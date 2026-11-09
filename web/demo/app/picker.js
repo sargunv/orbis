@@ -1,18 +1,16 @@
 // The map picker: the catalogue by provider, each entry with a chip in its
-// style's colours. Tokyo's offline extract carries its format toggle.
-import { h, hidden } from "./dom.js";
+// style's colours.
+import { h } from "./dom.js";
 
 export function picker(groups, { onPick }) {
   const popover = document.getElementById("scenes");
   const button = document.getElementById("scene-button");
   const list = document.getElementById("scene-groups");
-  let current = { scene: null, format: undefined };
 
   const option = (scene) => {
-    const pick = (format) => { popover.hidePopover(); onPick(scene, format); };
     const row = h("button", {
       class: "scene-option", type: "button", "data-scene": scene.key,
-      onclick: () => pick(scene.formats ? (current.scene === scene ? current.format : "mvt") : undefined),
+      onclick: () => { popover.hidePopover(); onPick(scene); },
     },
     h("span", { class: "chip", "aria-hidden": "true" }),
     h("span", { class: "scene-option-text" },
@@ -23,13 +21,7 @@ export function picker(groups, { onPick }) {
     chip.style.setProperty("--a", scene.swatch[0]);
     chip.style.setProperty("--b", scene.swatch[1]);
     chip.style.setProperty("--c", scene.swatch[2]);
-    if (!scene.formats) return h("li", {}, row);
-    const formats = h("span", { class: "formats", role: "group", "aria-label": "Tile format" },
-      Object.keys(scene.formats).map((format) => h("button", {
-        type: "button", "data-format": format, "aria-pressed": "false",
-        onclick: () => pick(format),
-      }, format.toUpperCase(), hidden(` tiles for ${scene.name}`))));
-    return h("li", { class: "scene-row" }, row, formats);
+    return h("li", {}, row);
   };
 
   list.replaceChildren(...groups.map((group) => h("section", { class: "scene-group" },
@@ -49,17 +41,14 @@ export function picker(groups, { onPick }) {
   });
 
   return {
+    /** The entry shown: one of the catalogue's, or one opened by URL (the Tokyo extract in `format`, a custom style). */
     show(scene, format) {
-      current = { scene, format };
       document.getElementById("scene-name").textContent = scene.name;
       document.getElementById("scene-provider").textContent =
         scene.formats ? `${scene.provider}, ${format.toUpperCase()} tiles` : scene.provider;
       button.setAttribute("aria-label", `Map: ${scene.name}, ${scene.provider}. Choose a map`);
       for (const row of list.querySelectorAll(".scene-option")) {
         row.setAttribute("aria-current", String(row.dataset.scene === scene.key));
-      }
-      for (const toggle of list.querySelectorAll("[data-format]")) {
-        toggle.setAttribute("aria-pressed", String(scene.formats && toggle.dataset.format === format));
       }
     },
   };

@@ -26,7 +26,7 @@ sprites once served.
   symbol layers, in Liberty's order. It inherits OSM Liberty's BSD code and
   CC BY design licences; see [STYLE-LICENSE.md](STYLE-LICENSE.md).
   Upstream style SHA-256: `408245464e76791801a64393c403433d09e8110eb9516040f8dc2b62584eee2a`.
-- `alps.json` and `alps-flight.json`: the terrain demo (`?style=alps&flight`
+- `alps.json` and `alps-flight.json`: the terrain entry (`?style=alps&flight`
   on the web, `--flight` natively), written for this
   repository. It draws OpenFreeMap's planet tiles (data as above) over
   [Mapterhorn](https://mapterhorn.com/)'s terrain tiles, fetched at run time
@@ -38,22 +38,14 @@ sprites once served.
   in [Mapterhorn's attribution list](https://mapterhorn.com/attribution).
   The flight's legs are `flyTo` options looped until the user takes the
   camera.
-- `scripts.json`: the Cairo, Delhi and Bangkok entries' style
-  (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
-  planet tiles with labels in Arabic, Devanagari, Thai and Latin from
-  `font-faces` files: Noto Sans subsets from `@fontsource` 5.3.0 on
-  jsDelivr (© Google, [SIL Open Font License 1.1](https://openfontlicense.org/)),
-  fetched at run time and not committed.
 - `osm-carto.json`: OpenStreetMap's standard raster tiles from
   `tile.openstreetmap.org`, under its [tile usage policy](https://operations.osmfoundation.org/policies/tiles/):
   attributed, fetched only as the map shows them, with the browser's
   referrer. Written for this repository.
-- `video.json`: a v8 `video` source over USGS The National Map's
-  orthoimagery (US public domain), playing GL JS's drone footage from
-  Mapbox's static assets, as GL JS's video example does; fetched at run
-  time, not committed. Written for this repository (`?style=video`).
-- `playground.json`: the style editor's sample, a made-up Tokyo district
-  drawn with hover state (`?style=playground`); written for this repository.
+- `playground.json`: a made-up Tokyo district drawn with hover state, the
+  style editor's end-to-end check (`pnpm -C web e2e --only=editor`) and
+  `orb-runtime`'s edit tests draw; written for this repository. No picker
+  entry shows it.
 - Labels: `sprites/` is OpenFreeMap's Liberty sprite (`ofm_f384/ofm`, 1× and
   2×; icons as in [STYLE-LICENSE.md](STYLE-LICENSE.md)). `glyphs/` holds
   OpenFreeMap's Noto Sans Regular, Bold and Italic glyph PBFs, cut to the
@@ -98,31 +90,21 @@ we use its typed staging API, currently exposed by its `__private` feature,
 into core.wasm. Mixed scalar columns are rejected because MLT v1 cannot retain
 them; they are never silently stringified. The real extract has none.
 
-## Other projections (`crs/`)
+## Another coordinate reference system (`crs/`)
 
-v8 styles whose root `projection` names a coordinate reference system
-and whose sources name their `tileMatrixSet`, written for this repository;
-the web demo opens them as `?style=arctic`, `?style=nz`,
-`?style=blue-marble` and `?style=greenland`, the native demo as
-`file://$PWD/web/demo/data/crs/arctic.json`.
+`arctic.json` is a v8 style whose root `projection` names a coordinate
+reference system and whose sources name their `tileMatrixSet`, written
+for this repository; the web demo opens it as `?style=arctic`, the native
+demo as `file://$PWD/web/demo/data/crs/arctic.json`. It draws on an
+EPSG:3413 (NSIDC polar stereographic) surface:
+[NASA EOSDIS GIBS](https://earthdata.nasa.gov/gibs) Blue Marble shaded relief,
+MEaSUREs Greenland ice velocity, coastlines and reference labels in GIBS's
+EPSG:3413 tile matrix sets (declared inline: 512-pixel tiles from
+±4,194,304 m), with a graticule from inline GeoJSON tiled on the surface,
+and OpenFreeMap's planet tiles' boundaries and labels, reprojected from
+Web Mercator (the `GpuPerVertex` plan).
 
-- `arctic.json` draws on an EPSG:3413 (NSIDC polar stereographic) surface:
-  [NASA EOSDIS GIBS](https://earthdata.nasa.gov/gibs) Blue Marble shaded relief,
-  MEaSUREs Greenland ice velocity, coastlines and reference labels in GIBS's
-  EPSG:3413 tile matrix sets (declared inline: 512-pixel tiles from
-  ±4,194,304 m), with a graticule from inline GeoJSON tiled on the surface,
-  and OpenFreeMap's planet tiles' boundaries and labels, reprojected from
-  Web Mercator (the `GpuPerVertex` plan).
-- `nz.json` draws OpenFreeMap's planet tiles on an NZTM2000 (EPSG:2193)
-  surface, reprojected from Web Mercator.
-- `blue-marble.json` draws a v8 globe: GIBS Blue Marble shaded relief from
-  its EPSG:4326 tiles (declared inline from level 3, where its matrices
-  become a quadtree of 36° tiles), to the poles, with OpenFreeMap's planet
-  tiles' boundaries and labels, under a v8 `sky`.
-- `greenland.json` keeps Web Mercator: OpenFreeMap's planet tiles under the
-  same ice velocity raster, warped from EPSG:3413 (the `RasterWarp` plan).
-
-They fetch their tiles at run time; nothing here is extracted or committed.
+It fetches its tiles at run time; nothing here is extracted or committed.
 GIBS imagery is NASA's and free of use restrictions; GIBS asks to be credited.
 OpenFreeMap's tiles and glyphs are as above (© OpenMapTiles, © OpenStreetMap
 contributors, ODbL).

@@ -63,6 +63,7 @@ export function hud() {
   const request = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
 
   return {
+    get visible() { return !root.hidden; },
     set visible(on) { root.hidden = !on; request(); },
     frame(ack) { latest = ack; request(); },
     hover(text) { hovered = text; request(); },

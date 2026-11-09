@@ -1,6 +1,9 @@
 // The map app: Orbis drawing a picked style full-bleed through the
-// `orbis` package, with a style editor, feature popups and highlights
-// through feature state, and a debug overlay.
+// `orbis` package, with a style editor (and, while it's open, feature
+// popups and highlights through feature state), and a debug overlay. One
+// map shows every entry: picking one sets its style on the map, which
+// diffs from the one before, so shared sources keep their tiles and paint
+// eases by the style's transition.
 //
 // URL: `?style=<key|url>` (styles.js), `&flight` (fly an entry's looping
 // flight, as picking it does; without it the map stays put and settles),
@@ -29,6 +32,12 @@ let map;
 let current;
 let popup;
 let highlighter;
+/** Bumped on every switch: a flight or camera move for an older entry stops. */
+let switches = 0;
+/** A switched-to style is on its way: the map reads as loading, not idle, until it arrives. */
+let styleLoading = false;
+/** The loaded style's own sky, which an entry's `sky` stands in for. */
+let styleSky = null;
 
 // Chrome tone: dark maps and a dark system preference turn it dark.
 const prefersDark = matchMedia("(prefers-color-scheme: dark)");
@@ -85,14 +94,17 @@ const editor = createEditor({
   onReplaced: () => { highlighter?.reset(); clearPopup(); },
 });
 
+/** Opens or closes the style editor; feature popups and highlights live only while it's open. */
 function setEditing(on) {
   app.classList.toggle("editing", on);
   editor.show(on);
   document.getElementById("edit-toggle").setAttribute("aria-pressed", String(on));
   setFlag("edit", on);
   if (!on) {
+    clearPopup();
     void highlighter?.set("hover", null);
     editor.inspect(null);
+    if (map) map.canvas.style.cursor = "";
     document.getElementById("edit-toggle").focus({ preventScroll: true });
   }
 }
@@ -185,33 +197,89 @@ function clearPopup() {
   void highlighter?.set("selected", null);
 }
 
+const projectionOf = (scene) => scene.projection ?? { type: "mercator" };
+
 /**
- * Moves to `next`: flies there when only the camera differs, else loads
- * its style in a new page. (A page draws one map: on Android Chrome a
- * second map in the same page doesn't present yet.) Basemaps keep the
- * camera between them.
+ * Moves to `next`: basemaps keep the camera between them; other entries
+ * fly to their own. The same style on another surface switches its
+ * projection in place; another style is set on the map as the diff from
+ * this one. `history` pushes the move as a history entry, or replaces the
+ * current one.
  */
-function go(next) {
-  const keep = current.scene.basemap && next.scene.basemap && map;
-  const camera = keep ? map.camera.current : next.scene.camera ?? (next.scene.basemap ? LIVE_CAMERA : undefined);
-  const sameCalls = JSON.stringify(current.scene.calls) === JSON.stringify(next.scene.calls);
-  if (map && sceneUrl(current.scene, current.format) === sceneUrl(next.scene, next.format) && sameCalls
-    && !next.scene.flight) {
-    // The same style on another surface switches in place: no tile loads.
-    const projection = (scene) => scene.projection ?? { type: "mercator" };
-    if (JSON.stringify(projection(current.scene)) !== JSON.stringify(projection(next.scene))) {
-      map.edit((tx) => tx.setProjection(projection(next.scene)));
+function go(next, { camera: asked, history: mode = "push" } = {}) {
+  if (!map) {
+    // No map started (no WebGPU, say): the new page tries again.
+    location.assign(urlFor(next, asked));
+    return;
+  }
+  const switched = ++switches;
+  const keep = current.scene.basemap && next.scene.basemap;
+  const camera = asked ?? (keep ? undefined : next.scene.camera ?? (next.scene.basemap ? LIVE_CAMERA : undefined));
+  const url = urlFor(next, camera ?? map.camera.current);
+  if (mode === "push") history.pushState(null, "", url); else history.replaceState(history.state, "", url);
+  const previous = current;
+  current = next;
+  tone();
+  picker.show(next.scene, next.format);
+  const fly = (to = camera) => {
+    if (to && switched === switches) {
+      map.camera.flyTo({ bearing: 0, pitch: 0, ...to, duration: reducedMotion() ? 0 : undefined });
+    }
+  };
+  if (sceneUrl(previous.scene, previous.format) === sceneUrl(next.scene, next.format) && !next.scene.flight) {
+    // The same style on another surface or under another sky: one edit,
+    // and nothing loads again.
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const projection = !same(projectionOf(previous.scene), projectionOf(next.scene));
+    const sky = !same(previous.scene.sky, next.scene.sky);
+    if (projection || sky) {
+      map.edit((tx) => {
+        if (projection) tx.setProjection(projectionOf(next.scene));
+        if (sky) tx.setSky(next.scene.sky ?? styleSky);
+      });
       // The comparison reopens with the projection, if it can draw it.
       compare.attach(map, next.scene);
     }
-    current = next;
-    picker.show(next.scene, next.format);
-    history.replaceState(history.state, "", urlFor(next, camera ?? map.camera.current));
-    if (camera) map.camera.flyTo({ bearing: 0, pitch: 0, ...camera, duration: reducedMotion() ? 0 : undefined });
+    fly();
     return;
   }
-  location.assign(urlFor(next, camera));
+  map.camera.stop();
+  map.camera.setConstraints(next.scene.constraints ?? {});
+  compare.attach(undefined, next.scene);
+  clearPopup();
+  say(`Loading ${next.scene.name}…`);
+  styleLoading = true;
+  app.dataset.map = "loading";
+  // The style's `styleload` applies the entry's projection and sky; then
+  // the camera moves, on the new style's surface.
+  map.setStyle(sceneUrl(next.scene, next.format));
+  const loaded = map.on("styleload", () => {
+    loaded();
+    // An entry without a camera of its own opens where its style does, as a new page would.
+    const style = map.getStyle();
+    const own = !keep && !camera && Array.isArray(style.center) && style.zoom !== undefined
+      && { center: style.center, zoom: style.zoom, bearing: style.bearing ?? 0, pitch: style.pitch ?? 0 };
+    if (!next.scene.flight || !params().has("flight")) fly(camera ?? own);
+    startFlight(switched);
+    if (!toast.classList.contains("error")) say("");
+  });
 }
+
+/** Flies the entry's looping flight, if it has one and the URL asks, until the user or another entry takes the camera. */
+async function startFlight(switched) {
+  const { flight } = current.scene;
+  if (!flight || !params().has("flight")) return;
+  for (let leg = 0; switched === switches; leg = (leg + 1) % flight.length) {
+    if (!await map.camera.flyTo(flight[leg])) return;
+  }
+}
+
+// Back and forward move between entries as picking them did.
+addEventListener("popstate", () => {
+  let next;
+  try { next = sceneFor(params()); } catch { return; }
+  go(next, { camera: hashCamera(), history: "none" });
+});
 
 async function load(next, { camera }) {
   current = next;
@@ -239,19 +307,29 @@ async function load(next, { camera }) {
   highlighter = new Highlighter(map, () => editor.style);
   map.on("error", ({ message }) => {
     console.error(message);
-    if (app.dataset.map === "loading") say(message, { error: true });
+    if (app.dataset.map === "loading" || toast.textContent.startsWith("Loading")) say(message, { error: true });
   });
+  // Each style, the first and those switched to: the entry's projection and
+  // sky, then the editor, attribution and comparison read it.
   map.on("styleload", async () => {
-    if (next.scene.projection) await map.edit((tx) => tx.setProjection(next.scene.projection));
-    if (next.scene.calls) await map.edit((tx) => { for (const [name, ...args] of next.scene.calls) tx[name](...args); });
+    const { scene } = current;
+    styleLoading = false;
+    highlighter.reset();
+    styleSky = map.getStyle().sky ?? null;
+    if (scene.projection || scene.sky) {
+      map.edit((tx) => {
+        if (scene.projection) tx.setProjection(scene.projection);
+        if (scene.sky) tx.setSky(scene.sky);
+      });
+    }
     await editor.attach(map);
     attributionControl.update(editor.style);
-    compare.attach(map, next.scene);
+    compare.attach(map, scene);
   });
   map.on("load", () => { if (!toast.classList.contains("error")) say(""); });
   map.on("warning", ({ message }) => console.warn(message));
   map.on("render", (ack) => {
-    app.dataset.map = ack.idle ? "idle" : "drawing";
+    app.dataset.map = styleLoading ? "loading" : ack.idle ? "idle" : "drawing";
     hudControl.frame(ack);
     editor.frame(ack);
     showCompass();
@@ -279,28 +357,20 @@ async function load(next, { camera }) {
     });
   }
   wireFeatures(map);
-
-  if (next.scene.flight && params().has("flight")) {
-    // From the style's own camera, which it adopts as it loads.
-    (async () => {
-      await created.once("styleload");
-      for (let leg = 0; ; leg = (leg + 1) % next.scene.flight.length) {
-        if (!await created.camera.flyTo(next.scene.flight[leg])) return;
-      }
-    })();
-  }
-  if (next.scene.basemap || next.scene.key === "tokyo" || next.scene.key === "playground") {
-    const pin = document.createElement("div");
-    pin.className = "pin demo-annotation";
-    pin.title = "Tokyo Station";
-    map.annotations.add({ element: pin, lngLat: [139.7671, 35.6812] });
-  }
+  // From the style's own camera, which it adopts as it loads.
+  const switched = switches;
+  const loaded = map.on("styleload", () => { loaded(); startFlight(switched); });
 }
 
-/** Popups on click, hover state while editing, a pointer cursor over features. */
+/**
+ * While the style editor is open: popups and a highlight on click, hover
+ * state, a pointer cursor over features. Otherwise a click or tap is only a
+ * gesture; the debug overlay still names the feature under the pointer.
+ */
 function wireFeatures(target) {
   target.on("click", async ({ point, lngLat }) => {
     clearPopup();
+    if (!editor.open) return;
     const [feature] = await target.queryRenderedFeatures(point);
     if (!feature || !lngLat) return;
     const element = featurePopup(feature, {
@@ -320,10 +390,11 @@ function wireFeatures(target) {
       while (pointer !== undefined) {
         const point = pointer;
         pointer = undefined;
+        if (!editor.open && !hudControl.visible) continue;
         const hit = point && target.hitTest(point);
-        target.canvas.style.cursor = hit ? "pointer" : "";
         hudControl.hover(hit ? `${hit.layer}${hit.id !== null ? ` #${hit.id}` : ""}` : "");
         if (!editor.open) continue;
+        target.canvas.style.cursor = hit ? "pointer" : "";
         editor.inspect(hit);
         await highlighter.set("hover", targetOf(hit, editor.style));
       }
@@ -338,7 +409,10 @@ function wireFeatures(target) {
 }
 
 // Hooks for the headless checks and the console.
-window.app = { get map() { return map; }, editor, compare, get scene() { return current?.scene.key; } };
+window.app = { get map() { return map; }, editor, compare, get scene() { return current?.scene.key; },
+  get popup() { return popup; },
+  /** Switches to `style`, a catalogue key or a style URL, as picking an entry does. */
+  show(style) { go(sceneFor(new URLSearchParams({ style }))); } };
 
 // Start.
 const start = params();
@@ -348,7 +422,7 @@ if (start.has("edit")) setEditing(true);
 {
   const camera = hashCamera();
   let first;
-  try { first = sceneFor(start, camera); } catch (e) { say(String(e.message), { error: true }); throw e; }
+  try { first = sceneFor(start); } catch (e) { say(String(e.message), { error: true }); throw e; }
   history.replaceState(history.state, "", urlFor(first, camera, { fly: start.has("flight") }));
   await load(first, { camera: camera ?? first.scene.camera ?? (first.scene.basemap ? LIVE_CAMERA : undefined) });
 }

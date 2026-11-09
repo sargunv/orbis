@@ -1,18 +1,14 @@
-// The demo's styles: the catalogue the map app's picker shows, grouped by
-// provider, and `demoStyle` for the bench and measurement pages.
+// The demo's styles: the catalogue the map app's picker shows (the
+// basemaps by provider, and a few entries for features: a projection, a
+// CRS, the globe, terrain), and `demoStyle` for the bench and measurement
+// pages.
 import mvt from "./data/tokyo-mvt.json?url";
 import mlt from "./data/tokyo-mlt.json?url";
 
-import playground from "./data/playground.json?url";
-import scripts from "./data/scripts.json?url";
 import arctic from "./data/crs/arctic.json?url";
-import greenland from "./data/crs/greenland.json?url";
-import nz from "./data/crs/nz.json?url";
-import blueMarble from "./data/crs/blue-marble.json?url";
 import alps from "./data/alps.json?url";
 import osmCarto from "./data/osm-carto.json?url";
 import alpsFlight from "./data/alps-flight.json";
-import video from "./data/video.json?url";
 
 /** OpenFreeMap's live Liberty style over the planet: the demo's default. */
 export const LIVE = "https://tiles.openfreemap.org/styles/liberty";
@@ -38,111 +34,43 @@ function tileBounds([west, south, east, north], z) {
 /** The committed Tokyo extract's bounds (data/README.md), cut at zoom 14. */
 const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
 
-const CITIES = {
-  cairo: { center: [31.2357, 30.0444], zoom: 13 },
-  delhi: { center: [77.209, 28.6139], zoom: 13 },
-  bangkok: { center: [100.5018, 13.7563], zoom: 13 },
-};
-
 /**
  * A picker entry. `basemap` entries keep the camera when switched to; the
  * rest open at their own. `swatch` is [land, water, line] for the picker's
  * chip; `dark` styles turn the app's chrome dark. `constraints` keep the
  * camera where a bounded dataset has data. `projection` is a v8 projection
- * the map switches to once the style loads; `calls` are GL JS map calls
- * (`[name, ...args]`) applied then too. `notInGlJs` says why the
+ * the map switches to once the style loads, and `sky` a v8 sky it puts
+ * in place of the style's then too. `notInGlJs` says why the
  * comparison with GL JS (app/compare.js) can't show the entry.
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
- *   projection?: object, calls?: unknown[][], notInGlJs?: string }} Scene
+ *   projection?: object, sky?: object, notInGlJs?: string }} Scene
  */
 
-/** The world, for layers that cover everything. */
-const WORLD = { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Polygon",
-  coordinates: [[[-180, -85.06], [180, -85.06], [180, 85.06], [-180, 85.06], [-180, -85.06]]] } } };
-
-/**
- * Liberty at dusk, by layer blends (style-spec 26): a blue tint multiplies
- * everything beneath the boundaries; major roads glow, added on top in
- * `plus-lighter` at a layer opacity; water screens a cool sheen.
- */
-const DUSK = [
-  ["addSource", "dusk", WORLD],
-  ["addLayer", { id: "dusk-tint", type: "fill", source: "dusk",
-    paint: { "fill-color": "#4d5894", "fill-layer-blend": "multiply" } }, "boundary_3"],
-  ["addLayer", { id: "dusk-glow", type: "line", source: "openmaptiles", "source-layer": "transportation",
-    filter: ["match", ["get", "class"], ["motorway", "trunk", "primary", "secondary"], true, false],
-    layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#ff9d4d", "line-blur": ["interpolate", ["linear"], ["zoom"], 8, 2, 16, 10],
-      "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 8, 2, 16, 18],
-      "line-layer-blend": "plus-lighter", "line-layer-opacity": 0.55 } }, "boundary_3"],
-  ["setPaintProperty", "water", "fill-layer-blend", "screen"],
-];
-
-/** A blue sky around the globe that thins out as it hands over to Mercator. */
-const GLOBE_SKY = [
-  ["setSky", { "sky-color": "#4f8fd9", "horizon-color": "#d6e8fb", "fog-color": "#e4eef8",
-    "sky-horizon-blend": 0.7, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.7,
-    "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 2, 0.8, 4, 0.45, 8, 0] }],
-];
-
-/**
- * GL JS's image source example: a weather radar frame over the northeast
- * of the United States, on Liberty.
- */
-const RADAR = [
-  ["addSource", "radar", { type: "image", url: "https://maplibre.org/maplibre-gl-js/docs/assets/radar.gif",
-    coordinates: [[-80.425, 46.437], [-71.516, 46.437], [-71.516, 37.936], [-80.425, 37.936]] }],
-  ["addLayer", { id: "radar", type: "raster", source: "radar",
-    paint: { "raster-fade-duration": 0, "raster-opacity": 0.85 } }],
-];
+/** A blue sky around the globe, a subtle rim at low zoom that thins out as it hands over to Mercator. */
+const GLOBE_SKY = { "sky-color": "#4f8fd9", "horizon-color": "#d6e8fb", "fog-color": "#e4eef8",
+  "sky-horizon-blend": 0.7, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.7,
+  "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 0.4, 2, 0.32, 4, 0.18, 8, 0] };
 
 /** @type {{ name: string, scenes: Scene[] }[]} */
 export const GROUPS = [
   {
-    name: "Orbis showcases",
+    name: "Features",
     scenes: [
       { key: "globe", name: "Globe", detail: "Liberty on the v8 globe under a v8 sky, Web Mercator from zoom 12",
-        url: LIVE, projection: { type: "globe" }, calls: GLOBE_SKY, camera: { center: [10, 30], zoom: 1.5 },
+        url: LIVE, projection: { type: "globe" }, sky: GLOBE_SKY, camera: { center: [10, 30], zoom: 1.5 },
         dark: true, swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
-      { key: "dusk", name: "Liberty at dusk", detail: "Layer blends: a multiplied tint, glowing roads",
-        url: LIVE, calls: DUSK, camera: { center: [139.767, 35.681], zoom: 12.5 }, dark: true,
-        swatch: ["#4c4f6e", "#6f86b8", "#ff9d4d"],
-        notInGlJs: "GL JS can't draw layer blends" },
-      { key: "blue-marble", name: "Blue Marble globe", detail: "NASA imagery in EPSG:4326 tiles, to the poles",
-        url: blueMarble, dark: true, swatch: ["#2f4a2a", "#0b2a5c", "#d8d0b8"],
-        notInGlJs: "GL JS can't draw tile matrix sets" },
-      { key: "alps", name: "Alps terrain flight", detail: "3D terrain, sky and a looping camera flight", url: alps,
-        flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
-      { key: "arctic", name: "Arctic", detail: "Polar stereographic, EPSG:3413", url: arctic, dark: true,
-        swatch: ["#24476b", "#e9eef2", "#9aa6ad"],
-        notInGlJs: "GL JS can't draw tile matrix sets" },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
         url: LIVE, projection: { type: "equal-earth" }, camera: { center: [0, 10], zoom: 0.5 },
         swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"],
         notInGlJs: "GL JS has no Equal Earth projection" },
-      { key: "nz", name: "New Zealand", detail: "Transverse Mercator, NZTM2000", url: nz,
-        swatch: ["#f8f4f0", "#a0c8f0", "#bfd6a8"],
-        notInGlJs: "GL JS can't reproject vector tiles" },
-      { key: "greenland", name: "Greenland ice flow", detail: "Polar imagery warped onto Web Mercator", url: greenland,
-        constraints: { bounds: [-76, 58, -8, 84.5], maxZoom: 8 }, swatch: ["#f4f7fa", "#a0c8f0", "#7b4fb0"],
-        notInGlJs: "GL JS can't reproject raster tiles" },
-      { key: "radar", name: "Weather radar", detail: "An image source: a radar frame over the northeast US",
-        url: LIVE, calls: RADAR, camera: { center: [-75.789, 41.874], zoom: 5 },
-        swatch: ["#f8f4f0", "#a0c8f0", "#44b85c"] },
-      { key: "video", name: "Video on a map", detail: "A video source: drone footage over the coast",
-        url: video, constraints: { minZoom: 14 }, dark: true, swatch: ["#3b4a35", "#1f3a52", "#c9b98f"] },
-      { key: "cairo", name: "Cairo", detail: "Arabic labels, shaped with HarfRust", url: scripts,
-        camera: CITIES.cairo, swatch: ["#f6f3ee", "#a9cbe8", "#d9a066"] },
-      { key: "delhi", name: "Delhi", detail: "Devanagari labels", url: scripts,
-        camera: CITIES.delhi, swatch: ["#f6f3ee", "#a9cbe8", "#d9a066"] },
-      { key: "bangkok", name: "Bangkok", detail: "Thai labels", url: scripts,
-        camera: CITIES.bangkok, swatch: ["#f6f3ee", "#a9cbe8", "#d9a066"] },
-      { key: "tokyo", name: "Tokyo, offline", detail: "Bundled extract, no network", url: mvt,
-        formats: { mvt, mlt }, constraints: { bounds: TOKYO_BOUNDS, maxPitch: 0 },
-        swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
+      { key: "arctic", name: "Arctic", detail: "A polar stereographic CRS, EPSG:3413", url: arctic, dark: true,
+        swatch: ["#24476b", "#e9eef2", "#9aa6ad"],
+        notInGlJs: "GL JS can't draw tile matrix sets" },
+      { key: "alps", name: "Alps terrain", detail: "3D terrain, sky and a looping camera flight", url: alps,
+        flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
     ],
   },
   {
@@ -195,35 +123,30 @@ export const GROUPS = [
 for (const group of GROUPS) for (const scene of group.scenes) scene.provider = group.name;
 
 const SCENES = Object.fromEntries(GROUPS.flatMap((g) => g.scenes).map((s) => [s.key, s]));
-/** The feature-state sample the style editor's tests draw; by URL only. */
-SCENES.playground = { key: "playground", name: "Editor sample", detail: "A Tokyo district with hover state",
-  url: playground, provider: "Orbis", swatch: ["#edf2f5", "#bfd5c7", "#567b99"] };
+/** The committed Tokyo extract, by URL only: the benchmarks', checks' and offline work's style. */
+SCENES.tokyo = { key: "tokyo", name: "Tokyo, offline", detail: "Bundled extract, no network", url: mvt,
+  provider: "Orbis", formats: { mvt, mlt }, constraints: { bounds: TOKYO_BOUNDS, maxPitch: 0 },
+  swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] };
 
 /** The default scene. */
 export const DEFAULT_SCENE = SCENES.liberty;
 
-const near = (camera, center) => camera && Math.hypot(camera.center[0] - center[0], camera.center[1] - center[1]) < 5;
-
 /**
  * The scene `params` name (and, for Tokyo, its format): a catalogue key,
- * `tokyo-mvt|tokyo-mlt`, `scripts` (the city nearest `camera`), a style
- * URL matching an entry, or any other style URL as a scene of its own.
+ * `tokyo[-mvt|-mlt]`, a style URL matching an entry, or any other style
+ * URL as a scene of its own.
  */
-export function sceneFor(params, camera) {
+export function sceneFor(params) {
   const style = params.get("style");
   const format = params.get("format");
   if (format && !["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");
   if (!style) return format ? { scene: SCENES.tokyo, format } : { scene: DEFAULT_SCENE };
   const tokyo = style.match(/^tokyo(?:-(mvt|mlt))?$/);
   if (tokyo) return { scene: SCENES.tokyo, format: tokyo[1] ?? format ?? "mvt" };
-  if (style === "scripts") {
-    const city = Object.keys(CITIES).find((key) => near(camera, CITIES[key].center)) ?? "cairo";
-    return { scene: SCENES[city] };
-  }
   if (SCENES[style]) return { scene: SCENES[style] };
   const url = new URL(style, location.href).href;
   const known = Object.values(SCENES)
-    .find((s) => !s.projection && !s.calls && new URL(s.url, location.href).href === url);
+    .find((s) => !s.projection && !s.sky && new URL(s.url, location.href).href === url);
   if (known) return { scene: known };
   return { scene: { key: style, name: new URL(url).hostname, detail: url, url, provider: "Custom style",
     basemap: true, swatch: ["#e8e8e8", "#c8c8c8", "#9a9a9a"] } };

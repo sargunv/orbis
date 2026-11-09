@@ -11,8 +11,12 @@
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
 //   the cost of a feature-state write (≤0.05 ms target) over
 //   `--writes` writes.
-// - `editor`: the map app's style editor, queries and hover state on the
-//   editor sample (`?style=playground&edit`), and frames per edit.
+// - `editor`: the map app's style editor, queries and hover state on
+//   web/demo/data/playground.json, and frames per edit.
+// - `switching`: entries switch on one map: another style on the same
+//   source eases its paint by the style's transition and requests no
+//   tiles, and back goes back without a reload; a click opens a feature
+//   popup only while the style editor is open.
 // - `compare`: the comparison with GL JS on the Tokyo extract: the plain
 //   page fetches none of GL JS, `&compare` shows both maps at one camera,
 //   and a drag on either side moves both.
@@ -29,14 +33,18 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,compare,gestures,offline]
+//   pnpm e2e [--only=scenario,edits,editor,switching,compare,gestures,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520]
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { decodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,compare,gestures").split(",");
+const only = arg("only", "scenario,edits,editor,switching,compare,gestures").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -429,7 +437,8 @@ async function edits(browser, server) {
 
 async function editor(browser, server) {
   const { page, errors } = await open(browser, { width: 1280, height: 800 });
-  await page.goto(`${server.url}?style=playground&edit`);
+  const style = encodeURIComponent(`${server.url}e2e/data/playground.json`);
+  await page.goto(`${server.url}?style=${style}&edit#15/35.6835/139.7655`);
   await page.waitForFunction(() => window.app?.editor.style && document.querySelector("#app").dataset.map === "idle",
     null,{timeout:60000});
   const map = page.locator("#map");
@@ -523,6 +532,112 @@ async function editor(browser, server) {
   await page.mouse.move(center[0]+1,center[1]);
   await page.waitForFunction(() => document.querySelector(".inspect").hidden);
   assert.deepEqual(errors,[]);
+  await page.close();
+}
+
+/** The Tokyo extract's style with its URLs absolute under the e2e mount, so a copy elsewhere draws alike. */
+async function tokyoStyle(server) {
+  const text = await readFile(join(DATA, "tokyo-mvt.json"), "utf8");
+  return JSON.parse(text.replaceAll('"./', `"${server.url}e2e/data/`)
+    .replaceAll("pmtiles://./", `pmtiles://${server.url}e2e/data/`));
+}
+
+async function switching(browser, server) {
+  const { page, errors } = await open(browser, { width: 800, height: 600 });
+  // Two basemaps on the one source: the second's water is red, and each
+  // eases paint over a second and a half.
+  const transition = { duration: 1500, delay: 0 };
+  const plain = { ...await tokyoStyle(server), transition };
+  const red = structuredClone(plain);
+  red.layers.find((l) => l.id === "water").paint["fill-color"] = "#ff0000";
+  await writeFile(join(server.styles, "plain.json"), JSON.stringify(plain));
+  await writeFile(join(server.styles, "red.json"), JSON.stringify(red));
+  const [first, second] = ["plain", "red"].map((name) => `${server.url}e2e/styles/${name}.json`);
+  const idle = () => page.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null,
+    { timeout: 60_000 });
+  // The extract's range requests, from the page and its workers.
+  let archive = 0;
+  page.on("request", (r) => { if (r.url().includes("tokyo-mvt.pmtiles")) archive++; });
+  await page.goto(`${server.url}?style=${encodeURIComponent(first)}#15/35.685/139.74`);
+  await idle();
+  assert.ok(archive > 0, "the first load reads the archive");
+
+  // A point the water draws, and its colour through a switch to `style`.
+  // Points on the map itself, not under its controls.
+  const onMap = (test) => page.evaluate((test) => {
+    const canvas = app.map.canvas;
+    const rect = canvas.getBoundingClientRect();
+    for (let y = 20; y < canvas.clientHeight; y += 20) {
+      for (let x = 20; x < canvas.clientWidth; x += 20) {
+        if (document.elementFromPoint(rect.x + x, rect.y + y) !== canvas) continue;
+        const hit = app.map.hitTest([x, y]);
+        if (hit && (test === "any" || hit.layer === test)) return [x, y];
+      }
+    }
+    return null;
+  }, test);
+  const water = await onMap("water");
+  assert.ok(water, "the view has water");
+  const through = async (style) => {
+    archive = 0;
+    const seen = await page.evaluate(async ([style, [x, y]]) => {
+      const { map } = app;
+      const colour = async () => {
+        const image = await map.readPixels();
+        const ratio = image.width / map.canvas.clientWidth;
+        const i = (Math.round(y * ratio) * image.width + Math.round(x * ratio)) * 4;
+        return [...image.data.slice(i, i + 3)];
+      };
+      const before = await colour();
+      const loaded = map.once("styleload");
+      if (style) app.show(style); else history.back();
+      const late = new Promise((_, reject) => setTimeout(() => reject(new Error("no styleload")), 20_000));
+      await Promise.race([loaded, late]);
+      // The transition takes 1.5 s: past it, the colour has settled.
+      const colours = [];
+      for (const until = performance.now() + 2500; performance.now() < until;) colours.push(await colour());
+      return { before, colours, after: await colour() };
+    }, [style, water]);
+    return { ...seen, requests: archive };
+  };
+  await page.evaluate(() => { window.firstMap = app.map; window.notReloaded = true; });
+  const close = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 6);
+  const eases = ({ before, colours, after }) => !close(before, after)
+    && colours.some((c) => !close(c, before) && !close(c, after));
+  const there = await through(second);
+  assert.ok(close(there.after, [255, 0, 0]), `the water turns red: ${JSON.stringify(there.after)}`);
+  assert.ok(eases(there), `the water eases: ${JSON.stringify(there)}`);
+  assert.equal(there.requests, 0, "the shared source reads no tiles again");
+  // Back, by the browser's history, on the same page and map.
+  const back = await through(null);
+  assert.ok(eases(back) && close(back.after, there.before), `back eases to the first: ${JSON.stringify(back)}`);
+  assert.equal(back.requests, 0);
+  assert.ok(await page.evaluate(() => window.notReloaded && app.map === window.firstMap
+    && document.querySelectorAll("#map canvas").length === 1), "one page, one map");
+  assert.ok(page.url().includes(encodeURIComponent(first)), page.url());
+  console.log(`switching: one map; the water eases over ${there.colours.length} frames read, ` +
+    `back over ${back.colours.length}, requesting no tiles`);
+
+  // A click is only a gesture outside the editor; inside it, it opens a popup.
+  const [x, y] = water;
+  const box = await page.locator("#map").boundingBox();
+  await page.mouse.click(box.x + x, box.y + y);
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".popup").count(), 0, "no popup outside the editor");
+  assert.equal(await page.evaluate(() => window.app.editor.open), false);
+  await page.click("#edit-toggle");
+  await page.waitForFunction(() => window.app.editor.open);
+  await idle();
+  // The editor takes room from the map: a feature where it still shows.
+  const box2 = await page.locator("#map canvas").boundingBox();
+  const feature = await onMap("any");
+  assert.ok(feature, "a feature shows beside the editor");
+  await page.mouse.click(box2.x + feature[0], box2.y + feature[1]);
+  await page.waitForSelector(".popup", { timeout: 5_000 });
+  await page.click("#edit-toggle");
+  assert.equal(await page.locator(".popup").count(), 0, "closing the editor closes the popup");
+  console.log("switching: a click opens a popup only in the editor");
+  assert.deepEqual(errors, []);
   await page.close();
 }
 
@@ -844,11 +959,15 @@ const CHECKS = {
   scenario,
   edits,
   editor,
+  switching,
   compare,
   gestures,
   offline,
 };
-const server = await serveDemo();
+const DATA = fileURLToPath(new URL("../demo/data/", import.meta.url));
+// Styles a check writes, served beside the demo's data.
+const styles = await mkdtemp(join(tmpdir(), "orbis-e2e-"));
+const server = { ...await serveDemo({ mounts: { "e2e/data/": DATA, "e2e/styles/": styles } }), styles };
 const browser = await launchChromium();
 let failed = 0;
 try {
@@ -865,5 +984,6 @@ try {
 } finally {
   await browser.close();
   server.close();
+  await rm(styles, { recursive: true, force: true });
 }
 if (failed) process.exit(1);

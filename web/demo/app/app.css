@@ -217,14 +217,6 @@ h2, h3 { margin: 0; }
     linear-gradient(130deg, var(--a) 0 58%, var(--b) 58% 100%);
 }
 .dark-flag { font-size: var(--text-xs); color: var(--ink-muted); border: 1px solid var(--hairline); border-radius: 99px; padding: 1px 8px; }
-.formats { display: inline-flex; padding: 2px; border-radius: 99px; background: var(--well); }
-.formats button {
-  min-width: 52px; min-height: 36px; padding: 0 var(--space-3); border: 0; border-radius: 99px;
-  background: transparent; font-size: var(--text-sm); font-weight: 600; color: var(--ink-muted);
-}
-.formats button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--lift); }
-.scene-row { display: flex; align-items: center; gap: var(--space-2); }
-.scene-row .scene-option { flex: 1; }
 
 .menu {
   position: fixed; inset: var(--menu-top, 64px) var(--menu-right, 12px) auto auto;
@@ -349,8 +341,7 @@ h2, h3 { margin: 0; }
 .toast:empty { display: none; }
 .toast.error { background: var(--danger); color: #fff; }
 
-/* Annotations: the Tokyo Station pin and feature popups. */
-.pin { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; box-shadow: 0 1px 4px rgb(0 0 0 / 0.4); }
+/* Feature popups, the style editor's annotations. */
 .popup {
   pointer-events: auto; width: max-content; max-width: min(300px, 80vw);
   padding: var(--space-3) var(--space-3) var(--space-2); border-radius: var(--radius-control);

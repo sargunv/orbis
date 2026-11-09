@@ -2,8 +2,8 @@
 // clipped to the right of a draggable divider, so each side shows one map
 // and takes its own input. The map that last took input leads and the
 // other jumps to its camera, so the two don't echo each other's moves.
-// The other map takes Orbis's style as it stands (projection, sky and the
-// entry's calls applied) and follows the style editor's edits.
+// The other map takes Orbis's style as it stands (the entry's projection
+// and sky applied) and follows the style editor's edits.
 //
 // An engine loads only when a comparison opens. Each is a module with a
 // `label` and `open(container, { style, camera, constraints })`, which
