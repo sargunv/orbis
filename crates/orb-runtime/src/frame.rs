@@ -128,20 +128,6 @@ impl Map {
             return Some(pyramid.plan(&cover));
         }
         let tms = &endpoint.tms;
-        // Where the source's visible layers are shown, their tiles hold
-        // their data: the cover keeps to the least zoom all of them have
-        // data at, wherever that detail still shows (orb_camera's
-        // `DATA_TILE_PX`), and picks finer by distance above it.
-        let data_zoom = plan
-            .nodes
-            .iter()
-            .filter(|n| n.source == index)
-            .map(|n| &plan.style.layers[n.layer])
-            .filter(|l| l.is_visible_at(zoom))
-            .map(|l| l.minzoom.floor().max(0.0) as u8)
-            .max()
-            .unwrap_or(0)
-            .clamp(pyramid.min_zoom(), pyramid.max_zoom());
         // Tile mode draws the middle tile of its grid and places labels over
         // the whole grid: a source whose content crosses tile edges (labels,
         // circles, heatmaps) covers the grid, as does a DEM source, whose
@@ -175,7 +161,7 @@ impl Map {
             (None, false) => view.cover_volume(
                 tms,
                 endpoint.cover_px,
-                data_zoom..=pyramid.max_zoom(),
+                pyramid.max_zoom(),
                 f64::from(height) * self.extrusion_scale(),
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 margin,
@@ -752,7 +738,7 @@ impl Map {
             None => view.cover_volume(
                 tms,
                 TILE_PX,
-                0..=24,
+                24,
                 0.0,
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 0.0,

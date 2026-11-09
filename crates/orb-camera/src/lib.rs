@@ -604,7 +604,7 @@ impl View {
     /// The tiles of `tms` that cover the view, choosing for each the zoom at
     /// which GL JS's default level-of-detail policy selects `tile_px` tiles.
     pub fn cover(&self, tms: &TileMatrixSet, tile_px: f64, max_zoom: u8) -> Vec<CoveredTile> {
-        self.cover_volume(tms, tile_px, 0..=max_zoom, 0.0, None, 0.0)
+        self.cover_volume(tms, tile_px, max_zoom, 0.0, None, 0.0)
     }
 
     /// Covers ground and content standing on it up to `height` (world
@@ -614,21 +614,15 @@ impl View {
     /// On `terrain`, tiles are culled by the elevations under them where
     /// known, and detail varies with distance at any pitch, as GL JS's
     /// cover does with terrain.
-    ///
-    /// Tiles take zooms in `zooms`. Below its start, where content needs
-    /// the data of that zoom (a source's visible layers' least zoom with
-    /// data), tiles refine to it wherever its tiles would still span
-    /// [`DATA_TILE_PX`] on screen: content past that is a pixel or less.
     pub fn cover_volume(
         &self,
         tms: &TileMatrixSet,
         tile_px: f64,
-        zooms: std::ops::RangeInclusive<u8>,
+        max_zoom: u8,
         height: f64,
         terrain: Option<&dyn Elevation>,
         margin_px: f64,
     ) -> Vec<CoveredTile> {
-        let max_zoom = *zooms.end();
         if let Some(low) = self.low_plane() {
             return low.cover_low(tms, tile_px, max_zoom);
         }
@@ -637,10 +631,17 @@ impl View {
             return self.cover_globe(globe, tms, tile_px, max_zoom, metres);
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
-        self.cover_tiles(tms, zooms, height, terrain, margin_px, |index, offset| {
-            let bounds = tms.tile_area(index).translated(DVec2::new(offset, 0.0));
-            Some((bounds, center_zoom))
-        })
+        self.cover_tiles(
+            tms,
+            max_zoom,
+            height,
+            terrain,
+            margin_px,
+            |index, offset| {
+                let bounds = tms.tile_area(index).translated(DVec2::new(offset, 0.0));
+                Some((bounds, center_zoom))
+            },
+        )
     }
 
     /// Covers the view with tiles of a set on another plane (the
@@ -660,7 +661,7 @@ impl View {
             return self.cover_globe(globe, tms, tile_px, max_zoom, 0.0);
         }
         let scale = self.world_per_px * tile_px;
-        self.cover_tiles(tms, 0..=max_zoom, 0.0, None, 0.0, |index, offset| {
+        self.cover_tiles(tms, max_zoom, 0.0, None, 0.0, |index, offset| {
             let f = footprint(index)?;
             // The zoom at which this tile, at its own scale, would span
             // `tile_px` pixels at the camera.
@@ -684,7 +685,7 @@ impl View {
     fn cover_tiles(
         &self,
         tms: &TileMatrixSet,
-        zooms: std::ops::RangeInclusive<u8>,
+        max_zoom: u8,
         height: f64,
         terrain: Option<&dyn Elevation>,
         margin_px: f64,
@@ -710,7 +711,6 @@ impl View {
         let wrap_period = self.projection.wrap_period();
         let copies = wrap_period.map_or(0, |period| ((reach / period).ceil() as i32).min(3));
         let lod = self.cover_lod(terrain.is_some());
-        let (floor, max_zoom) = (f64::from(*zooms.start()), *zooms.end());
         tms.cover_with(-copies..=copies, wrap_period, max_zoom, |index, offset| {
             let Some((bounds, center_zoom)) = place(index, offset) else {
                 return CoverDecision::Skip;
@@ -726,11 +726,7 @@ impl View {
             }
             let desired =
                 center_zoom + lod.map_or(0.0, |lod| lod.at(rel.clamp(self.eye.truncate())));
-            // Tiles of the floor's zoom span 2^(desired − floor) source
-            // tiles' pixels here.
-            let data = desired - floor >= (DATA_TILE_PX / TILE_SIZE_PX).log2();
-            let z = f64::from(index.z);
-            if z < tile_zoom(desired) || (z < floor && data) {
+            if f64::from(index.z) < tile_zoom(desired) {
                 CoverDecision::Refine
             } else {
                 CoverDecision::Accept
@@ -1166,12 +1162,6 @@ fn corners_in_frustum(view_proj: &DMat4, corners: &[DVec3; 8], margin: DVec2) ->
         || all(&|c| c.z < 0.0))
 }
 
-/// The least screen size, in pixels, of a tile of a source's data zoom
-/// that the cover still loads where its detail would be coarser: past it,
-/// the tile's content (a building is about a 60th of a z14 tile) is a
-/// pixel or less.
-pub const DATA_TILE_PX: f64 = 64.0;
-
 /// The whole tile zoom a cover's desired zoom asks for. A whole zoom
 /// computed through scales and trigonometry can land an ulp short of
 /// itself (1.9999999999999998 at zoom 2, latitude 57°); it means that zoom.
@@ -1179,8 +1169,6 @@ fn tile_zoom(desired: f64) -> f64 {
     (desired + 1e-9).floor().max(0.0)
 }
 
-/// The source tile size the cover's desired zoom refers to.
-const TILE_SIZE_PX: f64 = 512.0;
 /// Pitch, degrees, over which the distance LOD eases in past GL JS's
 /// threshold.
 const LOD_EASE: f64 = 5.0;
@@ -1333,8 +1321,8 @@ mod tests {
     #[test]
     fn cover_margins_reach_past_the_edge() {
         let (view, tms) = setup(3.0, 0.0);
-        let plain = view.cover_volume(&tms, 512.0, 0..=14, 0.0, None, 0.0);
-        let padded = view.cover_volume(&tms, 512.0, 0..=14, 0.0, None, 300.0);
+        let plain = view.cover_volume(&tms, 512.0, 14, 0.0, None, 0.0);
+        let padded = view.cover_volume(&tms, 512.0, 14, 0.0, None, 300.0);
         assert!(padded.len() > plain.len());
         assert!(plain.iter().all(|t| padded.contains(t)));
     }
@@ -1655,8 +1643,8 @@ mod tests {
         let view = globe_view(Geodetic::new(0.0, 0.0), 4.5, 80.0, 0.0);
         let globe = view.globe().unwrap();
         let lift = 500e3 * view.world_per_px() / globe.metres_per_px;
-        let plain = view.cover_volume(&tms, 512.0, 0..=22, 0.0, None, 0.0);
-        let lifted = view.cover_volume(&tms, 512.0, 0..=22, lift, None, 0.0);
+        let plain = view.cover_volume(&tms, 512.0, 22, 0.0, None, 0.0);
+        let lifted = view.cover_volume(&tms, 512.0, 22, lift, None, 0.0);
         assert!(plain.iter().all(|t| lifted.contains(t)));
         let eye = (globe.target + globe.eye).normalize();
         let past: Vec<_> = (lifted.iter())
