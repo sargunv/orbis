@@ -493,7 +493,6 @@ impl NodePaint {
         b.0
     }
 
-    /// How far drawn pixels can reach past a chunk's bounds.
     /// Whether its point quads lie on the surface: heatmap kernels and
     /// map-aligned circles, which a globe draws as grids that follow it.
     pub(crate) fn on_surface(&self) -> bool {
@@ -504,6 +503,7 @@ impl NodePaint {
         }
     }
 
+    /// How far drawn pixels can reach past a chunk's bounds.
     pub(crate) fn cull_margin_px(&self) -> f32 {
         match self {
             Self::Circle(p) => p.radius + p.stroke_width + p.translate.length() + 1.0,
