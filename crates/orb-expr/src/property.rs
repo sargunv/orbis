@@ -34,8 +34,9 @@ pub enum PropertyType {
 #[derive(Clone, Debug)]
 pub struct PropertySpec {
     pub ty: PropertyType,
-    /// The spec default, which legacy categorical functions fall back to.
-    pub default: Option<Json>,
+    /// The spec default as JSON text, which legacy categorical functions
+    /// fall back to.
+    pub default: Option<std::borrow::Cow<'static, str>>,
     /// `zoom` is among the expression parameters.
     pub zoom: bool,
     /// The property is data-driven: it may depend on the feature.

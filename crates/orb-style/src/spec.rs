@@ -209,7 +209,7 @@ impl Prop {
         let data = inputs.contains(Inputs::DATA);
         PropertySpec {
             ty: self.ty.clone(),
-            default: self.default_json(),
+            default: self.default.map(Into::into),
             zoom: inputs.contains(Inputs::ZOOM),
             feature: data || inputs.contains(Inputs::STATE),
             state: inputs.contains(Inputs::STATE) || (self.paint && data),
@@ -220,9 +220,22 @@ impl Prop {
         }
     }
 
-    pub fn default_json(&self) -> Option<Json> {
+    pub(crate) fn default_json(&self) -> Option<Json> {
         self.default
             .map(|text| json::parse(text).expect("spec defaults are JSON"))
+    }
+
+    /// The default as a value: `None` for a property without one, or
+    /// whose default is a ramp expression.
+    pub(crate) fn default_value(&self) -> Option<orb_expr::Value<'static>> {
+        let json = self.default_json().filter(|_| !self.ramp)?;
+        let parsed = PropertyExpression::parse(&json, &self.spec())
+            .unwrap_or_else(|e| panic!("{} default: {e:?}", self.name));
+        let value = parsed
+            .expression()
+            .constant()
+            .expect("defaults are literals");
+        Some(value.clone())
     }
 }
 
@@ -459,15 +472,7 @@ impl PropertyId {
         &DEFAULTS.get_or_init(|| {
             PROPS
                 .iter()
-                .map(|p| match p.default_json().filter(|_| !p.ramp) {
-                    None => orb_expr::Value::Null,
-                    Some(json) => PropertyExpression::parse(&json, &p.spec())
-                        .unwrap_or_else(|e| panic!("{} default: {e:?}", p.name))
-                        .expression()
-                        .constant()
-                        .expect("defaults are literals")
-                        .clone(),
-                })
+                .map(|p| p.default_value().unwrap_or(orb_expr::Value::Null))
                 .collect()
         })[self.0 as usize]
     }

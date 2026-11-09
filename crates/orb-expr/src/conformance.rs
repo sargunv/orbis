@@ -132,7 +132,7 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
         // Only legacy functions read the type without an expected type, and
         // their fixtures all declare one.
         ty: ty.unwrap_or(PropertyType::Number),
-        default: field("default").cloned(),
+        default: field("default").map(|d| d.to_string().into()),
         zoom: parameters.contains(&"zoom"),
         feature: matches!(property_type, "data-driven" | "cross-faded-data-driven"),
         // GL JS evaluates state wherever data is allowed; only the style

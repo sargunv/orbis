@@ -770,8 +770,12 @@ fn fallback(
     b: Build,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Json> {
-    match f.default.or(spec.default.as_ref()) {
-        Some(default) => Some(b.literal(default)),
+    let spec_default = || {
+        let text = spec.default.as_deref()?;
+        Some(crate::json::parse(text).expect("spec defaults are JSON"))
+    };
+    match f.default.cloned().or_else(spec_default) {
+        Some(default) => Some(b.literal(&default)),
         None if spec.ty == PropertyType::ResolvedImage => Some(b.string("")),
         None => {
             error(

@@ -124,19 +124,10 @@ pub(crate) fn typed_property_at<T: PropertyValue>(
     path: &str,
     prop: &Prop,
 ) -> crate::v8::Property<T> {
-    let default = match prop.default_json() {
+    let default = match prop.default_value() {
         None => T::UNSET.unwrap_or_else(|| panic!("{} has no default", prop.name)),
-        Some(json) => {
-            let parsed = PropertyExpression::parse(&json, &prop.spec())
-                .unwrap_or_else(|e| panic!("{} default: {e:?}", prop.name));
-            T::from_value(
-                parsed
-                    .expression()
-                    .constant()
-                    .expect("defaults are literals"),
-            )
-            .unwrap_or_else(|| panic!("{} default has the wrong type", prop.name))
-        }
+        Some(value) => T::from_value(&value)
+            .unwrap_or_else(|| panic!("{} default has the wrong type", prop.name)),
     };
     crate::v8::Property::from_slot(property_at(cx, json, path, prop), default)
 }
