@@ -48,6 +48,9 @@ struct State {
     faces: HashMap<fontdb::ID, Option<Arc<Face>>>,
     /// Per code point, the face a fallback search found.
     fallback: HashMap<char, Option<fontdb::ID>>,
+    /// Per family, weight and style, the face the database matched: each
+    /// query scans every installed face.
+    queries: HashMap<(String, u16, fontdb::Style), Option<fontdb::ID>>,
     /// The last text drawn, which `coverage` reads after `measure`.
     last: Option<(String, String, Drawn)>,
 }
@@ -76,6 +79,7 @@ impl State {
             db,
             faces: HashMap::new(),
             fallback: HashMap::new(),
+            queries: HashMap::new(),
             last: None,
         }
     }
@@ -144,7 +148,10 @@ impl State {
                 stretch: fontdb::Stretch::Normal,
                 style,
             };
-            if let Some(id) = self.db.query(&query)
+            let key = (name.to_string(), weight.0, style);
+            let db = &self.db;
+            let matched = *self.queries.entry(key).or_insert_with(|| db.query(&query));
+            if let Some(id) = matched
                 && let Some(face) = self.face(id)
                 && face.covers(first)
             {
