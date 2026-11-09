@@ -486,6 +486,7 @@ impl Map {
                 patches,
                 fade_from: (fade_ms > 0.0).then_some((now - self.born.unwrap_or(now)) as f32),
                 unpack: endpoint.dem_unpack.map(|u| u.map(|v| v as f32)),
+                area: inside_texels(&endpoint.tms, tile, [tile_image.width, tile_image.height]),
             }
         });
         // Labels take their icons' atlas rectangles as they upload: a tile
@@ -615,4 +616,24 @@ impl Map {
         }
         None
     }
+}
+
+/// The texels of a `size` image of `tile` inside its set's extent,
+/// `[x0, y0, x1, y1)`, for a tile of a partial matrix that reaches past it;
+/// `None` for a tile wholly inside.
+fn inside_texels(
+    tms: &orb_crs::TileMatrixSet,
+    tile: TileIndex,
+    [width, height]: [u32; 2],
+) -> Option<[u32; 4]> {
+    let (own, area) = (tms.tile_bounds(tile), tms.tile_area(tile));
+    if area == own {
+        return None;
+    }
+    let size = own.size();
+    let at = |v: f64, side: u32| (v * f64::from(side)).round().clamp(0.0, f64::from(side)) as u32;
+    let x = |w: f64| at((w - own.min.x) / size.x, width);
+    let y = |w: f64| at((own.max.y - w) / size.y, height);
+    let texels = [x(area.min.x), y(area.max.y), x(area.max.x), y(area.min.y)];
+    (texels[0] < texels[2] && texels[1] < texels[3]).then_some(texels)
 }

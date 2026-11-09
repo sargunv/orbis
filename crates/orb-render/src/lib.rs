@@ -1440,7 +1440,7 @@ impl Renderer {
             family if family.is_image() => {
                 out.extend(self.images.pipeline(family).map(PipelineId::from));
                 if family == Family::Raster {
-                    out.extend(self.downsampler.pipeline());
+                    out.extend(self.downsampler.pipelines());
                 } else {
                     out.extend(self.images.prepare_pipelines());
                 }
@@ -1776,7 +1776,7 @@ impl Renderer {
         }
         if let Some((mips, dispatches)) = self.images.mip_pass(gpu, &self.downsampler) {
             stats.dispatches += dispatches;
-            passes.push(mips);
+            passes.extend(mips);
         }
         // The dispatch writes every node's arguments, zeros included, so it
         // runs even when nothing is resident. Indexed nodes' batches add to

@@ -69,6 +69,11 @@ pub struct ImageBuild<'a> {
     pub fade_from: Option<f32>,
     /// A DEM tile's unpack vector.
     pub unpack: Option<[f32; 4]>,
+    /// For a raster tile of a partial tile matrix that reaches past its
+    /// set's extent, the texels inside it, `[x0, y0, x1, y1)`: those past
+    /// it hold fill, and take the nearest inside before filtering reads
+    /// them.
+    pub area: Option<[u32; 4]>,
 }
 
 /// What a mesh's property rows refer to besides their words.
@@ -332,6 +337,9 @@ impl Renderer {
         }
         .ok_or(UploadError::NoRoom)?;
         self.images.write_layer(gpu, page, layer, build.pixels);
+        if let (PageKind::Raster, Some(area)) = (kind, build.area) {
+            self.images.extend_edges(page, layer, area);
+        }
 
         let fade = match build.fade_from {
             Some(time) => self.fade_in(key, time),

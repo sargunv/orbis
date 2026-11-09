@@ -116,6 +116,9 @@ struct Page {
     pending: Vec<DemPrepare>,
     /// Raster layers uploaded since their mip levels were last made.
     mip_layers: Vec<u32>,
+    /// Of those, the ones whose tile reaches past its area, and the
+    /// texels inside it, `[x0, y0, x1, y1)`: their edges extend first.
+    edges: Vec<(u32, [u32; 4])>,
     mips: Option<Mips>,
     /// The prepare draws' targets.
     targets: Option<prepare::Targets>,
@@ -189,6 +192,9 @@ pub(crate) struct Images {
     /// The prepare draws, made for the first DEM page.
     prepare: Option<prepare::Draws>,
     pages: Vec<Option<Page>>,
+    /// What the last frame's edge extensions used (scratch layers, their
+    /// regions and group), released by the next mip pass.
+    edges: Vec<(TextureId, BufferId, BindGroupId)>,
 }
 
 impl Images {
@@ -277,6 +283,7 @@ impl Images {
             placeholder_ramp,
             prepare: None,
             pages: Vec::new(),
+            edges: Vec::new(),
         }
     }
 
@@ -395,6 +402,7 @@ impl Images {
             page: TilePage::new(gpu, &textures),
             pending: Vec::new(),
             mip_layers: Vec::new(),
+            edges: Vec::new(),
             mips: None,
             targets: None,
         };
@@ -480,7 +488,9 @@ impl Images {
     }
 
     pub(crate) fn free_layer(&mut self, id: PageId, layer: u32) {
-        self.page_mut(id).page.free(layer);
+        let page = self.page_mut(id);
+        page.page.free(layer);
+        page.edges.retain(|e| e.0 != layer);
     }
 
     pub(crate) fn write_layer(
@@ -492,23 +502,39 @@ impl Images {
     ) {
         let page = self.page_mut(id);
         page.page.write(gpu, 0, layer, pixels);
+        page.edges.retain(|e| e.0 != layer);
         if page.page.mip_levels(0) > 1 && !page.mip_layers.contains(&layer) {
             page.mip_layers.push(layer);
         }
     }
 
+    /// Marks a raster layer just written as a tile that reaches past its
+    /// area, `area` the texels inside, `[x0, y0, x1, y1)`: before its mip
+    /// levels are made, each texel past the area takes the nearest one
+    /// inside, so that filtering at the area's edge, at every level, reads
+    /// the edge as at a tile's own.
+    pub(crate) fn extend_edges(&mut self, id: PageId, layer: u32, area: [u32; 4]) {
+        let page = self.page_mut(id);
+        if page.mip_layers.contains(&layer) {
+            page.edges.push((layer, area));
+        }
+    }
+
     /// The compute pass that makes mip levels for raster layers uploaded,
-    /// and DEM slopes prepared, since the last, if any, and its
-    /// dispatches.
+    /// and DEM slopes prepared, since the last, if any, after the passes
+    /// that extend their edges; and its dispatches.
     pub(crate) fn mip_pass(
         &mut self,
         gpu: &mut dyn Gpu,
         downsampler: &crate::downsample::Downsampler,
-    ) -> Option<(Pass, u32)> {
-        // Layers wait for the pipeline to compile.
+    ) -> Option<(Vec<Pass>, u32)> {
+        // Layers wait for the pipelines to compile.
         if !downsampler.ready(gpu) {
             return None;
         }
+        // The last frame, which used them, was submitted.
+        std::mem::take(&mut self.edges).release(gpu);
+        let mut passes = Vec::new();
         let mut commands = Vec::new();
         let mut dispatches = 0;
         for page in self.pages.iter_mut().flatten() {
@@ -543,6 +569,48 @@ impl Images {
                 }
             });
             let [side, _] = page.page.size(index);
+            let edges = std::mem::take(&mut page.edges);
+            if !edges.is_empty() {
+                let count = edges.len() as u32;
+                let scratch = gpu.create_texture(&TextureDesc {
+                    label: "extended tiles",
+                    width: side,
+                    height: side,
+                    array_layers: count,
+                    dimension: TextureViewDimension::D2Array,
+                    format: TextureFormat::Rgba8Unorm,
+                    usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
+                    sample_count: 1,
+                    mip_levels: 1,
+                });
+                let regions = gpu.create_buffer(&BufferDesc {
+                    label: "extended tile areas",
+                    size: u64::from(count) * 16,
+                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                });
+                let words: Vec<[u32; 4]> = (edges.iter())
+                    .map(|&(layer, [x0, y0, x1, y1])| [layer, x0 | y0 << 16, x1 | y1 << 16, 0])
+                    .collect();
+                gpu.write_buffer(regions, 0, bytemuck::cast_slice(&words));
+                let group = downsampler.extend_group(gpu, mips.views[0], scratch, regions);
+                self.edges.push((scratch, regions, group));
+                passes.push(Pass::Compute(ComputePass {
+                    label: "image edges".into(),
+                    commands: downsampler.extend(gpu, group, side, count)?,
+                }));
+                passes.push(Pass::CopyTexture {
+                    source: scratch,
+                    destination: texture,
+                    copies: (edges.iter().zip(0..))
+                        .map(|(&(layer, _), i)| TextureCopy {
+                            from: [0, 0, i],
+                            to: [0, 0, layer],
+                            size: [side, side, 1],
+                        })
+                        .collect(),
+                });
+                dispatches += 1;
+            }
             let layers = std::mem::take(&mut page.mip_layers);
             let regions: Vec<[u32; 4]> = layers.iter().map(|&layer| [layer, 0, 0, side]).collect();
             gpu.write_buffer(mips.regions, 0, bytemuck::cast_slice(&regions));
@@ -551,13 +619,11 @@ impl Images {
             dispatches += mips.groups.len() as u32;
         }
         (!commands.is_empty()).then(|| {
-            (
-                Pass::Compute(ComputePass {
-                    label: "image mips".into(),
-                    commands,
-                }),
-                dispatches,
-            )
+            passes.push(Pass::Compute(ComputePass {
+                label: "image mips".into(),
+                commands,
+            }));
+            (passes, dispatches)
         })
     }
 
@@ -928,7 +994,7 @@ impl crate::release::Release for Images {
         let draws = self.prepare.map(|d| (d.layout, d.pad, d.slope));
         let fixed = (self.image_layout, self.relief_layout, self.pipelines.0);
         (fixed, self.linear, self.nearest).release(gpu);
-        (self.placeholder, self.placeholder_ramp, draws).release(gpu);
+        (self.placeholder, self.placeholder_ramp, draws, self.edges).release(gpu);
     }
 }
 

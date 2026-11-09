@@ -1,9 +1,11 @@
 //! Mip levels for the drape atlas and raster pages (`downsample.wgsl`):
 //! one compute dispatch per level over regions of an array texture's
-//! layers, each `(layer, x, y, side)` at level 0 in a regions buffer.
+//! layers, each `(layer, x, y, side)` at level 0 in a regions buffer. And
+//! before them, raster tiles' texels past their area taken from the
+//! nearest inside (`extend`).
 
 use orb_hal::*;
-use orb_shaders::DOWNSAMPLE_SHADER;
+use orb_shaders::{DOWNSAMPLE_SHADER, EXTEND_SHADER};
 
 use crate::release::Release;
 
@@ -15,8 +17,9 @@ const STRIDE: u64 = 256;
 #[derive(Debug)]
 pub(crate) struct Downsampler {
     layout: BindGroupLayoutId,
-    /// Made for the first texture that needs it.
+    /// Made for the first texture that needs it, with `extend`'s.
     pipeline: Option<ComputePipelineId>,
+    extend: Option<ComputePipelineId>,
     /// Per level, at `STRIDE` apart: its number.
     levels: BufferId,
 }
@@ -61,35 +64,45 @@ impl Downsampler {
         Self {
             layout,
             pipeline: None,
+            extend: None,
             levels,
         }
     }
 
-    /// Makes the pipeline, for the first texture with mip levels.
+    /// Makes the pipelines, for the first texture with mip levels.
     pub(crate) fn make(&mut self, gpu: &mut dyn Gpu) {
         if self.pipeline.is_some() {
             return;
         }
-        let module = crate::shader_module(gpu, &DOWNSAMPLE_SHADER);
-        self.pipeline = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
-            label: DOWNSAMPLE_SHADER.label,
-            bind_group_layouts: &[self.layout],
-            compute: ShaderStage {
-                module,
-                entry_point: DOWNSAMPLE_SHADER.compute,
-                constants: &[],
-            },
-        }));
-        gpu.destroy_shader_module(module);
+        let layout = self.layout;
+        let mut make = |shader: &orb_shaders::Shader| {
+            let module = crate::shader_module(gpu, shader);
+            let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
+                label: shader.label,
+                bind_group_layouts: &[layout],
+                compute: ShaderStage {
+                    module,
+                    entry_point: shader.compute,
+                    constants: &[],
+                },
+            });
+            gpu.destroy_shader_module(module);
+            pipeline
+        };
+        self.pipeline = Some(make(&DOWNSAMPLE_SHADER));
+        self.extend = Some(make(&EXTEND_SHADER));
     }
 
-    /// Whether its pipeline compiled, or none is needed yet.
+    /// Whether its pipelines compiled, or none is needed yet.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
-        self.pipeline.is_none_or(|p| gpu.pipeline_ready(p.into()))
+        self.pipelines().all(|p| gpu.pipeline_ready(p))
     }
 
-    pub(crate) fn pipeline(&self) -> Option<PipelineId> {
-        self.pipeline.map(PipelineId::from)
+    pub(crate) fn pipelines(&self) -> impl Iterator<Item = PipelineId> {
+        [self.pipeline, self.extend]
+            .into_iter()
+            .flatten()
+            .map(PipelineId::from)
     }
 
     /// Per level after the first, its group: reading `views[level - 1]`,
@@ -160,8 +173,71 @@ impl Downsampler {
     }
 }
 
+impl Downsampler {
+    /// The group for [`extend`](Self::extend): reading `level0`, a view of
+    /// a texture's first level, writing `scratch`'s layers, over
+    /// `regions`.
+    pub(crate) fn extend_group(
+        &self,
+        gpu: &mut dyn Gpu,
+        level0: TextureId,
+        scratch: TextureId,
+        regions: BufferId,
+    ) -> BindGroupId {
+        let view = |binding, texture| BindGroupEntry {
+            binding,
+            resource: BindingResource::Texture {
+                texture,
+                dimension: TextureViewDimension::D2Array,
+            },
+        };
+        gpu.create_bind_group(&BindGroupDesc {
+            label: "extend",
+            layout: self.layout,
+            entries: &[
+                view(0, level0),
+                view(1, scratch),
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::buffer(regions),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Buffer {
+                        buffer: self.levels,
+                        offset: 0,
+                        size: Some(16),
+                    },
+                },
+            ],
+        })
+    }
+
+    /// The dispatch extending `count` regions of `side` texels into a
+    /// scratch layer each, once the pipeline compiled.
+    pub(crate) fn extend(
+        &self,
+        gpu: &mut dyn Gpu,
+        group: BindGroupId,
+        side: u32,
+        count: u32,
+    ) -> Option<Vec<ComputeCommand>> {
+        let pipeline = self.extend.filter(|&p| gpu.pipeline_ready(p.into()))?;
+        let n = side.div_ceil(8);
+        Some(vec![
+            ComputeCommand::SetPipeline(pipeline),
+            ComputeCommand::SetBindGroup { index: 0, group },
+            ComputeCommand::Dispatch {
+                x: n,
+                y: n,
+                z: count,
+            },
+        ])
+    }
+}
+
 impl Release for Downsampler {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.layout, self.pipeline, self.levels).release(gpu);
+        (self.layout, self.pipeline, self.extend, self.levels).release(gpu);
     }
 }

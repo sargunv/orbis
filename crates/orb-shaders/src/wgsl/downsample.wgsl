@@ -28,3 +28,22 @@ fn downsample(@builtin(global_invocation_id) id: vec3<u32>) {
         + textureLoad(source, min(s + vec2<i32>(0, 1), last), layer, 0)
         + textureLoad(source, min(s + vec2<i32>(1, 1), last), layer, 0)));
 }
+
+// Edges: for each region (`regions`: its layer, then the corners of the
+// texels inside its tile's area, `[min, max)` packed as x | y << 16), the
+// layer's level 0 with every texel past that area taken from the nearest
+// inside, as a texture's edge clamps: into `destination`'s layer `z`, which
+// is copied back before the levels are made. A tile of a partial tile
+// matrix that reaches past its set's extent holds fill there, which
+// filtering and the levels would read into its edge.
+@compute @workgroup_size(8, 8)
+fn extend(@builtin(global_invocation_id) id: vec3<u32>) {
+    let region = regions[id.z];
+    if any(id.xy >= textureDimensions(source)) {
+        return;
+    }
+    let lo = vec2<u32>(region.y & 0xffffu, region.y >> 16u);
+    let hi = vec2<u32>(region.z & 0xffffu, region.z >> 16u);
+    let p = clamp(id.xy, lo, hi - 1u);
+    textureStore(destination, id.xy, id.z, textureLoad(source, p, region.x, 0));
+}

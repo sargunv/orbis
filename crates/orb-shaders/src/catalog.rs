@@ -220,6 +220,16 @@ pub const DOWNSAMPLE_SHADER: Shader = Shader {
     compute: "downsample",
 };
 
+/// Raster tiles' texels past their area, from the nearest inside: before
+/// their mip levels, in the downsampler's bindings.
+pub const EXTEND_SHADER: Shader = Shader {
+    label: "extend",
+    parts: &[wgsl!("downsample")],
+    vertex: "",
+    fragment: "",
+    compute: "extend",
+};
+
 /// The DEM prepare pass's border fill, from a raw tile into its padded
 /// layer: a draw into the layer.
 pub const PREPARE_PAD_SHADER: Shader = Shader {
@@ -310,5 +320,6 @@ pub const SHADERS: &[Shader] = &[
     PREPARE_PAD_SHADER,
     PREPARE_SLOPE_SHADER,
     DOWNSAMPLE_SHADER,
+    EXTEND_SHADER,
     CULL_SHADER,
 ];

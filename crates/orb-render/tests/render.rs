@@ -1173,6 +1173,79 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
     assert_eq!(stats.placements_written, 0);
 }
 
+/// A raster tile reaching past its set's extent, drawn whole and minified:
+/// its texels past its area, black fill, take the nearest inside before
+/// its mip levels are made, so no fill reaches into its edge at any level,
+/// even where the edge isn't on a level's texel grid.
+#[test]
+fn raster_texels_past_a_tiles_area_take_its_edge() {
+    use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey};
+    let mut h = Harness::new();
+    let source = 3;
+    let node = RenderNode {
+        family: Family::Raster,
+        source: Some(source),
+    };
+    assert!(h.renderer.remap_nodes(&mut h.gpu, &[node], &[None]));
+    let (side, inside) = (256u32, 130u32);
+    let pixels: Vec<u8> = (0..side * side)
+        .flat_map(|i| {
+            if i % side < inside {
+                RED
+            } else {
+                [0, 0, 0, 255]
+            }
+        })
+        .collect();
+    let build = ImageBuild {
+        key: TileKey {
+            source,
+            tile: orb_crs::TileIndex::new(0, 0, 0),
+        },
+        kind: PageKind::Raster,
+        size: [side, side],
+        pixels: Pixels::Core(&pixels),
+        mesh: None,
+        patches: None,
+        fade_from: None,
+        unpack: None,
+        area: Some([0, 0, inside, side]),
+    };
+    let tile = h.renderer.upload_image(&mut h.gpu, &build, true).unwrap();
+    h.renderer.set_paint(
+        &mut h.gpu,
+        0,
+        &NodePaint::Raster(RasterPaint {
+            opacity: 1.0,
+            hue_rotate: 0.0,
+            brightness_min: 0.0,
+            brightness_max: 1.0,
+            saturation: 0.0,
+            contrast: 0.0,
+            nearest: false,
+            mipmapped: true,
+            fade_duration: 0.0,
+        }),
+    );
+    let row = TileRow {
+        extent: 8192.0,
+        scale: 2.0 / 8192.0,
+        clips: [
+            ClipRect::new([0, 0], [8192, 8192]),
+            ClipRect::EMPTY,
+            ClipRect::EMPTY,
+            ClipRect::EMPTY,
+        ],
+        ..full_view_tile(0.0)
+    };
+    h.renderer.place(tile, 8192, &[row]).unwrap();
+    let pixels = h.render();
+    for x in 0..SIZE {
+        let p = pixel(&pixels, x, SIZE / 2);
+        assert!(p[0] >= 253 && p[1] <= 2 && p[2] <= 2, "x {x}: {p:?}");
+    }
+}
+
 /// A raster node drawing one image tile over the whole view: red, the
 /// north-west child of a blue tile a zoom up that is resident with
 /// `ancestor`, fading in over 1000 ms from time 0.
@@ -1196,6 +1269,7 @@ fn fading_raster(ancestor: bool) -> Harness {
             patches: None,
             fade_from,
             unpack: None,
+            area: None,
         };
         h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
     };
