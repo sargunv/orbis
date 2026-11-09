@@ -44,10 +44,13 @@ function reports() {
 export async function directLink(start: (report: (r: Report) => void) => Promise<Engine>): Promise<Link> {
   const { deliver, listen } = reports();
   const engine = await start(deliver);
+  let stopped = false;
   return {
     worker: false,
     state: () => engine.state(),
     call(method, ...args) {
+      // As from a worker: the wasm map is freed.
+      if (stopped) return Promise.reject(new Error("the map was removed"));
       try {
         return Promise.resolve((engine[method] as (...a: unknown[]) => never)(...args));
       } catch (e) {
@@ -56,7 +59,10 @@ export async function directLink(start: (report: (r: Report) => void) => Promise
     },
     input: (kind, args, time) => engine.input(kind, args, time),
     listen,
-    destroy: () => engine.remove(),
+    destroy: () => {
+      stopped = true;
+      engine.remove();
+    },
   };
 }
 

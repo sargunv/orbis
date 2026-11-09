@@ -147,6 +147,8 @@ export class Engine {
   /** The frame drawn if the input expected after an animation frame
    * doesn't come. */
   #fallback: ReturnType<typeof setTimeout> | undefined;
+  /** The last frame's time: a frame never goes back before it. */
+  #shown = -Infinity;
   /** The last animation frame's time, and the display's frame interval. */
   #vsync = 0;
   #interval = 1000 / 60;
@@ -313,12 +315,15 @@ export class Engine {
    * ImageBitmap of it. A source the style dropped is ignored: its close
    * is on the way. */
   videoFrame(source: string, frame: HTMLVideoElement | ImageBitmap): void {
-    if (this.#removed || this.#lostAt !== undefined || this.#snapshotting) return;
+    // A dropped bitmap is closed rather than left to the collector, which
+    // holds its pixels meanwhile; one the map took, it closes once copied.
+    const drop = () => { if (frame instanceof ImageBitmap) frame.close(); };
+    if (this.#removed || this.#lostAt !== undefined || this.#snapshotting) return drop();
     try {
       this.#core.videoFrame(source, frame);
       this.#request();
     } catch {
-      // Dropped.
+      drop();
     }
   }
   videoFailed(source: string, message: string): void { this.#core.videoFailed(source, message); this.#request(); }
@@ -440,6 +445,10 @@ export class Engine {
     this.#changed = false;
     clearTimeout(this.#fallback);
     this.#fallback = undefined;
+    // A frame input drew can come after an animation frame began and
+    // before its callback ran, with a later time than that callback's:
+    // animations and fades must not step back.
+    now = this.#shown = Math.max(now, this.#shown);
     const frame = this.#core.render(now);
     if (frame.lost) {
       frame.free();

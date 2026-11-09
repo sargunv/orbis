@@ -116,9 +116,8 @@ export class OrbisMap {
   #videos: Videos;
   #events = new Emitter<MapEvents>();
   #stats: FrameStats | undefined;
-  /** Animations by id, and those whose ids are on the way. */
+  /** Animations the page started, by id. */
   #animations = new Map<number, (arrived: boolean) => void>();
-  #ended = new Map<number, boolean>();
   #detach: (() => void)[] = [];
   #canvas: HTMLCanvasElement;
   #frame: HTMLElement;
@@ -139,9 +138,13 @@ export class OrbisMap {
     const fail = (e: unknown) => this.#error(e);
     this.#videos = new Videos(() => (this.#removed ? undefined : {
       videoFrame: (source, video) => {
-        // A worker takes the frame as a bitmap.
-        const frame = link.worker ? createImageBitmap(video) : Promise.resolve(video);
-        frame.then((f) => link.call("videoFrame", source, f)).catch(() => {});
+        // A worker takes the frame as a bitmap, closed if it never gets there.
+        if (!link.worker) {
+          link.call("videoFrame", source, video).catch(() => {});
+          return;
+        }
+        createImageBitmap(video).then((bitmap) => link.call("videoFrame", source, bitmap).catch(() => bitmap.close()),
+          () => {});
       },
       videoFailed: (source, message) => { link.call("videoFailed", source, message).catch(fail); },
     }), () => {});
@@ -383,15 +386,14 @@ export class OrbisMap {
 
   #send(call: Promise<unknown>): void { call.catch((e) => this.#error(e)); }
 
-  /** Resolves with animation `id`'s end. */
+  /** Resolves with animation `id`'s end. The id arrives before any
+   * frame's report can end it: in a worker, the call's reply is posted in
+   * the task that started the animation, before its frames, and this runs
+   * in a microtask of the reply's message; on the page, frames wait for
+   * an animation frame. */
   #track(id: Promise<number>): Promise<boolean> {
     return id.then((id) => {
       if (id < 0 || this.#removed) return id < 0;
-      const ended = this.#ended.get(id);
-      if (ended !== undefined) {
-        this.#ended.delete(id);
-        return ended;
-      }
       return new Promise<boolean>((resolve) => this.#animations.set(id, resolve));
     });
   }
@@ -421,12 +423,10 @@ export class OrbisMap {
   #emit(event: EngineEvent): void {
     switch (event.type) {
       case "animationend": {
-        const resolve = this.#animations.get(event.data.id);
+        // The map's own animations (a gesture's glide, a key's ease) end
+        // here too, with ids the page never had.
+        this.#animations.get(event.data.id)?.(event.data.arrived);
         this.#animations.delete(event.data.id);
-        // An animation that ends before its id arrives (a worker's reply
-        // comes after the frame's report) settles once it does.
-        if (resolve) resolve(event.data.arrived);
-        else this.#ended.set(event.data.id, event.data.arrived);
         break;
       }
       case "video": this.#videos.request(event.data); break;
