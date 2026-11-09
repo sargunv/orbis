@@ -826,16 +826,19 @@ impl TerrainElevation {
     /// The tile at zoom `z` containing a world position in the primary
     /// world copy, with the position's uv in it.
     fn locate(&self, world: DVec2, z: u8) -> Option<(TileIndex, DVec2)> {
-        let bounds = self.tms.projection().world_bounds();
+        // From the corner of the quadtree's grid, which a partial matrix's
+        // extent may not start at.
+        let corner = self.tms.tile_bounds(TileIndex::new(z, 0, 0));
         let span = self.tms.tile_span(z);
-        let x = (world.x - bounds.min.x) / span;
-        let y = (bounds.max.y - world.y) / span;
-        let (cols, rows) = self.tms.matrix_size(z);
-        if !(0.0..f64::from(rows)).contains(&y) || !(0.0..f64::from(cols)).contains(&x) {
+        let x = (world.x - corner.min.x) / span;
+        let y = (corner.max.y - world.y) / span;
+        if !(x >= 0.0 && y >= 0.0 && x < f64::from(u32::MAX) && y < f64::from(u32::MAX)) {
             return None;
         }
         let tile = TileIndex::new(z, x as u32, y as u32);
-        Some((tile, DVec2::new(x.fract(), y.fract())))
+        self.tms
+            .contains(tile)
+            .then(|| (tile, DVec2::new(x.fract(), y.fract())))
     }
 
     fn wrapped(&self, world: DVec2) -> DVec2 {

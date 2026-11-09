@@ -978,13 +978,21 @@ pub(crate) fn placements<'a>(
     // A tile of a partial matrix reaching past its set's extent draws
     // only what lies inside, in its data units.
     let (own, area) = (tms.tile_bounds(tile), tms.tile_area(tile));
-    let units = |v: f64| (v / own.size().x * f64::from(extent)).round() as i16;
+    let to_units = |v: f64| v / own.size().x * f64::from(extent);
+    let units = |v: f64| to_units(v).round() as i16;
     let inside = (area != own).then(|| {
         (
             [units(area.min.x - own.min.x), units(own.max.y - area.max.y)],
             [units(area.max.x - own.min.x), units(own.max.y - area.min.y)],
         )
     });
+    // The extent's top and bottom edges in the tile's data units: regions
+    // reaching them reach on to the caps.
+    let world = tms.projection().world_bounds();
+    let edges = [
+        to_units(own.max.y - world.max.y),
+        to_units(own.max.y - world.min.y),
+    ];
     let rect = move |region: TileIndex| {
         let depth = region.z - tile.z;
         let size = extent >> depth;
@@ -995,10 +1003,10 @@ pub(crate) fn placements<'a>(
             min = [min[0].max(lo[0]), min[1].max(lo[1])];
             max = [max[0].min(hi[0]), max[1].min(hi[1])];
         }
-        if caps[0] && region.row == 0 {
+        if caps[0] && f64::from(y) <= edges[0] + 0.5 {
             min[1] = i16::MIN;
         }
-        if caps[1] && region.row + 1 == rows0 << (region.z - first) {
+        if caps[1] && f64::from(y + size) >= edges[1] - 0.5 {
             max[1] = i16::MAX;
         }
         ClipRect::new(min, max)

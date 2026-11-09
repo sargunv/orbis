@@ -60,8 +60,6 @@ pub struct TileMatrixSet {
     origin: DVec2,
     /// Width and height of one tile of the first matrix in world units.
     span: f64,
-    /// Columns and rows of the first matrix.
-    size: (u32, u32),
     min_zoom: u8,
     max_zoom: u8,
     /// Pixels per tile side.
@@ -282,7 +280,6 @@ impl TileMatrixSet {
             projection: projection.with_extent(extent),
             origin,
             span,
-            size,
             min_zoom,
             max_zoom,
             tile_px,
@@ -323,6 +320,9 @@ impl TileMatrixSet {
         let Ok(min_zoom) = first.id.parse::<u8>() else {
             return fail(format!("matrix `{}` is not a zoom number", first.id));
         };
+        if min_zoom > 30 {
+            return fail(format!("matrix `{}` is past zoom 30", first.id));
+        }
         if first.tile_width != first.tile_height || first.tile_width == 0 {
             return fail("tiles are not square".into());
         }
@@ -374,6 +374,9 @@ impl TileMatrixSet {
                     m.id
                 ));
             }
+            if cols == 0 || rows == 0 {
+                return fail(format!("matrix `{}` has no tiles", m.id));
+            }
             let matrix = Matrix {
                 col: rounded.x as u32,
                 row: rounded.y as u32,
@@ -383,12 +386,11 @@ impl TileMatrixSet {
             // Every tile needs its parent.
             if let Some(&up) = placed.last() {
                 let up = up.deeper(1);
-                if cols == 0
-                    || rows == 0
-                    || matrix.col < up.col
+                let end = |first: u32, count: u32| u64::from(first) + u64::from(count);
+                if matrix.col < up.col
                     || matrix.row < up.row
-                    || matrix.col + cols > up.col + up.cols
-                    || matrix.row + rows > up.row + up.rows
+                    || end(matrix.col, cols) > end(up.col, up.cols)
+                    || end(matrix.row, rows) > end(up.row, up.rows)
                 {
                     return fail(format!(
                         "matrix `{}` reaches past the one before's children",
@@ -541,10 +543,11 @@ impl TileMatrixSet {
 
     /// Whether a tile lies inside its matrix.
     pub fn contains(&self, tile: TileIndex) -> bool {
-        self.matrix(tile.z).is_some_and(|m| {
-            (m.col..m.col + m.cols).contains(&tile.col)
-                && (m.row..m.row + m.rows).contains(&tile.row)
-        })
+        let within = |v: u32, first: u32, count: u32| {
+            (u64::from(first)..u64::from(first) + u64::from(count)).contains(&u64::from(v))
+        };
+        self.matrix(tile.z)
+            .is_some_and(|m| within(tile.col, m.col, m.cols) && within(tile.row, m.row, m.rows))
     }
 
     /// The column a tile has in its matrix's own indices.
@@ -565,7 +568,7 @@ impl TileMatrixSet {
 
     /// The tiles of the first matrix.
     pub fn roots(&self) -> impl Iterator<Item = TileIndex> + '_ {
-        let (cols, rows) = self.size;
+        let Matrix { cols, rows, .. } = self.matrices[0];
         let z = self.min_zoom;
         (0..rows).flat_map(move |row| (0..cols).map(move |col| TileIndex::new(z, col, row)))
     }
@@ -1021,9 +1024,21 @@ mod tests {
         let mut off = def.clone();
         off.matrices[2].point_of_origin[0] += 10.0;
         assert!(TileMatrixSet::from_definition(&off).is_err());
-        let mut orphan = def;
+        let mut orphan = def.clone();
         orphan.matrices[2].point_of_origin[0] = -180.0;
         assert!(TileMatrixSet::from_definition(&orphan).is_err());
+        // So are empty matrices, overflowing ones and zooms past 30.
+        let mut empty = def.clone();
+        empty.matrices[0].matrix_height = 0;
+        assert!(TileMatrixSet::from_definition(&empty).is_err());
+        let mut huge = def.clone();
+        huge.matrices[2].matrix_width = u32::MAX;
+        assert!(TileMatrixSet::from_definition(&huge).is_err());
+        let mut deep = def;
+        for (k, m) in deep.matrices.iter_mut().enumerate() {
+            m.id = (40 + k).to_string();
+        }
+        assert!(TileMatrixSet::from_definition(&deep).is_err());
     }
 
     #[test]
