@@ -15,7 +15,9 @@ export const label = `GL JS ${getVersion()}`;
 export function open(container, { style, camera: { center, zoom, bearing, pitch, roll }, constraints = {} }) {
   const map = new GlMap({
     container, style, center, zoom, bearing, pitch, roll,
-    minZoom: constraints.minZoom, maxZoom: constraints.maxZoom,
+    // GL JS reads a given but undefined minZoom as 0, not its default -2
+    // (Orbis's too), which stopped its globe zooming out at a larger size.
+    minZoom: constraints.minZoom ?? -2, maxZoom: constraints.maxZoom,
     // Orbis lets pitch reach 85 degrees by default, GL JS 60.
     minPitch: constraints.minPitch, maxPitch: constraints.maxPitch ?? 85,
     maxBounds: constraints.bounds ?? undefined,
