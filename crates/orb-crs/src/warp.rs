@@ -104,6 +104,49 @@ impl Node for glam::DVec3 {
     }
 }
 
+/// A map's positions on a lattice of `steps` per tile side (fractions, y
+/// down), each mapped when first asked for.
+struct Lattice<V> {
+    steps: u32,
+    points: Vec<Option<V>>,
+}
+
+impl<V: Node> Lattice<V> {
+    fn new() -> Self {
+        Self {
+            steps: 0,
+            points: Vec::new(),
+        }
+    }
+
+    /// Makes this a lattice of `steps` per side, a multiple of the current
+    /// one's, keeping the points it had.
+    fn refine(&mut self, steps: u32) {
+        let n = steps + 1;
+        let mut points = vec![None; (n * n) as usize];
+        if self.steps > 0 {
+            let (m, ratio) = (self.steps + 1, steps / self.steps);
+            for q in 0..m {
+                for p in 0..m {
+                    points[(q * ratio * n + p * ratio) as usize] =
+                        self.points[(q * m + p) as usize];
+                }
+            }
+        }
+        *self = Self { steps, points };
+    }
+
+    /// The position of point `(p, q)`, or `None` where `map` doesn't reach.
+    fn at(&mut self, map: &impl Fn(DVec2) -> Option<V>, p: u32, q: u32) -> Option<V> {
+        let slot = &mut self.points[(q * (self.steps + 1) + p) as usize];
+        if slot.is_none() {
+            let uv = DVec2::new(f64::from(p), f64::from(q)) / f64::from(self.steps);
+            *slot = Some(map(uv)?);
+        }
+        *slot
+    }
+}
+
 impl<V: Node> Series<V> {
     /// Fits the fewest of 1, 4, … 256 equal patches whose quadratics stay
     /// within `limit` of `map` (tile fractions, y down, to positions), or
@@ -116,20 +159,29 @@ impl<V: Node> Series<V> {
         max_cells: u32,
     ) -> Option<Self> {
         let anchor = map(DVec2::splat(0.5))?;
+        // Patches' nodes lie at halves of a cell and their error samples at
+        // fifths: neighbours share their edges' points, and each level's
+        // points are among the next one's, so each is mapped once.
+        let (mut nodes, mut samples) = (Lattice::new(), Lattice::new());
         let mut cells = 1u32;
         loop {
             let side = 1.0 / f64::from(cells);
+            nodes.refine(2 * cells);
+            samples.refine(5 * cells);
             let mut patches = Vec::with_capacity((cells * cells) as usize);
             let mut error: f64 = 0.0;
             for j in 0..cells {
                 for i in 0..cells {
-                    let center = (DVec2::new(f64::from(i), f64::from(j)) + 0.5) * side;
-                    let patch = Patch::through(&map, center, side, anchor)?;
+                    let mut points = [V::ZERO; 9];
+                    for (k, point) in (0..).zip(&mut points) {
+                        *point = nodes.at(&map, 2 * i + k % 3, 2 * j + k / 3)? - anchor;
+                    }
+                    let patch = Patch { points };
                     // Its worst point among a 6×6 sample between its nodes.
                     for b in 0..6 {
                         for a in 0..6 {
                             let st = DVec2::new(f64::from(a), f64::from(b)) / 2.5 - 1.0;
-                            let exact = map(center + st * side / 2.0)?;
+                            let exact = samples.at(&map, 5 * i + a, 5 * j + b)?;
                             error = error.max((anchor + patch.eval(st)).distance(exact));
                         }
                     }
@@ -235,23 +287,6 @@ fn basis(s: f64) -> ([f64; 3], [f64; 3]) {
 }
 
 impl<V: Node> Patch<V> {
-    /// The patch over the square of `side` about `center` (tile fractions)
-    /// through `map`'s positions at its corners, edge midpoints and
-    /// centre, relative to `anchor`.
-    fn through(
-        map: impl Fn(DVec2) -> Option<V>,
-        center: DVec2,
-        side: f64,
-        anchor: V,
-    ) -> Option<Self> {
-        let mut points = [V::ZERO; 9];
-        for (k, point) in points.iter_mut().enumerate() {
-            let offset = DVec2::new((k % 3) as f64 - 1.0, (k / 3) as f64 - 1.0) * side / 2.0;
-            *point = map(center + offset)? - anchor;
-        }
-        Some(Self { points })
-    }
-
     pub fn eval(&self, st: DVec2) -> V {
         let ((bs, _), (bt, _)) = (basis(st.x), basis(st.y));
         let mut p = V::ZERO;
