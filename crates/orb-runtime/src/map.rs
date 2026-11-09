@@ -181,10 +181,20 @@ pub(crate) enum Message {
         url: String,
         result: Result<String, FetchError>,
     },
-    Sprite {
+    /// A sprite's JSON: the images icon layout needs.
+    SpriteIcons {
         generation: u64,
         /// The style's sprite load it answers ([`LoadedStyle::sprite_epoch`]).
         epoch: u64,
+        /// The sprite's index in the style's.
+        index: usize,
+        result: Result<Vec<crate::sprite::SpriteIcon>, String>,
+    },
+    /// A sprite's pixels, after its icons.
+    Sprite {
+        generation: u64,
+        epoch: u64,
+        index: usize,
         result: Result<Vec<crate::sprite::SpriteImage>, String>,
     },
     TileJson {
@@ -258,7 +268,18 @@ pub(crate) struct LoadedStyle {
     pub(crate) paint: crate::paint::PaintState,
     pub(crate) image_namespace: Option<u64>,
     pub(crate) sprites_started: bool,
+    /// Sprites whose JSON hasn't arrived: icon layout waits for them.
     pub(crate) sprites_loading: u32,
+    /// Sprites whose pixels haven't arrived: the map isn't loaded until
+    /// they have.
+    pub(crate) sprite_pixels_loading: u32,
+    /// Each sprite's image names, by its index in the style's, to take
+    /// back if its pixels fail.
+    pub(crate) sprite_icon_names: Vec<Vec<String>>,
+    /// Whether labels laid out again (an edit's) took their icons' atlas
+    /// rectangles before the sprites' pixels were in: they lay out once
+    /// more when the pixels are.
+    pub(crate) relayout_after_pixels: bool,
     /// Counts the style's sprite loads: replies to an earlier one, which
     /// a new `sprite` superseded, are dropped.
     pub(crate) sprite_epoch: u64,
@@ -990,6 +1011,9 @@ impl Map {
             image_namespace: None,
             sprites_started: false,
             sprites_loading: 0,
+            sprite_pixels_loading: 0,
+            sprite_icon_names: Vec::new(),
+            relayout_after_pixels: false,
             sprite_epoch: 0,
             sprite_names: Default::default(),
             stale_sprites: None,
@@ -1341,6 +1365,7 @@ impl Map {
         }
         report.loaded = self.style.as_ref().is_some_and(|s| {
             s.sprites_loading == 0
+                && s.sprite_pixels_loading == 0
                 && s.sources
                     .iter()
                     .all(|source| !matches!(source, SourceState::Resolving))
@@ -1557,24 +1582,33 @@ impl Map {
         let worker = Arc::clone(&style.worker);
         let sprites = &worker.plan().style.sprites;
         style.sprites_loading = sprites.len() as u32;
+        style.sprite_pixels_loading = sprites.len() as u32;
+        style.sprite_icon_names = vec![Vec::new(); sprites.len()];
         style.icons.pixel_ratio = f64::from(pixel_ratio);
         if sprites.is_empty() && style.stale_sprites.is_some() {
             drop(guard);
             self.sprites_done(gpu);
             return;
         }
-        for sprite in sprites {
+        for (index, sprite) in sprites.iter().enumerate() {
             let generation = self.generation;
+            let icons = self.reply(move |result| Message::SpriteIcons {
+                generation,
+                epoch,
+                index,
+                result,
+            });
             let done = self.reply(move |result| Message::Sprite {
                 generation,
                 epoch,
+                index,
                 result,
             });
             let (fetch, decode) = (
                 self.services.fetch.as_ref(),
                 self.services.image_decode.clone(),
             );
-            crate::sprite::load(fetch, decode, sprite, pixel_ratio, done);
+            crate::sprite::load(fetch, decode, sprite, pixel_ratio, icons, done);
         }
     }
 

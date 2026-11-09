@@ -65,9 +65,10 @@ impl Map {
                     url,
                     result,
                 } => self.apply_style(request, &url, result),
-                Message::Sprite {
+                Message::SpriteIcons {
                     generation,
                     epoch,
+                    index,
                     result,
                 } => {
                     let mut done = false;
@@ -82,46 +83,15 @@ impl Map {
                                 let message = format!("sprite: {e}");
                                 self.events.push(MapEvent::Error { message });
                             }
-                            Ok(sprites) => {
-                                let mut atlas =
-                                    self.services.images.0.lock().expect("images poisoned");
-                                let atlas = atlas.atlas.as_mut().expect("initialized");
-                                for image in sprites {
-                                    let namespace =
-                                        style.image_namespace.expect("sprite namespace");
-                                    // Another sprite's image of the name
-                                    // gives way, keeping its atlas id.
-                                    if style.icons.contains(&image.name) {
-                                        atlas.clear(gpu, namespace, &image.name);
-                                    }
-                                    style.sprite_names.insert(image.name.clone());
+                            Ok(icons) => {
+                                for icon in icons {
+                                    style.sprite_names.insert(icon.name.clone());
                                     style.icons.add(
-                                        &image.name,
-                                        [image.width, image.height],
-                                        &image.metadata,
+                                        &icon.name,
+                                        [icon.width, icon.height],
+                                        &icon.metadata,
                                     );
-                                    // Patterns and icons pad differently.
-                                    let mut upload = |pattern: bool| {
-                                        let id = if pattern {
-                                            atlas.resolve(namespace, &image.name)?
-                                        } else {
-                                            atlas.resolve_icon(namespace, &image.name)?
-                                        };
-                                        atlas.upload(
-                                            gpu,
-                                            id,
-                                            ImageUpload {
-                                                size: [image.width, image.height],
-                                                pixels: &image.pixels,
-                                                metadata: image.metadata.clone(),
-                                                pattern,
-                                            },
-                                        )
-                                    };
-                                    let uploaded = upload(true).and_then(|()| upload(false));
-                                    if let Err(e) = uploaded {
-                                        self.warnings.push(format!("sprite {}: {e}", image.name));
-                                    }
+                                    style.sprite_icon_names[index].push(icon.name);
                                 }
                             }
                         }
@@ -131,6 +101,12 @@ impl Map {
                         self.sprites_done(gpu);
                     }
                 }
+                Message::Sprite {
+                    generation,
+                    epoch,
+                    index,
+                    result,
+                } => self.apply_sprite_pixels(gpu, (generation, epoch, index), result),
                 Message::TileJson {
                     generation,
                     source,
@@ -222,6 +198,89 @@ impl Map {
         self.retry_waiting(gpu, renderer, started);
     }
 
+    /// A sprite's pixels, into the atlas, for the icons its JSON gave. A
+    /// sprite whose image failed takes those icons back, and symbol layers
+    /// lay out again without them.
+    fn apply_sprite_pixels(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        (generation, epoch, index): (u64, u64, usize),
+        result: Result<Vec<crate::sprite::SpriteImage>, String>,
+    ) {
+        let Some(style) = self
+            .style
+            .as_mut()
+            .filter(|s| generation == self.generation && epoch == s.sprite_epoch)
+        else {
+            return;
+        };
+        style.sprite_pixels_loading -= 1;
+        let mut relayout = false;
+        match result {
+            Err(e) => {
+                let message = format!("sprite: {e}");
+                self.events.push(MapEvent::Error { message });
+                let mut withdrawn = false;
+                for name in std::mem::take(&mut style.sprite_icon_names[index]) {
+                    if !style.added_images.contains_key(&name) {
+                        style.sprite_names.remove(&name);
+                        withdrawn |= style.icons.remove(&name);
+                    }
+                }
+                // While other sprites' JSON loads, the set goes with theirs.
+                if withdrawn && style.sprites_loading == 0 {
+                    style.icons.epoch += 1;
+                    let icons = Arc::new(style.icons.clone());
+                    self.services
+                        .jobs
+                        .set_icons(style.id, &icons, &style.worker);
+                    relayout = true;
+                }
+            }
+            Ok(images) => {
+                let namespace = style.image_namespace.expect("sprite namespace");
+                let mut atlas = self.services.images.0.lock().expect("images poisoned");
+                let atlas = atlas.atlas.as_mut().expect("initialized");
+                for image in images {
+                    // Another sprite's image of the name gives way, keeping
+                    // its atlas id.
+                    let held = atlas.resolve(namespace, &image.name).ok();
+                    if held.and_then(|id| atlas.size(id)).is_some() {
+                        atlas.clear(gpu, namespace, &image.name);
+                    }
+                    // Patterns and icons pad differently.
+                    let mut upload = |pattern: bool| {
+                        let id = if pattern {
+                            atlas.resolve(namespace, &image.name)?
+                        } else {
+                            atlas.resolve_icon(namespace, &image.name)?
+                        };
+                        atlas.upload(
+                            gpu,
+                            id,
+                            ImageUpload {
+                                size: [image.width, image.height],
+                                pixels: &image.pixels,
+                                metadata: image.metadata.clone(),
+                                pattern,
+                            },
+                        )
+                    };
+                    let uploaded = upload(true).and_then(|()| upload(false));
+                    if let Err(e) = uploaded {
+                        self.warnings.push(format!("sprite {}: {e}", image.name));
+                    }
+                }
+            }
+        }
+        if style.sprite_pixels_loading == 0 {
+            relayout |= std::mem::take(&mut style.relayout_after_pixels);
+        }
+        if relayout {
+            self.relayout_symbols();
+        }
+    }
+
     /// Tries the tiles waiting for room again, in the frame's budget left,
     /// each only if room may have changed since it last failed: memory
     /// freed or grown, or other tiles' jobs done.
@@ -265,9 +324,10 @@ impl Map {
         }
     }
 
-    /// What a waiting tile's room depends on: the scene's pools in use and
-    /// their buffers, tile page layers in use, and tile jobs in flight.
-    pub(crate) fn room_state(&self, renderer: &Renderer) -> [u64; 6] {
+    /// What a waiting tile depends on: the scene's pools in use and their
+    /// buffers, tile page layers in use, tile jobs in flight, and sprites
+    /// whose pixels are on their way.
+    pub(crate) fn room_state(&self, renderer: &Renderer) -> [u64; 7] {
         let stats = renderer.stats();
         let loading: u64 = self
             .style
@@ -285,6 +345,9 @@ impl Map {
             renderer.pools_revision(),
             renderer.used_layers(),
             loading,
+            self.style
+                .as_ref()
+                .map_or(0, |s| u64::from(s.sprite_pixels_loading)),
         ]
     }
 
@@ -425,6 +488,12 @@ impl Map {
                 unpack: endpoint.dem_unpack.map(|u| u.map(|v| v as f32)),
             }
         });
+        // Labels take their icons' atlas rectangles as they upload: a tile
+        // with labels waits for the sprites' pixels (layout needed only
+        // their JSON).
+        if style.sprite_pixels_loading > 0 && !build.symbols.is_empty() {
+            return Some(build);
+        }
         let sizes = mesh_sizes(plan, &build);
         // Room: what's free first; then unused tiles go, this source's
         // before others'; under the budget the pools grow before they do.

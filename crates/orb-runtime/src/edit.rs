@@ -428,6 +428,7 @@ impl Map {
             &build,
             &mut self.events,
         );
+        style.relayout_after_pixels |= style.sprite_pixels_loading > 0 && !build.symbols.is_empty();
         let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
             return;
         };

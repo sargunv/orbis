@@ -933,6 +933,48 @@ mod tests {
         );
     }
 
+    /// Icon layout takes a sprite's images from its JSON, ahead of its
+    /// pixels; a sprite whose image then fails takes them back, as one
+    /// whose JSON failed never gave them.
+    #[test]
+    fn a_sprite_whose_image_fails_takes_its_icons_back() {
+        let dir = std::env::temp_dir().join(format!("orbis-sprite-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s.json"),
+            r#"{"dot":{"x":0,"y":0,"width":1,"height":1}}"#,
+        )
+        .unwrap();
+        let mut offscreen = null_island(&format!(
+            r#"{{"version":8,"sprite":"file://{}/s",
+            "sources":{{"s":{{"type":"geojson","data":{{"type":"Point","coordinates":[0,0]}}}}}},
+            "layers":[{{"id":"icon","type":"symbol","source":"s","layout":{{"icon-image":"dot"}}}}]}}"#,
+            dir.display()
+        ));
+        let started = std::time::Instant::now();
+        let mut errors = Vec::new();
+        while started.elapsed() < std::time::Duration::from_secs(10) {
+            let loaded = offscreen.frame().loaded;
+            errors.extend(
+                offscreen
+                    .map
+                    .take_events()
+                    .into_iter()
+                    .filter_map(|e| match e {
+                        orb_runtime::MapEvent::Error { message } => Some(message),
+                        _ => None,
+                    }),
+            );
+            if loaded {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(errors.iter().any(|e| e.starts_with("sprite")), "{errors:?}");
+        assert!(!offscreen.map.has_image("dot"));
+    }
+
     /// Raster tiles show at once until the map is first idle, as in GL JS,
     /// whose first view has no tiles to fade from; after that, new tiles
     /// fade in. Frames all show one instant, so a fade would never end.

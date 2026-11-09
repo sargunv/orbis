@@ -110,7 +110,8 @@ impl HostData {
     }
 }
 
-/// A tile result waiting for room in the scene (`Map::apply_tile`).
+/// A tile result waiting for room in the scene, or for the sprites' pixels
+/// its labels' icons need (`Map::apply_tile`).
 #[derive(Debug)]
 pub(crate) struct WaitingTile {
     pub(crate) generation: u64,
@@ -118,8 +119,8 @@ pub(crate) struct WaitingTile {
     pub(crate) source: u32,
     pub(crate) tile: TileIndex,
     pub(crate) build: TileResult,
-    /// [`Map::room_state`] when it last failed to fit.
-    pub(crate) tried: Option<[u64; 6]>,
+    /// [`Map::room_state`] when it was last tried.
+    pub(crate) tried: Option<[u64; 7]>,
 }
 
 /// Raises the nodes' row maxima to those of new meshes; paint is written
