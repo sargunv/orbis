@@ -294,10 +294,16 @@ fn write_paint(
         let state = style.nodes.entry(node.key).or_default();
         let index = index as u32;
         let layer = &plan.style.layers[node.layer];
+        // A node its layer hides at this zoom draws nothing: its paint is
+        // written when a zoom shows it.
         if node.family.is_symbol() {
+            if !layer.is_visible_at(zoom) {
+                renderer.set_visible(index, false);
+                continue;
+            }
             let lookup = style.states.lookup(index as usize);
             let paint = crate::labels::paint(plan, node, zoom, &state.maxima, lookup);
-            renderer.set_visible(index, layer.is_visible_at(zoom) && paint.is_some());
+            renderer.set_visible(index, paint.is_some());
             if let Some(paint) = paint {
                 renderer.set_paint(gpu, index, &NodePaint::Symbol(paint));
             }
@@ -315,6 +321,9 @@ fn write_paint(
                 visible
             },
         );
+        if !draped && !visible {
+            continue;
+        }
         // Paint that is the same for every camera was written this epoch.
         if state.painted == Some(style.paint.epoch) {
             continue;
