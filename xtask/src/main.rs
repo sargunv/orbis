@@ -43,8 +43,12 @@ cargo xtask <task>
                Pages workflow runs it and deploys on every push to main
   rt [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]
                the GL JS fixtures
-  bench [args]  GPU/CPU frame timings, still or along gesture paths (release);
-               web/demo/bench.html runs the same bench in a browser
+  bench [args]  native benchmarks (release): --experiment frames (GPU/CPU
+               frame timings; --nudge for whole frames read back), gestures,
+               load (style load to first complete still) or tiles (the
+               extract's tiles through decode, layout and pack); --views
+               <file> takes mln-rs's views.txt cameras; web/demo/bench.html
+               runs the frames and gestures benches in a browser
   sweep [--dry-run] [--target-dir <path>] [--keep-hours <n>]  prune stale build
                artifacts: keep every build compiled in the last <n> hours
                (default 6) and the 2 newest builds of each crate

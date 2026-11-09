@@ -61,13 +61,13 @@ Playwright.
 | `mise x -- cargo xtask android [--run]` | `liborbis.so`, the AAR and the reference app; `--run` installs it on this worktree's emulator (logcat tag `Orbis`) |
 | `cargo xtask apple [--test] [--ios-sim[=name]]` | the xcframework and Swift package; `--test` runs the Swift smoke test |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
-| `cargo run --release -p orb-cli -- render <style> -o out.png [--at …] [--size WxH]` | a still picture of a style; `tiles` renders a tile pyramid |
+| `cargo run --release -p orb-cli -- render <style> -o out.png [--at …] [--size WxH] [--state-dir d]` | a still picture of a style; `tiles` renders a tile pyramid, or `--list`ed tiles with `--times` per tile (`--still`: as Still-mode views) |
 | `cargo xtask web` / `cargo xtask pages` | `core.wasm` into `web/pkg` with its sizes (a warning when one grows past its watch level); `pages` also builds the site into `web/dist` |
 | `pnpm -C web dev` | the demo at `/orbis/` (after `cargo xtask web`) |
 | `pnpm -C web typecheck` / `test` / `e2e [--only=…]` | the package's types, unit tests, and headless-Chromium end-to-end checks |
 | `pnpm -C web snapshot out.png '#z/lat/lon' [--style=<key>\|URL]` | a screenshot of the demo in headless Chromium |
 | `pnpm -C web measure` / `pnpm -C web bench` | input latency and main-thread time against GL JS; frame timings in Chrome |
-| `cargo xtask bench [alps] [--experiment gestures]` | native GPU and CPU frame timings |
+| `cargo xtask bench [style\|alps] [--experiment frames\|gestures\|load\|tiles] [--views f] [--nudge]` | native GPU and CPU frame timings, gesture paths, fresh-map loads, and the Tokyo extract's tiles through decode/layout/pack |
 | `cargo xtask rt [--suite render\|query] [--filter <s>] [--platform native\|chrome\|all]` | the GL JS render or query fixtures |
 | `cargo xtask sweep [--dry-run] [--keep-hours N]` | prune stale build artifacts when the disk runs low |
 

@@ -1,6 +1,6 @@
 [package]
 name = "orb-bench"
-description = "GPU and CPU frame timings of the render submissions, through orb-api"
+description = "Native benchmarks through orb-api: GPU and CPU frame timings, gesture paths, map loads, and tile jobs' stages"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -8,7 +8,15 @@ version.workspace = true
 
 [dependencies]
 orb-api.workspace = true
+orb-crs.workspace = true
+orb-host-native.workspace = true
+orb-runtime.workspace = true
+orb-source.workspace = true
+orb-style.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
 
 [lints]
 workspace = true

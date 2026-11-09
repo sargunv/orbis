@@ -66,6 +66,8 @@ impl Stat {
 #[derive(Debug)]
 pub(crate) struct ViewResult {
     pub(crate) name: String,
+    /// The target in physical pixels.
+    pub(crate) size: (u32, u32),
     pub(crate) gpu: Summary,
     /// Passes, where timed.
     pub(crate) cull: Option<Summary>,
@@ -74,6 +76,8 @@ pub(crate) struct ViewResult {
     pub(crate) passes: Vec<(String, Summary, usize)>,
     pub(crate) render_cpu: Summary,
     pub(crate) submit_cpu: Summary,
+    /// Nudged frames' render and readback.
+    pub(crate) wall: Option<Summary>,
     pub(crate) draws: u32,
     pub(crate) dispatches: u32,
     pub(crate) tiles: u32,
@@ -88,8 +92,6 @@ pub(crate) struct ViewResult {
 pub struct FramesReport {
     pub(crate) about: Vec<String>,
     pub(crate) settings: Settings,
-    /// The target in physical pixels.
-    pub(crate) size: (u32, u32),
     /// The timestamps' resolution, if any were taken.
     pub(crate) gpu_resolution: Option<Duration>,
     pub(crate) cpu_resolution: Duration,
@@ -116,23 +118,23 @@ impl FramesReport {
         for line in &self.about {
             writeln!(out, "- {line}")?;
         }
+        let (w, h) = s.physical_size();
         writeln!(
             out,
-            "- {}×{} px ({}×{} @{}x) offscreen at {:.4}, {:.4}; {} rounds × {} frames after {} warm-up per view",
-            self.size.0,
-            self.size.1,
-            s.width,
-            s.height,
-            s.ratio,
-            s.center.lon,
-            s.center.lat,
-            s.rounds,
-            s.frames,
-            s.warmup,
+            "- {w}×{h} px ({}×{} @{}x) offscreen at {:.4}, {:.4} unless a view has its own; {} rounds × {} frames after {} warm-up per view",
+            s.width, s.height, s.ratio, s.center.lon, s.center.lat, s.rounds, s.frames, s.warmup,
         )?;
+        if s.nudge {
+            writeln!(
+                out,
+                "- nudged: every other frame zooms in by {}, and each is read back before the next (frame wall: render to pixels on the CPU)",
+                crate::NUDGE
+            )?;
+        }
         writeln!(
             out,
-            "- GPU: timestamp queries around every pass, two frames in flight; resolution {}{}",
+            "- GPU: timestamp queries around every pass, {} in flight; resolution {}{}",
+            if s.nudge { "one frame" } else { "two frames" },
             resolution(self.gpu_resolution),
             coarse_note(gpu_stat),
         )?;
@@ -144,16 +146,29 @@ impl FramesReport {
         )?;
         writeln!(out)?;
 
+        let wall = if s.nudge {
+            format!(" frame wall {c} | p90 |")
+        } else {
+            String::new()
+        };
         writeln!(
             out,
-            "| view | GPU {g} | p90 | cull pass {g} | main pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches |"
+            "| view |{wall} GPU {g} | p90 | cull pass {g} | main pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches |"
         )?;
-        writeln!(out, "|---|---|---|---|---|---|---|---|---|")?;
+        writeln!(
+            out,
+            "|---|{}---|---|---|---|---|---|---|---|",
+            if s.nudge { "---|---|" } else { "" }
+        )?;
         let pass = |p: &Option<Summary>| p.as_ref().map_or("—".into(), |m| ms(gpu_stat.of(m)));
         for view in &self.views {
+            let wall = match &view.wall {
+                Some(w) => format!(" {} | {} |", ms(cpu_stat.of(w)), ms(w.p90)),
+                None => String::new(),
+            };
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} |{wall} {} | {} | {} | {} | {} | {} | {} | {} |",
                 view.name,
                 ms(gpu_stat.of(&view.gpu)),
                 ms(view.gpu.p90),
@@ -170,9 +185,11 @@ impl FramesReport {
         for view in &self.views {
             writeln!(
                 out,
-                "- {}: {} tiles drawn, {} candidates, {} meshes, \
+                "- {}: {}×{} px, {} tiles drawn, {} candidates, {} meshes, \
                  {:.1} MiB of GPU memory allocated, {:.1} MiB of pools used",
                 view.name,
+                view.size.0,
+                view.size.1,
                 view.tiles,
                 view.candidates,
                 view.meshes,

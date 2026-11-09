@@ -31,6 +31,7 @@ mod queries;
 mod query;
 mod resident;
 mod sprite;
+pub mod stages;
 mod state;
 mod style;
 mod style_image;

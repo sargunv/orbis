@@ -2264,6 +2264,12 @@ name = "orb-bench"
 version = "0.0.0"
 dependencies = [
  "orb-api",
+ "orb-crs",
+ "orb-host-native",
+ "orb-runtime",
+ "orb-source",
+ "orb-style",
+ "rustix 1.1.6",
  "serde_json",
 ]
 
@@ -2295,6 +2301,7 @@ dependencies = [
  "orb-expr",
  "orb-style",
  "png",
+ "rustix 1.1.6",
 ]
 
 [[package]]
