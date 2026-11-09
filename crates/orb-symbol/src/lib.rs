@@ -42,6 +42,7 @@ pub use icon::{IconImage, IconTextFit, TextFit};
 pub use layout::{
     Alignment, FeatureLayout, FeatureSize, LayerLayout, LayoutContext, Placement, SymbolFeature,
     TextJustify, TileImages, TileParams, add_glyph_requests, layout, may_anchor_in_tile,
+    retain_line_labels_in_tile,
 };
 pub use placement::{
     BucketStates, Camera, Committed, Frame, Ground, GroundRef, LayerFrame, LayerParams, Mat4,

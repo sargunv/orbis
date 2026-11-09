@@ -15,7 +15,7 @@ use super::{anchor, assert_same, image, num, nums};
 use crate::bucket::{NONE, SizeKind, SymbolBucket, SymbolStream, instance_flags, quad_flags};
 use crate::layout::{
     Alignment, FeatureLayout, FeatureSize, LayerLayout, LayoutContext, Placement, SymbolFeature,
-    TextJustify, TileImages, TileParams, add_glyph_requests, layout,
+    TextJustify, TileImages, TileParams, add_glyph_requests, layout, retain_line_labels_in_tile,
 };
 use crate::{IconTextFit, quads::GLYPH_PADDING};
 
@@ -304,7 +304,9 @@ fn run<'a>(name: &'a str, json: &str) -> Case<'a> {
     run_in(name, json, None)
 }
 
-/// [`run`] for the slice at `ancestor` of the case's tile.
+/// [`run`] for the slice at `ancestor` of the case's tile. A slice lays
+/// out line labels only of the texts near it, as the runtime does, and
+/// that drops no symbol of the slice.
 fn run_in<'a>(name: &'a str, json: &str, ancestor: Option<Ancestor>) -> Case<'a> {
     let golden: Value = serde_json::from_str(json).expect("golden parses");
     let spec = &golden["case"];
@@ -343,7 +345,14 @@ fn run_in<'a>(name: &'a str, json: &str, ancestor: Option<Ancestor>) -> Case<'a>
         images: &images,
         words: None,
     };
-    let bucket = layout(layer, &features, &style, tile, context);
+    let mut bucket = layout(layer, &features, &style, tile, context);
+    if let Some(ancestor) = ancestor.filter(|_| style.placement == Placement::Line) {
+        let mut near = features.clone();
+        retain_line_labels_in_tile(layer, &mut near, ancestor);
+        let culled = layout(layer, &near, &style, tile, context);
+        assert_eq!(culled, bucket, "{name} at {ancestor:?}");
+        bucket = culled;
+    }
     Case {
         name,
         golden,

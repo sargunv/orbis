@@ -516,7 +516,15 @@ fn build_symbols<'f>(
             }
             None => Cow::Borrowed(&features),
         };
-        let p = crate::symbol::prepare(symbol, layer, &laid_out, zoom, ids, images, tile);
+        let p = crate::symbol::prepare(
+            symbol,
+            layer,
+            &laid_out,
+            zoom,
+            ids,
+            images,
+            (tile, ancestor),
+        );
         let faces = &plan.style.font_faces;
         for url in symbols.glyphs.missing(&p.requests, template, policy, faces) {
             if !missing.contains(&url) {

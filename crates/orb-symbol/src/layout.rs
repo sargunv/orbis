@@ -426,6 +426,50 @@ pub fn may_anchor_in_tile(
     !point && !(max[0] < 0.0 || max[1] < 0.0 || min[0] >= EXTENT || min[1] >= EXTENT)
 }
 
+/// Keeps the `features` of an overzoom slice laying out line labels in
+/// its `ancestor` that may have a label anchored in the slice. A feature's
+/// anchor can block a later one with the same text far down a chain
+/// (`anchor_is_too_close`), and lines with the same text merge, so features
+/// go or stay with all others labelled alike: those whose text no line
+/// near the slice carries can have no anchor in it. Text keys leave out
+/// the private-use code points that stand for inline images, so labels
+/// that shape alike always share one.
+pub fn retain_line_labels_in_tile(
+    layer: &Layer,
+    features: &mut Vec<SymbolFeature>,
+    ancestor: Ancestor,
+) {
+    let units = Units::new(Some(ancestor));
+    // Lines round to the ancestor's grid, which moves them up to half a
+    // cell of it in the slice's units.
+    let margin = units.scale;
+    let reaches = |index: u32| {
+        let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for part in layer.geometry(index as usize).parts() {
+            for &p in part.rings().flatten() {
+                let p = units.point(p, layer.extent());
+                min = [min[0].min(p.x), min[1].min(p.y)];
+                max = [max[0].max(p.x), max[1].max(p.y)];
+            }
+        }
+        let (lo, hi) = (-margin, EXTENT + margin);
+        !(max[0] < lo || max[1] < lo || min[0] > hi || min[1] > hi)
+    };
+    let key = |f: &SymbolFeature| -> String {
+        let text = f.text.as_ref().map(Label::text).unwrap_or_default();
+        text.chars()
+            .filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c))
+            .collect()
+    };
+    let keys: Vec<String> = features.iter().map(key).collect();
+    let near: std::collections::HashSet<&str> = (features.iter().zip(&keys))
+        .filter(|(f, _)| reaches(f.index))
+        .map(|(_, k)| k.as_str())
+        .collect();
+    let mut keys = keys.iter();
+    features.retain(|_| near.contains(keys.next().expect("a key per feature").as_str()));
+}
+
 fn is_outside_tile(p: Point) -> bool {
     p.x < 0.0 || p.x >= EXTENT || p.y < 0.0 || p.y >= EXTENT
 }

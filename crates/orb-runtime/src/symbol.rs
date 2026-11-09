@@ -276,7 +276,9 @@ fn label(sections: &[FormattedSection], transform: orb_text::TextTransform) -> L
 
 /// Evaluates a symbol layer's `features` (the filter's selection, in
 /// order) at tile zoom `zoom`. `ids` is the column of stable ids, the
-/// promoted id when the source has one.
+/// promoted id when the source has one. `tile` locates the layer for
+/// expressions that read geometry; `ancestor` is where an overzoom slice
+/// laid out in its ancestor is in it.
 pub(crate) fn prepare(
     symbol: &orb_style::Layer,
     layer: &Layer,
@@ -284,7 +286,7 @@ pub(crate) fn prepare(
     zoom: f64,
     ids: Option<&orb_tile::Column>,
     images: &[String],
-    tile: Option<orb_expr::CanonicalTile>,
+    (tile, ancestor): (Option<orb_expr::CanonicalTile>, Option<orb_tile::Ancestor>),
 ) -> Prepared {
     let style = layer_layout(symbol, zoom);
     let l = symbol;
@@ -437,6 +439,11 @@ pub(crate) fn prepare(
             sort_key: sort_by_key.then(|| sort_key.evaluate(zoom, row).unwrap_or(0.0)),
             layout,
         });
+    }
+    // An overzoom slice laid out in its ancestor shapes only the line
+    // labels that may land in it.
+    if let Some(ancestor) = ancestor.filter(|_| style.placement == Placement::Line) {
+        orb_symbol::retain_line_labels_in_tile(layer, &mut prepared, ancestor);
     }
     let mut requests = GlyphRequests::default();
     orb_symbol::add_glyph_requests(layer, &prepared, &style, &mut requests);
@@ -674,7 +681,7 @@ mod tests {
             let ids = case
                 .get("promoteId")
                 .and_then(|p| layer.property(p.as_str().unwrap()));
-            let prepared = prepare(symbol, layer, &features, zoom, ids, &[], None);
+            let prepared = prepare(symbol, layer, &features, zoom, ids, &[], (None, None));
 
             let g = &golden["layer"];
             let s = &prepared.style;
