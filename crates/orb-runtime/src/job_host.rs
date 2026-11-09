@@ -73,6 +73,39 @@ struct GlyphLoads {
     waiting: Mutex<GlyphWaiters>,
     /// The word data once a style's worker has loaded it, for the others.
     words: Mutex<Option<Arc<orb_text::WordBreaker>>>,
+    /// Glyph ranges fetched lately, whole: the atlas's raster jobs draw
+    /// their bitmaps from these rather than fetch them again (workers keep
+    /// metrics only).
+    recent: Mutex<RecentRanges>,
+}
+
+/// The glyph ranges fetched last, up to [`RecentRanges::BUDGET`] bytes.
+#[derive(Default)]
+struct RecentRanges {
+    ranges: std::collections::VecDeque<(String, Arc<Vec<u8>>)>,
+    bytes: usize,
+}
+
+impl RecentRanges {
+    /// A few fonts' worth of ranges: a Latin range is 60–80 KB.
+    const BUDGET: usize = 4 << 20;
+
+    fn get(&self, url: &str) -> Option<Arc<Vec<u8>>> {
+        let found = self.ranges.iter().find(|(u, _)| u == url);
+        found.map(|(_, bytes)| Arc::clone(bytes))
+    }
+
+    fn insert(&mut self, url: &str, bytes: Arc<Vec<u8>>) {
+        if bytes.len() > Self::BUDGET || self.get(url).is_some() {
+            return;
+        }
+        self.bytes += bytes.len();
+        self.ranges.push_back((url.to_string(), bytes));
+        while self.bytes > Self::BUDGET {
+            let (_, oldest) = self.ranges.pop_front().expect("over budget");
+            self.bytes -= oldest.len();
+        }
+    }
 }
 
 impl GlyphLoads {
@@ -109,6 +142,12 @@ impl GlyphLoads {
                     .glyphs
                     .files()
                     .filter(|_| worker.declares_font(&url));
+                if let Ok(bytes) = &fetched
+                    && worker.is_glyph_range(&url)
+                {
+                    let mut recent = this.recent.lock().expect("ranges poisoned");
+                    recent.insert(&url, Arc::new(bytes.clone()));
+                }
                 let finish = move |prepared: Result<(), String>| {
                     let bytes = prepared.and(fetched.as_deref().map_err(ToString::to_string));
                     worker.add_resource(&url, bytes);
@@ -194,6 +233,7 @@ impl JobHost {
                 executor: Arc::clone(&executor),
                 waiting: Mutex::default(),
                 words: Mutex::new(None),
+                recent: Mutex::default(),
             }),
             fetch,
             executor,
@@ -442,11 +482,22 @@ impl JobHost {
         let executor = Arc::clone(&self.executor);
         match &request {
             GlyphRaster::Pbf { url, .. } => {
-                let url = url.clone();
+                let recent = self.glyphs.recent.lock().expect("ranges poisoned").get(url);
+                if let Some(bytes) = recent {
+                    executor.spawn(Box::new(move || done(request.run(&bytes))));
+                    return;
+                }
+                let (url, glyphs) = (url.clone(), Arc::clone(&self.glyphs));
                 self.fetch.get(
                     &url.clone(),
                     Box::new(move |fetched| match fetched {
-                        Ok(bytes) => executor.spawn(Box::new(move || done(request.run(&bytes)))),
+                        Ok(bytes) => {
+                            let bytes = Arc::new(bytes);
+                            let mut recent = glyphs.recent.lock().expect("ranges poisoned");
+                            recent.insert(&url, Arc::clone(&bytes));
+                            drop(recent);
+                            executor.spawn(Box::new(move || done(request.run(&bytes))));
+                        }
                         Err(e) => done(Err(format!("glyphs {url}: {e}"))),
                     }),
                 );

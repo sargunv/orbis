@@ -273,6 +273,19 @@ impl TileWorker {
         declared.flat_map(|(_, files)| files).any(|f| f.url == url)
     }
 
+    /// Whether `url`, fetched for a tile's text, is a glyph range: not a
+    /// declared font file or the word data.
+    pub(crate) fn is_glyph_range(&self, url: &str) -> bool {
+        !self.declares_font(url)
+            && self
+                .data
+                .word_url
+                .lock()
+                .expect("words poisoned")
+                .as_deref()
+                != Some(url)
+    }
+
     /// Draws declared font files (`font-faces`) with the host's engine, for
     /// this revision and later ones.
     pub fn set_font_files(&self, files: Arc<dyn crate::glyphs::FontFiles>) {
