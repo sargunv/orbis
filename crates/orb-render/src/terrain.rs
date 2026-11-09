@@ -25,9 +25,30 @@ use crate::offscreen::{Composite, Composites, Mode, Offscreen};
 /// terrain tile covers at its zoom, GL JS's quality factor.
 pub const DRAPE_SLOT_PX: u32 = 1024;
 
-/// Slots per side of the largest drape atlas the device makes.
+/// Slots per side of the largest drape atlas the device makes, a power of
+/// two (see [`atlas_grid`]).
 fn atlas_side(gpu: &dyn Gpu) -> u32 {
-    gpu.caps().limits.max_texture_dimension_2d / DRAPE_SLOT_PX
+    let side = gpu.caps().limits.max_texture_dimension_2d / DRAPE_SLOT_PX;
+    1 << side.max(1).ilog2()
+}
+
+/// The atlas grid (columns, rows) for `slots` drape slots, or `None` to
+/// keep the atlas of `held` slots: kept while it holds them and they fill
+/// more than a quarter of it. A grid is a power of two slots a side, so
+/// that drape space maps to clip space and atlas uv by powers of two,
+/// exactly: a slot's texels then don't depend on where in the atlas it
+/// lies, which depends on the tiles that came and went before. A new grid
+/// holds the slots in the fewest, or on shrinking twice that, so that a
+/// view must grow past it again to make another; squarest, columns first.
+fn atlas_grid(slots: u32, held: Option<u32>, side: u32) -> Option<(u32, u32)> {
+    let slots = slots.max(1);
+    if held.is_some_and(|held| slots <= held && slots * 4 > held) {
+        return None;
+    }
+    let shrink = held.is_some_and(|held| slots <= held);
+    let count = (slots.next_power_of_two() << u32::from(shrink)).min(side * side);
+    let k = count.ilog2();
+    Some((1 << k.div_ceil(2), 1 << (k / 2)))
 }
 
 /// The terrain tiles the largest drape atlas holds, `stacks` slots each.
@@ -484,15 +505,13 @@ impl Terrain {
         }
     }
 
-    /// Sizes the atlas for `tile_slots` blocks of `stacks` slots, with a
-    /// quarter to spare: made again when they outgrow it, or fill less
-    /// than half of it and the new one is at least a quarter smaller (each
-    /// new atlas copies the kept slots). The tile slots in `kept` carry their texels
-    /// into a new atlas, those past its end moved to free slots; returns
-    /// the moves (from, to), or `None` when the atlas stays. A change of
-    /// stacks blanks every slot (a new [`DrapeLayout::generation`]).
-    /// Fails when the slots exceed the device's texture size
-    /// ([`room`]).
+    /// Sizes the atlas for `tile_slots` blocks of `stacks` slots
+    /// ([`atlas_grid`]); each new atlas copies the kept slots. The tile
+    /// slots in `kept` carry their texels into a new atlas, those past its
+    /// end moved to free slots; returns the moves (from, to), or `None`
+    /// when the atlas stays. A change of stacks blanks every slot (a new
+    /// [`DrapeLayout::generation`]). Fails when the slots exceed the
+    /// device's texture size ([`room`]).
     pub(crate) fn reserve(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -502,26 +521,16 @@ impl Terrain {
     ) -> Result<Option<Vec<(u32, u32)>>, crate::OutOfSpace> {
         let stacks = stacks.max(1);
         let state = self.layout_state;
-        let side = atlas_side(gpu);
         if tile_slots > room(gpu, stacks) {
             return Err(crate::OutOfSpace);
         }
-        let want = (tile_slots + tile_slots.div_ceil(4)).clamp(1, room(gpu, stacks));
         let same = self.atlas.is_some() && state.stacks == stacks;
-        if same && tile_slots <= state.tile_slots && tile_slots * 2 >= state.tile_slots {
+        let held = (self.atlas.as_ref())
+            .filter(|_| same)
+            .map(|a| (a.size[0] / DRAPE_SLOT_PX) * (a.size[1] / DRAPE_SLOT_PX));
+        let Some((columns, rows)) = atlas_grid(tile_slots * stacks, held, atlas_side(gpu)) else {
             return Ok(None);
-        }
-        // The grid of the fewest slots that holds them, squarest first.
-        let slots = want * stacks;
-        let (columns, rows) = (1..=side)
-            .map(|c| (c, slots.div_ceil(c)))
-            .filter(|&(_, r)| r <= side)
-            .min_by_key(|&(c, r)| (c * r, c.abs_diff(r)))
-            .expect("one column fits");
-        let held = state.tile_slots * stacks;
-        if same && tile_slots <= state.tile_slots && columns * rows * 4 > held * 3 {
-            return Ok(None);
-        }
+        };
         let layout = DrapeLayout {
             stacks,
             columns,
@@ -1306,6 +1315,21 @@ mod tests {
     fn coarser_dem_tiles_draw_with_gl_js_density() {
         let steps = [64.0, 256.0, 512.0, 1024.0, 4096.0].map(grid_step);
         assert_eq!(steps, [1, 1, 2, 4, 4]);
+    }
+
+    #[test]
+    fn atlas_grids_are_powers_of_two_with_room_to_change() {
+        assert_eq!(atlas_grid(0, None, 16), Some((1, 1)));
+        assert_eq!(atlas_grid(24, None, 16), Some((8, 4)));
+        assert_eq!(atlas_grid(33, None, 16), Some((8, 8)));
+        // Kept while it holds them and they fill over a quarter of it.
+        assert_eq!(atlas_grid(32, Some(32), 16), None);
+        assert_eq!(atlas_grid(9, Some(32), 16), None);
+        assert_eq!(atlas_grid(33, Some(32), 16), Some((8, 8)));
+        // Shrunk to twice the fewest, half full.
+        assert_eq!(atlas_grid(8, Some(32), 16), Some((4, 4)));
+        // Never past the device's largest.
+        assert_eq!(atlas_grid(200, None, 8), Some((8, 8)));
     }
 
     #[test]

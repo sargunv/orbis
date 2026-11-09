@@ -425,8 +425,10 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     );
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
-    // The drape differs from a fresh map's by a step in a channel at a few
-    // hundred pixels along draped lines' edges, by a cause not yet found.
+    // The drape differs from a fresh map's by a step in a channel at some
+    // pixels along draped lines' edges: their vertices and the terrain's
+    // samples round by where in the atlas their slot is, which follows
+    // the tiles that came and went.
     assert_within("terrain", both_ways(&style, start, end, 30), 1);
 }
 
@@ -553,9 +555,8 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
     fresh.edit(&hide).unwrap();
     fresh.jump_to(&camera(at(-32.0)));
     settle(&mut fresh, &mut target);
-    // The drape differs a little as in the terrain gesture, and two fresh
-    // maps here differ too: two steps.
-    assert_within("live-alps", (turned, target.read_pixels().unwrap()), 2);
+    // The drape rounds by its slots' places as in the terrain gesture.
+    assert_within("live-alps", (turned, target.read_pixels().unwrap()), 1);
 }
 
 /// A draped fill whose hovered colour varies with zoom shows the colour of
