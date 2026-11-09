@@ -107,11 +107,7 @@ impl Column {
 
     /// The value at `row`, or `None` if the feature has none.
     pub fn get(&self, row: usize) -> Option<ValueRef<'_>> {
-        if !self.present.get(row) {
-            return None;
-        }
-        let below = self.present.words[row / 64] & ((1 << (row % 64)) - 1);
-        let row = (self.ranks[row / 64] + below.count_ones()) as usize;
+        let row = self.rank(row)?;
         Some(match &self.data {
             ColumnData::Bool(v) => ValueRef::Bool(v[row]),
             ColumnData::I64(v) => ValueRef::I64(v[row]),
@@ -122,6 +118,31 @@ impl Column {
             }
             ColumnData::Mixed(v) => v[row].as_ref(),
         })
+    }
+
+    /// A number standing for the value at `row`, or `None` if the feature
+    /// has none: rows whose codes are equal have equal values. A string's
+    /// is its dictionary code; a column of mixed types gives each row its
+    /// own.
+    pub fn code(&self, row: usize) -> Option<u64> {
+        let row = self.rank(row)?;
+        Some(match &self.data {
+            ColumnData::Bool(v) => u64::from(v[row]),
+            ColumnData::I64(v) => v[row] as u64,
+            ColumnData::U64(v) => v[row],
+            ColumnData::F64(v) => v[row].to_bits(),
+            ColumnData::Str { codes, .. } => u64::from(codes[row]),
+            ColumnData::Mixed(_) => row as u64,
+        })
+    }
+
+    /// Where `row`'s value is among the present ones, if it has one.
+    fn rank(&self, row: usize) -> Option<usize> {
+        if !self.present.get(row) {
+            return None;
+        }
+        let below = self.present.words[row / 64] & ((1 << (row % 64)) - 1);
+        Some((self.ranks[row / 64] + below.count_ones()) as usize)
     }
 
     /// Heap bytes the column holds.

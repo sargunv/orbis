@@ -195,15 +195,34 @@ fn split_features(layer: &Layer, features: Vec<u32>, split_parts: bool) -> Split
     }
 }
 
+/// Per tile layer of a frame, the feature groups its style layers' filters
+/// share (`orb_expr::FilterGroups`).
+#[derive(Default)]
+struct Groups<'f>(Vec<(&'f Layer, orb_expr::FilterGroups)>);
+
+impl<'f> Groups<'f> {
+    fn of(&mut self, layer: &'f Layer) -> &mut orb_expr::FilterGroups {
+        let at = match self.0.iter().position(|(l, _)| std::ptr::eq(*l, layer)) {
+            Some(at) => at,
+            None => {
+                self.0.push((layer, orb_expr::FilterGroups::default()));
+                self.0.len() - 1
+            }
+        };
+        &mut self.0[at].1
+    }
+}
+
 fn features(
     plan: &StylePlan,
     node: &NodePlan,
     layer: &Layer,
     (zoom, canonical): (f64, Option<orb_expr::CanonicalTile>),
+    groups: &mut orb_expr::FilterGroups,
 ) -> Vec<u32> {
     let style_layer = &plan.style.layers[node.layer];
     let mut features: Vec<u32> = match &style_layer.filter {
-        Some(filter) => filter.select(layer, zoom, canonical),
+        Some(filter) => filter.select_grouped(layer, zoom, canonical, groups),
         None => (0..layer.len() as u32).collect(),
     };
     // GL JS's buckets draw features by their sort key.
@@ -352,13 +371,15 @@ fn in_ancestor(
 
 /// Lays out the symbol layers of `source` the selection needs. Returns the
 /// glyph range URLs this worker must fetch first, if any.
-fn build_symbols(
-    frame: &TileFrame,
+#[allow(clippy::too_many_arguments)]
+fn build_symbols<'f>(
+    frame: &'f TileFrame,
     plan: &StylePlan,
     source: usize,
     (zoom, canonical): (f64, Option<orb_expr::CanonicalTile>),
     select: Select<'_>,
     symbols: Symbols<'_>,
+    groups: &mut Groups<'f>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<(u32, SymbolBuild)>, Vec<String>> {
     let template = plan.style.glyphs.as_deref();
@@ -382,8 +403,15 @@ fn build_symbols(
         };
         // Labels lay out where GL JS lays them out (`Layer::labelled`).
         let (labelled, ancestor) = layer.labelled();
+        // A layer made for this node groups its features alone.
+        let mut own = orb_expr::FilterGroups::default();
+        let node_groups = match &labelled {
+            Cow::Borrowed(layer) => groups.of(layer),
+            Cow::Owned(_) => &mut own,
+        };
         let layer = &*labelled;
-        let features = features(plan, node, layer, (zoom, in_ancestor(canonical, ancestor)));
+        let at = (zoom, in_ancestor(canonical, ancestor));
+        let features = features(plan, node, layer, at, node_groups);
         if features.is_empty() {
             continue;
         }
@@ -461,6 +489,7 @@ pub(crate) fn build(
     select: Select<'_>,
     symbols: Symbols<'_>,
 ) -> Result<TileBuild, Vec<String>> {
+    let mut groups = Groups::default();
     let mut build = TileBuild {
         revision: plan.revision,
         rows_only: select.rows_only,
@@ -473,6 +502,7 @@ pub(crate) fn build(
         (zoom, canonical),
         select,
         symbols,
+        &mut groups,
         &mut build.warnings,
     )?;
     for (_, symbols) in &mut build.symbols {
@@ -503,7 +533,7 @@ pub(crate) fn build(
         };
         // Where `within` and `distance` find the features' geometry.
         let geometry_tile = in_ancestor(canonical, ancestor);
-        let selected = features(plan, node, layer, (zoom, geometry_tile));
+        let selected = features(plan, node, layer, (zoom, geometry_tile), groups.of(layer));
         if selected.is_empty() {
             continue;
         }

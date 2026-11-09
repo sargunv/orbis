@@ -40,7 +40,7 @@ use std::fmt;
 pub use color::Color;
 pub use context::{CanonicalTile, EvaluationContext, FeatureGeometry};
 pub use eval::{EvalError, interpolation_factor};
-pub use filter::Filter;
+pub use filter::{Filter, FilterGroups};
 pub use ir::Interpolation;
 pub use locale::{BUILTIN_LOCALE, BuiltinLocale, Collator, Locale, NumberFormat};
 pub use property::{Kind, PropertyExpression, PropertySpec, PropertyType, ZoomCurve};
