@@ -443,7 +443,8 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
 
 /// A view at rest over the Alps stays put: frames after idle cover the
 /// same terrain tiles and read the same DEM tiles, so they pad no DEM
-/// borders, write no rows and run one cull. Here the DEM tile under one
+/// borders, write no rows, keep the cull's candidates and run one cull,
+/// from the first frame after idle on. Here the DEM tile under one
 /// cover tile culls that tile, which must not let go of the DEM tile and
 /// bring the cover tile back on the next frame.
 #[test]
@@ -461,6 +462,7 @@ fn an_alpine_view_at_rest_redoes_nothing() {
         assert_eq!(report.frame.prepared, 0, "frame {frame}");
         assert_eq!(report.frame.placements_written, 0, "frame {frame}");
         assert_eq!(report.frame.dispatches, 1, "frame {frame}");
+        assert!(!report.frame.candidates_rebuilt, "frame {frame}");
     }
 }
 
