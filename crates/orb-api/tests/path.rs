@@ -513,6 +513,103 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     assert_within("terrain", both_ways(&style, start, end, 30), 1);
 }
 
+/// Houses on a hillside each stand on the ground under them: a row of
+/// them climbs a slope 300 m high across a few overzoom slices, each house
+/// a block of two (OpenMapTiles merges a block's buildings into one
+/// multipolygon) in a hue of its own, and every one shows, looked at from
+/// downhill and from uphill. Houses raised by one elevation per tile sink
+/// into the hill above that point.
+#[test]
+fn houses_on_a_slope_stand_on_the_ground() {
+    const HOUSES: usize = 12;
+    let (lat, west) = (35.68, 139.745);
+    // A plane rising east, 3,000 m a tenth of a degree: a third.
+    let (slope, _dem) = dem("slope", (139.6, 35.6, 139.9, 35.76), 12, |lon, _| {
+        (lon - 139.6) * 30_000.0
+    });
+    let square = |w: f64, s: f64| {
+        let (e, n) = (w + 0.00013, s + 0.0003);
+        format!("[[[{w}, {s}], [{e}, {s}], [{e}, {n}], [{w}, {n}], [{w}, {s}]]]")
+    };
+    let houses: Vec<String> = (0..HOUSES)
+        .map(|i| {
+            let w = west + 0.001 * i as f64;
+            format!(
+                r#"{{"type": "Feature", "properties": {{"hue": {}}}, "geometry":
+                    {{"type": "MultiPolygon", "coordinates": [{}, {}]}}}}"#,
+                30 * i,
+                square(w, lat),
+                square(w + 0.00017, lat),
+            )
+        })
+        .collect();
+    let style = format!(
+        r##"{{"version": 8,
+            "sources": {{{slope}
+              "houses": {{"type": "geojson", "maxzoom": 12, "data":
+                {{"type": "FeatureCollection", "features": [{}]}}}}}},
+            "terrain": {{"source": "slope"}},
+            "layers": [
+              {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+              {{"id": "houses", "type": "fill-extrusion", "source": "houses",
+                "paint": {{"fill-extrusion-height": 15,
+                           "fill-extrusion-color": ["to-color", ["concat",
+                             "hsl(", ["to-string", ["get", "hue"]], ", 100%, 50%)"]]}}}}]}}"##,
+        houses.join(", "),
+    );
+    // How many pixels show each house's hue: saturated pixels within 10°
+    // of it, whatever the light makes of its faces.
+    let shown = |pixels: &[u8]| {
+        let mut count = [0u32; HOUSES];
+        for p in pixels.chunks(4) {
+            let [r, g, b] = [p[0], p[1], p[2]].map(|c| f64::from(c) / 255.0);
+            let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+            if hi - lo < 0.3 {
+                continue;
+            }
+            let d = hi - lo;
+            let hue = 60.0
+                * if hi == r {
+                    ((g - b) / d).rem_euclid(6.0)
+                } else if hi == g {
+                    (b - r) / d + 2.0
+                } else {
+                    (r - g) / d + 4.0
+                };
+            let i = (hue / 30.0).round() as usize % HOUSES;
+            if (hue - 30.0 * (hue / 30.0).round()).abs() < 10.0 {
+                count[i] += 1;
+            }
+        }
+        count
+    };
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let middle = west + 0.0005 * (HOUSES - 1) as f64;
+    for (name, at) in [
+        (
+            "downhill",
+            (Geodetic::new(middle, lat - 0.003), 15.2, 0.0, 60.0),
+        ),
+        (
+            "uphill",
+            (Geodetic::new(middle, lat + 0.003), 15.2, 180.0, 60.0),
+        ),
+    ] {
+        let (pixels, _) = fresh_at(&runtime, &mut target, &style, at);
+        let count = shown(&pixels);
+        if count.iter().any(|&n| n < 20) {
+            let path = std::env::temp_dir()
+                .join(format!("orb-path-slope-{name}-{}.png", std::process::id()));
+            write_png(&path, WIDTH, HEIGHT, &pixels);
+            panic!(
+                "{name}: pixels per house {count:?}, some sunk or missing: {}",
+                path.display()
+            );
+        }
+    }
+}
+
 /// Ridges against the sky over the Alps: a turn and tilt to a pitch of
 /// 75° draws the silhouettes a fresh map at rest draws.
 #[test]
