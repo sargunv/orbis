@@ -518,7 +518,8 @@ impl Op {
 pub(crate) struct Ir {
     pub nodes: Vec<Node>,
     /// Each node's index path in the source expression (`[2][1]`), for
-    /// runtime error messages.
+    /// the conformance runner's error messages.
+    #[cfg(any(test, feature = "conformance"))]
     pub paths: Vec<Box<str>>,
     /// Literal property keys, by `KeyId`.
     pub keys: Vec<Box<str>>,
@@ -529,7 +530,10 @@ impl Ir {
         let mut deps = op.own_deps();
         op.for_each_child(|c| deps = deps | self.nodes[c as usize].deps);
         self.nodes.push(Node { op, ty, deps });
+        #[cfg(any(test, feature = "conformance"))]
         self.paths.push(path.into());
+        #[cfg(not(any(test, feature = "conformance")))]
+        let _ = path;
         (self.nodes.len() - 1) as NodeId
     }
 
@@ -572,6 +576,7 @@ impl Ir {
             ty: node.ty.clone(),
             deps: node.deps,
         });
+        #[cfg(any(test, feature = "conformance"))]
         out.paths.push(self.paths[id as usize].clone());
         let new = (out.nodes.len() - 1) as NodeId;
         map[id as usize] = new;
