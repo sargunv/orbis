@@ -16,17 +16,32 @@ pub struct Bound<'a> {
     layer: &'a Layer,
     columns: Vec<Option<&'a Column>>,
     images: &'a [String],
+    /// Whether the expression reads the feature's geometry (`within`,
+    /// `distance`).
+    reads_geometry: bool,
+    /// Where the layer's tile is, for expressions that read geometry.
+    tile: Option<crate::CanonicalTile>,
 }
 
 impl<'a> Bound<'a> {
-    pub(crate) fn new(ir: &'a Ir, layer: &'a Layer) -> Self {
+    pub(crate) fn new(ir: &'a Ir, layer: &'a Layer, reads_geometry: bool) -> Self {
         let columns = ir.keys.iter().map(|k| layer.property(k)).collect();
         Self {
             ir,
             layer,
             columns,
             images: &[],
+            reads_geometry,
+            tile: None,
         }
+    }
+
+    /// The canonical tile the layer's geometry is in, which `within` and
+    /// `distance` read when evaluated with [`evaluate`](Self::evaluate);
+    /// without one they find no geometry, as in a filter.
+    pub fn with_tile(mut self, tile: Option<crate::CanonicalTile>) -> Self {
+        self.tile = tile;
+        self
     }
 
     /// The images `image` expressions find available when evaluated with
@@ -38,6 +53,26 @@ impl<'a> Bound<'a> {
 
     /// Evaluates the expression for feature `row` at `zoom`.
     pub fn evaluate(&self, zoom: f64, row: usize) -> Result<Value<'a>, EvalError> {
+        if let Some(tile) = self.tile.filter(|_| self.reads_geometry) {
+            let geometry = crate::FeatureGeometry::from_layer(self.layer, row, tile);
+            let context = crate::EvaluationContext {
+                zoom,
+                available_images: self.images,
+                geometry: Some(&geometry),
+                ..crate::EvaluationContext::default()
+            };
+            return Evaluator {
+                context: &context,
+                ir: self.ir,
+                feature: Some(&Row {
+                    layer: self.layer,
+                    columns: &self.columns,
+                    row,
+                }),
+            }
+            .eval_root()
+            .map(Value::into_owned);
+        }
         self.evaluate_with(
             &crate::EvaluationContext {
                 zoom,

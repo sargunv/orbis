@@ -186,7 +186,7 @@ impl Expression {
 
     /// Binds the expression to a tile layer for evaluation per feature.
     pub fn bind<'a>(&'a self, layer: &'a orb_tile::Layer) -> Bound<'a> {
-        Bound::new(&self.ir, layer)
+        Bound::new(&self.ir, layer, self.reads_geometry())
     }
 
     /// The path, within the expression, of the operator that failed.

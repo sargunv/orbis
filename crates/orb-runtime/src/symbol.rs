@@ -279,6 +279,7 @@ pub(crate) fn prepare(
     zoom: f64,
     ids: Option<&orb_tile::Column>,
     images: &[String],
+    tile: Option<orb_expr::CanonicalTile>,
 ) -> Prepared {
     let style = layer_layout(symbol, zoom);
     let l = symbol;
@@ -298,26 +299,47 @@ pub(crate) fn prepare(
             Kind::Source | Kind::Composite
         );
 
-    let text_field = l.get(orb_style::TEXT_FIELD).bind_with_images(layer, images);
-    let text_transform = l.get(orb_style::TEXT_TRANSFORM).bind(layer);
-    let text_font = l.get(orb_style::TEXT_FONT).bind(layer);
-    let icon_image = l.get(orb_style::ICON_IMAGE).bind_with_images(layer, images);
-    let sort_key = l.get(orb_style::SYMBOL_SORT_KEY).bind(layer);
-    let text_size = l.get(orb_style::TEXT_SIZE).bind(layer);
-    let icon_size = l.get(orb_style::ICON_SIZE).bind(layer);
-    let letter_spacing = l.get(orb_style::TEXT_LETTER_SPACING).bind(layer);
-    let text_anchor = l.get(orb_style::TEXT_ANCHOR).bind(layer);
-    let text_justify = l.get(orb_style::TEXT_JUSTIFY).bind(layer);
-    let max_width = l.get(orb_style::TEXT_MAX_WIDTH).bind(layer);
-    let text_offset = l.get(orb_style::TEXT_OFFSET).bind(layer);
-    let radial_offset = l.get(orb_style::TEXT_RADIAL_OFFSET).bind(layer);
-    let anchor_offset = l.get(orb_style::TEXT_VARIABLE_ANCHOR_OFFSET).bind(layer);
-    let text_rotate = l.get(orb_style::TEXT_ROTATE).bind(layer);
-    let icon_offset = l.get(orb_style::ICON_OFFSET).bind(layer);
-    let icon_anchor = l.get(orb_style::ICON_ANCHOR).bind(layer);
-    let icon_rotate = l.get(orb_style::ICON_ROTATE).bind(layer);
-    let icon_padding = l.get(orb_style::ICON_PADDING).bind(layer);
-    let height_offset = l.get(orb_style::SYMBOL_HEIGHT_OFFSET).bind(layer);
+    let text_field = l
+        .get(orb_style::TEXT_FIELD)
+        .bind_with_images(layer, images)
+        .with_tile(tile);
+    let text_transform = l.get(orb_style::TEXT_TRANSFORM).bind(layer).with_tile(tile);
+    let text_font = l.get(orb_style::TEXT_FONT).bind(layer).with_tile(tile);
+    let icon_image = l
+        .get(orb_style::ICON_IMAGE)
+        .bind_with_images(layer, images)
+        .with_tile(tile);
+    let sort_key = l
+        .get(orb_style::SYMBOL_SORT_KEY)
+        .bind(layer)
+        .with_tile(tile);
+    let text_size = l.get(orb_style::TEXT_SIZE).bind(layer).with_tile(tile);
+    let icon_size = l.get(orb_style::ICON_SIZE).bind(layer).with_tile(tile);
+    let letter_spacing = l
+        .get(orb_style::TEXT_LETTER_SPACING)
+        .bind(layer)
+        .with_tile(tile);
+    let text_anchor = l.get(orb_style::TEXT_ANCHOR).bind(layer).with_tile(tile);
+    let text_justify = l.get(orb_style::TEXT_JUSTIFY).bind(layer).with_tile(tile);
+    let max_width = l.get(orb_style::TEXT_MAX_WIDTH).bind(layer).with_tile(tile);
+    let text_offset = l.get(orb_style::TEXT_OFFSET).bind(layer).with_tile(tile);
+    let radial_offset = l
+        .get(orb_style::TEXT_RADIAL_OFFSET)
+        .bind(layer)
+        .with_tile(tile);
+    let anchor_offset = l
+        .get(orb_style::TEXT_VARIABLE_ANCHOR_OFFSET)
+        .bind(layer)
+        .with_tile(tile);
+    let text_rotate = l.get(orb_style::TEXT_ROTATE).bind(layer).with_tile(tile);
+    let icon_offset = l.get(orb_style::ICON_OFFSET).bind(layer).with_tile(tile);
+    let icon_anchor = l.get(orb_style::ICON_ANCHOR).bind(layer).with_tile(tile);
+    let icon_rotate = l.get(orb_style::ICON_ROTATE).bind(layer).with_tile(tile);
+    let icon_padding = l.get(orb_style::ICON_PADDING).bind(layer).with_tile(tile);
+    let height_offset = l
+        .get(orb_style::SYMBOL_HEIGHT_OFFSET)
+        .bind(layer)
+        .with_tile(tile);
 
     let sizes = |bound: &orb_style::BoundProperty<'_, f64>, kind: SizeKind, row: usize| {
         let stops = match kind {
@@ -647,7 +669,7 @@ mod tests {
             let ids = case
                 .get("promoteId")
                 .and_then(|p| layer.property(p.as_str().unwrap()));
-            let prepared = prepare(symbol, layer, &features, zoom, ids, &[]);
+            let prepared = prepare(symbol, layer, &features, zoom, ids, &[], None);
 
             let g = &golden["layer"];
             let s = &prepared.style;

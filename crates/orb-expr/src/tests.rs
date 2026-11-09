@@ -419,6 +419,12 @@ fn bound_geometry_uses_layer_extent_and_tile_location() {
         Ok(Value::Bool(true))
     );
     assert_eq!(expr.bind(&layer).evaluate(0.0, 0), Ok(Value::Bool(false)));
+    // Bound to its tile, a row finds its geometry as paint and layout
+    // evaluate it.
+    assert_eq!(
+        expr.bind(&layer).with_tile(Some(tile)).evaluate(0.0, 0),
+        Ok(Value::Bool(true))
+    );
 }
 
 #[test]

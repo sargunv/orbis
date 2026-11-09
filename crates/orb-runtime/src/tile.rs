@@ -373,7 +373,8 @@ fn build_symbols(
         }
         let ids = stable_ids(source_def, layer);
         let images = symbols.icons.names();
-        let p = crate::symbol::prepare(symbol, layer, &features, zoom, ids, images);
+        let tile = in_ancestor(canonical, ancestor);
+        let p = crate::symbol::prepare(symbol, layer, &features, zoom, ids, images, tile);
         let faces = &plan.style.font_faces;
         for url in symbols.glyphs.missing(&p.requests, template, policy, faces) {
             if !missing.contains(&url) {
@@ -497,6 +498,13 @@ pub(crate) fn build(
             split_features(layer, selected)
         };
         let tile_layer = layer;
+        // Where `within` and `distance` find the features' geometry.
+        let geometry_tile = match layer.ancestor_labels() {
+            Some((_, ancestor)) if node.family.is_symbol() => {
+                in_ancestor(canonical, Some(ancestor))
+            }
+            _ => canonical,
+        };
         let tile_promote = match &source_def.kind {
             SourceKind::Vector(v) => v
                 .promote_id
@@ -579,20 +587,20 @@ pub(crate) fn build(
                     // magnitude for culling margins (none for colours).
                     let value: Box<dyn Fn(f64, usize) -> (u32, f32)> = match property {
                         PaintProperty::Color(p) => {
-                            let b = p.bind(layer);
+                            let b = p.bind(layer).with_tile(geometry_tile);
                             Box::new(move |z, f| {
                                 (pack_color(b.evaluate(z, f).premultiplied()), 0.0)
                             })
                         }
                         PaintProperty::OptionalColor(p) => {
-                            let b = p.bind(layer);
+                            let b = p.bind(layer).with_tile(geometry_tile);
                             Box::new(move |z, f| {
                                 let c = b.evaluate(z, f).map_or([0.0; 4], |c| c.premultiplied());
                                 (pack_color(c), 0.0)
                             })
                         }
                         PaintProperty::Number(p) => {
-                            let b = p.bind(layer);
+                            let b = p.bind(layer).with_tile(geometry_tile);
                             Box::new(move |z, f| {
                                 let v = b.evaluate(z, f);
                                 (v.to_bits(), v)
