@@ -342,7 +342,9 @@ impl Map {
             let Some(image) = resident.image.as_mut() else {
                 continue;
             };
-            if image.globe == globe && image.warped.as_ref().map_or([0; 4], |w| w.edges) == edges {
+            if image.globe == Some(globe)
+                && image.warped.as_ref().map_or([0; 4], |w| w.edges) == edges
+            {
                 continue;
             }
             let Ok(mesh) = image_mesh(
@@ -355,7 +357,6 @@ impl Map {
             ) else {
                 continue;
             };
-            image.globe = globe;
             image.warped = mesh;
             // A warped image draws through planar patches only on a globe
             // surface; elsewhere through its warp's mesh.
@@ -365,10 +366,9 @@ impl Map {
             let patches = resident.series.as_deref().map(series_patches);
             let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
             let mesh = image.warped.as_ref().map(|w| Arc::clone(&w.mesh));
-            if renderer
-                .set_image_mesh(gpu, resident.gpu, mesh, patches)
-                .is_err()
-            {
+            let set = renderer.set_image_mesh(gpu, resident.gpu, mesh, patches);
+            image.globe = set.is_ok().then_some(globe);
+            if set.is_err() {
                 self.warnings
                     .push("out of scene memory; an image layer misses tiles".into());
             }

@@ -434,7 +434,9 @@ impl Renderer {
     }
 
     /// Gives an image tile another mesh (a globe came or went): its quads
-    /// in every node, and its patches.
+    /// in every node, and its patches. The pools grow, within their
+    /// limits, for a finer mesh than the old. All or nothing: on `Err`
+    /// the tile holds no quads and draws nothing until a mesh fits.
     pub fn set_image_mesh(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -449,19 +451,33 @@ impl Renderer {
             self.scene.remove_mesh(id);
         }
         self.scene.remove_warp(std::mem::take(&mut entry.warp));
-        let image = entry.image.as_mut().expect("image tiles hold an image");
-        image.mesh = mesh;
         let nodes: Vec<u32> = (0..self.nodes.len() as u32)
             .filter(|&i| self.nodes[i as usize].source == Some(entry.key.source))
             .collect();
-        let mut result = nodes
-            .iter()
-            .try_for_each(|&node| self.add_image_node(gpu, &mut entry, node));
+        let mut sizes = vec![image_mesh_size(mesh.as_deref()); nodes.len()];
+        sizes.extend(patches.map(|(_, words)| MeshSize {
+            props: words.len() as u32,
+            ..MeshSize::default()
+        }));
+        let image = entry.image.as_mut().expect("image tiles hold an image");
+        image.mesh = mesh;
+        let mut result = match self.fits(&sizes) || self.grow_for(gpu, &sizes) {
+            true => nodes
+                .iter()
+                .try_for_each(|&node| self.add_image_node(gpu, &mut entry, node)),
+            false => Err(OutOfSpace),
+        };
         if let (Ok(()), Some((cells, patches))) = (&result, patches) {
             result = self
                 .scene
                 .add_warp(gpu, cells, patches)
                 .map(|warp| entry.warp = warp);
+        }
+        if result.is_err() {
+            // Quads without their patches would draw off the surface.
+            for (_, id) in entry.meshes.drain(..) {
+                self.scene.remove_mesh(id);
+            }
         }
         self.tiles.entries[tile.0 as usize] = Some(entry);
         result
@@ -900,7 +916,19 @@ impl Renderer {
             ) {
                 crate::image::Images::bind_page(image, page);
             }
-            for tile in self.tiles.of_source(source) {
+            // A new node of a source draws its resident tiles: room for
+            // their quads first.
+            let tiles = self.tiles.of_source(source);
+            let sizes: Vec<MeshSize> = (tiles.iter())
+                .map(|tile| {
+                    let image = self.tiles.entry(*tile).image.as_ref();
+                    image_mesh_size(image.and_then(|i| i.mesh.as_deref()))
+                })
+                .collect();
+            if !self.fits(&sizes) {
+                self.grow_for(gpu, &sizes);
+            }
+            for tile in tiles {
                 let mut entry = self.tiles.entries[tile.0 as usize]
                     .take()
                     .expect("indexed tiles are resident");

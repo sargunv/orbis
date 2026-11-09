@@ -601,7 +601,10 @@ impl Map {
         if fade_ms > 0.0 {
             self.image_fades_until = self.image_fades_until.max(now + fade_ms);
         }
-        resident.image = image.map(|(_, warped)| ResidentImage { warped, globe });
+        resident.image = image.map(|(_, warped)| ResidentImage {
+            warped,
+            globe: Some(globe),
+        });
         resident.series = series;
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);

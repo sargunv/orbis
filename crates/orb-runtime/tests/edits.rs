@@ -709,3 +709,68 @@ fn a_move_after_a_projection_edit_runs() {
     settle(&mut map);
     assert!((map.map.zoom() - target.zoom.unwrap()).abs() < 1e-6);
 }
+
+/// Image tiles take the mesh of the surface they draw on, however the map
+/// got there: a style URL that leaves an Equal Earth low-zoom plane, with
+/// a globe edit on its `styleload`, regrids the resident tiles for the
+/// sphere. Their finer meshes grow the scene's pools; a tile left without
+/// room drew nothing (or, warped, its quads without their patches).
+#[test]
+fn image_tiles_regrid_for_a_globe_after_leaving_a_plane() {
+    let scratch = Scratch::new("regrid");
+    let tile = scratch.0.join("tile.png");
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 256, 256);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
+            .unwrap();
+    }
+    std::fs::write(&tile, png).unwrap();
+    let style = |projection: &str| {
+        format!(
+            r##"{{"version": 8, {projection}
+                "sources": {{"imagery": {{"type": "raster", "tiles": ["file://{}"], "tileSize": 256}}}},
+                "layers": [{{"id": "bg", "type": "background", "paint": {{"background-color": "#f00"}}}},
+                    {{"id": "raster", "type": "raster", "source": "imagery",
+                      "paint": {{"raster-fade-duration": 0}}}}]}}"##,
+            tile.display()
+        )
+    };
+    let [plane, flat] = ["plane", "flat"].map(|name| scratch.0.join(format!("{name}.json")));
+    std::fs::write(&plane, style(r#""projection": {"type": "equal-earth"},"#)).unwrap();
+    std::fs::write(&flat, style("")).unwrap();
+    let mut map = Offscreen::new(
+        &Options {
+            style: Some(format!("file://{}", plane.display())),
+            encoding: "mvt".into(),
+            at: Some((orb_crs::Geodetic::new(0.0, 20.0), 1.5, 0.0, 0.0)),
+        },
+        Default::default(),
+    )
+    .unwrap();
+    map.map.set_previews(orb_style::Previews::ALL);
+    settle(&mut map);
+    assert!(map.map.surface().globe.is_some_and(|g| g.plane.is_some()));
+    map.map
+        .load_style_url(&format!("file://{}", flat.display()));
+    let started = Instant::now();
+    loop {
+        map.frame();
+        let events = map.map.take_events();
+        let warnings: Vec<_> = (events.iter())
+            .filter(|e| matches!(e, orb_runtime::MapEvent::Warning { .. }))
+            .collect();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        if (events.iter()).any(|e| matches!(e, orb_runtime::MapEvent::StyleLoad)) {
+            break;
+        }
+        assert!(started.elapsed().as_secs() < 30, "the style did not arrive");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    edit(&mut map, r#"[["setProjection", {"type": "globe"}]]"#);
+    assert_matches_fresh(&mut map);
+}

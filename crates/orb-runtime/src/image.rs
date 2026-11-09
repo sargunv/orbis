@@ -20,8 +20,10 @@ use crate::style::{NodePlan, StylePlan};
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResidentImage {
     pub(crate) warped: Option<Arc<Warped>>,
-    /// Whether the mesh is for a globe surface.
-    pub(crate) globe: bool,
+    /// Whether the mesh in the scene is for a globe surface, or `None`
+    /// while the scene holds none (it didn't fit): the next frame that
+    /// draws the tile tries again.
+    pub(crate) globe: Option<bool>,
 }
 
 /// A tile's warp mesh as its nodes draw it (`RasterWarp`).
