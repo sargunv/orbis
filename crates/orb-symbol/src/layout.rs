@@ -389,6 +389,41 @@ fn is_skipped(layer: &Layer, feature: &SymbolFeature, style: &LayerLayout, units
         })
 }
 
+/// Whether feature `index` of `layer` may have a label anchored in the
+/// tile, laid out with `placement` (in `ancestor`, for an overzoom slice
+/// laid out in it). Not for point labels of points all outside it, nor
+/// point and line-center labels of a line or polygon wholly to one side of
+/// it: their anchors (a polygon's pole, a line's first vertex or its
+/// middle) lie within its bounds, and GL JS drops anchors outside the
+/// tile. An overzoom slice laid out in its ancestor then shapes only the
+/// labels it may keep.
+pub fn may_anchor_in_tile(
+    layer: &Layer,
+    index: u32,
+    placement: Placement,
+    ancestor: Option<Ancestor>,
+) -> bool {
+    let units = Units::new(ancestor);
+    let index = index as usize;
+    if placement == Placement::Line {
+        return true;
+    }
+    let mut points = layer
+        .geometry(index)
+        .parts()
+        .flat_map(|part| part.rings().flatten().copied().collect::<Vec<_>>())
+        .map(|p| units.point(p, layer.extent()));
+    if layer.geometry_type(index) == GeometryType::Point {
+        return placement != Placement::Point || !points.all(is_outside_tile);
+    }
+    let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in points {
+        min = [min[0].min(p.x), min[1].min(p.y)];
+        max = [max[0].max(p.x), max[1].max(p.y)];
+    }
+    !(max[0] < 0.0 || max[1] < 0.0 || min[0] >= EXTENT || min[1] >= EXTENT)
+}
+
 fn is_outside_tile(p: Point) -> bool {
     p.x < 0.0 || p.x >= EXTENT || p.y < 0.0 || p.y >= EXTENT
 }
@@ -513,7 +548,7 @@ pub fn layout(
     let units = Units::new(tile.ancestor);
     let mut prepared: Vec<Prepared<'_>> = features
         .iter()
-        .filter(|f| !is_skipped(layer, f, style, units))
+        .filter(|f| may_anchor_in_tile(layer, f.index, style.placement, tile.ancestor))
         .map(|feature| Prepared {
             feature,
             geometry: load_geometry(layer, feature.index as usize, units),

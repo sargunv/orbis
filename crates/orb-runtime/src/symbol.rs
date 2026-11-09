@@ -170,14 +170,19 @@ pub(crate) fn size_kind(property: &PropertyRef<'_, f64>, zoom: f64) -> SizeKind 
     }
 }
 
-/// The layer-wide layout, after GL JS's `SymbolStyleLayer.recalculate`.
-fn layer_layout(symbol: &orb_style::Layer, zoom: f64) -> LayerLayout {
-    let l = symbol;
-    let placement = match l.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom) {
+/// A symbol layer's `symbol-placement` at `zoom`.
+pub(crate) fn placement(symbol: &orb_style::Layer, zoom: f64) -> Placement {
+    match symbol.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom) {
         orb_style::SymbolPlacement::Point => Placement::Point,
         orb_style::SymbolPlacement::Line => Placement::Line,
         orb_style::SymbolPlacement::LineCenter => Placement::LineCenter,
-    };
+    }
+}
+
+/// The layer-wide layout, after GL JS's `SymbolStyleLayer.recalculate`.
+fn layer_layout(symbol: &orb_style::Layer, zoom: f64) -> LayerLayout {
+    let l = symbol;
+    let placement = placement(symbol, zoom);
     let text_rotation_alignment = match l.get(orb_style::TEXT_ROTATION_ALIGNMENT).evaluate(zoom) {
         orb_style::TextRotationAlignment::Map => orb_symbol::Alignment::Map,
         orb_style::TextRotationAlignment::Viewport => orb_symbol::Alignment::Viewport,

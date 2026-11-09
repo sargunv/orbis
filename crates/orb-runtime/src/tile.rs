@@ -1,6 +1,7 @@
 //! The tile job: a decoded tile in, one mesh and property rows per render
 //! node out. Pure, so it runs on any job thread or worker.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use orb_layout::{Family, ImageKey, pack_color};
@@ -389,7 +390,17 @@ fn build_symbols(
         let ids = stable_ids(source_def, layer);
         let images = symbols.icons.names();
         let tile = in_ancestor(canonical, ancestor);
-        let p = crate::symbol::prepare(symbol, layer, &features, zoom, ids, images, tile);
+        // A slice laid out in its ancestor prepares only the labels it may
+        // keep, not each of its ancestor's.
+        let laid_out: Cow<'_, [u32]> = match ancestor {
+            Some(_) => {
+                let placement = crate::symbol::placement(symbol, zoom);
+                let may = |&f: &u32| orb_symbol::may_anchor_in_tile(layer, f, placement, ancestor);
+                Cow::Owned(features.iter().copied().filter(may).collect())
+            }
+            None => Cow::Borrowed(&features),
+        };
+        let p = crate::symbol::prepare(symbol, layer, &laid_out, zoom, ids, images, tile);
         let faces = &plan.style.font_faces;
         for url in symbols.glyphs.missing(&p.requests, template, policy, faces) {
             if !missing.contains(&url) {
