@@ -104,7 +104,6 @@ fn get_anchors_matches_gl_js() {
             num(&case["boxScale"]),
             num(&case["overscaling"]),
             Square::tile(8192.0),
-            None,
             &mut out,
         );
         let expected = case["out"].as_array().unwrap();

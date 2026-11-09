@@ -933,13 +933,9 @@ impl<'a> Builder<'a> {
                     |p| square.round(p),
                     &mut clipped,
                 );
-                // Laid out in an ancestor, the anchors that matter are the
-                // tile's and those near enough to keep a repeated label
-                // from it.
-                let window = self.tile.ancestor.map(|_| {
-                    let m = symbol_min_distance;
-                    [Point::new(-m, -m), Point::new(EXTENT + m, EXTENT + m)]
-                });
+                // Laid out in an ancestor, every anchor in it counts, not
+                // only the tile's: repeated labels block one another down a
+                // chain that can start far outside the tile.
                 let mut anchors = std::mem::take(&mut self.anchors);
                 for line in clipped.iter() {
                     anchors.clear();
@@ -952,7 +948,6 @@ impl<'a> Builder<'a> {
                         text_max_box_scale,
                         self.tile.overscaling * self.units.scale,
                         square,
-                        window,
                         &mut anchors,
                     );
                     let mut shared_line = None;

@@ -412,3 +412,52 @@ fn points_outside_the_tile_get_no_symbols_or_glyphs() {
     assert!(requests.is_empty());
     assert!(run(&layer, &features, &style).is_empty());
 }
+
+/// Same-text labels block one another down a chain (GL JS
+/// `anchorIsTooClose`), so a slice laid out in its ancestor keeps the
+/// ancestor's labels only by following the whole chain, from anchors far
+/// outside it too.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn slices_follow_repeated_labels_across_their_ancestor() {
+    // Short pieces of one road, each labelled at its middle, closer
+    // together than the repeat distance (1000 units at overscaling 2):
+    // every other one is kept.
+    let pieces: Vec<Vec<[i32; 2]>> = (0..10)
+        .map(|k| vec![[50 + 800 * k, 3000], [350 + 800 * k, 3000]])
+        .collect();
+    let layer = lines(&pieces.iter().map(Vec::as_slice).collect::<Vec<_>>());
+    let features: Vec<_> = (0..10).map(|k| feature(k, "AB")).collect();
+    let style = line_style();
+    let glyphs = glyphs(&layer, &features, &style);
+    let images = TileImages::default();
+    let lay = |overscaling, ancestor| {
+        let tile = TileParams {
+            source_layer: layer.name(),
+            overscaling,
+            pixel_ratio: 1.0,
+            ancestor,
+        };
+        let context = LayoutContext {
+            glyphs: &glyphs,
+            images: &images,
+            words: None,
+        };
+        let bucket = layout(&layer, &features, &style, tile, context);
+        bucket
+            .instances
+            .iter()
+            .map(|i| i.feature)
+            .collect::<Vec<_>>()
+    };
+    let whole = lay(2.0, None);
+    assert_eq!(whole, [0, 2, 4, 6, 8]);
+    let mut sliced: Vec<u32> = (0..4)
+        .flat_map(|c| {
+            let cell = [c % 2, c / 2];
+            lay(1.0, Some(orb_tile::Ancestor { scale: 2, cell }))
+        })
+        .collect();
+    sliced.sort_unstable();
+    assert_eq!(sliced, whole);
+}

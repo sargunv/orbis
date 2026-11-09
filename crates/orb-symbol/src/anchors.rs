@@ -150,9 +150,7 @@ pub(crate) fn center_anchor(
 }
 
 /// Anchors every `spacing` along the line where the label fits and its
-/// corners stay under `max_angle` (GL JS `getAnchors`), in `square`. Those
-/// outside `window` (`[min, max]`), if there is one, are left out as if
-/// dropped afterwards.
+/// corners stay under `max_angle` (GL JS `getAnchors`), in `square`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn line_anchors(
     line: &[Point],
@@ -163,7 +161,6 @@ pub(crate) fn line_anchors(
     box_scale: f64,
     overscaling: f64,
     square: Square,
-    window: Option<[Point; 2]>,
     out: &mut Vec<Anchor>,
 ) {
     let angle_window_size = label.angle_window_size(glyph_size, box_scale);
@@ -191,7 +188,6 @@ pub(crate) fn line_anchors(
         label_length,
         is_line_continued,
         square,
-        window,
     };
     sample.run(offset, false, out);
 }
@@ -204,14 +200,11 @@ struct Resample<'a> {
     label_length: f64,
     is_line_continued: bool,
     square: Square,
-    window: Option<[Point; 2]>,
 }
 
 impl Resample<'_> {
     fn run(&self, offset: f64, place_at_middle: bool, out: &mut Vec<Anchor>) {
-        // Whether the line has an anchor, in the window or not: past the
-        // first, those outside it aren't checked.
-        let mut placed = false;
+        let start = out.len();
         let half_label_length = self.label_length / 2.0;
         let line_length = line_length(self.line);
         let mut distance = 0.0;
@@ -232,15 +225,8 @@ impl Resample<'_> {
                     && marked_distance - half_label_length >= 0.0
                     && marked_distance + half_label_length <= line_length
                 {
-                    let point = self.square.round(Point::new(x, y));
-                    let wanted = self.window.is_none_or(|[lo, hi]| {
-                        (lo.x..=hi.x).contains(&point.x) && (lo.y..=hi.y).contains(&point.y)
-                    });
-                    if placed && !wanted {
-                        continue;
-                    }
                     let anchor = Anchor {
-                        point,
+                        point: self.square.round(Point::new(x, y)),
                         angle,
                         segment: Some(i),
                     };
@@ -253,17 +239,14 @@ impl Resample<'_> {
                             self.max_angle,
                         )
                     {
-                        placed = true;
-                        if wanted {
-                            out.push(anchor);
-                        }
+                        out.push(anchor);
                     }
                 }
             }
             distance += segment_dist;
         }
 
-        if !place_at_middle && !placed && !self.is_line_continued {
+        if !place_at_middle && out.len() == start && !self.is_line_continued {
             self.run(distance / 2.0, true, out);
         }
     }
