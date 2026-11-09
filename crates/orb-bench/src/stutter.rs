@@ -476,6 +476,8 @@ impl StutterReport {
             writeln!(out, "- style: {}", p.style)?;
             write_shares(out, p)?;
             writeln!(out)?;
+            write_passes(out, p)?;
+            writeln!(out)?;
             write_worst(out, p)?;
             writeln!(out)?;
             write_histogram(out, p)?;
@@ -537,6 +539,45 @@ fn write_share(
         "- the {frames} frames over 16.7 ms of {what} spent it on: {}",
         shares.join(", ")
     )
+}
+
+/// Per GPU pass label, the frames it ran in and its time per frame: the
+/// path's total, p50, p99 and max over those frames. Totals compare runs
+/// whose tiles arrived in other frames.
+fn write_passes(out: &mut String, p: &PathResult) -> std::fmt::Result {
+    let mut labels: Vec<&str> = Vec::new();
+    for (label, _) in p.frames.iter().flat_map(|f| &f.passes) {
+        if !labels.contains(&label.as_str()) {
+            labels.push(label);
+        }
+    }
+    if labels.is_empty() {
+        return Ok(());
+    }
+    let mut per_label: Vec<(&str, Vec<Duration>)> = (labels.into_iter())
+        .map(|label| {
+            let times = p
+                .frames
+                .iter()
+                .filter_map(|f| (f.passes.iter().find(|(l, _)| l == label)).map(|&(_, d)| d));
+            (label, sorted(times))
+        })
+        .collect();
+    per_label.sort_by_key(|(_, t)| std::cmp::Reverse(t.iter().sum::<Duration>()));
+    writeln!(out, "| GPU pass | frames | total | p50 | p99 | max |")?;
+    writeln!(out, "|---|---|---|---|---|---|")?;
+    for (label, times) in per_label {
+        writeln!(
+            out,
+            "| {label} | {} | {:.1} | {} | {} | {} |",
+            times.len(),
+            times.iter().sum::<Duration>().as_secs_f64() * 1000.0,
+            ms(percentile(&times, 0.5)),
+            ms(percentile(&times, 0.99)),
+            ms(percentile(&times, 1.0)),
+        )?;
+    }
+    Ok(())
 }
 
 /// The slowest frames, by what a display waits for, with their stages.
