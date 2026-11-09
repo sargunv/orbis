@@ -330,12 +330,13 @@ async function edits(browser, server) {
   assert.ok(before > 0 && after > 0, `labels before the trap ${before}, after ${after}`);
   console.log(`edits: placement worker trapped and replaced; ${before} → ${after} labels`);
 
-  // Job workers that trap are replaced, and the new ones have the style
-  // with the app's edits: tiles of a new view load and draw, the grid's
-  // among them.
-  await page.evaluate(() => globalThis.orbis.trapJobWorkers());
-  await page.waitForTimeout(100);
+  // Job workers that trap while a new view loads are replaced, and the
+  // new ones have the style with the app's edits: the loads lost go again,
+  // and the view's tiles draw without errors, the grid's among them.
   await page.evaluate(() => globalThis.orbis.map.camera.jumpTo({ center: [139.741, 35.6835], zoom: 16.2 }));
+  await page.waitForFunction(() => document.getElementById("app").dataset.map !== "idle");
+  await page.waitForTimeout(20);
+  await page.evaluate(() => globalThis.orbis.trapJobWorkers());
   await page.waitForTimeout(50);
   await idle();
   const drawn = await page.evaluate(async () => {

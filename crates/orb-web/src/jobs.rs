@@ -12,13 +12,13 @@
 //! A tile, its relayouts and its queries go to job worker
 //! `hash(source, tile) mod N`, which has its data; a glyph unit to its
 //! owner worker. A worker that is lost (its wasm trapped, or it died) fails
-//! the requests it had, which the map retries. The page puts another in its
-//! place, which this sends the style; or, past the page's limit, its share
-//! goes to the next worker on. A tile that was loading on a lost worker is
-//! a suspect: its next load goes alone, with no other suspect in flight, so
-//! a loss then is its own. A suspect lost again is quarantined: it loads as
-//! missing, so its ancestor stands in, rather than take down a worker each
-//! time it is retried.
+//! the queries and rasters it had, which the map retries. The page puts
+//! another in its place, which this sends the style; or, past the page's
+//! limit, its share goes to the next worker on. The loads it had go again
+//! at once, as suspects: one at a time, with no other suspect in flight, so
+//! a loss then is likely its own. A suspect lost again is quarantined: it
+//! loads as missing, so its ancestor stands in, rather than take down a
+//! worker each time it is loaded.
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -74,9 +74,9 @@ struct State {
     rasters: HashMap<u32, RasterDone>,
     features: HashMap<u32, orb_runtime::FeaturesDone>,
     answers: HashMap<u32, orb_runtime::QueryDone>,
-    /// The worker each request went to, until it answers, and the tile a
-    /// load is for.
-    sent_to: HashMap<u32, (u32, Option<LoadKey>)>,
+    /// The worker each request went to, until it answers, and a load's
+    /// request, to send again if the worker is lost.
+    sent_to: HashMap<u32, (u32, Option<TileRequest>)>,
     /// Tiles whose loads were lost with a worker, by how many times: one
     /// is a suspect, two quarantine it.
     lost_loads: HashMap<LoadKey, u8>,
@@ -95,6 +95,10 @@ struct State {
 
 /// A load's style, source and tile.
 type LoadKey = (u64, u32, TileIndex);
+
+fn load_key(request: &TileRequest) -> LoadKey {
+    (request.style, request.source, request.tile)
+}
 
 /// Losses of one tile's loads that quarantine it.
 const QUARANTINE: u8 = 2;
@@ -152,40 +156,48 @@ impl WorkerJobs {
         self.complete(Some(gpu), message, buffer, reply)
     }
 
-    /// Job worker `worker` is lost: the requests it had fail. With
-    /// `replacement`, another worker took its place and gets the style
-    /// first (if one has loaded) and the archive heads; without, the next
-    /// worker on takes its share.
+    /// Job worker `worker` is lost. With `replacement`, another worker
+    /// took its place and gets the style first (if one has loaded) and the
+    /// archive heads; without, the next worker on takes its share. The
+    /// loads it had go again, as suspects, or answer missing once
+    /// quarantined; its other requests fail.
     pub(crate) fn lost(
         &self,
         worker: u32,
         why: &str,
         replacement: Option<Option<(u64, StyleUpdate, SpriteIcons)>>,
     ) {
-        let (lost, heads, next) = {
+        let (failed, loads, heads) = {
             let mut state = self.state.lock().expect("jobs poisoned");
             let Some(lost) = state.lost.get_mut(worker as usize) else {
                 return;
             };
             *lost = replacement.is_none();
-            let lost: Vec<(u32, Option<LoadKey>)> = state
+            let ids: Vec<u32> = state
                 .sent_to
                 .iter()
                 .filter(|&(_, &(w, _))| w == worker)
-                .map(|(&id, &(_, load))| (id, load))
+                .map(|(&id, _)| id)
                 .collect();
-            for load in lost.iter().filter_map(|(_, load)| *load) {
-                let n = state.lost_loads.entry(load).or_default();
-                *n = n.saturating_add(1);
-            }
-            let next = match state.suspect {
-                Some(id) if lost.iter().any(|&(i, _)| i == id) => {
+            let (mut failed, mut loads) = (Vec::new(), Vec::new());
+            for id in ids {
+                let Some((_, request)) = state.sent_to.remove(&id) else {
+                    continue;
+                };
+                if state.suspect == Some(id) {
                     state.suspect = None;
-                    state.suspects.pop_front()
                 }
-                _ => None,
-            };
-            (lost, state.heads.clone(), next)
+                let Some(request) = request else {
+                    failed.push(id);
+                    continue;
+                };
+                let n = state.lost_loads.entry(load_key(&request)).or_default();
+                *n = n.saturating_add(1);
+                if let Some(done) = state.pending.remove(&id) {
+                    loads.push((request, done));
+                }
+            }
+            (failed, loads, state.heads.clone())
         };
         if let Some(style) = replacement {
             if let Some((style, update, icons)) = style {
@@ -207,23 +219,27 @@ impl WorkerJobs {
                 );
             }
         }
-        for (id, load) in lost {
-            let mut message = format!("job worker {worker} lost: {why}");
-            if load.is_some_and(|load| self.quarantined(load)) {
-                message.push_str("; the tile it was loading is left out from now on");
-                self.complete_load(id, Ok(quarantine(message)));
+        let message = format!("job worker {worker} lost: {why}");
+        for id in failed {
+            let message = message.clone();
+            let _ = self.complete(
+                None,
+                JobReply::Error { id, message },
+                None,
+                &JsValue::UNDEFINED,
+            );
+        }
+        for (request, done) in loads {
+            if self.quarantined(load_key(&request)) {
+                done(Ok(quarantine(format!(
+                    "tile {:?} is left out from now on: {message} loading it a second time",
+                    request.tile
+                ))));
             } else {
-                let _ = self.complete(
-                    None,
-                    JobReply::Error { id, message },
-                    None,
-                    &JsValue::UNDEFINED,
-                );
+                self.load(request, done);
             }
         }
-        if let Some((request, done)) = next {
-            self.load(request, done);
-        }
+        self.next_suspect();
     }
 
     fn quarantined(&self, load: LoadKey) -> bool {
@@ -234,16 +250,17 @@ impl WorkerJobs {
             .is_some_and(|&n| n >= QUARANTINE)
     }
 
-    /// Completes load `id` with `result`, without a reply.
-    fn complete_load(&self, id: u32, result: Result<TileResult, String>) {
-        let done = {
+    /// Sends the next suspect's load, unless one is in flight.
+    fn next_suspect(&self) {
+        let next = {
             let mut state = self.state.lock().expect("jobs poisoned");
-            state.sent_to.remove(&id);
-            state.done += 1;
-            state.pending.remove(&id)
+            if state.suspect.is_some() {
+                return;
+            }
+            state.suspects.pop_front()
         };
-        if let Some(done) = done {
-            done(result);
+        if let Some((request, done)) = next {
+            self.load(request, done);
         }
     }
 
@@ -292,15 +309,13 @@ impl WorkerJobs {
             .remove(&id)
             .ok_or_else(|| JsError::new(&format!("reply to unknown job {id}")))?;
         // A suspect answered: it didn't take its worker down.
-        let next = if state.suspect == Some(id) {
+        let answered = state.suspect == Some(id);
+        if answered {
             state.suspect = None;
-            if let Some((_, Some(load))) = sent {
-                state.lost_loads.remove(&load);
+            if let Some((_, Some(request))) = &sent {
+                state.lost_loads.remove(&load_key(request));
             }
-            state.suspects.pop_front()
-        } else {
-            None
-        };
+        }
         let result = match message {
             JobReply::Missing { .. } => Ok(TileResult {
                 missing: true,
@@ -359,8 +374,8 @@ impl WorkerJobs {
         };
         drop(state);
         done(result);
-        if let Some((request, done)) = next {
-            self.load(request, done);
+        if answered {
+            self.next_suspect();
         }
         Ok(())
     }
@@ -414,7 +429,7 @@ impl WorkerJobs {
     fn send(
         &self,
         preferred: u32,
-        load: Option<LoadKey>,
+        load: Option<TileRequest>,
         keep: impl FnOnce(&mut State, u32),
         make: impl FnOnce(u32) -> JobRequest,
     ) {
@@ -489,10 +504,9 @@ impl Jobs for WorkerJobs {
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {
-        let load = (request.style, request.source, request.tile);
         let suspect = {
             let mut state = self.state.lock().expect("jobs poisoned");
-            match state.lost_loads.get(&load) {
+            match state.lost_loads.get(&load_key(&request)) {
                 Some(&n) if n >= QUARANTINE => {
                     drop(state);
                     return done(Ok(quarantine(String::new())));
@@ -506,7 +520,7 @@ impl Jobs for WorkerJobs {
         };
         self.send(
             owner(request.source, request.tile, self.workers),
-            Some(load),
+            Some(request.clone()),
             |state, id| {
                 state.pending.insert(id, done);
                 if suspect {

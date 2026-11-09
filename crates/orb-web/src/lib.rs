@@ -751,7 +751,7 @@ impl OrbisMap {
     }
 
     /// Job worker `worker` is lost (its wasm trapped, or it died): the
-    /// requests it had fail, and the map retries them. With `replaced`,
+    /// loads it had go again and its other requests fail. With `replaced`,
     /// the page put another worker in its place, which the map sends its
     /// style; without, the others take its share.
     #[wasm_bindgen(js_name = jobWorkerLost)]

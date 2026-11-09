@@ -88,8 +88,8 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   };
   listen();
   // A job worker whose wasm trapped says so and closes; one that dies
-  // fires `error`. Either way its requests fail, and another takes its
-  // place, which the map sends its style; a slot that has lost
+  // fires `error`. Either way another takes its place, which the map
+  // sends its style before its loads go again; a slot that has lost
   // REPLACEMENTS workers is given up, and its share goes to the others.
   const released = ports.map(connectWorker);
   const replaced = jobs.map(() => 0);
