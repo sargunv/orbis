@@ -52,7 +52,6 @@ pub(crate) fn decode(bytes: &[u8], limit: usize) -> Result<Vec<u8>, &'static str
     Ok(body)
 }
 
-/// CRC-32 (ISO-HDLC, gzip's), a byte at a time.
 /// `bytes` as one gzip member.
 pub(crate) fn encode(bytes: &[u8]) -> Vec<u8> {
     let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255];
@@ -62,6 +61,7 @@ pub(crate) fn encode(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// CRC-32 (ISO-HDLC, gzip's), a byte at a time.
 fn crc32(bytes: &[u8]) -> u32 {
     const TABLE: [u32; 256] = {
         let mut table = [0; 256];

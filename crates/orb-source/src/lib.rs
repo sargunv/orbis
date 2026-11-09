@@ -180,22 +180,8 @@ impl<T> TilePyramid<T> {
         // (tile, wrap) → regions, ordered so ancestors draw first.
         let mut draws: BTreeMap<(u8, TileIndex, i32), Vec<TileIndex>> = BTreeMap::new();
 
-        // Only descend branches containing loaded tiles. Walking the cached
-        // ancestor paths bounds this by cache size × depth, not 4^depth.
-        let mut branches = HashSet::new();
-        for (&tile, entry) in &self.tiles {
-            if matches!(entry.state, State::Loading) {
-                continue;
-            }
-            let mut ancestor = tile;
-            while let Some(parent) = ancestor.parent() {
-                if parent.z < self.min_zoom {
-                    break;
-                }
-                branches.insert(parent);
-                ancestor = parent;
-            }
-        }
+        // Taken when an ideal tile isn't ready, which most frames have none of.
+        let mut branches = None;
 
         for covered in cover {
             let ideal = covered.index;
@@ -239,7 +225,8 @@ impl<T> TilePyramid<T> {
             );
             let mut descendants = Vec::new();
             let mut missing = Vec::new();
-            self.descendant_coverage(ideal, &branches, &mut descendants, &mut missing);
+            let branches = branches.get_or_insert_with(|| self.branches());
+            self.descendant_coverage(ideal, branches, &mut descendants, &mut missing);
             for tile in descendants {
                 update.used.push(tile);
                 if self.is_ready(tile) {
@@ -461,24 +448,20 @@ impl<T> TilePyramid<T> {
 
     /// Removes `tile` if it's ready, used or not.
     pub fn remove(&mut self, tile: TileIndex) -> Option<T> {
-        if !matches!(self.tiles.get(&tile)?.state, State::Ready(_)) {
-            return None;
-        }
-        match self.tiles.remove(&tile)?.state {
-            State::Ready(value) => Some(value),
-            _ => unreachable!("checked above"),
-        }
+        self.is_ready(tile).then(|| self.take_ready(tile))
     }
 
     /// Evicts `tile` if it's ready and the last update didn't use it.
     pub fn evict_unused(&mut self, tile: TileIndex) -> Option<T> {
-        let entry = self.tiles.get(&tile)?;
-        if entry.last_used == self.frame || !matches!(entry.state, State::Ready(_)) {
-            return None;
-        }
-        match self.tiles.remove(&tile)?.state {
-            State::Ready(value) => Some(value),
-            _ => unreachable!("checked above"),
+        let unused = self.tiles.get(&tile)?.last_used != self.frame;
+        (unused && self.is_ready(tile)).then(|| self.take_ready(tile))
+    }
+
+    /// Removes `tile`, which is ready, and gives its value.
+    fn take_ready(&mut self, tile: TileIndex) -> T {
+        match self.tiles.remove(&tile).map(|e| e.state) {
+            Some(State::Ready(value)) => value,
+            _ => unreachable!("a ready tile"),
         }
     }
 
@@ -492,10 +475,7 @@ impl<T> TilePyramid<T> {
             .iter()
             .filter(|(_, e)| e.last_used != frame && matches!(e.state, State::Ready(_)))
             .min_by_key(|(_, e)| e.last_used)?;
-        match self.tiles.remove(&tile)?.state {
-            State::Ready(value) => Some(value),
-            _ => unreachable!("filtered to ready tiles"),
-        }
+        Some(self.take_ready(tile))
     }
 
     /// Evicts a ready tile inside `tile`'s area. While `tile` loads, its
@@ -503,14 +483,9 @@ impl<T> TilePyramid<T> {
     /// so they're the first to make room for it.
     pub fn evict_within(&mut self, tile: TileIndex) -> Option<T> {
         let (&found, _) = self.tiles.iter().find(|(t, e)| {
-            t.z > tile.z
-                && matches!(e.state, State::Ready(_))
-                && TileIndex::new(tile.z, t.col >> (t.z - tile.z), t.row >> (t.z - tile.z)) == tile
+            t.z > tile.z && matches!(e.state, State::Ready(_)) && t.is_within(tile)
         })?;
-        match self.tiles.remove(&found)?.state {
-            State::Ready(value) => Some(value),
-            _ => unreachable!("filtered to ready tiles"),
-        }
+        Some(self.take_ready(found))
     }
 
     /// Whether the last committed plan's cover holds `tile`.
@@ -525,8 +500,7 @@ impl<T> TilePyramid<T> {
         self.cover.contains(&tile)
             || self.cover.iter().any(|&t| {
                 t.z > tile.z
-                    && TileIndex::new(tile.z, t.col >> (t.z - tile.z), t.row >> (t.z - tile.z))
-                        == tile
+                    && t.is_within(tile)
                     && (self.failures.contains_key(&t)
                         || matches!(
                             self.tiles.get(&t).map(|e| &e.state),
@@ -540,18 +514,13 @@ impl<T> TilePyramid<T> {
     /// cover would never have loaded it, so it makes room for the cover's
     /// tiles; `near`'s ancestors, which draw in its place, go first.
     pub fn evict_stand_in(&mut self, near: Option<TileIndex>) -> Option<T> {
-        let within = |outer: TileIndex, t: TileIndex| {
-            t.z >= outer.z
-                && TileIndex::new(outer.z, t.col >> (t.z - outer.z), t.row >> (t.z - outer.z))
-                    == outer
-        };
         let stands_in = |tile: TileIndex| {
             self.is_ready(tile)
                 && !self.cover.contains(&tile)
                 && !self
                     .tiles
                     .iter()
-                    .any(|(&t, e)| matches!(e.state, State::Missing) && within(tile, t))
+                    .any(|(&t, e)| matches!(e.state, State::Missing) && t.is_within(tile))
         };
         let ancestors = std::iter::successors(near, |t| t.parent());
         let found = ancestors
@@ -559,10 +528,7 @@ impl<T> TilePyramid<T> {
             .take_while(|t| t.z >= self.min_zoom)
             .find(|&t| stands_in(t))
             .or_else(|| self.tiles.keys().copied().find(|&t| stands_in(t)))?;
-        match self.tiles.remove(&found)?.state {
-            State::Ready(value) => Some(value),
-            _ => unreachable!("checked ready"),
-        }
+        Some(self.take_ready(found))
     }
 
     /// Forgets every tile, returning the ready values.
@@ -597,6 +563,21 @@ impl<T> TilePyramid<T> {
 
     /// Partitions a missing ideal into loaded descendants and uncovered
     /// regions. Empty descendants cover their region without drawing it.
+    /// The tiles with a known descendant, the only branches worth
+    /// descending: walking the cached tiles' ancestors bounds this by cache
+    /// size × depth, not 4^depth.
+    fn branches(&self) -> HashSet<TileIndex> {
+        let mut branches = HashSet::new();
+        let known = (self.tiles.iter()).filter(|(_, e)| !matches!(e.state, State::Loading));
+        for (&tile, _) in known {
+            let ancestors = std::iter::successors(tile.parent(), |t| t.parent());
+            for parent in ancestors.take_while(|t| t.z >= self.min_zoom) {
+                branches.insert(parent);
+            }
+        }
+        branches
+    }
+
     fn descendant_coverage(
         &self,
         tile: TileIndex,

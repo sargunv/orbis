@@ -35,6 +35,19 @@ impl TileIndex {
     pub fn parent(self) -> Option<Self> {
         (self.z > 0).then(|| Self::new(self.z - 1, self.col / 2, self.row / 2))
     }
+
+    /// The quad tile at zoom `z` holding this one, itself at its own zoom,
+    /// or `None` below it.
+    pub fn ancestor(self, z: u8) -> Option<Self> {
+        let depth = self.z.checked_sub(z)?;
+        let shift = |v: u32| v.checked_shr(u32::from(depth)).unwrap_or(0);
+        Some(Self::new(z, shift(self.col), shift(self.row)))
+    }
+
+    /// Whether this quad tile is `outer` or lies inside it.
+    pub fn is_within(self, outer: Self) -> bool {
+        self.ancestor(outer.z) == Some(outer)
+    }
 }
 
 /// A tiling of a projection's plane (OGC 2D TileMatrixSet) whose matrices
@@ -771,6 +784,16 @@ mod tests {
         let t = TileIndex::new(4, 7, 9);
         assert!(t.children().iter().all(|c| c.parent() == Some(t)));
         assert_eq!(TileIndex::new(0, 0, 0).parent(), None);
+        let deep = TileIndex::new(9, 0b1_0110_1011, 0b0_1101_0010);
+        assert_eq!(deep.ancestor(9), Some(deep));
+        assert_eq!(
+            deep.ancestor(5),
+            Some(TileIndex::new(5, 0b1_0110, 0b0_1101))
+        );
+        assert_eq!(deep.ancestor(10), None);
+        assert!(deep.is_within(TileIndex::new(5, 0b1_0110, 0b0_1101)));
+        assert!(!deep.is_within(TileIndex::new(5, 0b1_0111, 0b0_1101)));
+        assert!(!TileIndex::new(5, 0b1_0110, 0b0_1101).is_within(deep));
     }
 
     fn matrix(id: u32, sd: f64, origin: [f64; 2], size: (u32, u32)) -> TileMatrix {
