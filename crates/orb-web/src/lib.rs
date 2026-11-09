@@ -1,14 +1,14 @@
 //! The browser build of Orbis: `core.wasm` and its wasm-bindgen surface.
 //!
-//! One module, two places, chosen by the page's JS:
-//! - **the page** ([`create_map`]): the map draws into a canvas on the
-//!   page's thread, with its camera, gestures and synchronous `project`,
-//!   `unproject` and `hitTest`.
-//! - **workers**: job workers ([`jobs::JobWorker`]) fetch and lay out
-//!   tiles; a placement worker ([`PlacementWorker`]) places labels.
+//! One module, run by the web package's JS in three roles:
+//! - **the map** ([`create_map`]): the map draws into a canvas, with its
+//!   camera, gestures and queries: an `OffscreenCanvas` in a map worker
+//!   where the browser allows it, else a canvas on the page's thread.
+//! - **job workers** ([`jobs::JobWorker`]) fetch and lay out tiles.
+//! - **a placement worker** ([`PlacementWorker`]) places labels.
 //!
-//! The map draws through WebGPU; the `host` module gives both places
-//! the browser's fetch, storage, image decoding and canvas glyphs.
+//! The map draws through WebGPU; the `host` module gives every role the
+//! browser's fetch, storage, image decoding and canvas glyphs.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -295,13 +295,14 @@ impl From<&orb_runtime::Memory> for FrameMemory {
     }
 }
 
-/// Creates a map in `canvas` showing the style at `style_url`, drawing on
-/// this thread. Its tile jobs go to `job_workers` job workers through
+/// Creates a map in `canvas` (an `HTMLCanvasElement` or an
+/// `OffscreenCanvas`) showing the style at `style_url`, drawing on this
+/// thread. Its tile jobs go to `job_workers` job workers through
 /// `post(worker, message)`, whose replies come back through
 /// [`receive_job`](OrbisMap::receive_job); labels are placed by the
 /// placement worker `place(message, transfer)` reaches, whose replies come
 /// back through [`receive_placement`](OrbisMap::receive_placement).
-/// `on_wake` is called when the map has new data to draw; the page should
+/// `on_wake` is called when the map has new data to draw; its host should
 /// call `render` on its next animation frame. The camera is the style's
 /// until it moves. Video sources play on the page (`web/src/videos.ts`):
 /// see [`take_events`](OrbisMap::take_events) and
@@ -314,7 +315,7 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(
-    canvas: HtmlCanvasElement,
+    canvas: JsValue,
     style_url: String,
     options: JsValue,
     on_wake: js_sys::Function,
@@ -322,7 +323,13 @@ pub async fn create_map(
     post: js_sys::Function,
     place: js_sys::Function,
 ) -> Result<OrbisMap, JsError> {
-    let size = (canvas.width(), canvas.height());
+    let size = match canvas.dyn_ref::<HtmlCanvasElement>() {
+        Some(canvas) => (canvas.width(), canvas.height()),
+        None => {
+            let canvas = canvas.unchecked_ref::<web_sys::OffscreenCanvas>();
+            (canvas.width(), canvas.height())
+        }
+    };
 
     let id = NEXT_MAP.with(|next| next.replace(next.get() + 1));
     let worker_jobs = WorkerJobs::new(id, job_workers, post);
@@ -389,7 +396,7 @@ pub async fn create_map(
     }
     // The style loads while the GPU device is made.
     map.load_style_url(&style_url);
-    let canvas = Canvas::new(canvas.into(), size, id)
+    let canvas = Canvas::new(canvas, size, id)
         .await
         .map_err(|e| JsError::new(&e))?;
     Ok(OrbisMap {
@@ -691,16 +698,29 @@ impl OrbisMap {
         out
     }
 
-    /// The video of source `id` has a new frame to show: the element's
-    /// current frame is copied in the next frame drawn.
+    /// The video of source `id` has a new frame to show: a video element,
+    /// whose current frame is copied in the next frame drawn, or (for a
+    /// map in a worker) an `ImageBitmap` of the frame.
     #[wasm_bindgen(js_name = videoFrame)]
-    pub fn video_frame(
-        &mut self,
-        id: &str,
-        video: web_sys::HtmlVideoElement,
-    ) -> Result<(), JsError> {
-        let (width, height) = (video.video_width(), video.video_height());
-        let image = self.canvas.gpu().register_video(video);
+    pub fn video_frame(&mut self, id: &str, frame: JsValue) -> Result<(), JsError> {
+        let gpu = self.canvas.gpu();
+        let (width, height, image) = match frame.dyn_into::<web_sys::HtmlVideoElement>() {
+            Ok(video) => (
+                video.video_width(),
+                video.video_height(),
+                gpu.register_video(video),
+            ),
+            Err(frame) => {
+                let bitmap: web_sys::ImageBitmap = frame.dyn_into().map_err(|_| {
+                    JsError::new("a video frame is a video element or an ImageBitmap")
+                })?;
+                (
+                    bitmap.width(),
+                    bitmap.height(),
+                    gpu.register_image_bitmap(bitmap),
+                )
+            }
+        };
         let frame = orb_runtime::TileImage {
             width,
             height,

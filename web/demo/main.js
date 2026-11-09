@@ -136,10 +136,10 @@ menu.addEventListener("beforetoggle", (e) => {
   menu.style.setProperty("--menu-right", `${innerWidth - rect.right}px`);
 });
 const offlineAreas = createOffline({
-  view() {
+  async view() {
     if (!map) return null;
     const { width, height } = map.canvas.getBoundingClientRect();
-    const corners = [[0, 0], [width, 0], [width, height], [0, height]].map((p) => map.unproject(p));
+    const corners = await Promise.all([[0, 0], [width, 0], [width, height], [0, height]].map((p) => map.unproject(p)));
     if (corners.some((c) => !c)) return null;
     const lons = corners.map((c) => c[0]);
     const lats = corners.map((c) => c[1]);
@@ -241,7 +241,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
     const projection = !same(projectionOf(previous.scene), projectionOf(next.scene));
     const sky = !same(previous.scene.sky, next.scene.sky);
     if (projection || sky) {
-      map.edit((tx) => {
+      void map.edit((tx) => {
         if (projection) tx.setProjection(projectionOf(next.scene));
         if (sky) tx.setSky(next.scene.sky ?? styleSky);
       });
@@ -318,9 +318,9 @@ async function load(next, { camera }) {
     const { scene } = current;
     styleLoading = false;
     highlighter.reset();
-    styleSky = map.getStyle().sky ?? null;
+    styleSky = (await map.getStyle()).sky ?? null;
     if (scene.projection || scene.sky) {
-      map.edit((tx) => {
+      await map.edit((tx) => {
         if (scene.projection) tx.setProjection(scene.projection);
         if (scene.sky) tx.setSky(scene.sky);
       });
@@ -394,7 +394,7 @@ function wireFeatures(target) {
         const point = pointer;
         pointer = undefined;
         if (!editor.open && !hudControl.visible) continue;
-        const hit = point && target.hitTest(point);
+        const hit = point && await target.hitTest(point);
         hudControl.hover(hit ? `${hit.layer}${hit.id !== null ? ` #${hit.id}` : ""}` : "");
         if (!editor.open) continue;
         target.canvas.style.cursor = hit ? "pointer" : "";

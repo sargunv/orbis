@@ -5,7 +5,7 @@
 // its screen on).
 //
 //   pnpm measure [--android [--physical] | --headed] [--runs=3]
-//     [--configs=orbis,gljs] [--no-capture] [--no-annotation] [--profile]
+//     [--configs=orbis,orbis-page,gljs] [--no-capture] [--no-annotation] [--profile]
 //     [--style=<url or key>] [--at=lon,lat,zoom,bearing,pitch]
 //   pnpm measure --pipelines [--runs=3] [--android [--physical]]
 //
@@ -30,7 +30,8 @@
 // Method: DevTools dispatches touch gestures (8 ms apart, one second each)
 // while it captures composited frames (Page.startScreencast, PNG). Each
 // frame's blue circle (drawn by the map) is located; the page's log of where
-// that circle should be after each input (from the camera on the page)
+// that circle is drawn for each input (Orbis reports the latest input each
+// frame shows; GL JS draws the latest input it has seen)
 // gives the input it shows, so latency is the frame's swap time minus that
 // input's timestamp, both on the browser's clock. The cyan square is the
 // DOM annotation at the same point: its offset from the circle, as input
@@ -48,7 +49,7 @@ const option = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?
 const physical = args.includes("--physical");
 const android = physical || args.includes("--android");
 const runs = Number(option("runs", "3"));
-const configs = option("configs", "orbis,gljs").split(",");
+const configs = option("configs", "orbis,orbis-page,gljs").split(",");
 // The page's style and starting camera, for a dense or tilted scene.
 const view = Object.fromEntries(["style", "at"].filter((k) => option(k)).map((k) => [k, option(k)]));
 // Busy time and idle frames only, without frame capture (whose PNG encoding
@@ -124,7 +125,8 @@ function inputTime(log, value) {
 }
 
 async function run(page, config, viewport) {
-  const engine = config;
+  // `orbis-page` is Orbis with its map on the page's thread.
+  const [engine, thread] = config.split("-");
   // A session per page: Android's Chrome delivers synthetic touches only to
   // the first page a session navigates.
   const cdp = await page.context().newCDPSession(page);
@@ -133,7 +135,8 @@ async function run(page, config, viewport) {
   await cdp.send("Performance.enable");
   const busy = async () => (await cdp.send("Performance.getMetrics")).metrics
     .find((m) => m.name === "TaskDuration").value * 1000;
-  const query = new URLSearchParams({ engine, ...(annotation ? {} : { annotation: "0" }), ...view });
+  const query = new URLSearchParams({ engine, ...(thread === "page" ? { worker: "0" } : {}),
+    ...(annotation ? {} : { annotation: "0" }), ...view });
   await page.goto("about:blank");
   const before = await busy();
   await page.goto(`${server.url}measure.html?${query}`);

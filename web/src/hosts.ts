@@ -1,5 +1,5 @@
-// The wasm map on the page's thread, with its job workers and
-// placement worker (workers.ts), and its recovery from a lost GPU.
+// The wasm map, with its job workers and placement worker (workers.ts),
+// and its recovery from a lost GPU: in the map worker or on the page.
 
 import init, { createMap as createCoreMap, reloadRegions, setPreloads, setRequestHook, type OrbisMap as Core } from "../pkg/core.js";
 import { takePreload } from "./preload.ts";
@@ -51,7 +51,8 @@ export interface Host {
 
 /** The map on this thread, drawing into `canvas`, once `compiling` has
  * compiled core.wasm; `workers`, spawned on the same module, are its. */
-export async function startMain(compiling: Promise<WebAssembly.Module>, workers: Workers, canvas: HTMLCanvasElement,
+export async function startHost(compiling: Promise<WebAssembly.Module>, workers: Workers,
+  canvas: HTMLCanvasElement | OffscreenCanvas,
   style: string, options: CoreOptions, callbacks: HostCallbacks): Promise<Host> {
   const receive = (apply: (data: unknown) => void) => ({ data }: MessageEvent) => {
     try {

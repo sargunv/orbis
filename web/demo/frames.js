@@ -70,9 +70,9 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
       map.camera.jumpTo({ center, zoom, pitch, bearing: 0 });
       await loaded;
       if (buildings) {
-        const before = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+        const before = (await map.getStyle()).layers.find((l) => l.type === "symbol")?.id;
         const built = idle(map, name);
-        map.edit((tx) => tx.addLayer(BUILDINGS_3D, before));
+        await map.edit((tx) => tx.addLayer(BUILDINGS_3D, before));
         await built;
       }
       const s = { gpu: [], cull: [], main: [], extrusion: [], cpu: [], submit: [], stats: null };

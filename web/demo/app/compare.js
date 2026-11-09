@@ -106,8 +106,8 @@ export function comparison({ onChange, beforeReload }) {
 
 function show(map, scene, pair, { isolating, onPick }) {
   const stage = map.container.parentElement;
-  const style = () => {
-    const now = map.getStyle();
+  const style = async () => {
+    const now = await map.getStyle();
     return { ...now, layers: now.layers.filter((l) => !l.id.startsWith(HIGHLIGHT_PREFIX)) };
   };
   // The app's map, as a map the others follow and lead.
@@ -157,7 +157,7 @@ function show(map, scene, pair, { isolating, onPick }) {
         if (closed) return;
         side.inner.replaceChildren();
         const opened = await module.open(side.inner,
-          { style: style(), camera: map.camera.current, constraints: scene.constraints });
+          { style: await style(), camera: map.camera.current, constraints: scene.constraints });
         if (closed) { opened.remove(); return; }
         side.map = opened;
         const option = select.querySelector(`option[value="${key}"]`);
@@ -210,9 +210,9 @@ function show(map, scene, pair, { isolating, onPick }) {
   // Style edits, at most once a frame.
   let restyle = 0;
   offs.push(map.on("styledata", () => {
-    restyle ||= requestAnimationFrame(() => {
+    restyle ||= requestAnimationFrame(async () => {
       restyle = 0;
-      const next = style();
+      const next = await style();
       for (const m of maps()) if (m !== own) m.setStyle(next);
     });
   }));

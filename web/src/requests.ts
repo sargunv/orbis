@@ -1,6 +1,7 @@
 // How every map on the page fetches (GL JS `transformRequest`): a page-wide
-// transform each request goes through, on the page and in the job workers,
-// which ask the page for it over their ports.
+// transform each request goes through, on the page and in the map and job
+// workers, which ask the page for it (a job worker of a map worker asks
+// that worker, which asks the page).
 
 /** What a transform makes of a request: the URL to fetch and headers to send. */
 export interface RequestParameters {
@@ -17,7 +18,10 @@ type SetHook = (hook?: (url: string) => unknown) => void;
 
 let transform: RequestTransform | undefined;
 const hooks = new Set<SetHook>();
-const ports = new Set<MessagePort>();
+/** Where a worker hears from the page: its port, or the worker itself. */
+type Port = { postMessage(message: unknown): void };
+
+const ports = new Set<Port>();
 
 /** Transforms every request the page's maps make from here on, theirs and
  * their workers'; no transform, none. */
@@ -39,15 +43,15 @@ export function connectModule(set: SetHook): void {
   set(transform);
 }
 
-/** A job worker's port, told whether to ask the page; returns its release. */
-export function connectWorker(port: MessagePort): () => void {
+/** A worker's port, told whether to ask the page; returns its release. */
+export function connectWorker(port: Port): () => void {
   ports.add(port);
   if (transform) port.postMessage({ requestHook: true });
   return () => ports.delete(port);
 }
 
 /** Answers a worker's `{request, url}`; false for other messages. */
-export function answerWorker(port: MessagePort, data: unknown): boolean {
+export function answerWorker(port: Port, data: unknown): boolean {
   const { request, url } = data as { request?: number; url?: string };
   if (request === undefined || url === undefined) return false;
   void Promise.resolve(transform?.(url)).then(
@@ -57,8 +61,8 @@ export function answerWorker(port: MessagePort, data: unknown): boolean {
   return true;
 }
 
-/** A job worker's hook: the page's transform, asked over `port`. */
-export function askPage(port: MessagePort): { hook: (url: string) => Promise<unknown>; answer: (data: unknown) => boolean } {
+/** A worker's hook: the page's transform, asked over `port`. */
+export function askPage(port: Port): { hook: (url: string) => Promise<unknown>; answer: (data: unknown) => boolean } {
   let next = 0;
   const waiting = new Map<number, (result: unknown) => void>();
   return {

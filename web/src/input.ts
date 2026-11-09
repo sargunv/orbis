@@ -1,18 +1,27 @@
 // DOM input to the map's gestures (orb-camera's input): pointer events for
-// mouse, pen and touch, wheel, keys and focus. Each call carries the
-// event's timestamp, which release velocities and double taps measure, on
-// the clock frames' timestamps use. A Shift-drag's box shows over the
-// canvas while it is drawn.
+// mouse, pen and touch, wheel, keys and focus, sent to the map wherever it
+// runs. Each carries the event's timestamp, which release velocities and
+// double taps measure, on the clock frames' timestamps use. A Shift-drag's
+// box shows over the canvas while it is drawn.
 
-import type { Core } from "./hosts.ts";
+import type { InputKind } from "./engine.ts";
 
 const modifiers = (e: KeyboardEvent | MouseEvent) =>
   (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 
-/** Feeds `canvas`'s input to the map `core()` gives, while it gives one
- * (not while the map recovers its GPU); `changed` asks for a frame.
- * Returns a detach function. */
-export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefined, changed: () => void): () => void {
+/** The keys the map uses (orb-web's `key`); Escape only ends a box zoom. */
+const KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "+", "=", "-", "_"]);
+
+/** Where input goes: `send(kind, args, time)` while the map takes it (not
+ * while it recovers its GPU). */
+export type InputSink = (kind: InputKind, args: (number | string)[], time: number) => void;
+
+/** Feeds `canvas`'s input to `send`. Moves arrive as `pointerrawupdate`s
+ * with `raw` (as soon as the browser has them, for a map in a worker:
+ * `pointermove` waits for the page's next frame, and the worker's would
+ * already have begun). Returns the detach function and `showBox`, which
+ * shows a Shift-drag's box ([x0, y0, x1, y1], or null to hide it). */
+export function attachInput(canvas: HTMLCanvasElement, send: InputSink, raw: boolean) {
   canvas.tabIndex = 0;
   canvas.style.touchAction = "none";
   const box = document.createElement("div");
@@ -21,9 +30,7 @@ export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefi
     border: "2px dotted #202020", background: "rgba(255, 255, 255, 0.5)",
   });
   canvas.after(box);
-  // Shows the box a Shift-drag zooms to, if any, over the canvas.
-  const showBox = (ui: Core | undefined) => {
-    const corners = ui?.boxZoom();
+  const showBox = (corners: number[] | null) => {
     if (!corners) {
       box.style.display = "none";
       return;
@@ -48,60 +55,40 @@ export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefi
     canvas.focus({ preventScroll: true });
     origin = null;
     const [x, y] = at(e);
-    const ui = core();
-    if (ui?.pointerDown(e.pointerId, e.pointerType, e.button, x, y, modifiers(e), e.timeStamp)) {
+    send("pointerDown", [e.pointerId, e.pointerType, e.button, x, y, modifiers(e)], e.timeStamp);
+    // The map drags with the primary and secondary buttons.
+    if (e.button === 0 || e.button === 2) {
       canvas.setPointerCapture(e.pointerId);
       captured++;
-      changed();
     }
   };
   const move = (e: PointerEvent) => {
     const [x, y] = at(e);
-    const ui = core();
-    if (ui?.pointerMove(e.pointerId, x, y, e.timeStamp)) {
-      showBox(ui);
-      changed();
-    }
+    send("pointerMove", [e.pointerId, x, y], e.timeStamp);
   };
   const up = (e: PointerEvent) => {
     const [x, y] = at(e);
-    const ui = core();
-    if (ui?.pointerUp(e.pointerId, x, y, e.timeStamp)) changed();
-    showBox(ui);
+    send("pointerUp", [e.pointerId, x, y], e.timeStamp);
   };
   const lost = () => {
     captured = Math.max(0, captured - 1);
     origin = null;
   };
-  const cancel = (e: PointerEvent) => {
-    const ui = core();
-    if (ui?.pointerCancel(e.pointerId, e.timeStamp)) changed();
-    showBox(ui);
-  };
+  const cancel = (e: PointerEvent) => send("pointerCancel", [e.pointerId], e.timeStamp);
+  // The map zooms on every wheel event and uses its keys.
   const wheel = (e: WheelEvent) => {
-    if (core()?.wheel(e.offsetX, e.offsetY, e.deltaX, e.deltaY, e.deltaMode, modifiers(e), e.timeStamp)) {
-      e.preventDefault();
-      changed();
-    }
+    e.preventDefault();
+    send("wheel", [e.offsetX, e.offsetY, e.deltaX, e.deltaY, e.deltaMode, modifiers(e)], e.timeStamp);
   };
   const key = (e: KeyboardEvent) => {
-    const ui = core();
-    if (ui?.key(e.key, modifiers(e), e.timeStamp)) {
-      e.preventDefault();
-      showBox(ui);
-      changed();
-    }
+    if (KEYS.has(e.key)) e.preventDefault();
+    if (KEYS.has(e.key) || e.key === "Escape") send("key", [e.key, modifiers(e)], e.timeStamp);
   };
-  const blur = (e: FocusEvent) => {
-    const ui = core();
-    ui?.blur(e.timeStamp);
-    showBox(ui);
-    changed();
-  };
+  const blur = (e: FocusEvent) => send("blur", [], e.timeStamp);
   const menu = (e: Event) => e.preventDefault();
   const listeners: [string, EventListener, AddEventListenerOptions?][] = [
     ["pointerdown", down as EventListener],
-    ["pointermove", move as EventListener],
+    [raw ? "pointerrawupdate" : "pointermove", move as EventListener],
     ["pointerup", up as EventListener],
     ["pointercancel", cancel as EventListener],
     ["lostpointercapture", lost],
@@ -111,8 +98,11 @@ export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefi
     ["contextmenu", menu],
   ];
   for (const [type, listener, options] of listeners) canvas.addEventListener(type, listener, options);
-  return () => {
-    for (const [type, listener, options] of listeners) canvas.removeEventListener(type, listener, options);
-    box.remove();
+  return {
+    showBox,
+    detach: () => {
+      for (const [type, listener, options] of listeners) canvas.removeEventListener(type, listener, options);
+      box.remove();
+    },
   };
 }

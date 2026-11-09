@@ -6,7 +6,7 @@ import { h } from "./dom.js";
 
 const mib = (bytes) => `${(bytes / 1048576).toFixed(1)} MiB`;
 
-/** `view()` returns the map's visible bounds, zoom, style URL and a name, or null. */
+/** `view()` resolves to the map's visible bounds, zoom, style URL and a name, or null. */
 export function offline({ view }) {
   const dialog = document.getElementById("offline");
   const list = h("ul", { class: "regions" });
@@ -29,7 +29,7 @@ export function offline({ view }) {
   }
 
   async function download() {
-    const current = view();
+    const current = await view();
     if (!current) return;
     button.disabled = true;
     status.textContent = "Starting…";

@@ -29,16 +29,16 @@ async function apply(map, [name, ...args]) {
     case "setCenter": jump({ center: args[0] }); break;
     case "setCenterElevation": map.camera.setCenterElevation(args[0]); break;
     case "setCenterClampedToGround": map.camera.centerClampedToGround = args[0]; break;
-    case "removeImage": map.removeImage(args[0]); break;
+    case "removeImage": await map.removeImage(args[0]); break;
     case "addImage": {
       const bitmap = await createImageBitmap(await (await fetch(new URL(args[1], assets))).blob(),
         { premultiplyAlpha: "none", colorSpaceConversion: "none" });
       const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
       context.drawImage(bitmap, 0, 0);
-      map.addImage(args[0], context.getImageData(0, 0, bitmap.width, bitmap.height), args[2]);
+      await map.addImage(args[0], context.getImageData(0, 0, bitmap.width, bitmap.height), args[2]);
       break;
     }
-    default: map.edit((tx) => tx[name](...args));
+    default: await map.edit((tx) => tx[name](...args));
   }
 }
 
@@ -72,7 +72,7 @@ async function native(r) {
     // Native loads a style document before the runner goes on; here it
     // loads in a frame or two.
     for (const end = performance.now() + r.timeout_ms; ;) {
-      try { map.getStyle(); break; } catch (e) { if (performance.now() > end) throw e; }
+      try { await map.getStyle(); break; } catch (e) { if (performance.now() > end) throw e; }
       map.triggerRepaint();
       await new Promise((resolve) => setTimeout(resolve, 16));
     }
@@ -84,7 +84,7 @@ async function native(r) {
         if (name === "setStyle") map.setStyle(args[0]);
         else if (name === "addImage" || name === "updateImage") {
           // Native's addImage replaces an image of the same name.
-          if (map.hasImage(args[0])) map.removeImage(args[0]);
+          if (await map.hasImage(args[0])) await map.removeImage(args[0]);
           await apply(map, ["addImage", args[0], `mapbox/render-tests/${args[1]}`, args[2]]);
         } else await apply(map, op);
       } catch (e) { warnings.push(`operation ${JSON.stringify(op)}: ${e?.message ?? e}`); }

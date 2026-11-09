@@ -1,8 +1,9 @@
 // The measurement page (`web/scripts/measure.mjs` drives it): the
 // demo's Tokyo map with a blue circle drawn by the map and a cyan DOM
-// annotation at the same point, in Orbis (`?engine=orbis`) or the
-// pinned GL JS (`?engine=gljs`). It logs, for every input, where the
-// circle should then be drawn and when the input arrived, so the driver can
+// annotation at the same point, in Orbis (`?engine=orbis`; on the page,
+// not in a worker, with `&worker=0`) or the pinned GL JS (`?engine=gljs`).
+// It logs, for each frame that shows new input, where the circle is drawn
+// and when the latest input it shows arrived, so the driver can
 // read input-to-photon latency and overlay skew off composited frames.
 import { demoStyle } from "./styles.js";
 
@@ -30,31 +31,33 @@ for (const type of ["pointerdown", "pointermove", "touchstart", "touchmove", "mo
   window.addEventListener(type, (e) => { lastInput = e.timeStamp; }, { capture: true, passive: true });
 }
 
-const circleLngLat = (project, unproject) => {
-  const [x, y] = project(CENTER);
+const circleLngLat = async (project, unproject) => {
+  const [x, y] = await project(CENTER);
   return unproject([x + OFFSET_PX, y]);
 };
 
 async function startOrbis() {
   const { createMap } = await import("orbis");
   const map = await createMap({ container, style: demoStyle(params, "tokyo"),
-    camera: START });
+    camera: START, worker: params.get("worker") !== "0" });
   await map.once("idle");
-  const at = circleLngLat((l) => map.project(l), (p) => map.unproject(p));
+  const at = await circleLngLat((l) => map.project(l), (p) => map.unproject(p));
   await map.edit((tx) => tx
     .addSource("measure", { type: "geojson", data: { type: "Feature", geometry: { type: "Point", coordinates: at }, properties: {} } })
     .addLayer({ id: "measure", type: "circle", source: "measure", paint: { "circle-radius": 12, "circle-color": "#0000ff" } }));
+  // The annotation, shown or not, gives each frame's circle: frames that
+  // show new input log where the circle is drawn for it.
   const element = document.createElement("div");
   element.className = "mark";
-  if (params.get("annotation") !== "0") map.annotations.add({ element, lngLat: at });
-  // After the map's own listeners: the map has applied the input, so its
-  // camera says where the circle should be drawn for it.
-  const record = (e) => {
-    const p = map.project(at);
-    if (p) log.push({ t: e.timeStamp, x: p[0], y: p[1] });
-  };
-  for (const type of ["pointermove", "pointerdown"]) map.canvas.addEventListener(type, record);
-  map.on("render", () => renders++);
+  if (params.get("annotation") === "0") element.style.display = "none";
+  const mark = map.annotations.add({ element, lngLat: at });
+  let shown;
+  map.on("render", ({ inputTime }) => {
+    renders++;
+    const p = mark.point;
+    if (p && inputTime !== undefined && inputTime !== shown) log.push({ t: inputTime, x: p[0], y: p[1] });
+    shown = inputTime;
+  });
   await map.once("idle");
   // Resolves once idle, at once if it is.
   const idle = () => (map.stats?.idle && !map.camera.moving ? Promise.resolve() : map.once("idle"));
@@ -81,7 +84,7 @@ async function startGlJs() {
   }
   const map = new maplibregl.Map({ container, style, ...START, maxPitch: 85, attributionControl: false });
   await map.once("idle");
-  const at = circleLngLat((l) => { const p = map.project(l); return [p.x, p.y]; }, (p) => map.unproject(p).toArray());
+  const at = await circleLngLat((l) => { const p = map.project(l); return [p.x, p.y]; }, (p) => map.unproject(p).toArray());
   map.addSource("measure", { type: "geojson", data: { type: "Feature", geometry: { type: "Point", coordinates: at }, properties: {} } });
   map.addLayer({ id: "measure", type: "circle", source: "measure", paint: { "circle-radius": 12, "circle-color": "#0000ff" } });
   const element = document.createElement("div");

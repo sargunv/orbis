@@ -1,5 +1,5 @@
 // View annotations as DOM elements anchored to the map: markers
-// and popups. They move in the frame the canvas draws, on the terrain.
+// and popups. They move with the frames the map reports, on the terrain.
 
 import type { LngLat, Point } from "./types.ts";
 
@@ -42,6 +42,10 @@ export class Annotation {
 
   get lngLat(): LngLat { return this.#lngLat; }
 
+  /** The pixel it was last placed at, null where the map doesn't show its
+   * point, or undefined before the map has drawn. */
+  get point(): Point | null | undefined { return this.#at && [this.#at[0], this.#at[1]]; }
+
   setLngLat(lngLat: LngLat): this {
     this.#lngLat = lngLat;
     this.#layer.changed();
@@ -69,10 +73,10 @@ export class Annotation {
 export class Annotations {
   #overlay: HTMLElement;
   #items = new Set<Annotation>();
-  #changed: () => void;
+  #changed: (points: Float64Array) => void;
 
-  /** @internal */
-  constructor(overlay: HTMLElement, changed: () => void) {
+  /** @internal `changed` hears the points, [lon, lat, …], when they change. */
+  constructor(overlay: HTMLElement, changed: (points: Float64Array) => void) {
     this.#overlay = overlay;
     this.#changed = changed;
   }
@@ -81,7 +85,7 @@ export class Annotations {
     const annotation = new Annotation(this, options);
     this.#items.add(annotation);
     this.#overlay.append(annotation.element);
-    this.#changed();
+    this.changed();
     return annotation;
   }
 
@@ -89,25 +93,27 @@ export class Annotations {
   remove(annotation: Annotation): void {
     this.#items.delete(annotation);
     annotation.element.remove();
-    this.#changed();
+    this.changed();
   }
 
   /** @internal */
-  changed(): void { this.#changed(); }
-
-  get size(): number { return this.#items.size; }
-
-  /** @internal Positions every annotation with `project`: [lon, lat, …] → [x, y, …]. */
-  place(project: (points: Float64Array) => Float64Array): void {
-    if (!this.#items.size) return;
+  changed(): void {
     const points = new Float64Array(this.#items.size * 2);
     let i = 0;
     for (const a of this.#items) {
       points[i++] = a.lngLat[0];
       points[i++] = a.lngLat[1];
     }
-    const pixels = project(points);
-    i = 0;
+    this.#changed(points);
+  }
+
+  get size(): number { return this.#items.size; }
+
+  /** @internal Positions every annotation at its pixel, [x, y, …] in the
+   * order of the points last given; pixels for other points are dropped. */
+  place(pixels: Float64Array): void {
+    if (pixels.length !== this.#items.size * 2) return;
+    let i = 0;
     for (const a of this.#items) {
       a.place(pixels[i], pixels[i + 1]);
       i += 2;

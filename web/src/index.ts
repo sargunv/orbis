@@ -1,5 +1,5 @@
 // Orbis on the web: `createMap(options)` → a map with a camera, style edits,
-// events, queries and annotations, drawing on the page's thread.
+// events, queries and annotations, drawing in a worker or on the page.
 export { createMap, OrbisMap, CameraControl } from "./map.ts";
 export { transaction } from "./transaction.ts";
 export { setRequestTransform } from "./requests.ts";

@@ -1,7 +1,12 @@
 // The package's public types. Coordinates are [longitude, latitude] in
 // degrees; points are [x, y] in CSS pixels from the map's top-left corner.
 
-import type { FrameMemory, FrameStats } from "../pkg/core.js";
+import type { FrameMemory as CoreMemory, FrameStats as CoreStats } from "../pkg/core.js";
+
+/** A wasm-bindgen object's fields, as a plain object, its objects' too. */
+type Fields<T> = {
+  -readonly [K in keyof T as T[K] extends (...args: never[]) => unknown ? never : K]: T[K] extends object ? Fields<T[K]> : T[K]
+};
 
 export type LngLat = [number, number];
 export type Point = [number, number];
@@ -198,6 +203,11 @@ export interface MapOptions {
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)`. */
   jobWorkers?: number;
+  /** Whether the map may run in a worker, off the page's thread: where
+   * the browser can draw WebGPU into an OffscreenCanvas there and tells
+   * the page of pointer moves as they come (Chromium-based browsers).
+   * True by default; false keeps it on the page. */
+  worker?: boolean;
 }
 
 /** The topmost feature under a point, from the last frame. */
@@ -242,8 +252,15 @@ export interface SourceQueryOptions {
   filter?: unknown;
 }
 
-/** A frame's counters: orb-web's `FrameStats`, `memory` its `FrameMemory`. */
-export type { FrameStats, FrameMemory };
+/** GPU memory by pool: orb-web's `FrameMemory`. */
+export type FrameMemory = Fields<CoreMemory>;
+
+/** A frame's counters: orb-web's `FrameStats`. */
+export type FrameStats = Fields<CoreStats> & {
+  /** The `timeStamp` of the latest input the frame shows, if any, on the
+   * page's clock: input latency is the frame's display time after it. */
+  inputTime?: number;
+};
 
 /** A GPU submission's times ([`OrbisMap.gpuTimings`]), milliseconds. */
 export interface GpuSubmission {

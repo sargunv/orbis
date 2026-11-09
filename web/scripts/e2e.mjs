@@ -86,10 +86,17 @@ async function open(browser, viewport) {
   return { page, errors };
 }
 
+/** The scenario with the map in its worker, then on the page's thread. */
 async function scenario(browser, server) {
+  await scenarioOn(browser, server, "worker");
+  await scenarioOn(browser, server, "page");
+}
+
+async function scenarioOn(browser, server, thread) {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
-  await page.goto(`${server.url}scenario.html`);
-  const scenario = (fn, arg) => page.evaluate(([fn, arg]) => window.scenario.then((s) => new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg)), [fn.toString(), arg]);
+  await page.goto(`${server.url}scenario.html${thread === "page" ? "?worker=0" : ""}`);
+  assert.equal(await page.evaluate(() => window.scenario.then((s) => s.map.inWorker)), thread === "worker", thread);
+  const scenario =(fn, arg) => page.evaluate(([fn, arg]) => window.scenario.then((s) => new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg)), [fn.toString(), arg]);
   const pixels = async () => decodePng(await page.locator("#map").screenshot());
   const pixel = (image, [x, y]) => {
     const i = (Math.round(y) * image.width + Math.round(x)) * image.channels;
@@ -106,8 +113,8 @@ async function scenario(browser, server) {
   assert.deepEqual(pixel(image, [2, 2]), [255, 0, 0], "the background");
 
   // Picking and queries.
-  const picked = await scenario((s, [c, corner]) => ({
-    hit: s.map.hitTest(c), none: s.map.hitTest(corner),
+  const picked = await scenario(async (s, [c, corner]) => ({
+    hit: await s.map.hitTest(c), none: await s.map.hitTest(corner),
   }), [CENTER, [2, 2]]);
   assert.deepEqual([picked.hit?.layer, picked.hit?.id, picked.hit?.source], ["box", "7", "box"]);
   assert.equal(picked.none, null);
@@ -119,19 +126,21 @@ async function scenario(browser, server) {
   const unframed = await scenario((s) => s.firstProjection);
   assert.deepEqual(unframed, CENTER, "projected before a frame");
 
-  // Projection, synchronous in both modes.
-  const projected = await scenario((s, c) => ({ p: s.map.project([0, 0]), g: s.map.unproject(c) }), CENTER);
+  // Projection.
+  const projected = await scenario(async (s, c) => ({ p: await s.map.project([0, 0]), g: await s.map.unproject(c) }),
+    CENTER);
   assert.ok(Math.hypot(projected.p[0] - CENTER[0], projected.p[1] - CENTER[1]) < 1e-6, String(projected.p));
   assert.ok(Math.hypot(...projected.g) < 1e-6, String(projected.g));
 
   // Padding moves the center; a camera's projection answers before any
   // move; the eye round-trips.
-  const camera = await scenario((s) => {
+  const camera = await scenario(async (s) => {
     s.map.camera.jumpTo({ padding: { top: 40 } });
-    const padded = s.map.project([0, 0]);
-    const closer = s.map.project([10, 0], { zoom: s.map.camera.current.zoom + 1 });
+    const padded = await s.map.project([0, 0]);
+    const closer = await s.map.project([10, 0], { zoom: s.map.camera.current.zoom + 1 });
     const zoom = s.map.camera.current.zoom;
     s.map.camera.jumpToFree(s.map.camera.free);
+    await s.sync();
     const after = s.map.camera.current;
     s.map.camera.jumpTo({ padding: 0 });
     return { padded, closer, zoom, after };
@@ -166,7 +175,7 @@ async function scenario(browser, server) {
     const data = (rgb) => ({ ...image, data: new Uint8Array(image.data.map((v, i) => (i % 4 === 3 ? 255 : rgb[i % 4]))) });
     await s.map.addImage("dot", data([255, 255, 0]), { pixelRatio: 1 });
     const drawn = s.drawn();
-    const again = (() => { try { s.map.addImage("dot", data([0, 0, 0])); return null; } catch (e) { return String(e); } })();
+    const again = await s.map.addImage("dot", data([0, 0, 0])).then(() => null, (e) => String(e));
     await drawn;
     return { has: await s.map.hasImage("dot"), again };
   }, solid([0, 0, 0]));
@@ -182,7 +191,7 @@ async function scenario(browser, server) {
   assert.deepEqual(pixel(image, CENTER), [255, 0, 255], "the updated pattern");
   const removed = await scenario(async (s) => {
     await s.map.removeImage("dot");
-    const again = (() => { try { s.map.removeImage("dot"); return null; } catch (e) { return String(e); } })();
+    const again = await s.map.removeImage("dot").then(() => null, (e) => String(e));
     const generation = await s.map.edit((tx) => tx.setPaintProperty("box", "fill-pattern", null));
     await s.shows(generation);
     await s.idle();
@@ -195,9 +204,11 @@ async function scenario(browser, server) {
   const moved = await scenario(async (s) => {
     const c = s.map.camera;
     c.jumpTo({ roll: 30 });
+    await s.sync();
     const rolled = c.current.roll;
     c.centerClampedToGround = false;
     c.setCenterElevation(120);
+    await s.sync();
     const raised = c.current.elevation;
     const arrived = await c.easeTo({ roll: 0, elevation: 0, duration: 50 });
     const { roll, elevation } = c.current;
@@ -220,11 +231,15 @@ async function scenario(browser, server) {
 
   // A click is reported where it was, and an idle map draws nothing.
   await page.mouse.click(...CENTER);
-  // Gesture events are reported with the next animation frame.
+  // Gesture events are reported with the frame that follows.
   const clicked = await scenario(async (s) => {
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const events = [];
+    for (const until = performance.now() + 1000; !events.some((e) => e.type === "click") && performance.now() < until;) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      events.push(...s.events());
+    }
     await s.idle();
-    return s.events().filter((e) => e.type === "click");
+    return [...events, ...s.events()].filter((e) => e.type === "click");
   });
   assert.equal(clicked.length, 1);
   assert.deepEqual(clicked[0].point, CENTER);
@@ -232,9 +247,10 @@ async function scenario(browser, server) {
   assert.deepEqual(quiet, { rafs: 0, renders: 0 }, "idle draws nothing");
 
   // Errors: an edit of a layer that isn't there fails, and the map keeps its style.
-  const rejected = await scenario((s) => { try { s.map.edit((tx) => tx.setPaintProperty("nope", "fill-color", "#000")); return null; } catch (e) { return String(e); } });
+  const rejected = await scenario((s) => s.map.edit((tx) => tx.setPaintProperty("nope", "fill-color", "#000"))
+    .then(() => null, (e) => String(e)));
   assert.ok(rejected, "a bad edit rejects");
-  const hit = await scenario((s) => s.map.hitTest(s.map.project([0, 0]))?.layer);
+  const hit = await scenario(async (s) => (await s.map.hitTest(await s.map.project([0, 0])))?.layer);
   assert.equal(hit, "box");
 
   // A clustered source: its points' cluster, whose queries answer.
@@ -282,8 +298,9 @@ async function scenario(browser, server) {
   assert.deepEqual(updated, { name: "seven" });
 
   // The style reads back.
-  const readback = await scenario((s) => ({
-    order: s.map.getLayersOrder(), sources: s.map.getSourceIds(), box: s.map.getLayer("box"), none: s.map.getLayer("nope"),
+  const readback = await scenario(async (s) => ({
+    order: await s.map.getLayersOrder(), sources: await s.map.getSourceIds(), box: await s.map.getLayer("box"),
+    none: await s.map.getLayer("nope"),
   }));
   assert.deepEqual(readback.order.slice(0, 2), ["background", "box"]);
   assert.ok(readback.sources.includes("box") && readback.box.type === "fill" && readback.none === undefined, JSON.stringify(readback));
@@ -319,7 +336,7 @@ async function scenario(browser, server) {
   image = await pixels();
   assert.deepEqual(pixel(image, CENTER), [255, 0, 255], "the app's tile");
   assert.deepEqual(errors, []);
-  console.log("scenario: passed");
+  console.log(`scenario: passed (${thread})`);
   await page.close();
 }
 
@@ -391,7 +408,7 @@ async function edits(browser, server) {
     await map.edit((tx) => tx.updateSourceData("e2e-geo", { update: [{ id: 1, addOrUpdateProperties: [{ key: "name", value: "b" }] }] }));
     await map.once("idle");
     const shown = async () => {
-      const query = async (id, x) => (await map.queryRenderedFeatures(map.project(centre(x)), { layers: [id] }))[0]?.properties ?? null;
+      const query = async (id, x) => (await map.queryRenderedFeatures(await map.project(centre(x)), { layers: [id] }))[0]?.properties ?? null;
       return { geo: await query("e2e-geo", geoX), remote: await query("e2e-remote", remoteX) };
     };
     const before = await shown();
@@ -399,7 +416,7 @@ async function edits(browser, server) {
     map.loseDevice();
     await restored;
     await map.once("idle");
-    const at = map.project([139.735 + 7 * 0.0004, 35.682]);
+    const at = await map.project([139.735 + 7 * 0.0004, 35.682]);
     const [feature] = await map.queryRenderedFeatures(at, { layers: ["grid"] });
     const after = await shown();
     map.edit((tx) => tx.removeLayer("e2e-geo").removeLayer("e2e-remote"));
@@ -448,9 +465,7 @@ async function editor(browser, server) {
   const map = page.locator("#map");
   const hit = await page.evaluate(async () => {
     const canvas = document.querySelector("#map canvas");
-    const result = orbis.hitTest(canvas.clientWidth/2,canvas.clientHeight/2);
-    if (result instanceof Promise) throw new Error("hitTest must be synchronous");
-    return result;
+    return orbis.hitTest(canvas.clientWidth / 2, canvas.clientHeight / 2);
   });
   assert.equal(hit.layer,"stations");
   assert.equal(hit.id,"31");
@@ -568,13 +583,13 @@ async function switching(browser, server) {
 
   // A point the water draws, and its colour through a switch to `style`.
   // Points on the map itself, not under its controls.
-  const onMap = (test) => page.evaluate((test) => {
+  const onMap = (test) => page.evaluate(async (test) => {
     const canvas = app.map.canvas;
     const rect = canvas.getBoundingClientRect();
     for (let y = 20; y < canvas.clientHeight; y += 20) {
       for (let x = 20; x < canvas.clientWidth; x += 20) {
         if (document.elementFromPoint(rect.x + x, rect.y + y) !== canvas) continue;
-        const hit = app.map.hitTest([x, y]);
+        const hit = await app.map.hitTest([x, y]);
         if (hit && (test === "any" || hit.layer === test)) return [x, y];
       }
     }
@@ -874,7 +889,9 @@ const PAN = { halfLife: 140, stop: 10, min: 200, max: 10_000 };
 
 async function gestures(browser, server) {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
-  await page.goto(`${server.url}scenario.html`);
+  // On the page's thread, where the log below reads each frame's time, and a
+  // projection answers for the camera at its call.
+  await page.goto(`${server.url}scenario.html?worker=0`);
   const scenario = (fn, arg) => page.evaluate(([fn, arg]) => window.scenario.then((s) => new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg)), [fn.toString(), arg]);
   const cdp = await page.context().newCDPSession(page);
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -903,10 +920,16 @@ async function gestures(browser, server) {
     for (const type of ["pointerdown", "pointermove", "pointerup"]) {
       addEventListener(type, (e) => {
         window.gestureLog.pointers.push({ type, t: e.timeStamp, x: e.clientX, y: e.clientY, kind: e.pointerType });
-        if (type === "pointerup") window.gestureLog.atRelease = { t: e.timeStamp, at: s.map.project([0, 0]) };
+        if (type !== "pointerup") return;
+        const release = window.gestureLog.atRelease = { t: e.timeStamp, at: null };
+        s.map.project([0, 0]).then((at) => { release.at = at; });
       }, true);
     }
-    s.map.on("move", () => window.gestureLog.frames.push({ t: frameTime, at: s.map.project([0, 0]), zoom: s.map.camera.current.zoom }));
+    s.map.on("move", () => {
+      const frame = { t: frameTime, at: null, zoom: s.map.camera.current.zoom };
+      window.gestureLog.frames.push(frame);
+      s.map.project([0, 0]).then((at) => { frame.at = at; });
+    });
   });
   const log = (clear) => page.evaluate((clear) => {
     const out = structuredClone(window.gestureLog);

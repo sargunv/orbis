@@ -33,10 +33,10 @@ window.requestAnimationFrame = (callback) => raf((t) => { rafs++; callback(t); }
 
 window.scenario = (async () => {
   const map = await createMap({
-    container: document.getElementById("map"), style: STYLE,
+    container: document.getElementById("map"), style: STYLE, worker: params.get("worker") !== "0",
   });
   // Before a frame: the canvas's size, for fits and projections.
-  const firstProjection = map.project([0, 0]);
+  const firstProjection = await map.project([0, 0]);
   const generations = [];
   for (const type of ["styleload", "load", "idle", "movestart", "moveend", "click", "error", "styleimagemissing"]) {
     map.on(type, (e) => events.push({ type, ...(type === "click" ? { point: e.point, lngLat: e.lngLat } : {}), ...(e.id ? { id: e.id } : {}) }));
@@ -49,14 +49,23 @@ window.scenario = (async () => {
     firstProjection,
     /** The events since the last call. */
     events: () => events.splice(0),
-    idle: () => (map.stats?.idle && !map.camera.moving ? Promise.resolve() : map.once("idle")),
+    /** Resolves once the map has the calls made so far and is idle. */
+    idle: async () => {
+      await map.hasImage("");
+      if (!map.stats?.idle || map.camera.moving) await map.once("idle");
+    },
     /** Resolves once the next frame draws and the map idles again. */
     drawn: () => map.once("render").then(() => (map.stats?.idle ? undefined : map.once("idle"))),
-    /** Resolves once a frame shows `generation`. */
-    shows: (generation) => new Promise((resolve) => {
-      const check = () => (generations.some((g) => g >= generation) ? resolve() : setTimeout(check, 10));
-      check();
-    }),
+    /** Resolves once a frame shows `generation` (or the one it resolves to). */
+    shows: async (generation) => {
+      const shown = await generation;
+      await new Promise((resolve) => {
+        const check = () => (generations.some((g) => g >= shown) ? resolve() : setTimeout(check, 10));
+        check();
+      });
+    },
+    /** Resolves once the map has every call made so far, its state with them. */
+    sync: () => map.hasImage(""),
     /** Main-thread animation frames and map frames over `ms`. */
     async quiet(ms) {
       const [r0, f0] = [rafs, renders];

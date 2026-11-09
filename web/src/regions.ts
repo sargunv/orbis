@@ -4,7 +4,13 @@
 // opens offline. Each JS context reads the regions once; one that changes
 // them tells the others on the `orbis-regions` broadcast channel.
 
-import init, { deleteRegion as deleteCore, downloadRegion as downloadCore, listRegions } from "../pkg/core.js";
+/** core.wasm on this thread, loaded on first use: a page whose map runs
+ * in a worker loads it only for regions. */
+const core = async () => {
+  const module = await import("../pkg/core.js");
+  await module.default({ module_or_path: CORE });
+  return module;
+};
 
 const CORE = new URL("../pkg/core_bg.wasm", import.meta.url);
 const CHANNEL = "orbis-regions";
@@ -52,7 +58,7 @@ let starting: Promise<unknown> = Promise.resolve();
  * once it starts. */
 export async function downloadRegion(definition: RegionDefinition,
   onEvent?: (event: RegionEvent) => void): Promise<number> {
-  await init({ module_or_path: CORE });
+  const { downloadRegion: downloadCore } = await core();
   const start = starting.then(() => downloadCore(definition.name, definition.style,
     new Float64Array(definition.bounds), new Float64Array(definition.zooms), (event: RegionEvent) => {
       if (event.type === "complete") changed();
@@ -64,13 +70,13 @@ export async function downloadRegion(definition: RegionDefinition,
 
 /** Deletes a region, stopping its download. */
 export async function deleteRegion(id: number): Promise<void> {
-  await init({ module_or_path: CORE });
+  const { deleteRegion: deleteCore } = await core();
   await deleteCore(id);
   changed();
 }
 
 /** The regions on this origin. */
 export async function regions(): Promise<Region[]> {
-  await init({ module_or_path: CORE });
+  const { listRegions } = await core();
   return JSON.parse(await listRegions());
 }
