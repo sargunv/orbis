@@ -124,7 +124,8 @@ struct Split {
 }
 
 /// How far inside a tile's edges a neighbour's features reach past them,
-/// in data units: a pixel, with room to spare at any tile size and scale.
+/// in data units: a 128th of the tile, four pixels of a 512-pixel tile,
+/// at least the pixel a fill outline reaches in tiles of 128 pixels on.
 fn edge_band(layer: &Layer) -> i32 {
     (layer.extent() / 128).max(1) as i32
 }
@@ -682,13 +683,15 @@ pub(crate) fn build(
     let mut ids: HashMap<String, u32> = HashMap::new();
     let source_def = plan.source_def(source);
     for node in &plan.nodes {
-        if node.source != source
-            || select.nodes.is_some_and(|n| !n.contains(&node.key))
-            || (select.neighbour && !node.family.crosses_tiles() && !node.family.reaches_edges())
-        {
+        if node.source != source || select.nodes.is_some_and(|n| !n.contains(&node.key)) {
             continue;
         }
+        // A neighbour lays out nothing of a node that stays within its
+        // tile, as a relayout of it replaces what the node held: nothing.
         build.nodes.push(node.key);
+        if select.neighbour && !node.family.crosses_tiles() && !node.family.reaches_edges() {
+            continue;
+        }
         let style_layer = &plan.style.layers[node.layer];
         let Some((layer, name)) = node_layer(frame, plan, node, zoom) else {
             continue;

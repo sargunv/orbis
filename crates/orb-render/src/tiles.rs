@@ -826,11 +826,6 @@ impl Renderer {
         self.scene.set_tile_order(&parts);
     }
 
-    /// GPU bytes a mesh holds.
-    pub fn mesh_bytes(&self, mesh: MeshId) -> u64 {
-        self.scene.mesh_bytes(mesh)
-    }
-
     /// Words of the property buffer for a table outside any tile, such as
     /// the feature-state table; not cleared. The pool grows, within its
     /// limit, to make room.
