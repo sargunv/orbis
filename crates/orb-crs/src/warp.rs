@@ -329,16 +329,21 @@ impl Warp {
     }
 
     /// Whether the tile holds a pole that a wrapping target plane spreads
-    /// along its edge (Web Mercator's), so the tile spans every copy.
+    /// along its edge (Web Mercator's), so the tile spans every copy. A
+    /// source plane that only clamps the pole to its edge (Web Mercator's
+    /// own) holds no pole.
     fn spans_wrap(&self, tile: TileIndex) -> bool {
         self.to.wrap_period().is_some()
-            && [90.0, -90.0].into_iter().any(|lat| {
+            && [90.0, -90.0].into_iter().any(|lat: f64| {
                 let pole = crate::Geodetic::new(0.0, lat);
                 let from = self.from.projection();
                 if !from.contains(pole) {
                     return false;
                 }
                 let p = from.forward(pole);
+                if (from.inverse(p).lat - lat).abs() > 1e-6 {
+                    return false;
+                }
                 let b = self.from.tile_bounds(tile);
                 p.cmpge(b.min).all() && p.cmple(b.max).all()
             })
@@ -845,5 +850,40 @@ mod tests {
             assert_eq!(on_cut(left), west_cut, "{tile:?} west {left}");
             assert_eq!(on_cut(right), east_cut, "{tile:?} east {right}");
         }
+    }
+
+    /// Web Mercator's top row holds no pole (it stops at 85.05°), so on a
+    /// geographic plane its tiles stay within their own longitudes and
+    /// have patches to draw through.
+    #[test]
+    fn mercator_top_rows_hold_no_pole() {
+        let geographic = Projection::from_descriptor("EPSG:4326").unwrap();
+        let warp = Warp::new(mercator(), geographic);
+        for tile in [
+            TileIndex::new(1, 0, 0),
+            TileIndex::new(1, 1, 0),
+            TileIndex::new(3, 4, 0),
+        ] {
+            let footprint = warp.footprint(tile).unwrap();
+            assert!(footprint.bounds.size().x < 180.5, "{tile:?}");
+            assert!(warp.series(tile, 1.0 / 2048.0).is_some(), "{tile:?}");
+        }
+        // A polar set's tile around the pole does span every copy.
+        let pole = polar()
+            .projection()
+            .forward(crate::Geodetic::new(0.0, 90.0));
+        let tile = polar()
+            .tiles_in(
+                WorldRect {
+                    min: pole,
+                    max: pole,
+                },
+                2,
+            )
+            .next()
+            .unwrap();
+        let warp = Warp::new(polar(), geographic);
+        assert!(warp.spans_wrap(tile));
+        assert!(warp.series(tile, 1.0 / 2048.0).is_none());
     }
 }
