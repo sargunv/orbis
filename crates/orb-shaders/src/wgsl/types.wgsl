@@ -291,6 +291,22 @@ fn owned(tile: Tile, p: vec2<f32>) -> bool {
     return false;
 }
 
+// The box around the placement's clip rectangles within its bound, as
+// (min, max); empty (min past max) when it draws nothing.
+fn clips_box(tile: Tile) -> vec4<f32> {
+    var lo = vec2<f32>(1e9);
+    var hi = vec2<f32>(-1e9);
+    for (var i = 0u; i < 4u; i++) {
+        let a = unpack_i16x2(tile.clips[i].x);
+        let b = unpack_i16x2(tile.clips[i].y);
+        if all(a < b) {
+            lo = min(lo, a);
+            hi = max(hi, b);
+        }
+    }
+    return vec4<f32>(max(lo, unpack_i16x2(tile.bound.x)), min(hi, unpack_i16x2(tile.bound.y)));
+}
+
 // Whether `p` lies where the placement's content may land (`bound`).
 fn landed(tile: Tile, p: vec2<f32>) -> bool {
     return all(p >= unpack_i16x2(tile.bound.x)) && all(p < unpack_i16x2(tile.bound.y));

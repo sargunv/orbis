@@ -49,13 +49,26 @@ fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
         return out;
     }
     let tile = tile_at(v.tile);
-    let pos = bitcast<vec2<f32>>(vec2<u32>(vertex_at(v.vertex), vertex_at(v.vertex + 1u)));
+    var pos = bitcast<vec2<f32>>(vec2<u32>(vertex_at(v.vertex), vertex_at(v.vertex + 1u)));
+    let weight = bitcast<f32>(vertex_at(v.vertex + 3u));
+    var image = unpack_i16x2(vertex_at(v.vertex + 4u));
+    var clip = unpack_i16x2(vertex_at(v.vertex + 2u));
+    // On an affine tile, where a vertex's place, clip position and image
+    // position are one point, the mesh keeps to its placement's clips'
+    // box: a coarse tile standing in for a little of itself, as in a drape
+    // slot, would otherwise cover far more (all of the drape atlas) only
+    // to discard it.
+    if tile.warp_cells == 0u && tile.globe_cells == 0u && weight == 1.0 && all(pos == clip) && all(clip == image) {
+        let box = clips_box(tile);
+        pos = clamp(pos, box.xy, max(box.xy, box.zw));
+        clip = pos;
+        image = pos;
+    }
     let ground = tile_ground(tile, pos);
     out.position = ground_clip(ground, frame.align, 0.0);
-    let weight = bitcast<f32>(vertex_at(v.vertex + 3u));
-    out.tile_pos = unpack_i16x2(vertex_at(v.vertex + 4u)) * weight;
+    out.tile_pos = image * weight;
     out.weight = weight;
-    out.clip_pos = unpack_i16x2(vertex_at(v.vertex + 2u));
+    out.clip_pos = clip;
     out.tile = v.tile;
     out.layer = prop_at(v.prop_base);
     out.latitudes = bitcast<vec2<f32>>(vec2<u32>(prop_at(v.prop_base + 1u), prop_at(v.prop_base + 2u)));
