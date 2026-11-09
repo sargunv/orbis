@@ -43,7 +43,10 @@ try {
   page.on("console", (m) => {
     // Mobile Chrome asks for a favicon the demo has none of.
     if (m.location().url?.endsWith("/favicon.ico")) return;
-    if (["error", "warning"].includes(m.type())) { errors++; console.error(`page: ${m.text()}`); }
+    if (!["error", "warning"].includes(m.type())) return;
+    console.error(`page: ${m.text()}`);
+    // GL JS's console warnings are about the style, not the run.
+    if (params.get("engine") !== "gl") errors++;
   });
   page.on("pageerror", (e) => { errors++; console.error(`page: ${e.message}`); });
   await page.goto(`${server.url}bench.html?${params}`);

@@ -35,7 +35,8 @@ issue.</p>
 // size=WxH, at=lon,lat, experiment=frames|gestures; for frames, frames,
 // warmup, rounds and ratio; for gestures, workers=<job workers> and
 // paths=city|alps (alps by default with style=alps, at the terrain demo's
-// view).
+// view), and engine=orbis|gl (gl: MapLibre GL JS along the same paths,
+// counting its labels' blinks and returns).
 import { runFrames } from "./frames.js";
 import { runGestures } from "./gestures.js";
 import { demoStyle } from "./styles.js";
@@ -130,6 +131,7 @@ async function run() {
       report = await runGestures({
         style, center, paths, size: [w, h], about: lines,
         jobWorkers: params.has("workers") ? Number(params.get("workers")) : undefined,
+        engine: params.get("engine") ?? "orbis",
         show: (line) => show(line),
       });
     } else {

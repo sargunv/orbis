@@ -25,6 +25,9 @@ const PATH_FRAMES: usize = 360;
 /// A label that all but vanishes (opacity under 0.1) and is back in full
 /// (0.9) within this many frames blinked: no fade is that quick (300 ms).
 const FLASH_FRAMES: usize = 10;
+/// A label back in full within this many frames of all but vanishing
+/// dropped and returned: 1 s, a fade out and in with a placement between.
+const RETURN_FRAMES: usize = 60;
 /// How long the map may take to settle after a path.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -51,6 +54,14 @@ const CITY_PATHS: &[Path] = &[
         name: "zoom z12 → z16 → z12",
         camera: |s, f| {
             let zoom = 14.0 - 2.0 * (f * std::f64::consts::TAU).cos();
+            CameraState::new(s.center, zoom, &crate::web_mercator())
+        },
+        flight: false,
+    },
+    Path {
+        name: "zoom z12 → z16 → z12, 3 times",
+        camera: |s, f| {
+            let zoom = 14.0 - 2.0 * (3.0 * f * std::f64::consts::TAU).cos();
             CameraState::new(s.center, zoom, &crate::web_mercator())
         },
         flight: false,
@@ -141,6 +152,10 @@ struct PathResult {
     /// within [`FLASH_FRAMES`], and the frames between.
     blinks: usize,
     blink_frames: usize,
+    /// Labels shown in full that all but vanished, and of those, the ones
+    /// back in full within [`RETURN_FRAMES`] (blinks included).
+    drops: usize,
+    returns: usize,
     /// From the path's end until the map is idle.
     settle: Duration,
 }
@@ -210,7 +225,7 @@ pub(crate) fn run(
         let mut placement = Vec::new();
         // Per label text: shown in full, and since which frame it is gone.
         let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
-        let (mut blinks, mut blink_frames) = (0, 0);
+        let (mut blinks, mut blink_frames, mut returns, mut drops) = (0, 0, 0, 0);
         let (mut rebuilds, mut rows) = (0, 0);
         let started = clock::now();
         let mut now = base;
@@ -250,12 +265,17 @@ pub(crate) fn run(
             for (name, dim) in &mut labels {
                 let opacity = shown.get(name).copied().unwrap_or(0.0);
                 match *dim {
-                    None if opacity < 0.1 => *dim = Some(f as usize),
+                    None if opacity < 0.1 => {
+                        *dim = Some(f as usize);
+                        drops += 1;
+                    }
                     Some(since) if opacity >= 0.9 => {
-                        if f as usize - since <= FLASH_FRAMES {
+                        let gone = f as usize - since;
+                        if gone <= FLASH_FRAMES {
                             blinks += 1;
-                            blink_frames += f as usize - since;
+                            blink_frames += gone;
                         }
+                        returns += usize::from(gone <= RETURN_FRAMES);
                         *dim = None;
                     }
                     _ => {}
@@ -296,6 +316,8 @@ pub(crate) fn run(
             rows,
             blinks,
             blink_frames,
+            returns,
+            drops,
             settle: clock::now() - ended,
         });
     }
@@ -332,16 +354,16 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | drape atlas MiB max (mean) | drape resizes | settle ms | label blinks (frames) | placement p50 | p95 | max |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | drape atlas MiB max (mean) | drape resizes | settle ms | label blinks (frames) | label returns (drops) | placement p50 | p95 | max |"
         )?;
         writeln!(
             out,
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         )?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {} | {:.0} | {} ({}) | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {} | {:.0} | {} ({}) | {} ({}) | {} | {} | {} |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
@@ -358,6 +380,8 @@ impl GesturesReport {
                 p.settle.as_secs_f64() * 1000.0,
                 p.blinks,
                 p.blink_frames,
+                p.returns,
+                p.drops,
                 ms(percentile(&p.placement, 0.5)),
                 ms(percentile(&p.placement, 0.95)),
                 ms(percentile(&p.placement, 1.0)),
@@ -371,7 +395,9 @@ impl GesturesReport {
              path's end until the map is idle; candidate rebuilds: frames that laid the cull's \
              candidates out again; label blinks: labels shown in full that all but \
              vanished (opacity under 0.1) and were back in full within {FLASH_FRAMES} frames (no \
-             fade is that quick), and the frames they were gone; placement: the render thread's \
+             fade is that quick), and the frames they were gone; label returns: labels \
+             that all but vanished and were back in full within {RETURN_FRAMES} frames (1 s), \
+             blinks included, of the labels shown in full that all but vanished; placement: the render thread's \
              share of it (building the frame the lane places, applying commits; 0.2 ms)."
         )?;
         for warning in &self.warnings {

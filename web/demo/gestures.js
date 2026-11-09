@@ -7,6 +7,9 @@
 // the path ends (a backlog of frames shows there). `paths=alps` runs the
 // terrain demo's view instead: rotate and pan at z11.6, pitch 72, and its
 // 60 s flight (`data/alps-flight.json`), flown as the demo flies it.
+// `engine=gl` drives MapLibre GL JS along the same paths instead and
+// counts its labels' blinks and returns as the native bench counts
+// Orbis's, from `style.placement`'s opacities after each frame.
 import { createMap } from "orbis";
 import alpsFlight from "./data/alps-flight.json";
 
@@ -21,6 +24,10 @@ const CITY_PATHS = [
     name: "zoom z12 → z16 → z12",
     camera: (center, f) => ({ center, zoom: 14 - 2 * Math.cos(f * 2 * Math.PI), bearing: 0, pitch: 0 }),
   },
+  {
+    name: "zoom z12 → z16 → z12, 3 times",
+    camera: (center, f) => ({ center, zoom: 14 - 2 * Math.cos(3 * f * 2 * Math.PI), bearing: 0, pitch: 0 }),
+  },
 ];
 /** The terrain demo's view: z11.6, bearing −32, pitch 72. */
 const alpsView = (center, lon, bearing) => ({ center: [center[0] + lon, center[1]], zoom: 11.6, bearing, pitch: 72 });
@@ -31,6 +38,9 @@ const ALPS_PATHS = [
 ];
 const PATH_SETS = { city: CITY_PATHS, alps: ALPS_PATHS };
 const LOAD_TIMEOUT = 120_000;
+/** Within this many frames, a label that all but vanished (under 0.1) and is back in full (0.9) blinked, or returned. */
+const FLASH_FRAMES = 10;
+const RETURN_FRAMES = 60;
 
 const percentile = (xs, p) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -97,10 +107,159 @@ async function runPath(container, style, jobWorkers, center, path, show) {
   }
 }
 
+/**
+ * Per label text, the greatest opacity GL JS draws its text with now: each
+ * drawn symbol tile's instances, their `style.placement` opacity moved on by
+ * the fade since its commit (what the symbol shader computes).
+ */
+function glShown(map, maplibregl, texts) {
+  const style = map.style;
+  const placement = style.placement;
+  const shown = new Map();
+  if (!placement) return shown;
+  const change = placement.symbolFadeChange(maplibregl.now());
+  for (const id of style._order) {
+    const layer = style._layers[id];
+    if (layer.type !== "symbol") continue;
+    const tiles = style.tileManagers[layer.source];
+    for (const key of tiles.getRenderableIds(true)) {
+      const tile = tiles.getTileByID(key);
+      const bucket = tile.getBucket(layer);
+      if (!bucket?.symbolInstances) continue;
+      let names = texts.get(bucket);
+      if (!names) {
+        // The texts the layer's `text-field` evaluates to for each instance's feature.
+        const index = tile.latestFeatureIndex;
+        const source = index.loadVTLayers()[index.sourceLayerCoder.decode(bucket.sourceLayerIndex)];
+        const field = layer.layout.get("text-field");
+        names = [];
+        for (let i = 0; i < bucket.symbolInstances.length; i++) {
+          const f = source.feature(bucket.symbolInstances.get(i).featureIndex);
+          const text = field.evaluate({ type: f.type, id: f.id, properties: f.properties, geometry: [] }, {}, tile.tileID.canonical);
+          names.push(text ? text.toString() : "");
+        }
+        texts.set(bucket, names);
+      }
+      for (let i = 0; i < names.length; i++) {
+        if (!names[i]) continue;
+        const o = placement.opacities[bucket.symbolInstances.get(i).crossTileID];
+        const v = o ? Math.min(1, Math.max(0, o.text.opacity + (o.text.placed ? change : -change))) : 0;
+        if (v > (shown.get(names[i]) ?? 0)) shown.set(names[i], v);
+      }
+    }
+  }
+  return shown;
+}
+
+/** Counts labels' blinks and returns frame by frame, as `orb-bench` does. */
+function labelCounter() {
+  const labels = new Map();
+  const counts = { blinks: 0, blinkFrames: 0, returns: 0, drops: 0 };
+  return {
+    counts,
+    frame(f, shown) {
+      for (const [name, since] of labels) {
+        const opacity = shown.get(name) ?? 0;
+        if (since === null && opacity < 0.1) { labels.set(name, f); counts.drops++; }
+        else if (since !== null && opacity >= 0.9) {
+          const gone = f - since;
+          if (gone <= FLASH_FRAMES) { counts.blinks++; counts.blinkFrames += gone; }
+          if (gone <= RETURN_FRAMES) counts.returns++;
+          labels.set(name, null);
+        }
+      }
+      for (const [name, opacity] of shown) if (opacity >= 0.9 && !labels.has(name)) labels.set(name, null);
+    },
+  };
+}
+
+let glModule;
+async function loadGl() {
+  if (!glModule) {
+    const [gl, { Protocol }, { default: workerUrl }] = await Promise.all([
+      import("maplibre-gl"), import("pmtiles"), import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
+    ]);
+    glModule = gl.default ?? gl;
+    glModule.setWorkerUrl(workerUrl);
+    glModule.addProtocol("pmtiles", new Protocol().tile);
+  }
+  return glModule;
+}
+
+/** Runs one path through GL JS on a fresh map; resolves to its row. */
+async function runGlPath(container, styleUrl, center, path, show) {
+  const maplibregl = await loadGl();
+  const style = await (await fetch(styleUrl)).json();
+  // GL JS wants absolute URLs.
+  const absolute = (url) => new URL(url, new URL(styleUrl, location.href)).href;
+  if (style.sprite) style.sprite = absolute(style.sprite);
+  if (style.glyphs) style.glyphs = absolute(style.glyphs).replace(/%7B/g, "{").replace(/%7D/g, "}");
+  for (const source of Object.values(style.sources)) {
+    if (source.url?.startsWith("pmtiles://")) source.url = `pmtiles://${absolute(source.url.slice(10))}`;
+  }
+  show(`${path.name}: loading (GL JS)`);
+  const created = performance.now();
+  const map = new maplibregl.Map({ container, style, ...path.camera(center, 0), interactive: false, attributionControl: false });
+  try {
+    await idle(map, path.name);
+    const load = performance.now() - created;
+    show(`${path.name}: moving (GL JS)`);
+    const texts = new WeakMap();
+    const counter = labelCounter();
+    const times = [];
+    for (let f = 1; f <= PATH_FRAMES; f++) {
+      map.jumpTo(path.camera(center, f / PATH_FRAMES));
+      times.push(await nextFrame());
+      counter.frame(f, glShown(map, maplibregl, texts));
+    }
+    const ended = performance.now();
+    // A repaint ends in `idle` once nothing is left to do.
+    const settled = idle(map, path.name);
+    map.triggerRepaint();
+    await settled;
+    const gaps = times.slice(1).map((t, i) => t - times[i]);
+    return { path: path.name, load, frames: times.length, interval: [0.5, 0.95, 1].map((p) => percentile(gaps, p)),
+      ...counter.counts, settle: performance.now() - ended };
+  } finally {
+    map.remove();
+  }
+}
+
+/** The GL JS run's Markdown report: the paths but a flight. */
+async function runGlGestures({ style, center, run, size, about, show, container }) {
+  const rows = [];
+  for (const path of run.filter((p) => !p.flight)) rows.push(await runGlPath(container, style, center, path, show));
+  return [
+    "### Gestures bench (page, MapLibre GL JS)", "",
+    ...about.map((line) => `- ${line}`),
+    `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
+      "the camera moved once a display frame (`jumpTo`), each path from a fresh map at rest",
+    "",
+    "| path | load to idle ms | frames | interval p50 | p95 | max | label blinks (frames) | label returns (drops) | idle after ms |",
+    "|---|---|---|---|---|---|---|---|---|",
+    ...rows.map((r) => `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${r.interval.map(ms).join(" | ")} | ` +
+      `${r.blinks} (${r.blinkFrames}) | ${r.returns} (${r.drops}) | ${r.settle.toFixed(0)} |`),
+    "",
+    `Label blinks: label texts drawn in full that all but vanished (opacity under 0.1) and were back in full within ${FLASH_FRAMES} ` +
+      `frames, and the frames they were gone; label returns: back in full within ${RETURN_FRAMES} frames (1 s), blinks included, of the label texts drawn in full that all but vanished. ` +
+      "Opacities are `style.placement`'s, moved on by the fade since its commit, over the tiles GL JS draws.",
+  ].join("\n") + "\n";
+}
+
 /** Runs every path of `paths` (`city` or `alps`); resolves to the Markdown report. */
-export async function runGestures({ style, center, paths, jobWorkers, size, about, show }) {
+export async function runGestures({ style, center, paths, jobWorkers, size, about, show, engine = "orbis" }) {
   const run = PATH_SETS[paths];
   if (!run) throw new Error("paths must be city or alps");
+  if (engine === "gl") {
+    const container = document.createElement("div");
+    Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
+    document.body.append(container);
+    try {
+      return await runGlGestures({ style, center, run, size, about, show, container });
+    } finally {
+      container.remove();
+    }
+  }
   const container = document.createElement("div");
   Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
   document.body.append(container);
