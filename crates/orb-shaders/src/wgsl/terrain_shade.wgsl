@@ -9,19 +9,19 @@
 
 // The hillshade at the fragment, from its slopes' slot: premultiplied by
 // how much of the footprint the source covers.
-fn shade_color(in: TerrainOut) -> vec4<f32> {
-    let slopes = drape_color(in, layer.slopes);
+fn shade_color(in: TerrainOut, at: DrapeSample) -> vec4<f32> {
+    let slopes = drape_color(in, at, layer.slopes);
     if slopes.a < 0.5 / 255.0 {
         return vec4<f32>(0.0);
     }
     let pixel = vec4<f32>(slopes.rg / slopes.a, 1.0, 1.0);
-    let latitudes = terrain_tiles[in.tile.x].latitudes;
-    return hillshade_color(pixel, mix(latitudes.x, latitudes.y, in.uv.y)) * slopes.a;
+    return hillshade_color(pixel, in.stretch) * slopes.a;
 }
 
 @fragment
 fn fs_terrain_shaded(in: TerrainOut) -> @location(0) vec4<f32> {
-    let below = drape_color(in, layer.below);
-    let above = drape_color(in, layer.above);
-    return fogged(in, over(above, over(shade_color(in), below)));
+    let at = drape_sample(in);
+    let below = drape_color(in, at, layer.below);
+    let above = drape_color(in, at, layer.above);
+    return fogged(in, over(above, over(shade_color(in, at), below)));
 }

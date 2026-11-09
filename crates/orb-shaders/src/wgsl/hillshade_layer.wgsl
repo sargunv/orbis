@@ -17,7 +17,7 @@ fn fs_hillshade(in: ImageOut) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(images));
     let pixel = sample_image(in, (v_pos * (size - 2.0) + 1.0) / size, node.nearest);
     let latitude = mix(in.latitudes.x, in.latitudes.y, v_pos.y);
-    return hillshade_color(pixel, latitude);
+    return hillshade_color(pixel, mercator_stretch(latitude));
 }
 
 // A hillshade the terrain shades: its slopes, unlit, into its drape stack,

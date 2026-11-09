@@ -63,7 +63,11 @@ fn standard_hillshade(deriv: vec2<f32>) -> vec4<f32> {
     let max_value = 0.5 * PI;
     var scaled_slope = slope;
     if intensity != 0.5 {
-        scaled_slope = ((pow(base, slope) - 1.0) / (pow(base, max_value) - 1.0)) * max_value;
+        // GL JS's `pow(base, slope)` as `exp2` of a `log2`: `base` is
+        // positive for intensities in 0..1, and `pow` pays for the bases
+        // that aren't.
+        let log_base = log2(base);
+        scaled_slope = ((exp2(slope * log_base) - 1.0) / (exp2(max_value * log_base) - 1.0)) * max_value;
     }
     let accent = cos(scaled_slope);
     let accent_color = (1.0 - accent) * node.accent * clamp(intensity * 2.0, 0.0, 1.0);
@@ -125,11 +129,11 @@ fn combined_hillshade(d: vec2<f32>) -> vec4<f32> {
     return node.shadows[0] * shade + node.highlights[0] * highlight;
 }
 
-// The shade of slopes `pixel` (the prepared texel) at `latitude` degrees.
-// Slopes shrink by the cosine of the latitude, for Mercator's stretching
-// (GL JS #4807).
-fn hillshade_color(pixel: vec4<f32>, latitude: f32) -> vec4<f32> {
-    let deriv = (pixel.rg - 128.0 / 255.0) * 8.0 / cos(radians(latitude));
+// The shade of slopes `pixel` (the prepared texel) where Mercator stretches
+// them by `stretch`: they shrink by the cosine of the latitude, so
+// `stretch` is its inverse (`mercator_stretch`, GL JS #4807).
+fn hillshade_color(pixel: vec4<f32>, stretch: f32) -> vec4<f32> {
+    let deriv = (pixel.rg - 128.0 / 255.0) * 8.0 * stretch;
     switch node.method {
         case BASIC: {
             return basic_hillshade(deriv);
@@ -147,4 +151,9 @@ fn hillshade_color(pixel: vec4<f32>, latitude: f32) -> vec4<f32> {
             return standard_hillshade(deriv);
         }
     }
+}
+
+// Mercator's slope stretch at `latitude` degrees: the inverse of its cosine.
+fn mercator_stretch(latitude: f32) -> f32 {
+    return 1.0 / cos(radians(latitude));
 }

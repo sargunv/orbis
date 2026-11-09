@@ -1676,6 +1676,7 @@ impl Renderer {
         let size = frame
             .viewport
             .map(|v| (v * frame.pixel_ratio).max(1.0) as u32);
+        let logical = frame.viewport.map(|v| v.max(1.0) as u32);
         // Only nodes that have drawn have targets.
         let mut resized = self.extrusions.resize(
             gpu,
@@ -1688,7 +1689,8 @@ impl Renderer {
         );
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
             terrain.set_layers(gpu, &self.terrain_layers);
-            resized |= terrain.resize(gpu, &mut self.composites, size, self.extrusions.samples);
+            let sizes = (size, logical);
+            resized |= terrain.resize(gpu, &mut self.composites, sizes, self.extrusions.samples);
         }
         for node in self.nodes.iter_mut().filter(|n| n.drawn) {
             if let Some(extrusion) = &mut node.extrusion {

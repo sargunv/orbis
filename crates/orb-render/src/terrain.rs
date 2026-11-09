@@ -244,6 +244,8 @@ pub(crate) struct Terrain {
     occlusion: Option<[TextureId; 2]>,
     occlusion_pipeline: Option<RenderPipelineId>,
     target_size: [u32; 2],
+    /// The size of `occlusion`, in logical pixels.
+    occlusion_size: [u32; 2],
     target_samples: u32,
     /// Atlas slots to redraw this frame with the drape zoom each draws at,
     /// and those zooms.
@@ -414,6 +416,7 @@ impl Terrain {
             occlusion: None,
             occlusion_pipeline: None,
             target_size: [0; 2],
+            occlusion_size: [0; 2],
             target_samples: 0,
             pending: Vec::new(),
             pending_zooms: Vec::new(),
@@ -709,17 +712,21 @@ impl Terrain {
         self.paint = Some(paint);
     }
 
-    /// Sizes the terrain layers' textures to the target.
-    /// Returns whether they changed.
+    /// Sizes the terrain layers' textures to the target, `size` device
+    /// pixels, and its depth for what the terrain hides to `logical`
+    /// pixels, as GL JS's: what it hides is tested a logical pixel at a
+    /// time, and a quarter of the texels at a pixel ratio of 2 take a
+    /// fraction of the pass. Returns whether they changed.
     pub(crate) fn resize(
         &mut self,
         gpu: &mut dyn Gpu,
         composites: &mut Composites,
-        size: [u32; 2],
+        (size, logical): ([u32; 2], [u32; 2]),
         samples: u32,
     ) -> bool {
         let layers = self.layers.len();
         if self.target_size == size
+            && self.occlusion_size == logical
             && self.target_samples == samples
             && self.targets.len() == layers
         {
@@ -732,8 +739,8 @@ impl Terrain {
         let texture = |gpu: &mut dyn Gpu, label, format, usage| {
             gpu.create_texture(&TextureDesc {
                 label,
-                width: size[0],
-                height: size[1],
+                width: logical[0],
+                height: logical[1],
                 array_layers: 1,
                 dimension: TextureViewDimension::D2,
                 format,
@@ -757,6 +764,7 @@ impl Terrain {
             ),
         ]);
         self.target_size = size;
+        self.occlusion_size = logical;
         self.target_samples = samples;
         for _ in 0..layers {
             let mut slot = None;

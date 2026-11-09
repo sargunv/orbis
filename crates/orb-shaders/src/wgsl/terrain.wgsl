@@ -112,6 +112,10 @@ struct TerrainOut {
     // The tile's index and its block of drape slots.
     @location(1) @interpolate(flat) tile: vec2<u32>,
     @location(2) fog_depth: f32,
+    // Mercator's slope stretch for a hillshade the layer shades
+    // (`terrain_shade.wgsl`): per vertex rather than per fragment, which
+    // a grid cell's smooth change of latitude doesn't show.
+    @location(3) stretch: f32,
 };
 
 @vertex
@@ -148,6 +152,7 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     out.position = vec4<f32>(clip.xy, clip.w - clip.z, clip.w);
     out.uv = uv;
     out.tile = vec2<u32>(instance, tile.slot);
+    out.stretch = 1.0 / cos(radians(mix(tile.latitudes.x, tile.latitudes.y, uv.y)));
     // The view depth is the clip w. Fog stays off on a globe, as in GL JS.
     out.fog_depth = select(atmosphere_fog_depth(atmosphere, clip.w), 0.0, globe);
     return out;
@@ -160,18 +165,18 @@ fn fs_terrain_depth(@builtin(position) position: vec4<f32>) -> @location(0) vec4
     return vec4<f32>(position.z, 0.0, 0.0, 0.0);
 }
 
-// Stack `stack`'s slot colour at uv, none for NO_STACK: trilinear and
+// Where a fragment samples its tile's drape slots: the texel in a slot and
+// the footprint's gradients, the same in every slot. Trilinear and
 // anisotropic, as GL JS samples its render-to-texture tiles, and kept in
 // the slot as a texture of its own would clamp to its edge.
-fn drape_color(in: TerrainOut, stack: u32) -> vec4<f32> {
-    if stack == NO_STACK {
-        return vec4<f32>(0.0);
-    }
-    let slot = in.tile.y * terrain.stacks + stack;
-    let uv = in.uv;
-    let size = vec2<f32>(textureDimensions(drape));
-    let corner = vec2<f32>(f32(slot % terrain.columns), f32(slot / terrain.columns)) * terrain.slot_px;
-    let texel = uv * terrain.slot_px;
+struct DrapeSample {
+    texel: vec2<f32>,
+    dx: vec2<f32>,
+    dy: vec2<f32>,
+};
+
+fn drape_sample(in: TerrainOut) -> DrapeSample {
+    let texel = in.uv * terrain.slot_px;
     let dx = dpdx(texel);
     let dy = dpdy(texel);
     // A texel of the level the sampler reads: the footprint's longer side
@@ -186,7 +191,18 @@ fn drape_color(in: TerrainOut, stack: u32) -> vec4<f32> {
     let room = min(p, vec2<f32>(terrain.slot_px) - p) - half;
     let need = 0.5 * max(abs(dx), abs(dy));
     let fit = min(1.0, min(room.x / max(need.x, 1e-6), room.y / max(need.y, 1e-6)));
-    return textureSampleGrad(drape, drape_sampler, (corner + p) / size, 0, dx * fit / size, dy * fit / size);
+    return DrapeSample(p, dx * fit, dy * fit);
+}
+
+// Stack `stack`'s slot colour at `at`, none for NO_STACK.
+fn drape_color(in: TerrainOut, at: DrapeSample, stack: u32) -> vec4<f32> {
+    if stack == NO_STACK {
+        return vec4<f32>(0.0);
+    }
+    let slot = in.tile.y * terrain.stacks + stack;
+    let size = vec2<f32>(textureDimensions(drape));
+    let corner = vec2<f32>(f32(slot % terrain.columns), f32(slot / terrain.columns)) * terrain.slot_px;
+    return textureSampleGrad(drape, drape_sampler, (corner + at.texel) / size, 0, at.dx / size, at.dy / size);
 }
 
 // `top` over `bottom`, premultiplied.
@@ -196,7 +212,8 @@ fn over(top: vec4<f32>, bottom: vec4<f32>) -> vec4<f32> {
 
 @fragment
 fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
-    return fogged(in, over(drape_color(in, layer.above), drape_color(in, layer.below)));
+    let at = drape_sample(in);
+    return fogged(in, over(drape_color(in, at, layer.above), drape_color(in, at, layer.below)));
 }
 
 // The surface's colour as the atmosphere fogs it.
