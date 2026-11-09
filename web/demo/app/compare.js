@@ -63,7 +63,11 @@ export function comparison({ onToggle }) {
 
 function show(engine, map, scene) {
   const stage = map.container.parentElement;
-  const container = h("div", { class: "compare-map" });
+  // The engine gets a box of its own inside the clipped layer: GL JS's
+  // stylesheet makes its container `position: relative`, which would undo
+  // the layer's absolute inset and leave the map no height.
+  const inner = h("div", { class: "compare-engine" });
+  const container = h("div", { class: "compare-map" }, inner);
   const divider = h("div", {
     class: "compare-divider", role: "slider", tabindex: "0", "aria-label": "Divider between the maps",
     "aria-valuemin": "0", "aria-valuemax": "100",
@@ -76,7 +80,7 @@ function show(engine, map, scene) {
     const now = map.getStyle();
     return { ...now, layers: now.layers.filter((l) => !l.id.startsWith(HIGHLIGHT_PREFIX)) };
   };
-  const other = engine.open(container, { style: style(), camera: map.camera.current, constraints: scene.constraints });
+  const other = engine.open(inner, { style: style(), camera: map.camera.current, constraints: scene.constraints });
 
   // Input on a map makes it lead and stops the other's motion, such as a
   // drag's momentum. The capture phase sees it before either map does.

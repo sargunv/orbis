@@ -581,6 +581,11 @@ async function compare(browser, server) {
   await settled();
   assert.ok(gl().length > 0, "?compare loads GL JS");
   assert.equal(await page.locator(".compare-map canvas").count(), 1);
+  // GL JS's canvas fills the stage, and input right of the divider reaches it.
+  const box = await page.locator(".compare-map canvas").boundingBox();
+  assert.ok(box && box.width === 800 && box.height === 500, `GL JS's canvas fills the stage: ${JSON.stringify(box)}`);
+  assert.ok(await page.evaluate(() => document.querySelector(".compare-map").contains(document.elementFromPoint(600, 250))),
+    "the right half is GL JS's");
   assert.equal(await page.getAttribute("#compare-toggle", "aria-checked"), "true");
 
   // A drag on either side of the divider moves both maps.
