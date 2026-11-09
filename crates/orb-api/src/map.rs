@@ -59,6 +59,10 @@ pub struct MapOptions {
     /// depends on the camera alone. On by default; still and tile output
     /// places afresh either way.
     pub stable_labels: bool,
+    /// How tiles coarsen with distance in pitched views: MapLibre Native's
+    /// tile level of detail (maplibre-native-ffi's tile options), whose
+    /// defaults it takes.
+    pub tile_lod: orb_camera::TileLod,
 }
 
 impl Default for MapOptions {
@@ -73,6 +77,7 @@ impl Default for MapOptions {
             terrain_skirts: true,
             previews: crate::Previews::NONE,
             stable_labels: true,
+            tile_lod: orb_camera::TileLod::default(),
         }
     }
 }
@@ -229,6 +234,7 @@ impl Map {
         map.set_terrain_skirts(options.terrain_skirts);
         map.set_previews(options.previews);
         map.set_stable_labels(options.stable_labels);
+        map.set_tile_lod(options.tile_lod);
         Self {
             shared: runtime.shared.clone(),
             runtime: runtime.clone(),
@@ -344,6 +350,19 @@ impl Map {
     /// nothing, with a warning.
     pub fn set_plays_video(&mut self, plays: bool) {
         self.map.set_plays_video(plays);
+    }
+
+    /// Sets how tiles coarsen with distance in pitched views (MapLibre
+    /// Native's tile level of detail, as maplibre-native-ffi's
+    /// `mln_map_set_tile_options` takes it); the next frame covers with it.
+    pub fn set_tile_lod(&mut self, lod: orb_camera::TileLod) {
+        self.map.set_tile_lod(lod);
+        self.dirty = true;
+    }
+
+    /// How tiles coarsen with distance, values out of range brought in.
+    pub fn tile_lod(&self) -> orb_camera::TileLod {
+        self.map.tile_lod()
     }
 
     /// The picture the video or canvas source `id` shows now: straight

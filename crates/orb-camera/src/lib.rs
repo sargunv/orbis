@@ -15,6 +15,7 @@ mod animate;
 mod fit;
 mod free;
 pub mod input;
+mod lod;
 mod momentum;
 mod moves;
 mod store;
@@ -23,6 +24,7 @@ mod terrain;
 pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions};
 pub use fit::{FitOptions, Padding};
 pub use free::FreeCamera;
+pub use lod::{LOD_EASE, TileLod, TileLodMode};
 pub use momentum::{
     AnchoredMomentum, DecayModel, GestureMomentum, MomentumDecay, MomentumSnap, MomentumVelocity,
     PanMomentum,
@@ -211,6 +213,8 @@ pub struct View {
     height_scale: f64,
     projection: Projection,
     globe: Option<GlobeView>,
+    /// How its covers' tiles coarsen with distance.
+    lod: TileLod,
 }
 
 impl View {
@@ -369,7 +373,23 @@ impl View {
             height_scale,
             projection: *projection,
             globe,
+            lod: TileLod::default(),
         }
+    }
+
+    /// This view with its covers' tiles coarsening by `lod`
+    /// ([`TileLod::default`] until set), its low-zoom surface's too.
+    pub fn with_tile_lod(mut self, lod: TileLod) -> Self {
+        self.lod = lod.sanitized();
+        if let Some(low) = self.globe.as_mut().and_then(|g| g.plane.as_mut()) {
+            low.lod = self.lod;
+        }
+        self
+    }
+
+    /// How its covers' tiles coarsen with distance.
+    pub fn tile_lod(&self) -> TileLod {
+        self.lod
     }
 
     /// The view's low-zoom surface, when it shows at its zoom.
@@ -601,8 +621,9 @@ impl View {
         self.eye
     }
 
-    /// The tiles of `tms` that cover the view, choosing for each the zoom at
-    /// which GL JS's default level-of-detail policy selects `tile_px` tiles.
+    /// The tiles of `tms` that cover the view: of the zoom whose tiles span
+    /// `tile_px` pixels at the target, coarsening with distance past the
+    /// [`TileLod`]'s pitch threshold.
     pub fn cover(&self, tms: &TileMatrixSet, tile_px: f64, max_zoom: u8) -> Vec<CoveredTile> {
         self.cover_volume(tms, tile_px, max_zoom, 0.0, None, 0.0)
     }
@@ -612,8 +633,9 @@ impl View {
     /// grows toward that height (at least 500 style metres), retaining
     /// tiles whose roofs can enter the view above their ground.
     /// On `terrain`, tiles are culled by the elevations under them where
-    /// known, and detail varies with distance at any pitch, as GL JS's
-    /// cover does with terrain.
+    /// known, and take the terrain's level of detail
+    /// ([`cover_terrain`](Self::cover_terrain)): draped content shows no
+    /// more detail than its terrain tile's drape slot holds.
     pub fn cover_volume(
         &self,
         tms: &TileMatrixSet,
@@ -623,20 +645,58 @@ impl View {
         terrain: Option<&dyn Elevation>,
         margin_px: f64,
     ) -> Vec<CoveredTile> {
+        let detail = match terrain {
+            Some(_) => Detail::Terrain,
+            None => Detail::Lod(self.lod),
+        };
+        self.cover_detailed(tms, (tile_px, max_zoom), height, terrain, margin_px, detail)
+    }
+
+    /// The terrain's own cover: its tiles of `tms`, culled by the
+    /// elevations under them where known, coarsening with distance at any
+    /// pitch by GL JS's terrain level of detail. Each terrain tile takes a
+    /// drape slot per stack, so the terrain keeps GL JS's fewer, coarser
+    /// far tiles rather than the map's [`TileLod`]. Native draws no
+    /// terrain; its default detail wants 43 to 63 terrain tiles at pitches
+    /// 53 to 85 over the Alps and Japan where GL JS's wants 26 to 31, past
+    /// the 32 the drape atlas holds with a viewport-lit hillshade. And
+    /// where the ground falls away from the target, as straight down onto a
+    /// crest, one zoom across the view (Native's below its pitch
+    /// threshold) covers far more ground than the view shows.
+    pub fn cover_terrain(
+        &self,
+        tms: &TileMatrixSet,
+        tile_px: f64,
+        max_zoom: u8,
+        terrain: &dyn Elevation,
+    ) -> Vec<CoveredTile> {
+        let detail = Detail::Terrain;
+        self.cover_detailed(tms, (tile_px, max_zoom), 0.0, Some(terrain), 0.0, detail)
+    }
+
+    fn cover_detailed(
+        &self,
+        tms: &TileMatrixSet,
+        (tile_px, max_zoom): (f64, u8),
+        height: f64,
+        terrain: Option<&dyn Elevation>,
+        margin_px: f64,
+        detail: Detail,
+    ) -> Vec<CoveredTile> {
         if let Some(low) = self.low_plane() {
             return low.cover_low(tms, tile_px, max_zoom);
         }
         if let Some(globe) = &self.globe {
             let metres = height * globe.metres_per_px / self.world_per_px;
-            return self.cover_globe(globe, tms, tile_px, max_zoom, metres);
+            return self.cover_globe(globe, tms, (tile_px, max_zoom), metres, detail);
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
         self.cover_tiles(
             tms,
             max_zoom,
-            height,
-            terrain,
+            (height, terrain),
             margin_px,
+            detail,
             |index, offset| {
                 let bounds = tms.tile_area(index).translated(DVec2::new(offset, 0.0));
                 Some((bounds, center_zoom))
@@ -658,10 +718,12 @@ impl View {
         }
         // Any set's tiles wrap the globe directly.
         if let Some(globe) = &self.globe {
-            return self.cover_globe(globe, tms, tile_px, max_zoom, 0.0);
+            let detail = Detail::Lod(self.lod);
+            return self.cover_globe(globe, tms, (tile_px, max_zoom), 0.0, detail);
         }
         let scale = self.world_per_px * tile_px;
-        self.cover_tiles(tms, max_zoom, 0.0, None, 0.0, |index, offset| {
+        let detail = Detail::Lod(self.lod);
+        self.cover_tiles(tms, max_zoom, (0.0, None), 0.0, detail, |index, offset| {
             let f = footprint(index)?;
             // The zoom at which this tile, at its own scale, would span
             // `tile_px` pixels at the camera.
@@ -686,9 +748,9 @@ impl View {
         &self,
         tms: &TileMatrixSet,
         max_zoom: u8,
-        height: f64,
-        terrain: Option<&dyn Elevation>,
+        (height, terrain): (f64, Option<&dyn Elevation>),
         margin_px: f64,
+        detail: Detail,
         mut place: impl FnMut(TileIndex, f64) -> Option<(WorldRect, f64)>,
     ) -> Vec<CoveredTile> {
         let frustum = Frustum::new(
@@ -710,7 +772,16 @@ impl View {
         // three copies on either side, with the same generic DFS in each.
         let wrap_period = self.projection.wrap_period();
         let copies = wrap_period.map_or(0, |period| ((reach / period).ceil() as i32).min(3));
-        let lod = self.cover_lod(terrain.is_some());
+        let lod = match detail {
+            Detail::Lod(lod) => lod,
+            Detail::Terrain => TileLod::default(),
+        };
+        let weight = lod.weight(self.pitch);
+        let eye = self.eye.truncate();
+        // The eye's distance from the target: the centre's tiles show at
+        // the covering zoom.
+        let center_distance = self.eye_distance_px * self.world_per_px;
+        let terrain_lod = matches!(detail, Detail::Terrain).then(|| self.terrain_lod());
         tms.cover_with(-copies..=copies, wrap_period, max_zoom, |index, offset| {
             let Some((bounds, center_zoom)) = place(index, offset) else {
                 return CoverDecision::Skip;
@@ -724,9 +795,35 @@ impl View {
             if !frustum.meets(&rel, lo, hi) {
                 return CoverDecision::Skip;
             }
-            let desired =
-                center_zoom + lod.map_or(0.0, |lod| lod.at(rel.clamp(self.eye.truncate())));
-            if f64::from(index.z) < tile_zoom(desired) {
+            let z = f64::from(index.z);
+            if let Some(terrain_lod) = &terrain_lod {
+                let desired = center_zoom + terrain_lod.at(rel.clamp(eye));
+                return if z < tile_zoom(desired) {
+                    CoverDecision::Refine
+                } else {
+                    CoverDecision::Accept
+                };
+            }
+            // Native's ideal zoom: no deeper than the source's tiles.
+            let covering = tile_zoom(center_zoom + lod.zoom_shift).min(f64::from(max_zoom));
+            let refine = match lod.mode {
+                _ if weight == 0.0 => z < covering,
+                TileLodMode::Default => {
+                    // Its distance from the target along the farther axis,
+                    // in tiles of the covering zoom.
+                    let span = rel.size().max_element() * (z - covering).exp2();
+                    let gap = (rel.min.max(-rel.max)).max(DVec2::ZERO).max_element();
+                    z < covering && lod.splits(covering - z, gap / span, weight)
+                }
+                TileLodMode::Distance => {
+                    // Its nearest point, and the eye's height over it.
+                    let height = (self.eye.z - lo.min(self.eye.z)).max(1e-9);
+                    let distance = rel.clamp(eye).distance(eye).hypot(height);
+                    let levels = lod.levels(distance / center_distance, height / distance, weight);
+                    z < tile_zoom(covering + levels)
+                }
+            };
+            if refine {
                 CoverDecision::Refine
             } else {
                 CoverDecision::Accept
@@ -734,78 +831,54 @@ impl View {
         })
     }
 
-    /// How the cover's tile zoom falls with distance (GL JS's default LOD),
-    /// where it does: on terrain, and past GL JS's pitch threshold, eased
-    /// in over the 5° after it so that detail changes continuously with
-    /// the camera (GL JS switches it on there). `None` keeps one zoom
-    /// across the view.
-    fn cover_lod(&self, terrain: bool) -> Option<CoverLod> {
-        let (behavior, fov_scale, penalty, threshold) = self.pitched_lod();
-        let weight = if terrain {
-            1.0
-        } else {
-            self.lod_weight(threshold)
-        };
+    /// GL JS's terrain level of detail over this view: its distance terms
+    /// at any pitch, from the eye's ground position and height.
+    fn terrain_lod(&self) -> TerrainLod {
+        let (behavior, fov_scale, penalty) = self.gl_js_terms();
         let center_distance = self.eye_distance_px * self.world_per_px;
-        (weight > 0.0).then(|| CoverLod {
+        TerrainLod {
             eye: self.eye.truncate(),
             // The eye's height above the target, GL JS's `distanceToTileZ`.
             height: (self.eye.z - self.target_z).abs(),
             offset: (center_distance / fov_scale).log2() - penalty,
             behavior: behavior / 2.0,
-            weight,
-        })
-    }
-
-    /// How much of the distance LOD applies at this pitch: none up to
-    /// GL JS's threshold, all of it `LOD_EASE` past it.
-    fn lod_weight(&self, threshold: f64) -> f64 {
-        ((self.pitch - threshold) / LOD_EASE).clamp(0.0, 1.0)
-    }
-
-    /// GL JS's default tile LOD terms: its distance behaviour, FOV scale and
-    /// tile-count penalty, and the pitch past which it applies them (60°,
-    /// or less with a tall FOV; below it GL JS holds a constant zoom).
-    fn pitched_lod(&self) -> (f64, f64, f64, f64) {
-        // A rolled view's vertical extent spans some of its width.
-        let (sin, cos) = self.roll.to_radians().sin_cos();
-        let zfov = self.fov * (cos.abs() * self.viewport.height + sin.abs() * self.viewport.width)
-            / self.viewport.height;
-        let threshold = (78.5 - zfov / 2.0).clamp(0.0, 60.0);
-        {
-            let horizon = MAX_HORIZON_PITCH.to_radians();
-            let fov = self.fov.to_radians();
-            let behavior =
-                2.0 * ((9.314 - 1.0) / ((horizon - fov).cos() / horizon.cos()).log2() - 1.0);
-            let integral = |lo: f64, hi: f64| {
-                (0..10)
-                    .map(|i| {
-                        let x = lo + (f64::from(i) + 0.5) / 10.0 * (hi - lo);
-                        (hi - lo) / 10.0 * x.cos().powf(behavior - 1.0)
-                    })
-                    .sum::<f64>()
-            };
-            let pitch = self.pitch.to_radians();
-            let hi = horizon.min(pitch + fov / 2.0);
-            let count = integral(hi.min(pitch - fov / 2.0), hi);
-            let count0 = 2.0 * integral(0.0, fov / 2.0);
-            (
-                behavior,
-                (fov / 2.0).cos().max(0.5),
-                (count / count0 / 3.0).max(1.0).log2() / 2.0,
-                threshold,
-            )
         }
     }
 
+    /// GL JS's default tile LOD terms: its distance behaviour, FOV scale and
+    /// tile-count penalty.
+    fn gl_js_terms(&self) -> (f64, f64, f64) {
+        let horizon = MAX_HORIZON_PITCH.to_radians();
+        let fov = self.fov.to_radians();
+        let behavior = 2.0 * ((9.314 - 1.0) / ((horizon - fov).cos() / horizon.cos()).log2() - 1.0);
+        let integral = |lo: f64, hi: f64| {
+            (0..10)
+                .map(|i| {
+                    let x = lo + (f64::from(i) + 0.5) / 10.0 * (hi - lo);
+                    (hi - lo) / 10.0 * x.cos().powf(behavior - 1.0)
+                })
+                .sum::<f64>()
+        };
+        let pitch = self.pitch.to_radians();
+        let hi = horizon.min(pitch + fov / 2.0);
+        let count = integral(hi.min(pitch - fov / 2.0), hi);
+        let count0 = 2.0 * integral(0.0, fov / 2.0);
+        (
+            behavior,
+            (fov / 2.0).cos().max(0.5),
+            (count / count0 / 3.0).max(1.0).log2() / 2.0,
+        )
+    }
+
     /// The tiles of `tms` that cover a globe view: those on the eye's side
-    /// of the horizon and in the frustum, at GL JS's globe level of
-    /// detail. While the covering zoom (the target's tile zoom) is 4 or
-    /// less, every tile takes it. Past that, each tile takes the zoom whose
-    /// tiles span `tile_px` pixels at its nearest point, with GL JS's
-    /// distance and pitch terms: the tile under the eye gets the target's
-    /// zoom, and tiles coarsen with distance, with their angle from
-    /// straight down, and (being smaller on the sphere) toward the poles.
+    /// of the horizon and in the frustum. While the covering zoom (the
+    /// target's tile zoom) is 4 or less, every tile takes it, as GL JS's
+    /// globe gives them. Past that each tile takes the zoom whose tiles
+    /// span `tile_px` pixels at the target's distance where it lies (being
+    /// smaller on the sphere toward the poles), coarsening with distance
+    /// by the [`TileLod`] as on the plane: distances along the sphere from
+    /// the target, or from the eye with each tile's angle from straight
+    /// down.
     ///
     /// Content standing up to `height` metres over a tile (extrusions,
     /// lifted labels) keeps it covered while that content can show: past
@@ -815,9 +888,9 @@ impl View {
         &self,
         globe: &GlobeView,
         tms: &TileMatrixSet,
-        tile_px: f64,
-        max_zoom: u8,
+        (tile_px, max_zoom): (f64, u8),
         height: f64,
+        detail: Detail,
     ) -> Vec<CoveredTile> {
         let eye = globe.target + globe.eye;
         let eye_dir = eye.normalize();
@@ -836,10 +909,17 @@ impl View {
         // (A set whose plane doesn't reach the target has no covering zoom.)
         let fixed = covering.is_finite() && tile_zoom(covering) <= GLOBE_FIXED_ZOOM;
         let covering = tile_zoom(covering);
-        let (behavior, fov_scale, penalty, _) = self.pitched_lod();
-        // The point under the eye on the set's plane, for tiles' nearest
-        // points.
+        let (lod, weight) = match detail {
+            Detail::Lod(lod) => (lod, lod.weight(self.pitch)),
+            // GL JS's terms, at any pitch.
+            Detail::Terrain => (TileLod::default(), 1.0),
+        };
+        let (behavior, fov_scale, penalty) = self.gl_js_terms();
+        // The points under the eye and the target on the set's plane, for
+        // tiles' nearest points.
         let under = projection.forward(sphere::geodetic(eye_dir));
+        let target_dir = globe.target.normalize();
+        let target = projection.forward(sphere::geodetic(target_dir));
         let period = projection.wrap_period();
         let frustum = GlobeFrustum::new(globe, height);
         tms.cover_with(0..=0, None, max_zoom, |index, _| {
@@ -967,34 +1047,61 @@ impl View {
                     CoverDecision::Accept
                 };
             }
-            // Its nearest point to the eye: the point under the eye clamped
-            // into it on the set's plane (the nearest where the plane keeps
-            // the sphere's shapes), or else one of its grid or a pole past
-            // its edge.
-            let shift = period.map_or(0.0, |p| ((b.center().x - under.x) / p).round() * p);
-            let inside = projection.inverse((under + DVec2::new(shift, 0.0)).clamp(b.min, b.max));
-            let inside = if inside.lon.is_finite() && inside.lat.is_finite() {
-                inside
-            } else {
-                sphere::geodetic(center)
+            // Its point nearest `p` on the set's plane, clamped into it (the
+            // nearest where the plane keeps the sphere's shapes).
+            let nearest_to = |p: DVec2| {
+                let shift = period.map_or(0.0, |w| ((b.center().x - p.x) / w).round() * w);
+                let inside = projection.inverse((p + DVec2::new(shift, 0.0)).clamp(b.min, b.max));
+                if inside.lon.is_finite() && inside.lat.is_finite() {
+                    inside
+                } else {
+                    sphere::geodetic(center)
+                }
             };
+            let z = f64::from(index.z);
+            let gl_js = matches!(detail, Detail::Terrain);
+            if !gl_js && (lod.mode == TileLodMode::Default || weight == 0.0) {
+                // Its covering zoom where it comes nearest the target, and
+                // its distance from it along the sphere in tiles of that
+                // zoom there.
+                let near = nearest_to(target);
+                let here = zoom_at(projection.scale_factor(near)) + lod.zoom_shift;
+                let zoom = tile_zoom(here).min(f64::from(max_zoom));
+                let refine = z < zoom && {
+                    let span = globe.metres_per_px * tile_px * (here - zoom).exp2();
+                    let arc = sphere::ecef(near, 0.0).angle_between(target_dir) * sphere::RADIUS;
+                    lod.splits(zoom - z, arc / span, weight)
+                };
+                return if refine {
+                    CoverDecision::Refine
+                } else {
+                    CoverDecision::Accept
+                };
+            }
+            // Its nearest point to the eye: the point under the eye in it,
+            // or else one of its grid or a pole past its edge.
+            let inside = nearest_to(under);
             let nearest = finite()
                 .chain([sphere::ecef(inside, 0.0)])
                 .min_by(|a, b| a.distance_squared(eye).total_cmp(&b.distance_squared(eye)))
                 .unwrap_or(center);
             let distance = nearest.distance(eye).max(center_distance * 1e-3);
-            // GL JS's default LOD at the tile's scale (taken in the tile,
-            // even when the nearest point is a pole past it), with the
-            // tile's pitch, as GL JS's, its nearest point's angle from
-            // straight down at the eye. (Its angle to the ground there
-            // grows on toward the horizon, and the behaviour term would
-            // coarsen far tiles levels more than GL JS does.)
+            // The tile's scale taken in the tile (even when the nearest
+            // point is a pole past it), and its tilt, as GL JS's globe
+            // takes it: its nearest point's angle from straight down at the
+            // eye. (Its angle to the ground there grows on toward the
+            // horizon, which would coarsen far tiles far more.)
             let tile_pitch = (eye - nearest).angle_between(eye);
-            let desired = zoom_at(projection.scale_factor(inside))
-                + (center_distance / distance / fov_scale).log2()
-                + behavior * tile_pitch.cos().max(1e-6).log2() / 2.0
-                - penalty;
-            if f64::from(index.z) < tile_zoom(desired) {
+            let levels = if gl_js {
+                // GL JS's distance, behaviour, FOV scale and penalty.
+                (center_distance / distance / fov_scale).log2()
+                    + behavior * tile_pitch.cos().max(1e-6).log2() / 2.0
+                    - penalty
+            } else {
+                lod.levels(distance / center_distance, tile_pitch.cos(), weight)
+            };
+            let desired = zoom_at(projection.scale_factor(inside)) + lod.zoom_shift + levels;
+            if z < tile_zoom(desired) {
                 CoverDecision::Refine
             } else {
                 CoverDecision::Accept
@@ -1162,39 +1269,42 @@ fn corners_in_frustum(view_proj: &DMat4, corners: &[DVec3; 8], margin: DVec2) ->
         || all(&|c| c.z < 0.0))
 }
 
+/// How a cover picks its tiles' zooms.
+#[derive(Clone, Copy, Debug)]
+enum Detail {
+    /// The map's tile level of detail.
+    Lod(TileLod),
+    /// GL JS's terrain level of detail ([`View::cover_terrain`]).
+    Terrain,
+}
+
+/// GL JS's terrain level of detail: a tile whose nearest ground point is
+/// `p` (camera-relative world) takes the zoom whose tiles span the
+/// source's tile size at the target, plus [`at`](Self::at)`(p)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainLod {
+    /// The eye's ground position, camera-relative world.
+    eye: DVec2,
+    /// The eye's height above the target, world units.
+    height: f64,
+    /// `offset − log2(distance) + behavior · log2(height / distance)`.
+    offset: f64,
+    behavior: f64,
+}
+
+impl TerrainLod {
+    /// The zoom levels added to the cover's centre zoom at `p`.
+    fn at(&self, p: DVec2) -> f64 {
+        let distance = p.distance(self.eye).hypot(self.height).max(1.0e-9);
+        self.offset - distance.log2() + self.behavior * (self.height / distance).log2()
+    }
+}
+
 /// The whole tile zoom a cover's desired zoom asks for. A whole zoom
 /// computed through scales and trigonometry can land an ulp short of
 /// itself (1.9999999999999998 at zoom 2, latitude 57°); it means that zoom.
 fn tile_zoom(desired: f64) -> f64 {
     (desired + 1e-9).floor().max(0.0)
-}
-
-/// Pitch, degrees, over which the distance LOD eases in past GL JS's
-/// threshold.
-const LOD_EASE: f64 = 5.0;
-
-/// The pitched cover's level of detail: a tile whose nearest ground point
-/// is `p` (camera-relative world) takes the zoom whose tiles span the
-/// source's tile size at the target, plus [`at`](Self::at)`(p)`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CoverLod {
-    /// The eye's ground position, camera-relative world.
-    eye: DVec2,
-    /// The eye's height above the target, world units.
-    height: f64,
-    /// `weight · (offset − log2(distance) + behavior · log2(height / distance))`.
-    offset: f64,
-    behavior: f64,
-    weight: f64,
-}
-
-impl CoverLod {
-    /// The zoom levels added to the cover's centre zoom at `p`.
-    fn at(&self, p: DVec2) -> f64 {
-        let distance = p.distance(self.eye).hypot(self.height).max(1.0e-9);
-        self.weight
-            * (self.offset - distance.log2() + self.behavior * (self.height / distance).log2())
-    }
 }
 
 #[cfg(test)]

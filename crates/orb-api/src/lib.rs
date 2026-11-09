@@ -26,7 +26,8 @@ pub use orb_camera::input::{Button, Input, Key, Modifiers, PointerKind, WheelUni
 pub use orb_camera::{
     AnchoredMomentum, AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints,
     DecayModel, EaseOptions, Easing, FitOptions, FlyOptions, FreeCamera, GestureMomentum,
-    MomentumDecay, MomentumSnap, MomentumVelocity, Padding, PanMomentum, Phase,
+    MomentumDecay, MomentumSnap, MomentumVelocity, Padding, PanMomentum, Phase, TileLod,
+    TileLodMode,
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};

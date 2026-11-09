@@ -311,7 +311,8 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 /// options by name, each optional: `fadeDuration`,
 /// `crossSourceCollisions`, `localIdeographFontFamily` (`false` draws the
 /// style's glyphs), `antialias` and `terrainSkirts`; and Orbis's
-/// `previews`, an array of preview names or `"all"`, and `stableLabels`.
+/// `previews`, an array of preview names or `"all"`, `stableLabels`, and
+/// `tileLod` (as [`OrbisMap::set_tile_lod`] takes it).
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(
@@ -393,6 +394,9 @@ pub async fn create_map(
     }
     if let Some(stable) = option("stableLabels").and_then(|v| v.as_bool()) {
         map.set_stable_labels(stable);
+    }
+    if let Some(lod) = option("tileLod").filter(JsValue::is_object) {
+        map.set_tile_lod(camera::tile_lod(map.tile_lod(), &lod));
     }
     // The style loads while the GPU device is made.
     map.load_style_url(&style_url);

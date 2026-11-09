@@ -20,7 +20,7 @@ import { Videos } from "./videos.ts";
 import type {
   Bounds, Camera, CameraOptions, Constraints, EaseOptions, Feature, FitOptions, FlyOptions, FreeCamera,
   FrameStats, GestureMomentum, GpuSubmission, Hit, LngLat, MapEvents, MapOptions, Point, QueryGeometry, QueryOptions,
-  SourceQueryOptions, StyleImageData, StyleImageOptions,
+  SourceQueryOptions, StyleImageData, StyleImageOptions, TileLod,
 } from "./types.ts";
 
 /** An image's RGBA bytes, as the wasm map takes them. */
@@ -215,6 +215,8 @@ export class OrbisMap {
   /** Times the GPU's work from now on, for measurements: `gpuTimings`
    * collects it. WebGPU only. */
   setGpuTiming(on: boolean): void { this.#send(this.#link.call("setGpuTiming", on)); }
+  /** Sets how tiles coarsen with distance in pitched views; fields left out stay as they were. */
+  setTileLod(lod: TileLod): void { this.#send(this.#link.call("setTileLod", lod)); }
 
   /** Each GPU submission's times since the last call, once the GPU has
    * finished them, in order: its passes' GPU milliseconds by label (where
@@ -474,6 +476,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     fadeDuration: options.fadeDuration, crossSourceCollisions: options.crossSourceCollisions,
     localIdeographFontFamily: options.localIdeographFontFamily, antialias: options.antialias,
     terrainSkirts: options.terrainSkirts, previews: options.previews, stableLabels: options.stableLabels,
+    tileLod: options.tileLod,
   };
   const frame = document.createElement("div");
   Object.assign(frame.style, { position: "relative", width: "100%", height: "100%", overflow: "hidden" });

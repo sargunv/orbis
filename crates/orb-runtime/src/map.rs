@@ -472,6 +472,8 @@ pub struct Map {
     pub(crate) terrain_seen: u64,
     /// Terrain tiles hang skirts ([`Map::set_terrain_skirts`]).
     pub(crate) terrain_skirts: bool,
+    /// How covers coarsen with distance ([`Map::set_tile_lod`]).
+    tile_lod: orb_camera::TileLod,
     /// The previews styles parse with ([`Map::set_previews`]).
     previews: orb_style::Previews,
     pub(crate) antialias_3d: bool,
@@ -663,6 +665,7 @@ impl Map {
             renderer: None,
             retired: Retired::default(),
             terrain_skirts: true,
+            tile_lod: orb_camera::TileLod::default(),
             previews: orb_style::Previews::NONE,
             antialias_3d: true,
             nodes_stale: false,
@@ -758,6 +761,20 @@ impl Map {
         self.terrain_skirts = skirts;
     }
 
+    /// Sets how the covers' tiles coarsen with distance in pitched views:
+    /// MapLibre Native's tile level of detail, its defaults until set.
+    /// Values out of range are brought into it ([`TileLod::sanitized`]).
+    ///
+    /// [`TileLod::sanitized`]: orb_camera::TileLod::sanitized
+    pub fn set_tile_lod(&mut self, lod: orb_camera::TileLod) {
+        self.tile_lod = lod.sanitized();
+    }
+
+    /// How the covers' tiles coarsen with distance.
+    pub fn tile_lod(&self) -> orb_camera::TileLod {
+        self.tile_lod
+    }
+
     /// Enables 4× MSAA for 3D surfaces (the default). Disabling it uses
     /// single-sample rasterization, matching a GL JS map with antialias off.
     pub fn set_antialias_3d(&mut self, enabled: bool) {
@@ -839,9 +856,10 @@ impl Map {
         self.surface.view_surface()
     }
 
-    /// The view the camera gives for a viewport.
+    /// The view the camera gives for a viewport, covering with the map's
+    /// tile level of detail.
     pub fn view(&self, viewport: Viewport) -> View {
-        match self.elevation() {
+        let view = match self.elevation() {
             Some(terrain) => View::over(
                 self.camera.state(),
                 viewport,
@@ -849,7 +867,8 @@ impl Map {
                 &*terrain,
             ),
             None => View::new(self.camera.state(), viewport, &self.surface.view_surface()),
-        }
+        };
+        view.with_tile_lod(self.tile_lod)
     }
 
     /// Whether a paint transition is running.

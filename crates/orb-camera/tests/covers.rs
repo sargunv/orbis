@@ -5,19 +5,19 @@ use orb_crs::Surface;
 use orb_crs::TileIndex;
 use orb_crs::TileMatrixSet;
 
+/// Up to 60° of pitch, where neither GL JS nor Native's level of detail
+/// varies the zoom, covers are GL JS's tile for tile: they cull alike.
+/// Past it Orbis takes Native's level of detail, which keeps detail
+/// farther out than GL JS's: its cover must hold every point of the view
+/// GL JS's holds, in no more than three times GL JS's tiles (or 96).
 #[test]
 fn covers_match_pinned_gl_js() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("data/covers.json")).unwrap();
     let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+    let period = tms.tile_span(0);
     let mut failures = Vec::new();
     for case in golden["cases"].as_array().unwrap() {
         let n = |key: &str| case[key].as_f64().unwrap();
-        // GL JS switches its distance LOD on past 60° of pitch; Orbis eases
-        // it in over the 5° after, so just past 60° it has
-        // little of the LOD GL JS takes in full.
-        if n("pitch") > 60.0 && n("pitch") < 65.0 {
-            continue;
-        }
         let mut camera = CameraState::new(
             Geodetic::new(n("lon"), n("lat")),
             n("zoom"),
@@ -56,6 +56,44 @@ fn covers_match_pinned_gl_js() {
             .collect();
         actual.sort();
         let expected: Vec<[i64; 4]> = serde_json::from_value(case["tiles"].clone()).unwrap();
+        if n("pitch") > 60.0 {
+            if actual.len() > 3 * expected.len().max(32) {
+                failures.push(format!(
+                    "{}: {} tiles to {}",
+                    case["name"],
+                    actual.len(),
+                    expected.len()
+                ));
+            }
+            let (width, height) = (n("width"), n("height"));
+            for i in 0..=32 {
+                for j in 0..=32 {
+                    let px = DVec2::new(width * f64::from(i), height * f64::from(j)) / 32.0;
+                    let Some(world) = view.unproject(px) else {
+                        continue;
+                    };
+                    // Ground past the far plane isn't drawn.
+                    if view
+                        .project_depth(world, 0.0)
+                        .is_none_or(|(_, depth)| depth > 1.0)
+                    {
+                        continue;
+                    }
+                    let held = |cover: &[[i64; 4]]| {
+                        cover.iter().any(|&[wrap, z, col, row]| {
+                            let index = TileIndex::new(z as u8, col as u32, row as u32);
+                            let offset = DVec2::new(wrap as f64 * period, 0.0);
+                            let b = tms.tile_bounds(index).translated(offset);
+                            b.min.cmple(world).all() && world.cmple(b.max).all()
+                        })
+                    };
+                    if held(&expected) && !held(&actual) {
+                        failures.push(format!("{}: {px} uncovered", case["name"]));
+                    }
+                }
+            }
+            continue;
+        }
         if actual != expected {
             let extra: Vec<_> = actual.iter().filter(|t| !expected.contains(t)).collect();
             let missing: Vec<_> = expected.iter().filter(|t| !actual.contains(t)).collect();
@@ -79,15 +117,15 @@ fn covers_match_pinned_gl_js() {
 ///
 /// - Culling: each culls with its own conservative volumes, so each keeps
 ///   a few tiles the other drops that are out of view.
-/// - Detail: GL JS measures distances on the Mercator plane and pitch from
-///   the camera's height over the target; Orbis measures them on the
-///   sphere and takes each tile's own scale, so a tile can be a level
-///   apart.
+/// - Detail: GL JS coarsens tiles by distance at any pitch; Orbis takes
+///   Native's level of detail, as on the plane, with no coarsening up to
+///   60° of pitch.
 ///
-/// So for every visible point, Orbis's cover must hold it, a level or less
-/// from the tile GL JS covers it with, and no case may take many more tiles
-/// than GL JS's. Most cases still match exactly; the count of those is a
-/// floor, raised as covers come closer.
+/// So for every visible point, Orbis's cover must hold it (up to 60° of
+/// pitch, at most a level coarser than GL JS's tile, which may be finer
+/// than the target's near the eye), and no case may take many more tiles
+/// than GL JS's. Covers match exactly where GL JS doesn't coarsen; the
+/// count of those is a floor, raised as covers come closer.
 #[test]
 fn globe_covers_match_pinned_gl_js() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("data/covers.json")).unwrap();
@@ -140,7 +178,7 @@ fn globe_covers_match_pinned_gl_js() {
             exact += 1;
             continue;
         }
-        if actual.len() as f64 > 1.5 * expected.len() as f64 + 2.0 {
+        if actual.len() as f64 > 2.5 * expected.len() as f64 + 2.0 {
             failures.push(format!(
                 "{name}: {} tiles to {}",
                 actual.len(),
@@ -151,8 +189,10 @@ fn globe_covers_match_pinned_gl_js() {
             cover
                 .iter()
                 .find(|t| {
+                    // A metre's slack: a sample on a tile's edge (the view's
+                    // diagonal down a meridian) can fall a rounding outside.
                     let b = tms.tile_bounds(**t);
-                    b.min.cmple(world).all() && world.cmple(b.max).all()
+                    (b.min - 1.0).cmple(world).all() && world.cmple(b.max + 1.0).all()
                 })
                 .map(|t| t.z)
         };
@@ -169,14 +209,15 @@ fn globe_covers_match_pinned_gl_js() {
                 let world = DVec2::new(world.x - (world.x / period).round() * period, world.y);
                 let ours = holding(&actual, world);
                 let theirs = holding(&expected, world);
-                if ours.is_none() || theirs.is_some_and(|z| z.abs_diff(ours.unwrap()) > 1) {
+                let coarser = |z: u8| n("pitch") <= 60.0 && z > ours.unwrap() + 1;
+                if ours.is_none() || theirs.is_some_and(coarser) {
                     failures.push(format!("{name}: {px} in z{ours:?}, GL JS z{theirs:?}"));
                 }
             }
         }
     }
     assert!(
-        failures.is_empty() && exact >= 54,
+        failures.is_empty() && exact >= 33,
         "{exact} of {} match; {} failures:\n{}",
         cases.len(),
         failures.len(),

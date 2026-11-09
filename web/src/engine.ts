@@ -11,7 +11,7 @@ import type { VideoEventObject } from "./videos.ts";
 import type { Workers } from "./workers.ts";
 import type {
   Camera, CameraOptions, Constraints, EaseOptions, FitOptions, FlyOptions, FrameStats, FreeCamera, GestureMomentum,
-  GpuSubmission, Hit, MapEvents, Padding,
+  GpuSubmission, Hit, MapEvents, Padding, TileLod,
 } from "./types.ts";
 
 /** What the page reads of the map without asking: as of its last report. */
@@ -350,6 +350,7 @@ export class Engine {
     return this.#stats ? this.#project() : undefined;
   }
   setGpuTiming(on: boolean): void { this.#core.setGpuTiming(on); }
+  setTileLod(lod: TileLod): void { this.#core.setTileLod(lod); this.#request(); }
   async gpuTimings(): Promise<GpuSubmission[]> { return this.#core.gpuTimings(); }
 
   /** The next frame's pixels, as the canvas shows it. */

@@ -6,6 +6,7 @@ import { takePreload } from "./preload.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
 import { spawnJob, spawnPlacement, terminateWorkers, type Workers } from "./workers.ts";
+import type { TileLod } from "./types.ts";
 
 export type { Core };
 
@@ -21,6 +22,7 @@ export interface CoreOptions {
   terrainSkirts?: boolean;
   previews?: readonly string[] | "all";
   stableLabels?: boolean;
+  tileLod?: TileLod;
 }
 
 export interface HostCallbacks {

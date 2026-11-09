@@ -79,6 +79,27 @@ fn padding(value: &JsValue, current: Padding) -> Option<Padding> {
     })
 }
 
+/// `current` with the fields a `TileLod` object gives, MapLibre Native's
+/// tile level of detail: `mode` (`"default"` or `"distance"`),
+/// `minRadius`, `scale`, `pitchThreshold` (radians) and `zoomShift`. Fields
+/// it leaves out stay, as maplibre-native-ffi's tile options' field mask
+/// keeps them.
+pub(crate) fn tile_lod(current: orb_camera::TileLod, value: &JsValue) -> orb_camera::TileLod {
+    use orb_camera::TileLodMode;
+    let mode = match get(value, "mode").as_string().as_deref() {
+        Some("default") => TileLodMode::Default,
+        Some("distance") => TileLodMode::Distance,
+        _ => current.mode,
+    };
+    orb_camera::TileLod {
+        mode,
+        min_radius: number(value, "minRadius").unwrap_or(current.min_radius),
+        scale: number(value, "scale").unwrap_or(current.scale),
+        pitch_threshold: number(value, "pitchThreshold").unwrap_or(current.pitch_threshold),
+        zoom_shift: number(value, "zoomShift").unwrap_or(current.zoom_shift),
+    }
+}
+
 fn get(object: &JsValue, key: &str) -> JsValue {
     js_sys::Reflect::get(object, &key.into()).unwrap_or(JsValue::UNDEFINED)
 }
@@ -221,6 +242,14 @@ impl OrbisMap {
 
 #[wasm_bindgen]
 impl OrbisMap {
+    /// A `TileLod` object ([`tile_lod`]): how tiles coarsen with distance
+    /// in pitched views. The next frame covers with it.
+    #[wasm_bindgen(js_name = setTileLod)]
+    pub fn set_tile_lod(&mut self, lod: &JsValue) {
+        let lod = tile_lod(self.map.tile_lod(), lod);
+        self.map.set_tile_lod(lod);
+    }
+
     /// A `Constraints` object: zoom and pitch ranges, and bounds.
     #[wasm_bindgen(js_name = setConstraints)]
     pub fn set_constraints(&mut self, constraints: &JsValue) {

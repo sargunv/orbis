@@ -200,6 +200,9 @@ export interface MapOptions {
    * are placed before new and hidden ones. What labels show then depends on
    * how the camera got there; off, on the camera alone. True by default. */
   stableLabels?: boolean;
+  /** How tiles coarsen with distance in pitched views. MapLibre Native's
+   * defaults where left out. */
+  tileLod?: TileLod;
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)`. */
   jobWorkers?: number;
@@ -208,6 +211,30 @@ export interface MapOptions {
    * the page of pointer moves as they come (Chromium-based browsers).
    * True by default; false keeps it on the page. */
   worker?: boolean;
+}
+
+/** How tiles coarsen with distance in pitched views: MapLibre Native's tile
+ * level of detail, as maplibre-native-ffi's tile options give it. Up to the
+ * pitch threshold a view takes one zoom; past it tiles coarsen with
+ * distance, eased in over the five degrees after. */
+export interface TileLod {
+  /** `"default"`: tiles keep the view's zoom within `minRadius` tiles of its
+   * centre, and each zoom out spans twice the distance of the one before.
+   * `"distance"`: each tile takes the zoom at which it shows about as large
+   * as the centre's, by its distance from the eye and its tilt; nearer
+   * tiles may be finer. `"default"` by default. */
+  mode?: "default" | "distance";
+  /** Tiles of the view's zoom around its centre that keep it, at least 1;
+   * 3 by default. */
+  minRadius?: number;
+  /** How fast detail falls with distance: above 1 tiles coarsen nearer the
+   * centre; 1 by default. */
+  scale?: number;
+  /** Radians of pitch past which tiles coarsen with distance; π/3 (60°) by
+   * default. */
+  pitchThreshold?: number;
+  /** Zoom levels added to the view's tile zoom everywhere; 0 by default. */
+  zoomShift?: number;
 }
 
 /** The topmost feature under a point, from the last frame. */

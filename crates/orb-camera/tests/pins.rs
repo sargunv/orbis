@@ -1,6 +1,7 @@
 //! The 4,000-camera Web Mercator pin against the pinned GL JS transform
 //! (`generate-pins.mjs`): each camera's screen points unproject where GL JS
-//! puts them and project back, and every tenth camera covers the same tiles.
+//! puts them and project back, and every tenth camera up to GL JS's pitch
+//! threshold covers the same tiles.
 
 use glam::DVec2;
 use orb_camera::{CameraState, View, Viewport};
@@ -65,12 +66,11 @@ fn cameras_match_pinned_gl_js() {
                 ));
             }
         }
-        // GL JS switches its distance LOD on past its pitch threshold;
-        // Orbis eases it in over the 5° after, where the
-        // covers differ by design.
+        // Past GL JS's pitch threshold (60°, or less with a tall FOV) its
+        // tiles coarsen by distance, and Orbis's past Native's (60°) by
+        // Native's rule: there the covers differ by design.
         let threshold = (78.5 - camera.fov / 2.0).clamp(0.0, 60.0);
-        let eased = camera.pitch > threshold && camera.pitch < threshold + 5.0;
-        if let Some(tiles) = case.get("tiles").filter(|_| !eased) {
+        if let Some(tiles) = case.get("tiles").filter(|_| camera.pitch <= threshold) {
             covers += 1;
             let mut actual: Vec<[i64; 4]> = view
                 .cover(&tms, 512.0, 22)

@@ -273,14 +273,7 @@ impl Terrain {
             elevation: &self.elevation,
             ranges: Mutex::new(Vec::new()),
         };
-        let mut tiles = view.cover_volume(
-            tms,
-            TERRAIN_TILE_PX,
-            TERRAIN_MAX_ZOOM,
-            0.0,
-            Some(&consulted),
-            0.0,
-        );
+        let mut tiles = view.cover_terrain(tms, TERRAIN_TILE_PX, TERRAIN_MAX_ZOOM, &consulted);
         let ranges = consulted.ranges.into_inner().expect("ranges poisoned");
         // The tiles the cover drew or refined: any other tile it read a
         // range for, that range culled.
