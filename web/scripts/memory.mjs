@@ -24,8 +24,9 @@
 //   `footprint`), page, workers and wasm together;
 // - GPU: the GPU process's graphics memory (footprint's IOAccelerator,
 //   IOSurface and graphics categories) and whole footprint, less what it
-//   held at launch: an estimate of the engine's GPU memory, its WebGPU or
-//   WebGL device's own included.
+//   held at launch, once it holds still (it falls by tens of MB in the
+//   second or two after the map settles): an estimate of the engine's GPU
+//   memory, its WebGPU or WebGL device's own included.
 // Orbis also reports what it allocated itself (buffers and textures).
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -141,7 +142,16 @@ async function sample(server, engine, view) {
       const heaps = await all("Runtime.getHeapUsage");
       const memories = (await all("Runtime.evaluate", { expression: WASM_BYTES, returnByValue: true }))
         .flatMap((r) => r.result?.value ?? []);
-      const now = await processes(browser);
+      // The GPU process lets go of tens of MB a second or two after a load
+      // or a tour settles: read the footprints until they hold still.
+      let now = await processes(browser);
+      for (let i = 0; i < 5; i++) {
+        await page.waitForTimeout(1000);
+        const next = await processes(browser);
+        const still = Math.abs(next.gpu.graphics - now.gpu.graphics) < MB && Math.abs(next.renderer - now.renderer) < MB;
+        now = next;
+        if (still) break;
+      }
       return {
         heap: heaps.reduce((s, h) => s + (h.usedSize ?? 0), 0),
         buffers: heaps.reduce((s, h) => s + (h.backingStorageSize ?? 0), 0),

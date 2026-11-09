@@ -31,7 +31,8 @@
 // Mapterhorn tiles) and `--scene=globe` Liberty on the globe under the
 // demo's sky (`--style`, by default the live Liberty), each at three views,
 // in Orbis and GL JS by default. `--engines` takes `native` too: MapLibre
-// Native's browser build, as the demo's comparison loads it.
+// Native's browser build, as the demo's comparison loads it (not on the
+// globe, which it lacks).
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +50,8 @@ if (!style && !cache && !scene) {
 }
 const runs = Number(option("runs", "5"));
 const engines = option("engines", scene ? "orbis,gljs" : "orbis,gljs,mlnrs").split(",");
+// Native draws the style flat in Mercator: another scene, timed as if the same.
+if (scene === "globe" && engines.includes("native")) throw new Error("--scene=globe: MapLibre Native has no globe projection");
 // Other builds of web/dist, as `--builds=before=<dir>`, run as engine
 // `orbis@before` beside this tree's `orbis`.
 const builds = Object.fromEntries(option("builds", "").split(",").filter(Boolean).map((b) => b.split("=")));
@@ -84,7 +87,8 @@ const results = [];
 try {
   for (let run = -1; run < runs; run++) {
     for (const setting of settings) for (const view of views) {
-      for (const engine of engines) {
+      // The engines' order turns each run, so that neither always follows the other.
+      for (const engine of run % 2 ? [...engines].reverse() : engines) {
         const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
         const page = await context.newPage();
         await SETTINGS[setting](await context.newCDPSession(page));

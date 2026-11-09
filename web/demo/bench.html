@@ -37,9 +37,11 @@ issue.</p>
 // size=WxH, at=lon,lat, experiment=frames|gestures|stutter; for frames, frames,
 // warmup, rounds and ratio; for gestures, workers=<job workers> and
 // paths=city|dense|alps|globe (alps by default with style=terrain, globe
-// with style=globe or globe, each at its own view), and engine=orbis|gl
-// (gl: MapLibre GL JS along the same paths, counting its labels' blinks
-// and returns); for stutter, style=<url|key> for its Liberty scenarios
+// with style=globe or globe, each at its own view; dense on live Liberty
+// unless style says otherwise), and engine=orbis|gl|both (gl: MapLibre
+// GL JS along the same paths, counting its labels' blinks and returns;
+// both, or orbis,gl: path by path, interleaved); for stutter,
+// style=<url|key> for its Liberty scenarios
 // (live Liberty by default), filter=<substring of a scenario's name>,
 // legs=<the flight's first legs> and engine=orbis|gl|both (both: per path
 // an untimed pass of each engine, then each timed in turn).
@@ -51,6 +53,11 @@ import { demoStyle, demoStyleWithScene, LIVE } from "./styles.js";
 const params = new URLSearchParams(location.search);
 const format = params.get("format") ?? "mvt";
 if (!["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");
+const experiment = params.get("experiment") ?? "frames";
+const paths = params.get("paths") ?? (["terrain", "alps"].includes(params.get("style")) ? "alps"
+  : params.has("globe") || params.get("style") === "globe" ? "globe" : "city");
+/** Without a style: live Liberty for the dense and globe paths, which go beyond the Tokyo extract. */
+const scene = experiment === "gestures" && ["dense", "globe"].includes(paths) ? "live" : "tokyo";
 /** The style's URL, or the style with the globe in it: `run` resolves it. */
 let style;
 const status = document.getElementById("status");
@@ -82,7 +89,8 @@ async function about() {
     requestAnimationFrame(step);
   });
   lines.push(`display frame ${frame.toFixed(2)} ms`);
-  const data = params.has("style") ? `data: ${params.get("style")}` : `data: Tokyo extract (${format}, reduced Liberty)`;
+  const data = params.has("style") ? `data: ${params.get("style")}`
+    : demoStyle(params, scene) === LIVE ? `data: ${LIVE}` : `data: Tokyo extract (${format}, reduced Liberty)`;
   lines.push(typeof style === "string" ? data : `${data}, ${style.projection ? "on the globe, " : ""}fetched by the page`);
   return lines;
 }
@@ -136,13 +144,13 @@ async function run() {
   const lock = await navigator.wakeLock?.request("screen").catch(() => null);
   try {
     if (!navigator.gpu) throw new Error("this browser has no WebGPU");
-    style ??= await demoStyleWithScene(params, "tokyo");
+    style ??= await demoStyleWithScene(params, scene);
     const lines = await about();
     const started = performance.now();
     const [w, h] = (params.get("size") ?? "1024x768").split("x").map(Number);
     const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
     let report;
-    if (params.get("experiment") === "stutter") {
+    if (experiment === "stutter") {
       const liberty = params.has("style") ? demoStyle(params) : LIVE;
       lines[lines.length - 1] = `data: ${liberty}, and the Terrain entry`;
       report = await runStutter({
@@ -150,14 +158,12 @@ async function run() {
         filter: params.get("filter") ?? undefined, legs: params.has("legs") ? Number(params.get("legs")) : undefined,
         engine: params.get("engine") ?? "orbis",
       });
-    } else if (params.get("experiment") === "gestures") {
-      const paths = params.get("paths") ?? (["terrain", "alps"].includes(params.get("style")) ? "alps"
-        : params.has("globe") || params.get("style") === "globe" ? "globe" : "city");
+    } else if (experiment === "gestures") {
       const center = params.get("at")?.split(",").map(Number) ?? PATH_CENTERS[paths];
       report = await runGestures({
         style, center, paths, size: [w, h], about: lines,
         jobWorkers: params.has("workers") ? Number(params.get("workers")) : undefined,
-        engine: params.get("engine") ?? "orbis",
+        engines: params.get("engine") === "both" ? ["orbis", "gl"] : (params.get("engine") ?? "orbis").split(","),
         show: (line) => show(line),
       });
     } else {

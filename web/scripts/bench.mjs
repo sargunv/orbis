@@ -6,13 +6,15 @@
 // `--name=value` pairs become the page's query (format, style, frames,
 // warmup, rounds, size, ratio, at, experiment; workers (job workers),
 // paths and engine for `--experiment=gestures`; filter, legs and engine
-// for `--experiment=stutter`, whose `--engine=both` interleaves Orbis and GL
-// JS path by path after an untimed pass of each). Gesture paths are city, dense (pan, zoom
-// and turn at pitch 60: give it a dense style, such as a `cargo xtask h2h
-// mirror`'s Liberty `--at=2.35,48.857`), alps (the default with
-// `--style=terrain`) or globe (the default with `--style=globe`, the live
-// Liberty on the globe, or `--globe`, any style on it). `--engine=orbis,gl`
-// runs the experiment in Orbis, then in GL JS, and prints both reports.
+// for `--experiment=stutter`). Gesture paths are city, dense (pan, zoom
+// and turn at pitch 60 over Paris, on live Liberty unless `--style` gives
+// another, such as a `cargo xtask h2h mirror`'s Liberty), alps (the
+// default with `--style=terrain`) or globe (the default with
+// `--style=globe` or `--globe`, live Liberty or `--style` on the globe).
+// `--engine=both` runs the gestures or stutter experiment in Orbis and GL
+// JS, interleaved path by path on one page (stutter after an untimed pass
+// of each), and prints both reports; for gestures `orbis,gl` does the
+// same, for stutter it loads the page once an engine.
 // Chrome runs as a
 // user's would, quantizing timestamps (to 65.5 µs on a Mac) and
 // `performance.now()` (to 100 µs). `--precise` allows WebGPU's unsafe APIs,
@@ -39,7 +41,10 @@ for (const arg of args) {
   params.set(match[1], match[2]);
 }
 if (android && precise) throw new Error("--precise needs headless Chromium");
-const engines = (params.get("engine") ?? "orbis").split(",");
+// The gestures page interleaves engines itself, path by path; for the
+// rest, one page load an engine.
+const engines = params.get("experiment") === "gestures" ? [params.get("engine") ?? "orbis"]
+  : (params.get("engine") ?? "orbis").split(",");
 
 const server = await serveDemo({ isolated: precise });
 let browser, page, cleanup = () => {};
@@ -51,17 +56,17 @@ if (android) {
 }
 try {
   let errors = 0;
-  let engine;
   page.on("console", (m) => {
+    const from = m.location().url ?? "";
     // Mobile Chrome asks for a favicon the demo has none of.
-    if (m.location().url?.endsWith("/favicon.ico")) return;
+    if (from.endsWith("/favicon.ico")) return;
     if (!["error", "warning"].includes(m.type())) return;
     console.error(`page: ${m.text()}`);
     // GL JS's console warnings are about the style, not the run.
-    if (engine !== "gl" && engine !== "both") errors++;
+    if (!from.includes("/maplibre-gl")) errors++;
   });
   page.on("pageerror", (e) => { errors++; console.error(`page: ${e.message}`); });
-  for (engine of engines) {
+  for (const engine of engines) {
     params.set("engine", engine);
     await page.goto(`${server.url}bench.html?${params}`);
     let last = "";
