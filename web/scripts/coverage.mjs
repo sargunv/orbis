@@ -40,7 +40,7 @@ const args = process.argv.slice(2);
 const option = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const named = join(root, "target/web/core-names.wasm");
-if (!existsSync(named)) throw new Error("no target/web/core-names.wasm: run `cargo xtask web --names` first");
+if (!existsSync(named)) throw new Error("no target/web/core-names.wasm: run `cargo xtask web --names` (a build without it removes it)");
 const out = option("out", join(root, "target/coverage"));
 mkdirSync(out, { recursive: true });
 
@@ -311,7 +311,7 @@ function table(title, group, limit) {
 const HASHED = /([A-Za-z_][A-Za-z0-9_]*)\[[0-9a-f]{16}\]/g;
 const crateOf = (name) => {
   const crates = [...name.matchAll(HASHED)].map((m) => m[1]);
-  return crates.find((c) => c.startsWith("orb_")) ?? crates[0] ?? "(no crate: shims, libc)";
+  return crates.find((c) => c.startsWith("orb_")) ?? crates[0] ?? "(no crate in name: JS exports, shims)";
 };
 table("crate", crateOf, 25);
 table("module of ours", (name) => name.match(/(orb_\w+)\[[0-9a-f]{16}\]::(\w+)/)?.slice(1).join("::") ?? "(other crates)", 50);

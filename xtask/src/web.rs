@@ -53,7 +53,13 @@ pub(crate) fn build(names: bool) -> Result<(), String> {
     let out = root.join(OUT_DIR);
     let built = root.join("target/wasm32-unknown-unknown/wasm-release/orb_web.wasm");
 
-    let named = names.then(|| root.join(NAMED_CORE));
+    let named = root.join(NAMED_CORE);
+    // A copy from an earlier build no longer matches web/pkg's: if its
+    // imports still fit core.js, coverage would measure the old code.
+    if !names {
+        let _ = std::fs::remove_file(&named);
+    }
+    let named = names.then_some(named);
     let core = module(&root, "orb-web", "core", named.as_deref())?;
     report_crates(&built);
     let js = std::fs::read(out.join("core.js")).map_err(|e| format!("core.js: {e}"))?;
