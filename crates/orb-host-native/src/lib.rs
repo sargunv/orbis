@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 
 mod cache;
+mod connect;
 mod fonts;
 mod storage;
 
@@ -39,6 +40,10 @@ impl std::fmt::Debug for NativeFetch {
 /// Largest response body accepted.
 const MAX_BODY: u64 = 64 << 20;
 
+/// Requests in flight at once, each on a thread and connection of its own.
+/// Cold loads take as long with 16 (and longer with 4).
+const FETCH_THREADS: usize = 8;
+
 /// What the network answered.
 enum Response {
     Body {
@@ -61,13 +66,10 @@ impl NativeFetch {
     /// Fetches through `cache`: fresh entries without the network, stale
     /// ones revalidated, and either when the network fails.
     pub fn with_cache(cache: Option<Arc<HttpCache>>) -> Arc<Self> {
-        let agent = ureq::Agent::config_builder()
-            .user_agent(concat!("orbis/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .new_agent();
         Arc::new(Self {
-            agent,
-            pool: ThreadPool::new("fetch", 8),
+            // Every thread's connection stays open for the next request.
+            agent: connect::agent(FETCH_THREADS),
+            pool: ThreadPool::new("fetch", FETCH_THREADS),
             cache,
             transform: Default::default(),
             online: Arc::new(true.into()),
