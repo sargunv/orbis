@@ -510,12 +510,9 @@ pub(crate) fn under_budget(renderer: &Renderer, atlas: u64, budget: u64) -> bool
 /// What a resident tile costs to keep: the GPU bytes of its meshes and its
 /// texture layer, and its picking data.
 pub(crate) fn tile_cost(renderer: &Renderer, resident: &ResidentTile) -> u64 {
-    let meshes: u64 = resident
-        .meshes
-        .iter()
-        .map(|m| renderer.mesh_bytes(m.mesh) + m.hits.bytes())
-        .sum();
-    meshes + renderer.tile_bytes(resident.gpu)
+    // The renderer's count of the tile holds its meshes, all of them.
+    let hits: u64 = resident.meshes.iter().map(|m| m.hits.bytes()).sum();
+    renderer.tile_bytes(resident.gpu) + hits
 }
 
 /// Removes a tile from the scene. Returns the ramps its rows retained.
