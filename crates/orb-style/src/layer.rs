@@ -30,6 +30,11 @@ pub struct Layer {
     /// Paint properties' own `*-transition`, by property name; the rest
     /// take the style's.
     pub transitions: Vec<(String, crate::TransitionOverride)>,
+    /// Layers with the same group select the same features and lay them
+    /// out alike: their type, source, source layer, zoom range, filter and
+    /// layout are the same, as GL JS's and Native's `groupByLayout` key
+    /// them. `None` groups with no other layer.
+    pub layout_group: Option<u64>,
 }
 impl Layer {
     /// A layer of type `ty` with `props`, one slot per property of the
@@ -52,6 +57,7 @@ impl Layer {
             props: props.into(),
             first: ty.first(),
             transitions: Vec::new(),
+            layout_group: None,
         }
     }
 

@@ -472,5 +472,53 @@ pub(crate) fn parse_layer(
     layer.maxzoom = maxzoom;
     layer.visibility = visibility;
     layer.transitions = transitions;
+    layer.layout_group = Some(layout_group(json));
     (cx.diagnostics.errors.len() == errors).then_some(layer)
+}
+
+/// A hash of what GL JS's `groupByLayout` keys a layer by: its type,
+/// source, source layer, zoom range, filter and layout, objects compared
+/// whatever their key order.
+fn layout_group(layer: &Json) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn hash(json: Option<&Json>, h: &mut impl Hasher) {
+        let Some(json) = json else {
+            return 0u8.hash(h);
+        };
+        match &json.value {
+            JsonValue::Null => 1u8.hash(h),
+            JsonValue::Bool(b) => (2u8, b).hash(h),
+            JsonValue::Number(n) => (3u8, n.to_bits()).hash(h),
+            JsonValue::String(s) => (4u8, s).hash(h),
+            JsonValue::Array(items) => {
+                (5u8, items.len()).hash(h);
+                for item in items {
+                    hash(Some(item), h);
+                }
+            }
+            JsonValue::Object(members) => {
+                let mut keys: Vec<&str> = members.iter().map(|m| m.key.as_str()).collect();
+                keys.sort_unstable();
+                keys.dedup();
+                (6u8, keys.len()).hash(h);
+                for key in keys {
+                    key.hash(h);
+                    hash(json.get(key), h);
+                }
+            }
+        }
+    }
+    let mut h = std::hash::DefaultHasher::new();
+    for key in [
+        "type",
+        "source",
+        "source-layer",
+        "minzoom",
+        "maxzoom",
+        "filter",
+        "layout",
+    ] {
+        hash(layer.get(key), &mut h);
+    }
+    h.finish()
 }

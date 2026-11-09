@@ -317,6 +317,7 @@ fn layer_params(
     };
     orb_symbol::LayerParams {
         layer: crate::style::layer_key(node.key),
+        follows: plan.layout_leaders[node.layer].map(|leader| plan.layer_keys[leader]),
         source: plan.sources[node.source].key,
         minzoom: layer.minzoom,
         maxzoom: if layer.maxzoom.is_finite() {

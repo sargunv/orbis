@@ -903,3 +903,28 @@ fn layer_refs_take_their_parents_type_source_filter_and_layout() {
     .expect("parses");
     assert!(!doc.to_json().contains("\"ref\""));
 }
+
+#[test]
+fn layers_that_lay_out_alike_share_a_group() {
+    let style = style(
+        r#"[
+            {"id": "a", "type": "symbol", "source": "v", "source-layer": "poi",
+             "layout": {"text-field": "{name}", "text-size": 12}, "paint": {"text-color": "red"}},
+            {"id": "b", "type": "symbol", "source": "v", "source-layer": "poi",
+             "layout": {"text-size": 12, "text-field": "{name}"}, "paint": {"text-color": "blue"}},
+            {"id": "c", "type": "symbol", "source": "v", "source-layer": "poi",
+             "layout": {"text-field": "{name}", "text-size": 13}},
+            {"id": "d", "type": "symbol", "source": "v", "source-layer": "poi", "minzoom": 3,
+             "layout": {"text-field": "{name}", "text-size": 12}}
+        ]"#,
+    )
+    .unwrap_or_else(|d| panic!("{d}"));
+    let group = |i: usize| {
+        style.layers[i]
+            .layout_group
+            .expect("parsed layers have one")
+    };
+    assert_eq!(group(0), group(1), "paint and key order aside");
+    assert_ne!(group(0), group(2), "another layout");
+    assert_ne!(group(0), group(3), "another zoom range");
+}

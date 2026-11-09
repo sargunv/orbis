@@ -46,6 +46,9 @@ pub(crate) struct StylePlan {
     /// The layers whose paint reads the camera beyond its zoom
     /// ([`crate::paint::at_camera`]).
     pub(crate) camera_layers: Vec<usize>,
+    /// By layer, the first layer before it that lays out alike
+    /// ([`orb_style::Layer::layout_group`]): the group's leader.
+    pub(crate) layout_leaders: Vec<Option<usize>>,
 }
 
 /// A source some node draws from.
@@ -323,6 +326,13 @@ impl StylePlan {
             })
             .map(|(i, _)| i)
             .collect();
+        let mut groups = std::collections::HashMap::new();
+        let layout_leaders = (style.layers.iter().enumerate())
+            .map(|(i, l)| {
+                let leader = *groups.entry(l.layout_group?).or_insert(i);
+                (leader != i).then_some(leader)
+            })
+            .collect();
         Self {
             revision,
             style,
@@ -332,6 +342,7 @@ impl StylePlan {
             sources,
             warnings,
             camera_layers,
+            layout_leaders,
         }
     }
 

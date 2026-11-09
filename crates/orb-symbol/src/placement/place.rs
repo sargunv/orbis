@@ -43,6 +43,11 @@ pub struct PlacementTables {
 pub struct LayerParams {
     /// The layer's key.
     pub layer: u32,
+    /// An earlier layer that lays out the same symbols, which places them
+    /// for both, as GL JS and Native place a bucket for the first of the
+    /// layers it groups: this layer's symbols show where that layer's do,
+    /// rather than colliding with them.
+    pub follows: Option<u32>,
     /// Its source: symbols of different sources collide only with
     /// `crossSourceCollisions`.
     pub source: u32,
@@ -600,6 +605,7 @@ impl Placer {
             }
         };
         let mut now = now;
+        self.follow(&layers, &mut now);
         commit(&mut now, self.prev.as_ref(), frame.now, frame.fade_duration);
         let zoom_adjustment = self
             .prev
@@ -629,6 +635,40 @@ impl Placer {
         };
         self.prev = Some(now);
         committed
+    }
+
+    /// Gives each symbol of a layer that follows another (see
+    /// [`LayerParams::follows`]) the placement of the same symbol of that
+    /// layer's bucket for the same tile.
+    fn follow(&self, layers: &[(LayerParams, Vec<PlacedTile>)], now: &mut Decisions) {
+        for (params, tiles) in layers {
+            let Some(leader) = params.follows else {
+                continue;
+            };
+            let Some((_, leader_tiles)) = layers.iter().find(|(p, _)| p.layer == leader) else {
+                continue;
+            };
+            for t in tiles {
+                let Some(l) = leader_tiles.iter().find(|l| l.view.id == t.view.id) else {
+                    continue;
+                };
+                let (from, to) = (&self.buckets[&copy_key(l)], &self.buckets[&copy_key(t)]);
+                if from.ids.len() != to.ids.len() {
+                    continue;
+                }
+                for (&from, &to) in from.ids.iter().zip(&to.ids) {
+                    if let Some(&p) = now.placements.get(&from) {
+                        now.placements.insert(to, p);
+                    }
+                    if let Some(&o) = now.variable_offsets.get(&from) {
+                        now.variable_offsets.insert(to, o);
+                    }
+                    if let Some(&o) = now.orientations.get(&from) {
+                        now.orientations.insert(to, o);
+                    }
+                }
+            }
+        }
     }
 
     /// Tile scope (see [`Scope::Tiles`]): each tile's own placement, then
@@ -778,7 +818,8 @@ impl<'a> Pass<'a> {
     ) {
         for (rank, (params, tiles)) in layers.iter().rev().enumerate() {
             let zoom = self.camera.zoom;
-            if (params.minzoom != 0.0 && params.minzoom > zoom)
+            if params.follows.is_some()
+                || (params.minzoom != 0.0 && params.minzoom > zoom)
                 || (params.maxzoom != 0.0 && params.maxzoom <= zoom)
             {
                 continue;
@@ -1519,6 +1560,7 @@ mod tests {
     fn params(layer: u32) -> LayerParams {
         LayerParams {
             layer,
+            follows: None,
             source: 1,
             minzoom: 0.0,
             maxzoom: 0.0,
@@ -1703,6 +1745,41 @@ mod tests {
             .filter(|(_, _, s)| shown(word(s, 0)))
             .count();
         assert_eq!(shown_count, 1);
+    }
+
+    #[test]
+    fn layers_that_lay_out_alike_place_together() {
+        // Layer 9 lays out what layer 8 does (a second label colour, say):
+        // its labels show with layer 8's rather than colliding with them,
+        // and the one layer 10 above hides in layer 8 hides in layer 9.
+        let mut placer = Placer::default();
+        placer.ingest(1, labels(&[(1, [4096, 4096]), (2, [6000, 6000])]));
+        placer.ingest(2, labels(&[(3, [4096, 4096]), (4, [6000, 6000])]));
+        placer.ingest(3, labels(&[(5, [6004, 6000])]));
+        let c = placer.place(&frame(
+            vec![
+                LayerFrame {
+                    params: params(8),
+                    tiles: vec![tile(1, 0)],
+                },
+                LayerFrame {
+                    params: LayerParams {
+                        follows: Some(8),
+                        ..params(9)
+                    },
+                    tiles: vec![tile(2, 0)],
+                },
+                LayerFrame {
+                    params: params(10),
+                    tiles: vec![tile(3, 0)],
+                },
+            ],
+            0.0,
+            0.0,
+        ));
+        let by = |b: u64| &c.changed.iter().find(|(id, _, _)| *id == b).unwrap().2;
+        assert!(shown(word(by(1), 0)) && shown(word(by(2), 0)));
+        assert!(!shown(word(by(1), 1)) && !shown(word(by(2), 1)));
     }
 
     #[test]
