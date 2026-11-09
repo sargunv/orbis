@@ -408,20 +408,22 @@ pub fn may_anchor_in_tile(
     if placement == Placement::Line {
         return true;
     }
-    let mut points = layer
-        .geometry(index)
-        .parts()
-        .flat_map(|part| part.rings().flatten().copied().collect::<Vec<_>>())
-        .map(|p| units.point(p, layer.extent()));
-    if layer.geometry_type(index) == GeometryType::Point {
-        return placement != Placement::Point || !points.all(is_outside_tile);
+    let point = layer.geometry_type(index) == GeometryType::Point;
+    if point && placement != Placement::Point {
+        return true;
     }
     let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
-    for p in points {
-        min = [min[0].min(p.x), min[1].min(p.y)];
-        max = [max[0].max(p.x), max[1].max(p.y)];
+    for part in layer.geometry(index).parts() {
+        for &p in part.rings().flatten() {
+            let p = units.point(p, layer.extent());
+            if point && !is_outside_tile(p) {
+                return true;
+            }
+            min = [min[0].min(p.x), min[1].min(p.y)];
+            max = [max[0].max(p.x), max[1].max(p.y)];
+        }
     }
-    !(max[0] < 0.0 || max[1] < 0.0 || min[0] >= EXTENT || min[1] >= EXTENT)
+    !point && !(max[0] < 0.0 || max[1] < 0.0 || min[0] >= EXTENT || min[1] >= EXTENT)
 }
 
 fn is_outside_tile(p: Point) -> bool {
