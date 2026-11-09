@@ -85,9 +85,11 @@ pub enum JobReply {
     Tile {
         id: u32,
     },
-    /// An image tile: the bitmap.
+    /// An image tile: the bitmap, and the warp grid its request asked
+    /// for.
     Image {
         id: u32,
+        warp_grid: Option<orb_crs::WarpGrid>,
     },
     /// A terrain DEM tile: its pixels are the buffer.
     Dem {
@@ -126,7 +128,7 @@ impl JobReply {
     pub fn id(&self) -> u32 {
         match self {
             Self::Tile { id }
-            | Self::Image { id }
+            | Self::Image { id, .. }
             | Self::Dem { id, .. }
             | Self::Missing { id }
             | Self::Cancelled { id }
@@ -261,11 +263,21 @@ impl Jobs for PoolJobs {
                     cancelled: true,
                     ..TileResult::default()
                 })),
-                Ok(crate::Loaded::Image { bytes, kind }) => executor.spawn(Box::new(move || {
+                Ok(crate::Loaded::Image {
+                    bytes,
+                    kind,
+                    warp_grid,
+                }) => executor.spawn(Box::new(move || {
                     decode.decode(
                         bytes,
                         Box::new(move |decoded| {
-                            done(decoded.and_then(|i| image_result(kind, i, dem_unpack)))
+                            done(decoded.and_then(|i| {
+                                let result = image_result(kind, i, dem_unpack)?;
+                                Ok(TileResult {
+                                    warp_grid,
+                                    ..result
+                                })
+                            }))
                         }),
                     );
                 })),
@@ -367,6 +379,10 @@ pub struct TileResult {
     /// An image source's tile.
     #[serde(skip)]
     pub image: Option<TileImage>,
+    /// An image tile drawn on another plane: its warp's grid there
+    /// ([`TileRequest::warp`](crate::TileRequest::warp)).
+    #[serde(skip)]
+    pub warp_grid: Option<Arc<orb_crs::WarpGrid>>,
     /// A terrain DEM tile's elevations.
     #[serde(skip)]
     pub dem: Option<Arc<orb_tile::DemGrid>>,
@@ -477,6 +493,7 @@ impl From<TileBuild> for TileResult {
             warnings: build.warnings,
             missing_images: build.missing_images,
             image: None,
+            warp_grid: None,
             dem: None,
             missing: false,
             cancelled: false,

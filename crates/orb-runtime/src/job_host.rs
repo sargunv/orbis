@@ -27,10 +27,12 @@ use orb_crs::TileIndex;
 #[derive(Debug)]
 pub enum Loaded {
     Tile(TileBuild),
-    /// An image source's tile, still encoded.
+    /// An image source's tile, still encoded, and the warp grid its
+    /// request asked for ([`TileRequest::warp`]).
     Image {
         bytes: Vec<u8>,
         kind: ImageKind,
+        warp_grid: Option<Arc<orb_crs::WarpGrid>>,
     },
     /// The source doesn't have the tile.
     Missing,
@@ -465,6 +467,7 @@ impl JobHost {
             request.tile,
         ));
         if let Some(kind) = worker.image_kind(request.source) {
+            let (source, tile, warp) = (request.source, request.tile, request.warp);
             let fetch: Waiting = Box::new(move |turn| {
                 let Some(turn) = turn else {
                     return done(Ok(Loaded::Cancelled));
@@ -480,7 +483,21 @@ impl JobHost {
                             Ok((bytes, _)) if bytes.is_empty() => {
                                 done(Ok(Loaded::Tile(TileBuild::default())))
                             }
-                            Ok((bytes, _)) => done(Ok(Loaded::Image { bytes, kind })),
+                            // Its mesh on the surface's plane is the costly
+                            // part of drawing it there: the grid is made here.
+                            Ok((bytes, _)) if warp => executor.spawn(Box::new(move || {
+                                let warp_grid = worker.warp_grid(source, tile).map(Arc::new);
+                                done(Ok(Loaded::Image {
+                                    bytes,
+                                    kind,
+                                    warp_grid,
+                                }))
+                            })),
+                            Ok((bytes, _)) => done(Ok(Loaded::Image {
+                                bytes,
+                                kind,
+                                warp_grid: None,
+                            })),
                             Err(e) => done(missing(e)),
                         }
                     }),

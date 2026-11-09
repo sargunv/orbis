@@ -361,7 +361,7 @@ impl WorkerJobs {
                     ..TileResult::default()
                 })
             }
-            JobReply::Image { .. } => {
+            JobReply::Image { warp_grid, .. } => {
                 match (
                     field(reply, "image").dyn_into::<web_sys::ImageBitmap>(),
                     gpu,
@@ -372,6 +372,7 @@ impl WorkerJobs {
                             height: bitmap.height(),
                             pixels: ImagePixels::Host(gpu.register_image_bitmap(bitmap)),
                         }),
+                        warp_grid: warp_grid.map(Arc::new),
                         ..TileResult::default()
                     }),
                     _ => Err("image reply without a bitmap".into()),
@@ -773,6 +774,7 @@ impl JobWorker {
                 JobAnswer::Load(Ok(Loaded::Image {
                     bytes,
                     kind: ImageKind::Dem,
+                    ..
                 })) if let Some(DemUnpack(unpack)) = dem_unpack => {
                     let decoded = crate::host::decode_image(&bytes)
                         .await
@@ -795,12 +797,16 @@ impl JobWorker {
                         Err(e) => error(format!("image decode: {e}")),
                     }
                 }
-                JobAnswer::Load(Ok(Loaded::Image { bytes, .. })) => {
-                    match crate::host::decode_bitmap(&bytes).await {
-                        Ok(bitmap) => reply(&JobReply::Image { id }, None, Some(bitmap.into())),
-                        Err(e) => error(format!("image decode: {e:?}")),
+                JobAnswer::Load(Ok(Loaded::Image {
+                    bytes, warp_grid, ..
+                })) => match crate::host::decode_bitmap(&bytes).await {
+                    Ok(bitmap) => {
+                        let warp_grid = warp_grid.map(Arc::unwrap_or_clone);
+                        let message = JobReply::Image { id, warp_grid };
+                        reply(&message, None, Some(bitmap.into()))
                     }
-                }
+                    Err(e) => error(format!("image decode: {e:?}")),
+                },
                 JobAnswer::Features(Ok(features)) => {
                     reply(&JobReply::Features { id, features }, None, None)
                 }

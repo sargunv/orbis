@@ -40,6 +40,22 @@ pub struct WarpMesh {
     pub triangles: Vec<[u32; 3]>,
 }
 
+/// A tile's grid on the target plane ([`Warp::grid`]): what its mesh
+/// takes of the projections, so that [`Warp::mesh_on`] maps only the
+/// points refined edges add.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WarpGrid {
+    /// Cells per side.
+    cells: u32,
+    /// The x positions unwrap near: the footprint's centre.
+    reference: f64,
+    /// How far past the world bounds, in their sizes, positions are kept.
+    reach: f64,
+    /// Target positions by lattice point (`LATTICE` steps per side, x
+    /// right, y down), `None` outside the domain or the kept bounds.
+    points: HashMap<(u32, u32), Option<DVec2>>,
+}
+
 /// A tile on the target plane (or, as `Series<DVec3>`, on a sphere) as
 /// quadratic patches over an even grid.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -424,14 +440,7 @@ impl Warp {
         )
     }
 
-    /// The tile's mesh: a grid fine enough that its linear interpolation
-    /// strays from the true position by at most `tolerance` of the tile's
-    /// side (to a 64-cell limit), without the triangles that leave the
-    /// target plane's world bounds grown by `reach` times their size.
-    /// Its edges take 64 steps, each side (top, right, bottom, left in
-    /// tile space) `2^edges[side]` times as many: as many as a neighbour
-    /// that much finer takes along it, so the two share every vertex there
-    /// and no T-junction cracks open.
+    /// The tile's mesh: [`grid`](Self::grid) then [`mesh_on`](Self::mesh_on).
     pub fn mesh(
         &self,
         tile: TileIndex,
@@ -439,64 +448,138 @@ impl Warp {
         reach: f64,
         edges: [u8; 4],
     ) -> Option<WarpMesh> {
+        self.mesh_on(tile, &self.grid(tile, tolerance, reach)?, edges)
+    }
+
+    /// The costly part of the tile's mesh: a grid fine enough that its
+    /// linear interpolation strays from the true position by at most
+    /// `tolerance` of the tile's side (to a 64-cell limit), keeping what
+    /// lies within the target plane's world bounds grown by `reach` times
+    /// their size, with every position its mesh takes without refined
+    /// edges. `None` if no part of the tile reaches the target plane.
+    pub fn grid(&self, tile: TileIndex, tolerance: f64, reach: f64) -> Option<WarpGrid> {
         let footprint = self.footprint(tile)?;
         let reference = footprint.bounds.center().x;
-        let world = self.to.world_bounds();
-        let allowed = WorldRect {
-            min: world.min - world.size() * reach,
-            max: world.max + world.size() * reach,
-        };
         let limit = tolerance * footprint.span;
-        // A tile position on the target, near the footprint, if allowed.
-        let place = |uv: DVec2| {
-            self.map(tile, uv)
-                .map(|p| DVec2::new(self.unwrap(p.x, reference), p.y))
-                .filter(|p| p.cmpge(allowed.min).all() && p.cmple(allowed.max).all())
+        // Each point's exact position, mapped once: every search's corners
+        // and midpoints lie on the finest grid's corners.
+        let n = MAX_CELLS + 1;
+        let mut exact: Vec<Option<Option<DVec2>>> = vec![None; (n * n) as usize];
+        let mut at = |i: u32, j: u32| {
+            *exact[(j * n + i) as usize].get_or_insert_with(|| {
+                let uv = DVec2::new(f64::from(i), f64::from(j)) / f64::from(MAX_CELLS);
+                self.map(tile, uv)
+            })
         };
         let mut cells = 4;
-        let grid = loop {
-            let n = cells + 1;
-            let uvs: Vec<DVec2> = (0..n)
-                .flat_map(|j| (0..n).map(move |i| DVec2::new(f64::from(i), f64::from(j))))
-                .map(|p| p / f64::from(cells))
-                .collect();
-            let grid: Vec<Option<DVec2>> = uvs.iter().map(|&uv| place(uv)).collect();
-            if cells >= MAX_CELLS {
-                break grid;
-            }
+        while cells < MAX_CELLS {
             // The worst cell: its edges' midpoints against their ends'
             // mean, and its centre against its corners'. (A cell can bend
             // so that its centre stays near the corners' mean while its
             // edges bow out, as a parallel does on a polar plane.)
+            let unit = MAX_CELLS / cells;
+            let half = unit / 2;
             let mut error: f64 = 0.0;
-            let mut check = |uv: DVec2, ends: &[DVec2]| {
-                if let Some(exact) = self.map(tile, uv) {
-                    let mean = ends.iter().copied().sum::<DVec2>() / ends.len() as f64;
-                    let exact = DVec2::new(self.unwrap(exact.x, mean.x), exact.y);
-                    error = error.max(exact.distance(mean));
-                }
-            };
-            let step = 1.0 / f64::from(cells);
             for j in 0..cells {
                 for i in 0..cells {
-                    let at = |di: u32, dj: u32| grid[((j + dj) * n + i + di) as usize];
-                    let (Some(a), Some(b), Some(c), Some(d)) =
-                        (at(0, 0), at(1, 0), at(0, 1), at(1, 1))
-                    else {
+                    let (x, y) = (i * unit, j * unit);
+                    let near = |p| self.kept(reference, reach, p);
+                    let (Some(a), Some(b), Some(c), Some(d)) = (
+                        near(at(x, y)),
+                        near(at(x + unit, y)),
+                        near(at(x, y + unit)),
+                        near(at(x + unit, y + unit)),
+                    ) else {
                         continue;
                     };
-                    let corner = DVec2::new(f64::from(i), f64::from(j)) * step;
-                    check(corner + DVec2::new(0.5, 0.0) * step, &[a, b]);
-                    check(corner + DVec2::new(0.0, 0.5) * step, &[a, c]);
-                    check(corner + DVec2::new(1.0, 0.5) * step, &[b, d]);
-                    check(corner + DVec2::new(0.5, 1.0) * step, &[c, d]);
-                    check(corner + DVec2::splat(0.5) * step, &[a, b, c, d]);
+                    for ((mx, my), ends) in [
+                        ((x + half, y), &[a, b][..]),
+                        ((x, y + half), &[a, c][..]),
+                        ((x + unit, y + half), &[b, d][..]),
+                        ((x + half, y + unit), &[c, d][..]),
+                        ((x + half, y + half), &[a, b, c, d][..]),
+                    ] {
+                        if let Some(p) = at(mx, my) {
+                            let mean = ends.iter().copied().sum::<DVec2>() / ends.len() as f64;
+                            error = error.max(self.unwrap_near(p, mean.x).distance(mean));
+                        }
+                    }
                 }
             }
             if error <= limit {
-                break grid;
+                break;
             }
             cells *= 2;
+        }
+        let mut grid = WarpGrid {
+            cells,
+            reference,
+            reach,
+            points: HashMap::new(),
+        };
+        // What the mesh takes without refined edges: the grid's corners,
+        // and boundary cells' centres and the edge steps along their
+        // sides, keyed by lattice point.
+        let (scale, unit) = (LATTICE / MAX_CELLS, MAX_CELLS / cells);
+        let mut wanted = Vec::new();
+        for j in (0..=MAX_CELLS).step_by(unit as usize) {
+            for i in (0..=MAX_CELLS).step_by(unit as usize) {
+                wanted.push((i, j));
+            }
+        }
+        if unit > 1 {
+            for k in 0..=MAX_CELLS {
+                wanted.extend([(k, 0), (MAX_CELLS, k), (k, MAX_CELLS), (0, k)]);
+            }
+            let (first, last) = (unit / 2, MAX_CELLS - unit / 2);
+            for k in 0..cells {
+                let middle = k * unit + unit / 2;
+                wanted.extend([
+                    (middle, first),
+                    (last, middle),
+                    (middle, last),
+                    (first, middle),
+                ]);
+            }
+        }
+        for (i, j) in wanted {
+            let p = self.kept(reference, reach, at(i, j));
+            grid.points.insert((i * scale, j * scale), p);
+        }
+        Some(grid)
+    }
+
+    /// A position on the target, in the world copy nearest `reference`.
+    fn unwrap_near(&self, p: DVec2, reference: f64) -> DVec2 {
+        DVec2::new(self.unwrap(p.x, reference), p.y)
+    }
+
+    /// An exact position as a mesh takes it: in the world copy nearest
+    /// `reference`, if within the world bounds grown by `reach` times
+    /// their size.
+    fn kept(&self, reference: f64, reach: f64, p: Option<DVec2>) -> Option<DVec2> {
+        let world = self.to.world_bounds();
+        let (min, max) = (
+            world.min - world.size() * reach,
+            world.max + world.size() * reach,
+        );
+        p.map(|p| self.unwrap_near(p, reference))
+            .filter(|p| p.cmpge(min).all() && p.cmple(max).all())
+    }
+
+    /// The tile's mesh on its `grid`. Its edges take 64 steps, each side
+    /// (top, right, bottom, left in tile space) `2^edges[side]` times as
+    /// many: as many as a neighbour that much finer takes along it, so the
+    /// two share every vertex there and no T-junction cracks open. Only
+    /// the points refined edges add are mapped here.
+    pub fn mesh_on(&self, tile: TileIndex, grid: &WarpGrid, edges: [u8; 4]) -> Option<WarpMesh> {
+        let cells = grid.cells;
+        let place = |x: u32, y: u32| match grid.points.get(&(x, y)) {
+            Some(&p) => p,
+            None => {
+                let uv = DVec2::new(f64::from(x), f64::from(y)) / f64::from(LATTICE);
+                self.kept(grid.reference, grid.reach, self.map(tile, uv))
+            }
         };
         // Vertices sit on a lattice of `LATTICE` steps per side: the grid's
         // corners, boundary cells' centres, and every `MAX_CELLS`th of the
@@ -510,20 +593,14 @@ impl Warp {
         let mut vertex = |x: u32, y: u32| -> Option<u32> {
             *lattice.entry((x, y)).or_insert_with(|| {
                 let uv = DVec2::new(f64::from(x), f64::from(y)) / f64::from(LATTICE);
-                let on_grid = x.is_multiple_of(unit) && y.is_multiple_of(unit);
-                let p = if on_grid {
-                    grid[((y / unit) * (cells + 1) + x / unit) as usize]
-                } else {
-                    place(uv)
-                };
-                p.map(|p| {
+                place(x, y).map(|p| {
                     positions.push(p);
                     sources.push(uv);
                     (positions.len() - 1) as u32
                 })
             })
         };
-        let mut polygons: Vec<Vec<Option<u32>>> = Vec::new();
+        let mut polygons: Vec<[Option<u32>; 3]> = Vec::with_capacity((2 * cells * cells) as usize);
         let mut fans: Vec<(Option<u32>, Vec<Option<u32>>)> = Vec::new();
         for j in 0..cells {
             for i in 0..cells {
@@ -536,8 +613,7 @@ impl Warp {
                 if !boundary {
                     let [a, b, c, d] =
                         [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| vertex(x, y));
-                    polygons.push(vec![a, b, c]);
-                    polygons.push(vec![c, b, d]);
+                    polygons.extend([[a, b, c], [c, b, d]]);
                     continue;
                 }
                 // The cell's outline clockwise, with the tile edge's
@@ -569,16 +645,17 @@ impl Warp {
         }
         for (center, ring) in fans {
             for k in 0..ring.len() {
-                polygons.push(vec![center, ring[k], ring[(k + 1) % ring.len()]]);
+                polygons.push([center, ring[k], ring[(k + 1) % ring.len()]]);
             }
         }
         let period = self.to.wrap_period();
         let mut triangles = Vec::new();
         for tri in polygons {
-            let Some(ids) = tri.into_iter().collect::<Option<Vec<u32>>>() else {
+            let [Some(a), Some(b), Some(c)] = tri else {
                 continue;
             };
-            let points: Vec<DVec2> = ids.iter().map(|&k| positions[k as usize]).collect();
+            let ids = [a, b, c];
+            let points = ids.map(|k| positions[k as usize]);
             let spread = points.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max)
                 - points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
             if let Some(period) = period.filter(|period| spread > period / 2.0) {
@@ -587,7 +664,7 @@ impl Warp {
                 // no such copy; the plane draws the pole as an edge, so it
                 // is degenerate there anyway.
                 let first = points[0].x;
-                let xs: Vec<f64> = points.iter().map(|p| self.unwrap(p.x, first)).collect();
+                let xs = points.map(|p| self.unwrap(p.x, first));
                 let lo = xs.iter().copied().fold(f64::INFINITY, f64::min);
                 let hi = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 if hi - lo > period / 2.0 {
@@ -601,7 +678,7 @@ impl Warp {
                 triangles.push([base, base + 1, base + 2]);
                 continue;
             }
-            triangles.push([ids[0], ids[1], ids[2]]);
+            triangles.push(ids);
         }
         if triangles.is_empty() {
             return None;

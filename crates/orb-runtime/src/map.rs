@@ -1726,6 +1726,9 @@ impl Map {
             tile,
             zoom,
             bend,
+            // A raster tile on another plane draws through its warp's mesh
+            // there (on a globe, through a grid the sphere bends).
+            warp: warped && !vector && endpoint.quad.is_none() && self.surface.globe().is_none(),
             data_zoom: tile.z.min(endpoint.maxzoom),
             location: endpoint.location(endpoint.data_tile(tile)),
             encoding: endpoint.encoding,
@@ -2075,6 +2078,7 @@ impl Map {
                 tile,
                 zoom: endpoint.tms.style_zoom(tile),
                 bend: None,
+                warp: false,
                 data_zoom: tile.z,
                 location: endpoint.location(tile),
                 encoding: endpoint.encoding,

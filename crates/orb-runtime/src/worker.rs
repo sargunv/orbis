@@ -480,6 +480,25 @@ impl TileWorker {
         &self.surface
     }
 
+    /// A tile of source `key` on the surface's plane: its warp's grid
+    /// there, as the map draws it (`crate::image::warp_grid`). `None`
+    /// if no part of it reaches the plane.
+    pub(crate) fn warp_grid(&self, key: u32, tile: TileIndex) -> Option<orb_crs::WarpGrid> {
+        let at = self.plan.source_keys.iter().position(|&k| k == key)?;
+        let mercator = || TileMatrixSet::by_id("WebMercatorQuad").expect("registered");
+        let id = &self.plan.style.sources[at].id;
+        let tms = self
+            .surface
+            .source(id, false)
+            .cloned()
+            .unwrap_or_else(mercator);
+        let plane = match &self.surface.plane {
+            Some(plane) => *plane.projection(),
+            None => *mercator().projection(),
+        };
+        crate::image::warp_grid(&orb_crs::Warp::new(tms, plane), tile)
+    }
+
     /// The style revision this worker lays out.
     pub fn revision(&self) -> u64 {
         self.plan.revision
@@ -856,6 +875,10 @@ pub struct TileRequest {
     /// draws through a curved warp or on a globe), with fills on the
     /// world's edge extended to the poles.
     pub bend: Option<orb_layout::fill::Bend>,
+    /// An image tile drawn on the surface's plane, not its own: the job
+    /// also makes its warp's grid there
+    /// ([`TileResult::warp_grid`](crate::TileResult::warp_grid)).
+    pub warp: bool,
     /// Zoom of the ancestor whose bytes are fetched.
     pub(crate) data_zoom: u8,
     pub location: TileLocation,
@@ -912,6 +935,7 @@ pub(crate) mod tests {
             tile,
             zoom: f64::from(tile.z),
             bend: None,
+            warp: false,
             data_zoom: tile.z,
             location: TileLocation::Url("test://data.json".into()),
             encoding: Encoding::Mvt,
@@ -1113,6 +1137,41 @@ pub(crate) mod tests {
         assert_eq!(layer.len(), 1);
         let part = layer.geometry(0).parts().next().unwrap();
         assert_eq!(part.rings().next().unwrap(), [[4096, 4096]]);
+    }
+
+    /// A job makes a warped raster tile's grid on the surface's plane as
+    /// the map would, in this process and in a job worker that got the
+    /// surface over the wire; the grid crosses back in the reply.
+    #[test]
+    fn jobs_make_the_maps_warp_grids() {
+        let style = r#"{"version":8,"sources":{"r":{"type":"raster","tiles":["x/{z}/{x}/{y}.png"]}},
+            "layers":[{"id":"r","type":"raster","source":"r"}]}"#;
+        let surface = crate::surface::SurfaceTiles {
+            plane: Some(polar_plane()),
+            sources: Vec::new(),
+        };
+        let here = TileWorker {
+            surface: surface.clone(),
+            ..TileWorker::new(style).unwrap()
+        };
+        let there = TileWorker {
+            surface: crate::wire::decode(&crate::wire::encode(&surface)).unwrap(),
+            ..TileWorker::new(style).unwrap()
+        };
+        let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let warp = orb_crs::Warp::new(mercator, *polar_plane().projection());
+        for tile in [TileIndex::new(1, 1, 0), TileIndex::new(4, 9, 3)] {
+            let grid = crate::image::warp_grid(&warp, tile);
+            assert!(grid.is_some());
+            assert_eq!(here.warp_grid(1, tile), grid);
+            assert_eq!(there.warp_grid(1, tile), grid);
+            let reply = JobReply::Image {
+                id: 7,
+                warp_grid: grid.clone(),
+            };
+            let back: JobReply = crate::wire::decode(&crate::wire::encode(&reply)).unwrap();
+            assert!(matches!(back, JobReply::Image { warp_grid, .. } if warp_grid == grid));
+        }
     }
 
     #[test]

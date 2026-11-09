@@ -88,6 +88,7 @@ impl Stages {
             tile,
             zoom: f64::from(tile.z),
             bend: None,
+            warp: false,
             data_zoom: tile.z,
             location: TileLocation::Url(String::new()),
             encoding: self.encoding,

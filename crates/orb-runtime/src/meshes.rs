@@ -27,15 +27,16 @@ pub(crate) fn series_patches(series: &orb_crs::Series) -> (u32, Vec<f32>) {
 
 /// An image tile's mesh: on a globe, a grid in the tile's own space that
 /// the sphere and the plane's patches bend; on another plane, the warp's
-/// mesh, its sides refined by `edges`; else `None` for its quad. `Err`
-/// when nothing of it reaches the surface.
+/// mesh on the tile's `grid` (made here if its job didn't), its sides
+/// refined by `edges`; else `None` for its quad. `Err` when nothing of it
+/// reaches the surface.
 pub(crate) fn image_mesh(
     globe_warps: &mut crate::globe::GlobeWarps,
     globe: bool,
     warped: bool,
     endpoint: &TileEndpoint,
     tile: TileIndex,
-    edges: [u8; 4],
+    (grid, edges): (&mut Option<Arc<orb_crs::WarpGrid>>, [u8; 4]),
 ) -> Result<Option<Arc<image::Warped>>, ()> {
     let tms = &endpoint.tms;
     let bounds = tms.tile_bounds(tile);
@@ -49,7 +50,12 @@ pub(crate) fn image_mesh(
             image::Warped::quad(bounds, quad, cells)
         }
         (None, true, false) => {
-            image::Warped::new(&globe_warps.surface_warp(tms), tile, edges).ok_or(())?
+            let warp = globe_warps.surface_warp(tms);
+            let grid = match grid {
+                Some(grid) => grid,
+                None => grid.insert(Arc::new(image::warp_grid(&warp, tile).ok_or(())?)),
+            };
+            image::Warped::new(&warp, tile, grid, edges).ok_or(())?
         }
         (None, false, false) => return Ok(None),
         // On a globe, a grid fine enough for the sphere to bend.

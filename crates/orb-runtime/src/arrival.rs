@@ -442,10 +442,16 @@ impl Map {
         let mut image = None;
         let mut fade_ms = 0.0;
         let now = self.frame_time;
+        let mut grid = build.warp_grid.take();
         if let Some(tile_image) = &build.image {
-            let Ok(warped) =
-                image_mesh(&mut self.globe_warps, globe, warped, endpoint, tile, [0; 4])
-            else {
+            let Ok(warped) = image_mesh(
+                &mut self.globe_warps,
+                globe,
+                warped,
+                endpoint,
+                tile,
+                (&mut grid, [0; 4]),
+            ) else {
                 // Nothing of the tile reaches the surface.
                 pyramid.insert_empty(tile);
                 return None;
@@ -608,6 +614,7 @@ impl Map {
         }
         resident.image = image.map(|(_, warped)| ResidentImage {
             warped,
+            grid,
             globe: Some(globe),
         });
         resident.series = series;

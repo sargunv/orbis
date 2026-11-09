@@ -368,7 +368,7 @@ impl Map {
                 *warped,
                 &endpoint,
                 tile,
-                edges,
+                (&mut image.grid, edges),
             ) else {
                 continue;
             };

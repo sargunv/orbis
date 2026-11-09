@@ -27,7 +27,7 @@ pub use surface::{Globe, Surface};
 pub use tms::{
     TileIndex, TileMatrix, TileMatrixSet, TileMatrixSetDefinition, UnknownTileMatrixSet,
 };
-pub use warp::{Footprint, MAX_EDGE_REFINE, Node, Patch, Series, Warp, WarpMesh};
+pub use warp::{Footprint, MAX_EDGE_REFINE, Node, Patch, Series, Warp, WarpGrid, WarpMesh};
 
 use glam::DVec2;
 

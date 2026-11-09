@@ -20,6 +20,9 @@ use crate::style::{NodePlan, StylePlan};
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResidentImage {
     pub(crate) warped: Option<Arc<Warped>>,
+    /// A tile on another plane: its warp's grid there, from its job, on
+    /// which its meshes for each side's refinement are made.
+    pub(crate) grid: Option<Arc<orb_crs::WarpGrid>>,
     /// Whether the mesh in the scene is for a globe surface, or `None`
     /// while the scene holds none (it didn't fit): the next frame that
     /// draws the tile tries again.
@@ -37,12 +40,23 @@ pub(crate) struct Warped {
     pub(crate) edges: [u8; 4],
 }
 
+/// A tile's warp grid ([`orb_crs::Warp::grid`]): its meshes' linear
+/// interpolation within a quarter of a pixel at 512 pixels per tile side,
+/// without what leaves the target world by more than its size. Tile jobs
+/// make it; frames make the meshes on it.
+pub(crate) fn warp_grid(warp: &orb_crs::Warp, tile: TileIndex) -> Option<orb_crs::WarpGrid> {
+    warp.grid(tile, 1.0 / 2048.0, 1.0)
+}
+
 impl Warped {
-    /// The tile's mesh from `warp`, its linear interpolation within a
-    /// quarter of a pixel at 512 pixels per tile side, its sides refined
-    /// by `edges`.
-    pub(crate) fn new(warp: &orb_crs::Warp, tile: TileIndex, edges: [u8; 4]) -> Option<Self> {
-        let mesh = warp.mesh(tile, 1.0 / 2048.0, 1.0, edges)?;
+    /// The tile's mesh on its warp's `grid`, its sides refined by `edges`.
+    pub(crate) fn new(
+        warp: &orb_crs::Warp,
+        tile: TileIndex,
+        grid: &orb_crs::WarpGrid,
+        edges: [u8; 4],
+    ) -> Option<Self> {
+        let mesh = warp.mesh_on(tile, grid, edges)?;
         Some(Self {
             edges,
             ..Self::of(mesh, None)
