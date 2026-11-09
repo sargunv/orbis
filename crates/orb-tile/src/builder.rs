@@ -349,15 +349,10 @@ impl<'a> CodedColumns<'a> {
     /// The columns, for `len` features.
     pub(crate) fn finish(self, len: usize) -> Vec<(String, Column)> {
         let values = self.values;
-        // Per value, the first value equal to it, so that equal strings
-        // share a code; then per value, its code in the column being typed.
-        let mut first: FxHashMap<&str, u32> = FxHashMap::default();
-        let canonical: Vec<u32> = (values.iter().enumerate())
-            .map(|(i, v)| match v {
-                Value::Str(s) => *first.entry(s).or_insert(len_u32(i)),
-                _ => len_u32(i),
-            })
-            .collect();
+        // Per value, its code in the column being typed. A string's code is
+        // its value's in the table: encoders write each value once, and a
+        // table holding one twice gives it two codes, which only keeps
+        // filters from sharing an answer between them (`Column::code`).
         let mut codes = vec![u32::MAX; values.len()];
         (self.columns.into_iter().enumerate())
             .filter(|(_, column)| !column.is_empty())
@@ -394,7 +389,7 @@ impl<'a> CodedColumns<'a> {
                         let mut dictionary = Vec::new();
                         let column_codes = (column.iter())
                             .map(|&(_, v)| {
-                                let v = canonical[v as usize] as usize;
+                                let v = v as usize;
                                 if codes[v] == u32::MAX {
                                     codes[v] = len_u32(dictionary.len());
                                     let Value::Str(s) = &values[v] else {
@@ -406,7 +401,7 @@ impl<'a> CodedColumns<'a> {
                             })
                             .collect();
                         for &(_, v) in &column {
-                            codes[canonical[v as usize] as usize] = u32::MAX;
+                            codes[v as usize] = u32::MAX;
                         }
                         ColumnData::Str {
                             dictionary,
