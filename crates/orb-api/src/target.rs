@@ -20,6 +20,9 @@ pub struct Target {
     scale: f64,
     /// The runtime's device generation the target's resources are of.
     generation: u64,
+    /// The last frame was read back: the next one copies its pixels out
+    /// in its own submission, as the read after it will want them.
+    read_back: std::cell::Cell<bool>,
 }
 
 /// Frames a texture target lets the GPU queue before the next one waits,
@@ -49,6 +52,7 @@ impl Target {
             height,
             scale: sane_scale(scale),
             generation: runtime.shared.generation.get(),
+            read_back: Default::default(),
         }
     }
 
@@ -63,6 +67,7 @@ impl Target {
             height,
             scale: sane_scale(scale),
             generation: runtime.shared.generation.get(),
+            read_back: Default::default(),
         }
     }
 
@@ -116,9 +121,12 @@ impl Target {
             Kind::Texture(_) if self.generation != self.shared.generation.get() => Err(
                 Error::InvalidState("the GPU was replaced since the last frame".into()),
             ),
-            Kind::Texture(id) => Ok(pollster::block_on(
-                self.shared.gpu.borrow_mut().read_texture(id),
-            )),
+            Kind::Texture(id) => {
+                self.read_back.set(true);
+                Ok(pollster::block_on(
+                    self.shared.gpu.borrow_mut().read_texture(id),
+                ))
+            }
             Kind::Surface(_) => Err(Error::Unsupported(
                 "surface targets can't be read back".into(),
             )),
@@ -161,7 +169,13 @@ impl Target {
             }
         }
         match &mut self.kind {
-            Kind::Texture(id) => Ok(Some(*id)),
+            Kind::Texture(id) => {
+                // A host reading frames back reads the next one too.
+                if self.read_back.replace(false) {
+                    device.read_with_next_submit(*id);
+                }
+                Ok(Some(*id))
+            }
             Kind::Released => Err(Error::TargetLost("the GPU was replaced".into())),
             Kind::Surface(surface) => match device.acquire(surface) {
                 Ok(id) => Ok(Some(id)),

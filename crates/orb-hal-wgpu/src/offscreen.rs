@@ -18,6 +18,16 @@ pub(crate) type Readbacks = std::sync::Arc<std::sync::Mutex<Vec<wgpu::Buffer>>>;
 /// The most readback buffers kept.
 const READBACKS: usize = 2;
 
+/// A texture's pixels copied into a readback buffer, rows padded to
+/// wgpu's copy alignment.
+#[derive(Debug)]
+pub(crate) struct Readback {
+    buffer: wgpu::Buffer,
+    row: u32,
+    padded_row: u32,
+    height: u32,
+}
+
 /// An instance, configured from the environment, and its default adapter.
 ///
 /// Without wgpu's indirect-call validation unless the environment asks
@@ -120,10 +130,17 @@ impl WgpuGpu {
     }
 
     /// Copies the pixels of a 4-byte-per-texel texture out, row by row
-    /// without padding. The copy is submitted now; the future holds no
-    /// borrow of the device, so the texture may go before it resolves.
+    /// without padding. The copy is submitted now, unless the last
+    /// submission made it ([`read_with_next_submit`](Self::read_with_next_submit));
+    /// the future holds no borrow of the device, so the texture may go
+    /// before it resolves.
     pub fn read_texture(&self, id: TextureId) -> impl Future<Output = Vec<u8>> + use<> {
-        self.read_wgpu_texture(self.texture(id))
+        let copied = self.copied.lock().expect("copied poisoned").take();
+        let copy = match copied {
+            Some((texture, copy)) if texture == id => copy,
+            _ => self.copy_now(self.texture(id)),
+        };
+        self.finish_read(copy)
     }
 
     /// [`read_texture`](Self::read_texture) for a wgpu texture the host
@@ -132,6 +149,45 @@ impl WgpuGpu {
         &self,
         texture: &wgpu::Texture,
     ) -> impl Future<Output = Vec<u8>> + use<> {
+        let copy = self.copy_now(texture);
+        self.finish_read(copy)
+    }
+
+    /// Has the next [`submit`](orb_hal::Gpu::submit) copy texture `id` out
+    /// after its passes, for a [`read_texture`](Self::read_texture) to
+    /// map: a frame read back costs one submission rather than two, and
+    /// waits once.
+    pub fn read_with_next_submit(&mut self, id: TextureId) {
+        self.copy_next = Some(id);
+    }
+
+    /// Encodes the copy armed by [`read_with_next_submit`](Self::read_with_next_submit)
+    /// at the end of a submission, or forgets an earlier one's: the
+    /// texture may be drawn again.
+    pub(crate) fn encode_armed_copy(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let copy = (self.copy_next.take())
+            .filter(|id| self.textures.contains(id.0) && self.textures[id.0].texture.is_some())
+            .map(|id| (id, self.encode_copy(encoder, self.texture(id))));
+        let unread = std::mem::replace(&mut *self.copied.lock().expect("copied poisoned"), copy);
+        if let Some((_, unread)) = unread {
+            keep(&self.readbacks, unread.buffer);
+        }
+    }
+
+    /// Submits a copy of `texture` into a readback buffer.
+    fn copy_now(&self, texture: &wgpu::Texture) -> Readback {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.encode_writes(&mut encoder);
+        let copy = self.encode_copy(&mut encoder, texture);
+        self.queue.submit([encoder.finish()]);
+        copy
+    }
+
+    /// Encodes a copy of `texture` into a readback buffer, a kept one of
+    /// its size if there is one.
+    fn encode_copy(&self, encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture) -> Readback {
         let (width, height) = (texture.width(), texture.height());
         let row = width * 4;
         let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -149,10 +205,6 @@ impl WgpuGpu {
                 mapped_at_creation: false,
             })
         });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        self.encode_writes(&mut encoder);
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -165,9 +217,24 @@ impl WgpuGpu {
             },
             texture.size(),
         );
-        self.queue.submit([encoder.finish()]);
+        Readback {
+            buffer,
+            row,
+            padded_row,
+            height,
+        }
+    }
+
+    /// Maps a copy's buffer once the GPU has made it, and unpads its rows.
+    fn finish_read(&self, copy: Readback) -> impl Future<Output = Vec<u8>> + use<> {
         let (device, readbacks) = (self.device.clone(), self.readbacks.clone());
         async move {
+            let Readback {
+                buffer,
+                row,
+                padded_row,
+                height,
+            } = copy;
             let mapped = map_read(&device, &buffer).await;
             let mut pixels = Vec::with_capacity((row * height) as usize);
             for y in 0..height {
@@ -176,11 +243,7 @@ impl WgpuGpu {
             }
             drop(mapped);
             buffer.unmap();
-            let mut kept = readbacks.lock().expect("readbacks poisoned");
-            if kept.len() == READBACKS {
-                kept.remove(0);
-            }
-            kept.push(buffer);
+            keep(&readbacks, buffer);
             pixels
         }
     }
@@ -202,6 +265,15 @@ impl WgpuGpu {
         self.queue.submit([encoder.finish()]);
         map_read(&self.device, &buffer).await.to_vec()
     }
+}
+
+/// Keeps an unmapped readback buffer for the next readback of its size.
+fn keep(readbacks: &Readbacks, buffer: wgpu::Buffer) {
+    let mut kept = readbacks.lock().expect("readbacks poisoned");
+    if kept.len() == READBACKS {
+        kept.remove(0);
+    }
+    kept.push(buffer);
 }
 
 pub(crate) async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wgpu::BufferView {

@@ -82,6 +82,10 @@ pub struct WgpuGpu {
     /// Readback buffers back from their last readback, for the next of
     /// their size: a new one maps fresh pages each time.
     readbacks: offscreen::Readbacks,
+    /// The texture the next submission copies out after its passes, and
+    /// the copy the last one made, for the readback after it.
+    copy_next: Option<TextureId>,
+    copied: std::sync::Mutex<Option<(TextureId, offscreen::Readback)>>,
     pipelines_created: u32,
     /// Set when the device made by `offscreen` is lost.
     #[cfg(not(target_arch = "wasm32"))]
@@ -215,6 +219,8 @@ impl WgpuGpu {
             uploaded: Uploaded::default(),
             writes: writes::Writes::default(),
             readbacks: Default::default(),
+            copy_next: None,
+            copied: Default::default(),
             pipelines_created: 0,
             #[cfg(not(target_arch = "wasm32"))]
             lost: Default::default(),
@@ -1268,6 +1274,7 @@ impl Gpu for WgpuGpu {
                 }
             }
         }
+        self.encode_armed_copy(&mut encoder);
         self.last = Some(self.queue.submit([encoder.finish()]));
         if let Some(timing) = &mut self.timing {
             timing.end(timing::now() - started);
