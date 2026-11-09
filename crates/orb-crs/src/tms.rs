@@ -38,10 +38,20 @@ impl TileIndex {
 }
 
 /// A tiling of a projection's plane (OGC 2D TileMatrixSet) whose matrices
-/// form a quadtree: each matrix halves the previous one's cell size and
-/// doubles its columns and rows from the same corner. Matrix identifiers
-/// are consecutive zooms from [`min_zoom`](Self::min_zoom); the first
-/// matrix may have several columns and rows (`WorldCRS84Quad` is 2×1).
+/// form a quadtree: each matrix halves the previous one's cell size on the
+/// grid of the first one's corner, so every tile has a parent and up to
+/// four children. Matrix identifiers are consecutive zooms from
+/// [`min_zoom`](Self::min_zoom); the first matrix may have several columns
+/// and rows (`WorldCRS84Quad` is 2×1). Later matrices may hold only part
+/// of their quadtree level, as NASA GIBS's geographic sets do (2×1, 3×2,
+/// 5×3, 10×5…, the tiles that reach the world): the set's extent is then
+/// the area every matrix covers, and tiles reaching past it draw only
+/// what lies inside.
+///
+/// Tile indices count columns and rows on the quadtree's grid from the
+/// first matrix's top-left corner, whatever the set's own corner of
+/// origin and a matrix's first tile ([`native_col`](Self::native_col),
+/// [`native_row`](Self::native_row)).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileMatrixSet {
     id: String,
@@ -59,6 +69,31 @@ pub struct TileMatrixSet {
     /// Rows are counted from the bottom in the set's own indices (OGC
     /// `cornerOfOrigin: bottomLeft`).
     bottom_origin: bool,
+    /// Each matrix from `min_zoom` on, where it lies on its quadtree level.
+    matrices: Vec<Matrix>,
+}
+
+/// Where a matrix lies on its quadtree level: its first column and row,
+/// and its columns and rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Matrix {
+    col: u32,
+    row: u32,
+    cols: u32,
+    rows: u32,
+}
+
+impl Matrix {
+    /// The matrix `levels` deeper on the same area.
+    fn deeper(self, levels: u32) -> Self {
+        let shift = |v: u32| (u64::from(v) << levels.min(32)).min(u64::from(u32::MAX)) as u32;
+        Self {
+            col: shift(self.col),
+            row: shift(self.row),
+            cols: shift(self.cols),
+            rows: shift(self.rows),
+        }
+    }
 }
 
 /// One matrix of a tile matrix set definition, as an OGC document writes
@@ -183,17 +218,16 @@ impl TileMatrixSet {
             let projection =
                 Projection::from_descriptor("web-mercator").expect("built-in projection");
             let bounds = projection.world_bounds();
-            return Ok(Self {
-                id: id.to_string(),
+            return Ok(Self::quad(
+                id,
                 projection,
-                origin: DVec2::new(bounds.min.x, bounds.max.y),
-                span: bounds.size().x,
-                size: (1, 1),
-                min_zoom: 0,
-                max_zoom: 30,
-                tile_px: 256,
-                bottom_origin: false,
-            });
+                DVec2::new(bounds.min.x, bounds.max.y),
+                bounds.size().x,
+                (1, 1),
+                (0, 30),
+                256,
+                false,
+            ));
         }
         let utm = id
             .strip_prefix("UTM")
@@ -237,6 +271,12 @@ impl TileMatrixSet {
             min: DVec2::new(origin.x, origin.y - span * f64::from(size.1)),
             max: DVec2::new(origin.x + span * f64::from(size.0), origin.y),
         };
+        let first = Matrix {
+            col: 0,
+            row: 0,
+            cols: size.0,
+            rows: size.1,
+        };
         Self {
             id: id.to_string(),
             projection: projection.with_extent(extent),
@@ -247,12 +287,16 @@ impl TileMatrixSet {
             max_zoom,
             tile_px,
             bottom_origin,
+            matrices: (0..=u32::from(max_zoom - min_zoom))
+                .map(|k| first.deeper(k))
+                .collect(),
         }
     }
 
     /// A tile matrix set from its OGC definition. Its matrices must form a
-    /// quadtree with consecutive numeric identifiers; variable-width rows
-    /// and other layouts are reported as errors.
+    /// quadtree with consecutive numeric identifiers, each on the grid of
+    /// the first and within the children of the one before; variable-width
+    /// rows and other layouts are reported as errors.
     pub fn from_definition(def: &TileMatrixSetDefinition) -> Result<Self, UnknownTileMatrixSet> {
         let fail = |message: String| Err(UnknownTileMatrixSet(format!("{}: {message}", def.id)));
         let projection = match Projection::from_crs_uri(&def.crs) {
@@ -282,8 +326,25 @@ impl TileMatrixSet {
         if first.tile_width != first.tile_height || first.tile_width == 0 {
             return fail("tiles are not square".into());
         }
-        let (cell0, origin0) = (cell(first), origin(first));
-        for (k, m) in def.matrices.iter().enumerate() {
+        let cell0 = cell(first);
+        // A matrix's top-left corner.
+        let corner = |m: &TileMatrix| {
+            let o = origin(m);
+            if m.bottom_left {
+                DVec2::new(
+                    o.x,
+                    o.y + cell(m) * f64::from(m.tile_height) * f64::from(m.matrix_height),
+                )
+            } else {
+                o
+            }
+        };
+        let top_left = corner(first);
+        let span = cell0 * f64::from(first.tile_width);
+        let matrices = &def.matrices[..def.matrices.len().min(31 - usize::from(min_zoom))];
+        let mut placed: Vec<Matrix> = Vec::with_capacity(matrices.len());
+        let mut extent: Option<WorldRect> = None;
+        for (k, m) in matrices.iter().enumerate() {
             let zoom = u32::from(min_zoom) + k as u32;
             if m.id.parse::<u32>().ok() != Some(zoom) {
                 return fail(format!("matrix `{}` should be zoom {zoom}", m.id));
@@ -293,24 +354,9 @@ impl TileMatrixSet {
             }
             let scale = f64::from(1u32 << k);
             let expected = cell0 / scale;
-            let corner = |m: &TileMatrix| {
-                let o = origin(m);
-                if m.bottom_left {
-                    DVec2::new(
-                        o.x,
-                        o.y + cell(m) * f64::from(m.tile_height * m.matrix_height),
-                    )
-                } else {
-                    o
-                }
-            };
-            let tolerance = 1e-6 * cell0 * f64::from(first.tile_width);
             if (cell(m) - expected).abs() > 1e-6 * expected
-                || (corner(m) - corner(first)).abs().max_element() > tolerance
                 || m.tile_width != first.tile_width
                 || m.tile_height != first.tile_height
-                || m.matrix_width != first.matrix_width << k
-                || m.matrix_height != first.matrix_height << k
                 || m.bottom_left != first.bottom_left
             {
                 return fail(format!(
@@ -318,15 +364,57 @@ impl TileMatrixSet {
                     m.id
                 ));
             }
+            // Its first tile on the quadtree's grid at this level.
+            let tile = span / scale;
+            let offset = (corner(m) - top_left) * DVec2::new(1.0, -1.0) / tile;
+            let (rounded, cols, rows) = (offset.round(), m.matrix_width, m.matrix_height);
+            if (offset - rounded).abs().max_element() > 1e-6 || rounded.min_element() < 0.0 {
+                return fail(format!(
+                    "matrix `{}` isn't on the first one's tile grid",
+                    m.id
+                ));
+            }
+            let matrix = Matrix {
+                col: rounded.x as u32,
+                row: rounded.y as u32,
+                cols,
+                rows,
+            };
+            // Every tile needs its parent.
+            if let Some(&up) = placed.last() {
+                let up = up.deeper(1);
+                if cols == 0
+                    || rows == 0
+                    || matrix.col < up.col
+                    || matrix.row < up.row
+                    || matrix.col + cols > up.col + up.cols
+                    || matrix.row + rows > up.row + up.rows
+                {
+                    return fail(format!(
+                        "matrix `{}` reaches past the one before's children",
+                        m.id
+                    ));
+                }
+            }
+            placed.push(matrix);
+            let min = DVec2::new(
+                top_left.x + f64::from(matrix.col) * tile,
+                top_left.y - f64::from(matrix.row + rows) * tile,
+            );
+            let area = WorldRect {
+                min,
+                max: min + DVec2::new(f64::from(cols), f64::from(rows)) * tile,
+            };
+            extent = Some(match extent {
+                Some(e) => WorldRect {
+                    min: e.min.max(area.min),
+                    max: e.max.min(area.max),
+                },
+                None => area,
+            });
         }
-        let span = cell0 * f64::from(first.tile_width);
-        let top_left = if first.bottom_left {
-            DVec2::new(origin0.x, origin0.y + span * f64::from(first.matrix_height))
-        } else {
-            origin0
-        };
-        let max_zoom = (u32::from(min_zoom) + def.matrices.len() as u32 - 1).min(30) as u8;
-        Ok(Self::quad(
+        let max_zoom = (u32::from(min_zoom) + placed.len() as u32 - 1) as u8;
+        let mut set = Self::quad(
             &def.id,
             projection,
             top_left,
@@ -335,7 +423,10 @@ impl TileMatrixSet {
             (min_zoom, max_zoom),
             first.tile_width,
             first.bottom_left,
-        ))
+        );
+        set.projection = set.projection.with_extent(extent.expect("a first matrix"));
+        set.matrices = placed;
+        Ok(set)
     }
 
     /// A one-tile quadtree over the square around `rect`, for a plane that
@@ -378,15 +469,15 @@ impl TileMatrixSet {
         let unit_m = self.projection.metres_per_unit();
         let matrices = (self.min_zoom..=self.max_zoom)
             .map(|z| {
-                let (cols, rows) = self.matrix_size(z);
-                let cell = self.tile_span(z) / f64::from(self.tile_px);
+                let m = self.matrix(z).expect("a matrix");
+                let (cols, rows) = (m.cols, m.rows);
+                let span = self.tile_span(z);
+                let cell = span / f64::from(self.tile_px);
+                let x = self.origin.x + f64::from(m.col) * span;
                 let origin = if self.bottom_origin {
-                    [
-                        self.origin.x,
-                        self.origin.y - self.tile_span(z) * f64::from(rows),
-                    ]
+                    [x, self.origin.y - span * f64::from(m.row + rows)]
                 } else {
-                    [self.origin.x, self.origin.y]
+                    [x, self.origin.y - span * f64::from(m.row)]
                 };
                 TileMatrix {
                     id: z.to_string(),
@@ -429,25 +520,46 @@ impl TileMatrixSet {
         self.span / 2f64.powi(i32::from(z) - i32::from(self.min_zoom))
     }
 
+    /// The matrix at zoom `z`; past the last, the last one's area.
+    fn matrix(&self, z: u8) -> Option<Matrix> {
+        let k = usize::from(z.checked_sub(self.min_zoom)?);
+        let last = self.matrices.len() - 1;
+        Some(self.matrices[k.min(last)].deeper(k.saturating_sub(last) as u32))
+    }
+
     /// Columns and rows of the matrix at zoom `z`.
     pub fn matrix_size(&self, z: u8) -> (u32, u32) {
-        let shift = z.saturating_sub(self.min_zoom);
-        (self.size.0 << shift, self.size.1 << shift)
+        self.matrix(z).map_or((0, 0), |m| (m.cols, m.rows))
+    }
+
+    /// The first column and row of the matrix at zoom `z` on its
+    /// quadtree level: zero but for a matrix that holds only part of it
+    /// away from the set's corner.
+    pub fn matrix_start(&self, z: u8) -> (u32, u32) {
+        self.matrix(z).map_or((0, 0), |m| (m.col, m.row))
     }
 
     /// Whether a tile lies inside its matrix.
     pub fn contains(&self, tile: TileIndex) -> bool {
-        let (cols, rows) = self.matrix_size(tile.z);
-        tile.z >= self.min_zoom && tile.col < cols && tile.row < rows
+        self.matrix(tile.z).is_some_and(|m| {
+            (m.col..m.col + m.cols).contains(&tile.col)
+                && (m.row..m.row + m.rows).contains(&tile.row)
+        })
     }
 
-    /// The row a tile has in the set's own indices: counted from the
+    /// The column a tile has in its matrix's own indices.
+    pub fn native_col(&self, tile: TileIndex) -> u32 {
+        tile.col.wrapping_sub(self.matrix_start(tile.z).0)
+    }
+
+    /// The row a tile has in its matrix's own indices: counted from the
     /// bottom for a bottom-left corner of origin.
     pub fn native_row(&self, tile: TileIndex) -> u32 {
+        let (first, rows) = (self.matrix_start(tile.z).1, self.matrix_size(tile.z).1);
         if self.bottom_origin {
-            self.matrix_size(tile.z).1 - 1 - tile.row
+            (first + rows).wrapping_sub(1).wrapping_sub(tile.row)
         } else {
-            tile.row
+            tile.row.wrapping_sub(first)
         }
     }
 
@@ -467,6 +579,26 @@ impl TileMatrixSet {
             min: DVec2::new(min_x, max_y - span),
             max: DVec2::new(min_x + span, max_y),
         }
+    }
+
+    /// The part of a tile inside the set's extent: all of it, but for tiles
+    /// of a partial matrix that reach past the area every matrix covers.
+    pub fn tile_area(&self, tile: TileIndex) -> WorldRect {
+        let b = self.tile_bounds(tile);
+        let e = self.projection.world_bounds();
+        WorldRect {
+            min: b.min.max(e.min),
+            max: b.max.min(e.max),
+        }
+    }
+
+    /// A point of a tile, in fractions of its side from its top-left
+    /// corner (y down), in world space; held to the set's extent, so a
+    /// tile reaching past it maps its outside onto the extent's edge.
+    pub fn tile_point(&self, tile: TileIndex, uv: DVec2) -> DVec2 {
+        let b = self.tile_bounds(tile);
+        let world = DVec2::new(b.min.x + uv.x * b.size().x, b.max.y - uv.y * b.size().y);
+        self.projection.world_bounds().clamp(world)
     }
 
     /// The affine map from a tile's data units, `extent` per side with y down
@@ -516,11 +648,11 @@ impl TileMatrixSet {
     }
 
     /// A tile's longitude and latitude extent, `[west, south, east, north]`
-    /// in degrees, from points along its edges; a tile around a pole spans
-    /// every longitude.
+    /// in degrees, from points along the edges of its area; a tile around
+    /// a pole spans every longitude.
     pub fn geodetic_bounds(&self, tile: TileIndex) -> [f64; 4] {
         const STEPS: u32 = 8;
-        let rect = self.tile_bounds(tile);
+        let rect = self.tile_area(tile);
         let mut b = [
             f64::INFINITY,
             f64::INFINITY,
@@ -573,21 +705,29 @@ impl TileMatrixSet {
     /// The tiles at zoom `z` that a world rectangle touches.
     pub fn tiles_in(&self, rect: WorldRect, z: u8) -> impl Iterator<Item = TileIndex> + use<> {
         let span = self.tile_span(z);
-        let (cols, rows) = self.matrix_size(z);
-        let col = |x: f64| {
-            ((x - self.origin.x) / span)
-                .floor()
-                .clamp(0.0, f64::from(cols) - 1.0) as u32
+        let m = self.matrix(z).unwrap_or(Matrix {
+            col: 0,
+            row: 0,
+            cols: 0,
+            rows: 0,
+        });
+        let index = |v: f64, first: u32, count: u32| {
+            v.floor()
+                .clamp(f64::from(first), f64::from(first + count.max(1) - 1)) as u32
         };
-        let row = |y: f64| {
-            ((self.origin.y - y) / span)
-                .floor()
-                .clamp(0.0, f64::from(rows) - 1.0) as u32
-        };
+        let col = |x: f64| index((x - self.origin.x) / span, m.col, m.cols);
+        let row = |y: f64| index((self.origin.y - y) / span, m.row, m.rows);
         let (c0, c1) = (col(rect.min.x), col(rect.max.x));
         let (r0, r1) = (row(rect.max.y), row(rect.min.y));
         (r0..=r1).flat_map(move |r| (c0..=c1).map(move |c| TileIndex::new(z, c, r)))
     }
+}
+
+/// The centre of a tile's area (inside its set's extent) in fractions of
+/// the tile's side, y down.
+pub(crate) fn area_center(tms: &TileMatrixSet, tile: TileIndex) -> DVec2 {
+    let (b, c) = (tms.tile_bounds(tile), tms.tile_area(tile).center());
+    DVec2::new(c.x - b.min.x, b.max.y - c.y) / b.size()
 }
 
 #[cfg(test)]
@@ -782,6 +922,108 @@ mod tests {
             .unwrap();
         let b = ups.geodetic_bounds(tile);
         assert_eq!((b[0], b[2], b[3]), (-180.0, 180.0, 90.0));
+    }
+
+    /// NASA GIBS's geographic 500 m set, as its capabilities write it: 288°
+    /// tiles at level 0, halving, each matrix the tiles that reach the
+    /// world.
+    fn gibs() -> TileMatrixSetDefinition {
+        let sizes = [
+            (2, 1),
+            (3, 2),
+            (5, 3),
+            (10, 5),
+            (20, 10),
+            (40, 20),
+            (80, 40),
+            (160, 80),
+        ];
+        TileMatrixSetDefinition {
+            id: "500m".into(),
+            crs: "urn:ogc:def:crs:OGC:1.3:CRS84".into(),
+            northing_first: None,
+            matrices: (0..8)
+                .map(|z| TileMatrix {
+                    tile_width: 512,
+                    tile_height: 512,
+                    ..matrix(
+                        z,
+                        223_632_905.611_487_1 / f64::from(1u32 << z),
+                        [-180.0, 90.0],
+                        sizes[z as usize],
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn partial_matrices_keep_to_the_world() {
+        let tms = TileMatrixSet::from_definition(&gibs()).unwrap();
+        assert!((tms.tile_span(0) - 288.0).abs() < 1e-9);
+        assert_eq!(tms.matrix_size(1), (3, 2));
+        assert!(tms.contains(TileIndex::new(1, 2, 1)));
+        assert!(!tms.contains(TileIndex::new(1, 3, 0)));
+        assert!(!tms.contains(TileIndex::new(2, 4, 3)));
+        // The extent is the world, which every matrix covers.
+        let world = tms.projection().world_bounds();
+        assert!((world.min - DVec2::new(-180.0, -90.0)).abs().max_element() < 1e-9);
+        assert!((world.max - DVec2::new(180.0, 90.0)).abs().max_element() < 1e-9);
+        // A tile past the antimeridian and the south pole draws its part.
+        let area = tms.tile_area(TileIndex::new(0, 1, 0));
+        assert!((area.min - DVec2::new(108.0, -90.0)).abs().max_element() < 1e-9);
+        assert!((area.max - DVec2::new(180.0, 90.0)).abs().max_element() < 1e-9);
+        let corner = tms.tile_point(TileIndex::new(0, 1, 0), DVec2::ONE);
+        assert!((corner - DVec2::new(180.0, -90.0)).abs().max_element() < 1e-9);
+        let b = tms.geodetic_bounds(TileIndex::new(1, 2, 1));
+        assert!(
+            (b[1] + 90.0).abs() < 1e-9 && (b[2] - 180.0).abs() < 1e-9,
+            "{b:?}"
+        );
+        // Covers visit only the tiles the matrices hold, children of the
+        // edge's tiles too.
+        let cover = tms.cover(0..=0, 2, |_, _| crate::CoverDecision::Refine);
+        assert_eq!(cover.len(), 15);
+        assert!(cover.iter().all(|t| tms.contains(t.index)));
+        // Its definition reads back as the same set.
+        let back = TileMatrixSet::from_definition(&tms.definition().unwrap()).unwrap();
+        assert_eq!(back, tms);
+    }
+
+    #[test]
+    fn partial_matrices_off_the_corner() {
+        // A matrix holding the middle of its level, in a set counting rows
+        // from the bottom: its tiles keep their quadtree indices, and URLs
+        // take its own.
+        let mut def = gibs();
+        def.matrices.truncate(3);
+        for m in &mut def.matrices {
+            m.bottom_left = true;
+        }
+        def.matrices[0].point_of_origin = [-180.0, 90.0 - 288.0];
+        def.matrices[1].point_of_origin = [-36.0, 90.0 - 288.0];
+        def.matrices[1].matrix_width = 2;
+        def.matrices[2].point_of_origin = [-36.0, 90.0 - 216.0];
+        def.matrices[2].matrix_width = 4;
+        let tms = TileMatrixSet::from_definition(&def).unwrap();
+        assert_eq!(tms.matrix_start(1), (1, 0));
+        assert!(!tms.contains(TileIndex::new(1, 0, 0)));
+        let tile = TileIndex::new(2, 3, 0);
+        assert!(tms.contains(tile));
+        assert_eq!((tms.native_col(tile), tms.native_row(tile)), (1, 2));
+        let world = tms.projection().world_bounds();
+        assert!((world.min - DVec2::new(-36.0, -126.0)).abs().max_element() < 1e-9);
+        assert!((world.max - DVec2::new(252.0, 90.0)).abs().max_element() < 1e-9);
+        let back = TileMatrixSet::from_definition(&tms.definition().unwrap()).unwrap();
+        assert_eq!(back, tms);
+        // Matrices off the first one's grid, or past the one before's
+        // children, are refused.
+        let mut off = def.clone();
+        off.matrices[2].point_of_origin[0] += 10.0;
+        assert!(TileMatrixSet::from_definition(&off).is_err());
+        let mut orphan = def;
+        orphan.matrices[2].point_of_origin[0] = -180.0;
+        assert!(TileMatrixSet::from_definition(&orphan).is_err());
     }
 
     #[test]

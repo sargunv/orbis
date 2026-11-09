@@ -638,7 +638,7 @@ impl View {
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
         self.cover_tiles(tms, zooms, height, terrain, margin_px, |index, offset| {
-            let bounds = tms.tile_bounds(index).translated(DVec2::new(offset, 0.0));
+            let bounds = tms.tile_area(index).translated(DVec2::new(offset, 0.0));
             Some((bounds, center_zoom))
         })
     }
@@ -847,7 +847,7 @@ impl View {
         let period = projection.wrap_period();
         let frustum = GlobeFrustum::new(globe, height);
         tms.cover_with(0..=0, None, max_zoom, |index, _| {
-            let b = tms.tile_bounds(index);
+            let b = tms.tile_area(index);
             // A grid of the tile's points on the sphere, row by row: 5×5
             // for the widest tiles, 3×3 below.
             let steps = if index.z < 3 { 4 } else { 2 };
@@ -855,7 +855,7 @@ impl View {
             let mut points = [DVec3::NAN; 27];
             for (k, point) in points.iter_mut().enumerate().take(n * n) {
                 let uv = DVec2::new((k % n) as f64, (k / n) as f64) / steps as f64;
-                let world = DVec2::new(b.min.x + uv.x * b.size().x, b.max.y - uv.y * b.size().y);
+                let world = tms.tile_point(index, uv);
                 let g = projection.inverse(world);
                 if g.lon.is_finite() && g.lat.is_finite() {
                     *point = sphere::ecef(g, 0.0);

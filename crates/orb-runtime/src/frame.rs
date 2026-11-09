@@ -975,12 +975,26 @@ pub(crate) fn placements<'a>(
         }
         None => [false; 2],
     };
+    // A tile of a partial matrix reaching past its set's extent draws
+    // only what lies inside, in its data units.
+    let (own, area) = (tms.tile_bounds(tile), tms.tile_area(tile));
+    let units = |v: f64| (v / own.size().x * f64::from(extent)).round() as i16;
+    let inside = (area != own).then(|| {
+        (
+            [units(area.min.x - own.min.x), units(own.max.y - area.max.y)],
+            [units(area.max.x - own.min.x), units(own.max.y - area.min.y)],
+        )
+    });
     let rect = move |region: TileIndex| {
         let depth = region.z - tile.z;
         let size = extent >> depth;
         let x = (region.col - (tile.col << depth)) * size;
         let y = (region.row - (tile.row << depth)) * size;
         let (mut min, mut max) = ([x as i16, y as i16], [(x + size) as i16, (y + size) as i16]);
+        if let Some((lo, hi)) = inside {
+            min = [min[0].max(lo[0]), min[1].max(lo[1])];
+            max = [max[0].min(hi[0]), max[1].min(hi[1])];
+        }
         if caps[0] && region.row == 0 {
             min[1] = i16::MIN;
         }
@@ -993,7 +1007,8 @@ pub(crate) fn placements<'a>(
     // disjoint rows instead of expanding to quadrants that overlap loaded
     // descendants (and render translucent geometry twice).
     let pixel_size = TILE_PX * 2.0f64.powf(zoom.floor() - tile_zoom);
-    let x = f64::from(tile.col) + f64::from(draw.wrap) * f64::from(tms.matrix_size(tile.z).0);
+    let copy = tms.projection().wrap_period().unwrap_or(0.0) / tms.tile_span(tile.z);
+    let x = f64::from(tile.col) + f64::from(draw.wrap) * copy;
     let pattern_origin = [
         (x * pixel_size) as i64 as u32,
         (f64::from(tile.row) * pixel_size) as i64 as u32,

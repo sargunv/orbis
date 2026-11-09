@@ -298,9 +298,10 @@ impl Warp {
     /// A position in a tile (fractions, y down) on the target plane, or
     /// `None` where either projection doesn't reach.
     pub fn map(&self, tile: TileIndex, uv: DVec2) -> Option<DVec2> {
-        let b = self.from.tile_bounds(tile);
-        let world = DVec2::new(b.min.x + uv.x * b.size().x, b.max.y - uv.y * b.size().y);
-        let mut g = self.from.projection().inverse(world);
+        let mut g = self
+            .from
+            .projection()
+            .inverse(self.from.tile_point(tile, uv));
         if !g.lon.is_finite() || !g.lat.is_finite() || !self.to.contains(g) {
             return None;
         }
@@ -310,11 +311,10 @@ impl Warp {
             let wrap = |lon: f64| (lon - lon0 + 540.0).rem_euclid(360.0) - 180.0;
             if (wrap(g.lon).abs() - 180.0).abs() < 1e-6 {
                 let inside = uv + (DVec2::splat(0.5) - uv) * 1e-3;
-                let world = DVec2::new(
-                    b.min.x + inside.x * b.size().x,
-                    b.max.y - inside.y * b.size().y,
-                );
-                let near = self.from.projection().inverse(world);
+                let near = self
+                    .from
+                    .projection()
+                    .inverse(self.from.tile_point(tile, inside));
                 g.lon = lon0 + 180.0f64.copysign(wrap(near.lon));
             }
         }
@@ -379,11 +379,11 @@ impl Warp {
         })
     }
 
-    /// The tile's side on the target plane at its centre: the square root
-    /// of the local area scale times the tile's side.
+    /// The tile's side on the target plane at the centre of its area: the
+    /// square root of the local area scale times the tile's side.
     fn local_span(&self, tile: TileIndex) -> Option<f64> {
         let h = 1.0 / 64.0;
-        let c = DVec2::splat(0.5);
+        let c = crate::tms::area_center(&self.from, tile);
         let dx =
             self.map(tile, c + DVec2::new(h, 0.0))? - self.map(tile, c - DVec2::new(h, 0.0))?;
         let dy =

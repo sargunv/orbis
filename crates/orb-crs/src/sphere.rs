@@ -45,16 +45,16 @@ pub fn frame(g: Geodetic) -> DMat3 {
 /// world stops short of the pole (Web Mercator's at ±85.05°). Caps reach
 /// out to them.
 pub fn poles(tms: &TileMatrixSet, tile: TileIndex) -> [bool; 2] {
-    let rows = tms.matrix_size(tile.z).1;
-    let b = tms.tile_bounds(tile);
+    let (first, rows) = (tms.matrix_start(tile.z).1, tms.matrix_size(tile.z).1);
+    let b = tms.tile_area(tile);
     let projection = tms.projection();
     let short = |y: f64| {
         let lat = projection.inverse(DVec2::new(b.center().x, y)).lat;
         lat.is_finite() && lat.abs() < 90.0 - 1e-9
     };
     [
-        tile.row == 0 && short(b.max.y),
-        tile.row + 1 == rows && short(b.min.y),
+        tile.row == first && short(b.max.y),
+        tile.row + 1 == first + rows && short(b.min.y),
     ]
 }
 
@@ -63,16 +63,15 @@ pub fn poles(tms: &TileMatrixSet, tile: TileIndex) -> [bool; 2] {
 /// `GpuPerVertex` and `Geodetic` plans), or `None` where its projection
 /// doesn't reach or it needs more than 256 patches.
 pub fn series(tms: &TileMatrixSet, tile: TileIndex, tolerance: f64) -> Option<Series<DVec3>> {
-    let b = tms.tile_bounds(tile);
     let projection = tms.projection();
     let map = |uv: DVec2| {
-        let world = DVec2::new(b.min.x + uv.x * b.size().x, b.max.y - uv.y * b.size().y);
-        let g = projection.inverse(world);
+        let g = projection.inverse(tms.tile_point(tile, uv));
         (g.lon.is_finite() && g.lat.is_finite()).then(|| ecef(g, 0.0))
     };
-    // The tile's side at its centre: the square root of its area scale.
+    // The tile's side at the centre of its area: the square root of its
+    // area scale.
     let h = 1.0 / 64.0;
-    let c = DVec2::splat(0.5);
+    let c = crate::tms::area_center(tms, tile);
     let dx = map(c + DVec2::new(h, 0.0))? - map(c - DVec2::new(h, 0.0))?;
     let dy = map(c + DVec2::new(0.0, h))? - map(c - DVec2::new(0.0, h))?;
     let span = (dx.cross(dy).length() / (4.0 * h * h)).sqrt();

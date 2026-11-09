@@ -302,7 +302,7 @@ impl TileEndpoint {
         if let Some(url) = &self.data_url {
             return url.clone();
         }
-        let native = self.tms.native_row(tile);
+        let (col, native) = (self.tms.native_col(tile), self.tms.native_row(tile));
         let row = match self.scheme {
             Scheme::Xyz => native,
             Scheme::Tms => self.tms.matrix_size(tile.z).1 - 1 - native,
@@ -311,10 +311,10 @@ impl TileEndpoint {
             &self.templates[(tile.col as usize + tile.row as usize) % self.templates.len()];
         let mut url = template
             .replace("{z}", &tile.z.to_string())
-            .replace("{x}", &tile.col.to_string())
+            .replace("{x}", &col.to_string())
             .replace("{y}", &row.to_string())
             .replace("{tileMatrix}", &tile.z.to_string())
-            .replace("{tileCol}", &tile.col.to_string())
+            .replace("{tileCol}", &col.to_string())
             .replace("{tileRow}", &native.to_string());
         if url.contains("{bbox}") {
             let b = self.tms.tile_bounds(tile);

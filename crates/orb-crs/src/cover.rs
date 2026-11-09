@@ -24,9 +24,11 @@ pub enum CoverDecision {
 }
 
 impl TileMatrixSet {
-    /// Covers a view by depth-first traversal from the zoom-0 matrix of each
-    /// world copy in `wraps`. `decide` sees each tile with its bounds shifted
-    /// into its world copy. Tiles asked to refine at `max_zoom` are accepted.
+    /// Covers a view by depth-first traversal from the first matrix of each
+    /// world copy in `wraps`, through the children each matrix holds.
+    /// `decide` sees each tile with its area (inside the set's extent)
+    /// shifted into its world copy. Tiles asked to refine at `max_zoom` are
+    /// accepted.
     ///
     /// Projections that don't wrap only have copy 0.
     pub fn cover(
@@ -42,7 +44,7 @@ impl TileMatrixSet {
             |index, offset| {
                 decide(
                     index,
-                    self.tile_bounds(index).translated(DVec2::new(offset, 0.0)),
+                    self.tile_area(index).translated(DVec2::new(offset, 0.0)),
                 )
             },
         )
@@ -69,7 +71,9 @@ impl TileMatrixSet {
             while let Some(index) = stack.pop() {
                 match decide(index, offset) {
                     CoverDecision::Skip => {}
-                    CoverDecision::Refine if index.z < max_zoom => stack.extend(index.children()),
+                    CoverDecision::Refine if index.z < max_zoom => {
+                        stack.extend(index.children().into_iter().filter(|&c| self.contains(c)))
+                    }
                     CoverDecision::Accept | CoverDecision::Refine => {
                         out.push(CoveredTile { index, wrap })
                     }

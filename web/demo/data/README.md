@@ -113,6 +113,14 @@ the Kadaster's buildings to within a metre or so where the datum shift is
 right (and 100 m off where it isn't). Open it natively or with
 `cargo run --release -p orb-cli -- render web/demo/data/crs/rd-new.json -o rd.png --at 5.3872,52.1552,16`.
 
+`gibs-geographic.json`, likewise, draws GIBS Blue Marble shaded relief on
+a geographic (EPSG:4326) plane from its 500 m tile matrix set exactly as
+GIBS's capabilities list it: 288° tiles at level 0, whose matrices (2×1,
+3×2, 5×3, then 10×5 on) hold only the tiles that reach the world. The
+level 0–2 tiles reach past the antimeridian and the South Pole into
+black, which stays off the map. Open it with
+`cargo run --release -p orb-cli -- render web/demo/data/crs/gibs-geographic.json -o gibs.png --at 0,0,0 --size 900x500`.
+
 They fetch their tiles at run time; nothing here is extracted or committed.
 GIBS imagery is NASA's and free of use restrictions; GIBS asks to be credited.
 OpenFreeMap's tiles and glyphs are as above (© OpenMapTiles, © OpenStreetMap
