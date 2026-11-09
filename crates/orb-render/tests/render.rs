@@ -473,6 +473,50 @@ fn draws_a_fill() {
     assert_eq!(pixel(&pixels, 60, 60), CLEAR);
 }
 
+/// A chunk whose vertices lie more than `u16::MAX` apart, as earcut makes
+/// of a huge ring, draws copies of them within its u16 indices' reach.
+#[test]
+fn draws_a_fill_whose_chunk_spans_more_vertices_than_u16_indices_reach() {
+    let capacity = SceneCapacity {
+        vertex_words: 1 << 18,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity, None);
+    red_fill(&mut h);
+    let tile = h.tile();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    let mut b = orb_layout::MeshBuilder::new(orb_layout::fill::STRIDE);
+    let mut vertex = |[x, y]: [i16; 2]| {
+        let position = u32::from(x as u16) | u32::from(y as u16) << 16;
+        b.push_vertex([x, y], &[position, 0])
+    };
+    let first = vertex([0, 0]);
+    for _ in 0..70_000 {
+        vertex([0, 0]);
+    }
+    let [right_top, right_bottom, left_bottom] = [[2048, 0], [2048, 4096], [0, 4096]].map(vertex);
+    b.push_triangle(first, right_top, right_bottom);
+    b.push_triangle(first, right_bottom, left_bottom);
+    let mesh = b.finish();
+    assert!(mesh.chunks[0].first_vertex > first);
+    h.renderer
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, EXTENT),
+            &MeshData::new(&mesh, &[], 0),
+            &Default::default(),
+        )
+        .unwrap();
+
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 4, 32), RED);
+    assert_eq!(pixel(&pixels, 28, 4), RED);
+    assert_eq!(pixel(&pixels, 36, 32), CLEAR);
+}
+
 #[test]
 fn camera_moves_and_mesh_removal_take_effect() {
     let mut h = Harness::new();
@@ -753,7 +797,7 @@ fn compacted_slots_follow_the_view_without_recording() {
     assert_eq!(pixel(&pixels, 56, 48), CLEAR);
     // Every slot is written on the first cull: the two visible copies'
     // indices, and hidden ones for the copy off screen.
-    let mesh_indices = left_half_square().indices.len() as u32;
+    let mesh_indices = left_half_square().vertex_indices().count() as u32;
     assert_eq!(
         cull_counters(&mut h),
         [2, 3 * mesh_indices, 2 * mesh_indices]

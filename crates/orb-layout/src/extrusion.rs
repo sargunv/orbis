@@ -139,7 +139,7 @@ fn layout_normalized(
         let p = [v[0] as i16, (v[0] >> 16) as i16];
         builder.push_vertex(p, &[v[0], v[1], 1, 16384]);
     }
-    for t in roof.indices.as_chunks::<3>().0 {
+    for t in roof.vertex_indices().collect::<Vec<_>>().as_chunks::<3>().0 {
         // Tile Y points south; world Y points north. Reverse winding
         // so outward faces are counterclockwise after projection.
         builder.push_triangle(t[0], t[2], t[1]);
@@ -258,7 +258,7 @@ mod tests {
         assert!(layer.is_whole(0, layer.clip_buffer()));
         let mesh = layout(&layer, &[0]);
         // Two roof triangles and four whole walls, reaching x = −10.
-        assert_eq!(mesh.indices.len(), 6 + 4 * 6);
+        assert_eq!(mesh.vertex_indices().count(), 6 + 4 * 6);
         let min_x = mesh
             .vertices
             .as_chunks::<4>()
@@ -285,7 +285,7 @@ mod tests {
         );
         let mesh = layout(&layer, &[0]);
         // Two roof triangles, three walls; no wall on x = 0.
-        assert_eq!(mesh.indices.len(), 6 + 3 * 6);
+        assert_eq!(mesh.vertex_indices().count(), 6 + 3 * 6);
         for v in mesh.vertices.as_chunks::<4>().0 {
             assert!((0..=100).contains(&(v[0] as i16)));
         }
@@ -300,7 +300,7 @@ mod tests {
             b.push_vertex(p);
         }
         let mesh = layout(&b.finish(), &[0]);
-        assert_eq!(mesh.indices.len(), 6 + 4 * 6);
+        assert_eq!(mesh.vertex_indices().count(), 6 + 4 * 6);
     }
     #[test]
     fn surrounding_polygon_has_only_a_roof() {
@@ -312,7 +312,7 @@ mod tests {
             b.push_vertex(p);
         }
         let mesh = layout(&b.finish(), &[0]);
-        assert_eq!(mesh.indices.len(), 6);
+        assert_eq!(mesh.vertex_indices().count(), 6);
         assert!(
             mesh.vertices
                 .as_chunks::<4>()

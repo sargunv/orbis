@@ -7,7 +7,7 @@ fn pull_point(node_index: u32, instance: u32, out: ptr<function, Pulled>) -> boo
     let point = instance % CHUNK_POINTS;
     if point >= chunk.index_count { return false; }
     (*out).tile = entry.tile;
-    (*out).vertex = chunk.vertex_base + index_at(chunk.first_index + point) * 2u;
+    (*out).vertex = chunk.vertex_base + (chunk.first_vertex + index_at(chunk.first_index + point)) * 2u;
     (*out).prop_base = chunk.prop_base;
     (*out).state_base = chunk.state_base;
     (*out).row_words = chunk.row_words;

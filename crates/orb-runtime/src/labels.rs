@@ -549,6 +549,7 @@ fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_l
         if !fits {
             chunks.push(orb_layout::Chunk {
                 first_index: q,
+                first_vertex: 0,
                 index_count: 0,
                 bounds: orb_layout::TileBox {
                     min: [i16::MAX; 2],

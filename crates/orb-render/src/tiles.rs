@@ -1046,11 +1046,13 @@ const QUAD: [u32; 20] = {
         e | e << 16,
     ]
 };
-const QUAD_INDICES: [u32; 6] = [0, 1, 2, 2, 1, 3];
+/// Indices 0, 1, 2, 2, 1, 3, two to a word (`orb_layout::pack_indices`).
+const QUAD_INDICES: [u32; 3] = [1 << 16, 2 | 2 << 16, 1 | 3 << 16];
 const QUAD_CHUNK: Chunk = Chunk {
     sort_key: None,
     first_index: 0,
     index_count: 6,
+    first_vertex: 0,
     bounds: TileBox {
         min: [0, 0],
         max: [IMAGE_EXTENT as i16, IMAGE_EXTENT as i16],

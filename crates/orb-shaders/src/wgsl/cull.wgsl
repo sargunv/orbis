@@ -40,6 +40,7 @@ struct Candidate {
 // at 6 the indices it wrote, at 7 the vertex inputs it draws (vertex
 // pulling's padded vertices, or the visible chunks' indices).
 @group(0) @binding(6) var<storage, read_write> args: array<atomic<u32>>;
+// Mesh indices: u16s, two to a word, the first in the low half.
 @group(0) @binding(7) var<storage, read> indices: array<u32>;
 @group(0) @binding(8) var<storage, read_write> compacted: array<u32>;
 
@@ -131,8 +132,8 @@ var<workgroup> scan: array<u32, WORKGROUP>;
 var<workgroup> node_count: u32;
 var<workgroup> node_draw: u32;
 // Indexed nodes: the batch's slots to rewrite (source index, or
-// HIDDEN_INDEX to hide; count; destination; run tag), the end of its last
-// visible slot, and its counters.
+// HIDDEN_INDEX to hide; count; destination; run tag plus the chunk's first
+// vertex), the end of its last visible slot, and its counters.
 var<workgroup> rewrite_src: array<u32, INDEXED_BATCH>;
 var<workgroup> rewrite_count: array<u32, INDEXED_BATCH>;
 var<workgroup> rewrite_dst: array<u32, INDEXED_BATCH>;
@@ -239,7 +240,9 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
             rewrite_src[at] = select(HIDDEN_INDEX, chunk.first_index, keep == 1u);
             rewrite_count[at] = chunk.index_count;
             rewrite_dst[at] = candidate.slot;
-            rewrite_tag[at] = candidate.run << node.run_shift;
+            // A compacted index counts from the mesh's first vertex, and
+            // the mesh's vertices fit below the run's bits.
+            rewrite_tag[at] = (candidate.run << node.run_shift) + chunk.first_vertex;
             candidates[node.visible_base + i].drawn = keep;
             atomicAdd(&written_indices, chunk.index_count);
         }
@@ -256,7 +259,8 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
             if src == HIDDEN_INDEX {
                 compacted[dst + k] = HIDDEN_INDEX;
             } else {
-                compacted[dst + k] = tag | indices[src + k];
+                let i = src + k;
+                compacted[dst + k] = tag + ((indices[i >> 1u] >> ((i & 1u) << 4u)) & 0xffffu);
             }
         }
     }

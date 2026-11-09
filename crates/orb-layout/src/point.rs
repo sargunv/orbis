@@ -69,7 +69,7 @@ mod tests {
         }
         let mesh = layout(&b.finish(), &[0]);
         assert_eq!(mesh.vertices.len(), 4);
-        assert_eq!(mesh.indices, [0, 1]);
+        assert!(mesh.vertex_indices().eq([0, 1]));
     }
 
     #[test]
@@ -82,6 +82,6 @@ mod tests {
             b.push_vertex(p);
         }
         let mesh = layout(&b.finish(), &[0]);
-        assert_eq!(mesh.indices.len(), 4);
+        assert_eq!(mesh.vertex_indices().count(), 4);
     }
 }

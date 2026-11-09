@@ -164,7 +164,8 @@ impl Warped {
                 [position(p.x), position(p.y), clip, weight.to_bits(), image]
             })
             .collect();
-        let indices: Vec<u32> = mesh.triangles.iter().flatten().copied().collect();
+        let short = |&k: &u32| u16::try_from(k).expect("warp meshes have under 65,536 vertices");
+        let indices = orb_layout::pack_indices(mesh.triangles.iter().flatten().map(short));
         let point = |k: u32| mesh.positions[k as usize] * f64::from(IMAGE_EXTENT);
         let chunks = mesh
             .triangles
@@ -183,6 +184,7 @@ impl Warped {
                 Chunk {
                     sort_key: None,
                     first_index: (c * 256 * 3) as u32,
+                    first_vertex: 0,
                     index_count: (triangles.len() * 3) as u32,
                     bounds: TileBox { min, max },
                 }

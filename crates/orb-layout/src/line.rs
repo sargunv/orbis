@@ -854,8 +854,8 @@ mod tests {
 
     fn counts(mesh: &Mesh, vertices: usize, triangles: usize) {
         assert_eq!(mesh.vertices.len(), vertices * STRIDE);
-        assert_eq!(mesh.indices.len(), triangles * 3);
-        assert!(mesh.indices.iter().all(|&i| (i as usize) < vertices));
+        assert_eq!(mesh.vertex_indices().count(), triangles * 3);
+        assert!(mesh.vertex_indices().all(|i| (i as usize) < vertices));
     }
 
     fn offsets(mesh: &Mesh) -> Vec<[i8; 2]> {
@@ -964,7 +964,10 @@ mod tests {
             data(&butt),
             [[0, 63, 0], [0, -63, 2], [0, 63, 0], [0, -63, 2]]
         );
-        assert_eq!(butt.indices, [0, 2, 1, 2, 3, 1]);
+        assert_eq!(
+            butt.vertex_indices().collect::<Vec<_>>(),
+            [0, 2, 1, 2, 3, 1]
+        );
 
         let square = line(&points, &params(LineJoin::Miter, LineCap::Square));
         counts(&square, 4, 2);
@@ -1046,7 +1049,10 @@ mod tests {
                 [63, 0, 2],
             ]
         );
-        assert_eq!(&round.indices[9..18], &[2, 5, 4, 2, 6, 5, 2, 7, 6]);
+        assert_eq!(
+            &round.vertex_indices().collect::<Vec<_>>()[9..18],
+            &[2, 5, 4, 2, 6, 5, 2, 7, 6]
+        );
     }
 
     #[test]
@@ -1192,8 +1198,8 @@ mod tests {
         assert_eq!(&positions[0..2], &positions[8..10]);
         assert_eq!(&positions[10..12], &positions[18..20]);
         assert!(data(&mesh).iter().all(|v| v[2] & 1 == 0));
-        assert!(mesh.indices[..24].iter().all(|&i| i < 10));
-        assert!(mesh.indices[24..].iter().all(|&i| i >= 10));
+        assert!(mesh.vertex_indices().take(24).all(|i| i < 10));
+        assert!(mesh.vertex_indices().skip(24).all(|i| i >= 10));
         assert_eq!(
             mesh,
             layout(&layer, &[0], |_| params(LineJoin::Miter, LineCap::Square))
@@ -1248,10 +1254,17 @@ mod tests {
         assert_eq!(positions.first(), Some(&[-4096, 10]));
         assert_eq!(positions.last(), Some(&[-4096, 20]));
         // There is no artificial vertical edge joining the two clipped ends.
-        assert!(mesh.indices.as_chunks::<3>().0.iter().all(|t| {
-            let p = t.map(|i| positions[i as usize]);
-            !(p.iter().all(|q| q[0] == -4096) && p.iter().any(|q| q[1] != p[0][1]))
-        }));
+        assert!(
+            mesh.vertex_indices()
+                .collect::<Vec<_>>()
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|t| {
+                    let p = t.map(|i| positions[i as usize]);
+                    !(p.iter().all(|q| q[0] == -4096) && p.iter().any(|q| q[1] != p[0][1]))
+                })
+        );
         assert!(data(&mesh).iter().all(|v| v[2] & 1 == 0));
     }
 
@@ -1316,15 +1329,17 @@ mod tests {
         );
         let positions = positions(&mesh);
         for chunk in &mesh.chunks {
-            for &index in &mesh.indices
-                [chunk.first_index as usize..(chunk.first_index + chunk.index_count) as usize]
-            {
+            for i in chunk.first_index..chunk.first_index + chunk.index_count {
+                let index = chunk.first_vertex + u32::from(crate::index_at(&mesh.indices, i));
                 let p = positions[index as usize];
                 assert!((chunk.bounds.min[0]..=chunk.bounds.max[0]).contains(&p[0]));
                 assert!((chunk.bounds.min[1]..=chunk.bounds.max[1]).contains(&p[1]));
             }
         }
-        assert_eq!(&mesh.indices[768..774], &[256, 258, 257, 258, 259, 257]);
+        assert_eq!(
+            &mesh.vertex_indices().collect::<Vec<_>>()[768..774],
+            &[256, 258, 257, 258, 259, 257]
+        );
     }
 
     #[test]

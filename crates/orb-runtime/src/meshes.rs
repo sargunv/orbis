@@ -130,6 +130,7 @@ pub(crate) fn make_background(
             orb_layout::Chunk {
                 sort_key: None,
                 first_index: (c * 256 * 3) as u32,
+                first_vertex: 0,
                 index_count: (run.len() * 3) as u32,
                 // The caps' triangles come last and span every row.
                 bounds: if c * 256 >= (cells * cells * 2) as usize {
@@ -148,7 +149,8 @@ pub(crate) fn make_background(
         .collect();
     let mesh = orb_layout::Mesh {
         vertices,
-        indices: triangles.into_iter().flatten().collect(),
+        // At most 65 × 65 + 2 vertices.
+        indices: orb_layout::pack_indices(triangles.into_iter().flatten().map(|v| v as u16)),
         chunks,
     };
     // One quad (or grid) for every covered tile: no source's tile.

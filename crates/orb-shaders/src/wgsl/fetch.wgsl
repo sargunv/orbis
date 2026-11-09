@@ -14,7 +14,8 @@ fn tile_at(i: u32) -> Tile { return tiles[i]; }
 fn chunk_at(i: u32) -> Chunk { return chunks[i]; }
 fn visible_at(i: u32) -> Visible { return visible[i]; }
 fn vertex_at(i: u32) -> u32 { return vertices[i]; }
-fn index_at(i: u32) -> u32 { return indices[i]; }
+// Mesh indices are u16s, two to a word, the first in the low half.
+fn index_at(i: u32) -> u32 { return (indices[i >> 1u] >> ((i & 1u) << 4u)) & 0xffffu; }
 fn prop_at(i: u32) -> u32 { return props[i]; }
 fn node_cull_at(i: u32) -> NodeCull { return node_cull[i]; }
 fn image_at(i: u32) -> ImageRect { return image_rects[i]; }

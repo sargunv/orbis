@@ -329,7 +329,8 @@ mod tests {
                 f64::from((w >> 16) as u16 as i16),
             ]
         };
-        mesh.indices
+        mesh.vertex_indices()
+            .collect::<Vec<_>>()
             .as_chunks::<3>()
             .0
             .iter()
@@ -368,7 +369,7 @@ mod tests {
         );
         let layer = b.finish();
         let mesh = outline(&layer, &[0]);
-        assert_eq!(mesh.indices.len(), 6, "three segments");
+        assert_eq!(mesh.vertex_indices().count(), 6, "three segments");
         assert_eq!(mesh.chunks.len(), 1);
     }
 

@@ -97,7 +97,7 @@ fn pull(node_index: u32, instance: u32, index: u32, stride: u32, out: ptr<functi
         return false;
     }
     (*out).tile = entry.tile;
-    (*out).vertex = chunk.vertex_base + index_at(chunk.first_index + index) * stride;
+    (*out).vertex = chunk.vertex_base + (chunk.first_vertex + index_at(chunk.first_index + index)) * stride;
     (*out).prop_base = chunk.prop_base;
     (*out).state_base = chunk.state_base;
     (*out).row_words = chunk.row_words;

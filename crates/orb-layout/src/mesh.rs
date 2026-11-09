@@ -30,11 +30,14 @@ impl TileBox {
 /// A run of triangles, segments or point instances culled as one unit.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Chunk {
-    /// First index of the chunk in [`Mesh::indices`].
+    /// First index of the chunk in [`Mesh::indices`], counted in indices.
     pub first_index: u32,
     /// Indices in the chunk: three per triangle, two per segment, or one
     /// per point instance.
     pub index_count: u32,
+    /// The vertex its indices count from: index value `i` is vertex
+    /// `first_vertex + i`.
+    pub first_vertex: u32,
     /// Bounds of the chunk's vertex positions. Families that extrude on the
     /// GPU (lines) widen it when culling.
     pub bounds: TileBox,
@@ -47,7 +50,8 @@ pub struct Chunk {
 pub struct Mesh {
     /// Vertices as u32 words, a family-specific number per vertex.
     pub vertices: Vec<u32>,
-    /// Triangle indices into the mesh's vertices, counted in vertices.
+    /// u16 indices two to a word ([`pack_indices`]), each relative to its
+    /// chunk's first vertex.
     pub indices: Vec<u32>,
     pub chunks: Vec<Chunk>,
 }
@@ -56,6 +60,33 @@ impl Mesh {
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
+
+    /// Every chunk's indices in order, as vertex numbers.
+    pub fn vertex_indices(&self) -> impl Iterator<Item = u32> + '_ {
+        self.chunks.iter().flat_map(|c| {
+            (c.first_index..c.first_index + c.index_count)
+                .map(|i| c.first_vertex + u32::from(index_at(&self.indices, i)))
+        })
+    }
+}
+
+/// Packs u16 indices two to a word, the first in the low half: a
+/// little-endian `[u16]`, padded to whole words.
+pub fn pack_indices(indices: impl IntoIterator<Item = u16>) -> Vec<u32> {
+    let mut halves: Vec<u16> = indices.into_iter().collect();
+    if halves.len() % 2 == 1 {
+        halves.push(0);
+    }
+    let pairs = halves.as_chunks::<2>().0;
+    pairs
+        .iter()
+        .map(|&[lo, hi]| u32::from(lo) | u32::from(hi) << 16)
+        .collect()
+}
+
+/// Index `i` of indices packed by [`pack_indices`].
+pub fn index_at(words: &[u32], i: u32) -> u16 {
+    (words[i as usize / 2] >> (16 * (i % 2))) as u16
 }
 
 /// Accumulates vertices and triangles and cuts them into chunks.
@@ -63,6 +94,9 @@ impl Mesh {
 pub struct MeshBuilder {
     stride: usize,
     mesh: Mesh,
+    /// Indices as vertex numbers, until [`finish`](Self::finish) packs
+    /// them.
+    indices: Vec<u32>,
     /// Position of every vertex, for chunk bounds.
     positions: Vec<[i16; 2]>,
     open: TileBox,
@@ -75,6 +109,7 @@ impl MeshBuilder {
         Self {
             stride,
             mesh: Mesh::default(),
+            indices: Vec::new(),
             positions: Vec::new(),
             open: TileBox::EMPTY,
             sort_key: None,
@@ -123,17 +158,51 @@ impl MeshBuilder {
             .last()
             .map_or(0, |c| c.first_index + c.index_count);
         // Each primitive kind divides its limit, so none straddle chunks.
-        if self.mesh.indices.len() as u32 - chunk_start == limit {
+        if self.indices.len() as u32 - chunk_start == limit {
             self.close_chunk();
         }
         for &i in vertices {
             self.open.include(self.positions[i as usize]);
-            self.mesh.indices.push(i);
+            self.indices.push(i);
         }
     }
 
+    /// The mesh, with each chunk's indices relative to its lowest vertex.
+    /// A chunk whose vertices lie more than `u16::MAX` apart (earcut can
+    /// bridge across a huge ring) draws copies of them instead, appended
+    /// to the vertices.
     pub fn finish(mut self) -> Mesh {
         self.close_chunk();
+        let stride = self.stride;
+        let mesh = &mut self.mesh;
+        let mut relative = Vec::with_capacity(self.indices.len());
+        let mut copied = Vec::new();
+        for chunk in &mut mesh.chunks {
+            let start = chunk.first_index as usize;
+            let run = &self.indices[start..start + chunk.index_count as usize];
+            let (lo, hi) = run
+                .iter()
+                .fold((u32::MAX, 0), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+            if hi - lo <= u32::from(u16::MAX) {
+                chunk.first_vertex = lo;
+                relative.extend(run.iter().map(|&v| (v - lo) as u16));
+                continue;
+            }
+            copied.clear();
+            copied.extend_from_slice(run);
+            copied.sort_unstable();
+            copied.dedup();
+            chunk.first_vertex = (mesh.vertices.len() / stride) as u32;
+            for &v in &copied {
+                let at = v as usize * stride;
+                mesh.vertices.extend_from_within(at..at + stride);
+            }
+            relative.extend(
+                run.iter()
+                    .map(|v| copied.binary_search(v).expect("copied above") as u16),
+            );
+        }
+        mesh.indices = pack_indices(relative);
         self.mesh
     }
 
@@ -143,11 +212,12 @@ impl MeshBuilder {
             .chunks
             .last()
             .map_or(0, |c| c.first_index + c.index_count);
-        let index_count = self.mesh.indices.len() as u32 - first_index;
+        let index_count = self.indices.len() as u32 - first_index;
         if index_count > 0 {
             self.mesh.chunks.push(Chunk {
                 first_index,
                 index_count,
+                first_vertex: 0,
                 bounds: self.open,
                 sort_key: self.sort_key,
             });
@@ -173,9 +243,36 @@ mod tests {
         let counts: Vec<_> = mesh.chunks.iter().map(|c| c.index_count / 3).collect();
         assert_eq!(counts, [MAX_CHUNK_TRIANGLES, MAX_CHUNK_TRIANGLES, 10]);
         assert_eq!(mesh.chunks[1].first_index, MAX_CHUNK_TRIANGLES * 3);
+        assert_eq!(mesh.chunks[2].first_vertex, MAX_CHUNK_TRIANGLES * 2 * 3);
+        assert!(mesh.vertex_indices().eq(0..n * 3));
         let last = mesh.chunks[2].bounds;
         let first_x = (MAX_CHUNK_TRIANGLES * 2) as i16;
         assert_eq!(last.min, [first_x, 0]);
         assert_eq!(last.max, [n as i16, 1]);
+    }
+
+    #[test]
+    fn copies_the_vertices_of_a_chunk_spanning_more_than_u16() {
+        let mut b = MeshBuilder::new(2);
+        let far = 70_000;
+        for i in 0..far {
+            b.push_vertex([0, 0], &[i, 7]);
+        }
+        b.push_triangle(0, 1, far - 1);
+        b.push_triangle(1, far - 1, 2);
+        let mesh = b.finish();
+        assert_eq!(mesh.chunks[0].first_vertex, far);
+        assert_eq!(mesh.vertices.len(), (far as usize + 4) * 2);
+        let word = |v: u32| mesh.vertices[v as usize * 2];
+        let drawn: Vec<_> = mesh.vertex_indices().map(word).collect();
+        assert_eq!(drawn, [0, 1, far - 1, 1, far - 1, 2]);
+        assert!(mesh.vertex_indices().all(|v| v >= far));
+    }
+
+    #[test]
+    fn packs_indices_two_to_a_word() {
+        let words = pack_indices([1, 2, 3]);
+        assert_eq!(words, [1 | 2 << 16, 3]);
+        assert_eq!([0, 1, 2].map(|i| index_at(&words, i)), [1, 2, 3]);
     }
 }

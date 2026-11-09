@@ -1474,9 +1474,10 @@ impl Scene {
             let id = self.chunk_slots.alloc().expect("checked above");
             let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
             let row: [u32; CHUNK_WORDS] = [
-                indices.start + chunk.first_index,
+                indices.start * 2 + chunk.first_index,
                 chunk.index_count,
                 vertices.start,
+                chunk.first_vertex,
                 prop_range.start,
                 pack(chunk.bounds.min),
                 pack(chunk.bounds.max),
