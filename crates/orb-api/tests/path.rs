@@ -382,6 +382,38 @@ fn alps() -> (String, DemDir) {
     (style, dir)
 }
 
+/// Terrain that comes on after the style's first frame, its DEM source
+/// behind a TileJSON: a fresh map that never moves drapes the buildings
+/// its near drape slots' zoom shows (they show from zoom 13; the view is
+/// north of the extract, which lies in its near slots), as a map that
+/// moved there after the terrain came on does. Paint written before
+/// the terrain was on must not stay.
+#[test]
+fn a_terrain_that_comes_on_late_drapes_what_a_moved_map_does() {
+    let (hills, dem) = hills();
+    let tilejson = dem.0.join("tiles.json");
+    let tiles = format!("file://{}/{{z}}/{{x}}/{{y}}.png", dem.0.display());
+    std::fs::write(
+        &tilejson,
+        format!(r#"{{"tilejson": "3.0.0", "tiles": ["{tiles}"], "maxzoom": 11}}"#),
+    )
+    .unwrap();
+    let late = hills.replace(
+        &format!(r#""tiles": ["{tiles}"]"#),
+        &format!(r#""url": "file://{}""#, tilejson.display()),
+    );
+    assert_ne!(late, hills);
+    let style = tokyo(
+        r#""terrain": {"source": "hills", "exaggeration": 1.5},"#,
+        &late,
+    );
+    let north = Geodetic::new(STATION.lon, 35.70);
+    let start = (north, 12.5, 0.0, 60.0);
+    let end = (north, 12.9, 0.0, 60.0);
+    // Drape texels filtered into a pixel, each a step apart: two.
+    assert_within("late-terrain", both_ways(&style, start, end, 5), 2);
+}
+
 /// Terrain over local hills: DEM borders come from the neighbours the view
 /// draws, not from those a gesture saw.
 #[test]
