@@ -101,8 +101,9 @@ Advice that cost time to learn, not rules:
   after other performance techniques hit a wall, as long as the result
   doesn't depend on the path.
 - Fix causes rather than hiding them behind fades, fallbacks or flattening.
-- GL JS and its fixtures are a good guide to correct behaviour, not a pixel
-  target.
+- GL JS (with its fixtures) and MapLibre Native are both guides to correct
+  behaviour, not pixel targets, and neither is assumed better. Measure both
+  and aim for whichever does a thing best.
 - `cargo xtask check --affected` is the fast loop; run the fixtures now and
   then.
 - On tile-based GPUs (Apple, phones), per-pass GPU timestamps show where
