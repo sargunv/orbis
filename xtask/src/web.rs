@@ -19,7 +19,7 @@ const OUT_DIR: &str = "web/pkg";
 /// something grew. Find what in the per-crate report; if the growth earns
 /// its bytes, raise the level to the new size plus the same margin, and
 /// when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 980;
+const CORE_WATCH_KIB: usize = 910;
 const SHAPER_WATCH_KIB: usize = 420;
 
 /// Crates whose code the size report attributes separately.
@@ -120,6 +120,10 @@ fn module(root: &Path, package: &str, name: &str) -> Result<Sizes, String> {
         .args([
             "-Oz",
             "--converge",
+            // The module makes its memory, zeroed, and Rust lays nothing
+            // out below 1 MiB: true of both modules, and 2 KiB brotli.
+            "--zero-filled-memory",
+            "--low-memory-unused",
             "--strip-producers",
             "--strip-target-features",
             "--enable-simd",
