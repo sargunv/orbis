@@ -11,8 +11,6 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use crate::cargo;
-
 const OUT_DIR: &str = "web/pkg";
 /// Where `cargo xtask web --names` writes `core.wasm` with its function names.
 const NAMED_CORE: &str = "target/web/core-names.wasm";
@@ -22,8 +20,8 @@ const NAMED_CORE: &str = "target/web/core-names.wasm";
 /// something grew. Find what in the per-crate report; if the growth earns
 /// its bytes, raise the level to the new size plus the same margin, and
 /// when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 880;
-const SHAPER_WATCH_KIB: usize = 405;
+const CORE_WATCH_KIB: usize = 830;
+const SHAPER_WATCH_KIB: usize = 380;
 
 /// Crates whose code the size report attributes separately.
 const CRATES: &[&str] = &[
@@ -112,6 +110,12 @@ fn module(root: &Path, package: &str, name: &str, names: Option<&Path>) -> Resul
         "target/wasm32-unknown-unknown/wasm-release/{}.wasm",
         package.replace('-', "_")
     ));
+    // A panic traps at once, with no message. On wasm32-unknown-unknown
+    // std's stderr is a sink: the message was formatted only to be dropped,
+    // and that formatting, with the `Debug` impls and source locations it
+    // reaches, was 5% of core.wasm. It takes std rebuilt with the module
+    // and a flag stable Rust keeps unstable, so this build alone sets
+    // RUSTC_BOOTSTRAP.
     let args = [
         "build",
         "--quiet",
@@ -121,8 +125,14 @@ fn module(root: &Path, package: &str, name: &str, names: Option<&Path>) -> Resul
         "wasm32-unknown-unknown",
         "--profile",
         "wasm-release",
+        "-Zbuild-std=std,panic_abort",
+        "--config",
+        r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort"]"#,
     ];
-    cargo(&args)?;
+    eprintln!("$ RUSTC_BOOTSTRAP=1 cargo {}", args.join(" "));
+    run(Command::new(env!("CARGO"))
+        .env("RUSTC_BOOTSTRAP", "1")
+        .args(args))?;
     let out = root.join(OUT_DIR);
     run(Command::new("wasm-bindgen")
         .arg(&built)
