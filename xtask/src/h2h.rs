@@ -91,8 +91,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     if options.block == "web" {
         return web(&options, &mirror);
     }
-    let h2h = H2h::new(options, cache, mirror)?;
-    let blocks: &[&str] = match h2h.options.block.as_str() {
+    let blocks: &[&str] = match options.block.as_str() {
         "all" => &["stills", "tiles", "frames"],
         "stills" => &["stills"],
         "tiles" => &["tiles"],
@@ -100,7 +99,9 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         "size" => &["size"],
         other => return Err(format!("h2h: unknown block `{other}`\n\n{HELP}")),
     };
-    let mut out = h2h.about();
+    let h2h = H2h::new(options, cache, mirror)?;
+    // Each block prints as it ends, so a later one's failure loses nothing.
+    print!("{}", h2h.about());
     for block in blocks {
         let load = uptime();
         let report = match *block {
@@ -109,14 +110,11 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
             "frames" => h2h.frames()?,
             _ => h2h.size()?,
         };
-        writeln!(
-            out,
+        println!(
             "\n{report}\nLoad average: {load} before, {} after.",
             uptime()
-        )
-        .expect("a String");
+        );
     }
-    print!("{out}");
     Ok(())
 }
 
