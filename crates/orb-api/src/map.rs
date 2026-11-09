@@ -115,8 +115,7 @@ pub struct Map {
     woken: Arc<AtomicBool>,
     /// Notified with `woken`, for still output to wait on.
     signal: Arc<(Mutex<()>, Condvar)>,
-    /// What still output last drew into: a snapshot, or a tile with a
-    /// tile of its neighbours around it.
+    /// What still output last drew into: a snapshot or a tile.
     offscreen: Option<Target>,
     hook: WakeHook,
     /// Marks the map woken and calls the hook, from any thread.
@@ -669,8 +668,8 @@ impl Map {
     }
 
     /// Draws one tile of a tile matrix set on the map's plane as still
-    /// output, and returns its picture. The map draws the tile with a tile
-    /// of its neighbours around it and places labels in tile scope
+    /// output, and returns its picture. The map loads the labels of the
+    /// tile's neighbours too and places them all in tile scope
     /// ([`RenderMode::Tile`]): tiles drawn apart agree on the labels that
     /// cross their edges, those smaller than half a tile at least, and the
     /// same tile always draws the same bytes. The map's camera is left as it
@@ -696,21 +695,14 @@ impl Map {
             )));
         }
         let px = px as u32;
-        let mut target = self.offscreen(3 * px, 3 * px, tile.scale);
+        let mut target = self.offscreen(px, px, tile.scale);
         let drawn = self.draw_tile(&mut target, tile, index, deadline);
         let pixels = drawn.and_then(|()| target.read_pixels());
         self.offscreen = Some(target);
-        let pixels = pixels?;
-        // The middle tile.
-        let row_bytes = 3 * px as usize * 4;
-        let (start, len) = (px as usize * 4, px as usize * 4);
         Ok(Image {
             width: px,
             height: px,
-            pixels: (px as usize..2 * px as usize)
-                .flat_map(|y| &pixels[y * row_bytes + start..][..len])
-                .copied()
-                .collect(),
+            pixels: pixels?,
         })
     }
 
@@ -729,10 +721,11 @@ impl Map {
         index: TileIndex,
         deadline: Instant,
     ) -> Result<(), Error> {
-        // The style's projection sets the plane.
+        // The style's projection sets the plane. Until it is in, nothing
+        // draws: a frame would load what the interactive camera shows.
         self.set_mode(RenderMode::Still);
         while self.map.style_doc().is_none() {
-            self.frame(target, self.now())?;
+            self.arrive(target)?;
             self.style_failed()?;
             if self.map.style_doc().is_none() {
                 self.wait(deadline)?;
@@ -782,7 +775,16 @@ impl Map {
             .flat_map(|r| (col - 1..=col + 1).map(move |c| (c, r)))
             .filter_map(|(c, r)| grid(c, r))
             .collect();
-        let camera = grid(col, row).expect("checked above").camera;
+        // The middle tile as the middle of a view of the whole grid sees
+        // it: from three times as far, so that what stands up (extrusions)
+        // leans at the tile's edges as it does at its neighbours'.
+        let camera = CameraState {
+            fov: 2.0
+                * ((CameraState::DEFAULT_FOV / 2.0).to_radians().tan() / 3.0)
+                    .atan()
+                    .to_degrees(),
+            ..grid(col, row).expect("checked above").camera
+        };
         let interactive = *self.map.camera();
         self.map.jump_to_state(camera);
         self.set_mode(RenderMode::Tile(tiles));
@@ -931,6 +933,46 @@ impl Map {
             let _ = self.runtime.save_pipeline_cache();
         }
         Ok(Some(report))
+    }
+
+    /// Applies what has arrived without drawing a frame
+    /// ([`orb_runtime::Map::apply_arrivals`]), with the renderer of
+    /// `target`'s format.
+    fn arrive(&mut self, target: &Target) -> Result<(), Error> {
+        if !target.same_runtime(&self.shared) {
+            return Err(Error::InvalidArgument(
+                "the target belongs to another runtime".into(),
+            ));
+        }
+        if self.runtime.lost() {
+            self.runtime.recover()?;
+        }
+        if self.device != self.shared.generation.get() {
+            self.device = self.shared.generation.get();
+            self.renderer = None;
+            self.dirty = true;
+        }
+        let format = target.format();
+        {
+            let mut device = self.shared.gpu.borrow_mut();
+            self.woken.store(false, Ordering::Release);
+            let gpu: &mut dyn orb_hal::Gpu = &mut *device;
+            let map = &mut self.map;
+            let renderer = self
+                .renderer
+                .get_or_insert_with(|| map.create_renderer(gpu, format));
+            if renderer.format() != format {
+                return Err(Error::InvalidArgument(format!(
+                    "this map draws {:?} targets, not {:?}",
+                    renderer.format().color,
+                    format.color
+                )));
+            }
+            map.apply_arrivals(gpu, renderer, target.scale() as f32);
+        }
+        self.events
+            .extend(self.map.take_events().into_iter().map(Event::Map));
+        Ok(())
     }
 
     /// The oldest event not yet taken.

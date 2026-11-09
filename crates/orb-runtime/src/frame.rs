@@ -135,6 +135,25 @@ impl Map {
             .max()
             .unwrap_or(0)
             .clamp(pyramid.min_zoom(), pyramid.max_zoom());
+        // Tile mode draws the middle tile of its grid and places labels over
+        // the whole grid: a source whose content crosses tile edges (labels,
+        // circles, heatmaps) covers the grid. The grid's edges are tile
+        // edges: tiles that only touch it hold nothing the middle shows.
+        let grid_view;
+        let (view, margin) = match &self.mode {
+            RenderMode::Tile(_) => {
+                let crosses = nodes().any(|(_, n)| {
+                    n.family.is_symbol() || matches!(n.family, Family::Circle | Family::Heatmap)
+                });
+                let middle = view.viewport();
+                grid_view = self.view(orb_camera::Viewport {
+                    width: 3.0 * middle.width,
+                    height: 3.0 * middle.height,
+                });
+                (if crosses { &grid_view } else { view }, -0.5)
+            }
+            _ => (view, f64::from(reach)),
+        };
         let warps = &self.globe_warps;
         let cover = match (view.low_plane(), *warped) {
             // On a low-zoom plane every set's tiles land through its warp.
@@ -149,7 +168,7 @@ impl Map {
                 data_zoom..=pyramid.max_zoom(),
                 f64::from(height) * self.extrusion_scale(),
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
-                f64::from(reach),
+                margin,
             ),
             (None, true) => view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
                 warps.surface_footprint(tms, tile)

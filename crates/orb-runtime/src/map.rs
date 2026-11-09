@@ -322,9 +322,10 @@ pub enum RenderMode {
     /// One picture: nothing fades and labels place as if nothing had been
     /// placed before, so that the same inputs draw the same pixels.
     Still,
-    /// One tile of a grid, drawn with its neighbours around it: `Still`,
-    /// with labels placed in tile scope over the grid's tiles listed, so
-    /// that tiles drawn apart agree on the labels that cross their edges.
+    /// The middle tile of a grid, the camera's view: `Still`, with labels
+    /// placed in tile scope over the grid's tiles listed, so that tiles
+    /// drawn apart agree on the labels that cross their edges. Sources
+    /// whose content crosses tile edges load the whole grid.
     Tile(Vec<GridTile>),
 }
 
@@ -1040,6 +1041,31 @@ impl Map {
         self.surface.plan(&tms, image).map(|plan| (tms, plan))
     }
 
+    /// Applies what has arrived (the style among it) with `renderer` and
+    /// starts the style's sprites, without moving the camera, loading what
+    /// a view needs or drawing: still output that can't place its camera
+    /// before the style is in waits for it this way. [`render`](Self::render)
+    /// begins with it.
+    pub fn apply_arrivals(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, pixel_ratio: f32) {
+        if self.renderer != Some(renderer.id()) {
+            if self.renderer.is_some() {
+                self.forget_gpu();
+                self.events.push(MapEvent::Restored);
+            }
+            self.renderer = Some(renderer.id());
+            self.nodes_stale = true;
+        }
+        self.retired.release(renderer);
+        self.start_sprites(gpu, pixel_ratio);
+        self.apply_image_edits(gpu);
+        // Bring the scene's nodes to the plan before results for it apply.
+        self.sync_nodes(gpu, renderer);
+        self.apply_messages(gpu, renderer);
+        // A URL style may have arrived while applying messages.
+        self.start_sprites(gpu, pixel_ratio);
+        self.sync_nodes(gpu, renderer);
+    }
+
     /// Draws the frame shown at `frame_time` (the host's frame timestamp,
     /// on the clock its input times use, in milliseconds) into `target`
     /// with `renderer`: applies arrived data, takes the style's camera if
@@ -1058,25 +1084,9 @@ impl Map {
     ) -> FrameReport {
         self.frame_time = frame_time;
         self.born.get_or_insert(frame_time);
-        if self.renderer != Some(renderer.id()) {
-            if self.renderer.is_some() {
-                self.forget_gpu();
-                self.events.push(MapEvent::Restored);
-            }
-            self.renderer = Some(renderer.id());
-            self.nodes_stale = true;
-        }
-        self.retired.release(renderer);
         renderer.set_antialias_3d(gpu, self.antialias_3d);
-        self.start_sprites(gpu, pixel_ratio);
-        self.apply_image_edits(gpu);
-        // Bring the scene's nodes to the plan before results for it apply.
-        self.sync_nodes(gpu, renderer);
         self.placement_ms = 0.0;
-        self.apply_messages(gpu, renderer);
-        // A URL style may have arrived while applying messages.
-        self.start_sprites(gpu, pixel_ratio);
-        self.sync_nodes(gpu, renderer);
+        self.apply_arrivals(gpu, renderer, pixel_ratio);
         self.apply_videos(gpu, renderer);
         // The camera moves for this frame on what has arrived.
         let moving = self.advance_camera(viewport, frame_time);
