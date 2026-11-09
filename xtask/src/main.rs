@@ -58,8 +58,8 @@ cargo xtask <task>
                extract's tiles through decode, layout and pack); --views
                <file> takes mln-rs's views.txt cameras; web/demo/bench.html
                runs the frames and gestures benches in a browser;
-               --compare <rev> [--runs N] builds <rev> in a temporary
-               worktree and runs both builds N times (default 3),
+               --compare <rev> [--runs N] builds <rev> in target/compare
+               and runs both builds N times (default 3),
                interleaved, reporting each number as <rev> → this tree
   h2h <stills|tiles|frames|size|all|web|mirror> [options]  Orbis against mln-rs
                (pinned, built into the shared h2h cache) over a local

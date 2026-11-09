@@ -1,27 +1,31 @@
 //! A/B runs against another revision: `bench --compare <rev>` builds
-//! `orb-bench` at `<rev>` in a temporary worktree and runs it interleaved
-//! with this tree's, and `h2h --compare <rev>` adds that revision's
-//! `orbis` as an engine. Builds share `target/compare/target`, so a second
-//! comparison rebuilds only what changed.
+//! `orb-bench` at `<rev>` and runs it interleaved with this tree's, and
+//! `h2h --compare <rev>` adds that revision's `orbis` as an engine. The
+//! revision is checked out into one worktree, `target/compare/src`, kept
+//! between runs and built into `target/compare/target`: a checkout touches
+//! only the files that differ, so the next comparison rebuilds only the
+//! crates they're in.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A revision's build in a worktree under `target/compare/`, removed when
-/// this drops.
+/// A revision's build in `target/compare/`, which stays locked until this
+/// drops.
 pub(crate) struct Build {
     /// The revision as given.
     pub(crate) rev: String,
     pub(crate) commit: String,
-    worktree: PathBuf,
     /// The build's binaries: `target/compare/target/<profile>`.
     pub(crate) bin: PathBuf,
+    _lock: File,
 }
 
 impl Build {
-    /// Checks `rev` out into a worktree and builds `packages` there in `profile`.
+    /// Checks `rev` out into the comparison worktree and builds `packages`
+    /// there in `profile`.
     pub(crate) fn new(rev: &str, packages: &[&str], profile: &str) -> Result<Self, String> {
         let root = root();
         let commit = git(
@@ -34,20 +38,31 @@ impl Build {
             ],
         )?;
         let compare = root.join("target/compare");
-        let worktree = compare.join(format!("src-{commit}-{}", std::process::id()));
         std::fs::create_dir_all(&compare).map_err(|e| format!("{}: {e}", compare.display()))?;
-        eprintln!("compare: {rev} ({commit}) into {}", worktree.display());
-        git(
-            &root,
-            &["worktree", "add", "--detach", path(&worktree)?, &commit],
-        )?;
-        let build = Self {
-            rev: rev.to_string(),
-            commit,
-            worktree,
-            bin: compare.join("target").join(profile),
-        };
-        let manifest = build.worktree.join("Cargo.toml");
+        // Another comparison in this tree checks out and builds in the same place.
+        let lock_path = compare.join("lock");
+        let lock = File::create(&lock_path).map_err(|e| format!("{}: {e}", lock_path.display()))?;
+        if lock.try_lock().is_err() {
+            eprintln!("compare: waiting for another comparison in this tree");
+            lock.lock()
+                .map_err(|e| format!("{}: {e}", lock_path.display()))?;
+        }
+        let worktree = compare.join("src");
+        eprintln!("compare: {rev} ({commit}) in {}", worktree.display());
+        if worktree.join(".git").exists() {
+            git(
+                &worktree,
+                &["checkout", "--quiet", "--detach", "--force", &commit],
+            )?;
+        } else {
+            // A worktree whose directory went with target/ is still registered.
+            git(&root, &["worktree", "prune"])?;
+            git(
+                &root,
+                &["worktree", "add", "--detach", path(&worktree)?, &commit],
+            )?;
+        }
+        let manifest = worktree.join("Cargo.toml");
         let target = compare.join("target");
         let mut args = vec![
             "build",
@@ -62,24 +77,12 @@ impl Build {
             args.extend(["-p", package]);
         }
         crate::cargo(&args)?;
-        Ok(build)
-    }
-}
-
-impl Drop for Build {
-    fn drop(&mut self) {
-        let root = root();
-        if let Err(e) = git(
-            &root,
-            &[
-                "worktree",
-                "remove",
-                "--force",
-                &self.worktree.display().to_string(),
-            ],
-        ) {
-            eprintln!("compare: {e}; remove {} by hand", self.worktree.display());
-        }
+        Ok(Self {
+            rev: rev.to_string(),
+            commit,
+            bin: target.join(profile),
+            _lock: lock,
+        })
     }
 }
 
@@ -142,7 +145,8 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
 
 /// The last of `after`'s reports, each numeric table cell replaced by the
 /// median over `before`'s reports → the median over `after`'s and the
-/// change. A row is matched by its table and first cell.
+/// change, and each `min–max` cell by the range over `before`'s → over
+/// `after`'s. A row is matched by its table and first cell.
 fn merge(before: &[String], after: &[String]) -> String {
     let template = after.last().map_or("", String::as_str);
     let (before, after) = (cells(before), cells(after));
@@ -157,15 +161,25 @@ fn merge(before: &[String], after: &[String]) -> String {
         let key = (table, first.clone());
         let mut merged = Vec::new();
         for (i, cell) in row.as_ref().into_iter().flatten().enumerate() {
-            let column = |runs: &HashMap<(usize, String), Vec<Vec<String>>>| {
-                let values: Option<Vec<f64>> = (runs.get(&key).into_iter().flatten())
-                    .map(|r| r.get(i).and_then(|c| number(c)))
-                    .collect();
-                values.filter(|v| !v.is_empty()).map(|mut v| median(&mut v))
+            // This cell's column over the runs.
+            let column = |runs: &Rows| -> Vec<String> {
+                (runs.get(&key).into_iter().flatten())
+                    .map(|r| r.get(i).cloned().unwrap_or_default())
+                    .collect()
             };
-            merged.push(match (i, column(&before), column(&after)) {
-                (1.., Some(b), Some(a)) => change(b, a, cell),
-                _ => cell.clone(),
+            let (b, a) = (column(&before), column(&after));
+            merged.push(if i == 0 {
+                cell.clone()
+            } else if let (Some(b), Some(a)) = (medians(&b), medians(&a)) {
+                change(b, a, cell)
+            } else if let (Some(b), Some(a)) = (ranges(&b), ranges(&a)) {
+                let digits = precision(cell);
+                format!(
+                    "{:.digits$}–{:.digits$} → {:.digits$}–{:.digits$}",
+                    b.0, b.1, a.0, a.1
+                )
+            } else {
+                cell.clone()
             });
         }
         writeln!(out, "| {} |", merged.join(" | ")).expect("a String");
@@ -173,12 +187,39 @@ fn merge(before: &[String], after: &[String]) -> String {
     out
 }
 
+/// Report table rows by table index and first cell, each run's.
+type Rows = HashMap<(usize, String), Vec<Vec<String>>>;
+
+/// The median of numeric cells, if every one is a number.
+fn medians(cells: &[String]) -> Option<f64> {
+    let mut values = cells
+        .iter()
+        .map(|c| number(c))
+        .collect::<Option<Vec<_>>>()?;
+    (!values.is_empty()).then(|| median(&mut values))
+}
+
+/// The range over `min–max` cells, if every one is one.
+fn ranges(cells: &[String]) -> Option<(f64, f64)> {
+    let bounds = cells.iter().map(|c| {
+        let (lo, hi) = c.trim_matches('*').split_once('–')?;
+        Some((number(lo)?, number(hi)?))
+    });
+    bounds
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .reduce(|(lo, hi), (a, b)| (lo.min(a), hi.max(b)))
+}
+
+/// The digits after the point in a numeric or `min–max` cell.
+fn precision(cell: &str) -> usize {
+    let first = cell.trim_matches('*').split('–').next().unwrap_or_default();
+    first.split_once('.').map_or(0, |(_, f)| f.len())
+}
+
 /// `before → after (±x%)`, at the cell's own precision.
 fn change(before: f64, after: f64, cell: &str) -> String {
-    let digits = cell
-        .trim_matches('*')
-        .split_once('.')
-        .map_or(0, |(_, f)| f.len());
+    let digits = precision(cell);
     let percent = if before == 0.0 {
         String::new()
     } else {
@@ -188,7 +229,7 @@ fn change(before: f64, after: f64, cell: &str) -> String {
 }
 
 /// Each report's table rows by table index and first cell.
-fn cells(reports: &[String]) -> HashMap<(usize, String), Vec<Vec<String>>> {
+fn cells(reports: &[String]) -> Rows {
     let mut rows: HashMap<_, Vec<_>> = HashMap::new();
     for report in reports {
         for (table, line) in tables(report) {
@@ -300,5 +341,15 @@ mod tests {
         );
         assert!(merged.contains("|---|---|---|\n"));
         assert!(merged.starts_with("### Frame bench\n\n- data\n"));
+    }
+
+    #[test]
+    fn merges_ranges_over_runs() {
+        let report = |range: &str| format!("| view | min–max |\n|---|---|\n| z12 | {range} |\n");
+        let merged = merge(
+            &[report("1.0–3.0"), report("0.5–2.0")],
+            &[report("2.0–2.5"), report("1.5–4.0")],
+        );
+        assert!(merged.contains("| z12 | 0.5–3.0 → 1.5–4.0 |"), "{merged}");
     }
 }

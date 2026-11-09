@@ -60,8 +60,8 @@ cargo xtask h2h <stills|tiles|frames|size|all|web|mirror> [options]
                        link of that bandwidth, as a first visit loads them
   --bin <name>=<path>  another Orbis build as an engine: an `orbis` binary,
                        `orb-bench` beside it for frames
-  --compare <rev>      <rev>'s build as an engine named <rev>: built in a
-                       temporary worktree, as `bench --compare` does
+  --compare <rev>      <rev>'s build as an engine named <rev>: built in
+                       target/compare, as `bench --compare` builds it
   --diff <dir>         for `stills`: each Orbis engine's stills against
                        <dir>/orbis-<view>.png (a copy of an earlier run's
                        target/h2h/png, or that directory itself to compare
@@ -680,6 +680,8 @@ impl H2h {
     /// render tests default to, anti-aliased pixels aside).
     fn diff_stills(&self, views: &[(String, [String; 8])], dir: &Path) -> Result<String, String> {
         let diffs = self.out.join("diff");
+        // An earlier run's diff images would pass for this run's.
+        let _ = std::fs::remove_dir_all(&diffs);
         std::fs::create_dir_all(&diffs).map_err(|e| format!("{}: {e}", diffs.display()))?;
         let mut out = format!(
             "\n### Stills against {}\n\n| view | engine | mismatched px | of all |\n|---|---|---|---|\n",
