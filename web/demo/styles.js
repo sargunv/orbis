@@ -47,15 +47,19 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * place of the style's then too. `restyle` turns the fetched style into the
  * entry's (sources, layers, terrain, light), so a live style keeps tracking
  * its upstream; the map then loads that style, with the projection and sky
- * in it, whole (`sceneStyle`). `light` offers the ⋯ menu's switch
- * between a map- and a viewport-anchored light (app/light.js), `&light=`
- * in the URL. `unsupported` says, by engine, why that engine can't show
- * the entry in the comparison (app/compare.js).
+ * in it, whole (`sceneStyle`). `light` offers the entry's switch between
+ * a map- and a viewport-anchored light (app/light.js), `&light=` in the
+ * URL; `terrain` its terrain switch (app/terrain.js), with the terrain it
+ * turns on, off by default, or `true` for the style's own, on by default
+ * (`&terrain=1|0` in the URL when not the default). `unsupported` says, by
+ * engine, why that engine can't show the entry in the comparison
+ * (app/compare.js).
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
- *   light?: boolean, projection?: object, sky?: object, restyle?: (style: object) => object,
+ *   light?: boolean, terrain?: object | true, projection?: object, sky?: object,
+ *   restyle?: (style: object) => object,
  *   unsupported?: { gljs?: string, native?: string } }} Scene
  */
 
@@ -73,25 +77,31 @@ const MAPTERHORN = { type: "raster-dem", tiles: ["https://tiles.mapterhorn.com/{
   encoding: "terrarium", tileSize: 512, maxzoom: 17 };
 
 /**
+ * The Globe entry's terrain, off until its switch turns it on: draped lines
+ * still jump in width at zoom steps (#151).
+ */
+const PROTOMAPS_TERRAIN = { source: "terrain", exaggeration: 1.3 };
+
+/**
  * The Globe entry's sky, from Protomaps Light's palette: a pale cyan after
  * its water (#80deea) fading to a horizon and fog of its land (#e2dfda),
- * so far terrain dissolves into the map's own ground, and a rim of
- * atmosphere at low zoom that thins out as it hands over to Mercator.
- * Behind it, style-spec#1889's night: a deep blue-black backdrop with
+ * so far terrain dissolves into the map's own ground, and a full
+ * atmosphere at low zoom that thins out as it hands over to Mercator: with
+ * `orbis:atmosphere` it tints the sunlit face and glows at the limb (GL
+ * JS's model washes the face out at this blend). Behind it, style-spec#1889's night: a deep blue-black backdrop with
  * stars that fade out by zoom 6, by when the sky covers them anyway.
  */
 const PROTOMAPS_SKY = { "sky-color": "#9fd3e0", "horizon-color": "#eef1ef", "fog-color": "#e6e4df",
   "sky-horizon-blend": 0.6, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.6,
-  "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 0.45, 2, 0.36, 4, 0.2, 8, 0],
+  "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 2, 0.9, 4, 0.5, 8, 0],
   "backdrop-color": "#060a17",
   "star-opacity": ["interpolate", ["linear"], ["zoom"], 2, 1, 6, 0] };
 
 /**
- * Protomaps Light (v5) with what it lacks for a 3D map: Mapterhorn's
- * terrain, a hillshade from a DEM source of its own over the land and water
- * fills and under the roads and labels, a map-anchored light, and the
- * buildings layer's `height` and `min_height` extruded under the labels.
- * Buildings without a height keep the style's flat fill. Each addition is
+ * Protomaps Light (v5) with what it lacks for a 3D map: Mapterhorn's DEM
+ * for PROTOMAPS_TERRAIN, a hillshade from a DEM source of its own over the
+ * land and water fills and under the roads and labels, a map-anchored
+ * light, and the buildings extruded under the labels. Each addition is
  * placed by the layers it finds, so a style with other ids still draws.
  */
 function protomaps3d(style) {
@@ -114,10 +124,14 @@ function protomaps3d(style) {
   });
   const buildings = layers.find((l) => l["source-layer"] === "buildings" && l.type === "fill");
   if (buildings) {
-    const height = ["get", "height"];
+    // Protomaps carries `height` on only some footprints (about half in
+    // Tokyo and Manhattan, a tenth in central Paris) and no level counts:
+    // the rest stand at OpenMapTiles' default `render_height`, 5 m, as
+    // Liberty's do where OpenStreetMap has neither.
+    const height = ["coalesce", ["get", "height"], 5];
     layers.splice(labels(), 0, {
       id: "buildings_3d", type: "fill-extrusion", source: buildings.source, "source-layer": "buildings", minzoom: 14,
-      filter: ["all", ["==", ["geometry-type"], "Polygon"], ["has", "height"]],
+      filter: ["==", ["geometry-type"], "Polygon"],
       paint: {
         // Protomaps Light's buildings fill (#cccccc at 0.5) over its land (#e2dfda).
         "fill-extrusion-color": "#d7d6d3",
@@ -133,7 +147,6 @@ function protomaps3d(style) {
     ...style,
     sources: { ...style.sources, terrain: { ...MAPTERHORN, attribution: "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>" },
       hillshade: MAPTERHORN },
-    terrain: { source: "terrain", exaggeration: 1.3 },
     light: { anchor: "map", position: [1.15, 210, 30], intensity: 0.35 },
     layers,
   };
@@ -145,11 +158,11 @@ export const GROUPS = [
     name: "Features",
     scenes: [
       { key: "globe", name: "Globe",
-        detail: "Protomaps Light on the globe in 3D: Mapterhorn terrain, hillshade, buildings, sky and atmosphere",
+        detail: "Protomaps Light on the globe in 3D: hillshade, buildings, a night sky, and Mapterhorn terrain",
         url: protomaps("light"), projection: { type: "globe" }, sky: PROTOMAPS_SKY, restyle: protomaps3d,
+        terrain: PROTOMAPS_TERRAIN,
         camera: { center: [10, 30], zoom: 1.5 }, constraints: { minZoom: 0 }, flight: alpsFlight.legs, light: true,
-        dark: true, swatch: ["#e2dfda", "#80deea", "#060a17"],
-        unsupported: { native: "MapLibre Native has no globe projection" } },
+        dark: true, swatch: ["#e2dfda", "#80deea", "#060a17"] },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
         url: LIVE, projection: { type: "equal-earth" }, camera: { center: [0, 10], zoom: 0.5 },
         swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"],
@@ -220,7 +233,7 @@ SCENES.tokyo = { key: "tokyo", name: "Tokyo, offline", detail: "Bundled extract,
  * flight, the stutter bench and orb-bench measure terrain on.
  */
 SCENES.alps = { key: "alps", name: "Alps", detail: "Terrain over OpenFreeMap tiles, for the benches", url: alps,
-  provider: "Orbis", flight: alpsFlight.legs, light: true, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] };
+  provider: "Orbis", flight: alpsFlight.legs, light: true, terrain: true, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] };
 
 /** The default scene. */
 export const DEFAULT_SCENE = SCENES.globe;
@@ -252,24 +265,31 @@ export function sceneUrl(scene, format) {
   return new URL(url, location.href).href;
 }
 
-/** `style` as `scene` draws it: restyled, with its projection and sky. */
-function withScene(scene, style) {
+/** Whether `scene` draws terrain by default: with the style's own, yes; with terrain of its own, no. */
+export const terrainByDefault = (scene) => scene.terrain === true;
+
+/**
+ * `style` as `scene` draws it: restyled, with its projection and sky, and
+ * with the entry's terrain when `terrain` asks for it.
+ */
+function withScene(scene, style, { terrain = false } = {}) {
   const restyled = scene.restyle ? scene.restyle(style) : style;
   return { ...restyled, ...(scene.projection && { projection: scene.projection }),
-    ...(scene.sky && { sky: scene.sky }) };
+    ...(scene.sky && { sky: scene.sky }),
+    ...(terrain && typeof scene.terrain === "object" && { terrain: scene.terrain }) };
 }
 
 /**
  * What the map loads for a scene: its URL, or for a scene that restyles,
  * the style fetched and restyled, so that the map builds its tiles once
- * rather than again for an edit.
+ * rather than again for an edit; `terrain` puts in the entry's terrain.
  */
-export async function sceneStyle(scene, format) {
+export async function sceneStyle(scene, format, { terrain = false } = {}) {
   const url = sceneUrl(scene, format);
   if (!scene.restyle) return url;
   const response = await fetch(url);
   if (!response.ok) throw new Error(`The style failed to load: HTTP ${response.status}`);
-  return withScene(scene, await response.json());
+  return withScene(scene, await response.json(), { terrain });
 }
 
 /**
@@ -284,8 +304,9 @@ export function demoStyle(params, fallback = "live") {
 }
 
 /**
- * As `demoStyle`, with the scene's projection, sky and restyle put in the
- * style itself, fetched, so that every engine loads them with it; `globe`
+ * As `demoStyle`, with the scene's projection, sky, restyle and terrain
+ * (on, whatever the app's default) put in the style itself, fetched, so
+ * that every engine loads them with it; `globe`
  * in `params` puts Liberty-on-the-globe's projection and sky (GLOBE_SKY)
  * in any style. Otherwise the style's URL.
  */
@@ -294,5 +315,5 @@ export async function demoStyleWithScene(params, fallback = "live") {
   const scene = params.has("globe") ? { projection: { type: "globe" }, sky: GLOBE_SKY }
     : params.get("style") ? sceneFor(params).scene : {};
   if (!scene.projection && !scene.sky && !scene.restyle) return url;
-  return withScene(scene, await (await fetch(url)).json());
+  return withScene(scene, await (await fetch(url)).json(), { terrain: true });
 }

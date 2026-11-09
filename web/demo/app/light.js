@@ -1,5 +1,5 @@
-// The light switch in the ⋯ menu, for an entry that offers it (the
-// Terrain one): where the style's illumination is anchored. On the map,
+// The light switch in an entry's options, for an entry that offers it (the
+// Globe and the Alps): where the style's illumination is anchored. On the map,
 // the light stays fixed to the ground as 3D terrain maps light it; on the
 // viewport, it turns with the camera as suits a flat hillshade. A switch is
 // one edit of every hillshade layer's `hillshade-illumination-anchor` and
@@ -24,7 +24,7 @@ export async function setAnchor(map, anchor) {
   });
 }
 
-/** The menu's control. `onPick(anchor)` hears the user's choices. */
+/** The control. `onPick(anchor)` hears the user's choices. */
 export function lightSwitch({ onPick }) {
   const root = document.getElementById("light-choice");
   const options = [...root.querySelectorAll("[data-anchor]")];

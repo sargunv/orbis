@@ -10,12 +10,14 @@
 // `&debug`, `&edit`, `&compare[=<left>,<right>]` (two engines' maps of
 // the style side by side, Orbis and GL JS by default, app/compare.js),
 // `&light=map|viewport` (where an entry with the light switch anchors its
-// light, when not where its style does, app/light.js),
+// light, when not where its style does, app/light.js), `&terrain=1|0`
+// (whether an entry with the terrain switch draws terrain, when not its
+// default, app/terrain.js),
 // `&lose=<ms>` (lose the GPU that long after
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
-import { DEFAULT_SCENE, GROUPS, LIVE_CAMERA, sceneFor, sceneStyle, sceneUrl } from "./styles.js";
+import { DEFAULT_SCENE, GROUPS, LIVE_CAMERA, sceneFor, sceneStyle, sceneUrl, terrainByDefault } from "./styles.js";
 import { expose, hashCamera } from "./expose.js";
 import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
@@ -24,6 +26,7 @@ import { Highlighter, targetOf } from "./app/highlight.js";
 import { hud as createHud } from "./app/hud.js";
 import { anchorOf, lightSwitch, setAnchor } from "./app/light.js";
 import { picker as createPicker } from "./app/picker.js";
+import { setTerrain, terrainOf, terrainSwitch } from "./app/terrain.js";
 import { offline as createOffline } from "./app/offline.js";
 import { featurePopup } from "./app/popup.js";
 
@@ -44,6 +47,8 @@ let styleLoading = false;
 let styleSky = null;
 /** The loaded style's own illumination anchor, which `&light` overrides. */
 let styleAnchor;
+/** The terrain the entry's switch turns on: its own, or the loaded style's. */
+let entryTerrain = null;
 
 // Chrome tone: dark maps and a dark system preference turn it dark.
 const prefersDark = matchMedia("(prefers-color-scheme: dark)");
@@ -66,12 +71,13 @@ const searchOf = (query) => {
   const search = query.toString().replace(/=(?=&|$)/g, "");
   return search ? `?${search}` : "";
 };
-/** The app's URL for `next` with `camera` as its hash. `&flight` and `&light` stay only for an entry with one. */
+/** The app's URL for `next` with `camera` as its hash. `&flight`, `&light` and `&terrain` stay only for an entry with one. */
 function urlFor(next, camera) {
   const query = params();
   query.delete("format");
   if (!next.scene.flight) query.delete("flight");
   if (!next.scene.light) query.delete("light");
+  if (!next.scene.terrain) query.delete("terrain");
   const style = styleParam(next);
   if (style) query.set("style", style); else query.delete("style");
   return `${location.pathname}${searchOf(query)}${camera ? hashOf(camera) : ""}`;
@@ -107,7 +113,7 @@ const compare = comparison({
 });
 const editor = createEditor({
   onClose: () => setEditing(false),
-  onReplaced: () => { highlighter?.reset(); clearPopup(); void showLight(); },
+  onReplaced: () => { highlighter?.reset(); clearPopup(); void showLight(); void showTerrain(); },
 });
 const light = lightSwitch({
   async onPick(anchor) {
@@ -118,7 +124,32 @@ const light = lightSwitch({
     await editor.refresh();
   },
 });
-/** Shows the style's illumination anchor in the menu and the URL, for an entry with the light switch. */
+const terrain = terrainSwitch({
+  async onPick(on) {
+    if (!map) return;
+    terrain.show(on);
+    if (on !== terrainOf(await map.getStyle())) await setTerrain(map, on ? entryTerrain : null);
+    await showTerrain();
+    await editor.refresh();
+  },
+});
+/** Whether `&terrain` asks for terrain: true, false, or null for the entry's default. */
+function wantedTerrain() {
+  const value = params().get("terrain");
+  return value === "1" ? true : value === "0" ? false : null;
+}
+/** Shows whether the style draws terrain in its switch and the URL, for an entry with the terrain switch. */
+async function showTerrain() {
+  if (!map || styleLoading || !current.scene.terrain) {
+    terrain.show(null);
+    return;
+  }
+  const on = terrainOf(await map.getStyle());
+  terrain.show(on);
+  setParam("terrain", on !== terrainByDefault(current.scene) && (on ? "1" : "0"));
+}
+
+/** Shows the style's illumination anchor in its switch and the URL, for an entry with the light switch. */
 async function showLight() {
   if (!map || styleLoading || !current.scene.light) {
     light.show(null);
@@ -282,11 +313,12 @@ function go(next, { camera, history: mode = "push" } = {}) {
   say(`Loading ${next.scene.name}…`);
   styleLoading = true;
   void showLight();
+  void showTerrain();
   app.dataset.map = "loading";
   // The style's `styleload` applies the entry's projection and sky, unless
   // it restyles, which puts them in the style. The style's own camera is a
   // fresh page's (load), never a switch's.
-  sceneStyle(next.scene, next.format).then((style) => { if (switched === switches) map.setStyle(style); }, (e) => {
+  sceneStyle(next.scene, next.format, { terrain: wantedTerrain() === true }).then((style) => { if (switched === switches) map.setStyle(style); }, (e) => {
     if (switched !== switches) return;
     styleLoading = false;
     app.dataset.map = "error";
@@ -326,7 +358,7 @@ async function load(next, { camera }) {
   try {
     created = await createMap({
       container,
-      style: await sceneStyle(next.scene, next.format),
+      style: await sceneStyle(next.scene, next.format, { terrain: wantedTerrain() === true }),
       camera,
       constraints: next.scene.constraints,
       // The demo shows what Orbis can do beyond the spec too.
@@ -366,6 +398,13 @@ async function load(next, { camera }) {
       if ((wanted === "map" || wanted === "viewport") && wanted !== styleAnchor) await setAnchor(map, wanted);
     }
     await showLight();
+    if (scene.terrain) {
+      // The entry's own terrain, or the style's as it loaded; `&terrain=0`
+      // takes the style's away (`&terrain=1` put the entry's in the style).
+      entryTerrain = scene.terrain === true ? loaded.terrain ?? null : scene.terrain;
+      if (wantedTerrain() === false && terrainOf(loaded)) await setTerrain(map, null);
+    }
+    await showTerrain();
     await editor.attach(map);
     attributionControl.update(editor.style);
     compare.attach(map, scene);

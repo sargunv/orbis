@@ -20,8 +20,14 @@
 //   the camera, its style's own camera never applying.
 // - `light`: the Alps terrain style's light switch, offline: `&light=viewport`
 //   anchors its hillshade and light to the viewport as the style loads,
-//   the ⋯ menu's switch edits them in place and keeps the URL and the
+//   the entry's switch edits them in place and keeps the URL and the
 //   editor in step, and another entry hides it and drops `&light`.
+// - `terrain`: the Alps terrain style's terrain switch, offline: on by
+//   default with no `&terrain`, a click or the keyboard edits the style's
+//   terrain away and back without a reload, keeping the URL and the editor
+//   in step, `&terrain=0` applies as the style loads, another entry hides
+//   it and drops `&terrain`, and at phone width the entry's options sit
+//   clear of the map's centre and the zoom buttons.
 // - `compare`: the comparison on the Tokyo extract: the plain page fetches
 //   no other engine and isn't isolated; each pair of engines (Orbis, GL JS
 //   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
@@ -46,7 +52,7 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,switching,light,compare,gestures,readback,offline]
+//   pnpm e2e [--only=scenario,edits,editor,switching,light,terrain,compare,gestures,readback,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -57,7 +63,7 @@ import { decodePng, encodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,switching,light,compare,gestures,readback").split(",");
+const only = arg("only", "scenario,edits,editor,switching,light,terrain,compare,gestures,readback").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -741,18 +747,18 @@ async function light(browser, server) {
   const all = (anchor) => ({ map: [anchor, anchor], editor: [anchor, anchor], checked: anchor,
     light: anchor === "map" ? null : anchor });
   await settles(all("viewport"), "&light=viewport applies as the style loads");
-  await page.click("#menu-button");
+  // The switch sits in the entry's options under the picker, not the ⋯ menu.
+  assert.ok(await page.evaluate(() => document.getElementById("scene-options").contains(document.getElementById("light-choice"))
+    && !document.getElementById("menu").contains(document.getElementById("light-choice"))));
   await choice.locator('[data-anchor="map"]').click();
   await settles(all("map"), "the style's own anchor, map, leaves the URL without &light");
   // The arrow keys move the choice, as in a radio group.
   await page.keyboard.press("ArrowRight");
   await settles(all("viewport"), "the arrow keys choose the viewport");
-  assert.ok(await page.evaluate(() => document.getElementById("menu").matches(":popover-open")),
-    "the menu stays open for another choice");
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset.anchor), "viewport", "focus follows the choice");
   // The editor's Reset returns to the style as loaded (with &light), and the switch follows it.
   await page.keyboard.press("ArrowLeft");
   await settles(all("map"), "the arrow keys choose the map");
-  await page.keyboard.press("Escape");
   await page.locator(".editor-head .text-button").click();
   await settles(all("viewport"), "Reset returns to the style as loaded");
   await page.evaluate(() => app.show("tokyo"));
@@ -761,6 +767,70 @@ async function light(browser, server) {
   assert.deepEqual(errors, []);
   await page.close();
   console.log("light: &light, the switch, the editor and another entry agree on the anchor");
+}
+
+async function terrain(browser, server) {
+  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+  // As in `light`: the switch only edits the style.
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
+  await page.goto(`${server.url}?style=alps&edit`);
+  const toggle = page.locator("#terrain-toggle");
+  await page.waitForFunction(() => app.map && !document.getElementById("terrain-toggle").hidden && app.editor.style,
+    null, { timeout: 60_000 });
+  // Whether the map's style and the editor's have terrain, the switch, and the URL.
+  const state = () => page.evaluate(async () => ({
+    map: Boolean((await app.map.getStyle()).terrain), editor: Boolean(app.editor.style?.terrain),
+    checked: document.getElementById("terrain-toggle").getAttribute("aria-checked"),
+    terrain: new URLSearchParams(location.search).get("terrain") }));
+  const settles = async (expected, message) => {
+    let seen;
+    for (const until = Date.now() + 10_000; Date.now() < until; await page.waitForTimeout(50)) {
+      seen = await state();
+      if (JSON.stringify(seen) === JSON.stringify(expected)) return;
+    }
+    assert.deepEqual(seen, expected, message);
+  };
+  const on = { map: true, editor: true, checked: "true", terrain: null };
+  const off = { map: false, editor: false, checked: "false", terrain: "0" };
+  await settles(on, "the Alps draw their terrain by default, with no &terrain");
+  // A page that reloads loses this.
+  await page.evaluate(() => { window.stayed = true; });
+  await toggle.click();
+  await settles(off, "the switch takes the terrain away, with &terrain=0");
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await settles(on, "the keyboard puts the style's terrain back, and the URL drops &terrain");
+  assert.ok(await page.evaluate(() => window.stayed === true), "the switch edits the style without a reload");
+  // &terrain=0 applies as the style loads.
+  await page.goto(`${server.url}?style=alps&terrain=0&edit`);
+  await page.waitForFunction(() => app.map && !document.getElementById("terrain-toggle").hidden, null, { timeout: 60_000 });
+  await settles(off, "&terrain=0 applies as the style loads");
+  await toggle.click();
+  await settles(on, "turning it on restores the style's own terrain");
+  await page.evaluate(() => app.show("tokyo"));
+  await page.waitForFunction(() => app.scene === "tokyo" && document.getElementById("terrain-toggle").hidden);
+  assert.ok(await page.evaluate(() => getComputedStyle(document.getElementById("scene-options")).display === "none"),
+    "an entry without options shows no options group");
+  assert.equal(new URL(page.url()).searchParams.has("terrain"), false, "another entry drops &terrain");
+  assert.deepEqual(errors, []);
+  await page.close();
+
+  // At phone width the options sit clear of the map's centre and the zoom buttons.
+  const phone = await browser.newPage({ viewport: { width: 360, height: 640 } });
+  await phone.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
+  await phone.goto(`${server.url}?style=alps`);
+  await phone.waitForFunction(() => app.map && !document.getElementById("terrain-toggle").hidden
+    && !document.getElementById("light-choice").hidden, null, { timeout: 60_000 });
+  const boxes = await phone.evaluate(() => Object.fromEntries(["scene-options", "zoom-in", "compass"]
+    .map((id) => [id, document.getElementById(id).getBoundingClientRect().toJSON()])));
+  const options = boxes["scene-options"];
+  const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  assert.ok(options.right <= 360 && options.bottom < 640 / 2 - 40, `options cover the centre: ${JSON.stringify(options)}`);
+  assert.ok(!overlaps(options, boxes["zoom-in"]) && !overlaps(options, boxes.compass), "options cover the zoom buttons");
+  await phone.close();
+  console.log("terrain: the switch, &terrain, the editor and another entry agree, with no reload; clear of the map at phone width");
 }
 
 async function offline(browser, server) {
@@ -1234,6 +1304,7 @@ const CHECKS = {
   editor,
   switching,
   light,
+  terrain,
   compare,
   gestures,
   readback,
