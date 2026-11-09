@@ -492,6 +492,7 @@ impl Map {
                 current.ramps = rows.ramps;
                 current.states = rows.states;
                 current.hits = mesh.hits.clone();
+                current.maxima = mesh.maxima.clone();
                 current.rows_rev = build.revision;
                 self.counts.rows_uploaded += 1;
             }

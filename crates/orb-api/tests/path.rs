@@ -303,27 +303,49 @@ fn a_globe_gesture_draws_what_a_fresh_globe_does() {
     assert_same("globe", both_ways(&style, start, end, 30));
 }
 
-/// Satellites lifted by a data-driven `symbol-height-offset`, over a globe
-/// looking past its horizon: the far ones' ground is out of view. A gesture
-/// that passed over one, and saw how high it flies, covers no more than a
-/// fresh map, which knows only what the covered tiles hold (GL JS keeps the
-/// highest it has seen).
+/// Satellites lifted by a data-driven `symbol-height-offset`, and towers as
+/// tall, over a globe looking past its horizon: the far ones' ground is out
+/// of view. A gesture that passed over one, and saw how high it stands,
+/// covers no more than a fresh map, which knows only what the covered tiles
+/// hold (GL JS keeps the highest it has seen).
 #[test]
-fn lifted_labels_cover_what_a_fresh_globe_does() {
-    let satellite = |lon: f64, lat: f64, altitude: u32| {
-        format!(
-            r#"{{"type": "Feature", "properties": {{"altitude": {altitude}}},
-                "geometry": {{"type": "Point", "coordinates": [{lon}, {lat}]}}}}"#
-        )
+fn lifted_content_covers_what_a_fresh_globe_does() {
+    // At each: a point lifted to its altitude, and a tower that tall.
+    let at = |lon: f64, lat: f64, altitude: u32| {
+        let (w, e, s, n) = (lon - 0.3, lon + 0.3, lat - 0.3, lat + 0.3);
+        [
+            format!(
+                r#"{{"type": "Feature", "properties": {{"altitude": {altitude}}},
+                    "geometry": {{"type": "Point", "coordinates": [{lon}, {lat}]}}}}"#
+            ),
+            format!(
+                r#"{{"type": "Feature", "properties": {{"altitude": {altitude}}},
+                    "geometry": {{"type": "Polygon", "coordinates":
+                    [[[{w}, {s}], [{e}, {s}], [{e}, {n}], [{w}, {n}], [{w}, {s}]]]}}}}"#
+            ),
+        ]
     };
+    // Shows, its tiles kept by the height of `near` on the covered ground.
+    let far = at(2.3522, 45.9188, 500_000);
+    let near = at(2.3522, 60.0, 500_000);
+    // Higher than anything the covered tiles hold, so its tiles go
+    // uncovered and it doesn't show, though the gesture starts over it.
+    let lone = at(-3.0, 18.0, 3_000_000);
+    let features = |i: usize| [&far[i], &near[i], &lone[i]].map(String::as_str).join(", ");
     let style = format!(
         r##"{{"version": 8, "projection": {{"type": "globe"}},
             "glyphs": "file://{data}/glyphs/{{fontstack}}/{{range}}.pbf",
-            "sources": {{"satellites": {{"type": "geojson", "data":
-                {{"type": "FeatureCollection", "features": [{far}, {near}, {lone}]}}}}}},
+            "sources": {{
+                "satellites": {{"type": "geojson", "data":
+                    {{"type": "FeatureCollection", "features": [{points}]}}}},
+                "towers": {{"type": "geojson", "data":
+                    {{"type": "FeatureCollection", "features": [{towers}]}}}}}},
             "layers": [
                 {{"id": "background", "type": "background",
                   "paint": {{"background-color": "#c9d9e8"}}}},
+                {{"id": "towers", "type": "fill-extrusion", "source": "towers",
+                  "paint": {{"fill-extrusion-height": ["get", "altitude"],
+                             "fill-extrusion-color": "#4a6"}}}},
                 {{"id": "satellites", "type": "symbol", "source": "satellites",
                   "layout": {{"symbol-height-offset": ["get", "altitude"],
                               "symbol-height-anchor": "absolute",
@@ -333,12 +355,8 @@ fn lifted_labels_cover_what_a_fresh_globe_does() {
                   "paint": {{"text-color": "#c00", "text-halo-color": "#fff",
                              "text-halo-width": 2}}}}]}}"##,
         data = data().display(),
-        // Shows, its tile kept by the height of `near` on the covered ground.
-        far = satellite(2.3522, 45.9188, 500_000),
-        near = satellite(2.3522, 60.0, 500_000),
-        // Higher than anything the covered tiles hold, so its tile goes
-        // uncovered and it doesn't show, though the gesture starts over it.
-        lone = satellite(-3.0, 18.0, 3_000_000),
+        points = features(0),
+        towers = features(1),
     );
     let start = (Geodetic::new(-3.0, 18.0), 4.0, 0.0, 0.0);
     let end = (Geodetic::new(2.3522, 52.0566), 4.3, 180.0, 95.0);

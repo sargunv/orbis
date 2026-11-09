@@ -595,17 +595,17 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
     }
 }
 
-impl PropertyRef<'_, f64> {
+impl<T: PropertyValue + Into<f64>> PropertyRef<'_, T> {
     /// The largest value at `zoom` over every feature, the default that
     /// a `null` or failed evaluation falls back to included: `None` when
     /// the expression sets no bound (a bare `get`).
     pub fn max_value(&self, zoom: f64) -> Option<f64> {
         match self.kind() {
-            Kind::Constant | Kind::Camera => Some(self.evaluate(zoom)),
+            Kind::Constant | Kind::Camera => Some(self.evaluate(zoom).into()),
             Kind::Source | Kind::Composite => {
                 let expression = self.as_expression()?.expression();
                 let max = expression.max_number(zoom)?;
-                Some(max.max(self.default.get()))
+                Some(max.max(self.default.get().into()))
             }
         }
     }

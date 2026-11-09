@@ -68,6 +68,9 @@ pub(crate) struct Resident {
     pub(crate) ramps: Vec<u32>,
     /// The feature-state indices its features refer to.
     pub(crate) states: Vec<u32>,
+    /// Per paint property, the largest number in its rows (a tile's
+    /// tallest extrusion, say), as laid out.
+    pub(crate) maxima: Vec<f32>,
 }
 
 #[derive(Debug)]
@@ -325,6 +328,7 @@ pub(crate) fn upload_mesh(
         rows_rev: result.revision,
         ramps: rows.ramps,
         states: rows.states,
+        maxima: mesh.maxima.clone(),
     });
     Ok(())
 }
@@ -401,6 +405,7 @@ pub(crate) fn upload(
             rows_rev: result.revision,
             ramps: rows.ramps,
             states: rows.states,
+            maxima: m.maxima.clone(),
         })
         .collect();
     if let Err(e) = labels.upload(

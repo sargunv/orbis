@@ -48,30 +48,49 @@ impl Map {
             return None;
         }
         let zoom = self.camera.state().zoom(self.surface.projection());
-        // The tallest extrusion, as this frame's paint has it, or the
-        // highest a symbol layer lifts its labels (`symbol-height-offset`):
-        // their tiles stay covered while the lifted content can show, as in
-        // GL JS. A lift is the most its expression can give at this zoom,
-        // which holds for every tile however the camera got here. One the
-        // expression doesn't bound (a bare `get`) is read from the tiles
-        // below, once the cover is known.
-        let mut unbounded = Vec::new();
+        // The tallest extrusion or the highest a symbol layer lifts its
+        // labels (`symbol-height-offset`): their tiles stay covered while
+        // the lifted content can show, as in GL JS. Per feature, the most
+        // the expression can give at this zoom, which holds for every tile
+        // however the camera got here; one the expression doesn't bound (a
+        // bare `get`) is read from the tiles below, once the cover is known.
+        // (GL JS keeps the highest any loaded tile has held, which depends
+        // on the camera's path.) Otherwise the height as this frame's paint
+        // has it.
+        let mut unbounded = Unbounded::default();
         let height = (plan.nodes.iter().enumerate())
             .filter(|(_, n)| n.source == index)
             .map(|(i, n)| {
                 let layer = &plan.style.layers[n.layer];
-                let lifted = if n.family.is_symbol() {
-                    layer.get(orb_style::SYMBOL_HEIGHT_OFFSET).max_value(zoom)
-                } else {
-                    Some(0.0)
-                };
-                let lifted = lifted.unwrap_or_else(|| {
-                    unbounded.push(crate::style::layer_key(n.key));
-                    0.0
-                });
-                renderer
-                    .cull_elevation(i as u32)
-                    .max(lifted.max(0.0) as f32)
+                if n.family.is_symbol() {
+                    let lift = layer.get(orb_style::SYMBOL_HEIGHT_OFFSET).max_value(zoom);
+                    if lift.is_none() {
+                        unbounded.labels.push(crate::style::layer_key(n.key));
+                    }
+                    let lift = lift.unwrap_or(0.0).max(0.0) as f32;
+                    return renderer.cull_elevation(i as u32).max(lift);
+                }
+                if n.family != Family::FillExtrusion {
+                    return renderer.cull_elevation(i as u32);
+                }
+                let (top, base) = (
+                    layer.get(orb_style::EXTRUSION_HEIGHT),
+                    layer.get(orb_style::EXTRUSION_BASE),
+                );
+                let per_feature =
+                    |kind| matches!(kind, orb_style::Kind::Source | orb_style::Kind::Composite);
+                if per_feature(top.kind()) || per_feature(base.kind()) {
+                    // Not the paint's, the most the tiles laid out so far
+                    // have held.
+                    let tallest = (top.max_value(zoom))
+                        .zip(base.max_value(zoom))
+                        .map(|(t, b)| t.max(b));
+                    if tallest.is_none() {
+                        unbounded.extrusions.push(n.key);
+                    }
+                    return tallest.unwrap_or(0.0).max(0.0) as f32;
+                }
+                renderer.cull_elevation(i as u32)
             })
             .fold(0.0f32, f32::max);
         // Circles and heatmaps draw from the tile their point is in alone,
@@ -174,16 +193,15 @@ impl Map {
                     )
                 };
                 let cover = volume(height);
-                // Lifts no expression bounds: the highest the covered tiles
-                // hold, as each laid out, widens the cover. It comes from
-                // this cover's own tiles, not from what loaded before, so a
-                // map reached by a gesture covers what a fresh one does.
+                // Heights no expression bounds: the highest the covered
+                // tiles hold, as each laid out, widens the cover. It comes
+                // from this cover's own tiles, not from what loaded before,
+                // so a map reached by a gesture covers what a fresh one does.
                 let lifted = (cover.iter())
                     .filter(|_| !unbounded.is_empty())
                     .filter_map(|t| pyramid.get(t.index))
-                    .flat_map(|tile| &tile.symbols)
-                    .filter(|s| unbounded.contains(&s.layer))
-                    .fold(0.0f32, |max, s| max.max(s.max_height_offset as f32));
+                    .map(|tile| unbounded.tallest(tile))
+                    .fold(0.0f32, f32::max);
                 if lifted > height {
                     volume(lifted)
                 } else {
@@ -1139,5 +1157,33 @@ mod tests {
         }
         assert_eq!(rows[0].origin, rows[1].origin);
         assert_eq!(rows[0].scale, rows[1].scale);
+    }
+}
+
+/// A source's layers whose height in the cover no expression bounds: the
+/// tiles they stand in tell.
+#[derive(Default)]
+struct Unbounded {
+    /// Symbol layers' keys, lifted by `symbol-height-offset`.
+    labels: Vec<u32>,
+    /// Extrusion nodes' keys.
+    extrusions: Vec<u32>,
+}
+
+impl Unbounded {
+    fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.extrusions.is_empty()
+    }
+
+    /// The highest these stand in `tile`, as it laid out, style metres.
+    fn tallest(&self, tile: &ResidentTile) -> f32 {
+        let labels = (tile.symbols.iter())
+            .filter(|s| self.labels.contains(&s.layer))
+            .map(|s| s.max_height_offset as f32);
+        // An extrusion's paint slots: colour, height, base.
+        let extrusions = (tile.meshes.iter())
+            .filter(|m| self.extrusions.contains(&m.node))
+            .flat_map(|m| m.maxima.get(1..3).into_iter().flatten().copied());
+        labels.chain(extrusions).fold(0.0, f32::max)
     }
 }

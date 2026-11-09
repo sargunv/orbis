@@ -863,6 +863,7 @@ impl Labels {
                 rows_rev: result.revision,
                 ramps: Vec::new(),
                 states: indices,
+                maxima: Vec::new(),
             });
             if key == text_key {
                 meshes.text = Some(mesh);
