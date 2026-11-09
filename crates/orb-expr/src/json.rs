@@ -137,6 +137,18 @@ impl Json {
             .map(|m| &m.value)
     }
 
+    /// [`get`](Self::get), to change the member in place.
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Json> {
+        match &mut self.value {
+            JsonValue::Object(members) => members
+                .iter_mut()
+                .rev()
+                .find(|m| m.key == key)
+                .map(|m| &mut m.value),
+            _ => None,
+        }
+    }
+
     /// The JavaScript `typeof`-style name used in diagnostics: `null`,
     /// `boolean`, `number`, `string`, `array` or `object`.
     pub fn type_name(&self) -> &'static str {

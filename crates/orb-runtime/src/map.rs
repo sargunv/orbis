@@ -984,10 +984,12 @@ impl Map {
     /// Installs a v8 style; `base`, the URL it came from, resolves its
     /// relative URLs.
     fn set_document(&mut self, json: &str, base: Option<&str>) -> Result<(), String> {
+        let mut root = orb_style::v8::read(json).map_err(|d| d.to_string())?;
         // A fetched style's relative URLs are relative to it.
-        let resolved = base.map(|base| orb_source::endpoint::resolve_style_urls(json, base));
-        let text = resolved.as_deref().unwrap_or(json);
-        let doc = StyleDoc::parse_with(text, self.previews).map_err(|d| d.to_string())?;
+        if let Some(base) = base {
+            orb_source::endpoint::resolve_style_urls(&mut root, base);
+        }
+        let doc = StyleDoc::from_json(root, self.previews).map_err(|d| d.to_string())?;
         // A style URL still loading is superseded, and the old style's
         // paint transitions with it.
         self.style_request += 1;
@@ -2330,8 +2332,10 @@ impl Map {
     /// Applies a fetched style as the diff from the loaded one; it loads
     /// (`styleload`) as a new one would.
     fn diff_document(&mut self, json: &str, base: &str) -> Result<(), String> {
-        let resolved = orb_source::endpoint::resolve_style_urls(json, base);
-        let tx = Transaction::from_commands(&format!(r#"[["setStyle",{resolved}]]"#))?;
+        let mut root = orb_style::v8::read(json).map_err(|d| d.to_string())?;
+        orb_source::endpoint::resolve_style_urls(&mut root, base);
+        let mut tx = Transaction::new();
+        tx.push(orb_style::v8::Op::set_style(root));
         let id = self.style_id;
         self.edit(&tx)?;
         // A diff that needed a reload installed the document, which said so.

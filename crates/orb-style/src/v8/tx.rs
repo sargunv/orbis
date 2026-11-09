@@ -76,6 +76,7 @@ pub enum Op {
         key: Option<String>,
     },
     /// Replaces the whole document, applied as the diff to the new one.
+    /// [`Op::set_style`] resolves its layer references.
     SetStyle {
         style: Json,
     },
@@ -145,6 +146,13 @@ impl Transaction {
 }
 
 impl Op {
+    /// Replaces the whole document with `style`, its layer references
+    /// resolved.
+    pub fn set_style(mut style: Json) -> Self {
+        crate::v8::deref_layers(&mut style);
+        Op::SetStyle { style }
+    }
+
     /// Sets global state property `key` to a JSON value, or resets it.
     pub fn set_global_state(key: String, value: Option<&Json>) -> Self {
         Op::SetGlobalState {
@@ -244,9 +252,7 @@ impl Op {
                 key: arg(2).and_then(Json::as_str).map(str::to_string),
             },
             "setStyle" => match arg(1) {
-                Some(style) if style.as_object().is_some() => Op::SetStyle {
-                    style: crate::v8::deref_layers(style.clone()),
-                },
+                Some(style) if style.as_object().is_some() => Op::set_style(style.clone()),
                 _ => return Err("setStyle: only style objects are supported".into()),
             },
             "setTerrain" => Op::SetRoot {

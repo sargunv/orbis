@@ -609,8 +609,9 @@ fn tokyo_json() -> String {
         .join("tokyo-mvt.json")
         .canonicalize()
         .unwrap();
-    let json = std::fs::read_to_string(&path).unwrap();
-    orb_source::endpoint::resolve_style_urls(&json, &format!("file://{}", path.display()))
+    let mut doc = orb_style::v8::read(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    orb_source::endpoint::resolve_style_urls(&mut doc, &format!("file://{}", path.display()));
+    doc.to_string()
 }
 
 /// Another sprite in a style edit loads the sprite and lays the symbol

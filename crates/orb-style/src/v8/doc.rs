@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::v8::{Diagnostic, Diagnostics};
-use orb_expr::json::{self, Json, JsonValue, Member, Span};
+use orb_expr::json::{Json, JsonValue, Member, Span};
 
 use crate::v8::diff;
 use crate::v8::tx::{FeatureTarget, Op, Transaction};
@@ -106,43 +106,53 @@ impl StyleDoc {
 
     /// Parses a v8 document with `previews` enabled; its edits keep them.
     pub fn parse_with(text: &str, previews: Previews) -> Result<Self, Diagnostics> {
-        let style = crate::v8::parse_with(text, previews, &[])?;
-        let root = json::parse(text).map_err(|e| error(e.to_string()))?;
-        Ok(Self::from_parts(style, &crate::v8::deref_layers(root)))
+        Self::from_json(crate::v8::read(text)?, previews)
     }
 
-    fn from_parts(style: Style, root: &Json) -> Self {
+    /// [`parse_with`](Self::parse_with) of a document already read
+    /// ([`read`](crate::v8::read)).
+    pub fn from_json(mut root: Json, previews: Previews) -> Result<Self, Diagnostics> {
+        crate::v8::deref_layers(&mut root);
+        let style = crate::v8::parse_json(&root, previews, &[])?;
+        let JsonValue::Object(members) = root.value else {
+            unreachable!("parsed styles are objects");
+        };
         let mut next_key = 0;
         let mut key = || {
             next_key += 1;
             next_key
         };
-        let members = root.as_object().expect("parsed styles are objects");
-        let sources = member(members, "sources")
-            .and_then(Json::as_object)
-            .unwrap_or_default()
-            .iter()
+        // The last of a repeated key is the one that counts.
+        let (mut sources, mut layers, mut root) = (Vec::new(), Vec::new(), Vec::new());
+        for m in members {
+            match m.key.as_str() {
+                "sources" => match m.value.value {
+                    JsonValue::Object(members) => sources = members,
+                    _ => sources.clear(),
+                },
+                "layers" => match m.value.value {
+                    JsonValue::Array(items) => layers = items,
+                    _ => layers.clear(),
+                },
+                _ => root.push(m),
+            }
+        }
+        let sources = sources
+            .into_iter()
             .map(|m| SourceEntry {
                 key: SourceKey(key()),
-                id: m.key.clone(),
-                json: Arc::new(m.value.clone()),
+                id: m.key,
+                json: Arc::new(m.value),
             })
             .collect();
-        let layers = member(members, "layers")
-            .and_then(Json::as_array)
-            .unwrap_or_default()
-            .iter()
-            .map(|l| LayerEntry {
+        let layers = layers
+            .into_iter()
+            .map(|json| LayerEntry {
                 key: LayerKey(key()),
-                json: Arc::new(l.clone()),
+                json: Arc::new(json),
             })
             .collect();
-        let root = members
-            .iter()
-            .filter(|m| m.key != "sources" && m.key != "layers")
-            .cloned()
-            .collect();
-        Self {
+        Ok(Self {
             version: 1,
             root: Arc::new(root),
             sources,
@@ -150,7 +160,7 @@ impl StyleDoc {
             overrides: Vec::new(),
             style: Arc::new(style),
             next_key,
-        }
+        })
     }
 
     /// Counts applied transactions; the first document is version 1.

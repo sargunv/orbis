@@ -1,7 +1,7 @@
 //! Tiled sources' TileJSON/tile URLs and GeoJSON source-data endpoints.
 
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_expr::json;
+use orb_expr::json::{self, Json, JsonValue, Member};
 use orb_style::{
     DemEncoding, Encoding, GeoJsonData, GeoJsonSource, RasterSource, Scheme, SourceKind, TileSet,
     VectorSource,
@@ -351,77 +351,60 @@ pub(crate) fn join_url(base: &str, relative: &str) -> String {
     format!("{origin}{}", segments.join("/"))
 }
 
-/// A style fetched from `base` with its relative URLs resolved against
-/// it, as a browser resolves a style's links: sources' `url`, `urls`,
-/// `tiles` and GeoJSON `data`, `glyphs`, `sprite` and `font-faces` (a
-/// `pmtiles://` URL keeps its prefix). The rest of the text is unchanged.
-pub fn resolve_style_urls(style: &str, base: &str) -> String {
-    use orb_expr::json::Json;
-    let Ok(doc) = json::parse(style) else {
-        return style.to_string();
-    };
-    fn add<'a>(strings: &mut Vec<&'a Json>, value: Option<&'a Json>) {
-        if let Some(value) = value {
-            match value.as_array() {
-                Some(items) => strings.extend(items),
-                None => strings.push(value),
+/// Resolves a style's relative URLs against `base`, the URL it came from,
+/// as a browser resolves a style's links: sources' `url`, `urls`, `tiles`
+/// and GeoJSON `data`, `glyphs`, `sprite` and `font-faces` (a
+/// `pmtiles://` URL keeps its prefix).
+pub fn resolve_style_urls(doc: &mut Json, base: &str) {
+    // A URL, or each URL of an array of them.
+    fn resolve(value: Option<&mut Json>, base: &str) {
+        match value.map(|v| &mut v.value) {
+            Some(JsonValue::Array(items)) => {
+                items.iter_mut().for_each(|v| join(&mut v.value, base))
             }
+            Some(value) => join(value, base),
+            None => {}
         }
     }
-    let mut strings: Vec<&Json> = Vec::new();
-    add(&mut strings, doc.get("glyphs"));
-    match doc.get("sprite").and_then(Json::as_array) {
-        Some(sprites) => {
-            for s in sprites {
-                add(&mut strings, s.get("url"));
-            }
-        }
-        None => add(&mut strings, doc.get("sprite")),
+    fn join(value: &mut JsonValue, base: &str) {
+        let JsonValue::String(url) = value else {
+            return;
+        };
+        let (prefix, rest) = match url.strip_prefix("pmtiles://") {
+            Some(rest) => ("pmtiles://", rest),
+            None => ("", url.as_str()),
+        };
+        *url = format!("{prefix}{}", join_url(base, rest));
     }
-    for source in doc
-        .get("sources")
-        .and_then(Json::as_object)
-        .unwrap_or_default()
-    {
+    fn members(value: Option<&mut Json>) -> &mut [Member] {
+        match value.map(|v| &mut v.value) {
+            Some(JsonValue::Object(members)) => members,
+            _ => &mut [],
+        }
+    }
+    resolve(doc.get_mut("glyphs"), base);
+    match doc.get_mut("sprite") {
+        Some(Json {
+            value: JsonValue::Array(sprites),
+            ..
+        }) => sprites
+            .iter_mut()
+            .for_each(|s| resolve(s.get_mut("url"), base)),
+        sprite => resolve(sprite, base),
+    }
+    for source in members(doc.get_mut("sources")) {
         for key in ["url", "urls", "tiles", "data"] {
-            add(&mut strings, source.value.get(key));
+            resolve(source.value.get_mut(key), base);
         }
     }
-    for faces in doc
-        .get("font-faces")
-        .and_then(Json::as_object)
-        .unwrap_or_default()
-    {
-        match faces.value.as_array() {
-            Some(faces) => {
-                for f in faces {
-                    add(&mut strings, f.get("url"));
-                }
-            }
-            None => add(&mut strings, faces.value.get("url")),
+    for faces in members(doc.get_mut("font-faces")) {
+        match &mut faces.value.value {
+            JsonValue::Array(faces) => faces
+                .iter_mut()
+                .for_each(|f| resolve(f.get_mut("url"), base)),
+            _ => resolve(faces.value.get_mut("url"), base),
         }
     }
-    let mut edits: Vec<(usize, usize, String)> = strings
-        .into_iter()
-        .filter_map(|value| {
-            let url = value.as_str()?;
-            let (prefix, rest) = match url.strip_prefix("pmtiles://") {
-                Some(rest) => ("pmtiles://", rest),
-                None => ("", url),
-            };
-            let joined = format!("{prefix}{}", join_url(base, rest));
-            (joined != url).then(|| {
-                let quoted = format!("\"{}\"", joined.replace('\\', "\\\\").replace('"', "\\\""));
-                (value.span.start as usize, value.span.end as usize, quoted)
-            })
-        })
-        .collect();
-    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
-    let mut out = style.to_string();
-    for (start, end, text) in edits {
-        out.replace_range(start..end, &text);
-    }
-    out
 }
 
 /// Header metadata has the same precedence as TileJSON keys.
@@ -456,8 +439,8 @@ mod tests {
                 "r": {"type": "raster", "tiles": ["https://x.org/{z}.png", "r/{z}.png"]},
                 "i": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
             "layers": []}"#;
-        let resolved = resolve_style_urls(style, "file:///d/styles/s.json");
-        let doc = json::parse(&resolved).unwrap();
+        let mut doc = json::parse(style).unwrap();
+        resolve_style_urls(&mut doc, "file:///d/styles/s.json");
         let at = |path: &[&str]| {
             let mut v = &doc;
             for key in path {

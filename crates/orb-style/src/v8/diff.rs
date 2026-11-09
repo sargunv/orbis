@@ -137,11 +137,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
                 value: synthetic(value),
             });
         }
-        let root = crate::v8::parse_with(
-            &synthetic(JsonValue::Object(members)).to_string(),
-            previews,
-            &[],
-        )?;
+        let root = crate::v8::parse_json(&synthetic(JsonValue::Object(members)), previews, &[])?;
         if RESTYLE_ROOT
             .iter()
             .any(|k| !same_opt(member(&doc.root, k), member(&draft.root, k)))
