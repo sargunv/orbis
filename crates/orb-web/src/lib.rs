@@ -917,6 +917,25 @@ impl OrbisMap {
         })
     }
 
+    /// Applies what has arrived since the last frame and sends what the
+    /// view needs next (tiles, glyphs, a placement) now, rather than at the
+    /// next frame; draws nothing. The page calls it soon after `on_wake`.
+    pub fn prepare(&mut self) {
+        if self.canvas.lost() || self.snapshot.is_some() {
+            return;
+        }
+        let viewport = self.viewport();
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        self.map.prepare(
+            self.canvas.gpu(),
+            renderer,
+            viewport,
+            self.pixel_ratio as f32,
+        );
+    }
+
     fn viewport(&self) -> Viewport {
         let (width, height) = self.canvas.size();
         Viewport {

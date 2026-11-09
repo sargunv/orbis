@@ -176,6 +176,8 @@ export class OrbisMap {
   /** The last device loss's start, until the new device draws. */
   #recovering: number | undefined;
   #removed = false;
+  /** Whether a prepare is queued. */
+  #preparing = false;
 
   /** @internal */
   constructor(container: HTMLElement, frame: HTMLElement, canvas: HTMLCanvasElement, overlay: HTMLElement,
@@ -490,8 +492,22 @@ export class OrbisMap {
   /** @internal A failure where the map draws. */
   fail(e: unknown): void { this.#error(e); }
 
-  /** @internal The map has new data to draw. */
-  wake(): void { this.#request(); }
+  /** @internal The map has new data to draw. Its next requests go out
+   * in a task of their own, without waiting for the frame. */
+  wake(): void {
+    this.#request();
+    if (this.#preparing) return;
+    this.#preparing = true;
+    afterTask(() => {
+      this.#preparing = false;
+      if (this.#removed || this.#lostAt !== undefined || this.#snapshotting) return;
+      try {
+        this.#host.core.prepare();
+      } catch (e) {
+        this.#error(e);
+      }
+    });
+  }
 
   /** The wasm map's events since the last frame, to listeners. */
   #drain(): void {
@@ -549,6 +565,18 @@ export class OrbisMap {
 }
 
 const CORE = new URL("../pkg/core_bg.wasm", import.meta.url);
+
+/** Runs `f` in a task of its own, soon: a message, not a timer, which
+ * browsers delay. */
+const afterTask = (() => {
+  const channel = new MessageChannel();
+  const queued: (() => void)[] = [];
+  channel.port1.onmessage = () => queued.shift()?.();
+  return (f: () => void) => {
+    queued.push(f);
+    channel.port2.postMessage(null);
+  };
+})();
 
 /** Why WebGPU gives no adapter here, if it doesn't. */
 async function noWebgpu(): Promise<string | undefined> {

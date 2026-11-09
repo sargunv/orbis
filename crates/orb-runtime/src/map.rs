@@ -1114,12 +1114,49 @@ impl Map {
     ) -> FrameReport {
         self.frame_time = frame_time;
         self.born.get_or_insert(frame_time);
+        self.frame(gpu, renderer, Some(target), viewport, pixel_ratio)
+    }
+
+    /// Applies what has arrived and asks for what the view needs next
+    /// (tiles, glyphs, a placement), as a frame would, without moving the
+    /// camera or drawing: for a host that hears of arrivals between
+    /// frames, so that each request goes out without waiting for the next
+    /// frame. The frames after it draw as they would without it. Nothing
+    /// before the first [`render`](Self::render).
+    pub fn prepare(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        viewport: Viewport,
+        pixel_ratio: f32,
+    ) {
+        if self.born.is_some() && self.renderer == Some(renderer.id()) {
+            self.frame(gpu, renderer, None, viewport, pixel_ratio);
+        }
+    }
+
+    /// A frame at `self.frame_time`, drawn into `target`, or only
+    /// prepared without one.
+    fn frame(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        target: Option<TextureId>,
+        viewport: Viewport,
+        pixel_ratio: f32,
+    ) -> FrameReport {
+        let frame_time = self.frame_time;
         renderer.set_antialias_3d(gpu, self.antialias_3d);
         self.placement_ms = 0.0;
         self.apply_arrivals(gpu, renderer, pixel_ratio);
-        self.apply_videos(gpu, renderer);
         // The camera moves for this frame on what has arrived.
-        let moving = self.advance_camera(viewport, frame_time);
+        let moving = match target {
+            Some(_) => {
+                self.apply_videos(gpu, renderer);
+                self.advance_camera(viewport, frame_time)
+            }
+            None => false,
+        };
 
         // Tiles' patches are on the low-zoom surface the style draws on.
         let plane = self.surface.globe().and_then(|g| g.plane);
@@ -1180,10 +1217,15 @@ impl Map {
                 self.services.jobs.prefetch_glyphs(style.id, urls);
             }
         }
+        // A prepared frame leaves the terrain's cover and drape, whose
+        // redraws are the drawn frame's, to the next one.
+        let drawing = target.is_some();
         if self.style.is_some() {
             // Terrain's DEM and cover first: the sources cover over its
             // elevations, and drape over its tiles.
-            frame_terrain = self.update_terrain(gpu, renderer, &view, &mut report);
+            if drawing {
+                frame_terrain = self.update_terrain(gpu, renderer, &view, &mut report);
+            }
             let elevation = self.terrain_elevation();
             // Failed tiles due for a retry go, so the plan asks for them.
             let now = self.services.clock.now();
@@ -1196,15 +1238,20 @@ impl Map {
             for (index, update) in plan.into_iter().enumerate() {
                 self.apply_source(index, update, &mut report);
             }
-            let drape = self.plan_drape(gpu, renderer, &view);
-            self.place_background(
-                gpu,
-                renderer,
-                &view,
-                elevation.as_deref(),
-                drape.as_ref(),
-                &mut report,
-            );
+            let drape = match drawing {
+                true => self.plan_drape(gpu, renderer, &view),
+                false => None,
+            };
+            if drawing {
+                self.place_background(
+                    gpu,
+                    renderer,
+                    &view,
+                    elevation.as_deref(),
+                    drape.as_ref(),
+                    &mut report,
+                );
+            }
             for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
                 self.place_source(
                     gpu,
@@ -1221,6 +1268,10 @@ impl Map {
         }
         let labels_settled = self.place_labels(gpu, renderer, &view, now);
         report.placement_us = (self.placement_ms * 1000.0).round() as u32;
+        let Some(target) = target else {
+            self.globe_warps.end_frame();
+            return report;
+        };
 
         if !self.retired_ramps.is_empty() {
             let mut images = self.services.images.0.lock().expect("images poisoned");
