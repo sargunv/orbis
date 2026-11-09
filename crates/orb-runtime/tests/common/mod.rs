@@ -156,6 +156,9 @@ impl Offscreen {
         // Snapshots use the same white backing as the native demo window.
         map.set_clear_color([1.0; 4]);
         map.set_scene_capacity(capacity);
+        // Tests compare maps reached by different paths: labels placed by
+        // the camera alone, as AGENTS.md's path rule has the path tests.
+        map.set_stable_labels(false);
         load_style(&mut map, options)?;
         Ok(Self {
             gpu,

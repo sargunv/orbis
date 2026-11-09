@@ -845,8 +845,13 @@ mod tests {
             "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
         );
         assert!(!offscreen.frame().idle);
+        // Until prepare has the label shown, not for a fixed time, which
+        // a loaded machine can overrun.
         let started = std::time::Instant::now();
-        while started.elapsed() < std::time::Duration::from_millis(500) {
+        let shown = |map: &orb_runtime::Map| map.shown_labels().get("Null Island").copied();
+        while shown(&offscreen.map) != Some(1.0)
+            && started.elapsed() < std::time::Duration::from_secs(30)
+        {
             let (map, gpu) = (&mut offscreen.map, &mut offscreen.gpu);
             let renderer = offscreen.renderer.as_mut().expect("made by the frame");
             map.prepare(gpu, renderer, offscreen.viewport, 1.0);
@@ -866,8 +871,13 @@ mod tests {
             "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
             "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
         );
+        // Until prepare has the label shown, not for a fixed time, which
+        // a loaded machine can overrun.
         let started = std::time::Instant::now();
-        while started.elapsed() < std::time::Duration::from_millis(500) {
+        let shown = |map: &orb_runtime::Map| map.shown_labels().get("Null Island").copied();
+        while shown(&offscreen.map) != Some(1.0)
+            && started.elapsed() < std::time::Duration::from_secs(30)
+        {
             let (map, gpu, format) = (&mut offscreen.map, &mut offscreen.gpu, offscreen.format);
             let renderer = offscreen
                 .renderer
