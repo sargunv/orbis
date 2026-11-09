@@ -1,7 +1,8 @@
-//! Evaluation of the special forms and host-service operators.
+//! Evaluation of the special forms and the locale-sensitive operators.
 use crate::eval::{Evaluator, Result, error};
 use crate::ir::{Call, NodeId};
-use crate::{Collator, FormattedSection, NumberFormat, Value};
+use crate::locale::{self, NumberFormat};
+use crate::{Collator, FormattedSection, Value};
 
 impl<'a> Evaluator<'_, 'a> {
     pub(super) fn eval_call(&self, id: NodeId, call: &Call, args: &[NodeId]) -> Result<Value<'a>> {
@@ -78,7 +79,7 @@ impl<'a> Evaluator<'_, 'a> {
                 Value::Collator(Collator {
                     case_sensitive: self.boolean(args[0])?,
                     diacritic_sensitive: self.boolean(args[1])?,
-                    locale: self.context.locale.resolved_locale(locale.as_str()),
+                    locale: locale::resolved_locale(locale.as_str()),
                 })
             }
             Call::ResolvedLocale => {
@@ -94,20 +95,18 @@ impl<'a> Evaluator<'_, 'a> {
                     .map(|&a| self.eval(a))
                     .collect::<Result<Vec<_>>>()?;
                 Value::String(
-                    self.context
-                        .locale
-                        .format_number(
-                            number,
-                            NumberFormat {
-                                locale: values[0].as_str(),
-                                currency: values[1].as_str(),
-                                unit: values[2].as_str(),
-                                min_fraction_digits: values[3].as_f64(),
-                                max_fraction_digits: values[4].as_f64(),
-                            },
-                        )
-                        .map_err(|e| error(id, e))?
-                        .into(),
+                    locale::format_number(
+                        number,
+                        NumberFormat {
+                            locale: values[0].as_str(),
+                            currency: values[1].as_str(),
+                            unit: values[2].as_str(),
+                            min_fraction_digits: values[3].as_f64(),
+                            max_fraction_digits: values[4].as_f64(),
+                        },
+                    )
+                    .map_err(|e| error(id, e))?
+                    .into(),
                 )
             }
             Call::Image => {

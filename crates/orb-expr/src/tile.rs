@@ -83,7 +83,7 @@ impl<'a> Bound<'a> {
         )
     }
 
-    /// Evaluates a row with explicit state, geometry, locale and globals.
+    /// Evaluates a row with explicit state, geometry and globals.
     /// Literal property keys still address the columns resolved at bind time.
     pub fn evaluate_with(
         &self,

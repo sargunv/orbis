@@ -44,7 +44,7 @@ pub use elevation::{ElevationCurve, ElevationOp};
 pub use eval::{EvalError, interpolation_factor};
 pub use filter::{Filter, FilterGroups};
 pub use ir::Interpolation;
-pub use locale::{BUILTIN_LOCALE, BuiltinLocale, Collator, Locale, NumberFormat};
+pub use locale::Collator;
 pub use property::{Kind, PropertyExpression, PropertySpec, PropertyType, ZoomCurve};
 pub use tile::{Bound, FeatureData};
 pub use value::FormattedSection;
@@ -102,17 +102,7 @@ impl Expression {
     /// `None`), fitting the result to it as GL JS does: value-typed results
     /// are asserted, strings coerced to colours.
     pub fn parse(json: &Json, expected: Option<&Type>) -> Result<Self, Vec<Diagnostic>> {
-        Self::parse_with_locale(json, expected, &BUILTIN_LOCALE)
-    }
-
-    /// Parses using the host locale service, including constant folding of
-    /// case mapping and number formatting. Use the same service at evaluation.
-    pub(crate) fn parse_with_locale(
-        json: &Json,
-        expected: Option<&Type>,
-        locale: &dyn Locale,
-    ) -> Result<Self, Vec<Diagnostic>> {
-        let mut parser = Parser::with_locale(locale);
+        let mut parser = Parser::default();
         match parser.parse(json, "", expected, None) {
             Some(root) => Ok(Self {
                 ir: parser.ir.compact(root),
@@ -163,7 +153,7 @@ impl Expression {
         })
     }
 
-    /// Evaluates with explicit state, geometry, locale and global inputs.
+    /// Evaluates with explicit state, geometry and global inputs.
     pub fn evaluate_with<'a>(
         &'a self,
         context: &EvaluationContext<'a>,

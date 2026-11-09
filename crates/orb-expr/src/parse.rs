@@ -340,9 +340,8 @@ pub(super) fn js_typeof(json: &Json) -> &'static str {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Parser<'l> {
-    pub(crate) locale: &'l dyn crate::Locale,
     /// When set, `global-state` reads fold to these values at parse time.
     pub global_state: Option<&'l [(String, Value<'static>)]>,
     /// The literals folded from global state.
@@ -352,26 +351,7 @@ pub(crate) struct Parser<'l> {
     pub(super) scope: Vec<(String, NodeId)>,
 }
 
-impl Default for Parser<'_> {
-    fn default() -> Self {
-        Self {
-            ir: Ir::default(),
-            errors: Vec::new(),
-            scope: Vec::new(),
-            locale: &crate::BUILTIN_LOCALE,
-            global_state: None,
-            global_literals: Vec::new(),
-        }
-    }
-}
-
 impl<'l> Parser<'l> {
-    pub(crate) fn with_locale(locale: &'l dyn crate::Locale) -> Self {
-        Self {
-            locale,
-            ..Self::default()
-        }
-    }
     pub(crate) fn error(
         &mut self,
         path: impl Into<String>,
@@ -528,10 +508,7 @@ impl<'l> Parser<'l> {
         {
             let ty = node.ty.clone();
             let evaluator = Evaluator {
-                context: &crate::EvaluationContext {
-                    locale: self.locale,
-                    ..crate::EvaluationContext::default()
-                },
+                context: &crate::EvaluationContext::default(),
                 ir: &self.ir,
                 feature: None,
             };

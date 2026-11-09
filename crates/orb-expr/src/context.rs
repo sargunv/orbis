@@ -1,5 +1,5 @@
 //! Explicit inputs shared by every expression backend.
-use crate::{BUILTIN_LOCALE, Locale, Value};
+use crate::Value;
 
 /// Evaluation inputs that vary independently of tile properties.
 #[derive(Debug)]
@@ -17,7 +17,6 @@ pub struct EvaluationContext<'a> {
     pub global_state: &'a [(String, Value<'static>)],
     pub available_images: &'a [String],
     pub geometry: Option<&'a FeatureGeometry>,
-    pub locale: &'a dyn Locale,
     pub is_supported_script: Option<fn(&str) -> bool>,
 }
 impl Default for EvaluationContext<'_> {
@@ -34,7 +33,6 @@ impl Default for EvaluationContext<'_> {
             global_state: &[],
             available_images: &[],
             geometry: None,
-            locale: &BUILTIN_LOCALE,
             is_supported_script: None,
         }
     }

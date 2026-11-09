@@ -599,7 +599,7 @@ impl<'a> Evaluator<'_, 'a> {
                     && let (Value::String(a), Value::String(b), Value::Collator(c)) =
                         (&a, &b, self.eval(*c)?)
                 {
-                    let ordering = self.context.locale.compare(a, b, &c);
+                    let ordering = crate::locale::compare(a, b, &c);
                     return Ok(Value::Bool(match op {
                         CmpOp::Eq => ordering == Ordering::Equal,
                         CmpOp::Ne => ordering != Ordering::Equal,
@@ -752,12 +752,8 @@ impl<'a> Evaluator<'_, 'a> {
                 }
                 Value::String(Cow::Owned(out))
             }
-            Op::Upcase(s) => {
-                Value::String(Cow::Owned(self.context.locale.uppercase(&self.string(*s)?)))
-            }
-            Op::Downcase(s) => {
-                Value::String(Cow::Owned(self.context.locale.lowercase(&self.string(*s)?)))
-            }
+            Op::Upcase(s) => Value::String(Cow::Owned(self.string(*s)?.to_uppercase())),
+            Op::Downcase(s) => Value::String(Cow::Owned(self.string(*s)?.to_lowercase())),
             Op::Length(v) => match self.eval(*v)? {
                 Value::String(s) => Value::Number(s.chars().count() as f64),
                 Value::Array(a) => Value::Number(a.len() as f64),

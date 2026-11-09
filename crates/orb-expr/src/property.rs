@@ -168,17 +168,7 @@ impl PropertyExpression {
     /// `convertFunction` for legacy functions). Diagnostic paths are relative
     /// to the value.
     pub fn parse(json: &Json, spec: &PropertySpec) -> Result<Self, Vec<Diagnostic>> {
-        Self::parse_with_locale(json, spec, &crate::BUILTIN_LOCALE)
-    }
-
-    /// Parses and folds constants with the same locale service the host will
-    /// supply when evaluating the property.
-    pub(crate) fn parse_with_locale(
-        json: &Json,
-        spec: &PropertySpec,
-        locale: &dyn crate::Locale,
-    ) -> Result<Self, Vec<Diagnostic>> {
-        Self::parse_inner(json, spec, locale, None)
+        Self::parse_inner(json, spec, None)
     }
 
     /// Parses with the style's global state resolved:
@@ -189,20 +179,21 @@ impl PropertyExpression {
         spec: &PropertySpec,
         state: &[(String, crate::Value<'static>)],
     ) -> Result<Self, Vec<Diagnostic>> {
-        Self::parse_inner(json, spec, &crate::BUILTIN_LOCALE, Some(state))
+        Self::parse_inner(json, spec, Some(state))
     }
 
     fn parse_inner(
         json: &Json,
         spec: &PropertySpec,
-        locale: &dyn crate::Locale,
         state: Option<&[(String, crate::Value<'static>)]>,
     ) -> Result<Self, Vec<Diagnostic>> {
         let expected = spec.expected_type();
         // String properties coerce rather than assert at the top level.
         let annotation = (spec.ty == PropertyType::String).then_some(Annotation::Coerce);
-        let mut parser = Parser::with_locale(locale);
-        parser.global_state = state;
+        let mut parser = Parser {
+            global_state: state,
+            ..Parser::default()
+        };
         let root = if json.as_object().is_some() {
             let lowered = lower_function(json, spec)?;
             parser.parse(&lowered, "", Some(&expected), annotation)

@@ -429,44 +429,7 @@ fn bound_geometry_uses_layer_extent_and_tile_location() {
 }
 
 #[test]
-fn host_locale_is_used_for_folding_and_dynamic_evaluation() {
-    use crate::{BuiltinLocale, Collator, EvaluationContext, Locale, NumberFormat};
-    #[derive(Debug)]
-    struct HostLocale;
-    impl Locale for HostLocale {
-        fn compare(&self, a: &str, b: &str, c: &Collator) -> std::cmp::Ordering {
-            BuiltinLocale.compare(a, b, c)
-        }
-        fn resolved_locale(&self, s: Option<&str>) -> String {
-            BuiltinLocale.resolved_locale(s)
-        }
-        fn format_number(&self, n: f64, o: NumberFormat<'_>) -> Result<String, String> {
-            BuiltinLocale.format_number(n, o)
-        }
-        fn uppercase(&self, s: &str) -> String {
-            s.replace('i', "İ").to_uppercase()
-        }
-        fn lowercase(&self, s: &str) -> String {
-            s.to_lowercase()
-        }
-    }
-    let host = HostLocale;
-    let expr = Expression::parse_with_locale(&parse(r#"["upcase","i"]"#), None, &host).unwrap();
-    assert_eq!(expr.constant().and_then(Value::as_str), Some("İ"));
-    let expr = Expression::parse_with_locale(&parse(r#"["upcase",["get","class"]]"#), None, &host)
-        .unwrap();
-    let layer = roads();
-    let context = EvaluationContext {
-        locale: &host,
-        ..EvaluationContext::default()
-    };
-    assert_eq!(
-        expr.bind(&layer)
-            .evaluate_with(&context, 1)
-            .unwrap()
-            .as_str(),
-        Some("MİNOR")
-    );
+fn number_format_rejects_out_of_range_digits() {
     assert!(
         Expression::parse(
             &parse(r#"["number-format",1,{"min-fraction-digits":-1}]"#),
