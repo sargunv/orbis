@@ -23,8 +23,8 @@ use orb_camera::View;
 use orb_crs::{CoveredTile, TileIndex, TileMatrixSet, WorldRect};
 use orb_hal::Gpu;
 use orb_render::{
-    ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, PageId, PlacementTarget, Renderer, TerrainDem,
-    TerrainTile, TileRow,
+    ClipRect, DemRef, DrapeLayout, PageId, PlacementTarget, Renderer, TerrainDem, TerrainTile,
+    TileRow,
 };
 use orb_source::{Draw, TilePyramid};
 use orb_tile::DemGrid;
@@ -122,7 +122,7 @@ pub(crate) type Redraw = (CoveredTile, u32, Vec<u8>);
 
 /// The style zoom a terrain tile's drape slots are drawn at, whatever the
 /// camera's: the tile's own, where it spans its 512 logical pixels, at
-/// [`DRAPE_SLOT_PX`] texels (GL JS's quality factor 2).
+/// [`orb_render::DRAPE_SLOT_PX`] texels (GL JS's quality factor 2).
 pub(crate) fn drape_zoom(tms: &TileMatrixSet, tile: TileIndex) -> u8 {
     tms.style_zoom(tile).round().clamp(0.0, 255.0) as u8
 }
@@ -769,12 +769,11 @@ pub(crate) fn drape_rows(
     let reach = DVec2::splat(reach_px * span / TERRAIN_TILE_PX / scale);
     let (lo, hi) = (lo - reach, hi + reach);
     let (lo, hi) = ([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
-    let k = f64::from(DRAPE_SLOT_PX) / span;
     let zoom = drape_zoom(surface, terrain.index);
-    // Texels per logical pixel at the drape zoom: the slot spans the 512
-    // logical pixels of the terrain tile at its own zoom.
-    let px_scale = f64::from(DRAPE_SLOT_PX)
-        / (TERRAIN_TILE_PX * (f64::from(zoom) - surface.style_zoom(terrain.index)).exp2());
+    // Logical pixels the slot spans at the drape zoom: the 512 of the
+    // terrain tile at its own zoom.
+    let slot_span_px =
+        TERRAIN_TILE_PX * (f64::from(zoom) - surface.style_zoom(terrain.index)).exp2();
     for row in map_rows {
         let mut clips = [ClipRect::EMPTY; 4];
         let mut any = false;
@@ -792,13 +791,16 @@ pub(crate) fn drape_rows(
         for &stack in stacks {
             let [cx, cy] = layout.corner(slot, u32::from(stack));
             let corner = DVec2::new(f64::from(cx), -f64::from(cy));
+            // Texels per world unit and per logical pixel at the drape zoom.
+            let slot_px = f64::from(layout.slot_px(u32::from(stack)));
+            let k = slot_px / span;
             let o = corner + (origin - t_origin) * k;
             out.push(TileRow {
                 origin: o.to_array(),
                 scale: (scale * k) as f32,
                 clips,
                 bound,
-                px_scale: px_scale as f32,
+                px_scale: (slot_px / slot_span_px) as f32,
                 drape_zoom: f32::from(zoom),
                 target: PlacementTarget::Drape(stack),
                 // Slots are flat: the terrain carries them onto a globe.
@@ -1123,6 +1125,7 @@ impl orb_camera::Elevation for Consulted<'_> {
 mod tests {
     use super::*;
     use orb_camera::Elevation;
+    use orb_render::DRAPE_SLOT_PX;
 
     fn tms() -> TileMatrixSet {
         TileMatrixSet::by_id("WebMercatorQuad").unwrap()
@@ -1458,8 +1461,8 @@ mod tests {
     fn drape_rows_map_tiles_into_their_slots() {
         let tms = tms();
         let layout = DrapeLayout {
-            stacks: 2,
-            columns: 8,
+            stacks: [2, 1],
+            columns: [8, 4],
             tile_slots: 4,
             generation: 1,
         };
@@ -1503,12 +1506,12 @@ mod tests {
             drawn,
             4096,
             (terrain, 1),
-            (&layout, &[0, 1]),
+            (&layout, &[0, 1, 2]),
             0.0,
             [row].into_iter(),
             &mut rows,
         );
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         let slot = DRAPE_SLOT_PX as f32;
         // Slot 1, stack 0 is atlas slot 2: column 2. The tile's top-left
         // is the slot's centre; its 4096 units span half a slot.
@@ -1522,6 +1525,11 @@ mod tests {
         assert_eq!(rows[0].px_scale, 2.0);
         assert_eq!(rows[1].target, PlacementTarget::Drape(1));
         assert_eq!(rows[1].origin[0], 3.5 * px);
+        // Stack 2 holds slopes: slot 1 of the slope page, half the texels.
+        let slope = px / 2.0;
+        assert!(near(rows[2].origin, [1.5 * slope, -0.5 * slope]));
+        assert_eq!(rows[2].scale, slot / 4.0 / 4096.0);
+        assert_eq!(rows[2].px_scale, 1.0);
         // Clipped to the terrain tile: the whole vector tile is inside.
         assert_eq!(rows[0].clips[0], ClipRect::new([0, 0], [4096, 4096]));
         // A neighbour outside contributes nothing.

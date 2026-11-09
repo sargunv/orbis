@@ -664,7 +664,7 @@ impl Map {
             .collect();
         // Each draped source's stacks: a slot's stack redraws when what
         // the sources drawing into it drape there changes.
-        let stacks = layout.stacks as usize;
+        let stacks = layout.stack_count() as usize;
         let mut source_stacks = vec![Vec::new(); style.sources.len()];
         for (index, node) in plan.nodes.iter().enumerate() {
             if let (Some(stack), Some(stacks)) = (
@@ -850,7 +850,7 @@ impl Map {
                 regions: vec![terrain.index],
             };
             let tile_zoom = tms.style_zoom(terrain.index);
-            let stacks: Vec<u8> = (0..drape.layout.stacks as u8).collect();
+            let stacks: Vec<u8> = (0..drape.layout.stack_count() as u8).collect();
             let at = (Placement { tile_zoom, ..at }, &stacks[..]);
             drape.rows(tms, &draw, at, &mut rows);
         }

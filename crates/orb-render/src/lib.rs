@@ -282,6 +282,8 @@ pub struct Renderer {
     drape_zooms: BTreeMap<u8, DrapeZoom>,
     /// What each terrain draw composites, in style order.
     terrain_layers: Vec<terrain::TerrainLayer>,
+    /// Colour and slope stacks of the terrain layers.
+    drape_stacks: [u32; 2],
     /// Draped families' pipelines for the drape atlas, made for the first
     /// terrain when the target's format isn't the atlas's.
     drape_pipelines: Option<DrapePipelines>,
@@ -618,6 +620,7 @@ impl Renderer {
             terrain: None,
             drape_zooms: BTreeMap::new(),
             terrain_layers: Vec::new(),
+            drape_stacks: [0; 2],
             drape_pipelines: None,
             no_dem,
             dem_bound: no_dem,
@@ -851,7 +854,9 @@ impl Renderer {
     /// hillshade ends its stack and draws its slopes into one of its own:
     /// the terrain layer lights them over the stack before and under the
     /// next, which draws the layers above it (one hillshade a terrain
-    /// layer; another starts the next).
+    /// layer; another starts the next). Colour stacks come first, in
+    /// order, then slope stacks, which the drape keeps on a page of their
+    /// own ([`DrapeLayout`]).
     fn assign_stacks(&mut self) {
         let on = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         let mut stacks = 0u8;
@@ -887,11 +892,27 @@ impl Renderer {
                     *part.get_or_insert_with(next)
                 });
             }
+        }
+        // Colour stacks keep their order ahead of the slope stacks.
+        let slopes: Vec<u8> = layers.iter().filter_map(|l| Some(l.shade?.1)).collect();
+        let colour = u32::from(stacks) - slopes.len() as u32;
+        let renumber = |stack: u8| match slopes.iter().position(|&s| s == stack) {
+            Some(rank) => colour as u8 + rank as u8,
+            None => stack - slopes.iter().filter(|&&s| s < stack).count() as u8,
+        };
+        for layer in &mut layers {
+            layer.below = layer.below.map(renumber);
+            layer.above = layer.above.map(renumber);
+            layer.shade = layer.shade.map(|(node, s)| (node, renumber(s)));
+        }
+        for node in &mut self.nodes {
+            node.stack = node.stack.map(renumber);
             node.cull.target = match node.stack {
                 Some(stack) => PlacementTarget::Drape(stack),
                 None => PlacementTarget::Map,
             };
         }
+        self.drape_stacks = [colour, slopes.len() as u32];
         self.terrain_layers = layers;
     }
 
@@ -925,13 +946,10 @@ impl Renderer {
         self.nodes[node as usize].stack
     }
 
-    /// Drape stacks of the current nodes while terrain is on.
-    pub(crate) fn drape_stacks(&self) -> u32 {
-        self.nodes
-            .iter()
-            .filter_map(|n| n.stack)
-            .max()
-            .map_or(0, |s| u32::from(s) + 1)
+    /// Drape stacks of the current nodes while terrain is on: colour
+    /// stacks, then slope stacks.
+    pub(crate) fn drape_stacks(&self) -> [u32; 2] {
+        self.drape_stacks
     }
 
     /// Turns terrain on over a DEM page, or off. Draped nodes then draw
@@ -1041,10 +1059,12 @@ impl Renderer {
         let nodes = self.nodes.len() as u64;
         let stride = self.node_stride;
         let level = self.drape_zooms.entry(zoom).or_insert_with(|| DrapeZoom {
-            frame: gpu.create_buffer(&BufferDesc {
-                label: "drape frame",
-                size: crate::scene::FRAME_BYTES,
-                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            frame: [(); 2].map(|()| {
+                gpu.create_buffer(&BufferDesc {
+                    label: "drape frame",
+                    size: crate::scene::FRAME_BYTES,
+                    usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                })
             }),
             uniforms: gpu.create_buffer(&BufferDesc {
                 label: "drape node uniforms",
@@ -1052,9 +1072,9 @@ impl Renderer {
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             }),
             written: Vec::new(),
-            scene: None,
-            bundle: None,
-            waiting: 0,
+            scene: [None; 2],
+            bundle: [None, None],
+            waiting: [0; 2],
         });
         level.written.resize(self.nodes.len(), None);
         let before = &level.written[node as usize];
@@ -1595,7 +1615,9 @@ impl Renderer {
             self.dem_bound = dem;
             self.terrain_depth_bound = terrain_depth;
             for zoom in self.drape_zooms.values_mut() {
-                zoom.scene.take().release(gpu);
+                for scene in &mut zoom.scene {
+                    scene.take().release(gpu);
+                }
             }
             self.invalidate_bundle(gpu);
             // Extrusion and heatmap nodes record the scene group too.
@@ -1648,7 +1670,8 @@ impl Renderer {
         if compiling.made != self.made_seen {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
-            let drape_waiting = self.drape_zooms.values().any(|z| z.waiting > 0);
+            let drape_waiting =
+                (self.drape_zooms.values()).any(|z| z.waiting.iter().any(|&w| w > 0));
             if self.waiting > 0 || drape_waiting {
                 self.invalidate_bundle(gpu);
             }
@@ -1657,7 +1680,7 @@ impl Renderer {
                 // zoom: all draw again, each zoom's bundle recorded anew.
                 terrain.redraw_all();
                 for zoom in self.drape_zooms.values_mut() {
-                    zoom.waiting = 0;
+                    zoom.waiting = [0; 2];
                 }
             }
         }
@@ -1688,7 +1711,7 @@ impl Renderer {
                 + terrain_layers,
         );
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
-            terrain.set_layers(gpu, &self.terrain_layers);
+            terrain.set_layers(gpu, &self.terrain_layers, self.drape_stacks[0]);
             let sizes = (size, logical);
             resized |= terrain.resize(gpu, &mut self.composites, sizes, self.extrusions.samples);
         }
@@ -1825,13 +1848,13 @@ impl Renderer {
         }
         let draping = clock();
         times.bundles = micros(recording, draping);
-        let zooms = match self.terrain.as_ref().filter(|_| terrain_on) {
-            Some(terrain) => terrain.pending_zooms().to_vec(),
+        let draws = match self.terrain.as_ref().filter(|_| terrain_on) {
+            Some(terrain) => terrain.pending_draws().to_vec(),
             None => Vec::new(),
         };
-        let drape: Vec<(u8, RenderBundleId)> = zooms
+        let drape: Vec<terrain::DrapeBundle> = draws
             .into_iter()
-            .filter_map(|zoom| Some((zoom, self.drape_bundle(gpu, frame, zoom)?)))
+            .filter_map(|at| Some((at.0, at.1, self.drape_bundle(gpu, frame, at)?)))
             .collect();
         let encoding = clock();
         let mut drape_passes = 0;
@@ -1986,26 +2009,28 @@ impl Renderer {
         }
     }
 
-    /// The drape pass of style zoom `zoom` for this frame: its frame
-    /// written, and its bundle of the draped nodes drawn at it, recorded
-    /// if it isn't. `None` when no node's paint was set at it.
+    /// The drape pass of style zoom `zoom` into page `page` for this
+    /// frame: its frame written, and its bundle of the draped nodes drawn
+    /// at it into that page's stacks, recorded if it isn't. `None` when no
+    /// node's paint was set at it.
     fn drape_bundle(
         &mut self,
         gpu: &mut dyn Gpu,
         frame: &FrameBlock,
-        zoom: u8,
+        (zoom, page): (u8, usize),
     ) -> Option<RenderBundleId> {
         let terrain = self.terrain.as_ref()?;
-        let drape_frame = terrain.drape_frame(frame, zoom);
+        let drape_frame = terrain.drape_frame(frame, (zoom, page));
+        let colour = self.drape_stacks[0];
         let level = self.drape_zooms.get_mut(&zoom)?;
-        crate::scene::write_frame(gpu, level.frame, &drape_frame);
-        if level.scene.is_none() {
+        crate::scene::write_frame(gpu, level.frame[page], &drape_frame);
+        if level.scene[page].is_none() {
             let b = *self.scene.buffers();
-            level.scene = Some(scene_group(
+            level.scene[page] = Some(scene_group(
                 gpu,
                 self.draw_layout,
                 &b,
-                level.frame,
+                level.frame[page],
                 &self.image_bindings,
                 // Draped content isn't hidden by the terrain it's on.
                 (
@@ -2015,14 +2040,14 @@ impl Renderer {
                     self.no_terrain_depth,
                 ),
             ));
-            level.forget_bundle(gpu);
+            level.bundle[page].take().release(gpu);
         }
-        if let Some((bundle, _)) = &level.bundle {
+        if let Some((bundle, _)) = &level.bundle[page] {
             return Some(*bundle);
         }
         let ready = self.ready(gpu, true);
         let level = &self.drape_zooms[&zoom];
-        let (scene, uniforms) = (level.scene.expect("made above"), level.uniforms);
+        let (scene, uniforms) = (level.scene[page].expect("made above"), level.uniforms);
         let mut commands = vec![RenderCommand::SetIndexBuffer {
             buffer: self.scene.buffers().compacted,
             format: IndexFormat::Uint32,
@@ -2031,7 +2056,10 @@ impl Renderer {
         let (mut groups, mut waiting) = (Vec::new(), 0);
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
-            if node.stack.is_none() || !level.written.get(i).is_some_and(Option::is_some) {
+            let on_page = node
+                .stack
+                .is_some_and(|s| usize::from(u32::from(s) >= colour) == page);
+            if !on_page || !level.written.get(i).is_some_and(Option::is_some) {
                 continue;
             }
             let uniform = BindingResource::Buffer {
@@ -2065,8 +2093,8 @@ impl Renderer {
             &commands,
         );
         let level = self.drape_zooms.get_mut(&zoom).expect("found above");
-        level.bundle = Some((bundle, groups));
-        level.waiting = waiting;
+        level.bundle[page] = Some((bundle, groups));
+        level.waiting[page] = waiting;
         Some(bundle)
     }
 
@@ -2243,21 +2271,21 @@ struct DrapePipelines {
 /// drape placements of other zooms draw nothing in it (`drawn_in_pass`).
 #[derive(Debug)]
 struct DrapeZoom {
-    /// The drape frame at this zoom.
-    frame: BufferId,
+    /// The drape frame at this zoom, per drape page.
+    frame: [BufferId; 2],
     /// Node uniforms at this zoom, at each node's offset.
     uniforms: BufferId,
     /// Per node, the words written, or `None` where it doesn't draw at
     /// this zoom (outside its layer's zooms, or not draped).
     written: Vec<Option<Vec<u32>>>,
-    /// The scene group over `frame`, and the bundle with the node groups
-    /// it binds.
-    scene: Option<BindGroupId>,
-    bundle: Option<(RenderBundleId, Vec<BindGroupId>)>,
-    /// Draped nodes the slots last drawn at this zoom left out, waiting
-    /// for a pipeline: each zoom keeps its own, as a frame records only
-    /// the bundles of the zooms its redrawn slots draw at.
-    waiting: u32,
+    /// Per page, the scene group over its `frame`, and the bundle of the
+    /// nodes drawing into its stacks with the node groups it binds.
+    scene: [Option<BindGroupId>; 2],
+    bundle: [Option<(RenderBundleId, Vec<BindGroupId>)>; 2],
+    /// Draped nodes the slots last drawn at this zoom left out, per page,
+    /// waiting for a pipeline: each zoom keeps its own, as a frame records
+    /// only the bundles of the zooms its redrawn slots draw at.
+    waiting: [u32; 2],
 }
 
 impl release::Release for Node {
@@ -2274,12 +2302,16 @@ impl release::Release for DrapeZoom {
 
 impl DrapeZoom {
     fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
-        self.bundle.take().release(gpu);
+        for bundle in &mut self.bundle {
+            bundle.take().release(gpu);
+        }
     }
 
     fn release(mut self, gpu: &mut dyn Gpu) {
         self.forget_bundle(gpu);
-        (self.scene, self.frame, self.uniforms).release(gpu);
+        let [a, b] = self.scene;
+        let [f, g] = self.frame;
+        ((a, b), (f, g), self.uniforms).release(gpu);
     }
 }
 
