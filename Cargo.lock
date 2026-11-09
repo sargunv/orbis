@@ -941,8 +941,7 @@ dependencies = [
 [[package]]
 name = "fastpfor"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2434ebf43a2a3513a89c26990d3d5f3e3799d6c83ebc7a76ee2a5d814828d8c"
+source = "git+https://github.com/sargunv/FastPFOR-rs?branch=scalar-unpack-not-inline#79b01314bf3e51e4363708b8d255f38aba0dfa37"
 dependencies = [
  "bytemuck",
  "bytes",

@@ -71,6 +71,11 @@ orb-style = { path = "crates/orb-style" }
 orb-tile = { path = "crates/orb-tile" }
 orb-web = { path = "crates/orb-web" }
 
+[patch.crates-io]
+# One copy of the scalar unpack kernels instead of three: 7 KiB brotli off
+# core.wasm, no measurable tile decode cost (#35 tracks sending it upstream).
+fastpfor = { git = "https://github.com/sargunv/FastPFOR-rs", branch = "scalar-unpack-not-inline" }
+
 # Several agents build at once on one disk: line tables keep backtraces
 # readable at a fraction of full debug info, and dependencies carry none.
 [profile.dev]
