@@ -23,8 +23,10 @@ use crate::style::{PaintProperty, StylePlan};
 /// What a style's paint was last written for.
 #[derive(Debug, Default)]
 pub(crate) struct PaintState {
-    /// The zoom and bearing node paint was written for; `None` to rewrite.
-    written: Option<(f64, f64)>,
+    /// The zoom and bearing node paint was written for, and whether
+    /// draped nodes draped (on terrain they show at their slots' zooms,
+    /// not the camera's); `None` to rewrite.
+    written: Option<(f64, f64, bool)>,
     fade: Option<Crossfade>,
     /// Counts rewrites of all paint: what camera-free nodes were written
     /// in.
@@ -275,18 +277,22 @@ fn write_paint(
         style.paint.drape.painted.clear();
         style.paint.epoch += 1;
     }
-    if style.paint.written == Some((zoom, bearing)) && style.paint.fade == Some(crossfade) {
+    // Draped nodes on terrain draw at their slots' zooms, which hide them
+    // where their layers don't draw ([`drape`]).
+    let draping = renderer.terrain_on();
+    if style.paint.written == Some((zoom, bearing, draping)) && style.paint.fade == Some(crossfade)
+    {
         return missing;
     }
     // Only image nodes' paint reads the bearing (a viewport-anchored
     // hillshade's light): a turn alone repaints them.
-    let turned_only =
-        style.paint.written.is_some_and(|(z, _)| z == zoom) && style.paint.fade == Some(crossfade);
-    style.paint.written = Some((zoom, bearing));
+    let turned_only = style
+        .paint
+        .written
+        .is_some_and(|(z, _, d)| z == zoom && d == draping)
+        && style.paint.fade == Some(crossfade);
+    style.paint.written = Some((zoom, bearing, draping));
     style.paint.fade = Some(crossfade);
-    // Draped nodes on terrain draw at their slots' zooms, which hide them
-    // where their layers don't draw ([`drape`]).
-    let draping = renderer.terrain_on();
     for (index, node) in plan.nodes.iter().enumerate() {
         if turned_only && !node.family.is_image() {
             continue;
