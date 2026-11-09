@@ -737,7 +737,7 @@ mod tests {
         lcc.matrices[2].scale_denominator *= 1.1;
         assert!(TileMatrixSet::from_definition(&lcc).is_err());
         let mut unknown = nztm;
-        unknown.crs = "EPSG:28992".into();
+        unknown.crs = "EPSG:31467".into();
         assert!(TileMatrixSet::from_definition(&unknown).is_err());
     }
 

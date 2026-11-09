@@ -48,5 +48,5 @@ fn families_agree_with_proj() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 39 * 25);
+    assert_eq!(checked, 43 * 25);
 }

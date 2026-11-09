@@ -4,10 +4,13 @@
 
 use glam::DVec2;
 
-use super::ellipsoid::{A, E2, e};
+use super::ellipsoid::Ellipsoid;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TransverseMercator {
+    /// First eccentricity and its square.
+    e: f64,
+    e2: f64,
     lon0: f64,
     /// The latitude of natural origin.
     lat0: f64,
@@ -23,12 +26,20 @@ pub(crate) struct TransverseMercator {
 }
 
 impl TransverseMercator {
-    pub(crate) fn new(lon0: f64, lat0: f64, k0: f64, x0: f64, y0: f64) -> Self {
-        let f = E2 / (1.0 + (1.0 - E2).sqrt());
+    pub(crate) fn new(
+        ellipsoid: Ellipsoid,
+        lon0: f64,
+        lat0: f64,
+        k0: f64,
+        x0: f64,
+        y0: f64,
+    ) -> Self {
+        let Ellipsoid { a, e2 } = ellipsoid;
+        let f = e2 / (1.0 + (1.0 - e2).sqrt());
         let n = f / (2.0 - f);
         let (n2, n3) = (n * n, n * n * n);
         let (n4, n5, n6) = (n2 * n2, n2 * n3, n3 * n3);
-        let a = A / (1.0 + n) * (1.0 + n2 / 4.0 + n4 / 64.0 + n6 / 256.0);
+        let a = a / (1.0 + n) * (1.0 + n2 / 4.0 + n4 / 64.0 + n6 / 256.0);
         let alpha = [
             n / 2.0 - 2.0 * n2 / 3.0 + 5.0 * n3 / 16.0 + 41.0 * n4 / 180.0 - 127.0 * n5 / 288.0
                 + 7891.0 * n6 / 37800.0,
@@ -52,6 +63,8 @@ impl TransverseMercator {
             20648693.0 * n6 / 638668800.0,
         ];
         let mut tm = Self {
+            e: ellipsoid.e(),
+            e2,
             lon0,
             lat0,
             k0,
@@ -68,7 +81,7 @@ impl TransverseMercator {
 
     /// Gauss–Krüger ξ (northing) and η (easting) before scaling.
     fn xi_eta(&self, phi: f64, dlon: f64) -> DVec2 {
-        let e = e();
+        let e = self.e;
         let tau = phi.tan();
         let sigma = (e * (e * phi.sin()).atanh()).sinh();
         let taup = tau * sigma.hypot(1.0) - sigma * tau.hypot(1.0);
@@ -100,7 +113,7 @@ impl TransverseMercator {
         }
         let dlon = etap.sinh().atan2(xip.cos());
         let taup = xip.sin() / etap.sinh().hypot(xip.cos());
-        let lat = tau_from_taup(taup).atan();
+        let lat = tau_from_taup(taup, self.e2).atan();
         (self.lon0 + dlon, lat)
     }
 
@@ -121,16 +134,16 @@ impl TransverseMercator {
     }
 }
 
-/// tan φ from the conformal latitude's tangent, by Newton's method
-/// (Karney 2011, eq. 19–21).
-pub(crate) fn tau_from_taup(taup: f64) -> f64 {
-    let e = e();
+/// tan φ from the conformal latitude's tangent on an ellipsoid of
+/// eccentricity squared `e2`, by Newton's method (Karney 2011, eq. 19–21).
+pub(crate) fn tau_from_taup(taup: f64, e2: f64) -> f64 {
+    let e = e2.sqrt();
     let mut tau = taup;
     for _ in 0..8 {
         let sigma = (e * (e * tau / tau.hypot(1.0)).atanh()).sinh();
         let tp = tau * sigma.hypot(1.0) - sigma * tau.hypot(1.0);
-        let d = (taup - tp) / tp.hypot(1.0) * (1.0 + (1.0 - E2) * tau * tau)
-            / ((1.0 - E2) * tau.hypot(1.0));
+        let d = (taup - tp) / tp.hypot(1.0) * (1.0 + (1.0 - e2) * tau * tau)
+            / ((1.0 - e2) * tau.hypot(1.0));
         tau += d;
         if d.abs() < 1e-14 * tau.abs().max(1.0) {
             break;
@@ -139,7 +152,6 @@ pub(crate) fn tau_from_taup(taup: f64) -> f64 {
     tau
 }
 
-/// An angle wrapped into [-π, π).
 /// An angle in `[-π, π]`; ±π stay as they are, so a seam's two sides keep
 /// apart.
 pub(crate) fn wrap_pi(a: f64) -> f64 {
@@ -148,5 +160,29 @@ pub(crate) fn wrap_pi(a: f64) -> f64 {
         a
     } else {
         (a + PI).rem_euclid(2.0 * PI) - PI
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn british_grid_matches_ordnance_survey_example() {
+        // The Ordnance Survey's worked example (A guide to coordinate
+        // systems in Great Britain, C.1): Caister water tower, OSGB36
+        // 52°39′27.2531″N 1°43′4.5177″E, is at (651409.903, 313177.270).
+        let bng = TransverseMercator::new(
+            Ellipsoid::AIRY_1830,
+            f64::to_radians(-2.0),
+            f64::to_radians(49.0),
+            0.999_601_271_7,
+            400_000.0,
+            -100_000.0,
+        );
+        let dms = |d: f64, m: f64, s: f64| (d + m / 60.0 + s / 3600.0).to_radians();
+        let p = bng.forward(dms(1.0, 43.0, 4.5177), dms(52.0, 39.0, 27.2531));
+        let expected = DVec2::new(651_409.903, 313_177.270);
+        assert!((p - expected).abs().max_element() < 1e-3, "{p}");
     }
 }

@@ -1,5 +1,6 @@
-//! Latitude functions of the WGS84 ellipsoid shared by the ellipsoidal
-//! families (EPSG Guidance Note 7-2 notation). Angles are radians.
+//! Ellipsoids, and latitude functions of the WGS84 ellipsoid shared by the
+//! ellipsoidal families (EPSG Guidance Note 7-2 notation). Angles are
+//! radians.
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -7,6 +8,37 @@ use crate::wgs84;
 
 pub(crate) const A: f64 = wgs84::SEMI_MAJOR_M;
 pub(crate) const E2: f64 = wgs84::E2;
+
+/// An ellipsoid of revolution: semi-major axis in metres and first
+/// eccentricity squared.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Ellipsoid {
+    pub(crate) a: f64,
+    pub(crate) e2: f64,
+}
+
+impl Ellipsoid {
+    /// WGS 84, which GRS 1980 matches here (see [`wgs84::FLATTENING`]).
+    pub(crate) const WGS84: Self = Self { a: A, e2: E2 };
+    /// Bessel 1841 (EPSG:7004), under the Dutch and Swiss grids.
+    pub(crate) const BESSEL_1841: Self = Self::flattened(6_377_397.155, 299.152_812_8);
+    /// Airy 1830 (EPSG:7001), under the British National Grid.
+    pub(crate) const AIRY_1830: Self = Self::flattened(6_377_563.396, 299.324_964_6);
+
+    /// The ellipsoid of semi-major axis `a` and inverse flattening `rf`.
+    const fn flattened(a: f64, rf: f64) -> Self {
+        let f = 1.0 / rf;
+        Self {
+            a,
+            e2: f * (2.0 - f),
+        }
+    }
+
+    /// The first eccentricity.
+    pub(crate) fn e(&self) -> f64 {
+        self.e2.sqrt()
+    }
+}
 
 pub(crate) fn e() -> f64 {
     E2.sqrt()
@@ -33,7 +65,7 @@ pub(crate) fn phi_from_t(t: f64) -> f64 {
     if !t.is_finite() {
         return -FRAC_PI_2;
     }
-    super::tm::tau_from_taup((1.0 - t * t) / (2.0 * t)).atan()
+    super::tm::tau_from_taup((1.0 - t * t) / (2.0 * t), E2).atan()
 }
 
 /// The authalic function `q`.

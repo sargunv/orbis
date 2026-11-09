@@ -1,0 +1,241 @@
+{
+ "version": 8,
+ "name": "Amersfoort in RD New (EPSG:28992)",
+ "center": [
+  5.3872,
+  52.1552
+ ],
+ "zoom": 15,
+ "projection": {
+  "type": "EPSG:28992"
+ },
+ "sources": {
+  "brt": {
+   "type": "raster",
+   "tileSize": 256,
+   "attribution": "<a href=\"https://www.pdok.nl/\">Kadaster / PDOK</a> BRT Achtergrondkaart",
+   "tiles": [
+    "https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/grijs/EPSG:28992/{tileMatrix}/{tileCol}/{tileRow}.png"
+   ],
+   "tileMatrixSet": {
+    "id": "EPSG:28992",
+    "crs": "http://www.opengis.net/def/crs/EPSG/0/28992",
+    "tileMatrices": [
+     {
+      "id": "00",
+      "scaleDenominator": 12288000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 1,
+      "matrixHeight": 1
+     },
+     {
+      "id": "01",
+      "scaleDenominator": 6144000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 2,
+      "matrixHeight": 2
+     },
+     {
+      "id": "02",
+      "scaleDenominator": 3072000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 4,
+      "matrixHeight": 4
+     },
+     {
+      "id": "03",
+      "scaleDenominator": 1536000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 8,
+      "matrixHeight": 8
+     },
+     {
+      "id": "04",
+      "scaleDenominator": 768000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 16,
+      "matrixHeight": 16
+     },
+     {
+      "id": "05",
+      "scaleDenominator": 384000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 32,
+      "matrixHeight": 32
+     },
+     {
+      "id": "06",
+      "scaleDenominator": 192000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 64,
+      "matrixHeight": 64
+     },
+     {
+      "id": "07",
+      "scaleDenominator": 96000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 128,
+      "matrixHeight": 128
+     },
+     {
+      "id": "08",
+      "scaleDenominator": 48000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 256,
+      "matrixHeight": 256
+     },
+     {
+      "id": "09",
+      "scaleDenominator": 24000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 512,
+      "matrixHeight": 512
+     },
+     {
+      "id": "10",
+      "scaleDenominator": 12000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 1024,
+      "matrixHeight": 1024
+     },
+     {
+      "id": "11",
+      "scaleDenominator": 6000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 2048,
+      "matrixHeight": 2048
+     },
+     {
+      "id": "12",
+      "scaleDenominator": 3000.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 4096,
+      "matrixHeight": 4096
+     },
+     {
+      "id": "13",
+      "scaleDenominator": 1500.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 8192,
+      "matrixHeight": 8192
+     },
+     {
+      "id": "14",
+      "scaleDenominator": 750.0,
+      "pointOfOrigin": [
+       -285401.92,
+       903401.92
+      ],
+      "tileWidth": 256,
+      "tileHeight": 256,
+      "matrixWidth": 16384,
+      "matrixHeight": 16384
+     }
+    ]
+   }
+  },
+  "openmaptiles": {
+   "type": "vector",
+   "url": "https://tiles.openfreemap.org/planet",
+   "attribution": "<a href=\"https://openfreemap.org\">OpenFreeMap</a> <a href=\"https://www.openmaptiles.org/\">\u00a9 OpenMapTiles</a> Data from <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>"
+  }
+ },
+ "layers": [
+  {
+   "id": "brt",
+   "type": "raster",
+   "source": "brt"
+  },
+  {
+   "id": "roads",
+   "type": "line",
+   "source": "openmaptiles",
+   "source-layer": "transportation",
+   "paint": {
+    "line-color": "#e0218a",
+    "line-width": 1.5,
+    "line-opacity": 0.8
+   }
+  },
+  {
+   "id": "buildings",
+   "type": "line",
+   "source": "openmaptiles",
+   "source-layer": "building",
+   "paint": {
+    "line-color": "#1060ff",
+    "line-width": 1
+   }
+  }
+ ]
+}

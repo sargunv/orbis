@@ -1,17 +1,22 @@
 //! The EPSG codes Orbis knows, as families and parameters taken from their
-//! PROJ 9 definitions. Every listed datum (WGS 84, NZGD2000, ETRS89, NAD83,
-//! GDA94, RGF93, SWEREF99, EUREF-FIN) is within a metre of WGS 84 and uses
-//! GRS 1980 or WGS 84, so no datum shift applies. Codes on other datums
-//! (Bessel, Airy, Clarke) need a transformation and stay unknown, as does
-//! every code not listed: an error, never a fallback.
+//! PROJ 9 definitions. Most listed datums (WGS 84, NZGD2000, ETRS89, NAD83,
+//! GDA94, RGF93, SWEREF99, EUREF-FIN) are within a metre of WGS 84 on
+//! GRS 1980 or WGS 84, so no datum shift applies. The Dutch, British and
+//! Swiss grids are on Bessel 1841 and Airy 1830 datums, reached by EPSG's
+//! Helmert transformation from ETRS89 (taken as WGS 84): within 0.25 m of
+//! the national grid shifts (RDNAPTRANS, CHENyx06) in the Netherlands and
+//! Switzerland, a few metres of OSTN15 in Britain. Every code not listed
+//! is unknown: an error, never a fallback.
 
+use crate::family::{Datum, Ellipsoid};
 use crate::projection::{Kind, Params};
 
-/// A known code: its family, parameters and whether its first axis is
-/// northing (which tile matrix set origins follow).
+/// A known code: its family, parameters, datum if not WGS 84, and whether
+/// its first axis is northing (which tile matrix set origins follow).
 pub(crate) struct Entry {
     pub(crate) kind: Kind,
     pub(crate) params: Params,
+    pub(crate) datum: Option<Datum>,
     pub(crate) northing_first: bool,
 }
 
@@ -21,9 +26,33 @@ pub(crate) fn lookup(code: u32) -> Option<Entry> {
         Some(Entry {
             kind,
             params,
+            datum: None,
             northing_first,
         })
     };
+    let on = |datum, kind, params| {
+        Some(Entry {
+            kind,
+            params,
+            datum: Some(datum),
+            northing_first: false,
+        })
+    };
+    let swiss = |x_0, y_0| Params {
+        lat_0: Some(46.952_405_555_555_6),
+        lon_0: Some(7.439_583_333_333_33),
+        k_0: Some(1.0),
+        x_0: Some(x_0),
+        y_0: Some(y_0),
+        ..p
+    };
+    // CH1903 and CH1903+ to ETRS89 (EPSG:1646, EPSG:1647).
+    let ch1903 = Datum::position_vector(
+        Ellipsoid::BESSEL_1841,
+        [674.374, 15.056, 405.346],
+        [0.0; 3],
+        0.0,
+    );
     let utm = |zone: u32, south: bool, northing_first: bool| {
         entry(
             Kind::TransverseMercator,
@@ -152,6 +181,58 @@ pub(crate) fn lookup(code: u32) -> Option<Entry> {
         6932 => laea(-90.0, 0.0, 0.0, 0.0, false),
         3573 => laea(90.0, -100.0, 0.0, 0.0, false),
         8857 => entry(Kind::EqualEarth, p, false),
+        // Amersfoort / RD New, by Amersfoort to ETRS89 (8) (EPSG:9281).
+        28992 => on(
+            Datum::coordinate_frame(
+                Ellipsoid::BESSEL_1841,
+                [565.7381, 50.4018, 465.2904],
+                [
+                    0.395_025_981_036_064,
+                    -0.330_772_431_242_031,
+                    1.876_073_294_628_21,
+                ],
+                4.072_44,
+            ),
+            Kind::ObliqueStereographic,
+            Params {
+                lat_0: Some(52.156_160_555_555_6),
+                lon_0: Some(5.387_638_888_888_89),
+                k_0: Some(0.999_907_9),
+                x_0: Some(155_000.0),
+                y_0: Some(463_000.0),
+                ..p
+            },
+        ),
+        // OSGB36 / British National Grid, by OSGB36 to WGS 84 (6)
+        // (EPSG:1314), the Ordnance Survey's ETRS89 transformation.
+        27700 => on(
+            Datum::position_vector(
+                Ellipsoid::AIRY_1830,
+                [446.448, -125.157, 542.06],
+                [0.15, 0.247, 0.842],
+                -20.489,
+            ),
+            Kind::TransverseMercator,
+            Params {
+                lat_0: Some(49.0),
+                lon_0: Some(-2.0),
+                k_0: Some(0.999_601_271_7),
+                x_0: Some(400_000.0),
+                y_0: Some(-100_000.0),
+                ..p
+            },
+        ),
+        // CH1903+ / LV95 and CH1903 / LV03.
+        2056 => on(
+            ch1903,
+            Kind::SwissObliqueMercator,
+            swiss(2_600_000.0, 1_200_000.0),
+        ),
+        21781 => on(
+            ch1903,
+            Kind::SwissObliqueMercator,
+            swiss(600_000.0, 200_000.0),
+        ),
         _ => None,
     }
 }

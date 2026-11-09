@@ -4,7 +4,9 @@
 
 mod azimuthal;
 mod conic;
+mod datum;
 mod ellipsoid;
+mod oblique;
 mod pseudo;
 mod tm;
 
@@ -14,7 +16,9 @@ use glam::DVec2;
 
 pub(crate) use azimuthal::{Laea, PolarStereographic};
 pub(crate) use conic::Conic;
-pub(crate) use ellipsoid::A;
+pub(crate) use datum::Datum;
+pub(crate) use ellipsoid::{A, Ellipsoid};
+pub(crate) use oblique::{ObliqueStereographic, SwissObliqueMercator};
 pub(crate) use pseudo::Pseudo;
 pub(crate) use tm::{TransverseMercator, wrap_pi};
 
@@ -36,6 +40,8 @@ pub(crate) enum Family {
     Conic(Conic),
     Laea(Laea),
     Pseudo(Pseudo),
+    ObliqueStereographic(ObliqueStereographic),
+    SwissObliqueMercator(SwissObliqueMercator),
 }
 
 impl Family {
@@ -53,6 +59,8 @@ impl Family {
             Self::Conic(f) => f.forward(lon, lat),
             Self::Laea(f) => f.forward(lon, lat),
             Self::Pseudo(f) => f.forward(lon, lat),
+            Self::ObliqueStereographic(f) => f.forward(lon, lat),
+            Self::SwissObliqueMercator(f) => f.forward(lon, lat),
         }
     }
 
@@ -67,6 +75,8 @@ impl Family {
             Self::Conic(f) => f.inverse(p),
             Self::Laea(f) => f.inverse(p),
             Self::Pseudo(f) => f.inverse(p),
+            Self::ObliqueStereographic(f) => f.inverse(p),
+            Self::SwissObliqueMercator(f) => f.inverse(p),
         }
     }
 
@@ -79,6 +89,8 @@ impl Family {
             Self::Conic(f) => f.contains(lat),
             Self::Laea(f) => f.contains(lon, lat),
             Self::Pseudo(_) => true,
+            Self::ObliqueStereographic(f) => f.contains(lon, lat),
+            Self::SwissObliqueMercator(f) => f.contains(lon, lat),
         }
     }
 
@@ -95,6 +107,8 @@ impl Family {
             }
             Self::Conic(f) => near(f.lon0(), 60.0) && lat.abs() <= 84f64.to_radians(),
             Self::Laea(f) => f.angular_cos(lon, lat) >= 0.0,
+            Self::ObliqueStereographic(f) => f.shows(lon, lat),
+            Self::SwissObliqueMercator(f) => f.shows(lon, lat),
         }
     }
 
@@ -111,6 +125,8 @@ impl Family {
             Self::Conic(f) => f.reference(),
             Self::Laea(f) => f.reference(),
             Self::Pseudo(f) => (f.lon0(), 0.0),
+            Self::ObliqueStereographic(f) => f.reference(),
+            Self::SwissObliqueMercator(f) => f.reference(),
         })
     }
 
@@ -131,5 +147,69 @@ impl Family {
             Self::Geographic => Some(360.0),
             _ => None,
         }
+    }
+}
+
+/// A family on a datum: positions in and out are WGS 84 radians, shifted
+/// to and from the datum the family's formulas take, if not WGS 84.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Plane {
+    pub(crate) family: Family,
+    datum: Option<Datum>,
+}
+
+impl Plane {
+    pub(crate) fn new(family: Family, datum: Option<Datum>) -> Self {
+        Self { family, datum }
+    }
+
+    /// A WGS 84 position on the family's datum.
+    fn local(&self, lon: f64, lat: f64) -> (f64, f64) {
+        match &self.datum {
+            Some(datum) => datum.local(lon, lat),
+            None => (lon, lat),
+        }
+    }
+
+    fn wgs84(&self, (lon, lat): (f64, f64)) -> (f64, f64) {
+        match &self.datum {
+            Some(datum) => datum.wgs84(lon, lat),
+            None => (lon, lat),
+        }
+    }
+
+    pub(crate) fn forward(&self, lon: f64, lat: f64) -> DVec2 {
+        let (lon, lat) = self.local(lon, lat);
+        self.family.forward(lon, lat)
+    }
+
+    pub(crate) fn inverse(&self, p: DVec2) -> (f64, f64) {
+        let local = self.family.inverse(p);
+        if !(local.0.is_finite() && local.1.is_finite()) {
+            return local;
+        }
+        self.wgs84(local)
+    }
+
+    pub(crate) fn contains(&self, lon: f64, lat: f64) -> bool {
+        let (lon, lat) = self.local(lon, lat);
+        self.family.contains(lon, lat)
+    }
+
+    pub(crate) fn shows(&self, lon: f64, lat: f64) -> bool {
+        let (lon, lat) = self.local(lon, lat);
+        self.family.shows(lon, lat)
+    }
+
+    pub(crate) fn zoom_reference(&self) -> Option<(f64, f64)> {
+        self.family.zoom_reference().map(|p| self.wgs84(p))
+    }
+
+    pub(crate) fn seam(&self) -> Option<f64> {
+        self.family.seam()
+    }
+
+    pub(crate) fn wrap_period(&self) -> Option<f64> {
+        self.family.wrap_period()
     }
 }

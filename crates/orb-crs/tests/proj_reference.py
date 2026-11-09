@@ -9,12 +9,19 @@ import warnings
 
 import pyproj
 from pyproj import CRS, Transformer
+from pyproj.transformer import TransformerGroup
 
 warnings.simplefilter("ignore")
 
 EPSG = [3857, 4326, 2193, 32601, 32633, 32660, 32701, 32760, 25832, 26910, 3006, 3067,
         3413, 3976, 3031, 3995, 5041, 5042, 32661, 32761, 2154, 3034, 3577, 5070, 3338,
         3035, 6931, 6932, 3573, 8857]
+
+# Codes on other datums, from the datum their Helmert transformation starts
+# at (ETRS89, or WGS 84 for Britain's), through that transformation even
+# where PROJ has a better grid, with GRS 1980 read as WGS 84 as orb-crs
+# reads it (a tenth of a millimetre apart).
+SHIFTED = [(28992, 4258), (27700, 4326), (2056, 4258), (21781, 4258)]
 
 # Descriptor kinds as PROJ strings on the ellipsoid or sphere orb-crs uses.
 DESCRIPTORS = [
@@ -51,8 +58,8 @@ def projection_only(crs):
     return CRS.from_proj4(" ".join(proj))
 
 
-def entry(descriptor, crs, area):
-    t = Transformer.from_crs(CRS.from_user_input("OGC:CRS84"), crs, always_xy=True)
+def entry(descriptor, crs, area, t=None):
+    t = t or Transformer.from_crs(CRS.from_user_input("OGC:CRS84"), crs, always_xy=True)
     points = []
     for lon, lat in samples(*area):
         x, y = t.transform(lon, lat)
@@ -68,6 +75,13 @@ for code in EPSG:
     if code == 3857:
         area = (-180, -85, 180, 85)
     out["cases"].append(entry({"type": f"EPSG:{code}"}, projection_only(crs), area))
+for code, source in SHIFTED:
+    crs = CRS.from_epsg(code)
+    a = crs.area_of_use
+    helmert = [t for t in TransformerGroup(source, crs, always_xy=True).transformers
+               if "helmert" in t.definition][0]
+    helmert = Transformer.from_pipeline(helmert.definition.replace("ellps=GRS80", "ellps=WGS84"))
+    out["cases"].append(entry({"type": f"EPSG:{code}"}, crs, (a.west, a.south, a.east, a.north), helmert))
 for descriptor, proj, area in DESCRIPTORS:
     out["cases"].append(entry(descriptor, CRS.from_proj4(proj), area))
 print(json.dumps(out, indent=None, separators=(",", ":")))

@@ -717,7 +717,7 @@ fn world_planes_adapt_to_mercator() {
     assert!(polar.projection.is_some() && polar.warnings.is_empty());
     // Unknown planes and invalid transitions warn and draw Web Mercator.
     for bad in [
-        r#"{"type": "EPSG:28992"}"#,
+        r#"{"type": "EPSG:31467"}"#,
         r#"{"type": "equal-earth", "lon_0": "east"}"#,
     ] {
         let style = style(bad);

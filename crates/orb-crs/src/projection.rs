@@ -5,7 +5,8 @@ use glam::DVec2;
 
 use crate::WorldRect;
 use crate::family::{
-    Conic, Family, Laea, MERCATOR_MAX_LAT, PolarStereographic, Pseudo, TransverseMercator,
+    Conic, Ellipsoid, Family, Laea, MERCATOR_MAX_LAT, ObliqueStereographic, Plane,
+    PolarStereographic, Pseudo, SwissObliqueMercator, TransverseMercator,
 };
 
 /// A map projection into a plane's world space (world units with y up:
@@ -16,7 +17,7 @@ use crate::family::{
 /// [`descriptor`](Self::descriptor).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Projection {
-    family: Family,
+    plane: Plane,
     name: Name,
     extent: WorldRect,
     northing_first: bool,
@@ -43,6 +44,9 @@ pub(crate) enum Kind {
     Laea,
     EqualEarth,
     NaturalEarth,
+    /// EPSG codes' own kinds, outside the descriptor syntax.
+    ObliqueStereographic,
+    SwissObliqueMercator,
 }
 
 impl Kind {
@@ -86,6 +90,9 @@ impl Kind {
             Kind::PolarStereographic => &["lat_0", "lat_ts", "lon_0", "k_0", "x_0", "y_0"],
             Kind::Lcc | Kind::Albers => &["lat_1", "lat_2", "lat_0", "lon_0", "x_0", "y_0"],
             Kind::Laea => &["lat_0", "lon_0", "x_0", "y_0"],
+            Kind::ObliqueStereographic | Kind::SwissObliqueMercator => {
+                &["lat_0", "lon_0", "k_0", "x_0", "y_0"]
+            }
         }
     }
 }
@@ -179,9 +186,10 @@ impl Projection {
             let unknown = || UnknownProjection(format!("unknown projection `{kind}`"));
             let code: u32 = code.parse().map_err(|_| unknown())?;
             let entry = crate::epsg::lookup(code).ok_or_else(unknown)?;
-            let family = family(entry.kind, &entry.params)?;
-            return Ok(Self::with_family(
-                family,
+            let ellipsoid = entry.datum.map_or(Ellipsoid::WGS84, |d| d.ellipsoid);
+            let family = family(entry.kind, &entry.params, ellipsoid)?;
+            return Ok(Self::with_plane(
+                Plane::new(family, entry.datum),
                 Name::Epsg(code),
                 entry.northing_first,
             ));
@@ -198,8 +206,12 @@ impl Projection {
             *params.slot(name).expect("listed parameter") = Some(*value);
         }
         // Descriptor kinds list easting first, as `OGC:CRS84` does.
-        let family = family(parsed, &params)?;
-        Ok(Self::with_family(family, Name::Kind(parsed, params), false))
+        let family = family(parsed, &params, Ellipsoid::WGS84)?;
+        Ok(Self::with_plane(
+            Plane::new(family, None),
+            Name::Kind(parsed, params),
+            false,
+        ))
     }
 
     /// The projection of a coordinate reference system URI, as tile matrix
@@ -229,17 +241,17 @@ impl Projection {
     /// degree's arc for geographic ones (OGC's convention for tile matrix
     /// scale denominators).
     pub fn metres_per_unit(&self) -> f64 {
-        match self.family {
+        match self.plane.family {
             Family::Geographic => 2.0 * std::f64::consts::PI * wgs84::SEMI_MAJOR_M / 360.0,
             _ => 1.0,
         }
     }
 
-    fn with_family(family: Family, name: Name, northing_first: bool) -> Self {
+    fn with_plane(plane: Plane, name: Name, northing_first: bool) -> Self {
         Self {
-            family,
+            plane,
             name,
-            extent: default_extent(&family),
+            extent: default_extent(&plane),
             northing_first,
         }
     }
@@ -262,7 +274,7 @@ impl Projection {
     /// Whether two projections map positions identically, however they
     /// are named and whatever their extents.
     pub fn same_plane(&self, other: &Projection) -> bool {
-        self.family == other.family
+        self.plane == other.plane
     }
 
     /// The same projection with another world extent, such as the area of
@@ -281,18 +293,18 @@ impl Projection {
 
     /// Projects a geodetic position into world space.
     pub fn forward(&self, g: Geodetic) -> DVec2 {
-        self.family.forward(g.lon.to_radians(), g.lat.to_radians())
+        self.plane.forward(g.lon.to_radians(), g.lat.to_radians())
     }
 
     /// The geodetic position of a world-space point.
     pub fn inverse(&self, p: DVec2) -> Geodetic {
-        let (lon, lat) = self.family.inverse(p);
+        let (lon, lat) = self.plane.inverse(p);
         Geodetic::new(lon.to_degrees(), lat.to_degrees())
     }
 
     /// Whether `forward` maps a position to a finite, meaningful point.
     pub fn contains(&self, g: Geodetic) -> bool {
-        self.family.contains(g.lon.to_radians(), g.lat.to_radians())
+        self.plane.contains(g.lon.to_radians(), g.lat.to_radians())
     }
 
     /// World units per ground metre at `g`, along the parallel. Ground
@@ -300,7 +312,7 @@ impl Projection {
     /// style zoom is defined on, so that zoom, resolution and scale agree
     /// in every projection.
     pub fn scale_factor(&self, g: Geodetic) -> f64 {
-        match self.family {
+        match self.plane.family {
             Family::WebMercator => {
                 1.0 / g
                     .lat
@@ -313,18 +325,19 @@ impl Projection {
                     / std::f64::consts::PI
                     / (wgs84::SEMI_MAJOR_M * g.lat.to_radians().cos().max(1e-9))
             }
-            family => {
+            _ => {
+                let plane = &self.plane;
                 let (lon, lat) = (g.lon.to_radians(), g.lat.to_radians());
                 let h = 1e-7;
                 let ground = wgs84::SEMI_MAJOR_M * lat.cos();
                 if ground > 1.0 {
-                    let d = family.forward(lon + h, lat) - family.forward(lon - h, lat);
+                    let d = plane.forward(lon + h, lat) - plane.forward(lon - h, lat);
                     d.length() / (2.0 * h * ground)
                 } else {
                     // At a pole, the meridian scale: the same for the
                     // conformal families centred there.
                     let lat = lat.clamp(-FRAC_PI_2_LESS, FRAC_PI_2_LESS);
-                    let d = family.forward(lon, lat + h) - family.forward(lon, lat - h);
+                    let d = plane.forward(lon, lat + h) - plane.forward(lon, lat - h);
                     d.length() / (2.0 * h * wgs84::SEMI_MAJOR_M)
                 }
             }
@@ -335,7 +348,7 @@ impl Projection {
     /// or `None` for Web Mercator, whose style zoom follows the target's
     /// latitude as GL JS's does.
     pub fn zoom_reference(&self) -> Option<Geodetic> {
-        self.family
+        self.plane
             .zoom_reference()
             .map(|(lon, lat)| Geodetic::new(lon.to_degrees(), lat.to_degrees()))
     }
@@ -384,7 +397,7 @@ impl Projection {
 
     /// The x period after which the world repeats, if it wraps.
     pub fn wrap_period(&self) -> Option<f64> {
-        self.family.wrap_period()
+        self.plane.wrap_period()
     }
 
     /// `world` in the copy of a wrapping world nearest `near`; unchanged on
@@ -403,7 +416,7 @@ impl Projection {
     /// Earth's, a conic's), in degrees: longitudes on the cut lie on either
     /// edge of the world.
     pub(crate) fn seam(&self) -> Option<f64> {
-        self.family.seam().map(f64::to_degrees)
+        self.plane.seam().map(f64::to_degrees)
     }
 }
 
@@ -412,7 +425,9 @@ const STYLE_TILE_PX: f64 = 512.0;
 
 const FRAC_PI_2_LESS: f64 = std::f64::consts::FRAC_PI_2 - 1e-6;
 
-fn family(kind: Kind, p: &Params) -> Result<Family, UnknownProjection> {
+/// The family a kind and its parameters name, on `ellipsoid` where the
+/// kind is ellipsoidal and not tied to WGS 84.
+fn family(kind: Kind, p: &Params, ellipsoid: Ellipsoid) -> Result<Family, UnknownProjection> {
     let deg = |v: Option<f64>| v.unwrap_or(0.0).to_radians();
     let (x_0, y_0) = (p.x_0.unwrap_or(0.0), p.y_0.unwrap_or(0.0));
     let bad = |message: &str| Err(UnknownProjection(message.to_string()));
@@ -421,6 +436,7 @@ fn family(kind: Kind, p: &Params) -> Result<Family, UnknownProjection> {
         Kind::Geographic => Family::Geographic,
         Kind::Equirectangular => Family::Equirectangular { lon0: deg(p.lon_0) },
         Kind::TransverseMercator => Family::TransverseMercator(TransverseMercator::new(
+            ellipsoid,
             deg(p.lon_0),
             deg(p.lat_0),
             p.k_0.unwrap_or(1.0),
@@ -434,6 +450,7 @@ fn family(kind: Kind, p: &Params) -> Result<Family, UnknownProjection> {
             }
             let south = p.south.unwrap_or(0.0) != 0.0;
             Family::TransverseMercator(TransverseMercator::new(
+                ellipsoid,
                 (-183.0 + 6.0 * zone).to_radians(),
                 0.0,
                 0.9996,
@@ -486,13 +503,29 @@ fn family(kind: Kind, p: &Params) -> Result<Family, UnknownProjection> {
         Kind::Laea => Family::Laea(Laea::new(deg(p.lat_0), deg(p.lon_0), x_0, y_0)),
         Kind::EqualEarth => Family::Pseudo(Pseudo::equal_earth(deg(p.lon_0))),
         Kind::NaturalEarth => Family::Pseudo(Pseudo::natural_earth(deg(p.lon_0))),
+        Kind::ObliqueStereographic => Family::ObliqueStereographic(ObliqueStereographic::new(
+            ellipsoid,
+            deg(p.lon_0),
+            deg(p.lat_0),
+            p.k_0.unwrap_or(1.0),
+            x_0,
+            y_0,
+        )),
+        Kind::SwissObliqueMercator => Family::SwissObliqueMercator(SwissObliqueMercator::new(
+            ellipsoid,
+            deg(p.lon_0),
+            deg(p.lat_0),
+            p.k_0.unwrap_or(1.0),
+            x_0,
+            y_0,
+        )),
     })
 }
 
 /// The bounding box of the positions a family shows with moderate
 /// distortion; Web Mercator's is its square world.
-fn default_extent(family: &Family) -> WorldRect {
-    if let Family::WebMercator = family {
+fn default_extent(plane: &Plane) -> WorldRect {
+    if let Family::WebMercator = plane.family {
         let half = std::f64::consts::PI * wgs84::SEMI_MAJOR_M;
         return WorldRect {
             min: DVec2::splat(-half),
@@ -503,8 +536,8 @@ fn default_extent(family: &Family) -> WorldRect {
     let grid =
         (0..=72).flat_map(|i| (0..=36).map(move |j| (degrees(i, -180.0), degrees(j, -90.0))));
     WorldRect::around(
-        grid.filter(|&(lon, lat)| family.contains(lon, lat) && family.shows(lon, lat))
-            .map(|(lon, lat)| family.forward(lon, lat))
+        grid.filter(|&(lon, lat)| plane.contains(lon, lat) && plane.shows(lon, lat))
+            .map(|(lon, lat)| plane.forward(lon, lat))
             .filter(|p| p.is_finite()),
     )
 }
@@ -550,7 +583,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_descriptors() {
-        assert!(Projection::from_descriptor("EPSG:28992").is_err());
+        assert!(Projection::from_descriptor("EPSG:31467").is_err());
         assert!(Projection::from_descriptor("EPSG:1").is_err());
         assert!(Projection::from_descriptor("orthographic-ish").is_err());
         let bad = Descriptor {
@@ -589,6 +622,86 @@ mod tests {
         let mercator = Projection::from_descriptor("mercator").unwrap();
         assert!(mercator.same_plane(&Projection::from_descriptor("EPSG:3857").unwrap()));
         assert_eq!(mercator.descriptor(), Descriptor::named("web-mercator"));
+    }
+
+    #[test]
+    fn national_grids_shift_datums() {
+        let close = |code: &str, lon: f64, lat: f64, x: f64, y: f64, metres: f64| {
+            let p = Projection::from_descriptor(code).unwrap();
+            let g = Geodetic::new(lon, lat);
+            let w = p.forward(g);
+            assert!(
+                (w - DVec2::new(x, y)).length() < metres,
+                "{code} {g:?}: {w} not within {metres} m of ({x}, {y})"
+            );
+            let back = p.inverse(w);
+            assert!(
+                (back.lon - lon).abs() < 1e-11 && (back.lat - lat).abs() < 1e-11,
+                "{code}: {back:?}"
+            );
+        };
+        // As PROJ 9.8 transforms them with the same EPSG Helmert
+        // transformations, from ETRS89 (WGS 84 for Britain).
+        for (code, lon, lat, x, y) in [
+            ("EPSG:28992", 6.0, 53.0, 196_139.438_6, 557_179.094_0),
+            ("EPSG:28992", 3.6, 51.45, 30_775.060_4, 386_068.515_9),
+            ("EPSG:28992", 7.0, 52.2, 265_253.172_4, 469_213.651_7),
+            ("EPSG:27700", -0.1276, 51.5072, 530_043.195_0, 180_358.208_6),
+            ("EPSG:27700", -3.19, 55.95, 325_784.748_0, 673_635.768_1),
+            ("EPSG:27700", -1.6, 60.15, 422_310.805_3, 1_140_678.863_7),
+            ("EPSG:2056", 6.14, 46.2, 2_499_760.951_7, 1_117_336.097_8),
+            ("EPSG:2056", 10.4, 46.6, 2_826_856.477_1, 1_165_252.546_2),
+        ] {
+            close(code, lon, lat, x, y, 0.005);
+        }
+        // Published reference points. The RD grid's origin at Amersfoort's
+        // tower in ETRS89, as Rijkswaterstaat's approximate formulas place
+        // it; swisstopo's worked example for its approximate formulas
+        // (46°2′38.87″N 8°43′49.79″E); both formulas are good to a metre.
+        close(
+            "EPSG:28992",
+            5.387_206_21,
+            52.155_174_40,
+            155_000.0,
+            463_000.0,
+            0.5,
+        );
+        close(
+            "EPSG:2056",
+            8.730_497_22,
+            46.044_130_56,
+            2_700_000.0,
+            1_100_000.0,
+            1.0,
+        );
+        close(
+            "EPSG:21781",
+            8.730_497_22,
+            46.044_130_56,
+            700_000.0,
+            100_000.0,
+            1.0,
+        );
+        // OSTN15, the British grid shift, as PROJ applies it: the Helmert
+        // transformation is within a few metres of it.
+        close(
+            "EPSG:27700",
+            -0.1276,
+            51.5072,
+            530_041.453_9,
+            180_358.008_5,
+            2.0,
+        );
+        close("EPSG:27700", -6.3, 49.92, 91_461.709_1, 11_068.126_9, 5.0);
+        // The grid's scale at its origin is its k0, times the ratio of the
+        // prime vertical radius to the semi-major axis (as for transverse
+        // Mercator below), up to the ellipsoids' difference.
+        let rd = Projection::from_descriptor("EPSG:28992").unwrap();
+        let origin = rd.zoom_reference().unwrap();
+        let n = 1.0 / (1.0 - wgs84::E2 * origin.lat.to_radians().sin().powi(2)).sqrt();
+        let k = rd.scale_factor(origin);
+        assert!((k - 0.999_907_9 * n).abs() < 2e-4, "{k}");
+        assert!(!rd.same_plane(&Projection::from_descriptor("EPSG:2056").unwrap()));
     }
 
     #[test]

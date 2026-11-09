@@ -90,7 +90,7 @@ we use its typed staging API, currently exposed by its `__private` feature,
 into core.wasm. Mixed scalar columns are rejected because MLT v1 cannot retain
 them; they are never silently stringified. The real extract has none.
 
-## Another coordinate reference system (`crs/`)
+## Other coordinate reference systems (`crs/`)
 
 `arctic.json` is a v8 style whose root `projection` names a coordinate
 reference system and whose sources name their `tileMatrixSet`, written
@@ -104,7 +104,16 @@ EPSG:3413 tile matrix sets (declared inline: 512-pixel tiles from
 and OpenFreeMap's planet tiles' boundaries and labels, reprojected from
 Web Mercator (the `GpuPerVertex` plan).
 
-It fetches its tiles at run time; nothing here is extracted or committed.
+`rd-new.json`, written for this repository and not in the web demo's
+list, draws on the Dutch grid, Amersfoort / RD New (EPSG:28992, on the
+Bessel datum): [PDOK](https://www.pdok.nl/)'s grey BRT Achtergrondkaart
+(© Kadaster, CC BY 4.0) in its own tile matrix set, under OpenFreeMap's
+roads and building outlines reprojected from Web Mercator, which land on
+the Kadaster's buildings to within a metre or so where the datum shift is
+right (and 100 m off where it isn't). Open it natively or with
+`cargo run --release -p orb-cli -- render web/demo/data/crs/rd-new.json -o rd.png --at 5.3872,52.1552,16`.
+
+They fetch their tiles at run time; nothing here is extracted or committed.
 GIBS imagery is NASA's and free of use restrictions; GIBS asks to be credited.
 OpenFreeMap's tiles and glyphs are as above (© OpenMapTiles, © OpenStreetMap
 contributors, ODbL).
