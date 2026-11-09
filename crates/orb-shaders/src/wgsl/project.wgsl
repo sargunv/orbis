@@ -92,8 +92,46 @@ fn tile_to_world(tile: Tile, p: vec2<f32>) -> vec2<f32> {
     if tile.warp_cells == 0u {
         return tile_affine(tile, p);
     }
+    return tile_origin(tile) + tile_local(tile, p);
+}
+
+// Tile point `p` less the tile's origin, in world units.
+fn tile_local(tile: Tile, p: vec2<f32>) -> vec2<f32> {
+    if tile.warp_cells == 0u {
+        return vec2<f32>(p.x, -p.y) * tile.scale;
+    }
     let w = warp_patch(tile, p);
-    return tile_origin(tile) + warp_sum(w.at, lagrange(w.st.x), lagrange(w.st.y));
+    return warp_sum(w.at, lagrange(w.st.x), lagrange(w.st.y));
+}
+
+// A drape placement's tile point `p` in atlas texels, the same wherever
+// its slot is, which the map's history decides. Its origin's whole quanta
+// hold the slot's corner, a multiple of the quantum, and the remainder its
+// place in the slot: the point within the slot, snapped onto the
+// rasterizer's 1/256 grid, is the same in every slot, and the corner adds
+// to it exactly. On the grid, not between its points: a point midway
+// rounds by the rasterizer's rule, which can differ by sign (a slot's edge
+// lies just off the page at row 0).
+fn drape_texel(tile: Tile, p: vec2<f32>) -> vec2<f32> {
+    let whole = vec2<f32>(tile.origin - frame.camera_whole) * frame.quantum;
+    return whole + snap_texel((tile.origin_rest - frame.camera_rest) + tile_local(tile, p));
+}
+
+// Where a drape placement's tile origin's whole quanta put it in the page,
+// in texels; the origin elsewhere. Screen positions taken from it are the
+// same in every slot, and exact: interpolated across a primitive, they
+// round alike wherever the slot is.
+fn drape_origin(tile: Tile) -> vec2<f32> {
+    if !draped_placement(tile) {
+        return vec2<f32>(0.0);
+    }
+    let whole = vec2<f32>(tile.origin - frame.camera_whole) * frame.quantum;
+    return vec2<f32>(whole.x, -whole.y);
+}
+
+// `v` on the rasterizer's 1/256 grid.
+fn snap_texel(v: vec2<f32>) -> vec2<f32> {
+    return round(v * 256.0) / 256.0;
 }
 
 // World units per data unit at `p`: the tile's scale, or a warp's local
@@ -195,14 +233,10 @@ fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     var g: Ground;
     g.on_plane = (tile.globe_flags & 1u) == 0u;
     if g.on_plane {
-        g.flat = tile_to_world(tile, p);
-        // A drape placement's positions are atlas texels, whose f32
-        // precision falls with the slot's distance from the atlas origin:
-        // snapped to the rasterizer's 1/256 grid, exact at any slot, they
-        // cover the same texels wherever the slot is, which the map's
-        // history decides.
         if draped_placement(tile) {
-            g.flat = (floor(g.flat * 256.0) + 0.5) / 256.0;
+            g.flat = drape_texel(tile, p);
+        } else {
+            g.flat = tile_to_world(tile, p);
         }
     }
     if frame.globe_amount > 0.0 && tile.globe_cells > 0u {
@@ -249,7 +283,8 @@ fn sphere_at(base: u32, cells: u32, origin: vec3<f32>, uv: vec2<f32>) -> vec3<f3
 fn tile_ground_shifted(tile: Tile, p: vec2<f32>, shift: vec2<f32>) -> Ground {
     if frame.globe_amount <= 0.0 {
         var g = tile_ground(tile, p);
-        g.flat += shift;
+        // On a drape's grid too, a texel position plus it is exact.
+        g.flat += select(shift, snap_texel(shift), draped_placement(tile));
         return g;
     }
     return tile_ground(tile, p + vec2<f32>(shift.x, -shift.y) / tile.scale);

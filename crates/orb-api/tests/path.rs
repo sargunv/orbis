@@ -491,8 +491,10 @@ fn a_terrain_that_comes_on_late_drapes_what_a_moved_map_does() {
     let north = Geodetic::new(STATION.lon, 35.70);
     let start = (north, 12.5, 0.0, 60.0);
     let end = (north, 12.9, 0.0, 60.0);
-    // Drape texels filtered into a pixel, each a step apart: two.
-    assert_within("late-terrain", both_ways(&style, start, end, 5), 2);
+    // The terrain's anisotropic filter rounds its taps by where in the
+    // atlas a slot lies, which follows the tiles that came and went: a
+    // step in a channel at a few pixels of a pitched view.
+    assert_within("late-terrain", both_ways(&style, start, end, 5), 1);
 }
 
 /// Terrain over local hills: DEM borders come from the neighbours the view
@@ -506,11 +508,7 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     );
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
-    // The drape differs from a fresh map's by a step in a channel at some
-    // pixels along draped lines' edges: their vertices and the terrain's
-    // samples round by where in the atlas their slot is, which follows
-    // the tiles that came and went.
-    assert_within("terrain", both_ways(&style, start, end, 30), 1);
+    assert_same("terrain", both_ways(&style, start, end, 30));
 }
 
 /// Houses on a hillside each stand on the ground under them: a row of
@@ -617,9 +615,8 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0);
     let end = (Geodetic::new(7.85, 45.95), 12.4, 60.0, 75.0);
     let (alps, _dem) = alps();
-    // The hillshade drapes its slopes: they round by where in the atlas
-    // their slot is, as the terrain gesture's lines do, a step in a channel
-    // at scattered pixels.
+    // Far slopes filtered anisotropically: a step at a few pixels, as
+    // the late terrain's.
     assert_within("alps", both_ways(&alps, start, end, 30), 1);
 }
 
@@ -679,8 +676,7 @@ fn every_terrain_view_fits_the_drape_atlas() {
     // Detail enough to compare: the DEM's 11 zooms overzoomed by 8.
     let start = (crest, 16.0, -120.0, 30.0);
     let end = (crest, 19.0, -167.1, 0.0);
-    // A step at scattered pixels, as in the alpine gesture.
-    assert_within("crest", both_ways(&alps, start, end, 20), 1);
+    assert_same("crest", both_ways(&alps, start, end, 20));
 }
 
 /// The Alps terrain style's view (live tiles), turned at a pitch of 72° with the

@@ -70,7 +70,7 @@ fn fill_outline_vertex(v: Pulled) -> FillOut {
     var out = fill_vertex(v);
     let ndc = out.position.xy / out.position.w;
     let size = frame.viewport * frame.pixel_ratio;
-    out.screen = vec2<f32>(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * size;
+    out.screen = vec2<f32>(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * size - drape_origin(tile_at(v.tile));
     return out;
 }
 
@@ -151,7 +151,7 @@ fn fs_fill_outline(in: FillOut) -> @location(0) vec4<f32> {
     if !clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos) {
         discard;
     }
-    let dist = length(in.screen - in.position.xy);
+    let dist = length(in.screen - (in.position.xy - drape_origin(tile_at(in.tile))));
     var color = in.color;
     if node.pattern.enabled == 1u {
         color = fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);

@@ -200,7 +200,10 @@ fn drape_sample(in: TerrainOut, slot_px: f32) -> DrapeSample {
     let room = min(p, vec2<f32>(slot_px) - p) - half;
     let need = 0.5 * max(abs(dx), abs(dy));
     let fit = min(1.0, min(room.x / max(need.x, 1e-6), room.y / max(need.y, 1e-6)));
-    return DrapeSample(p, dx * fit, dy * fit);
+    // On a 1/512-texel grid, finer than samplers resolve: added to any
+    // slot's corner in a page of up to 32768 texels a side, exact in f32,
+    // so where a tile's slot lies never moves its samples.
+    return DrapeSample(round(p * 512.0) / 512.0, dx * fit, dy * fit);
 }
 
 // Colour stack `stack`'s slot colour at `at`, none for NO_STACK.
