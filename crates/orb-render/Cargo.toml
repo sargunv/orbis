@@ -13,6 +13,10 @@ orb-hal.workspace = true
 orb-layout.workspace = true
 orb-shaders.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Natively, wgpu makes shader modules from the build's naga modules.
+orb-shaders = { workspace = true, features = ["ir"] }
+
 [dev-dependencies]
 orb-hal-wgpu.workspace = true
 orb-host.workspace = true

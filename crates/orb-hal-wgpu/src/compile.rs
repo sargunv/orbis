@@ -31,6 +31,9 @@ use crate::convert;
 pub(crate) struct Module {
     pub(crate) label: String,
     pub(crate) source: String,
+    /// `source` as a naga module, postcard-encoded.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    ir: Option<&'static [u8]>,
     made: OnceLock<wgpu::ShaderModule>,
     /// The browser's module for async compiles.
     #[cfg(target_arch = "wasm32")]
@@ -38,10 +41,11 @@ pub(crate) struct Module {
 }
 
 impl Module {
-    pub(crate) fn new(label: &str, source: String) -> Shared<Self> {
+    pub(crate) fn new(label: &str, source: String, ir: Option<&'static [u8]>) -> Shared<Self> {
         Shared::new(Self {
             label: label.to_owned(),
             source,
+            ir,
             made: OnceLock::new(),
             #[cfg(target_arch = "wasm32")]
             raw: Default::default(),
@@ -52,9 +56,23 @@ impl Module {
         self.made.get_or_init(|| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(&self.label),
-                source: wgpu::ShaderSource::Wgsl(self.source.as_str().into()),
+                source: self.naga_source(),
             })
         })
+    }
+
+    /// The module to make: natively the build's naga module when there is
+    /// one, which skips parsing the WGSL (most of a module's cost), and the
+    /// WGSL otherwise.
+    fn naga_source(&self) -> wgpu::ShaderSource<'_> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(module) = self
+            .ir
+            .and_then(|bytes| postcard::from_bytes::<naga::Module>(bytes).ok())
+        {
+            return wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module));
+        }
+        wgpu::ShaderSource::Wgsl(self.source.as_str().into())
     }
 }
 

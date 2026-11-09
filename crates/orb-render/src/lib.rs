@@ -514,10 +514,7 @@ impl Renderer {
         });
         // The cull pipeline first: nothing draws without it.
         let cull = {
-            let module = gpu.create_shader_module(&ShaderModuleDesc {
-                label: CULL_SHADER.label,
-                source: CULL_SHADER.source().into(),
-            });
+            let module = shader_module(gpu, &CULL_SHADER);
             let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
                 label: CULL_SHADER.label,
                 bind_group_layouts: &[cull_layout],
@@ -2186,6 +2183,7 @@ fn shader_module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
     gpu.create_shader_module(&ShaderModuleDesc {
         label: shader.label,
         source: shader.source().into(),
+        ir: shader.ir(),
     })
 }
 

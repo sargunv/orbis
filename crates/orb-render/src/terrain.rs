@@ -274,10 +274,7 @@ impl Terrain {
             label: "drape clear",
             entries: &[uniform(0, vs), storage(1)],
         });
-        let drape_module = gpu.create_shader_module(&ShaderModuleDesc {
-            label: DRAPE_SHADER.label,
-            source: DRAPE_SHADER.source().into(),
-        });
+        let drape_module = crate::shader_module(gpu, &DRAPE_SHADER);
         let clear = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: DRAPE_SHADER.label,
             bind_group_layouts: &[clear_layout],
@@ -823,10 +820,7 @@ impl Terrain {
         } else {
             (&TERRAIN_SHADER, &[self.layout, self.stack_layout])
         };
-        let module = gpu.create_shader_module(&ShaderModuleDesc {
-            label: shader.label,
-            source: shader.source().into(),
-        });
+        let module = crate::shader_module(gpu, shader);
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: shader.label,
             bind_group_layouts: layouts,
@@ -1150,10 +1144,7 @@ impl Terrain {
         if let Some(pipeline) = self.occlusion_pipeline {
             return pipeline;
         }
-        let module = gpu.create_shader_module(&ShaderModuleDesc {
-            label: TERRAIN_SHADER.label,
-            source: TERRAIN_SHADER.source().into(),
-        });
+        let module = crate::shader_module(gpu, &TERRAIN_SHADER);
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: "terrain depth",
             bind_group_layouts: &[self.layout, self.stack_layout],

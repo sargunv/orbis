@@ -25,6 +25,10 @@ orb-host.workspace = true
 sha2.workspace = true
 # Compile threads pop wgpu's (immediately ready) error scopes.
 pollster.workspace = true
+# Shader modules from the build's naga modules (`ShaderModuleDesc::ir`).
+naga = { workspace = true, features = ["deserialize"] }
+postcard.workspace = true
+wgpu = { workspace = true, features = ["naga-ir"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 wgpu = { workspace = true, features = ["metal"] }

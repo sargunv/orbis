@@ -6,11 +6,17 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# Each shader's naga module, parsed at build time (`Shader::ir`).
+ir = []
+
 [build-dependencies]
-naga.workspace = true
+naga = { workspace = true, features = ["serialize"] }
+postcard.workspace = true
 
 [dev-dependencies]
-naga.workspace = true
+naga = { workspace = true, features = ["serialize", "deserialize"] }
+postcard.workspace = true
 
 [lints]
 workspace = true

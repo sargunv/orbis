@@ -16,6 +16,29 @@ macro_rules! wgsl {
 mod catalog;
 pub use catalog::*;
 
+#[cfg(feature = "ir")]
+mod ir {
+    include!(concat!(env!("OUT_DIR"), "/ir.rs"));
+}
+
+impl Shader {
+    /// Its naga module, which the build script parsed from
+    /// [`source`](Self::source), postcard-encoded (the `ir` feature):
+    /// devices that compile with naga make the module from it rather than
+    /// parse the WGSL.
+    pub fn ir(&self) -> Option<&'static [u8]> {
+        #[cfg(feature = "ir")]
+        {
+            ir::IR
+                .iter()
+                .find(|(label, _)| *label == self.label)
+                .map(|&(_, bytes)| bytes)
+        }
+        #[cfg(not(feature = "ir"))]
+        None
+    }
+}
+
 /// The scene tables' layouts, reflected from `types.wgsl`: each struct's
 /// words and each member's first word.
 pub mod layout {
@@ -120,6 +143,31 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Each build-made module is the one the shader's WGSL parses to, and
+    /// decodes to a valid module.
+    #[cfg(feature = "ir")]
+    #[test]
+    fn modules_are_their_sources() {
+        for shader in SHADERS {
+            let ir = shader
+                .ir()
+                .unwrap_or_else(|| panic!("{}: no module", shader.label));
+            let parsed = validate(shader);
+            assert!(
+                postcard::to_allocvec(&parsed).unwrap() == ir,
+                "{}: the build's module differs",
+                shader.label
+            );
+            let made: naga::Module = postcard::from_bytes(ir).expect("decodes");
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::CLIP_DISTANCES,
+            )
+            .validate(&made)
+            .unwrap_or_else(|e| panic!("{}: {e}", shader.label));
         }
     }
 }

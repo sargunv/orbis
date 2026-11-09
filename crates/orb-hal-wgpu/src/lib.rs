@@ -910,7 +910,7 @@ impl Gpu for WgpuGpu {
         let source = desc.source.to_string();
         ShaderModuleId(
             self.shader_modules
-                .insert(compile::Module::new(desc.label, source)),
+                .insert(compile::Module::new(desc.label, source, desc.ir)),
         )
     }
 
