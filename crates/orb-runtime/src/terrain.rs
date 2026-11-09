@@ -150,6 +150,11 @@ pub(crate) struct Terrain {
     /// these alone (and, while one loads, its nearest ready ancestor), not
     /// whatever else the pyramid keeps from earlier views.
     wanted: Vec<TileIndex>,
+    /// The other DEM tiles whose ranges culled tiles of the cover, sorted:
+    /// kept so that the next cover culls those tiles alike, and read for
+    /// their ranges alone. Which these are depends on the ranges held
+    /// before, so nothing drawn reads them: no elevation, no border.
+    culling: Vec<TileIndex>,
     /// Per wanted DEM tile, its layer and the neighbours' layers its border
     /// was last padded from ([`pads`](Self::pads)).
     padded: HashMap<TileIndex, (u32, [Option<u32>; 8])>,
@@ -188,6 +193,7 @@ impl Terrain {
             generation: 0,
             elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
             wanted: Vec::new(),
+            culling: Vec::new(),
             padded: HashMap::new(),
             stale: true,
             revision: 0,
@@ -225,9 +231,10 @@ impl Terrain {
     ///
     /// The cover culls tiles by the elevations held, and what is held
     /// follows from the cover, so a DEM tile whose range culls a tile is
-    /// wanted too. Otherwise a tile its own DEM culls lets go of that DEM,
-    /// comes back under its ancestor's wider range and asks for it again:
-    /// a view at rest would flip between two covers forever.
+    /// kept too ([`culling`](Self::culling)). Otherwise a tile its own DEM
+    /// culls lets go of that DEM, comes back under its ancestor's wider
+    /// range and asks for it again: a view at rest would flip between two
+    /// covers forever.
     fn update(&mut self, view: &View, tms: &TileMatrixSet, budget: usize) -> Vec<TileIndex> {
         let consulted = Consulted {
             elevation: &self.elevation,
@@ -287,14 +294,23 @@ impl Terrain {
                     .map(|index| CoveredTile { index, wrap: 0 }),
             );
         }
-        wanted.extend(culled_by);
         wanted.sort();
         wanted.dedup();
         let indices: Vec<TileIndex> = wanted.iter().map(|t| t.index).collect();
-        if indices != self.wanted {
+        let mut culling: Vec<TileIndex> = (culled_by.iter())
+            .map(|t| t.index)
+            .filter(|t| indices.binary_search(t).is_err())
+            .collect();
+        culling.sort();
+        culling.dedup();
+        if indices != self.wanted || culling != self.culling {
             self.wanted = indices;
+            self.culling = culling;
             self.stale = true;
         }
+        wanted.extend(culled_by);
+        wanted.sort();
+        wanted.dedup();
         let update = self.pyramid.update(&wanted);
         update.request
     }
@@ -443,28 +459,36 @@ impl Terrain {
     /// when they change.
     pub(crate) fn elevation(&mut self, tms: &TileMatrixSet) -> &Arc<TerrainElevation> {
         if std::mem::take(&mut self.stale) {
-            let mut dems = HashMap::new();
-            for &tile in &self.wanted {
-                let mut at = Some(tile);
-                while let Some(t) = at {
-                    if let Some(dem) = self.pyramid.get(t) {
-                        dems.insert(t, Arc::clone(&dem.dem));
-                        break;
+            // Each tile, or while it loads its nearest ready ancestor.
+            let held = |tiles: &[TileIndex]| {
+                let mut dems = HashMap::new();
+                for &tile in tiles {
+                    let mut at = Some(tile);
+                    while let Some(t) = at {
+                        if let Some(dem) = self.pyramid.get(t) {
+                            dems.insert(t, Arc::clone(&dem.dem));
+                            break;
+                        }
+                        at = t.parent().filter(|_| t.z > self.min_zoom);
                     }
-                    at = t.parent().filter(|_| t.z > self.min_zoom);
                 }
-            }
+                dems
+            };
+            let dems = held(&self.wanted);
+            let mut culling = held(&self.culling);
+            culling.retain(|t, _| !dems.contains_key(t));
+            let same = |a: &HashMap<TileIndex, Arc<Dem>>, b: &HashMap<TileIndex, Arc<Dem>>| {
+                a.len() == b.len()
+                    && a.iter()
+                        .all(|(t, d)| b.get(t).is_some_and(|h| Arc::ptr_eq(h, d)))
+            };
             // The same tiles as before: the same elevations, no new revision.
-            let held = &self.elevation.dems;
-            if dems.len() == held.len()
-                && dems
-                    .iter()
-                    .all(|(t, d)| held.get(t).is_some_and(|h| Arc::ptr_eq(h, d)))
-            {
+            if same(&dems, &self.elevation.dems) && same(&culling, &self.elevation.culling) {
                 return &self.elevation;
             }
             let mut elevation = TerrainElevation::empty(tms.clone(), self.exaggeration);
             elevation.dems = dems;
+            elevation.culling = culling;
             elevation.delta = self.delta;
             elevation.min_zoom = self.min_zoom;
             elevation.max_zoom = self.max_zoom;
@@ -801,6 +825,9 @@ pub struct TerrainElevation {
     min_zoom: u8,
     max_zoom: u8,
     dems: HashMap<TileIndex, Arc<Dem>>,
+    /// DEM tiles the cover reads ranges from and nothing else
+    /// (the terrain's `culling`).
+    culling: HashMap<TileIndex, Arc<Dem>>,
     /// The pyramid, encoded once for every reader of this snapshot.
     encoded: OnceLock<Arc<[u8]>>,
 }
@@ -814,13 +841,16 @@ impl TerrainElevation {
             min_zoom: 0,
             max_zoom: 0,
             dems: HashMap::new(),
+            culling: HashMap::new(),
             encoded: OnceLock::new(),
         }
     }
 
     /// Bytes of DEM data held.
     pub fn bytes(&self) -> usize {
-        self.dems.values().map(|d| d.grid.bytes()).sum()
+        (self.dems.values().chain(self.culling.values()))
+            .map(|d| d.grid.bytes())
+            .sum()
     }
 
     /// The tile at zoom `z` containing a world position in the primary
@@ -862,9 +892,17 @@ impl TerrainElevation {
 
     /// The DEM tile `tile` reads, or its nearest loaded ancestor.
     fn dem_for(&self, tile: TileIndex) -> Option<(TileIndex, &DemGrid)> {
+        self.held_for(tile, false)
+    }
+
+    /// [`dem_for`](Self::dem_for) among the tiles held, with `culling`
+    /// those held for their ranges too.
+    fn held_for(&self, tile: TileIndex, culling: bool) -> Option<(TileIndex, &DemGrid)> {
         let mut at = scaled(tile, self.dem_zoom(tile.z)?);
         loop {
-            if let Some(dem) = self.dems.get(&at) {
+            let dem =
+                (self.dems.get(&at)).or_else(|| culling.then(|| self.culling.get(&at)).flatten());
+            if let Some(dem) = dem {
                 return Some((at, &dem.grid));
             }
             if at.z <= self.min_zoom {
@@ -1046,7 +1084,7 @@ impl TerrainElevation {
     /// DEM's range of elevations.
     fn range_of(&self, rect: WorldRect, z: u8) -> Option<(TileIndex, TileIndex, (f64, f64))> {
         let (tile, _) = self.locate(self.wrapped(rect.center()), z)?;
-        let (dem, grid) = self.dem_for(tile)?;
+        let (dem, grid) = self.held_for(tile, true)?;
         let e = self.exaggeration;
         Some((
             tile,
