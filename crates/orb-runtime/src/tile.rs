@@ -245,71 +245,145 @@ fn features(
     features
 }
 
-/// A node's geometry over `features`. `bend` cuts fills for a tile drawn
-/// through a curved warp or on a globe, and extends them to the poles.
-///
-/// An overzoom slice's line node lays out along its data tile's lines,
-/// `overscaled` (`Layer::overscaled_lines`).
-fn layout(
-    layer: &Layer,
-    features: &[u32],
-    style_layer: &orb_style::Layer,
-    (family, overscaled): (Family, Option<(&Layer, orb_tile::Ancestor)>),
-    zoom: f64,
-    bend: Option<orb_layout::fill::Bend>,
-    units_per_metre: f64,
-) -> Mesh {
-    let l = style_layer;
-    match l.ty {
-        LayerType::Fill => match family {
-            Family::FillOutline => fill::outline(layer, features),
-            _ => fill::layout_subdivided(layer, features, bend),
-        },
-        LayerType::FillExtrusion => {
-            let rounding = f64::from(l.get(orb_style::EXTRUSION_ROUNDED_CORNER).evaluate(zoom))
-                * units_per_metre;
-            extrusion::layout_in_extent(layer, features, 8192, rounding, bend)
-        }
-        LayerType::Circle => {
-            let key = l.get(orb_style::CIRCLE_SORT_KEY).bind(layer);
-            point::layout_sorted(layer, features, |feature| {
-                key.evaluate(zoom, feature as usize)
-            })
-        }
-        LayerType::Heatmap => point::layout(layer, features),
-        LayerType::Line => {
-            let join = l.get(orb_style::LINE_JOIN).bind(layer);
-            let cap = l.get(orb_style::LINE_CAP).bind(layer);
-            let miter_limit = l.get(orb_style::LINE_MITER_LIMIT).bind(layer);
-            let round_limit = l.get(orb_style::LINE_ROUND_LIMIT).bind(layer);
-            let params = |feature: u32| line::LineLayout {
-                join: match join.evaluate(zoom, feature as usize) {
-                    orb_style::LineJoin::Bevel => line::LineJoin::Bevel,
-                    orb_style::LineJoin::Round => line::LineJoin::Round,
-                    orb_style::LineJoin::Miter => line::LineJoin::Miter,
-                },
-                cap: match cap.evaluate(zoom, feature as usize) {
-                    orb_style::LineCap::Butt => line::LineCap::Butt,
-                    orb_style::LineCap::Round => line::LineCap::Round,
-                    orb_style::LineCap::Square => line::LineCap::Square,
-                },
-                miter_limit: miter_limit.evaluate(zoom, feature as usize),
-                round_limit: round_limit.evaluate(zoom, feature as usize),
-            };
-            match overscaled {
-                Some((data, ancestor)) => {
-                    let data_features: Vec<u32> = features
-                        .iter()
-                        .map(|&f| layer.data_feature(f as usize))
-                        .collect();
-                    let params = |slot: usize| params(features[slot]);
-                    let cells = bend.map(|b| b.cells);
-                    line::layout_overscaled(data, &data_features, params, ancestor, cells)
+/// What a node's geometry depends on besides its tile layer and features.
+/// Two nodes with equal shapes over the same features lay out the same
+/// mesh, as a road's casing and its fill do, so a tile lays it out once
+/// ([`Laid`]).
+#[derive(Debug, PartialEq)]
+enum Shape<'f> {
+    /// `bend` cuts fills for a tile drawn through a curved warp or on a
+    /// globe, and extends them to the poles.
+    Fill(Option<orb_layout::fill::Bend>),
+    FillOutline,
+    Extrusion {
+        rounding: f64,
+        bend: Option<orb_layout::fill::Bend>,
+    },
+    /// Each feature's sort key, by slot.
+    Circle(Vec<Option<f32>>),
+    Heatmap,
+    Line {
+        /// Each feature's layout properties, by slot.
+        params: Vec<line::LineLayout>,
+        /// The data tile's lines an overzoom slice's lay out along
+        /// (`Layer::overscaled_lines`), and the bend's grid.
+        overscaled: Option<(ByAddress<'f>, orb_tile::Ancestor, Option<u32>)>,
+    },
+}
+
+/// A layer equal only to itself.
+#[derive(Debug)]
+struct ByAddress<'f>(&'f Layer);
+
+impl PartialEq for ByAddress<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+impl<'f> Shape<'f> {
+    fn of(
+        layer: &Layer,
+        features: &[u32],
+        style_layer: &orb_style::Layer,
+        (family, overscaled): (Family, Option<(&'f Layer, orb_tile::Ancestor)>),
+        zoom: f64,
+        bend: Option<orb_layout::fill::Bend>,
+        units_per_metre: f64,
+    ) -> Self {
+        let l = style_layer;
+        match l.ty {
+            LayerType::Fill => match family {
+                Family::FillOutline => Self::FillOutline,
+                _ => Self::Fill(bend),
+            },
+            LayerType::FillExtrusion => Self::Extrusion {
+                rounding: f64::from(l.get(orb_style::EXTRUSION_ROUNDED_CORNER).evaluate(zoom))
+                    * units_per_metre,
+                bend,
+            },
+            LayerType::Circle => {
+                let key = l.get(orb_style::CIRCLE_SORT_KEY).bind(layer);
+                Self::Circle(
+                    (features.iter())
+                        .map(|&f| key.evaluate(zoom, f as usize))
+                        .collect(),
+                )
+            }
+            LayerType::Heatmap => Self::Heatmap,
+            LayerType::Line => {
+                let join = l.get(orb_style::LINE_JOIN).bind(layer);
+                let cap = l.get(orb_style::LINE_CAP).bind(layer);
+                let miter_limit = l.get(orb_style::LINE_MITER_LIMIT).bind(layer);
+                let round_limit = l.get(orb_style::LINE_ROUND_LIMIT).bind(layer);
+                let params = |feature: usize| line::LineLayout {
+                    join: match join.evaluate(zoom, feature) {
+                        orb_style::LineJoin::Bevel => line::LineJoin::Bevel,
+                        orb_style::LineJoin::Round => line::LineJoin::Round,
+                        orb_style::LineJoin::Miter => line::LineJoin::Miter,
+                    },
+                    cap: match cap.evaluate(zoom, feature) {
+                        orb_style::LineCap::Butt => line::LineCap::Butt,
+                        orb_style::LineCap::Round => line::LineCap::Round,
+                        orb_style::LineCap::Square => line::LineCap::Square,
+                    },
+                    miter_limit: miter_limit.evaluate(zoom, feature),
+                    round_limit: round_limit.evaluate(zoom, feature),
+                };
+                Self::Line {
+                    params: features.iter().map(|&f| params(f as usize)).collect(),
+                    overscaled: overscaled
+                        .map(|(data, ancestor)| (ByAddress(data), ancestor, bend.map(|b| b.cells))),
                 }
-                None => line::layout_in_extent(layer, features, params, 8192),
+            }
+            _ => unreachable!("vector nodes have feature selections"),
+        }
+    }
+
+    /// The geometry of `features` of `layer` in this shape.
+    fn layout(&self, layer: &Layer, features: &[u32]) -> Mesh {
+        match self {
+            Self::Fill(bend) => fill::layout_subdivided(layer, features, *bend),
+            Self::FillOutline => fill::outline(layer, features),
+            Self::Extrusion { rounding, bend } => {
+                extrusion::layout_in_extent(layer, features, 8192, *rounding, *bend)
+            }
+            Self::Circle(keys) => point::layout_sorted(layer, features, |slot| keys[slot]),
+            Self::Heatmap => point::layout(layer, features),
+            Self::Line { params, overscaled } => {
+                let params = |slot: usize| params[slot];
+                match overscaled {
+                    Some((data, ancestor, cells)) => {
+                        let data_features: Vec<u32> = (features.iter())
+                            .map(|&f| layer.data_feature(f as usize))
+                            .collect();
+                        line::layout_overscaled(data.0, &data_features, params, *ancestor, *cells)
+                    }
+                    None => line::layout_in_extent(layer, features, params, 8192),
+                }
             }
         }
-        _ => unreachable!("vector nodes have feature selections"),
+    }
+}
+
+/// The meshes a tile has laid out, by tile layer, features and shape, for
+/// nodes that lay out alike.
+#[derive(Default)]
+struct Laid<'f>(Vec<(&'f Layer, Vec<u32>, Shape<'f>, Mesh)>);
+
+impl<'f> Laid<'f> {
+    /// The mesh of `features` of `layer` in `shape`: laid out, or a copy
+    /// of an equal node's.
+    fn mesh(&mut self, layer: &'f Layer, features: &[u32], shape: Shape<'f>) -> Mesh {
+        let earlier = self.0.iter().find(|(l, f, s, _)| {
+            std::ptr::eq(*l, layer) && *s == shape && f.as_slice() == features
+        });
+        if let Some((_, _, _, mesh)) = earlier {
+            return mesh.clone();
+        }
+        let mesh = shape.layout(layer, features);
+        self.0.push((layer, features.to_vec(), shape, mesh.clone()));
+        mesh
     }
 }
 
@@ -490,6 +564,7 @@ pub(crate) fn build(
     symbols: Symbols<'_>,
 ) -> Result<TileBuild, Vec<String>> {
     let mut groups = Groups::default();
+    let mut laid = Laid::default();
     let mut build = TileBuild {
         revision: plan.revision,
         rows_only: select.rows_only,
@@ -596,7 +671,7 @@ pub(crate) fn build(
                     Mesh::default()
                 }
                 _ => {
-                    let mesh = layout(
+                    let shape = Shape::of(
                         layer,
                         &features,
                         style_layer,
@@ -605,6 +680,11 @@ pub(crate) fn build(
                         bend,
                         units_per_metre,
                     );
+                    // A layer of pieces is this node's alone.
+                    let mesh = match origin {
+                        Some(_) => shape.layout(layer, &features),
+                        None => laid.mesh(tile_layer, &features, shape),
+                    };
                     if mesh.is_empty() {
                         continue;
                     }

@@ -70,11 +70,15 @@ pub enum LineCap {
 /// Lays out line strings and every polygon ring among `features` (indices
 /// into `layer`), skipping points. Each feature's slot is its position in
 /// `features`. Polygon rings are closed and have no caps. `parameters` is
-/// called once per non-point feature with its index in `layer`.
+/// called with the slot of each non-point feature.
 ///
 /// # Panics
 /// Panics if the extent plus clipping margin cannot fit signed i16 positions.
-pub fn layout(layer: &Layer, features: &[u32], parameters: impl FnMut(u32) -> LineLayout) -> Mesh {
+pub fn layout(
+    layer: &Layer,
+    features: &[u32],
+    parameters: impl FnMut(usize) -> LineLayout,
+) -> Mesh {
     layout_in_extent(layer, features, parameters, layer.extent())
 }
 
@@ -84,7 +88,7 @@ pub fn layout(layer: &Layer, features: &[u32], parameters: impl FnMut(u32) -> Li
 pub fn layout_in_extent(
     layer: &Layer,
     features: &[u32],
-    mut parameters: impl FnMut(u32) -> LineLayout,
+    parameters: impl FnMut(usize) -> LineLayout,
     output_extent: u32,
 ) -> Mesh {
     let extent = i32::try_from(output_extent).expect("extent fits i32");
@@ -96,13 +100,7 @@ pub fn layout_in_extent(
         overscale: 1.0,
         step: None,
     };
-    lay_out(
-        layer,
-        features,
-        |slot| parameters(features[slot]),
-        place,
-        &frame,
-    )
+    lay_out(layer, features, parameters, place, &frame)
 }
 
 /// Lays out an overzoom slice's lines, as GL JS lays out the data tile it
@@ -884,24 +882,24 @@ mod tests {
     }
 
     #[test]
-    fn parameters_use_source_indices_while_vertices_keep_selection_slots() {
+    fn parameters_and_vertices_follow_selection_slots() {
         let mut b = LayerBuilder::new("roads", 4096);
         for y in [10, 20] {
             feature(&mut b, GeometryType::LineString, &[&[[10, y], [20, y]]]);
         }
         let mut evaluated = Vec::new();
-        let mesh = layout(&b.finish(), &[1, 0], |feature| {
-            evaluated.push(feature);
+        let mesh = layout(&b.finish(), &[1, 0], |slot| {
+            evaluated.push(slot);
             params(
                 LineJoin::Miter,
-                if feature == 1 {
+                if slot == 0 {
                     LineCap::Round
                 } else {
                     LineCap::Butt
                 },
             )
         });
-        assert_eq!(evaluated, [1, 0]);
+        assert_eq!(evaluated, [0, 1]);
         counts(&mesh, 12, 8);
         let vertices = mesh.vertices.as_chunks::<STRIDE>().0;
         assert!(vertices[..8].iter().all(|v| v[3] == 0));

@@ -20,10 +20,11 @@ pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
 
 /// The sorted form keeps different feature keys in separate chunks so the
 /// scene can merge their order across tiles without changing geometry.
+/// `sort_key` is called with each feature's slot.
 pub fn layout_sorted(
     layer: &Layer,
     features: &[u32],
-    sort_key: impl Fn(u32) -> Option<f32>,
+    sort_key: impl Fn(usize) -> Option<f32>,
 ) -> Mesh {
     let extent = i32::try_from(layer.extent()).expect("extent fits i32");
     assert!(
@@ -32,7 +33,7 @@ pub fn layout_sorted(
     );
     let mut builder = MeshBuilder::new(STRIDE);
     for (slot, &feature) in features.iter().enumerate() {
-        builder.set_sort_key(sort_key(feature));
+        builder.set_sort_key(sort_key(slot));
         let polygon = layer.geometry_type(feature as usize) == GeometryType::Polygon;
         for part in layer.geometry(feature as usize).parts() {
             for ring in part.rings() {
