@@ -11,7 +11,10 @@ support new features, and perform better than the existing renderers
 tile processing and rendering speed, in  2D and 3D, while drawing v8
 styles correctly. Scope is the v8 spec plus what it could reasonably grow
 into: projections, coordinate reference systems and tile matrix sets. Features
-beyond that don't belong. The C, Kotlin and Swift bindings
+beyond that don't belong. Anything a style can use beyond the approved spec
+(style-spec proposals, our own extensions, coordinate reference systems and
+tile matrix sets) sits behind the preview switch (#134) and is off unless a
+map opts in, so a style never depends on it by accident. The C, Kotlin and Swift bindings
 (`orb-capi`, Diplomat) will be replaced by
 [maplibre-native-ffi](https://github.com/maplibre/maplibre-native-ffi)'s C
 API, so keep them building and don't grow them.
