@@ -27,6 +27,12 @@ export function setRequestTransform(fn?: RequestTransform): void {
   for (const port of ports) port.postMessage({ requestHook: fn !== undefined });
 }
 
+/** What the transform makes of a request for `url`; null when it refuses. */
+export async function transformed(url: string): Promise<RequestParameters | null> {
+  const result = await transform?.(url);
+  return result === undefined ? { url } : result;
+}
+
 /** A wasm module's `setRequestHook`, kept up to date. */
 export function connectModule(set: SetHook): void {
   hooks.add(set);

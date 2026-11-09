@@ -34,6 +34,14 @@ pub fn set_request_hook(hook: Option<js_sys::Function>) {
     crate::host::set_request_hook(hook);
 }
 
+/// What the page fetched ahead of its maps: `take(url)` answers a
+/// promise of the response for `url`, once, or `undefined`
+/// (`web/src/preload.ts`). The page's whole-body fetches take theirs.
+#[wasm_bindgen(js_name = setPreloads)]
+pub fn set_preloads(take: Option<js_sys::Function>) {
+    crate::host::set_preloads(take);
+}
+
 /// Reads the regions again, after another context changed them.
 #[wasm_bindgen(js_name = reloadRegions)]
 pub fn reload_regions() {

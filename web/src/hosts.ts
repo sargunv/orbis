@@ -1,7 +1,8 @@
 // The wasm map on the page's thread, with its job workers and
 // placement worker (workers.ts), and its recovery from a lost GPU.
 
-import init, { createMap as createCoreMap, reloadRegions, setRequestHook, type OrbisMap as Core } from "../pkg/core.js";
+import init, { createMap as createCoreMap, reloadRegions, setPreloads, setRequestHook, type OrbisMap as Core } from "../pkg/core.js";
+import { takePreload } from "./preload.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
 import { spawnJob, spawnPlacement } from "./workers.ts";
@@ -69,6 +70,7 @@ export async function startMain(compiling: Promise<WebAssembly.Module>, canvas: 
     module = await compiling;
     await init({ module_or_path: module });
     connectModule(setRequestHook);
+    setPreloads(takePreload);
     core = await createCoreMap(canvas, style, options, callbacks.wake, ports.length,
       (worker: number, message: unknown) => ports[worker].postMessage(message),
       (message: unknown, transfer: Transferable[]) => placement.port.postMessage(message, transfer));

@@ -102,6 +102,27 @@ thread_local! {
     static REQUEST_HOOK: std::cell::RefCell<Option<js_sys::Function>> = const {
         std::cell::RefCell::new(None)
     };
+    static PRELOADS: std::cell::RefCell<Option<js_sys::Function>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// What this JS context fetched ahead of its maps (`web/src/preload.ts`):
+/// `take(url)` answers a promise of the response to a whole-body request
+/// for `url`, once, or `undefined`.
+pub(crate) fn set_preloads(take: Option<js_sys::Function>) {
+    PRELOADS.with(|p| *p.borrow_mut() = take);
+}
+
+/// The response the page fetched ahead for `url`, if it did and it came.
+async fn preloaded(url: &str) -> Option<web_sys::Response> {
+    let take = PRELOADS.with(|p| p.borrow().clone())?;
+    let promise = take
+        .call1(&JsValue::NULL, &url.into())
+        .ok()?
+        .dyn_into::<js_sys::Promise>()
+        .ok()?;
+    JsFuture::from(promise).await.ok()?.dyn_into().ok()
 }
 
 /// Transforms every request this JS context's fetches make (GL JS
@@ -112,6 +133,19 @@ pub(crate) fn set_request_hook(hook: Option<js_sys::Function>) {
 }
 
 async fn fetch_body(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
+    let early = match range {
+        None => preloaded(url).await,
+        Some(_) => None,
+    };
+    let response = match early {
+        Some(response) => response,
+        None => request(url, range).await?,
+    };
+    read(response, range).await
+}
+
+/// Fetches `url` (its `range`), through the request hook.
+async fn request(url: &str, range: Option<(u64, u64)>) -> Result<web_sys::Response, FetchError> {
     let network = |e: JsValue| FetchError::Network(format!("{e:?}"));
     let global = js_sys::global();
     let fetch = Reflect::get(&global, &"fetch".into())
@@ -157,11 +191,19 @@ async fn fetch_body(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, Fet
         .map_err(network)?
         .dyn_into::<js_sys::Promise>()
         .map_err(network)?;
-    let response: web_sys::Response = JsFuture::from(promise)
+    JsFuture::from(promise)
         .await
         .map_err(network)?
         .dyn_into()
-        .map_err(network)?;
+        .map_err(network)
+}
+
+/// A response's body, checked against its status and `range`.
+async fn read(
+    response: web_sys::Response,
+    range: Option<(u64, u64)>,
+) -> Result<Vec<u8>, FetchError> {
+    let network = |e: JsValue| FetchError::Network(format!("{e:?}"));
     let stream = response.body();
     let valid = match response.status() {
         404 => Err(FetchError::NotFound),

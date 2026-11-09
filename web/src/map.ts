@@ -8,6 +8,7 @@ import { frameLoop } from "./frames.ts";
 import { startMain, type Core, type Host } from "./hosts.ts";
 import { Videos, type VideoEventObject } from "./videos.ts";
 import { attachInput } from "./input.ts";
+import { preloadStyle } from "./preload.ts";
 import { defaultJobWorkers } from "./workers.ts";
 import { transaction, type FeatureTarget, type Transaction } from "./transaction.ts";
 import type {
@@ -551,7 +552,9 @@ async function noWebgpu(): Promise<string | undefined> {
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on.
  * Rejects, saying why, where the browser has no WebGPU. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
-  // core.wasm downloads and compiles while WebGPU is checked.
+  // The style's first fetches start, and core.wasm downloads and compiles,
+  // while WebGPU is checked.
+  preloadStyle(options.style, options.pixelRatio ?? devicePixelRatio);
   const module = WebAssembly.compileStreaming(fetch(CORE));
   module.catch(() => {});
   const missing = await noWebgpu();
