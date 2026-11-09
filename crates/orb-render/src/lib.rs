@@ -211,10 +211,9 @@ pub struct Renderer {
     pipelines_stale: bool,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
-    /// Nodes the main bundle left out, waiting for a pipeline, and draped
-    /// nodes a drape bundle left out.
+    /// Nodes the main bundle left out, waiting for a pipeline (draped
+    /// nodes a drape bundle left out: [`DrapeZoom::waiting`]).
     waiting: u32,
-    drape_waiting: u32,
     node_uniforms: BufferId,
     node_stride: u64,
     /// The node uniforms as written, and the nodes changed since the last
@@ -562,7 +561,6 @@ impl Renderer {
             pipelines_stale: false,
             made_seen: 0,
             waiting: 0,
-            drape_waiting: 0,
             node_uniforms,
             node_stride,
             node_words: vec![0; (node_stride / 4) as usize * capacity.nodes as usize],
@@ -1004,6 +1002,7 @@ impl Renderer {
             written: Vec::new(),
             scene: None,
             bundle: None,
+            waiting: 0,
         });
         level.written.resize(self.nodes.len(), None);
         let before = &level.written[node as usize];
@@ -1574,14 +1573,17 @@ impl Renderer {
         if compiling.made != self.made_seen {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
-            if self.waiting > 0 || self.drape_waiting > 0 {
+            let drape_waiting = self.drape_zooms.values().any(|z| z.waiting > 0);
+            if self.waiting > 0 || drape_waiting {
                 self.invalidate_bundle(gpu);
             }
-            if self.drape_waiting > 0
-                && let Some(terrain) = self.terrain.as_mut()
-            {
-                // Slots drawn without them lack those layers.
+            if drape_waiting && let Some(terrain) = self.terrain.as_mut() {
+                // Slots drawn without them lack those layers, at whichever
+                // zoom: all draw again, each zoom's bundle recorded anew.
                 terrain.redraw_all();
+                for zoom in self.drape_zooms.values_mut() {
+                    zoom.waiting = 0;
+                }
             }
         }
         if compiling.pending > 0 {
@@ -1961,7 +1963,6 @@ impl Renderer {
                 waiting += 1;
             }
         }
-        self.drape_waiting = waiting;
         let bundle = gpu.create_render_bundle(
             &RenderBundleDesc {
                 label: "drape",
@@ -1971,7 +1972,9 @@ impl Renderer {
             },
             &commands,
         );
-        self.drape_zooms.get_mut(&zoom).expect("found above").bundle = Some((bundle, groups));
+        let level = self.drape_zooms.get_mut(&zoom).expect("found above");
+        level.bundle = Some((bundle, groups));
+        level.waiting = waiting;
         Some(bundle)
     }
 
@@ -2151,6 +2154,10 @@ struct DrapeZoom {
     /// it binds.
     scene: Option<BindGroupId>,
     bundle: Option<(RenderBundleId, Vec<BindGroupId>)>,
+    /// Draped nodes the slots last drawn at this zoom left out, waiting
+    /// for a pipeline: each zoom keeps its own, as a frame records only
+    /// the bundles of the zooms its redrawn slots draw at.
+    waiting: u32,
 }
 
 impl release::Release for Node {
