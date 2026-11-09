@@ -72,7 +72,15 @@ pub(crate) fn signed_area(points: impl Iterator<Item = [i32; 2]>) -> i128 {
 }
 
 pub(crate) fn finish_layer(builder: crate::LayerBuilder) -> crate::Layer {
-    let mut layer = builder.finish();
+    finish_layer_with(builder, Vec::new())
+}
+
+/// [`finish_layer`], with columns besides the builder's.
+pub(crate) fn finish_layer_with(
+    builder: crate::LayerBuilder,
+    columns: Vec<(String, crate::Column)>,
+) -> crate::Layer {
+    let mut layer = builder.finish_with(columns);
     // Property order on the wire is not semantic. MLT shared dictionaries may
     // regroup columns; use one stable order for equal TileFrames across formats.
     layer.properties.sort_unstable_by(|a, b| a.0.cmp(&b.0));

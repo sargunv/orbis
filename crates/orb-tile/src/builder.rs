@@ -140,17 +140,27 @@ impl LayerBuilder {
         self
     }
 
-    pub fn finish(mut self) -> Layer {
+    /// The features begun so far.
+    pub(crate) fn features(&self) -> usize {
+        self.types.len()
+    }
+
+    pub fn finish(self) -> Layer {
+        self.finish_with(Vec::new())
+    }
+
+    /// Finishes the layer with `coded` columns besides those set through
+    /// [`set_property`](Self::set_property) ([`CodedColumns`]).
+    pub(crate) fn finish_with(mut self, coded: Vec<(String, Column)>) -> Layer {
         let len = self.types.len();
         self.feature_parts.push(len_u32(self.part_rings.len()));
         self.part_rings.push(len_u32(self.ring_vertices.len()));
         self.ring_vertices.push(len_u32(self.vertices.len()));
 
         let ids = typed_column(len, self.ids);
-        let properties = self
-            .columns
-            .into_iter()
+        let properties = (self.columns.into_iter())
             .map(|(key, values)| (key, typed_column(len, values)))
+            .chain(coded)
             .collect();
 
         Layer {
@@ -183,19 +193,22 @@ fn set(values: &mut Vec<(u32, Value)>, feature: u32, value: Value) {
     }
 }
 
-fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
-    #[derive(PartialEq)]
-    enum Kind {
-        Bool,
-        I64,
-        U64,
-        F64,
-        Number,
-        Str,
-        Mixed,
-    }
+/// A column's type: one all its values share, numbers of different types
+/// as `Number` (`F64`), anything else `Mixed`.
+#[derive(PartialEq)]
+enum Kind {
+    Bool,
+    I64,
+    U64,
+    F64,
+    Number,
+    Str,
+    Mixed,
+}
+
+fn kind<'a>(values: impl Iterator<Item = &'a Value>) -> Kind {
     let mut kind = None;
-    for (_, value) in &values {
+    for value in values {
         let k = match value {
             Value::Bool(_) => Kind::Bool,
             Value::I64(_) => Kind::I64,
@@ -215,14 +228,33 @@ fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
             Some(_) => Kind::Mixed,
         });
     }
+    kind.unwrap_or(Kind::Bool)
+}
 
+/// Which of `len` features have a value, from those that do, ascending.
+fn presence(len: usize, features: impl Iterator<Item = u32>) -> Bitmap {
     let mut present = Bitmap::new();
-    let mut next = values.iter().map(|(f, _)| *f as usize).peekable();
+    let mut next = features.map(|f| f as usize).peekable();
     for feature in 0..len {
         present.push(next.next_if_eq(&feature).is_some());
     }
+    present
+}
+
+fn number(value: &Value) -> f64 {
+    match *value {
+        Value::I64(v) => v as f64,
+        Value::U64(v) => v as f64,
+        Value::F64(v) => v,
+        _ => unreachable!("a number column"),
+    }
+}
+
+fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
+    let kind = kind(values.iter().map(|(_, v)| v));
+    let present = presence(len, values.iter().map(|(f, _)| *f));
     let values = values.into_iter().map(|(_, v)| v);
-    let data = match kind.unwrap_or(Kind::Bool) {
+    let data = match kind {
         Kind::Bool => ColumnData::Bool(values.map(|v| v == Value::Bool(true)).collect()),
         Kind::I64 => ColumnData::I64(
             values
@@ -240,16 +272,7 @@ fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
                 })
                 .collect(),
         ),
-        Kind::F64 | Kind::Number => ColumnData::F64(
-            values
-                .map(|v| match v {
-                    Value::I64(v) => v as f64,
-                    Value::U64(v) => v as f64,
-                    Value::F64(v) => v,
-                    _ => unreachable!("a number column"),
-                })
-                .collect(),
-        ),
+        Kind::F64 | Kind::Number => ColumnData::F64(values.map(|v| number(&v)).collect()),
         Kind::Str => {
             let mut dictionary = Vec::new();
             let mut lookup: HashMap<String, u32> = HashMap::new();
@@ -267,6 +290,120 @@ fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
         Kind::Mixed => ColumnData::Mixed(values.collect()),
     };
     Column::new(present, data)
+}
+
+/// Property columns whose values index a table of values, as an MVT
+/// layer's tags index its keys and values: filled feature by feature
+/// without hashing keys or copying values, and typed once the layer is
+/// done, as [`LayerBuilder::set_property`]'s columns are.
+pub(crate) struct CodedColumns<'a> {
+    keys: &'a [&'a str],
+    values: &'a [Value],
+    /// Per key, the first key equal to it: a layer may name a key twice.
+    key_of: Vec<u32>,
+    /// Per key, its values: (feature, value index), by feature.
+    columns: Vec<Vec<(u32, u32)>>,
+}
+
+impl<'a> CodedColumns<'a> {
+    pub(crate) fn new(keys: &'a [&'a str], values: &'a [Value]) -> Self {
+        let mut first: HashMap<&str, u32> = HashMap::new();
+        let key_of = (keys.iter().enumerate())
+            .map(|(i, k)| *first.entry(k).or_insert(len_u32(i)))
+            .collect();
+        Self {
+            keys,
+            values,
+            key_of,
+            columns: vec![Vec::new(); keys.len()],
+        }
+    }
+
+    /// Sets `feature`'s value of key `key` to value `value`, replacing one
+    /// set before. Features come in order.
+    pub(crate) fn set(&mut self, feature: u32, key: u32, value: u32) {
+        let column = &mut self.columns[self.key_of[key as usize] as usize];
+        match column.last_mut() {
+            Some((f, v)) if *f == feature => *v = value,
+            _ => column.push((feature, value)),
+        }
+    }
+
+    /// The columns, for `len` features.
+    pub(crate) fn finish(self, len: usize) -> Vec<(String, Column)> {
+        let values = self.values;
+        // Per value, the first value equal to it, so that equal strings
+        // share a code; then per value, its code in the column being typed.
+        let mut first: HashMap<&str, u32> = HashMap::new();
+        let canonical: Vec<u32> = (values.iter().enumerate())
+            .map(|(i, v)| match v {
+                Value::Str(s) => *first.entry(s).or_insert(len_u32(i)),
+                _ => len_u32(i),
+            })
+            .collect();
+        let mut codes = vec![u32::MAX; values.len()];
+        (self.columns.into_iter().enumerate())
+            .filter(|(_, column)| !column.is_empty())
+            .map(|(key, column)| {
+                let row = |&(_, v): &(u32, u32)| &values[v as usize];
+                let present = presence(len, column.iter().map(|(f, _)| *f));
+                let data = match kind(column.iter().map(row)) {
+                    Kind::Bool => ColumnData::Bool(
+                        column
+                            .iter()
+                            .map(|e| *row(e) == Value::Bool(true))
+                            .collect(),
+                    ),
+                    Kind::I64 => ColumnData::I64(
+                        (column.iter().map(row))
+                            .map(|v| match v {
+                                Value::I64(v) => *v,
+                                _ => unreachable!("an i64 column"),
+                            })
+                            .collect(),
+                    ),
+                    Kind::U64 => ColumnData::U64(
+                        (column.iter().map(row))
+                            .map(|v| match v {
+                                Value::U64(v) => *v,
+                                _ => unreachable!("a u64 column"),
+                            })
+                            .collect(),
+                    ),
+                    Kind::F64 | Kind::Number => {
+                        ColumnData::F64(column.iter().map(|e| number(row(e))).collect())
+                    }
+                    Kind::Str => {
+                        let mut dictionary = Vec::new();
+                        let column_codes = (column.iter())
+                            .map(|&(_, v)| {
+                                let v = canonical[v as usize] as usize;
+                                if codes[v] == u32::MAX {
+                                    codes[v] = len_u32(dictionary.len());
+                                    let Value::Str(s) = &values[v] else {
+                                        unreachable!("a string column")
+                                    };
+                                    dictionary.push(s.clone());
+                                }
+                                codes[v]
+                            })
+                            .collect();
+                        for &(_, v) in &column {
+                            codes[canonical[v as usize] as usize] = u32::MAX;
+                        }
+                        ColumnData::Str {
+                            dictionary,
+                            codes: column_codes,
+                        }
+                    }
+                    Kind::Mixed => {
+                        ColumnData::Mixed(column.iter().map(|e| row(e).clone()).collect())
+                    }
+                };
+                (self.keys[key].to_string(), Column::new(present, data))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

@@ -258,6 +258,31 @@ fn duplicate_tags_last_value_wins() {
     );
 }
 
+/// A layer may name a key twice and hold a value twice: the key is one
+/// column, and equal strings share a dictionary code.
+#[test]
+fn repeated_keys_and_values_share_a_column_and_codes() {
+    let s = |v: &str| message(1, v.as_bytes());
+    let frame = mvt::decode(&tile(
+        &[
+            feature(None, 1, &[9, 0, 0], &[0, 0]),
+            feature(None, 1, &[9, 2, 2], &[1, 1]),
+            feature(None, 1, &[9, 4, 4], &[1, 2]),
+        ],
+        &["k", "k"],
+        &[s("a"), s("a"), s("b")],
+    ))
+    .unwrap();
+    let layer = &frame.layers[0];
+    assert_eq!(layer.properties().count(), 1);
+    let column = layer.property("k").unwrap();
+    assert!(
+        matches!(column.data(), ColumnData::Str { dictionary, .. } if dictionary == &["a", "b"])
+    );
+    assert_eq!(column.code(0), column.code(1));
+    assert_eq!(column.get(2), Some(ValueRef::Str("b")));
+}
+
 #[test]
 fn empty_unknown_and_zero_area_features_are_dropped() {
     let zero = paths(&[&[[0, 0], [1, 1], [2, 2]]], true);

@@ -1,6 +1,7 @@
 //! Mapbox Vector Tile 2.1 decoding from uncompressed protobuf bytes.
 
-use crate::decode::{finish_layer, signed_area};
+use crate::builder::CodedColumns;
+use crate::decode::{finish_layer_with, signed_area};
 use crate::{DecodeError, GeometryType, Layer, LayerBuilder, TileFrame, Value};
 
 /// Decode an uncompressed MVT tile, dropping unknown and empty geometries.
@@ -8,7 +9,8 @@ use crate::{DecodeError, GeometryType, Layer, LayerBuilder, TileFrame, Value};
 /// Layer dictionaries and feature headers are read before their payloads:
 /// protobuf permits these fields after the features/geometry that need them.
 /// Payloads are decoded once directly into the builder, with one reusable
-/// polygon ring buffer and no intermediate feature objects.
+/// polygon ring buffer and no intermediate feature objects; tags stay
+/// indices into the layer's tables until its columns are typed.
 /// Property columns are sorted by name, matching [`crate::mlt::decode`].
 pub fn decode(bytes: &[u8]) -> Result<TileFrame, DecodeError> {
     // Every vertex/part/feature consumes input bytes, so this also bounds the
@@ -56,29 +58,34 @@ fn layer(bytes: &[u8]) -> Result<Layer, DecodeError> {
     }
     let mut builder =
         LayerBuilder::new(name.ok_or(DecodeError::MissingField("layer.name"))?, extent);
+    let mut columns = CodedColumns::new(&keys, &values);
     let mut ring = Vec::new();
     let mut reader = Reader::new(bytes);
     while let Some((field, wire)) = reader.field()? {
         if field == 2 {
+            let tables = (keys.len(), values.len());
             feature(
                 reader.message(wire)?,
-                &keys,
-                &values,
+                tables,
                 &mut builder,
+                &mut columns,
                 &mut ring,
             )?;
         } else {
             reader.skip(field, wire)?;
         }
     }
-    Ok(finish_layer(builder))
+    let columns = columns.finish(builder.features());
+    Ok(finish_layer_with(builder, columns))
 }
 
+/// Decodes one feature into `builder`, its tags into `columns`; `tables`
+/// are the layer's key and value counts.
 fn feature(
     bytes: &[u8],
-    keys: &[&str],
-    values: &[Value],
+    (keys, values): (usize, usize),
     builder: &mut LayerBuilder,
+    columns: &mut CodedColumns<'_>,
     ring: &mut Vec<[i32; 2]>,
 ) -> Result<(), DecodeError> {
     let mut reader = Reader::new(bytes);
@@ -99,23 +106,26 @@ fn feature(
     };
     builder.begin_feature(id, kind);
     let nonempty = geometry(Repeated::new(bytes, 4), kind, builder, ring)?;
+    let feature = (builder.features() - 1) as u32;
     let mut tags = Repeated::new(bytes, 2);
     while let Some(key) = tags.next()? {
         let index = tags
             .next()?
             .ok_or(DecodeError::InvalidValue("odd property tag count"))?;
-        let key = keys.get(key as usize).ok_or(DecodeError::InvalidTagIndex {
-            table: "key",
-            index: key,
-        })?;
-        let value = values
-            .get(index as usize)
-            .ok_or(DecodeError::InvalidTagIndex {
+        if key as usize >= keys {
+            return Err(DecodeError::InvalidTagIndex {
+                table: "key",
+                index: key,
+            });
+        }
+        if index as usize >= values {
+            return Err(DecodeError::InvalidTagIndex {
                 table: "value",
                 index,
-            })?;
+            });
+        }
         if nonempty {
-            builder.set_property(key, value.clone());
+            columns.set(feature, key, index);
         }
     }
     if !nonempty {
