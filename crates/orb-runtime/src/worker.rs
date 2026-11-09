@@ -592,16 +592,14 @@ impl TileWorker {
         }
         let (began, data) = self.data_at(request.source, None);
         let key = (request.source, began, request.tile);
-        if self
-            .data
-            .frames
-            .lock()
-            .expect("frames poisoned")
-            .tiles
-            .contains_key(&key)
-        {
+        // An overzoomed tile slices its ancestor's frame, decoded for a
+        // sibling.
+        let whole = (request.source, began, request.data_tile());
+        let frames = self.data.frames.lock().expect("frames poisoned");
+        if frames.tiles.contains_key(&key) || frames.tiles.contains_key(&whole) {
             return true;
         }
+        drop(frames);
         self.geojson_source(request.source).is_some_and(|s| {
             matches!(s.data, GeoJsonData::Inline(_))
                 || data
@@ -755,15 +753,32 @@ impl TileWorker {
         let key = (source, began, tile);
         let frames = &self.data.frames;
         let cached = frames.lock().expect("frames poisoned").get(key);
-        Ok(match cached {
-            Some(frame) => frame,
-            None => {
-                let frame = Arc::new(self.decode(bytes, encoding, index, &data, tile, data_zoom)?);
-                let mut frames = frames.lock().expect("frames poisoned");
-                frames.insert(key, Arc::clone(&frame));
-                frame
-            }
-        })
+        if let Some(frame) = cached {
+            return Ok(frame);
+        }
+        let geojson = matches!(self.plan.source_def(index).kind, SourceKind::GeoJson(_));
+        let frame = if data_zoom < tile.z && !geojson {
+            // An ancestor's overzoomed tiles slice its one decode.
+            let whole = request.data_tile();
+            let whole_key = (source, began, whole);
+            let cached = frames.lock().expect("frames poisoned").get(whole_key);
+            let whole_frame = match cached {
+                Some(frame) => frame,
+                None => {
+                    let frame =
+                        Arc::new(self.decode(bytes, encoding, index, &data, whole, data_zoom)?);
+                    let mut frames = frames.lock().expect("frames poisoned");
+                    frames.insert(whole_key, Arc::clone(&frame));
+                    frame
+                }
+            };
+            Arc::new(slice(&whole_frame, tile, data_zoom))
+        } else {
+            Arc::new(self.decode(bytes, encoding, index, &data, tile, data_zoom)?)
+        };
+        let mut frames = frames.lock().expect("frames poisoned");
+        frames.insert(key, Arc::clone(&frame));
+        Ok(frame)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -813,6 +828,11 @@ fn overzoom(frame: TileFrame, tile: TileIndex, data_zoom: u8) -> TileFrame {
     if data_zoom >= tile.z {
         return frame;
     }
+    slice(&frame, tile, data_zoom)
+}
+
+/// [`overzoom`] of an ancestor's frame that stays whole.
+fn slice(frame: &TileFrame, tile: TileIndex, data_zoom: u8) -> TileFrame {
     let depth = tile.z - data_zoom;
     let mask = (1u32 << depth) - 1;
     let labels_zoom = data_zoom.max(VECTOR_LABEL_ZOOM).min(tile.z);
@@ -1402,6 +1422,40 @@ pub(crate) mod tests {
         let gets = fetch.gets.lock().unwrap();
         let glyph_gets = gets.iter().filter(|u| u.contains("/glyphs/")).count();
         assert_eq!(glyph_gets, 1, "{gets:?}");
+    }
+
+    /// Overzoomed tiles of one ancestor share its fetch and its decode.
+    #[test]
+    fn overzoomed_siblings_share_their_ancestor() {
+        let fetch = Arc::new(AssetFetch::default());
+        let jobs = PoolJobs::new(
+            fetch.clone(),
+            Arc::new(NoImages),
+            Arc::new(orb_host::jobs::Inline),
+        );
+        let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
+        jobs.set_style(1, &StyleUpdate::default(), &worker);
+        jobs.prefetch_glyphs(1, worker.first_glyphs(symbol_request().zoom));
+        fetch.release();
+        let (z, x, y) = SYMBOL_TILE;
+        let (tx, rx) = std::sync::mpsc::channel();
+        for col in [x * 2, x * 2 + 1] {
+            let tile = TileIndex::new(z + 1, col, y * 2);
+            let request = TileRequest {
+                tile,
+                zoom: f64::from(z + 1),
+                data_zoom: z,
+                ..symbol_request()
+            };
+            let tx = tx.clone();
+            jobs.load(request, Box::new(move |r| tx.send(r).unwrap()));
+        }
+        let built: Vec<_> = rx.try_iter().collect();
+        assert_eq!(built.len(), 2);
+        assert!(built.iter().all(Result::is_ok));
+        let gets = fetch.gets.lock().unwrap();
+        let tiles = gets.iter().filter(|u| u.contains("/tiles/")).count();
+        assert_eq!(tiles, 1, "{gets:?}");
     }
 
     /// A glyph range another context fetches for the job hosts: a tile

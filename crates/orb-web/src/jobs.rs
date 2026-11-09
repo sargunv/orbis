@@ -91,7 +91,8 @@ struct State {
     heads: Vec<(String, Arc<Vec<u8>>)>,
     /// Workers lost.
     lost: Vec<bool>,
-    /// The worker each tile (by source) went to, the latest
+    /// The worker each tile (by source; an overzoomed tile by the ancestor
+    /// it slices, so that they share its decode) went to, the latest
     /// [`HOMES`] of them, oldest first in `home_order`.
     homes: HashMap<(u32, TileIndex), u32>,
     home_order: VecDeque<(u32, TileIndex)>,
@@ -590,7 +591,7 @@ impl Jobs for WorkerJobs {
                 found => found.is_some(),
             }
         };
-        let (source, tile) = (request.source, request.tile);
+        let (source, tile) = (request.source, request.data_tile());
         self.send(
             |state| state.home(source, tile),
             Some(request.clone()),
@@ -605,7 +606,7 @@ impl Jobs for WorkerJobs {
     }
 
     fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
-        let (source, tile) = (request.tile.source, request.tile.tile);
+        let (source, tile) = (request.tile.source, request.tile.data_tile());
         self.send(
             |state| state.home(source, tile),
             None,
@@ -615,7 +616,7 @@ impl Jobs for WorkerJobs {
     }
 
     fn cluster(&self, request: orb_runtime::ClusterRequest, done: orb_runtime::QueryDone) {
-        let (source, tile) = (request.tile.source, request.tile.tile);
+        let (source, tile) = (request.tile.source, request.tile.data_tile());
         self.send(
             |state| state.home(source, tile),
             None,
