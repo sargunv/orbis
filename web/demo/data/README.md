@@ -26,7 +26,7 @@ sprites once served.
   symbol layers, in Liberty's order. It inherits OSM Liberty's BSD code and
   CC BY design licences; see [STYLE-LICENSE.md](STYLE-LICENSE.md).
   Upstream style SHA-256: `408245464e76791801a64393c403433d09e8110eb9516040f8dc2b62584eee2a`.
-- `alps.json` and `alps-flight.json`: the terrain entry (`?style=alps&flight`
+- `alps.json` and `alps-flight.json`: the Terrain entry (`?style=terrain&flight`
   on the web, `--flight` natively), written for this
   repository. It draws OpenFreeMap's planet tiles (data as above) over
   [Mapterhorn](https://mapterhorn.com/)'s terrain tiles, fetched at run time

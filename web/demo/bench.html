@@ -34,7 +34,7 @@ issue.</p>
 // Query: format=mvt|mlt or style=<url> (the Tokyo extract by default);
 // size=WxH, at=lon,lat, experiment=frames|gestures; for frames, frames,
 // warmup, rounds and ratio; for gestures, workers=<job workers> and
-// paths=city|alps (alps by default with style=alps, at the terrain demo's
+// paths=city|alps (alps by default with style=terrain, at the terrain demo's
 // view), and engine=orbis|gl (gl: MapLibre GL JS along the same paths,
 // counting its labels' blinks and returns).
 import { runFrames } from "./frames.js";
@@ -126,7 +126,7 @@ async function run() {
     const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
     let report;
     if (params.get("experiment") === "gestures") {
-      const paths = params.get("paths") ?? (params.get("style") === "alps" ? "alps" : "city");
+      const paths = params.get("paths") ?? (["terrain", "alps"].includes(params.get("style")) ? "alps" : "city");
       const center = (params.get("at") ?? (paths === "alps" ? "7.7491,46.0207" : "139.74,35.685")).split(",").map(Number);
       report = await runGestures({
         style, center, paths, size: [w, h], about: lines,

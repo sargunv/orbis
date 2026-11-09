@@ -12,7 +12,7 @@ import alpsFlight from "./data/alps-flight.json";
 
 /** OpenFreeMap's live Liberty style over the planet: the demo's default. */
 export const LIVE = "https://tiles.openfreemap.org/styles/liberty";
-/** Where the live basemaps open: central Tokyo, around Tokyo Station. */
+/** Where a fresh page of a basemap opens without a camera in its hash: central Tokyo, around Tokyo Station. */
 export const LIVE_CAMERA = { center: [139.767, 35.681], zoom: 13 };
 
 // The demo key for api.protomaps.com that maplibre-compose's demo app
@@ -35,14 +35,17 @@ function tileBounds([west, south, east, north], z) {
 const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
 
 /**
- * A picker entry. `basemap` entries keep the camera when switched to; the
- * rest open at their own. `swatch` is [land, water, line] for the picker's
- * chip; `dark` styles turn the app's chrome dark. `constraints` keep the
- * camera where a bounded dataset has data, or a view in range (the globe
- * no smaller than at zoom 0), on both maps of a comparison. `projection` is a v8 projection
- * the map switches to once the style loads, and `sky` a v8 sky it puts
- * in place of the style's then too. `unsupported` says, by engine, why
- * that engine can't show the entry in the comparison (app/compare.js).
+ * A picker entry. Switching entries keeps the camera; `camera` is only
+ * where a fresh page without a camera in its hash opens, by default
+ * LIVE_CAMERA for a `basemap` and the style's own for the rest. `flight` is
+ * a looping flight that `&flight` flies. `swatch` is [land, water, line]
+ * for the picker's chip; `dark` styles turn the app's chrome dark.
+ * `constraints` keep the camera where a bounded dataset has data, or a
+ * view in range (the globe no smaller than at zoom 0), on both maps of a
+ * comparison, and clamp it on a switch. `projection` is a v8 projection the
+ * map switches to once the style loads, and `sky` a v8 sky it puts in
+ * place of the style's then too. `unsupported` says, by engine, why that
+ * engine can't show the entry in the comparison (app/compare.js).
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
@@ -71,8 +74,8 @@ export const GROUPS = [
       { key: "arctic", name: "Arctic", detail: "A polar stereographic CRS, EPSG:3413", url: arctic, dark: true,
         swatch: ["#24476b", "#e9eef2", "#9aa6ad"],
         unsupported: { gljs: "GL JS can't draw tile matrix sets", native: "MapLibre Native can't draw tile matrix sets" } },
-      { key: "alps", name: "Alps terrain", detail: "3D terrain, sky and a looping camera flight", url: alps,
-        flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
+      { key: "terrain", name: "Terrain", detail: "3D terrain from Mapterhorn's global elevation, under a sky",
+        url: alps, flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
     ],
   },
   {
@@ -117,14 +120,15 @@ export const GROUPS = [
       { key: "osm", name: "OpenStreetMap Carto", detail: "Raster tiles from openstreetmap.org", url: osmCarto,
         basemap: true, swatch: ["#f2efe9", "#aad3df", "#e892a2"] },
       { key: "americana", name: "Americana", detail: "Route shields come from its own page, not shown",
-        url: "https://americanamap.org/style.json", basemap: true,
-        camera: { center: [-77.036, 38.897], zoom: 13 }, swatch: ["#f3efe6", "#a6cfe6", "#c8553d"] },
+        url: "https://americanamap.org/style.json", basemap: true, swatch: ["#f3efe6", "#a6cfe6", "#c8553d"] },
     ],
   },
 ];
 for (const group of GROUPS) for (const scene of group.scenes) scene.provider = group.name;
 
 const SCENES = Object.fromEntries(GROUPS.flatMap((g) => g.scenes).map((s) => [s.key, s]));
+/** Old keys that links may still use. */
+const ALIASES = { alps: "terrain" };
 /** The committed Tokyo extract, by URL only: the benchmarks', checks' and offline work's style. */
 SCENES.tokyo = { key: "tokyo", name: "Tokyo, offline", detail: "Bundled extract, no network", url: mvt,
   provider: "Orbis", formats: { mvt, mlt }, constraints: { bounds: TOKYO_BOUNDS, maxPitch: 0 },
@@ -145,7 +149,7 @@ export function sceneFor(params) {
   if (!style) return format ? { scene: SCENES.tokyo, format } : { scene: DEFAULT_SCENE };
   const tokyo = style.match(/^tokyo(?:-(mvt|mlt))?$/);
   if (tokyo) return { scene: SCENES.tokyo, format: tokyo[1] ?? format ?? "mvt" };
-  if (SCENES[style]) return { scene: SCENES[style] };
+  if (SCENES[ALIASES[style] ?? style]) return { scene: SCENES[ALIASES[style] ?? style] };
   const url = new URL(style, location.href).href;
   const known = Object.values(SCENES)
     .find((s) => !s.projection && !s.sky && new URL(s.url, location.href).href === url);

@@ -6,7 +6,7 @@
 // eases by the style's transition.
 //
 // URL: `?style=<key|url>` (styles.js), `&flight` (fly an entry's looping
-// flight, as picking it does; without it the map stays put and settles),
+// flight; without it the map stays put and settles),
 // `&debug`, `&edit`, `&compare[=<left>,<right>]` (two engines' maps of
 // the style side by side, Orbis and GL JS by default, app/compare.js),
 // `&lose=<ms>` (lose the GPU that long after
@@ -61,14 +61,13 @@ const searchOf = (query) => {
   const search = query.toString().replace(/=(?=&|$)/g, "");
   return search ? `?${search}` : "";
 };
-/** The app's URL for `next` with `camera` as its hash; `fly` keeps its flight. */
-function urlFor(next, camera, { fly = true } = {}) {
+/** The app's URL for `next` with `camera` as its hash. `&flight` stays only for an entry with one. */
+function urlFor(next, camera) {
   const query = params();
   query.delete("format");
-  query.delete("flight");
+  if (!next.scene.flight) query.delete("flight");
   const style = styleParam(next);
   if (style) query.set("style", style); else query.delete("style");
-  if (next.scene.flight && fly) query.set("flight", "");
   return `${location.pathname}${searchOf(query)}${camera ? hashOf(camera) : ""}`;
 }
 function hashOf({ center: [lon, lat], zoom, bearing = 0, pitch = 0 }) {
@@ -211,33 +210,31 @@ function clearPopup() {
 const projectionOf = (scene) => scene.projection ?? { type: "mercator" };
 
 /**
- * Moves to `next`: basemaps keep the camera between them; other entries
- * fly to their own. The same style on another surface switches its
- * projection in place; another style is set on the map as the diff from
- * this one. `history` pushes the move as a history entry, or replaces the
- * current one.
+ * Moves to `next`, keeping the camera: switching entries never moves it,
+ * though the entry's constraints clamp it where they must (the globe no
+ * smaller than at zoom 0, a bounded dataset where it has data). Back and
+ * forward pass the history entry's `camera`. The same style on another
+ * surface switches its projection in place; another style is set on the
+ * map as the diff from this one. `history` pushes the move as a history
+ * entry, or replaces the current one.
  */
-function go(next, { camera: asked, history: mode = "push" } = {}) {
+function go(next, { camera, history: mode = "push" } = {}) {
   if (!map) {
     // No map started (no WebGPU, say): the new page tries again.
-    location.assign(urlFor(next, asked));
+    location.assign(urlFor(next, camera));
     return;
   }
   const switched = ++switches;
-  const keep = current.scene.basemap && next.scene.basemap;
-  const camera = asked ?? (keep ? undefined : next.scene.camera ?? (next.scene.basemap ? LIVE_CAMERA : undefined));
   const url = urlFor(next, camera ?? map.camera.current);
   if (mode === "push") history.pushState(null, "", url); else history.replaceState(history.state, "", url);
   const previous = current;
   current = next;
   tone();
   picker.show(next.scene, next.format);
-  const fly = (to = camera) => {
-    if (to && switched === switches) {
-      map.camera.flyTo({ bearing: 0, pitch: 0, ...to, duration: reducedMotion() ? 0 : undefined });
-    }
-  };
-  if (sceneUrl(previous.scene, previous.format) === sceneUrl(next.scene, next.format) && !next.scene.flight) {
+  map.camera.stop();
+  map.camera.setConstraints(next.scene.constraints ?? {});
+  if (camera) map.camera.jumpTo(camera);
+  if (sceneUrl(previous.scene, previous.format) === sceneUrl(next.scene, next.format)) {
     // The same style on another surface or under another sky: one edit,
     // and nothing loads again.
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -251,26 +248,19 @@ function go(next, { camera: asked, history: mode = "push" } = {}) {
       // The comparison reopens with the projection, if it can draw it.
       compare.attach(map, next.scene);
     }
-    fly();
+    startFlight(switched);
     return;
   }
-  map.camera.stop();
-  map.camera.setConstraints(next.scene.constraints ?? {});
   compare.attach(undefined, next.scene);
   clearPopup();
   say(`Loading ${next.scene.name}…`);
   styleLoading = true;
   app.dataset.map = "loading";
-  // The style's `styleload` applies the entry's projection and sky; then
-  // the camera moves, on the new style's surface.
+  // The style's `styleload` applies the entry's projection and sky. The
+  // style's own camera is a fresh page's (load), never a switch's.
   map.setStyle(sceneUrl(next.scene, next.format));
   const loaded = map.on("styleload", () => {
     loaded();
-    // An entry without a camera of its own opens where its style does, as a new page would.
-    const style = map.getStyle();
-    const own = !keep && !camera && Array.isArray(style.center) && style.zoom !== undefined
-      && { center: style.center, zoom: style.zoom, bearing: style.bearing ?? 0, pitch: style.pitch ?? 0 };
-    if (!next.scene.flight || !params().has("flight")) fly(camera ?? own);
     startFlight(switched);
     if (!toast.classList.contains("error")) say("");
   });
@@ -436,7 +426,7 @@ if (start.has("edit")) setEditing(true);
   const camera = hashCamera();
   let first;
   try { first = sceneFor(start); } catch (e) { say(String(e.message), { error: true }); throw e; }
-  history.replaceState(history.state, "", urlFor(first, camera, { fly: start.has("flight") }));
+  history.replaceState(history.state, "", urlFor(first, camera));
   await load(first, { camera: camera ?? first.scene.camera ?? (first.scene.basemap ? LIVE_CAMERA : undefined) });
 }
 

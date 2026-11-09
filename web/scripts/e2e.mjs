@@ -16,7 +16,8 @@
 // - `switching`: entries switch on one map: another style on the same
 //   source eases its paint by the style's transition and requests no
 //   tiles, and back goes back without a reload; a click opens a feature
-//   popup only while the style editor is open.
+//   popup only while the style editor is open; picking any entry keeps
+//   the camera, its style's own camera never applying.
 // - `compare`: the comparison on the Tokyo extract: the plain page fetches
 //   no other engine and isn't isolated; each pair of engines (Orbis, GL JS
 //   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
@@ -642,6 +643,46 @@ async function switching(browser, server) {
   console.log("switching: a click opens a popup only in the editor");
   assert.deepEqual(errors, []);
   await page.close();
+
+  // Picking any entry keeps the camera, whatever its style's own camera:
+  // every remote style here is the extract's, set at a view far away, and
+  // the rest of the network fails. Arctic's plane ends short of Tokyo, so
+  // its constraint clamps the camera, last.
+  const far = { ...await tokyoStyle(server), center: [7.75, 46.02], zoom: 3, bearing: -32, pitch: 72 };
+  const picking = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  await picking.route((u) => !u.href.startsWith(server.url), (route) => {
+    if (/\/styles?\/|style\.json/.test(route.request().url())) route.fulfill({ json: far });
+    else route.abort("internetdisconnected");
+  });
+  await picking.goto(`${server.url}#15/35.687/139.74/20/30`);
+  await picking.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null, { timeout: 60_000 });
+  const camera = () => picking.evaluate(() => {
+    const { center, zoom, bearing, pitch } = app.map.camera.current;
+    return { center, zoom, bearing, pitch };
+  });
+  const start = await camera();
+  const keys = await picking.evaluate(() => [...document.querySelectorAll("[data-scene]")].map((e) => e.dataset.scene));
+  assert.ok(keys.length > 10 && keys.includes("arctic"), keys.join());
+  const pick = async (key) => {
+    await picking.click("#scene-button");
+    await picking.click(`[data-scene="${key}"]`);
+    await picking.waitForFunction(() => document.getElementById("app").dataset.map !== "loading", null, { timeout: 20_000 });
+    // Past the style's load, where a style's camera or a flight would move it.
+    await picking.waitForTimeout(500);
+    return camera();
+  };
+  const same = (a, b) => Math.hypot(a.center[0] - b.center[0], a.center[1] - b.center[1]) < 1e-6
+    && ["zoom", "bearing", "pitch"].every((k) => Math.abs(a[k] - b[k]) < 1e-6);
+  for (const key of [...keys.filter((k) => k !== "arctic"), "liberty"]) {
+    const now = await pick(key);
+    assert.ok(same(now, start), `${key} keeps the camera: ${JSON.stringify(now)}, not ${JSON.stringify(start)}`);
+  }
+  const arctic = await pick("arctic");
+  assert.ok(arctic.zoom > 10 && Math.abs(arctic.bearing - start.bearing) < 1e-6 && arctic.pitch === start.pitch
+    && Math.hypot(arctic.center[0] - start.center[0], arctic.center[1] - start.center[1]) < 20,
+  `Arctic clamps the camera into its plane: ${JSON.stringify(arctic)}`);
+  await picking.close();
+  console.log(`switching: ${keys.length} entries keep the camera; Arctic clamps it into its plane`);
 }
 
 async function offline(browser, server) {
