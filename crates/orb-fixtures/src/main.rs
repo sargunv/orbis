@@ -174,13 +174,6 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
         Backend::Chrome(c) => c.version.clone(),
         _ => Value::Null,
     };
-    let voids: Vec<Value> = (dem::voids(&assets).into_iter())
-        .map(|(tile, black)| {
-            let tile = tile.strip_prefix(&assets).unwrap_or(&tile).display();
-            eprintln!("note: {tile} has {black} black texels, no data under terrarium");
-            json!({"tile": tile.to_string(), "black": black})
-        })
-        .collect();
     let summary = json!({
         "filter": filter,
         "platform": {"name":name,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"browser":browser},
@@ -189,7 +182,6 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
         "totals": total.json(),
         "prefixes": prefixes.iter().map(|(p,c)| (p.clone(), c.json())).collect::<BTreeMap<_,_>>(),
         "skip_reasons": skip_counts.iter().map(|(reason,count)| json!({"reason":reason,"count":count})).collect::<Vec<_>>(),
-        "dem_voids": voids,
         "tests": results,
     });
     write_json(&output.join("summary.json"), &summary)?;

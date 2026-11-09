@@ -21,13 +21,11 @@ const PLAUSIBLE: std::ops::RangeInclusive<f64> = -12_000.0..=9_000.0;
 const MAPBOX: [f64; 4] = [6553.6, 25.6, 0.1, 10000.0];
 const TERRARIUM: [f64; 4] = [256.0, 1.0, 1.0 / 256.0, 32768.0];
 
-/// A DEM tile's decoded range under an unpack vector, and its black
-/// texels (terrarium's no-data).
+/// A DEM tile's decoded range under an unpack vector.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Decoded {
     min: f64,
     max: f64,
-    black: usize,
 }
 
 /// What the lint found for a test: why it can't check terrain, one line per
@@ -57,7 +55,8 @@ pub(crate) fn lint(style: &Value, width: u32, height: u32, assets: &Path) -> Vec
                 let Some(d) = decode(&path, unpack) else {
                     continue;
                 };
-                if PLAUSIBLE.contains(&d.min) && PLAUSIBLE.contains(&d.max) {
+                // All no data, or Earth's elevations.
+                if d.min > d.max || (PLAUSIBLE.contains(&d.min) && PLAUSIBLE.contains(&d.max)) {
                     continue;
                 }
                 let others: Vec<String> = [("mapbox", MAPBOX), ("terrarium", TERRARIUM)]
@@ -78,30 +77,6 @@ pub(crate) fn lint(style: &Value, width: u32, height: u32, assets: &Path) -> Vec
         }
     }
     found
-}
-
-/// Every DEM tile among the assets with black texels, and how many: voids
-/// under terrarium, which reads them as sea level.
-pub(crate) fn voids(assets: &Path) -> Vec<(PathBuf, usize)> {
-    let mut out = Vec::new();
-    let mut walk = vec![assets.join("tiles")];
-    while let Some(dir) = walk.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for path in entries.flatten().map(|e| e.path()) {
-            if path.is_dir() {
-                walk.push(path);
-            } else if path.to_string_lossy().ends_with(".terrain.png")
-                && let Some(d) = decode(&path, TERRARIUM)
-                && d.black > 0
-            {
-                out.push((path, d.black));
-            }
-        }
-    }
-    out.sort();
-    out
 }
 
 fn range(d: Decoded) -> String {
@@ -248,8 +223,9 @@ impl Camera {
     }
 }
 
-/// A PNG DEM tile's range under `unpack` (black read as data), cached by
-/// file and vector. `None` for other formats.
+/// A PNG DEM tile's range under `unpack`, cached by file and vector, with
+/// terrarium's black as no data (as `orb_tile::DemGrid` reads it). `None`
+/// for other formats.
 fn decode(path: &Path, unpack: [f64; 4]) -> Option<Decoded> {
     type Cache = Mutex<HashMap<(PathBuf, [u64; 4]), Option<Decoded>>>;
     static CACHE: OnceLock<Cache> = OnceLock::new();
@@ -266,10 +242,11 @@ fn decode(path: &Path, unpack: [f64; 4]) -> Option<Decoded> {
             let mut d = Decoded {
                 min: f64::INFINITY,
                 max: f64::NEG_INFINITY,
-                black: 0,
             };
             for t in image.pixels.as_chunks::<4>().0 {
-                d.black += usize::from(t[..3] == [0, 0, 0]);
+                if unpack == TERRARIUM && t[..3] == [0, 0, 0] {
+                    continue;
+                }
                 let e = f64::from(t[0]) * r + f64::from(t[1]) * g + f64::from(t[2]) * b - w;
                 (d.min, d.max) = (d.min.min(e), d.max.max(e));
             }

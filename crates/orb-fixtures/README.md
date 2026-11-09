@@ -47,7 +47,7 @@ elevations (−12 000 to 9 000 m) skips the test as
 `fixture:implausible-dem`, its diagnostics naming the tile and what the
 other encodings read. Seven tests decode GL JS's terrarium-encoded Grand
 Canyon tiles as `mapbox`, mountains 800 km high in GL JS's expected images
-too. Each run also notes the tiles with black texels, terrarium's voids. Load errors and timeouts are failures, not skips; so is anything
+too. Load errors and timeouts are failures, not skips; so is anything
 the renderer silently leaves out.
 
 **Operations** apply after the map first goes idle, as GL JS applies them
