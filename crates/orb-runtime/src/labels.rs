@@ -624,7 +624,8 @@ impl Labels {
             crate::style::node_key(s.layer, 0),
             crate::style::node_key(s.layer, 1),
         );
-        // What the tile held of the layer goes.
+        // What the tile held of the layer goes: this is a reload.
+        let reloaded = resident.symbols.iter().any(|r| r.layer == s.layer);
         resident.symbols.retain(|r| r.layer != s.layer);
         resident.meshes.retain(|m| {
             if m.node == icon_key || m.node == text_key {
@@ -872,6 +873,7 @@ impl Labels {
             sort_key_ranges,
             text_size: meta.text_size,
             allow_vertical_placement: meta.allow_vertical_placement,
+            reloaded,
         });
         meshes.names = names;
         self.lane.ingest(bucket, Arc::clone(&meshes.tables));
@@ -989,7 +991,11 @@ impl Labels {
     }
 
     /// Whether `frame` needs placing: it differs from the last one placed
-    /// (clock aside), nothing is out on the lane, and fades allow it.
+    /// (clock aside) and nothing is out on the lane. Each frame that moves
+    /// the camera places, rather than every 300 ms as GL JS and MapLibre
+    /// Native do: fades then smooth what a frame's collisions decide, and
+    /// a label one placement drops doesn't fade out in full before the
+    /// next can show it again (the gestures bench's label returns).
     pub(crate) fn wants_placement(&self, frame: &orb_symbol::Frame) -> bool {
         if self.in_flight.is_some() {
             return false;

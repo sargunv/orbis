@@ -31,6 +31,11 @@ pub struct PlacementTables {
     pub sort_key_ranges: Vec<SortKeyRange>,
     pub text_size: SizeKind,
     pub allow_vertical_placement: bool,
+    /// The bucket replaces one its tile had, laid out again (a data or
+    /// style change): its symbols show without fading in the first time
+    /// it is placed (GL JS and MapLibre Native `justReloaded`). A tile's
+    /// first bucket fades its new symbols in.
+    pub reloaded: bool,
 }
 
 /// A layer's placement settings, from its evaluated layout and paint.
@@ -329,8 +334,8 @@ struct Bucket {
     id: u64,
     /// Cross-tile ids, per instance.
     ids: Vec<u32>,
-    /// Not yet placed: its symbols appear without fading in (GL JS
-    /// `justReloaded`).
+    /// Reloaded and not yet placed: its symbols appear without fading in
+    /// (GL JS `justReloaded`).
     just_reloaded: bool,
     /// The words last committed.
     states: BucketStates,
@@ -348,6 +353,9 @@ pub struct Placer {
     lng: f64,
     index: CrossTileIndex,
     prev: Option<Decisions>,
+    /// Buckets placed so far: a reloaded one's copies fade in after its
+    /// first placement.
+    placed: HashSet<u64>,
 }
 
 fn copy_key(t: &PlacedTile) -> (u64, i32) {
@@ -476,11 +484,13 @@ impl Placer {
     pub fn ingest(&mut self, id: u64, tables: impl Into<Arc<PlacementTables>>) {
         self.tables.insert(id, tables.into());
         self.buckets.retain(|&(bucket, _), _| bucket != id);
+        self.placed.remove(&id);
     }
 
     pub fn remove(&mut self, id: u64) {
         self.tables.remove(&id);
         self.buckets.retain(|&(bucket, _), _| bucket != id);
+        self.placed.remove(&id);
     }
 
     /// Keeps the copies `frame` draws, re-wrapped when the camera jumped a
@@ -509,7 +519,7 @@ impl Placer {
                     tables: self.tables[&key.0].clone(),
                     id: self.next_copy,
                     ids: Vec::new(),
-                    just_reloaded: true,
+                    just_reloaded: self.tables[&key.0].reloaded && !self.placed.contains(&key.0),
                     states: BucketStates::default(),
                 }
             });
@@ -593,6 +603,7 @@ impl Placer {
             for t in tiles {
                 let b = self.buckets.get_mut(&copy_key(t)).expect("filtered above");
                 b.just_reloaded = false;
+                self.placed.insert(t.bucket);
                 let states = bucket_states(&mut now, params, b, &mut seen, camera.bearing);
                 if states != b.states {
                     b.states = states.clone();
@@ -1574,7 +1585,8 @@ mod tests {
         let states = &c.changed[0].2;
         let placed: Vec<bool> = (0..4).map(|i| shown(word(states, i))).collect();
         assert_eq!(placed, [true, false, false, true]);
-        assert_eq!(word(states, 0) & state::OPACITY, 127);
+        // Without fades, labels show in full at once.
+        assert_eq!(c.fade_change(0.0), 1.0);
 
         let mut overlap = params(7);
         overlap.text_overlap = Overlap::Always;
@@ -1656,9 +1668,10 @@ mod tests {
                 tiles: vec![tile(1, 0)],
             }]
         };
-        // A new bucket's labels appear without fading in.
+        // A tile's first labels fade in from 0.
         let c = placer.place(&frame(layer(params(7)), 0.0, 300.0));
-        assert_eq!(word(&c.changed[0].2, 0) & state::OPACITY, 127);
+        let w = word(&c.changed[0].2, 0);
+        assert_eq!((w & state::OPACITY, w & state::PLACED != 0), (0, true));
         assert_eq!(c.fade_change(150.0), 0.5);
         // Allowing overlap places label 2, which fades in from 0.
         let mut overlap = params(7);
@@ -1888,7 +1901,22 @@ mod tests {
         f.scope = Scope::Still;
         let c = placer.place(&f);
         let states = &c.changed[0].2;
-        assert_eq!(word(states, 0) & state::OPACITY, 127);
+        assert!(shown(word(states, 0)));
+        assert_eq!(c.fade_change(10.0), 1.0);
         assert!(!shown(word(states, 1)));
+    }
+
+    #[test]
+    fn reloaded_buckets_show_at_once() {
+        let mut placer = Placer::default();
+        let mut t = labels(&[(1, [4096, 4096])]);
+        t.reloaded = true;
+        placer.ingest(1, t);
+        let layer = vec![LayerFrame {
+            params: params(7),
+            tiles: vec![tile(1, 0)],
+        }];
+        let c = placer.place(&frame(layer, 0.0, 300.0));
+        assert_eq!(word(&c.changed[0].2, 0) & state::OPACITY, 127);
     }
 }
