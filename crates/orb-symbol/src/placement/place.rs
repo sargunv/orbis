@@ -31,10 +31,10 @@ pub struct PlacementTables {
     pub sort_key_ranges: Vec<SortKeyRange>,
     pub text_size: SizeKind,
     pub allow_vertical_placement: bool,
-    /// The bucket replaces one its tile had, laid out again (a data or
-    /// style change): its symbols show without fading in the first time
-    /// it is placed (GL JS and MapLibre Native `justReloaded`). A tile's
-    /// first bucket fades its new symbols in.
+    /// The bucket's tile was laid out again (a data or style change): its
+    /// symbols show without fading in the first time it is placed (GL JS
+    /// and MapLibre Native `justReloaded`). A tile's first load fades its
+    /// new symbols in.
     pub reloaded: bool,
 }
 
@@ -1242,7 +1242,8 @@ fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duratio
                 JointOpacity::new(Some(prev), increment, placement.text, placement.icon, false)
             }
             None => {
-                // A label of a tile just loaded shows at once (skip fade):
+                // A label of a tile just laid out again, or offscreen,
+                // shows at once (skip fade):
                 // nothing animates, so nothing keeps frames coming.
                 changed |= (placement.text || placement.icon) && !placement.skip_fade;
                 JointOpacity::new(

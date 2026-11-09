@@ -413,6 +413,7 @@ pub(crate) fn upload(
         namespace,
         states,
         tile_zoom,
+        false,
     ) {
         atlas.release_ramps(gpu, remove_resident(renderer, resident, states));
         return Err(e);

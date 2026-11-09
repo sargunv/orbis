@@ -132,3 +132,50 @@ fn queries_answer_from_the_drawn_data() {
     };
     assert!(features.contains(r#""name":"a""#), "{features}");
 }
+
+/// New data lays a tile out again, and its new labels show at once, as GL
+/// JS and MapLibre Native show a reloaded tile's (`justReloaded`): labels
+/// fade in only on a tile's first load.
+#[test]
+fn new_data_shows_its_labels_at_once() {
+    let glyphs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../web/demo/data/glyphs")
+        .canonicalize()
+        .unwrap();
+    let feature = |name: &str| {
+        format!(
+            r#"{{"type":"Feature","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[0,0]}}}}"#
+        )
+    };
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 3,
+        "glyphs": "file://{}/{{fontstack}}/{{range}}.pbf",
+        "sources": {{"p": {{"type": "geojson", "data": {}}}}},
+        "layers": [{{"id": "t", "type": "symbol", "source": "p",
+           "layout": {{"text-field": ["get", "name"], "text-font": ["Noto Sans Regular"]}}}}]}}"##,
+        glyphs.display(),
+        feature("before")
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 256, 256, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    map.render_until_idle(&mut target, std::time::Duration::from_secs(30))
+        .unwrap();
+    // Frames from here on are all at one time: nothing fades.
+    let time = 1e9;
+    map.render(&mut target, time).unwrap();
+    assert_eq!(map.shown_labels().get("before"), Some(&1.0));
+    map.edit(&source_data(&feature("after"))).unwrap();
+    // Fading in from nothing, the label would stay hidden at this time.
+    for _ in 0..400 {
+        map.render(&mut target, time).unwrap();
+        if map.shown_labels().get("after") == Some(&1.0) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let shown = map.shown_labels();
+    assert_eq!(shown.get("after"), Some(&1.0), "{shown:?}");
+    assert!(!shown.contains_key("before"), "{shown:?}");
+}

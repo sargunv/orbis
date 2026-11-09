@@ -590,6 +590,10 @@ impl Labels {
 
     /// Uploads a tile's symbol layers into `resident`, replacing what it held
     /// of those layers, and gives their buckets to the placement lane.
+    /// `reloaded`: the tile was laid out again (a data or style change), so
+    /// its labels show without fading in the first time they are placed
+    /// (GL JS's and MapLibre Native's `justReloaded`); a tile's first load
+    /// fades them in.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn upload(
         &mut self,
@@ -602,10 +606,12 @@ impl Labels {
         namespace: u64,
         states: &mut FeatureStates,
         tile_zoom: f64,
+        reloaded: bool,
     ) -> Result<(), OutOfSpace> {
         for s in &result.symbols {
             self.upload_layer(
                 gpu, renderer, plan, result, s, resident, images, namespace, states, tile_zoom,
+                reloaded,
             )?;
         }
         Ok(())
@@ -624,13 +630,13 @@ impl Labels {
         namespace: u64,
         states: &mut FeatureStates,
         tile_zoom: f64,
+        reloaded: bool,
     ) -> Result<(), OutOfSpace> {
         let (icon_key, text_key) = (
             crate::style::node_key(s.layer, 0),
             crate::style::node_key(s.layer, 1),
         );
-        // What the tile held of the layer goes: this is a reload.
-        let reloaded = resident.symbols.iter().any(|r| r.layer == s.layer);
+        // What the tile held of the layer goes.
         resident.symbols.retain(|r| r.layer != s.layer);
         resident.meshes.retain(|m| {
             if m.node == icon_key || m.node == text_key {
@@ -1749,6 +1755,7 @@ mod tests {
                 self.namespace,
                 &mut self.states,
                 14.0,
+                false,
             )
         }
 

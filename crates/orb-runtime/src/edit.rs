@@ -573,6 +573,7 @@ impl Map {
                     namespace,
                     &mut style.states,
                     tile_zoom,
+                    true,
                 )
                 .is_err()
             {
