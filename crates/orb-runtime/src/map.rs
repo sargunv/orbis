@@ -1250,7 +1250,11 @@ impl Map {
 
         let now = frame_time;
         let mut fading = false;
-        if let Some(style) = &mut self.style {
+        // A prepared frame leaves paint to the frame that draws: it asks
+        // for tiles sooner.
+        if let Some(style) = &mut self.style
+            && target.is_some()
+        {
             let mut images = self.services.images.0.lock().expect("images poisoned");
             let missing;
             (fading, missing) = crate::paint::frame(
@@ -1266,6 +1270,8 @@ impl Map {
             for name in missing {
                 self.events.push(MapEvent::StyleImageMissing { name });
             }
+        }
+        if let Some(style) = &mut self.style {
             style.symbol_tiles.clear();
         }
         let default_light;
