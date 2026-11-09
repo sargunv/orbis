@@ -9,9 +9,9 @@
 //! or a DEM tile's pixels as the transferred `buffer` and an image tile as
 //! the transferred `image` bitmap. The page copies only a packed tile's
 //! header into wasm memory; the payload goes from the buffer to the GPU.
-//! A tile, its relayouts and its queries go to job worker
-//! `hash(source, tile) mod N`, which has its data; a glyph unit to its
-//! owner worker. A worker that is lost (its wasm trapped, or it died) fails
+//! A tile goes to the job worker with the fewest requests in flight, and
+//! its relayouts and queries follow it there, where its data is; a glyph
+//! unit goes to its owner worker. A worker that is lost (its wasm trapped, or it died) fails
 //! the queries and rasters it had, which the map retries. The page puts
 //! another in its place, which this sends the style; or, past the page's
 //! limit, its share goes to the next worker on. The loads it had go again
@@ -21,7 +21,6 @@
 //! worker each time it is loaded.
 
 use std::collections::{HashMap, VecDeque};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 use js_sys::{ArrayBuffer, Object, Reflect};
@@ -87,6 +86,10 @@ struct State {
     heads: Vec<(String, Arc<Vec<u8>>)>,
     /// Workers lost.
     lost: Vec<bool>,
+    /// The worker each tile (by source) went to, the latest
+    /// [`HOMES`] of them, oldest first in `home_order`.
+    homes: HashMap<(u32, TileIndex), u32>,
+    home_order: VecDeque<(u32, TileIndex)>,
     /// Bytes of packed headers copied into this worker's wasm memory.
     header_bytes: u64,
     /// Replies received.
@@ -391,11 +394,35 @@ fn quarantine(why: String) -> TileResult {
     }
 }
 
-/// The job worker that loaded `tile` of `source`: `hash(source, tile) mod N`.
-fn owner(source: u32, tile: TileIndex, workers: u32) -> u32 {
-    let mut hasher = DefaultHasher::new();
-    (source, tile).hash(&mut hasher);
-    (hasher.finish() % u64::from(workers)) as u32
+/// Tiles whose worker is remembered: far more than the workers keep
+/// decoded. A tile forgotten goes to a worker afresh, which fetches it again.
+const HOMES: usize = 8192;
+
+impl State {
+    /// The worker `tile` of `source` went to, or the one with the fewest
+    /// requests in flight, which becomes its home.
+    fn home(&mut self, source: u32, tile: TileIndex) -> u32 {
+        let key = (source, tile);
+        if let Some(&worker) = self.homes.get(&key) {
+            return worker;
+        }
+        let mut busy = vec![0usize; self.lost.len()];
+        for &(worker, _) in self.sent_to.values() {
+            busy[worker as usize] += 1;
+        }
+        let worker = (0..self.lost.len())
+            .filter(|&w| !self.lost[w])
+            .min_by_key(|&w| busy[w])
+            .unwrap_or(0) as u32;
+        if self.home_order.len() == HOMES
+            && let Some(oldest) = self.home_order.pop_front()
+        {
+            self.homes.remove(&oldest);
+        }
+        self.homes.insert(key, worker);
+        self.home_order.push_back(key);
+        worker
+    }
 }
 
 /// Copies a packed tile's header out of `buffer`: its length, then its
@@ -424,16 +451,17 @@ fn route(lost: &[bool], preferred: u32) -> Option<u32> {
 
 impl WorkerJobs {
     /// Sends the request `make` builds with its id to the worker
-    /// `preferred` routes to, its done kept by `keep`. With every worker
-    /// lost, the request fails at once.
+    /// `preferred` picks (or the next one on, while it's lost), its done
+    /// kept by `keep`. With every worker lost, the request fails at once.
     fn send(
         &self,
-        preferred: u32,
+        preferred: impl FnOnce(&mut State) -> u32,
         load: Option<TileRequest>,
         keep: impl FnOnce(&mut State, u32),
         make: impl FnOnce(u32) -> JobRequest,
     ) {
         let mut state = self.state.lock().expect("jobs poisoned");
+        let preferred = preferred(&mut state);
         let id = state.next_id;
         state.next_id = id.wrapping_add(1);
         keep(&mut state, id);
@@ -493,10 +521,16 @@ impl Jobs for WorkerJobs {
         })));
     }
 
+    fn prefetch_glyphs(&self, style: u64, urls: Vec<String>) {
+        // Each worker lays out with its own glyph metrics.
+        self.broadcast(&bytes(&wire::encode(&JobRequest::Glyphs { style, urls })));
+    }
+
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
         // A unit's owner worker rasterizes it.
+        let owner = request.owner(self.workers);
         self.send(
-            request.owner(self.workers),
+            |_| owner,
             None,
             |state, id| drop(state.rasters.insert(id, done)),
             |id| JobRequest::Raster { id, request },
@@ -518,8 +552,9 @@ impl Jobs for WorkerJobs {
                 found => found.is_some(),
             }
         };
+        let (source, tile) = (request.source, request.tile);
         self.send(
-            owner(request.source, request.tile, self.workers),
+            |state| state.home(source, tile),
             Some(request.clone()),
             |state, id| {
                 state.pending.insert(id, done);
@@ -532,8 +567,9 @@ impl Jobs for WorkerJobs {
     }
 
     fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
+        let (source, tile) = (request.tile.source, request.tile.tile);
         self.send(
-            owner(request.tile.source, request.tile.tile, self.workers),
+            |state| state.home(source, tile),
             None,
             |state, id| drop(state.features.insert(id, done)),
             |id| JobRequest::Features { id, request },
@@ -541,8 +577,9 @@ impl Jobs for WorkerJobs {
     }
 
     fn cluster(&self, request: orb_runtime::ClusterRequest, done: orb_runtime::QueryDone) {
+        let (source, tile) = (request.tile.source, request.tile.tile);
         self.send(
-            owner(request.tile.source, request.tile.tile, self.workers),
+            |state| state.home(source, tile),
             None,
             |state, id| drop(state.answers.insert(id, done)),
             |id| JobRequest::Cluster { id, request },
@@ -609,6 +646,10 @@ impl JobWorker {
             }
             JobRequest::ArchiveHead { url, head } => {
                 self.host.add_archive_head(&url, &head);
+                return Ok(None);
+            }
+            JobRequest::Glyphs { style, urls } => {
+                self.host.prefetch_glyphs(style, urls);
                 return Ok(None);
             }
             JobRequest::Cluster { id, request } => {

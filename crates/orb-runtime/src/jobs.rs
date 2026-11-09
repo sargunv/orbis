@@ -34,6 +34,11 @@ pub enum JobRequest {
         style: u64,
         icons: SpriteIcons,
     },
+    /// [`Jobs::prefetch_glyphs`].
+    Glyphs {
+        style: u64,
+        urls: Vec<String>,
+    },
     Load {
         id: u32,
         request: TileRequest,
