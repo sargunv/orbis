@@ -863,37 +863,8 @@ impl Map {
         frame_time: f64,
     ) -> Result<Option<FrameReport>, Error> {
         self.last_frame = Some((frame_time, Instant::now()));
-        if !target.same_runtime(&self.shared) {
-            return Err(Error::InvalidArgument(
-                "the target belongs to another runtime".into(),
-            ));
-        }
-        // A lost GPU is replaced before the frame: texture
-        // targets are made again, and window targets fail with
-        // `TargetLost` for the host to make on the new one.
-        if self.runtime.lost() {
-            if target.is_window() {
-                target.release();
-            }
-            self.runtime.recover()?;
-        }
-        // The runtime replaced its device: draw on the new one, laying the
-        // tiles out again.
-        if self.device != self.shared.generation.get() {
-            self.device = self.shared.generation.get();
-            self.renderer = None;
-            self.dirty = true;
-        }
+        self.ready_for(target)?;
         let format = target.format();
-        if let Some(renderer) = &self.renderer
-            && renderer.format() != format
-        {
-            return Err(Error::InvalidArgument(format!(
-                "this map draws {:?} targets, not {:?}",
-                renderer.format().color,
-                format.color
-            )));
-        }
         let viewport = target.viewport();
         // The frame borrows the device once: the target begins and ends
         // with it, and it's let go before anything else here borrows it.
@@ -935,23 +906,48 @@ impl Map {
         Ok(Some(report))
     }
 
-    /// Applies what has arrived without drawing a frame
-    /// ([`orb_runtime::Map::apply_arrivals`]), with the renderer of
-    /// `target`'s format.
-    fn arrive(&mut self, target: &Target) -> Result<(), Error> {
+    /// Checks that this map can draw into `target`, after bringing it to
+    /// the runtime's current device.
+    fn ready_for(&mut self, target: &mut Target) -> Result<(), Error> {
         if !target.same_runtime(&self.shared) {
             return Err(Error::InvalidArgument(
                 "the target belongs to another runtime".into(),
             ));
         }
+        // A lost GPU is replaced before the frame: texture
+        // targets are made again, and window targets fail with
+        // `TargetLost` for the host to make on the new one.
         if self.runtime.lost() {
+            if target.is_window() {
+                target.release();
+            }
             self.runtime.recover()?;
         }
+        // The runtime replaced its device: draw on the new one, laying the
+        // tiles out again.
         if self.device != self.shared.generation.get() {
             self.device = self.shared.generation.get();
             self.renderer = None;
             self.dirty = true;
         }
+        let format = target.format();
+        if let Some(renderer) = &self.renderer
+            && renderer.format() != format
+        {
+            return Err(Error::InvalidArgument(format!(
+                "this map draws {:?} targets, not {:?}",
+                renderer.format().color,
+                format.color
+            )));
+        }
+        Ok(())
+    }
+
+    /// Applies what has arrived without drawing a frame
+    /// ([`orb_runtime::Map::apply_arrivals`]), with the renderer of
+    /// `target`'s format.
+    fn arrive(&mut self, target: &mut Target) -> Result<(), Error> {
+        self.ready_for(target)?;
         let format = target.format();
         {
             let mut device = self.shared.gpu.borrow_mut();
@@ -961,13 +957,6 @@ impl Map {
             let renderer = self
                 .renderer
                 .get_or_insert_with(|| map.create_renderer(gpu, format));
-            if renderer.format() != format {
-                return Err(Error::InvalidArgument(format!(
-                    "this map draws {:?} targets, not {:?}",
-                    renderer.format().color,
-                    format.color
-                )));
-            }
             map.apply_arrivals(gpu, renderer, target.scale() as f32);
         }
         self.events
