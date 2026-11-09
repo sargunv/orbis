@@ -4,8 +4,8 @@
 <script type="module">
 // `cargo xtask rt --platform chrome`'s page (web/scripts/render-fixtures.mjs):
 // one GL JS fixture through the orbis package, settled as orb-fixtures
-// settles it natively. `window.fixture(request)` resolves to its straight
-// RGBA pixels as base64, or with `query` set to its features' JSON.
+// settles it natively. `window.fixture(request)` resolves to its
+// premultiplied RGBA pixels as base64, or with `query` set to its features' JSON.
 import { createMap } from "orbis";
 
 const assets = new URL("fixtures/", location.href).href;
@@ -85,7 +85,7 @@ window.fixture = async (r) => {
       await settle();
       return JSON.stringify(await map.queryRenderedFeatures([r.query.slice(0, 2), r.query.slice(2)]));
     }
-    const { data } = await map.readPixels();
+    const { data } = await map.readPixels({ premultiplied: true });
     let binary = "";
     for (let i = 0; i < data.length; i += 8192) binary += String.fromCharCode(...data.subarray(i, i + 8192));
     return { rgba: btoa(binary), warnings, frames, tiles_drawn: stats.tilesDrawn, timed_out: timedOut };

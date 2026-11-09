@@ -382,19 +382,8 @@ fn warn(map: &mut Map) {
 
 /// Writes a picture as a PNG of straight alpha.
 fn write_png(path: &Path, image: Image) -> Result<(), String> {
-    let Image {
-        width,
-        height,
-        mut pixels,
-    } = image;
-    for p in pixels.as_chunks_mut::<4>().0 {
-        let a = u32::from(p[3]);
-        if a != 0 && a != 255 {
-            for c in &mut p[..3] {
-                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
-            }
-        }
-    }
+    let (width, height) = (image.width, image.height);
+    let pixels = image.into_straight();
     let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Rgba);

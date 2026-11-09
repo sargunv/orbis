@@ -82,8 +82,8 @@ impl Chrome {
         self.receive()
     }
 
-    /// Renders a test: its straight RGBA pixels, or `None` with the
-    /// driver's error in the response.
+    /// Renders a test: its RGBA pixels, unpremultiplied as the native
+    /// readback is, or `None` with the driver's error in the response.
     pub(crate) fn render(
         &mut self,
         style: &str,
@@ -100,11 +100,12 @@ impl Chrome {
         if pixels.len() != width as usize * height as usize * 4 {
             return Err("Chrome returned the wrong number of RGBA bytes".into());
         }
-        let image = Image {
+        let mut image = Image {
             width,
             height,
             pixels,
         };
+        image.unpremultiply();
         Ok((Some(image), response))
     }
 

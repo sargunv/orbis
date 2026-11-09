@@ -95,6 +95,16 @@ pub struct Image {
     pub pixels: Vec<u8>,
 }
 
+impl Image {
+    /// The pixels as straight (not premultiplied) RGBA8, for a PNG:
+    /// [`orb_runtime::unpremultiply`].
+    pub fn into_straight(self) -> Vec<u8> {
+        let mut pixels = self.pixels;
+        orb_runtime::unpremultiply(&mut pixels);
+        pixels
+    }
+}
+
 /// A tile to draw with [`Map::render_tile`].
 #[derive(Clone, Debug)]
 pub struct TileRequest {

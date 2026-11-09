@@ -1,8 +1,9 @@
 // The Chrome transport for orb-fixtures: web/demo/fixture.html, which
 // draws each fixture through the orbis package. Rust sends one JSON request
-// per line; a render's response names straight RGBA bytes written by this
-// process, a query's (`query` set) carries its features' JSON. Fixture
-// selection, metadata and pixel comparison belong to Rust.
+// per line; a render's response names premultiplied RGBA bytes written by
+// this process, a query's (`query` set) carries its features' JSON.
+// Fixture selection, metadata, unpremultiplying and pixel comparison
+// belong to Rust.
 import { writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";

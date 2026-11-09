@@ -297,6 +297,26 @@ pub(crate) fn premultiply(pixels: &mut [u8]) {
     }
 }
 
+/// A drawn picture's premultiplied RGBA8 as straight alpha, in place, for
+/// PNGs and `ImageData`. Light added over transparency (the globe's
+/// atmosphere in space, blended additively as in GL JS) leaves more
+/// colour than alpha, which straight alpha can't hold: its alpha rises to
+/// its brightest channel, so it keeps its colour and shows exactly as the
+/// canvas does over black. Dividing by the old alpha would clamp the halo
+/// to white.
+pub fn unpremultiply(pixels: &mut [u8]) {
+    for texel in pixels.as_chunks_mut::<4>().0 {
+        let a = texel.iter().copied().max().expect("four bytes");
+        texel[3] = a;
+        let a = u32::from(a);
+        if a != 0 && a != 255 {
+            for c in &mut texel[..3] {
+                *c = ((u32::from(*c) * 255 + a / 2) / a) as u8;
+            }
+        }
+    }
+}
+
 /// A finished tile, ready to upload: in core memory, or in host-held bytes.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TileResult {
@@ -544,6 +564,21 @@ pub(crate) mod tests {
         premultiply(&mut texels);
         // Math.round(c * a / 255).
         assert_eq!(texels, [128, 64, 2, 128, 0, 0, 0, 0, 9, 8, 7, 255]);
+    }
+
+    /// Ordinary pixels divide by their alpha; the atmosphere's halo in
+    /// space (colour above alpha) keeps its colour instead of turning
+    /// white.
+    #[test]
+    fn unpremultiplies_added_light_without_whitening_it() {
+        let mut texels = [64, 32, 0, 128, 55, 80, 100, 13, 7, 10, 13, 0, 9, 8, 7, 255];
+        unpremultiply(&mut texels);
+        assert_eq!(
+            texels,
+            [
+                128, 64, 0, 128, 140, 204, 255, 100, 137, 196, 255, 13, 9, 8, 7, 255
+            ]
+        );
     }
 
     /// The header is postcard; the streams follow it raw, where the

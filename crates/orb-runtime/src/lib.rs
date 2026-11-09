@@ -55,7 +55,7 @@ pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use job_host::{JobHost, Loaded};
 pub use jobs::{
     ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, TileDone, TileImage, TileResult, pack,
-    packed_header, unpack,
+    packed_header, unpack, unpremultiply,
 };
 pub use loader::TileLocation;
 pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};

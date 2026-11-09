@@ -263,9 +263,13 @@ export class OrbisMap {
   get stats(): FrameStats | undefined { return this.#stats; }
 
   /** The next frame the map draws, as the canvas shows it: for
-   * screenshots and tests. Asks for that frame. */
-  async readPixels(): Promise<ImageData> {
-    const pixels: Promise<Uint8Array> = this.#host.core.readNextFrame();
+   * screenshots and tests. Asks for that frame. Its pixels are straight
+   * RGBA, or with `premultiplied` the canvas's own bytes. Light added over
+   * transparency (the globe's atmosphere in space) has more colour than
+   * alpha there; straight, its alpha rises to its brightest channel, so
+   * it shows as the canvas does over black. */
+  async readPixels({ premultiplied = false }: { premultiplied?: boolean } = {}): Promise<ImageData> {
+    const pixels: Promise<Uint8Array> = this.#host.core.readNextFrame(premultiplied);
     this.#request();
     const data = await pixels;
     return new ImageData(new Uint8ClampedArray(data.buffer as ArrayBuffer, data.byteOffset, data.length),

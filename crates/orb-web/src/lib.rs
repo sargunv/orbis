@@ -814,11 +814,12 @@ impl OrbisMap {
         self.map.retry_failed_tiles();
     }
 
-    /// The next frame's pixels, straight (not premultiplied) RGBA8 rows top
-    /// to bottom, as `ImageData` holds them: what the canvas shows, for
-    /// screenshots and tests. Resolves once that frame is drawn.
+    /// The next frame's pixels, RGBA8 rows top to bottom: straight, as
+    /// `ImageData` holds them, or premultiplied, as the canvas holds them.
+    /// What the canvas shows, for screenshots and tests. Resolves once that
+    /// frame is drawn.
     #[wasm_bindgen(js_name = readNextFrame)]
-    pub fn read_next_frame(&mut self) -> js_sys::Promise {
+    pub fn read_next_frame(&mut self, premultiplied: bool) -> js_sys::Promise {
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.read_next = Some(sender);
         let bgra = snapshot::bgra(self.canvas.format().color);
@@ -826,7 +827,7 @@ impl OrbisMap {
             let pixels = receiver
                 .await
                 .map_err(|_| JsValue::from_str("the map went before its next frame"))?;
-            Ok(snapshot::straight_rgba(pixels, bgra).into())
+            Ok(snapshot::rgba(pixels, bgra, !premultiplied).into())
         })
     }
 

@@ -58,14 +58,19 @@ impl Image {
             .map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Like the GL harness's Uint8Array division, truncate to bytes after
-    /// unassociating alpha. Wgpu readback already has top-to-bottom scanlines.
+    /// Unassociates premultiplied alpha as GL JS's harness wrote the
+    /// expected images: dividing in place in a `Uint8Array`, which
+    /// truncates and wraps modulo 256. Light added over a transparent
+    /// pixel (the globe's atmosphere in space) has more colour than alpha,
+    /// so its expected bytes wrapped, and a saturating division would
+    /// differ from them wherever the renderers agree. Wgpu readback
+    /// already has top-to-bottom scanlines.
     pub(crate) fn unpremultiply(&mut self) {
         for pixel in self.pixels.as_chunks_mut::<4>().0 {
             let alpha = f64::from(pixel[3]) / 255.0;
             if alpha != 0.0 {
                 for c in &mut pixel[..3] {
-                    *c = (f64::from(*c) / alpha) as u8;
+                    *c = (f64::from(*c) / alpha) as u32 as u8;
                 }
             }
         }

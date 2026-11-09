@@ -100,7 +100,7 @@ impl OrbisMap {
         gpu.destroy_texture(snapshot.texture);
         self.map.set_mode(RenderMode::Continuous);
         Ok(wasm_bindgen_futures::future_to_promise(async move {
-            Ok(straight_rgba(pixels.await, bgra).into())
+            Ok(rgba(pixels.await, bgra, true).into())
         }))
     }
 
@@ -122,19 +122,16 @@ pub(crate) fn bgra(format: TextureFormat) -> bool {
     )
 }
 
-/// A target's premultiplied pixels as straight RGBA, as `ImageData` holds
-/// them, truncating as GL JS's render tests do.
-pub(crate) fn straight_rgba(mut pixels: Vec<u8>, bgra: bool) -> js_sys::Uint8Array {
-    for px in pixels.as_chunks_mut::<4>().0 {
-        if bgra {
+/// A target's premultiplied pixels as RGBA: straight, as `ImageData` holds
+/// them ([`orb_runtime::unpremultiply`]), or premultiplied as they are.
+pub(crate) fn rgba(mut pixels: Vec<u8>, bgra: bool, straight: bool) -> js_sys::Uint8Array {
+    if bgra {
+        for px in pixels.as_chunks_mut::<4>().0 {
             px.swap(0, 2);
         }
-        let a = u32::from(px[3]);
-        if a != 0 && a != 255 {
-            for c in &mut px[..3] {
-                *c = (u32::from(*c) * 255 / a).min(255) as u8;
-            }
-        }
+    }
+    if straight {
+        orb_runtime::unpremultiply(&mut pixels);
     }
     js_sys::Uint8Array::from(pixels.as_slice())
 }
