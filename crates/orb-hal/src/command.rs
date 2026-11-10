@@ -26,6 +26,14 @@ pub enum Pass {
         destination_offset: u64,
         size: u64,
     },
+    /// Copies the first `words` words of `source` into `destination`, an
+    /// R32Uint texture, row after row of its width: a table into the data
+    /// texture a draw stage without storage buffers reads.
+    CopyBufferToTexture {
+        source: BufferId,
+        destination: TextureId,
+        words: u64,
+    },
     /// Zeroes a buffer range; `size: None` clears to the end.
     ClearBuffer {
         buffer: BufferId,

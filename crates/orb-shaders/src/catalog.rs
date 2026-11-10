@@ -4,6 +4,7 @@ pub(crate) const TYPES: &str = wgsl!("types");
 const PROJECT: &str = wgsl!("project");
 const DRAW: &str = concat!(wgsl!("bezier"), wgsl!("draw"), wgsl!("project"));
 const FETCH: &str = wgsl!("fetch");
+const FETCH_TEXTURE: &str = concat!(wgsl!("fetch_texture"), generated!("rows_texture"));
 const PATTERN: &str = wgsl!("pattern");
 const EXTRUSION: &str = wgsl!("extrusion");
 const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
@@ -49,12 +50,23 @@ pub struct Shader {
 
 impl Shader {
     pub fn source(&self) -> String {
+        self.source_with(false)
+    }
+
+    /// Whether its draw stages read the scene's tables through `fetch`.
+    pub fn fetches(&self) -> bool {
+        self.parts.contains(&DRAW)
+    }
+
+    /// Its source, reading the scene's tables from data textures rather
+    /// than storage buffers when `textures`.
+    pub fn source_with(&self, textures: bool) -> String {
         let mut source: String = self.parts.concat();
         if self.parts.contains(&CLIP_PLANES) {
             source = source.replace("//planes ", "");
         }
         if self.parts.contains(&DRAW) {
-            source.push_str(FETCH);
+            source.push_str(if textures { FETCH_TEXTURE } else { FETCH });
         }
         source
     }

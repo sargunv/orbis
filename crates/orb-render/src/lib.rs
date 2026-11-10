@@ -307,6 +307,9 @@ pub struct Renderer {
     image_bindings: ImageBindings,
     /// The image texture the scene group binds.
     images_bound: TextureId,
+    /// With [`tables_in_textures`], the data textures the draw stages read
+    /// the tables from.
+    data: Option<DataTextures>,
     nearest: SamplerId,
 }
 
@@ -398,19 +401,41 @@ impl Renderer {
             visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
             ty: BindingType::Storage { read_only: true },
         };
+        let mut tables = [
+            vf_storage(1),
+            storage(2, vs, true),
+            storage(3, vs, true),
+            storage(4, vs, true),
+            storage(5, vs, true),
+            // Extrusions' fragments read colours over the elevation.
+            storage(6, vf, true),
+            storage(7, vs, true),
+            storage(8, ShaderStages::FRAGMENT, true),
+        ];
+        if tables_in_textures() {
+            for (i, entry) in tables.iter_mut().enumerate() {
+                if rows_only() && (3..6).contains(&i) {
+                    continue;
+                }
+                entry.ty = BindingType::Texture {
+                    sample: TextureSampleType::Uint,
+                    dimension: TextureViewDimension::D2,
+                };
+            }
+        }
+        let [t1, t2, t3, t4, t5, t6, t7, t8] = tables;
         let draw_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "scene",
             entries: &[
                 uniform(0, vf),
-                vf_storage(1),
-                storage(2, vs, true),
-                storage(3, vs, true),
-                storage(4, vs, true),
-                storage(5, vs, true),
-                // Extrusions' fragments read colours over the elevation.
-                storage(6, vf, true),
-                storage(7, vs, true),
-                storage(8, ShaderStages::FRAGMENT, true),
+                t1,
+                t2,
+                t3,
+                t4,
+                t5,
+                t6,
+                t7,
+                t8,
                 BindGroupLayoutEntry {
                     binding: 9,
                     visibility: ShaderStages::FRAGMENT,
@@ -515,12 +540,16 @@ impl Renderer {
             sample_count: 1,
             mip_levels: 1,
         });
+        let data = (tables_in_textures()
+            || option_env!("ORB_MIRROR_TABLES").is_some()
+            || std::env::var_os("ORB_MIRROR_TABLES").is_some())
+        .then(|| DataTextures::new(gpu, &scene, &images));
         let draw_group = scene_group(
             gpu,
             draw_layout,
             &b,
             b.frame,
-            &images,
+            (&images, data.as_ref()),
             (glyphs.texture(), nearest, no_dem, no_terrain_depth),
         );
         let cull_group = cull_group(gpu, cull_layout, &b);
@@ -636,6 +665,7 @@ impl Renderer {
             glyphs,
             images_bound: image_bindings.texture,
             image_bindings,
+            data,
         }
     }
 
@@ -1620,6 +1650,10 @@ impl Renderer {
                 self.buffers_bound = buffers;
                 gpu.destroy_bind_group(self.cull.1);
                 self.cull.1 = cull_group(gpu, self.cull_layout, self.scene.buffers());
+                if let Some(data) = self.data.take() {
+                    data.release(gpu);
+                    self.data = Some(DataTextures::new(gpu, &self.scene, &self.image_bindings));
+                }
             }
             gpu.destroy_bind_group(self.draw_group);
             let b = *self.scene.buffers();
@@ -1628,7 +1662,7 @@ impl Renderer {
                 self.draw_layout,
                 &b,
                 b.frame,
-                &self.image_bindings,
+                (&self.image_bindings, self.data.as_ref()),
                 (self.glyphs.texture(), self.nearest, dem, terrain_depth),
             );
             self.glyphs_bound = self.glyphs.revision();
@@ -1900,6 +1934,9 @@ impl Renderer {
             stats.dispatches += dispatches;
             passes.extend(mips);
         }
+        if let Some(data) = &self.data {
+            passes.extend(data.copies(|i| i != VISIBLE_DATA));
+        }
         // The dispatch writes every node's arguments, zeros included, so it
         // runs even when nothing is resident. Indexed nodes' batches add to
         // cleared arguments.
@@ -1923,6 +1960,9 @@ impl Renderer {
                     ComputeCommand::Dispatch { x, y, z: 1 },
                 ],
             }));
+        }
+        if let Some(data) = &self.data {
+            passes.extend(data.copies(|i| i == VISIBLE_DATA));
         }
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
@@ -2051,7 +2091,7 @@ impl Renderer {
                 self.draw_layout,
                 &b,
                 level.frame[page],
-                &self.image_bindings,
+                (&self.image_bindings, self.data.as_ref()),
                 // Draped content isn't hidden by the terrain it's on.
                 (
                     self.glyphs.texture(),
@@ -2341,11 +2381,122 @@ impl DrapeZoom {
 
 /// A module of `shader`'s WGSL.
 fn shader_module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
+    let textures = tables_in_textures() && shader.fetches();
     gpu.create_shader_module(&ShaderModuleDesc {
         label: shader.label,
-        source: shader.source().into(),
-        ir: shader.ir(),
+        source: {
+            let mut s = shader.source_with(textures);
+            if textures && rows_only() {
+                for (a, b) in [
+                    (
+                        "var vertices: texture_2d<u32>;",
+                        "var<storage, read> vertices: array<u32>;",
+                    ),
+                    (
+                        "var indices: texture_2d<u32>;",
+                        "var<storage, read> indices: array<u32>;",
+                    ),
+                    (
+                        "var props: texture_2d<u32>;",
+                        "var<storage, read> props: array<u32>;",
+                    ),
+                    ("data_word(vertices, i)", "vertices[i]"),
+                    ("data_word(indices, i >> 1u)", "indices[i >> 1u]"),
+                    ("data_word(props, i)", "props[i]"),
+                ] {
+                    assert!(s.contains(a), "{a}");
+                    s = s.replace(a, b);
+                }
+            }
+            s.into()
+        },
+        ir: if textures { None } else { shader.ir() },
     })
+}
+
+/// Whether the draw stages read the scene's tables from data textures
+/// rather than storage buffers: `ORB_TABLES_IN_TEXTURES` set (natively when
+/// run, on the web when built). An experiment for #140.
+pub(crate) fn tables_in_textures() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        option_env!("ORB_TABLES_IN_TEXTURES").is_some()
+            || (!cfg!(target_arch = "wasm32")
+                && std::env::var_os("ORB_TABLES_IN_TEXTURES").is_some())
+    })
+}
+
+/// With [`tables_in_textures`]: only the row tables in textures, the
+/// vertex, index and property arenas still in storage buffers.
+fn rows_only() -> bool {
+    std::env::var_os("ORB_TEXTURE_ROWS_ONLY").is_some()
+}
+
+/// Words a data texture's row holds: fetch_texture.wgsl's DATA_WIDTH.
+const DATA_WIDTH: u64 = 1 << 12;
+/// The visible list's data texture, which the cull writes each frame.
+const VISIBLE_DATA: usize = 2;
+
+/// The tables the draw stages read, as R32Uint data textures: tiles,
+/// chunks, visible, vertices, indices, props, node cull, image rects.
+#[derive(Debug)]
+struct DataTextures {
+    buffers: [BufferId; 8],
+    textures: [TextureId; 8],
+    words: [u64; 8],
+}
+
+impl DataTextures {
+    fn new(gpu: &mut dyn Gpu, scene: &Scene, images: &ImageBindings) -> Self {
+        let b = scene.buffers();
+        let buffers = [
+            b.tiles,
+            b.chunks,
+            b.visible,
+            b.vertices,
+            b.indices,
+            b.props,
+            b.node_cull,
+            images.table,
+        ];
+        let [t, c, v, vx, ix, p, n] = scene.table_words();
+        let words = [t, c, v, vx, ix, p, n, images.table_words];
+        let textures = words.map(|w| {
+            gpu.create_texture(&TextureDesc {
+                label: "data",
+                width: DATA_WIDTH as u32,
+                height: w.div_ceil(DATA_WIDTH).max(1) as u32,
+                array_layers: 1,
+                dimension: TextureViewDimension::D2,
+                format: TextureFormat::R32Uint,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+                sample_count: 1,
+                mip_levels: 1,
+            })
+        });
+        Self {
+            buffers,
+            textures,
+            words,
+        }
+    }
+
+    fn copies(&self, which: impl Fn(usize) -> bool) -> Vec<Pass> {
+        (0..8)
+            .filter(|&i| which(i))
+            .map(|i| Pass::CopyBufferToTexture {
+                source: self.buffers[i],
+                destination: self.textures[i],
+                words: self.words[i],
+            })
+            .collect()
+    }
+
+    fn release(self, gpu: &mut dyn Gpu) {
+        for t in self.textures {
+            gpu.destroy_texture(t);
+        }
+    }
 }
 
 /// The vector families' pipelines (fill, fill outline, line, circle), each
@@ -2486,7 +2637,7 @@ fn scene_group(
     layout: BindGroupLayoutId,
     b: &crate::scene::SceneBuffers,
     frame: BufferId,
-    images: &ImageBindings,
+    (images, data): (&ImageBindings, Option<&DataTextures>),
     (glyphs, nearest, dem, terrain_depth): (TextureId, SamplerId, TextureId, TextureId),
 ) -> BindGroupId {
     let whole = BindingResource::buffer;
@@ -2512,6 +2663,14 @@ fn scene_group(
         binding,
         resource: BindingResource::Texture { texture, dimension },
     };
+    if let Some(data) = data.filter(|_| tables_in_textures()) {
+        for (i, &t) in data.textures.iter().enumerate() {
+            if rows_only() && (3..6).contains(&i) {
+                continue;
+            }
+            entries[i + 1] = texture(i as u32 + 1, t, TextureViewDimension::D2);
+        }
+    }
     entries.extend([
         texture(9, images.texture, TextureViewDimension::D2Array),
         BindGroupEntry {

@@ -974,14 +974,22 @@ impl Scene {
                 FRAME_WORDS as u64,
                 BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             ),
-            tiles: buffer("tiles", words(c.placements, TILE_WORDS), storage),
+            tiles: buffer(
+                "tiles",
+                words(c.placements, TILE_WORDS),
+                storage | BufferUsages::COPY_SRC,
+            ),
             chunks: buffer("chunks", words(c.chunks, CHUNK_WORDS), POOL_USAGE),
             candidates: buffer(
                 "candidates",
                 words(c.candidates, CANDIDATE_WORDS),
                 storage | BufferUsages::COPY_SRC,
             ),
-            node_cull: buffer("node cull", words(c.nodes, NODE_CULL_WORDS), storage),
+            node_cull: buffer(
+                "node cull",
+                words(c.nodes, NODE_CULL_WORDS),
+                storage | BufferUsages::COPY_SRC,
+            ),
             visible: buffer(
                 "visible",
                 words(c.candidates, VISIBLE_WORDS),
@@ -2098,6 +2106,22 @@ impl Scene {
     }
 
     /// Changes whenever a pool moved into a larger buffer.
+    /// The words of the tables the draw stages read: tiles, chunks,
+    /// visible, vertices, indices, props, node cull.
+    pub(crate) fn table_words(&self) -> [u64; 7] {
+        let c = &self.capacity;
+        let words = |count: u32, per: usize| u64::from(count) * per as u64;
+        [
+            words(c.placements, TILE_WORDS),
+            words(c.chunks, CHUNK_WORDS),
+            words(c.candidates, VISIBLE_WORDS),
+            u64::from(c.vertex_words),
+            u64::from(c.index_words),
+            u64::from(c.prop_words),
+            words(c.nodes, NODE_CULL_WORDS),
+        ]
+    }
+
     pub(crate) fn buffers_revision(&self) -> u64 {
         self.buffers_revision
     }

@@ -30,6 +30,7 @@ pub struct ImageUpload<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageBindings {
     pub table: BufferId,
+    pub table_words: u64,
     pub texture: TextureId,
     pub sampler: SamplerId,
     pub dashes: TextureId,
@@ -85,7 +86,7 @@ impl ImageAtlas {
         let table = gpu.create_buffer(&BufferDesc {
             label: "image rects",
             size: u64::from(capacity) * 32,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
         });
         let sampler = gpu.create_sampler(&SamplerDesc {
             label: "images",
@@ -98,6 +99,7 @@ impl ImageAtlas {
         Self {
             bindings: ImageBindings {
                 table,
+                table_words: u64::from(capacity) * 8,
                 texture,
                 sampler,
                 dashes: lines.texture,

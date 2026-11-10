@@ -13,6 +13,13 @@ macro_rules! wgsl {
     };
 }
 
+/// A WGSL module the build script generated.
+macro_rules! generated {
+    ($name:literal) => {
+        include_str!(concat!(env!("OUT_DIR"), "/wgsl/", $name, ".wgsl"))
+    };
+}
+
 mod catalog;
 pub use catalog::*;
 
@@ -165,6 +172,13 @@ mod tests {
                     assert!(!is_array(base), "{name}: indexes an array value");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn texture_fetch_shaders_validate() {
+        for shader in SHADERS.iter().filter(|s| s.fetches()) {
+            parse(shader.label, &shader.source_with(true));
         }
     }
 

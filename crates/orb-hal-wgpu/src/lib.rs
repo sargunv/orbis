@@ -1196,6 +1196,50 @@ impl Gpu for WgpuGpu {
                         );
                     }
                 }
+                Pass::CopyBufferToTexture {
+                    source,
+                    destination,
+                    words,
+                } => {
+                    let texture = self.texture(*destination);
+                    let width = u64::from(texture.width());
+                    let (rows, rest) = (words / width, words % width);
+                    let copy = |offset: u64, y: u64, size: (u64, u64)| {
+                        (
+                            wgpu::TexelCopyBufferInfo {
+                                buffer: &self.buffers[source.0],
+                                layout: wgpu::TexelCopyBufferLayout {
+                                    offset,
+                                    bytes_per_row: Some(width as u32 * 4),
+                                    rows_per_image: None,
+                                },
+                            },
+                            wgpu::TexelCopyTextureInfo {
+                                texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d {
+                                    x: 0,
+                                    y: y as u32,
+                                    z: 0,
+                                },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::Extent3d {
+                                width: size.0 as u32,
+                                height: size.1 as u32,
+                                depth_or_array_layers: 1,
+                            },
+                        )
+                    };
+                    if rows > 0 {
+                        let (b, t, e) = copy(0, 0, (width, rows));
+                        encoder.copy_buffer_to_texture(b, t, e);
+                    }
+                    if rest > 0 {
+                        let (b, t, e) = copy(rows * width * 4, rows, (rest, 1));
+                        encoder.copy_buffer_to_texture(b, t, e);
+                    }
+                }
                 Pass::ClearBuffer {
                     buffer,
                     offset,

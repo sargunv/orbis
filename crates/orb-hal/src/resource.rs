@@ -78,6 +78,8 @@ pub enum TextureFormat {
     R8Unorm,
     /// Unfilterable single floats: the terrain's depth as a colour.
     R32Float,
+    /// Words of a data texture.
+    R32Uint,
     /// Filterable, blendable half-float density targets.
     Rgba16Float,
     Rgba8Unorm,
@@ -94,6 +96,7 @@ impl TextureFormat {
             Self::R8Unorm => 1,
             Self::Rgba16Float => 8,
             Self::R32Float
+            | Self::R32Uint
             | Self::Rgba8Unorm
             | Self::Rgba8UnormSrgb
             | Self::Bgra8Unorm
