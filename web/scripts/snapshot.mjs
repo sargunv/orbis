@@ -3,8 +3,13 @@
 //
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]]
 //     [--format=mvt|mlt] [--style=<key>|URL]
-//     [--size=WxH] [--compare=reference-map.png] [--lose=<ms>]
-//     [--reopen[=offline]] [--still] [--pair=<left>,<right>]
+//     [--size=WxH] [--dpr=n] [--compare=reference-map.png] [--lose=<ms>]
+//     [--reopen[=offline]] [--still] [--pair=<left>,<right>] [--query=k=v&…]
+//     [--hover=x,y]
+//
+// `--query` adds the demo's own parameters, as a shared link carries them
+// (`light=map&terrain=1`). `--hover` rests the pointer at a point of the
+// page before the shot, where the demo highlights the feature under it.
 //
 // `--pair` shows the demo's comparison of two engines (`orbis`, `gljs`,
 // `native`) side by side and waits for both sides to load.
@@ -38,12 +43,23 @@ const style = args
 const lose = args.find((a) => a.startsWith("--lose="))?.slice("--lose=".length);
 const reopen = args.find((a) => a.startsWith("--reopen"));
 const pair = args.find((a) => a.startsWith("--pair="))?.slice("--pair=".length);
+const hover = args
+  .find((a) => a.startsWith("--hover="))
+  ?.slice("--hover=".length)
+  .split(",")
+  .map(Number);
+const extra = args
+  .find((a) => a.startsWith("--query="))
+  ?.slice("--query=".length);
 let offline = false;
 const [width, height] = (
   args.find((a) => a.startsWith("--size="))?.slice(7) ?? "1024x768"
 )
   .split("x")
   .map(Number);
+const dpr = Number(
+  args.find((a) => a.startsWith("--dpr="))?.slice("--dpr=".length) ?? 1,
+);
 const [out = "snapshot.png", hash = ""] = args.filter(
   (a) => !a.startsWith("--"),
 );
@@ -56,12 +72,17 @@ if (pair) params.set("compare", pair);
 // Snapshots draw the committed extract unless told otherwise.
 if (style) params.set("style", style);
 else params.set("style", `tokyo-${format ?? "mvt"}`);
+for (const [key, value] of new URLSearchParams(extra ?? ""))
+  params.set(key, value);
 const query = `?${params}`;
 const url = `${server.url}${query}${hash}`;
 
 const browser = await launchChromium();
 try {
-  const page = await browser.newPage({ viewport: { width, height } });
+  const page = await browser.newPage({
+    viewport: { width, height },
+    deviceScaleFactor: dpr,
+  });
   let warnings = 0;
   page.on("console", (m) => {
     if (offline && m.text().includes("ERR_INTERNET_DISCONNECTED")) return;
@@ -113,6 +134,11 @@ try {
     console.log(
       `reopened${reopen === "--reopen=offline" ? " offline" : ""}: ${Date.now() - started} ms to idle`,
     );
+  }
+  if (hover) {
+    await page.mouse.move(hover[0], hover[1]);
+    await page.waitForTimeout(500);
+    await idle();
   }
   await page.waitForTimeout(250);
   const stats = await page.evaluate(() => {
