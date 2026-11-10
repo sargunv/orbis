@@ -20,6 +20,34 @@ hosts.
 
 The live demo is at <https://code.sargunv.dev/orbis/>.
 
+## How it differs
+
+MapLibre GL JS and MapLibre Native, and
+[mln-rs](https://github.com/louwers/mln-rs), a file-by-file Rust port of
+Native, share one design: the CPU prepares each tile and issues each tile's
+draw calls every frame. Orbis was designed from scratch around a few
+different ideas:
+
+- **The GPU drives each frame.** Tiles go into large shared buffers once.
+  Each frame, a compute pass picks what's visible and the GPU draws it from
+  pre-recorded command lists, so moving the camera costs the CPU very little.
+- **Three phases.** Work happens once per tile (shaping text, building
+  geometry, on worker threads), once per camera for labels (placement, on its
+  own worker), or every frame in shaders. Each style property lives in the
+  phase that can honour it, which is why Orbis can animate and data-drive
+  more properties than the spec asks for.
+- **The same picture however you got there.** A map you've panned and zoomed
+  draws exactly like a fresh map at that camera. Nothing on screen depends
+  on the path the camera took.
+- **Plain workers on the web.** No shared memory, so no cross-origin
+  isolation headers, and the map runs in a worker to keep the page
+  responsive.
+- **Projections are first class.** Geometry is computed relative to the
+  camera in double precision, so the globe, other projections and coordinate
+  systems aren't special cases of Web Mercator.
+- **Both engines are the reference.** Orbis runs GL JS's and Native's test
+  suites, and where they disagree it aims for whichever looks better.
+
 ## Build and run
 
 [mise](https://mise.jdx.dev) provides the pinned tools (the Rust toolchain
