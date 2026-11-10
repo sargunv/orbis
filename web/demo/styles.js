@@ -185,9 +185,7 @@ const LOCAL = {
 
 /**
  * The picker's catalogue, from data/scenes.json, which orb-demo shows
- * too: local URLs and flights resolved, restyles named by function. The
- * Globe's terrain starts off, as draped lines still jump in width at zoom
- * steps (#151).
+ * too: local URLs and flights resolved, restyles named by function.
  *
  * @type {{ name: string, scenes: Scene[] }[]}
  */

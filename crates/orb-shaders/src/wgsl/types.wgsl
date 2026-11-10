@@ -174,9 +174,6 @@ struct Tile {
     // The remainders of `origin` and `globe_origin`.
     origin_rest: vec2<f32>,
     globe_origin_rest: array<f32, 3>,
-    // A drape placement's style zoom, which the drape pass of that zoom
-    // draws (its frame's `zoom`); 0 for map placements.
-    drape_zoom: f32,
     // The tiles around it at its zoom that draw whole the polygons they
     // own, bit 3 (dy + 1) + dx + 1 (`TileRow::neighbours`).
     neighbours: u32,

@@ -102,19 +102,12 @@ struct Pulled {
     row_words: u32,
 };
 
-// Whether this pass draws placement `tile`: a drape placement only in the
-// drape pass of its zoom, whose frame has that zoom.
-fn drawn_in_pass(tile: u32) -> bool {
-    let zoom = tile_at(tile).drape_zoom;
-    return zoom == 0.0 || zoom == frame.zoom;
-}
-
 // Maps a vertex of a chunk instance to its vertex, or `None` (false) for
 // padding past the chunk's last index.
 fn pull(node_index: u32, instance: u32, index: u32, stride: u32, out: ptr<function, Pulled>) -> bool {
     let entry = visible_at(node_cull_at(node_index).visible_base + instance);
     let chunk = chunk_at(entry.chunk);
-    if index >= chunk.index_count || !drawn_in_pass(entry.tile) {
+    if index >= chunk.index_count {
         return false;
     }
     (*out).tile = entry.tile;
@@ -134,9 +127,6 @@ fn pull_indexed(node_index: u32, index: u32, stride: u32, out: ptr<function, Pul
     let cull = node_cull_at(node_index);
     let run = visible_at(cull.visible_base + (index >> cull.run_shift));
     let chunk = chunk_at(run.chunk);
-    if !drawn_in_pass(run.tile) {
-        return false;
-    }
     (*out).tile = run.tile;
     (*out).vertex = chunk.vertex_base + (index & ((1u << cull.run_shift) - 1u)) * stride;
     (*out).prop_base = chunk.prop_base;

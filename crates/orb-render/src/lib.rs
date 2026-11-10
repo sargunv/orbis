@@ -68,7 +68,6 @@ pub use tiles::{
 
 use crate::pipeline::Draw;
 use crate::release::Release;
-use std::collections::BTreeMap;
 
 use orb_hal::*;
 use orb_shaders::{
@@ -216,6 +215,9 @@ struct Node {
     /// A hillshade the terrain pass lights from the frame's bearing: it
     /// drapes its unlit slopes ([`Renderer::set_shaded_on_terrain`]).
     shaded: bool,
+    /// What it drapes changes with the zoom
+    /// ([`Renderer::set_drapes_by_zoom`]).
+    by_zoom: bool,
     /// Its style layer's key, layer opacity and blend mode
     /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
     /// other than normally, the layer composites once.
@@ -320,8 +322,9 @@ pub struct Renderer {
     composites: offscreen::Composites,
     /// Made for the first terrain.
     terrain: Option<terrain::Terrain>,
-    /// The drape passes of each style zoom slots are drawn at.
-    drape_zooms: BTreeMap<u8, DrapeZoom>,
+    /// The drape pass's paint, frames and bundles, made for the first
+    /// draped paint.
+    drape: Option<Drape>,
     /// What each terrain draw composites, in style order.
     terrain_layers: Vec<terrain::TerrainLayer>,
     /// Colour and slope stacks of the terrain layers.
@@ -387,7 +390,7 @@ impl Renderer {
             .map(|d| (d.paint.pipelines, d.images.0));
         (
             self.terrain,
-            self.drape_zooms,
+            self.drape,
             drape,
             self.no_dem,
             self.no_terrain_depth,
@@ -604,7 +607,7 @@ impl Renderer {
             composites,
             extrusions,
             terrain: None,
-            drape_zooms: BTreeMap::new(),
+            drape: None,
             terrain_layers: Vec::new(),
             drape_stacks: [0; 2],
             drape_pipelines: None,
@@ -806,11 +809,12 @@ impl Renderer {
             if node.is_none() && family.is_image() {
                 added.push(i as u32);
             }
-            let (mut image, cull) = match node {
+            // A retained node keeps what decides its drape stack.
+            let (mut image, cull, (shaded, by_zoom)) = match node {
                 Some(node) => {
                     // Groups bind the uniform at the node's index.
                     (node.group, node.extrusion, node.heatmap).release(gpu);
-                    (node.image, node.cull)
+                    (node.image, node.cull, (node.shaded, node.by_zoom))
                 }
                 None => (
                     family.is_image().then(image::NodeImage::default),
@@ -824,6 +828,7 @@ impl Renderer {
                         surface: false,
                         unclipped: family == Family::FillExtrusion,
                     },
+                    (false, false),
                 ),
             };
             let group = match &mut image {
@@ -857,7 +862,8 @@ impl Renderer {
                 ground_drawn: extrusion::Ground::default(),
                 stack: None,
                 terrain_layer: None,
-                shaded: false,
+                shaded,
+                by_zoom,
                 composite: None,
                 drawn: false,
                 left_out: Default::default(),
@@ -867,9 +873,7 @@ impl Renderer {
         retired_uniforms.release(gpu);
         self.assign_stacks();
         // Nodes moved: their drape paint is set again at their indices.
-        for (_, level) in std::mem::take(&mut self.drape_zooms) {
-            level.release(gpu);
-        }
+        self.drape.take().release(gpu);
         let cull: Vec<NodeCull> = self.nodes.iter().map(Node::scene_cull).collect();
         self.scene.remap_nodes(&map, &cull);
         self.pipelines_stale = true;
@@ -891,9 +895,12 @@ impl Renderer {
     /// hillshade ends its stack and draws its slopes into one of its own:
     /// the terrain layer lights them over the stack before and under the
     /// next, which draws the layers above it (one hillshade a terrain
-    /// layer; another starts the next). Colour stacks come first, in
-    /// order, then slope stacks, which the drape keeps on a page of their
-    /// own ([`DrapeLayout`]).
+    /// layer; another starts the next). A terrain layer without one whose
+    /// first nodes draw alike at every zoom and whose later ones don't
+    /// ([`set_drapes_by_zoom`](Self::set_drapes_by_zoom)) splits there
+    /// into a stack below and one above, so that zooming redraws only the
+    /// one above. Colour stacks come first, in order, then slope stacks,
+    /// which the drape keeps on a page of their own ([`DrapeLayout`]).
     fn assign_stacks(&mut self) {
         let on = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         let mut stacks = 0u8;
@@ -928,6 +935,27 @@ impl Renderer {
                     };
                     *part.get_or_insert_with(next)
                 });
+            }
+        }
+        // A layer without a shade whose zoom-free nodes come first splits
+        // above them: the stack below keeps its slots while the camera
+        // zooms.
+        for (index, layer) in layers.iter_mut().enumerate() {
+            if layer.shade.is_some() {
+                continue;
+            }
+            let members: Vec<usize> = (0..self.nodes.len())
+                .filter(|&i| self.nodes[i].terrain_layer == Some(index as u8))
+                .collect();
+            let Some(split) =
+                (members.iter().position(|&i| self.nodes[i].by_zoom)).filter(|&split| split > 0)
+            else {
+                continue;
+            };
+            stacks = stacks.saturating_add(1);
+            layer.above = Some(stacks - 1);
+            for &i in &members[split..] {
+                self.nodes[i].stack = layer.above;
             }
         }
         // Colour stacks keep their order ahead of the slope stacks.
@@ -967,6 +995,23 @@ impl Renderer {
             self.assign_stacks();
             self.sync_cull();
             self.pipelines_stale = true;
+            self.invalidate_bundle(gpu);
+        }
+    }
+
+    /// Says whether what draped node `node` draws changes with the zoom:
+    /// sizes in pixels, or paint that follows the zoom. Draped nodes that
+    /// don't, under ones that do, keep a stack of their own, which zooming
+    /// doesn't redraw.
+    pub fn set_drapes_by_zoom(&mut self, gpu: &mut dyn Gpu, node: u32, by_zoom: bool) {
+        let n = &mut self.nodes[node as usize];
+        if n.by_zoom == by_zoom {
+            return;
+        }
+        n.by_zoom = by_zoom;
+        if n.terrain_layer.is_some() {
+            self.assign_stacks();
+            self.sync_cull();
             self.invalidate_bundle(gpu);
         }
     }
@@ -1020,9 +1065,7 @@ impl Renderer {
                 if let Some(t) = &mut self.terrain {
                     t.disable(gpu);
                 }
-                for (_, level) in std::mem::take(&mut self.drape_zooms) {
-                    level.release(gpu);
-                }
+                self.drape.take().release(gpu);
             }
         }
         if was != self.terrain.as_ref().is_some_and(|t| t.paint.is_some()) {
@@ -1065,25 +1108,23 @@ impl Renderer {
         Ok((layout, made.unwrap_or_default()))
     }
 
-    /// Redraws these terrain tiles' drape slots this frame, each at its
-    /// drape zoom, in the stacks given: their drape placements are in the
-    /// scene, and every draped node's paint at that zoom was set
-    /// ([`set_drape_paint`](Self::set_drape_paint)).
-    pub fn redraw_drape(&mut self, tile_slots: &[(u32, u8, &[u8])]) {
+    /// Redraws these terrain tiles' drape slots this frame, in the stacks
+    /// given: their drape placements are in the scene, and every draped
+    /// node's paint was set ([`set_drape_paint`](Self::set_drape_paint)).
+    pub fn redraw_drape(&mut self, tile_slots: &[(u32, &[u8])]) {
         if let Some(terrain) = &mut self.terrain {
             terrain.redraw(tile_slots);
         }
     }
 
-    /// Writes a draped node's paint for the slots drawn at style zoom
-    /// `zoom`, or with `None` leaves it out of them (its layer doesn't
-    /// draw at that zoom). Whether anything changed: slots drawn at that
-    /// zoom then need drawing again.
+    /// Writes a draped node's paint for the slots redrawn from now on, or
+    /// with `None` leaves it out of them (its layer doesn't draw at the
+    /// zoom). Whether anything changed: the slots of its stack then need
+    /// drawing again.
     pub fn set_drape_paint(
         &mut self,
         gpu: &mut dyn Gpu,
         node: u32,
-        zoom: u8,
         paint: Option<&NodePaint>,
     ) -> bool {
         let words = paint.map(|p| {
@@ -1095,7 +1136,7 @@ impl Renderer {
         });
         let nodes = self.nodes.len() as u64;
         let stride = self.node_stride;
-        let level = self.drape_zooms.entry(zoom).or_insert_with(|| DrapeZoom {
+        let level = self.drape.get_or_insert_with(|| Drape {
             frame: [(); 2].map(|()| {
                 gpu.create_buffer(&BufferDesc {
                     label: "drape frame",
@@ -1110,7 +1151,7 @@ impl Renderer {
             }),
             written: Vec::new(),
             scene: [None; 2],
-            bundle: [None, None],
+            bundle: Vec::new(),
         });
         level.written.resize(self.nodes.len(), None);
         let before = &level.written[node as usize];
@@ -1186,8 +1227,8 @@ impl Renderer {
         for node in &self.nodes {
             node.left_out.set(false);
         }
-        for zoom in self.drape_zooms.values_mut() {
-            zoom.forget_bundle(gpu);
+        if let Some(drape) = &mut self.drape {
+            drape.forget_bundle(gpu);
         }
     }
 
@@ -1690,10 +1731,8 @@ impl Renderer {
             self.glyphs_bound = self.glyphs.revision();
             self.dem_bound = dem;
             self.terrain_depth_bound = terrain_depth;
-            for zoom in self.drape_zooms.values_mut() {
-                for scene in &mut zoom.scene {
-                    scene.take().release(gpu);
-                }
+            for scene in self.drape.iter_mut().flat_map(|d| &mut d.scene) {
+                scene.take().release(gpu);
             }
             self.invalidate_bundle(gpu);
             // Extrusion and heatmap nodes record the scene group too.
@@ -1767,8 +1806,8 @@ impl Renderer {
                 self.invalidate_bundle(gpu);
             }
             if drape_waiting && let Some(terrain) = self.terrain.as_mut() {
-                // Slots drawn without them lack those layers, at whichever
-                // zoom: all draw again, each zoom's bundle recorded anew.
+                // Slots drawn without them lack those layers: all draw
+                // again, the drape's bundles recorded anew.
                 terrain.redraw_all();
             }
         }
@@ -1958,13 +1997,12 @@ impl Renderer {
         }
         let draping = clock();
         times.bundles = micros(recording, draping);
-        let draws = match self.terrain.as_ref().filter(|_| terrain_on) {
-            Some(terrain) => terrain.pending_draws().to_vec(),
+        let stacks = match self.terrain.as_ref().filter(|_| terrain_on) {
+            Some(terrain) => terrain.pending_stacks(),
             None => Vec::new(),
         };
-        let drape: Vec<terrain::DrapeBundle> = draws
-            .into_iter()
-            .filter_map(|at| Some((at.0, at.1, self.drape_bundle(gpu, frame, at)?)))
+        let drape: Vec<(u32, RenderBundleId)> = (stacks.into_iter())
+            .filter_map(|stack| Some((stack, self.drape_bundle(gpu, frame, stack)?)))
             .collect();
         let encoding = clock();
         let mut drape_passes = 0;
@@ -2198,21 +2236,25 @@ impl Renderer {
         }
     }
 
-    /// The drape pass of style zoom `zoom` into page `page` for this
-    /// frame: its frame written, and its bundle of the draped nodes drawn
-    /// at it into that page's stacks, recorded if it isn't. `None` when no
-    /// node's paint was set at it.
+    /// The drape pass into stack `stack` for this frame: its page's frame
+    /// written, and its bundle of the draped nodes drawn into it, recorded
+    /// if it isn't. `None` when no node's drape paint was set.
     fn drape_bundle(
         &mut self,
         gpu: &mut dyn Gpu,
         frame: &FrameBlock,
-        (zoom, page): (u8, usize),
+        stack: u32,
     ) -> Option<RenderBundleId> {
         let terrain = self.terrain.as_ref()?;
-        let drape_frame = terrain.drape_frame(frame, (zoom, page));
         let colour = self.drape_stacks[0];
-        let level = self.drape_zooms.get_mut(&zoom)?;
+        let page = usize::from(stack >= colour);
+        let drape_frame = terrain.drape_frame(frame, page);
+        let level = self.drape.as_mut()?;
         crate::scene::write_frame(gpu, level.frame[page], &drape_frame, self.linear.is_some());
+        let at = stack as usize;
+        if level.bundle.len() <= at {
+            level.bundle.resize_with(at + 1, || None);
+        }
         if level.scene[page].is_none() {
             let b = *self.scene.buffers();
             level.scene[page] = Some(scene_group(
@@ -2229,13 +2271,18 @@ impl Renderer {
                     self.no_terrain_depth,
                 ),
             ));
-            level.bundle[page].take().release(gpu);
+            // The bundles of the page's stacks bound the group it replaces.
+            for (s, bundle) in level.bundle.iter_mut().enumerate() {
+                if usize::from(s as u32 >= colour) == page {
+                    bundle.take().release(gpu);
+                }
+            }
         }
-        if let Some((bundle, _)) = &level.bundle[page] {
+        if let Some((bundle, _)) = &level.bundle[at] {
             return Some(*bundle);
         }
         let ready = self.ready(gpu, true);
-        let level = &self.drape_zooms[&zoom];
+        let level = self.drape.as_ref().expect("found above");
         let (scene, uniforms) = (level.scene[page].expect("made above"), level.uniforms);
         let mut commands = vec![RenderCommand::SetIndexBuffer {
             buffer: self.scene.buffers().compacted,
@@ -2244,10 +2291,8 @@ impl Renderer {
         let mut groups = Vec::new();
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
-            let on_page = node
-                .stack
-                .is_some_and(|s| usize::from(u32::from(s) >= colour) == page);
-            if !on_page || !level.written.get(i).is_some_and(Option::is_some) {
+            let in_stack = node.stack.is_some_and(|s| u32::from(s) == stack);
+            if !in_stack || !level.written.get(i).is_some_and(Option::is_some) {
                 continue;
             }
             let uniform = BindingResource::Buffer {
@@ -2286,8 +2331,8 @@ impl Renderer {
             },
             &commands,
         );
-        let level = self.drape_zooms.get_mut(&zoom).expect("found above");
-        level.bundle[page] = Some((bundle, groups));
+        let level = self.drape.as_mut().expect("found above");
+        level.bundle[at] = Some((bundle, groups));
         Some(bundle)
     }
 
@@ -2446,24 +2491,22 @@ struct DrapePipelines {
     images: image::ImagePipelines,
 }
 
-/// The drape pass of one style zoom: a slot draws its
-/// terrain tile's content at that zoom whatever the camera's, so draped
-/// nodes' paint at it is written once, not per frame. Its bundle replays
-/// the draped nodes over its frame and their paint at that zoom; their
-/// drape placements of other zooms draw nothing in it (`drawn_in_pass`).
+/// The drape pass: draped nodes' paint for the slots it redraws, and per
+/// page its frame, scene group and bundle.
 #[derive(Debug)]
-struct DrapeZoom {
-    /// The drape frame at this zoom, per drape page.
+struct Drape {
+    /// The drape frame, per drape page.
     frame: [BufferId; 2],
-    /// Node uniforms at this zoom, at each node's offset.
+    /// Node uniforms, at each node's offset.
     uniforms: BufferId,
-    /// Per node, the words written, or `None` where it doesn't draw at
-    /// this zoom (outside its layer's zooms, or not draped).
+    /// Per node, the words written, or `None` where it doesn't draw (outside
+    /// its layer's zooms, or not draped).
     written: Vec<Option<Vec<u32>>>,
-    /// Per page, the scene group over its `frame`, and the bundle of the
-    /// nodes drawing into its stacks with the node groups it binds.
+    /// Per page, the scene group over its `frame`.
     scene: [Option<BindGroupId>; 2],
-    bundle: [Option<(RenderBundleId, Vec<BindGroupId>)>; 2],
+    /// Per stack, the bundle of the nodes drawing into it, with the node
+    /// groups it binds: a redraw replays each over its own slots.
+    bundle: Vec<Option<(RenderBundleId, Vec<BindGroupId>)>>,
 }
 
 impl release::Release for Node {
@@ -2472,13 +2515,13 @@ impl release::Release for Node {
     }
 }
 
-impl release::Release for DrapeZoom {
+impl release::Release for Drape {
     fn release(self, gpu: &mut dyn Gpu) {
-        DrapeZoom::release(self, gpu);
+        Drape::release(self, gpu);
     }
 }
 
-impl DrapeZoom {
+impl Drape {
     fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
         for bundle in &mut self.bundle {
             bundle.take().release(gpu);

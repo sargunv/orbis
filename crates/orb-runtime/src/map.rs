@@ -2303,6 +2303,15 @@ impl Map {
                 SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
             renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
         }
+        // Draped layers that draw alike at every zoom keep slots of their
+        // own under those that don't, which zooming redraws.
+        for (index, node) in plan.nodes.iter().enumerate() {
+            if node.family.is_draped() {
+                let layer = &plan.style.layers[node.layer];
+                let by_zoom = crate::paint::drapes_by_zoom(layer);
+                renderer.set_drapes_by_zoom(gpu, index as u32, by_zoom);
+            }
+        }
         let at = (view, self.surface.tms());
         let (frame, requests) =
             terrain.upkeep(gpu, renderer, at, unpack, skirt * view.height_scale());

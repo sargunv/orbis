@@ -2,20 +2,22 @@
 //! layers draped over a DEM-raised surface, after GL JS's render to
 //! texture.
 //!
-//! Each terrain tile has a block of drape slots, one per drape stack (a run
-//! of draped layers between layers that draw in 3D or on screen, or a
+//! Each terrain tile has a drape slot per drape stack (a run of draped
+//! layers between layers that draw in 3D or on screen, the part of one
+//! above its first layer whose drawing changes with the zoom, or a
 //! hillshade the terrain shades, whose stack holds its unlit slopes).
 //! Slots are squares of mipmapped atlas pages, sized to the slots in use:
 //! colour stacks in one, slope stacks at half the texels a side in
-//! another. A new page takes the kept slots' texels, so none redraws for
-//! it. A frame
-//! redraws only the slots the runtime marks: their drape placements, the
-//! draped nodes' only candidates, map them into the atlas, so one pass
-//! redraws them all, replaying a bundle of the draped nodes per drape zoom
-//! among them, then a compute pass downsamples their mip levels. Each
-//! terrain layer (a stack, or two around a hillshade lit between them from
-//! its slopes' stack and the frame's bearing) draws into a texture of its own
-//! with the depth extrusions share, composited in the map at its place.
+//! another, each stack's slots side by side. A new page takes the kept
+//! slots' texels, so none redraws for it. A frame redraws only the slots
+//! the runtime marks: their drape placements, the draped nodes' only
+//! candidates, map them into the atlas, so one pass a page redraws them
+//! all, replaying each stack's bundle of its draped nodes over its redrawn
+//! slots, then a compute pass downsamples their mip levels. Each terrain
+//! layer (a stack, two where the zoom splits it, or two around a hillshade
+//! lit between them from its slopes' stack and the frame's bearing) draws
+//! into a texture of its own with the depth extrusions share, composited
+//! in the map at its place.
 //!
 //! Its decal is what an extrusion layer darkens on the ground beneath its
 //! buildings, on a plane's terrain: the terrain's mesh drawn again into
@@ -39,9 +41,9 @@ pub const DRAPE_SLOT_PX: u32 = 1024;
 
 /// Slope slots' texels per terrain tile side: half the drape's. A shaded
 /// hillshade's slopes come from DEM tiles of at most 512 pixels a side at
-/// the drape zoom, which a 512-texel slot holds sample for sample, and a
-/// quarter of the texels lets a viewport-lit hillshade cost a terrain
-/// tile a quarter slot rather than a whole one (#142).
+/// the terrain tile's zoom, which a 512-texel slot holds sample for
+/// sample, and a quarter of the texels lets a viewport-lit hillshade cost
+/// a terrain tile a quarter slot rather than a whole one (#142).
 pub(crate) const SLOPE_SLOT_PX: u32 = DRAPE_SLOT_PX / 2;
 
 /// The drape's pages by slot side: colour stacks, then slope stacks.
@@ -155,8 +157,9 @@ pub struct TerrainTile {
     pub latitudes: [f32; 2],
 }
 
-/// What one terrain draw composites in the map: a stack's slots, or the
-/// stacks below and above a hillshade it shades between them.
+/// What one terrain draw composites in the map: a stack's slots, the
+/// stacks below and above where the zoom splits it, or those below and
+/// above a hillshade it shades between them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TerrainLayer {
     pub(crate) below: Option<u8>,
@@ -186,8 +189,10 @@ pub struct TerrainDem {
 /// Where drape slots are. Stacks `0..stacks[0]` are colour stacks, on
 /// page 0 at [`DRAPE_SLOT_PX`] texels a side; the rest hold slopes, on
 /// page 1 at [`SLOPE_SLOT_PX`]. Tile slot `t`'s stack of rank `r` on page
-/// `p` is that page's slot `t · stacks[p] + r`, at column
-/// `slot % columns[p]`, row `slot / columns[p]`. Each page's drape space
+/// `p` is that page's slot `r · strides[p] + t`, at column
+/// `slot % columns[p]`, row `slot / columns[p]`: each stack's slots lie
+/// side by side, so that redrawing one stack of many tiles draws into a
+/// few rows. Each page's drape space
 /// is its texels with y up: texel `(x, y)` is drape world `(x, −y)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrapeLayout {
@@ -195,6 +200,9 @@ pub struct DrapeLayout {
     pub stacks: [u32; 2],
     /// Slots per row of each page.
     pub columns: [u32; 2],
+    /// Slots of each page between a tile slot's stacks: the tile slots
+    /// one of its stacks has room for.
+    pub strides: [u32; 2],
     /// Tile slots the pages hold.
     pub tile_slots: u32,
     /// Changes when every slot is blank (new pages without the old ones'
@@ -224,7 +232,7 @@ impl DrapeLayout {
     /// Tile slot `tile_slot`'s slot of `stack`: its page and slot there.
     fn slot(&self, tile_slot: u32, stack: u32) -> (usize, u32) {
         let (page, rank) = self.page(stack);
-        (page, tile_slot * self.stacks[page] + rank)
+        (page, rank * self.strides[page] + tile_slot)
     }
 
     /// A slot's top-left texel in its page.
@@ -235,22 +243,32 @@ impl DrapeLayout {
     }
 }
 
-/// Sorted atlas slots as runs side by side in a row of an atlas
-/// `columns` slots wide: `[column, row, slots]`.
-fn slot_runs(slots: &[u32], columns: u32) -> Vec<[u32; 3]> {
-    let mut runs: Vec<[u32; 3]> = Vec::new();
+/// Sorted atlas slots as rectangles of an atlas `columns` slots wide:
+/// runs side by side in a row, each joined to the run above it when that
+/// spans the same columns, `[column, row, slots, rows]`.
+fn slot_runs(slots: &[u32], columns: u32) -> Vec<[u32; 4]> {
+    let mut rects: Vec<[u32; 4]> = Vec::new();
+    let close = |rects: &mut Vec<[u32; 4]>, [x, y, width]: [u32; 3]| match rects.last_mut() {
+        Some(r) if (r[0], r[2]) == (x, width) && r[1] + r[3] == y => r[3] += 1,
+        _ => rects.push([x, y, width, 1]),
+    };
+    let mut run: Option<[u32; 3]> = None;
     for &slot in slots {
         let (x, y) = (slot % columns, slot / columns);
-        match runs.last_mut() {
-            Some(run) if run[1] == y && run[0] + run[2] == x => run[2] += 1,
-            _ => runs.push([x, y, 1]),
+        match &mut run {
+            Some(r) if r[1] == y && r[0] + r[2] == x => r[2] += 1,
+            _ => {
+                if let Some(done) = run.replace([x, y, 1]) {
+                    close(&mut rects, done);
+                }
+            }
         }
     }
-    runs
+    if let Some(done) = run {
+        close(&mut rects, done);
+    }
+    rects
 }
-
-/// A drape bundle: its zoom, the page it draws into, the bundle.
-pub(crate) type DrapeBundle = (u8, usize, RenderBundleId);
 
 #[derive(Debug)]
 struct Atlas {
@@ -436,10 +454,9 @@ pub(crate) struct Terrain {
     /// The size of `occlusion`, in logical pixels.
     occlusion_size: [u32; 2],
     target_samples: u32,
-    /// Slots to redraw this frame (page, slot) with the drape zoom each
-    /// draws at, and those zooms with the pages they draw into.
-    pending: Vec<(usize, u32, u8)>,
-    pending_draws: Vec<(u8, usize)>,
+    /// Slots to redraw this frame: (page, slot, stack). In a page's order
+    /// they're each stack's in turn ([`DrapeLayout`]).
+    pending: Vec<(usize, u32, u32)>,
     pub(crate) paint: Option<TerrainPaint>,
     /// The atmosphere's uniform, for fog.
     atmosphere: BufferId,
@@ -566,6 +583,7 @@ impl Terrain {
             layout_state: DrapeLayout {
                 stacks: [1, 0],
                 columns: [1; 2],
+                strides: [0; 2],
                 tile_slots: 0,
                 generation: 0,
             },
@@ -578,7 +596,6 @@ impl Terrain {
             occlusion_size: [0; 2],
             target_samples: 0,
             pending: Vec::new(),
-            pending_draws: Vec::new(),
             paint: None,
             atmosphere,
         }
@@ -687,6 +704,7 @@ impl Terrain {
         let layout = DrapeLayout {
             stacks,
             columns: grids.map(|g| g.map_or(1, |(columns, _)| columns)),
+            strides: [0, 1].map(|p| grids[p].map_or(0, |(c, r)| c * r / alloc[p].max(1))),
             tile_slots: (0..2)
                 .filter_map(|p| grids[p].map(|(c, r)| c * r / alloc[p]))
                 .min()
@@ -753,7 +771,6 @@ impl Terrain {
         // Terrain tiles find their slots by these from this frame on.
         self.write_layout(gpu);
         self.pending.clear();
-        self.pending_draws.clear();
         self.forget_group(gpu);
         Ok(Some(moves))
     }
@@ -762,9 +779,9 @@ impl Terrain {
     fn write_layout(&self, gpu: &mut dyn Gpu) {
         let state = self.layout_state;
         let words = [
-            (params::STACKS, state.stacks[0]),
+            (params::STRIDE, state.strides[0]),
             (params::COLUMNS, state.columns[0]),
-            (params::SLOPE_STACKS, state.stacks[1]),
+            (params::SLOPE_STRIDE, state.strides[1]),
             (params::SLOPE_COLUMNS, state.columns[1]),
         ];
         for (word, value) in words {
@@ -782,27 +799,26 @@ impl Terrain {
         self.group.take().map(|(group, _)| group).release(gpu);
     }
 
-    /// Redraws tile slots' stacks this frame: per tile slot, its drape
-    /// zoom and the stacks to redraw.
-    pub(crate) fn redraw(&mut self, tile_slots: &[(u32, u8, &[u8])]) {
+    /// Redraws tile slots' stacks this frame: per tile slot, the stacks
+    /// to redraw.
+    pub(crate) fn redraw(&mut self, tile_slots: &[(u32, &[u8])]) {
         let layout = self.layout_state;
-        for &(tile, zoom, redrawn) in tile_slots {
+        for &(tile, redrawn) in tile_slots {
             let stacks =
                 (redrawn.iter().map(|&s| u32::from(s))).filter(|&s| s < layout.stack_count());
-            for stack in stacks {
+            self.pending.extend(stacks.map(|stack| {
                 let (page, slot) = layout.slot(tile, stack);
-                self.pending.push((page, slot, zoom));
-                self.pending_draws.push((zoom, page));
-            }
+                (page, slot, stack)
+            }));
         }
-        self.pending_draws.sort_unstable();
-        self.pending_draws.dedup();
     }
 
-    /// The drape zooms of the slots this frame redraws, with the pages
-    /// they draw into.
-    pub(crate) fn pending_draws(&self) -> &[(u8, usize)] {
-        &self.pending_draws
+    /// The stacks this frame redraws slots of, in order.
+    pub(crate) fn pending_stacks(&self) -> Vec<u32> {
+        let mut stacks: Vec<u32> = self.pending.iter().map(|p| p.2).collect();
+        stacks.sort_unstable();
+        stacks.dedup();
+        stacks
     }
 
     pub(crate) fn set_tiles(&mut self, gpu: &mut dyn Gpu, tiles: &[TerrainTile]) {
@@ -869,9 +885,9 @@ impl Terrain {
             .f(params::EXAGGERATION, &[paint.exaggeration]);
         b.f(params::DEM_DIM, &[dim as f32])
             .f(params::SKIRT, &[paint.skirt]);
-        b.u(params::STACKS, &[state.stacks[0]])
+        b.u(params::STRIDE, &[state.strides[0]])
             .u(params::COLUMNS, &[state.columns[0]]);
-        b.u(params::SLOPE_STACKS, &[state.stacks[1]])
+        b.u(params::SLOPE_STRIDE, &[state.strides[1]])
             .u(params::SLOPE_COLUMNS, &[state.columns[1]]);
         b.f(params::SLOT_PX, &[DRAPE_SLOT_PX as f32])
             .f(params::SLOPE_PX, &[SLOPE_SLOT_PX as f32])
@@ -998,7 +1014,6 @@ impl Terrain {
     pub(crate) fn redraw_all(&mut self) {
         self.layout_state.generation += 1;
         self.pending.clear();
-        self.pending_draws.clear();
     }
 
     /// Makes the decal's pipeline into `format` targets at `samples`,
@@ -1125,7 +1140,7 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         (frame, props): (BufferId, BufferId),
-        (drape, shades): (&[DrapeBundle], &[Option<BindGroupId>]),
+        (drape, shades): (&[(u32, RenderBundleId)], &[Option<BindGroupId>]),
         (depth, depth_store): (TextureId, StoreOp),
         downsampler: &crate::downsample::Downsampler,
         (passes, layers): (&mut Vec<Pass>, &mut Vec<RenderPass>),
@@ -1150,17 +1165,18 @@ impl Terrain {
                 let Some(atlas) = atlas else {
                     continue;
                 };
-                let slots: Vec<(u32, u8)> = (self.pending.iter())
+                let pending: Vec<(u32, u32)> = (self.pending.iter())
                     .filter(|p| p.0 == page)
-                    .map(|&(_, slot, zoom)| (slot, zoom))
+                    .map(|&(_, slot, stack)| (slot, stack))
                     .collect();
+                let slots: Vec<u32> = pending.iter().map(|p| p.0).collect();
                 if slots.is_empty() {
                     continue;
                 }
                 let (columns, _) = atlas.grid();
                 let px = atlas.slot_px;
                 let regions: Vec<[u32; 4]> = (slots.iter())
-                    .map(|&(s, _)| [0, s % columns * px, s / columns * px, px])
+                    .map(|&s| [0, s % columns * px, s / columns * px, px])
                     .collect();
                 gpu.write_buffer(atlas.regions, 0, bytemuck::cast_slice(&regions));
                 let count = slots.len() as u32;
@@ -1175,18 +1191,23 @@ impl Terrain {
                         instances: 0..count,
                     },
                 ];
-                // Each zoom's bundle replays once per run of its redrawn
-                // slots side by side, scissored to it: what a coarse tile
+                // Each stack's bundle replays once per rectangle of its
+                // redrawn slots, scissored to it: what a coarse tile
                 // standing in draws spans far more than the slots it draws
-                // into (all of the page), and would otherwise be
-                // rasterized there only to be discarded.
-                for &(zoom, _, bundle) in drape.iter().filter(|d| d.1 == page) {
-                    let at: Vec<u32> = (slots.iter())
-                        .filter(|p| p.1 == zoom)
+                // into (all of the page), and would otherwise be rasterized
+                // there only to be discarded.
+                for &(stack, bundle) in drape {
+                    let slots: Vec<u32> = (pending.iter())
+                        .filter(|p| p.1 == stack)
                         .map(|p| p.0)
                         .collect();
-                    for [x, y, width] in slot_runs(&at, columns) {
-                        commands.push(RenderCommand::SetScissor([x * px, y * px, width * px, px]));
+                    for [x, y, width, height] in slot_runs(&slots, columns) {
+                        commands.push(RenderCommand::SetScissor([
+                            x * px,
+                            y * px,
+                            width * px,
+                            height * px,
+                        ]));
                         commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
                     }
                 }
@@ -1210,7 +1231,6 @@ impl Terrain {
                 draws += 1;
             }
             self.pending.clear();
-            self.pending_draws.clear();
             Pass::group(passes, start, "drape");
         }
         let atlas_texture = colour.sampled;
@@ -1318,12 +1338,11 @@ impl Terrain {
         draws
     }
 
-    /// The drape frame at style zoom `zoom`: the map's, drawn into page
-    /// `page`.
+    /// The drape frame: the map's, at its zoom, drawn into page `page`.
     pub(crate) fn drape_frame(
         &self,
         frame: &crate::scene::FrameBlock,
-        (zoom, page): (u8, usize),
+        page: usize,
     ) -> crate::scene::FrameBlock {
         let [w, h] = self.atlas[page]
             .as_ref()
@@ -1341,10 +1360,9 @@ impl Terrain {
             camera: [0.0; 2],
             viewport: [w, h],
             // Drape placements' `px_scale` is their texels per logical
-            // pixel at the drape zoom.
+            // pixel at the map's zoom.
             world_per_px: 1.0,
             pixel_ratio: 1.0,
-            zoom: f64::from(zoom),
             align: [0.0; 2],
             pitch: 0.0,
             // Slots are flat: the terrain carries them onto a globe.
@@ -1370,7 +1388,6 @@ impl Terrain {
         self.target_size = [0; 2];
         self.dem = None;
         self.pending.clear();
-        self.pending_draws.clear();
         self.layout_state.tile_slots = 0;
     }
 
@@ -1503,11 +1520,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn redrawn_slots_replay_in_runs_along_rows() {
+    fn redrawn_slots_replay_in_rectangles() {
         // Four columns: 2, 3 run together; 4 starts the next row.
         assert_eq!(
             slot_runs(&[0, 2, 3, 4, 5, 7], 4),
-            [[0, 0, 1], [2, 0, 2], [0, 1, 2], [3, 1, 1]]
+            [[0, 0, 1, 1], [2, 0, 2, 1], [0, 1, 2, 1], [3, 1, 1, 1]]
+        );
+        // Whole rows join: one stack of every tile slot from slot 6 on.
+        assert_eq!(
+            slot_runs(&(6..20).collect::<Vec<_>>(), 4),
+            [[2, 1, 2, 1], [0, 2, 4, 3]]
         );
     }
 
@@ -1556,11 +1578,14 @@ mod tests {
         let layout = DrapeLayout {
             stacks: [2, 1],
             columns: [8, 4],
+            strides: [16, 16],
             tile_slots: 16,
             generation: 1,
         };
-        assert_eq!(layout.corner(0, 1), [DRAPE_SLOT_PX, 0]);
-        assert_eq!(layout.corner(4, 0), [0, DRAPE_SLOT_PX]);
+        // Each stack's slots side by side: stack 1 after stack 0's 16.
+        assert_eq!(layout.corner(1, 0), [DRAPE_SLOT_PX, 0]);
+        assert_eq!(layout.corner(0, 1), [0, 2 * DRAPE_SLOT_PX]);
+        assert_eq!(layout.corner(9, 0), [DRAPE_SLOT_PX, DRAPE_SLOT_PX]);
         // Slopes on their own page, at half the texels a side.
         assert_eq!(layout.page(2), (1, 0));
         assert_eq!(layout.corner(1, 2), [SLOPE_SLOT_PX, 0]);

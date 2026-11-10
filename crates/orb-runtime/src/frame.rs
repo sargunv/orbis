@@ -2,7 +2,7 @@
 //! view and stand in where they haven't arrived, where they are placed,
 //! the background's quads, and which drape slots draw again.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use glam::DVec2;
@@ -127,8 +127,8 @@ impl Map {
         // A hillshade the terrain shades drapes its slopes: its source
         // covers each terrain tile's quarters, whatever detail the
         // terrain's cover keeps, so that a slot holds the source's detail
-        // at its drape zoom; its other layers, all draped, draw into the
-        // terrain tiles' slots from any cover.
+        // at its terrain tile's zoom; its other layers, all draped, draw
+        // into the terrain tiles' slots from any cover.
         let nodes = || (plan.nodes.iter().enumerate()).filter(|(_, n)| n.source == index);
         let shaded = nodes().any(|(i, _)| renderer.shades_on_terrain(i as u32))
             && nodes().all(|(_, n)| n.family.is_draped());
@@ -630,12 +630,13 @@ impl Map {
     }
 
     /// Plans this frame's drape: makes room for the terrain tiles' slots,
-    /// writes the draped paint at their drape zooms and picks the slots to
-    /// redraw, by what is draped under each tile. Nothing
-    /// here depends on the camera but which tiles there are, and the
-    /// bearing under a viewport-anchored translate. Viewport-anchored
-    /// hillshades turn with the map too: they drape their slopes, which
-    /// the terrain pass lights from the frame's bearing.
+    /// writes the draped paint at the camera's zoom and picks the slots to
+    /// redraw, by what is draped under each tile. Nothing here depends on
+    /// the camera but which tiles there are, the zoom where a stack's
+    /// paint or pixel sizes follow it, and the bearing under a
+    /// viewport-anchored translate. Viewport-anchored hillshades turn with
+    /// the map too: they drape their slopes, which the terrain pass lights
+    /// from the frame's bearing.
     pub(crate) fn plan_drape(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -666,11 +667,8 @@ impl Map {
             }
         };
         let surface = self.surface.tms().clone();
-        let zooms: BTreeSet<u8> = terrain
-            .tiles
-            .iter()
-            .map(|t| crate::terrain::drape_zoom(&surface, t.index))
-            .collect();
+        let zoom = self.camera.state().zoom(self.surface.projection());
+        let stacks = layout.stack_count() as usize;
         let bearing = self.camera.state().bearing;
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
@@ -681,7 +679,7 @@ impl Map {
         // Draped paint eases as the rest does.
         let overlay = style.paint.overlay.clone();
         let eased = overlay.as_deref().unwrap_or(plan);
-        crate::paint::drape(gpu, renderer, (style, eased), &zooms, at, atlas);
+        crate::paint::drape(gpu, renderer, (style, eased), (zoom, stacks), at, atlas);
         let images_revision = atlas.revision();
         drop(images);
         let draped: Vec<usize> = (0..style.sources.len())
@@ -692,18 +690,16 @@ impl Map {
         let draws = &style.draws;
         let paint = &style.paint;
         let revision = (self.version, style.states.writes(time), images_revision);
-        // The farthest a draped fill or line is translated at a drape
-        // zoom: a slot takes rows from the drawn tiles that far around it,
-        // whose content moves into it.
+        // The farthest a draped fill or line is translated: a slot takes
+        // rows from the drawn tiles that far around it, whose content
+        // moves into it.
         let reach_px = (plan.nodes.iter())
             .filter(|n| n.family.is_draped())
-            .flat_map(|n| {
+            .map(|n| {
                 let slots = plan.paint_properties(n).len();
                 let reach = style.nodes.get(&n.key).and_then(|s| s.maxima.get(slots));
-                zooms.iter().map(move |&z| {
-                    let [x, y] = crate::paint::translate(plan, n, f64::from(z), reach).px;
-                    f64::from(x.hypot(y))
-                })
+                let [x, y] = crate::paint::translate(plan, n, zoom, reach).px;
+                f64::from(x.hypot(y))
             })
             .fold(0.0, f64::max);
         // A DEM tile's border comes from its drawn neighbours
@@ -713,7 +709,6 @@ impl Map {
             .collect();
         // Each draped source's stacks: a slot's stack redraws when what
         // the sources drawing into it drape there changes.
-        let stacks = layout.stack_count() as usize;
         let mut source_stacks = vec![Vec::new(); style.sources.len()];
         for (index, node) in plan.nodes.iter().enumerate() {
             if let (Some(stack), Some(stacks)) = (
@@ -724,7 +719,6 @@ impl Map {
             }
         }
         let content = |t: orb_crs::CoveredTile| {
-            let zoom = crate::terrain::drape_zoom(&surface, t.index);
             let mut parts = vec![Vec::new(); stacks];
             for &i in &draped {
                 let (
@@ -774,10 +768,11 @@ impl Map {
                     }
                 }
             }
-            let paint = paint.drape_key(zoom, bearing);
-            let states = style.states.zoom_key(zoom);
-            (parts.into_iter())
-                .map(|parts| crate::terrain::hash((revision, parts, zoom, paint, states)))
+            (parts.into_iter().enumerate())
+                .map(|(stack, parts)| {
+                    let paint = paint.drape_key(stack, zoom, bearing);
+                    crate::terrain::hash((revision, parts, paint))
+                })
                 .collect()
         };
         let globe_warps = &mut self.globe_warps;
@@ -793,17 +788,15 @@ impl Map {
         let terrain = style.terrain.as_mut().expect("checked above");
         let (tiles, redraw) = terrain.plan(&surface, view, (layout, &moves), &content, &mut globe);
         renderer.set_terrain_tiles(gpu, &tiles);
-        let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
-            .map(|(tile, slot, stacks)| {
-                let zoom = crate::terrain::drape_zoom(&surface, tile.index);
-                (*slot, zoom, &stacks[..])
-            })
+        let slots: Vec<(u32, &[u8])> = (redraw.iter())
+            .map(|(_, slot, stacks)| (*slot, &stacks[..]))
             .collect();
         renderer.redraw_drape(&slots);
         Some(DrapePlan {
             surface,
             layout,
             redraw,
+            zoom,
             reach_px,
         })
     }
@@ -919,6 +912,8 @@ pub(crate) struct DrapePlan {
     pub(crate) surface: TileMatrixSet,
     pub(crate) layout: orb_render::DrapeLayout,
     pub(crate) redraw: Vec<crate::terrain::Redraw>,
+    /// The camera's style zoom, which the slots are drawn at.
+    pub(crate) zoom: f64,
     /// The farthest a draped fill or line is translated, logical pixels.
     pub(crate) reach_px: f64,
 }
@@ -940,7 +935,7 @@ impl DrapePlan {
                 .filter(|s| redrawn.contains(s))
                 .collect();
             if !stacks.is_empty() && drawn.overlaps(&self.surface, terrain, self.reach_px) {
-                let zoom = f64::from(crate::terrain::drape_zoom(&self.surface, terrain.index));
+                let zoom = self.zoom;
                 let map = placements(tms, draw, Placement { zoom, ..at });
                 crate::terrain::drape_rows(
                     &self.surface,
@@ -948,7 +943,7 @@ impl DrapePlan {
                     at.extent,
                     (terrain, slot),
                     (&self.layout, &stacks),
-                    self.reach_px,
+                    (zoom, self.reach_px),
                     map,
                     out,
                 );
@@ -1138,7 +1133,6 @@ pub(crate) fn placements<'a>(
             clips,
             bound: ClipRect::EVERYWHERE,
             px_scale: 1.0,
-            drape_zoom: 0.0,
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,

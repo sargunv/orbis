@@ -1,8 +1,7 @@
-//! Node paint for a frame: each node's paint and visibility
-//! at the frame's zoom and bearing, and the draped nodes' at their drape
-//! zooms, written to the renderer when they change.
+//! Node paint for a frame: each node's paint and visibility at the
+//! frame's zoom and bearing, and the draped nodes' drape paint, written to
+//! the renderer when they change.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use orb_hal::Gpu;
@@ -24,15 +23,15 @@ use crate::style::{PaintProperty, StylePlan};
 #[derive(Debug, Default)]
 pub(crate) struct PaintState {
     /// The zoom and bearing node paint was written for, and whether
-    /// draped nodes draped (on terrain they show at their slots' zooms,
-    /// not the camera's); `None` to rewrite.
+    /// draped nodes draped (on terrain they show their drape paint);
+    /// `None` to rewrite.
     written: Option<(f64, f64, bool)>,
     fade: Option<Crossfade>,
     /// Counts rewrites of all paint: what camera-free nodes were written
     /// in.
     epoch: u64,
     zoom_history: ZoomHistory,
-    /// The draped nodes' paint at drape zooms.
+    /// The draped nodes' paint for the drape slots.
     drape: DrapePaint,
     /// The camera inputs paint that reads the camera was written at.
     camera: Option<CameraInputs>,
@@ -144,8 +143,8 @@ pub(crate) fn frame(
     let overlay = (transitions.overlay(plan, zoom, now, composite_ready)).map(Arc::new);
     if overlay.is_some() || std::mem::take(&mut transitions.ran) {
         style.paint.invalidate();
-        // Draped paint eases alike: its zooms are draped again.
-        style.paint.drape.painted.clear();
+        // Draped paint eases alike: it is draped again.
+        style.paint.drape.painted = None;
     }
     style.paint.overlay = overlay.clone();
     let plan = overlay.as_deref().unwrap_or(plan);
@@ -160,15 +159,16 @@ pub(crate) fn frame(
     (fading, missing)
 }
 
-/// Writes the draped nodes' paint at each of `zooms` not written since it
-/// changed, for drape layout `generation`: evaluated there,
+/// Writes the draped nodes' paint at the camera's `zoom` for drape layout
+/// `generation`, unless it was written there since it last changed:
 /// with the cross-fade of a zoom at rest, and left out where their layers
-/// don't draw.
+/// don't draw. Each drape stack's [`drape_key`](PaintState::drape_key)
+/// then says what of it its slots show.
 pub(crate) fn drape(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     (style, plan): (&mut LoadedStyle, &StylePlan),
-    zooms: &std::collections::BTreeSet<u8>,
+    (zoom, stacks): (f64, usize),
     (generation, inputs): (u64, CameraInputs),
     atlas: &mut ImageAtlas,
 ) {
@@ -176,82 +176,87 @@ pub(crate) fn drape(
     let camera = at_camera(plan, inputs);
     let plan = camera.as_ref().unwrap_or(plan);
     let drape = &mut style.paint.drape;
-    if drape.generation != Some(generation) {
+    if drape.generation != Some(generation) || drape.stacks.len() != stacks {
         // A new atlas, or one whose slots all draw again.
         drape.generation = Some(generation);
-        drape.painted.clear();
+        drape.painted = None;
+        drape.stacks = vec![StackPaint::default(); stacks];
     }
     // Paint that reads the camera is draped again as it moves.
     let read = read_by(plan, inputs);
     if camera.is_some() && drape.camera != Some(read) {
         drape.camera = Some(read);
-        drape.painted.clear();
+        drape.painted = None;
     }
-    if drape.bearing != bearing {
-        drape.bearing = bearing;
-        let turning = &drape.turning;
-        drape.painted.retain(|z| !turning.contains(z));
+    let turns = drape.stacks.iter().any(|s| s.turns);
+    if drape.painted == Some(zoom.to_bits()) && (!turns || drape.bearing == bearing) {
+        return;
     }
-    for &zoom in zooms {
-        if style.paint.drape.painted.contains(&zoom) {
-            continue;
-        }
+    let at = PaintAt {
+        zoom,
+        bearing,
+        // At rest: that zoom's images alone.
+        crossfade: Crossfade {
+            from_scale: 0.5,
+            mix: 1.0,
+        },
+    };
+    let states_by_zoom = style.states.zoom_dependent();
+    let mut drawn = vec![StackPaint::default(); stacks];
+    for (index, node) in plan
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.family.is_draped())
+    {
+        let layer = &plan.style.layers[node.layer];
+        // A shaded hillshade drapes its slopes, unlit: the terrain pass
+        // lights them from the frame's bearing, so its slots don't turn
+        // with it.
+        let shaded = renderer.shades_on_terrain(index as u32);
         let at = PaintAt {
-            zoom: f64::from(zoom),
-            bearing,
-            // At an integer zoom at rest: that zoom's images alone.
-            crossfade: Crossfade {
-                from_scale: 0.5,
-                mix: 1.0,
-            },
+            bearing: if shaded { 0.0 } else { at.bearing },
+            ..at
         };
-        let (mut changed, mut turns) = (false, false);
-        for (index, node) in plan
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.family.is_draped())
-        {
-            let layer = &plan.style.layers[node.layer];
-            // A shaded hillshade drapes its slopes, unlit: the terrain pass
-            // lights them from the frame's bearing, so its slots don't
-            // turn with it.
-            let shaded = renderer.shades_on_terrain(index as u32);
-            let at = PaintAt {
-                bearing: if shaded { 0.0 } else { at.bearing },
-                ..at
-            };
-            let paint = (layer.is_visible_at(at.zoom))
-                .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas))
-                .flatten();
-            turns |= paint.is_some() && !shaded && turns_with_bearing(layer, at.zoom);
-            changed |= renderer.set_drape_paint(gpu, index as u32, zoom, paint.as_ref());
+        let paint = (layer.is_visible_at(at.zoom))
+            .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas))
+            .flatten();
+        let changed = renderer.set_drape_paint(gpu, index as u32, paint.as_ref());
+        let Some(stack) = renderer.drape_stack(index as u32).map(usize::from) else {
+            continue;
+        };
+        let Some(part) = drawn.get_mut(stack) else {
+            continue;
+        };
+        part.revision += u64::from(changed);
+        if let Some(paint) = &paint {
+            part.by_zoom |= paint.drapes_by_zoom(states_by_zoom);
+            part.turns |= !shaded && turns_with_bearing(layer, at.zoom);
         }
-        let drape = &mut style.paint.drape;
-        if changed {
-            *drape.revisions.entry(zoom).or_default() += 1;
-        }
-        if turns {
-            drape.turning.insert(zoom);
-        } else {
-            drape.turning.remove(&zoom);
-        }
-        drape.painted.insert(zoom);
     }
+    let drape = &mut style.paint.drape;
+    for (held, now) in drape.stacks.iter_mut().zip(drawn) {
+        *held = StackPaint {
+            revision: held.revision + now.revision,
+            ..now
+        };
+    }
+    drape.painted = Some(zoom.to_bits());
+    drape.bearing = bearing;
 }
 
 impl PaintState {
-    /// What changes with the draped paint at drape zoom `zoom`: its
-    /// revision, and the bearing if something drawn there turns with it.
-    pub(crate) fn drape_key(&self, zoom: u8, bearing: f64) -> (u64, Option<u64>) {
-        let revision = self.drape.revisions.get(&zoom).copied().unwrap_or(0);
-        (
-            revision,
-            self.drape
-                .turning
-                .contains(&zoom)
-                .then_some(bearing.to_bits()),
-        )
+    /// What drape stack `stack`'s slots show of the draped paint at
+    /// `zoom` and `bearing`: its revision, the zoom if what it draws scales
+    /// with it ([`NodePaint::drapes_by_zoom`](orb_render::NodePaint::drapes_by_zoom)),
+    /// and the bearing if something drawn there turns with it.
+    pub(crate) fn drape_key(&self, stack: usize, zoom: f64, bearing: f64) -> [u64; 3] {
+        let paint = self.drape.stacks.get(stack).copied().unwrap_or_default();
+        [
+            paint.revision,
+            if paint.by_zoom { zoom.to_bits() } else { 0 },
+            if paint.turns { bearing.to_bits() } else { 0 },
+        ]
     }
 }
 
@@ -261,22 +266,30 @@ pub(crate) struct Crossfade {
     pub(crate) mix: f32,
 }
 
-/// The draped nodes' paint at the drape zooms slots are drawn at,
-/// and what tells a slot's content changed with it.
+/// The draped nodes' paint at the camera's zoom, and per drape stack what
+/// tells its slots' content changed with it.
 #[derive(Debug, Default)]
 struct DrapePaint {
-    /// Zooms written since the paint last changed.
-    painted: HashSet<u8>,
-    /// Per zoom, a revision that changes with what is written there.
-    revisions: HashMap<u8, u64>,
-    /// Zooms where something drawn turns with the bearing, and the
-    /// bearing they were written at.
-    turning: HashSet<u8>,
+    /// The zoom (bits) paint was written at since it last changed.
+    painted: Option<u64>,
+    /// The bearing it was written at.
     bearing: f64,
+    stacks: Vec<StackPaint>,
     /// The drape layout generation written for.
     generation: Option<u64>,
     /// The camera inputs paint that reads the camera was draped at.
     camera: Option<CameraInputs>,
+}
+
+/// What a drape stack's slots show of the draped paint.
+#[derive(Clone, Copy, Debug, Default)]
+struct StackPaint {
+    /// Changes with what is written for its nodes.
+    revision: u64,
+    /// What its nodes draw scales with the zoom.
+    by_zoom: bool,
+    /// Something drawn there turns with the bearing.
+    turns: bool,
 }
 
 #[derive(Debug, Default)]
@@ -365,12 +378,12 @@ fn write_paint(
 ) -> Vec<String> {
     let mut missing = Vec::new();
     if style.paint.written.is_none() {
-        // What draped nodes draw with at their drape zooms may have changed.
-        style.paint.drape.painted.clear();
+        // What draped nodes draw with may have changed.
+        style.paint.drape.painted = None;
         style.paint.epoch += 1;
     }
-    // Draped nodes on terrain draw at their slots' zooms, which hide them
-    // where their layers don't draw ([`drape`]).
+    // Draped nodes on terrain draw their drape paint, which leaves them
+    // out where their layers don't draw ([`drape`]).
     let draping = renderer.terrain_on();
     if style.paint.written == Some((zoom, bearing, draping)) && style.paint.fade == Some(crossfade)
     {
@@ -501,6 +514,28 @@ fn write_paint(
 /// Whether a layer drawn at `zoom` turns with the map's bearing: a
 /// viewport-anchored hillshade's light (one the terrain doesn't shade), or
 /// a viewport-anchored translate.
+/// Whether what a draped layer draws into a drape slot changes with the
+/// zoom, whatever its features: line sizes are in pixels, which the slot's
+/// texels per pixel scale, and so are fill translations and patterns; paint
+/// that follows the zoom changes with it. A layer that doesn't keeps its
+/// slots while the camera zooms
+/// ([`Renderer::set_drapes_by_zoom`](orb_render::Renderer::set_drapes_by_zoom)).
+pub(crate) fn drapes_by_zoom(l: &orb_style::Layer) -> bool {
+    let follows = l
+        .slots()
+        .any(|(_, slot)| matches!(slot.kind(), Kind::Camera | Kind::Composite));
+    follows
+        || match l.ty {
+            LayerType::Line => true,
+            LayerType::Fill => {
+                l.get(orb_style::FILL_PATTERN).is_set()
+                    || l.get(orb_style::FILL_TRANSLATE).constant() != Some([0.0; 2])
+            }
+            LayerType::Background => l.get(orb_style::BACKGROUND_PATTERN).is_set(),
+            _ => false,
+        }
+}
+
 fn turns_with_bearing(l: &orb_style::Layer, zoom: f64) -> bool {
     let translates = |px: orb_style::Key<[f32; 2]>, anchor: orb_style::Key<TranslateAnchor>| {
         let px = l.get(px);

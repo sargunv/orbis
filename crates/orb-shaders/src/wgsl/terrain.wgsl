@@ -7,10 +7,11 @@
 //
 // Drape slots are squares of the drape atlas, `slot_px` texels per side,
 // `columns` per row; a tile's slot for colour stack `s` is
-// `slot * stacks + s`. Slope stacks are on a page of their own, at
-// `slope_px` texels a side, likewise. A terrain layer draws a stack's
-// slots, or two stacks' around a hillshade it shades between them from
-// its slopes (`terrain_shade.wgsl`).
+// `s * stride + slot`, each stack's slots side by side. Slope stacks are
+// on a page of their own, at `slope_px` texels a side, likewise. A
+// terrain layer draws a stack's slots, two stacks' where the zoom splits
+// it, or two around a hillshade it shades between them from its slopes
+// (`terrain_shade.wgsl`).
 // Mip levels never mix slots, and samples keep to the slot at the level
 // they read, as a texture of its own would clamp to its edge.
 
@@ -46,14 +47,16 @@ struct Terrain {
     dem_dim: f32,
     // World units the skirts hang below the edges.
     skirt: f32,
-    // Colour stacks, and the colour page's slots per row.
-    stacks: u32,
+    // Slots between a tile's colour stacks, and the colour page's slots
+    // per row.
+    stride: u32,
     columns: u32,
     slot_px: f32,
     // Terrain tiles drawn.
     tiles: u32,
-    // Slope stacks, and the slope page's slots per row and side.
-    slope_stacks: u32,
+    // Slots between a tile's slope stacks, and the slope page's slots per
+    // row and side.
+    slope_stride: u32,
     slope_columns: u32,
     slope_px: f32,
 };
@@ -206,7 +209,7 @@ fn drape_color(in: TerrainOut, at: DrapeSample, stack: u32) -> vec4<f32> {
     if stack == NO_STACK {
         return vec4<f32>(0.0);
     }
-    let slot = in.tile.y * terrain.stacks + stack;
+    let slot = stack * terrain.stride + in.tile.y;
     let size = vec2<f32>(textureDimensions(drape));
     let corner = vec2<f32>(f32(slot % terrain.columns), f32(slot / terrain.columns)) * terrain.slot_px;
     return textureSampleGrad(drape, drape_sampler, (corner + at.texel) / size, 0, at.dx / size, at.dy / size);
@@ -214,7 +217,7 @@ fn drape_color(in: TerrainOut, at: DrapeSample, stack: u32) -> vec4<f32> {
 
 // Slope stack `rank`'s slot at `at` (a sample at `slope_px`).
 fn slope_texel(in: TerrainOut, at: DrapeSample, rank: u32) -> vec4<f32> {
-    let slot = in.tile.y * terrain.slope_stacks + rank;
+    let slot = rank * terrain.slope_stride + in.tile.y;
     let size = vec2<f32>(textureDimensions(slope_atlas));
     let corner = vec2<f32>(f32(slot % terrain.slope_columns), f32(slot / terrain.slope_columns)) * terrain.slope_px;
     return textureSampleGrad(slope_atlas, drape_sampler, (corner + at.texel) / size, 0, at.dx / size, at.dy / size);

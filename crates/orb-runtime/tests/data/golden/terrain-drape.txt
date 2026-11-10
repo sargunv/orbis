@@ -17,10 +17,6 @@ submit 0
     bundles [bundle "drape"#0]
     scissor
     bundles [bundle "drape"#1]
-    scissor
-    bundles [bundle "drape"#2]
-    scissor
-    bundles [bundle "drape"#3]
   compute pass "drape mips"
     pipeline compute "downsample"#0
     group 0 group "downsample"#0
@@ -58,13 +54,7 @@ submit 0
     group 0 group "drape clear"#1
     draw 0..4 0..8
     scissor
-    bundles [bundle "drape"#4]
-    scissor
-    bundles [bundle "drape"#5]
-    scissor
-    bundles [bundle "drape"#6]
-    scissor
-    bundles [bundle "drape"#7]
+    bundles [bundle "drape"#2]
   compute pass "drape mips"
     pipeline compute "downsample"#0
     group 0 group "downsample"#10
@@ -108,7 +98,7 @@ submit 0
     pipeline render "terrain shade"#0
     group 0 group "terrain"#0
     group 1 group "terrain layer"#0
-    group 2 group "image node"#4
+    group 2 group "image node"#1
     index buffer "terrain grid indices"#0 at 0
     draw indexed 0..101376 0 0..8
   render pass "terrain"
@@ -185,41 +175,34 @@ group "drape node"#13: layout layout "node"#0; 0 buffer "drape node uniforms"#0 
 group "drape node"#14: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 9728 size Some(512)
 group "drape node"#15: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 10240 size Some(512)
 group "drape node"#16: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 10752 size Some(512)
-group "drape node"#17: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 14336 size Some(512)
-group "drape node"#18: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 15360 size Some(512)
-group "drape node"#19: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 15872 size Some(512)
-group "drape node"#20: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 16384 size Some(512)
-group "drape node"#21: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 16896 size Some(512)
-group "drape node"#22: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 17408 size Some(512)
-group "drape node"#23: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 17920 size Some(512)
-group "drape node"#24: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 18432 size Some(512)
-group "drape node"#25: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 18944 size Some(512)
-group "drape node"#26: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 19456 size Some(512)
-group "drape node"#27: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 19968 size Some(512)
-group "drape node"#28: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 21504 size Some(512)
-group "drape node"#29: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 22528 size Some(512)
-group "drape node"#30: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 23040 size Some(512)
-group "drape node"#31: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 23552 size Some(512)
-group "drape node"#32: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 24064 size Some(512)
-group "drape node"#33: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 25088 size Some(512)
-group "drape node"#34: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 26112 size Some(512)
-group "drape node"#35: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 26624 size Some(512)
-group "drape node"#36: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 27136 size Some(512)
-group "drape node"#37: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 27648 size Some(512)
-group "drape node"#38: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 28160 size Some(512)
-group "drape node"#39: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 31744 size Some(512)
-group "drape node"#40: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 32256 size Some(512)
-group "drape node"#41: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 33792 size Some(512)
-group "drape node"#42: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 34304 size Some(512)
-group "drape node"#43: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 34816 size Some(512)
-group "drape node"#44: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 35328 size Some(512)
-group "drape node"#45: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 35840 size Some(512)
-group "drape node"#46: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 36864 size Some(512)
-group "drape node"#47: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 37376 size Some(512)
-group "drape node"#48: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 37888 size Some(512)
-group "drape node"#49: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 38400 size Some(512)
-group "drape node"#50: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 38912 size Some(512)
-group "drape node"#51: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 39424 size Some(512)
+group "drape node"#17: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 12288 size Some(512)
+group "drape node"#18: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 12800 size Some(512)
+group "drape node"#19: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 14336 size Some(512)
+group "drape node"#20: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 15360 size Some(512)
+group "drape node"#21: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 15872 size Some(512)
+group "drape node"#22: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 16384 size Some(512)
+group "drape node"#23: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 16896 size Some(512)
+group "drape node"#24: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 17408 size Some(512)
+group "drape node"#25: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 17920 size Some(512)
+group "drape node"#26: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 18432 size Some(512)
+group "drape node"#27: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 18944 size Some(512)
+group "drape node"#28: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 19456 size Some(512)
+group "drape node"#29: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 19968 size Some(512)
+group "drape node"#30: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 20992 size Some(512)
+group "drape node"#31: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 21504 size Some(512)
+group "drape node"#32: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 22016 size Some(512)
+group "drape node"#33: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 22528 size Some(512)
+group "drape node"#34: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 23040 size Some(512)
+group "drape node"#35: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 23552 size Some(512)
+group "drape node"#36: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 24064 size Some(512)
+group "drape node"#37: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 24576 size Some(512)
+group "drape node"#38: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 25088 size Some(512)
+group "drape node"#39: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 25600 size Some(512)
+group "drape node"#40: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 26112 size Some(512)
+group "drape node"#41: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 26624 size Some(512)
+group "drape node"#42: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 27136 size Some(512)
+group "drape node"#43: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 27648 size Some(512)
+group "drape node"#44: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 28160 size Some(512)
 bundle "drape"#0: [Rgba8Unorm] depth None samples 1
     index buffer "compacted indices"#0 at 0
     pipeline render "fill"#0
@@ -290,1031 +273,195 @@ bundle "drape"#0: [Rgba8Unorm] depth None samples 1
     group 0 group "scene"#0
     group 1 group "drape node"#16
     draw indexed indirect buffer "draw args"#0 at 672
-    pipeline render "line"#0
+    pipeline render "fill"#0
     group 0 group "scene"#0
     group 1 group "drape node"#17
-    draw indexed indirect buffer "draw args"#0 at 896
-    pipeline render "line"#0
+    draw indexed indirect buffer "draw args"#0 at 768
+    pipeline render "fill outline"#0
     group 0 group "scene"#0
     group 1 group "drape node"#18
-    draw indexed indirect buffer "draw args"#0 at 960
+    draw indexed indirect buffer "draw args"#0 at 800
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#19
-    draw indexed indirect buffer "draw args"#0 at 992
+    draw indexed indirect buffer "draw args"#0 at 896
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#20
-    draw indexed indirect buffer "draw args"#0 at 1024
+    draw indexed indirect buffer "draw args"#0 at 960
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#21
-    draw indexed indirect buffer "draw args"#0 at 1056
+    draw indexed indirect buffer "draw args"#0 at 992
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#22
-    draw indexed indirect buffer "draw args"#0 at 1088
+    draw indexed indirect buffer "draw args"#0 at 1024
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#23
-    draw indexed indirect buffer "draw args"#0 at 1120
+    draw indexed indirect buffer "draw args"#0 at 1056
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#24
-    draw indexed indirect buffer "draw args"#0 at 1152
+    draw indexed indirect buffer "draw args"#0 at 1088
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#25
-    draw indexed indirect buffer "draw args"#0 at 1184
+    draw indexed indirect buffer "draw args"#0 at 1120
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#26
-    draw indexed indirect buffer "draw args"#0 at 1216
+    draw indexed indirect buffer "draw args"#0 at 1152
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#27
-    draw indexed indirect buffer "draw args"#0 at 1248
+    draw indexed indirect buffer "draw args"#0 at 1184
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#28
-    draw indexed indirect buffer "draw args"#0 at 1344
+    draw indexed indirect buffer "draw args"#0 at 1216
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#29
-    draw indexed indirect buffer "draw args"#0 at 1408
+    draw indexed indirect buffer "draw args"#0 at 1248
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#30
-    draw indexed indirect buffer "draw args"#0 at 1440
+    draw indexed indirect buffer "draw args"#0 at 1312
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#31
-    draw indexed indirect buffer "draw args"#0 at 1472
+    draw indexed indirect buffer "draw args"#0 at 1344
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#32
-    draw indexed indirect buffer "draw args"#0 at 1504
+    draw indexed indirect buffer "draw args"#0 at 1376
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#33
-    draw indexed indirect buffer "draw args"#0 at 1568
+    draw indexed indirect buffer "draw args"#0 at 1408
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#34
-    draw indexed indirect buffer "draw args"#0 at 1632
+    draw indexed indirect buffer "draw args"#0 at 1440
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#35
-    draw indexed indirect buffer "draw args"#0 at 1664
+    draw indexed indirect buffer "draw args"#0 at 1472
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#36
-    draw indexed indirect buffer "draw args"#0 at 1696
+    draw indexed indirect buffer "draw args"#0 at 1504
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#37
-    draw indexed indirect buffer "draw args"#0 at 1728
+    draw indexed indirect buffer "draw args"#0 at 1536
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#38
-    draw indexed indirect buffer "draw args"#0 at 1760
+    draw indexed indirect buffer "draw args"#0 at 1568
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#39
-    draw indexed indirect buffer "draw args"#0 at 1984
+    draw indexed indirect buffer "draw args"#0 at 1600
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#40
-    draw indexed indirect buffer "draw args"#0 at 2016
+    draw indexed indirect buffer "draw args"#0 at 1632
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#41
-    draw indexed indirect buffer "draw args"#0 at 2112
+    draw indexed indirect buffer "draw args"#0 at 1664
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#42
-    draw indexed indirect buffer "draw args"#0 at 2144
+    draw indexed indirect buffer "draw args"#0 at 1696
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#43
-    draw indexed indirect buffer "draw args"#0 at 2176
+    draw indexed indirect buffer "draw args"#0 at 1728
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#44
-    draw indexed indirect buffer "draw args"#0 at 2208
+    draw indexed indirect buffer "draw args"#0 at 1760
+group "drape node"#45: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 31744 size Some(512)
+group "drape node"#46: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 32256 size Some(512)
+group "drape node"#47: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 33792 size Some(512)
+group "drape node"#48: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 34304 size Some(512)
+group "drape node"#49: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 34816 size Some(512)
+group "drape node"#50: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 35328 size Some(512)
+group "drape node"#51: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 35840 size Some(512)
+group "drape node"#52: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 36864 size Some(512)
+group "drape node"#53: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 37376 size Some(512)
+group "drape node"#54: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 37888 size Some(512)
+group "drape node"#55: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 38400 size Some(512)
+group "drape node"#56: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 38912 size Some(512)
+group "drape node"#57: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 39424 size Some(512)
+group "drape node"#58: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 39936 size Some(512)
+group "drape node"#59: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 40448 size Some(512)
+bundle "drape"#1: [Rgba8Unorm] depth None samples 1
+    index buffer "compacted indices"#0 at 0
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#45
-    draw indexed indirect buffer "draw args"#0 at 2240
+    draw indexed indirect buffer "draw args"#0 at 1984
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#46
-    draw indexed indirect buffer "draw args"#0 at 2304
+    draw indexed indirect buffer "draw args"#0 at 2016
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#47
-    draw indexed indirect buffer "draw args"#0 at 2336
+    draw indexed indirect buffer "draw args"#0 at 2112
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#48
-    draw indexed indirect buffer "draw args"#0 at 2368
+    draw indexed indirect buffer "draw args"#0 at 2144
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#49
-    draw indexed indirect buffer "draw args"#0 at 2400
+    draw indexed indirect buffer "draw args"#0 at 2176
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#50
-    draw indexed indirect buffer "draw args"#0 at 2432
+    draw indexed indirect buffer "draw args"#0 at 2208
     pipeline render "line"#0
     group 0 group "scene"#0
     group 1 group "drape node"#51
-    draw indexed indirect buffer "draw args"#0 at 2464
-buffer "drape frame"#1: BufferUsages(COPY_DST | UNIFORM)
-group "scene"#1: layout layout "scene"#0; 0 buffer "drape frame"#1 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
-buffer "drape node uniforms"#1: BufferUsages(COPY_DST | UNIFORM)
-group "drape node"#52: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 0 size Some(512)
-group "drape node"#53: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 2560 size Some(512)
-group "drape node"#54: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 3072 size Some(512)
-group "drape node"#55: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 4096 size Some(512)
-group "drape node"#56: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 4608 size Some(512)
-group "drape node"#57: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 5120 size Some(512)
-group "drape node"#58: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 5632 size Some(512)
-group "drape node"#59: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 6144 size Some(512)
-group "drape node"#60: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 6656 size Some(512)
-group "drape node"#61: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 7168 size Some(512)
-group "drape node"#62: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 7680 size Some(512)
-group "drape node"#63: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 8192 size Some(512)
-group "drape node"#64: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 8704 size Some(512)
-group "drape node"#65: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 9216 size Some(512)
-group "drape node"#66: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 9728 size Some(512)
-group "drape node"#67: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 10240 size Some(512)
-group "drape node"#68: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 10752 size Some(512)
-group "drape node"#69: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 12288 size Some(512)
-group "drape node"#70: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 12800 size Some(512)
-group "drape node"#71: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 14336 size Some(512)
-group "drape node"#72: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 15360 size Some(512)
-group "drape node"#73: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 15872 size Some(512)
-group "drape node"#74: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 16384 size Some(512)
-group "drape node"#75: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 16896 size Some(512)
-group "drape node"#76: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 17408 size Some(512)
-group "drape node"#77: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 17920 size Some(512)
-group "drape node"#78: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 18432 size Some(512)
-group "drape node"#79: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 18944 size Some(512)
-group "drape node"#80: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 19456 size Some(512)
-group "drape node"#81: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 19968 size Some(512)
-group "drape node"#82: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 20992 size Some(512)
-group "drape node"#83: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 21504 size Some(512)
-group "drape node"#84: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 22528 size Some(512)
-group "drape node"#85: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 23040 size Some(512)
-group "drape node"#86: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 23552 size Some(512)
-group "drape node"#87: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 24064 size Some(512)
-group "drape node"#88: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 24576 size Some(512)
-group "drape node"#89: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 25088 size Some(512)
-group "drape node"#90: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 26112 size Some(512)
-group "drape node"#91: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 26624 size Some(512)
-group "drape node"#92: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 27136 size Some(512)
-group "drape node"#93: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 27648 size Some(512)
-group "drape node"#94: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 28160 size Some(512)
-group "drape node"#95: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 31744 size Some(512)
-group "drape node"#96: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 32256 size Some(512)
-group "drape node"#97: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 33792 size Some(512)
-group "drape node"#98: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 34304 size Some(512)
-group "drape node"#99: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 34816 size Some(512)
-group "drape node"#100: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 35328 size Some(512)
-group "drape node"#101: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 35840 size Some(512)
-group "drape node"#102: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 36864 size Some(512)
-group "drape node"#103: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 37376 size Some(512)
-group "drape node"#104: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 37888 size Some(512)
-group "drape node"#105: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 38400 size Some(512)
-group "drape node"#106: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 38912 size Some(512)
-group "drape node"#107: layout layout "node"#0; 0 buffer "drape node uniforms"#1 at 39424 size Some(512)
-bundle "drape"#1: [Rgba8Unorm] depth None samples 1
-    index buffer "compacted indices"#0 at 0
-    pipeline render "fill"#0
-    group 0 group "scene"#1
+    draw indexed indirect buffer "draw args"#0 at 2240
+    pipeline render "line"#0
+    group 0 group "scene"#0
     group 1 group "drape node"#52
-    draw indexed indirect buffer "draw args"#0 at 0
-    pipeline render "fill"#0
-    group 0 group "scene"#1
+    draw indexed indirect buffer "draw args"#0 at 2304
+    pipeline render "line"#0
+    group 0 group "scene"#0
     group 1 group "drape node"#53
-    draw indexed indirect buffer "draw args"#0 at 160
-    pipeline render "fill"#0
-    group 0 group "scene"#1
+    draw indexed indirect buffer "draw args"#0 at 2336
+    pipeline render "line"#0
+    group 0 group "scene"#0
     group 1 group "drape node"#54
-    draw indexed indirect buffer "draw args"#0 at 192
-    pipeline render "fill"#0
-    group 0 group "scene"#1
+    draw indexed indirect buffer "draw args"#0 at 2368
+    pipeline render "line"#0
+    group 0 group "scene"#0
     group 1 group "drape node"#55
-    draw indexed indirect buffer "draw args"#0 at 256
-    pipeline render "fill outline"#0
-    group 0 group "scene"#1
+    draw indexed indirect buffer "draw args"#0 at 2400
+    pipeline render "line"#0
+    group 0 group "scene"#0
     group 1 group "drape node"#56
-    draw indexed indirect buffer "draw args"#0 at 288
-    pipeline render "fill"#0
-    group 0 group "scene"#1
+    draw indexed indirect buffer "draw args"#0 at 2432
+    pipeline render "line"#0
+    group 0 group "scene"#0
     group 1 group "drape node"#57
-    draw indexed indirect buffer "draw args"#0 at 320
-    pipeline render "fill outline"#0
-    group 0 group "scene"#1
+    draw indexed indirect buffer "draw args"#0 at 2464
+    pipeline render "fill"#0
+    group 0 group "scene"#0
     group 1 group "drape node"#58
-    draw indexed indirect buffer "draw args"#0 at 352
-    pipeline render "fill"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#59
-    draw indexed indirect buffer "draw args"#0 at 384
-    pipeline render "fill outline"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#60
-    draw indexed indirect buffer "draw args"#0 at 416
-    pipeline render "fill"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#61
-    draw indexed indirect buffer "draw args"#0 at 448
-    pipeline render "fill outline"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#62
-    draw indexed indirect buffer "draw args"#0 at 480
-    pipeline render "fill"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#63
-    draw indexed indirect buffer "draw args"#0 at 512
-    pipeline render "fill outline"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#64
-    draw indexed indirect buffer "draw args"#0 at 544
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#65
-    draw indexed indirect buffer "draw args"#0 at 576
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#66
-    draw indexed indirect buffer "draw args"#0 at 608
-    pipeline render "fill"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#67
-    draw indexed indirect buffer "draw args"#0 at 640
-    pipeline render "fill outline"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#68
-    draw indexed indirect buffer "draw args"#0 at 672
-    pipeline render "fill"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#69
-    draw indexed indirect buffer "draw args"#0 at 768
-    pipeline render "fill outline"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#70
-    draw indexed indirect buffer "draw args"#0 at 800
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#71
-    draw indexed indirect buffer "draw args"#0 at 896
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#72
-    draw indexed indirect buffer "draw args"#0 at 960
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#73
-    draw indexed indirect buffer "draw args"#0 at 992
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#74
-    draw indexed indirect buffer "draw args"#0 at 1024
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#75
-    draw indexed indirect buffer "draw args"#0 at 1056
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#76
-    draw indexed indirect buffer "draw args"#0 at 1088
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#77
-    draw indexed indirect buffer "draw args"#0 at 1120
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#78
-    draw indexed indirect buffer "draw args"#0 at 1152
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#79
-    draw indexed indirect buffer "draw args"#0 at 1184
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#80
-    draw indexed indirect buffer "draw args"#0 at 1216
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#81
-    draw indexed indirect buffer "draw args"#0 at 1248
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#82
-    draw indexed indirect buffer "draw args"#0 at 1312
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#83
-    draw indexed indirect buffer "draw args"#0 at 1344
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#84
-    draw indexed indirect buffer "draw args"#0 at 1408
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#85
-    draw indexed indirect buffer "draw args"#0 at 1440
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#86
-    draw indexed indirect buffer "draw args"#0 at 1472
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#87
-    draw indexed indirect buffer "draw args"#0 at 1504
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#88
-    draw indexed indirect buffer "draw args"#0 at 1536
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#89
-    draw indexed indirect buffer "draw args"#0 at 1568
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#90
-    draw indexed indirect buffer "draw args"#0 at 1632
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#91
-    draw indexed indirect buffer "draw args"#0 at 1664
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#92
-    draw indexed indirect buffer "draw args"#0 at 1696
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#93
-    draw indexed indirect buffer "draw args"#0 at 1728
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#94
-    draw indexed indirect buffer "draw args"#0 at 1760
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#95
-    draw indexed indirect buffer "draw args"#0 at 1984
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#96
-    draw indexed indirect buffer "draw args"#0 at 2016
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#97
-    draw indexed indirect buffer "draw args"#0 at 2112
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#98
-    draw indexed indirect buffer "draw args"#0 at 2144
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#99
-    draw indexed indirect buffer "draw args"#0 at 2176
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#100
-    draw indexed indirect buffer "draw args"#0 at 2208
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#101
-    draw indexed indirect buffer "draw args"#0 at 2240
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#102
-    draw indexed indirect buffer "draw args"#0 at 2304
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#103
-    draw indexed indirect buffer "draw args"#0 at 2336
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#104
-    draw indexed indirect buffer "draw args"#0 at 2368
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#105
-    draw indexed indirect buffer "draw args"#0 at 2400
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#106
-    draw indexed indirect buffer "draw args"#0 at 2432
-    pipeline render "line"#0
-    group 0 group "scene"#1
-    group 1 group "drape node"#107
-    draw indexed indirect buffer "draw args"#0 at 2464
-buffer "drape frame"#2: BufferUsages(COPY_DST | UNIFORM)
-group "scene"#2: layout layout "scene"#0; 0 buffer "drape frame"#2 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
-buffer "drape node uniforms"#2: BufferUsages(COPY_DST | UNIFORM)
-group "drape node"#108: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 0 size Some(512)
-group "drape node"#109: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 2560 size Some(512)
-group "drape node"#110: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 3072 size Some(512)
-group "drape node"#111: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 4096 size Some(512)
-group "drape node"#112: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 4608 size Some(512)
-group "drape node"#113: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 5120 size Some(512)
-group "drape node"#114: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 5632 size Some(512)
-group "drape node"#115: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 6144 size Some(512)
-group "drape node"#116: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 6656 size Some(512)
-group "drape node"#117: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 7168 size Some(512)
-group "drape node"#118: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 7680 size Some(512)
-group "drape node"#119: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 8192 size Some(512)
-group "drape node"#120: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 8704 size Some(512)
-group "drape node"#121: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 9216 size Some(512)
-group "drape node"#122: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 9728 size Some(512)
-group "drape node"#123: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 10240 size Some(512)
-group "drape node"#124: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 10752 size Some(512)
-group "drape node"#125: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 12288 size Some(512)
-group "drape node"#126: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 12800 size Some(512)
-group "drape node"#127: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 14336 size Some(512)
-group "drape node"#128: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 15360 size Some(512)
-group "drape node"#129: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 15872 size Some(512)
-group "drape node"#130: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 16384 size Some(512)
-group "drape node"#131: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 16896 size Some(512)
-group "drape node"#132: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 17408 size Some(512)
-group "drape node"#133: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 17920 size Some(512)
-group "drape node"#134: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 18432 size Some(512)
-group "drape node"#135: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 18944 size Some(512)
-group "drape node"#136: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 19456 size Some(512)
-group "drape node"#137: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 19968 size Some(512)
-group "drape node"#138: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 20992 size Some(512)
-group "drape node"#139: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 21504 size Some(512)
-group "drape node"#140: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 22016 size Some(512)
-group "drape node"#141: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 22528 size Some(512)
-group "drape node"#142: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 23040 size Some(512)
-group "drape node"#143: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 23552 size Some(512)
-group "drape node"#144: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 24064 size Some(512)
-group "drape node"#145: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 24576 size Some(512)
-group "drape node"#146: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 25088 size Some(512)
-group "drape node"#147: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 25600 size Some(512)
-group "drape node"#148: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 26112 size Some(512)
-group "drape node"#149: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 26624 size Some(512)
-group "drape node"#150: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 27136 size Some(512)
-group "drape node"#151: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 27648 size Some(512)
-group "drape node"#152: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 28160 size Some(512)
-group "drape node"#153: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 31744 size Some(512)
-group "drape node"#154: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 32256 size Some(512)
-group "drape node"#155: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 33792 size Some(512)
-group "drape node"#156: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 34304 size Some(512)
-group "drape node"#157: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 34816 size Some(512)
-group "drape node"#158: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 35328 size Some(512)
-group "drape node"#159: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 35840 size Some(512)
-group "drape node"#160: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 36864 size Some(512)
-group "drape node"#161: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 37376 size Some(512)
-group "drape node"#162: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 37888 size Some(512)
-group "drape node"#163: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 38400 size Some(512)
-group "drape node"#164: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 38912 size Some(512)
-group "drape node"#165: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 39424 size Some(512)
-group "drape node"#166: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 39936 size Some(512)
-group "drape node"#167: layout layout "node"#0; 0 buffer "drape node uniforms"#2 at 40448 size Some(512)
-bundle "drape"#2: [Rgba8Unorm] depth None samples 1
-    index buffer "compacted indices"#0 at 0
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#108
-    draw indexed indirect buffer "draw args"#0 at 0
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#109
-    draw indexed indirect buffer "draw args"#0 at 160
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#110
-    draw indexed indirect buffer "draw args"#0 at 192
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#111
-    draw indexed indirect buffer "draw args"#0 at 256
-    pipeline render "fill outline"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#112
-    draw indexed indirect buffer "draw args"#0 at 288
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#113
-    draw indexed indirect buffer "draw args"#0 at 320
-    pipeline render "fill outline"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#114
-    draw indexed indirect buffer "draw args"#0 at 352
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#115
-    draw indexed indirect buffer "draw args"#0 at 384
-    pipeline render "fill outline"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#116
-    draw indexed indirect buffer "draw args"#0 at 416
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#117
-    draw indexed indirect buffer "draw args"#0 at 448
-    pipeline render "fill outline"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#118
-    draw indexed indirect buffer "draw args"#0 at 480
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#119
-    draw indexed indirect buffer "draw args"#0 at 512
-    pipeline render "fill outline"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#120
-    draw indexed indirect buffer "draw args"#0 at 544
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#121
-    draw indexed indirect buffer "draw args"#0 at 576
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#122
-    draw indexed indirect buffer "draw args"#0 at 608
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#123
-    draw indexed indirect buffer "draw args"#0 at 640
-    pipeline render "fill outline"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#124
-    draw indexed indirect buffer "draw args"#0 at 672
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#125
-    draw indexed indirect buffer "draw args"#0 at 768
-    pipeline render "fill outline"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#126
-    draw indexed indirect buffer "draw args"#0 at 800
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#127
-    draw indexed indirect buffer "draw args"#0 at 896
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#128
-    draw indexed indirect buffer "draw args"#0 at 960
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#129
-    draw indexed indirect buffer "draw args"#0 at 992
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#130
-    draw indexed indirect buffer "draw args"#0 at 1024
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#131
-    draw indexed indirect buffer "draw args"#0 at 1056
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#132
-    draw indexed indirect buffer "draw args"#0 at 1088
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#133
-    draw indexed indirect buffer "draw args"#0 at 1120
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#134
-    draw indexed indirect buffer "draw args"#0 at 1152
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#135
-    draw indexed indirect buffer "draw args"#0 at 1184
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#136
-    draw indexed indirect buffer "draw args"#0 at 1216
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#137
-    draw indexed indirect buffer "draw args"#0 at 1248
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#138
-    draw indexed indirect buffer "draw args"#0 at 1312
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#139
-    draw indexed indirect buffer "draw args"#0 at 1344
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#140
-    draw indexed indirect buffer "draw args"#0 at 1376
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#141
-    draw indexed indirect buffer "draw args"#0 at 1408
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#142
-    draw indexed indirect buffer "draw args"#0 at 1440
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#143
-    draw indexed indirect buffer "draw args"#0 at 1472
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#144
-    draw indexed indirect buffer "draw args"#0 at 1504
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#145
-    draw indexed indirect buffer "draw args"#0 at 1536
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#146
-    draw indexed indirect buffer "draw args"#0 at 1568
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#147
-    draw indexed indirect buffer "draw args"#0 at 1600
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#148
-    draw indexed indirect buffer "draw args"#0 at 1632
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#149
-    draw indexed indirect buffer "draw args"#0 at 1664
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#150
-    draw indexed indirect buffer "draw args"#0 at 1696
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#151
-    draw indexed indirect buffer "draw args"#0 at 1728
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#152
-    draw indexed indirect buffer "draw args"#0 at 1760
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#153
-    draw indexed indirect buffer "draw args"#0 at 1984
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#154
-    draw indexed indirect buffer "draw args"#0 at 2016
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#155
-    draw indexed indirect buffer "draw args"#0 at 2112
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#156
-    draw indexed indirect buffer "draw args"#0 at 2144
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#157
-    draw indexed indirect buffer "draw args"#0 at 2176
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#158
-    draw indexed indirect buffer "draw args"#0 at 2208
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#159
-    draw indexed indirect buffer "draw args"#0 at 2240
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#160
-    draw indexed indirect buffer "draw args"#0 at 2304
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#161
-    draw indexed indirect buffer "draw args"#0 at 2336
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#162
-    draw indexed indirect buffer "draw args"#0 at 2368
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#163
-    draw indexed indirect buffer "draw args"#0 at 2400
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#164
-    draw indexed indirect buffer "draw args"#0 at 2432
-    pipeline render "line"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#165
-    draw indexed indirect buffer "draw args"#0 at 2464
-    pipeline render "fill"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#166
     draw indexed indirect buffer "draw args"#0 at 2496
     pipeline render "fill outline"#0
-    group 0 group "scene"#2
-    group 1 group "drape node"#167
+    group 0 group "scene"#0
+    group 1 group "drape node"#59
     draw indexed indirect buffer "draw args"#0 at 2528
-buffer "drape frame"#3: BufferUsages(COPY_DST | UNIFORM)
-group "scene"#3: layout layout "scene"#0; 0 buffer "drape frame"#3 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
-buffer "drape node uniforms"#3: BufferUsages(COPY_DST | UNIFORM)
-group "drape node"#168: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 0 size Some(512)
-group "drape node"#169: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 2560 size Some(512)
-group "drape node"#170: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 3072 size Some(512)
-group "drape node"#171: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 4096 size Some(512)
-group "drape node"#172: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 4608 size Some(512)
-group "drape node"#173: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 5120 size Some(512)
-group "drape node"#174: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 5632 size Some(512)
-group "drape node"#175: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 6144 size Some(512)
-group "drape node"#176: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 6656 size Some(512)
-group "drape node"#177: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 7168 size Some(512)
-group "drape node"#178: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 7680 size Some(512)
-group "drape node"#179: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 8192 size Some(512)
-group "drape node"#180: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 8704 size Some(512)
-group "drape node"#181: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 9216 size Some(512)
-group "drape node"#182: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 9728 size Some(512)
-group "drape node"#183: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 10240 size Some(512)
-group "drape node"#184: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 10752 size Some(512)
-group "drape node"#185: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 12288 size Some(512)
-group "drape node"#186: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 12800 size Some(512)
-group "drape node"#187: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 14336 size Some(512)
-group "drape node"#188: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 15360 size Some(512)
-group "drape node"#189: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 15872 size Some(512)
-group "drape node"#190: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 16384 size Some(512)
-group "drape node"#191: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 16896 size Some(512)
-group "drape node"#192: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 17408 size Some(512)
-group "drape node"#193: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 17920 size Some(512)
-group "drape node"#194: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 18432 size Some(512)
-group "drape node"#195: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 18944 size Some(512)
-group "drape node"#196: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 19456 size Some(512)
-group "drape node"#197: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 19968 size Some(512)
-group "drape node"#198: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 20992 size Some(512)
-group "drape node"#199: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 21504 size Some(512)
-group "drape node"#200: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 22016 size Some(512)
-group "drape node"#201: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 22528 size Some(512)
-group "drape node"#202: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 23040 size Some(512)
-group "drape node"#203: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 23552 size Some(512)
-group "drape node"#204: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 24064 size Some(512)
-group "drape node"#205: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 24576 size Some(512)
-group "drape node"#206: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 25088 size Some(512)
-group "drape node"#207: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 25600 size Some(512)
-group "drape node"#208: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 26112 size Some(512)
-group "drape node"#209: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 26624 size Some(512)
-group "drape node"#210: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 27136 size Some(512)
-group "drape node"#211: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 27648 size Some(512)
-group "drape node"#212: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 28160 size Some(512)
-group "drape node"#213: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 31744 size Some(512)
-group "drape node"#214: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 32256 size Some(512)
-group "drape node"#215: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 33792 size Some(512)
-group "drape node"#216: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 34304 size Some(512)
-group "drape node"#217: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 34816 size Some(512)
-group "drape node"#218: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 35328 size Some(512)
-group "drape node"#219: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 35840 size Some(512)
-group "drape node"#220: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 36864 size Some(512)
-group "drape node"#221: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 37376 size Some(512)
-group "drape node"#222: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 37888 size Some(512)
-group "drape node"#223: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 38400 size Some(512)
-group "drape node"#224: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 38912 size Some(512)
-group "drape node"#225: layout layout "node"#0; 0 buffer "drape node uniforms"#3 at 39424 size Some(512)
-bundle "drape"#3: [Rgba8Unorm] depth None samples 1
-    index buffer "compacted indices"#0 at 0
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#168
-    draw indexed indirect buffer "draw args"#0 at 0
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#169
-    draw indexed indirect buffer "draw args"#0 at 160
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#170
-    draw indexed indirect buffer "draw args"#0 at 192
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#171
-    draw indexed indirect buffer "draw args"#0 at 256
-    pipeline render "fill outline"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#172
-    draw indexed indirect buffer "draw args"#0 at 288
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#173
-    draw indexed indirect buffer "draw args"#0 at 320
-    pipeline render "fill outline"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#174
-    draw indexed indirect buffer "draw args"#0 at 352
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#175
-    draw indexed indirect buffer "draw args"#0 at 384
-    pipeline render "fill outline"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#176
-    draw indexed indirect buffer "draw args"#0 at 416
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#177
-    draw indexed indirect buffer "draw args"#0 at 448
-    pipeline render "fill outline"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#178
-    draw indexed indirect buffer "draw args"#0 at 480
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#179
-    draw indexed indirect buffer "draw args"#0 at 512
-    pipeline render "fill outline"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#180
-    draw indexed indirect buffer "draw args"#0 at 544
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#181
-    draw indexed indirect buffer "draw args"#0 at 576
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#182
-    draw indexed indirect buffer "draw args"#0 at 608
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#183
-    draw indexed indirect buffer "draw args"#0 at 640
-    pipeline render "fill outline"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#184
-    draw indexed indirect buffer "draw args"#0 at 672
-    pipeline render "fill"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#185
-    draw indexed indirect buffer "draw args"#0 at 768
-    pipeline render "fill outline"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#186
-    draw indexed indirect buffer "draw args"#0 at 800
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#187
-    draw indexed indirect buffer "draw args"#0 at 896
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#188
-    draw indexed indirect buffer "draw args"#0 at 960
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#189
-    draw indexed indirect buffer "draw args"#0 at 992
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#190
-    draw indexed indirect buffer "draw args"#0 at 1024
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#191
-    draw indexed indirect buffer "draw args"#0 at 1056
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#192
-    draw indexed indirect buffer "draw args"#0 at 1088
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#193
-    draw indexed indirect buffer "draw args"#0 at 1120
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#194
-    draw indexed indirect buffer "draw args"#0 at 1152
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#195
-    draw indexed indirect buffer "draw args"#0 at 1184
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#196
-    draw indexed indirect buffer "draw args"#0 at 1216
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#197
-    draw indexed indirect buffer "draw args"#0 at 1248
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#198
-    draw indexed indirect buffer "draw args"#0 at 1312
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#199
-    draw indexed indirect buffer "draw args"#0 at 1344
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#200
-    draw indexed indirect buffer "draw args"#0 at 1376
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#201
-    draw indexed indirect buffer "draw args"#0 at 1408
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#202
-    draw indexed indirect buffer "draw args"#0 at 1440
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#203
-    draw indexed indirect buffer "draw args"#0 at 1472
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#204
-    draw indexed indirect buffer "draw args"#0 at 1504
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#205
-    draw indexed indirect buffer "draw args"#0 at 1536
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#206
-    draw indexed indirect buffer "draw args"#0 at 1568
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#207
-    draw indexed indirect buffer "draw args"#0 at 1600
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#208
-    draw indexed indirect buffer "draw args"#0 at 1632
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#209
-    draw indexed indirect buffer "draw args"#0 at 1664
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#210
-    draw indexed indirect buffer "draw args"#0 at 1696
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#211
-    draw indexed indirect buffer "draw args"#0 at 1728
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#212
-    draw indexed indirect buffer "draw args"#0 at 1760
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#213
-    draw indexed indirect buffer "draw args"#0 at 1984
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#214
-    draw indexed indirect buffer "draw args"#0 at 2016
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#215
-    draw indexed indirect buffer "draw args"#0 at 2112
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#216
-    draw indexed indirect buffer "draw args"#0 at 2144
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#217
-    draw indexed indirect buffer "draw args"#0 at 2176
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#218
-    draw indexed indirect buffer "draw args"#0 at 2208
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#219
-    draw indexed indirect buffer "draw args"#0 at 2240
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#220
-    draw indexed indirect buffer "draw args"#0 at 2304
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#221
-    draw indexed indirect buffer "draw args"#0 at 2336
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#222
-    draw indexed indirect buffer "draw args"#0 at 2368
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#223
-    draw indexed indirect buffer "draw args"#0 at 2400
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#224
-    draw indexed indirect buffer "draw args"#0 at 2432
-    pipeline render "line"#0
-    group 0 group "scene"#3
-    group 1 group "drape node"#225
-    draw indexed indirect buffer "draw args"#0 at 2464
 layout "downsample"#0: 0 ShaderStages(COMPUTE) Texture { filterable: false, dimension: D2Array }; 1 ShaderStages(COMPUTE) StorageTexture { format: Rgba8Unorm, dimension: D2Array }; 2 ShaderStages(COMPUTE) Storage { read_only: true }; 3 ShaderStages(COMPUTE) Uniform; 
 module "downsample"#0: wgsl
 compute "downsample"#0: layouts [layout "downsample"#0]; module "downsample"#0 downsample []; 
@@ -1347,44 +494,17 @@ group "drape clear"#1: layout layout "drape clear"#0; 0 buffer "drape atlas size
 layout "image node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 2 ShaderStages(FRAGMENT) Sampler { filtering: true }; 3 ShaderStages(FRAGMENT) Sampler { filtering: true }; 5 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 
 module "hillshade slopes"#0: wgsl
 render "hillshade slopes"#0: layouts [layout "scene"#0, layout "image node"#0]; module "hillshade slopes"#0 vs_hillshade []; module "hillshade slopes"#0 fs_hillshade_slopes []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
-buffer "drape frame"#4: BufferUsages(COPY_DST | UNIFORM)
-group "scene"#4: layout layout "scene"#0; 0 buffer "drape frame"#4 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
+buffer "drape frame"#1: BufferUsages(COPY_DST | UNIFORM)
+group "scene"#1: layout layout "scene"#0; 0 buffer "drape frame"#1 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
 texture "hillshade slopes"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT)
 sampler "linear"#0: Linear mips Linear anisotropy 16
 sampler "nearest"#1: Nearest mips Nearest anisotropy 1
 group "image node"#0: layout layout "image node"#0; 0 buffer "drape node uniforms"#0 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#1; 5 texture "hillshade slopes"#0 as D2Array
-bundle "drape"#4: [Rgba8Unorm] depth None samples 1
+bundle "drape"#2: [Rgba8Unorm] depth None samples 1
     index buffer "compacted indices"#0 at 0
     pipeline render "hillshade slopes"#0
-    group 0 group "scene"#4
+    group 0 group "scene"#1
     group 1 group "image node"#0
-    draw indirect buffer "draw args"#0 at 1824
-buffer "drape frame"#5: BufferUsages(COPY_DST | UNIFORM)
-group "scene"#5: layout layout "scene"#0; 0 buffer "drape frame"#5 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
-group "image node"#1: layout layout "image node"#0; 0 buffer "drape node uniforms"#1 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#1; 5 texture "hillshade slopes"#0 as D2Array
-bundle "drape"#5: [Rgba8Unorm] depth None samples 1
-    index buffer "compacted indices"#0 at 0
-    pipeline render "hillshade slopes"#0
-    group 0 group "scene"#5
-    group 1 group "image node"#1
-    draw indirect buffer "draw args"#0 at 1824
-buffer "drape frame"#6: BufferUsages(COPY_DST | UNIFORM)
-group "scene"#6: layout layout "scene"#0; 0 buffer "drape frame"#6 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
-group "image node"#2: layout layout "image node"#0; 0 buffer "drape node uniforms"#2 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#1; 5 texture "hillshade slopes"#0 as D2Array
-bundle "drape"#6: [Rgba8Unorm] depth None samples 1
-    index buffer "compacted indices"#0 at 0
-    pipeline render "hillshade slopes"#0
-    group 0 group "scene"#6
-    group 1 group "image node"#2
-    draw indirect buffer "draw args"#0 at 1824
-buffer "drape frame"#7: BufferUsages(COPY_DST | UNIFORM)
-group "scene"#7: layout layout "scene"#0; 0 buffer "drape frame"#7 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
-group "image node"#3: layout layout "image node"#0; 0 buffer "drape node uniforms"#3 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#1; 5 texture "hillshade slopes"#0 as D2Array
-bundle "drape"#7: [Rgba8Unorm] depth None samples 1
-    index buffer "compacted indices"#0 at 0
-    pipeline render "hillshade slopes"#0
-    group 0 group "scene"#7
-    group 1 group "image node"#3
     draw indirect buffer "draw args"#0 at 1824
 texture "view of texture \"drape atlas\"#1"#1: levels 1..2
 group "downsample"#10: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#1"#0 as D2Array; 1 texture "view of texture \"drape atlas\"#1"#1 as D2Array; 2 buffer "drape slots"#1 at 0 size None; 3 buffer "downsample levels"#0 at 256 size Some(16)
@@ -1425,7 +545,7 @@ texture "3d depth"#0: Depth32Float D2 samples 4 views [] TextureUsages(RENDER_AT
 module "terrain shade"#0: wgsl
 render "terrain shade"#0: layouts [layout "terrain"#0, layout "terrain layer"#0, layout "image node"#0]; module "terrain shade"#0 vs_terrain []; module "terrain shade"#0 fs_terrain_shaded []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 4
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
-group "image node"#4: layout layout "image node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#1; 5 texture "hillshade slopes"#0 as D2Array
+group "image node"#1: layout layout "image node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#1; 5 texture "hillshade slopes"#0 as D2Array
 texture "terrain layer"#2: Rgba8Unorm D2 samples 4 views [] TextureUsages(RENDER_ATTACHMENT | TRANSIENT_ATTACHMENT)
 texture "terrain layer"#3: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
 module "terrain"#1: wgsl
@@ -1444,7 +564,7 @@ group "composite"#1: layout layout "composite"#0; 0 buffer "composite"#1 at 0 si
 layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
 module "symbol line"#0: wgsl
 render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol []; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
-group "scene"#8: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
+group "scene"#2: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 41984 size Some(512)
 buffer "symbol passes"#0: BufferUsages(COPY_DST | UNIFORM)
 group "symbol pass"#0: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 256 size Some(16)
@@ -1466,34 +586,34 @@ bundle "layers"#0: [Rgba8Unorm] depth None samples 1
     group 0 group "composite"#1
     draw 0..3 0..1
     pipeline render "symbol line"#0
-    group 0 group "scene"#8
+    group 0 group "scene"#2
     group 1 group "node"#0
     group 2 group "symbol pass"#0
     draw indirect buffer "draw args"#0 at 2624
     group 2 group "symbol pass"#1
     draw indirect buffer "draw args"#0 at 2624
     pipeline render "symbol line"#0
-    group 0 group "scene"#8
+    group 0 group "scene"#2
     group 1 group "node"#1
     group 2 group "symbol pass"#2
     draw indirect buffer "draw args"#0 at 3200
     pipeline render "symbol"#0
-    group 0 group "scene"#8
+    group 0 group "scene"#2
     group 1 group "node"#2
     group 2 group "symbol pass"#2
     draw indirect buffer "draw args"#0 at 3232
     pipeline render "symbol"#0
-    group 0 group "scene"#8
+    group 0 group "scene"#2
     group 1 group "node"#3
     group 2 group "symbol pass"#2
     draw indirect buffer "draw args"#0 at 3264
     pipeline render "symbol"#0
-    group 0 group "scene"#8
+    group 0 group "scene"#2
     group 1 group "node"#4
     group 2 group "symbol pass"#2
     draw indirect buffer "draw args"#0 at 3776
     pipeline render "symbol"#0
-    group 0 group "scene"#8
+    group 0 group "scene"#2
     group 1 group "node"#5
     group 2 group "symbol pass"#2
     draw indirect buffer "draw args"#0 at 3840

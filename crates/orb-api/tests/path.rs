@@ -470,6 +470,65 @@ fn alps() -> (String, DemDir) {
     (style, dir)
 }
 
+/// A line draped on flat terrain is as wide as on a flat map at any
+/// zoom, in screen pixels as the spec has it, with a zoom-dependent width
+/// too. Drape slots drawn at their tile's whole zoom magnified it by up to
+/// twice between zoom steps (#151).
+#[test]
+fn a_draped_line_is_as_wide_as_a_flat_one() {
+    let (lon, lat) = (139.76, 35.68);
+    let (flat, _dem) = dem("flat", (139.2, 35.2, 140.3, 36.2), 11, |_, _| 0.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    // The dark rows down the middle column: the line's width there.
+    let width = |pixels: &[u8]| {
+        (0..HEIGHT)
+            .filter(|&y| pixels[((y * WIDTH + WIDTH / 2) * 4) as usize] < 128)
+            .count()
+    };
+    let mut widths = |zoom: f64| {
+        [false, true].map(|terrain| {
+            let style = format!(
+                r##"{{"version": 8,
+                "sources": {{{flat}
+                  "line": {{"type": "geojson", "data": {{"type": "LineString",
+                    "coordinates": [[{w}, {lat}], [{e}, {lat}]]}}}}
+                }},
+                {}
+                "layers": [
+                  {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+                  {{"id": "line", "type": "line", "source": "line", "paint": {{"line-color": "#000000",
+                      "line-width": ["interpolate", ["linear"], ["zoom"], 12, 6, 14, 14]}}}}
+                ]}}"##,
+                match terrain {
+                    true => r#""terrain": {"source": "flat", "exaggeration": 1},"#,
+                    false => "",
+                },
+                w = lon - 0.2,
+                e = lon + 0.2,
+            );
+            let mut map = Map::new(&runtime, options());
+            map.set_style_json(&style).unwrap();
+            map.jump_to(&camera((Geodetic::new(lon, lat), zoom, 0.0, 0.0)));
+            settle(&mut map, &mut target);
+            width(&target.read_pixels().unwrap())
+        })
+    };
+    for zoom in [12.0, 12.3, 12.6, 12.9] {
+        let [flat, draped] = widths(zoom);
+        // Each is the zoom's width, give or take an edge's rounding.
+        let expected = 6.0 + 4.0 * (zoom - 12.0);
+        assert!(
+            (flat as f64 - expected).abs() <= 1.0,
+            "z{zoom}: flat {flat}"
+        );
+        assert!(
+            flat.abs_diff(draped) <= 1,
+            "z{zoom}: draped {draped} px against flat {flat} px"
+        );
+    }
+}
+
 /// Terrain that comes on after the style's first frame, its DEM source
 /// behind a TileJSON: a fresh map that never moves drapes the buildings
 /// its near drape slots' zoom shows (they show from zoom 13; the view is

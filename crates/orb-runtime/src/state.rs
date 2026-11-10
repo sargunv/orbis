@@ -243,12 +243,10 @@ impl FeatureStates {
         time < self.fading_until
     }
 
-    /// What a drape slot drawn at `zoom` takes from the rows' zooms, when
-    /// its state values depend on them: past the rows' zooms, it draws
-    /// their first or last, which changes as they move.
-    pub(crate) fn zoom_key(&self, zoom: u8) -> Option<u64> {
-        let held = self.zoom..self.zoom + f64::from(STATE_ZOOMS);
-        (self.zoom_dependent && !held.contains(&f64::from(zoom))).then(|| self.zoom.to_bits())
+    /// Whether state values change with the zoom: what draws them then
+    /// changes as it moves.
+    pub(crate) fn zoom_dependent(&self) -> bool {
+        self.zoom_dependent
     }
 
     pub(crate) fn apply(&mut self, op: &FeatureStateOp) {
@@ -686,21 +684,6 @@ mod tests {
         assert_eq!(mix_word(true, red, blue, 1.0), blue);
     }
     use orb_style::SourceKey;
-
-    /// Drape slots within the rows' zooms read their own zoom's values,
-    /// whatever the camera's; only those past them change with it.
-    #[test]
-    fn drape_zooms_in_the_rows_need_no_camera_key() {
-        let states = FeatureStates {
-            zoom_dependent: true,
-            // A camera at zoom 12.4: values at zooms 7 to 14.
-            zoom: 7.0,
-            ..FeatureStates::default()
-        };
-        assert!((7..=14).all(|z| states.zoom_key(z).is_none()));
-        assert_eq!(states.zoom_key(6), Some(7f64.to_bits()));
-        assert_eq!(states.zoom_key(15), Some(7f64.to_bits()));
-    }
 
     #[test]
     fn indices_are_counted_and_states_survive_unloads() {

@@ -207,7 +207,11 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     let flags = vertex_at(v.vertex + 2u);
     let normal = vec2<f32>(f32(flags & 1u), f32((flags >> 1u) & 1u) * 2.0 - 1.0);
 
-    let antialiasing = 1.0 / frame.pixel_ratio / 2.0;
+    // Room for the edges' fade (`line_alpha`, a device pixel wide): half
+    // a device pixel, so that the line's coverage sums to its width. In a
+    // drape slot the fade is a texel wide, and a texel as many pixels as
+    // the zoom makes it: half a texel.
+    let antialiasing = select(1.0 / frame.pixel_ratio, 1.0 / tile.px_scale, draped_placement(tile)) / 2.0;
     let half_width = width / 2.0;
     var inset = gap_width;
     var outset = gap_width + half_width;

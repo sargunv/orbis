@@ -11,8 +11,9 @@
 //! second vertex there (`orb_render`'s grid step), GL JS's mesh density;
 //! slots and covers stay 512 pixels, so one atlas size serves every
 //! DEM. A terrain tile's drape slots
-//! are drawn at a zoom of its own ([`drape_zoom`]), whatever the camera's,
-//! and redrawn only when the draped content under it changes.
+//! are drawn at the camera's zoom, as a flat map would draw their
+//! content, and redrawn only when what they show changes: what is draped
+//! under the tile, or for stacks whose content scales with it, the zoom.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -119,13 +120,6 @@ struct Slot {
 /// A tile slot to redraw: its terrain tile, tile slot, and the stacks
 /// whose content changed.
 pub(crate) type Redraw = (CoveredTile, u32, Vec<u8>);
-
-/// The style zoom a terrain tile's drape slots are drawn at, whatever the
-/// camera's: the tile's own, where it spans its 512 logical pixels, at
-/// [`orb_render::DRAPE_SLOT_PX`] texels (GL JS's quality factor 2).
-pub(crate) fn drape_zoom(tms: &TileMatrixSet, tile: TileIndex) -> u8 {
-    tms.style_zoom(tile).round().clamp(0.0, 255.0) as u8
-}
 
 #[derive(Debug)]
 pub(crate) struct Terrain {
@@ -751,13 +745,13 @@ fn terrain_bounds(surface: &TileMatrixSet, terrain: CoveredTile) -> WorldRect {
 }
 
 /// Drape placements of a drawn tile (`extent` data units a side, mapped
-/// by its map placements `map_rows`, placed at the terrain tile's
-/// [`drape_zoom`]) for a terrain tile and its tile slot: one row set per
-/// drape stack of `stacks` (those its source's layers draw into), each
-/// mapping the tile's data into the stack's slot,
-/// clipped to the terrain tile and the `reach_px` (logical pixels) a
-/// translation moves content into it from, bounded by the terrain tile,
-/// with pixel sizes in slot texels at the drape zoom.
+/// by its map placements `map_rows`) for a terrain tile and its tile
+/// slot, drawn at style zoom `zoom`, the camera's: one row set per drape
+/// stack of `stacks` (those its source's layers draw into), each mapping
+/// the tile's data into the stack's slot, clipped to the terrain tile and
+/// the `reach_px` (logical pixels) a translation moves content into it
+/// from, bounded by the terrain tile, with pixel sizes in slot texels at
+/// that zoom.
 #[expect(clippy::too_many_arguments, reason = "one placement's terms")]
 pub(crate) fn drape_rows(
     surface: &TileMatrixSet,
@@ -765,7 +759,7 @@ pub(crate) fn drape_rows(
     extent: u32,
     (terrain, slot): (CoveredTile, u32),
     (layout, stacks): (&DrapeLayout, &[u8]),
-    reach_px: f64,
+    (zoom, reach_px): (f64, f64),
     map_rows: impl Iterator<Item = TileRow>,
     out: &mut Vec<TileRow>,
 ) {
@@ -782,11 +776,9 @@ pub(crate) fn drape_rows(
     let reach = DVec2::splat(reach_px * span / TERRAIN_TILE_PX / scale);
     let (lo, hi) = (lo - reach, hi + reach);
     let (lo, hi) = ([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
-    let zoom = drape_zoom(surface, terrain.index);
-    // Logical pixels the slot spans at the drape zoom: the 512 of the
-    // terrain tile at its own zoom.
-    let slot_span_px =
-        TERRAIN_TILE_PX * (f64::from(zoom) - surface.style_zoom(terrain.index)).exp2();
+    // Logical pixels the slot spans at that zoom: the 512 of the terrain
+    // tile at its own zoom.
+    let slot_span_px = TERRAIN_TILE_PX * (zoom - surface.style_zoom(terrain.index)).exp2();
     for row in map_rows {
         let mut clips = [ClipRect::EMPTY; 4];
         let mut any = false;
@@ -804,7 +796,7 @@ pub(crate) fn drape_rows(
         for &stack in stacks {
             let [cx, cy] = layout.corner(slot, u32::from(stack));
             let corner = DVec2::new(f64::from(cx), -f64::from(cy));
-            // Texels per world unit and per logical pixel at the drape zoom.
+            // Texels per world unit, and per logical pixel at the zoom.
             let slot_px = f64::from(layout.slot_px(u32::from(stack)));
             let k = slot_px / span;
             let o = corner + (origin - t_origin) * k;
@@ -814,7 +806,6 @@ pub(crate) fn drape_rows(
                 clips,
                 bound,
                 px_scale: (slot_px / slot_span_px) as f32,
-                drape_zoom: f32::from(zoom),
                 target: PlacementTarget::Drape(stack),
                 // Slots are flat: the terrain carries them onto a globe.
                 globe: None,
@@ -1484,6 +1475,7 @@ mod tests {
         let layout = DrapeLayout {
             stacks: [2, 1],
             columns: [8, 4],
+            strides: [4, 4],
             tile_slots: 4,
             generation: 1,
         };
@@ -1514,7 +1506,6 @@ mod tests {
             extent: 4096.0,
             wrap: 0,
             px_scale: 1.0,
-            drape_zoom: 0.0,
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
@@ -1522,31 +1513,43 @@ mod tests {
             globe: None,
             neighbours: 0,
         };
-        let mut rows = Vec::new();
-        drape_rows(
-            &tms,
-            drawn,
-            4096,
-            (terrain, 1),
-            (&layout, &[0, 1, 2]),
-            0.0,
-            [row].into_iter(),
-            &mut rows,
-        );
+        let zoom = tms.style_zoom(terrain.index);
+        let rows_at = |zoom: f64| {
+            let mut rows = Vec::new();
+            drape_rows(
+                &tms,
+                drawn,
+                4096,
+                (terrain, 1),
+                (&layout, &[0, 1, 2]),
+                (zoom, 0.0),
+                [row].into_iter(),
+                &mut rows,
+            );
+            rows
+        };
+        let rows = rows_at(zoom);
         assert_eq!(rows.len(), 3);
         let slot = DRAPE_SLOT_PX as f32;
-        // Slot 1, stack 0 is atlas slot 2: column 2. The tile's top-left
+        // Slot 1, stack 0 is atlas slot 1: column 1. The tile's top-left
         // is the slot's centre; its 4096 units span half a slot.
         let px = f64::from(DRAPE_SLOT_PX);
         let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() + (a[1] - b[1]).abs() < 1e-9;
-        assert!(near(rows[0].origin, [2.5 * px, -0.5 * px]));
+        assert!(near(rows[0].origin, [1.5 * px, -0.5 * px]));
         assert_eq!(rows[0].scale, slot / 2.0 / 4096.0);
-        // Drawn at the terrain tile's zoom, two texels a logical pixel.
-        let zoom = tms.style_zoom(terrain.index);
-        assert_eq!(f64::from(rows[0].drape_zoom), zoom);
+        // At the terrain tile's zoom, two texels a logical pixel; at a
+        // camera's zoom past it, as many fewer as the tile has grown, in
+        // the same place.
         assert_eq!(rows[0].px_scale, 2.0);
+        let past = rows_at(zoom + 0.5);
+        assert!((past[0].px_scale - 2.0f32.sqrt()).abs() < 1e-6);
+        assert_eq!(
+            (past[0].origin, past[0].scale),
+            (rows[0].origin, rows[0].scale)
+        );
         assert_eq!(rows[1].target, PlacementTarget::Drape(1));
-        assert_eq!(rows[1].origin[0], 3.5 * px);
+        // Stack 1's slots follow stack 0's 4: atlas slot 5.
+        assert_eq!(rows[1].origin[0], 5.5 * px);
         // Stack 2 holds slopes: slot 1 of the slope page, half the texels.
         let slope = px / 2.0;
         assert!(near(rows[2].origin, [1.5 * slope, -0.5 * slope]));

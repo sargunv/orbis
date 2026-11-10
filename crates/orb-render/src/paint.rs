@@ -410,6 +410,28 @@ pub struct PatternPaint {
 }
 
 impl NodePaint {
+    /// Whether what it draws into a drape slot changes with the camera's
+    /// zoom beyond its uniform: sizes in pixels (line widths, translations,
+    /// patterns), which the slot's texels per pixel scale, or per-feature
+    /// values blended by the zoom, from property rows or, with
+    /// `states_by_zoom`, feature state. Rasters, hillshades and colour
+    /// reliefs map their tiles into a slot whatever the zoom.
+    pub fn drapes_by_zoom(&self, states_by_zoom: bool) -> bool {
+        let blends = |mask: u32, curves: &[Curve]| {
+            (curves.iter().enumerate()).any(|(i, c)| mask & 1 << i != 0 && *c != Curve::Step)
+        };
+        match self {
+            Self::Fill(p) | Self::Background(p) => {
+                p.translate.px != [0.0; 2]
+                    || p.translate.rows.is_some()
+                    || blends(p.table_mask, &p.curves)
+                    || (states_by_zoom && p.state.mask != 0)
+            }
+            Self::Raster(_) | Self::Hillshade(_) | Self::ColorRelief(_) => false,
+            _ => true,
+        }
+    }
+
     /// Whether this paint fits a node of `family`.
     pub(crate) fn fits(&self, family: Family) -> bool {
         matches!(
