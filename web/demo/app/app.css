@@ -122,7 +122,7 @@ h2, h3 { margin: 0; }
 .icon-minus { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M3.5 10h13' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"); }
 .icon-close { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M5 5l10 10M15 5L5 15' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"); }
 .icon-more { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='4' cy='10' r='1.8'/%3E%3Ccircle cx='10' cy='10' r='1.8'/%3E%3Ccircle cx='16' cy='10' r='1.8'/%3E%3C/svg%3E"); }
-.icon-brush { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='black' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M16.5 2.5l-8 8 1 1 8-8z'/%3E%3Cpath d='M7.5 11.5c-2.5 0-3.5 1.5-3.5 3.2 0 1.2-.8 2-1.5 2.3 3.6.6 7.5-.8 6.2-4.3z'/%3E%3C/svg%3E"); }
+.icon-sliders { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M2.5 4.5h8M15.5 4.5h2M2.5 10h2M9.5 10h8M2.5 15.5h5M12.5 15.5h5'/%3E%3Ccircle cx='13' cy='4.5' r='2.2'/%3E%3Ccircle cx='7' cy='10' r='2.2'/%3E%3Ccircle cx='10' cy='15.5' r='2.2'/%3E%3C/svg%3E"); }
 .icon-eye { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='black' stroke-width='1.7'%3E%3Cpath d='M1.8 10s3-5.5 8.2-5.5S18.2 10 18.2 10s-3 5.5-8.2 5.5S1.8 10 1.8 10z'/%3E%3Ccircle cx='10' cy='10' r='2.6'/%3E%3C/svg%3E"); }
 .icon-eye-off { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'%3E%3Cpath d='M3 3l14 14M8 4.8c.6-.2 1.3-.3 2-.3 5.2 0 8.2 5.5 8.2 5.5s-.8 1.5-2.4 3M5 6.4C2.9 7.9 1.8 10 1.8 10s3 5.5 8.2 5.5c1.3 0 2.5-.3 3.5-.8'/%3E%3C/svg%3E"); }
 .icon-chevron { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 4l6 6-6 6'/%3E%3C/svg%3E"); }
@@ -152,25 +152,6 @@ h2, h3 { margin: 0; }
 .scene-name { font-weight: 700; font-size: var(--text-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .scene-provider { font-size: var(--text-xs); color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chevron { width: 16px; height: 16px; flex: none; background: var(--ink-muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") center / contain no-repeat; }
-
-/* An entry's own options, under the picker: compact pills, wrapping on a
-   narrow screen, shown only when the entry has one. */
-.scene-options { display: flex; flex-wrap: wrap; gap: var(--space-2); max-width: 100%; }
-.scene-options:not(:has(> :not([hidden]))) { display: none; }
-.scene-option-control {
-  display: flex; align-items: center; gap: var(--space-2);
-  min-height: 36px; padding: 2px 2px 2px var(--space-3);
-  border: 0; border-radius: var(--radius-control);
-  background: var(--surface-veil); color: var(--ink); box-shadow: var(--lift);
-  font-size: var(--text-sm); font-weight: 600; white-space: nowrap;
-}
-button.scene-option-control { padding-right: var(--space-2); }
-button.scene-option-control:hover { background: var(--surface); }
-.scene-option-control .icon { width: 16px; height: 16px; color: var(--ink-muted); }
-.scene-option-control .switch { transform: scale(0.85); }
-.scene-option-control .segmented button { min-height: 30px; padding: 0 var(--space-2); font-weight: 600; }
-.icon-terrain { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='black' stroke-width='1.8' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M1.5 16.5l5.5-9 3.5 5.5 2.5-3.5 5.5 7z'/%3E%3C/svg%3E"); }
-.icon-sun { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='10' cy='10' r='3.5'/%3E%3Cpath d='M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2M4 4l1.4 1.4M14.6 14.6L16 16M4 16l1.4-1.4M14.6 5.4L16 4'/%3E%3C/svg%3E"); }
 
 /* The compass: the needle points north and leans with the tilt. */
 .compass .needle {
@@ -236,6 +217,42 @@ button.scene-option-control:hover { background: var(--surface); }
     linear-gradient(130deg, var(--a) 0 58%, var(--b) 58% 100%);
 }
 .dark-flag { font-size: var(--text-xs); color: var(--ink-muted); border: 1px solid var(--hairline); border-radius: 99px; padding: 1px 8px; }
+
+/* The map options (options.js): a bottom sheet on a phone, beside its
+   button on a wider screen, in groups of rows as the menu's. */
+/* On a phone it leaves the top of the map in view, to see a choice take. */
+.sheet.options { max-height: min(62dvh, 720px); }
+@media (min-width: 640px) {
+  .sheet.options {
+    inset: var(--sheet-top, 12px) var(--sheet-right, 64px) auto auto;
+    width: 340px; max-height: calc(100dvh - var(--sheet-top, 12px) - 12px);
+  }
+}
+.options-body { overflow-y: auto; padding: 0 var(--space-2) calc(var(--space-3) + env(safe-area-inset-bottom)); overscroll-behavior: contain; }
+.option-group + .option-group { margin-top: var(--space-1); border-top: 1px solid var(--hairline); }
+.option-group h3 {
+  font-size: var(--text-sm); font-weight: 700; color: var(--ink-muted);
+  padding: var(--space-3) var(--space-2) var(--space-1);
+}
+.option-row {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  width: 100%; min-height: var(--target); padding: var(--space-1) var(--space-2);
+  border: 0; border-radius: 8px; background: transparent; text-align: left;
+}
+button.option-row:hover:enabled { background: var(--well); }
+.option-row:disabled { cursor: default; }
+.option-row:disabled .option-text, .option-row:has(button:disabled) .option-text { color: var(--ink-muted); }
+.option-row:disabled .switch { opacity: 0.5; }
+.option-text { display: flex; flex-direction: column; min-width: 0; }
+.option-label { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--space-2); font-weight: 600; }
+.option-note { font-size: var(--text-xs); color: var(--ink-muted); }
+.option-tag {
+  font-size: 11px; font-weight: 600; line-height: 16px; color: var(--accent);
+  padding: 0 6px; border-radius: 99px; background: var(--accent-wash);
+}
+.option-row .segmented button { min-width: 72px; font-weight: 600; }
+.option-row .segmented button:disabled { cursor: default; }
+.options-empty { margin: var(--space-2) var(--space-2) var(--space-3); color: var(--ink-muted); font-size: var(--text-sm); }
 
 .menu {
   position: fixed; inset: var(--menu-top, 64px) var(--menu-right, 12px) auto auto;
@@ -427,6 +444,11 @@ button.scene-option-control:hover { background: var(--surface); }
   .app.editing .bottom-right { bottom: calc(58dvh + var(--space-2) + 44px); }
   .app.editing .attribution { bottom: calc(58dvh + var(--space-2)); }
   .app.editing .toast { bottom: calc(58dvh + 16px); }
+}
+/* Where the editor's sheet leaves the map too short, the zoom buttons and
+   compass over it would reach the top corner's buttons: gestures zoom. */
+@media (max-width: 899.98px) and (max-height: 760px) {
+  .app.editing .bottom-right { display: none; }
 }
 .editor-grip {
   display: none; align-self: center; width: 64px; height: 20px; margin-top: 2px; border: 0; background: transparent; position: relative;

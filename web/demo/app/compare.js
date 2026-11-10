@@ -7,12 +7,12 @@
 // other maps take Orbis's style as it stands (the entry's projection and
 // sky applied, less Orbis's preview properties, for which GL JS's
 // validation refuses the whole style) and follow its edits: the style
-// editor's, the light and terrain switches'.
+// editor's and the map options'.
 //
 // An engine loads only when a side picks it. Each is a module with a
 // `label` and `open(container, { style, camera, constraints })`, which
 // returns, or resolves to, the map as `{ camera, jumpTo, onMove, stop,
-// setStyle, loaded, remove }`. In ENGINES, `unsupported(scene)` says why it
+// setStyle, loaded, remove }`, and `style` where it can give its style. In ENGINES, `unsupported(scene)` says why it
 // can't show an entry, `once` why it can't draw both sides, and `isolated`
 // that it needs a cross-origin isolated page (isolation.js).
 import { h } from "./dom.js";
@@ -118,6 +118,8 @@ export function comparison({ onChange, beforeReload }) {
     attach(next, entry) { map = next; scene = entry; update(); },
     /** Each side's engine, camera, whether it's settled and leads, and its note, for the headless checks. */
     get sides() { return shown?.sides(); },
+    /** Each side's style, where its engine gives it, for the headless checks. */
+    styles() { return shown?.styles(); },
   };
 }
 
@@ -140,6 +142,7 @@ function show(map, scene, pair, { isolating, onPick }) {
     jumpTo: (camera) => map.camera.jumpTo(camera),
     stop: () => map.camera.stop(),
     loaded: () => document.getElementById("app").dataset.map === "idle",
+    style: () => map.getStyle(),
   };
   const ownSide = pair.indexOf("orbis");
   let closed = false;
@@ -267,6 +270,7 @@ function show(map, scene, pair, { isolating, onPick }) {
       engine: s.key, note: s.note, own: s.map === own, leads: Boolean(s.map) && s.map === leader,
       camera: s.map?.camera(), loaded: s.map?.loaded() ?? false,
     })),
+    styles: () => Promise.all(sides.map((s) => s.map?.style?.() ?? null)),
     close() {
       closed = true;
       listening.abort();

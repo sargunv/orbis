@@ -47,7 +47,7 @@ function range(name, min, max, value) {
   return { lo, hi, step: hi - lo <= 2 ? 0.01 : hi - lo <= 40 ? 0.1 : 1 };
 }
 
-export function editor({ onClose, onReplaced }) {
+export function editor({ onClose, onReplaced, onEdited }) {
   const root = document.getElementById("editor");
   let map;
   let style;
@@ -112,6 +112,7 @@ export function editor({ onClose, onReplaced }) {
     const started = performance.now();
     const generation = await map.edit(build);
     pending.push({ generation, frame: before, ms: performance.now() - started });
+    onEdited();
     return generation;
   }
 

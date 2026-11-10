@@ -20,22 +20,10 @@
         <span class="scene-text"><span class="scene-name" id="scene-name">Orbis</span><span class="scene-provider" id="scene-provider">Loading</span></span>
         <span class="chevron" aria-hidden="true"></span>
       </button>
-      <div class="scene-options" id="scene-options" role="group" aria-label="This map's options">
-        <button type="button" class="scene-option-control" id="terrain-toggle" role="switch" aria-checked="false" title="3D terrain" hidden>
-          <span class="icon icon-terrain" aria-hidden="true"></span><span>Terrain</span><span class="switch" aria-hidden="true"></span>
-        </button>
-        <div class="scene-option-control" id="light-choice" title="Light fixed to the ground, or turning with the view" hidden>
-          <span class="icon icon-sun" aria-hidden="true"></span><span id="light-label">Light</span>
-          <span class="segmented" role="radiogroup" aria-labelledby="light-label">
-            <button type="button" role="radio" aria-checked="true" data-anchor="map">Map</button>
-            <button type="button" role="radio" aria-checked="false" data-anchor="viewport" tabindex="-1">Viewport</button>
-          </span>
-        </div>
-      </div>
       <section class="hud" id="hud" aria-label="Debug overlay" hidden></section>
     </div>
     <div class="corner top-right">
-      <button class="tool" id="edit-toggle" type="button" aria-pressed="false" aria-controls="editor" title="Edit style"><span class="icon icon-brush" aria-hidden="true"></span><span class="visually-hidden">Edit style</span></button>
+      <button class="tool" id="options-button" type="button" popovertarget="options" aria-haspopup="dialog" title="Map options"><span class="icon icon-sliders" aria-hidden="true"></span><span class="visually-hidden">Map options</span></button>
       <button class="tool" id="menu-button" type="button" popovertarget="menu" title="More"><span class="icon icon-more" aria-hidden="true"></span><span class="visually-hidden">More</span></button>
     </div>
     <div class="corner bottom-right">
@@ -55,10 +43,18 @@
   <div class="scene-groups" id="scene-groups"></div>
 </div>
 
+<div class="sheet options" id="options" popover role="dialog" aria-labelledby="options-title">
+  <header class="sheet-head"><h2 id="options-title">Map options</h2><button class="tool quiet" type="button" popovertarget="options" popovertargetaction="hide" title="Close"><span class="icon icon-close" aria-hidden="true"></span><span class="visually-hidden">Close</span></button></header>
+  <div class="options-body" id="options-body"></div>
+</div>
+
 <div class="menu" id="menu" popover>
   <button type="button" class="menu-item" id="debug-toggle" role="switch" aria-checked="false"><span>Debug overlay</span><span class="switch" aria-hidden="true"></span></button>
   <button type="button" class="menu-item" id="compare-toggle" role="switch" aria-checked="false" disabled>
     <span class="menu-text"><span>Compare engines</span><span class="menu-note">Orbis, GL JS or MapLibre Native on each side</span></span><span class="switch" aria-hidden="true"></span>
+  </button>
+  <button type="button" class="menu-item" id="edit-toggle" role="switch" aria-checked="false" aria-controls="editor">
+    <span class="menu-text"><span>Style editor</span><span class="menu-note">Layers, paint and JSON; click a feature to inspect it</span></span><span class="switch" aria-hidden="true"></span>
   </button>
   <button type="button" class="menu-item" id="picture-button"><span>Save as image</span></button>
   <button type="button" class="menu-item" id="offline-button"><span>Offline areas</span></button>
@@ -75,7 +71,7 @@
     <li><span>Pan</span><span>Drag, or the arrow keys</span></li>
     <li><span>Zoom</span><span>Scroll, pinch, double-click, or + and −</span></li>
     <li><span>Rotate and tilt</span><span>Right-drag, Ctrl-drag, or two fingers</span></li>
-    <li><span>Inspect</span><span>In the style editor, click or tap a feature</span></li>
+    <li><span>Inspect</span><span>In the style editor (in the ⋯ menu), click or tap a feature</span></li>
   </ul>
   <p class="about-links"><a href="https://github.com/sargunv/orbis">Source code on GitHub</a></p>
   <p class="build" id="build"></p>

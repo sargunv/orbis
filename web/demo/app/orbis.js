@@ -16,6 +16,7 @@ export async function open(container, { style, camera, constraints }) {
     onMove: (listener) => map.on("move", listener),
     stop: () => map.camera.stop(),
     setStyle: (next) => map.setStyle(next),
+    style: () => map.getStyle(),
     loaded: () => idle,
     remove: () => map.remove(),
   };

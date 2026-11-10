@@ -1,32 +1,30 @@
 // The map app: Orbis drawing a picked style full-bleed through the
-// `orbis` package, with a style editor (and, while it's open, feature
-// popups and highlights through feature state), and a debug overlay. One
-// map shows every entry: picking one sets its style on the map, which
-// diffs from the one before, so shared sources keep their tiles and paint
-// eases by the style's transition.
+// `orbis` package, with the map options panel (the style's switches,
+// app/options.js), a style editor in the ⋯ menu (and, while it's open,
+// feature popups and highlights through feature state), and a debug
+// overlay. One map shows every entry: picking one sets its style on the
+// map, which diffs from the one before, so shared sources keep their tiles
+// and paint eases by the style's transition.
 //
 // URL: `?style=<key|url>` (styles.js), `&flight` (fly an entry's looping
 // flight; without it the map stays put and settles),
 // `&debug`, `&edit`, `&compare[=<left>,<right>]` (two engines' maps of
 // the style side by side, Orbis and GL JS by default, app/compare.js),
-// `&light=map|viewport` (where an entry with the light switch anchors its
-// light, when not where its style does, app/light.js), `&terrain=1|0`
-// (whether an entry with the terrain switch draws terrain, when not its
-// default, app/terrain.js),
+// the map options that differ from the entry's own (`&terrain=1`,
+// `&light=map`, `&shadows=0`, `&projection=mercator`, …, app/options.js),
 // `&lose=<ms>` (lose the GPU that long after
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
-import { DEFAULT_SCENE, GROUPS, LIVE_CAMERA, sceneFor, sceneStyle, sceneUrl, terrainByDefault } from "./styles.js";
+import { DEFAULT_SCENE, GROUPS, LIVE_CAMERA, sceneFor, sceneStyle, sceneUrl } from "./styles.js";
 import { expose, hashCamera } from "./expose.js";
 import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
 import { editor as createEditor } from "./app/editor.js";
 import { Highlighter, targetOf } from "./app/highlight.js";
 import { hud as createHud } from "./app/hud.js";
-import { anchorOf, lightSwitch, setAnchor } from "./app/light.js";
+import { mapOptions, OPTION_PARAMS } from "./app/options.js";
 import { picker as createPicker } from "./app/picker.js";
-import { setTerrain, terrainOf, terrainSwitch } from "./app/terrain.js";
 import { offline as createOffline } from "./app/offline.js";
 import { featurePopup } from "./app/popup.js";
 
@@ -45,10 +43,8 @@ let switches = 0;
 let styleLoading = false;
 /** The loaded style's own sky, which an entry's `sky` stands in for. */
 let styleSky = null;
-/** The loaded style's own illumination anchor, which `&light` overrides. */
-let styleAnchor;
-/** The terrain the entry's switch turns on: its own, or the loaded style's. */
-let entryTerrain = null;
+/** The loaded style as its entry designs it, and the terrain its switch turns on: the options' baseline. */
+let designed;
 
 // Chrome tone: dark maps and a dark system preference turn it dark.
 const prefersDark = matchMedia("(prefers-color-scheme: dark)");
@@ -71,13 +67,17 @@ const searchOf = (query) => {
   const search = query.toString().replace(/=(?=&|$)/g, "");
   return search ? `?${search}` : "";
 };
-/** The app's URL for `next` with `camera` as its hash. `&flight`, `&light` and `&terrain` stay only for an entry with one. */
-function urlFor(next, camera) {
+/**
+ * The app's URL for `next` with `camera` as its hash. `&flight` stays only
+ * for an entry with one, and the map options only for the entry they were
+ * chosen on (or with `keepOptions`, for a page or a history entry that
+ * names them).
+ */
+function urlFor(next, camera, { keepOptions = next.scene === current?.scene } = {}) {
   const query = params();
   query.delete("format");
   if (!next.scene.flight) query.delete("flight");
-  if (!next.scene.light) query.delete("light");
-  if (!next.scene.terrain) query.delete("terrain");
+  if (!keepOptions) for (const name of OPTION_PARAMS) query.delete(name);
   const style = styleParam(next);
   if (style) query.set("style", style); else query.delete("style");
   return `${location.pathname}${searchOf(query)}${camera ? hashOf(camera) : ""}`;
@@ -111,70 +111,34 @@ const compare = comparison({
   },
   beforeReload: () => writeHash(),
 });
+const options = mapOptions({ params, setParam, onEdited: () => void editor.refresh() });
 const editor = createEditor({
   onClose: () => setEditing(false),
-  onReplaced: () => { highlighter?.reset(); clearPopup(); void showLight(); void showTerrain(); },
-});
-const light = lightSwitch({
-  async onPick(anchor) {
-    if (!map) return;
-    light.show(anchor);
-    if (anchor !== anchorOf(await map.getStyle())) await setAnchor(map, anchor);
-    await showLight();
-    await editor.refresh();
-  },
-});
-const terrain = terrainSwitch({
-  async onPick(on) {
-    if (!map) return;
-    terrain.show(on);
-    if (on !== terrainOf(await map.getStyle())) await setTerrain(map, on ? entryTerrain : null);
-    await showTerrain();
-    await editor.refresh();
-  },
+  onReplaced: () => { highlighter?.reset(); clearPopup(); options.refreshSoon(); },
+  onEdited: () => options.refreshSoon(),
 });
 /** Whether `&terrain` asks for terrain: true, false, or null for the entry's default. */
 function wantedTerrain() {
   const value = params().get("terrain");
   return value === "1" ? true : value === "0" ? false : null;
 }
-/** Shows whether the style draws terrain in its switch and the URL, for an entry with the terrain switch. */
-async function showTerrain() {
-  if (!map || styleLoading || !current.scene.terrain) {
-    terrain.show(null);
-    return;
-  }
-  const on = terrainOf(await map.getStyle());
-  terrain.show(on);
-  setParam("terrain", on !== terrainByDefault(current.scene) && (on ? "1" : "0"));
-}
-
-/** Shows the style's illumination anchor in its switch and the URL, for an entry with the light switch. */
-async function showLight() {
-  if (!map || styleLoading || !current.scene.light) {
-    light.show(null);
-    return;
-  }
-  const anchor = anchorOf(await map.getStyle());
-  light.show(anchor);
-  setParam("light", anchor !== styleAnchor && anchor);
-}
 
 /** Opens or closes the style editor; feature popups and highlights live only while it's open. */
+const editToggle = document.getElementById("edit-toggle");
 function setEditing(on) {
   app.classList.toggle("editing", on);
   editor.show(on);
-  document.getElementById("edit-toggle").setAttribute("aria-pressed", String(on));
+  editToggle.setAttribute("aria-checked", String(on));
   setFlag("edit", on);
   if (!on) {
     clearPopup();
     void highlighter?.set("hover", null);
     editor.inspect(null);
     if (map) map.canvas.style.cursor = "";
-    document.getElementById("edit-toggle").focus({ preventScroll: true });
+    document.getElementById("menu-button").focus({ preventScroll: true });
   }
 }
-document.getElementById("edit-toggle").addEventListener("click", () => setEditing(!editor.open));
+editToggle.addEventListener("click", () => { menu.hidePopover(); setEditing(!editor.open); });
 
 const debugToggle = document.getElementById("debug-toggle");
 function setDebug(on) {
@@ -281,7 +245,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
     return;
   }
   const switched = ++switches;
-  const url = urlFor(next, camera ?? map.camera.current);
+  const url = urlFor(next, camera ?? map.camera.current, { keepOptions: mode !== "push" || next.scene === current.scene });
   if (mode === "push") history.pushState(null, "", url); else history.replaceState(history.state, "", url);
   const previous = current;
   current = next;
@@ -298,9 +262,13 @@ function go(next, { camera, history: mode = "push" } = {}) {
     const projection = !same(projectionOf(previous.scene), projectionOf(next.scene));
     const sky = !same(previous.scene.sky, next.scene.sky);
     if (projection || sky) {
+      options.loading();
       void map.edit((tx) => {
         if (projection) tx.setProjection(projectionOf(next.scene));
         if (sky) tx.setSky(next.scene.sky ?? styleSky);
+      }).then(() => {
+        // The other entry's options, from the style as it designs it.
+        if (switched === switches) void options.attach(map, { ...designed, scene: next.scene });
       });
       // The comparison reopens with the projection, if it can draw it.
       compare.attach(map, next.scene);
@@ -312,8 +280,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
   clearPopup();
   say(`Loading ${next.scene.name}…`);
   styleLoading = true;
-  void showLight();
-  void showTerrain();
+  options.loading();
   app.dataset.map = "loading";
   // The style's `styleload` applies the entry's projection and sky, unless
   // it restyles, which puts them in the style. The style's own camera is a
@@ -392,19 +359,15 @@ async function load(next, { camera }) {
         if (scene.sky) tx.setSky(scene.sky);
       });
     }
-    if (scene.light) {
-      styleAnchor = anchorOf(loaded);
-      const wanted = params().get("light");
-      if ((wanted === "map" || wanted === "viewport") && wanted !== styleAnchor) await setAnchor(map, wanted);
-    }
-    await showLight();
-    if (scene.terrain) {
-      // The entry's own terrain, or the style's as it loaded; `&terrain=0`
-      // takes the style's away (`&terrain=1` put the entry's in the style).
-      entryTerrain = scene.terrain === true ? loaded.terrain ?? null : scene.terrain;
-      if (wantedTerrain() === false && terrainOf(loaded)) await setTerrain(map, null);
-    }
-    await showTerrain();
+    // The options read the style as the entry designs it, then apply the
+    // URL's: the terrain the switch turns on is the entry's own, or the
+    // style's as it loaded (`&terrain=1` put the entry's in the style).
+    designed = {
+      designed: { ...loaded, ...(!scene.restyle && scene.projection && { projection: scene.projection }),
+        ...(!scene.restyle && scene.sky && { sky: scene.sky }) },
+      terrain: scene.terrain === true ? loaded.terrain ?? null : scene.terrain ?? null,
+    };
+    await options.attach(map, { ...designed, scene });
     await editor.attach(map);
     attributionControl.update(editor.style);
     compare.attach(map, scene);
@@ -492,7 +455,7 @@ function wireFeatures(target) {
 }
 
 // Hooks for the headless checks and the console.
-window.app = { get map() { return map; }, editor, compare, get scene() { return current?.scene.key; },
+window.app = { get map() { return map; }, editor, compare, options, get scene() { return current?.scene.key; },
   get popup() { return popup; },
   /** Switches to `style`, a catalogue key or a style URL, as picking an entry does. */
   show(style) { go(sceneFor(new URLSearchParams({ style }))); } };
@@ -506,7 +469,7 @@ if (start.has("edit")) setEditing(true);
   const camera = hashCamera();
   let first;
   try { first = sceneFor(start); } catch (e) { say(String(e.message), { error: true }); throw e; }
-  history.replaceState(history.state, "", urlFor(first, camera));
+  history.replaceState(history.state, "", urlFor(first, camera, { keepOptions: true }));
   await load(first, { camera: camera ?? first.scene.camera ?? (first.scene.basemap ? LIVE_CAMERA : undefined) });
 }
 

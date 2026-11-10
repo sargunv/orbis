@@ -18,16 +18,23 @@
 //   tiles, and back goes back without a reload; a click opens a feature
 //   popup only while the style editor is open; picking any entry keeps
 //   the camera, its style's own camera never applying.
-// - `light`: the Alps terrain style's light switch, offline: `&light=viewport`
-//   anchors its hillshade and light to the viewport as the style loads,
-//   the entry's switch edits them in place and keeps the URL and the
-//   editor in step, and another entry hides it and drops `&light`.
-// - `terrain`: the Alps terrain style's terrain switch, offline: on by
-//   default with no `&terrain`, a click or the keyboard edits the style's
-//   terrain away and back without a reload, keeping the URL and the editor
-//   in step, `&terrain=0` applies as the style loads, another entry hides
-//   it and drops `&terrain`, and at phone width the entry's options sit
-//   clear of the map's centre and the zoom buttons.
+// - `light`: the Alps terrain style's light choice in the map options,
+//   offline: `&light=viewport` anchors its hillshade and light to the
+//   viewport as the style loads, the choice edits them in place and keeps
+//   the URL and the editor in step, and another entry hides it and drops
+//   `&light`.
+// - `terrain`: the Alps terrain style's terrain switch in the map options,
+//   offline: on by default with no `&terrain`, a click or the keyboard
+//   edits the style's terrain away and back without a reload, keeping the
+//   URL and the editor in step, `&terrain=0` applies as the style loads,
+//   and another entry hides it and drops `&terrain`.
+// - `options`: the Globe's map options, offline (the Tokyo extract's style
+//   standing in for Protomaps Light): the URL's choices apply as it loads,
+//   every option is listed in its group, clicks and keys edit the live
+//   style without a reload and keep the URL, options that need another
+//   (shadows 3D buildings, fog terrain) wait for it, a reload reproduces
+//   the choices, opening the panel moves nothing, and at phone width it's
+//   a bottom sheet that fits.
 // - `resize`: the Alps terrain style, offline, with circles over it,
 //   resized three times: each resize draws the map at the new size, not
 //   black, with no WebGPU error in any submit (a bundle bound to a target
@@ -37,7 +44,8 @@
 //   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
 //   isolates the page only for Native, fills the stage on both sides, and
 //   a drag on either side reaches that side's map, which leads the other;
-//   Native draws one side at a time.
+//   Native draws one side at a time; and GL JS's map follows the map
+//   options (labels off, the globe).
 // - `gestures`: Compose's gesture set on the scenario page, from input
 //   synthesized through the DevTools protocol (mouse and touch): mouse and
 //   touch flings, measured against mln-ffi's pan decay (the release
@@ -56,7 +64,7 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,switching,light,terrain,resize,compare,gestures,readback,offline]
+//   pnpm e2e [--only=scenario,edits,editor,switching,light,terrain,options,resize,compare,gestures,readback,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -67,7 +75,7 @@ import { decodePng, encodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,switching,light,terrain,resize,compare,gestures,readback").split(",");
+const only = arg("only", "scenario,edits,editor,switching,light,terrain,options,resize,compare,gestures,readback").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -663,6 +671,7 @@ async function switching(browser, server) {
   await page.waitForTimeout(300);
   assert.equal(await page.locator(".popup").count(), 0, "no popup outside the editor");
   assert.equal(await page.evaluate(() => window.app.editor.open), false);
+  await page.click("#menu-button");
   await page.click("#edit-toggle");
   await page.waitForFunction(() => window.app.editor.open);
   await idle();
@@ -672,6 +681,7 @@ async function switching(browser, server) {
   assert.ok(feature, "a feature shows beside the editor");
   await page.mouse.click(box2.x + feature[0], box2.y + feature[1]);
   await page.waitForSelector(".popup", { timeout: 5_000 });
+  await page.click("#menu-button");
   await page.click("#edit-toggle");
   assert.equal(await page.locator(".popup").count(), 0, "closing the editor closes the popup");
   console.log("switching: a click opens a popup only in the editor");
@@ -719,6 +729,24 @@ async function switching(browser, server) {
   console.log(`switching: ${keys.length} entries keep the camera; Arctic clamps it into its plane`);
 }
 
+/** Opens the map options panel on `page`, if it's closed. */
+async function openOptions(page) {
+  if (await page.evaluate(() => app.options.open)) return;
+  await page.click("#options-button");
+  await page.waitForFunction(() => app.options.open);
+}
+const option = (page, key) => page.locator(`#options [data-option="${key}"]`);
+
+/** Polls `read` until it gives `expected`: the map answers edits and queries in its own time. */
+async function settles(page, read, expected, message) {
+  let seen;
+  for (const until = Date.now() + 10_000; Date.now() < until; await page.waitForTimeout(50)) {
+    seen = await read();
+    if (JSON.stringify(seen) === JSON.stringify(expected)) return;
+  }
+  assert.deepEqual(seen, expected, message);
+}
+
 async function light(browser, server) {
   // Wide enough that the editor is a side panel.
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
@@ -728,45 +756,32 @@ async function light(browser, server) {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
   await page.goto(`${server.url}?style=alps&light=viewport&edit`);
-  const choice = page.locator("#light-choice");
-  await page.waitForFunction(() => app.map && !document.getElementById("light-choice").hidden, null,
-    { timeout: 60_000 });
+  await page.waitForFunction(() => app.options.values && app.editor.style, null, { timeout: 60_000 });
   // Every illumination anchor in the map's style, and the editor's.
   const anchors = () => page.evaluate(async () => {
     const of = (style) => style && [...style.layers.filter((l) => l.type === "hillshade")
       .map((l) => l.paint["hillshade-illumination-anchor"]), style.light.anchor];
     return { map: of(await app.map.getStyle()), editor: of(app.editor.style),
-      checked: document.querySelector('#light-choice [aria-checked="true"]')?.dataset.anchor,
+      checked: document.querySelector('#options [data-option="light"] [aria-checked="true"]')?.dataset.value,
       light: new URLSearchParams(location.search).get("light") };
   });
-  // The map answers edits and queries in its own time: the state settles.
-  const settles = async (expected, message) => {
-    let seen;
-    for (const until = Date.now() + 10_000; Date.now() < until; await page.waitForTimeout(50)) {
-      seen = await anchors();
-      if (JSON.stringify(seen) === JSON.stringify(expected)) return;
-    }
-    assert.deepEqual(seen, expected, message);
-  };
   const all = (anchor) => ({ map: [anchor, anchor], editor: [anchor, anchor], checked: anchor,
     light: anchor === "map" ? null : anchor });
-  await settles(all("viewport"), "&light=viewport applies as the style loads");
-  // The switch sits in the entry's options under the picker, not the ⋯ menu.
-  assert.ok(await page.evaluate(() => document.getElementById("scene-options").contains(document.getElementById("light-choice"))
-    && !document.getElementById("menu").contains(document.getElementById("light-choice"))));
-  await choice.locator('[data-anchor="map"]').click();
-  await settles(all("map"), "the style's own anchor, map, leaves the URL without &light");
+  await settles(page, anchors, all("viewport"), "&light=viewport applies as the style loads");
+  await openOptions(page);
+  await option(page, "light").locator('[data-value="map"]').click();
+  await settles(page, anchors, all("map"), "the style's own anchor, map, leaves the URL without &light");
   // The arrow keys move the choice, as in a radio group.
   await page.keyboard.press("ArrowRight");
-  await settles(all("viewport"), "the arrow keys choose the viewport");
-  assert.equal(await page.evaluate(() => document.activeElement?.dataset.anchor), "viewport", "focus follows the choice");
+  await settles(page, anchors, all("viewport"), "the arrow keys choose the viewport");
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset.value), "viewport", "focus follows the choice");
   // The editor's Reset returns to the style as loaded (with &light), and the switch follows it.
   await page.keyboard.press("ArrowLeft");
-  await settles(all("map"), "the arrow keys choose the map");
+  await settles(page, anchors, all("map"), "the arrow keys choose the map");
   await page.locator(".editor-head .text-button").click();
-  await settles(all("viewport"), "Reset returns to the style as loaded");
+  await settles(page, anchors, all("viewport"), "Reset returns to the style as loaded");
   await page.evaluate(() => app.show("tokyo"));
-  await page.waitForFunction(() => app.scene === "tokyo" && document.getElementById("light-choice").hidden);
+  await page.waitForFunction(() => app.scene === "tokyo" && !document.querySelector('#options [data-option="light"]'));
   assert.equal(new URL(page.url()).searchParams.has("light"), false, "another entry drops &light");
   assert.deepEqual(errors, []);
   await page.close();
@@ -780,61 +795,167 @@ async function terrain(browser, server) {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
   await page.goto(`${server.url}?style=alps&edit`);
-  const toggle = page.locator("#terrain-toggle");
-  await page.waitForFunction(() => app.map && !document.getElementById("terrain-toggle").hidden && app.editor.style,
-    null, { timeout: 60_000 });
+  const toggle = option(page, "terrain");
+  await page.waitForFunction(() => app.options.values && app.editor.style, null, { timeout: 60_000 });
   // Whether the map's style and the editor's have terrain, the switch, and the URL.
   const state = () => page.evaluate(async () => ({
     map: Boolean((await app.map.getStyle()).terrain), editor: Boolean(app.editor.style?.terrain),
-    checked: document.getElementById("terrain-toggle").getAttribute("aria-checked"),
+    checked: document.querySelector('#options [data-option="terrain"]').getAttribute("aria-checked"),
     terrain: new URLSearchParams(location.search).get("terrain") }));
-  const settles = async (expected, message) => {
-    let seen;
-    for (const until = Date.now() + 10_000; Date.now() < until; await page.waitForTimeout(50)) {
-      seen = await state();
-      if (JSON.stringify(seen) === JSON.stringify(expected)) return;
-    }
-    assert.deepEqual(seen, expected, message);
-  };
   const on = { map: true, editor: true, checked: "true", terrain: null };
   const off = { map: false, editor: false, checked: "false", terrain: "0" };
-  await settles(on, "the Alps draw their terrain by default, with no &terrain");
+  await settles(page, state, on, "the Alps draw their terrain by default, with no &terrain");
   // A page that reloads loses this.
   await page.evaluate(() => { window.stayed = true; });
+  await openOptions(page);
   await toggle.click();
-  await settles(off, "the switch takes the terrain away, with &terrain=0");
+  await settles(page, state, off, "the switch takes the terrain away, with &terrain=0");
   await toggle.focus();
   await page.keyboard.press("Space");
-  await settles(on, "the keyboard puts the style's terrain back, and the URL drops &terrain");
+  await settles(page, state, on, "the keyboard puts the style's terrain back, and the URL drops &terrain");
   assert.ok(await page.evaluate(() => window.stayed === true), "the switch edits the style without a reload");
   // &terrain=0 applies as the style loads.
   await page.goto(`${server.url}?style=alps&terrain=0&edit`);
-  await page.waitForFunction(() => app.map && !document.getElementById("terrain-toggle").hidden, null, { timeout: 60_000 });
-  await settles(off, "&terrain=0 applies as the style loads");
+  await page.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
+  await settles(page, state, off, "&terrain=0 applies as the style loads");
+  await openOptions(page);
   await toggle.click();
-  await settles(on, "turning it on restores the style's own terrain");
+  await settles(page, state, on, "turning it on restores the style's own terrain");
   await page.evaluate(() => app.show("tokyo"));
-  await page.waitForFunction(() => app.scene === "tokyo" && document.getElementById("terrain-toggle").hidden);
-  assert.ok(await page.evaluate(() => getComputedStyle(document.getElementById("scene-options")).display === "none"),
-    "an entry without options shows no options group");
+  await page.waitForFunction(() => app.scene === "tokyo" && !document.querySelector('#options [data-option="terrain"]'));
   assert.equal(new URL(page.url()).searchParams.has("terrain"), false, "another entry drops &terrain");
   assert.deepEqual(errors, []);
   await page.close();
+  console.log("terrain: the switch, &terrain, the editor and another entry agree, with no reload");
+}
 
-  // At phone width the options sit clear of the map's centre and the zoom buttons.
+/** The Globe entry offline: Protomaps Light stood in for by the Tokyo extract's style, with a buildings layer to extrude. */
+async function offlineGlobe(page, server) {
+  const tokyo = await tokyoStyle(server);
+  const style = { ...tokyo, layers: [...tokyo.layers,
+    { id: "buildings", type: "fill", source: "openmaptiles", "source-layer": "buildings", paint: { "fill-color": "#ccc" } }] };
+  await page.route((u) => !u.href.startsWith(server.url), (route) => {
+    if (route.request().url().includes("api.protomaps.com/styles/")) route.fulfill({ json: style });
+    else route.abort("internetdisconnected");
+  });
+}
+
+// The Globe's options, in the panel's order, and their values as it designs them.
+const GLOBE_OPTIONS = {
+  terrain: false, hillshade: true, light: "viewport", buildings: true, shadows: true, ao: true,
+  projection: "globe", atmosphere: true, fog: true, stars: true, labels: true, colors: "linear",
+};
+
+async function options(browser, server) {
+  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await offlineGlobe(page, server);
+  await page.goto(`${server.url}?style=globe&shadows=0&projection=mercator&colors=srgb#14/35.687/139.74`);
+  await page.waitForFunction(() => app.scene === "globe" && app.options.values, null, { timeout: 60_000 });
+  // The panel's values, what the map's style draws, the disabled rows and the URL's choices.
+  const state = () => page.evaluate(async () => {
+    const style = await app.map.getStyle();
+    const layer = (id) => style.layers.find((l) => l.id === id);
+    const query = new URLSearchParams(location.search);
+    return {
+      values: app.options.values,
+      style: {
+        shadows: style.light["shadow-intensity"], projection: style.projection.type, terrain: Boolean(style.terrain),
+        colors: style.metadata["dev.sargunv.orbis:color-space"],
+        buildings: layer("buildings_3d").layout.visibility ?? "visible",
+        ao: layer("buildings_3d").paint["fill-extrusion-ambient-occlusion-wall-intensity"],
+        labels: [...new Set(style.layers.filter((l) => l.type === "symbol").map((l) => l.layout?.visibility ?? "visible"))],
+      },
+      disabled: [...document.querySelectorAll("#options [data-option]")]
+        .filter((row) => row.disabled || row.querySelector("button:disabled")).map((row) => row.dataset.option),
+      url: Object.fromEntries([...query].filter(([k]) => !["style", "edit"].includes(k)).sort()),
+    };
+  });
+  const expect = (values, style, disabled, url) => ({ values: { ...GLOBE_OPTIONS, ...values },
+    style: { shadows: 0.5, projection: "globe", terrain: false, colors: "linear", buildings: "visible", ao: 0.6,
+      labels: ["visible"], ...style }, disabled, url: Object.fromEntries(Object.entries(url).sort()) });
+  // The URL's choices apply as the style loads; fog waits for terrain.
+  await settles(page, state, expect({ shadows: false, projection: "mercator", colors: "srgb" },
+    { shadows: 0, projection: "mercator", colors: "srgb" }, ["atmosphere", "fog", "stars"],
+  { shadows: "0", projection: "mercator", colors: "srgb" }), "the URL's choices apply as the Globe loads");
+  await page.evaluate(() => { window.stayed = true; });
+
+  // Opening the panel moves nothing; it lists the Globe's options, grouped, clear of its button.
+  const boxes = () => page.evaluate(() => ["scene-button", "options-button", "menu-button", "zoom-in", "map"]
+    .map((id) => document.getElementById(id).getBoundingClientRect().toJSON()));
+  const before = await boxes();
+  await openOptions(page);
+  assert.deepEqual(await boxes(), before, "opening the panel moves nothing");
+  const panel = await page.evaluate(() => ({
+    keys: [...document.querySelectorAll("#options [data-option]")].map((row) => row.dataset.option),
+    groups: [...document.querySelectorAll("#options .option-group h3")].map((h) => h.textContent),
+    box: document.getElementById("options").getBoundingClientRect().toJSON(),
+    button: document.getElementById("options-button").getBoundingClientRect().toJSON(),
+  }));
+  assert.deepEqual(panel.keys, Object.keys(GLOBE_OPTIONS));
+  assert.deepEqual(panel.groups, ["Terrain and light", "Buildings", "Globe and sky", "Map"]);
+  assert.ok(panel.box.right <= panel.button.left && panel.box.top >= 0 && panel.box.bottom <= 800,
+    `the panel opens beside its button: ${JSON.stringify(panel)}`);
+
+  // Each choice edits the live style and keeps the URL.
+  await option(page, "shadows").click();
+  await option(page, "projection").locator('[data-value="globe"]').click();
+  await settles(page, state, expect({ colors: "srgb" }, { colors: "srgb" }, ["fog"], { colors: "srgb" }),
+    "shadows back on and the globe leave the URL");
+  await option(page, "buildings").click();
+  await settles(page, state, expect({ colors: "srgb", buildings: false }, { colors: "srgb", buildings: "none" },
+    ["shadows", "ao", "fog"], { colors: "srgb", buildings: "0" }), "without 3D buildings, shadows and AO wait");
+  await option(page, "buildings").click();
+  await option(page, "ao").click();
+  await option(page, "terrain").click();
+  // The keyboard: a switch takes Space, a choice the arrow keys.
+  await option(page, "labels").focus();
+  await page.keyboard.press("Space");
+  await option(page, "colors").locator('[aria-checked="true"]').focus();
+  await page.keyboard.press("ArrowLeft");
+  const chosen = expect({ ao: false, terrain: true, labels: false }, { ao: 0, terrain: true, labels: ["none"] }, [],
+    { ao: "0", terrain: "1", labels: "0" });
+  await settles(page, state, chosen, "AO, terrain, labels and colours by click and key");
+  assert.ok(await page.evaluate(() => window.stayed), "the switches edit the style without a reload");
+
+  // Escape closes the panel, focus back on its button.
+  await page.keyboard.press("Escape");
+  assert.deepEqual(await page.evaluate(() => [app.options.open, document.activeElement?.id]), [false, "options-button"]);
+
+  // The link reproduces the view.
+  await page.reload();
+  await page.waitForFunction(() => app.scene === "globe" && app.options.values, null, { timeout: 60_000 });
+  await settles(page, state, chosen, "a reload draws the same choices");
+  // (`light` and `terrain` check that another entry drops them: a switch
+  // away from this offline Globe, its DEM tiles failing, loses the job
+  // workers, #160.)
+  assert.deepEqual(errors, []);
+  await page.close();
+
+  // At phone width the panel is a sheet across the bottom: on screen, under
+  // the picker, scrolling to its last option, with no sideways scroll.
   const phone = await browser.newPage({ viewport: { width: 360, height: 640 } });
-  await phone.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
-  await phone.goto(`${server.url}?style=alps`);
-  await phone.waitForFunction(() => app.map && !document.getElementById("terrain-toggle").hidden
-    && !document.getElementById("light-choice").hidden, null, { timeout: 60_000 });
-  const boxes = await phone.evaluate(() => Object.fromEntries(["scene-options", "zoom-in", "compass"]
-    .map((id) => [id, document.getElementById(id).getBoundingClientRect().toJSON()])));
-  const options = boxes["scene-options"];
-  const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-  assert.ok(options.right <= 360 && options.bottom < 640 / 2 - 40, `options cover the centre: ${JSON.stringify(options)}`);
-  assert.ok(!overlaps(options, boxes["zoom-in"]) && !overlaps(options, boxes.compass), "options cover the zoom buttons");
+  await offlineGlobe(phone, server);
+  await phone.goto(`${server.url}?style=globe#14/35.687/139.74`);
+  await phone.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
+  const scene = await phone.evaluate(() => document.getElementById("scene-button").getBoundingClientRect().toJSON());
+  await openOptions(phone);
+  // Once it has risen into place.
+  const sheet = await phone.evaluate(async () => {
+    const panel = document.getElementById("options");
+    await Promise.all(panel.getAnimations().map((a) => a.finished));
+    return { box: panel.getBoundingClientRect().toJSON(), scroll: document.documentElement.scrollWidth };
+  });
+  assert.ok(sheet.box.left === 0 && sheet.box.right === 360 && Math.abs(sheet.box.bottom - 640) < 1
+    && sheet.box.top > scene.bottom && sheet.scroll <= 360, `the sheet: ${JSON.stringify(sheet)}`);
+  await option(phone, "labels").click();
+  // An option below the fold, scrolled to, takes a tap and keeps the URL.
+  await phone.waitForFunction(() => app.options.values?.labels === false
+    && new URLSearchParams(location.search).get("labels") === "0");
   await phone.close();
-  console.log("terrain: the switch, &terrain, the editor and another entry agree, with no reload; clear of the map at phone width");
+  console.log("options: the Globe's options apply from the URL, edit the style in place by click and key, "
+    + "keep the URL, survive a reload, move nothing as the panel opens, and fit a phone");
 }
 
 /** Logs every WebGPU submit's validation errors on the page's console, from
@@ -1058,7 +1179,27 @@ async function compare(browser, server) {
     assert.deepEqual(pageErrors, [], name);
     await page.close();
   }
+  {
+    // The map options reach the other engine: GL JS's map hides the labels
+    // and turns to the globe with Orbis's.
+    const opened = await open(`${server.url}?style=tokyo-mvt&compare#15/35.687/139.74`);
+    const { page, pageErrors } = opened;
+    await settled(opened, "options");
+    const other = () => page.evaluate(async () => {
+      const style = (await app.compare.styles())[1];
+      return { projection: style.projection?.type ?? "mercator",
+        labels: [...new Set(style.layers.filter((l) => l.type === "symbol").map((l) => l.layout?.visibility ?? "visible"))] };
+    });
+    assert.deepEqual(await other(), { projection: "mercator", labels: ["visible"] });
+    await openOptions(page);
+    await option(page, "labels").click();
+    await option(page, "projection").locator('[data-value="globe"]').click();
+    await settles(page, other, { projection: "globe", labels: ["none"] }, "GL JS follows the map options");
+    assert.deepEqual(pageErrors, []);
+    await page.close();
+  }
   await context.close();
+  console.log("compare: GL JS follows the map options");
   console.log(`compare: the plain page fetches no other engine and isn't isolated; ${PAIRS.length} pairs `
     + "fill the stage, load only their engines, isolate only for MapLibre Native, and follow drags on either side; "
     + "a second Native is GL JS");
@@ -1389,6 +1530,7 @@ const CHECKS = {
   switching,
   light,
   terrain,
+  options,
   resize,
   compare,
   gestures,

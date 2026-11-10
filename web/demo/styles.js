@@ -47,11 +47,11 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * place of the style's then too. `restyle` turns the fetched style into the
  * entry's (sources, layers, terrain, light), so a live style keeps tracking
  * its upstream; the map then loads that style, with the projection and sky
- * in it, whole (`sceneStyle`). `light` offers the entry's switch between
- * a map- and a viewport-anchored light (app/light.js), `&light=` in the
- * URL; `terrain` its terrain switch (app/terrain.js), with the terrain it
- * turns on, off by default, or `true` for the style's own, on by default
- * (`&terrain=1|0` in the URL when not the default). `unsupported` says, by
+ * in it, whole (`sceneStyle`). `light` offers the map options' choice
+ * between a map- and a viewport-anchored light, and `terrain` their
+ * terrain switch, with the terrain it turns on, off by default, or `true`
+ * for the style's own, on by default (app/options.js, which offers the
+ * rest by what the style draws). `unsupported` says, by
  * engine, why that engine can't show the entry in the comparison
  * (app/compare.js).
  *
@@ -287,9 +287,6 @@ export function sceneUrl(scene, format) {
   const url = scene.formats?.[format] ?? scene.url;
   return new URL(url, location.href).href;
 }
-
-/** Whether `scene` draws terrain by default: with the style's own, yes; with terrain of its own, no. */
-export const terrainByDefault = (scene) => scene.terrain === true;
 
 /**
  * `style` as `scene` draws it: restyled, with its projection and sky, and

@@ -32,6 +32,7 @@ export function open(container, { style, camera: { center, zoom, bearing, pitch,
     onMove: (listener) => { const subscription = map.on("move", listener); return () => subscription.unsubscribe(); },
     stop: () => map.stop(),
     setStyle: (next) => map.setStyle(next, { diff: true }),
+    style: () => map.getStyle(),
     loaded: () => map.loaded() && !map.isMoving(),
     remove: () => map.remove(),
   };
