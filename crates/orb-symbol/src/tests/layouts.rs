@@ -87,7 +87,6 @@ fn layer_layout(v: &Value) -> LayerLayout {
             _ => Placement::Point,
         },
         text_rotation_alignment: alignment(&v["textRotationAlignment"]),
-        icon_rotation_alignment: alignment(&v["iconRotationAlignment"]),
         text_keep_upright: v["keepUpright"].as_bool().unwrap(),
         text_padding: num(&v["textPadding"]),
         text_writing_mode: v["writingModes"]
@@ -516,11 +515,6 @@ impl Case<'_> {
             );
         }
         assert_eq!(b.sdf_icons, out["sdfIcons"].as_bool(), "{name}: sdfIcons");
-        assert_eq!(
-            b.icons_in_text,
-            out["iconsInText"].as_bool().unwrap(),
-            "{name}: iconsInText"
-        );
         assert_eq!(
             b.icons_need_linear,
             out["iconsNeedLinear"].as_bool().unwrap(),

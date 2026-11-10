@@ -85,7 +85,6 @@ pub enum TextJustify {
 pub struct LayerLayout {
     pub placement: Placement,
     pub text_rotation_alignment: Alignment,
-    pub icon_rotation_alignment: Alignment,
     pub text_keep_upright: bool,
     /// `text-padding`, pixels.
     pub text_padding: f64,
@@ -109,7 +108,6 @@ impl Default for LayerLayout {
         Self {
             placement: Placement::Point,
             text_rotation_alignment: Alignment::Auto,
-            icon_rotation_alignment: Alignment::Auto,
             text_keep_upright: true,
             text_padding: 2.0,
             text_writing_mode: Vec::new(),
@@ -726,7 +724,6 @@ impl<'a> Builder<'a> {
         let bucket = SymbolBucket {
             text_size: style.text_size,
             icon_size: style.icon_size,
-            tile_pixel_ratio: EXTENT / (512.0 * tile.overscaling),
             allow_vertical_placement: style.allow_vertical_placement(),
             ..SymbolBucket::default()
         };
@@ -896,7 +893,6 @@ impl<'a> Builder<'a> {
         }
 
         let shaped_text = shapings.default_horizontal().or(shapings.vertical.as_ref());
-        self.bucket.icons_in_text |= shaped_text.is_some_and(|s| s.icons_in_text);
         if shaped_text.is_some() || icon.is_some() {
             let anchor_offsets = anchor_offsets.as_deref().unwrap_or_default();
             self.add_anchors(
@@ -944,7 +940,8 @@ impl<'a> Builder<'a> {
     ) {
         let style = self.style;
         let f = &feature.layout;
-        let tile_pixel_ratio = self.bucket.tile_pixel_ratio;
+        // Tile units per layout pixel (GL JS `tilePixelRatio`).
+        let tile_pixel_ratio = EXTENT / (512.0 * self.tile.overscaling);
         let text_max_size = f.text_size.max;
         let default_horizontal = shapings.default_horizontal();
         let font_scale = f.text_size.layout / GLYPH_SIZE;

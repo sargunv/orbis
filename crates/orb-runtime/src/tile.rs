@@ -652,17 +652,18 @@ fn build_symbols<'f>(
             .map(|(slot, &f)| (f, slot as u32))
             .collect();
         let layer_key = crate::style::layer_key(node.key);
-        built.push((
-            layer_key,
-            crate::symbol::layout(
-                p,
-                (layer, ancestor),
-                resolved.glyphs,
-                symbols.icons,
-                &slots,
-                symbols.words,
-            ),
-        ));
+        let symbols = crate::symbol::layout(
+            p,
+            (layer, ancestor),
+            resolved.glyphs,
+            symbols.icons,
+            &slots,
+            symbols.words,
+        );
+        let id = &plan.style.layers[node.layer].id;
+        let named = format!("layers[{}] ({id})", node.layer);
+        warnings.extend(symbols.bucket.warnings.messages(&named));
+        built.push((layer_key, symbols));
     }
     Ok(built)
 }

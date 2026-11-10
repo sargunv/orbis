@@ -190,13 +190,6 @@ fn layer_layout(symbol: &orb_style::Layer, zoom: f64) -> LayerLayout {
         orb_style::TextRotationAlignment::Auto => orb_symbol::Alignment::Auto,
     }
     .resolve(placement);
-    // A data-driven or `auto` icon alignment resolves for the placement.
-    let icon_rotation_alignment = match l.get(orb_style::ICON_ROTATION_ALIGNMENT).constant() {
-        Some(orb_style::Alignment::Map) => orb_symbol::Alignment::Map,
-        Some(orb_style::Alignment::Viewport) => orb_symbol::Alignment::Viewport,
-        _ => orb_symbol::Alignment::Auto,
-    }
-    .resolve(placement);
     let text_writing_mode = {
         let modes = l
             .get(orb_style::TEXT_WRITING_MODE)
@@ -220,7 +213,6 @@ fn layer_layout(symbol: &orb_style::Layer, zoom: f64) -> LayerLayout {
     LayerLayout {
         placement,
         text_rotation_alignment,
-        icon_rotation_alignment,
         text_keep_upright: l.get(orb_style::TEXT_KEEP_UPRIGHT).evaluate(zoom),
         text_padding: l.get(orb_style::TEXT_PADDING).evaluate(zoom),
         text_writing_mode,
@@ -751,11 +743,6 @@ mod tests {
                 "{name}"
             );
             assert_eq!(
-                alignment(s.icon_rotation_alignment),
-                g["iconRotationAlignment"],
-                "{name}"
-            );
-            assert_eq!(
                 s.text_keep_upright,
                 g["keepUpright"].as_bool().unwrap(),
                 "{name}"
@@ -960,13 +947,10 @@ pub(crate) const SYMBOL_TABLES: usize = 14;
 pub struct SymbolMeta {
     pub text_size: SizeKind,
     pub icon_size: SizeKind,
-    pub tile_pixel_ratio: f64,
     pub sdf_icons: Option<bool>,
-    pub icons_in_text: bool,
     pub icons_need_linear: bool,
     pub allow_vertical_placement: bool,
     pub max_height_offset: f64,
-    pub warnings: orb_symbol::Warnings,
 }
 
 /// A symbol layer's share of a finished tile: its bucket's tables as word
@@ -1027,13 +1011,10 @@ impl ResultSymbols {
             meta: SymbolMeta {
                 text_size: b.text_size,
                 icon_size: b.icon_size,
-                tile_pixel_ratio: b.tile_pixel_ratio,
                 sdf_icons: b.sdf_icons,
-                icons_in_text: b.icons_in_text,
                 icons_need_linear: b.icons_need_linear,
                 allow_vertical_placement: b.allow_vertical_placement,
                 max_height_offset: b.max_height_offset,
-                warnings: b.warnings,
             },
             tables,
             glyphs: build.glyphs.clone(),

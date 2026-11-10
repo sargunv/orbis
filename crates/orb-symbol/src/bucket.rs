@@ -230,6 +230,29 @@ pub struct Warnings {
     pub(crate) icon_size_too_large: bool,
 }
 
+impl Warnings {
+    /// What to tell the style's author, each message for layer `layer`.
+    pub fn messages(self, layer: &str) -> impl Iterator<Item = String> {
+        [
+            (
+                self.mixed_sdf_icons,
+                "its icons mix SDF and non-SDF images: all draw as the first one does",
+            ),
+            (
+                self.text_size_too_large,
+                "a text-size reaches 255 px, the largest it draws at: reduce it",
+            ),
+            (
+                self.icon_size_too_large,
+                "an icon-size reaches 255, the largest it draws at: reduce it",
+            ),
+        ]
+        .into_iter()
+        .filter(|&(on, _)| on)
+        .map(move |(_, message)| format!("{layer}: {message}"))
+    }
+}
+
 /// One symbol layer's layout of one tile (GL JS `SymbolBucket`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SymbolBucket {
@@ -244,12 +267,8 @@ pub struct SymbolBucket {
     pub sort_key_ranges: Vec<SortKeyRange>,
     pub text_size: SizeKind,
     pub icon_size: SizeKind,
-    /// Tile units per layout pixel (GL JS `tilePixelRatio`).
-    pub tile_pixel_ratio: f64,
     /// Whether the layer's icons are SDFs; `None` with no icons.
     pub sdf_icons: Option<bool>,
-    /// Some label has inline images.
-    pub icons_in_text: bool,
     /// Icons need linear filtering: scaled from another pixel ratio, or
     /// rotated.
     pub icons_need_linear: bool,
