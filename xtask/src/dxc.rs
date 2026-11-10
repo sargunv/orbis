@@ -11,7 +11,7 @@ const VERSION: &str = "v1.9.2609";
 const ZIP: &str = "dxc_2026_09_29.zip";
 /// The release asset's digest, as GitHub reports it.
 const ZIP_SHA256: &str = "ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1";
-const DLLS: [&str; 2] = ["dxcompiler.dll", "dxil.dll"];
+pub(crate) const DLLS: [&str; 2] = ["dxcompiler.dll", "dxil.dll"];
 
 const HELP: &str = "\
 cargo xtask dxc [--arch arm64|x64]

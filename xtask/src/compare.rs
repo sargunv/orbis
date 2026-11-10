@@ -79,10 +79,20 @@ impl Build {
             args.extend(["-p", package]);
         }
         crate::cargo(&args)?;
+        let bin = target.join(profile);
+        // The DXC this tree's builds load (`cargo xtask dxc`), so both
+        // sides of a D3D12 comparison compile with the same one.
+        for dll in crate::dxc::DLLS {
+            let from = root.join("target").join(profile).join(dll);
+            if from.exists() {
+                let to = bin.join(dll);
+                std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", to.display()))?;
+            }
+        }
         Ok(Self {
             rev: rev.to_string(),
             commit,
-            bin: target.join(profile),
+            bin,
             _lock: lock,
         })
     }
