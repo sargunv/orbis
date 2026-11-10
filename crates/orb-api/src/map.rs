@@ -943,6 +943,7 @@ impl Map {
             let Some(texture) = target.begin(&mut device)? else {
                 return Ok(None);
             };
+            device.start_frame();
             self.woken.store(false, Ordering::Release);
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
             let map = &mut self.map;
@@ -958,6 +959,7 @@ impl Map {
                 frame_time,
             );
             target.end(&mut device);
+            device.finish_frame();
             report
         };
         // The frame found the device lost (a compile the watchdog found

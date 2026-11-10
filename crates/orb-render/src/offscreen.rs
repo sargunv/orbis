@@ -497,7 +497,7 @@ impl LinearScene {
             _ => Vec::new(),
         };
         Pass::Render(RenderPass {
-            label: "encode".into(),
+            label: "encode",
             colors: vec![ColorAttachment {
                 target: host,
                 resolve: None,

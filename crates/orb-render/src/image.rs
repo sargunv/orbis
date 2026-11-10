@@ -588,7 +588,7 @@ impl Images {
                 let group = downsampler.extend_group(gpu, mips.views[0], scratch, regions);
                 self.edges.push((scratch, regions, group));
                 passes.push(Pass::Compute(ComputePass {
-                    label: "image edges".into(),
+                    label: "image edges",
                     commands: downsampler.extend(gpu, group, side, count)?,
                 }));
                 passes.push(Pass::CopyTexture {
@@ -613,7 +613,7 @@ impl Images {
         }
         (!commands.is_empty()).then(|| {
             passes.push(Pass::Compute(ComputePass {
-                label: "image mips".into(),
+                label: "image mips",
                 commands,
             }));
             (passes, dispatches)
@@ -968,7 +968,7 @@ mod prepare {
                         }
                     }
                     passes.push(Pass::Render(RenderPass {
-                        label: "prepare".into(),
+                        label: "prepare",
                         colors: vec![ColorAttachment {
                             target,
                             resolve: None,

@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! orbis render <style> -o out.png [--at lon,lat,zoom[,bearing,pitch]] [--size WxH] [--scale s]
+//!     [--capture]
 //! orbis tiles <style> [-o dir] [--tms <id|tms.json>] (--zoom z[-z] [--bbox w,s,e,n] | --list file)
 //!     [--size px] [--scale s] [--still] [--times]
 //! ```
@@ -9,7 +10,9 @@
 //! `<style>` is a v8 style: a URL (`https://`, `file://`, `pmtiles://`)
 //! or a path. `render` draws one picture in Still
 //! mode (`--at`'s zoom is Web Mercator's, as the style's own plane is known
-//! only once it loads). `tiles` draws tiles of a tile matrix set (default
+//! only once it loads); with `--capture` it draws the settled picture once
+//! more for the graphics debugger it runs under (Xcode, RenderDoc) to
+//! capture. `tiles` draws tiles of a tile matrix set (default
 //! `WebMercatorQuad`) on the style's plane in Tile mode, into
 //! `dir/z/col/row.png` when `-o` is given, rows in the set's own order:
 //! every tile of `--zoom`, those `--bbox` (degrees) touches, or the
@@ -50,7 +53,7 @@ fn main() -> ExitCode {
 }
 
 /// Flags that take no value.
-const SWITCHES: &[&str] = &["--still", "--times"];
+const SWITCHES: &[&str] = &["--still", "--times", "--capture"];
 
 /// Flags and the positional arguments.
 struct Args {
@@ -210,6 +213,11 @@ fn render(
         .map_err(|e| e.to_string())?;
     warn(&mut map);
     write_png(output, image)?;
+    if args.has("--capture") {
+        runtime.capture_gpu_frames(0, 1);
+        map.snapshot(width as u32, height as u32, scale)
+            .map_err(|e| e.to_string())?;
+    }
     let stats = runtime.stats();
     eprintln!(
         "orbis: {} in {:.0} ms; {} pipelines in {:.0} ms of compile threads",

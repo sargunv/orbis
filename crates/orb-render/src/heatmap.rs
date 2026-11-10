@@ -169,7 +169,7 @@ impl Heatmaps {
             )
         });
         Some(RenderPass {
-            label: "heatmap density".into(),
+            label: "heatmap density",
             colors: vec![target.attachment(0, LoadOp::Clear([0.0; 4]))],
             depth: None,
             commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],

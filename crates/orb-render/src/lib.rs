@@ -1901,13 +1901,17 @@ impl Renderer {
             ..FrameStats::default()
         };
         if let Some((prepare, prepared)) = self.images.prepare_pass(gpu) {
+            let start = passes.len();
             stats.draws += prepared.draws;
             stats.prepared = prepared.tiles;
             passes.extend(prepare);
+            Pass::group(&mut passes, start, "dem prepare");
         }
         if let Some((mips, dispatches)) = self.images.mip_pass(gpu, &self.downsampler) {
+            let start = passes.len();
             stats.dispatches += dispatches;
             passes.extend(mips);
+            Pass::group(&mut passes, start, "image mips");
         }
         // The dispatch writes every node's arguments, zeros included, so it
         // runs even when nothing is resident. Indexed nodes' batches add to
@@ -1915,6 +1919,7 @@ impl Renderer {
         let (pipeline, group) = self.cull;
         let cull_ready = gpu.pipeline_ready(pipeline.into());
         if !self.nodes.is_empty() && cull_ready {
+            let start = passes.len();
             if self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed) {
                 passes.push(Pass::ClearBuffer {
                     buffer: self.scene.buffers().args,
@@ -1925,14 +1930,16 @@ impl Renderer {
             let [x, y] = self.scene.cull_grid();
             stats.dispatches += 1;
             passes.push(Pass::Compute(ComputePass {
-                label: "cull".into(),
+                label: "cull",
                 commands: vec![
                     ComputeCommand::SetPipeline(pipeline),
                     ComputeCommand::SetBindGroup { index: 0, group },
                     ComputeCommand::Dispatch { x, y, z: 1 },
                 ],
             }));
+            Pass::group(&mut passes, start, "cull");
         }
+        let start = passes.len();
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
                 && node.drawn
@@ -1951,8 +1958,10 @@ impl Renderer {
                 passes.push(Pass::Render(pass));
             }
         }
+        Pass::group(&mut passes, start, "heatmaps");
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
             let passing = clock();
+            let start = passes.len();
             let depth = self.extrusions.depth().expect("sized above");
             let b = self.scene.buffers();
             // Shaded hillshades light their slopes' slots: blank until
@@ -1971,11 +1980,13 @@ impl Renderer {
                 &self.downsampler,
                 &mut passes,
             );
+            Pass::group(&mut passes, start, "terrain");
             drape_passes = micros(passing, clock());
         }
         let mut first = !terrain_on;
         let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
         let (draw_group, buffers) = (self.draw_group, *self.scene.buffers());
+        let start = passes.len();
         for (index, node) in self.nodes.iter_mut().enumerate() {
             let Some(target) = node
                 .extrusion
@@ -1996,7 +2007,10 @@ impl Renderer {
             first = false;
             stats.draws += 1;
         }
+        Pass::group(&mut passes, start, "3d layers");
+        let start = passes.len();
         passes.extend(self.layers.passes());
+        Pass::group(&mut passes, start, "layers apart");
         // In linear light the map draws into its own texture, cleared to the
         // colour decoded, then encodes into the host's target.
         let (into, into_clear) = match &mut self.linear {
@@ -2006,6 +2020,7 @@ impl Renderer {
             ),
             None => (target, clear),
         };
+        let start = passes.len();
         passes.extend(self.layers.main_passes(
             &self.composites,
             (
@@ -2019,6 +2034,7 @@ impl Renderer {
         if let Some(linear) = &self.linear {
             passes.push(linear.pass(gpu, target, clear));
         }
+        Pass::group(&mut passes, start, "main");
         let submitting = clock();
         gpu.submit(&passes);
         times.submit = micros(submitting, clock());

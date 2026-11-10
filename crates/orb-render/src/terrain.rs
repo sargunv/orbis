@@ -1025,6 +1025,7 @@ impl Terrain {
             return 0;
         };
         if !self.pending.is_empty() {
+            let start = passes.len();
             self.pending.sort_unstable();
             self.pending.dedup();
             for (page, atlas) in self.atlas.iter().enumerate() {
@@ -1072,7 +1073,7 @@ impl Terrain {
                     }
                 }
                 passes.push(Pass::Render(RenderPass {
-                    label: "drape".into(),
+                    label: "drape",
                     colors: vec![ColorAttachment {
                         target: atlas.draw,
                         resolve: None,
@@ -1085,13 +1086,14 @@ impl Terrain {
                 // Each level from the one above, one dispatch over the slots.
                 let mips = downsampler.dispatches(gpu, &atlas.mips, px, count);
                 passes.push(Pass::Compute(ComputePass {
-                    label: "drape mips".into(),
+                    label: "drape mips",
                     commands: mips.expect("ready above"),
                 }));
                 draws += 1;
             }
             self.pending.clear();
             self.pending_draws.clear();
+            Pass::group(passes, start, "drape");
         }
         let atlas_texture = colour.sampled;
         let slope_texture = self.atlas[1].as_ref().map_or(atlas_texture, |a| a.sampled);
@@ -1160,7 +1162,7 @@ impl Terrain {
             occlusion_pipeline,
         ) {
             passes.push(Pass::Render(RenderPass {
-                label: "terrain depth".into(),
+                label: "terrain depth",
                 colors: vec![ColorAttachment {
                     target: color,
                     resolve: None,
@@ -1180,7 +1182,7 @@ impl Terrain {
             let shade = shades.get(layer).copied().flatten();
             let pipeline = pipelines[usize::from(shade.is_some())].expect("made above");
             passes.push(Pass::Render(RenderPass {
-                label: "terrain".into(),
+                label: "terrain",
                 colors: vec![target.target.attachment(0, LoadOp::Clear([0.0; 4]))],
                 depth: Some(DepthAttachment {
                     target: depth,

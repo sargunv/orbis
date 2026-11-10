@@ -2,7 +2,7 @@
 //! [--experiment frames|gestures|load|tiles|stutter] [--frames N] [--warmup N]
 //! [--rounds N] [--samples N] [--size WxH] [--ratio R] [--at lon,lat]
 //! [--view zoom,pitch,bearing]... [--views file] [--filter s] [--nudge]
-//! [--paths city|alps] [--legs N]`.
+//! [--paths city|alps] [--legs N] [--capture N]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract, as the browser
 //! bench (`web/demo/bench.html`) does; `alps` is the Alps terrain style
@@ -12,7 +12,9 @@
 //! mirror`'s) stands in.
 //! `--views` reads cameras in mln-rs's `views.txt` format, keeping those
 //! whose style column is the style URL's last path segment (`liberty` for
-//! `…/styles/liberty`). Prints the Markdown report.
+//! `…/styles/liberty`). `--capture N` asks the graphics debugger the bench
+//! runs under (Xcode, RenderDoc) to capture the runtime's frame N, from 1.
+//! Prints the Markdown report.
 
 #![forbid(unsafe_code)]
 
@@ -43,6 +45,7 @@ fn run() -> Result<(), String> {
         settings.paths = orb_bench::GesturePaths::Alps;
     }
     let mut views_file = None;
+    let mut capture = None;
     let mut style_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -59,6 +62,10 @@ fn run() -> Result<(), String> {
                     about_data = format!("Tokyo extract ({value}, reduced Liberty)");
                 }
                 "views" => views_file = Some(value),
+                "capture" => {
+                    let frame: u64 = value.parse().map_err(|e| format!("--capture: {e}"))?;
+                    capture = Some(frame.checked_sub(1).ok_or("--capture counts from 1")?);
+                }
                 _ => settings.set(name, &value)?,
             }
         } else if arg == "alps" {
@@ -82,6 +89,9 @@ fn run() -> Result<(), String> {
         about_data = format!("{about_data}; the {name} views of {path}");
     }
     let runtime = Runtime::new(&RuntimeOptions::default()).map_err(|e| e.to_string())?;
+    if let Some(skip) = capture {
+        runtime.capture_gpu_frames(skip, 1);
+    }
     let about = vec![
         format!("device: {}", runtime.stats().adapter),
         "native, orb-api".to_string(),

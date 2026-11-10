@@ -257,7 +257,7 @@ impl Extrusions {
             )
         });
         RenderPass {
-            label: "3d layer".into(),
+            label: "3d layer",
             colors: vec![
                 node.offscreen
                     .as_ref()

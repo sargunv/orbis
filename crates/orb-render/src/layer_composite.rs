@@ -180,7 +180,7 @@ impl LayerComposites {
     pub(crate) fn passes(&self) -> impl Iterator<Item = Pass> + '_ {
         self.groups.iter().filter_map(|g| {
             Some(Pass::Render(RenderPass {
-                label: "layer composite".into(),
+                label: "layer composite",
                 colors: vec![g.layer.as_ref()?.attachment(0, LoadOp::Clear([0.0; 4]))],
                 depth: None,
                 commands: vec![RenderCommand::ExecuteBundles(vec![g.bundle?])],
@@ -225,7 +225,7 @@ impl LayerComposites {
                     self.canvases[k % 2].attachment(0, load)
                 };
                 Pass::Render(RenderPass {
-                    label: "main".into(),
+                    label: "main",
                     colors: vec![color],
                     depth: None,
                     commands,

@@ -108,6 +108,14 @@ pub struct WgpuGpu {
     copy_next: Option<TextureId>,
     copied: std::sync::Mutex<Option<(TextureId, offscreen::Readback)>>,
     pipelines_created: u32,
+    /// Frames started ([`WgpuGpu::start_frame`]), and those to capture by
+    /// number, while one is asked for; whether a capture is running.
+    frames_started: u64,
+    capture: Option<std::ops::Range<u64>>,
+    capturing: bool,
+    /// Whether submissions carry their debug groups outside captures too
+    /// ([`WgpuGpu::set_debug_groups`]).
+    debug_groups: bool,
     /// Set when the device made by `offscreen` is lost.
     #[cfg(not(target_arch = "wasm32"))]
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -281,6 +289,10 @@ impl WgpuGpu {
             copy_next: None,
             copied: Default::default(),
             pipelines_created: 0,
+            frames_started: 0,
+            capture: None,
+            capturing: false,
+            debug_groups: false,
             #[cfg(not(target_arch = "wasm32"))]
             lost: Default::default(),
         }
@@ -295,6 +307,61 @@ impl WgpuGpu {
             |id| self.buffers[id.0].clone(),
             encoder,
         );
+    }
+
+    /// Asks the graphics debugger the process runs under (Xcode's Metal
+    /// debugger, RenderDoc) to capture `count` frames after the next
+    /// `skip`: each frame from [`start_frame`](Self::start_frame) to
+    /// [`finish_frame`](Self::finish_frame), its passes grouped by stage
+    /// and labelled by role. Without one attached, and in the browser, it
+    /// does nothing.
+    pub fn capture_frames(&mut self, skip: u64, count: u64) {
+        let first = self.frames_started + skip;
+        self.capture = Some(first..first + count);
+    }
+
+    /// Encodes submissions' debug groups ([`Pass::PushDebugGroup`]) outside
+    /// captures too, for captures a debugger's own controls start. Off by
+    /// default: each is a driver call with a string made for it, which
+    /// only a capture reads.
+    pub fn set_debug_groups(&mut self, on: bool) {
+        self.debug_groups = on;
+    }
+
+    /// Marks the start of a frame: its submissions, and a host target's
+    /// acquire and present around them. Starts a capture asked for.
+    #[allow(unsafe_code)]
+    pub fn start_frame(&mut self) {
+        let frame = self.frames_started;
+        self.frames_started += 1;
+        if !self.capturing && self.capture.as_ref().is_some_and(|c| c.start == frame) {
+            // SAFETY: no other capture runs: this device starts one only
+            // when none of its own is, and nothing else in Orbis starts
+            // one. The debuggers' own rules hold as for any wgpu capture.
+            unsafe { self.device.start_graphics_debugger_capture() };
+            self.capturing = true;
+        }
+    }
+
+    /// Marks the end of a frame. Ends a capture after its last frame,
+    /// once the GPU finished the work, as debuggers want.
+    #[allow(unsafe_code)]
+    pub fn finish_frame(&mut self) {
+        if self.capturing
+            && self
+                .capture
+                .as_ref()
+                .is_some_and(|c| self.frames_started >= c.end)
+        {
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+            // SAFETY: the capture `start_frame` started runs.
+            unsafe { self.device.stop_graphics_debugger_capture() };
+            self.capturing = false;
+            self.capture = None;
+        }
     }
 
     /// Bytes written to buffers so far.
@@ -664,9 +731,11 @@ impl Gpu for WgpuGpu {
                 self.uploaded.from_js += len;
                 // It lands before gathered writes: those it overlaps go first.
                 if self.writes.overlaps(id, offset, len) {
-                    let mut encoder = self
-                        .device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    let mut encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("uploads"),
+                            });
                     self.encode_writes(&mut encoder);
                     self.queue.submit([encoder.finish()]);
                 }
@@ -1097,20 +1166,33 @@ impl Gpu for WgpuGpu {
         // While timing, each compute and render pass's first query.
         let queries = match &mut self.timing {
             Some(timing) => timing.begin(passes.iter().map(|pass| match pass {
-                Pass::Compute(p) => Some(p.label.as_str()),
-                Pass::Render(p) => Some(p.label.as_str()),
+                Pass::Compute(p) => Some(p.label),
+                Pass::Render(p) => Some(p.label),
                 _ => None,
             })),
             None => Vec::new(),
         };
         let set = self.timing.as_ref().and_then(timing::Timing::set);
         let writes = |i: usize| Some((set?, (*queries.get(i)?)?));
+        // Debug groups and the encoder's label, for captures only.
+        let groups = self.capturing || self.debug_groups;
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: groups.then_some("passes"),
+            });
+        if groups {
+            encoder.push_debug_group("uploads");
+        }
         self.encode_writes(&mut encoder);
+        if groups {
+            encoder.pop_debug_group();
+        }
         for (i, pass) in passes.iter().enumerate() {
             match pass {
+                Pass::PushDebugGroup(label) if groups => encoder.push_debug_group(label),
+                Pass::PopDebugGroup if groups => encoder.pop_debug_group(),
+                Pass::PushDebugGroup(_) | Pass::PopDebugGroup => {}
                 Pass::CopyTexture {
                     source,
                     destination,
@@ -1170,7 +1252,7 @@ impl Gpu for WgpuGpu {
                 ),
                 Pass::Compute(compute) => {
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some(&compute.label),
+                        label: Some(compute.label),
                         timestamp_writes: writes(i).map(|(query_set, first)| {
                             wgpu::ComputePassTimestampWrites {
                                 query_set,
@@ -1220,7 +1302,7 @@ impl Gpu for WgpuGpu {
                         })
                         .collect();
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some(&render.label),
+                        label: Some(render.label),
                         color_attachments: &colors,
                         depth_stencil_attachment: render.depth.as_ref().map(|depth| {
                             wgpu::RenderPassDepthStencilAttachment {
@@ -1261,7 +1343,13 @@ impl Gpu for WgpuGpu {
                 }
             }
         }
+        if groups {
+            encoder.push_debug_group("readback");
+        }
         self.encode_armed_copy(&mut encoder);
+        if groups {
+            encoder.pop_debug_group();
+        }
         self.last = Some(self.queue.submit([encoder.finish()]));
         if let Some(timing) = &mut self.timing {
             timing.end(timing::now() - started);

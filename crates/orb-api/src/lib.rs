@@ -181,6 +181,10 @@ fn wake_all(wakes: &Wakes) -> Arc<dyn Fn() + Send + Sync> {
     })
 }
 
+/// Asks for a capture of a new runtime's frame `n`, from 1, or (0) only
+/// for every frame's debug groups ([`Runtime::capture_gpu_frames`]).
+const GPU_CAPTURE: &str = "ORB_GPU_CAPTURE";
+
 impl Runtime {
     /// Makes a device on the default adapter and starts the job and fetch
     /// pools. Blocks while the device is made.
@@ -213,7 +217,30 @@ impl Runtime {
             }),
         };
         runtime.start_pipeline_cache()?;
+        if let Some(frame) = std::env::var(GPU_CAPTURE)
+            .ok()
+            .and_then(|n| n.parse::<u64>().ok())
+        {
+            let mut gpu = runtime.shared.gpu.borrow_mut();
+            gpu.set_debug_groups(true);
+            if let Some(skip) = frame.checked_sub(1) {
+                gpu.capture_frames(skip, 1);
+            }
+        }
         Ok(runtime)
+    }
+
+    /// Asks the graphics debugger the process runs under (Xcode's Metal
+    /// debugger, RenderDoc) to capture `count` of the frames this
+    /// runtime's maps draw, after the next `skip`: each a frame's passes
+    /// grouped by stage, every pass, pipeline and buffer labelled by its
+    /// role. Without a debugger attached it does nothing. The
+    /// `ORB_GPU_CAPTURE` environment variable asks for frame `n` (from 1)
+    /// of a new runtime, and with 0 for none: either way every frame then
+    /// carries its debug groups, for captures the debugger's own controls
+    /// start.
+    pub fn capture_gpu_frames(&self, skip: u64, count: u64) {
+        self.shared.gpu.borrow_mut().capture_frames(skip, count);
     }
 
     /// Rewrites every request the runtime's maps and region downloads make

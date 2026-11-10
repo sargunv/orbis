@@ -108,7 +108,9 @@ impl WgpuGpu {
         // Gathered writes are work submitted too.
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("work done"),
+            });
         self.encode_writes(&mut encoder);
         let index = self.queue.submit([encoder.finish()]);
         let (sender, receiver) = futures_channel::oneshot::channel();
@@ -176,7 +178,9 @@ impl WgpuGpu {
     fn copy_now(&self, texture: &wgpu::Texture) -> Readback {
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("readback"),
+            });
         self.encode_writes(&mut encoder);
         let copy = self.encode_copy(&mut encoder, texture);
         self.queue.submit([encoder.finish()]);
@@ -257,7 +261,9 @@ impl WgpuGpu {
         });
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("buffer readback"),
+            });
         self.encode_writes(&mut encoder);
         encoder.copy_buffer_to_buffer(source, 0, &buffer, 0, source.size());
         self.queue.submit([encoder.finish()]);

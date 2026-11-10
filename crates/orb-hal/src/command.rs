@@ -31,6 +31,21 @@ pub enum Pass {
         offset: u64,
         size: Option<u64>,
     },
+    /// Opens a named group of the passes up to its [`PopDebugGroup`]
+    /// (`Pass::PopDebugGroup`), for graphics debuggers' captures.
+    PushDebugGroup(&'static str),
+    PopDebugGroup,
+}
+
+impl Pass {
+    /// Wraps the passes of `passes` from `start` on in a debug group, if
+    /// there are any.
+    pub fn group(passes: &mut Vec<Pass>, start: usize, label: &'static str) {
+        if passes.len() > start {
+            passes.insert(start, Pass::PushDebugGroup(label));
+            passes.push(Pass::PopDebugGroup);
+        }
+    }
 }
 
 /// A box of texels at mip level 0, `size` (width, height, layers) from
@@ -44,7 +59,7 @@ pub struct TextureCopy {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComputePass {
-    pub label: String,
+    pub label: &'static str,
     pub commands: Vec<ComputeCommand>,
 }
 
@@ -57,7 +72,7 @@ pub enum ComputeCommand {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderPass {
-    pub label: String,
+    pub label: &'static str,
     /// Colour attachments, at the pipelines' target locations; none draws
     /// depth only.
     pub colors: Vec<ColorAttachment>,

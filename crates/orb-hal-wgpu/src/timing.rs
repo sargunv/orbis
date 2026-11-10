@@ -180,8 +180,9 @@ impl WgpuGpu {
                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 });
-                let mut encoder =
-                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("timestamps"),
+                });
                 encoder.resolve_query_set(&set, 0..used, &resolve, 0);
                 encoder.copy_buffer_to_buffer(&resolve, 0, &readback, 0, size);
                 queue.submit([encoder.finish()]);
