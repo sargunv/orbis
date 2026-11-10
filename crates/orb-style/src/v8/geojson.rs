@@ -12,10 +12,11 @@ use orb_tile::{
 /// Null properties are absent; objects and arrays are kept as JSON text,
 /// which expressions read back as arrays and objects.
 pub fn parse_geojson(text: &str) -> Result<Vec<Feature>, String> {
-    convert(&json::parse(text).map_err(|e| e.to_string())?)
+    geojson_features(&json::parse(text).map_err(|e| e.to_string())?)
 }
 
-pub(crate) fn convert(doc: &Json) -> Result<Vec<Feature>, String> {
+/// The features of a parsed GeoJSON document, as [`parse_geojson`] reads them.
+pub fn geojson_features(doc: &Json) -> Result<Vec<Feature>, String> {
     match ty(doc)? {
         "FeatureCollection" => array(doc.get("features"))?.iter().map(feature).collect(),
         "Feature" => Ok(vec![feature(doc)?]),

@@ -127,7 +127,7 @@ pub(crate) fn host_frame(text: &str, tile: orb_crs::TileIndex) -> Result<TileFra
         .ok_or("an app's GeoJSON tile is an object of source layers")?;
     let mut frame = TileFrame::default();
     for layer in layers {
-        let features = orb_style::v8::parse_geojson(&layer.value.to_string())?;
+        let features = orb_style::v8::geojson_features(&layer.value)?;
         let options = geojson::Options {
             max_zoom: tile.z,
             layer: layer.key.clone(),

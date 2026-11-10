@@ -426,7 +426,8 @@ fn source_diffs_change_the_record_and_the_features_alike() {
         .map(|f| format!("{:?} {:?} {:?}", f.id, f.properties, f.geometry))
         .collect();
     // The record, parsed again from scratch, agrees.
-    let reparsed = crate::v8::geojson::convert(doc.source_json(1).get("data").unwrap()).unwrap();
+    let reparsed =
+        crate::v8::geojson::geojson_features(doc.source_json(1).get("data").unwrap()).unwrap();
     let again: Vec<String> = reparsed
         .iter()
         .map(|f| format!("{:?} {:?} {:?}", f.id, f.properties, f.geometry))

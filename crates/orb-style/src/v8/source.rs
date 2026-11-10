@@ -371,10 +371,12 @@ fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonS
         }
         Some(data) => match data.as_str() {
             Some(url) => GeoJsonData::Url(url.to_string()),
-            None => GeoJsonData::Inline(crate::v8::geojson::convert(data).unwrap_or_else(|e| {
-                cx.warn(at("data"), data.span, format!("{e}; {EMPTY_SOURCE}"));
-                Vec::new()
-            })),
+            None => GeoJsonData::Inline(crate::v8::geojson::geojson_features(data).unwrap_or_else(
+                |e| {
+                    cx.warn(at("data"), data.span, format!("{e}; {EMPTY_SOURCE}"));
+                    Vec::new()
+                },
+            )),
         },
     };
     let mut options = orb_tile::geojson::Options::default();
