@@ -132,6 +132,8 @@ function protomaps3d(style) {
     layers.splice(labels(), 0, {
       id: "buildings_3d", type: "fill-extrusion", source: buildings.source, "source-layer": "buildings", minzoom: 14,
       filter: ["==", ["geometry-type"], "Polygon"],
+      // Softly rounded corners (spec 26.2.0; clamped to a fifth of each edge).
+      layout: { "fill-extrusion-rounded-corner-distance": 2 },
       paint: {
         // Protomaps Light's buildings fill (#cccccc at 0.5) over its land (#e2dfda).
         "fill-extrusion-color": "#d7d6d3",
