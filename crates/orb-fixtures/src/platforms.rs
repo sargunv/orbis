@@ -139,6 +139,22 @@ fn container(root: &Path, filter: &str, suite: Suite, output: &Path) -> Result<(
         std::fs::remove_dir_all(output).map_err(|e| e.to_string())?;
     }
     std::fs::create_dir_all(output).map_err(|e| e.to_string())?;
+    // Every worktree builds into the one target volume, and cargo takes a
+    // path crate whose files are older than its last build as fresh: after
+    // another tree's build, the binary would mix both trees' crates. Under
+    // the volume's lock, a run from another root than the last first
+    // cleans the workspace's own packages; dependencies stay built.
+    let clean: String = workspace_packages(root)?
+        .iter()
+        .map(|p| format!(" -p {p}"))
+        .collect();
+    let script = format!(
+        "exec 9>/work/target/.orbis-lock && flock 9 && \
+         if [ \"$(cat /work/target/.orbis-root 2>/dev/null)\" != \"$ORBIS_ROOT\" ]; then \
+         cargo clean --release{clean} && printf %s \"$ORBIS_ROOT\" > /work/target/.orbis-root; fi && \
+         exec cargo run --locked --release -p orb-fixtures -- --suite {} --filter \"$ORBIS_FILTER\"",
+        suite.name()
+    );
     run_command(
         Command::new("docker")
             .args(["run", "--rm", "--init", "--mount"])
@@ -151,7 +167,10 @@ fn container(root: &Path, filter: &str, suite: Suite, output: &Path) -> Result<(
                 "type=bind,source={},target=/work/{target}",
                 output.display()
             ))
-            .args(["--env", "ORB_FIXTURES_LAVAPIPE=1"])
+            .args(["--env", "ORB_FIXTURES_LAVAPIPE=1", "--env"])
+            .arg(format!("ORBIS_ROOT={}", root.display()))
+            .args(["--env"])
+            .arg(format!("ORBIS_FILTER={filter}"))
             .args([
                 "--mount",
                 "type=volume,source=orbis-rt-target,target=/work/target",
@@ -160,19 +179,30 @@ fn container(root: &Path, filter: &str, suite: Suite, output: &Path) -> Result<(
                 "--mount",
                 "type=volume,source=orbis-rt-git,target=/usr/local/cargo/git",
                 "orbis-rt-lavapipe",
-                "cargo",
-                "run",
-                "--locked",
-                "--release",
-                "-p",
-                "orb-fixtures",
-                "--",
-                "--suite",
-                suite.name(),
-                "--filter",
-                filter,
+                "sh",
+                "-c",
+                &script,
             ]),
     )
+}
+
+/// The workspace's packages, by name.
+fn workspace_packages(root: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("cargo metadata: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("cargo metadata failed: {}", output.status));
+    }
+    let metadata: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    Ok(metadata["packages"]
+        .as_array()
+        .ok_or("cargo metadata: no packages")?
+        .iter()
+        .filter_map(|p| p["name"].as_str().map(str::to_owned))
+        .collect())
 }
 
 fn run_command(command: &mut Command) -> Result<(), String> {
