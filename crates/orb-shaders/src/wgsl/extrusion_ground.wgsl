@@ -11,7 +11,8 @@
 // projected along it onto the ground the building stands on: each ray of
 // light through a building enters by its roof or a wall facing the light,
 // and leaves by a wall turned from it or into the ground beneath it, which
-// the building covers. Occlusion turns each wall into a strip on the
+// the building covers (a raised part's, by its underside: see
+// vs_extrusion_shadow). Occlusion turns each wall into a strip on the
 // ground running out from its foot, past both ends by the radius so that
 // convex corners round off.
 //
@@ -97,9 +98,12 @@ fn ground_landing(g: GroundVertex, offset: vec2<f32>) -> vec4<f32> {
 
 // A shadow: each vertex where the light carries it down to the ground, at
 // frame.shadow_offset metres east and north per metre it stands up. A wall
-// facing the light stays at its foot: its sweep would lie beneath its
-// building and the shadows of the rest. Its two ends may judge apart on a
-// rounded corner, which leaves part of the sweep, still in the shadow.
+// facing the light, on a part standing on the ground, stays at its foot:
+// its sweep would lie beneath its building and the shadows of the rest. A
+// raised part's light leaves by its underside, which has no faces to draw,
+// so its walls facing the light sweep too. A wall's two ends may judge
+// apart on a rounded corner, which leaves part of the sweep, still in the
+// shadow.
 @vertex
 fn vs_extrusion_shadow(@builtin(vertex_index) index: u32) -> GroundOut {
     var out: GroundOut;
@@ -118,7 +122,7 @@ fn vs_extrusion_shadow(@builtin(vertex_index) index: u32) -> GroundOut {
     var up = g.height;
     if !ground_roof(v) {
         let lit = dot(ground_outward(packed), frame.shadow_offset) < 0.0;
-        up = select(g.height, g.base, (packed & 1u) == 0u || lit);
+        up = select(g.height, g.base, (packed & 1u) == 0u || (lit && g.base <= 0.0));
     }
     out.position = ground_landing(g, frame.shadow_offset * (up * frame.extrusion_scale));
     out.ground = vec4<f32>(0.0, 0.0, 0.0, frame.shadow_intensity * g.opacity);

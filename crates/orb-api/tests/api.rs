@@ -1686,6 +1686,28 @@ fn shadows_fall_away_from_the_light() {
     assert_eq!(on[3][0], 255, "on the lit side: {on:?}");
 }
 
+/// A part raised off the ground lets light out by its underside, which has
+/// no faces: its shadow there comes from the walls facing the light, swept
+/// from its base to its top.
+#[test]
+fn a_raised_part_shadows_beneath_its_lit_side() {
+    // A slab from 50 m to 60 m up, its shadow 28 m to 82 m north of its
+    // centre: the near part of it (33 m, 36 m) falls from the light's side,
+    // which the roof's shadow (38 m on) misses; then within it, and 10 m
+    // south of the slab.
+    let at = [33.0, 36.0, 60.0, -32.0];
+    let on = beside_a_building(
+        60.0,
+        r#""intensity": 0.5, "shadow-intensity": 0.6"#,
+        r#", "fill-extrusion-base": 50"#,
+        &at,
+    );
+    for p in &on[..3] {
+        assert!((p[0] as i32 - 102).abs() <= 2, "shadowed: {on:?}");
+    }
+    assert_eq!(on[3][0], 255, "on the lit side: {on:?}");
+}
+
 /// style-spec#1796: the ground darkens along the walls by the ground
 /// intensity at their foot, fading out over the ground radius; the walls
 /// darken toward the ground over theirs (a wall, from above, shows at the
