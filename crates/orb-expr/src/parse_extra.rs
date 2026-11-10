@@ -32,8 +32,9 @@ impl Parser<'_> {
                     self.error(child_key(key,1),items[1].span,format!("Unknown variable \"{name}\". Make sure \"{name}\" has been bound in an enclosing \"let\" expression before using it."));
                     return None;
                 };
-                let value = *value;
-                self.call(Call::Var, vec![value], self.ty(value).clone(), key)
+                // The bound node itself: the IR is a DAG, so a variable
+                // needs no node of its own.
+                Some(*value)
             }
             "let" => {
                 if n < 3 {
@@ -78,6 +79,8 @@ impl Parser<'_> {
                 self.scope.truncate(old);
                 let result = result?;
                 args.push(result);
+                // The node keeps the bindings for `findZoomCurve`, which
+                // rejects a zoom curve in any of them, used or not.
                 self.call(Call::Let, args, self.ty(result).clone(), key)
             }
             "semiliteral" => {

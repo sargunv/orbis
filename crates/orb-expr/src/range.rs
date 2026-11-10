@@ -106,7 +106,6 @@ fn range_of(ir: &Ir, op: &Op, ranges: &[Range]) -> Range {
     let all = |ids: &[NodeId]| ids.iter().map(r).all(|x| !x.is_none());
     match op {
         Op::Call(Call::Let, args) => args.last().map_or(Range::ALL, r),
-        Op::Call(Call::Var, args) => args.first().map_or(Range::ALL, r),
         Op::Match {
             outputs, otherwise, ..
         } => union(&mut outputs.iter().chain([otherwise])),
