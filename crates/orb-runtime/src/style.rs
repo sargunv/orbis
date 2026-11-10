@@ -48,6 +48,10 @@ pub(crate) struct StylePlan {
     /// The layers whose paint reads the camera beyond its zoom
     /// ([`crate::paint::at_camera`]).
     pub(crate) camera_layers: Vec<usize>,
+    /// Whether any of them reads `["meters-per-pixel"]`, which a pan
+    /// changes: paint that reads only the pitch and bearing isn't written
+    /// again as the map pans.
+    pub(crate) reads_resolution: bool,
     /// By layer, the first layer before it that lays out alike
     /// ([`orb_style::Layer::layout_group`]): the group's leader.
     pub(crate) layout_leaders: Vec<Option<usize>>,
@@ -352,13 +356,19 @@ impl StylePlan {
             });
         }
 
-        let camera_layers = (style.layers.iter().enumerate())
+        let camera_layers: Vec<usize> = (style.layers.iter().enumerate())
             .filter(|(_, l)| {
                 l.slots()
                     .any(|(_, s)| s.as_expression().is_some_and(|e| e.reads_camera()))
             })
             .map(|(i, _)| i)
             .collect();
+        let reads_resolution = camera_layers.iter().any(|&i| {
+            (style.layers[i].slots()).any(|(_, s)| {
+                s.as_expression()
+                    .is_some_and(|e| e.reads_meters_per_pixel())
+            })
+        });
         let mut groups = std::collections::HashMap::new();
         let layout_leaders = (style.layers.iter().enumerate())
             .map(|(i, l)| {
@@ -375,6 +385,7 @@ impl StylePlan {
             sources,
             warnings,
             camera_layers,
+            reads_resolution,
             layout_leaders,
         }
     }

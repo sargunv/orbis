@@ -58,6 +58,20 @@ pub(crate) fn camera_inputs(state: &orb_camera::CameraState) -> CameraInputs {
     }
 }
 
+/// `camera` as far as the plan's values read it, which paint is written
+/// again when it changes: a pan moves the ground resolution, which paint
+/// reading only the pitch and bearing doesn't see.
+fn read_by(plan: &StylePlan, camera: CameraInputs) -> CameraInputs {
+    CameraInputs {
+        meters_per_pixel: if plan.reads_resolution {
+            camera.meters_per_pixel
+        } else {
+            0.0
+        },
+        ..camera
+    }
+}
+
 /// The plan with its paint's camera reads (`["pitch"]`, `["bearing"]`,
 /// `["meters-per-pixel"]`, beyond the spec) resolved to `camera`'s: `None`
 /// when no paint reads the camera.
@@ -109,8 +123,9 @@ pub(crate) fn frame(
     // Paint that reads the camera is written again as it moves.
     let bearing = inputs.bearing;
     let camera = at_camera(plan, inputs);
-    if camera.is_some() && style.paint.camera != Some(inputs) {
-        style.paint.camera = Some(inputs);
+    let read = read_by(plan, inputs);
+    if camera.is_some() && style.paint.camera != Some(read) {
+        style.paint.camera = Some(read);
         style.paint.invalidate();
     }
     let plan = camera.as_ref().unwrap_or(plan);
@@ -167,8 +182,9 @@ pub(crate) fn drape(
         drape.painted.clear();
     }
     // Paint that reads the camera is draped again as it moves.
-    if camera.is_some() && drape.camera != Some(inputs) {
-        drape.camera = Some(inputs);
+    let read = read_by(plan, inputs);
+    if camera.is_some() && drape.camera != Some(read) {
+        drape.camera = Some(read);
         drape.painted.clear();
     }
     if drape.bearing != bearing {
