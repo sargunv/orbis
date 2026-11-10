@@ -18,8 +18,8 @@ pub(crate) struct Snapshot {
     texture: TextureId,
     viewport: Viewport,
     scale: f32,
-    /// Whether the last frame was idle: the next idle one is settled.
-    idle: bool,
+    /// Its frames so far.
+    settle: orb_runtime::Settle,
 }
 
 #[wasm_bindgen]
@@ -52,13 +52,13 @@ impl OrbisMap {
                 height: f64::from(height),
             },
             scale: scale as f32,
-            idle: false,
+            settle: orb_runtime::Settle::default(),
         });
     }
 
-    /// Draws a frame of the snapshot; whether it is settled: two idle
-    /// frames in a row, the second drawing what the first's replies
-    /// brought. Wait a little for data between calls.
+    /// Draws a frame of the snapshot; whether it is settled
+    /// ([`orb_runtime::Settle`]), or an error at once for a style that
+    /// failed to load. Wait a little for data between calls.
     #[wasm_bindgen(js_name = snapshotFrame)]
     pub fn snapshot_frame(&mut self) -> Result<bool, JsError> {
         let snapshot = self
@@ -81,9 +81,11 @@ impl OrbisMap {
             snapshot.scale,
             orb_host::Clock::now(&crate::host::WebClock),
         );
-        let settled = report.idle && snapshot.idle;
-        snapshot.idle = report.idle;
-        Ok(settled)
+        // A style that failed to load never settles: say why at once.
+        snapshot
+            .settle
+            .frame(map, Some(&report))
+            .map_err(|message| JsError::new(&message))
     }
 
     /// Ends the snapshot: resolves to its pixels, straight (not

@@ -1064,14 +1064,15 @@ impl Map {
     /// one's report, or `None` at the first frame that leaves work to wait
     /// for.
     fn settle_step(&mut self, target: &mut Target) -> Result<Option<FrameReport>, Error> {
-        let mut was_idle = false;
+        let mut settle = orb_runtime::Settle::default();
         loop {
             let report = self.frame(target, self.now())?;
-            // A style that failed to load never settles: say why at once.
-            self.style_failed()?;
+            let settled = settle
+                .frame(&self.map, report.as_ref())
+                .map_err(Error::InvalidArgument)?;
             match report {
-                Some(report) if report.idle && was_idle => return Ok(Some(report)),
-                Some(report) if report.idle => was_idle = true,
+                Some(report) if settled => return Ok(Some(report)),
+                Some(report) if report.idle => {}
                 _ => return Ok(None),
             }
         }

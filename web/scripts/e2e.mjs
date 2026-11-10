@@ -1613,6 +1613,24 @@ async function failing(browser, server) {
     if (entry !== "globe") await page.close();
   }
 
+  // A snapshot of a style that failed to load fails at once, saying why,
+  // rather than waiting out its minute.
+  const refused = await page.evaluate(async () => {
+    const started = performance.now();
+    app.map.setStyle("/no-such-style.json");
+    const message = await app.map.snapshot(64, 64, 1).then(
+      () => "resolved",
+      (e) => e.message,
+    );
+    return { message, ms: performance.now() - started };
+  });
+  assert.notEqual(refused.message, "resolved", JSON.stringify(refused));
+  assert.doesNotMatch(refused.message, /settle/, JSON.stringify(refused));
+  assert.ok(refused.ms < 10_000, JSON.stringify(refused));
+  console.log(
+    `failing: a snapshot of a missing style fails in ${refused.ms.toFixed(0)} ms: ${refused.message.split("\n")[0]}`,
+  );
+
   // A trap stops the map cleanly: one `error` says so, and calls after
   // fail with its message rather than "recursive use of an object".
   const seen = await page.evaluate(async () => {
