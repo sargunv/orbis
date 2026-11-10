@@ -75,21 +75,13 @@ const NO_STACK: u32 = 0xffffffffu;
 const GRID: u32 = 128u;
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-@group(0) @binding(1) var<storage, read> terrain_tiles: array<TerrainTile>;
-// Grid vertices: x and y in cells (8 bits each), then a skirt bit.
-@group(0) @binding(2) var<storage, read> grid: array<u32>;
 @group(0) @binding(3) var dem: texture_2d_array<f32>;
 @group(0) @binding(4) var drape: texture_2d_array<f32>;
 @group(0) @binding(5) var drape_sampler: sampler;
 @group(0) @binding(6) var<uniform> terrain: Terrain;
 @group(0) @binding(7) var<uniform> atmosphere: Atmosphere;
-@group(0) @binding(8) var<storage, read> props: array<u32>;
 @group(0) @binding(9) var slope_atlas: texture_2d_array<f32>;
 @group(1) @binding(0) var<uniform> layer: Layer;
-
-fn prop_at(i: u32) -> u32 {
-    return props[i];
-}
 
 fn dem_texel(p: vec2<i32>, layer: u32) -> f32 {
     let hi = vec2<i32>(textureDimensions(dem)) - 1;
@@ -128,8 +120,8 @@ struct TerrainOut {
 
 @vertex
 fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> TerrainOut {
-    let tile = terrain_tiles[instance];
-    let g = grid[vertex];
+    let tile = terrain_tile_at(instance);
+    let g = grid_at(vertex);
     let cell = vec2<f32>(f32(g & 255u), f32((g >> 8u) & 255u));
     let skirt = (g >> 16u) & 1u;
     let uv = cell / f32(GRID);

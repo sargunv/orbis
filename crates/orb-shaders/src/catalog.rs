@@ -33,7 +33,8 @@ const ATMOSPHERE: &str = concat!(wgsl!("color"), wgsl!("atmosphere"));
 const LIGHTING: &str = wgsl!("lighting");
 const RASTER: &str = wgsl!("raster");
 const HILLSHADE: &str = wgsl!("hillshade");
-const TERRAIN: &str = wgsl!("terrain");
+/// The terrain, and `fetch_terrain`: its reads of its tables.
+const TERRAIN: &str = concat!(wgsl!("fetch_terrain"), wgsl!("terrain"));
 const COLOR_RELIEF: &str = wgsl!("color_relief");
 const PREPARE: &str = wgsl!("prepare");
 const PREPARE_PAD: &str = wgsl!("prepare_pad");
@@ -92,7 +93,7 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
 /// Clears the drape slots a frame redraws.
 pub const DRAPE_SHADER: Shader = Shader {
     label: "drape",
-    parts: &[wgsl!("drape")],
+    parts: &[wgsl!("fetch_drape"), wgsl!("drape")],
     vertex: "vs_slot",
     fragment: "fs_clear",
     compute: "",
