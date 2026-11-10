@@ -31,7 +31,20 @@ const FALLBACKS: &[&str] = &[
     "Khmer Sangam MN",
     "Myanmar Sangam MN",
 ];
-#[cfg(not(target_os = "macos"))]
+/// Windows's own faces for those scripts, installed with every language:
+/// without them every CJK code point would scan the installed faces.
+#[cfg(windows)]
+const FALLBACKS: &[&str] = &[
+    "Yu Gothic UI",
+    "Microsoft YaHei UI",
+    "Malgun Gothic",
+    "Nirmala UI",
+    "Leelawadee UI",
+    "Segoe UI",
+    "Khmer UI",
+    "Myanmar Text",
+];
+#[cfg(not(any(target_os = "macos", windows)))]
 const FALLBACKS: &[&str] = &[
     "Noto Sans CJK JP",
     "Noto Sans CJK SC",
@@ -161,14 +174,14 @@ impl State {
         let id = match self.fallback.get(&first) {
             Some(id) => *id,
             None => {
-                // Coverage is read from each file without keeping it.
-                let id = self.db.faces().map(|f| f.id).find(|&id| {
-                    self.db
-                        .with_face_data(id, |data, index| {
-                            orb_text::font::covers(data, index, first)
-                        })
-                        .unwrap_or(false)
-                });
+                // The first installed face that has it, in the database's
+                // order whatever was drawn before. Each face is mapped
+                // once and kept: opening every file again for each code
+                // point cost Windows seconds per CJK view (#141).
+                let ids: Vec<fontdb::ID> = self.db.faces().map(|f| f.id).collect();
+                let id = ids
+                    .into_iter()
+                    .find(|&id| self.face(id).is_some_and(|f| f.covers(first)));
                 self.fallback.insert(first, id);
                 id
             }
