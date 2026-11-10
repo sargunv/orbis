@@ -745,6 +745,16 @@ impl Map {
                         .map(|r| r.meshes.iter().map(|m| m.mesh).collect())
                         .unwrap_or_default();
                     let held = resident.map(|r| r.gpu);
+                    // The tile's regions that reach the slot: those
+                    // elsewhere change as other tiles come and go, and
+                    // draw nothing in it.
+                    let regions: Vec<TileIndex> = (draw.regions.iter())
+                        .filter(|&&r| {
+                            let part = drawn.region(&endpoint.tms, draw, r);
+                            part.overlaps(&surface, t, reach_px)
+                        })
+                        .copied()
+                        .collect();
                     // A DEM tile's borders come from its neighbours.
                     let borders = endpoint.dem_unpack.map(|_| {
                         let drawn = &drawn_tiles[&i];
@@ -753,15 +763,7 @@ impl Map {
                                 .map(|r| crate::terrain::hash(r.gpu) as u32)
                         })
                     });
-                    let part = (
-                        i,
-                        draw.tile,
-                        draw.wrap,
-                        &draw.regions,
-                        meshes,
-                        held,
-                        borders,
-                    );
+                    let part = (i, draw.tile, draw.wrap, regions, meshes, held, borders);
                     let part = crate::terrain::hash(part);
                     for &stack in source_stacks[i].iter().filter(|&&s| s < stacks) {
                         parts[stack].push(part);

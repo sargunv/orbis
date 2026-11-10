@@ -712,6 +712,19 @@ impl Drawn {
         }
     }
 
+    /// The part of it that region `region` of its draw (a tile at its
+    /// zoom or deeper) covers.
+    pub(crate) fn region(&self, tms: &TileMatrixSet, draw: &Draw, region: TileIndex) -> Self {
+        let (own, part) = (tms.tile_bounds(draw.tile), tms.tile_bounds(region));
+        let to = |p: DVec2| self.bounds.min + (p - own.min) / own.size() * self.bounds.size();
+        Self {
+            bounds: WorldRect {
+                min: to(part.min),
+                max: to(part.max),
+            },
+        }
+    }
+
     /// Whether it overlaps a terrain tile of the surface's matrix set, or
     /// comes within `reach_px` of it, in the tile's logical pixels: what a
     /// translation that far moves into the tile's slots.
@@ -1564,5 +1577,29 @@ mod tests {
             regions: vec![TileIndex::new(4, 7, 5)],
         };
         assert!(!Drawn::of(&tms, &away, None, 0.0).overlaps(&tms, terrain, 0.0));
+    }
+
+    /// A drawn tile's regions reach a terrain tile's slots only where they
+    /// overlap it: a coarse tile over two terrain tiles draws its west
+    /// half's region into the west one alone.
+    #[test]
+    fn a_drawn_region_reaches_the_slots_it_overlaps() {
+        let tms = tms();
+        let draw = Draw {
+            tile: TileIndex::new(2, 1, 1),
+            wrap: 0,
+            regions: vec![TileIndex::new(3, 2, 2), TileIndex::new(3, 3, 3)],
+        };
+        let drawn = Drawn::of(&tms, &draw, None, 0.0);
+        let at = |z, col, row| CoveredTile {
+            index: TileIndex::new(z, col, row),
+            wrap: 0,
+        };
+        let north_west = drawn.region(&tms, &draw, draw.regions[0]);
+        assert_eq!(north_west.bounds, tms.tile_bounds(draw.regions[0]));
+        assert!(north_west.overlaps(&tms, at(3, 2, 2), 0.0));
+        assert!(!north_west.overlaps(&tms, at(3, 3, 3), 0.0));
+        // Within reach of a translation, it comes into the neighbour's.
+        assert!(north_west.overlaps(&tms, at(3, 3, 2), 1.0));
     }
 }
