@@ -2732,16 +2732,9 @@ impl Map {
     }
 }
 
-/// Removes a terrain's DEM page; the renderer's terrain is off.
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
-    use orb_host::FetchDone;
-    use orb_host::jobs::Inline;
-
     use super::*;
-    use crate::PoolJobs;
 
     /// S5: a result laid out before an edit to a symbol layer brings
     /// neither its meshes nor its bucket.
@@ -2755,55 +2748,14 @@ mod tests {
         assert!(result.meshes.iter().all(|m| m.node != text));
     }
 
-    /// A fetch that holds requests until the test answers them.
-    #[derive(Default)]
-    struct HeldFetch {
-        pending: Mutex<Vec<(String, FetchDone)>>,
-    }
-
-    impl Fetch for HeldFetch {
-        fn get(&self, _: orb_host::ResourceKind, url: &str, done: FetchDone) {
-            self.pending.lock().unwrap().push((url.to_string(), done));
-        }
-
-        fn get_range(&self, _: orb_host::ResourceKind, url: &str, _: u64, _: u64, done: FetchDone) {
-            self.get(orb_host::ResourceKind::Unknown, url, done);
-        }
-    }
-
-    struct NoClock;
-    impl orb_host::Clock for NoClock {
-        fn now(&self) -> f64 {
-            0.0
-        }
-    }
-
-    struct NoDecode;
-    impl ImageDecode for NoDecode {
-        fn decode(&self, _: Vec<u8>, _: orb_host::ImageDone) {
-            panic!("unexpected image");
-        }
-    }
-
     fn style(name: &str) -> String {
         format!(r#"{{"version": 8, "name": "{name}", "sources": {{}}, "layers": []}}"#)
     }
 
     #[test]
     fn a_style_set_directly_supersedes_one_still_loading() {
-        let fetch = Arc::new(HeldFetch::default());
-        let services = Services {
-            clock: Arc::new(NoClock),
-            image_decode: Arc::new(NoDecode),
-            images: Default::default(),
-            jobs: PoolJobs::new(
-                fetch.clone(),
-                Arc::new(crate::worker::tests::NoImages),
-                Arc::new(Inline),
-            ),
-            fetch: fetch.clone(),
-            wake: Arc::new(|| {}),
-        };
+        let fetch = Arc::new(crate::testing::HeldFetch::default());
+        let services = crate::testing::services(fetch.clone());
         let mut map = Map::new(services, None);
         map.load_style_url("https://example.com/a.json");
         map.set_style_json(&style("b")).unwrap();
@@ -2826,19 +2778,8 @@ mod tests {
     /// meanwhile: a style with fewer sources trapped the web map (#160).
     #[test]
     fn source_data_between_frames_survives_new_sources() {
-        let fetch = Arc::new(HeldFetch::default());
-        let services = Services {
-            clock: Arc::new(NoClock),
-            image_decode: Arc::new(NoDecode),
-            images: Default::default(),
-            jobs: PoolJobs::new(
-                fetch.clone(),
-                Arc::new(crate::worker::tests::NoImages),
-                Arc::new(Inline),
-            ),
-            fetch,
-            wake: Arc::new(|| {}),
-        };
+        let fetch = Arc::new(crate::testing::HeldFetch::default());
+        let services = crate::testing::services(fetch.clone());
         let raster = |name: &str| {
             format!(
                 r#""{name}": {{"type": "raster", "tiles": ["https://example.com/{name}/{{z}}/{{x}}/{{y}}.png"]}}"#
@@ -2898,19 +2839,8 @@ mod tests {
 
     #[test]
     fn the_root_projection_chooses_the_surface() {
-        let fetch = Arc::new(HeldFetch::default());
-        let services = Services {
-            clock: Arc::new(NoClock),
-            image_decode: Arc::new(NoDecode),
-            images: Default::default(),
-            jobs: PoolJobs::new(
-                fetch.clone(),
-                Arc::new(crate::worker::tests::NoImages),
-                Arc::new(Inline),
-            ),
-            fetch: fetch.clone(),
-            wake: Arc::new(|| {}),
-        };
+        let fetch = Arc::new(crate::testing::HeldFetch::default());
+        let services = crate::testing::services(fetch.clone());
         let mut map = Map::new(services, None);
         map.set_previews(orb_style::Previews::ALL);
         map.load_style_url("https://example.com/maps/polar.json");
@@ -2953,41 +2883,9 @@ mod tests {
 #[cfg(test)]
 mod gpu_tests {
     use orb_hal_wgpu::WgpuGpu;
-    use orb_host::jobs::Inline;
 
     use super::*;
-    use crate::{ImagePixels, PoolJobs, TileImage, VideoRequest};
-
-    struct NoFetch;
-    impl Fetch for NoFetch {
-        fn get(&self, _: orb_host::ResourceKind, url: &str, _: orb_host::FetchDone) {
-            panic!("unexpected fetch of {url}");
-        }
-        fn get_range(
-            &self,
-            _: orb_host::ResourceKind,
-            url: &str,
-            _: u64,
-            _: u64,
-            _: orb_host::FetchDone,
-        ) {
-            panic!("unexpected fetch of {url}");
-        }
-    }
-
-    struct NoDecode;
-    impl ImageDecode for NoDecode {
-        fn decode(&self, _: Vec<u8>, _: orb_host::ImageDone) {
-            panic!("unexpected image");
-        }
-    }
-
-    struct Clock(std::time::Instant);
-    impl orb_host::Clock for Clock {
-        fn now(&self) -> f64 {
-            self.0.elapsed().as_secs_f64() * 1000.0
-        }
-    }
+    use crate::{ImagePixels, TileImage, VideoRequest};
 
     fn frame(rgba: [u8; 4]) -> TileImage {
         TileImage {
@@ -3013,22 +2911,8 @@ mod gpu_tests {
             eprintln!("no GPU adapter; skipped");
             return;
         };
-        let fetch = Arc::new(NoFetch);
-        let mut map = Map::new(
-            Services {
-                clock: Arc::new(Clock(std::time::Instant::now())),
-                image_decode: Arc::new(NoDecode),
-                images: Default::default(),
-                jobs: PoolJobs::new(
-                    fetch.clone(),
-                    Arc::new(crate::worker::tests::NoImages),
-                    Arc::new(Inline),
-                ),
-                fetch,
-                wake: Arc::new(|| {}),
-            },
-            None,
-        );
+        let fetch = Arc::new(crate::testing::NoFetch);
+        let mut map = Map::new(crate::testing::services(fetch.clone()), None);
         map.set_plays_video(true);
         // The video covers the whole view.
         map.set_style_json(
@@ -3124,19 +3008,8 @@ mod gpu_tests {
             eprintln!("no GPU adapter; skipped");
             return;
         };
-        let fetch = Arc::new(NoFetch);
-        let services = Services {
-            clock: Arc::new(Clock(std::time::Instant::now())),
-            image_decode: Arc::new(NoDecode),
-            images: Default::default(),
-            jobs: PoolJobs::new(
-                fetch.clone(),
-                Arc::new(crate::worker::tests::NoImages),
-                Arc::new(Inline),
-            ),
-            fetch,
-            wake: Arc::new(|| {}),
-        };
+        let fetch = Arc::new(crate::testing::NoFetch);
+        let services = crate::testing::services(fetch.clone());
         let images = services.images.clone();
         let mut map = Map::new(services, None);
         map.set_previews(orb_style::Previews::ALL);

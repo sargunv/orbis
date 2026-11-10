@@ -986,7 +986,7 @@ impl TileRequest {
 pub(crate) mod tests {
     use super::*;
     use crate::jobs::*;
-    use orb_host::{Fetch, ImageDecode};
+    use orb_host::Fetch;
 
     fn request(tile: TileIndex) -> TileRequest {
         let location = TileLocation::Url("test://data.json".into());
@@ -1078,15 +1078,6 @@ pub(crate) mod tests {
         assert_eq!(rows.meshes[0].props, build.meshes[0].props);
     }
 
-    /// Tests load no image sources.
-    pub(crate) struct NoImages;
-
-    impl ImageDecode for NoImages {
-        fn decode(&self, _: Vec<u8>, _: orb_host::ImageDone) {
-            unreachable!("no image sources");
-        }
-    }
-
     #[derive(Default)]
     struct DeferredFetch {
         callbacks: Mutex<Vec<orb_host::FetchDone>>,
@@ -1126,7 +1117,7 @@ pub(crate) mod tests {
         let fetch = Arc::new(DeferredFetch::default());
         let jobs = PoolJobs::new(
             fetch.clone(),
-            Arc::new(NoImages),
+            Arc::new(crate::testing::NoDecode),
             Arc::new(orb_host::jobs::Inline),
         );
         jobs.set_style(1, &StyleUpdate::default(), &worker);
@@ -1445,7 +1436,7 @@ pub(crate) mod tests {
         let fetch = Arc::new(AssetFetch::default());
         let jobs = PoolJobs::new(
             fetch.clone(),
-            Arc::new(NoImages),
+            Arc::new(crate::testing::NoDecode),
             Arc::new(orb_host::jobs::Inline),
         );
         let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
@@ -1477,7 +1468,7 @@ pub(crate) mod tests {
         let fetch = Arc::new(AssetFetch::default());
         let jobs = PoolJobs::new(
             fetch.clone(),
-            Arc::new(NoImages),
+            Arc::new(crate::testing::NoDecode),
             Arc::new(orb_host::jobs::Inline),
         );
         let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
@@ -1509,7 +1500,7 @@ pub(crate) mod tests {
         let fetch = Arc::new(AssetFetch::default());
         let jobs = PoolJobs::new(
             fetch.clone(),
-            Arc::new(NoImages),
+            Arc::new(crate::testing::NoDecode),
             Arc::new(orb_host::jobs::Inline),
         );
         let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
@@ -1665,7 +1656,7 @@ pub(crate) mod tests {
         let fetch = Arc::new(AssetFetch::default());
         let jobs = PoolJobs::new(
             fetch.clone(),
-            Arc::new(NoImages),
+            Arc::new(crate::testing::NoDecode),
             Arc::new(orb_host::jobs::Inline),
         );
         let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());

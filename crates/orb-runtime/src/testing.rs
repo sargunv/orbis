@@ -1,11 +1,16 @@
 //! Test inputs shared across modules.
 
+use std::sync::{Arc, Mutex};
+
 use orb_crs::TileIndex;
+use orb_host::jobs::Inline;
+use orb_host::{Fetch, FetchDone, ImageDecode, ResourceKind};
 use orb_style::Encoding;
 
 use crate::jobs::TileResult;
 use crate::loader::TileLocation;
 use crate::worker::{Built, TileRequest, TileWorker};
+use crate::{PoolJobs, Services};
 
 /// The committed test data, served for `local://` URLs (`tests/data/README.md`).
 pub(crate) const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data");
@@ -37,4 +42,64 @@ pub(crate) fn symbol_tile() -> (TileWorker, TileResult) {
     }
     let build = worker.build(&[], Encoding::Mvt, &request).unwrap().tile();
     (worker, TileResult::from(build))
+}
+
+/// A map's services for a test: fetches through `fetch`, tile jobs inline
+/// on the thread that asks, no images, and a clock from now.
+pub(crate) fn services(fetch: Arc<dyn Fetch>) -> Services {
+    Services {
+        clock: Arc::new(Clock(std::time::Instant::now())),
+        image_decode: Arc::new(NoDecode),
+        images: Default::default(),
+        jobs: PoolJobs::new(fetch.clone(), Arc::new(NoDecode), Arc::new(Inline)),
+        fetch,
+        wake: Arc::new(|| {}),
+    }
+}
+
+/// A fetch that holds requests until the test answers them.
+#[derive(Default)]
+pub(crate) struct HeldFetch {
+    pub(crate) pending: Mutex<Vec<(String, FetchDone)>>,
+}
+
+impl Fetch for HeldFetch {
+    fn get(&self, _: ResourceKind, url: &str, done: FetchDone) {
+        self.pending.lock().unwrap().push((url.to_string(), done));
+    }
+
+    fn get_range(&self, _: ResourceKind, url: &str, _: u64, _: u64, done: FetchDone) {
+        self.get(ResourceKind::Unknown, url, done);
+    }
+}
+
+/// A fetch a test doesn't expect.
+pub(crate) struct NoFetch;
+
+impl Fetch for NoFetch {
+    fn get(&self, _: ResourceKind, url: &str, _: FetchDone) {
+        panic!("unexpected fetch of {url}");
+    }
+
+    fn get_range(&self, _: ResourceKind, url: &str, _: u64, _: u64, _: FetchDone) {
+        panic!("unexpected fetch of {url}");
+    }
+}
+
+/// Image decoding a test doesn't expect: tests load no images.
+pub(crate) struct NoDecode;
+
+impl ImageDecode for NoDecode {
+    fn decode(&self, _: Vec<u8>, _: orb_host::ImageDone) {
+        panic!("unexpected image");
+    }
+}
+
+/// Milliseconds since the clock was made.
+struct Clock(std::time::Instant);
+
+impl orb_host::Clock for Clock {
+    fn now(&self) -> f64 {
+        self.0.elapsed().as_secs_f64() * 1000.0
+    }
 }
