@@ -2281,8 +2281,6 @@ fn shrunk(old: u32, held: u32, first: u32) -> u32 {
     new
 }
 
-/// The smallest of `old`'s doublings (from 1 when it is 0) that holds
-/// `need`, at most `max`: a capacity's next size.
 /// Lowers `capacity`'s chunk and candidate ceilings, and first sizes,
 /// until the row tables fit one data texture of `side` rows `width` words
 /// wide, the texture backing's (`tables::RowTexture`): halving whichever
@@ -2303,7 +2301,8 @@ fn fit_row_texture(capacity: &mut SceneCapacity, side: u32, width: u32) {
         if fixed + chunk_rows + visible_rows <= side || chunks.max(candidates) <= 1 {
             return;
         }
-        let (max, start, count) = if chunk_rows >= visible_rows {
+        // The one taking more rows, of those that can still halve.
+        let (max, start, count) = if chunks > 1 && (chunk_rows >= visible_rows || candidates <= 1) {
             (&mut c.max_chunks, &mut c.chunks, chunks)
         } else {
             (&mut c.max_candidates, &mut c.candidates, candidates)
@@ -2313,6 +2312,8 @@ fn fit_row_texture(capacity: &mut SceneCapacity, side: u32, width: u32) {
     }
 }
 
+/// The smallest of `old`'s doublings (from 1 when it is 0) that holds
+/// `need`, at most `max`: a capacity's next size.
 fn grown(old: u32, need: u64, max: u32) -> u32 {
     let mut new = u64::from(old.max(1));
     while new < need {
@@ -2421,6 +2422,10 @@ mod tests {
             assert!(total(&c, 2048) <= 2048, "{} rows", total(&c, 2048));
             assert!(c.max_chunks.max(c.chunks) >= 1 << 16);
             assert!(c.max_candidates.max(c.candidates) >= 1 << 16);
+            // A side the fixed tables fill halves both down to one, and ends.
+            let mut c = start;
+            fit_row_texture(&mut c, 1, 2048);
+            assert!(c.max_chunks.max(c.chunks) <= 1 && c.max_candidates.max(c.candidates) <= 1);
         }
     }
 }
