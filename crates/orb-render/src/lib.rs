@@ -1758,8 +1758,6 @@ impl Renderer {
                 offscreen.set_opacity(gpu, opacity);
             }
         }
-        // Preparing may have grown the compacted index buffer.
-        self.bind_scene(gpu);
         self.refresh_image_groups(gpu);
         let compiling = self.pipelines(gpu);
         let made = compiling.made;
@@ -1826,6 +1824,11 @@ impl Renderer {
         if resized {
             self.invalidate_bundle(gpu);
         }
+        // Bound once the targets are sized: a resize remade the terrain's
+        // depth the scene group samples, and preparing may have grown the
+        // compacted index buffer. Bound before, the frame's bundles would
+        // sample the destroyed depth and the submit fail.
+        self.bind_scene(gpu);
         let bundle_recorded = self.bundles.is_empty();
         let recording = clock();
         if bundle_recorded {

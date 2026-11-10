@@ -38,7 +38,12 @@ fn tokyo(extra: &str, sources: &str) -> String {
 
 /// Tokyo's buildings standing, as extrusions under the v8 `light`.
 fn extruded_tokyo() -> String {
-    let style = tokyo("", "").replacen(
+    extruded(tokyo("", ""))
+}
+
+/// `style` (Tokyo's) with its buildings standing.
+fn extruded(style: String) -> String {
+    let style = style.replacen(
         "{\n      \"id\": \"building\",",
         r##"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles",
             "source-layer": "building", "minzoom": 14,
@@ -509,6 +514,41 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
     assert_same("terrain", both_ways(&style, start, end, 30));
+}
+
+/// A map over terrain resized between frames draws its next frame at
+/// the new size: the terrain's depth for what it hides, its layers, the
+/// extrusions' depth and targets are remade at the new size, and what the
+/// frame binds is the new ones, not the destroyed (a submit that used one
+/// drew nothing, a black map in browsers).
+#[test]
+fn a_resized_terrain_map_draws_its_next_frame() {
+    let (hills, _dem) = hills();
+    let style = extruded(tokyo(
+        r#""terrain": {"source": "hills", "exaggeration": 1.5},"#,
+        &hills,
+    ));
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, options());
+    map.set_style_json(&style).unwrap();
+    map.jump_to(&camera((STATION, 15.0, 20.0, 50.0)));
+    settle(&mut map, &mut target);
+    for (width, height) in [
+        (WIDTH + 96, HEIGHT - 64),
+        (WIDTH / 2, HEIGHT),
+        (WIDTH, HEIGHT),
+    ] {
+        target.resize(width, height, 1.0);
+        map.render(&mut target, 0.0).unwrap();
+        let pixels = target.read_pixels().unwrap();
+        let colours: std::collections::HashSet<&[u8]> = pixels.chunks(4).collect();
+        assert!(
+            colours.len() > 64,
+            "the frame after a resize to {width}×{height} drew {} colours",
+            colours.len()
+        );
+    }
 }
 
 /// Houses on a hillside each stand on the ground under them: a row of

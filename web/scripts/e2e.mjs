@@ -28,6 +28,10 @@
 //   in step, `&terrain=0` applies as the style loads, another entry hides
 //   it and drops `&terrain`, and at phone width the entry's options sit
 //   clear of the map's centre and the zoom buttons.
+// - `resize`: the Alps terrain style, offline, with circles over it,
+//   resized three times: each resize draws the map at the new size, not
+//   black, with no WebGPU error in any submit (a bundle bound to a target
+//   the resize destroyed failed its submit).
 // - `compare`: the comparison on the Tokyo extract: the plain page fetches
 //   no other engine and isn't isolated; each pair of engines (Orbis, GL JS
 //   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
@@ -52,7 +56,7 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,switching,light,terrain,compare,gestures,readback,offline]
+//   pnpm e2e [--only=scenario,edits,editor,switching,light,terrain,resize,compare,gestures,readback,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -63,7 +67,7 @@ import { decodePng, encodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,switching,light,terrain,compare,gestures,readback").split(",");
+const only = arg("only", "scenario,edits,editor,switching,light,terrain,resize,compare,gestures,readback").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -833,6 +837,86 @@ async function terrain(browser, server) {
   console.log("terrain: the switch, &terrain, the editor and another entry agree, with no reload; clear of the map at phone width");
 }
 
+/** Logs every WebGPU submit's validation errors on the page's console, from
+ * the page and its workers (a worker's reach the page over a channel): Chrome
+ * reports them through DevTools' log, which Playwright doesn't show from
+ * workers, and only once the device next does work. Runs as an init script
+ * and, through `Worker`, in each worker. */
+function reportGpuErrors() {
+  const channel = new BroadcastChannel("e2e-gpu-errors");
+  const report = globalThis.document ? (m) => console.error(m) : (m) => channel.postMessage(m);
+  if (globalThis.document) channel.onmessage = (e) => report(e.data);
+  const request = globalThis.GPUAdapter?.prototype.requestDevice;
+  if (request) {
+    GPUAdapter.prototype.requestDevice = async function (...args) {
+      const device = await request.apply(this, args);
+      const { queue } = device;
+      const submit = queue.submit;
+      queue.submit = (...buffers) => {
+        device.pushErrorScope("validation");
+        submit.apply(queue, buffers);
+        device.popErrorScope().then((e) => e && report(`WebGPU: ${e.message}`));
+      };
+      return device;
+    };
+  }
+  const Base = globalThis.Worker;
+  if (!Base) return;
+  const patch = `data:text/javascript,${encodeURIComponent(`(${reportGpuErrors})()`)}`;
+  globalThis.Worker = class extends Base {
+    constructor(url, options) {
+      const source = `import ${JSON.stringify(patch)}; import ${JSON.stringify(String(url))};`;
+      super(URL.createObjectURL(new Blob([source], { type: "text/javascript" })), options);
+    }
+  };
+}
+
+async function resize(browser, server) {
+  const { page, errors } = await open(browser, { width: 1000, height: 700 });
+  await page.addInitScript(`(${reportGpuErrors})()`);
+  await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
+  const idle = () => page.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null,
+    { timeout: 60_000 });
+  await page.goto(`${server.url}?style=alps`);
+  await page.waitForFunction(() => app.map, null, { timeout: 60_000 });
+  await idle();
+  // Offline, every layer drapes; circles draw over the terrain, reading the
+  // terrain's depth for what it hides.
+  await page.evaluate(async () => {
+    const { map } = globalThis.orbis;
+    const [lon, lat] = map.camera.current.center;
+    const features = [];
+    for (let i = 0; i < 100; i++) {
+      const at = [lon + ((i % 10) - 4.5) * 0.02, lat + (Math.floor(i / 10) - 4.5) * 0.015];
+      features.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: at } });
+    }
+    await map.edit((tx) => tx
+      .addSource("e2e-points", { type: "geojson", data: { type: "FeatureCollection", features } })
+      .addLayer({ id: "e2e-points", type: "circle", source: "e2e-points", paint: { "circle-radius": 6 } }));
+  });
+  await idle();
+  for (const viewport of [{ width: 1200, height: 800 }, { width: 640, height: 480 }, { width: 1000, height: 700 }]) {
+    await page.setViewportSize(viewport);
+    // Frames at the new size, then rest.
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await idle();
+    const { width, height, channels, pixels } = decodePng(await page.locator("#map").screenshot());
+    let dark = 0;
+    const colours = new Set();
+    for (let i = 0; i < pixels.length; i += channels) {
+      if (pixels[i] + pixels[i + 1] + pixels[i + 2] < 24) dark++;
+      colours.add((pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2]);
+    }
+    const share = dark / (width * height);
+    assert.ok(share < 0.2 && colours.size > 256,
+      `at ${viewport.width}×${viewport.height} the map is ${(share * 100).toFixed(0)}% black in ${colours.size} colours`);
+    // Offline, the style's live basemap fails to load; nothing else may.
+    assert.deepEqual(errors.filter((e) => !/network error/.test(e)), [], `at ${viewport.width}×${viewport.height}`);
+  }
+  await page.close();
+  console.log("resize: the Alps terrain draws after each of three resizes, without a WebGPU error");
+}
+
 async function offline(browser, server) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   const errors = [];
@@ -1305,6 +1389,7 @@ const CHECKS = {
   switching,
   light,
   terrain,
+  resize,
   compare,
   gestures,
   readback,
