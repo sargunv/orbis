@@ -1764,6 +1764,7 @@ fn ground_lighting_shades_the_ground_by_the_suns_elevation() {
             twilight: 10.0,
             sun,
             up: [0.0, 0.0, 1.0],
+            relief: 0.0,
         };
         let view = orb_render::AtmosphereView {
             ground: Some(ground),

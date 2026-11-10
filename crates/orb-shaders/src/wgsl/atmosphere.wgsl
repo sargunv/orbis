@@ -44,7 +44,8 @@ struct Atmosphere {
     // light whatever the colour space: the sun's light and how much the
     // light shades the ground (0 off), the ambient light and the sine of
     // half the twilight, toward the sun and the target's up (unit,
-    // camera-relative globe axes, on flat surfaces too).
+    // camera-relative globe axes, on flat surfaces too) with the highest
+    // terrain could stand above a globe, as a share of its radius.
     ground_day: vec4<f32>,
     ground_night: vec4<f32>,
     ground_sun: vec4<f32>,

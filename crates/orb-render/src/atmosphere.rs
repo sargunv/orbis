@@ -83,6 +83,9 @@ pub struct GroundLight {
     /// globe axes.
     pub sun: [f32; 3],
     pub up: [f32; 3],
+    /// The highest the ground can stand above a globe (terrain), as a share
+    /// of its radius.
+    pub relief: f32,
 }
 
 #[derive(Debug)]
@@ -242,7 +245,7 @@ impl Atmosphere {
             b.f(n::GROUND_DAY, &[dr, dg, db, g.amount])
                 .f(n::GROUND_NIGHT, &[nr, ng, nb, half])
                 .f(n::GROUND_SUN, &g.sun)
-                .f(n::GROUND_UP, &g.up);
+                .f(n::GROUND_UP, &[g.up[0], g.up[1], g.up[2], g.relief]);
         }
         gpu.write_buffer(self.uniform, 0, bytemuck::cast_slice(&b.0));
         self.written = Some((paint, view));

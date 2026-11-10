@@ -29,10 +29,12 @@ pub(crate) fn frame_light(light: &LightValues, bearing: f64) -> FrameLight {
 
 /// How `view` of `camera` sees the atmosphere: the sky above the surface's
 /// horizon (a globe's limb), fog on terrain standing `terrain_presence`
-/// (0 to 1), scattering over a globe lit by `light`.
+/// (0 to 1) and drawn at `exaggeration`, scattering over a globe lit by
+/// `light`.
 pub(crate) fn atmosphere_view(
     light: &LightValues,
     terrain_presence: f64,
+    exaggeration: f64,
     view: &orb_camera::View,
     camera: &orb_camera::CameraState,
 ) -> orb_render::AtmosphereView {
@@ -56,15 +58,19 @@ pub(crate) fn atmosphere_view(
         // The sky over a sphere; a low-zoom plane's is a plane's.
         globe: (view.globe().filter(|g| g.plane.is_none()))
             .map(|g| globe_sky(g, view, camera, light)),
-        ground: ground_light(light, camera),
+        ground: ground_light(light, camera, exaggeration),
     }
 }
 
+/// The highest ground on Earth, metres.
+const HIGHEST_GROUND: f64 = 8849.0;
+
 /// How the light shades the ground (`dev.sargunv.orbis:ground-lighting`),
-/// when it does.
+/// when it does, with terrain drawn at `exaggeration` (0 without).
 fn ground_light(
     light: &LightValues,
     camera: &orb_camera::CameraState,
+    exaggeration: f64,
 ) -> Option<orb_render::GroundLight> {
     if light.ground_lighting <= 0.0 {
         return None;
@@ -79,13 +85,17 @@ fn ground_light(
         twilight: light.twilight,
         sun: toward_light(camera, light).as_vec3().to_array(),
         up: up.as_vec3().to_array(),
+        // As high as Everest, exaggerated.
+        relief: (exaggeration * HIGHEST_GROUND / orb_crs::sphere::RADIUS) as f32,
     })
 }
 
-/// A globe view's sphere for its sky and scattering. Its sun is GL JS's,
-/// turned toward the ground's as the light comes to shade the ground, so
-/// that the haze glows over the day side and the limb beside it, and
-/// doesn't jump as ground lighting eases in or out.
+/// A globe view's sphere for its sky and scattering, lit by the sun the
+/// extrusions and the ground take (`toward_light`), whether or not the
+/// light shades the ground, so that shading the ground darkens its night
+/// side and moves nothing. (GL JS's atmosphere turns the light's position
+/// half a turn about the east axis, which puts the default sun behind the
+/// globe; see `docs/style-support.md`.)
 fn globe_sky(
     globe: &orb_camera::GlobeView,
     view: &orb_camera::View,
@@ -93,55 +103,13 @@ fn globe_sky(
     light: &LightValues,
 ) -> orb_render::GlobeSky {
     let eye = globe.target + globe.eye;
-    let gl = gl_sun(camera, light);
-    let t = f64::from(light.ground_lighting);
-    let sun = if t <= 0.0 {
-        gl
-    } else if t >= 1.0 {
-        toward_light(camera, light)
-    } else {
-        // Along the arc between them, as the two can stand opposite.
-        let turn = glam::DQuat::from_rotation_arc(gl, toward_light(camera, light));
-        glam::DQuat::IDENTITY.slerp(turn, t) * gl
-    };
     orb_render::GlobeSky {
         eye: eye.as_vec3().to_array(),
         radius: orb_crs::sphere::RADIUS as f32,
         amount: globe.amount as f32,
         eye_distance_px: view.eye_distance_px() as f32,
-        sun: sun.as_vec3().to_array(),
+        sun: toward_light(camera, light).as_vec3().to_array(),
     }
-}
-
-/// GL JS's `getSunPos` for its atmosphere, on Earth-fixed axes: the
-/// light's position negated, in the view for a viewport anchor (turned by
-/// the view's pitch and bearing), fixed to the globe for a map one. At the
-/// spec's default position it puts the sun behind the globe, so the haze
-/// rims its far side.
-fn gl_sun(camera: &orb_camera::CameraState, light: &LightValues) -> glam::DVec3 {
-    use glam::{DMat3, DVec3};
-    let target = camera.target;
-    let frame = orb_crs::sphere::frame(target);
-    let [_, azimuth, polar] = light.position.map(f64::from);
-    let (a, p) = ((azimuth + 90.0).to_radians(), polar.to_radians());
-    let v = -DVec3::new(a.cos() * p.sin(), a.sin() * p.sin(), p.cos());
-    let sun = match light.anchor {
-        // View axes back through the view's pitch and bearing to the
-        // target's east, north and up.
-        TranslateAnchor::Viewport => {
-            frame
-                * DMat3::from_rotation_z(-camera.bearing.to_radians())
-                * DMat3::from_rotation_x(camera.pitch.to_radians())
-                * v
-        }
-        TranslateAnchor::Map => {
-            frame
-                * DMat3::from_rotation_x(target.lat.to_radians())
-                * DMat3::from_rotation_y(-target.lon.to_radians())
-                * v
-        }
-    };
-    sun.normalize()
 }
 
 /// Toward the light, unit, on Earth-fixed axes, as v8 places it: the
@@ -213,7 +181,7 @@ mod tests {
             let mut camera = orb_camera::CameraState::new(target, zoom, &mercator);
             camera.pitch = 75.0;
             let view = orb_camera::View::new(&camera, viewport, &surface);
-            atmosphere_view(&light, 1.0, &view, &camera).fog_opacity
+            atmosphere_view(&light, 1.0, 1.0, &view, &camera).fog_opacity
         };
         let band = [10.5, 11.0, 11.25, 11.5, 11.75, 12.0, 12.5].map(fog);
         assert_eq!((band[0], band[1]), (0.0, 0.0));
@@ -221,11 +189,10 @@ mod tests {
         assert_eq!((band[5], band[6]), (1.0, 1.0));
     }
 
-    /// The haze's sun turns from GL JS's toward the ground's as ground
-    /// lighting eases in, rather than jumping as it leaves 0 or reaches 1,
-    /// though at v8's default position the two stand nearly opposite.
+    /// The haze is lit by the ground's sun whether or not the light shades
+    /// the ground, so easing ground lighting in moves nothing.
     #[test]
-    fn the_haze_sun_eases_with_ground_lighting() {
+    fn the_haze_and_the_ground_share_one_sun() {
         let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
         let mercator = *tms.projection();
         let surface = orb_crs::Surface {
@@ -239,21 +206,25 @@ mod tests {
         let camera = orb_camera::CameraState::new(Geodetic::new(10.0, 30.0), 1.5, &mercator);
         let view = orb_camera::View::new(&camera, viewport, &surface);
         let globe = view.globe().unwrap();
-        let sun = |amount: f32| {
+        for anchor in [TranslateAnchor::Viewport, TranslateAnchor::Map] {
             let mut light = LightValues::of(&orb_style::v8::default_light(), 0.0);
-            light.ground_lighting = amount;
-            glam::Vec3::from(globe_sky(globe, &view, &camera, &light).sun)
-        };
-        let (gl, ground) = (sun(0.0), sun(1.0));
-        assert!(gl.dot(ground) < -0.5, "{gl} {ground}");
-        let mut last = gl;
-        for i in 1..=100 {
-            let next = sun(i as f32 / 100.0);
-            assert!((next.length() - 1.0).abs() < 1e-4, "{next}");
-            assert!(next.angle_between(last) < 0.05, "{i}: {last} → {next}");
-            last = next;
+            light.anchor = anchor;
+            light.ground_lighting = 1.0;
+            let ground = glam::Vec3::from(ground_light(&light, &camera, 0.0).unwrap().sun);
+            for amount in [0.0, 0.5, 1.0] {
+                light.ground_lighting = amount;
+                let haze = glam::Vec3::from(globe_sky(globe, &view, &camera, &light).sun);
+                assert!(
+                    haze.angle_between(ground) < 1e-6,
+                    "{anchor:?} {amount}: {haze} {ground}"
+                );
+            }
         }
-        assert!(sun(1e-4).angle_between(gl) < 1e-3);
-        assert!(sun(1.0 - 1e-4).angle_between(ground) < 1e-3);
+        // v8's default viewport light stands over the target, 60° up: the
+        // haze's sun is on the eye's side of the globe, not behind it.
+        let light = LightValues::of(&orb_style::v8::default_light(), 0.0);
+        let sun = glam::DVec3::from(globe_sky(globe, &view, &camera, &light).sun.map(f64::from));
+        let eye = globe.target + globe.eye;
+        assert!(sun.dot(eye.normalize()) > 0.5, "{sun} {eye}");
     }
 }

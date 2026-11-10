@@ -294,6 +294,25 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
     }
 
     out.push_str(
+        "\n## Light and atmosphere\n\n\
+         `light.position` places the light relative to lit geometry: its\n\
+         azimuth clockwise from the top of the viewport (`viewport` anchor) or\n\
+         from north (`map`), its polar angle from the zenith. GL JS's and\n\
+         MapLibre Native's extrusions agree on that direction. Orbis lights\n\
+         everything by it: the extrusions, the ground under\n\
+         `dev.sargunv.orbis:ground-lighting`, and the globe's atmosphere,\n\
+         whose scattering glows over the day side, whether or not the light\n\
+         shades the ground. A viewport light stands over the camera's target;\n\
+         on a globe a map light stands as if over 0°, 0°.\n\n\
+         GL JS's globe atmosphere (`getSunPos` in `draw_sky.ts`) negates the\n\
+         same vector but reads it on the view's or the globe's axes, which\n\
+         turns its sun half a turn about the east axis: the north–south and\n\
+         up–down parts reverse. At the spec's default light it stands behind\n\
+         the globe, and the haze rims its far side, while the extrusions are\n\
+         lit from the front. Native has no globe, sky or atmosphere.\n",
+    );
+
+    out.push_str(
         "\n## Phases\n\n\
          Orbis has no paint and layout: each property is evaluated in one\n\
          phase, which bounds the inputs it can follow.\n\n\

@@ -1459,6 +1459,7 @@ impl Map {
         let at = crate::light::atmosphere_view(
             &root.light,
             root.terrain_presence,
+            root.exaggeration,
             &view,
             self.camera.state(),
         );

@@ -75,7 +75,35 @@ fn fs_ground(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let ray = atmosphere_ray(a, px, frame.viewport);
     var amount = a.ground_day.w;
     var normal = a.ground_up.xyz;
-    if atmosphere_horizon(a, px, ray).x > 0.0 {
+    // The sky starts at the globe's limb, not at GL JS's sky's, a pixel or
+    // two inside it (`atmosphere_horizon`'s offset, and its pixels measured
+    // as at the view's centre): on a whole globe, half a pixel past where
+    // the ray clears it and any terrain that could stand on it. This draws
+    // per pixel and the ground per sample, so a pixel the limb crosses is
+    // lit if any of its samples could be ground. So the globe's outermost
+    // pixels, and mountains on its limb, are lit as the rest of the ground
+    // (where the space beside them darkens with them, it was dark already).
+    var sky = atmosphere_horizon(a, px, ray).x > a.globe_amount;
+    if a.globe_amount > 0.0 {
+        let origin = a.globe_eye.xyz / a.globe_eye.w;
+        // The height the ray passes closest to the globe's centre at, if
+        // ahead, in its radii.
+        let toward = -dot(origin, ray);
+        let clear = sqrt(max(dot(origin, origin) - toward * toward, 0.0)) - 1.0;
+        let pixel = fwidth(clear);
+        if a.globe_amount >= 1.0 {
+            sky = toward <= 0.0 || clear > a.ground_up.w + 0.5 * pixel;
+        }
+        if !sky {
+            // Where the ray meets the globe, or, over its limb, passes
+            // closest to it.
+            let hit = atmosphere_sphere(origin, ray, 1.0);
+            let along = select(max(-dot(origin, ray), 0.0), max(hit.x, 0.0), hit.x <= hit.y);
+            let sphere = normalize(origin + ray * along);
+            normal = normalize(mix(normal, sphere, a.globe_amount));
+        }
+    }
+    if sky {
         // As the sky itself fades out with altitude (`atmosphere_horizon`).
         if a.globe_amount > 0.0 {
             let altitude = length(a.globe_eye.xyz / a.globe_eye.w) - 1.0;
@@ -84,13 +112,6 @@ fn fs_ground(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         }
         if amount <= 0.0 {
             discard;
-        }
-    } else if a.globe_amount > 0.0 {
-        let origin = a.globe_eye.xyz / a.globe_eye.w;
-        let hit = atmosphere_sphere(origin, ray, 1.0);
-        if hit.x <= hit.y {
-            let sphere = normalize(origin + ray * max(hit.x, 0.0));
-            normal = normalize(mix(normal, sphere, a.globe_amount));
         }
     }
     // The sine of the sun's elevation, against that of half the twilight.

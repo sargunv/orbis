@@ -2,15 +2,15 @@
 sky vs_sky 71e36185980c397b
 sky fs_sky 4556a1b4bf468552
 sky fs_scatter 5319d3f79f1ae75d
-sky fs_ground 8a8c79d2c9bbce4b
+sky fs_ground 99ece939f3fd6bf2
 atmosphere scattering vs_sky 71e36185980c397b
 atmosphere scattering fs_sky 4556a1b4bf468552
 atmosphere scattering fs_scatter 5319d3f79f1ae75d
-atmosphere scattering fs_ground 8a8c79d2c9bbce4b
+atmosphere scattering fs_ground 99ece939f3fd6bf2
 ground lighting vs_sky 71e36185980c397b
 ground lighting fs_sky 4556a1b4bf468552
 ground lighting fs_scatter 5319d3f79f1ae75d
-ground lighting fs_ground 8a8c79d2c9bbce4b
+ground lighting fs_ground 99ece939f3fd6bf2
 composite over vs_composite fe2b34eabe869054
 composite over fs_over a9613473514cf06a
 composite over fs_replace 13713a2c5f64dfcf
