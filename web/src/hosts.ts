@@ -6,6 +6,7 @@ import { bindings, type Backend, type Build } from "./builds.ts";
 import { takePreload } from "./preload.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
+import { guard, trapError } from "./trap.ts";
 import type { TileLod } from "./types.ts";
 import {
   spawnJob,
@@ -121,6 +122,8 @@ export async function startHost(
     }));
   } catch (e) {
     terminateWorkers(workers);
+    // A trap making the map is a bug, not this thread's lack.
+    if (e instanceof WebAssembly.RuntimeError) throw trapError(e);
     // Neither WebGPU nor WebGL 2 draws here, or the one asked for doesn't.
     const picked = await compiling.catch(() => undefined);
     const message = e instanceof Error ? e.message : e;
@@ -247,53 +250,6 @@ export async function startHost(
       core.free();
     },
   };
-}
-
-/**
- * `core`, stopping at its first trap. A Rust panic traps the module
- * (`-Cpanic=immediate-abort`) partway through a call, leaving the object
- * borrowed and its memory half-written: called again, every method would
- * throw "recursive use of an object". The trapping call throws an error
- * that says what happened instead, `trapped` hears it once, and every
- * call after throws it too without entering the module. `stop` stops it
- * for a trap outside a call.
- */
-function guard(
-  core: Core,
-  trapped: (e: Error) => void,
-): { core: Core; stop: (e: unknown) => Error } {
-  let stopped: Error | undefined;
-  const stop = (e: unknown): Error => {
-    if (stopped) return stopped;
-    console.error(e);
-    stopped = new Error(
-      `the map stopped: its wasm trapped (${e instanceof Error ? e.message : e}), a bug in Orbis`,
-    );
-    trapped(stopped);
-    return stopped;
-  };
-  // A method's guarded self, made once: frames call many.
-  const methods = new Map<PropertyKey, (...args: unknown[]) => unknown>();
-  const guarded = new Proxy(core, {
-    get(target, key) {
-      const value: unknown = Reflect.get(target, key, target);
-      if (typeof value !== "function") return value;
-      let method = methods.get(key);
-      if (!method) {
-        method = (...args) => {
-          if (stopped) throw stopped;
-          try {
-            return value.apply(target, args);
-          } catch (e) {
-            throw e instanceof WebAssembly.RuntimeError ? stop(e) : e;
-          }
-        };
-        methods.set(key, method);
-      }
-      return method;
-    },
-  });
-  return { core: guarded, stop };
 }
 
 /** The slot at `i` of an array the caller keeps one entry per worker in. */

@@ -6,7 +6,7 @@
 // Page → worker: `ToWorker` (link.ts), and the page's answers to request
 // transform questions (requests.ts). Worker → page: `FromWorker`.
 import { pickBuild } from "./builds.ts";
-import { Engine, type Report } from "./engine.ts";
+import { Engine, type MapState, type Report } from "./engine.ts";
 import type { FromWorker, ToWorker, WorkerInit } from "./link.ts";
 import { preloadStyle } from "./preload.ts";
 import {
@@ -14,6 +14,7 @@ import {
   setRequestTransform,
   type RequestTransform,
 } from "./requests.ts";
+import { isTrap } from "./trap.ts";
 import { spawnWorkers } from "./workers.ts";
 
 const post = (message: FromWorker, transfer: Transferable[] = []) =>
@@ -43,6 +44,7 @@ async function start(init: WorkerInit): Promise<void> {
   const build = pickBuild(gpu, init.backend);
   build.catch(() => {});
   const workers = spawnWorkers(build, init.jobWorkers);
+  let ready: MapState;
   try {
     engine = await Engine.start(
       build,
@@ -64,13 +66,16 @@ async function start(init: WorkerInit): Promise<void> {
           report.points ? [report.points.buffer as ArrayBuffer] : [],
         ),
     );
+    ready = engine.state();
   } catch (e) {
+    const message = String(e instanceof Error ? e.message : e);
     // No adapter, or no device, is likely this worker's lack: the page
-    // tries on its own thread, and says why if it can't either.
-    post({ unsupported: String(e instanceof Error ? e.message : e) });
+    // tries on its own thread, and says why if it can't either. A trap is
+    // a bug that thread would hit too: the map fails to start.
+    post(isTrap(e) ? { failed: message } : { unsupported: message });
     return;
   }
-  post({ ready: engine.state(), backend: engine.backend });
+  post({ ready, backend: engine.backend });
 }
 
 self.onmessage = ({ data }: MessageEvent<ToWorker>) => {
