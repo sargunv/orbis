@@ -78,9 +78,9 @@ line styled fs_line 106d6ba5c827b567
 line styled fs_line_styled ba65ba73cf3525f2
 circle vs_circle e489023d93532162
 circle fs_circle 1ece45af91c05abf
-symbol vs_symbol 9cdcace8cafe2541
+symbol vs_symbol 0d091b43af943974
 symbol fs_symbol dde852284992354c
-symbol line vs_symbol 2a174fb4083a386b
+symbol line vs_symbol 42698f59e267798c
 symbol line fs_symbol 605b1a645e390299
 heatmap density vs_heatmap 80055d8f7664112d
 heatmap density fs_heatmap ce3065a7088ee475

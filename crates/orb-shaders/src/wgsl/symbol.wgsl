@@ -392,6 +392,19 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let qa = base + vertex_at(base + H_QUADS) + quad_index * QUAD_WORDS;
     let placed_index = vertex_at(qa + 10u);
     let placed = read_placed(base, placed_index);
+    let flags = vertex_at(qa + 11u) >> 16u;
+    let image = (flags & Q_IMAGE) != 0u;
+    // The quad's bitmap in the atlas, read with the quad: an image's rect,
+    // or a glyph's row in the glyph row table (the property arena's first
+    // block; row 0, unused, for an image). Read after the full variants'
+    // projections, these returned another glyph's row on an Adreno 619
+    // (native Vulkan, naga's SPIR-V; Tint's of the same source didn't),
+    // and labels sampled empty texels (#173).
+    let atlas = vertex_at(base + vertex_at(base + select(H_GLYPHS, H_IMAGES, image)) + vertex_at(qa + 9u));
+    let glyph_row = select(atlas, 0u, image) * 4u;
+    let glyph_origin = prop_at(glyph_row);
+    let glyph_ready = prop_at(glyph_row + 1u);
+    let glyph_layer = prop_at(glyph_row + 2u);
     if !point_owned(tile, placed.anchor) { return out; }
 
     // The block of the placement's world copy; the placed table runs up to
@@ -577,8 +590,6 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let bottom = corner >= 2u;
     let pixel_offset = vec2<f32>(select(px.x, px_br.x, right), select(px.y, px_br.y, bottom)) / 16.0;
     let corner_tex = vec2<f32>(select(x0, x1, right), select(y0, y1, bottom));
-    let flags = vertex_at(qa + 11u) >> 16u;
-    let texture = vertex_at(qa + 9u);
 
     let glyph_offset_px = rotation * (offset / 32.0 * max(min_font_scale, vec2<f32>(font_scale)) + pixel_offset);
     var final_pos: vec4<f32>;
@@ -592,22 +603,16 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     out.tex = corner_tex;
 
     // Texels: the padded rectangle's origin plus the quad's texels.
-    let image = (flags & Q_IMAGE) != 0u;
     if image {
-        let rect = vertex_at(base + vertex_at(base + H_IMAGES) + texture);
-        if rect == 0xffffffffu {
+        if atlas == 0xffffffffu {
             return out;
         }
-        out.layer = rect >> 24u;
-        out.origin = vec2<f32>(f32(rect & 0xfffu), f32((rect >> 12u) & 0xfffu));
+        out.layer = atlas >> 24u;
+        out.origin = vec2<f32>(f32(atlas & 0xfffu), f32((atlas >> 12u) & 0xfffu));
     } else {
-        let atlas_row = vertex_at(base + vertex_at(base + H_GLYPHS) + texture);
-        // The glyph row table is the property arena's first block.
-        let g = atlas_row * 4u;
-        let origin = prop_at(g);
-        out.layer = prop_at(g + 2u);
-        out.origin = vec2<f32>(f32(origin & 0xffffu), f32(origin >> 16u));
-        if prop_at(g + 1u) == 0u {
+        out.layer = glyph_layer;
+        out.origin = vec2<f32>(f32(glyph_origin & 0xffffu), f32(glyph_origin >> 16u));
+        if glyph_ready == 0u {
             // Not rasterized yet: nothing to draw.
             out.position = discarded_vertex();
         }
