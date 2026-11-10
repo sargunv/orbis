@@ -1180,10 +1180,8 @@ mod ffi {
         /// Replaces the whole style, applied as the difference to the new.
         #[diplomat::attr(contract, immediate)]
         pub fn set_style(&mut self, style: &DiplomatStr) -> Result<(), OrbError> {
-            let op = orb_api::Op::SetStyle {
-                style: json(style)?.ok_or_else(|| invalid("setStyle: no style".into()))?,
-            };
-            self.0.push(op);
+            let style = json(style)?.ok_or_else(|| invalid("setStyle: no style".into()))?;
+            self.0.push(orb_api::Op::set_style(style));
             Ok(())
         }
 
