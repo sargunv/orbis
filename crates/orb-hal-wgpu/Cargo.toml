@@ -67,6 +67,8 @@ libloading.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
+# tests/leaks.rs hears the validation layer through wgpu-hal's log.
+log.workspace = true
 
 [lints]
 workspace = true
