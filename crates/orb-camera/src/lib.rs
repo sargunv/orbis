@@ -279,17 +279,18 @@ impl View {
         // shows `HORIZON_SHARE` of the way up to the true horizon. GL JS
         // stops at 85% of the angle to it and fills the rest with sky; the
         // ground is drawn on instead, and the sky starts where it ends.
-        // GL JS's `zfov`: a rolled view's vertical extent spans some of its
-        // width, so the far plane reaches farther.
+        // The view's highest corner above its axis, in pixels at the
+        // target's depth: padding moves the target off the middle, and a
+        // rolled view's vertical extent spans some of its width (Native's
+        // `tanFovAboveCenter`, here exact for any padding and roll).
         let (roll_sin, roll_cos) = camera.roll.to_radians().sin_cos();
-        // Padding moves the target down from the middle: more shows above.
         let center = camera.center(viewport);
         let offset = center - DVec2::new(viewport.width, viewport.height) / 2.0;
-        let above_center = half_fov
-            * (roll_cos.abs() * (viewport.height + 2.0 * offset.y)
-                + roll_sin.abs() * (viewport.width + 2.0 * offset.x.abs()))
-            / viewport.height;
-        let top = (above_center.min(FRAC_PI_2).tan() * limited.tan()).clamp(0.0, HORIZON_SHARE);
+        let above_center = viewport.height / 2.0 * roll_cos.abs()
+            + offset.y * roll_cos
+            + viewport.width / 2.0 * roll_sin.abs()
+            + offset.x * roll_sin;
+        let top = (above_center / eye_distance_px * limited.tan()).clamp(0.0, HORIZON_SHARE);
         // The deepest ground drawn.
         let mut deepest = lowest_plane_px / (1.0 - HORIZON_SHARE);
         let altitude_px = altitude * px_per_m;
@@ -1521,6 +1522,64 @@ mod tests {
             let ahead = under_eye - under_eye.normalize() * reach;
             let end = view.project_3d(ahead + view.camera_world, 0.0).unwrap();
             assert!((end.y - view.sky_horizon()).abs() < 0.5, "{zoom}: {end}");
+        }
+    }
+
+    /// Below the pitch where Native's bound takes over, the far plane
+    /// reaches the ground at every corner of the view, however padding
+    /// moves the target and roll turns the view.
+    #[test]
+    fn the_far_plane_holds_the_ground_at_every_corner() {
+        let viewport = Viewport {
+            width: 1200.0,
+            height: 700.0,
+        };
+        let surface = Surface::plane(mercator());
+        // Top, right, bottom and left padding, and roll.
+        for (top, right, bottom, left, roll) in [
+            (0.0, 0.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 350.0, 0.0, 0.0),
+            (300.0, 0.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 400.0, 30.0),
+            (300.0, 0.0, 0.0, 0.0, 180.0),
+            (0.0, 0.0, 300.0, 0.0, 150.0),
+            (0.0, 500.0, 0.0, 0.0, -90.0),
+        ] {
+            let padding = Padding {
+                top,
+                right,
+                bottom,
+                left,
+            };
+            for pitch in [45.0, 55.0, 60.0, 65.0] {
+                let mut camera = CameraState::new(Geodetic::new(-74.0, 40.7), 14.0, &mercator());
+                camera.pitch = pitch;
+                camera.roll = roll;
+                camera.padding = padding;
+                let view = View::new(&camera, viewport, &surface);
+                for corner in [
+                    DVec2::ZERO,
+                    DVec2::new(viewport.width, 0.0),
+                    DVec2::new(0.0, viewport.height),
+                    DVec2::new(viewport.width, viewport.height),
+                ] {
+                    let (near, far) = view.ray(corner, &view.view_proj);
+                    if near.z <= far.z {
+                        continue;
+                    }
+                    // The corner looks at the ground: its depth there, when
+                    // nearer than Native's bound, is within the far plane.
+                    let ground = near + (far - near) * (near.z / (near.z - far.z));
+                    let depth = (view.view_proj * ground.extend(1.0)).w;
+                    if depth < view.sea_level_px / (1.0 - HORIZON_SHARE) {
+                        assert!(
+                            depth < view.far_px,
+                            "{padding:?} roll {roll} pitch {pitch} {corner}: {depth} past {}",
+                            view.far_px
+                        );
+                    }
+                }
+            }
         }
     }
 
