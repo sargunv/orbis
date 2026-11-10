@@ -27,9 +27,16 @@ pub(crate) struct LineContext<'a> {
     pub(crate) anchor: Point,
     pub(crate) translation: [f64; 2],
     pub(crate) elevation: Elevation<'a>,
+    cache: &'a mut LineCache,
+    cached_anchor: Option<Point>,
+}
+
+/// A [`LineContext`]'s projected vertices and offset corners, kept
+/// across symbols.
+#[derive(Debug, Default)]
+pub(crate) struct LineCache {
     projections: Vec<Option<Point>>,
     offsets: Vec<Option<Point>>,
-    cached_anchor: Option<Point>,
 }
 
 /// Where a line label's points stand: GL JS's `elevationAt` over its
@@ -73,7 +80,12 @@ impl<'a> LineContext<'a> {
         anchor: Point,
         translation: [f64; 2],
         elevation: Elevation<'a>,
+        cache: &'a mut LineCache,
     ) -> Self {
+        for v in [&mut cache.projections, &mut cache.offsets] {
+            v.clear();
+            v.resize(lines.len(), None);
+        }
         Self {
             lines,
             plane,
@@ -82,8 +94,7 @@ impl<'a> LineContext<'a> {
             anchor,
             translation,
             elevation,
-            projections: vec![None; lines.len()],
-            offsets: vec![None; lines.len()],
+            cache,
             cached_anchor: None,
         }
     }
@@ -120,13 +131,13 @@ impl<'a> LineContext<'a> {
 
     /// GL JS `projectLineVertexToLabelPlane`.
     fn line_vertex(&mut self, index: usize, synthetic: &Synthetic) -> Point {
-        if let Some(p) = self.projections[index] {
+        if let Some(p) = self.cache.projections[index] {
             return p;
         }
         let current = self.vertex(index);
         let projection = self.to_label_plane(current.x, current.y);
         if projection.w > 0.0 {
-            self.projections[index] = Some(projection.point);
+            self.cache.projections[index] = Some(projection.point);
             return projection.point;
         }
         // Behind the camera: a vertex along the line far enough for the
@@ -168,13 +179,13 @@ impl<'a> LineContext<'a> {
         line_offset_y: f64,
         synthetic: &Synthetic,
     ) -> Point {
-        if let Some(p) = self.offsets[index] {
+        if let Some(p) = self.cache.offsets[index] {
             return p;
         }
         let offset_current = current.add(prev_to_current_normal);
         let next_index = index as isize + synthetic.direction;
         if next_index < line.0 as isize || next_index >= line.1 as isize {
-            self.offsets[index] = Some(offset_current);
+            self.cache.offsets[index] = Some(offset_current);
             return offset_current;
         }
         let next = self.line_vertex(next_index as usize, synthetic);
@@ -188,7 +199,7 @@ impl<'a> LineContext<'a> {
         } else {
             line_intersection(offset_previous, offset_current, begin, end).unwrap_or(offset_current)
         };
-        self.offsets[index] = Some(p);
+        self.cache.offsets[index] = Some(p);
         p
     }
 
@@ -214,13 +225,6 @@ struct Synthetic {
     previous_vertex: Point,
     direction: isize,
     abs_offset_x: f64,
-}
-
-/// A glyph placed on the line: the path from the anchor to it, ending at
-/// the glyph.
-#[derive(Clone, Debug)]
-pub(crate) struct PlacedGlyph {
-    pub(crate) path: Vec<Point>,
 }
 
 fn sub(a: Point, b: Point) -> Point {
@@ -258,26 +262,21 @@ fn line_intersection(a1: Point, a2: Point, b1: Point, b2: Point) -> Option<Point
     ))
 }
 
-/// GL JS `placeGlyphAlongLine`, without rotation (collision needs none).
-#[allow(clippy::too_many_arguments)]
+/// GL JS `placeGlyphAlongLine`, unflipped and without rotation (collision
+/// needs neither): into `path`, the path from the anchor to the glyph,
+/// ending at it. False when the glyph falls off the line.
 fn place_glyph(
     cx: &mut LineContext<'_>,
     offset_x: f64,
     line_offset_x: f64,
     line_offset_y: f64,
-    flip: bool,
     anchor_segment: usize,
-    line: (usize, usize),
-) -> Option<PlacedGlyph> {
-    let combined = if flip {
-        offset_x - line_offset_x
-    } else {
-        offset_x + line_offset_x
-    };
-    let mut direction: isize = if combined > 0.0 { 1 } else { -1 };
-    if flip {
-        direction = -direction;
-    }
+    path: &mut Vec<Point>,
+) -> bool {
+    // The context holds the symbol's own line.
+    let line = (0, cx.lines.len());
+    let combined = offset_x + line_offset_x;
+    let direction: isize = if combined > 0.0 { 1 } else { -1 };
     let mut index = if direction > 0 {
         (line.0 + anchor_segment) as isize
     } else {
@@ -298,12 +297,12 @@ fn place_glyph(
     let mut distance = 0.0;
     let mut segment_distance = 0.0;
     let abs_offset_x = combined.abs();
-    let mut path = Vec::new();
+    path.clear();
     let mut segment = Point::new(0.0, 0.0);
     while distance + segment_distance <= abs_offset_x {
         index += direction;
         if index < line.0 as isize || index >= line.1 as isize {
-            return None;
+            return false;
         }
         distance += segment_distance;
         previous = current;
@@ -346,45 +345,30 @@ fn place_glyph(
     let t = (abs_offset_x - distance) / segment_distance;
     let p = scale(segment, t).add(offset_previous.unwrap_or(previous));
     path.push(p);
-    Some(PlacedGlyph { path })
+    true
 }
 
-/// GL JS `placeFirstAndLastGlyph`, unflipped and not rotated to the line.
+/// GL JS `placeFirstAndLastGlyph`, unflipped and not rotated to the line:
+/// the paths to the first and last glyphs (see [`place_glyph`]), or false
+/// when either falls off the line.
 pub(crate) fn first_and_last_glyph(
     cx: &mut LineContext<'_>,
     font_scale: f64,
     glyph_offsets: &[f32],
     line_offset: [f64; 2],
     symbol: &PlacedSymbol,
-) -> Option<(PlacedGlyph, PlacedGlyph)> {
+    (first, last): (&mut Vec<Point>, &mut Vec<Point>),
+) -> bool {
     let [start, count] = symbol.quads.map(|v| v as usize);
     if count == 0 {
-        return None;
+        return false;
     }
-    // The context holds the symbol's own line.
-    let line = (0, cx.lines.len());
     let segment = usize::from(symbol.segment);
     let first_offset = f64::from(glyph_offsets[start]);
     let last_offset = f64::from(glyph_offsets[start + count - 1]);
-    let first = place_glyph(
-        cx,
-        font_scale * first_offset,
-        line_offset[0],
-        line_offset[1],
-        false,
-        segment,
-        line,
-    )?;
-    let last = place_glyph(
-        cx,
-        font_scale * last_offset,
-        line_offset[0],
-        line_offset[1],
-        false,
-        segment,
-        line,
-    )?;
-    Some((first, last))
+    let [x, y] = line_offset;
+    place_glyph(cx, font_scale * first_offset, x, y, segment, first)
+        && place_glyph(cx, font_scale * last_offset, x, y, segment, last)
 }
 
 #[cfg(test)]
@@ -417,6 +401,7 @@ mod tests {
         };
         let lines = [[0, 0], [100, 0], [200, 0]];
         let plane = LabelPlane::Pitched([1.0, 0.0, 0.0, 1.0]);
+        let mut cache = LineCache::default();
         let mut cx = LineContext::new(
             &lines,
             plane,
@@ -425,17 +410,25 @@ mod tests {
             Point::new(50.0, 0.0),
             [0.0; 2],
             Elevation::FLAT,
+            &mut cache,
         );
-        let at = |g: &PlacedGlyph| *g.path.last().unwrap();
-        let g = place_glyph(&mut cx, 80.0, 0.0, 0.0, false, 0, (0, 3)).unwrap();
-        assert_eq!((at(&g).x, at(&g).y), (130.0, 0.0));
-        assert_eq!(g.path.len(), 3);
-        let back = place_glyph(&mut cx, -30.0, 0.0, 0.0, false, 0, (0, 3)).unwrap();
-        assert_eq!(at(&back).x, 20.0);
+        let mut path = Vec::new();
+        assert!(place_glyph(&mut cx, 80.0, 0.0, 0.0, 0, &mut path));
+        assert_eq!(
+            path,
+            [
+                Point::new(50.0, 0.0),
+                Point::new(100.0, 0.0),
+                Point::new(130.0, 0.0)
+            ]
+        );
+        assert!(place_glyph(&mut cx, -30.0, 0.0, 0.0, 0, &mut path));
+        assert_eq!(path.last().unwrap().x, 20.0);
         // Off the end of the line.
-        assert!(place_glyph(&mut cx, 200.0, 0.0, 0.0, false, 0, (0, 3)).is_none());
+        assert!(!place_glyph(&mut cx, 200.0, 0.0, 0.0, 0, &mut path));
         // Offset below the line.
-        let below = place_glyph(&mut cx, 20.0, 0.0, 10.0, false, 0, (0, 3)).unwrap();
-        assert_eq!((at(&below).x, at(&below).y), (70.0, 10.0));
+        assert!(place_glyph(&mut cx, 20.0, 0.0, 10.0, 0, &mut path));
+        let below = path.last().unwrap();
+        assert_eq!((below.x, below.y), (70.0, 10.0));
     }
 }

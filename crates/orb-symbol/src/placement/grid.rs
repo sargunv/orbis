@@ -118,48 +118,17 @@ impl GridIndex {
         overlap: Overlap,
         group: Group,
     ) -> bool {
-        if x2 < 0.0 || x1 > self.width || y2 < 0.0 || y1 > self.height {
-            return false;
-        }
         // A box over the whole grid collides with everything.
         if x1 <= 0.0 && y1 <= 0.0 && self.width <= x2 && self.height <= y2 {
             return true;
         }
-
-        let query = self.next_query();
-        for cell in self.cells(x1, y1, x2, y2) {
-            for &uid in &self.box_cells[cell] {
-                let seen = &mut self.box_seen[uid as usize];
-                if *seen == query {
-                    continue;
-                }
-                *seen = query;
-                let b = &self.bboxes[uid as usize * 4..][..4];
-                let key = &self.box_keys[uid as usize];
-                if boxes_collide([x1, y1, x2, y2], b)
-                    && in_group(group, key)
-                    && !overlap_allowed(overlap, key.overlap)
-                {
-                    return true;
-                }
-            }
-            for &uid in &self.circle_cells[cell] {
-                let seen = &mut self.circle_seen[uid as usize];
-                if *seen == query {
-                    continue;
-                }
-                *seen = query;
-                let c = &self.circles[uid as usize * 3..][..3];
-                let key = &self.circle_keys[uid as usize];
-                if circle_and_rect_collide(c[0], c[1], c[2], x1, y1, x2, y2)
-                    && in_group(group, key)
-                    && !overlap_allowed(overlap, key.overlap)
-                {
-                    return true;
-                }
-            }
-        }
-        false
+        self.hits(
+            [x1, y1, x2, y2],
+            overlap,
+            group,
+            |b| boxes_collide([x1, y1, x2, y2], b),
+            |c| circle_and_rect_collide(c[0], c[1], c[2], x1, y1, x2, y2),
+        )
     }
 
     /// Whether a circle hits anything it may not overlap (GL JS
@@ -172,39 +141,47 @@ impl GridIndex {
         overlap: Overlap,
         group: Group,
     ) -> bool {
-        let (x1, y1, x2, y2) = (x - radius, y - radius, x + radius, y + radius);
+        self.hits(
+            [x - radius, y - radius, x + radius, y + radius],
+            overlap,
+            group,
+            |b| circle_and_rect_collide(x, y, radius, b[0], b[1], b[2], b[3]),
+            |c| circles_collide(c[0], c[1], c[2], x, y, radius),
+        )
+    }
+
+    /// Whether a shape with these bounds meets, by `meets_box` and
+    /// `meets_circle`, a placed box or circle it may not overlap. Each is
+    /// tested once, however many of its cells the bounds cover.
+    fn hits(
+        &mut self,
+        [x1, y1, x2, y2]: [f64; 4],
+        overlap: Overlap,
+        group: Group,
+        meets_box: impl Fn(&[f64]) -> bool,
+        meets_circle: impl Fn(&[f64]) -> bool,
+    ) -> bool {
         if x2 < 0.0 || x1 > self.width || y2 < 0.0 || y1 > self.height {
             return false;
         }
         let query = self.next_query();
+        let blocks = |key: &GridKey| in_group(group, key) && !overlap_allowed(overlap, key.overlap);
         for cell in self.cells(x1, y1, x2, y2) {
             for &uid in &self.box_cells[cell] {
-                let seen = &mut self.box_seen[uid as usize];
-                if *seen == query {
+                let uid = uid as usize;
+                if std::mem::replace(&mut self.box_seen[uid], query) == query {
                     continue;
                 }
-                *seen = query;
-                let b = &self.bboxes[uid as usize * 4..][..4];
-                let key = &self.box_keys[uid as usize];
-                if circle_and_rect_collide(x, y, radius, b[0], b[1], b[2], b[3])
-                    && in_group(group, key)
-                    && !overlap_allowed(overlap, key.overlap)
-                {
+                if meets_box(&self.bboxes[uid * 4..][..4]) && blocks(&self.box_keys[uid]) {
                     return true;
                 }
             }
             for &uid in &self.circle_cells[cell] {
-                let seen = &mut self.circle_seen[uid as usize];
-                if *seen == query {
+                let uid = uid as usize;
+                if std::mem::replace(&mut self.circle_seen[uid], query) == query {
                     continue;
                 }
-                *seen = query;
-                let c = &self.circles[uid as usize * 3..][..3];
-                let key = &self.circle_keys[uid as usize];
-                if circles_collide(c[0], c[1], c[2], x, y, radius)
-                    && in_group(group, key)
-                    && !overlap_allowed(overlap, key.overlap)
-                {
+                if meets_circle(&self.circles[uid * 3..][..3]) && blocks(&self.circle_keys[uid]) {
                     return true;
                 }
             }

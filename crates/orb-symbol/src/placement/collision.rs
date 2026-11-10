@@ -4,7 +4,9 @@
 use crate::bucket::PlacedSymbol;
 use crate::geometry::{Point, js_max, js_min};
 use crate::lines::{Lines, clip_line};
-use crate::placement::along_line::{Elevation, LabelPlane, LineContext, first_and_last_glyph};
+use crate::placement::along_line::{
+    Elevation, LabelPlane, LineCache, LineContext, first_and_last_glyph,
+};
 use crate::placement::grid::{GridIndex, GridKey, Group, Overlap};
 use crate::placement::view::{
     Camera, Ground, TileView, pitched_label_plane, symbol_elevation, tile_skew_vectors,
@@ -68,10 +70,10 @@ struct Projected {
     w: f64,
 }
 
-#[derive(Debug)]
-pub(crate) struct CollisionIndex {
-    grid: GridIndex,
-    ignored: GridIndex,
+/// The padded viewport placement projects into: the camera, and where
+/// the screen and the collision grid end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Viewport {
     pub(crate) camera: Camera,
     screen_right: f64,
     screen_bottom: f64,
@@ -79,22 +81,117 @@ pub(crate) struct CollisionIndex {
     grid_bottom: f64,
 }
 
+/// What line labels' circles are worked out in, kept across labels.
+#[derive(Debug, Default)]
+pub(crate) struct Scratch {
+    line: LineCache,
+    first: Vec<Point>,
+    last: Vec<Point>,
+    path: Vec<Point>,
+    screen: Vec<Point>,
+    clipped: Lines,
+    distances: Vec<f64>,
+}
+
+/// The placed shapes of a placement in the padded viewport's grid.
+#[derive(Debug)]
+pub(crate) struct CollisionIndex {
+    grid: GridIndex,
+    pub(crate) view: Viewport,
+    scratch: Scratch,
+}
+
 /// Below this perspective ratio, near the horizon, nothing is placed.
 const PERSPECTIVE_RATIO_CUTOFF: f64 = 0.6;
 
 impl CollisionIndex {
     pub(crate) fn new(camera: Camera) -> Self {
-        let (w, h) = (
-            camera.width + 2.0 * VIEWPORT_PADDING,
-            camera.height + 2.0 * VIEWPORT_PADDING,
-        );
+        let view = Viewport::new(camera);
         Self {
-            grid: GridIndex::new(w, h, 25.0),
-            ignored: GridIndex::new(w, h, 25.0),
+            grid: GridIndex::new(view.grid_right, view.grid_bottom, 25.0),
+            view,
+            scratch: Scratch::default(),
+        }
+    }
+
+    /// GL JS `placeCollisionBox`. `shift` is a variable anchor's, in layout
+    /// pixels at the box's scale.
+    pub(crate) fn place_box(
+        &mut self,
+        b: &CollisionBox,
+        p: &BoxPlacement<'_>,
+        shift: Option<Point>,
+    ) -> PlacedBox {
+        let mut placed = self.view.place_box(b, p, shift);
+        let [x1, y1, x2, y2] = placed.bounds;
+        if placed.placeable
+            && p.overlap != Overlap::Always
+            && self.grid.hit_test(x1, y1, x2, y2, p.overlap, p.group)
+        {
+            placed.placeable = false;
+            placed.offscreen = false;
+        }
+        placed
+    }
+
+    /// GL JS `placeCollisionCircles` for a line label's centred placed
+    /// symbol, without collision debug.
+    pub(crate) fn place_circles(
+        &mut self,
+        p: &BoxPlacement<'_>,
+        label: &LineLabel<'_>,
+    ) -> PlacedCircles {
+        let grid = &mut self.grid;
+        self.view
+            .place_circles(p, label, &mut self.scratch, |x, y, radius| {
+                grid.hit_test_circle(x, y, radius, p.overlap, p.group)
+            })
+    }
+
+    /// Adds a placed box; one that ignores placement collides with nothing.
+    pub(crate) fn insert_box(&mut self, bounds: [f64; 4], key: GridKey, ignore_placement: bool) {
+        if !ignore_placement {
+            self.grid
+                .insert(key, bounds[0], bounds[1], bounds[2], bounds[3]);
+        }
+    }
+
+    /// Adds placed circles; those that ignore placement collide with
+    /// nothing.
+    pub(crate) fn insert_circles(
+        &mut self,
+        circles: &[[f64; 3]],
+        key: GridKey,
+        ignore_placement: bool,
+    ) {
+        if ignore_placement {
+            return;
+        }
+        for &[x, y, r] in circles {
+            self.grid.insert_circle(key, x, y, r);
+        }
+    }
+}
+
+/// A line label's centred placed symbol, as its collision circles need it.
+pub(crate) struct LineLabel<'a> {
+    pub(crate) symbol: &'a PlacedSymbol,
+    /// The bucket's lines and per-quad glyph offsets.
+    pub(crate) lines: &'a [[i16; 2]],
+    pub(crate) glyph_offsets: &'a [f32],
+    pub(crate) font_size: f64,
+    pub(crate) circle_diameter: f64,
+    /// `text-padding`, pixels.
+    pub(crate) padding: f64,
+}
+
+impl Viewport {
+    pub(crate) fn new(camera: Camera) -> Self {
+        Self {
             screen_right: camera.width + VIEWPORT_PADDING,
             screen_bottom: camera.height + VIEWPORT_PADDING,
-            grid_right: w,
-            grid_bottom: h,
+            grid_right: camera.width + 2.0 * VIEWPORT_PADDING,
+            grid_bottom: camera.height + 2.0 * VIEWPORT_PADDING,
             camera,
         }
     }
@@ -144,14 +241,9 @@ impl CollisionIndex {
         x2 >= 0.0 && x1 < self.grid_right && y2 >= 0.0 && y1 < self.grid_bottom
     }
 
-    /// GL JS `placeCollisionBox`. `shift` is a variable anchor's, in layout
-    /// pixels at the box's scale.
-    pub(crate) fn place_box(
-        &mut self,
-        b: &CollisionBox,
-        p: &BoxPlacement<'_>,
-        shift: Option<Point>,
-    ) -> PlacedBox {
+    /// Where a box lands and whether it may be placed, before collisions
+    /// (see [`CollisionIndex::place_box`]).
+    fn place_box(&self, b: &CollisionBox, p: &BoxPlacement<'_>, shift: Option<Point>) -> PlacedBox {
         let x = b.anchor.x + p.translation[0];
         let y = b.anchor.y + p.translation[1];
         let ground = p.ground.map(|g| g.elevation(p.tile.id, x, y));
@@ -173,20 +265,11 @@ impl CollisionIndex {
         let [x1, y1, x2, y2] = bounds;
         let unplaceable = projected.perspective_ratio < PERSPECTIVE_RATIO_CUTOFF
             || !self.is_inside_grid(x1, y1, x2, y2);
-        if unplaceable
-            || (p.overlap != Overlap::Always
-                && self.grid.hit_test(x1, y1, x2, y2, p.overlap, p.group))
-        {
-            return PlacedBox {
-                bounds,
-                placeable: false,
-                offscreen: false,
-            };
-        }
+        let placeable = !unplaceable;
         PlacedBox {
             bounds,
-            placeable: true,
-            offscreen: self.is_offscreen(x1, y1, x2, y2),
+            placeable,
+            offscreen: placeable && self.is_offscreen(x1, y1, x2, y2),
         }
     }
 
@@ -273,33 +356,25 @@ impl CollisionIndex {
     }
 
     /// GL JS `placeCollisionCircles` for a line label's centred placed
-    /// symbol, without collision debug.
-    #[allow(clippy::too_many_arguments)]
+    /// symbol, without collision debug: `hits` tests a circle against
+    /// those placed, unless the label may overlap anything.
     pub(crate) fn place_circles(
-        &mut self,
-        overlap: Overlap,
-        symbol: &PlacedSymbol,
-        lines: &[[i16; 2]],
-        glyph_offsets: &[f32],
-        font_size: f64,
-        tile: &TileView,
-        pitch_with_map: bool,
-        rotate_with_map: bool,
-        group: Group,
-        circle_diameter: f64,
-        text_padding: f64,
-        translation: [f64; 2],
-        (ground, height_offset, anchor_ground): (Option<&dyn Ground>, f64, bool),
+        &self,
+        p: &BoxPlacement<'_>,
+        label: &LineLabel<'_>,
+        scratch: &mut Scratch,
+        mut hits: impl FnMut(f64, f64, f64) -> bool,
     ) -> PlacedCircles {
+        let (symbol, tile) = (label.symbol, p.tile);
         let anchor = Point::new(f64::from(symbol.anchor[0]), f64::from(symbol.anchor[1]));
         // GL JS takes the anchor's perspective on the terrain alone.
-        let anchor_elevation = ground.map(|g| g.elevation(tile.id, anchor.x, anchor.y));
+        let anchor_elevation = p.ground.map(|g| g.elevation(tile.id, anchor.x, anchor.y));
         let projected_anchor = self.project(tile, anchor.x, anchor.y, anchor_elevation);
         let perspective_ratio = projected_anchor.perspective_ratio;
-        let plane_font_size = if pitch_with_map {
-            font_size / perspective_ratio
+        let plane_font_size = if p.pitch_with_map {
+            label.font_size / perspective_ratio
         } else {
-            font_size * perspective_ratio
+            label.font_size * perspective_ratio
         };
         let font_scale = plane_font_size / ONE_EM;
         let line_offset = [
@@ -307,79 +382,96 @@ impl CollisionIndex {
             f64::from(symbol.line_offset[1]) * font_scale,
         ];
         let units_per_pixel = tile.tile_units_per_pixel(&self.camera);
-        let plane = if pitch_with_map {
+        let plane = if p.pitch_with_map {
             LabelPlane::Pitched(pitched_label_plane(
-                rotate_with_map,
+                p.rotate_with_map,
                 &self.camera,
                 units_per_pixel,
             ))
         } else {
             LabelPlane::Screen
         };
-        let line = &lines[symbol.line[0] as usize..][..symbol.line[1] as usize];
-        let camera = self.camera;
+        let line = &label.lines[symbol.line[0] as usize..][..symbol.line[1] as usize];
+        let Scratch {
+            line: cache,
+            first,
+            last,
+            path,
+            screen,
+            clipped,
+            distances,
+        } = scratch;
         let mut cx = LineContext::new(
             line,
             plane,
             tile,
-            &camera,
+            &self.camera,
             anchor,
-            translation,
+            p.translation,
             Elevation {
-                ground: ground.map(|g| (g, tile.id)),
-                height_offset,
-                anchor_ground,
+                ground: p.ground.map(|g| (g, tile.id)),
+                height_offset: p.height_offset,
+                anchor_ground: p.height_anchor_ground,
             },
+            cache,
         );
-        let collision_detected = false;
         let mut in_grid = false;
         let mut entirely_offscreen = true;
         let mut placed = Vec::new();
-        if let Some((first, last)) =
-            first_and_last_glyph(&mut cx, font_scale, glyph_offsets, line_offset, symbol)
-        {
-            let radius = circle_diameter * 0.5 * perspective_ratio + text_padding;
+        if first_and_last_glyph(
+            &mut cx,
+            font_scale,
+            label.glyph_offsets,
+            line_offset,
+            symbol,
+            (first, last),
+        ) {
+            let radius = label.circle_diameter * 0.5 * perspective_ratio + label.padding;
             let (min, max) = (
                 Point::new(-VIEWPORT_PADDING, -VIEWPORT_PADDING),
                 Point::new(self.screen_right, self.screen_bottom),
             );
-            let mut path: Vec<Point> = first.path[1..].iter().rev().copied().collect();
-            path.extend_from_slice(&last.path[1..]);
+            path.clear();
+            path.extend(first[1..].iter().rev());
+            path.extend_from_slice(&last[1..]);
             let circle_distance = radius * 2.5;
             if let LabelPlane::Pitched(m) = plane {
                 // Back to tile units, then to the screen; nothing if any
                 // point is behind the camera.
                 let det = m[0] * m[3] - m[2] * m[1];
                 let inverse = [m[3] / det, -m[1] / det, -m[2] / det, m[0] / det];
-                let mut screen = Vec::with_capacity(path.len());
+                screen.clear();
                 let mut behind = false;
-                for p in &path {
-                    let tile_x = inverse[0] * p.x + inverse[2] * p.y;
-                    let tile_y = inverse[1] * p.x + inverse[3] * p.y;
+                for v in path.iter() {
+                    let tile_x = inverse[0] * v.x + inverse[2] * v.y;
+                    let tile_y = inverse[1] * v.x + inverse[3] * v.y;
                     let q = cx.to_screen(tile_x, tile_y);
                     behind |= q.w <= 0.0;
                     screen.push(q.point);
                 }
-                path = if behind { Vec::new() } else { screen };
+                std::mem::swap(path, screen);
+                if behind {
+                    path.clear();
+                }
             }
-            let mut segments: Vec<Vec<Point>> = Vec::new();
+            clipped.clear();
+            let mut whole = false;
             if !path.is_empty() {
                 let mut lo = path[0];
                 let mut hi = path[0];
-                for p in &path[1..] {
-                    lo = Point::new(js_min(lo.x, p.x), js_min(lo.y, p.y));
-                    hi = Point::new(js_max(hi.x, p.x), js_max(hi.y, p.y));
+                for v in &path[1..] {
+                    lo = Point::new(js_min(lo.x, v.x), js_min(lo.y, v.y));
+                    hi = Point::new(js_max(hi.x, v.x), js_max(hi.y, v.y));
                 }
                 if lo.x >= min.x && hi.x <= max.x && lo.y >= min.y && hi.y <= max.y {
-                    segments.push(path);
+                    whole = true;
                 } else if !(hi.x < min.x || lo.x > max.x || hi.y < min.y || lo.y > max.y) {
-                    let mut clipped = Lines::default();
-                    clip_line([&path[..]], min.x, min.y, max.x, max.y, &mut clipped);
-                    segments.extend(clipped.iter().map(<[Point]>::to_vec));
+                    clip_line([&path[..]], min.x, min.y, max.x, max.y, clipped);
                 }
             }
-            for segment in &segments {
-                let interpolator = PathInterpolator::new(segment, radius * 0.25);
+            let whole = whole.then_some(&path[..]);
+            for segment in whole.into_iter().chain(clipped.iter()) {
+                let interpolator = PathInterpolator::new(segment, radius * 0.25, distances);
                 let circles = if interpolator.length <= 0.5 * radius {
                     1
                 } else {
@@ -393,9 +485,7 @@ impl CollisionIndex {
                     let (x1, y1, x2, y2) = (x - radius, y - radius, x + radius, y + radius);
                     entirely_offscreen &= self.is_offscreen(x1, y1, x2, y2);
                     in_grid |= self.is_inside_grid(x1, y1, x2, y2);
-                    if overlap != Overlap::Always
-                        && self.grid.hit_test_circle(x, y, radius, overlap, group)
-                    {
+                    if p.overlap != Overlap::Always && hits(x, y, radius) {
                         return PlacedCircles {
                             circles: Vec::new(),
                             offscreen: false,
@@ -405,42 +495,13 @@ impl CollisionIndex {
                 }
             }
         }
-        PlacedCircles {
-            circles: if collision_detected
-                || !in_grid
-                || perspective_ratio < PERSPECTIVE_RATIO_CUTOFF
-            {
-                Vec::new()
-            } else {
-                placed
-            },
-            offscreen: entirely_offscreen,
-            collision_detected,
+        if !in_grid || perspective_ratio < PERSPECTIVE_RATIO_CUTOFF {
+            placed.clear();
         }
-    }
-
-    pub(crate) fn insert_box(&mut self, bounds: [f64; 4], key: GridKey, ignore_placement: bool) {
-        let grid = if ignore_placement {
-            &mut self.ignored
-        } else {
-            &mut self.grid
-        };
-        grid.insert(key, bounds[0], bounds[1], bounds[2], bounds[3]);
-    }
-
-    pub(crate) fn insert_circles(
-        &mut self,
-        circles: &[[f64; 3]],
-        key: GridKey,
-        ignore_placement: bool,
-    ) {
-        let grid = if ignore_placement {
-            &mut self.ignored
-        } else {
-            &mut self.grid
-        };
-        for &[x, y, r] in circles {
-            grid.insert_circle(key, x, y, r);
+        PlacedCircles {
+            circles: placed,
+            offscreen: entirely_offscreen,
+            collision_detected: false,
         }
     }
 }
@@ -448,15 +509,18 @@ impl CollisionIndex {
 /// GL JS `PathInterpolator`.
 struct PathInterpolator<'a> {
     points: &'a [Point],
-    distances: Vec<f64>,
+    distances: &'a [f64],
     length: f64,
     padded_length: f64,
     padding: f64,
 }
 
 impl<'a> PathInterpolator<'a> {
-    fn new(points: &'a [Point], padding: f64) -> Self {
-        let mut distances = vec![0.0];
+    /// Over `points`, with their distances along the path kept in
+    /// `distances`.
+    fn new(points: &'a [Point], padding: f64, distances: &'a mut Vec<f64>) -> Self {
+        distances.clear();
+        distances.push(0.0);
         for i in 1..points.len() {
             distances.push(distances[i - 1] + points[i].dist(points[i - 1]));
         }

@@ -127,7 +127,7 @@ impl LayerIndex {
         }
     }
 
-    /// GL JS `addBucket`. Returns whether the bucket is new to the index.
+    /// GL JS `addBucket`.
     fn add_bucket(
         &mut self,
         tile: TileId,
@@ -135,10 +135,10 @@ impl LayerIndex {
         instances: &[SymbolInstance],
         ids: &mut Vec<u32>,
         next_id: &mut u32,
-    ) -> bool {
+    ) {
         if let Some(existing) = self.indexes.get(&tile.z).and_then(|z| z.get(&tile)) {
             if existing.bucket == bucket {
-                return false;
+                return;
             }
             // A replaced bucket gives up its ids for the new one to claim.
             Self::remove_ids(&mut self.used, tile.z, existing);
@@ -169,23 +169,19 @@ impl LayerIndex {
             .entry(tile.z)
             .or_default()
             .insert(tile, TileLayerIndex::new(tile, instances, ids, bucket));
-        true
     }
 
     /// GL JS `removeStaleBuckets`.
-    fn remove_stale(&mut self, current: &HashSet<u64>) -> bool {
-        let mut changed = false;
+    fn remove_stale(&mut self, current: &HashSet<u64>) {
         for (&z, indexes) in &mut self.indexes {
             indexes.retain(|_, index| {
                 let keep = current.contains(&index.bucket);
                 if !keep {
                     Self::remove_ids(&mut self.used, z, index);
-                    changed = true;
                 }
                 keep
             });
         }
-        changed
     }
 }
 
@@ -206,18 +202,17 @@ pub(crate) struct Indexed<'a> {
 
 impl CrossTileIndex {
     /// GL JS `addLayer`: assigns ids to the layer's buckets, highest zoom
-    /// first, and drops buckets no longer drawn. Returns whether anything
-    /// changed.
-    pub(crate) fn add_layer(&mut self, layer: u32, buckets: &mut [Indexed<'_>], lng: f64) -> bool {
+    /// first, and drops buckets no longer drawn. A bucket already indexed
+    /// keeps the ids it holds.
+    pub(crate) fn add_layer(&mut self, layer: u32, buckets: &mut [Indexed<'_>], lng: f64) {
         let index = self.layers.entry(layer).or_default();
         index.handle_wrap_jump(lng);
-        let mut changed = false;
         let mut current = HashSet::with_capacity(buckets.len());
         for b in buckets.iter_mut() {
-            changed |= index.add_bucket(b.tile, b.bucket, b.instances, b.ids, &mut self.next_id);
+            index.add_bucket(b.tile, b.bucket, b.instances, b.ids, &mut self.next_id);
             current.insert(b.bucket);
         }
-        changed | index.remove_stale(&current)
+        index.remove_stale(&current);
     }
 
     /// GL JS `pruneUnusedLayers`.
@@ -256,16 +251,16 @@ mod tests {
         };
         let parent_instances = [instance(1, 4096, 1024), instance(2, 100, 100)];
         let mut parent_ids = Vec::new();
-        assert!(index.add_layer(
+        index.add_layer(
             1,
             &mut [Indexed {
                 tile: parent,
                 bucket: 1,
                 instances: &parent_instances,
-                ids: &mut parent_ids
+                ids: &mut parent_ids,
             }],
-            0.0
-        ));
+            0.0,
+        );
         assert_eq!(parent_ids, [1, 2]);
         // Key 1 at the same place in the child (x 4096 of the parent is the
         // child's left edge, plus a rounding error); key 2 elsewhere.
@@ -291,25 +286,28 @@ mod tests {
             0.0,
         );
         assert_eq!(child_ids, [1, 3]);
-        // Unchanged buckets keep their ids and report no change.
-        let mut ids = Vec::new();
-        assert!(!index.add_layer(
+        // Buckets already indexed keep their ids; a new bucket for the
+        // parent's tile takes over the ids of its symbols.
+        let mut parent_new = Vec::new();
+        index.add_layer(
             1,
             &mut [
                 Indexed {
                     tile: child,
                     bucket: 2,
                     instances: &child_instances,
-                    ids: &mut ids,
+                    ids: &mut child_ids,
                 },
                 Indexed {
                     tile: parent,
-                    bucket: 1,
+                    bucket: 3,
                     instances: &parent_instances,
-                    ids: &mut parent_again,
-                }
+                    ids: &mut parent_new,
+                },
             ],
-            0.0
-        ));
+            0.0,
+        );
+        assert_eq!(child_ids, [1, 3]);
+        assert_eq!(parent_new, [1, 2]);
     }
 }

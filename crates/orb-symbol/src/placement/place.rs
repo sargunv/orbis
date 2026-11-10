@@ -12,7 +12,9 @@ use crate::bucket::{
     instance_flags, justification,
 };
 use crate::geometry::{EXTENT, Point};
-use crate::placement::collision::{BoxPlacement, CollisionBox, CollisionIndex, PlacedBox};
+use crate::placement::collision::{
+    BoxPlacement, CollisionBox, CollisionIndex, LineLabel, PlacedBox, Scratch, Viewport,
+};
 use crate::placement::cross_tile::{CrossTileIndex, Indexed};
 use crate::placement::grid::{GridKey, Overlap};
 use crate::placement::view::{Camera, TileView};
@@ -555,28 +557,30 @@ pub fn label_circles(
         return Vec::new();
     }
     let symbol = &tables.text_placed[center as usize];
-    let mut index = CollisionIndex::new(frame.camera);
+    let view = Viewport::new(frame.camera);
     let ground = frame.ground.as_ref().map(|g| &*g.0);
-    let anchor = index.anchor_px(&tile.view, instance.anchor, ground);
-    let placed = index.place_circles(
-        Overlap::Always,
+    let anchor = view.anchor_px(&tile.view, instance.anchor, ground);
+    let placement = BoxPlacement {
+        tile: &tile.view,
+        overlap: Overlap::Always,
+        pixel_ratio: 512.0 / EXTENT,
+        pitch_with_map: params.pitch_with_map,
+        rotate_with_map: params.rotate_with_map,
+        translation: translation(&frame.camera, &tile.view, params.text_translate),
+        group: None,
+        height_offset: f64::from(instance.height_offset),
+        height_anchor_ground: params.height_anchor_ground,
+        ground,
+    };
+    let label = LineLabel {
         symbol,
-        &tables.lines,
-        &tables.text_glyph_offsets,
-        feature_size(tables.text_size, tile.text_size, symbol),
-        &tile.view,
-        params.pitch_with_map,
-        params.rotate_with_map,
-        None,
-        f64::from(instance.collision_circle_diameter),
-        params.text_padding,
-        translation(&frame.camera, &tile.view, params.text_translate),
-        (
-            ground,
-            f64::from(instance.height_offset),
-            params.height_anchor_ground,
-        ),
-    );
+        lines: &tables.lines,
+        glyph_offsets: &tables.text_glyph_offsets,
+        font_size: feature_size(tables.text_size, tile.text_size, symbol),
+        circle_diameter: f64::from(instance.collision_circle_diameter),
+        padding: params.text_padding,
+    };
+    let placed = view.place_circles(&placement, &label, &mut Scratch::default(), |_, _, _| false);
     placed
         .circles
         .into_iter()
@@ -728,24 +732,32 @@ impl Placer {
         let dropped = self.update_copies(frame);
         let camera = &frame.camera;
         let layers = self.drawn(&frame.layers);
+        // Each layer's copies lend the index their ids.
+        let mut lent = Vec::new();
+        let mut keys = HashSet::new();
         for (params, tiles) in &layers {
-            let mut indexed: Vec<Indexed<'_>> = Vec::with_capacity(tiles.len());
-            let buckets = &mut self.buckets;
-            // Each copy appears once per layer: split the borrows by key.
-            let mut by_key: HashMap<(u64, i32), &mut Bucket> =
-                buckets.iter_mut().map(|(k, b)| (*k, b)).collect();
-            for t in tiles.iter() {
-                let Some(b) = by_key.remove(&copy_key(t)) else {
+            keys.clear();
+            for t in tiles {
+                // Each copy appears once per layer.
+                if !keys.insert(copy_key(t)) {
                     continue;
-                };
-                indexed.push(Indexed {
-                    tile: t.view.id,
-                    bucket: b.id,
-                    instances: &b.tables.instances,
-                    ids: &mut b.ids,
-                });
+                }
+                let b = self.buckets.get_mut(&copy_key(t)).expect("drawn");
+                let ids = std::mem::take(&mut b.ids);
+                lent.push((copy_key(t), t.view.id, b.id, b.tables.clone(), ids));
             }
+            let mut indexed: Vec<Indexed<'_>> = (lent.iter_mut())
+                .map(|(_, tile, bucket, tables, ids)| Indexed {
+                    tile: *tile,
+                    bucket: *bucket,
+                    instances: &tables.instances,
+                    ids,
+                })
+                .collect();
             self.index.add_layer(params.layer, &mut indexed, frame.lng);
+            for (key, .., ids) in lent.drain(..) {
+                self.buckets.get_mut(&key).expect("lent above").ids = ids;
+            }
         }
         self.index
             .retain_layers(&layers.iter().map(|(p, _)| p.layer).collect());
@@ -1065,7 +1077,7 @@ impl<'a> Pass<'a> {
             let f = p.flags_of(instance);
             let (always_text, always_icon) = f.always(has_text_data, has_icon_data);
             // Tile scope: a tile places the labels anchored in it.
-            if self.record.is_some() && !self.index.in_view(&tile.view, instance.anchor) {
+            if self.record.is_some() && !self.index.view.in_view(&tile.view, instance.anchor) {
                 continue;
             }
             let ground = self.ground;
@@ -1103,13 +1115,13 @@ impl<'a> Pass<'a> {
                 let offsets = &t.anchor_offsets
                     [instance.anchor_offsets[0] as usize..instance.anchor_offsets[1] as usize];
                 // Modes in order; the first that fits wins.
-                let modes: Vec<WritingMode> = if allow_vertical && vertical_text_box.is_some() {
-                    p.writing_modes.clone()
+                let modes: &[WritingMode] = if allow_vertical && vertical_text_box.is_some() {
+                    &p.writing_modes
                 } else {
-                    vec![WritingMode::Horizontal]
+                    &[WritingMode::Horizontal]
                 };
                 if offsets.is_empty() {
-                    for mode in modes {
+                    for &mode in modes {
                         let (bx, orientation) = match mode {
                             WritingMode::Vertical => (
                                 vertical_text_box.expect("checked"),
@@ -1132,7 +1144,7 @@ impl<'a> Pass<'a> {
                         }
                     }
                 } else {
-                    for mode in modes {
+                    for &mode in modes {
                         if mode == WritingMode::Vertical && placed.is_some_and(|b| b.placeable) {
                             break;
                         }
@@ -1200,26 +1212,17 @@ impl<'a> Pass<'a> {
             let center = instance.text[justification::CENTER];
             if instance.flags & instance_flags::RUNTIME_COLLISION_CIRCLES != 0 && center != NONE {
                 let symbol = &t.text_placed[center as usize];
-                let font_size = feature_size(t.text_size, tile.text_size, symbol);
-                let result = self.index.place_circles(
-                    f.text_overlap,
+                let label = LineLabel {
                     symbol,
-                    &t.lines,
-                    &t.text_glyph_offsets,
-                    font_size,
-                    &tile.view,
-                    p.pitch_with_map,
-                    p.rotate_with_map,
-                    group,
-                    f64::from(instance.collision_circle_diameter),
-                    p.text_padding,
-                    text_translation,
-                    (
-                        ground,
-                        f64::from(instance.height_offset),
-                        p.height_anchor_ground,
-                    ),
-                );
+                    lines: &t.lines,
+                    glyph_offsets: &t.text_glyph_offsets,
+                    font_size: feature_size(t.text_size, tile.text_size, symbol),
+                    circle_diameter: f64::from(instance.collision_circle_diameter),
+                    padding: p.text_padding,
+                };
+                let result = self
+                    .index
+                    .place_circles(&base(f.text_overlap, text_translation), &label);
                 place_text = f.text_overlap == Overlap::Always
                     || (!result.circles.is_empty() && !result.collision_detected);
                 offscreen &= result.offscreen;
