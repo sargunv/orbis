@@ -64,3 +64,11 @@ run = "hk fix --all"
 [deps.pnpm]
 auto = true
 dir = "web"
+
+[tasks."demo:desktop"]
+description = "The native demo window: [style] [--at lon,lat,z[,bearing,pitch]]"
+run = "cargo run --release -p orb-demo --"
+
+[tasks."demo:web"]
+description = "Build core.wasm, then serve the web demo at /orbis/"
+run = ["cargo xtask web", "pnpm -C web dev"]
