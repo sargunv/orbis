@@ -101,8 +101,12 @@ orb-web = { path = "crates/orb-web" }
 # wgpu 30.0.1 with D3D12 render passes (BeginRenderPass): a tiling GPU
 # (Adreno on Snapdragon X) can then keep a multisampled pass on chip and
 # resolve it there instead of storing, reloading and resolving it (#164).
-# Every crate of wgpu's workspace comes from the fork, since its path
-# dependencies resolve there. #35 tracks sending it upstream.
+# The same branch carries naga's SPIR-V fixes: no explicit layout on
+# Function, Private and Workgroup variables (VUID-StandaloneSpirv-None-10684,
+# gfx-rs/wgpu#7696), and a u32 one clamping u32 image coordinates; orb-shaders'
+# `spirv_validates_for_vulkan` checks every stage. Every crate of wgpu's
+# workspace comes from the fork, since its path dependencies resolve there.
+# #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
 naga-types = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
 wgpu = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }

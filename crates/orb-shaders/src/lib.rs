@@ -524,4 +524,120 @@ mod tests {
             }
         }
     }
+
+    /// Every pipeline stage as wgpu's Vulkan back end writes it (its
+    /// `naga_options`, overrides at their defaults), at the SPIR-V version
+    /// it picks for Vulkan 1.1, 1.2 and 1.3, through SPIRV-Tools'
+    /// `spirv-val` as the validation layer runs it, `Restrict` bounds
+    /// checks as on a device without robust access. Explicit layout on
+    /// Function and Workgroup variables (VUID-StandaloneSpirv-None-10684)
+    /// and an `i32` one clamping `u32` image coordinates failed here until
+    /// naga's patch (#35). Skipped, saying so, where
+    /// `spirv-val` isn't installed (`brew install spirv-tools`, or the
+    /// Vulkan SDK).
+    #[test]
+    fn spirv_validates_for_vulkan() {
+        use naga::back::spv;
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        if Command::new("spirv-val").arg("--version").output().is_err() {
+            eprintln!("spirv_validates_for_vulkan: skipped, no spirv-val on PATH");
+            return;
+        }
+        // (SPIR-V, the Vulkan environment wgpu-hal picks it for).
+        const TARGETS: &[((u8, u8), &str)] = &[
+            ((1, 3), "vulkan1.1"),
+            ((1, 5), "vulkan1.2"),
+            ((1, 6), "vulkan1.3"),
+        ];
+        // (what, the module's words, its Vulkan environment).
+        let mut modules = Vec::new();
+        for shader in SHADERS {
+            for (entry, one) in split::entry_modules(&validate(shader)) {
+                let info = naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::CLIP_DISTANCES,
+                )
+                .validate(&one)
+                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+                let (one, info) = naga::back::pipeline_constants::process_overrides(
+                    &one,
+                    &info,
+                    None,
+                    &Default::default(),
+                )
+                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+                for &(lang_version, env) in TARGETS {
+                    for debug in [false, true] {
+                        let mut flags = spv::WriterFlags::FORCE_POINT_SIZE;
+                        flags.set(spv::WriterFlags::DEBUG, debug);
+                        let options = spv::Options {
+                            lang_version,
+                            flags,
+                            bounds_check_policies: naga::proc::BoundsCheckPolicies {
+                                index: naga::proc::BoundsCheckPolicy::Restrict,
+                                buffer: naga::proc::BoundsCheckPolicy::Restrict,
+                                image_load: naga::proc::BoundsCheckPolicy::Restrict,
+                                binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
+                            },
+                            zero_initialize_workgroup_memory: if lang_version >= (1, 6) {
+                                spv::ZeroInitializeWorkgroupMemoryMode::Native
+                            } else {
+                                spv::ZeroInitializeWorkgroupMemoryMode::Polyfill
+                            },
+                            ..Default::default()
+                        };
+                        let words = spv::write_vec(&one, &info, &options, None)
+                            .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+                        let what = format!(
+                            "{} {entry} (SPIR-V {}.{}, {env}{})",
+                            shader.label,
+                            lang_version.0,
+                            lang_version.1,
+                            if debug { ", debug" } else { "" },
+                        );
+                        modules.push((what, words, env));
+                    }
+                }
+            }
+        }
+        assert!(modules.len() > 600, "only {} modules", modules.len());
+        let validate = |(what, words, env): &(String, Vec<u32>, &str)| {
+            let mut child = Command::new("spirv-val")
+                .args(["--relax-block-layout", "--target-env", env, "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("runs spirv-val");
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            child.stdin.take().unwrap().write_all(&bytes).unwrap();
+            let out = child.wait_with_output().unwrap();
+            (!out.status.success()).then(|| {
+                let text = String::from_utf8_lossy(&out.stderr);
+                format!(
+                    "{what}: {}",
+                    text.lines().take(2).collect::<Vec<_>>().join(" ")
+                )
+            })
+        };
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let failures: Vec<String> = std::thread::scope(|scope| {
+            let chunks = modules.chunks(modules.len().div_ceil(threads));
+            let workers: Vec<_> = chunks
+                .map(|chunk| {
+                    scope.spawn(move || chunk.iter().filter_map(validate).collect::<Vec<_>>())
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|w| w.join().unwrap())
+                .collect()
+        });
+        assert!(
+            failures.is_empty(),
+            "spirv-val:\n  {}",
+            failures.join("\n  ")
+        );
+    }
 }

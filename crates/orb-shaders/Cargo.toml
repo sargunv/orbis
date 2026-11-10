@@ -19,12 +19,14 @@ naga = { workspace = true, features = ["serialize"] }
 postcard.workspace = true
 
 [dev-dependencies]
-# The stage hashes write Metal; the WebGL 2 dry run, GLSL ES 3.00.
+# The stage hashes write Metal; the WebGL 2 dry run, GLSL ES 3.00; the
+# Vulkan check, SPIR-V.
 naga = { workspace = true, features = [
   "serialize",
   "deserialize",
   "msl-out",
   "glsl-out",
+  "spv-out",
 ] }
 postcard.workspace = true
 
