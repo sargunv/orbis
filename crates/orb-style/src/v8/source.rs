@@ -61,6 +61,15 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
         .filter(|tms| cx.preview(Preview::Crs, &tms_path, tms.span, "\"tileMatrixSet\""))
     {
         None => None,
+        // GeoJSON is geodetic: Orbis tiles it on the map's own plane.
+        Some(tms) if ty == "geojson" => {
+            cx.warn(
+                &tms_path,
+                tms.span,
+                "a GeoJSON source tiles on the map's plane; its \"tileMatrixSet\" is ignored",
+            );
+            None
+        }
         Some(tms) => Some(parse_tms(cx, tms, &tms_path)?),
     };
     Some(Source {

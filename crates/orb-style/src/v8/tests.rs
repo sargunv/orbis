@@ -750,6 +750,19 @@ fn world_planes_adapt_to_mercator() {
     .unwrap_err();
     let paths: Vec<_> = bad_tms.errors.iter().map(|e| e.path.as_str()).collect();
     assert_eq!(paths, ["sources.a.tileMatrixSet"]);
+    // GeoJSON tiles on the plane, whatever set it names: drawn through
+    // that set's warp, it would land in the wrong place.
+    let geojson = crate::v8::parse_with(
+        r#"{"version": 8, "sources": {"g": {"type": "geojson",
+            "data": {"type": "FeatureCollection", "features": []},
+            "tileMatrixSet": "WorldCRS84Quad"}}, "layers": []}"#,
+        Previews::ALL,
+        &[],
+    )
+    .unwrap();
+    assert!(geojson.tile_matrix_sets().is_empty());
+    let paths: Vec<_> = geojson.warnings.iter().map(|w| w.path.as_str()).collect();
+    assert_eq!(paths, ["sources.g.tileMatrixSet"]);
 }
 
 /// With their previews off, inputs beyond the approved spec warn and fall
