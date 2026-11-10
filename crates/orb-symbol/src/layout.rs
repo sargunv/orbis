@@ -682,9 +682,8 @@ pub(crate) fn justification_slot(justify: Justify) -> usize {
 struct FeatureSymbols<'a> {
     feature: &'a SymbolFeature,
     shapings: &'a Shapings,
-    icon: Option<(u32, PositionedIcon<'a>)>,
+    icon: Option<FeatureIcon<'a>>,
     vertical_icon: Option<PositionedIcon<'a>>,
-    sdf_icon: bool,
     text_offset: [f64; 2],
     text_box_scale: f64,
     icon_box_scale: f64,
@@ -693,6 +692,33 @@ struct FeatureSymbols<'a> {
     /// The text's key part: the default horizontal shaping's text.
     key_text: &'a str,
     anchor_offsets: &'a [(Anchor, [f64; 2])],
+}
+
+/// A feature's icon (see [`Builder::feature_icon`]).
+struct FeatureIcon<'a> {
+    /// The image's tile-local index.
+    image: u32,
+    shape: PositionedIcon<'a>,
+    sdf: bool,
+}
+
+/// What `addFeature` shaped of a feature (see [`Builder::add_anchors`]).
+struct Shaped<'s, 'a> {
+    shapings: &'s Shapings,
+    icon: Option<FeatureIcon<'a>>,
+    text_offset: [f64; 2],
+    anchor_offsets: &'s [(Anchor, [f64; 2])],
+}
+
+/// Where a symbol's placed symbols go: its anchor, the line it rides on
+/// (see [`Builder::line_range`]) and its instance.
+type At<'s> = (&'s SymbolAnchor, [u32; 2], u32);
+
+/// A bucket's two streams of placed symbols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stream {
+    Text,
+    Icon,
 }
 
 struct Builder<'a> {
@@ -754,16 +780,41 @@ impl<'a> Builder<'a> {
 
     /// The loop body of GL JS `performSymbolLayout`.
     fn add_feature(&mut self, feature: &SymbolFeature, geometry: &Geometry) {
+        let anchor_offsets = self.variable_anchor_offsets(&feature.layout);
+        let anchor_offsets = anchor_offsets.as_deref();
+        let (shapings, text_offset) = match &feature.text {
+            Some(label) => self.shape_label(feature, label, anchor_offsets),
+            None => (Shapings::default(), [0.0, 0.0]),
+        };
+        let icon = self.feature_icon(feature);
+        let shaped_text = shapings.default_horizontal().or(shapings.vertical.as_ref());
+        if shaped_text.is_some() || icon.is_some() {
+            let shaped = Shaped {
+                shapings: &shapings,
+                icon,
+                text_offset,
+                anchor_offsets: anchor_offsets.unwrap_or_default(),
+            };
+            self.add_anchors(feature, geometry, shaped);
+        }
+    }
+
+    /// A feature's label shaped for each justification and writing mode
+    /// it may draw in, and its text offset (none with variable anchors).
+    fn shape_label(
+        &self,
+        feature: &SymbolFeature,
+        label: &Label,
+        anchor_offsets: Option<&[(Anchor, [f64; 2])]>,
+    ) -> (Shapings, [f64; 2]) {
         let style = self.style;
         let f = &feature.layout;
         let line_height = f.text_line_height * ONE_EM;
         let text_along_line = style.text_along_line();
         let allow_vertical_placement = style.allow_vertical_placement();
-
-        let anchor_offsets = self.variable_anchor_offsets(f);
         let mut shapings = Shapings::default();
         let mut text_offset = [0.0, 0.0];
-        if let Some(label) = &feature.text {
+        {
             let unformatted = label.text();
             let spacing = f.text_letter_spacing * ONE_EM;
             let spacing = if unicode::allows_letter_spacing(&unformatted) {
@@ -812,7 +863,7 @@ impl<'a> Builder<'a> {
             if !text_along_line && variable {
                 let mut justifications: Vec<Justify> = Vec::new();
                 if f.text_justify == TextJustify::Auto {
-                    for &(anchor, _) in anchor_offsets.iter().flatten() {
+                    for &(anchor, _) in anchor_offsets.into_iter().flatten() {
                         let j = anchor_justification(anchor);
                         if !justifications.contains(&j) {
                             justifications.push(j);
@@ -872,39 +923,31 @@ impl<'a> Builder<'a> {
                 }
             }
         }
+        (shapings, text_offset)
+    }
 
-        let mut icon = None;
-        let mut sdf_icon = false;
-        if let Some(name) = feature.icon.as_deref().filter(|n| !n.is_empty())
-            && let Some((index, image)) = self.context.images.get(name)
+    /// A feature's icon: its image's index and its shape, and whether it
+    /// is an SDF. Notes what the bucket's icons need.
+    fn feature_icon(&mut self, feature: &SymbolFeature) -> Option<FeatureIcon<'a>> {
+        let f = &feature.layout;
+        let name = feature.icon.as_deref().filter(|n| !n.is_empty())?;
+        let (index, image) = self.context.images.get(name)?;
+        let sdf = image.sdf;
+        match self.bucket.sdf_icons {
+            None => self.bucket.sdf_icons = Some(sdf),
+            Some(other) if other != sdf => self.bucket.warnings.mixed_sdf_icons = true,
+            Some(_) => {}
+        }
+        if image.pixel_ratio != self.tile.pixel_ratio
+            || self.style.icon_rotate_constant.is_none_or(|r| r != 0.0)
         {
-            icon = Some((index, shape_icon(image, f.icon_offset, f.icon_anchor)));
-            sdf_icon = image.sdf;
-            match self.bucket.sdf_icons {
-                None => self.bucket.sdf_icons = Some(sdf_icon),
-                Some(sdf) if sdf != sdf_icon => self.bucket.warnings.mixed_sdf_icons = true,
-                Some(_) => {}
-            }
-            if image.pixel_ratio != self.tile.pixel_ratio
-                || style.icon_rotate_constant.is_none_or(|r| r != 0.0)
-            {
-                self.bucket.icons_need_linear = true;
-            }
+            self.bucket.icons_need_linear = true;
         }
-
-        let shaped_text = shapings.default_horizontal().or(shapings.vertical.as_ref());
-        if shaped_text.is_some() || icon.is_some() {
-            let anchor_offsets = anchor_offsets.as_deref().unwrap_or_default();
-            self.add_anchors(
-                feature,
-                geometry,
-                &shapings,
-                icon,
-                sdf_icon,
-                text_offset,
-                anchor_offsets,
-            );
-        }
+        Some(FeatureIcon {
+            image: index,
+            shape: shape_icon(image, f.icon_offset, f.icon_anchor),
+            sdf,
+        })
     }
 
     /// GL JS `getTextVariableAnchorOffset`, in layout units; `None` without
@@ -927,17 +970,18 @@ impl<'a> Builder<'a> {
     }
 
     /// GL JS `addFeature`: the feature's anchors, then a symbol at each.
-    #[allow(clippy::too_many_arguments)]
     fn add_anchors(
         &mut self,
         feature: &SymbolFeature,
         geometry: &Geometry,
-        shapings: &Shapings,
-        icon: Option<(u32, PositionedIcon<'a>)>,
-        sdf_icon: bool,
-        text_offset: [f64; 2],
-        anchor_offsets: &[(Anchor, [f64; 2])],
+        shaped: Shaped<'_, 'a>,
     ) {
+        let Shaped {
+            shapings,
+            icon,
+            text_offset,
+            anchor_offsets,
+        } = shaped;
         let style = self.style;
         let f = &feature.layout;
         // Tile units per layout pixel (GL JS `tilePixelRatio`).
@@ -956,7 +1000,9 @@ impl<'a> Builder<'a> {
 
         let mut icon = icon;
         let mut vertical_icon = None;
-        if let Some((_, shaped_icon)) = &mut icon
+        if let Some(FeatureIcon {
+            shape: shaped_icon, ..
+        }) = &mut icon
             && style.icon_text_fit != IconTextFit::None
         {
             if style.allow_vertical_placement()
@@ -989,14 +1035,13 @@ impl<'a> Builder<'a> {
                 .as_ref()
                 .or(default_horizontal)
                 .map(|s| s.right - s.left),
-            icon: icon.as_ref().map(|(_, i)| i.right - i.left),
+            icon: icon.as_ref().map(|i| i.shape.right - i.shape.left),
         };
         let symbols = FeatureSymbols {
             feature,
             shapings,
             icon,
             vertical_icon,
-            sdf_icon,
             text_offset,
             text_box_scale,
             icon_box_scale,
@@ -1155,157 +1200,15 @@ impl<'a> Builder<'a> {
         } else {
             (anchor, self.line_range(anchor, line, shared_line))
         };
-        let style = self.style;
-        let f = &s.feature.layout;
-        let text_along_line = style.text_along_line();
-        let elevation = f.height_offset;
+        let elevation = s.feature.layout.height_offset;
         if elevation > self.bucket.max_height_offset {
             self.bucket.max_height_offset = elevation;
         }
         let instance = self.bucket.instances.len() as u32;
-        let text_padding = [s.text_padding; 4];
-
-        let mut vertical_text_feature = None;
-        let mut vertical_icon_feature = None;
-        if style.allow_vertical_placement()
-            && let Some(vertical) = &s.shapings.vertical
-        {
-            let rotation = f.text_rotate + 90.0;
-            vertical_text_feature = Some(collision_feature(
-                Shape::text(vertical),
-                s.text_box_scale,
-                text_padding,
-                text_along_line,
-                rotation,
-            ));
-            if let Some(vertical_icon) = &s.vertical_icon {
-                vertical_icon_feature = Some(collision_feature(
-                    Shape::icon(vertical_icon),
-                    s.icon_box_scale,
-                    s.icon_padding,
-                    text_along_line,
-                    rotation,
-                ));
-            }
-        }
-
-        let mut icon_feature = None;
-        let mut placed_icon = NONE;
-        let mut vertical_placed_icon = NONE;
-        if let Some((image, icon)) = &s.icon {
-            let has_icon_text_fit = style.icon_text_fit != IconTextFit::None;
-            let size = self.size_vertex(false, f);
-            icon_feature = Some(collision_feature(
-                Shape::icon(icon),
-                s.icon_box_scale,
-                s.icon_padding,
-                false,
-                f.icon_rotate,
-            ));
-            let mut quads = std::mem::take(&mut self.quads);
-            let mut add = |this: &mut Self, icon, mode| {
-                quads.clear();
-                let fit = has_icon_text_fit;
-                icon_quads(icon, *image, f.icon_rotate, s.sdf_icon, fit, &mut quads);
-                let offset = f.icon_offset;
-                this.add_symbols(
-                    false, &quads, size, offset, mode, anchor, line_range, instance, NONE,
-                )
-            };
-            placed_icon = add(self, icon, SymbolWritingMode::None);
-            if let Some(vertical_icon) = &s.vertical_icon {
-                vertical_placed_icon = add(self, vertical_icon, SymbolWritingMode::Vertical);
-            }
-            self.quads = quads;
-        }
-
-        let mut text_feature = None;
-        let mut placed_text = [NONE; 4];
-        let horizontal_mode = if s.shapings.vertical.is_some() {
-            SymbolWritingMode::Horizontal
-        } else {
-            SymbolWritingMode::HorizontalOnly
-        };
-        for &(justify, shaping) in &s.shapings.horizontal {
-            let shaping = &s.shapings.shapings
-                [shaping.expect("an aliased justification follows a single-line shaping")];
-            if text_feature.is_none() {
-                text_feature = Some(collision_feature(
-                    Shape::text(shaping),
-                    s.text_box_scale,
-                    text_padding,
-                    text_along_line,
-                    f.text_rotate,
-                ));
-            }
-            let single_line = shaping.lines.len() == 1;
-            let placed = self.add_text(
-                s,
-                shaping,
-                anchor,
-                line_range,
-                horizontal_mode,
-                instance,
-                placed_icon,
-            );
-            if single_line {
-                for &(j, _) in &s.shapings.horizontal {
-                    placed_text[justification_slot(j)] = placed;
-                }
-                break;
-            }
-            placed_text[justification_slot(justify)] = placed;
-        }
-        if let Some(vertical) = &s.shapings.vertical {
-            placed_text[justification::VERTICAL] = self.add_text(
-                s,
-                vertical,
-                anchor,
-                line_range,
-                SymbolWritingMode::Vertical,
-                instance,
-                vertical_placed_icon,
-            );
-        }
-
-        // Beyond the spec, the feature's own collision settings.
-        let mut flags = s
-            .feature
-            .layout
-            .placement
-            .map_or(0, crate::placement::SymbolFlags::instance_bits);
-        let mut boxes = [[0i16; 4]; 4];
-        let features = [
-            text_feature,
-            vertical_text_feature,
-            icon_feature,
-            vertical_icon_feature,
-        ];
-        let box_flags = [
-            instance_flags::TEXT_BOX,
-            instance_flags::VERTICAL_TEXT_BOX,
-            instance_flags::ICON_BOX,
-            instance_flags::VERTICAL_ICON_BOX,
-        ];
-        let mut circle_diameter = -1.0;
-        for (i, feature) in features.iter().enumerate() {
-            match feature {
-                Some(CollisionFeature::Box(b)) => {
-                    boxes[i] = [to_i16(b.x1), to_i16(b.y1), to_i16(b.x2), to_i16(b.y2)];
-                    flags |= box_flags[i];
-                }
-                Some(c) => {
-                    if let Some(d) = c.circle_diameter() {
-                        circle_diameter = js_max(d, circle_diameter);
-                    }
-                }
-                None => {}
-            }
-        }
-        if circle_diameter > -1.0 {
-            flags |= instance_flags::RUNTIME_COLLISION_CIRCLES;
-            circle_diameter *= f.text_size.layout / ONE_EM;
-        }
+        let at = (anchor, line_range, instance);
+        let icons = self.add_icons(s, at);
+        let texts = self.add_texts(s, at, icons);
+        let (boxes, flags, circle_diameter) = self.collision_shapes(s);
 
         if let Some(sort_key) = s.feature.sort_key {
             let ranges = &mut self.bucket.sort_key_ranges;
@@ -1339,24 +1242,148 @@ impl<'a> Builder<'a> {
             text_box_scale: s.text_box_scale as f32,
             collision_circle_diameter: circle_diameter as f32,
             height_offset: elevation as f32,
-            text: placed_text,
-            icon: [placed_icon, vertical_placed_icon],
+            text: texts,
+            icon: icons,
             boxes,
             anchor_offsets: [offsets_start, offsets_end],
             flags,
         });
     }
 
+    /// A symbol's icon and its vertical one, as placed symbols (or
+    /// [`NONE`]).
+    fn add_icons(&mut self, s: &FeatureSymbols<'_>, at: At<'_>) -> [u32; 2] {
+        let mut placed = [NONE; 2];
+        let Some(icon) = &s.icon else {
+            return placed;
+        };
+        let f = &s.feature.layout;
+        let fit = self.style.icon_text_fit != IconTextFit::None;
+        let size = self.size_vertex(Stream::Icon, f);
+        let mut quads = std::mem::take(&mut self.quads);
+        let mut add = |this: &mut Self, shape, mode| {
+            quads.clear();
+            icon_quads(shape, icon.image, f.icon_rotate, icon.sdf, fit, &mut quads);
+            this.add_symbols(Stream::Icon, &quads, size, f.icon_offset, mode, at, NONE)
+        };
+        placed[0] = add(self, &icon.shape, SymbolWritingMode::None);
+        if let Some(vertical_icon) = &s.vertical_icon {
+            placed[1] = add(self, vertical_icon, SymbolWritingMode::Vertical);
+        }
+        self.quads = quads;
+        placed
+    }
+
+    /// A symbol's text, by [`justification`] slot, as placed symbols (or
+    /// [`NONE`]): each justification's shaping, sharing one for a single
+    /// line, and the vertical one. `icons` are those [`Self::add_icons`]
+    /// placed.
+    fn add_texts(&mut self, s: &FeatureSymbols<'_>, at: At<'_>, icons: [u32; 2]) -> [u32; 4] {
+        let mut placed_text = [NONE; 4];
+        let horizontal_mode = if s.shapings.vertical.is_some() {
+            SymbolWritingMode::Horizontal
+        } else {
+            SymbolWritingMode::HorizontalOnly
+        };
+        for &(justify, shaping) in &s.shapings.horizontal {
+            let shaping = &s.shapings.shapings
+                [shaping.expect("an aliased justification follows a single-line shaping")];
+            let placed = self.add_text(s, shaping, at, horizontal_mode, icons[0]);
+            if shaping.lines.len() == 1 {
+                for &(j, _) in &s.shapings.horizontal {
+                    placed_text[justification_slot(j)] = placed;
+                }
+                break;
+            }
+            placed_text[justification_slot(justify)] = placed;
+        }
+        if let Some(vertical) = &s.shapings.vertical {
+            let mode = SymbolWritingMode::Vertical;
+            placed_text[justification::VERTICAL] = self.add_text(s, vertical, at, mode, icons[1]);
+        }
+        placed_text
+    }
+
+    /// A symbol's collision boxes (text, vertical text, icon, vertical
+    /// icon), its instance flags, and its collision circles' diameter, or
+    /// -1 without circles.
+    fn collision_shapes(&self, s: &FeatureSymbols<'_>) -> ([[i16; 4]; 4], u32, f64) {
+        let style = self.style;
+        let f = &s.feature.layout;
+        let text_along_line = style.text_along_line();
+        let text_padding = [s.text_padding; 4];
+        let text = |shaping: &Shaping, rotation| {
+            collision_feature(
+                Shape::text(shaping),
+                s.text_box_scale,
+                text_padding,
+                text_along_line,
+                rotation,
+            )
+        };
+        let icon = |icon: &PositionedIcon<'_>, along_line, rotation| {
+            collision_feature(
+                Shape::icon(icon),
+                s.icon_box_scale,
+                s.icon_padding,
+                along_line,
+                rotation,
+            )
+        };
+        let vertical = (s.shapings.vertical.as_ref()).filter(|_| style.allow_vertical_placement());
+        let rotation = f.text_rotate + 90.0;
+        let features = [
+            s.shapings
+                .default_horizontal()
+                .map(|h| text(h, f.text_rotate)),
+            vertical.map(|v| text(v, rotation)),
+            s.icon
+                .as_ref()
+                .map(|i| icon(&i.shape, false, f.icon_rotate)),
+            (s.vertical_icon.as_ref())
+                .filter(|_| vertical.is_some())
+                .map(|i| icon(i, text_along_line, rotation)),
+        ];
+        // Beyond the spec, the feature's own collision settings.
+        let mut flags = f
+            .placement
+            .map_or(0, crate::placement::SymbolFlags::instance_bits);
+        let mut boxes = [[0i16; 4]; 4];
+        let box_flags = [
+            instance_flags::TEXT_BOX,
+            instance_flags::VERTICAL_TEXT_BOX,
+            instance_flags::ICON_BOX,
+            instance_flags::VERTICAL_ICON_BOX,
+        ];
+        let mut circle_diameter = -1.0;
+        for (i, feature) in features.iter().enumerate() {
+            match feature {
+                Some(CollisionFeature::Box(b)) => {
+                    boxes[i] = [to_i16(b.x1), to_i16(b.y1), to_i16(b.x2), to_i16(b.y2)];
+                    flags |= box_flags[i];
+                }
+                Some(c) => {
+                    if let Some(d) = c.circle_diameter() {
+                        circle_diameter = js_max(d, circle_diameter);
+                    }
+                }
+                None => {}
+            }
+        }
+        if circle_diameter > -1.0 {
+            flags |= instance_flags::RUNTIME_COLLISION_CIRCLES;
+            circle_diameter *= f.text_size.layout / ONE_EM;
+        }
+        (boxes, flags, circle_diameter)
+    }
+
     /// GL JS `addTextVertices`. Returns the placed symbol's index.
-    #[allow(clippy::too_many_arguments)]
     fn add_text(
         &mut self,
         s: &FeatureSymbols<'_>,
         shaping: &Shaping,
-        anchor: &SymbolAnchor,
-        line: [u32; 2],
+        at: At<'_>,
         writing_mode: SymbolWritingMode,
-        instance: u32,
         associated_icon: u32,
     ) -> u32 {
         let f = &s.feature.layout;
@@ -1374,16 +1401,14 @@ impl<'a> Builder<'a> {
             },
             &mut quads,
         );
-        let size = self.size_vertex(true, f);
+        let size = self.size_vertex(Stream::Text, f);
         let placed = self.add_symbols(
-            true,
+            Stream::Text,
             &quads,
             size,
             s.text_offset,
             writing_mode,
-            anchor,
-            line,
-            instance,
+            at,
             associated_icon,
         );
         self.quads = quads;
@@ -1392,13 +1417,16 @@ impl<'a> Builder<'a> {
 
     /// The per-feature text or icon size GL JS bakes into vertices,
     /// noting sizes too large to pack.
-    fn size_vertex(&mut self, text: bool, f: &FeatureLayout) -> Option<[f64; 2]> {
-        let (kind, size, warning) = if text {
-            let w = &mut self.bucket.warnings.text_size_too_large;
-            (self.style.text_size, &f.text_size, w)
-        } else {
-            let w = &mut self.bucket.warnings.icon_size_too_large;
-            (self.style.icon_size, &f.icon_size, w)
+    fn size_vertex(&mut self, stream: Stream, f: &FeatureLayout) -> Option<[f64; 2]> {
+        let (kind, size, warning) = match stream {
+            Stream::Text => {
+                let w = &mut self.bucket.warnings.text_size_too_large;
+                (self.style.text_size, &f.text_size, w)
+            }
+            Stream::Icon => {
+                let w = &mut self.bucket.warnings.icon_size_too_large;
+                (self.style.icon_size, &f.icon_size, w)
+            }
         };
         let size = size_vertex(kind, size);
         if size.is_some_and(|s| s[0] > MAX_PACKED_SIZE || s[1] > MAX_PACKED_SIZE) {
@@ -1411,20 +1439,17 @@ impl<'a> Builder<'a> {
     #[allow(clippy::too_many_arguments)]
     fn add_symbols(
         &mut self,
-        text: bool,
+        stream: Stream,
         quads: &[SymbolQuad],
         size: Option<[f64; 2]>,
         line_offset: [f64; 2],
         writing_mode: SymbolWritingMode,
-        anchor: &SymbolAnchor,
-        line: [u32; 2],
-        instance: u32,
+        (anchor, line, instance): At<'_>,
         associated_icon: u32,
     ) -> u32 {
-        let stream: &mut SymbolStream = if text {
-            &mut self.bucket.text
-        } else {
-            &mut self.bucket.icon
+        let stream: &mut SymbolStream = match stream {
+            Stream::Text => &mut self.bucket.text,
+            Stream::Icon => &mut self.bucket.icon,
         };
         let symbol = stream.placed.len() as u32;
         let first_quad = stream.quads.len() as u32;
