@@ -134,7 +134,13 @@ fn physical(logical: mln_logical_size, scale: f64) -> Result<(u32, u32)> {
 
 /// A retain of the caller's layer, which an accepted attach takes so the
 /// layer outlives the surface on it.
-struct Retained(UserData);
+struct Retained(
+    #[cfg_attr(
+        not(target_vendor = "apple"),
+        expect(dead_code, reason = "only Apple layers take a retain")
+    )]
+    UserData,
+);
 
 #[cfg(target_vendor = "apple")]
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -1047,6 +1053,10 @@ impl FramePacer {
     }
 
     /// A display refresh, on the display link's thread.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only macOS has a display link")
+    )]
     fn refresh(&self) {
         for (session, tx) in self.sessions.lock().unwrap().iter() {
             if !session.tick.swap(true, Ordering::AcqRel) {

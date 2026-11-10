@@ -48,6 +48,10 @@ pub(crate) enum Object {
     /// Orbis owns the device of its runtime, so an offscreen device is only a
     /// token that sessions accept.
     OffscreenDevice,
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only macOS makes a pacer")
+    )]
     Pacer(Arc<FramePacer>),
 }
 
