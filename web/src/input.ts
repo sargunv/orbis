@@ -129,9 +129,15 @@ export function attachInput(
       captured++;
     }
   };
+  // A drag's every sample with its own time, for the release's velocity:
+  // `pointermove` comes once a frame with the samples since folded in, and
+  // `pointerrawupdate` can fold too. Hovers send the latest alone.
   const move = (e: PointerEvent) => {
-    const [x, y] = at(e);
-    send("pointerMove", [e.pointerId, x, y], e.timeStamp);
+    const samples = (captured && e.getCoalescedEvents?.()) || [];
+    for (const s of samples.length ? samples : [e]) {
+      const [x, y] = at(s);
+      send("pointerMove", [e.pointerId, x, y], s.timeStamp);
+    }
   };
   const up = (e: PointerEvent) => {
     const [x, y] = at(e);
