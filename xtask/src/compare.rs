@@ -146,21 +146,21 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
 /// The last of `after`'s reports, each numeric table cell replaced by the
 /// median over `before`'s reports → the median over `after`'s and the
 /// change, and each `min–max` cell by the range over `before`'s → over
-/// `after`'s. A row is matched by its table and first cell.
+/// `after`'s. A row is matched by its table, its first cell and how many
+/// rows before it in the table share that cell (the tile bench's mvt and
+/// mlt rows of one tile).
 fn merge(before: &[String], after: &[String]) -> String {
     let template = after.last().map_or("", String::as_str);
     let (before, after) = (cells(before), cells(after));
     let mut out = String::new();
-    for (table, line) in tables(template) {
-        let row = row_cells(line);
-        let Some((table, first)) = table.zip(row.as_ref().and_then(|r| r.first())) else {
+    for (key, line) in keyed(template) {
+        let (Some(key), Some(row)) = (key, row_cells(line)) else {
             out.push_str(line);
             out.push('\n');
             continue;
         };
-        let key = (table, first.clone());
         let mut merged = Vec::new();
-        for (i, cell) in row.as_ref().into_iter().flatten().enumerate() {
+        for (i, cell) in row.iter().enumerate() {
             // This cell's column over the runs.
             let column = |runs: &Rows| -> Vec<String> {
                 (runs.get(&key).into_iter().flatten())
@@ -187,8 +187,12 @@ fn merge(before: &[String], after: &[String]) -> String {
     out
 }
 
-/// Report table rows by table index and first cell, each run's.
-type Rows = HashMap<(usize, String), Vec<Vec<String>>>;
+/// A table row's key: its table's index, its first cell and how many
+/// rows before it in the table have that first cell.
+type Key = (usize, String, usize);
+
+/// Report table rows by [`Key`], each run's.
+type Rows = HashMap<Key, Vec<Vec<String>>>;
 
 /// The median of numeric cells, if every one is a number.
 fn medians(cells: &[String]) -> Option<f64> {
@@ -228,17 +232,31 @@ fn change(before: f64, after: f64, cell: &str) -> String {
     format!("{before:.digits$} → {after:.digits$}{percent}")
 }
 
-/// Each report's table rows by table index and first cell.
+/// Each report's table rows by [`Key`].
 fn cells(reports: &[String]) -> Rows {
     let mut rows: HashMap<_, Vec<_>> = HashMap::new();
     for report in reports {
-        for (table, line) in tables(report) {
-            if let (Some(table), Some(row)) = (table, row_cells(line)) {
-                rows.entry((table, row[0].clone())).or_default().push(row);
+        for (key, line) in keyed(report) {
+            if let (Some(key), Some(row)) = (key, row_cells(line)) {
+                rows.entry(key).or_default().push(row);
             }
         }
     }
     rows
+}
+
+/// The report's lines, each table data row with its [`Key`].
+fn keyed(report: &str) -> impl Iterator<Item = (Option<Key>, &str)> {
+    let mut seen: HashMap<(usize, String), usize> = HashMap::new();
+    tables(report).map(move |(table, line)| {
+        let first = row_cells(line).map(|row| row[0].clone());
+        let key = table.zip(first).map(|(table, first)| {
+            let repeat = seen.entry((table, first.clone())).or_default();
+            *repeat += 1;
+            (table, first, *repeat - 1)
+        });
+        (key, line)
+    })
 }
 
 /// The report's lines, each table row with its table's index.
@@ -341,6 +359,26 @@ mod tests {
         );
         assert!(merged.contains("|---|---|---|\n"));
         assert!(merged.starts_with("### Frame bench\n\n- data\n"));
+    }
+
+    /// Rows sharing a first cell, as the tile bench's mvt and mlt rows of
+    /// one tile do, each merge with their own.
+    #[test]
+    fn keeps_rows_with_one_first_cell_apart() {
+        let report = |mvt: &str, mlt: &str| {
+            format!(
+                "| tile | encoding | ms |\n|---|---|---|\n| 0/0/0 | mvt | {mvt} |\n| 0/0/0 | mlt | {mlt} |\n"
+            )
+        };
+        let merged = merge(&[report("2.0", "8.0")], &[report("1.0", "4.0")]);
+        assert!(
+            merged.contains("| 0/0/0 | mvt | 2.0 → 1.0 (-50.0%) |"),
+            "{merged}"
+        );
+        assert!(
+            merged.contains("| 0/0/0 | mlt | 8.0 → 4.0 (-50.0%) |"),
+            "{merged}"
+        );
     }
 
     #[test]
