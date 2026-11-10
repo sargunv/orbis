@@ -2,7 +2,7 @@
 //! test tile (`layout-*.json`): the same evaluated features in, every
 //! instance, placed symbol, vertex, box and offset compared.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use orb_text::{
     Content, FontStack, Glyph, GlyphKey, GlyphMap, GlyphMetrics, GlyphRequests, Label, Section,
@@ -242,9 +242,12 @@ impl Glyphs {
         Self { resolved }
     }
 
+    /// The glyphs `requests` asks for, each one GL JS asked for. Orbis
+    /// asks for none of the labels layout drops for an anchor outside the
+    /// tile, which GL JS asks for too; one it should have asked for shows
+    /// as a missing quad.
     fn map(&self, requests: GlyphRequests) -> GlyphMap {
         let mut map = GlyphMap::default();
-        let mut asked = HashSet::new();
         for request in requests {
             let key = (
                 request.stack.as_str().to_owned(),
@@ -255,15 +258,8 @@ impl Glyphs {
                 .resolved
                 .get(&key)
                 .unwrap_or_else(|| panic!("GL JS did not request {key:?}"));
-            asked.insert(key);
             map.insert(request, glyph.clone());
         }
-        let missing: Vec<_> = self
-            .resolved
-            .keys()
-            .filter(|k| !asked.contains(*k))
-            .collect();
-        assert!(missing.is_empty(), "orb-symbol did not request {missing:?}");
         map
     }
 

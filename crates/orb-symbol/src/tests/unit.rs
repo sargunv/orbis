@@ -411,6 +411,21 @@ fn points_outside_the_tile_get_no_symbols_or_glyphs() {
     add_glyph_requests(&layer, &features, &style, &mut requests);
     assert!(requests.is_empty());
     assert!(run(&layer, &features, &style).is_empty());
+
+    // Nor do point and line-center labels of lines wholly outside it; one
+    // that crosses it asks for its glyphs.
+    let layer = lines(&[&[[-500, 100], [-10, 200]], &[[-500, 300], [500, 300]]]);
+    let features = [feature(0, "Out"), feature(1, "In")];
+    for placement in [Placement::Point, Placement::LineCenter] {
+        let style = LayerLayout {
+            placement,
+            ..LayerLayout::default()
+        };
+        let mut requests = GlyphRequests::default();
+        add_glyph_requests(&layer, &features, &style, &mut requests);
+        let texts: Vec<&str> = requests.iter().map(|r| &*r.text).collect();
+        assert_eq!(texts, ["I", "n"], "{placement:?}");
+    }
 }
 
 /// Same-text labels block one another down a chain (GL JS

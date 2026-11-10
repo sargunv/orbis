@@ -357,7 +357,8 @@ pub struct LayoutContext<'a> {
 }
 
 /// Adds the glyphs `features` need to `requests` (GL JS
-/// `calculateGlyphDependencies`, as `populate` calls it).
+/// `calculateGlyphDependencies`, as `populate` calls it), but not those
+/// of labels layout drops for an anchor outside the tile.
 pub fn add_glyph_requests(
     layer: &Layer,
     features: &[SymbolFeature],
@@ -365,10 +366,10 @@ pub fn add_glyph_requests(
     requests: &mut GlyphRequests,
 ) {
     let allow_vertical_placement = style.allow_vertical_placement();
-    // In the layer's own units: an overzoom slice's ancestor holds it.
-    let units = Units::new(None);
     for feature in features {
-        if is_skipped(layer, feature, style, units) {
+        // In the layer's own tile: an overzoom slice laid out in its
+        // ancestor keeps only the features that may anchor in the slice.
+        if !may_anchor_in_tile(layer, feature.index, style.placement, None) {
             continue;
         }
         if let Some(label) = &feature.text {
@@ -380,18 +381,6 @@ pub fn add_glyph_requests(
             );
         }
     }
-}
-
-/// Point labels of points all outside the tile are dropped before layout.
-fn is_skipped(layer: &Layer, feature: &SymbolFeature, style: &LayerLayout, units: Units) -> bool {
-    let index = feature.index as usize;
-    style.placement == Placement::Point
-        && layer.geometry_type(index) == GeometryType::Point
-        && layer.geometry(index).parts().all(|part| {
-            part.rings()
-                .flatten()
-                .all(|&p| is_outside_tile(units.point(p, layer.extent())))
-        })
 }
 
 /// Whether feature `index` of `layer` may have a label anchored in the
