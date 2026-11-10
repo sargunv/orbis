@@ -20,13 +20,33 @@ hosts.
 
 The live demo is at <https://code.sargunv.dev/orbis/>.
 
+## Design principles
+
+- **A frame is a function of style, data and camera.** It doesn't depend on
+  the camera's path, the order tiles arrived in, or anything else in its
+  history, so it's deterministic and testable. Exceptions are explicit and
+  opt-in.
+- **The spec's restrictions are portability notes, not limits.** Many of the
+  spec's "this property can't vary by feature" or "this can't animate" rules
+  come from how the existing engines were built. Orbis accepts whatever its
+  own design can honour, and tells you when a style won't work in the other
+  engines. New syntax stays opt-in.
+- **Both MapLibre engines are references, not targets.** GL JS and Native
+  are the guide to how styles should look. Where they differ, Orbis follows
+  whichever handles the case well; where both share a known limitation, it
+  aims for what the style author most plausibly meant.
+- **Modern GPUs first, compatibility added downward.** GL JS and Native grew
+  up on WebGL 1 and OpenGL ES 2 and still carry those constraints. Orbis is
+  designed for today's GPU APIs and reaches older hardware through
+  compatibility layers, not by designing around the oldest one.
+
 ## How it differs
 
 MapLibre GL JS and MapLibre Native, and
 [mln-rs](https://github.com/louwers/mln-rs), a file-by-file Rust port of
 Native, share one design: worker threads turn each tile into buffers, and
 every frame the CPU walks the visible tiles of each layer and issues their
-draw calls. Orbis was designed from scratch around a few different ideas:
+draw calls. Orbis carries out the principles above with a different design:
 
 - **The GPU drives each frame.** All tiles' geometry lives in a few large
   buffers, and the draw commands are recorded once and replayed. Each frame,
