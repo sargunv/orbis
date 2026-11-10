@@ -261,16 +261,8 @@ impl Composites {
         }
     }
 
-    /// A composite of `source` in `mode` at `opacity`, with `aux` its ramp
-    /// or the canvas beneath; makes the pipeline it needs.
-    pub(crate) fn composite(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        source: TextureId,
-        aux: Option<TextureId>,
-        mode: Mode,
-        opacity: f32,
-    ) -> Composite {
+    /// Makes the pipeline of composites in `mode`, unless it is made.
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, mode: Mode) {
         let target = self.target;
         let (slot, shader, blend) = if mode.replaces() {
             (&mut self.replace, &COMPOSITE_REPLACE_SHADER, None)
@@ -284,6 +276,19 @@ impl Composites {
         if slot.is_none() {
             *slot = Some(Draw::new(shader, &[self.layout], target, blend).make(gpu));
         }
+    }
+
+    /// A composite of `source` in `mode` at `opacity`, with `aux` its ramp
+    /// or the canvas beneath; makes the pipeline it needs.
+    pub(crate) fn composite(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        source: TextureId,
+        aux: Option<TextureId>,
+        mode: Mode,
+        opacity: f32,
+    ) -> Composite {
+        self.make(gpu, mode);
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "composite",
             size: 16,

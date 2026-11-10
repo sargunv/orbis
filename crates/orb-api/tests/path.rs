@@ -1135,3 +1135,132 @@ fn coarser_terrain_keeps_the_hillshade_it_drew() {
         "{first} of {middle} pixels in the middle are bare in the first frame, {settled} once settled"
     );
 }
+
+/// Edits ease alike on terrain and off it: a draped fill hidden, its
+/// feature state changed and its paint edited fade frame by frame (drape
+/// slots draw them eased each frame they run), and no frame draws nothing
+/// while the layer composite a fade goes through compiles.
+#[test]
+fn draped_edits_ease_as_flat_ones_do() {
+    let (lon, lat) = (139.76, 35.68);
+    let (hills, _dem) = hills();
+    let centre = |pixels: &[u8]| {
+        let at = ((HEIGHT / 2 * WIDTH + WIDTH / 2) * 4) as usize;
+        [pixels[at], pixels[at + 1], pixels[at + 2]]
+    };
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    for terrain in [false, true] {
+        let style = format!(
+            r##"{{"version": 8, "transition": {{"duration": 600}},
+            "sources": {{{}
+              "square": {{"type": "geojson", "data": {{"type": "Feature", "id": 1, "properties": {{}},
+                "geometry": {{"type": "Polygon", "coordinates": [[[{w}, {s}], [{e}, {s}], [{e}, {n}], [{w}, {n}], [{w}, {s}]]]}}}}}}
+            }},
+            {}
+            "layers": [
+              {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+              {{"id": "square", "type": "fill", "source": "square", "paint": {{"fill-color":
+                  ["case", ["boolean", ["feature-state", "hover"], false], "#ff0000", "#00ff00"]}}}}
+            ]}}"##,
+            hills,
+            match terrain {
+                true => r#""terrain": {"source": "hills", "exaggeration": 1},"#,
+                false => "",
+            },
+            w = lon - 0.05,
+            e = lon + 0.05,
+            s = lat - 0.05,
+            n = lat + 0.05,
+        );
+        for commands in [
+            r#"[["setLayoutProperty", "square", "visibility", "none"]]"#,
+            r#"[["setFeatureState", {"source": "square", "id": 1}, {"hover": true}]]"#,
+            r#"[["setPaintProperty", "square", "fill-opacity", 0]]"#,
+        ] {
+            let mut map = Map::new(&runtime, options());
+            map.set_style_json(&style).unwrap();
+            map.jump_to(&camera((Geodetic::new(lon, lat), 12.0, 0.0, 30.0)));
+            settle(&mut map, &mut target);
+            let before = centre(&target.read_pixels().unwrap());
+            map.edit(&orb_api::Transaction::from_commands(commands).unwrap())
+                .unwrap();
+            // Frame times run on from well past the settled frames'.
+            let started = std::time::Instant::now();
+            let mut seen = Vec::new();
+            while started.elapsed() < Duration::from_millis(800) {
+                let time = 1e6 + started.elapsed().as_secs_f64() * 1000.0;
+                map.render(&mut target, time).unwrap();
+                let pixels = target.read_pixels().unwrap();
+                assert!(
+                    pixels.chunks(4).all(|p| p[3] > 0),
+                    "terrain {terrain}, {commands}: a frame drew nothing"
+                );
+                seen.push(centre(&pixels));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            settle(&mut map, &mut target);
+            let after = centre(&target.read_pixels().unwrap());
+            let c = (0..3)
+                .max_by_key(|&c| before[c].abs_diff(after[c]))
+                .unwrap();
+            let (lo, hi) = (before[c].min(after[c]), before[c].max(after[c]));
+            assert!(hi - lo > 200, "{commands}: {before:?} → {after:?}");
+            assert!(
+                seen.iter().any(|p| p[c] > lo + 20 && p[c] < hi - 20),
+                "terrain {terrain}, {commands} snapped: {seen:?}"
+            );
+        }
+    }
+}
+
+/// Terrain switched on by an edit rises to what a fresh map with it
+/// draws, camera and all; switched off with its DEM source gone, it falls
+/// flat as the camera moves, quietly, to what a fresh flat map draws.
+#[test]
+fn terrain_switched_by_edits_ends_as_a_fresh_map_does() {
+    let (hills, _dem) = hills();
+    let flat = tokyo("", "");
+    let terrain = tokyo(
+        r#""terrain": {"source": "hills", "exaggeration": 1.5},"#,
+        &hills,
+    );
+    let at = (STATION, 13.0, 30.0, 60.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, options());
+    map.set_style_json(&flat).unwrap();
+    map.jump_to(&camera(at));
+    settle(&mut map, &mut target);
+    let warnings = |map: &mut Map| -> Vec<String> {
+        std::iter::from_fn(|| map.poll_event())
+            .filter_map(|e| match e {
+                orb_api::Event::Map(orb_api::MapEvent::Warning { message }) => Some(message),
+                _ => None,
+            })
+            .collect()
+    };
+    warnings(&mut map);
+    let restyle = |json: &str| {
+        orb_api::Transaction::from_commands(&format!(r#"[["setStyle", {json}]]"#)).unwrap()
+    };
+    map.edit(&restyle(&terrain)).unwrap();
+    settle(&mut map, &mut target);
+    let on = (target.read_pixels().unwrap(), map.camera());
+    let (fresh, fresh_camera) = fresh_at(&runtime, &mut target, &terrain, at);
+    assert_eq!(on.1, fresh_camera, "the camera on the risen terrain");
+    assert_within("terrain-on", (on.0, fresh), 1);
+    map.edit(&restyle(&flat)).unwrap();
+    for step in 0..30 {
+        let s = f64::from(step);
+        map.jump_to(&camera((STATION, 13.0 + s * 0.03, 30.0 + s, 60.0)));
+        map.render(&mut target, 0.0).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    map.jump_to(&camera(at));
+    settle(&mut map, &mut target);
+    let off = target.read_pixels().unwrap();
+    assert_eq!(warnings(&mut map), Vec::<String>::new());
+    let (fresh, _) = fresh_at(&runtime, &mut target, &flat, at);
+    assert_same("terrain-off", (off, fresh));
+}

@@ -123,8 +123,10 @@ pub(crate) fn frame(
             }
         });
     // Paint transitions write from the style overlaid with their eased
-    // values, and once more when they end.
-    let overlay = transitions.overlay(plan, zoom, now).map(Arc::new);
+    // values, and once more when they end. A layer fading through its
+    // composite waits for it to compile.
+    let composite_ready = !transitions.awaits_composite() || renderer.layer_composite_ready(gpu);
+    let overlay = (transitions.overlay(plan, zoom, now, composite_ready)).map(Arc::new);
     if overlay.is_some() || std::mem::take(&mut transitions.ran) {
         style.paint.invalidate();
         // Draped paint eases alike: its zooms are draped again.

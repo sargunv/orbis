@@ -2,17 +2,20 @@
 //! paint edit eases from the property's prior value to its new one. Each
 //! frame a transition runs, the plan's style is overlaid with the eased
 //! values as constants, by [`PropertyId`]: the overlay copies only the
-//! eased layers, and the paint writes from it. A new style ends them.
-//! Values interpolate as GL JS's do: numbers, colours (straight components) and
-//! pairs, eased cubic in-out. Per-feature values (data or feature state)
-//! change at once, which is also what GL JS does with feature state.
+//! eased layers, and the paint writes from it, draped paint too. A new
+//! style ends them. Values interpolate as GL JS's do: numbers, colours
+//! (straight components) and pairs, eased cubic in-out. Per-feature
+//! values change at once (feature-state changes fade in the shaders,
+//! [`crate::state`]).
 //!
 //! Beyond GL JS and Native, which snap, a layer shown or hidden fades in
 //! or out by the style's `transition`: the overlay keeps a hidden layer
 //! drawing while it fades, and scales its opacity, the layer opacity of a
 //! fill or line (which composites the layer once) and the per-feature
 //! opacities of the rest, where those are the same for every feature. A
-//! layer whose opacity varies by feature shows or hides at once.
+//! layer whose opacity varies by feature shows or hides at once. A fill or
+//! line starts fading once the composite's pipeline compiled: a frame
+//! waiting for it would draw nothing.
 
 use std::sync::Arc;
 
@@ -61,6 +64,12 @@ struct Fade {
 }
 
 impl Fade {
+    /// Whether it fades through its layer's composite (the layer opacity
+    /// of a fill or line), which must compile before it starts.
+    fn composited(&self) -> bool {
+        matches!(self.ty, LayerType::Fill | LayerType::Line)
+    }
+
     fn at(&self, now: f64) -> f64 {
         let t = self
             .span
@@ -198,6 +207,13 @@ impl Transitions {
         self.fades.iter().any(|f| f.layer == layer && f.to == 0.0)
     }
 
+    /// Whether a fade waits to start for the layer composite.
+    pub(crate) fn awaits_composite(&self) -> bool {
+        self.fades
+            .iter()
+            .any(|f| f.span.is_none() && f.composited())
+    }
+
     /// Whether a paint transition or a fade runs.
     pub(crate) fn running(&self) -> bool {
         !self.running.is_empty() || !self.fades.is_empty()
@@ -209,8 +225,16 @@ impl Transitions {
     }
 
     /// The style overlaid with the eased values at `zoom` and `now`, while
-    /// a transition runs; finished ones end.
-    pub(crate) fn overlay(&mut self, plan: &StylePlan, zoom: f64, now: f64) -> Option<StylePlan> {
+    /// a transition runs; finished ones end. Fades through the layer
+    /// composite start once it is `composite_ready`, showing what they
+    /// showed until then.
+    pub(crate) fn overlay(
+        &mut self,
+        plan: &StylePlan,
+        zoom: f64,
+        now: f64,
+        composite_ready: bool,
+    ) -> Option<StylePlan> {
         for r in &mut self.running {
             let t = r.transition;
             r.span
@@ -220,11 +244,12 @@ impl Transitions {
             .retain(|r| r.span.is_some_and(|(_, end)| end > now));
         for f in &mut self.fades {
             let t = f.transition;
-            f.span
-                .get_or_insert((now + t.delay, now + t.delay + t.duration));
+            if f.span.is_none() && (composite_ready || !f.composited()) {
+                f.span = Some((now + t.delay, now + t.delay + t.duration));
+            }
         }
         self.fades
-            .retain(|f| f.span.is_some_and(|(_, end)| end > now));
+            .retain(|f| f.span.is_none_or(|(_, end)| end > now));
         self.ran |= self.running();
         if !self.running() {
             return None;
@@ -251,8 +276,16 @@ impl Transitions {
                 continue;
             };
             let layer = Arc::make_mut(layer);
-            layer.visibility = Visibility::Visible;
             let shown = f.at(now);
+            // At its ends it shows or hides as such, needing no composite.
+            if shown == 0.0 {
+                layer.visibility = Visibility::None;
+                continue;
+            }
+            layer.visibility = Visibility::Visible;
+            if shown == 1.0 {
+                continue;
+            }
             for &id in fade_properties(f.ty) {
                 let slot = layer.slot_mut(id);
                 if let Value::Number(n) = id.value(slot, zoom) {

@@ -1387,6 +1387,14 @@ impl Renderer {
         self.atmosphere.set(gpu, self.target, frame, paint, view);
     }
 
+    /// Whether a layer can composite at a layer opacity, asking for the
+    /// pipeline it takes: a frame that would wait for it draws nothing,
+    /// so what fades through it starts once it compiled.
+    pub fn layer_composite_ready(&mut self, gpu: &mut dyn Gpu) -> bool {
+        self.composites.make(gpu, offscreen::Mode::Over);
+        self.composites.ready(gpu, offscreen::Mode::Over)
+    }
+
     /// Asks for the pipelines the nodes shown need and counts those
     /// compiling: a frame is complete only once none are.
     pub fn pipelines(&mut self, gpu: &mut dyn Gpu) -> PipelineCounts {
