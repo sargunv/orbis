@@ -79,6 +79,9 @@ struct Frame {
     dem_unpack: vec4<f32>,
     terrain_exaggeration: f32,
     dem_dim: f32,
+    // The ground's elevation under the camera target, metres: the plane
+    // the ground mask lies on (`GROUND_MASK_SCALE`).
+    terrain_ground: f32,
     // v8's `light` (see lighting.wgsl): its premultiplied colour with its
     // intensity in w, and its position in GL JS's extrusion axes.
     light_color: vec4<f32>,

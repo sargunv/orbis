@@ -166,6 +166,9 @@ pub struct FrameTerrain {
     pub exaggeration: f32,
     /// DEM pixels per side, without borders.
     pub dem_dim: f32,
+    /// The ground's elevation under the camera target, metres: the plane
+    /// the ground mask lies on (`project.wgsl`'s `ground_mask_clip`).
+    pub ground: f32,
 }
 
 const FRAME_WORDS: usize = layout::frame::WORDS;
@@ -227,6 +230,7 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
         b.f(f::DEM_UNPACK, &t.unpack);
         b.f(f::TERRAIN_EXAGGERATION, &[t.exaggeration]);
         b.f(f::DEM_DIM, &[t.dem_dim]);
+        b.f(f::TERRAIN_GROUND, &[t.ground]);
     }
     let [red, green, blue] = frame.light.color;
     b.f(f::LIGHT_COLOR, &[red, green, blue, frame.light.intensity]);

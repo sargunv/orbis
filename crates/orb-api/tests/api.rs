@@ -1626,13 +1626,72 @@ fn fits_before_the_first_frame_use_the_viewport_set() {
 /// `metres` north of its middle (south for negative), with `light` and
 /// `paint` added to its style.
 fn beside_a_building(height: f64, light: &str, paint: &str, metres: &[f64]) -> Vec<[u8; 4]> {
-    const VIEW: u32 = 256;
+    beside_a_building_on(None, height, light, paint, metres)
+}
+
+/// [`beside_a_building`] on `terrain`, if any (see [`a_building`]).
+fn beside_a_building_on(
+    terrain: Option<&dyn Fn(f64) -> f64>,
+    height: f64,
+    light: &str,
+    paint: &str,
+    metres: &[f64],
+) -> Vec<[u8; 4]> {
+    a_building(terrain, height, (light, paint), 0.0, |map, pixels| {
+        (metres.iter())
+            .map(|&m| {
+                let p = map.project(north_of_building(m)).expect("in view");
+                pixel_of(pixels, BUILDING_VIEW, p.x as u32, p.y as u32)
+            })
+            .collect()
+    })
+}
+
+/// The side of [`a_building`]'s pictures, in pixels.
+const BUILDING_VIEW: u32 = 256;
+
+/// Where [`a_building`] stands: within one tile at every zoom, as the
+/// origin isn't.
+const BUILDING: (f64, f64) = (0.001, 0.001);
+
+/// The point `metres` north of [`a_building`]'s middle.
+fn north_of_building(metres: f64) -> orb_api::Geodetic {
+    orb_api::Geodetic::new(BUILDING.0, BUILDING.1 + metres / 110_574.0)
+}
+
+/// `read` of a [`BUILDING_VIEW`]-pixel square picture of a building
+/// `height` metres tall and 44 m square near the equator ([`BUILDING`]),
+/// in the middle of the picture, its light from the
+/// south 45° up, on white, with `light` and `paint` added to its style,
+/// seen from the south at `pitch` degrees, and of its map. On `terrain`,
+/// if any, its ground stands `terrain(north)` metres high, `north` metres
+/// north of the building's middle.
+fn a_building<T>(
+    terrain: Option<&dyn Fn(f64) -> f64>,
+    height: f64,
+    (light, paint): (&str, &str),
+    pitch: f64,
+    read: impl FnOnce(&Map, &[u8]) -> T,
+) -> T {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let dem = terrain.map(equator_dem);
+    let (dem_source, terrain) = dem.as_ref().map_or((String::new(), String::new()), |d| {
+        (
+            format!(
+                r#", "dem": {{"type": "raster-dem", "encoding": "terrarium", "tileSize": 256,
+                  "maxzoom": {DEM_ZOOM}, "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}}"#,
+                d.0.display()
+            ),
+            r#""terrain": {"source": "dem"},"#.to_owned(),
+        )
+    });
+    let (x, y) = BUILDING;
+    let [w, s, e, n] = [x - 0.0002, y - 0.0002, x + 0.0002, y + 0.0002];
     let style = format!(
-        r##"{{"version": 8, "center": [0, 0], "zoom": 17,
+        r##"{{"version": 8, "center": [{x}, {y}], "zoom": 17, "pitch": {pitch}, {terrain}
           "light": {{"anchor": "map", "position": [1.15, 180, 45], {light}}},
           "sources": {{"b": {{"type": "geojson", "data": {{"type": "Polygon", "coordinates":
-            [[[-0.0002, -0.0002], [0.0002, -0.0002], [0.0002, 0.0002], [-0.0002, 0.0002], [-0.0002, -0.0002]]]}}}}}},
+            [[[{w}, {s}], [{e}, {s}], [{e}, {n}], [{w}, {n}], [{w}, {s}]]]}}}}{dem_source}}},
           "layers": [
             {{"id": "background", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
             {{"id": "b", "type": "fill-extrusion", "source": "b", "paint": {{
@@ -1646,15 +1705,68 @@ fn beside_a_building(height: f64, light: &str, paint: &str, metres: &[f64]) -> V
         },
     );
     map.set_style_json(&style).expect("style");
-    let image = map.snapshot(VIEW, VIEW, 1.0).expect("snapshot");
-    (metres.iter())
-        .map(|&m| {
-            let p = map
-                .project(orb_api::Geodetic::new(0.0, m / 110_574.0))
-                .expect("in view");
-            pixel_of(&image.pixels, VIEW, p.x as u32, p.y as u32)
-        })
-        .collect()
+    let image = map
+        .snapshot(BUILDING_VIEW, BUILDING_VIEW, 1.0)
+        .expect("snapshot");
+    read(&map, &image.pixels)
+}
+
+/// The deepest zoom of [`equator_dem`]'s tiles.
+const DEM_ZOOM: u8 = 15;
+
+/// A directory of DEM tiles, removed when the test is done with it.
+struct DemDir(std::path::PathBuf);
+
+impl Drop for DemDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Terrarium DEM tiles, zooms 0 to [`DEM_ZOOM`], of the ground within
+/// 0.01° of the origin standing `metres(north)` high, `north` metres
+/// north of [`BUILDING`], written to a fresh directory.
+fn equator_dem(metres: &dyn Fn(f64) -> f64) -> DemDir {
+    // One directory per call: tests run in parallel.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "orb-api-dem-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ));
+    const SIZE: u32 = 256;
+    for z in 0..=DEM_ZOOM {
+        let n = f64::from(1u32 << z);
+        let cell = |v: f64| ((v + 180.0) / 360.0 * n).floor() as u32;
+        let (lo, hi) = (cell(-0.01), cell(0.01));
+        for x in lo..=hi {
+            for y in lo..=hi {
+                let mut pixels = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+                for py in 0..SIZE {
+                    for _ in 0..SIZE {
+                        let fy = (f64::from(y) + (f64::from(py) + 0.5) / f64::from(SIZE)) / n;
+                        let lat = (std::f64::consts::PI * (1.0 - 2.0 * fy))
+                            .sinh()
+                            .atan()
+                            .to_degrees();
+                        let north = (lat - BUILDING.1) * 110_574.0;
+                        let v = ((metres(north) + 32768.0) * 256.0).round() as u32;
+                        pixels.extend([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
+                    }
+                }
+                let path = dir.join(format!("{z}/{x}/{y}.png"));
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                let file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+                let mut encoder = png::Encoder::new(file, SIZE, SIZE);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                (encoder.write_header().unwrap())
+                    .write_image_data(&pixels)
+                    .unwrap();
+            }
+        }
+    }
+    DemDir(dir)
 }
 
 fn pixel_of(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
@@ -1722,6 +1834,106 @@ fn ambient_occlusion_darkens_the_ground_along_the_walls() {
     assert!(on[0][0] < 80, "at the foot: {on:?}");
     assert!(on[0][0] < on[1][0] && on[1][0] < 255, "fading out: {on:?}");
     assert_eq!(on[2][0], 255, "past the radius: {on:?}");
+}
+
+/// On terrain a shadow falls on the ground where the light meets it: on
+/// a plateau as on flat ground, and on ground rising away from the light,
+/// shorter. 30 m up, the roof's north edge 22 m north of the middle
+/// stands 19 m over ground rising one in two, and lands as high on it,
+/// 12.7 m further: 34.7 m north rather than 52 m.
+#[test]
+fn shadows_fall_on_the_terrain() {
+    let light = r#""intensity": 0.5, "shadow-intensity": 0.6"#;
+    let at = [32.0, 47.0, 62.0, -32.0];
+    let plateau = beside_a_building_on(Some(&|_| 300.0), 30.0, light, "", &at);
+    for p in &plateau[..2] {
+        assert!((p[0] as i32 - 102).abs() <= 2, "shadowed: {plateau:?}");
+    }
+    assert_eq!(plateau[2][0], 255, "past the shadow: {plateau:?}");
+    assert_eq!(plateau[3][0], 255, "on the lit side: {plateau:?}");
+    let at = [30.0, 40.0, 47.0];
+    let rising = beside_a_building_on(Some(&|north| 300.0 + north / 2.0), 30.0, light, "", &at);
+    assert!(
+        (rising[0][0] as i32 - 102).abs() <= 2,
+        "shadowed: {rising:?}"
+    );
+    assert_eq!(rising[1][0], 255, "past the shadow: {rising:?}");
+    assert_eq!(rising[2][0], 255, "past the shadow: {rising:?}");
+}
+
+/// On ground falling away from the light as steeply as the light falls, a
+/// shadow would reach on until the ground rose again: it falls at most
+/// twice as far as on flat ground. The roof's north edge, 22 m north of
+/// the middle, 30 m up, lands 60 m on, 82 m north.
+#[test]
+fn shadows_down_a_steep_slope_reach_twice_as_far() {
+    let light = r#""intensity": 0.5, "shadow-intensity": 0.6"#;
+    let at = [75.0, 90.0];
+    let falling = beside_a_building_on(Some(&|north| 300.0 - north), 30.0, light, "", &at);
+    assert!(
+        (falling[0][0] as i32 - 102).abs() <= 2,
+        "shadowed: {falling:?}"
+    );
+    assert_eq!(falling[1][0], 255, "past the shadow: {falling:?}");
+}
+
+/// On terrain the ground darkens along the walls as on flat ground: at
+/// their foot by the ground intensity, fading out over the radius, on a
+/// plateau and on a slope. North of the building, where the slope rises
+/// past its roof: south of it, the roof standing over the falling ground
+/// would hide the foot from above.
+#[test]
+fn ambient_occlusion_darkens_the_terrain_along_the_walls() {
+    let paint = r#", "fill-extrusion-ambient-occlusion-ground-intensity": 0.8,
+        "fill-extrusion-ambient-occlusion-ground-radius": 8"#;
+    let at = [23.0, 26.0, 34.0];
+    let grounds: [&dyn Fn(f64) -> f64; 2] = [&|_| 300.0, &|north| 300.0 + north * 0.3];
+    for ground in grounds {
+        let on = beside_a_building_on(Some(ground), 2.0, r#""intensity": 0.5"#, paint, &at);
+        assert!(on[0][0] < 80, "at the foot: {on:?}");
+        assert!(on[0][0] < on[1][0] && on[1][0] < 255, "fading out: {on:?}");
+        assert_eq!(on[2][0], 255, "past the radius: {on:?}");
+    }
+}
+
+/// On terrain a wall darkens toward the ground at its foot, wherever that
+/// is: over the wall radius above the ground under it, not under the
+/// building's middle. On ground rising north one in three, the south wall
+/// stands 6.6 m lower than the middle, and darkens over as many rows as
+/// it does on a plateau.
+#[test]
+fn walls_darken_toward_the_terrain_they_stand_on() {
+    let paint = r#", "fill-extrusion-ambient-occlusion-wall-intensity": 0.8,
+        "fill-extrusion-ambient-occlusion-wall-radius": 6"#;
+    let light = r#""intensity": 0.5"#;
+    // Rows of the south wall's middle, from its foot up, darker with the
+    // occlusion than without.
+    let darkened = |ground: &dyn Fn(f64) -> f64| {
+        let foot = north_of_building(-22.1);
+        let column = |paint| {
+            a_building(Some(ground), 30.0, (light, paint), 60.0, |map, pixels| {
+                let p = map.project(foot).expect("in view");
+                (0..p.y as u32)
+                    .rev()
+                    .map(|y| pixel_of(pixels, BUILDING_VIEW, p.x as u32, y)[0])
+                    .collect::<Vec<_>>()
+            })
+        };
+        let (off, on) = (column(""), column(paint));
+        let rows = off
+            .iter()
+            .zip(&on)
+            .filter(|(a, b)| u16::from(**b) + 2 < u16::from(**a))
+            .count();
+        assert!(rows > 0, "no occlusion: {off:?} {on:?}");
+        rows
+    };
+    let plateau = darkened(&|_| 300.0);
+    let slope = darkened(&|north| 300.0 + north * 0.3);
+    assert!(
+        slope.abs_diff(plateau) <= 2,
+        "{slope} rows on the slope, {plateau} on the plateau"
+    );
 }
 
 /// style-spec#1047: a fill's corners round off by the distance along their

@@ -1652,7 +1652,10 @@ impl Map {
                     self.camera.state().bearing,
                 ),
             },
-            terrain: frame_terrain,
+            terrain: frame_terrain.map(|t| orb_render::FrameTerrain {
+                ground: self.camera.state().elevation as f32,
+                ..t
+            }),
             light: frame_light,
             globe,
         };

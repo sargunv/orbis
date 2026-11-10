@@ -206,7 +206,8 @@ struct Node {
     /// its paint's occlusion. Its paint asks for occlusion.
     ground: extrusion::Ground,
     occlusion: bool,
-    /// What its recorded draw darkens: what of `ground` had compiled.
+    /// What its recorded draw darkens: what of `ground` had compiled, as
+    /// the draw records it ([`extrusion::Ground::recorded`]).
     ground_drawn: extrusion::Ground,
     /// On terrain, the drape stack a draped node draws into, and the
     /// terrain layer that composites it.
@@ -452,7 +453,8 @@ impl Renderer {
                 E::texture(11, fs, true, D2),
                 E::texture(12, fs, true, D2Array),
                 E::sampler(13, fs, true),
-                E::texture(14, vs, false, D2Array),
+                // Extrusions' walls read the ground per fragment.
+                E::texture(14, vf, false, D2Array),
                 E::texture(15, vf, false, D2),
                 // The image pages again, for the nearest sampler
                 // (`symbol.wgsl`).
@@ -1520,7 +1522,15 @@ impl Renderer {
             Family::Heatmap => self.heatmaps.make(gpu),
             Family::FillExtrusion => {
                 self.extrusions.make(gpu, self.nodes[i].elevation);
-                self.extrusions.make_ground(gpu, self.nodes[i].ground);
+                let ground = self.nodes[i].ground;
+                self.extrusions.make_ground(gpu, ground);
+                if ground.mask
+                    && ground.any()
+                    && let Some(terrain) = self.terrain.as_mut()
+                {
+                    let (format, samples) = (self.target.color, self.extrusions.samples);
+                    terrain.make_decal(gpu, format, samples);
+                }
             }
         }
     }
@@ -1558,6 +1568,13 @@ impl Renderer {
             Family::FillExtrusion => {
                 out.extend(self.extrusions.pipelines(node.elevation));
                 out.extend(self.extrusions.ground_pipelines(node.ground));
+                if node.ground.mask
+                    && node.ground.any()
+                    && let Some(terrain) = &self.terrain
+                {
+                    let decal = terrain.decal_pipeline(self.extrusions.samples);
+                    out.extend(decal.map(PipelineId::from));
+                }
             }
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(
@@ -1723,11 +1740,15 @@ impl Renderer {
         self.refresh_image_groups(gpu);
         // What extrusion nodes darken on the ground: their pipelines are
         // made with the rest.
+        // On a plane's terrain, through the ground mask.
         let shadows = frame.light.shadow().1 > 0.0;
+        let mask = frame.globe.is_none_or(|g| g.amount <= 0.0)
+            && self.terrain.as_ref().is_some_and(terrain::Terrain::active);
         for node in self.nodes.iter_mut().filter(|n| n.extrusion.is_some()) {
             let ground = extrusion::Ground {
                 shadows,
                 occlusion: node.occlusion,
+                mask,
             };
             if node.ground != ground {
                 node.ground = ground;
@@ -2057,24 +2078,41 @@ impl Renderer {
             }
             let first = !depth_cleared;
             depth_cleared = true;
-            // Ground passes join the recorded draw as they compile.
-            let ground = self.extrusions.ground_ready(gpu, node.ground);
-            if ground != node.ground_drawn {
-                node.ground_drawn = ground;
+            // Ground passes join the recorded draw as they compile. On
+            // terrain they draw into the mask first, and the terrain's
+            // decal carries it into the layer's pass.
+            let mut ground = self.extrusions.ground_ready(gpu, node.ground);
+            let mut decal = None;
+            if ground.mask && ground.any() {
+                let mask = self.extrusions.mask_target(gpu, size);
+                let samples = self.extrusions.samples;
+                decal = (self.terrain.as_mut()).and_then(|t| t.decal_commands(gpu, samples, mask));
+                if decal.is_none() {
+                    ground.shadows = false;
+                    ground.occlusion = false;
+                }
+            }
+            if ground.recorded() != node.ground_drawn {
+                node.ground_drawn = ground.recorded();
                 target.forget_bundle(gpu);
             }
-            let pass = self.extrusions.prepare(
+            let draw = self.driver.draw(&buffers, index as u32, NodeDraw::Indexed);
+            if decal.is_some() {
+                let groups = (draw_group, node.group);
+                let mask = (self.extrusions).mask_pass(groups, &buffers, (draw.clone(), ground));
+                passes.extend(mask.map(Pass::Render));
+            }
+            let mut pass = self.extrusions.prepare(
                 gpu,
                 target,
                 (draw_group, node.group),
                 &buffers,
-                (
-                    self.driver.draw(&buffers, index as u32, NodeDraw::Indexed),
-                    node.elevation,
-                    ground,
-                ),
+                (draw, node.elevation, ground),
                 first,
             );
+            if let Some(decal) = decal {
+                pass.commands.splice(0..0, decal);
+            }
             passes.push(Pass::Render(pass));
             stats.draws += 1;
         }

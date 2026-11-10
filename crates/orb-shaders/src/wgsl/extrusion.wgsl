@@ -72,8 +72,12 @@ struct ExtrusionOut {
     @location(3) pattern_pos: vec2<f32>,
     @location(4) @interpolate(flat) images: vec2<u32>,
     // A wall's height above the ground, metres, for its ambient occlusion;
-    // EXTRUSION_ROOF_ABOVE on roofs, which it leaves alone.
+    // EXTRUSION_ROOF_ABOVE on roofs, which it leaves alone. On terrain, its
+    // elevation, less the DEM's at the fragment (`dem` and `dem_layer`,
+    // `ground_dem_at`'s; NO_GROUND_DEM off terrain).
     @location(5) above: f32,
+    @location(6) dem: vec2<f32>,
+    @location(7) @interpolate(flat) dem_layer: u32,
 };
 // Extrusions draw in two pipelines: whole buildings, and buildings cut at
 // the source's buffer, clipped per fragment to the placement. Only the
@@ -262,6 +266,18 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     out.tile_pos = pos;
     out.tile = v.tile;
     out.above = select(EXTRUSION_ROOF_ABOVE, mix(gradient_base - basement, gradient_height, top), normal.z == 0.0);
+    // On terrain a wall's foot is where it meets the ground, which the DEM
+    // shapes between the wall's ends (a street's crown, a pit dug beside
+    // it): a wall measures its height above the ground per fragment.
+    out.dem_layer = NO_GROUND_DEM;
+    if normal.z == 0.0 && node.occlusion.x > 0.0 && frame.dem_dim > 0.0 {
+        let at = ground_dem_at(tile, pos);
+        if at.layer != NO_GROUND_DEM {
+            out.above = elevation;
+            out.dem = at.coord;
+            out.dem_layer = at.layer;
+        }
+    }
     var gradient = 1.0;
     if normal.z == 0.0 && vertical_gradient {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
@@ -400,15 +416,19 @@ fn elevation_shade(in: ExtrusionOut) -> vec4<f32> {
 // The fragment's colour, its wall darkened toward the ground by
 // style-spec#1796's ambient occlusion as MapLibre Native's walls PR (#4909)
 // shades it: by the intensity at the foot, fading out over the radius. On
-// terrain, a wall's basement below the ground at its centroid shows on the
-// downhill side, darkened as its foot is.
+// terrain, from the ground under the fragment, wherever along the wall the
+// terrain meets it.
 fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {
     let color = extrusion_color(in);
     let occlusion = node.occlusion;
     if occlusion.x <= 0.0 || occlusion.y <= 0.0 {
         return color;
     }
-    let lit = 1.0 - occlusion.x * (1.0 - smoothstep(0.0, occlusion.y, in.above));
+    var above = in.above;
+    if in.dem_layer != NO_GROUND_DEM {
+        above -= dem_bilinear(DemAt(in.dem, in.dem_layer));
+    }
+    let lit = 1.0 - occlusion.x * (1.0 - smoothstep(0.0, occlusion.y, above));
     return vec4<f32>(color.rgb * lit, color.a);
 }
 fn extrusion_color(in: ExtrusionOut) -> vec4<f32> {

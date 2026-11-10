@@ -16,8 +16,19 @@
 // ground running out from its foot, past both ends by the radius so that
 // convex corners round off.
 //
+// On terrain they draw into the ground mask instead (`ground_mask`), which
+// the terrain's own mesh then carries onto the surface drawn (orb-render's
+// terrain decal): drawn here, a shape lying flat between the DEM's heights
+// at its corners would float over the ground or sink into it where the
+// terrain bends between them, and the buildings' walls would cover what
+// floats.
+//
 // Every vertex of a triangle draws or none does: one moved out of the view
 // alone would stretch its triangle across the map.
+
+// The pipelines that draw into the ground mask (`ground_mask_clip`), one
+// sample of the darkness alone.
+override ground_mask: bool = false;
 
 struct GroundOut {
     @builtin(position) position: vec4<f32>,
@@ -39,6 +50,12 @@ struct GroundVertex {
     opacity: f32,
     // The ground it stands on, moved by the layer's translate.
     ground: Ground,
+    // On terrain, the ground's elevation under its feature's centroid,
+    // which its building stands on (`extrusion_vertex`), metres; 0 off it.
+    raise: f32,
+    // Whether its feature's centroid lies in its tile's square, where the
+    // placement's DEM reaches: past it, `raise` holds the DEM's edge.
+    centroid_in_tile: bool,
 };
 
 // Pulled vertex `v`'s building, which this placement draws.
@@ -54,6 +71,11 @@ fn ground_vertex(v: Pulled) -> GroundVertex {
     g.opacity = part.z;
     let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, g.tile.zoom);
     g.ground = tile_ground_shifted(g.tile, g.pos, translate_world(px, node.translate_anchor, g.tile));
+    let centroid = unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID));
+    g.centroid_in_tile = all(centroid >= vec2<f32>(0.0)) && all(centroid <= vec2<f32>(g.tile.extent));
+    if frame.dem_dim > 0.0 {
+        g.raise = ground_elevation(g.tile, centroid);
+    }
     return g;
 }
 
@@ -82,18 +104,60 @@ fn ground_outward(packed: u32) -> vec2<f32> {
 // they stay where they fall on screen.
 const GROUND_TERRAIN_PULL: f32 = 0.01;
 
+// The DEM's elevation where ground vertex `g` lands moved `offset` world
+// units along the map (east, north), metres: off the placement's DEM
+// tile, at its edge, as far as its border reaches.
+fn ground_elevation_at(g: GroundVertex, offset: vec2<f32>) -> f32 {
+    let landing = g.pos + vec2<f32>(offset.x, -offset.y) / ground_scale(g.tile, g.pos);
+    var at = ground_dem_at(g.tile, landing);
+    at.coord = clamp(at.coord, vec2<f32>(0.5), vec2<f32>(frame.dem_dim + 2.5));
+    return dem_bilinear(at);
+}
+
 // The clip position of ground vertex `g` moved `offset` world units along
 // the map (east, north), on the ground there: on terrain, the DEM's height
-// where it lands.
+// where it lands, or flat in the ground mask.
 fn ground_landing(g: GroundVertex, offset: vec2<f32>) -> vec4<f32> {
+    if ground_mask {
+        return ground_mask_clip(g.ground.flat + offset);
+    }
     if frame.dem_dim <= 0.0 {
         return ground_clip_reversed(g.ground, offset, 0.0);
     }
-    let landing = g.pos + vec2<f32>(offset.x, -offset.y) / ground_scale(g.tile, g.pos);
-    let z = ground_elevation(g.tile, clamp(landing, vec2<f32>(0.0), vec2<f32>(g.tile.extent)));
+    let z = ground_elevation_at(g, offset);
     var clip = ground_clip_reversed(g.ground, offset, z * frame.extrusion_scale);
     clip.z *= 1.0 + GROUND_TERRAIN_PULL;
     return clip;
+}
+
+// How many times as far as on flat ground a shadow falls at most on ground
+// falling away from the light: where the ground falls as steeply as the
+// light, the light would carry it on until the ground rises again, and
+// each vertex would settle on a different slope, spiking the shadow
+// downhill. Ground falling half as steeply as the light already doubles
+// it; past that, the terrain shades itself.
+const SHADOW_DROP_LIMIT: f32 = 2.0;
+
+// Where the light carries a point of ground vertex `g`'s building `up`
+// metres above its base down to the ground, world units east and north of
+// it. On terrain the point stands on the ground under its feature's
+// centroid, and falls as far as it stands over the ground where it lands:
+// two steps toward it from where it would land on the ground under it,
+// which slopes gentler than the light settle on, and at most
+// SHADOW_DROP_LIMIT times its height. A point at the foot of a part on
+// the ground stays where it meets the ground.
+fn shadow_reach(g: GroundVertex, up: f32) -> vec2<f32> {
+    let along = frame.shadow_offset * frame.extrusion_scale;
+    if frame.dem_dim <= 0.0 || up <= 0.0 {
+        return along * up;
+    }
+    let top = g.raise + up;
+    let limit = SHADOW_DROP_LIMIT * up;
+    var drop = clamp(top - ground_elevation(g.tile, g.pos), 0.0, limit);
+    for (var i = 0; i < 2; i++) {
+        drop = clamp(top - ground_elevation_at(g, along * drop), 0.0, limit);
+    }
+    return along * drop;
 }
 
 // A shadow: each vertex where the light carries it down to the ground, at
@@ -114,7 +178,12 @@ fn vs_extrusion_shadow(@builtin(vertex_index) index: u32) -> GroundOut {
         return out;
     }
     let g = ground_vertex(v);
-    if g.opacity <= 0.0 {
+    // On terrain, a building cut at the buffer casts its shadow from the
+    // placement holding its centroid: another's DEM doesn't reach it, and
+    // would stand the building at the wrong height, its shadow at the
+    // wrong length, which nothing covers where it falls on the terrain.
+    let stray = frame.dem_dim > 0.0 && !g.centroid_in_tile;
+    if g.opacity <= 0.0 || stray {
         out.position = discarded_vertex();
         return out;
     }
@@ -124,7 +193,7 @@ fn vs_extrusion_shadow(@builtin(vertex_index) index: u32) -> GroundOut {
         let lit = dot(ground_outward(packed), frame.shadow_offset) < 0.0;
         up = select(g.height, g.base, (packed & 1u) == 0u || (lit && g.base <= 0.0));
     }
-    out.position = ground_landing(g, frame.shadow_offset * (up * frame.extrusion_scale));
+    out.position = ground_landing(g, shadow_reach(g, up));
     out.ground = vec4<f32>(0.0, 0.0, 0.0, frame.shadow_intensity * g.opacity);
     return out;
 }
@@ -174,9 +243,20 @@ fn vs_extrusion_occlusion(@builtin(vertex_index) index: u32) -> GroundOut {
 
 // The darkness at a fragment: a shadow's throughout; occlusion's from the
 // wall's foot out to the radius, rounding past its ends.
-@fragment
-fn fs_extrusion_ground(in: GroundOut) -> @location(0) vec4<f32> {
+fn ground_darkness(in: GroundOut) -> f32 {
     let beyond = max(max(-in.ground.y, in.ground.y - in.ground.z), 0.0);
     let d = length(vec2<f32>(in.ground.x, beyond));
-    return vec4<f32>(0.0, 0.0, 0.0, in.ground.w * (1.0 - smoothstep(0.0, 1.0, d)));
+    return in.ground.w * (1.0 - smoothstep(0.0, 1.0, d));
+}
+
+// As black whose alpha is the darkness, into the layer's target.
+@fragment
+fn fs_extrusion_ground(in: GroundOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, ground_darkness(in));
+}
+
+// As the darkness alone, into the ground mask.
+@fragment
+fn fs_extrusion_ground_mask(in: GroundOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(ground_darkness(in));
 }

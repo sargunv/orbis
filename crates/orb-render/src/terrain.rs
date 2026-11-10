@@ -16,13 +16,20 @@
 //! terrain layer (a stack, or two around a hillshade lit between them from
 //! its slopes' stack and the frame's bearing) draws into a texture of its own
 //! with the depth extrusions share, composited in the map at its place.
+//!
+//! Its decal is what an extrusion layer darkens on the ground beneath its
+//! buildings, on a plane's terrain: the terrain's mesh drawn again into
+//! the layer's target before its buildings, where the extrusion layer's
+//! ground mask says (`terrain_decal.wgsl`).
 
 use crate::TargetFormat;
 use crate::pipeline::{DEPTH, Draw};
 use crate::release::Release;
 use TextureViewDimension::D2Array;
 use orb_hal::*;
-use orb_shaders::{DRAPE_SHADER, Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
+use orb_shaders::{
+    DRAPE_SHADER, Shader, TERRAIN_DECAL_SHADER, TERRAIN_SHADE_SHADER, TERRAIN_SHADER,
+};
 
 use crate::offscreen::{Composite, Composites, Mode, Offscreen};
 
@@ -388,6 +395,12 @@ pub(crate) struct Terrain {
     clear_layout: BindGroupLayoutId,
     /// Draping and shading, each at one sample and at four.
     pipelines: [[Option<RenderPipelineId>; 2]; 2],
+    /// The decal's group over a ground mask, its pipelines at one sample
+    /// and at four, made for the first extrusion layer on terrain, and
+    /// the group and the mask it binds.
+    decal_layout: BindGroupLayoutId,
+    decal_pipelines: [Option<RenderPipelineId>; 2],
+    decal_group: Option<(BindGroupId, TextureId)>,
     /// Clearing the colour page's slots and the slope page's, which differ
     /// in linear light.
     clear: [RenderPipelineId; 2],
@@ -467,6 +480,13 @@ impl Terrain {
             label: "terrain layer",
             entries: &[E::uniform(0, fs)],
         });
+        let decal_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "terrain decal",
+            entries: &[
+                E::texture(1, fs, true, TextureViewDimension::D2),
+                E::sampler(2, fs, true),
+            ],
+        });
         let clear_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "drape clear",
             entries: &[E::uniform(0, vs), E::storage(1, vs)],
@@ -522,6 +542,9 @@ impl Terrain {
             shade_layout,
             clear_layout,
             pipelines: [[None; 2]; 2],
+            decal_layout,
+            decal_pipelines: [None; 2],
+            decal_group: None,
             clear,
             grid: grid_buffer,
             grid_indices,
@@ -978,6 +1001,92 @@ impl Terrain {
         self.pending_draws.clear();
     }
 
+    /// Makes the decal's pipeline into `format` targets at `samples`,
+    /// unless made: depth-tested against the terrain without writing it,
+    /// keeping the darkest of what overlaps.
+    pub(crate) fn make_decal(&mut self, gpu: &mut dyn Gpu, format: TextureFormat, samples: u32) {
+        let slot = &mut self.decal_pipelines[usize::from(samples > 1)];
+        if slot.is_some() {
+            return;
+        }
+        let target = TargetFormat {
+            color: format,
+            sample_count: samples,
+        };
+        let shader = &TERRAIN_DECAL_SHADER;
+        *slot = Some(
+            Draw {
+                depth: Some(DepthState {
+                    format: TextureFormat::Depth32Float,
+                    write: false,
+                }),
+                ..Draw::new(
+                    shader,
+                    &[self.layout, self.decal_layout],
+                    target,
+                    Some(BlendState::Max),
+                )
+            }
+            .make(gpu),
+        );
+    }
+
+    /// The decal's pipeline at `samples`, made or not.
+    pub(crate) fn decal_pipeline(&self, samples: u32) -> Option<RenderPipelineId> {
+        self.decal_pipelines[usize::from(samples > 1)]
+    }
+
+    /// The decal's draw at `samples` of the ground in `mask`, once its
+    /// pipeline compiled and this frame's terrain drew (its group bound).
+    pub(crate) fn decal_commands(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        samples: u32,
+        mask: TextureId,
+    ) -> Option<Vec<RenderCommand>> {
+        let pipeline = self
+            .decal_pipeline(samples)
+            .filter(|&p| gpu.pipeline_ready(p.into()))?;
+        let (group, _) = self.group?;
+        if self.decal_group.is_some_and(|(_, bound)| bound != mask) {
+            self.decal_group.take().map(|(g, _)| g).release(gpu);
+        }
+        let decal = match self.decal_group {
+            Some((group, _)) => group,
+            None => {
+                let decal = gpu.create_bind_group(&BindGroupDesc {
+                    label: "terrain decal",
+                    layout: self.decal_layout,
+                    entries: &[
+                        BindGroupEntry::texture(1, mask, TextureViewDimension::D2),
+                        BindGroupEntry::sampler(2, self.linear),
+                    ],
+                });
+                self.decal_group = Some((decal, mask));
+                decal
+            }
+        };
+        let step = GRID_STEPS.iter().position(|&s| s == self.grid_step);
+        let indices = self.grid_ranges[step.expect("a grid step")].clone();
+        Some(vec![
+            RenderCommand::SetPipeline(pipeline),
+            RenderCommand::SetBindGroup { index: 0, group },
+            RenderCommand::SetBindGroup {
+                index: 1,
+                group: decal,
+            },
+            RenderCommand::SetIndexBuffer {
+                buffer: self.grid_indices,
+                offset: 0,
+            },
+            RenderCommand::DrawIndexed {
+                indices,
+                base_vertex: 0,
+                instances: 0..self.tile_count,
+            },
+        ])
+    }
+
     /// The pipeline terrain layers draw with at `samples`: shading a
     /// hillshade or not.
     fn pipeline(&mut self, gpu: &mut dyn Gpu, samples: u32, shaded: bool) -> RenderPipelineId {
@@ -1257,6 +1366,7 @@ impl Terrain {
             target.release(gpu);
         }
         self.release_occlusion(gpu);
+        self.decal_group.take().map(|(g, _)| g).release(gpu);
         self.target_size = [0; 2];
         self.dem = None;
         self.pending.clear();
@@ -1370,7 +1480,12 @@ impl crate::release::Release for Terrain {
         self.release_atlas(gpu);
         self.release_occlusion(gpu);
         self.forget_group(gpu);
-        let layouts = (self.layout, self.stack_layout, self.clear_layout);
+        let decal = (
+            self.decal_layout,
+            self.decal_pipelines,
+            self.decal_group.map(|(g, _)| g),
+        );
+        let layouts = (self.layout, self.stack_layout, self.clear_layout, decal);
         let [colour_clear, slope_clear] = self.clear;
         let clear = (
             colour_clear,

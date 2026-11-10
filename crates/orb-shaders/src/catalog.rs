@@ -123,6 +123,23 @@ pub const TERRAIN_SHADER: Shader = Shader {
     compute: "",
 };
 
+/// What an extrusion layer darkens on terrain: the terrain's mesh again,
+/// reading the ground mask (`fs_terrain_decal`).
+pub const TERRAIN_DECAL_SHADER: Shader = Shader {
+    label: "terrain decal",
+    parts: &[
+        TYPES,
+        DEM,
+        ATMOSPHERE,
+        PROJECT,
+        TERRAIN,
+        wgsl!("terrain_decal"),
+    ],
+    vertex: "vs_terrain",
+    fragment: "fs_terrain_decal",
+    compute: "",
+};
+
 /// A terrain layer that shades a hillshade between its stacks.
 pub const TERRAIN_SHADE_SHADER: Shader = Shader {
     label: "terrain shade",
@@ -430,6 +447,7 @@ pub const SHADERS: &[Shader] = &[
     COMPOSITE_ENCODE_SHADER,
     TERRAIN_SHADER,
     TERRAIN_SHADE_SHADER,
+    TERRAIN_DECAL_SHADER,
     DRAPE_SHADER,
     EXTRUSION_SHADER,
     EXTRUSION_CUT_SHADER,

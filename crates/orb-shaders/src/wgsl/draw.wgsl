@@ -46,25 +46,46 @@ fn dem_pixel(p: vec2<i32>, layer: u32) -> f32 {
     return select(dot(vec4<f32>(texel.rgb * 255.0, -1.0), frame.dem_unpack), 0.0, void);
 }
 
+// Where data point `p` of a placement reads the terrain's DEM page: the
+// page's layer (NO_GROUND_DEM without one) and the point in its texels.
+// Affine in `p`, so a fragment may take it interpolated.
+struct DemAt {
+    coord: vec2<f32>,
+    layer: u32,
+};
+const NO_GROUND_DEM: u32 = 0xffffu;
+
+fn ground_dem_at(tile: Tile, p: vec2<f32>) -> DemAt {
+    var at: DemAt;
+    at.layer = select(tile.dem & 0xffffu, NO_GROUND_DEM, frame.terrain_exaggeration == 0.0);
+    let depth = f32((tile.dem >> 16u) & 255u);
+    let offset = vec2<f32>(f32(tile.dem_offset & 0xffffu), f32(tile.dem_offset >> 16u));
+    let uv = (p / tile.extent + offset) / exp2(depth);
+    at.coord = uv * frame.dem_dim + 1.5;
+    return at;
+}
+
+// The terrain's elevation in metres, with exaggeration, at `at`: bilinear
+// between pixels as the terrain's mesh samples it. Sea level where there
+// is no DEM.
+fn dem_bilinear(at: DemAt) -> f32 {
+    if at.layer == NO_GROUND_DEM {
+        return 0.0;
+    }
+    let f = fract(at.coord);
+    let c = vec2<i32>(floor(at.coord));
+    let tl = dem_pixel(c, at.layer);
+    let tr = dem_pixel(c + vec2<i32>(1, 0), at.layer);
+    let bl = dem_pixel(c + vec2<i32>(0, 1), at.layer);
+    let br = dem_pixel(c + vec2<i32>(1, 1), at.layer);
+    return mix(mix(tl, tr, f.x), mix(bl, br, f.x), f.y) * frame.terrain_exaggeration;
+}
+
 // The terrain's elevation in metres, with exaggeration, under data point
 // `p` of a placement: its DEM, bilinear between pixels as the terrain's
 // mesh samples it. Sea level where it has none.
 fn ground_elevation(tile: Tile, p: vec2<f32>) -> f32 {
-    let layer = tile.dem & 0xffffu;
-    if layer == 0xffffu || frame.terrain_exaggeration == 0.0 {
-        return 0.0;
-    }
-    let depth = f32((tile.dem >> 16u) & 255u);
-    let offset = vec2<f32>(f32(tile.dem_offset & 0xffffu), f32(tile.dem_offset >> 16u));
-    let uv = (p / tile.extent + offset) / exp2(depth);
-    let coord = uv * frame.dem_dim + 1.5;
-    let f = fract(coord);
-    let c = vec2<i32>(floor(coord));
-    let tl = dem_pixel(c, layer);
-    let tr = dem_pixel(c + vec2<i32>(1, 0), layer);
-    let bl = dem_pixel(c + vec2<i32>(0, 1), layer);
-    let br = dem_pixel(c + vec2<i32>(1, 1), layer);
-    return mix(mix(tl, tr, f.x), mix(bl, br, f.x), f.y) * frame.terrain_exaggeration;
+    return dem_bilinear(ground_dem_at(tile, p));
 }
 
 // A vertex to shade, however the draw found it.

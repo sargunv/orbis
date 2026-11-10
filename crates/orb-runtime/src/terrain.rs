@@ -433,6 +433,8 @@ impl Terrain {
             unpack,
             exaggeration,
             dem_dim,
+            // The map sets it from the camera.
+            ground: 0.0,
         };
         (frame, requests)
     }
