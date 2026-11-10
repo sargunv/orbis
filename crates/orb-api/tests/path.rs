@@ -754,6 +754,67 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     assert_within("alps", both_ways(&alps, start, end, 30), 1);
 }
 
+/// The same ridges on a globe, into the middle of its handover to Web
+/// Mercator at a pitch of 75°: the cover bounds each tile by the DEM's
+/// range under it and measures detail at the camera's elevation, both
+/// learned along the way, and the fog fades with the handover, yet the
+/// picture is a fresh globe's.
+#[test]
+fn an_alpine_globe_gesture_draws_what_a_fresh_globe_does() {
+    let start = (Geodetic::new(7.95, 46.0), 10.4, 0.0, 30.0);
+    let end = (Geodetic::new(7.85, 45.95), 11.6, 60.0, 75.0);
+    let (alps, _dem) = alps();
+    let globe = alps.replacen(
+        "{\"version\": 8,",
+        "{\"version\": 8, \"projection\": {\"type\": \"globe\"},",
+        1,
+    );
+    assert_ne!(globe, alps);
+    assert_within("alps-globe", both_ways(&globe, start, end, 30), 1);
+}
+
+/// Terrain fog fades in through a globe's handover to Web Mercator rather
+/// than snapping on where it ends (#154): across zoom 12, where the
+/// handover finishes, the picture changes no more than over the same
+/// zoom step on the plane past it.
+#[test]
+fn terrain_fog_fades_through_the_globe_handover() {
+    let (alps, _dem) = alps();
+    let globe = alps.replacen(
+        "{\"version\": 8,",
+        "{\"version\": 8, \"projection\": {\"type\": \"globe\"},",
+        1,
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut at = |zoom: f64| {
+        let camera = (Geodetic::new(7.85, 45.95), zoom, 60.0, 75.0);
+        fresh_at(&runtime, &mut target, &globe, camera).0
+    };
+    let [before, after, past] = [11.97, 12.0, 12.03].map(&mut at);
+    // The picture's mean colour, which the fog lightens: a step's zoom
+    // shifts every pixel, but barely moves it.
+    let mean = |pixels: &[u8]| {
+        let mut sum = [0.0; 3];
+        for p in pixels.chunks(4) {
+            for (s, &c) in sum.iter_mut().zip(p) {
+                *s += f64::from(c);
+            }
+        }
+        sum.map(|s| s / (pixels.len() / 4) as f64)
+    };
+    let change = |a: &[u8], b: &[u8]| {
+        let (a, b) = (mean(a), mean(b));
+        (0..3).map(|i| (a[i] - b[i]).abs()).fold(0.0, f64::max)
+    };
+    let (handover, plane) = (change(&before, &after), change(&after, &past));
+    assert!(
+        handover < 2.0 * plane + 0.2,
+        "across the handover's end the mean colour changes by {handover:.2} a channel, \
+         over the same step on the plane by {plane:.2}"
+    );
+}
+
 /// A view at rest over the Alps stays put: frames after idle cover the
 /// same terrain tiles and read the same DEM tiles, so they pad no DEM
 /// borders, write no rows, keep the cull's candidates and run one cull,
