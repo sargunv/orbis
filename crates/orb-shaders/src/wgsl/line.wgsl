@@ -124,31 +124,56 @@ fn pulled_line(index: u32) -> StyledLineOut {
     return line_vertex(v);
 }
 
-// Data units per pixel of extrusion at tile point `p`, for a line whose
-// normal there is along `across` (data units, y down): a pixel vector a
-// across and b along the line goes a pixels across and b along it on
-// screen. GL JS lineUniformValues uses transform.zoom for u_ratio
-// (tileZoom only scales patterned and dashed lines' atlas); in our
-// camera-relative world its reciprocal is world_per_px over the tile's
-// scale. A warp or a sphere can stretch one direction more than the
-// other, where one scale can't be right both ways: with J its Jacobian
-// and K = JᵀJ its metric, the line's normal n goes to J⁻ᵀn on screen and
-// its direction d to Jd, and each part takes its own length. A join
-// takes its bisector's frame, exact for straight runs and caps.
-fn line_px_to_data(tile: Tile, p: vec2<f32>, across: vec2<f32>) -> mat2x2<f32> {
+// Data units per pixel of extrusion at tile point `p`, for a vertex
+// whose offset normal is `across` (data units, y down) and `miter` long
+// (1 on a straight run or a cap). GL JS lineUniformValues uses
+// transform.zoom for u_ratio (tileZoom only scales patterned and dashed
+// lines' atlas); in our camera-relative world its reciprocal is
+// world_per_px over the tile's scale. A warp or a sphere can stretch one
+// direction more than the other, where one scale can't be right both
+// ways. With J its Jacobian and K = JᵀJ its metric, a line's normal n
+// goes to J⁻ᵀn on screen and its direction d to Jd, and a point a pixels
+// off the line on screen is a·|J⁻ᵀn| off it along n in data units.
+//
+// A join's two segment normals sit at ± its half-angle about the
+// bisector b, cos = 1 / miter. The extrusion keeps its distance from
+// both lines, in pixels, so a miter meets where the lines' edges meet on
+// screen and a bevel's corners stay on them. On a straight run that is
+// K⁻¹n / |J⁻ᵀn| across, with d / |Jd| along for its caps. The miter's
+// bytes round to a half-angle of up to 9° where there is none, so joins
+// whose half-angle is under about 17° (sine 0.3) ease to the straight
+// run's frame.
+fn line_px_to_data(tile: Tile, p: vec2<f32>, across: vec2<f32>, miter: f32) -> mat2x2<f32> {
     let world_per_px = tile_world_per_px(tile);
     if tile.warp_cells == 0u && (frame.globe_amount <= 0.0 || tile.globe_cells == 0u) {
         let s = world_per_px / tile.scale;
         return mat2x2<f32>(s, 0.0, 0.0, s);
     }
     let k = tile_metric_at(tile, p);
-    let n = across * inverseSqrt(max(dot(across, across), 1.0e-12));
-    let d = vec2<f32>(-n.y, n.x);
-    // Along: d / |Jd|. Across: J⁻ᵀn / |J⁻ᵀn| back in data units by J⁻¹,
-    // K⁻¹n / |J⁻ᵀn| = adj(K) n / (sqrt(det K) |Jd|), as nᵀ adj(K) n = |Jd|².
-    let along = max(dot(d, k * d), 1.0e-30);
-    let u = mat2x2<f32>(k[1][1], -k[0][1], -k[1][0], k[0][0]) * n * inverseSqrt(max(determinant(k), 1.0e-30));
-    return mat2x2<f32>(u * n.x + d * d.x, u * n.y + d * d.y) * (world_per_px * inverseSqrt(along));
+    let inv = mat2x2<f32>(k[1][1], -k[0][1], -k[1][0], k[0][0]) * (1.0 / max(determinant(k), 1.0e-30));
+    let b = across * inverseSqrt(max(dot(across, across), 1.0e-12));
+    let e = vec2<f32>(-b.y, b.x);
+    let raw = sqrt(max(1.0 - 1.0 / (miter * miter), 0.0));
+    let blend = smoothstep(0.15, 0.3, raw);
+    let s = raw * blend;
+    let c = sqrt(1.0 - s * s);
+    // With normals n = c b ± s e, solve n · x = |J⁻ᵀn| (n · v) for both,
+    // σ = |J⁻ᵀn| = sqrt(nᵀK⁻¹n); their difference, 4cs q / (σ₁ + σ₂),
+    // doesn't cancel as the half-angle closes.
+    let bb = dot(b, inv * b);
+    let ee = dot(e, inv * e);
+    let q = dot(e, inv * b);
+    let sum = max(sqrt(max(c * c * bb + s * s * ee + 2.0 * c * s * q, 0.0))
+        + sqrt(max(c * c * bb + s * s * ee - 2.0 * c * s * q, 0.0)), 1.0e-30);
+    // Where the screen's angle is much sharper than the data's, the join
+    // the layout chose as a miter would reach far past the bytes' limit
+    // (`orb_layout::line`, about twice the half width): it stops there.
+    let exact = b * (0.5 * sum) + e * (2.0 * c * c * q / sum);
+    let x = exact * min(1.0, 2.0 / max(miter * sqrt(max(dot(exact, k * exact), 0.0)), 1.0e-30));
+    let kept = b * (2.0 * s * s * q / sum) + e * (0.5 * sum);
+    let along = e * inverseSqrt(max(dot(e, k * e), 1.0e-30));
+    let y = mix(along, kept, blend);
+    return mat2x2<f32>(x * b.x + y * e.x, x * b.y + y * e.y) * world_per_px;
 }
 
 fn line_vertex(v: Pulled) -> StyledLineOut {
@@ -194,7 +219,13 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
         outset += antialiasing;
     }
 
-    let px_to_data = line_px_to_data(tile, pos, select(extrude, offset_normal, any(offset_normal != vec2<f32>(0.0))));
+    let has_offset_normal = any(offset_normal != vec2<f32>(0.0));
+    let px_to_data = line_px_to_data(
+        tile,
+        pos,
+        select(extrude, offset_normal, has_offset_normal),
+        select(1.0, length(offset_normal) * EXTRUDE_SCALE, has_offset_normal),
+    );
     let dist = outset * extrude * EXTRUDE_SCALE;
     let offset2 = offset * offset_normal * EXTRUDE_SCALE * normal.y;
 

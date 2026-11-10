@@ -1,7 +1,8 @@
 //! Lines drawn through an anisotropic warp keep their width across and
 //! along: geographic tiles (`WorldCRS84Quad`) on Web Mercator stretch y by
 //! sec(lat), 6× at 81°N, and a meridian and a parallel there draw as wide
-//! as at the equator.
+//! as at the equator, and their joins meet as the same line's from Web
+//! Mercator tiles.
 
 use orb_api::{Map, MapOptions, Previews, Runtime, RuntimeOptions};
 
@@ -25,23 +26,21 @@ fn uint(field: u64, n: u64, out: &mut Vec<u8>) {
     varint(n, out);
 }
 
-/// A vector tile whose layer `l` holds two-point lines.
-fn tile(lines: &[[[i64; 2]; 2]]) -> Vec<u8> {
+/// A vector tile whose layer `l` holds these lines.
+fn tile(lines: &[&[[i64; 2]]]) -> Vec<u8> {
     let zigzag = |n: i64| ((n << 1) ^ (n >> 63)) as u64;
     let mut layer = Vec::new();
     uint(15, 2, &mut layer);
     message(1, b"l", &mut layer);
-    for [a, b] in lines {
+    for line in lines {
         let mut geometry = Vec::new();
-        for n in [
-            9,
-            zigzag(a[0]),
-            zigzag(a[1]),
-            10,
-            zigzag(b[0] - a[0]),
-            zigzag(b[1] - a[1]),
-        ] {
-            varint(n, &mut geometry);
+        varint(9, &mut geometry);
+        varint(zigzag(line[0][0]), &mut geometry);
+        varint(zigzag(line[0][1]), &mut geometry);
+        varint(2 | (line.len() as u64 - 1) << 3, &mut geometry);
+        for pair in line.windows(2) {
+            varint(zigzag(pair[1][0] - pair[0][0]), &mut geometry);
+            varint(zigzag(pair[1][1] - pair[0][1]), &mut geometry);
         }
         let mut feature = Vec::new();
         uint(3, 2, &mut feature);
@@ -52,6 +51,21 @@ fn tile(lines: &[[[i64; 2]; 2]]) -> Vec<u8> {
     let mut tile = Vec::new();
     message(3, &layer, &mut tile);
     tile
+}
+
+/// A `size`-pixel square snapshot of `style`, with every preview on.
+fn snapshot(style: &str, size: u32) -> Vec<u8> {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut map = Map::new(
+        &runtime,
+        MapOptions {
+            previews: Previews::ALL,
+            ..MapOptions::default()
+        },
+    );
+    map.set_viewport(f64::from(size), f64::from(size));
+    map.set_style_json(style).unwrap();
+    map.snapshot(size, size, 1.0).unwrap().pixels
 }
 
 const SIZE: u32 = 512;
@@ -86,9 +100,11 @@ fn lines_through_a_stretching_warp_keep_their_width() {
     ];
     let dir = std::env::temp_dir().join(format!("orb-warped-lines-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("0/0")).unwrap();
+    let parallels: Vec<&[[i64; 2]]> = parallels.iter().map(|line| &line[..]).collect();
     std::fs::write(dir.join("0/0/0.pbf"), tile(&parallels)).unwrap();
-    let mut east = parallels.to_vec();
-    east.push([[x, -64], [x, 4160]]);
+    let meridian = [[x, -64], [x, 4160]];
+    let mut east = parallels.clone();
+    east.push(&meridian);
     std::fs::write(dir.join("0/0/1.pbf"), tile(&east)).unwrap();
 
     let style = format!(
@@ -103,21 +119,11 @@ fn lines_through_a_stretching_warp_keep_their_width() {
         CENTER[1],
         dir.display()
     );
-    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
-    let mut map = Map::new(
-        &runtime,
-        MapOptions {
-            previews: Previews::ALL,
-            ..MapOptions::default()
-        },
-    );
-    map.set_viewport(f64::from(SIZE), f64::from(SIZE));
-    map.set_style_json(&style).unwrap();
-    let image = map.snapshot(SIZE, SIZE, 1.0).unwrap();
+    let pixels = snapshot(&style, SIZE);
     std::fs::remove_dir_all(&dir).unwrap();
     let ink = |x: i64, y: i64| {
         let i = ((y * i64::from(SIZE) + x) * 4) as usize;
-        f64::from(255 - image.pixels[i]) / 255.0
+        f64::from(255 - pixels[i]) / 255.0
     };
 
     // The meridian's ink per row, across a band of rows (well clear of the
@@ -153,6 +159,90 @@ fn lines_through_a_stretching_warp_keep_their_width() {
         assert!(
             (width - 2.0).abs() < 0.15,
             "{line}: {width:.2} px, not 2: {widths:?}"
+        );
+    }
+}
+
+#[test]
+fn joins_through_a_stretching_warp_meet_on_screen() {
+    // A staircase near 81°N, where WorldCRS84Quad stretches y 6×, drawn
+    // from geographic tiles and from a Web Mercator tile, whose plane is
+    // the map's. Its corners lie on both tiles' grids in x and on the
+    // geographic one in y, a third of a pixel from the Mercator one's.
+    let (lons, lats) = ([228, 284, 341, 398, 455], [228, 210, 193, 176]);
+    let corners: Vec<(i64, i64)> = (0..4)
+        .flat_map(|i| [(lons[i], lats[i]), (lons[i + 1], lats[i])])
+        .collect();
+    let geographic: Vec<[i64; 2]> = corners.iter().map(|&(x, y)| [2 * x, y]).collect();
+    let mercator: Vec<[i64; 2]> = corners
+        .iter()
+        .map(|&(x, y)| {
+            // In tile 3/4/0.
+            let lat = (90.0 - y as f64 * 180.0 / 4096.0).to_radians();
+            let y = (std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln();
+            let row = (1.0 - y / std::f64::consts::PI) * 4.0;
+            [8 * x, (row * 4096.0).round() as i64]
+        })
+        .collect();
+    let dir = std::env::temp_dir().join(format!("orb-warped-joins-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("g/0/0")).unwrap();
+    std::fs::write(dir.join("g/0/0/1.pbf"), tile(&[&geographic])).unwrap();
+    std::fs::create_dir_all(dir.join("m/3/4")).unwrap();
+    std::fs::write(dir.join("m/3/4/0.pbf"), tile(&[&mercator])).unwrap();
+
+    let draw = |source: &str, line: &str| {
+        snapshot(
+            &format!(
+                r##"{{"version": 8, "center": [30, 81.2], "zoom": 3.5,
+                "sources": {{"s": {source}}},
+                "layers": [
+                  {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+                  {{"id": "l", "type": "line", "source": "s", "source-layer": "l", {line}}}]}}"##
+            ),
+            SIZE,
+        )
+    };
+    let geographic = format!(
+        r#"{{"type": "vector", "maxzoom": 0, "tileMatrixSet": "WorldCRS84Quad",
+            "tiles": ["file://{}/g/{{tileMatrix}}/{{tileRow}}/{{tileCol}}.pbf"]}}"#,
+        dir.display()
+    );
+    let mercator = format!(
+        r#"{{"type": "vector", "maxzoom": 3, "tiles": ["file://{}/m/{{z}}/{{x}}/{{y}}.pbf"]}}"#,
+        dir.display()
+    );
+    // Through the bisector's frame alone, the joins missed by 5.7%, 3.5%
+    // and 18.9% of the line's ink.
+    let cases = [
+        ("miter", r#""paint": {"line-width": 10}"#, 0.015),
+        (
+            "bevel",
+            r#""layout": {"line-join": "bevel"}, "paint": {"line-width": 10}"#,
+            0.015,
+        ),
+        (
+            "offset",
+            r#""paint": {"line-width": 4, "line-offset": 6}"#,
+            0.04,
+        ),
+    ];
+    let mut misses = Vec::new();
+    for (name, line, limit) in cases {
+        let (warped, flat) = (draw(&geographic, line), draw(&mercator, line));
+        let ink = |pixels: &[u8], i: usize| f64::from(255 - pixels[i]) / 255.0;
+        let (mut miss, mut total) = (0.0, 0.0);
+        for i in (0..warped.len()).step_by(4) {
+            miss += (ink(&warped, i) - ink(&flat, i)).abs();
+            total += ink(&flat, i);
+        }
+        misses.push((name, miss / total, limit));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    for &(name, miss, limit) in &misses {
+        assert!(
+            miss < limit,
+            "{name}: {:.1}% of ink apart: {misses:?}",
+            100.0 * miss
         );
     }
 }
