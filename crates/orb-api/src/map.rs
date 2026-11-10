@@ -19,7 +19,7 @@ use orb_runtime::{
     StyleImage, Transaction, VideoRequest, Viewport,
 };
 
-use crate::{Error, Runtime, Shared, Target};
+use crate::{Error, Runtime, Target};
 
 /// How a map starts.
 #[derive(Clone, Debug)]
@@ -152,7 +152,6 @@ pub struct CullCount {
 /// A map: style, camera, gestures and events. Draw it with
 /// [`render`](Self::render) whenever [`needs_frame`](Self::needs_frame).
 pub struct Map {
-    shared: Arc<Shared>,
     runtime: Runtime,
     map: orb_runtime::Map,
     /// Set from any thread when data arrived.
@@ -211,9 +210,9 @@ impl Drop for Map {
         drop(hook);
         // What the map drew with goes with it, on the device that made it.
         if let Some(renderer) = self.renderer.take()
-            && self.device == self.shared.generation()
+            && self.device == self.runtime.shared.generation()
         {
-            renderer.destroy(&mut *self.shared.gpu());
+            renderer.destroy(&mut *self.runtime.shared.gpu());
         }
     }
 }
@@ -258,7 +257,6 @@ impl Map {
         // culled.
         map.set_keep_all_cull(std::env::var_os("ORB_CULL").is_some_and(|v| v == "keep-all"));
         Self {
-            shared: runtime.shared.clone(),
             runtime: runtime.clone(),
             map,
             woken,
@@ -296,7 +294,12 @@ impl Map {
         let Some(renderer) = &self.renderer else {
             return Vec::new();
         };
-        let bytes = pollster::block_on(self.shared.gpu().read_buffer(renderer.draw_args().0));
+        let bytes = pollster::block_on(
+            self.runtime
+                .shared
+                .gpu()
+                .read_buffer(renderer.draw_args().0),
+        );
         (renderer.cull_counts(&bytes).into_iter())
             .map(|(family, candidates, kept)| CullCount {
                 family: format!("{family:?}"),
@@ -1138,7 +1141,7 @@ impl Map {
         // The frame borrows the device once: the target begins and ends
         // with it, and it's let go before anything else here borrows it.
         let report = {
-            let mut device = self.shared.gpu();
+            let mut device = self.runtime.shared.gpu();
             let Some(texture) = target.begin(&mut device)? else {
                 return Ok(None);
             };
@@ -1181,7 +1184,7 @@ impl Map {
     /// the runtime's current device: `false` while a lost device's
     /// replacement waits out its backoff (the map is woken when it's due).
     fn ready_for(&mut self, target: &mut Target) -> Result<bool, Error> {
-        if !target.same_runtime(&self.shared) {
+        if !target.same_runtime(&self.runtime.shared) {
             return Err(Error::InvalidArgument(
                 "the target belongs to another runtime".into(),
             ));
@@ -1223,8 +1226,8 @@ impl Map {
         }
         // The runtime replaced its device: draw on the new one, laying the
         // tiles out again.
-        if self.device != self.shared.generation() {
-            self.device = self.shared.generation();
+        if self.device != self.runtime.shared.generation() {
+            self.device = self.runtime.shared.generation();
             self.renderer = None;
             self.dirty = true;
         }
@@ -1250,7 +1253,7 @@ impl Map {
         }
         let format = target.format();
         {
-            let mut device = self.shared.gpu();
+            let mut device = self.runtime.shared.gpu();
             self.woken.store(false, Ordering::Release);
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
             let map = &mut self.map;
