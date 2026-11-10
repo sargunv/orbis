@@ -134,13 +134,25 @@ impl WgpuGpu {
         });
         let device = self.device.clone();
         async move {
-            device
-                .poll(wgpu::PollType::Wait {
-                    submission_index: Some(index),
-                    timeout: None,
+            #[cfg(webgl)]
+            {
+                let _ = index;
+                let mut receiver = receiver;
+                polled(&device, || {
+                    receiver.try_recv().expect("work-done callback dropped")
                 })
-                .expect("device lost");
-            receiver.await.expect("work-done callback dropped");
+                .await;
+            }
+            #[cfg(not(webgl))]
+            {
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: Some(index),
+                        timeout: None,
+                    })
+                    .expect("device lost");
+                receiver.await.expect("work-done callback dropped");
+            }
         }
     }
 
@@ -295,21 +307,15 @@ fn keep(readbacks: &Readbacks, buffer: wgpu::Buffer) {
     kept.push(buffer);
 }
 
-pub(crate) async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wgpu::BufferView {
-    #[cfg_attr(not(webgl), allow(unused_mut))]
-    let (sender, mut receiver) = futures_channel::oneshot::channel();
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-    // WebGL 2 can't wait for its fence: each task polls it once, until the
-    // mapping lands.
-    #[cfg(webgl)]
-    let mapped = loop {
+/// What `ready` gives once it gives something, the device polled before
+/// each try: WebGL 2 can't wait for its fence, so each task polls it once
+/// until the callback that `ready` watches has run.
+#[cfg(webgl)]
+async fn polled<T>(device: &wgpu::Device, mut ready: impl FnMut() -> Option<T>) -> T {
+    loop {
         let _ = device.poll(wgpu::PollType::Poll);
-        if let Some(mapped) = receiver.try_recv().expect("mapping callback dropped") {
-            break mapped;
+        if let Some(value) = ready() {
+            return value;
         }
         let tick = js_sys::Promise::new(&mut |resolve, _| {
             let global = js_sys::global();
@@ -320,7 +326,22 @@ pub(crate) async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wg
             let _ = set_timeout.call2(&global, &resolve, &1.into());
         });
         let _ = wasm_bindgen_futures::JsFuture::from(tick).await;
-    };
+    }
+}
+
+pub(crate) async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wgpu::BufferView {
+    #[cfg_attr(not(webgl), allow(unused_mut))]
+    let (sender, mut receiver) = futures_channel::oneshot::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+    #[cfg(webgl)]
+    let mapped = polled(device, || {
+        receiver.try_recv().expect("mapping callback dropped")
+    })
+    .await;
     #[cfg(not(webgl))]
     let mapped = {
         device
