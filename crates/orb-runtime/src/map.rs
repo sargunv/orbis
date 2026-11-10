@@ -1608,7 +1608,7 @@ impl Map {
                 .world_bounds()
                 .size()
                 .max_element(),
-            view_proj: view.view_proj().as_mat4().to_cols_array_2d(),
+            view_proj: view.view_proj().to_cols_array_2d(),
             viewport: [viewport.width as f32, viewport.height as f32],
             world_per_px: view.world_per_px() as f32,
             pixel_ratio,

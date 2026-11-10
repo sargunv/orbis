@@ -156,8 +156,9 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
         clip = ground_clip_3d(g, vec2<f32>(0.0), z);
     }
     var out: TerrainOut;
-    // Reversed-Z, as extrusions draw.
-    out.position = vec4<f32>(clip.xy, clip.w - clip.z, clip.w);
+    // Reversed-Z, as extrusions draw (`ground_clip_reversed`).
+    let depth = select(plane_depth(world, z), clip.w - clip.z, globe);
+    out.position = vec4<f32>(clip.xy, depth, clip.w);
     out.uv = uv;
     out.tile = vec2<u32>(instance, tile.slot);
     out.stretch = 1.0 / cos(radians(mix(tile.latitudes.x, tile.latitudes.y, uv.y)));

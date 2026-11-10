@@ -50,8 +50,9 @@ fn write_words(gpu: &mut dyn Gpu, buffer: BufferId, word: u32, words: &[u32]) {
 /// Per-frame values every pipeline reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameBlock {
-    /// Camera-relative world → clip, column-major.
-    pub view_proj: [[f32; 4]; 4],
+    /// Camera-relative world → clip, column-major. In f64: reversed-Z
+    /// depth is the difference of two of its rows.
+    pub view_proj: [[f64; 4]; 4],
     /// Where the camera is in the world: tile rows' origins less it are
     /// camera-relative.
     pub camera: [f64; 2],
@@ -178,7 +179,12 @@ fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
 pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock, linear: bool) {
     use layout::frame as f;
     let mut b = orb_shaders::Block::new(f::WORDS);
-    b.f(f::VIEW_PROJ, frame.view_proj.as_flattened());
+    let view_proj = frame.view_proj.map(|column| column.map(|v| v as f32));
+    b.f(f::VIEW_PROJ, view_proj.as_flattened());
+    // Clip w less clip z, taken in f64: in f32 the difference cancels to a
+    // few float steps, which decide coplanar faces' order by rounding.
+    let depth = frame.view_proj.map(|column| (column[3] - column[2]) as f32);
+    b.f(f::VIEW_DEPTH, &depth);
     b.f(f::VIEWPORT, &frame.viewport);
     b.f(f::WORLD_PER_PX, &[frame.world_per_px, frame.pixel_ratio]);
     b.f(f::ZOOM, &[frame.zoom as f32, frame.bearing]);

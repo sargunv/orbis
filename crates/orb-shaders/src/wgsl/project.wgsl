@@ -324,6 +324,21 @@ fn ground_clip_3d(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
     return ground_clip_depth(g, offset, z, true);
 }
 
+// `ground_clip_3d` with reversed-Z depth, as 3D passes draw. On the plane
+// it comes from the frame's depth row, as clip w less z taken whole: w and
+// z are nearly equal there, and subtracting them in f32 would leave a
+// relative error of up to 10^-5, enough for coplanar faces to fight.
+fn ground_clip_reversed(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
+    var clip = ground_clip_3d(g, offset, z);
+    clip.z = select(clip.w - clip.z, plane_depth(g.flat + offset, z), frame.globe_amount <= 0.0);
+    return clip;
+}
+
+// Reversed-Z depth of a camera-relative world position on the plane.
+fn plane_depth(p: vec2<f32>, z: f32) -> f32 {
+    return dot(frame.view_depth, vec4<f32>(p, z, 1.0));
+}
+
 fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<f32> {
     let flat = frame.view_proj * vec4<f32>(g.flat + offset, z, 1.0);
     if frame.globe_amount <= 0.0 {

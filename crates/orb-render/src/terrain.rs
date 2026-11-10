@@ -1210,8 +1210,8 @@ impl Terrain {
             .map_or([1.0; 2], |a| a.size.map(|s| s as f32));
         // Drape world (x, −y) for texel (x, y) → clip.
         let view_proj = [
-            [2.0 / w, 0.0, 0.0, 0.0],
-            [0.0, 2.0 / h, 0.0, 0.0],
+            [2.0 / f64::from(w), 0.0, 0.0, 0.0],
+            [0.0, 2.0 / f64::from(h), 0.0, 0.0],
             [0.0, 0.0, 0.0, 0.0],
             [-1.0, 1.0, 0.0, 1.0],
         ];

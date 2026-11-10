@@ -48,6 +48,8 @@ const MAX_ELEVATION_OPS: u32 = 4u;
 struct Frame {
     // Camera-relative world → clip.
     view_proj: mat4x4<f32>,
+    // The row of clip w less clip z: reversed-Z depth (`ground_clip_reversed`).
+    view_depth: vec4<f32>,
     // Logical pixels.
     viewport: vec2<f32>,
     // World units per logical pixel at the camera target.
