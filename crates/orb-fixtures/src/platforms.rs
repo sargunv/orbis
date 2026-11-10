@@ -370,8 +370,12 @@ fn run_cpu_driver(
     }
     let identity = byte_identity(&output, &native, &other, platform)?;
     println!(
-        "\n{platform}/native: {} identical, {} differ, {} without both images ({} tests)",
-        identity["identical"], identity["different"], identity["unavailable"], identity["tests"]
+        "\n{platform}/native: {} identical ({} of them terrain within one in a channel, #174), {} differ, {} without both images ({} tests)",
+        identity["identical"],
+        identity["terrain_within_one"],
+        identity["different"],
+        identity["unavailable"],
+        identity["tests"]
     );
     for test in identity["differing"].as_array().expect("differing") {
         println!(
@@ -392,6 +396,12 @@ fn run_cpu_driver(
 /// Compares `other`'s image of every test with native's, byte for byte;
 /// writes each pair that differs, and a mask of where, under
 /// `<output>/<platform>-identity`.
+///
+/// A test drawing 3D terrain whose images differ by at most one in any
+/// channel counts as identical: the drape's anisotropic samples depend on
+/// where in its atlas a tile's slot lies, which depends on the order its
+/// tiles arrived in, so two runs of one driver differ that much too (on
+/// Apple M-series, a handful of pixels; #174).
 fn byte_identity(
     output: &Path,
     native: &Value,
@@ -409,6 +419,7 @@ fn byte_identity(
         .map(|t| (t["id"].as_str().unwrap_or_default(), t))
         .collect();
     let (mut identical, mut unavailable, mut differing) = (0, 0, Vec::new());
+    let mut jittered = 0;
     let tests = native["tests"].as_array().expect("tests");
     for test in tests {
         let id = test["id"].as_str().unwrap_or_default();
@@ -430,7 +441,8 @@ fn byte_identity(
         };
         let a = Image::read(&output.join("native").join(a))?;
         let b = Image::read(&output.join(platform).join(b))?;
-        let pixels = if (a.width, a.height) == (b.width, b.height) {
+        let same_size = (a.width, a.height) == (b.width, b.height);
+        let pixels = if same_size {
             a.pixels
                 .chunks(4)
                 .zip(b.pixels.chunks(4))
@@ -439,8 +451,15 @@ fn byte_identity(
         } else {
             (a.width * a.height) as usize
         };
-        if pixels == 0 && statuses.is_none() {
+        let drape_jitter = test["terrain"] == true
+            && same_size
+            && a.pixels
+                .iter()
+                .zip(&b.pixels)
+                .all(|(p, q)| p.abs_diff(*q) <= 1);
+        if (pixels == 0 || drape_jitter) && statuses.is_none() {
             identical += 1;
+            jittered += usize::from(pixels > 0);
             continue;
         }
         if pixels > 0 && (a.width, a.height) == (b.width, b.height) {
@@ -472,6 +491,7 @@ fn byte_identity(
     Ok(json!({
         "tests": tests.len(),
         "identical": identical,
+        "terrain_within_one": jittered,
         "different": differing.len(),
         "unavailable": unavailable,
         "differing": differing,
