@@ -1964,18 +1964,19 @@ impl Renderer {
             self.pipelines_stale = true;
             self.invalidate_bundle(gpu);
         }
-        // Extrusions draw with the plane variants where the paint
-        // pipelines do: they have no fallback to the full ones while
-        // those compile.
+        // Extrusions are made in the plane variants where the paint
+        // pipelines are, and draw in them once compiled.
         if self.extrusions.set_full(!self.variants()[0]) {
             self.pipelines_stale = true;
+        }
+        let compiling = self.pipelines(gpu);
+        if self.extrusions.settle(gpu) {
             for node in &mut self.nodes {
                 if let Some(extrusion) = &mut node.extrusion {
                     extrusion.forget_bundle(gpu);
                 }
             }
         }
-        let compiling = self.pipelines(gpu);
         let made = compiling.made;
         if compiling.made != self.made_seen {
             // Pipelines arrived: record again what waited for them.

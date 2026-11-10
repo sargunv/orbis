@@ -68,11 +68,16 @@ pub(crate) struct Extrusions {
     /// and where clip distances are, cut ones clipped by planes; at one
     /// sample and at four.
     pipelines: Vec<((ElevationShape, bool), Pipelines)>,
-    /// The pipelines draw in their full variants, not their plane ones
-    /// ([`Draw::plane`]): the paint pipelines' plane variants aren't
+    /// The pipelines are made in their full variants, not their plane
+    /// ones ([`Draw::plane`]): the paint pipelines' plane variants aren't
     /// made. On the moto g, the plane variant's vertex stage took 40% less
     /// of a pitched 3D frame's buildings (#180).
     full: bool,
+    /// The variant they draw in: `full`'s, or while the plane pipelines
+    /// compile, the full ones made before in their place, as the paint
+    /// pipelines' `Variants::drawn` does: turning terrain off doesn't
+    /// hide the buildings for the plane ones' compile.
+    drawn_full: bool,
     /// The shadow and ground occlusion passes, at one sample and at four,
     /// made for the first node that draws each; and into the ground mask,
     /// likewise.
@@ -108,6 +113,7 @@ impl Extrusions {
         Self {
             pipelines: Vec::new(),
             full: true,
+            drawn_full: true,
             ground: [[None; 2]; 2],
             mask: [[None; 2]; 2],
             sphere: [None; 2],
@@ -121,18 +127,43 @@ impl Extrusions {
         }
     }
 
-    /// Sets whether the pipelines draw in their full variants; true when
-    /// that changed, and bundles recorded with the others draw no more.
+    /// Sets whether the pipelines are made in their full variants; true
+    /// when that changed, and the new variant's are to be made.
     pub(crate) fn set_full(&mut self, full: bool) -> bool {
         std::mem::replace(&mut self.full, full) != full
     }
 
+    /// Picks the variant the pipelines draw in (`drawn_full`): the one
+    /// they're made in, or the full one while the plane one's pipelines
+    /// compile, if every shape's full ones are made. True when that
+    /// changed, and bundles recorded with the other draw no more.
+    pub(crate) fn settle(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let samples = usize::from(self.samples == 4);
+        let made = |full: bool| {
+            (self.pipelines.iter())
+                .filter(move |((_, f), p)| *f == full && p.iter().any(|p| p[samples].is_some()))
+        };
+        let plane_compiled = made(false).all(|(_, p)| {
+            (p.iter().filter_map(|p| p[samples])).all(|p| gpu.pipeline_ready(p.into()))
+        });
+        let full_cover =
+            made(false).all(|((shape, _), _)| made(true).any(|((s, _), _)| s == shape));
+        let drawn = self.full || (!plane_compiled && full_cover);
+        std::mem::replace(&mut self.drawn_full, drawn) != drawn
+    }
+
     /// The whole, cut and planes pipelines for `shape` at the current
-    /// sample count and variant.
+    /// sample count in the variant they draw in.
     fn slot(&self, shape: ElevationShape) -> [Option<RenderPipelineId>; 3] {
+        self.slot_in(shape, self.drawn_full)
+    }
+
+    /// The whole, cut and planes pipelines for `shape` at the current
+    /// sample count in the full variant or the plane one.
+    fn slot_in(&self, shape: ElevationShape, full: bool) -> [Option<RenderPipelineId>; 3] {
         let samples = usize::from(self.samples == 4);
         (self.pipelines.iter())
-            .find(|(s, _)| *s == (shape, self.full))
+            .find(|(s, _)| *s == (shape, full))
             .map_or([None; 3], |(_, p)| p.map(|p| p[samples]))
     }
 
@@ -313,11 +344,11 @@ impl Extrusions {
     }
 
     /// Whether every shape's pipelines made at the current sample count
-    /// and variant, and the composites', compiled.
+    /// in the variant they draw in, and the composites', compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
         let samples = usize::from(self.samples == 4);
         let made: Vec<_> = (self.pipelines.iter())
-            .filter(|((_, full), _)| *full == self.full)
+            .filter(|((_, full), _)| *full == self.drawn_full)
             .flat_map(|(_, p)| p.map(|p| p[samples]))
             .collect();
         let sphere = self.sphere[samples].filter(|_| self.full);
@@ -326,10 +357,12 @@ impl Extrusions {
             && composites.ready(gpu, Mode::Over)
     }
 
+    /// What a frame waits for to draw `shape`: the pipelines in the
+    /// variant they're made in.
     pub(crate) fn pipelines(&self, shape: ElevationShape) -> Vec<PipelineId> {
         let samples = usize::from(self.samples == 4);
         let sphere = self.sphere[samples].filter(|_| self.full);
-        (self.slot(shape).iter().chain([&sphere]))
+        (self.slot_in(shape, self.full).iter().chain([&sphere]))
             .flatten()
             .map(|&p| p.into())
             .collect()
