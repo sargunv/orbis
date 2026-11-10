@@ -169,12 +169,11 @@ Advice that cost time to learn, not rules:
   (mln-rs is a readable port of it) and take the better of the two.
 - `cargo xtask check --affected` is the fast loop; run the fixtures now and
   then.
-- A feature that adds a novel code path (a new pass, pipeline, shader
-  path, per-tile build step or upload) lands with a focused bench: the
-  feature on against off, interleaved, for steady frames, tile build, its
-  first use (pipeline compiles) and tiles arriving mid-gesture. Shadows and
-  ambient occlusion shipped without one, and nothing caught that they made
-  zooming into a city stutter.
+- When a feature puts nontrivial work on a hot path (frames, tile
+  arrival, first use), a focused bench of it on against off pays for
+  itself; most features don't need one. Shadows and ambient occlusion
+  were measured only at rest, and nothing caught that they made zooming
+  into a city stutter as the buildings arrived.
 - On tile-based GPUs (Apple, phones), per-pass GPU timestamps show where
   work waits, not where it is. Compare whole-frame times.
 - Burn issues down rather than piling them up. The focus is performance,
