@@ -41,7 +41,7 @@ impl Running {
 }
 
 /// GL JS's `easeCubicInOut`.
-fn ease(t: f64) -> f64 {
+pub(crate) fn ease(t: f64) -> f64 {
     if t <= 0.0 {
         return 0.0;
     }

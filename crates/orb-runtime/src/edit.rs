@@ -165,8 +165,12 @@ impl Map {
         style.worker = Arc::clone(&worker);
         let plan = worker.plan();
 
-        // Paint changes ease from the property before the edit.
+        // Paint changes ease from the property before the edit, and the
+        // root's light, sky and terrain from what the last frame showed.
         let (now, zoom) = (self.frame_time, self.zoom());
+        if patch.changes.contains(&Change::Root) {
+            self.root.start(&plan.style, zoom);
+        }
         let old_plan = old.plan();
         for change in &patch.changes {
             let Change::Paint { layer, id, .. } = change else {

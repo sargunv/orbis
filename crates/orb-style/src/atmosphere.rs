@@ -19,4 +19,6 @@ pub struct Atmosphere {
     /// stars' opacity; transparent and 0 unless its preview is on.
     pub backdrop_color: Property<Color>,
     pub star_opacity: Property<f32>,
+    /// Each property's own `*-transition`, by property name.
+    pub transitions: Vec<(String, crate::TransitionOverride)>,
 }

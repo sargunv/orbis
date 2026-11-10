@@ -22,7 +22,7 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         if STARS.contains(&name) {
             let what = format!("\"sky.{}\"", m.key);
             stars |= cx.preview(Preview::Stars, format!("sky.{}", m.key), m.key_span, what);
-        } else if !NAMES.contains(&m.key.as_str()) && !m.key.ends_with("-transition") {
+        } else if !NAMES.contains(&name) {
             cx.warn_unknown("sky", m);
         }
     }
@@ -69,6 +69,13 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         atmosphere_blend: number(cx, "atmosphere-blend", "0.8"),
         backdrop_color: color(cx, "backdrop-color", "\"transparent\""),
         star_opacity: number(cx, "star-opacity", "0"),
+        transitions: {
+            let names: Vec<&str> = (NAMES.iter())
+                .chain(STARS.iter().filter(|_| stars))
+                .copied()
+                .collect();
+            crate::v8::paint::root_transitions(cx, Some(json), "sky", &names)
+        },
     }
 }
 

@@ -134,6 +134,10 @@ pub(crate) struct Terrain {
     /// The DEM source's index in the plan and its key.
     pub(crate) source: usize,
     pub(crate) key: u32,
+    /// The DEM source's tiles, held while the terrain falls flat after
+    /// the style dropped it.
+    pub(crate) endpoint: Arc<orb_source::endpoint::TileEndpoint>,
+    /// As drawn: the style's, eased ([`crate::root`]).
     pub(crate) exaggeration: f64,
     pub(crate) pyramid: TilePyramid<DemTile>,
     /// The DEM tiles' page, made for the first.
@@ -169,21 +173,23 @@ pub(crate) struct Terrain {
 }
 
 impl Terrain {
-    /// Terrain over a `raster-dem` source of `tile_px` tiles between
-    /// `min_zoom` and `max_zoom`.
+    /// Terrain over the `raster-dem` source at `source` (its index in the
+    /// plan and key) of `tile_px` tiles from `endpoint`.
     pub(crate) fn new(
         id: u64,
-        source: usize,
-        key: u32,
+        (source, key): (usize, u32),
         exaggeration: f64,
+        endpoint: Arc<orb_source::endpoint::TileEndpoint>,
         tms: &TileMatrixSet,
-        (tile_px, min_zoom, max_zoom): (f64, u8, u8),
+        tile_px: f64,
     ) -> Self {
         let delta = 1 + (tile_px / 256.0).log2().round().max(0.0) as u8;
+        let (min_zoom, max_zoom) = (endpoint.minzoom, endpoint.maxzoom);
         Self {
             id,
             source,
             key,
+            endpoint,
             exaggeration,
             pyramid: TilePyramid::new(min_zoom, max_zoom, DEM_CACHE),
             page: None,
@@ -201,6 +207,15 @@ impl Terrain {
             padded: HashMap::new(),
             stale: true,
             revision: 0,
+        }
+    }
+
+    /// Draws it at `exaggeration` from now on: the elevations are taken
+    /// again.
+    pub(crate) fn set_exaggeration(&mut self, exaggeration: f64) {
+        if exaggeration != self.exaggeration {
+            self.exaggeration = exaggeration;
+            self.stale = true;
         }
     }
 
@@ -507,7 +522,10 @@ impl Terrain {
                         .all(|(t, d)| b.get(t).is_some_and(|h| Arc::ptr_eq(h, d)))
             };
             // The same tiles as before: the same elevations, no new revision.
-            if same(&dems, &self.elevation.dems) && same(&culling, &self.elevation.culling) {
+            if same(&dems, &self.elevation.dems)
+                && same(&culling, &self.elevation.culling)
+                && self.elevation.exaggeration == self.exaggeration
+            {
                 return &self.elevation;
             }
             let mut elevation = TerrainElevation::empty(tms.clone(), self.exaggeration);
@@ -1212,7 +1230,15 @@ mod tests {
 
     /// A terrain over 256-pixel DEM tiles to zoom 12 with `dems` arrived.
     fn terrain_with(dems: &[(TileIndex, Arc<Dem>)]) -> Terrain {
-        let mut terrain = Terrain::new(1, 0, 0, 1.5, &tms(), (256.0, 0, 12));
+        let style = orb_style::v8::parse(
+            r#"{"version": 8, "sources": {"dem": {"type": "raster-dem",
+                "tiles": ["t/{z}/{x}/{y}.png"], "tileSize": 256, "maxzoom": 12}}, "layers": []}"#,
+        )
+        .unwrap();
+        let endpoint =
+            orb_source::endpoint::TileEndpoint::resolve(&style.sources[0].kind, None, tms())
+                .unwrap();
+        let mut terrain = Terrain::new(1, (0, 0), 1.5, Arc::new(endpoint), &tms(), 256.0);
         arrive(&mut terrain, dems);
         terrain
     }

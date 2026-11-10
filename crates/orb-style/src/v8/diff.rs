@@ -192,6 +192,15 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         }
     }
 
+    if let Some(json) = member(&draft.root, "light")
+        && reads_global(json, &changed)
+    {
+        style.light = crate::v8::parse_light(json, &new_state, previews)?;
+        if !changes.contains(&Change::Root) {
+            changes.push(Change::Root);
+        }
+    }
+
     // A projection that reads the global state follows it.
     if let Some(json) = member(&draft.root, "projection")
         && (draft.new_root || reads_global(json, &changed))

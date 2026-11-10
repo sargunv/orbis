@@ -511,6 +511,10 @@ pub struct Map {
     pub(crate) image_fades_until: f64,
     /// Paint edits easing in.
     pub(crate) transitions: crate::transitions::Transitions,
+    /// The light, sky and terrain easing in.
+    pub(crate) root: crate::root::Root,
+    /// This frame's root values, eased.
+    pub(crate) root_frame: Option<crate::root::RootFrame>,
     /// The latest `load_style_url` request; earlier ones are ignored.
     pub(crate) style_request: u64,
     /// Why the latest style request failed: nothing will load until
@@ -679,6 +683,8 @@ impl Map {
             globe_warps: crate::globe::GlobeWarps::new(*surface.projection()),
             surface,
             transitions: Default::default(),
+            root: Default::default(),
+            root_frame: None,
             style_request: 0,
             style_error: None,
             generation: 0,
@@ -901,9 +907,9 @@ impl Map {
         view.with_tile_lod(self.tile_lod)
     }
 
-    /// Whether a paint transition is running.
+    /// Whether a transition is running: paint, light, sky or terrain.
     pub fn transitioning(&self) -> bool {
-        self.transitions.running()
+        self.transitions.running() || self.root.running()
     }
 
     /// What the map did since the last call, in order: style and source
@@ -995,6 +1001,7 @@ impl Map {
         self.style_request += 1;
         self.style_error = None;
         self.transitions = Default::default();
+        self.root = Default::default();
         self.install(doc);
         Ok(())
     }
@@ -1367,9 +1374,15 @@ impl Map {
             .style
             .as_ref()
             .map(|s| Arc::clone(&s.worker.plan().style));
-        let (paint, at) =
-            crate::light::atmosphere(model.as_deref(), &view, self.camera.state(), zoom);
-        renderer.set_atmosphere(gpu, paint, at);
+        let root = self.root.frame(model.as_deref(), zoom, frame_time);
+        self.root_frame = Some(root);
+        let at = crate::light::atmosphere_view(
+            &root.light,
+            root.terrain_presence,
+            &view,
+            self.camera.state(),
+        );
+        renderer.set_atmosphere(gpu, root.sky, at);
 
         let now = frame_time;
         let mut fading = false;
@@ -1397,15 +1410,7 @@ impl Map {
         if let Some(style) = &mut self.style {
             style.symbol_tiles.clear();
         }
-        let default_light;
-        let light = match model.as_deref() {
-            Some(s) => &s.light,
-            None => {
-                default_light = orb_style::v8::default_light();
-                &default_light
-            }
-        };
-        let frame_light = crate::light::frame_light(light, zoom, self.camera.state().bearing);
+        let frame_light = crate::light::frame_light(&root.light, self.camera.state().bearing);
         let mut frame_terrain = None;
         if let Some(style) = &mut self.style
             && !std::mem::replace(&mut style.glyphs_fetched, true)
@@ -1528,6 +1533,7 @@ impl Map {
             && !fading
             && !self.labels.fading(now)
             && !self.transitions.running()
+            && !self.root.running()
             && now >= self.image_fades_until;
         if let Some(style) = &self.style {
             let plan = style.worker.plan();
@@ -2139,9 +2145,10 @@ impl Map {
     ) -> Option<orb_render::FrameTerrain> {
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();
-        let mut wanted = plan.terrain();
+        let root = self.root_frame.expect("eased before the terrain");
+        let mut wanted = plan.terrain().map(|(index, _)| index);
         // Terrain tiles are the surface's; their DEM must be too.
-        let unusable = match wanted.map(|(index, _)| &style.sources[index]) {
+        let unusable = match wanted.map(|index| &style.sources[index]) {
             Some(SourceState::Ready { endpoint, .. }) if endpoint.tms != *self.surface.tms() => {
                 Some(format!(
                     "terrain: the DEM source's tiles ({}) are not the map's ({}); the map is flat",
@@ -2155,20 +2162,21 @@ impl Map {
             self.warnings.push(warning);
             wanted = None;
         }
-        let same = match (&style.terrain, wanted) {
-            (Some(t), Some((index, exaggeration))) => {
-                t.source == index
-                    && t.key == plan.sources[index].key
-                    && t.exaggeration == exaggeration
+        // Terrain turned off falls flat before it goes.
+        let same = match (&mut style.terrain, wanted) {
+            (Some(t), Some(index)) => {
+                t.source = index;
+                t.key == plan.sources[index].key
             }
+            (Some(_), None) => root.terrain_presence > 0.0,
             (None, None) => true,
-            _ => false,
+            (None, Some(_)) => false,
         };
         if !same {
             if let Some(old) = style.terrain.take() {
                 old.release(gpu, renderer);
             }
-            if let Some((index, exaggeration)) = wanted
+            if let Some(index) = wanted
                 && let SourceState::Ready { endpoint, .. } = &style.sources[index]
             {
                 // Raster sources cover with `tileSize / √2` (GL JS's
@@ -2177,11 +2185,11 @@ impl Map {
                 self.terrains += 1;
                 style.terrain = Some(crate::terrain::Terrain::new(
                     self.terrains,
-                    index,
-                    plan.sources[index].key,
-                    exaggeration,
+                    (index, plan.sources[index].key),
+                    root.exaggeration,
+                    Arc::clone(endpoint),
                     self.surface.tms(),
-                    (tile_px, endpoint.minzoom, endpoint.maxzoom),
+                    tile_px,
                 ));
             }
         }
@@ -2189,10 +2197,8 @@ impl Map {
             renderer.set_terrain(gpu, None);
             return None;
         };
-        let SourceState::Ready { endpoint, .. } = &style.sources[terrain.source] else {
-            return None;
-        };
-        let endpoint = Arc::clone(endpoint);
+        terrain.set_exaggeration(root.exaggeration);
+        let endpoint = Arc::clone(&terrain.endpoint);
         terrain.pyramid.retry_failed(self.services.clock.now());
         let unpack = endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32);
         // GL JS's `getSkirtLength`: a fifth of a tile's width at the

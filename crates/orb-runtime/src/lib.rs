@@ -31,6 +31,7 @@ mod point;
 mod queries;
 mod query;
 mod resident;
+mod root;
 mod sprite;
 pub mod stages;
 mod state;

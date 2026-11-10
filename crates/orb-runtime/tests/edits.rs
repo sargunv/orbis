@@ -775,3 +775,29 @@ fn image_tiles_regrid_for_a_globe_after_leaving_a_plane() {
     edit(&mut map, r#"[["setProjection", {"type": "globe"}]]"#);
     assert_matches_fresh(&mut map);
 }
+
+/// A sky and light edit eases by their transitions, frame by frame, and
+/// once it ends the map draws what a fresh load of the edited style draws.
+#[test]
+fn sky_and_light_edits_ease_then_match_a_fresh_map() {
+    let mut map = tokyo();
+    let mut camera = *map.map.camera();
+    camera.pitch = 70.0;
+    map.map.jump_to_state(camera);
+    edit(&mut map, r##"[["setSky", {"sky-color": "#102040"}]]"##);
+    settle(&mut map);
+    edit(
+        &mut map,
+        r##"[["setSky", {"sky-color": "#ff8000", "sky-color-transition": {"duration": 200}}],
+            ["setLight", {"color": "#ffd0a0", "intensity": 0.8}]]"##,
+    );
+    let mut eased = 0;
+    while map.map.transitioning() || eased == 0 {
+        map.frame();
+        eased += 1;
+        assert!(eased < 10_000, "the edit never finished easing");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(eased > 2, "the sky eased over {eased} frames");
+    assert_matches_fresh(&mut map);
+}

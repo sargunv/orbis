@@ -325,6 +325,25 @@ pub fn parse_layer(
     cx.finish(layer)
 }
 
+/// Parses a root light with the current global state.
+pub(crate) fn parse_light(
+    json: &Json,
+    state: &[(String, Value<'static>)],
+    previews: Previews,
+) -> Result<Light, Diagnostics> {
+    let mut cx = Cx {
+        state: state.to_vec(),
+        previews,
+        ..Cx::default()
+    };
+    let light = light::parse(&mut cx, Some(json));
+    if cx.diagnostics.errors.is_empty() {
+        Ok(light)
+    } else {
+        Err(cx.diagnostics)
+    }
+}
+
 /// Parses a root sky with the current global state, returning its warnings.
 pub(crate) fn parse_sky(
     json: &Json,

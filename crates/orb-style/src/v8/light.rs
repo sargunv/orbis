@@ -8,6 +8,9 @@ pub fn default_light() -> Light {
     parse(&mut Cx::default(), None)
 }
 
+/// The light's properties that transition (`anchor` doesn't).
+const TRANSITIONED: &[&str] = &["position", "color", "intensity"];
+
 pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
     let prop = |name, ty, default, interpolated, minimum, maximum| Prop {
         name,
@@ -48,7 +51,11 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
     );
     if let Some(json) = json {
         for member in cx.object(json, "light").unwrap_or_default() {
-            if !["anchor", "position", "color", "intensity"].contains(&member.key.as_str()) {
+            let known = match member.key.strip_suffix("-transition") {
+                Some(name) => TRANSITIONED.contains(&name),
+                None => ["anchor", "position", "color", "intensity"].contains(&member.key.as_str()),
+            };
+            if !known {
                 cx.warn_unknown("light", member);
             }
         }
@@ -73,5 +80,6 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
             "light.intensity",
             &intensity,
         ),
+        transitions: crate::v8::paint::root_transitions(cx, json, "light", TRANSITIONED),
     }
 }
