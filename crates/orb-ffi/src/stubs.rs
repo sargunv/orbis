@@ -452,17 +452,6 @@ pub unsafe extern "C" fn mln_map_fit_camera_to_geometry(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_fit_camera_to_geometry") }
 }
 
-/// `mln_map_get_image_source_coordinates`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_get_image_source_coordinates(
-    map: mln_map,
-    source_id: mln_buffer_view,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_get_image_source_coordinates") }
-}
-
 /// `mln_map_set_free_camera_options`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_set_free_camera_options(
@@ -472,19 +461,6 @@ pub unsafe extern "C" fn mln_map_set_free_camera_options(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_free_camera_options") }
-}
-
-/// `mln_map_set_image_source_coordinates`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_image_source_coordinates(
-    map: mln_map,
-    source_id: mln_buffer_view,
-    coordinates: *const mln_lat_lng,
-    coordinate_count: usize,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_image_source_coordinates") }
 }
 
 /// `mln_map_set_image_source_image`: not implemented.
@@ -497,18 +473,6 @@ pub unsafe extern "C" fn mln_map_set_image_source_image(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_image_source_image") }
-}
-
-/// `mln_map_set_image_source_url`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_image_source_url(
-    map: mln_map,
-    source_id: mln_buffer_view,
-    url: mln_buffer_view,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_image_source_url") }
 }
 
 /// `mln_map_set_projection_mode`: not implemented.
@@ -1058,6 +1022,10 @@ const _: () = {
         crate::style::mln_map_get_global_state,
     ];
     let _ = [
+        crate::sys::mln_map_get_image_source_coordinates,
+        crate::style::mln_map_get_image_source_coordinates,
+    ];
+    let _ = [
         crate::sys::mln_map_get_loaded_style_json,
         crate::map::mln_map_get_loaded_style_json,
     ];
@@ -1246,6 +1214,14 @@ const _: () = {
     let _ = [
         crate::sys::mln_map_set_global_state_property,
         crate::style::mln_map_set_global_state_property,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_image_source_coordinates,
+        crate::style::mln_map_set_image_source_coordinates,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_image_source_url,
+        crate::style::mln_map_set_image_source_url,
     ];
     let _ = [
         crate::sys::mln_map_set_rendering_stats_view_enabled,

@@ -2563,3 +2563,153 @@ command!(
         })
     }
 );
+
+// MARK: - Image sources
+
+/// Checks that `id` names an image source, and gives its JSON.
+fn image_source(entry: &MapEntry, id: &str) -> Result<Json> {
+    let json = source(entry, id)?;
+    if source_type(json) != "image" {
+        return Err(Failure::argument(format!(
+            "source \"{id}\" is not an image source"
+        )));
+    }
+    Ok(json.clone())
+}
+
+/// Replaces image source `id` with `json`, where it stood.
+fn replace_source(entry: &mut MapEntry, id: &str, json: Json) -> Result {
+    // Orbis's transactions replace a source whole: its layers go and come
+    // back with it.
+    let doc = doc(entry)?;
+    let users: Vec<(Json, Option<String>)> = {
+        let ids: Vec<&str> = doc.layer_ids().collect();
+        ids.iter()
+            .enumerate()
+            .filter_map(|(i, l)| {
+                let layer = doc.layer(l)?;
+                (layer.get("source").and_then(Json::as_str) == Some(id)).then(|| {
+                    (
+                        layer.clone(),
+                        ids.get(i + 1).map(|next| (*next).to_string()),
+                    )
+                })
+            })
+            .collect()
+    };
+    let mut ops: Vec<Op> = users
+        .iter()
+        .filter_map(|(layer, _)| layer.get("id").and_then(Json::as_str))
+        .map(|l| Op::RemoveLayer { id: l.to_string() })
+        .collect();
+    ops.push(Op::RemoveSource { id: id.to_string() });
+    ops.push(Op::AddSource {
+        id: id.to_string(),
+        source: json,
+    });
+    // Back on top of the layer that followed each, from the topmost down.
+    for (layer, before) in users.into_iter().rev() {
+        ops.push(Op::AddLayer { layer, before });
+    }
+    edit(entry, ops)
+}
+
+/// The JSON of four corners, clockwise from the top left.
+unsafe fn corners(coordinates: *const mln_lat_lng, count: usize) -> Result<Json> {
+    if count != 4 {
+        return Err(Failure::argument("an image source takes four coordinates"));
+    }
+    if coordinates.is_null() {
+        return Err(Failure::argument("coordinates is null"));
+    }
+    // SAFETY: the caller's four coordinates.
+    let corners = unsafe { std::slice::from_raw_parts(coordinates, 4) };
+    let mut text = String::from("[");
+    for (i, c) in corners.iter().enumerate() {
+        if !(c.latitude.is_finite() && c.longitude.is_finite()) || c.latitude.abs() > 90.0 {
+            return Err(Failure::argument(format!(
+                "coordinates[{i}] isn't a coordinate"
+            )));
+        }
+        if i > 0 {
+            text.push(',');
+        }
+        text.push_str(&format!("[{:?},{:?}]", c.longitude, c.latitude));
+    }
+    text.push(']');
+    json::parse(&text).map_err(|e| Failure::native(e.to_string()))
+}
+
+fn with_member(json: &Json, key: &str, value: Json) -> Json {
+    let mut members = json.as_object().unwrap_or_default().to_vec();
+    members.retain(|m| m.key != key);
+    members.push(json::Member {
+        key: key.into(),
+        key_span: json::Span::default(),
+        value,
+    });
+    Json::new(JsonValue::Object(members), json::Span::default())
+}
+
+command!(
+    mln_map_set_image_source_url(source_id: mln_buffer_view, url: mln_buffer_view),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let url = id(url, "url")?;
+        Ok(job(move |entry| {
+            let json = image_source(entry, &source_id)?;
+            let url = Json::new(JsonValue::String(url), json::Span::default());
+            replace_source(entry, &source_id, with_member(&json, "url", url))
+        }))
+    }
+);
+
+command!(
+    mln_map_set_image_source_coordinates(
+        source_id: mln_buffer_view,
+        coordinates: *const mln_lat_lng,
+        coordinate_count: usize,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let corners = corners(coordinates, coordinate_count)?;
+        Ok(job(move |entry| {
+            let json = image_source(entry, &source_id)?;
+            replace_source(
+                entry,
+                &source_id,
+                with_member(&json, "coordinates", corners),
+            )
+        }))
+    }
+);
+
+command!(
+    mln_map_get_image_source_coordinates(source_id: mln_buffer_view),
+    true,
+    false,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        Ok(move |state: &mut State, map: u64| {
+            let json = image_source(entry(state, map), &source_id)?;
+            let corners: Vec<mln_lat_lng> = json
+                .get("coordinates")
+                .and_then(Json::as_array)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|c| {
+                    let c = c.as_array()?;
+                    Some(mln_lat_lng {
+                        latitude: c.get(1)?.as_f64()?,
+                        longitude: c.first()?.as_f64()?,
+                    })
+                })
+                .collect();
+            Ok(Value::array(&corners, None))
+        })
+    }
+);
