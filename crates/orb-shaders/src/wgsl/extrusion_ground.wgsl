@@ -234,23 +234,34 @@ fn vs_extrusion_occlusion(@builtin(vertex_index) index: u32) -> GroundOut {
     let lost = vertex_at(mate + 1u) != g.feature || ((vertex_at(mate + 2u) ^ packed) & 0x10001u) != 0x10000u
         || span <= 0.0;
     let top = f32(packed & 1u);
-    let to = vec2<f32>(along.x, -along.y) / span + ground_outward(packed) * top;
     let reach = radius * frame.extrusion_scale;
+    // The foot of a part on the ground reaches in under its building, at
+    // the foot's darkness, which the building covers: sampled between
+    // its texels, a ground mask whose darkness began at the foot would
+    // leave a light seam along it on terrain.
+    let inward = select(0.0, min(GROUND_OCCLUSION_INWARD * frame.world_per_px / reach, 0.5), g.base <= 0.0);
+    let out_from_foot = mix(-inward, 1.0, top);
+    let to = vec2<f32>(along.x, -along.y) / span + ground_outward(packed) * out_from_foot;
     out.position = ground_landing(g, select(to * reach, vec2<f32>(0.0), lost));
     if lost {
         out.ground = vec4<f32>(0.0);
         return out;
     }
     let wall = span * ground_scale(g.tile, g.pos) / reach;
-    out.ground = vec4<f32>(top, select(-1.0, wall + 1.0, end == 1u), wall, intensity);
+    out.ground = vec4<f32>(out_from_foot, select(-1.0, wall + 1.0, end == 1u), wall, intensity);
     return out;
 }
+
+// How far in under its building, in logical pixels at the camera target,
+// a wall's ground occlusion reaches from its foot, at most half its
+// radius.
+const GROUND_OCCLUSION_INWARD: f32 = 2.0;
 
 // The darkness at a fragment: a shadow's throughout; occlusion's from the
 // wall's foot out to the radius, rounding past its ends.
 fn ground_darkness(in: GroundOut) -> f32 {
     let beyond = max(max(-in.ground.y, in.ground.y - in.ground.z), 0.0);
-    let d = length(vec2<f32>(in.ground.x, beyond));
+    let d = length(vec2<f32>(max(in.ground.x, 0.0), beyond));
     return in.ground.w * (1.0 - smoothstep(0.0, 1.0, d));
 }
 

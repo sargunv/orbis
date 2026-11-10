@@ -17,7 +17,7 @@
 //! falls on the surface drawn, wherever the DEM bends between the
 //! buildings' vertices.
 use crate::TargetFormat;
-use crate::offscreen::{Apart, Composites, Mode, Offscreen};
+use crate::offscreen::{Apart, Composites, Mode, Offscreen, Target};
 use crate::paint::ElevationShape;
 use crate::pipeline::{DEPTH, Draw};
 use crate::release::Release;
@@ -68,12 +68,15 @@ pub(crate) struct Extrusions {
     /// are, cut ones clipped by planes; at one sample and at four.
     pipelines: Vec<(ElevationShape, Pipelines)>,
     /// The shadow and ground occlusion passes, at one sample and at four,
-    /// made for the first node that draws each; and into the ground mask.
+    /// made for the first node that draws each; and into the ground mask,
+    /// likewise.
     ground: [[Option<RenderPipelineId>; 2]; 2],
-    mask: [Option<RenderPipelineId>; 2],
-    /// The ground mask and its size, made for the first node drawing into
-    /// it.
-    mask_target: Option<(TextureId, [u32; 2])>,
+    mask: [[Option<RenderPipelineId>; 2]; 2],
+    /// The ground mask, its size and samples, made for the first node
+    /// drawing into it. It draws multisampled as the layer's target does,
+    /// resolved into the texture the decal samples: drawn at one sample,
+    /// every shadow's edge stood in steps along the terrain.
+    mask_target: Option<(Target, [u32; 2], u32)>,
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
     /// The targets' format: the map's.
@@ -96,7 +99,7 @@ impl Extrusions {
         Self {
             pipelines: Vec::new(),
             ground: [[None; 2]; 2],
-            mask: [None; 2],
+            mask: [[None; 2]; 2],
             mask_target: None,
             layouts: [scene, node],
             samples: 4,
@@ -190,17 +193,18 @@ impl Extrusions {
         }
     }
 
-    /// Makes the ground passes `ground` draws into the ground mask, unless
-    /// they are made: the darkness alone, flat on its plane, the darkest
-    /// kept.
+    /// Makes the ground passes `ground` draws into the ground mask at the
+    /// current sample count, unless they are made: the darkness alone,
+    /// flat on its plane, the darkest kept.
     fn make_mask(&mut self, gpu: &mut dyn Gpu, ground: Ground) {
+        let samples = usize::from(self.samples == 4);
         let target = TargetFormat {
             color: TextureFormat::R8Unorm,
-            sample_count: 1,
+            sample_count: self.samples,
         };
         let shader = &EXTRUSION_GROUND_SHADER;
         for (kind, (on, entry)) in ground.passes().into_iter().enumerate() {
-            if on && self.mask[kind].is_none() {
+            if on && self.mask[kind][samples].is_none() {
                 let draw = Draw {
                     label: "extrusion ground mask",
                     vertex: (shader, entry),
@@ -208,19 +212,19 @@ impl Extrusions {
                     constants: [&[("ground_mask", 1.0)], &[]],
                     ..Draw::new(shader, &self.layouts, target, Some(BlendState::Max))
                 };
-                self.mask[kind] = Some(draw.make(gpu));
+                self.mask[kind][samples] = Some(draw.make(gpu));
             }
         }
     }
 
     /// The ground passes `ground` draws whose pipelines are made: into the
-    /// layer's target at the current sample count, or into the mask.
+    /// layer's target or into the mask, at the current sample count.
     fn ground_made(&self, ground: Ground) -> [Option<RenderPipelineId>; 2] {
         let samples = usize::from(self.samples == 4);
         let mut made = [None; 2];
         for (kind, (on, _)) in ground.passes().into_iter().enumerate() {
             let pipeline = if ground.mask {
-                self.mask[kind]
+                self.mask[kind][samples]
             } else {
                 self.ground[kind][samples]
             };
@@ -433,30 +437,23 @@ impl Extrusions {
 }
 
 impl Extrusions {
-    /// The ground mask for a 3D target of `size`, made or remade to fit:
-    /// as much larger as its plane shrinks into it (`GROUND_MASK_SCALE`).
+    /// The ground mask for a 3D target of `size`, made or remade to fit,
+    /// to sample: as much larger as its plane shrinks into it
+    /// (`GROUND_MASK_SCALE`), at the current sample count.
     pub(crate) fn mask_target(&mut self, gpu: &mut dyn Gpu, size: [u32; 2]) -> TextureId {
         let max = gpu.caps().limits.max_texture_dimension_2d;
         let size = size.map(|s| ((s as f32 / GROUND_MASK_SCALE).ceil() as u32).clamp(1, max));
-        if let Some((texture, made)) = self.mask_target
-            && made == size
+        let samples = self.samples;
+        if let Some((target, made, made_samples)) = &self.mask_target
+            && (*made, *made_samples) == (size, samples)
         {
-            return texture;
+            return target.texture(0);
         }
-        self.mask_target.take().map(|(t, _)| t).release(gpu);
-        let texture = gpu.create_texture(&TextureDesc {
-            label: "ground mask",
-            width: size[0],
-            height: size[1],
-            array_layers: 1,
-            dimension: TextureViewDimension::D2,
-            format: TextureFormat::R8Unorm,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            sample_count: 1,
-            mip_levels: 1,
-            view_formats: &[],
-        });
-        self.mask_target = Some((texture, size));
+        self.mask_target.take().map(|(t, ..)| t).release(gpu);
+        let format = [TextureFormat::R8Unorm];
+        let target = Target::new(gpu, "ground mask", &format, size, samples);
+        let texture = target.texture(0);
+        self.mask_target = Some((target, size, samples));
         texture
     }
 
@@ -469,7 +466,7 @@ impl Extrusions {
         buffers: &SceneBuffers,
         (draw, ground): (RenderCommand, Ground),
     ) -> Option<RenderPass> {
-        let (target, _) = self.mask_target?;
+        let (target, ..) = self.mask_target.as_ref()?;
         let mut commands = vec![
             RenderCommand::SetBindGroup {
                 index: 0,
@@ -486,12 +483,7 @@ impl Extrusions {
         }
         Some(RenderPass {
             label: "ground mask",
-            colors: vec![ColorAttachment {
-                target,
-                resolve: None,
-                store: StoreOp::Store,
-                load: LoadOp::Clear([0.0; 4]),
-            }],
+            colors: vec![target.attachment(0, LoadOp::Clear([0.0; 4]))],
             depth: None,
             commands,
         })
@@ -504,7 +496,7 @@ const GROUND_MASK_SCALE: f32 = 0.8;
 impl crate::release::Release for Extrusions {
     fn release(self, gpu: &mut dyn Gpu) {
         let pipelines: Vec<Pipelines> = self.pipelines.into_iter().map(|(_, p)| p).collect();
-        let mask = self.mask_target.map(|(t, _)| t);
+        let mask = self.mask_target.map(|(t, ..)| t);
         (pipelines, self.ground, self.mask, self.depth, mask).release(gpu);
     }
 }

@@ -65,10 +65,12 @@ fn steep() -> Constraints {
 }
 
 /// A map's options for these tests: labels that depend on the camera
-/// alone, which MapLibre Native's stabilisers (on by default) don't.
+/// alone, which MapLibre Native's stabilisers (on by default) don't, and
+/// every preview, for the styles that use one.
 fn options() -> MapOptions {
     MapOptions {
         stable_labels: false,
+        previews: orb_api::Previews::ALL,
         ..MapOptions::default()
     }
 }
@@ -514,6 +516,32 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
     assert_same("terrain", both_ways(&style, start, end, 30));
+}
+
+/// Tokyo's buildings on hills, with style-spec#1797's shadows and
+/// #1796's ambient occlusion: what they darken on the terrain (its ground
+/// mask, on a plane at the ground under the target, carried onto the
+/// terrain) and the walls' occlusion from the ground under them draw as a
+/// fresh map does after a gesture over the hills.
+#[test]
+fn shadows_on_terrain_after_a_gesture_draw_what_a_fresh_map_does() {
+    let (hills, _dem) = hills();
+    let style = extruded(tokyo(
+        r#""terrain": {"source": "hills", "exaggeration": 1.5},
+           "light": {"anchor": "map", "position": [1.15, 210, 60], "shadow-intensity": 0.5},"#,
+        &hills,
+    ))
+    .replacen(
+        r#""fill-extrusion-height": ["get", "render_height"]}"#,
+        r#""fill-extrusion-height": ["get", "render_height"],
+           "fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
+           "fill-extrusion-ambient-occlusion-ground-intensity": 0.5}"#,
+        1,
+    );
+    assert!(style.contains("ground-intensity"));
+    let start = (Geodetic::new(139.735, 35.68), 14.5, -20.0, 40.0);
+    let end = (STATION, 16.0, 30.0, 60.0);
+    assert_same("terrain-shadows", both_ways(&style, start, end, 20));
 }
 
 /// A map over terrain resized between frames draws its next frame at
