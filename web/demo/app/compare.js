@@ -37,12 +37,20 @@ const ENGINES = {
 };
 /**
  * Properties of Orbis's previews that the other engines don't know, by
- * where they sit: style-spec#1889's stars, #1797's shadows, #1796's ambient
- * occlusion and #1047's rounded fills.
+ * where they sit: style-spec#1889's stars, #1797's shadows, ground
+ * lighting, #1796's ambient occlusion and #1047's rounded fills.
  */
 const PREVIEWS = {
   sky: ["backdrop-color", "star-opacity"],
-  light: ["shadow-intensity"],
+  light: [
+    "shadow-intensity",
+    ...[
+      "ground-lighting",
+      "ambient-color",
+      "ambient-intensity",
+      "twilight",
+    ].map((p) => `dev.sargunv.orbis:${p}`),
+  ],
   paint: [
     "wall-intensity",
     "wall-radius",

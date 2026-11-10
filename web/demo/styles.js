@@ -1,6 +1,7 @@
 import alpsFlight from "./data/alps-flight.json";
 import alps from "./data/alps.json?url";
 import arctic from "./data/crs/arctic.json?url";
+import globe from "./data/globe.json";
 import osmCarto from "./data/osm-carto.json?url";
 import catalogue from "./data/scenes.json";
 import mlt from "./data/tokyo-mlt.json?url";
@@ -89,54 +90,61 @@ const GLOBE_SKY = {
   ],
 };
 
-/** Mapterhorn's global elevation: Terrarium-encoded WebP (data/README.md). */
-const MAPTERHORN = {
-  type: "raster-dem",
-  tiles: ["https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"],
-  encoding: "terrarium",
-  tileSize: 512,
-  maxzoom: 17,
-};
+/** Whether a filter is in v8's legacy syntax rather than an expression. */
+function isLegacyFilter(filter) {
+  if (!Array.isArray(filter)) return false;
+  const [op, ...args] = filter;
+  if (["all", "any", "none"].includes(op)) return args.every(isLegacyFilter);
+  return (
+    ["==", "!=", "<", ">", "<=", ">=", "in", "!in", "has", "!has"].includes(
+      op,
+    ) && typeof args[0] === "string"
+  );
+}
 
 /**
- * Protomaps Light (v5) with what it lacks for a 3D map: Mapterhorn's DEM
- * for the entry's terrain, a hillshade from a DEM source of its own over the
- * land and water fills and under the roads and labels, a viewport-anchored
- * light (the spec's default, which reads best on the globe in both engines),
- * the buildings extruded under the labels with their footprints rounded
- * (with shadows and ambient occlusion), and colours mixed in linear
- * light (`dev.sargunv.orbis:color-space`). Each
+ * Protomaps' layers and tiles as the Globe draws them (data/globe.json,
+ * which orb-demo applies too): its own palette set over each layer's paint
+ * by id, keeping Protomaps' widths, filters and layout, so the road
+ * hierarchy and label placement follow upstream; the sea's depth and
+ * seafloor relief from AWS Terrain Tiles (ETOPO1 and GEBCO offshore) over
+ * the ocean, which is the background once the water fill leaves out
+ * Protomaps' ocean polygons, and under the land, so neither shows on land
+ * however low it lies, and Mapterhorn's land hillshade isn't doubled;
+ * Mapterhorn's DEM for the entry's terrain (which keeps the sea at sea
+ * level) and a hillshade over the land and lakes, under the roads and
+ * labels; the buildings extruded under the labels with their footprints
+ * rounded (with shadows and ambient occlusion); and a light that shades
+ * the ground too (`dev.sargunv.orbis:ground-lighting`), from a sun 60°
+ * from overhead so the globe shows its night side by the far limb, and
+ * colours mixed in linear light (`dev.sargunv.orbis:color-space`), in
+ * which the haze tints the sunlit face rather than washing it out. Each
  * addition is placed by the layers it finds, so a style with other ids
  * still draws.
  */
-function protomaps3d(style) {
-  const layers = [...style.layers];
+function globeStyle(style) {
+  const layers = style.layers.map((layer) => {
+    const paint = globe.paint[layer.id];
+    const recoloured = paint
+      ? { ...layer, paint: { ...layer.paint, ...paint } }
+      : layer;
+    if (layer.id !== "water") return recoloured;
+    // In the filter's own syntax: Protomaps' is legacy.
+    const legacy = !layer.filter || isLegacyFilter(layer.filter);
+    const ocean = ["!=", legacy ? "kind" : ["get", "kind"], "ocean"];
+    return {
+      ...recoloured,
+      filter: layer.filter ? ["all", layer.filter, ocean] : ocean,
+    };
+  });
   const labels = () => {
     const i = layers.findIndex((l) => l.type === "symbol");
     return i < 0 ? layers.length : i;
   };
-  // Over the water's fill, before the waterways, piers and roads drawn after it.
+  const earth = layers.findIndex((l) => l.id === "earth");
+  layers.splice(earth < 0 ? 1 : earth, 0, ...globe.sea);
   const water = layers.findIndex((l) => l.id === "water");
-  layers.splice(water < 0 ? labels() : water + 1, 0, {
-    id: "hillshade",
-    type: "hillshade",
-    source: "hillshade",
-    paint: {
-      "hillshade-illumination-anchor": "viewport",
-      "hillshade-exaggeration": [
-        "interpolate",
-        ["linear"],
-        ["zoom"],
-        3,
-        0.6,
-        12,
-        0.35,
-      ],
-      "hillshade-shadow-color": "#6f6a63",
-      "hillshade-highlight-color": "#fbfaf7",
-      "hillshade-accent-color": "#8d877e",
-    },
-  });
+  layers.splice(water < 0 ? labels() : water + 1, 0, globe.hillshade);
   const at = layers.findIndex(
     (l) => l["source-layer"] === "buildings" && l.type === "fill",
   );
@@ -152,77 +160,22 @@ function protomaps3d(style) {
     // Tokyo and Manhattan, a tenth in central Paris) and no level counts:
     // the rest stand at OpenMapTiles' default `render_height`, 5 m, as
     // Liberty's do where OpenStreetMap has neither.
-    const height = ["coalesce", ["get", "height"], 5];
     layers.splice(labels(), 0, {
-      id: "buildings_3d",
-      type: "fill-extrusion",
+      ...globe.buildings,
       source: buildings.source,
-      "source-layer": "buildings",
-      minzoom: 14,
-      filter: ["==", ["geometry-type"], "Polygon"],
-      // Softly rounded corners (spec 26.2.0; clamped to a fifth of each edge).
-      layout: { "fill-extrusion-rounded-corner-distance": 2 },
-      paint: {
-        // Protomaps Light's buildings fill (#cccccc at 0.5) over its land (#e2dfda).
-        "fill-extrusion-color": "#d7d6d3",
-        // Rising out of the ground as the zoom reaches 15.
-        "fill-extrusion-height": [
-          "interpolate",
-          ["linear"],
-          ["zoom"],
-          14,
-          0,
-          15,
-          height,
-        ],
-        "fill-extrusion-base": [
-          "interpolate",
-          ["linear"],
-          ["zoom"],
-          14,
-          0,
-          15,
-          ["min", ["coalesce", ["get", "min_height"], 0], height],
-        ],
-        "fill-extrusion-opacity": 0.9,
-        // Grounded by ambient occlusion (style-spec#1796's preview): walls
-        // darken toward their feet and the ground along them.
-        "fill-extrusion-ambient-occlusion-wall-intensity": 0.6,
-        "fill-extrusion-ambient-occlusion-ground-intensity": 0.5,
-      },
     });
   }
   return {
     ...style,
-    sources: {
-      ...style.sources,
-      terrain: {
-        ...MAPTERHORN,
-        attribution:
-          '<a href="https://mapterhorn.com/attribution">© Mapterhorn</a>',
-      },
-      hillshade: MAPTERHORN,
-    },
-    // The buildings cast shadows on the ground from it (style-spec#1797's
-    // preview), turning with the view or fixed to the ground as the
-    // entry's light switch anchors it.
-    light: {
-      anchor: "viewport",
-      position: [1.15, 210, 30],
-      intensity: 0.35,
-      "shadow-intensity": 0.5,
-    },
-    // Colours mix in linear light: the scattering tints the sunlit face
-    // rather than washing it out, fog and the hillshade blend as light
-    // does, and lines and labels antialias evenly. GL JS and Native ignore
-    // metadata.
-    metadata: { ...style.metadata, "dev.sargunv.orbis:color-space": "linear" },
+    sources: { ...style.sources, ...globe.sources },
+    light: globe.light,
+    metadata: { ...style.metadata, ...globe.metadata },
     layers,
   };
 }
 
 /** What a catalogue entry's `restyle` names. */
-const RESTYLES = { "protomaps-3d": protomaps3d };
+const RESTYLES = { globe: globeStyle };
 /** The catalogue's local files, as the build emits them. */
 const LOCAL = {
   "alps-flight.json": alpsFlight,

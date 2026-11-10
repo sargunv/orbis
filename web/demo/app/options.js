@@ -11,6 +11,7 @@
 import { h } from "./dom.js";
 
 const COLOR_SPACE = "dev.sargunv.orbis:color-space";
+const GROUND_LIGHTING = "dev.sargunv.orbis:ground-lighting";
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
 const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map(
   (p) => `fill-extrusion-ambient-occlusion-${p}`,
@@ -125,6 +126,21 @@ export const OPTIONS = [
         tx.setPaintProperty(layer.id, HILLSHADE_ANCHOR, anchor);
       tx.setLight({ ...style.light, anchor });
     },
+  },
+  {
+    key: "night",
+    group: "Terrain and light",
+    label: "Night side",
+    note: "The ground darkened where the sun is down",
+    kind: "switch",
+    orbisOnly: true,
+    supported: ({ designed }) => nonzero(designed.light?.[GROUND_LIGHTING], 0),
+    read: (style) => nonzero(style.light?.[GROUND_LIGHTING], 0),
+    apply: (tx, on, { style, designed }) =>
+      tx.setLight({
+        ...style.light,
+        [GROUND_LIGHTING]: on ? designed.light[GROUND_LIGHTING] : 0,
+      }),
   },
   {
     key: "buildings",

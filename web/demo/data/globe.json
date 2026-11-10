@@ -1,0 +1,667 @@
+{
+  "$comment": [
+    "The Globe entry's restyle of Protomaps Light, which web/demo/styles.js and orb-demo's scenes.rs both apply (styles.js says how).",
+    "The palette is the Globe's own: warm, calm limestone land; vegetation in muted sage that tints the globe by biome from orbit and gives way to parks close in; a sea that deepens from a pale lagoon over the shelves to slate blue over the abyss, with a faint seafloor relief; white roads with honey motorways on Protomaps' quiet hierarchy; slate-plum labels on soft halos, each text colour at least 4.5:1 against its halo (3:1 for the large ocean, country and region names).",
+    "`paint` is set over each Protomaps layer's own by id; `sea` goes over the background (the ocean, its shore colour) and under `earth`, the land, so neither shows on land however low it lies; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source."
+  ],
+  "paint": {
+    "background": {
+      "background-color": "#c3e6ea"
+    },
+    "earth": {
+      "fill-color": "#efebe4"
+    },
+    "landcover": {
+      "fill-color": [
+        "match",
+        [
+          "get",
+          "kind"
+        ],
+        "grassland",
+        "#e2e8d2",
+        "barren",
+        "#f1e8d4",
+        "urban_area",
+        "#e7e3dc",
+        "farmland",
+        "#e9ebda",
+        "glacier",
+        "#f8fafb",
+        "scrub",
+        "#e6e8d3",
+        "#d3e2c8"
+      ]
+    },
+    "landuse_park": {
+      "fill-color": [
+        "case",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "national_park",
+              "park",
+              "cemetery",
+              "protected_area",
+              "nature_reserve",
+              "forest",
+              "golf_course"
+            ]
+          ]
+        ],
+        "#cee3c4",
+        [
+          "==",
+          [
+            "get",
+            "kind"
+          ],
+          "wood"
+        ],
+        "#c6deba",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "scrub",
+              "grassland",
+              "grass"
+            ]
+          ]
+        ],
+        "#d6e7cb",
+        [
+          "==",
+          [
+            "get",
+            "kind"
+          ],
+          "glacier"
+        ],
+        "#f8fafb",
+        [
+          "==",
+          [
+            "get",
+            "kind"
+          ],
+          "sand"
+        ],
+        "#f1e8d4",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "military",
+              "naval_base",
+              "airfield"
+            ]
+          ]
+        ],
+        "#e4e2e7",
+        "#efebe4"
+      ]
+    },
+    "landuse_urban_green": {
+      "fill-color": "#d5e7c9",
+      "fill-opacity": 0.8
+    },
+    "landuse_hospital": {
+      "fill-color": "#f2e2e1"
+    },
+    "landuse_industrial": {
+      "fill-color": "#e6e4ea"
+    },
+    "landuse_school": {
+      "fill-color": "#efe6d8"
+    },
+    "landuse_beach": {
+      "fill-color": "#f4eacf"
+    },
+    "landuse_zoo": {
+      "fill-color": "#d8e7cf"
+    },
+    "landuse_aerodrome": {
+      "fill-color": "#e6e6eb"
+    },
+    "landuse_runway": {
+      "fill-color": "#d9d8e0"
+    },
+    "roads_runway": {
+      "line-color": "#d9d8e0"
+    },
+    "roads_taxiway": {
+      "line-color": "#d9d8e0"
+    },
+    "water": {
+      "fill-color": "#b0dbe7"
+    },
+    "water_stream": {
+      "line-color": "#b0dbe7"
+    },
+    "water_river": {
+      "line-color": "#b0dbe7"
+    },
+    "landuse_pedestrian": {
+      "fill-color": "#ece8e0"
+    },
+    "landuse_pier": {
+      "fill-color": "#e6e2db"
+    },
+    "roads_tunnels_other_casing": {
+      "line-color": "#e2ddd5"
+    },
+    "roads_tunnels_minor_casing": {
+      "line-color": "#e2ddd5"
+    },
+    "roads_tunnels_link_casing": {
+      "line-color": "#e2ddd5"
+    },
+    "roads_tunnels_major_casing": {
+      "line-color": "#e2ddd5"
+    },
+    "roads_tunnels_highway_casing": {
+      "line-color": "#e8d9b8"
+    },
+    "roads_tunnels_other": {
+      "line-color": "#f3f0eb"
+    },
+    "roads_tunnels_minor": {
+      "line-color": "#f3f0eb"
+    },
+    "roads_tunnels_link": {
+      "line-color": "#f6ecd3"
+    },
+    "roads_tunnels_major": {
+      "line-color": "#f3f0eb"
+    },
+    "roads_tunnels_highway": {
+      "line-color": "#f6ecd3"
+    },
+    "buildings": {
+      "fill-color": "#e2ddd5",
+      "fill-opacity": 0.9
+    },
+    "roads_pier": {
+      "line-color": "#e6e2db"
+    },
+    "roads_minor_service_casing": {
+      "line-color": "#e2ddd5"
+    },
+    "roads_minor_casing": {
+      "line-color": "#e2ddd5"
+    },
+    "roads_link_casing": {
+      "line-color": "#e3c588"
+    },
+    "roads_major_casing_late": {
+      "line-color": "#dcd6cc"
+    },
+    "roads_highway_casing_late": {
+      "line-color": "#e3c588"
+    },
+    "roads_other": {
+      "line-color": "#f7f5f1"
+    },
+    "roads_link": {
+      "line-color": "#fbe4a6"
+    },
+    "roads_minor_service": {
+      "line-color": "#f7f5f1"
+    },
+    "roads_minor": {
+      "line-color": [
+        "interpolate",
+        [
+          "exponential",
+          1.6
+        ],
+        [
+          "zoom"
+        ],
+        11,
+        "#f7f5f1",
+        16,
+        "#ffffff"
+      ]
+    },
+    "roads_major_casing_early": {
+      "line-color": "#dcd6cc"
+    },
+    "roads_major": {
+      "line-color": "#ffffff"
+    },
+    "roads_highway_casing_early": {
+      "line-color": "#e3c588"
+    },
+    "roads_highway": {
+      "line-color": "#fbe4a6"
+    },
+    "roads_rail": {
+      "line-color": "#a9a4b1",
+      "line-opacity": 0.6
+    },
+    "boundaries_country": {
+      "line-color": "#b4a7bf"
+    },
+    "boundaries": {
+      "line-color": "#cbc2ce"
+    },
+    "roads_bridges_other_casing": {
+      "line-color": "#dcd6cc"
+    },
+    "roads_bridges_link_casing": {
+      "line-color": "#e3c588"
+    },
+    "roads_bridges_minor_casing": {
+      "line-color": "#dcd6cc"
+    },
+    "roads_bridges_major_casing": {
+      "line-color": "#dcd6cc"
+    },
+    "roads_bridges_other": {
+      "line-color": "#f7f5f1"
+    },
+    "roads_bridges_minor": {
+      "line-color": "#ffffff"
+    },
+    "roads_bridges_link": {
+      "line-color": "#fbe4a6"
+    },
+    "roads_bridges_major": {
+      "line-color": "#ffffff"
+    },
+    "roads_bridges_highway_casing": {
+      "line-color": "#e3c588"
+    },
+    "roads_bridges_highway": {
+      "line-color": "#fbe4a6"
+    },
+    "address_label": {
+      "text-color": "#736b79",
+      "text-halo-color": "#fbfaf7"
+    },
+    "water_waterway_label": {
+      "text-color": "#234d76",
+      "text-halo-color": "#b0dbe7"
+    },
+    "roads_labels_minor": {
+      "text-color": "#736b79",
+      "text-halo-color": "#ffffff"
+    },
+    "water_label_ocean": {
+      "text-color": "#234d76",
+      "text-halo-color": "rgba(214, 238, 242, 0.6)"
+    },
+    "earth_label_islands": {
+      "text-color": "#736b79",
+      "text-halo-color": "#efebe4"
+    },
+    "water_label_lakes": {
+      "text-color": "#234d76",
+      "text-halo-color": "#b0dbe7"
+    },
+    "roads_shields": {
+      "text-color": "#6c6570"
+    },
+    "roads_labels_major": {
+      "text-color": "#6c6570",
+      "text-halo-color": "#ffffff"
+    },
+    "pois": {
+      "text-color": [
+        "case",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "beach",
+              "forest",
+              "marina",
+              "park",
+              "peak",
+              "zoo",
+              "garden",
+              "bench"
+            ]
+          ]
+        ],
+        "#3b7550",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "aerodrome",
+              "station",
+              "bus_stop",
+              "ferry_terminal"
+            ]
+          ]
+        ],
+        "#3a64ad",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "stadium",
+              "university",
+              "library",
+              "school",
+              "animal",
+              "toilets",
+              "drinking_water",
+              "post_office",
+              "building",
+              "townhall"
+            ]
+          ]
+        ],
+        "#685a8c",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "supermarket",
+              "convenience",
+              "books",
+              "beauty",
+              "electronics",
+              "clothes"
+            ]
+          ]
+        ],
+        "#2c7593",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "restaurant",
+              "fast_food",
+              "cafe",
+              "bar"
+            ]
+          ]
+        ],
+        "#a85c1c",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "attraction",
+              "museum",
+              "theatre",
+              "artwork"
+            ]
+          ]
+        ],
+        "#ad4683",
+        "#736b79"
+      ],
+      "text-halo-color": "#fbfaf7"
+    },
+    "places_subplace": {
+      "text-color": "#736b79",
+      "text-halo-color": "#fbfaf7"
+    },
+    "places_region": {
+      "text-color": "#8a8090",
+      "text-halo-color": "#fbfaf7"
+    },
+    "places_locality": {
+      "text-color": "#3f3a45",
+      "text-halo-color": "#fbfaf7",
+      "text-halo-width": 1.25
+    },
+    "places_country": {
+      "text-color": "#776b82",
+      "text-halo-color": "#fbfaf7"
+    }
+  },
+  "sea": [
+    {
+      "id": "sea_depth",
+      "type": "color-relief",
+      "source": "bathymetry",
+      "paint": {
+        "color-relief-color": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "elevation"
+          ],
+          -8000,
+          "#5a84b8",
+          -5000,
+          "#6896c8",
+          -3000,
+          "#74a6d2",
+          -1000,
+          "#86badb",
+          -200,
+          "#98cbe1",
+          -60,
+          "#acd9e5",
+          0,
+          "#c3e6ea"
+        ]
+      }
+    },
+    {
+      "id": "seafloor_hillshade",
+      "type": "hillshade",
+      "source": "bathymetry",
+      "paint": {
+        "hillshade-illumination-anchor": "viewport",
+        "hillshade-exaggeration": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          0,
+          0.45,
+          8,
+          0.3
+        ],
+        "hillshade-shadow-color": "rgba(28, 58, 102, 0.45)",
+        "hillshade-highlight-color": "rgba(236, 248, 252, 0.35)",
+        "hillshade-accent-color": "rgba(28, 58, 102, 0.2)"
+      }
+    }
+  ],
+  "hillshade": {
+    "id": "hillshade",
+    "type": "hillshade",
+    "source": "hillshade",
+    "paint": {
+      "hillshade-illumination-anchor": "viewport",
+      "hillshade-exaggeration": [
+        "interpolate",
+        [
+          "linear"
+        ],
+        [
+          "zoom"
+        ],
+        3,
+        0.6,
+        12,
+        0.35
+      ],
+      "hillshade-shadow-color": "#776f82",
+      "hillshade-highlight-color": "#fffdf8",
+      "hillshade-accent-color": "#948d9b"
+    }
+  },
+  "buildings": {
+    "id": "buildings_3d",
+    "type": "fill-extrusion",
+    "source-layer": "buildings",
+    "minzoom": 14,
+    "filter": [
+      "==",
+      [
+        "geometry-type"
+      ],
+      "Polygon"
+    ],
+    "layout": {
+      "fill-extrusion-rounded-corner-distance": 2
+    },
+    "paint": {
+      "fill-extrusion-color": "#f2eee7",
+      "fill-extrusion-height": [
+        "interpolate",
+        [
+          "linear"
+        ],
+        [
+          "zoom"
+        ],
+        14,
+        0,
+        15,
+        [
+          "coalesce",
+          [
+            "get",
+            "height"
+          ],
+          5
+        ]
+      ],
+      "fill-extrusion-base": [
+        "interpolate",
+        [
+          "linear"
+        ],
+        [
+          "zoom"
+        ],
+        14,
+        0,
+        15,
+        [
+          "min",
+          [
+            "coalesce",
+            [
+              "get",
+              "min_height"
+            ],
+            0
+          ],
+          [
+            "coalesce",
+            [
+              "get",
+              "height"
+            ],
+            5
+          ]
+        ]
+      ],
+      "fill-extrusion-opacity": 0.9,
+      "fill-extrusion-ambient-occlusion-wall-intensity": 0.6,
+      "fill-extrusion-ambient-occlusion-ground-intensity": 0.5
+    }
+  },
+  "sources": {
+    "terrain": {
+      "type": "raster-dem",
+      "tiles": [
+        "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"
+      ],
+      "encoding": "terrarium",
+      "tileSize": 512,
+      "maxzoom": 17,
+      "attribution": "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>"
+    },
+    "hillshade": {
+      "type": "raster-dem",
+      "tiles": [
+        "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"
+      ],
+      "encoding": "terrarium",
+      "tileSize": 512,
+      "maxzoom": 17
+    },
+    "bathymetry": {
+      "type": "raster-dem",
+      "tiles": [
+        "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+      ],
+      "encoding": "terrarium",
+      "tileSize": 256,
+      "maxzoom": 12,
+      "attribution": "<a href=\"https://github.com/tilezen/joerd/blob/master/docs/attribution.md\">Terrain Tiles: ETOPO1, GEBCO, NOAA, USGS and others</a>"
+    }
+  },
+  "light": {
+    "anchor": "viewport",
+    "position": [
+      1.15,
+      210,
+      60
+    ],
+    "intensity": 0.35,
+    "shadow-intensity": 0.5,
+    "dev.sargunv.orbis:ground-lighting": 1,
+    "dev.sargunv.orbis:ambient-color": "#8d9fd6",
+    "dev.sargunv.orbis:ambient-intensity": 0.5,
+    "dev.sargunv.orbis:twilight": 14
+  },
+  "metadata": {
+    "dev.sargunv.orbis:color-space": "linear"
+  }
+}

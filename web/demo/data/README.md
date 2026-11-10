@@ -40,13 +40,17 @@ sprites once served.
   the European Union and ESA), swisstopo's swissALTI3D (open government
   data) and Austria's BEV ALS-DGM (CC BY 4.0); every source and licence is
   in [Mapterhorn's attribution list](https://mapterhorn.com/attribution).
-- The Globe entry, the web demo's default, commits no style: it loads
-  Protomaps Light live from `api.protomaps.com` and `protomaps3d` in
-  `../styles.js` adds Mapterhorn's terrain and a hillshade from it, a
-  map-anchored light, the buildings layer's `height` and `min_height`
-  extruded, the globe projection and a sky from Protomaps Light's palette,
-  so it keeps tracking Protomaps' upstream style. Old `?style=terrain`
-  links open it.
+- `globe.json`: the Globe entry's restyle (its palette, sea depths,
+  hillshade, buildings and light), written for this repository; the entry,
+  the web demo's default, commits no basemap. Both demos load Protomaps
+  Light live from `api.protomaps.com` and restyle it with this file
+  (`globeStyle` in `../styles.js`, `globe` in orb-demo's `scenes.rs`), so it
+  keeps tracking Protomaps' upstream layers. It draws Mapterhorn's terrain
+  (as above) and [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
+  for the seafloor, fetched at run time: Mapzen's Terrarium PNGs, offshore
+  from ETOPO1 and GEBCO; every source is in
+  [their attribution list](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
+  Old `?style=terrain` links open it.
 - `osm-carto.json`: OpenStreetMap's standard raster tiles from
   `tile.openstreetmap.org`, under its [tile usage policy](https://operations.osmfoundation.org/policies/tiles/):
   attributed, fetched only as the map shows them, with the browser's

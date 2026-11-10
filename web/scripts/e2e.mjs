@@ -1531,6 +1531,7 @@ const GLOBE_OPTIONS = {
   terrain: false,
   hillshade: true,
   light: "viewport",
+  night: true,
   buildings: true,
   shadows: true,
   ao: true,

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::scenes::Scene;
 
 const COLOR_SPACE: &str = "dev.sargunv.orbis:color-space";
+const GROUND_LIGHTING: &str = "dev.sargunv.orbis:ground-lighting";
 const HILLSHADE_ANCHOR: &str = "hillshade-illumination-anchor";
 const AMBIENT_OCCLUSION: [&str; 2] = [
     "fill-extrusion-ambient-occlusion-wall-intensity",
@@ -29,6 +30,7 @@ pub(crate) enum Opt {
     Terrain,
     Hillshade,
     Light,
+    Night,
     Buildings,
     Shadows,
     Ao,
@@ -47,10 +49,11 @@ pub(crate) enum Kind {
 }
 
 /// The panel's order.
-pub(crate) const ALL: [Opt; 12] = [
+pub(crate) const ALL: [Opt; 13] = [
     Opt::Terrain,
     Opt::Hillshade,
     Opt::Light,
+    Opt::Night,
     Opt::Buildings,
     Opt::Shadows,
     Opt::Ao,
@@ -134,7 +137,7 @@ impl SkyNumber {
 impl Opt {
     pub(crate) fn group(self) -> &'static str {
         match self {
-            Opt::Terrain | Opt::Hillshade | Opt::Light => "Terrain and light",
+            Opt::Terrain | Opt::Hillshade | Opt::Light | Opt::Night => "Terrain and light",
             Opt::Buildings | Opt::Shadows | Opt::Ao => "Buildings",
             Opt::Projection | Opt::Atmosphere | Opt::Fog | Opt::Stars => "Globe and sky",
             Opt::Labels | Opt::Colors => "Map",
@@ -146,6 +149,7 @@ impl Opt {
             Opt::Terrain => "Terrain",
             Opt::Hillshade => "Hillshade",
             Opt::Light => "Light",
+            Opt::Night => "Night side",
             Opt::Buildings => "3D buildings",
             Opt::Shadows => "Shadows",
             Opt::Ao => "Ambient occlusion",
@@ -161,6 +165,7 @@ impl Opt {
     pub(crate) fn note(self) -> Option<&'static str> {
         match self {
             Opt::Light => Some("Fixed to the ground, or turning with the view"),
+            Opt::Night => Some("The ground darkened where the sun is down"),
             Opt::Colors => Some("Mixed in linear light, or in sRGB as GL JS mixes them"),
             _ => None,
         }
@@ -169,7 +174,10 @@ impl Opt {
     /// A preview of a style-spec proposal that GL JS and MapLibre Native
     /// don't draw.
     pub(crate) fn orbis_only(self) -> bool {
-        matches!(self, Opt::Shadows | Opt::Ao | Opt::Stars | Opt::Colors)
+        matches!(
+            self,
+            Opt::Night | Opt::Shadows | Opt::Ao | Opt::Stars | Opt::Colors
+        )
     }
 
     pub(crate) fn kind(self) -> Kind {
@@ -238,6 +246,7 @@ impl Opt {
         match self {
             Opt::Terrain => cx.scene.terrain.is_some() && cx.terrain.is_some(),
             Opt::Light => cx.scene.light,
+            Opt::Night => nonzero(&designed["light"][GROUND_LIGHTING], 0.0),
             Opt::Shadows => {
                 nonzero(&designed["light"]["shadow-intensity"], 0.0)
                     && layers(designed, "fill-extrusion").next().is_some()
@@ -276,6 +285,7 @@ impl Opt {
                     _ => json!(style["light"]["anchor"].as_str().unwrap_or("viewport")),
                 }
             }
+            Opt::Night => json!(nonzero(&style["light"][GROUND_LIGHTING], 0.0)),
             Opt::Shadows => json!(nonzero(&style["light"]["shadow-intensity"], 0.0)),
             Opt::Ao => json!(!occluded(style).is_empty()),
             Opt::Projection => json!(projection_type(style)),
@@ -309,6 +319,7 @@ impl Opt {
             Opt::Terrain => "terrain",
             Opt::Hillshade => "hillshade",
             Opt::Light => "light",
+            Opt::Night => "night",
             Opt::Buildings => "buildings",
             Opt::Shadows => "shadows",
             Opt::Ao => "ao",
@@ -358,6 +369,13 @@ impl Opt {
                     }
                 }
                 style["light"]["anchor"] = value.clone();
+            }
+            Opt::Night => {
+                style["light"][GROUND_LIGHTING] = if on {
+                    cx.designed["light"][GROUND_LIGHTING].clone()
+                } else {
+                    json!(0)
+                };
             }
             Opt::Shadows => {
                 style["light"]["shadow-intensity"] = if on {

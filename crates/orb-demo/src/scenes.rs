@@ -1,7 +1,8 @@
 //! The map catalogue the web demo shows too (`web/demo/data/scenes.json`,
 //! whose fields `web/demo/styles.js` documents), and what a scene does to
 //! its style once it loads: the projection and sky it puts in, or for the
-//! Globe, the restyle `protomaps3d` in `styles.js` makes.
+//! Globe, the restyle of `web/demo/data/globe.json` that `globeStyle` in
+//! `styles.js` makes.
 
 use orb_api::{
     Bounds, CameraState, CameraTarget, Constraints, FlyOptions, Geodetic, TileMatrixSet,
@@ -183,7 +184,7 @@ impl Scene {
     /// sky, and with its terrain when `terrain` asks for it.
     pub(crate) fn designed(&self, style: &Value, terrain: bool) -> Value {
         let mut style = match self.restyle.as_deref() {
-            Some("protomaps-3d") => protomaps3d(style),
+            Some("globe") => globe(style),
             _ => style.clone(),
         };
         if let Some(projection) = &self.projection {
@@ -268,93 +269,87 @@ impl Flight {
     }
 }
 
-/// Mapterhorn's global elevation: Terrarium-encoded WebP (data/README.md).
-fn mapterhorn() -> Value {
-    json!({
-        "type": "raster-dem",
-        "tiles": ["https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"],
-        "encoding": "terrarium",
-        "tileSize": 512,
-        "maxzoom": 17,
-    })
-}
-
-/// Protomaps Light with what it lacks for a 3D map, as `protomaps3d` in
-/// `web/demo/styles.js` adds it (which says why each part is as it is):
-/// Mapterhorn's DEM for the scene's terrain, a hillshade over the land and
-/// water, the buildings extruded under the labels with rounded footprints,
-/// shadows and ambient occlusion, a viewport-anchored light, and colours
-/// mixed in linear light. Each addition is placed by the layers it finds.
-fn protomaps3d(style: &Value) -> Value {
+/// Protomaps Light as the Globe draws it, from `web/demo/data/globe.json`
+/// as `globeStyle` in `web/demo/styles.js` applies it (which says why each
+/// part is as it is): the palette over each layer's paint by id, the ocean
+/// left to the background with the sea's depth and relief over it and
+/// under the land, a hillshade over the land and lakes, the buildings
+/// extruded under the labels with rounded footprints, the DEM sources, and
+/// a light that shades the ground. Each addition is placed by the layers
+/// it finds.
+fn globe(style: &Value) -> Value {
+    let globe: Value = serde_json::from_str(include_str!("../../../web/demo/data/globe.json"))
+        .expect("web/demo/data/globe.json");
     let mut style = style.clone();
     let mut layers = style["layers"].as_array().cloned().unwrap_or_default();
+    for layer in &mut layers {
+        if let Some(Value::Object(paint)) = layer["id"].as_str().map(|id| &globe["paint"][id]) {
+            for (name, value) in paint {
+                layer["paint"][name] = value.clone();
+            }
+        }
+        // In the filter's own syntax: Protomaps' is legacy.
+        if layer["id"] == "water" {
+            let legacy = layer["filter"].is_null() || is_legacy_filter(&layer["filter"]);
+            let kind = if legacy {
+                json!("kind")
+            } else {
+                json!(["get", "kind"])
+            };
+            let ocean = json!(["!=", kind, "ocean"]);
+            layer["filter"] = match layer["filter"].take() {
+                Value::Null => ocean,
+                filter => json!(["all", filter, ocean]),
+            };
+        }
+    }
     let labels = |layers: &[Value]| {
         layers
             .iter()
             .position(|l| l["type"] == "symbol")
             .unwrap_or(layers.len())
     };
+    let earth = layers.iter().position(|l| l["id"] == "earth").unwrap_or(1);
+    let sea = globe["sea"].as_array().cloned().unwrap_or_default();
+    layers.splice(earth..earth, sea);
     let water = layers.iter().position(|l| l["id"] == "water");
     let at = water.map_or_else(|| labels(&layers), |i| i + 1);
-    layers.insert(
-        at,
-        json!({
-            "id": "hillshade",
-            "type": "hillshade",
-            "source": "hillshade",
-            "paint": {
-                "hillshade-illumination-anchor": "viewport",
-                "hillshade-exaggeration": ["interpolate", ["linear"], ["zoom"], 3, 0.6, 12, 0.35],
-                "hillshade-shadow-color": "#6f6a63",
-                "hillshade-highlight-color": "#fbfaf7",
-                "hillshade-accent-color": "#8d877e",
-            },
-        }),
-    );
+    layers.insert(at, globe["hillshade"].clone());
     if let Some(at) = layers
         .iter()
         .position(|l| l["source-layer"] == "buildings" && l["type"] == "fill")
     {
-        let source = layers[at]["source"].clone();
+        let mut buildings = globe["buildings"].clone();
+        buildings["source"] = layers[at]["source"].clone();
         layers[at]["layout"]["fill-rounded-corner-distance"] = json!(2);
-        let height = json!(["coalesce", ["get", "height"], 5]);
         let at = labels(&layers);
-        layers.insert(
-            at,
-            json!({
-                "id": "buildings_3d",
-                "type": "fill-extrusion",
-                "source": source,
-                "source-layer": "buildings",
-                "minzoom": 14,
-                "filter": ["==", ["geometry-type"], "Polygon"],
-                "layout": { "fill-extrusion-rounded-corner-distance": 2 },
-                "paint": {
-                    "fill-extrusion-color": "#d7d6d3",
-                    "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 14, 0, 15, height],
-                    "fill-extrusion-base": [
-                        "interpolate", ["linear"], ["zoom"], 14, 0, 15,
-                        ["min", ["coalesce", ["get", "min_height"], 0], height],
-                    ],
-                    "fill-extrusion-opacity": 0.9,
-                    "fill-extrusion-ambient-occlusion-wall-intensity": 0.6,
-                    "fill-extrusion-ambient-occlusion-ground-intensity": 0.5,
-                },
-            }),
-        );
+        layers.insert(at, buildings);
     }
-    let mut terrain = mapterhorn();
-    terrain["attribution"] =
-        json!(r#"<a href="https://mapterhorn.com/attribution">© Mapterhorn</a>"#);
-    style["sources"]["terrain"] = terrain;
-    style["sources"]["hillshade"] = mapterhorn();
-    style["light"] = json!({
-        "anchor": "viewport",
-        "position": [1.15, 210, 30],
-        "intensity": 0.35,
-        "shadow-intensity": 0.5,
-    });
-    style["metadata"]["dev.sargunv.orbis:color-space"] = json!("linear");
+    if let Value::Object(sources) = &globe["sources"] {
+        for (name, source) in sources {
+            style["sources"][name] = source.clone();
+        }
+    }
+    style["light"] = globe["light"].clone();
+    if let Value::Object(metadata) = &globe["metadata"] {
+        for (name, value) in metadata {
+            style["metadata"][name] = value.clone();
+        }
+    }
     style["layers"] = Value::Array(layers);
     style
+}
+
+/// Whether a filter is in v8's legacy syntax rather than an expression.
+fn is_legacy_filter(filter: &Value) -> bool {
+    let Some([op, args @ ..]) = filter.as_array().map(Vec::as_slice) else {
+        return false;
+    };
+    match op.as_str() {
+        Some("all" | "any" | "none") => args.iter().all(is_legacy_filter),
+        Some("==" | "!=" | "<" | ">" | "<=" | ">=" | "in" | "!in" | "has" | "!has") => {
+            args.first().is_some_and(Value::is_string)
+        }
+        _ => false,
+    }
 }
