@@ -862,7 +862,7 @@ dependencies = [
 [[package]]
 name = "mln-rs"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-actor",
  "mln-rs-conversion",
@@ -908,7 +908,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-actor"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-util",
@@ -917,7 +917,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-conversion"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-geojson",
@@ -927,12 +927,12 @@ dependencies = [
 [[package]]
 name = "mln-rs-csscolorparser"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 
 [[package]]
 name = "mln-rs-earcut"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-geometry",
  "mln-rs-libstdcxx",
@@ -941,7 +941,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-expression"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-conversion",
  "mln-rs-feature",
@@ -963,7 +963,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-feature"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-geometry",
  "mln-rs-vec-map",
@@ -973,7 +973,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-geojson"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-geometry",
@@ -984,7 +984,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-geojson-vt"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-geojson",
@@ -995,7 +995,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-geometry"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "serde",
 ]
@@ -1003,7 +1003,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-gestures"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-map",
  "mln-rs-util",
@@ -1012,7 +1012,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-gfx"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "bytemuck",
  "mln-rs-geometry",
@@ -1026,7 +1026,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-headless"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-actor",
  "mln-rs-gfx",
@@ -1041,7 +1041,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-image"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "flate2",
  "image-webp",
@@ -1056,7 +1056,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-kdbush"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-libstdcxx",
 ]
@@ -1064,12 +1064,12 @@ dependencies = [
 [[package]]
 name = "mln-rs-libstdcxx"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 
 [[package]]
 name = "mln-rs-map"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-actor",
  "mln-rs-geometry",
@@ -1084,7 +1084,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-map-types"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-geometry",
  "mln-rs-math",
@@ -1096,22 +1096,22 @@ dependencies = [
 [[package]]
 name = "mln-rs-math"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 
 [[package]]
 name = "mln-rs-nunicode"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 
 [[package]]
 name = "mln-rs-pmtiles"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 
 [[package]]
 name = "mln-rs-polylabel"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-geometry",
  "mln-rs-libstdcxx",
@@ -1120,17 +1120,17 @@ dependencies = [
 [[package]]
 name = "mln-rs-protozero"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 
 [[package]]
 name = "mln-rs-rapidjson"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 
 [[package]]
 name = "mln-rs-renderer"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "bytemuck",
  "mln-rs-actor",
@@ -1161,12 +1161,12 @@ dependencies = [
 [[package]]
 name = "mln-rs-shelf-pack"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 
 [[package]]
 name = "mln-rs-sprite"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-actor",
  "mln-rs-geometry",
@@ -1181,7 +1181,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-storage"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "js-sys",
  "mln-rs-actor",
@@ -1202,7 +1202,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-storage-offline"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-actor",
  "mln-rs-conversion",
@@ -1221,7 +1221,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-style"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-actor",
  "mln-rs-conversion",
@@ -1248,7 +1248,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-style-types"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-math",
@@ -1261,7 +1261,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-supercluster"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-geometry",
@@ -1272,7 +1272,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-text"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "harfrust",
  "mln-rs-math",
@@ -1288,7 +1288,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-tile"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-geometry",
@@ -1305,7 +1305,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-tile-id"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-geometry",
@@ -1316,7 +1316,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-util"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "bytemuck",
  "flate2",
@@ -1332,7 +1332,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-vec-map"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "serde",
 ]
@@ -1340,7 +1340,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-vector-tile"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-feature",
  "mln-rs-geometry",
@@ -1350,7 +1350,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-wagyu"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "mln-rs-geometry",
  "mln-rs-libstdcxx",
@@ -1359,7 +1359,7 @@ dependencies = [
 [[package]]
 name = "mln-rs-webgpu"
 version = "0.0.10"
-source = "git+https://github.com/louwers/mln-rs?rev=26d7630c743156d8b64acd70e5cdd729bca6ee3d#26d7630c743156d8b64acd70e5cdd729bca6ee3d"
+source = "git+https://github.com/louwers/mln-rs?rev=b582dfec7238ab980ca4282124945d88c865016b#b582dfec7238ab980ca4282124945d88c865016b"
 dependencies = [
  "bytemuck",
  "mln-rs-gfx",
