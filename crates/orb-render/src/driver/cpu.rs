@@ -11,9 +11,10 @@
 //! hidden ones when it leaves) and each node's draw arguments, which its
 //! direct draws take. Slots a layout moved hold what they held (the
 //! scene copies them on the GPU), and a bit per compacted word says which
-//! of the two, as the GPU's cull reads it from the slot itself. Bundles record those draws, so the renderer records
-//! them again when a node's arguments change. A test holds all of it to
-//! the GPU's cull over the same scene and frames (`Renderer::check_driver`).
+//! of the two, as the GPU's cull reads it from the slot itself. Bundles
+//! record those draws, so the renderer records them again when a node's
+//! arguments change. A test holds all of it to the GPU's cull over the
+//! same scene and frames (`Renderer::check_driver`).
 //!
 //! A commit that changes this file says why in its body: it is the one
 //! piece of logic the two drivers have twice.
@@ -285,7 +286,11 @@ impl CpuDriver {
                     }
                     if candidate[c::DRAWN] != u32::from(keep) {
                         let n = index_count.min(orb_layout::CHUNK_INDICES);
-                        set_bit(&mut self.drawn, slot, keep);
+                        // A chunk without indices has no first word: its
+                        // slot's is the next candidate's.
+                        if n > 0 {
+                            set_bit(&mut self.drawn, slot, keep);
+                        }
                         let words = if keep {
                             let tag = (candidate[c::RUN] << node[nc::RUN_SHIFT])
                                 .wrapping_add(chunk[ch::FIRST_VERTEX]);
