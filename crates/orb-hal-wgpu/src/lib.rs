@@ -317,6 +317,14 @@ impl WgpuGpu {
         self.compiler.inject_hang();
     }
 
+    /// Makes later compiles of pipelines labelled `label` take `by` longer,
+    /// as on a device compiling cold: fault injection for tests of what
+    /// waits for them. Needs compile threads.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn inject_slow_compile(&self, label: &str, by: std::time::Duration) {
+        self.compiler.inject_slow(label, by);
+    }
+
     /// How long a compile may run before the driver is taken to have hung
     /// (60 s by default).
     #[cfg(not(target_arch = "wasm32"))]

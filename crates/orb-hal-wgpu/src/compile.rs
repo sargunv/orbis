@@ -356,6 +356,9 @@ mod native {
         /// Fault injection: tasks stall in their job until the compiler
         /// closes, as in a driver hung in its compiler.
         hang: std::sync::atomic::AtomicBool,
+        /// Fault injection: compiles of pipelines of this label take this
+        /// much longer, as on a device compiling cold.
+        slow: Mutex<Option<(String, Duration)>>,
         /// Called from a task when a compile finishes.
         compiled: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         /// The jobs compiling and since when, by task.
@@ -450,6 +453,12 @@ mod native {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
+        /// Makes compiles of pipelines labelled `label` take `by` longer
+        /// (fault injection for tests of what waits for them).
+        pub(crate) fn inject_slow(&self, label: &str, by: Duration) {
+            *self.shared.slow.lock().expect("compile watch poisoned") = Some((label.into(), by));
+        }
+
         /// Moves a queued job to the front.
         pub(crate) fn prioritize(&mut self, id: PipelineId) {
             let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
@@ -535,6 +544,10 @@ mod native {
             busy = shared.changed.wait(busy).expect("compile watch poisoned");
         }
         drop(busy);
+        let slow = shared.slow.lock().expect("compile watch poisoned").clone();
+        if let Some((_, by)) = slow.filter(|(label, _)| job.label() == label) {
+            std::thread::sleep(by);
+        }
         let built = job.compile(device);
         shared
             .busy
