@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::{self, Json, JsonValue};
-use orb_host::{Fetch, FetchDone, FetchError, Storage, StorageDone};
+use orb_host::{Fetch, FetchDone, FetchError, ResourceKind, Storage, StorageDone};
 use orb_source::endpoint::TileEndpoint;
 use orb_source::pmtiles::{self, Contents, Entry, Lookup, Reader};
 use orb_style::{GeoJsonData, Scheme, SourceKind};
@@ -271,6 +271,18 @@ enum Then {
     Header(String),
 }
 
+impl Then {
+    /// The kind of resource that arrives for this. `Nothing` follows
+    /// sprites, glyphs and archive reads alike.
+    fn kind(&self) -> ResourceKind {
+        match self {
+            Then::Nothing => ResourceKind::Unknown,
+            Then::Style => ResourceKind::Style,
+            Then::TileJson(_) | Then::Header(_) => ResourceKind::Source,
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     queue: VecDeque<Task>,
@@ -385,17 +397,20 @@ impl Job {
     fn start(self: &Arc<Self>, task: Task, tries: u8) {
         let job = self.clone();
         match &task {
-            Task::Resource { url, range, .. } => {
-                let (url, range) = (url.clone(), *range);
+            Task::Resource { url, range, then } => {
+                let (url, range, kind) = (url.clone(), *range, then.kind());
                 let done: FetchDone = Box::new(move |result| job.arrived(task, tries, result));
                 match range {
-                    Some((offset, length)) => self.fetch.get_range(&url, offset, length, done),
-                    None => self.fetch.get(&url, done),
+                    Some((offset, length)) => {
+                        self.fetch.get_range(kind, &url, offset, length, done);
+                    }
+                    None => self.fetch.get(kind, &url, done),
                 }
             }
             Task::Tile { url, .. } => {
                 let url = url.clone();
                 self.fetch.get(
+                    ResourceKind::Tile,
                     &url,
                     Box::new(move |result| job.arrived(task, tries, result)),
                 );
@@ -408,6 +423,7 @@ impl Job {
                         let reader = reader.clone();
                         let key = orb_host::cache::key(&url, Some((range.offset, range.length)));
                         self.fetch.get_range(
+                            ResourceKind::Source,
                             &url,
                             range.offset,
                             range.length,
@@ -1046,7 +1062,7 @@ impl std::fmt::Debug for RegionFetch {
 }
 
 /// A fetch waiting for the regions to be read.
-type Pending = (String, Option<(u64, u64)>, FetchDone);
+type Pending = (ResourceKind, String, Option<(u64, u64)>, FetchDone);
 
 enum Served {
     Loading(Vec<Pending>),
@@ -1106,18 +1122,20 @@ impl RegionFetch {
                         Served::Ready(_) => Vec::new(),
                     }
                 };
-                for (url, range, done) in pending {
-                    this.serve(&url, range, done);
+                for (kind, url, range, done) in pending {
+                    this.serve(kind, &url, range, done);
                 }
             }),
         );
     }
 
-    fn serve(&self, url: &str, range: Option<(u64, u64)>, done: FetchDone) {
+    fn serve(&self, kind: ResourceKind, url: &str, range: Option<(u64, u64)>, done: FetchDone) {
         let regions = {
             let mut served = self.served.lock().expect("regions poisoned");
             match &mut *served {
-                Served::Loading(pending) => return pending.push((url.to_string(), range, done)),
+                Served::Loading(pending) => {
+                    return pending.push((kind, url.to_string(), range, done));
+                }
                 Served::Ready(regions) => regions.clone(),
             }
         };
@@ -1130,7 +1148,7 @@ impl RegionFetch {
                     Some((at, length)),
                     Box::new(move |read| match read {
                         Ok(Some(bytes)) => done(Ok(bytes)),
-                        _ => pass(&*inner, &url, range, done),
+                        _ => pass(&*inner, kind, &url, range, done),
                     }),
                 );
             }
@@ -1145,29 +1163,36 @@ impl RegionFetch {
                             key: archive.key.clone(),
                             reader: archive.reader.clone(),
                             url: url.to_string(),
+                            kind,
                         };
                         return served.read(tile, 0, done);
                     }
                 }
             }
         }
-        pass(&*self.inner, url, range, done);
+        pass(&*self.inner, kind, url, range, done);
     }
 }
 
-fn pass(inner: &dyn Fetch, url: &str, range: Option<(u64, u64)>, done: FetchDone) {
+fn pass(
+    inner: &dyn Fetch,
+    kind: ResourceKind,
+    url: &str,
+    range: Option<(u64, u64)>,
+    done: FetchDone,
+) {
     match range {
-        Some((offset, length)) => inner.get_range(url, offset, length, done),
-        None => inner.get(url, done),
+        Some((offset, length)) => inner.get_range(kind, url, offset, length, done),
+        None => inner.get(kind, url, done),
     }
 }
 
 impl Fetch for RegionFetch {
-    fn get(&self, url: &str, done: FetchDone) {
-        self.serve(url, None, done);
+    fn get(&self, kind: ResourceKind, url: &str, done: FetchDone) {
+        self.serve(kind, url, None, done);
     }
-    fn get_range(&self, url: &str, offset: u64, length: u64, done: FetchDone) {
-        self.serve(url, Some((offset, length)), done);
+    fn get_range(&self, kind: ResourceKind, url: &str, offset: u64, length: u64, done: FetchDone) {
+        self.serve(kind, url, Some((offset, length)), done);
     }
 }
 
@@ -1178,6 +1203,7 @@ struct Tile {
     key: String,
     reader: Arc<Mutex<Reader>>,
     url: String,
+    kind: ResourceKind,
 }
 
 impl Tile {
@@ -1202,7 +1228,7 @@ impl Tile {
                         if again {
                             self.read(tile, reads + 1, done);
                         } else {
-                            pass(&*self.inner, &self.url, None, done);
+                            pass(&*self.inner, self.kind, &self.url, None, done);
                         }
                     }),
                 );
@@ -1214,12 +1240,12 @@ impl Tile {
                     Some((range.offset, range.length)),
                     Box::new(move |read| match read {
                         Ok(Some(bytes)) => done(Ok(bytes)),
-                        _ => pass(&*self.inner, &self.url, None, done),
+                        _ => pass(&*self.inner, self.kind, &self.url, None, done),
                     }),
                 );
             }
             // Not in the region: the network.
-            _ => pass(&*self.inner, &self.url, None, done),
+            _ => pass(&*self.inner, self.kind, &self.url, None, done),
         }
     }
 }
@@ -1354,7 +1380,7 @@ mod tests {
                     "layout": {"text-field": "a", "text-font": ["literal", ["Sans Bold"]]}}]}"#;
 
     impl Fetch for Server {
-        fn get(&self, url: &str, done: FetchDone) {
+        fn get(&self, _: orb_host::ResourceKind, url: &str, done: FetchDone) {
             self.requests.lock().unwrap().push(url.to_string());
             if self.offline {
                 return done(Err(FetchError::Network("offline".into())));
@@ -1372,14 +1398,18 @@ mod tests {
                 _ => Err(FetchError::NotFound),
             })
         }
-        fn get_range(&self, _: &str, _: u64, _: u64, done: FetchDone) {
+        fn get_range(&self, _: orb_host::ResourceKind, _: &str, _: u64, _: u64, done: FetchDone) {
             done(Err(FetchError::NotFound));
         }
     }
 
     fn get(fetch: &dyn Fetch, url: &str) -> Result<Vec<u8>, FetchError> {
         let (tx, rx) = mpsc::channel();
-        fetch.get(url, Box::new(move |r| tx.send(r).unwrap()));
+        fetch.get(
+            ResourceKind::Unknown,
+            url,
+            Box::new(move |r| tx.send(r).unwrap()),
+        );
         rx.recv().unwrap()
     }
 

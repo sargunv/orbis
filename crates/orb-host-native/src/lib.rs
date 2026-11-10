@@ -16,16 +16,19 @@ pub use storage::{FileStorage, wait};
 
 use orb_host::jobs::{Executor, ThreadPool};
 use orb_host::{
-    DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone, Request, RequestTransform,
+    DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone, NetworkAnswer, NetworkHook,
+    NetworkRequest, Prior, Request, RequestTransform, ResourceKind,
 };
 
 /// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
-/// small pool of I/O threads, through an [`HttpCache`] when it has one.
+/// small pool of I/O threads, through an [`HttpCache`] when it has one. A
+/// [`NetworkHook`] can serve requests where the network would.
 pub struct NativeFetch {
     agent: ureq::Agent,
-    pool: ThreadPool,
+    pool: Arc<ThreadPool>,
     cache: Option<Arc<HttpCache>>,
     transform: std::sync::RwLock<Option<Arc<RequestTransform>>>,
+    hook: std::sync::RwLock<Option<Arc<dyn NetworkHook>>>,
     /// Off, requests answer from the cache alone.
     online: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -45,6 +48,10 @@ const MAX_BODY: u64 = 64 << 20;
 /// Requests in flight at once, each on a thread and connection of its own.
 /// Cold loads take as long with 16 (and longer with 4).
 const FETCH_THREADS: usize = 8;
+
+/// A request's cache key, when it has one, and the stale copy the
+/// network's answer replaces or confirms.
+type Stale = (Option<String>, Option<cache::Cached>);
 
 /// What the network answered.
 enum Response {
@@ -71,9 +78,10 @@ impl NativeFetch {
         Arc::new(Self {
             // Every thread's connection stays open for the next request.
             agent: connect::agent(FETCH_THREADS),
-            pool: ThreadPool::new("fetch", FETCH_THREADS),
+            pool: Arc::new(ThreadPool::new("fetch", FETCH_THREADS)),
             cache,
             transform: Default::default(),
+            hook: Default::default(),
             online: Arc::new(true.into()),
         })
     }
@@ -82,6 +90,13 @@ impl NativeFetch {
     /// headers to send (`None` for none).
     pub fn set_transform(&self, transform: Option<Arc<RequestTransform>>) {
         *self.transform.write().expect("transform poisoned") = transform;
+    }
+
+    /// Serves the requests the cache can't answer through `hook` from here
+    /// on, whatever their URL's scheme, or through the network again
+    /// (`None`).
+    pub fn set_network_hook(&self, hook: Option<Arc<dyn NetworkHook>>) {
+        *self.hook.write().expect("hook poisoned") = hook;
     }
 
     /// Off, nothing goes to the network: requests answer from the cache,
@@ -100,6 +115,7 @@ impl NativeFetch {
         self.cache.as_ref()
     }
 
+    /// One request through the cache and the network, on this thread.
     fn get_blocking(
         agent: &ureq::Agent,
         cache: Option<&HttpCache>,
@@ -107,35 +123,63 @@ impl NativeFetch {
         range: Option<(u64, u64)>,
         online: bool,
     ) -> Result<Vec<u8>, FetchError> {
-        let url = request.url.as_str();
-        if let Some(path) = url.strip_prefix("file://") {
-            return read_file(path, range);
-        }
-        if !orb_host::cache::cacheable(url) {
-            return Err(FetchError::UnsupportedUrl(url.to_string()));
-        }
-        let http = |validators| http(agent, request, range, validators);
-        if !online {
-            let cached = cache.and_then(|c| c.lookup(&orb_host::cache::key(url, range)));
-            return cached
-                .map(|c| c.bytes)
-                .ok_or_else(|| FetchError::Network("offline".into()));
-        }
-        let Some(cache) = cache else {
-            return match http(None)? {
-                Response::Body { bytes, .. } => Ok(bytes),
-                Response::NotModified { .. } => Err(FetchError::Status(304)),
-            };
+        let (key, cached) = match Self::prepare(cache, &request.url, range, online, false) {
+            Ok(answer) => return answer,
+            Err(network) => network,
         };
-        let key = orb_host::cache::key(url, range);
-        let cached = cache.lookup(&key);
-        if let Some(cached) = cached.as_ref().filter(|c| c.fresh) {
-            return Ok(cached.bytes.clone());
-        }
         let validators = cached
             .as_ref()
             .map(|c| (c.etag.as_deref(), c.last_modified.as_deref()));
-        match (http(validators), cached) {
+        let response = http(agent, request, range, validators);
+        Self::finish(cache, key, cached, response)
+    }
+
+    /// What answers a request without the network: a file, or the cache
+    /// when it holds a fresh copy or the network is off. Otherwise the
+    /// cache key and the stale copy the network's answer goes with.
+    fn prepare(
+        cache: Option<&HttpCache>,
+        url: &str,
+        range: Option<(u64, u64)>,
+        online: bool,
+        hooked: bool,
+    ) -> Result<Result<Vec<u8>, FetchError>, Stale> {
+        if let Some(path) = url.strip_prefix("file://") {
+            return Ok(read_file(path, range));
+        }
+        let cacheable = orb_host::cache::cacheable(url);
+        if !cacheable && !hooked {
+            return Ok(Err(FetchError::UnsupportedUrl(url.to_string())));
+        }
+        let key = cacheable.then(|| orb_host::cache::key(url, range));
+        let cached = cache.zip(key.as_deref()).and_then(|(c, k)| c.lookup(k));
+        if !online {
+            return Ok(cached
+                .map(|c| c.bytes)
+                .ok_or_else(|| FetchError::Network("offline".into())));
+        }
+        if let Some(cached) = cached.as_ref().filter(|c| c.fresh) {
+            return Ok(Ok(cached.bytes.clone()));
+        }
+        Err((key, cached))
+    }
+
+    /// The network's answer, kept in the cache as it says, or the stale
+    /// copy when the network fails.
+    fn finish(
+        cache: Option<&HttpCache>,
+        key: Option<String>,
+        cached: Option<cache::Cached>,
+        response: Result<Response, FetchError>,
+    ) -> Result<Vec<u8>, FetchError> {
+        let Some((cache, key)) = cache.zip(key) else {
+            return match (response?, cached) {
+                (Response::Body { bytes, .. }, _) => Ok(bytes),
+                (Response::NotModified { .. }, Some(cached)) => Ok(cached.bytes),
+                (Response::NotModified { .. }, None) => Err(FetchError::Status(304)),
+            };
+        };
+        match (response, cached) {
             (
                 Ok(Response::Body {
                     bytes,
@@ -289,16 +333,22 @@ fn http(
 }
 
 impl Fetch for NativeFetch {
-    fn get(&self, url: &str, done: FetchDone) {
-        self.get_range_opt(url, None, done);
+    fn get(&self, kind: ResourceKind, url: &str, done: FetchDone) {
+        self.get_range_opt(kind, url, None, done);
     }
-    fn get_range(&self, url: &str, offset: u64, length: u64, done: FetchDone) {
-        self.get_range_opt(url, Some((offset, length)), done);
+    fn get_range(&self, kind: ResourceKind, url: &str, offset: u64, length: u64, done: FetchDone) {
+        self.get_range_opt(kind, url, Some((offset, length)), done);
     }
 }
 
 impl NativeFetch {
-    fn get_range_opt(&self, url: &str, range: Option<(u64, u64)>, done: FetchDone) {
+    fn get_range_opt(
+        &self,
+        kind: ResourceKind,
+        url: &str,
+        range: Option<(u64, u64)>,
+        done: FetchDone,
+    ) {
         let transform = self.transform.read().expect("transform poisoned").clone();
         let request = match transform {
             Some(transform) => match transform(url) {
@@ -310,15 +360,84 @@ impl NativeFetch {
                 headers: Vec::new(),
             },
         };
+        let hook = self.hook.read().expect("hook poisoned").clone();
         let (agent, cache, online) = (self.agent.clone(), self.cache.clone(), self.online());
+        let (pool, url) = (self.pool.clone(), url.to_string());
         self.pool.spawn(Box::new(move || {
-            done(Self::get_blocking(
-                &agent,
-                cache.as_deref(),
-                &request,
+            let Some(hook) = hook else {
+                return done(Self::get_blocking(
+                    &agent,
+                    cache.as_deref(),
+                    &request,
+                    range,
+                    online,
+                ));
+            };
+            let (key, cached) =
+                match Self::prepare(cache.as_deref(), &request.url, range, online, true) {
+                    Ok(answer) => return done(answer),
+                    Err(network) => network,
+                };
+            let prior = cached.as_ref().map(|c| Prior {
+                etag: c.etag.clone(),
+                modified: c
+                    .last_modified
+                    .as_deref()
+                    .and_then(orb_host::cache::http_date),
+                bytes: c.bytes.clone(),
+            });
+            let network = NetworkRequest {
+                kind,
+                url,
+                request,
                 range,
-                online,
-            ))
+                prior,
+            };
+            hook.request(
+                network,
+                Box::new(move |answer| {
+                    let response = match answer {
+                        NetworkAnswer::Body {
+                            bytes,
+                            fresh_until,
+                            etag,
+                            modified,
+                        } => Ok(Response::Body {
+                            bytes,
+                            fresh_until,
+                            etag,
+                            last_modified: modified.map(orb_host::cache::format_http_date),
+                        }),
+                        NetworkAnswer::NotModified { fresh_until } => {
+                            Ok(Response::NotModified { fresh_until })
+                        }
+                        NetworkAnswer::Failed(error) => Err(error),
+                        // The host's network, on its own threads.
+                        NetworkAnswer::Network(request) => {
+                            return pool.clone().spawn(Box::new(move || {
+                                let response =
+                                    if let Some(path) = request.url.strip_prefix("file://") {
+                                        read_file(path, range).map(|bytes| Response::Body {
+                                            bytes,
+                                            fresh_until: None,
+                                            etag: None,
+                                            last_modified: None,
+                                        })
+                                    } else if orb_host::cache::cacheable(&request.url) {
+                                        let validators = cached.as_ref().map(|c| {
+                                            (c.etag.as_deref(), c.last_modified.as_deref())
+                                        });
+                                        http(&agent, &request, range, validators)
+                                    } else {
+                                        Err(FetchError::UnsupportedUrl(request.url.clone()))
+                                    };
+                                done(Self::finish(cache.as_deref(), key, cached, response));
+                            }));
+                        }
+                    };
+                    done(Self::finish(cache.as_deref(), key, cached, response));
+                }),
+            );
         }));
     }
 }
@@ -447,7 +566,11 @@ mod tests {
             "ftp://x".into(),
         ] {
             let tx = tx.clone();
-            fetch.get(&url.clone(), Box::new(move |r| tx.send((url, r)).unwrap()));
+            fetch.get(
+                ResourceKind::Unknown,
+                &url.clone(),
+                Box::new(move |r| tx.send((url, r)).unwrap()),
+            );
         }
         let mut results: Vec<_> = (0..3).map(|_| rx.recv().unwrap()).collect();
         results.sort_by(|a, b| a.0.cmp(&b.0));
@@ -664,7 +787,11 @@ mod cache_tests {
         })));
         let get = |url: &str| {
             let (send, receive) = std::sync::mpsc::channel();
-            fetch.get(url, Box::new(move |r| send.send(r).unwrap()));
+            fetch.get(
+                ResourceKind::Unknown,
+                url,
+                Box::new(move |r| send.send(r).unwrap()),
+            );
             receive.recv().unwrap()
         };
         assert_eq!(get("tiles://tile").unwrap(), b"tile");

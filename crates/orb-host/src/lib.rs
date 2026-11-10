@@ -12,14 +12,93 @@ use std::fmt;
 /// Called once with the outcome of a fetch, on any thread.
 pub type FetchDone = Box<dyn FnOnce(Result<Vec<u8>, FetchError>) + Send + 'static>;
 
+/// What a fetched resource is for. Hosts that serve requests themselves
+/// (maplibre-native-ffi's resource providers, and the rules and transforms
+/// that pick requests by kind) tell them apart by it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ResourceKind {
+    #[default]
+    Unknown,
+    /// A style document.
+    Style,
+    /// A source's TileJSON or GeoJSON data, or a tile archive's header and
+    /// directories.
+    Source,
+    Tile,
+    Glyphs,
+    SpriteImage,
+    SpriteJson,
+    /// An image or video source's image, or a font face file.
+    Image,
+}
+
 /// Loads resources by URL.
 pub trait Fetch: Send + Sync {
-    /// Starts loading `url`; `done` gets the body.
-    fn get(&self, url: &str, done: FetchDone);
+    /// Starts loading `url`, a `kind` of resource; `done` gets the body.
+    fn get(&self, kind: ResourceKind, url: &str, done: FetchDone);
     /// Reads exactly `length` bytes at `offset` (at most 64 MiB). HTTP must
     /// answer 206 with a matching Content-Range. Reject 200 before reading
     /// its body, and bound streaming reads even without Content-Length.
-    fn get_range(&self, url: &str, offset: u64, length: u64, done: FetchDone);
+    fn get_range(&self, kind: ResourceKind, url: &str, offset: u64, length: u64, done: FetchDone);
+}
+
+/// A request a [`NetworkHook`] can serve where the network would: one the
+/// HTTP cache had no fresh copy of.
+#[derive(Clone, Debug)]
+pub struct NetworkRequest {
+    pub kind: ResourceKind,
+    /// The URL as the style names it, before any [`RequestTransform`].
+    pub url: String,
+    /// What the host's network would send: the URL after the transform,
+    /// with its headers.
+    pub request: Request,
+    /// The bytes wanted, `(offset, length)`.
+    pub range: Option<(u64, u64)>,
+    /// The cached copy a new answer would replace, which a
+    /// [`NetworkAnswer::NotModified`] keeps.
+    pub prior: Option<Prior>,
+}
+
+/// A cached copy of a resource.
+#[derive(Clone, Debug, Default)]
+pub struct Prior {
+    pub etag: Option<String>,
+    /// When it was last modified, Unix seconds.
+    pub modified: Option<u64>,
+    pub bytes: Vec<u8>,
+}
+
+/// How a [`NetworkHook`] answers a request.
+#[derive(Clone, Debug)]
+pub enum NetworkAnswer {
+    /// The resource. `fresh_until` (Unix seconds) says how long the cache
+    /// may answer with it; `None` keeps it out of the cache.
+    Body {
+        bytes: Vec<u8>,
+        fresh_until: Option<u64>,
+        etag: Option<String>,
+        /// Unix seconds.
+        modified: Option<u64>,
+    },
+    /// The request's [`Prior`] copy is current.
+    NotModified {
+        fresh_until: Option<u64>,
+    },
+    Failed(FetchError),
+    /// The host's own network loads it, as `request`.
+    Network(Request),
+}
+
+/// Called once with a [`NetworkHook`]'s answer, on any thread.
+pub type NetworkDone = Box<dyn FnOnce(NetworkAnswer) + Send + 'static>;
+
+/// Serves a host's network requests in its place, as maplibre-native-ffi's
+/// resource providers and asynchronous request transforms do: it sits
+/// behind the HTTP cache, where the network does, and sees every URL
+/// scheme, so it can serve ones the host can't load.
+pub trait NetworkHook: Send + Sync {
+    /// Starts serving `request`; `done` gets the answer, now or later.
+    fn request(&self, request: NetworkRequest, done: NetworkDone);
 }
 
 /// What a [`RequestTransform`] makes of a URL: the URL to fetch, and

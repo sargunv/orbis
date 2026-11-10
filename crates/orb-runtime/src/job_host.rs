@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use orb_host::jobs::Executor;
-use orb_host::{Fetch, FetchError, FontFiles};
+use orb_host::{Fetch, FetchError, FontFiles, ResourceKind};
 
 use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone};
 use crate::loader::TileLoader;
@@ -196,6 +196,7 @@ impl GlyphLoads {
         drop(waiting);
         let (this, worker) = (Arc::clone(self), Arc::clone(worker));
         self.fetch.get(
+            ResourceKind::Glyphs,
             &key.1.clone(),
             Box::new(move |fetched| {
                 this.arrived(worker, key, fetched.map_err(|e| e.to_string()));
@@ -468,11 +469,13 @@ impl JobHost {
         ));
         if let Some(kind) = worker.image_kind(request.source) {
             let (source, tile, warp) = (request.source, request.tile, request.warp);
+            let resource = worker.resource_kind(source);
             let fetch: Waiting = Box::new(move |turn| {
                 let Some(turn) = turn else {
                     return done(Ok(Loaded::Cancelled));
                 };
                 loader.load(
+                    resource,
                     request.location,
                     request.tile,
                     request.encoding,
@@ -512,6 +515,7 @@ impl JobHost {
             };
             let data_tile = request.data_tile();
             loader.load(
+                ResourceKind::Tile,
                 request.location.clone(),
                 data_tile,
                 request.encoding,
@@ -592,6 +596,7 @@ impl JobHost {
         let loads = Arc::clone(&self.data_loads);
         let executor = Arc::clone(&self.executor);
         self.fetch.get(
+            ResourceKind::Source,
             &url,
             Box::new(move |fetched| {
                 executor.spawn(Box::new(move || {
@@ -639,6 +644,7 @@ impl JobHost {
         }
         let tile = &request.tile;
         self.loader.load(
+            worker.resource_kind(tile.source),
             tile.location.clone(),
             tile.data_tile(),
             tile.encoding,
@@ -665,6 +671,7 @@ impl JobHost {
         }
         let tile = &request.tile;
         self.loader.load(
+            worker.resource_kind(tile.source),
             tile.location.clone(),
             tile.data_tile(),
             tile.encoding,
@@ -689,6 +696,7 @@ impl JobHost {
                 }
                 let (url, glyphs) = (url.clone(), Arc::clone(&self.glyphs));
                 self.fetch.get(
+                    ResourceKind::Glyphs,
                     &url.clone(),
                     Box::new(move |fetched| match fetched {
                         Ok(bytes) => {
@@ -726,6 +734,7 @@ impl JobHost {
                         return done(request.draw_file(files.as_ref(), None));
                     }
                     fetch.get(
+                        ResourceKind::Glyphs,
                         &url.clone(),
                         Box::new(move |fetched| match fetched {
                             Ok(bytes) => done(request.draw_file(files.as_ref(), Some(&bytes))),

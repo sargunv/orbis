@@ -7,7 +7,7 @@ use orb_crs::{TileIndex, TileMatrixSet};
 
 use crate::surface::Surface;
 use orb_hal::{Gpu, TextureId};
-use orb_host::{Fetch, FetchError, ImageDecode};
+use orb_host::{Fetch, FetchError, ImageDecode, ResourceKind};
 use orb_render::GpuTile;
 use orb_render::ImageAtlas;
 use orb_render::{
@@ -986,7 +986,7 @@ impl Map {
         self.style_request += 1;
         let request = self.style_request;
         let owned = url.to_string();
-        self.fetch_text(url, move |result| Message::Style {
+        self.fetch_text(ResourceKind::Style, url, move |result| Message::Style {
             request,
             url: owned,
             result,
@@ -1261,11 +1261,13 @@ impl Map {
                         });
                         crate::loader::read_head(&self.services.fetch, archive, done);
                     } else {
-                        self.fetch_text(url, move |result| Message::TileJson {
-                            generation,
-                            source: key,
-                            result,
-                            head: None,
+                        self.fetch_text(ResourceKind::Source, url, move |result| {
+                            Message::TileJson {
+                                generation,
+                                source: key,
+                                result,
+                                head: None,
+                            }
                         });
                     }
                     SourceState::Resolving
@@ -2557,13 +2559,14 @@ impl Map {
 
     fn fetch_text(
         &self,
+        kind: ResourceKind,
         url: &str,
         message: impl FnOnce(Result<String, FetchError>) -> Message + Send + 'static,
     ) {
         let done = self.reply(move |result: Result<Vec<u8>, FetchError>| {
             message(result.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
         });
-        self.services.fetch.get(url, done);
+        self.services.fetch.get(kind, url, done);
     }
 
     /// A callback that sends `message(result)` to the map's next frame and
@@ -2675,12 +2678,12 @@ mod tests {
     }
 
     impl Fetch for HeldFetch {
-        fn get(&self, url: &str, done: FetchDone) {
+        fn get(&self, _: orb_host::ResourceKind, url: &str, done: FetchDone) {
             self.pending.lock().unwrap().push((url.to_string(), done));
         }
 
-        fn get_range(&self, url: &str, _: u64, _: u64, done: FetchDone) {
-            self.get(url, done);
+        fn get_range(&self, _: orb_host::ResourceKind, url: &str, _: u64, _: u64, done: FetchDone) {
+            self.get(orb_host::ResourceKind::Unknown, url, done);
         }
     }
 
@@ -2873,10 +2876,17 @@ mod gpu_tests {
 
     struct NoFetch;
     impl Fetch for NoFetch {
-        fn get(&self, url: &str, _: orb_host::FetchDone) {
+        fn get(&self, _: orb_host::ResourceKind, url: &str, _: orb_host::FetchDone) {
             panic!("unexpected fetch of {url}");
         }
-        fn get_range(&self, url: &str, _: u64, _: u64, _: orb_host::FetchDone) {
+        fn get_range(
+            &self,
+            _: orb_host::ResourceKind,
+            url: &str,
+            _: u64,
+            _: u64,
+            _: orb_host::FetchDone,
+        ) {
             panic!("unexpected fetch of {url}");
         }
     }

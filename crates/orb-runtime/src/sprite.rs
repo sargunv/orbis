@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use orb_expr::json::{self, Json};
-use orb_host::{DecodedImage, Fetch, ImageDecode};
+use orb_host::{DecodedImage, Fetch, ImageDecode, ResourceKind};
 use orb_render::ImageMetadata;
 use orb_style::Sprite;
 
@@ -63,7 +63,13 @@ pub(crate) fn load(
         let id = sprite.id.clone();
         let heard = (index == 0).then(|| icons.take().expect("one JSON"));
         let url = resource_url(&sprite.url, pixel_ratio, extension);
+        let kind = if index == 0 {
+            ResourceKind::SpriteJson
+        } else {
+            ResourceKind::SpriteImage
+        };
         fetch.get(
+            kind,
             &url,
             Box::new(move |result| {
                 let result = result.map_err(|e| e.to_string());
@@ -274,10 +280,10 @@ mod tests {
         use orb_host::{FetchDone, ImageDone};
         struct Answers(Mutex<Vec<(String, FetchDone)>>);
         impl Fetch for Answers {
-            fn get(&self, url: &str, done: FetchDone) {
+            fn get(&self, _: orb_host::ResourceKind, url: &str, done: FetchDone) {
                 self.0.lock().unwrap().push((url.to_string(), done));
             }
-            fn get_range(&self, _: &str, _: u64, _: u64, _: FetchDone) {
+            fn get_range(&self, _: orb_host::ResourceKind, _: &str, _: u64, _: u64, _: FetchDone) {
                 unreachable!("sprites are read whole")
             }
         }

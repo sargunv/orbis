@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use orb_crs::TileIndex;
-use orb_host::{Fetch, FetchDone, FetchError};
+use orb_host::{Fetch, FetchDone, FetchError, ResourceKind};
 use orb_source::endpoint::HostTile;
 use orb_source::pmtiles::{self, Lookup, Range, Reader, TileType};
 use orb_style::Encoding;
@@ -42,11 +42,14 @@ pub(crate) fn read_head(fetch: &Arc<dyn Fetch>, url: &str, done: FetchDone) {
     let (head, header) = (pmtiles::HEAD, pmtiles::HEADER_LEN);
     let (again, url_again) = (Arc::clone(fetch), url.to_string());
     fetch.get_range(
+        ResourceKind::Source,
         url,
         head.offset,
         head.length,
         Box::new(move |result| match result {
-            Err(e) if falls_back(&e) => again.get_range(&url_again, 0, header, done),
+            Err(e) if falls_back(&e) => {
+                again.get_range(ResourceKind::Source, &url_again, 0, header, done)
+            }
             result => done(result),
         }),
     );
@@ -99,7 +102,13 @@ impl TileLoader {
 
     /// Fetches `url` (`range` of it), or waits on the fetch of it already
     /// under way.
-    fn share(self: &Arc<Self>, url: &str, range: Option<Range>, waiter: Waiter) {
+    fn share(
+        self: &Arc<Self>,
+        kind: ResourceKind,
+        url: &str,
+        range: Option<Range>,
+        waiter: Waiter,
+    ) {
         let key = (url.to_string(), range);
         {
             let mut in_flight = self.in_flight.lock().expect("fetches poisoned");
@@ -129,13 +138,16 @@ impl TileLoader {
             }
         });
         match range {
-            None => self.fetch.get(url, done),
-            Some(range) => self.fetch.get_range(url, range.offset, range.length, done),
+            None => self.fetch.get(kind, url, done),
+            Some(range) => self
+                .fetch
+                .get_range(kind, url, range.offset, range.length, done),
         }
     }
 
     pub(crate) fn load(
         self: &Arc<Self>,
+        kind: ResourceKind,
         location: TileLocation,
         tile: TileIndex,
         encoding: Encoding,
@@ -152,6 +164,7 @@ impl TileLoader {
                 done(Err(FetchError::NotFound))
             }
             TileLocation::Url(url) => self.share(
+                kind,
                 &url,
                 None,
                 Box::new(move |r| done(r.map(|bytes| (owned(bytes), encoding)))),
@@ -195,7 +208,9 @@ impl TileLoader {
                     // Images decode by content.
                     TileType::Png | TileType::Jpeg | TileType::Webp => encoding,
                 };
+                // An archive holds tiles alone: an image source is one image.
                 self.share(
+                    ResourceKind::Tile,
                     &url,
                     Some(range),
                     Box::new(move |r| {
@@ -211,6 +226,7 @@ impl TileLoader {
             Ok(Lookup::Read(range)) => {
                 let loader = Arc::clone(self);
                 self.share(
+                    ResourceKind::Source,
                     &url.clone(),
                     Some(range),
                     Box::new(move |r| {
@@ -272,10 +288,17 @@ mod tests {
     }
 
     impl Fetch for Held {
-        fn get(&self, _: &str, done: FetchDone) {
+        fn get(&self, _: orb_host::ResourceKind, _: &str, done: FetchDone) {
             done(Err(FetchError::NotFound));
         }
-        fn get_range(&self, _: &str, offset: u64, length: u64, done: FetchDone) {
+        fn get_range(
+            &self,
+            _: orb_host::ResourceKind,
+            _: &str,
+            offset: u64,
+            length: u64,
+            done: FetchDone,
+        ) {
             self.reads.lock().unwrap().push((offset, length));
             self.held.lock().unwrap().push((offset, length, done));
         }
@@ -321,6 +344,7 @@ mod tests {
         for (i, &tile) in tiles.iter().enumerate() {
             let got = Arc::clone(&got);
             loader.load(
+                ResourceKind::Tile,
                 TileLocation::Pmtiles("a".into()),
                 tile,
                 Encoding::Mvt,

@@ -216,12 +216,19 @@ pub(crate) async fn decode_bitmap(bytes: &[u8]) -> Result<web_sys::ImageBitmap, 
 }
 
 impl Fetch for WebFetch {
-    fn get(&self, url: &str, done: FetchDone) {
+    fn get(&self, _: orb_host::ResourceKind, url: &str, done: FetchDone) {
         let url = url.to_string();
         wasm_bindgen_futures::spawn_local(async move { done(fetch(&url).await) });
     }
 
-    fn get_range(&self, url: &str, offset: u64, length: u64, done: FetchDone) {
+    fn get_range(
+        &self,
+        _: orb_host::ResourceKind,
+        url: &str,
+        offset: u64,
+        length: u64,
+        done: FetchDone,
+    ) {
         let url = url.to_string();
         wasm_bindgen_futures::spawn_local(async move {
             done(fetch_body(&url, Some((offset, length))).await)

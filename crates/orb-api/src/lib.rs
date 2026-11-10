@@ -33,7 +33,10 @@ pub use orb_camera::{
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
-pub use orb_host::{Request, RequestTransform};
+pub use orb_host::{
+    FetchError, NetworkAnswer, NetworkDone, NetworkHook, NetworkRequest, Prior, Request,
+    RequestTransform, ResourceKind,
+};
 pub use orb_runtime::{
     CameraState, ClusterQuery, FeatureTarget, FrameReport, FrameTimes, HOST_TILES, Hit, HostTile,
     MapEvent, MissingTiles, Op, Preview, Previews, StyleDoc, StyleImage, Transaction, VideoRequest,
@@ -299,6 +302,14 @@ impl Runtime {
     /// from the transform refuses the request.
     pub fn set_request_transform(&self, transform: Option<Arc<orb_host::RequestTransform>>) {
         self.shared.fetch.set_transform(transform);
+    }
+
+    /// Serves the requests of the runtime's maps and region downloads that
+    /// the HTTP cache and offline regions can't answer through `hook`, in
+    /// the network's place, from here on: any URL scheme, with the cached
+    /// copy it would replace. `None` hands them back to the network.
+    pub fn set_network_hook(&self, hook: Option<Arc<dyn orb_host::NetworkHook>>) {
+        self.shared.fetch.set_network_hook(hook);
     }
 
     /// Off, nothing goes to the network: requests answer from the HTTP

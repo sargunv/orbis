@@ -563,7 +563,7 @@ impl Jobs for WorkerJobs {
                 let range = JobRequest::GlyphRange { style, url, bytes };
                 jobs.broadcast(&self::bytes(&wire::encode(&range)));
             });
-            crate::regions::service().get(&fetching, done);
+            crate::regions::service().get(orb_host::ResourceKind::Glyphs, &fetching, done);
         }
     }
 

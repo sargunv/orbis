@@ -539,6 +539,17 @@ impl TileWorker {
         }
     }
 
+    /// What a fetch of `source`'s data is (a source key): an image
+    /// source's image, a GeoJSON document, or a tile.
+    pub(crate) fn resource_kind(&self, source: u32) -> orb_host::ResourceKind {
+        let at = self.plan.source_keys.iter().position(|&k| k == source);
+        match at.map(|at| &self.plan.style.sources[at].kind) {
+            Some(orb_style::SourceKind::Image(_)) => orb_host::ResourceKind::Image,
+            Some(orb_style::SourceKind::GeoJson(_)) => orb_host::ResourceKind::Source,
+            _ => orb_host::ResourceKind::Tile,
+        }
+    }
+
     fn geojson_source(&self, source: u32) -> Option<&orb_style::GeoJsonSource> {
         match &self.plan.source_def(self.plan.source(source)?).kind {
             SourceKind::GeoJson(source) => Some(source),
@@ -1066,11 +1077,18 @@ pub(crate) mod tests {
         callbacks: Mutex<Vec<orb_host::FetchDone>>,
     }
     impl Fetch for DeferredFetch {
-        fn get_range(&self, _: &str, _: u64, _: u64, _: orb_host::FetchDone) {
+        fn get_range(
+            &self,
+            _: orb_host::ResourceKind,
+            _: &str,
+            _: u64,
+            _: u64,
+            _: orb_host::FetchDone,
+        ) {
             panic!("GeoJSON must fetch its whole document");
         }
 
-        fn get(&self, url: &str, done: orb_host::FetchDone) {
+        fn get(&self, _: orb_host::ResourceKind, url: &str, done: orb_host::FetchDone) {
             assert_eq!(url, "test://data.json");
             self.callbacks.lock().unwrap().push(done);
         }
@@ -1321,11 +1339,18 @@ pub(crate) mod tests {
     }
 
     impl Fetch for AssetFetch {
-        fn get_range(&self, _: &str, _: u64, _: u64, _: orb_host::FetchDone) {
+        fn get_range(
+            &self,
+            _: orb_host::ResourceKind,
+            _: &str,
+            _: u64,
+            _: u64,
+            _: orb_host::FetchDone,
+        ) {
             unreachable!("no archives")
         }
 
-        fn get(&self, url: &str, done: orb_host::FetchDone) {
+        fn get(&self, _: orb_host::ResourceKind, url: &str, done: orb_host::FetchDone) {
             self.gets.lock().unwrap().push(url.to_string());
             let path = format!("{ASSETS}/{}", url.strip_prefix("local://").unwrap());
             if url.contains("/glyphs/") {
@@ -1502,11 +1527,18 @@ pub(crate) mod tests {
     struct HeldTiles(Mutex<Vec<orb_host::FetchDone>>);
 
     impl Fetch for HeldTiles {
-        fn get_range(&self, _: &str, _: u64, _: u64, _: orb_host::FetchDone) {
+        fn get_range(
+            &self,
+            _: orb_host::ResourceKind,
+            _: &str,
+            _: u64,
+            _: u64,
+            _: orb_host::FetchDone,
+        ) {
             unreachable!("no archives")
         }
 
-        fn get(&self, _: &str, done: orb_host::FetchDone) {
+        fn get(&self, _: orb_host::ResourceKind, _: &str, done: orb_host::FetchDone) {
             self.0.lock().unwrap().push(done);
         }
     }
@@ -1579,10 +1611,17 @@ pub(crate) mod tests {
     fn loads_of_a_replaced_style_are_not_built() {
         struct Held(Mutex<Vec<orb_host::FetchDone>>);
         impl Fetch for Held {
-            fn get(&self, _: &str, done: orb_host::FetchDone) {
+            fn get(&self, _: orb_host::ResourceKind, _: &str, done: orb_host::FetchDone) {
                 self.0.lock().unwrap().push(done);
             }
-            fn get_range(&self, _: &str, _: u64, _: u64, _: orb_host::FetchDone) {
+            fn get_range(
+                &self,
+                _: orb_host::ResourceKind,
+                _: &str,
+                _: u64,
+                _: u64,
+                _: orb_host::FetchDone,
+            ) {
                 unreachable!("no archives")
             }
         }
