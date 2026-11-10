@@ -321,6 +321,8 @@ impl Canvas {
         });
         #[cfg(feature = "gl")]
         crate::gl_context::watch(&canvas, lost.clone(), map);
+        #[cfg(feature = "gl")]
+        crate::gl_context::first_vertex(&canvas);
         let caps = surface.get_capabilities(&adapter);
         let surface_format = caps
             .formats
