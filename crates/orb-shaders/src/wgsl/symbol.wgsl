@@ -387,7 +387,8 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let anchor_metres = symbol_metres(tile, anchor);
     let projected_point = ground_clip(anchor_ground, vec2<f32>(0.0), anchor_metres * frame.extrusion_scale);
     // Terrain in front of the anchor hides it (GL JS `calculate_visibility`).
-    let visible_opacity = total_opacity * terrain_visibility(projected_point);
+    let visible_opacity = total_opacity * terrain_visibility(
+        terrain_seen(projected_point, anchor_ground, anchor_metres * frame.extrusion_scale));
     if visible_opacity < 0.1 { return out; }
     if globe_hides_anchor(anchor_ground, anchor_metres) { return out; }
     // The anchor's east neighbour, which map-rotated shifted labels and

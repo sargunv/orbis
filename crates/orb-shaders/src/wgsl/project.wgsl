@@ -313,6 +313,18 @@ fn ground_clip(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
     return ground_clip_depth(g, offset, z, false);
 }
 
+// A ground point raised `z` world units, for the terrain's depth test
+// (`terrain_visibility`): `projected`, its `ground_clip`, with the depth
+// the terrain draws. On a globe that is the sphere's perspective depth
+// (`ground_clip_3d`), not the horizon plane's, which no surface's depth
+// matches.
+fn terrain_seen(projected: vec4<f32>, g: Ground, z: f32) -> vec4<f32> {
+    if frame.globe_amount <= 0.0 {
+        return projected;
+    }
+    return ground_clip_3d(g, vec2<f32>(0.0), z);
+}
+
 // Whether the sphere stands between the eye and camera-relative `p`. A
 // point in front of the horizon plane never is; only behind it does the
 // ray test run (in f32 it cancels badly for grazing rays).
