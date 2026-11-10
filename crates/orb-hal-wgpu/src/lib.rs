@@ -590,14 +590,16 @@ impl WgpuGpu {
         self.hung.as_deref()
     }
 
-    /// On a lost device, lets the compiles running finish (up to a
-    /// second) and takes them, so a pipeline whose compile lost the
-    /// device is [`hung`](Self::hung): a loss is checked for before
-    /// frames take their compiles.
+    /// On a lost device, lets the compiles running finish (up to `wait`)
+    /// and takes them, so a pipeline whose compile lost the device is
+    /// [`hung`](Self::hung): a loss is checked for before frames take
+    /// their compiles. The caller waits once per loss: a compile still
+    /// running then (a slow compiler, a hung driver) mustn't stall every
+    /// later check.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn settle_loss(&mut self) {
+    pub fn settle_loss(&mut self, wait: std::time::Duration) {
         if self.hung.is_none() && self.lost() {
-            self.compiler.settle(std::time::Duration::from_secs(1));
+            self.compiler.settle(wait);
             self.take_compiled(false);
         }
     }

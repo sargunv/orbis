@@ -373,10 +373,17 @@ impl Runtime {
         if let Some(failed) = &recovery.failed {
             return Err(Error::Native(failed.clone()));
         }
-        // A compile that lost the device names its pipeline.
+        // A compile that lost the device names its pipeline. Running
+        // compiles get a second to finish when the loss is first seen, not
+        // on each check while the backoff runs.
+        let wait = if recovery.due.is_none() {
+            std::time::Duration::from_secs(1)
+        } else {
+            std::time::Duration::ZERO
+        };
         let hung = {
             let mut gpu = self.shared.gpu();
-            gpu.settle_loss();
+            gpu.settle_loss(wait);
             gpu.hung().map(str::to_owned)
         };
         if let Some(hung) = hung {

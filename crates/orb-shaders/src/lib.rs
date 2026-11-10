@@ -526,10 +526,13 @@ mod tests {
     }
 
     /// Every pipeline stage as wgpu's Vulkan back end writes it (its
-    /// `naga_options`, overrides at their defaults), at the SPIR-V version
-    /// it picks for Vulkan 1.1, 1.2 and 1.3, through SPIRV-Tools'
-    /// `spirv-val` as the validation layer runs it, `Restrict` bounds
-    /// checks as on a device without robust access. Explicit layout on
+    /// `naga_options`), in each variant pipelines make of it (overrides at
+    /// their defaults, the plane variant, the cull's `keep_all`, the ground
+    /// mask, extrusions' elevation shapes), at the SPIR-V version wgpu-hal
+    /// picks for Vulkan 1.1, 1.2 and 1.3, through SPIRV-Tools' `spirv-val`
+    /// as the validation layer runs it, with `Restrict` bounds checks as on
+    /// a device without robust access and `Unchecked` ones as on a device
+    /// with it (Vulkan 1.3 requires robust image access). Explicit layout on
     /// Function and Workgroup variables (VUID-StandaloneSpirv-None-10684)
     /// and an `i32` one clamping `u32` image coordinates failed here until
     /// naga's patch (#35). Skipped, saying so, where
@@ -550,58 +553,110 @@ mod tests {
             ((1, 5), "vulkan1.2"),
             ((1, 6), "vulkan1.3"),
         ];
+        // The override constants pipelines set (orb-render's plane
+        // variants, `ORB_CULL=keep-all`, the ground mask on terrain, an
+        // `ElevationShape`), each stage taking those it reads.
+        const VARIANTS: &[&[(&str, f64)]] = &[
+            &[],
+            &[
+                (PLANE, 1.0),
+                ("keep_all", 1.0),
+                ("ground_mask", 1.0),
+                ("elevation_stops", 2.0),
+                ("elevation_input", 1.0),
+                ("elevation_curve", 1.0),
+                ("elevation_dynamic", 1.0),
+            ],
+            &[
+                ("elevation_stops", 16.0),
+                ("elevation_input", 65.0),
+                ("elevation_curve", 2.0),
+                ("elevation_dynamic", 2.0),
+            ],
+            &[
+                ("elevation_stops", 5.0),
+                ("elevation_curve", 3.0),
+                ("elevation_dynamic", 3.0),
+            ],
+        ];
+        // (image and buffer bounds checks, what they're named).
+        const POLICIES: &[(naga::proc::BoundsCheckPolicy, &str)] = &[
+            (naga::proc::BoundsCheckPolicy::Restrict, "restrict"),
+            (naga::proc::BoundsCheckPolicy::Unchecked, "robust"),
+        ];
         // (what, the module's words, its Vulkan environment).
         let mut modules = Vec::new();
+        let mut stages = 0;
         for shader in SHADERS {
             for (entry, one) in split::entry_modules(&validate(shader)) {
+                stages += 1;
                 let info = naga::valid::Validator::new(
                     naga::valid::ValidationFlags::all(),
                     naga::valid::Capabilities::CLIP_DISTANCES,
                 )
                 .validate(&one)
                 .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                let (one, info) = naga::back::pipeline_constants::process_overrides(
-                    &one,
-                    &info,
-                    None,
-                    &Default::default(),
-                )
-                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                for &(lang_version, env) in TARGETS {
-                    for debug in [false, true] {
-                        let mut flags = spv::WriterFlags::FORCE_POINT_SIZE;
-                        flags.set(spv::WriterFlags::DEBUG, debug);
-                        let options = spv::Options {
-                            lang_version,
-                            flags,
-                            bounds_check_policies: naga::proc::BoundsCheckPolicies {
-                                index: naga::proc::BoundsCheckPolicy::Restrict,
-                                buffer: naga::proc::BoundsCheckPolicy::Restrict,
-                                image_load: naga::proc::BoundsCheckPolicy::Restrict,
-                                binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
-                            },
-                            zero_initialize_workgroup_memory: if lang_version >= (1, 6) {
-                                spv::ZeroInitializeWorkgroupMemoryMode::Native
-                            } else {
-                                spv::ZeroInitializeWorkgroupMemoryMode::Polyfill
-                            },
-                            ..Default::default()
-                        };
-                        let words = spv::write_vec(&one, &info, &options, None)
-                            .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                        let what = format!(
-                            "{} {entry} (SPIR-V {}.{}, {env}{})",
-                            shader.label,
-                            lang_version.0,
-                            lang_version.1,
-                            if debug { ", debug" } else { "" },
-                        );
-                        modules.push((what, words, env));
+                let mut made = Vec::new();
+                for variant in VARIANTS {
+                    let constants: Vec<_> = (variant.iter())
+                        .filter(|(name, _)| shader.takes(&entry, name))
+                        .collect();
+                    if made.contains(&constants) {
+                        continue;
                     }
+                    let map = (constants.iter())
+                        .map(|&&(name, value)| (name.to_string(), value))
+                        .collect();
+                    let (one, info) =
+                        naga::back::pipeline_constants::process_overrides(&one, &info, None, &map)
+                            .unwrap_or_else(|e| {
+                                panic!("{} {entry} {constants:?}: {e}", shader.label)
+                            });
+                    for &(lang_version, env) in TARGETS {
+                        for &(policy, checks) in POLICIES {
+                            for debug in [false, true] {
+                                let mut flags = spv::WriterFlags::FORCE_POINT_SIZE;
+                                flags.set(spv::WriterFlags::DEBUG, debug);
+                                let options = spv::Options {
+                                    lang_version,
+                                    flags,
+                                    bounds_check_policies: naga::proc::BoundsCheckPolicies {
+                                        index: naga::proc::BoundsCheckPolicy::Restrict,
+                                        buffer: policy,
+                                        image_load: policy,
+                                        binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
+                                    },
+                                    zero_initialize_workgroup_memory: if lang_version >= (1, 6) {
+                                        spv::ZeroInitializeWorkgroupMemoryMode::Native
+                                    } else {
+                                        spv::ZeroInitializeWorkgroupMemoryMode::Polyfill
+                                    },
+                                    ..Default::default()
+                                };
+                                let words = spv::write_vec(&one, &info, &options, None)
+                                    .unwrap_or_else(|e| {
+                                        panic!("{} {entry} {constants:?}: {e}", shader.label)
+                                    });
+                                let what = format!(
+                                    "{} {entry} {constants:?} (SPIR-V {}.{}, {env}, {checks}{})",
+                                    shader.label,
+                                    lang_version.0,
+                                    lang_version.1,
+                                    if debug { ", debug" } else { "" },
+                                );
+                                modules.push((what, words, env));
+                            }
+                        }
+                    }
+                    made.push(constants);
                 }
             }
         }
-        assert!(modules.len() > 600, "only {} modules", modules.len());
+        assert!(
+            stages > 100 && modules.len() > 12 * stages,
+            "only {} modules of {stages} stages",
+            modules.len()
+        );
         let validate = |(what, words, env): &(String, Vec<u32>, &str)| {
             let mut child = Command::new("spirv-val")
                 .args(["--relax-block-layout", "--target-env", env, "-"])
