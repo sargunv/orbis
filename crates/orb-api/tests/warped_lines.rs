@@ -2,7 +2,8 @@
 //! along: geographic tiles (`WorldCRS84Quad`) on Web Mercator stretch y by
 //! sec(lat), 6× at 81°N, and a meridian and a parallel there draw as wide
 //! as at the equator, and their joins meet as the same line's from Web
-//! Mercator tiles.
+//! Mercator tiles. Web Mercator's whole-world tile draws on a geographic
+//! plane.
 
 use orb_api::{Map, MapOptions, Previews, Runtime, RuntimeOptions};
 
@@ -245,4 +246,72 @@ fn joins_through_a_stretching_warp_meet_on_screen() {
             100.0 * miss
         );
     }
+}
+
+/// Web Mercator's z0 tile spans the whole world: on a geographic plane,
+/// which wraps at ±180°, its two edges lie half a period from its centre.
+/// Taking them into one world copy folded the right edge onto the left,
+/// so it had no patches to draw through and views at zoom 1 and below,
+/// which cover it, drew nothing.
+#[test]
+fn whole_world_mercator_tile_draws_on_a_geographic_plane() {
+    let dir = std::env::temp_dir().join(format!("orb-warped-world-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("0/0")).unwrap();
+    // The equator and the prime meridian, end to end.
+    let cross = tile(&[&[[0, 2048], [4096, 2048]], &[[2048, 0], [2048, 4096]]]);
+    std::fs::write(dir.join("0/0/0.pbf"), cross).unwrap();
+    let center = [40.0, 0.0];
+    let draw = |zoom: f64| {
+        let style = format!(
+            r##"{{"version": 8, "projection": {{"type": "EPSG:4326"}},
+                "center": [{}, {}], "zoom": {zoom},
+                "sources": {{"m": {{"type": "vector", "maxzoom": 0,
+                  "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.pbf"]}}}},
+                "layers": [
+                  {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+                  {{"id": "l", "type": "line", "source": "m", "source-layer": "l",
+                    "paint": {{"line-color": "#000000", "line-width": 2}}}}]}}"##,
+            center[0],
+            center[1],
+            dir.display()
+        );
+        snapshot(&style, SIZE)
+    };
+    let mut misses = Vec::new();
+    for zoom in [0.0, 0.5, 1.0, 1.5] {
+        let pixels = draw(zoom);
+        let size = i64::from(SIZE);
+        let inked = |x: i64, y: i64| {
+            (0..size).contains(&x)
+                && (0..size).contains(&y)
+                && pixels[((y * size + x) * 4) as usize] < 128
+        };
+        // A position's pixel: the plane's degrees are square, 360° to 512
+        // pixels at zoom 0.
+        let per_px = 360.0 / (512.0 * zoom.exp2());
+        let half = f64::from(SIZE) / 2.0;
+        let px = |lon: f64, lat: f64| {
+            (
+                (half + (lon - center[0]) / per_px).round() as i64,
+                (half - (lat - center[1]) / per_px).round() as i64,
+            )
+        };
+        let near = |x: i64, y: i64| (-2..=2).any(|d| inked(x + d, y) || inked(x, y + d));
+        // Samples along both lines in view, and those that drew.
+        let (mut seen, mut drawn) = (0, 0);
+        for k in -40..=40 {
+            let along = f64::from(k) * 2.0;
+            for (x, y) in [px(0.0, along), px(along * 2.0, 0.0)] {
+                if (4..size - 4).contains(&x) && (4..size - 4).contains(&y) {
+                    seen += 1;
+                    drawn += i32::from(near(x, y));
+                }
+            }
+        }
+        if drawn < seen {
+            misses.push((zoom, drawn, seen));
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(misses.is_empty(), "(zoom, drawn, in view): {misses:?}");
 }

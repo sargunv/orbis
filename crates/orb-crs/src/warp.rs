@@ -480,10 +480,20 @@ impl Warp {
         Some(window)
     }
 
-    /// `x` in the world copy nearest `reference`, on a wrapping plane.
+    /// `x` in the world copy nearest `reference`, on a wrapping plane. One
+    /// half a period away, to within rounding, is as near in either copy
+    /// and stays in the one `map` gave: a whole-world tile's edges about
+    /// its centre (Web Mercator's z0 on a geographic plane, at
+    /// ±180.00000000000003°) keep their sides rather than both landing on
+    /// one.
     fn unwrap(&self, x: f64, reference: f64) -> f64 {
-        let near = DVec2::new(reference, 0.0);
-        self.to.nearest_copy(DVec2::new(x, 0.0), near).x
+        match self.to.wrap_period() {
+            Some(period) if (x - reference).abs() > period * (0.5 + 1e-9) => {
+                let near = DVec2::new(reference, 0.0);
+                self.to.nearest_copy(DVec2::new(x, 0.0), near).x
+            }
+            _ => x,
+        }
     }
 
     /// Whether the tile holds a pole that a wrapping target plane spreads
@@ -1088,12 +1098,16 @@ mod tests {
         let geographic = Projection::from_descriptor("EPSG:4326").unwrap();
         let warp = Warp::new(mercator(), geographic);
         for tile in [
+            TileIndex::new(0, 0, 0),
             TileIndex::new(1, 0, 0),
             TileIndex::new(1, 1, 0),
             TileIndex::new(3, 4, 0),
         ] {
             let footprint = warp.footprint(tile).unwrap();
-            assert!(footprint.bounds.size().x < 180.5, "{tile:?}");
+            assert!(
+                footprint.bounds.size().x < 360.5 / f64::from(1 << tile.z),
+                "{tile:?}"
+            );
             assert!(warp.series(tile, 1.0 / 2048.0).is_some(), "{tile:?}");
         }
         // A polar set's tile around the pole does span every copy.
