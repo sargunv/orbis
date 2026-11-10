@@ -22,8 +22,7 @@ fn of(canvas: &JsValue) -> Result<JsValue, JsValue> {
 
 fn listen(canvas: &JsValue, event: &str, handler: impl FnMut(JsValue) + 'static) {
     let handler = Closure::<dyn FnMut(JsValue)>::new(handler).into_js_value();
-    let options = js_sys::Object::new();
-    let _ = Reflect::set(&options, &"once".into(), &true.into());
+    let options = crate::js::object(&[("once", true.into())]);
     let _ = call(
         canvas,
         "addEventListener",

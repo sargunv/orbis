@@ -25,7 +25,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use js_sys::{ArrayBuffer, Object, Reflect};
+use js_sys::ArrayBuffer;
 use orb_crs::TileIndex;
 use orb_hal::Gpu as _;
 use orb_runtime::wire;
@@ -159,11 +159,13 @@ impl WorkerJobs {
         gpu: &mut orb_hal_wgpu::WgpuGpu,
         reply: &JsValue,
     ) -> Result<(), JsError> {
-        let message = field(reply, "message")
+        let message = crate::js::get(reply, "message")
             .dyn_into::<js_sys::Uint8Array>()
             .map_err(|_| JsError::new("job reply without a message"))?;
         let message: JobReply = wire::decode(&message.to_vec()).map_err(|e| JsError::new(&e))?;
-        let buffer = field(reply, "buffer").dyn_into::<ArrayBuffer>().ok();
+        let buffer = crate::js::get(reply, "buffer")
+            .dyn_into::<ArrayBuffer>()
+            .ok();
         self.complete(Some(gpu), message, buffer, reply)
     }
 
@@ -363,7 +365,7 @@ impl WorkerJobs {
             }
             JobReply::Image { warp_grid, .. } => {
                 match (
-                    field(reply, "image").dyn_into::<web_sys::ImageBitmap>(),
+                    crate::js::get(reply, "image").dyn_into::<web_sys::ImageBitmap>(),
                     gpu,
                 ) {
                     (Ok(bitmap), Some(gpu)) => Ok(TileResult {
@@ -834,11 +836,12 @@ enum JobAnswer {
 /// A reply for the page: the message, and the buffer and bitmap it
 /// transfers.
 fn reply(message: &JobReply, buffer: Option<ArrayBuffer>, image: Option<JsValue>) -> JsValue {
-    object(&[
+    crate::js::object(&[
         ("message", bytes(&wire::encode(message))),
         ("buffer", buffer.map_or(JsValue::UNDEFINED, Into::into)),
         ("image", image.unwrap_or(JsValue::UNDEFINED)),
     ])
+    .into()
 }
 
 /// A packed tile's reply.
@@ -851,18 +854,6 @@ fn tile_reply(id: u32, build: TileBuild) -> JsValue {
 /// A message's bytes as a JS array.
 fn bytes(bytes: &[u8]) -> JsValue {
     js_sys::Uint8Array::from(bytes).into()
-}
-
-fn field(object: &JsValue, key: &str) -> JsValue {
-    Reflect::get(object, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED)
-}
-
-fn object(fields: &[(&str, JsValue)]) -> JsValue {
-    let object = Object::new();
-    for (key, value) in fields {
-        let _ = Reflect::set(&object, &JsValue::from_str(key), value);
-    }
-    object.into()
 }
 
 impl Default for JobWorker {

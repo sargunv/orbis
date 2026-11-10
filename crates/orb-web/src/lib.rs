@@ -18,6 +18,7 @@ mod canvas;
 mod gl_context;
 mod host;
 mod jobs;
+mod js;
 mod placement;
 pub mod regions;
 mod snapshot;
@@ -338,31 +339,27 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 /// their defaults.
 fn map_options(options: &JsValue) -> orb_runtime::MapOptions {
     let mut map = orb_runtime::MapOptions::default();
-    let option = |name: &str| js_sys::Reflect::get(options, &name.into()).ok();
-    if let Some(ms) = option("fadeDuration").and_then(|v| v.as_f64()) {
+    let option = |name: &str| crate::js::get(options, name);
+    if let Some(ms) = option("fadeDuration").as_f64() {
         map.fade_duration = ms;
     }
-    if let Some(collide) = option("crossSourceCollisions").and_then(|v| v.as_bool()) {
+    if let Some(collide) = option("crossSourceCollisions").as_bool() {
         map.cross_source_collisions = collide;
     }
-    match option("localIdeographFontFamily") {
-        Some(family) if family.as_bool() == Some(false) || family.is_null() => {
-            map.local_ideograph_font_family = None;
-        }
-        Some(family) => {
-            if let Some(family) = family.as_string() {
-                map.local_ideograph_font_family = Some(family);
-            }
-        }
-        None => {}
+    let family = option("localIdeographFontFamily");
+    if family.as_bool() == Some(false) || family.is_null() {
+        map.local_ideograph_font_family = None;
+    } else if let Some(family) = family.as_string() {
+        map.local_ideograph_font_family = Some(family);
     }
-    if let Some(antialias) = option("antialias").and_then(|v| v.as_bool()) {
+    if let Some(antialias) = option("antialias").as_bool() {
         map.antialias = antialias;
     }
-    if let Some(skirts) = option("terrainSkirts").and_then(|v| v.as_bool()) {
+    if let Some(skirts) = option("terrainSkirts").as_bool() {
         map.terrain_skirts = skirts;
     }
-    if let Some(previews) = option("previews").filter(|v| !v.is_undefined()) {
+    let previews = option("previews");
+    if !previews.is_undefined() {
         let names: Vec<String> = match previews.as_string() {
             Some(name) => vec![name],
             None => js_sys::Array::from(&previews)
@@ -377,16 +374,14 @@ fn map_options(options: &JsValue) -> orb_runtime::MapOptions {
         }
         map.previews = previews;
     }
-    if let Some(stable) = option("stableLabels").and_then(|v| v.as_bool()) {
+    if let Some(stable) = option("stableLabels").as_bool() {
         map.stable_labels = stable;
     }
-    if let Some(lod) = option("tileLod").filter(JsValue::is_object) {
+    let lod = option("tileLod");
+    if lod.is_object() {
         map.tile_lod = camera::tile_lod(map.tile_lod, &lod);
     }
-    match option("missingTiles")
-        .and_then(|v| v.as_string())
-        .as_deref()
-    {
+    match option("missingTiles").as_string().as_deref() {
         Some("parent") => map.missing_tiles = orb_runtime::MissingTiles::Parent,
         Some("empty") => map.missing_tiles = orb_runtime::MissingTiles::Empty,
         Some(other) => web_sys::console::warn_1(
@@ -1164,23 +1159,16 @@ impl OrbisMap {
 /// budget: `navigator.userAgentData.mobile` where there is one
 /// (Chromium, pages and workers), else the user agent string.
 fn mobile() -> bool {
-    let get = |object: &JsValue, key: &str| js_sys::Reflect::get(object, &key.into()).ok();
-    let Some(navigator) = get(&js_sys::global(), "navigator") else {
-        return false;
-    };
-    if let Some(mobile) = get(&navigator, "userAgentData")
-        .and_then(|d| get(&d, "mobile"))
-        .and_then(|m| m.as_bool())
-    {
+    use crate::js::get;
+    let navigator = get(&js_sys::global(), "navigator");
+    if let Some(mobile) = get(&get(&navigator, "userAgentData"), "mobile").as_bool() {
         return mobile;
     }
-    get(&navigator, "userAgent")
-        .and_then(|ua| ua.as_string())
-        .is_some_and(|ua| {
-            ["Android", "iPhone", "iPad", "Mobile"]
-                .iter()
-                .any(|s| ua.contains(s))
-        })
+    get(&navigator, "userAgent").as_string().is_some_and(|ua| {
+        ["Android", "iPhone", "iPad", "Mobile"]
+            .iter()
+            .any(|s| ua.contains(s))
+    })
 }
 
 /// A promise of a query's features as JSON text.
@@ -1201,9 +1189,7 @@ pub(crate) fn hit_object(hit: Option<orb_runtime::Hit>) -> JsValue {
         return JsValue::NULL;
     };
     let object = js_sys::Object::new();
-    let set = |key: &str, value: JsValue| {
-        let _ = js_sys::Reflect::set(&object, &key.into(), &value);
-    };
+    let set = |key: &str, value: JsValue| crate::js::set(&object, key, &value);
     set("layer", hit.layer.into());
     set("source", hit.source.into());
     set(

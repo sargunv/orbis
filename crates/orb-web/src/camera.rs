@@ -60,7 +60,7 @@ fn padding_object(p: Padding) -> JsValue {
         ("bottom", p.bottom),
         ("left", p.left),
     ] {
-        let _ = js_sys::Reflect::set(&object, &key.into(), &value.into());
+        crate::js::set(&object, key, &value.into());
     }
     object.into()
 }
@@ -89,7 +89,7 @@ fn padding(value: &JsValue, current: Padding) -> Option<Padding> {
 /// keeps them.
 pub(crate) fn tile_lod(current: orb_camera::TileLod, value: &JsValue) -> orb_camera::TileLod {
     use orb_camera::TileLodMode;
-    let mode = match get(value, "mode").as_string().as_deref() {
+    let mode = match crate::js::get(value, "mode").as_string().as_deref() {
         Some("default") => TileLodMode::Default,
         Some("distance") => TileLodMode::Distance,
         _ => current.mode,
@@ -103,12 +103,8 @@ pub(crate) fn tile_lod(current: orb_camera::TileLod, value: &JsValue) -> orb_cam
     }
 }
 
-fn get(object: &JsValue, key: &str) -> JsValue {
-    js_sys::Reflect::get(object, &key.into()).unwrap_or(JsValue::UNDEFINED)
-}
-
 fn number(object: &JsValue, key: &str) -> Option<f64> {
-    get(object, key).as_f64()
+    crate::js::get(object, key).as_f64()
 }
 
 /// `[a, b]` as numbers.
@@ -126,22 +122,22 @@ fn lng_lat(value: &JsValue) -> Option<Geodetic> {
 fn target(options: &JsValue, current: Padding) -> CameraTarget {
     CameraTarget {
         fov: number(options, "fov"),
-        padding: padding(&get(options, "padding"), current),
-        center: lng_lat(&get(options, "center")),
+        padding: padding(&crate::js::get(options, "padding"), current),
+        center: lng_lat(&crate::js::get(options, "center")),
         zoom: number(options, "zoom"),
         bearing: number(options, "bearing"),
         pitch: number(options, "pitch"),
         roll: number(options, "roll"),
         elevation: number(options, "elevation"),
-        around: lng_lat(&get(options, "around")),
-        offset: pair(&get(options, "offset")).map_or(DVec2::ZERO, DVec2::from),
+        around: lng_lat(&crate::js::get(options, "around")),
+        offset: pair(&crate::js::get(options, "offset")).map_or(DVec2::ZERO, DVec2::from),
     }
 }
 
 /// An `Easing`: a cubic Bézier's control points, `"linear"`, or GL JS's
 /// default when absent.
 fn easing(options: &JsValue) -> Easing {
-    let value = get(options, "easing");
+    let value = crate::js::get(options, "easing");
     if value.as_string().as_deref() == Some("linear") {
         return Easing::Linear;
     }
@@ -169,11 +165,11 @@ fn decay(value: &JsValue, default: MomentumDecay) -> MomentumDecay {
         } => (half_life, stop_speed),
         DecayModel::Ease { .. } => (140.0, 1.0),
     };
-    let model = match get(value, "model").as_string().as_deref() {
+    let model = match crate::js::get(value, "model").as_string().as_deref() {
         Some("ease") => DecayModel::Ease {
             distance: number(value, "distance").unwrap_or(0.0),
             duration: number(value, "duration").unwrap_or(0.0),
-            easing: if get(value, "easing").is_undefined() {
+            easing: if crate::js::get(value, "easing").is_undefined() {
                 Easing::Bezier([0.0, 0.0, 0.25, 1.0])
             } else {
                 easing(value)
@@ -203,7 +199,7 @@ fn anchored(
         return None;
     }
     let base = part(number(value, "velocity"));
-    let snap = get(value, "snap");
+    let snap = crate::js::get(value, "snap");
     let snap = if snap.as_bool() == Some(true) {
         Some(snap_default)
     } else if snap.is_object() {
@@ -212,8 +208,8 @@ fn anchored(
         None
     };
     Some(AnchoredMomentum {
-        anchor: pair(&get(value, "anchor")).map(DVec2::from),
-        decay: decay(&get(value, "decay"), base.decay),
+        anchor: pair(&crate::js::get(value, "anchor")).map(DVec2::from),
+        decay: decay(&crate::js::get(value, "decay"), base.decay),
         snap,
         ..base
     })
@@ -223,7 +219,7 @@ fn anchored(
 fn gestures(value: &JsValue) -> GestureOptions {
     let defaults = GestureOptions::default();
     let movement = |key: &str, default: Movement, snap_default: MomentumSnap| {
-        let value = get(value, key);
+        let value = crate::js::get(value, key);
         if let Some(enabled) = value.as_bool() {
             return Movement { enabled, ..default };
         }
@@ -234,21 +230,23 @@ fn gestures(value: &JsValue) -> GestureOptions {
             Some(Fling::Decay(decay)) => decay,
             _ => MomentumDecay::PAN,
         };
-        let momentum = get(&value, "momentum");
+        let momentum = crate::js::get(&value, "momentum");
         let momentum = match momentum.as_bool() {
             Some(false) => None,
             Some(true) => default.momentum.or(Some(Fling::Decay(decay_default))),
             None if momentum.is_object() => Some(Fling::Decay(decay(&momentum, decay_default))),
             None => default.momentum,
         };
-        let snap = get(&value, "snap");
+        let snap = crate::js::get(&value, "snap");
         let snap = match snap.as_bool() {
             Some(on) => on.then_some(default.snap.unwrap_or(snap_default)),
             None if snap.is_object() => Some(snap_options(&snap, snap_default)),
             None => default.snap,
         };
         Movement {
-            enabled: get(&value, "enabled").as_bool().unwrap_or(default.enabled),
+            enabled: crate::js::get(&value, "enabled")
+                .as_bool()
+                .unwrap_or(default.enabled),
             momentum,
             snap,
         }
@@ -311,7 +309,7 @@ impl OrbisMap {
     #[wasm_bindgen(js_name = setConstraints)]
     pub fn set_constraints(&mut self, constraints: &JsValue) {
         let defaults = Constraints::default();
-        let bounds = get(constraints, "bounds")
+        let bounds = crate::js::get(constraints, "bounds")
             .dyn_ref::<js_sys::Array>()
             .and_then(|b| {
                 let at = |i| b.get(i).as_f64();
@@ -464,9 +462,7 @@ impl OrbisMap {
     pub fn free_camera(&self) -> JsValue {
         let f = self.map.free_camera();
         let object = js_sys::Object::new();
-        let set = |key: &str, value: JsValue| {
-            let _ = js_sys::Reflect::set(&object, &key.into(), &value);
-        };
+        let set = |key: &str, value: JsValue| crate::js::set(&object, key, &value);
         set(
             "position",
             js_sys::Array::of2(&f.position.lon.into(), &f.position.lat.into()).into(),
@@ -488,7 +484,7 @@ impl OrbisMap {
     pub fn jump_to_free(&mut self, camera: &JsValue) {
         let now = self.map.free_camera();
         self.map.jump_to_free(&orb_camera::FreeCamera {
-            position: lng_lat(&get(camera, "position")).unwrap_or(now.position),
+            position: lng_lat(&crate::js::get(camera, "position")).unwrap_or(now.position),
             altitude: number(camera, "altitude").unwrap_or(now.altitude),
             bearing: number(camera, "bearing").unwrap_or(now.bearing),
             pitch: number(camera, "pitch").unwrap_or(now.pitch),
@@ -539,8 +535,9 @@ impl OrbisMap {
             return JsValue::NULL;
         };
         let fit = FitOptions {
-            padding: padding(&get(options, "padding"), Padding::default()).unwrap_or_default(),
-            offset: pair(&get(options, "offset")).map_or(DVec2::ZERO, DVec2::from),
+            padding: padding(&crate::js::get(options, "padding"), Padding::default())
+                .unwrap_or_default(),
+            offset: pair(&crate::js::get(options, "offset")).map_or(DVec2::ZERO, DVec2::from),
             max_zoom: number(options, "maxZoom"),
             bearing: number(options, "bearing"),
             pitch: number(options, "pitch"),
@@ -555,9 +552,7 @@ impl OrbisMap {
             return JsValue::NULL;
         };
         let object = js_sys::Object::new();
-        let set = |key: &str, value: JsValue| {
-            let _ = js_sys::Reflect::set(&object, &key.into(), &value);
-        };
+        let set = |key: &str, value: JsValue| crate::js::set(&object, key, &value);
         if let Some(c) = target.center {
             set(
                 "center",
@@ -584,24 +579,24 @@ impl OrbisMap {
     /// moves.
     #[wasm_bindgen(js_name = startMomentum)]
     pub fn start_momentum(&mut self, options: &JsValue) -> f64 {
-        let pan = get(options, "pan");
+        let pan = crate::js::get(options, "pan");
         let momentum = GestureMomentum {
-            pan: pair(&get(&pan, "velocity")).map(|v| PanMomentum {
-                decay: decay(&get(&pan, "decay"), MomentumDecay::PAN),
+            pan: pair(&crate::js::get(&pan, "velocity")).map(|v| PanMomentum {
+                decay: decay(&crate::js::get(&pan, "decay"), MomentumDecay::PAN),
                 ..PanMomentum::new(DVec2::from(v))
             }),
             zoom: anchored(
-                &get(options, "zoom"),
+                &crate::js::get(options, "zoom"),
                 AnchoredMomentum::zoom,
                 MomentumSnap::ZOOM,
             ),
             bearing: anchored(
-                &get(options, "bearing"),
+                &crate::js::get(options, "bearing"),
                 AnchoredMomentum::bearing,
                 MomentumSnap::BEARING,
             ),
             pitch: anchored(
-                &get(options, "pitch"),
+                &crate::js::get(options, "pitch"),
                 AnchoredMomentum::pitch,
                 MomentumSnap::PITCH,
             ),

@@ -109,9 +109,7 @@ pub async fn download_region(
 
 fn event_object(event: &RegionEvent) -> JsValue {
     let object = js_sys::Object::new();
-    let set = |key: &str, value: JsValue| {
-        let _ = js_sys::Reflect::set(&object, &key.into(), &value);
-    };
+    let set = |key: &str, value: JsValue| crate::js::set(&object, key, &value);
     match event {
         RegionEvent::Progress {
             id,
