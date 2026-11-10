@@ -63,7 +63,9 @@ fn fs_scatter(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> 
 // up, the ambient light where it is down, smoothly over the twilight, by
 // the sun's elevation over the ground's normal: the globe's where the ray
 // meets it, mixed toward the target's up as the globe hands over to a
-// flat surface, which takes the target's. Above the horizon is sky,
+// flat surface, which takes the target's. Above the horizon the sky is
+// lit as the target's ground is, so a night view's sky is dark too, while
+// the camera is inside the atmosphere: seen from orbit it is space,
 // unlit. The light is in linear light; in sRGB it multiplies encoded
 // colours by its encoding, which is the same under GL JS's 2.2 gamma.
 @fragment
@@ -71,11 +73,19 @@ fn fs_ground(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let a = atmosphere;
     let px = position.xy / frame.pixel_ratio;
     let ray = atmosphere_ray(a, px, frame.viewport);
-    if atmosphere_horizon(a, px, ray).x > 0.0 {
-        discard;
-    }
+    var amount = a.ground_day.w;
     var normal = a.ground_up.xyz;
-    if a.globe_amount > 0.0 {
+    if atmosphere_horizon(a, px, ray).x > 0.0 {
+        // As the sky itself fades out with altitude (`atmosphere_horizon`).
+        if a.globe_amount > 0.0 {
+            let altitude = length(a.globe_eye.xyz / a.globe_eye.w) - 1.0;
+            let inside = 1.0 - smoothstep(ATMOSPHERE_HEIGHT, 10.0 * ATMOSPHERE_HEIGHT, altitude);
+            amount *= mix(1.0, inside, a.globe_amount);
+        }
+        if amount <= 0.0 {
+            discard;
+        }
+    } else if a.globe_amount > 0.0 {
         let origin = a.globe_eye.xyz / a.globe_eye.w;
         let hit = atmosphere_sphere(origin, ray, 1.0);
         if hit.x <= hit.y {
@@ -83,13 +93,14 @@ fn fs_ground(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
             normal = normalize(mix(normal, sphere, a.globe_amount));
         }
     }
-    let elevation = degrees(asin(clamp(dot(normal, a.ground_sun.xyz), -1.0, 1.0)));
+    // The sine of the sun's elevation, against that of half the twilight.
+    let elevation = dot(normal, a.ground_sun.xyz);
     let half = a.ground_night.w;
     var day = select(0.0, 1.0, elevation >= 0.0);
     if half > 0.0 {
         day = smoothstep(-half, half, elevation);
     }
-    let light = mix(vec3<f32>(1.0), mix(a.ground_night.rgb, a.ground_day.rgb, day), a.ground_day.w);
+    let light = mix(vec3<f32>(1.0), mix(a.ground_night.rgb, a.ground_day.rgb, day), amount);
     if a.linear != 0.0 {
         return vec4<f32>(light, 1.0);
     }

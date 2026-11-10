@@ -237,8 +237,10 @@ impl Atmosphere {
             // In linear light whatever the space: it multiplies light.
             let [dr, dg, db, _] = crate::color_in(g.day, true);
             let [nr, ng, nb, _] = crate::color_in(g.night, true);
+            // The sine of the sun elevation half the twilight away.
+            let half = (g.twilight / 2.0).to_radians().sin();
             b.f(n::GROUND_DAY, &[dr, dg, db, g.amount])
-                .f(n::GROUND_NIGHT, &[nr, ng, nb, g.twilight / 2.0])
+                .f(n::GROUND_NIGHT, &[nr, ng, nb, half])
                 .f(n::GROUND_SUN, &g.sun)
                 .f(n::GROUND_UP, &g.up);
         }

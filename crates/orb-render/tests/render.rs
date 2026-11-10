@@ -1745,7 +1745,8 @@ fn sky_view() -> orb_render::AtmosphereView {
 
 /// `dev.sargunv.orbis:ground-lighting` multiplies the ground below the
 /// horizon by the sun's light or the ambient light, by the sun's
-/// elevation, and leaves the sky above it alone.
+/// elevation, and on a flat surface the sky above it as the target's
+/// ground, so a night view's sky isn't a day's.
 #[test]
 fn ground_lighting_shades_the_ground_by_the_suns_elevation() {
     let mut h = Harness::new();
@@ -1783,9 +1784,9 @@ fn ground_lighting_shades_the_ground_by_the_suns_elevation() {
     // Below the horizon past the twilight: the ambient light, which in
     // sRGB multiplies by its encoding.
     let (sky, night) = draw([0.0, 0.6, -0.8], 1.0);
-    assert_eq!(sky, [0, 0, 255, 255], "the sky stays unlit");
     let expected = 255.0 * 0.25f32.powf(1.0 / 2.2);
     assert!((blue(night) - expected).abs() <= 1.5, "{night:?}");
+    assert_eq!(sky, night, "the sky is lit as the ground");
     // On the horizon: halfway through the twilight.
     let (_, twilight) = draw([0.0, 1.0, 0.0], 1.0);
     let expected = 255.0 * 0.625f32.powf(1.0 / 2.2);

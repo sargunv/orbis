@@ -82,8 +82,9 @@ fn ground_light(
 }
 
 /// A globe view's sphere for its sky and scattering. Its sun is GL JS's,
-/// unless the light shades the ground: then it's the ground's, so that
-/// the haze glows over the day side and the limb beside it.
+/// turned toward the ground's as the light comes to shade the ground, so
+/// that the haze glows over the day side and the limb beside it, and
+/// doesn't jump as ground lighting eases in or out.
 fn globe_sky(
     globe: &orb_camera::GlobeView,
     view: &orb_camera::View,
@@ -91,10 +92,16 @@ fn globe_sky(
     light: &LightValues,
 ) -> orb_render::GlobeSky {
     let eye = globe.target + globe.eye;
-    let sun = if light.ground_lighting > 0.0 {
+    let gl = gl_sun(camera, light);
+    let t = f64::from(light.ground_lighting);
+    let sun = if t <= 0.0 {
+        gl
+    } else if t >= 1.0 {
         toward_light(camera, light)
     } else {
-        gl_sun(camera, light)
+        // Along the arc between them, as the two can stand opposite.
+        let turn = glam::DQuat::from_rotation_arc(gl, toward_light(camera, light));
+        glam::DQuat::IDENTITY.slerp(turn, t) * gl
     };
     orb_render::GlobeSky {
         eye: eye.as_vec3().to_array(),
@@ -211,5 +218,41 @@ mod tests {
         assert_eq!((band[0], band[1]), (0.0, 0.0));
         assert_eq!(band[2..5], [0.25, 0.5, 0.75], "{band:?}");
         assert_eq!((band[5], band[6]), (1.0, 1.0));
+    }
+
+    /// The haze's sun turns from GL JS's toward the ground's as ground
+    /// lighting eases in, rather than jumping as it leaves 0 or reaches 1,
+    /// though at v8's default position the two stand nearly opposite.
+    #[test]
+    fn the_haze_sun_eases_with_ground_lighting() {
+        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let mercator = *tms.projection();
+        let surface = orb_crs::Surface {
+            projection: mercator,
+            globe: Some(orb_crs::Globe::V8),
+        };
+        let viewport = orb_camera::Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        let camera = orb_camera::CameraState::new(Geodetic::new(10.0, 30.0), 1.5, &mercator);
+        let view = orb_camera::View::new(&camera, viewport, &surface);
+        let globe = view.globe().unwrap();
+        let sun = |amount: f32| {
+            let mut light = LightValues::of(&orb_style::v8::default_light(), 0.0);
+            light.ground_lighting = amount;
+            glam::Vec3::from(globe_sky(globe, &view, &camera, &light).sun)
+        };
+        let (gl, ground) = (sun(0.0), sun(1.0));
+        assert!(gl.dot(ground) < -0.5, "{gl} {ground}");
+        let mut last = gl;
+        for i in 1..=100 {
+            let next = sun(i as f32 / 100.0);
+            assert!((next.length() - 1.0).abs() < 1e-4, "{next}");
+            assert!(next.angle_between(last) < 0.05, "{i}: {last} → {next}");
+            last = next;
+        }
+        assert!(sun(1e-4).angle_between(gl) < 1e-3);
+        assert!(sun(1.0 - 1e-4).angle_between(ground) < 1e-3);
     }
 }

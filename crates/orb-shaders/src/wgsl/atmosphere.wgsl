@@ -42,8 +42,8 @@ struct Atmosphere {
     globe_sun: vec4<f32>,
     // Ground lighting (`dev.sargunv.orbis:ground-lighting`), in linear
     // light whatever the colour space: the sun's light and how much the
-    // light shades the ground (0 off), the ambient light and half the
-    // twilight in degrees, toward the sun and the target's up (unit,
+    // light shades the ground (0 off), the ambient light and the sine of
+    // half the twilight, toward the sun and the target's up (unit,
     // camera-relative globe axes, on flat surfaces too).
     ground_day: vec4<f32>,
     ground_night: vec4<f32>,
