@@ -437,12 +437,16 @@ async function scenarioOn(browser, server, thread, backend = "webgpu") {
     elevation: 0,
   });
 
-  // A drag moves the camera, with move events.
+  // A drag moves the camera by as much as the pointer, with move events.
+  // It's held still before release: Playwright's moves come a few ms
+  // apart, so a release glides some hundreds of degrees at zoom 0 and can
+  // wrap the longitude back to where it started.
   await scenario((s) => s.events());
   const before = await scenario((s) => s.map.camera.current.center);
   await page.mouse.move(40, 100);
   await page.mouse.down();
   for (const x of [50, 70, 100, 140]) await page.mouse.move(x, 100);
+  await page.waitForTimeout(150);
   await page.mouse.up();
   const dragged = await scenario(async (s) => {
     await s.idle();
@@ -456,8 +460,9 @@ async function scenarioOn(browser, server, thread, backend = "webgpu") {
     }
     return { center: s.map.camera.current.center, events };
   });
+  // 100 px of a 512 px world.
   assert.ok(
-    Math.abs(dragged.center[0] - before[0]) > 1,
+    Math.abs(dragged.center[0] - before[0] + (100 / 512) * 360) < 0.01,
     `${before} → ${dragged.center}`,
   );
   assert.ok(
