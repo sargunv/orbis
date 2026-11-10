@@ -3,7 +3,7 @@
 //!
 //! - `stills`: one process per still (`orbis render`, `mlnstill`) per view
 //!   of mln-rs's `tools/liberty-compare/views.txt`: wall time, CPU,
-//!   peak RSS, instructions retired (macOS) and requests.
+//!   peak RSS, instructions retired (macOS; Linux with `perf`) and requests.
 //! - `tiles`: one process per pass over `xtask/h2h/tiles.txt`'s 4×4 tile
 //!   blocks (`orbis tiles --list --times`, `mlntiles`), as Still-mode views
 //!   of each tile and in Tile mode: per-set wall and CPU totals.
@@ -673,10 +673,14 @@ impl H2h {
         writeln!(
             out,
             "\nWall: exec to exit; CPU: user + system, and instructions retired, from `/usr/bin/time`{}; requests: what the engine asked the mirror for. Timed runs: {}. Raw rows: {}.",
-            if Path::new(TIME).exists() {
-                ""
-            } else {
+            if !Path::new(TIME).exists() {
                 " (none here, so not measured)"
+            } else if cfg!(target_os = "linux") && perf_counts() {
+                "; instructions in user space, from `perf stat`"
+            } else if cfg!(target_os = "linux") {
+                "; instructions need `perf`, so not measured"
+            } else {
+                ""
             },
             net.answers(),
             csv_path.display()
@@ -1199,13 +1203,23 @@ struct Timed {
 /// What measures a run's CPU and memory, where there is one.
 const TIME: &str = "/usr/bin/time";
 
-/// Runs a command under `/usr/bin/time` (`-l` on macOS, `-v` elsewhere),
-/// failing if it fails. Without one (Windows) only the wall time and what
-/// the engine reports are measured.
+/// Counts a run's user-space instructions on Linux, where GNU time doesn't.
+const PERF: &str = "/usr/bin/perf";
+
+/// Runs a command under `/usr/bin/time` (`-l` on macOS, `-v` elsewhere,
+/// inside `perf stat` on Linux for instructions retired), failing if it
+/// fails. Without one (Windows) only the wall time and what the engine
+/// reports are measured.
 fn timed(command: &[String]) -> Result<Timed, String> {
     let time = Path::new(TIME);
     let mut c = if time.exists() {
-        let mut c = Command::new(time);
+        let mut c = if cfg!(target_os = "linux") && perf_counts() {
+            let mut c = Command::new(PERF);
+            c.args(["stat", "-x,", "-e", "instructions:u", "--", TIME]);
+            c
+        } else {
+            Command::new(time)
+        };
         c.arg(if cfg!(target_os = "macos") {
             "-l"
         } else {
@@ -1253,6 +1267,13 @@ fn timed(command: &[String]) -> Result<Timed, String> {
             t.rss_mb = first().map(|b| b / 1e6);
         } else if line.ends_with("instructions retired") {
             t.ginstr = first().map(|n| n / 1e9);
+        } else if line.split(',').nth(2) == Some("instructions:u") {
+            // `perf stat -x,`: the count, its unit (empty), the event.
+            t.ginstr = line
+                .split(',')
+                .next()
+                .and_then(|n| n.parse::<f64>().ok())
+                .map(|n| n / 1e9);
         } else if line.starts_with("User time (seconds):") {
             user = last();
         } else if line.starts_with("System time (seconds):") {
@@ -1268,6 +1289,25 @@ fn timed(command: &[String]) -> Result<Timed, String> {
     }
     t.cpu_ms = user.zip(sys).map(|(u, s)| (u + s) * 1000.0);
     Ok(t)
+}
+
+/// Whether `perf stat` can count this user's instructions (perf installed,
+/// and `perf_event_paranoid` allowing it).
+fn perf_counts() -> bool {
+    static COUNTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *COUNTS.get_or_init(|| {
+        Command::new(PERF)
+            .args(["stat", "-x,", "-e", "instructions:u", "--", "true"])
+            .output()
+            .is_ok_and(|o| {
+                o.status.success()
+                    && String::from_utf8_lossy(&o.stderr).lines().any(|l| {
+                        l.split(',')
+                            .next()
+                            .is_some_and(|n| n.parse::<u64>().is_ok())
+                    })
+            })
+    })
 }
 
 fn ms(d: Duration) -> f64 {
