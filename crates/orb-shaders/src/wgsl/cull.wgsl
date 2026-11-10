@@ -282,7 +282,10 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
     }
     if lane == 0u {
         let at = index * ARGS_WORDS;
-        let visible = atomicLoad(&extent);
+        // No further than the node's slots: a slot or chunk row gone stale
+        // can't make the draw read past them (indirect calls aren't
+        // validated natively, and billions of indices hang the GPU).
+        let visible = min(atomicLoad(&extent), node.index_count);
         // A node with nothing in view keeps all-zero arguments: an indexed
         // indirect draw of no indices but one instance loses the device on
         // an Adreno 619 (Chrome 156, Vulkan).

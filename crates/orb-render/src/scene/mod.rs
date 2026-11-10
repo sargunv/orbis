@@ -1854,6 +1854,8 @@ impl Scene {
             let mut renumbered = vec![u32::MAX; node_runs.len()];
             let mut used = 0u32;
             for (_, chunk, tile, index_count, run) in candidates {
+                // The cull's copy stops at CHUNK_INDICES.
+                debug_assert!(!indexed || index_count <= orb_layout::CHUNK_INDICES);
                 let room = u64::from(compacted) + u64::from(index_count)
                     <= u64::from(limits.compacted_words);
                 let fits = (rows.len() / CANDIDATE_WORDS) < limit
