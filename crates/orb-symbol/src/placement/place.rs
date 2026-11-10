@@ -12,6 +12,7 @@ use crate::bucket::{
     instance_flags, justification,
 };
 use crate::geometry::{EXTENT, Point};
+use crate::layout::{anchor_justification, justification_slot};
 use crate::placement::collision::{
     BoxPlacement, CollisionBox, CollisionIndex, LineLabel, PlacedBox, Scratch, Viewport,
 };
@@ -588,15 +589,6 @@ pub fn label_circles(
         .collect()
 }
 
-/// GL JS `getAnchorJustification` as a [`justification`] slot.
-fn anchor_slot(anchor: Anchor) -> usize {
-    match anchor {
-        Anchor::Right | Anchor::TopRight | Anchor::BottomRight => justification::RIGHT,
-        Anchor::Left | Anchor::TopLeft | Anchor::BottomLeft => justification::LEFT,
-        _ => justification::CENTER,
-    }
-}
-
 fn collision_box(instance: &SymbolInstance, i: usize, flag: u32) -> Option<CollisionBox> {
     (instance.flags & flag != 0).then(|| {
         let b = instance.boxes[i];
@@ -1042,18 +1034,7 @@ impl<'a> Pass<'a> {
         let text_translation = translation(self.camera, &tile.view, p.text_translate);
         let icon_translation = translation(self.camera, &tile.view, p.icon_translate);
         let mut order: Vec<usize> = if p.z_order_viewport_y {
-            let (sin, cos) = (
-                libm::sin(-self.camera.bearing),
-                libm::cos(-self.camera.bearing),
-            );
-            let mut order: Vec<usize> = (0..t.instances.len()).collect();
-            let key = |i: usize| {
-                let s = &t.instances[i];
-                let y =
-                    (sin * f64::from(s.anchor[0]) + cos * f64::from(s.anchor[1])).round() as i64;
-                (y, std::cmp::Reverse(s.feature))
-            };
-            order.sort_by_key(|&i| key(i));
+            let mut order = viewport_y_order(t, -self.camera.bearing);
             order.reverse();
             order
         } else {
@@ -1535,7 +1516,9 @@ fn bucket_states(
             let auto = match (orientation, offset) {
                 (Some(o), _) if o == vertical => instance.text[justification::VERTICAL],
                 (Some(_), _) => instance.text[justification::LEFT],
-                (None, Some(o)) => instance.text[anchor_slot(o.anchor)],
+                (None, Some(o)) => {
+                    instance.text[justification_slot(anchor_justification(o.anchor))]
+                }
                 (None, None) => NONE,
             };
             auto == NONE || instance.text[slot] == auto
@@ -1635,17 +1618,22 @@ fn bucket_states(
     states
 }
 
-/// GL JS `sortFeatures`: quads in the order of their instances' anchors
-/// rotated by `angle`, top to bottom, ties by feature index descending.
-fn draw_order(t: &PlacementTables, angle: f64) -> (Vec<u32>, Vec<u32>) {
+/// GL JS `getSortedSymbolIndexes`: the instances by their anchors rotated
+/// by `angle`, top to bottom, ties by feature index descending.
+fn viewport_y_order(t: &PlacementTables, angle: f64) -> Vec<usize> {
     let (sin, cos) = (libm::sin(angle), libm::cos(angle));
     let mut order: Vec<usize> = (0..t.instances.len()).collect();
-    let key = |i: usize| {
+    order.sort_by_key(|&i| {
         let s = &t.instances[i];
         let y = (sin * f64::from(s.anchor[0]) + cos * f64::from(s.anchor[1])).round() as i64;
         (y, std::cmp::Reverse(s.feature))
-    };
-    order.sort_by_key(|&i| key(i));
+    });
+    order
+}
+
+/// GL JS `sortFeatures`: quads in their instances' [`viewport_y_order`].
+fn draw_order(t: &PlacementTables, angle: f64) -> (Vec<u32>, Vec<u32>) {
+    let order = viewport_y_order(t, angle);
     let (mut text, mut icon) = (Vec::new(), Vec::new());
     let push = |out: &mut Vec<u32>, placed: &[PlacedSymbol], index: u32| {
         let [start, count] = placed[index as usize].quads;

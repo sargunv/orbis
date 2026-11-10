@@ -16,7 +16,7 @@ mod symbol;
 mod tables;
 #[cfg(cpu_driven)]
 pub(crate) use candidates::NO_CHUNK;
-pub use glyph::{GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
+pub use glyph::{GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
 pub use image::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
 #[cfg(cpu_driven)]
 pub(crate) use tables::data_width;

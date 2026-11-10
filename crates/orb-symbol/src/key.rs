@@ -36,7 +36,7 @@ pub(crate) fn stable_key(source_layer: &str, id: Option<&Value>, text: &str) -> 
     match id {
         None => h.field(1, &[]),
         Some(Value::Str(s)) => h.field(2, s.as_bytes()),
-        Some(Value::Json(s)) => h.field(6, s.as_bytes()),
+        Some(Value::Json(s)) => h.field(8, s.as_bytes()),
         Some(Value::Bool(b)) => h.field(3, &[u8::from(*b)]),
         Some(&Value::I64(v)) => h.field(4, &v.to_le_bytes()),
         // Numbers equal as JavaScript numbers get equal keys.

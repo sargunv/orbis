@@ -29,7 +29,9 @@ pub use glyph::{
     FontId, FontPolicy, FontStack, Glyph, GlyphId, GlyphKey, GlyphMap, GlyphMetrics, GlyphRequest,
     GlyphRequests, LocalFont, Provider, Variant, glyphs_url, provider,
 };
-pub use label::{Content, IMAGE_PADDING, Images, InlineImage, Label, Section, VerticalAlign};
+pub use label::{
+    Content, IMAGE_PADDING, Images, InlineImage, Label, Section, VerticalAlign, js_max, js_min,
+};
 pub use segment::{HostWords, WordBreaker};
 pub use shaping::{
     Anchor, DEFAULT_OFFSET, GlyphSource, Justify, ONE_EM, PositionedGlyph, PositionedLine,

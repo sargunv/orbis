@@ -28,6 +28,7 @@
 //! BSD-3-Clause; copyright and terms in `LICENSE-MapLibre` alongside this module.
 //! Distance follows the pinned shader's two-tile-unit quantization.
 
+use orb_tile::js_round;
 use std::ops::{Add, Mul, Sub};
 
 use glam::DVec2;
@@ -404,12 +405,6 @@ impl JsPoint for Point {
     fn js_round(self) -> Self {
         Point::new(js_round(self.x), js_round(self.y))
     }
-}
-
-// Math.round rounds ties towards +infinity (Rust's round rounds away from 0).
-fn js_round(n: f64) -> f64 {
-    let floor = n.floor();
-    if n - floor < 0.5 { floor } else { floor + 1.0 }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

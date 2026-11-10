@@ -6,7 +6,7 @@ use std::fmt;
 use crate::glyph::{FontStack, Glyph, GlyphKey, GlyphMetrics};
 
 /// The SDF border around a PBF glyph's bitmap (GL JS `GLYPH_PBF_BORDER`).
-pub const BORDER: f64 = 3.0;
+pub const BORDER: f64 = BORDER_PX as f64;
 const BORDER_PX: u32 = 3;
 
 /// One glyph of a range.

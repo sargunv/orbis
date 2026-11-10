@@ -72,29 +72,8 @@ pub(crate) fn degrees_to_radians(degrees: f64) -> f64 {
     degrees * PI / 180.0
 }
 
-/// `Math.round`: the nearest integer, ties toward +∞.
-pub(crate) fn js_round(x: f64) -> f64 {
-    let floor = x.floor();
-    if x - floor >= 0.5 { floor + 1.0 } else { floor }
-}
-
-/// `Math.max` of two numbers: NaN if either is.
-pub(crate) fn js_max(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else {
-        a.max(b)
-    }
-}
-
-/// `Math.min` of two numbers: NaN if either is.
-pub(crate) fn js_min(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else {
-        a.min(b)
-    }
-}
+pub(crate) use orb_text::{js_max, js_min};
+pub(crate) use orb_tile::js_round;
 
 /// ECMAScript `ToInt16`, what storing into an `Int16Array` does.
 pub(crate) fn to_i16(x: f64) -> i16 {

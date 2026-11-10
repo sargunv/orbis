@@ -5,17 +5,17 @@
 //! padded rectangle, never to an atlas.
 
 use orb_text::{
-    DEFAULT_OFFSET, GlyphId, GlyphMap, GlyphSource, ONE_EM, ShapedSection, Shaping, pbf::BORDER,
+    DEFAULT_OFFSET, GlyphId, GlyphMap, GlyphSource, IMAGE_PADDING, ONE_EM, ShapedSection, Shaping,
+    pbf::BORDER,
 };
 
 use crate::geometry::{Point, degrees_to_radians, rotation_matrix};
 use crate::icon::{Box2, PositionedIcon, apply_text_fit};
 use crate::layout::TileImages;
 
-/// GL JS `IMAGE_PADDING`: transparent texels around every image.
-const IMAGE_PADDING: f64 = 1.0;
-/// GL JS's glyph atlas `padding`: texels around every glyph bitmap.
-pub(crate) const GLYPH_PADDING: u32 = 1;
+/// GL JS's glyph atlas `padding`: texels around every glyph bitmap, as
+/// the renderer's glyph atlas pads them.
+pub const GLYPH_PADDING: u32 = 1;
 
 /// What a quad samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

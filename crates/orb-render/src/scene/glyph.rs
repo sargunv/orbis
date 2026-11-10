@@ -14,7 +14,7 @@ use crate::scene::{OutOfSpace, PageTexture, TableWriter, TilePage};
 /// Texels on a side of a glyph page.
 pub const GLYPH_PAGE: u32 = 512;
 /// Transparent texels around every bitmap, as GL JS's glyph atlas pads.
-pub(crate) const GLYPH_PADDING: u32 = 1;
+pub const GLYPH_PADDING: u32 = 1;
 /// One more transparent texel around the padded rectangle: glyph quads
 /// cover their padding, so filtering at their edge reaches one texel past
 /// it, which must not be whichever glyph was packed next to it.

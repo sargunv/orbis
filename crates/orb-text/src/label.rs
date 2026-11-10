@@ -571,14 +571,28 @@ fn evaluate_break(
     }
 }
 
-/// JavaScript's `Math.max` for two numbers: NaN if either is.
-pub(crate) fn js_max(a: f64, b: f64) -> f64 {
+/// JavaScript's `Math.max` of two numbers: NaN if either is, and +0 over
+/// -0 (Rust's `max` returns the other for NaN and either zero), for the
+/// ports of GL JS that compute what it computes.
+pub fn js_max(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
-    } else if b > a {
-        b
-    } else {
+    } else if a > b || (a == b && b.is_sign_negative()) {
         a
+    } else {
+        b
+    }
+}
+
+/// JavaScript's `Math.min` of two numbers: NaN if either is, and -0 under
+/// +0.
+pub fn js_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a < b || (a == b && a.is_sign_negative()) {
+        a
+    } else {
+        b
     }
 }
 

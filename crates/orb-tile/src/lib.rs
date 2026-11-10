@@ -29,6 +29,14 @@ pub use geometry::{FeatureGeometry, GeometryType, Part};
 pub use overzoom::Ancestor;
 pub use subdivide::grid_crossings;
 
+/// JavaScript's `Math.round`: the nearest integer, ties toward +∞ (Rust's
+/// `round` takes them away from 0), for the ports of GL JS that compute
+/// what it computes.
+pub fn js_round(x: f64) -> f64 {
+    let floor = x.floor();
+    if x - floor >= 0.5 { floor + 1.0 } else { floor }
+}
+
 #[cfg(test)]
 mod tests;
 

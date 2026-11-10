@@ -661,7 +661,8 @@ impl Shapings {
     }
 }
 
-fn anchor_justification(anchor: Anchor) -> Justify {
+/// GL JS `getAnchorJustification`.
+pub(crate) fn anchor_justification(anchor: Anchor) -> Justify {
     match anchor {
         Anchor::Right | Anchor::TopRight | Anchor::BottomRight => Justify::Right,
         Anchor::Left | Anchor::TopLeft | Anchor::BottomLeft => Justify::Left,
@@ -669,7 +670,7 @@ fn anchor_justification(anchor: Anchor) -> Justify {
     }
 }
 
-fn justification_slot(justify: Justify) -> usize {
+pub(crate) fn justification_slot(justify: Justify) -> usize {
     match justify {
         Justify::Right => justification::RIGHT,
         Justify::Center => justification::CENTER,

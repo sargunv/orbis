@@ -3,6 +3,7 @@
 //! `cluster: true`: a tree of points per zoom, each zoom's points merged
 //! within `radius` into clusters of the next zoom down.
 
+use crate::js_round;
 use std::sync::Arc;
 
 use super::kdbush::KdBush;
@@ -114,11 +115,6 @@ fn position(feature: &Feature) -> Option<[f64; 2]> {
         Some(Geometry::Points(points)) if points.len() == 1 => Some(points[0]),
         _ => None,
     }
-}
-
-/// JavaScript's `Math.round`: halves go up.
-fn js_round(v: f64) -> f64 {
-    (v + 0.5).floor()
 }
 
 impl Clusters {

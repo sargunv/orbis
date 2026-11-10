@@ -25,6 +25,9 @@ use crate::style::StylePlan;
 use crate::symbol::{ResultSymbols, SymbolTable};
 use crate::{GlyphBitmap, GlyphRaster, Jobs};
 
+// Layout sizes glyph quads by the padding the atlas packs glyphs with.
+const _: () = assert!(orb_symbol::GLYPH_PADDING == orb_render::GLYPH_PADDING);
+
 /// Buckets dropped since the last frame, with the glyph rows they held.
 type Retired = Arc<Mutex<Vec<(u64, Vec<u32>)>>>;
 
