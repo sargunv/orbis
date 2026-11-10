@@ -351,6 +351,7 @@ fn layer_params(
                 .get(orb_style::ICON_IGNORE_PLACEMENT)
                 .evaluate_camera(zoom, camera),
         },
+        own_flags: own_symbol_flags(symbol),
         rotate_with_map: text_rotates_with_map(symbol, zoom),
         pitch_with_map: text_pitches_with_map(symbol, zoom),
         icon_text_fit: l.get(orb_style::ICON_TEXT_FIT).evaluate(zoom)
@@ -406,16 +407,37 @@ fn draws_by_viewport_y(symbol: &orb_style::Layer, zoom: f64) -> bool {
     by_y && can_overlap
 }
 
-/// Whether the layer reads any overlap, optional or ignore-placement
-/// setting per feature, beyond the spec: each symbol then collides by its
-/// own ([`orb_symbol::SymbolFlags::of`]).
-pub(crate) fn own_symbol_flags(symbol: &orb_style::Layer) -> bool {
-    symbol_flag_values(symbol).any(|e| {
-        matches!(
-            e.kind(),
-            orb_style::Kind::Source | orb_style::Kind::Composite
-        )
-    })
+/// The overlap, optional and ignore-placement settings the layer reads
+/// per feature, beyond the spec, as [`orb_symbol::LayerParams::own_flags`]:
+/// each symbol collides by its own of those, and by the layer's (which
+/// may follow the camera) for the rest.
+pub(crate) fn own_symbol_flags(symbol: &orb_style::Layer) -> u8 {
+    use orb_style::{
+        ICON_ALLOW_OVERLAP, ICON_IGNORE_PLACEMENT, ICON_OPTIONAL, ICON_OVERLAP, TEXT_ALLOW_OVERLAP,
+        TEXT_IGNORE_PLACEMENT, TEXT_OPTIONAL, TEXT_OVERLAP,
+    };
+    use orb_symbol::SymbolFlags as F;
+    let per_feature = |kind| matches!(kind, orb_style::Kind::Source | orb_style::Kind::Composite);
+    let flag = |key: orb_style::Key<bool>| per_feature(symbol.get(key).kind());
+    let overlap =
+        |key: orb_style::Key<Option<orb_style::Overlap>>| per_feature(symbol.get(key).kind());
+    [
+        (
+            overlap(TEXT_OVERLAP) || flag(TEXT_ALLOW_OVERLAP),
+            F::TEXT_OVERLAP,
+        ),
+        (
+            overlap(ICON_OVERLAP) || flag(ICON_ALLOW_OVERLAP),
+            F::ICON_OVERLAP,
+        ),
+        (flag(TEXT_OPTIONAL), F::TEXT_OPTIONAL),
+        (flag(ICON_OPTIONAL), F::ICON_OPTIONAL),
+        (flag(TEXT_IGNORE_PLACEMENT), F::TEXT_IGNORE_PLACEMENT),
+        (flag(ICON_IGNORE_PLACEMENT), F::ICON_IGNORE_PLACEMENT),
+    ]
+    .into_iter()
+    .filter(|&(own, _)| own)
+    .fold(0, |mask, (_, bit)| mask | bit)
 }
 
 /// The expressions of the layer's overlap, optional and ignore-placement

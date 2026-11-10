@@ -55,8 +55,12 @@ pub struct LayerParams {
     pub minzoom: f64,
     pub maxzoom: f64,
     /// The overlap, optional and ignore-placement settings; a symbol's
-    /// own where its feature gives them ([`SymbolFlags::of`]).
+    /// own where its feature gives them ([`LayerParams::flags_of`]).
     pub flags: SymbolFlags,
+    /// Which of `flags` each symbol carries its own of, read per feature
+    /// beyond the spec ([`SymbolFlags::TEXT_OVERLAP`] and the rest); the
+    /// others are the layer's, which may follow the camera.
+    pub own_flags: u8,
     /// `text-rotation-alignment: map` (after `auto`).
     pub rotate_with_map: bool,
     /// `text-pitch-alignment: map` (after `auto`).
@@ -98,25 +102,51 @@ impl SymbolFlags {
     /// [`instance_flags::OWN_PLACEMENT`] and the bits after it hold them.
     const SHIFT: u32 = 9;
 
-    /// The instance's own, where its feature gives them (beyond the spec:
-    /// GL JS and Native read them per layer), else these.
-    pub fn of(self, instance: &SymbolInstance) -> Self {
-        if instance.flags & instance_flags::OWN_PLACEMENT == 0 {
+    /// `text-overlap` (after `text-allow-overlap`), as a bit of
+    /// [`LayerParams::own_flags`]; the rest likewise.
+    pub const TEXT_OVERLAP: u8 = 1;
+    pub const ICON_OVERLAP: u8 = 2;
+    pub const TEXT_OPTIONAL: u8 = 4;
+    pub const ICON_OPTIONAL: u8 = 8;
+    pub const TEXT_IGNORE_PLACEMENT: u8 = 16;
+    pub const ICON_IGNORE_PLACEMENT: u8 = 32;
+
+    /// These, but for those of `own` the instance's, where its feature
+    /// gives them (beyond the spec: GL JS and Native read them per layer).
+    fn of(self, own: u8, instance: &SymbolInstance) -> Self {
+        if own == 0 || instance.flags & instance_flags::OWN_PLACEMENT == 0 {
             return self;
         }
         let bits = instance.flags >> Self::SHIFT;
-        let overlap = |b: u32| match b & 3 {
-            1 => Overlap::Always,
-            2 => Overlap::Cooperative,
-            _ => Overlap::Never,
+        let mine = |flag: u8| own & flag != 0;
+        let overlap = |flag: u8, b: u32, layer: Overlap| {
+            if !mine(flag) {
+                return layer;
+            }
+            match b & 3 {
+                1 => Overlap::Always,
+                2 => Overlap::Cooperative,
+                _ => Overlap::Never,
+            }
+        };
+        let flag = |flag: u8, bit: u32, layer: bool| {
+            if mine(flag) { bits & bit != 0 } else { layer }
         };
         Self {
-            text_overlap: overlap(bits),
-            icon_overlap: overlap(bits >> 2),
-            text_optional: bits & 16 != 0,
-            icon_optional: bits & 32 != 0,
-            text_ignore_placement: bits & 64 != 0,
-            icon_ignore_placement: bits & 128 != 0,
+            text_overlap: overlap(Self::TEXT_OVERLAP, bits, self.text_overlap),
+            icon_overlap: overlap(Self::ICON_OVERLAP, bits >> 2, self.icon_overlap),
+            text_optional: flag(Self::TEXT_OPTIONAL, 16, self.text_optional),
+            icon_optional: flag(Self::ICON_OPTIONAL, 32, self.icon_optional),
+            text_ignore_placement: flag(
+                Self::TEXT_IGNORE_PLACEMENT,
+                64,
+                self.text_ignore_placement,
+            ),
+            icon_ignore_placement: flag(
+                Self::ICON_IGNORE_PLACEMENT,
+                128,
+                self.icon_ignore_placement,
+            ),
         }
     }
 
@@ -145,6 +175,14 @@ impl SymbolFlags {
             text && (icon || !has_icon || self.icon_optional),
             icon && (text || !has_text || self.text_optional),
         )
+    }
+}
+
+impl LayerParams {
+    /// A symbol's overlap, optional and ignore-placement settings: its own
+    /// of those the layer reads per feature, the layer's for the rest.
+    pub fn flags_of(&self, instance: &SymbolInstance) -> SymbolFlags {
+        self.flags.of(self.own_flags, instance)
     }
 }
 
@@ -982,7 +1020,7 @@ impl<'a> Pass<'a> {
             if seen.contains(&id) {
                 continue;
             }
-            let f = p.flags.of(instance);
+            let f = p.flags_of(instance);
             let (always_text, always_icon) = f.always(has_text_data, has_icon_data);
             // Tile scope: a tile places the labels anchored in it.
             if self.record.is_some() && !self.index.in_view(&tile.view, instance.anchor) {
@@ -1271,7 +1309,7 @@ impl<'a> Pass<'a> {
         orientation: SymbolWritingMode,
         shift_out: &mut Option<Point>,
     ) -> Option<PlacedBox> {
-        let f = p.flags.of(instance);
+        let f = p.flags_of(instance);
         let width = text_box.x2 - text_box.x1;
         let height = text_box.y2 - text_box.y1;
         let scale = f64::from(instance.text_box_scale);
@@ -1434,7 +1472,7 @@ fn bucket_states(
             duplicate
         } else {
             *now.opacities.entry(id).or_insert_with(|| {
-                let (text, icon) = params.flags.of(instance).always(has.0, has.1);
+                let (text, icon) = params.flags_of(instance).always(has.0, has.1);
                 JointOpacity::new(None, 0.0, text, icon, true)
             })
         };
@@ -1639,6 +1677,7 @@ mod tests {
             minzoom: 0.0,
             maxzoom: 0.0,
             flags: SymbolFlags::default(),
+            own_flags: 0,
             rotate_with_map: false,
             pitch_with_map: false,
             icon_text_fit: false,

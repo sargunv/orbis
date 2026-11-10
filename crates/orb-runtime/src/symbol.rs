@@ -341,7 +341,9 @@ pub(crate) fn prepare(
         .bind(layer)
         .with_tile(tile);
     // GL JS reads these per layer; Orbis per feature, beyond the spec.
-    let own_flags = crate::labels::own_symbol_flags(l).then(|| {
+    // Placement takes each symbol's own only of those read per feature,
+    // and follows the camera for the rest.
+    let own_flags = (crate::labels::own_symbol_flags(l) != 0).then(|| {
         let flag = |key| l.get(key).bind(layer).with_tile(tile);
         let overlap = |key| l.get(key).bind(layer).with_tile(tile);
         (

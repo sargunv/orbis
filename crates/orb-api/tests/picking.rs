@@ -280,7 +280,8 @@ fn labels_take_their_own_overlap_and_line_height() {
 
 /// Beyond the spec, overlap follows the camera at each placement: two
 /// colliding labels both show once the map tilts past 30°, and one hides
-/// again when it levels, as a fresh map at each camera places them.
+/// again when it levels, as a fresh map at each camera places them. It
+/// does so too where the layer reads another setting per feature.
 #[test]
 fn label_overlap_follows_the_camera() {
     let points = [(1, -1.0, 0.0), (2, 1.0, 0.0)];
@@ -293,8 +294,6 @@ fn label_overlap_follows_the_camera() {
             .collect::<std::collections::BTreeSet<_>>()
             .len()
     };
-    let (mut map, mut target) = labels(&points, tilted);
-    assert_eq!(shown(&mut map), 1, "level, one hides the other");
     let tilt = |map: &mut Map, target: &mut Target, pitch: f64| {
         map.jump_to(&orb_api::CameraTarget {
             pitch: Some(pitch),
@@ -302,8 +301,13 @@ fn label_overlap_follows_the_camera() {
         });
         settle(map, target);
     };
-    tilt(&mut map, &mut target, 45.0);
-    assert_eq!(shown(&mut map), 2, "tilted, both show");
-    tilt(&mut map, &mut target, 0.0);
-    assert_eq!(shown(&mut map), 1, "level again");
+    let per_feature = format!(r#"{tilted}, "text-optional": ["==", ["get", "k"], 2]"#);
+    for layout in [tilted, &per_feature] {
+        let (mut map, mut target) = labels(&points, layout);
+        assert_eq!(shown(&mut map), 1, "level, one hides the other: {layout}");
+        tilt(&mut map, &mut target, 45.0);
+        assert_eq!(shown(&mut map), 2, "tilted, both show: {layout}");
+        tilt(&mut map, &mut target, 0.0);
+        assert_eq!(shown(&mut map), 1, "level again: {layout}");
+    }
 }
