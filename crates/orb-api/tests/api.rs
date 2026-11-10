@@ -2,6 +2,8 @@
 //! frame, a query, an edit, a style image, camera moves, a gesture and
 //! idle, into a texture target.
 
+mod common;
+
 use std::time::Duration;
 
 use orb_api::{
@@ -57,8 +59,7 @@ fn commands(json: &str) -> Transaction {
 
 /// Draws until the map is idle, and returns the events.
 fn settle(map: &mut Map, target: &mut Target) -> Vec<Event> {
-    map.render_until_idle(target, Duration::from_secs(30))
-        .expect("the map idles");
+    common::settle(map, target);
     std::iter::from_fn(|| map.poll_event()).collect()
 }
 

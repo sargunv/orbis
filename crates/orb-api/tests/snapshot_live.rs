@@ -1,33 +1,14 @@
 //! A snapshot leaves the live map as it was: hit tests and rendered
 //! queries answer for the live view, and its labels stay placed.
 
-use std::path::PathBuf;
+mod common;
+
 use std::time::{Duration, Instant};
 
 use glam::DVec2;
 use orb_api::{
     CameraState, Event, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target, TileMatrixSet,
 };
-
-fn tokyo() -> String {
-    let data = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/demo/data")
-        .canonicalize()
-        .unwrap();
-    std::fs::read_to_string(data.join("tokyo-mvt.json"))
-        .unwrap()
-        .replace(
-            "pmtiles://./",
-            &format!("pmtiles://file://{}/", data.display()),
-        )
-        .replace("\"./", &format!("\"file://{}/", data.display()))
-}
-
-/// Draws until the map is idle.
-fn settle(map: &mut Map, target: &mut Target) {
-    map.render_until_idle(target, Duration::from_secs(30))
-        .expect("the map idles");
-}
 
 fn query(map: &mut Map, at: DVec2) -> String {
     let id = map.query_rendered(at, at);
@@ -61,9 +42,9 @@ fn snapshots_leave_the_live_view_as_it_was() {
             ..MapOptions::default()
         },
     );
-    map.set_style_json(&tokyo()).unwrap();
+    map.load_style_url(&common::tokyo_url());
     let mut target = Target::texture(&runtime, 400, 300, 1.0);
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     while map.poll_event().is_some() {}
     let points: Vec<DVec2> = (0..12)
         .flat_map(|i| {
@@ -92,7 +73,7 @@ fn snapshots_leave_the_live_view_as_it_was() {
     assert_eq!(hits(&map), before, "hit tests after the snapshot");
     assert_eq!(query(&mut map, DVec2::new(200.0, 150.0)), features);
 
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let after = target.read_pixels().unwrap();
     let differing = pixels
         .chunks(4)

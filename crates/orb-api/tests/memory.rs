@@ -1,23 +1,10 @@
 //! The GPU memory a map holds follows what it draws.
 
-use std::path::PathBuf;
+mod common;
+
 use std::time::Duration;
 
 use orb_api::{CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target};
-
-fn tokyo() -> String {
-    let data = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/demo/data")
-        .canonicalize()
-        .unwrap();
-    std::fs::read_to_string(data.join("tokyo-mvt.json"))
-        .unwrap()
-        .replace(
-            "pmtiles://./",
-            &format!("pmtiles://file://{}/", data.display()),
-        )
-        .replace("\"./", &format!("\"file://{}/", data.display()))
-}
 
 /// The demo's Tokyo extract draws on a few tens of megabytes: pools and
 /// tables start small and grow as the tiles in view need, and the image
@@ -27,7 +14,7 @@ fn tokyo_takes_what_it_draws() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, 1024, 768, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
-    map.set_style_json(&tokyo()).unwrap();
+    map.load_style_url(&common::tokyo_url());
     for (zoom, pitch) in [(12.0, 0.0), (15.0, 0.0), (16.0, 60.0)] {
         map.jump_to(&CameraTarget {
             center: Some(Geodetic::new(139.74, 35.685)),
@@ -58,7 +45,7 @@ fn dropped_maps_leave_nothing_behind() {
     let live: Vec<usize> = (0..20)
         .map(|_| {
             let mut map = Map::new(&runtime, MapOptions::default());
-            map.set_style_json(&tokyo()).unwrap();
+            map.load_style_url(&common::tokyo_url());
             map.jump_to(&CameraTarget {
                 center: Some(Geodetic::new(139.74, 35.685)),
                 zoom: Some(15.0),

@@ -1,15 +1,10 @@
 //! Hits land where features draw: picking projects as the renderer does,
 //! on the globe too.
 
-use std::time::Duration;
+mod common;
 
 use glam::DVec2;
 use orb_api::{Map, MapOptions, Runtime, RuntimeOptions, Target};
-
-fn settle(map: &mut Map, target: &mut Target) {
-    map.render_until_idle(target, Duration::from_secs(30))
-        .expect("the map idles");
-}
 
 /// The centre of the red pixels.
 fn red_centre(target: &Target) -> DVec2 {
@@ -40,7 +35,7 @@ fn hits_land_where_features_draw_on_the_globe() {
     let mut target = Target::texture(&runtime, 400, 300, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(style).unwrap();
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let drawn = red_centre(&target);
     let hit = map.hit_test(drawn).expect("the circle where it draws");
     assert_eq!((hit.layer.as_str(), hit.id.as_deref()), ("c", Some("3")));
@@ -103,7 +98,7 @@ fn hits_land_where_features_draw_on_terrain() {
     let mut target = Target::texture(&runtime, 400, 300, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let drawn = red_centre(&target);
     let hit = map
         .hit_test(drawn)
@@ -114,10 +109,7 @@ fn hits_land_where_features_draw_on_terrain() {
 
 #[test]
 fn labels_pick_where_their_variable_anchor_puts_them() {
-    let glyphs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/demo/data/glyphs")
-        .canonicalize()
-        .unwrap();
+    let glyphs = common::data().join("glyphs");
     let style = format!(
         r##"{{"version": 8, "center": [0, 0], "zoom": 3,
         "glyphs": "file://{}/{{fontstack}}/{{range}}.pbf",
@@ -134,7 +126,7 @@ fn labels_pick_where_their_variable_anchor_puts_them() {
     let mut target = Target::texture(&runtime, 400, 300, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     // Anchored on its left, the text runs east of the point (200, 150):
     // well past half its width.
     let hit = map
@@ -164,7 +156,7 @@ fn buildings_pick_wherever_they_draw() {
     let mut target = Target::texture(&runtime, 300, 300, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(style).unwrap();
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let pixels = target.read_pixels().unwrap();
     let (mut drawn, mut missed) = (0, 0);
     for (i, p) in pixels.chunks(4).enumerate() {
@@ -187,10 +179,7 @@ fn buildings_pick_wherever_they_draw() {
 
 /// A symbol layer of points `[id, lon, lat]` with `layout`, 20 px labels from the demo's glyphs, drawn into a 400 × 300 map at zoom 3.
 fn labels(points: &[(u32, f64, f64)], layout: &str) -> (Map, Target) {
-    let glyphs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/demo/data/glyphs")
-        .canonicalize()
-        .unwrap();
+    let glyphs = common::data().join("glyphs");
     let features: Vec<String> = points
         .iter()
         .map(|(id, lon, lat)| {
@@ -215,7 +204,7 @@ fn labels(points: &[(u32, f64, f64)], layout: &str) -> (Map, Target) {
     let mut target = Target::texture(&runtime, 400, 300, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     (map, target)
 }
 
@@ -299,7 +288,7 @@ fn label_overlap_follows_the_camera() {
             pitch: Some(pitch),
             ..orb_api::CameraTarget::default()
         });
-        settle(map, target);
+        common::settle(map, target);
     };
     let per_feature = format!(r#"{tilted}, "text-optional": ["==", ["get", "k"], 2]"#);
     for layout in [tilted, &per_feature] {

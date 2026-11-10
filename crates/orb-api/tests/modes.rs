@@ -1,31 +1,12 @@
 //! Still and Tile output: the same inputs draw the same bytes,
 //! and tiles drawn apart agree on the labels across their edges.
 
-use std::path::PathBuf;
+mod common;
 
 use orb_api::{
     CameraState, CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, TileMatrixSet,
     TileRequest,
 };
-
-fn data() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/demo/data")
-        .canonicalize()
-        .unwrap()
-}
-
-/// The demo's Tokyo extract with Liberty's labels.
-fn tokyo() -> String {
-    let data = data();
-    std::fs::read_to_string(data.join("tokyo-mvt.json"))
-        .unwrap()
-        .replace(
-            "pmtiles://./",
-            &format!("pmtiles://file://{}/", data.display()),
-        )
-        .replace("\"./", &format!("\"file://{}/", data.display()))
-}
 
 /// A label's text and anchor (longitude, latitude).
 type Anchor = (String, f64, f64);
@@ -67,7 +48,7 @@ fn crowd() -> (String, Vec<Anchor>) {
               {{"id":"names","type":"symbol","source":"crowd",
                 "layout":{{"text-field":["get","name"],"text-font":["Noto Sans Regular"],"text-size":14}}}}
             ]}}"#,
-        data().display(),
+        common::data().display(),
         features.join(",")
     );
     (style, anchors)
@@ -113,7 +94,7 @@ fn still_output_repeats_byte_for_byte() {
             ..MapOptions::default()
         },
     );
-    map.set_style_json(&tokyo()).unwrap();
+    map.load_style_url(&common::tokyo_url());
     let first = still(&mut map);
     // Elsewhere and back: what was placed there doesn't carry over.
     for (center, zoom) in [(Geodetic::new(139.75, 35.69), 13.5), (station, 15.0)] {
@@ -131,7 +112,7 @@ fn still_output_repeats_byte_for_byte() {
 fn tiles_repeat_byte_for_byte() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());
-    map.set_style_json(&tokyo()).unwrap();
+    map.load_style_url(&common::tokyo_url());
     let center = tile_at(Geodetic::new(139.755, 35.686), 15);
     let first = render_tile(&mut map, 15, center.col, center.row);
     // A neighbour between: what was placed there doesn't carry over.
@@ -151,11 +132,11 @@ fn a_tile_drawn_after_its_neighbour_matches_a_fresh_one() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let center = tile_at(Geodetic::new(139.755, 35.686), 15);
     let mut fresh = Map::new(&runtime, MapOptions::default());
-    fresh.set_style_json(&tokyo()).unwrap();
+    fresh.load_style_url(&common::tokyo_url());
     let first = render_tile(&mut fresh, 15, center.col, center.row);
     let beside_whole = render_tile(&mut fresh, 15, center.col - 1, center.row);
     let mut map = Map::new(&runtime, MapOptions::default());
-    map.set_style_json(&tokyo()).unwrap();
+    map.load_style_url(&common::tokyo_url());
     assert!(
         render_tile(&mut map, 15, center.col - 1, center.row) == beside_whole,
         "a tile beside a neighbour laid out whole differs from one beside a neighbour's edges"

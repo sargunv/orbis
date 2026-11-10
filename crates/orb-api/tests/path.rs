@@ -4,6 +4,8 @@
 //! other zooms, rows, cull state, warps, paint written for other zooms)
 //! may show.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,25 +16,10 @@ use orb_api::{
 const WIDTH: u32 = 512;
 const HEIGHT: u32 = 384;
 
-fn data() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/demo/data")
-        .canonicalize()
-        .unwrap()
-}
-
 /// The demo's Tokyo extract, with `extra` spliced into the document's top
 /// level (a projection, a terrain) and `sources` into its sources.
 fn tokyo(extra: &str, sources: &str) -> String {
-    let data = data();
-    let style = std::fs::read_to_string(data.join("tokyo-mvt.json"))
-        .unwrap()
-        .replace(
-            "pmtiles://./",
-            &format!("pmtiles://file://{}/", data.display()),
-        )
-        .replace("\"./", &format!("\"file://{}/", data.display()));
-    let style = style.replacen('{', &format!("{{{extra}"), 1);
+    let style = common::tokyo_json().replacen('{', &format!("{{{extra}"), 1);
     style.replacen("\"sources\": {", &format!("\"sources\": {{{sources}"), 1)
 }
 
@@ -95,12 +82,6 @@ fn camera((center, zoom, bearing, pitch): At) -> CameraTarget {
     }
 }
 
-/// Draws until loaded and idle.
-fn settle(map: &mut Map, target: &mut Target) {
-    map.render_until_idle(target, Duration::from_secs(60))
-        .expect("the map idles");
-}
-
 /// What a live map draws at `end` once loaded and faded to idle, after
 /// moving there frame by frame from `start` (a gesture: one frame per
 /// step, nothing waits for data), and what a fresh map draws at rest at
@@ -114,7 +95,7 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
     moved.set_constraints(steep());
     moved.set_style_json(style).unwrap();
     moved.jump_to(&camera(start));
-    settle(&mut moved, &mut target);
+    common::settle(&mut moved, &mut target);
     let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
     for step in 1..=steps {
         let t = f64::from(step) / f64::from(steps);
@@ -128,7 +109,7 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
         moved.render(&mut target, 0.0).unwrap();
         std::thread::sleep(Duration::from_millis(8));
     }
-    settle(&mut moved, &mut target);
+    common::settle(&mut moved, &mut target);
     let gestured = target.read_pixels().unwrap();
     let rest = moved.camera();
     drop(moved);
@@ -153,7 +134,7 @@ fn fresh_at(
     fresh.set_constraints(steep());
     fresh.set_style_json(style).unwrap();
     fresh.jump_to(&camera(at));
-    settle(&mut fresh, target);
+    common::settle(&mut fresh, target);
     (target.read_pixels().unwrap(), fresh.camera())
 }
 
@@ -296,14 +277,14 @@ fn panning_frame_by_frame_draws_what_a_fresh_map_does() {
         (center, 15.0, 0.0, 0.0)
     };
     map.jump_to(&camera(at(0)));
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     for stop in 1..=6 {
         for f in (stop - 1) * 20 + 1..=stop * 20 {
             map.jump_to(&camera(at(f)));
             map.render(&mut target, 0.0).unwrap();
             std::thread::sleep(Duration::from_millis(8));
         }
-        settle(&mut map, &mut target);
+        common::settle(&mut map, &mut target);
         let panned = target.read_pixels().unwrap();
         let rest = map.camera();
         let (fresh, fresh_rest) = fresh_at(&runtime, &mut target, &style, at(stop * 20));
@@ -341,7 +322,7 @@ fn a_globe_gesture_draws_what_a_fresh_globe_does() {
 /// have is drawn once, by zoom 11's tile, at full.
 #[test]
 fn held_labels_stay_put_as_the_globe_comes_in() {
-    let data = data();
+    let data = common::data();
     let (lon, lat) = (STATION.lon, STATION.lat);
     let style = |filter: &str| {
         format!(
@@ -384,13 +365,13 @@ fn held_labels_stay_put_as_the_globe_comes_in() {
         map.set_style_json(style).unwrap();
         map.jump_to(&camera(at(11.4)));
         map.render(target, now()).unwrap();
-        settle(&mut map, target);
+        common::settle(&mut map, target);
         map
     };
     let only_12 = r#"["any", ["!=", ["get", "name"], "Held"], [">=", ["zoom"], 12]]"#;
     let mut moved = map(&mut target, &style(only_12));
     moved.jump_to(&camera(at(12.05)));
-    settle(&mut moved, &mut target);
+    common::settle(&mut moved, &mut target);
     for step in 1..=12 {
         let zoom = 12.05 - 0.65 * f64::from(step) / 12.0;
         moved.jump_to(&camera(at(zoom)));
@@ -504,7 +485,7 @@ fn lifted_content_covers_what_a_fresh_globe_does() {
                               "text-allow-overlap": true, "text-ignore-placement": true}},
                   "paint": {{"text-color": "#c00", "text-halo-color": "#fff",
                              "text-halo-width": 2}}}}]}}"##,
-        data = data().display(),
+        data = common::data().display(),
         points = features(0),
         towers = features(1),
     );
@@ -653,7 +634,7 @@ fn a_draped_line_is_as_wide_as_a_flat_one() {
             let mut map = Map::new(&runtime, options());
             map.set_style_json(&style).unwrap();
             map.jump_to(&camera((Geodetic::new(lon, lat), zoom, 0.0, 0.0)));
-            settle(&mut map, &mut target);
+            common::settle(&mut map, &mut target);
             width(&target.read_pixels().unwrap())
         })
     };
@@ -705,7 +686,7 @@ fn a_draped_translate_reaches_as_far_as_the_camera_s_pixels() {
     let mut map = Map::new(&runtime, options());
     map.set_style_json(&style).unwrap();
     map.jump_to(&camera((Geodetic::new(lon, lat), 12.3, 0.0, 60.0)));
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let pixels = target.read_pixels().unwrap();
     let red = |x: u32, y: u32| {
         let p = &pixels[((y * WIDTH + x) * 4) as usize..][..4];
@@ -809,7 +790,7 @@ fn a_resized_terrain_map_draws_its_next_frame() {
     let mut map = Map::new(&runtime, options());
     map.set_style_json(&style).unwrap();
     map.jump_to(&camera((STATION, 15.0, 20.0, 50.0)));
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     for (width, height) in [
         (WIDTH + 96, HEIGHT - 64),
         (WIDTH / 2, HEIGHT),
@@ -1105,7 +1086,7 @@ fn an_alpine_view_at_rest_redoes_nothing() {
     let mut map = Map::new(&runtime, options());
     map.set_style_json(&alps).unwrap();
     map.jump_to(&camera((Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0)));
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     for frame in 1..=4 {
         let report = map.render(&mut target, 0.0).unwrap().unwrap();
         assert!(report.idle, "frame {frame}");
@@ -1135,7 +1116,7 @@ fn every_terrain_view_fits_the_drape_atlas() {
         let mut map = Map::new(&runtime, options());
         map.set_style_json(&alps).unwrap();
         map.jump_to(&camera(at));
-        settle(&mut map, &mut target);
+        common::settle(&mut map, &mut target);
         let warnings: Vec<String> = std::iter::from_fn(|| map.poll_event())
             .filter_map(|event| match event {
                 orb_api::Event::Map(orb_api::MapEvent::Warning { message }) => Some(message),
@@ -1160,7 +1141,7 @@ fn every_terrain_view_fits_the_drape_atlas() {
 #[test]
 #[ignore = "fetches tiles over the network"]
 fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
-    let data = data();
+    let data = common::data();
     let style = std::fs::read_to_string(data.join("alps.json")).unwrap();
     let hide = orb_api::Transaction::from_commands(
         r#"[["setLayoutProperty", "peaks", "visibility", "none"],
@@ -1174,12 +1155,12 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
     moved.set_style_json(&style).unwrap();
     moved.edit(&hide).unwrap();
     moved.jump_to(&camera(at(-72.0)));
-    settle(&mut moved, &mut target);
+    common::settle(&mut moved, &mut target);
     // Load what the arrival shows, then turn back without waiting.
     moved.jump_to(&camera(at(-32.0)));
-    settle(&mut moved, &mut target);
+    common::settle(&mut moved, &mut target);
     moved.jump_to(&camera(at(-72.0)));
-    settle(&mut moved, &mut target);
+    common::settle(&mut moved, &mut target);
     for step in 1..10 {
         moved.jump_to(&camera(at(-72.0 + 4.0 * f64::from(step))));
         moved.render(&mut target, 0.0).unwrap();
@@ -1203,7 +1184,7 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
     fresh.set_style_json(&style).unwrap();
     fresh.edit(&hide).unwrap();
     fresh.jump_to(&camera(at(-32.0)));
-    settle(&mut fresh, &mut target);
+    common::settle(&mut fresh, &mut target);
     // The drape rounds by its slots' places as in the terrain gesture.
     assert_within("live-alps", (turned, target.read_pixels().unwrap()), 1);
 }
@@ -1251,7 +1232,7 @@ fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
     moved.set_style_json(&style).unwrap();
     moved.edit(&hover).unwrap();
     moved.jump_to(&camera(at(10.0)));
-    settle(&mut moved, &mut target);
+    common::settle(&mut moved, &mut target);
     moved.jump_to(&camera(at(16.0)));
     // Its time runs on from the settled frames', past the hover's fade.
     moved.render(&mut target, 1e6).unwrap();
@@ -1261,7 +1242,7 @@ fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
     fresh.set_style_json(&style).unwrap();
     fresh.edit(&hover).unwrap();
     fresh.jump_to(&camera(at(16.0)));
-    settle(&mut fresh, &mut target);
+    common::settle(&mut fresh, &mut target);
     let rest = centre(&target.read_pixels().unwrap());
     assert!(
         jumped.iter().zip(&rest).all(|(a, b)| a.abs_diff(*b) <= 2),
@@ -1285,7 +1266,7 @@ fn camera_only_frames_write_no_rows() {
         map.set_style_json(&style).unwrap();
         let at = |step: f64| (STATION, 14.2 + step * 0.01, step, 20.0);
         map.jump_to(&camera(at(0.0)));
-        settle(&mut map, &mut target);
+        common::settle(&mut map, &mut target);
         for step in 1..=3 {
             map.jump_to(&camera(at(f64::from(step))));
             let report = map.render(&mut target, 0.0).unwrap().unwrap();
@@ -1352,7 +1333,7 @@ fn overscaled_geojson_after_a_gesture_is_a_fresh_map_s() {
                               "text-font": ["Noto Sans Regular"], "text-size": 14}},
                   "paint": {{"text-color": "#800000", "text-halo-color": "#fff",
                              "text-halo-width": 1.5}}}}]}}"##,
-        data = data().display(),
+        data = common::data().display(),
         spiral = spiral.join(", "),
         ring = ring.join(", "),
     );
@@ -1384,7 +1365,7 @@ fn zoom_22_draws_to_the_pixel() {
     for (dlon, dlat) in [(0.0, 0.0), (2.37e-6, -1.13e-6), (-3.11e-6, 0.9e-6)] {
         let center = Geodetic::new(lon + dlon, lat + dlat);
         map.jump_to(&camera((center, 22.0, 0.0, 0.0)));
-        settle(&mut map, &mut target);
+        common::settle(&mut map, &mut target);
         let pixels = target.read_pixels().unwrap();
         let corner = map.project(Geodetic::new(lon, lat)).expect("in view");
         let dark = |x: u32, y: u32| pixels[((y * WIDTH + x) * 4) as usize] < 128;
@@ -1484,7 +1465,7 @@ fn stable_labels_converge_and_stay_put() {
     let start = (Geodetic::new(139.72, 35.67), 12.6, 0.0, 0.0);
     let end = (STATION, 15.4, 35.0, 50.0);
     map.jump_to(&camera(start));
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
     for step in 1..=30 {
         let t = f64::from(step) / 30.0;
@@ -1500,7 +1481,7 @@ fn stable_labels_converge_and_stay_put() {
         map.render(&mut target, 0.0).unwrap();
         std::thread::sleep(Duration::from_millis(8));
     }
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let shown = |map: &Map| {
         let mut names: Vec<Box<str>> = map
             .shown_labels()
@@ -1517,7 +1498,7 @@ fn stable_labels_converge_and_stay_put() {
     for i in 0..4 {
         let nudge = if i % 2 == 0 { 1e-6 } else { 0.0 };
         map.jump_to(&camera((end.0, end.1, end.2 + nudge, end.3)));
-        settle(&mut map, &mut target);
+        common::settle(&mut map, &mut target);
         assert_eq!(
             shown(&map),
             rest,
@@ -1563,11 +1544,11 @@ fn coarser_terrain_keeps_the_hillshade_it_drew() {
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
     map.jump_to(&camera((at, 14.4, 0.0, 0.0)));
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     map.jump_to(&camera((at, 13.9, 0.0, 0.0)));
     map.render(&mut target, 0.0).unwrap();
     let first = bare(&target.read_pixels().unwrap());
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let settled = bare(&target.read_pixels().unwrap());
     let middle = WIDTH as usize * HEIGHT as usize / 4;
     assert!(
@@ -1621,7 +1602,7 @@ fn draped_edits_ease_as_flat_ones_do() {
             let mut map = Map::new(&runtime, options());
             map.set_style_json(&style).unwrap();
             map.jump_to(&camera((Geodetic::new(lon, lat), 12.0, 0.0, 30.0)));
-            settle(&mut map, &mut target);
+            common::settle(&mut map, &mut target);
             let before = centre(&target.read_pixels().unwrap());
             map.edit(&orb_api::Transaction::from_commands(commands).unwrap())
                 .unwrap();
@@ -1639,7 +1620,7 @@ fn draped_edits_ease_as_flat_ones_do() {
                 seen.push(centre(&pixels));
                 std::thread::sleep(Duration::from_millis(20));
             }
-            settle(&mut map, &mut target);
+            common::settle(&mut map, &mut target);
             let after = centre(&target.read_pixels().unwrap());
             let c = (0..3)
                 .max_by_key(|&c| before[c].abs_diff(after[c]))
@@ -1671,7 +1652,7 @@ fn terrain_switched_by_edits_ends_as_a_fresh_map_does() {
     let mut map = Map::new(&runtime, options());
     map.set_style_json(&flat).unwrap();
     map.jump_to(&camera(at));
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let warnings = |map: &mut Map| -> Vec<String> {
         std::iter::from_fn(|| map.poll_event())
             .filter_map(|e| match e {
@@ -1685,7 +1666,7 @@ fn terrain_switched_by_edits_ends_as_a_fresh_map_does() {
         orb_api::Transaction::from_commands(&format!(r#"[["setStyle", {json}]]"#)).unwrap()
     };
     map.edit(&restyle(&terrain)).unwrap();
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let on = (target.read_pixels().unwrap(), map.camera());
     let (fresh, fresh_camera) = fresh_at(&runtime, &mut target, &terrain, at);
     assert_eq!(on.1, fresh_camera, "the camera on the risen terrain");
@@ -1698,7 +1679,7 @@ fn terrain_switched_by_edits_ends_as_a_fresh_map_does() {
         std::thread::sleep(Duration::from_millis(10));
     }
     map.jump_to(&camera(at));
-    settle(&mut map, &mut target);
+    common::settle(&mut map, &mut target);
     let off = target.read_pixels().unwrap();
     assert_eq!(warnings(&mut map), Vec::<String>::new());
     let (fresh, _) = fresh_at(&runtime, &mut target, &flat, at);
