@@ -5,6 +5,7 @@
 //! The layout matches `symbol.wgsl`. Chunks are runs of at most 256 quads;
 //! their first index and count are quads, not indices.
 
+use super::Table;
 use orb_hal::Gpu;
 
 use crate::scene::{Chunk, MeshEntry, MeshId, NO_STATE, OutOfSpace, Scene, TileId, Words};
@@ -127,15 +128,20 @@ impl Scene {
         let mut at = SYMBOL_HEADER_WORDS as u32;
         for (i, table) in tables.iter().enumerate() {
             header[i] = at;
-            table.write(gpu, self.buffers.vertices, vertices.start + at);
+            self.tables
+                .write(gpu, Table::Vertices, vertices.start + at, *table);
             at += table.len();
         }
         header[symbol_header::STATES] = states.start;
         header[symbol_header::COPIES] = 1;
         header[symbol_header::PARAMS..].copy_from_slice(&data.params);
-        Words::Core(&header).write(gpu, self.buffers.vertices, vertices.start);
-        data.props.write(gpu, self.buffers.props, props.start);
-        Words::Core(&vec![0; states.len()]).write(gpu, self.buffers.props, states.start);
+        self.tables
+            .write(gpu, Table::Vertices, vertices.start, Words::Core(&header));
+        self.tables
+            .write(gpu, Table::Props, props.start, data.props);
+        let zeros = vec![0; states.len()];
+        self.tables
+            .write_words(gpu, Table::Props, states.start, &zeros);
 
         let mut chunk_ids = Vec::with_capacity(data.chunks.len());
         for chunk in data.chunks {
@@ -152,9 +158,9 @@ impl Scene {
                 NO_STATE,
                 0,
             ];
-            crate::scene::write_words(
+            self.tables.write_words(
                 gpu,
-                self.buffers.chunks,
+                Table::Chunks,
                 id * crate::scene::CHUNK_WORDS as u32,
                 &row,
             );
@@ -183,7 +189,12 @@ impl Scene {
         let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
         let [offset, quads] = entry.symbol_order;
         assert_eq!(order.len() as u32, quads, "one entry per quad");
-        Words::Core(order).write(gpu, self.buffers.vertices, entry.vertices.start + offset);
+        self.tables.write(
+            gpu,
+            Table::Vertices,
+            entry.vertices.start + offset,
+            Words::Core(order),
+        );
     }
 
     /// How many world copies a symbol mesh keeps state words for.
@@ -206,13 +217,20 @@ impl Scene {
         let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
         let block = entry.symbol_states.len() as u32 / entry.symbol_copies;
         let states = self.prop_arena.alloc(block * copies).ok_or(OutOfSpace)?;
-        Words::Core(&vec![0; states.len()]).write(gpu, self.buffers.props, states.start);
+        let zeros = vec![0; states.len()];
+        self.tables
+            .write_words(gpu, Table::Props, states.start, &zeros);
         let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
         let old = std::mem::replace(&mut entry.symbol_states, states.clone());
         entry.symbol_copies = copies;
         let header = entry.vertices.start + symbol_header::STATES as u32;
         self.prop_arena.free(old);
-        Words::Core(&[states.start, copies]).write(gpu, self.buffers.vertices, header);
+        self.tables.write(
+            gpu,
+            Table::Vertices,
+            header,
+            Words::Core(&[states.start, copies]),
+        );
         Ok(())
     }
 
@@ -230,6 +248,6 @@ impl Scene {
         assert_eq!(words.len() as u32, block, "one state per placed symbol");
         let copy = wrap.rem_euclid(entry.symbol_copies as i32) as u32;
         let at = entry.symbol_states.start + copy * block;
-        Words::Core(words).write(gpu, self.buffers.props, at);
+        self.tables.write(gpu, Table::Props, at, Words::Core(words));
     }
 }

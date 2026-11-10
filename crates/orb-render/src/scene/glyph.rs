@@ -6,10 +6,10 @@
 //! arrives, and nothing that refers to it changes then. The atlas knows
 //! rows only: which glyph a row holds is the runtime's business.
 
-use orb_hal::{BufferId, Gpu, TextureFormat, TextureId, TextureRegion};
+use orb_hal::{Gpu, TextureFormat, TextureId, TextureRegion};
 
 use crate::scene::shelf::Shelves;
-use crate::scene::{OutOfSpace, PageTexture, TilePage};
+use crate::scene::{OutOfSpace, PageTexture, TableWriter, TilePage};
 
 /// Texels on a side of a glyph page.
 pub const GLYPH_PAGE: u32 = 512;
@@ -37,8 +37,8 @@ pub struct GlyphAtlas {
     page: TilePage,
     /// Per layer of `page`, its shelves.
     shelves: Vec<Shelves>,
-    /// The row table: the first words of a scene buffer.
-    table: BufferId,
+    /// The row table: the first words of the scene's property table.
+    table: TableWriter,
     capacity: u32,
     rows: Vec<Option<Row>>,
     free: Vec<u32>,
@@ -57,7 +57,7 @@ impl GlyphAtlas {
 
     /// An atlas of at most `capacity` rows, its row table the first
     /// `capacity` × [`GLYPH_ROW_WORDS`] words of `table`.
-    pub fn new(gpu: &mut dyn Gpu, capacity: u32, table: BufferId) -> Self {
+    pub(crate) fn new(gpu: &mut dyn Gpu, capacity: u32, table: TableWriter) -> Self {
         assert!(capacity > 1);
         let page = TilePage::new(
             gpu,
@@ -70,7 +70,7 @@ impl GlyphAtlas {
                 mip_levels: 1,
             }],
         );
-        gpu.write_buffer(table, 0, &[0; GLYPH_ROW_WORDS * 4]);
+        table.write_words(gpu, 0, &[0; GLYPH_ROW_WORDS]);
         Self {
             page,
             shelves: Vec::new(),
@@ -87,13 +87,13 @@ impl GlyphAtlas {
         self.page.texture(0)
     }
 
-    /// The row table moved, at the same offset, into a larger buffer.
-    pub(crate) fn set_table(&mut self, table: BufferId) {
+    /// The row table moved, at the same offset, into a larger table.
+    pub(crate) fn set_table(&mut self, table: TableWriter) {
         self.table = table;
     }
 
-    fn row_offset(&self, row: u32) -> u64 {
-        u64::from(row) * GLYPH_ROW_WORDS as u64 * 4
+    fn row_offset(&self, row: u32) -> u32 {
+        row * GLYPH_ROW_WORDS as u32
     }
 
     /// Changes whenever [`texture`](Self::texture) is replaced, so bind
@@ -185,11 +185,7 @@ impl GlyphAtlas {
             layer,
             0,
         ];
-        gpu.write_buffer(
-            self.table,
-            self.row_offset(row),
-            bytemuck::cast_slice(&words),
-        );
+        self.table.write_words(gpu, self.row_offset(row), &words);
         self.rows[row as usize].as_mut().expect("reserved").placed =
             Some((layer, origin, allocated));
         Ok(())
@@ -206,7 +202,8 @@ impl GlyphAtlas {
             if shelves.live == 0 {
                 *shelves = Shelves::default();
             }
-            gpu.write_buffer(self.table, self.row_offset(row), &[0; GLYPH_ROW_WORDS * 4]);
+            self.table
+                .write_words(gpu, self.row_offset(row), &[0; GLYPH_ROW_WORDS]);
         }
         self.free.push(row);
     }

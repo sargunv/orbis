@@ -12,8 +12,10 @@ mod line;
 mod pages;
 mod shelf;
 mod symbol;
+mod tables;
 pub use glyph::{GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
 pub use image::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
+pub(crate) use tables::{Table, TableWriter, Tables};
 
 use std::ops::Range;
 
@@ -38,14 +40,9 @@ fn state_base(range: &Range<u32>) -> u32 {
     }
 }
 
-fn write_chunk_word(gpu: &mut dyn Gpu, chunks: BufferId, chunk: u32, word: u64, value: u32) {
+fn write_chunk_word(gpu: &mut dyn Gpu, tables: &Tables, chunk: u32, word: u64, value: u32) {
     let at = u64::from(chunk) * CHUNK_WORDS as u64 + word;
-    write_words(gpu, chunks, at as u32, &[value]);
-}
-
-/// Writes words into a table at word `word`.
-fn write_words(gpu: &mut dyn Gpu, buffer: BufferId, word: u32, words: &[u32]) {
-    gpu.write_buffer(buffer, u64::from(word) * 4, bytemuck::cast_slice(words));
+    tables.write_words(gpu, Table::Chunks, at as u32, &[value]);
 }
 
 /// Per-frame values every pipeline reads.
@@ -681,7 +678,9 @@ impl Words<'_> {
         self.len() == 0
     }
 
-    fn write(&self, gpu: &mut dyn Gpu, buffer: BufferId, word_offset: u32) {
+    /// Queues the words into `buffer` from word `word_offset`: what the
+    /// storage backing of [`Tables`] does.
+    fn write_buffer(&self, gpu: &mut dyn Gpu, buffer: BufferId, word_offset: u32) {
         let offset = u64::from(word_offset) * 4;
         match *self {
             Self::Core(words) => gpu.write_buffer(buffer, offset, bytemuck::cast_slice(words)),
@@ -913,7 +912,7 @@ const UNCLIPPED: u32 = 1 << 11;
 
 #[derive(Debug)]
 pub(crate) struct Scene {
-    buffers: SceneBuffers,
+    tables: Tables,
     capacity: SceneCapacity,
     /// Bits of a compacted index on the renderer's driver
     /// ([`SubmitLimits::index_bits`]).
@@ -979,7 +978,7 @@ pub struct SceneStats {
 impl Scene {
     /// Destroys the scene's buffers, with the scene.
     pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {
-        let b = self.buffers;
+        let b = self.tables.buffers;
         for buffer in [
             b.frame,
             b.tiles,
@@ -1022,7 +1021,6 @@ impl Scene {
             *start = (*start).min(largest);
             *max = (*max).min(largest).max(*start);
         }
-        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         let mut buffer = |label: &str, words: u64, usage: BufferUsages| {
             gpu.create_buffer(&BufferDesc {
                 label,
@@ -1032,44 +1030,36 @@ impl Scene {
         };
         let c = capacity;
         let words = |count: u32, per: usize| u64::from(count) * per as u64;
+        let frame = buffer(
+            "frame",
+            FRAME_WORDS as u64,
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let args = buffer("draw args", words(c.nodes, ARGS_WORDS), ARGS_USAGE);
+        let compacted = buffer(
+            "compacted indices",
+            u64::from(c.compacted_words),
+            COMPACTED_USAGE,
+        );
+        let mut table = |table, words| Tables::create(gpu, table, words);
         let buffers = SceneBuffers {
-            frame: buffer(
-                "frame",
-                FRAME_WORDS as u64,
-                BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            ),
-            tiles: buffer("tiles", words(c.placements, TILE_WORDS), storage),
-            chunks: buffer("chunks", words(c.chunks, CHUNK_WORDS), POOL_USAGE),
-            candidates: buffer(
-                "candidates",
-                words(c.candidates, CANDIDATE_WORDS),
-                storage | BufferUsages::COPY_SRC,
-            ),
-            node_cull: buffer("node cull", words(c.nodes, NODE_CULL_WORDS), storage),
-            visible: buffer(
-                "visible",
-                words(c.candidates, VISIBLE_WORDS),
-                storage | BufferUsages::COPY_SRC,
-            ),
-            args: buffer(
-                "draw args",
-                words(c.nodes, ARGS_WORDS),
-                storage | BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            ),
-            vertices: buffer("vertices", u64::from(c.vertex_words), POOL_USAGE),
-            indices: buffer("indices", u64::from(c.index_words), POOL_USAGE),
-            compacted: buffer(
-                "compacted indices",
-                u64::from(c.compacted_words),
-                COMPACTED_USAGE,
-            ),
-            props: buffer("props", u64::from(c.prop_words), POOL_USAGE),
+            frame,
+            tiles: table(Table::Tiles, words(c.placements, TILE_WORDS)),
+            chunks: table(Table::Chunks, words(c.chunks, CHUNK_WORDS)),
+            candidates: table(Table::Candidates, words(c.candidates, CANDIDATE_WORDS)),
+            node_cull: table(Table::NodeCull, words(c.nodes, NODE_CULL_WORDS)),
+            visible: table(Table::Visible, words(c.candidates, VISIBLE_WORDS)),
+            args,
+            vertices: table(Table::Vertices, u64::from(c.vertex_words)),
+            indices: table(Table::Indices, u64::from(c.index_words)),
+            compacted,
+            props: table(Table::Props, u64::from(c.prop_words)),
         };
         let mut prop_arena = Arena::new(c.prop_words);
         let glyphs = prop_arena.alloc(glyph_words).expect("the glyph table fits");
         debug_assert_eq!(glyphs.start, 0);
         Self {
-            buffers,
+            tables: Tables::storage(buffers),
             capacity,
             index_bits: 32,
             placement_slots: Slots::new(c.placements),
@@ -1100,7 +1090,11 @@ impl Scene {
     }
 
     pub(crate) fn buffers(&self) -> &SceneBuffers {
-        &self.buffers
+        &self.tables.buffers
+    }
+
+    pub(crate) fn tables(&self) -> &Tables {
+        &self.tables
     }
 
     pub(crate) fn capacity(&self) -> &SceneCapacity {
@@ -1176,25 +1170,15 @@ impl Scene {
             return;
         }
         let new = nodes.next_power_of_two();
-        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        let args_usage =
-            storage | BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
-        for (buffer, label, words, usage) in [
-            (
-                &mut self.buffers.node_cull,
-                "node cull",
-                NODE_CULL_WORDS,
-                storage,
-            ),
-            (&mut self.buffers.args, "draw args", ARGS_WORDS, args_usage),
-        ] {
-            let desc = BufferDesc {
-                label,
-                size: (u64::from(new) * words as u64 * 4).max(16),
-                usage,
-            };
-            move_buffer(gpu, buffer, &desc, 0);
-        }
+        let words = |per: usize| u64::from(new) * per as u64;
+        self.tables
+            .resize(gpu, Table::NodeCull, words(NODE_CULL_WORDS), 0);
+        let desc = BufferDesc {
+            label: "draw args",
+            size: (words(ARGS_WORDS) * 4).max(16),
+            usage: ARGS_USAGE,
+        };
+        move_buffer(gpu, &mut self.tables.buffers.args, &desc, 0);
         self.capacity.nodes = new;
         self.candidates_dirty = true;
         self.buffers_revision += 1;
@@ -1332,7 +1316,8 @@ impl Scene {
             .alloc(patches.len() as u32)
             .ok_or(OutOfSpace)?;
         let words: Vec<u32> = patches.iter().map(|v| v.to_bits()).collect();
-        Words::Core(&words).write(gpu, self.buffers.props, range.start);
+        self.tables
+            .write(gpu, Table::Props, range.start, Words::Core(&words));
         Ok(TileWarp {
             base: range.start,
             cells,
@@ -1414,9 +1399,9 @@ impl Scene {
         for (slot, row) in self.rows_dirty.drain(..) {
             self.tile_rows[words(slot)..words(slot + 1)].copy_from_slice(&row.words(quantum));
         }
-        write_words(
+        self.tables.write_words(
             gpu,
-            self.buffers.tiles,
+            Table::Tiles,
             words(first) as u32,
             &self.tile_rows[words(first)..words(end)],
         );
@@ -1535,9 +1520,9 @@ impl Scene {
             }
             return Err(OutOfSpace);
         };
-        for (pool, (range, words, buffer)) in [
-            (&vertices, mesh.vertices, self.buffers.vertices),
-            (&indices, mesh.indices, self.buffers.indices),
+        for (pool, (range, words, table)) in [
+            (&vertices, mesh.vertices, Table::Vertices),
+            (&indices, mesh.indices, Table::Indices),
         ]
         .into_iter()
         .enumerate()
@@ -1547,10 +1532,11 @@ impl Scene {
                 // does: they hold nothing to share.
                 Some(_) if range.is_empty() => {}
                 Some(_) => *self.shared[pool].entry(range.start).or_default() += 1,
-                None => words.write(gpu, buffer, range.start),
+                None => self.tables.write(gpu, table, range.start, words),
             }
         }
-        mesh.props.write(gpu, self.buffers.props, prop_range.start);
+        self.tables
+            .write(gpu, Table::Props, prop_range.start, mesh.props);
 
         let mut chunk_ids = Vec::with_capacity(mesh.chunks.len());
         for chunk in mesh.chunks {
@@ -1567,7 +1553,8 @@ impl Scene {
                 NO_STATE,
                 mesh.row_words,
             ];
-            write_words(gpu, self.buffers.chunks, id * CHUNK_WORDS as u32, &row);
+            self.tables
+                .write_words(gpu, Table::Chunks, id * CHUNK_WORDS as u32, &row);
             chunk_ids.push(id);
         }
 
@@ -1622,11 +1609,8 @@ impl Scene {
     ) {
         let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
         assert!(word < entry.props.len() as u32);
-        gpu.write_buffer(
-            self.buffers.props,
-            u64::from(entry.props.start + word) * 4,
-            &image.to_le_bytes(),
-        );
+        self.tables
+            .write_words(gpu, Table::Props, entry.props.start + word, &[image]);
     }
 
     /// Replaces a mesh's property rows, keeping its geometry: a column job's
@@ -1643,13 +1627,7 @@ impl Scene {
         if row_words != entry.row_words {
             entry.row_words = row_words;
             for &chunk in &entry.chunk_slots {
-                write_chunk_word(
-                    gpu,
-                    self.buffers.chunks,
-                    chunk,
-                    CHUNK_ROW_WORDS_WORD,
-                    row_words,
-                );
+                write_chunk_word(gpu, &self.tables, chunk, CHUNK_ROW_WORDS_WORD, row_words);
             }
         }
         if props.len() != entry.props.len() as u32 {
@@ -1657,16 +1635,11 @@ impl Scene {
             self.prop_arena
                 .free(std::mem::replace(&mut entry.props, range.clone()));
             for &chunk in &entry.chunk_slots {
-                write_chunk_word(
-                    gpu,
-                    self.buffers.chunks,
-                    chunk,
-                    CHUNK_PROPS_WORD,
-                    range.start,
-                );
+                write_chunk_word(gpu, &self.tables, chunk, CHUNK_PROPS_WORD, range.start);
             }
         }
-        props.write(gpu, self.buffers.props, entry.props.start);
+        self.tables
+            .write(gpu, Table::Props, entry.props.start, *props);
         Ok(())
     }
 
@@ -1689,7 +1662,7 @@ impl Scene {
             for &chunk in &entry.chunk_slots {
                 write_chunk_word(
                     gpu,
-                    self.buffers.chunks,
+                    &self.tables,
                     chunk,
                     CHUNK_STATE_WORD,
                     state_base(&range),
@@ -1697,7 +1670,8 @@ impl Scene {
             }
         }
         if !indices.is_empty() {
-            Words::Core(indices).write(gpu, self.buffers.props, entry.state.start);
+            self.tables
+                .write(gpu, Table::Props, entry.state.start, Words::Core(indices));
         }
         Ok(())
     }
@@ -1715,7 +1689,7 @@ impl Scene {
     /// Writes words of a table from [`alloc_table`](Self::alloc_table),
     /// starting at word `at` of the property buffer.
     pub(crate) fn write_table(&mut self, gpu: &mut dyn Gpu, at: u32, words: &[u32]) {
-        Words::Core(words).write(gpu, self.buffers.props, at);
+        self.tables.write_words(gpu, Table::Props, at, words);
     }
 
     pub(crate) fn remove_mesh(&mut self, id: MeshId) {
@@ -1793,10 +1767,11 @@ impl Scene {
                 self.rebuild_candidates(gpu);
             }
         } else if std::mem::take(&mut self.params_dirty) && !self.node_rows.is_empty() {
-            write_words(gpu, self.buffers.node_cull, 0, &self.node_rows);
+            self.tables
+                .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
         }
 
-        write_frame(gpu, self.buffers.frame, frame, linear);
+        write_frame(gpu, self.tables.buffers.frame, frame, linear);
         (self.candidate_count, rebuilt)
     }
 
@@ -1921,10 +1896,10 @@ impl Scene {
         self.compacted_words = compacted;
         self.cull_batches = batches;
         if !rows.is_empty() {
-            gpu.write_buffer(self.buffers.candidates, 0, bytemuck::cast_slice(&rows));
+            self.tables.write_words(gpu, Table::Candidates, 0, &rows);
         }
         if !node_cull.is_empty() {
-            gpu.write_buffer(self.buffers.node_cull, 0, bytemuck::cast_slice(&node_cull));
+            self.tables.write_words(gpu, Table::NodeCull, 0, &node_cull);
         }
         self.node_rows = node_cull;
         self.params_dirty = false;
@@ -1937,11 +1912,8 @@ impl Scene {
                 end += 1;
             }
             let words: Vec<u32> = runs[at..end].iter().flat_map(|(_, run)| *run).collect();
-            gpu.write_buffer(
-                self.buffers.visible,
-                u64::from(start) * (VISIBLE_WORDS as u64 * 4),
-                bytemuck::cast_slice(&words),
-            );
+            let first = start * VISIBLE_WORDS as u32;
+            self.tables.write_words(gpu, Table::Visible, first, &words);
             at = end;
         }
         (compacted_short, candidates_short)
@@ -2045,33 +2017,14 @@ impl Scene {
     /// sizes copied over on the GPU at the same offsets.
     fn resize_pool(&mut self, gpu: &mut dyn Gpu, pool: Pool, new: u32) {
         let c = &mut self.capacity;
-        let (words, buffer, arena, label) = match pool {
-            Pool::Vertices => (
-                &mut c.vertex_words,
-                &mut self.buffers.vertices,
-                &mut self.vertex_arena,
-                "vertices",
-            ),
-            Pool::Indices => (
-                &mut c.index_words,
-                &mut self.buffers.indices,
-                &mut self.index_arena,
-                "indices",
-            ),
-            Pool::Props => (
-                &mut c.prop_words,
-                &mut self.buffers.props,
-                &mut self.prop_arena,
-                "props",
-            ),
+        let (words, table, arena) = match pool {
+            Pool::Vertices => (&mut c.vertex_words, Table::Vertices, &mut self.vertex_arena),
+            Pool::Indices => (&mut c.index_words, Table::Indices, &mut self.index_arena),
+            Pool::Props => (&mut c.prop_words, Table::Props, &mut self.prop_arena),
         };
         let old = *words;
-        let desc = BufferDesc {
-            label,
-            size: u64::from(new) * 4,
-            usage: POOL_USAGE,
-        };
-        move_buffer(gpu, buffer, &desc, u64::from(old.min(new)) * 4);
+        let keep = u64::from(old.min(new));
+        self.tables.resize(gpu, table, u64::from(new), keep);
         if new > old {
             arena.grow(old, new);
         } else {
@@ -2089,13 +2042,9 @@ impl Scene {
         if new <= old {
             return false;
         }
-        let bytes = |count: u32| u64::from(count) * CHUNK_WORDS as u64 * 4;
-        let desc = BufferDesc {
-            label: "chunks",
-            size: bytes(new),
-            usage: POOL_USAGE,
-        };
-        move_buffer(gpu, &mut self.buffers.chunks, &desc, bytes(old));
+        let words = |count: u32| u64::from(count) * CHUNK_WORDS as u64;
+        self.tables
+            .resize(gpu, Table::Chunks, words(new), words(old));
         self.chunk_slots.grow(new);
         self.capacity.chunks = new;
         self.buffers_revision += 1;
@@ -2111,16 +2060,12 @@ impl Scene {
         if new <= old {
             return false;
         }
-        for (buffer, label, words) in [
-            (&mut self.buffers.candidates, "candidates", CANDIDATE_WORDS),
-            (&mut self.buffers.visible, "visible", VISIBLE_WORDS),
+        for (table, words) in [
+            (Table::Candidates, CANDIDATE_WORDS),
+            (Table::Visible, VISIBLE_WORDS),
         ] {
-            let desc = BufferDesc {
-                label,
-                size: u64::from(new) * words as u64 * 4,
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            };
-            move_buffer(gpu, buffer, &desc, 0);
+            self.tables
+                .resize(gpu, table, u64::from(new) * words as u64, 0);
         }
         self.capacity.candidates = new;
         self.buffers_revision += 1;
@@ -2141,7 +2086,7 @@ impl Scene {
             size: u64::from(new) * 4,
             usage: COMPACTED_USAGE,
         };
-        move_buffer(gpu, &mut self.buffers.compacted, &desc, 0);
+        move_buffer(gpu, &mut self.tables.buffers.compacted, &desc, 0);
         self.capacity.compacted_words = new;
         self.buffers_revision += 1;
         true
@@ -2204,8 +2149,10 @@ enum Pool {
     Props,
 }
 
-/// The vertex and index pools: storage that a larger buffer copies from.
-const POOL_USAGE: BufferUsages = BufferUsages::STORAGE
+/// The draw arguments: the cull dispatch writes them, indirect draws read
+/// them, and tests read them back.
+const ARGS_USAGE: BufferUsages = BufferUsages::STORAGE
+    .union(BufferUsages::INDIRECT)
     .union(BufferUsages::COPY_DST)
     .union(BufferUsages::COPY_SRC);
 

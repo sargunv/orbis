@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::scene::{
-    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, TileId, TileRow, TileWarp,
-    Words,
+    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, Table, TileId, TileRow,
+    TileWarp, Words,
 };
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
@@ -607,7 +607,8 @@ impl Renderer {
     /// fit; whether they do.
     pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
         let fits = self.scene.grow_for(gpu, meshes);
-        self.glyphs.set_table(self.scene.buffers().props);
+        self.glyphs
+            .set_table(self.scene.tables().writer(Table::Props));
         fits
     }
 
@@ -615,14 +616,16 @@ impl Renderer {
     /// shrank.
     pub fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
         let shrank = self.scene.shrink(gpu);
-        self.glyphs.set_table(self.scene.buffers().props);
+        self.glyphs
+            .set_table(self.scene.tables().writer(Table::Props));
         shrank
     }
 
     /// Grows the pools once, within their limits; whether they grew.
     pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
         let grew = self.scene.grow(gpu);
-        self.glyphs.set_table(self.scene.buffers().props);
+        self.glyphs
+            .set_table(self.scene.tables().writer(Table::Props));
         grew
     }
 

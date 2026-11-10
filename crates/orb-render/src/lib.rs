@@ -75,7 +75,7 @@ use orb_shaders::{
     CIRCLE_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, LINE_STYLED_SHADER,
     SYMBOL_SHADERS,
 };
-use scene::Scene;
+use scene::{Scene, Table};
 
 /// How a family's nodes draw: meshes from compacted
 /// indices, instanced quads by vertex pulling.
@@ -464,7 +464,11 @@ impl Renderer {
             entries: &[E::uniform(0, vf)],
         });
 
-        let glyphs = GlyphAtlas::new(gpu, capacity.glyph_rows, b.props);
+        let glyphs = GlyphAtlas::new(
+            gpu,
+            capacity.glyph_rows,
+            scene.tables().writer(Table::Props),
+        );
         let nearest = gpu.create_sampler(&SamplerDesc {
             label: "nearest",
             filter: FilterMode::Nearest,
