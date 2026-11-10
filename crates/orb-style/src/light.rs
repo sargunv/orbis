@@ -24,9 +24,13 @@ pub struct Light {
     /// is up and by the ambient light where it's down.
     pub ground_lighting: Property<f32>,
     /// `dev.sargunv.orbis:ambient-color` and `-intensity`: the light the
-    /// ground keeps where the sun is down.
+    /// ground keeps where the sun is down, and maplibre/maplibre#555's
+    /// ambient light on extrusions.
     pub ambient_color: Property<Color>,
     pub ambient_intensity: Property<f32>,
+    /// Whether the style sets either: extrusions then take this ambient
+    /// light, and `intensity` is the sun's alone.
+    pub ambient: bool,
     /// `dev.sargunv.orbis:twilight`: the sun elevations, degrees, centred
     /// on the horizon, over which the ground passes from ambient to sunlit.
     pub twilight: Property<f32>,

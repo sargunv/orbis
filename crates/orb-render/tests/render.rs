@@ -166,6 +166,8 @@ impl Harness {
                 intensity: 0.5,
                 position: [0.0, 0.0, 1.0],
                 shadow_intensity: 0.0,
+                ambient: [0.0; 3],
+                ambient_amount: 0.0,
                 ground: None,
             },
             globe: None,

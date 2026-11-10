@@ -1759,7 +1759,7 @@ async function options(browser, server) {
   const expect = (values, style, disabled, url) => ({
     values: { ...GLOBE_OPTIONS, ...values },
     style: {
-      shadows: 0.5,
+      shadows: 0.9,
       now: "undefined",
       anchor: "viewport",
       projection: "globe",

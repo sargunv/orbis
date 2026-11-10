@@ -36,6 +36,8 @@ pub(crate) fn frame_light(light: &LightValues, camera: &orb_camera::CameraState)
         intensity: light.intensity,
         position: [x * c - y * s, x * s + y * c, z].map(|v| v as f32),
         shadow_intensity: light.shadow_intensity,
+        ambient: [0, 1, 2].map(|k| light.ambient_color[k] * light.ambient_intensity),
+        ambient_amount: light.ambient,
         ground: None,
     }
 }

@@ -41,10 +41,13 @@ pub(crate) struct LightValues {
     pub(crate) sun: [f32; 3],
     /// Whether the sun comes from `dev.sargunv.orbis:datetime`.
     pub(crate) timed: bool,
+    /// How far the extrusions take the ambient light, 1 where the style
+    /// sets it, rather than GL JS's `1 − intensity` of the light's colour.
+    pub(crate) ambient: f32,
 }
 
 /// Slots a light eases in.
-const LIGHT_SLOTS: usize = 19;
+const LIGHT_SLOTS: usize = 20;
 
 impl LightValues {
     pub(crate) fn of(light: &Light, zoom: f64) -> Self {
@@ -60,6 +63,7 @@ impl LightValues {
             twilight: light.twilight.evaluate(zoom),
             sun: crate::light::map_sun(light, zoom),
             timed: light.datetime.is_some(),
+            ambient: f32::from(u8::from(light.ambient)),
         }
     }
 
@@ -88,6 +92,7 @@ impl LightValues {
             sx,
             sy,
             sz,
+            self.ambient,
         ]
     }
 
@@ -102,6 +107,7 @@ impl LightValues {
             ambient_intensity: s[14],
             twilight: s[15],
             sun: [s[16], s[17], s[18]],
+            ambient: s[19],
             ..self
         }
     }
@@ -119,6 +125,8 @@ const LIGHT: &[(&str, usize)] = &[
     ("dev.sargunv.orbis:twilight", 1),
     // Eased as `dev.sargunv.orbis:datetime` with a time, else `position`.
     (SUN, 3),
+    // The style's transition.
+    ("ambient", 1),
 ];
 
 const SUN: &str = "sun";

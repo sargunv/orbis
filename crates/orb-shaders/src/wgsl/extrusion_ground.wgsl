@@ -217,7 +217,8 @@ fn vs_extrusion_occlusion(@builtin(vertex_index) index: u32) -> GroundOut {
         return out;
     }
     let g = ground_vertex(v);
-    let intensity = node.occlusion.z * g.opacity * (1.0 - min(g.base / radius, 1.0));
+    // Of the ambient share of the light on the ground, as the walls'.
+    let intensity = node.occlusion.z * g.opacity * (1.0 - min(g.base / radius, 1.0)) * light_ground_ambient();
     if intensity <= 0.0 {
         return out;
     }

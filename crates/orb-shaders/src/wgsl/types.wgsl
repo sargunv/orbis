@@ -142,6 +142,9 @@ struct Frame {
     // much the light shades the ground (0 off), unit Earth-fixed axes.
     ground_sun: vec4<f32>,
     ground_up: vec4<f32>,
+    // maplibre/maplibre#555's ambient light on extrusions (lighting.wgsl),
+    // premultiplied, with how far they take it in w rather than GL JS's.
+    light_ambient: vec4<f32>,
 };
 
 // One placement of a tile's data: data units → world is

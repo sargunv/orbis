@@ -114,6 +114,13 @@ pub struct FrameLight {
     /// style-spec#1797: how much extrusions' shadows darken the ground
     /// beneath them, 0 to 1, cast away from `position`.
     pub shadow_intensity: f32,
+    /// maplibre/maplibre#555's ambient light on extrusions, premultiplied,
+    /// and how far they take it (0 to 1) rather than GL JS's `1 −
+    /// intensity` of `color`: with it, `intensity` is the sun's alone,
+    /// ambient occlusion dims only the ambient light and shadows only the
+    /// sun's.
+    pub ambient: [f32; 3],
+    pub ambient_amount: f32,
     /// Its shading of the ground (`dev.sargunv.orbis:ground-lighting`),
     /// which labels' `["dev.sargunv.orbis:daylight"]` follows.
     pub ground: Option<crate::GroundLight>,
@@ -137,7 +144,25 @@ impl FrameLight {
         let fade = ((z / radius - low) / (high - low)).clamp(0.0, 1.0);
         let reach = (x.hypot(y) / z).min(Self::LONGEST_SHADOW);
         let along = [x, -y].map(|v| v / x.hypot(y).max(f32::MIN_POSITIVE) * reach);
-        (along, self.shadow_intensity * fade)
+        // With an ambient light a shadow takes away the sun's share of the
+        // light on the ground (`lighting.wgsl`'s `light_ground_ambient`).
+        let sun = 1.0 - self.ground_ambient_share();
+        let share = 1.0 + (sun - 1.0) * self.ambient_amount;
+        (along, self.shadow_intensity * fade * share)
+    }
+
+    /// The ambient share of the light on flat ground, as `lighting.wgsl`'s
+    /// `light_ground_ambient` gives it before the ambient amount.
+    fn ground_ambient_share(&self) -> f32 {
+        let luminance = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let i = self.intensity;
+        let ambient: [f32; 3] = std::array::from_fn(|k| {
+            let gl = (1.0 - i) * self.color[k];
+            gl + (self.ambient[k] - gl) * self.ambient_amount
+        });
+        let facing = self.position[2].clamp(0.0, 1.0);
+        let total: [f32; 3] = std::array::from_fn(|k| ambient[k] + facing * i * self.color[k]);
+        luminance(ambient) / luminance(total).max(1e-6)
     }
 }
 
@@ -255,6 +280,11 @@ pub(crate) fn frame_words(frame: &FrameBlock, linear: bool) -> Vec<u32> {
     let [red, green, blue] = frame.light.color;
     b.f(f::LIGHT_COLOR, &[red, green, blue, frame.light.intensity]);
     b.f(f::LIGHT_POSITION, &frame.light.position);
+    let [red, green, blue] = frame.light.ambient;
+    b.f(
+        f::LIGHT_AMBIENT,
+        &[red, green, blue, frame.light.ambient_amount],
+    );
     let (offset, intensity) = frame.light.shadow();
     b.f(f::SHADOW_OFFSET, &offset);
     b.f(f::SHADOW_INTENSITY, &[intensity]);
@@ -2309,7 +2339,30 @@ fn move_buffer(gpu: &mut dyn Gpu, buffer: &mut BufferId, desc: &BufferDesc<'_>, 
 
 #[cfg(test)]
 mod tests {
-    use super::{INDEXED_BATCH, grown};
+    use super::{FrameLight, INDEXED_BATCH, grown};
+
+    /// With the style's ambient light a shadow takes away the sun's share
+    /// of the light on the ground, so a sun under a bright sky casts faint
+    /// shadows; without it, as dark as the intensity says.
+    #[test]
+    fn shadows_take_away_the_suns_share() {
+        let light = |ambient: f32, amount| FrameLight {
+            color: [1.0; 3],
+            intensity: 0.5,
+            // Overhead.
+            position: [0.0, 0.0, 1.0],
+            shadow_intensity: 0.8,
+            ambient: [ambient; 3],
+            ambient_amount: amount,
+            ground: None,
+        };
+        assert_eq!(light(0.0, 0.0).shadow().1, 0.8);
+        // No sky light: the sun's whole.
+        assert_eq!(light(0.0, 1.0).shadow().1, 0.8);
+        // As bright a sky as the sun: half.
+        assert!((light(0.5, 1.0).shadow().1 - 0.4).abs() < 1e-6);
+        assert!((light(0.5, 0.5).shadow().1 - 0.6).abs() < 1e-6);
+    }
 
     /// The cull shader's constants are the scene's: its batches, and the
     /// most indices a chunk has, which bounds its copy loop.

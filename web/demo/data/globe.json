@@ -3,6 +3,7 @@
     "The Globe entry's restyle of Protomaps Light, which web/demo/styles.js and orb-demo's scenes.rs both apply (styles.js says how).",
     "The palette is the Globe's own: warm, calm limestone land; vegetation in muted sage that tints the globe by biome from orbit and gives way to parks close in; a sea that deepens from a pale lagoon over the shelves to slate blue over the abyss, with a faint seafloor relief; white roads with honey motorways on Protomaps' quiet hierarchy; slate-plum labels on soft halos, each text colour at least 4.5:1 against its halo (3:1 for the large ocean, country and region names).",
     "The night side is a globe-scale effect: ground lighting fades out from zoom 5 to 7, and the labels follow the daylight where they stand (`dev.sargunv.orbis:daylight`), switching to light text on dark navy halos (POIs keep their category hues, lightened) where the ground is dark, past a quarter of the way from night to day, so each reads against the ground beneath it.",
+    "The ambient light is the night side's dim blue at globe zooms and a pale sky by city zooms, where it lights the buildings' faces the sun doesn't reach (maplibre/maplibre#555's ambient light); the sun adds half its light to the faces turned to it, and its shadows take that away.",
     "`paint` is set over each Protomaps layer's own by id; `sea` goes over the background (the ocean, its shore colour) and under `earth`, the land, so neither shows on land however low it lies; its last layer, `caspian`, fills the Caspian Sea as the lake it is: OpenStreetMap maps its shore as coastline, so it is among Protomaps' ocean polygons, and the DEM there shows its surface, 28 m below sea level, in blocks; a box around it, under the land, takes the shore's shape; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source."
   ],
   "paint": {
@@ -1002,8 +1003,8 @@
       210,
       60
     ],
-    "intensity": 0.35,
-    "dev.sargunv.orbis:shadow-intensity": 0.5,
+    "intensity": 0.5,
+    "dev.sargunv.orbis:shadow-intensity": 0.9,
     "dev.sargunv.orbis:ground-lighting": [
       "interpolate",
       [
@@ -1017,8 +1018,32 @@
       7,
       0
     ],
-    "dev.sargunv.orbis:ambient-color": "#8d9fd6",
-    "dev.sargunv.orbis:ambient-intensity": 0.5,
+    "dev.sargunv.orbis:ambient-color": [
+      "interpolate",
+      [
+        "linear"
+      ],
+      [
+        "zoom"
+      ],
+      7,
+      "#8d9fd6",
+      12,
+      "#e4e9f5"
+    ],
+    "dev.sargunv.orbis:ambient-intensity": [
+      "interpolate",
+      [
+        "linear"
+      ],
+      [
+        "zoom"
+      ],
+      7,
+      0.5,
+      12,
+      0.55
+    ],
     "dev.sargunv.orbis:twilight": 14
   },
   "metadata": {

@@ -78,6 +78,9 @@ struct ExtrusionOut {
     @location(5) above: f32,
     @location(6) dem: vec2<f32>,
     @location(7) @interpolate(flat) dem_layer: u32,
+    // A wall's share of its light that is ambient, which its ambient
+    // occlusion dims (`light_ambient_share`).
+    @location(8) @interpolate(flat) ambient: f32,
 };
 // Extrusions draw in two pipelines: whole buildings, and buildings cut at
 // the source's buffer, clipped per fragment to the placement. Only the
@@ -282,6 +285,15 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     if normal.z == 0.0 && vertical_gradient {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
     }
+    // Patterns and colours over the elevation are lit as mid luminance.
+    var luminance = 0.5;
+    if node.pattern.enabled == 0u && elevation_stops == 0u {
+        luminance = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    }
+    out.ambient = 1.0;
+    if normal.z == 0.0 && node.occlusion.x > 0.0 {
+        out.ambient = light_ambient_share(light_facing(normal), luminance);
+    }
     if node.pattern.enabled != 0u {
         out.images = pattern_ids(row, EXTRUSION_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
         var pattern_pos = pos;
@@ -415,9 +427,9 @@ fn elevation_shade(in: ExtrusionOut) -> vec4<f32> {
 }
 // The fragment's colour, its wall darkened toward the ground by
 // style-spec#1796's ambient occlusion as MapLibre Native's walls PR (#4909)
-// shades it: by the intensity at the foot, fading out over the radius. On
-// terrain, from the ground under the fragment, wherever along the wall the
-// terrain meets it.
+// shades it: by the intensity at the foot, fading out over the radius, of
+// the ambient share of its light. On terrain, from the ground under the
+// fragment, wherever along the wall the terrain meets it.
 fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {
     let color = extrusion_color(in);
     let occlusion = node.occlusion;
@@ -428,7 +440,7 @@ fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {
     if in.dem_layer != NO_GROUND_DEM {
         above -= dem_bilinear(DemAt(in.dem, in.dem_layer));
     }
-    let lit = 1.0 - occlusion.x * (1.0 - smoothstep(0.0, occlusion.y, above));
+    let lit = 1.0 - occlusion.x * (1.0 - smoothstep(0.0, occlusion.y, above)) * in.ambient;
     return vec4<f32>(color.rgb * lit, color.a);
 }
 fn extrusion_color(in: ExtrusionOut) -> vec4<f32> {

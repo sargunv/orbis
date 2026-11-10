@@ -199,6 +199,13 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
             ),
         ),
         ambient_intensity: read(cx, json, &on, &number(AMBIENT_INTENSITY, "0.5", 1.0)),
+        ambient: [AMBIENT_COLOR, AMBIENT_INTENSITY].into_iter().any(|key| {
+            let i = PREVIEWS
+                .iter()
+                .position(|&(n, _)| n == key)
+                .expect("a preview");
+            on[i] && json.is_some_and(|j| j.get(key).is_some())
+        }),
         twilight: read(cx, json, &on, &number(TWILIGHT, "12", 90.0)),
         datetime: (json.and_then(|j| j.get(DATETIME)))
             .filter(|_| on[PREVIEWS.len() - 1])
@@ -226,6 +233,7 @@ mod tests {
         assert_eq!(light.ground_lighting.evaluate(0.0), 1.0);
         assert_eq!(light.ambient_intensity.evaluate(5.0), 0.4);
         assert_eq!(light.twilight.evaluate(0.0), 20.0);
+        assert!(light.ambient, "the extrusions take the ambient light");
         assert_eq!(
             light.ambient_color.evaluate(0.0).straight()[2],
             0x50 as f32 / 255.0
@@ -242,6 +250,7 @@ mod tests {
         assert_eq!(some.light.ground_lighting.evaluate(0.0), 1.0);
         assert_eq!(some.light.twilight.evaluate(0.0), 12.0);
         assert_eq!(some.light.ambient_intensity.evaluate(0.0), 0.5);
+        assert!(!some.light.ambient);
 
         let off = crate::v8::parse(DOC).unwrap();
         assert_eq!(off.warnings.len(), 5, "{:?}", off.warnings);

@@ -881,6 +881,49 @@ fn extrusion_opacity_follows_the_feature() {
     }
 }
 
+/// maplibre/maplibre#555's ambient light: with `light`'s ambient keys set,
+/// a face the sun doesn't reach takes the ambient light rather than GL
+/// JS's `1 − intensity` of the light's colour, and `intensity` is the
+/// sun's alone; unset, extrusions draw as GL JS shades them.
+#[test]
+fn extrusions_take_the_ambient_light() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let draw = |ambient: &str, previews| {
+        let style = format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 2, "sources": {{"b": {{"type": "geojson",
+              "data": {{"type": "Polygon", "coordinates": [[[-10, -5], [10, -5], [10, 5], [-10, 5], [-10, -5]]]}}}}}},
+              "light": {{"anchor": "map", "position": [1, 0, 90], "intensity": 0.4 {ambient}}},
+              "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+                {{"id": "b", "type": "fill-extrusion", "source": "b", "paint": {{
+                  "fill-extrusion-color": "#ffffff", "fill-extrusion-height": 1000}}}}]}}"##
+        );
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(&style).expect("style");
+        let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+        pixel(&image.pixels, SIZE / 2, SIZE / 2)
+    };
+    // The sun on the horizon: the roof has the ambient light alone, GL
+    // JS's 0.6 of white, 1.03 times (its lift) is 158.
+    let gl = draw("", orb_api::Previews::ALL);
+    assert!(gl[..3].iter().all(|&c| c.abs_diff(158) <= 1), "{gl:?}");
+    // The style's: 0.5 of red.
+    let ambient = r##", "dev.sargunv.orbis:ambient-color": "#ff0000", "dev.sargunv.orbis:ambient-intensity": 0.5"##;
+    let red = draw(ambient, orb_api::Previews::ALL);
+    assert!(
+        red[0].abs_diff(131) <= 1 && red[1] == 0 && red[2] == 0,
+        "{red:?}"
+    );
+    // Without the previews the keys are ignored.
+    assert_eq!(draw(ambient, orb_api::Previews::NONE), gl);
+}
+
 /// Each feature takes its own translate from its data, beyond the spec:
 /// fills and circles draw and pick where their own translate puts them,
 /// and a circle takes its own pitch alignment: tilted, one on the map is
