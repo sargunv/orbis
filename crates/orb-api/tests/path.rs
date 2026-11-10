@@ -163,6 +163,19 @@ fn assert_same(name: &str, pair: (Vec<u8>, Vec<u8>)) {
     assert_within(name, pair, 0);
 }
 
+/// [`assert_same`] for a map over 3D terrain: to one step in a channel.
+///
+/// Which drape atlas slot a terrain tile gets follows the tiles that came
+/// and went, and the GPU's anisotropic filter places its taps from the
+/// absolute texture coordinate, so the same texel of the same tile can
+/// filter a step apart in another slot (#174). The slots' data is the
+/// same: sampled at level 0 without anisotropy, every terrain path test
+/// here is byte-identical on RADV, where the hardware's taps differ at up
+/// to a few hundred pixels by one (#172).
+fn assert_same_terrain(name: &str, pair: (Vec<u8>, Vec<u8>)) {
+    assert_within(name, pair, 1);
+}
+
 /// [`assert_same`] to `steps` in a channel.
 fn assert_within(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>), steps: u8) {
     // A map that loaded nothing draws its background alike both ways.
@@ -736,10 +749,7 @@ fn a_terrain_that_comes_on_late_drapes_what_a_moved_map_does() {
     let north = Geodetic::new(STATION.lon, 35.70);
     let start = (north, 12.5, 0.0, 60.0);
     let end = (north, 12.9, 0.0, 60.0);
-    // The terrain's anisotropic filter rounds its taps by where in the
-    // atlas a slot lies, which follows the tiles that came and went: a
-    // step in a channel at a few pixels of a pitched view.
-    assert_within("late-terrain", both_ways(&style, start, end, 5), 1);
+    assert_same_terrain("late-terrain", both_ways(&style, start, end, 5));
 }
 
 /// Terrain over local hills: DEM borders come from the neighbours the view
@@ -753,7 +763,7 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     );
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
-    assert_same("terrain", both_ways(&style, start, end, 30));
+    assert_same_terrain("terrain", both_ways(&style, start, end, 30));
 }
 
 /// Tokyo's buildings on hills, with style-spec#1797's shadows and
@@ -779,7 +789,7 @@ fn shadows_on_terrain_after_a_gesture_draw_what_a_fresh_map_does() {
     assert!(style.contains("ground-intensity"));
     let start = (Geodetic::new(139.735, 35.68), 14.5, -20.0, 40.0);
     let end = (STATION, 16.0, 30.0, 60.0);
-    assert_same("terrain-shadows", both_ways(&style, start, end, 20));
+    assert_same_terrain("terrain-shadows", both_ways(&style, start, end, 20));
 }
 
 /// A map over terrain resized between frames draws its next frame at
@@ -1137,7 +1147,7 @@ fn every_terrain_view_fits_the_drape_atlas() {
     // Detail enough to compare: the DEM's 11 zooms overzoomed by 8.
     let start = (crest, 16.0, -120.0, 30.0);
     let end = (crest, 19.0, -167.1, 0.0);
-    assert_same("crest", both_ways(&alps, start, end, 20));
+    assert_same_terrain("crest", both_ways(&alps, start, end, 20));
 }
 
 /// The Alps terrain style's view (live tiles), turned at a pitch of 72° with the

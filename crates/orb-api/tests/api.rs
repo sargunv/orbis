@@ -1994,10 +1994,31 @@ fn the_sphere_draws_across_tile_edges_as_the_plane_does() {
     };
     let (plane, sphere) = (draw("mercator"), draw("vertical-perspective"));
     let (plane, sphere) = (plane.as_chunks::<4>().0, sphere.as_chunks::<4>().0);
-    let apart = (plane.iter().zip(sphere))
-        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(a, b)| a.abs_diff(*b) > 48))
-        .count();
-    assert_eq!(apart, 0, "{apart} pixels apart");
+    let apart: Vec<usize> = (plane.iter().zip(sphere))
+        .enumerate()
+        .filter(|(_, (a, b))| a.iter().zip(b.iter()).any(|(a, b)| a.abs_diff(*b) > 48))
+        .map(|(i, _)| i)
+        .collect();
+    // A jog moves the stroke and the fill's edge along the tile's edge:
+    // runs of pixels, hundreds at #162's metre. A lone pixel apart is a
+    // rasterizer tie on an edge both draw alike: on RADV the fill's
+    // outline pixels around one agree to a level (their positions to
+    // under 1/100 px), and the sphere's f32 rounds the tie the other way
+    // (#172).
+    let lone = |&i: &usize| {
+        let (x, y) = ((i % 256) as i64, (i / 256) as i64);
+        !apart.iter().any(|&j| {
+            let (u, v) = ((j % 256) as i64, (j / 256) as i64);
+            j != i && (u - x).abs() <= 1 && (v - y).abs() <= 1
+        })
+    };
+    let at = |i: usize| (i % 256, i / 256);
+    assert!(
+        apart.len() <= 4 && apart.iter().all(lone),
+        "{} pixels apart: {:?}",
+        apart.len(),
+        apart.iter().take(8).map(|&i| at(i)).collect::<Vec<_>>()
+    );
 }
 
 fn pixel_of(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
