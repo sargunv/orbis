@@ -59,19 +59,26 @@
 //   DEM tile and a sprite drawn on fixture.html come out the same with every
 //   context's `getImageData` flipping texels' low bits, and differently once
 //   `VideoFrame` is gone too, so the noise reaches what a canvas reads.
+// - `boot`: which build a map picks, in the worker and on the page: WebGPU
+//   in Chromium, WebGL 2 (core-gl.wasm) in Firefox, whose adapter is
+//   blocklisted headless, and in Chromium without a GPU or without WebGPU.
+//   The empty style draws transparent on WebGPU and the flat colour of
+//   WebGL 2's boot on WebGL 2 (#140), with no errors or other warnings.
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback,offline]
+//   pnpm e2e [--only=scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback,boot,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { chromium, firefox } from "playwright";
 
 import { decodePng, encodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
@@ -83,7 +90,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback",
+  "scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback,boot",
 ).split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
@@ -2702,8 +2709,77 @@ const CHECKS = {
   compare,
   gestures,
   readback,
+  boot,
   offline,
 };
+/** What WebGL 2 draws until it draws styles (orb-hal-wgpu's `BOOT_COLOR`),
+ * and what an empty style shows on WebGPU: the page. */
+const BOOTED = { webgl2: [64, 128, 191], webgpu: [255, 255, 255] };
+
+async function boot(webgpuBrowser, server) {
+  const browsers = [
+    ["Chromium", "webgpu", () => webgpuBrowser],
+    ["Firefox", "webgl2", () => firefox.launch()],
+    [
+      "Chromium without a GPU",
+      "webgl2",
+      () => chromium.launch({ args: ["--disable-gpu"] }),
+    ],
+    [
+      "Chromium without WebGPU",
+      "webgl2",
+      () =>
+        chromium.launch({
+          args: [
+            "--disable-features=WebGPU,Vulkan,WebGPUService",
+            "--use-angle=metal",
+          ],
+        }),
+    ],
+  ];
+  for (const [name, backend, launch] of browsers) {
+    const browser = await launch();
+    try {
+      for (const worker of [true, false]) {
+        const where = `${name}, ${worker ? "worker" : "page"}`;
+        const { page, errors } = await open(browser, {
+          width: 300,
+          height: 300,
+        });
+        await page.goto(`${server.url}boot.html${worker ? "" : "?worker=0"}`);
+        const booted = await page.evaluate(() => window.booted);
+        assert.equal(booted.error, undefined, where);
+        assert.equal(booted.backend, backend, where);
+        // Firefox and Chromium hand a worker the canvas.
+        assert.equal(booted.inWorker, worker, where);
+        await page.waitForTimeout(100);
+        const image = decodePng(await page.locator("#map").screenshot());
+        const at = (100 * image.width + 100) * image.channels;
+        const pixel = [...image.pixels.subarray(at, at + 3)];
+        assert.ok(
+          pixel.every((v, i) => Math.abs(v - BOOTED[backend][i]) <= 1),
+          `${where}: ${pixel}`,
+        );
+        // Browsers warn that WebGPU has no adapter (Firefox's is
+        // blocklisted), Firefox of a deprecated extension wgpu reads, and
+        // Chromium without a GPU that its software compositor reads the
+        // canvas back; WebGL 2 says what it can't draw yet.
+        const unexpected = errors.filter(
+          (e) =>
+            !/WebGPU is disabled by blocklist|^No available adapters\.$|^Failed to create WebGPU Context Provider$|WEBGL_debug_renderer_info|GPU stall due to ReadPixels|draws only a flat colour/.test(
+              e,
+            ),
+        );
+        assert.deepEqual(unexpected, [], where);
+        await page.close();
+        console.log(`boot: ${where}: ${backend}`);
+      }
+    } finally {
+      if (browser !== webgpuBrowser) await browser.close();
+    }
+  }
+}
+
 const DATA = fileURLToPath(new URL("../demo/data/", import.meta.url));
 // Styles a check writes, served beside the demo's data.
 const styles = await mkdtemp(join(tmpdir(), "orbis-e2e-"));

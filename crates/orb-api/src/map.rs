@@ -992,19 +992,29 @@ impl Map {
             };
             device.start_frame();
             self.woken.store(false, Ordering::Release);
+            let draws = orb_hal::Gpu::caps(&*device).gpu_driven();
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
             let map = &mut self.map;
-            let renderer = self
-                .renderer
-                .get_or_insert_with(|| map.create_renderer(gpu, format));
-            let report = map.render(
-                gpu,
-                renderer,
-                texture,
-                viewport,
-                target.scale() as f32,
-                frame_time,
-            );
+            let report = if draws {
+                let renderer = self
+                    .renderer
+                    .get_or_insert_with(|| map.create_renderer(gpu, format));
+                map.render(
+                    gpu,
+                    renderer,
+                    texture,
+                    viewport,
+                    target.scale() as f32,
+                    frame_time,
+                )
+            } else {
+                // GLES: a flat colour until the CPU frame driver draws (#140).
+                orb_hal_wgpu::boot_frame(gpu, texture);
+                orb_runtime::FrameReport {
+                    idle: true,
+                    ..Default::default()
+                }
+            };
             target.end(&mut device);
             device.finish_frame();
             report
@@ -1100,6 +1110,9 @@ impl Map {
         {
             let mut device = self.shared.gpu.borrow_mut();
             self.woken.store(false, Ordering::Release);
+            if !orb_hal::Gpu::caps(&*device).gpu_driven() {
+                return Ok(());
+            }
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
             let map = &mut self.map;
             let renderer = self

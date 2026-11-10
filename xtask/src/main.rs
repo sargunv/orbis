@@ -30,14 +30,15 @@ cargo xtask <task>
                to the packages changed since <rev>'s merge base with HEAD
                (default origin/main), the working tree and untracked files,
                and every package depending on those
-  clippy [--fix]  clippy over the workspace, native and wasm32, denying
+  clippy [--fix]  clippy over the workspace, native and wasm32 (WebGL 2 too), denying
                warnings; --fix applies its suggestions
   android [--run [--leakcheck]]  the Android app: orb-android as
                liborbis.so for arm64-v8a (NDK, API 24) in a NativeActivity,
                packaged with Gradle; --run installs it on this worktree's
                Android emulator and starts it; --leakcheck checks that maps
                dropped there leave no GPU resources behind
-  web [--names]  build core.wasm into web/pkg, report sizes; --names also
+  web [--names]  build core.wasm and core-gl.wasm (WebGL 2) into web/pkg,
+               report sizes; --names also
                writes it with its function names to target/web/core-names.wasm
                (for `pnpm -C web coverage`)
   pages        build the Pages site (web, then Vite) into web/dist; the
@@ -150,6 +151,25 @@ fn rt(args: &[String]) -> Result<(), String> {
     cargo(&command)
 }
 
+/// Clippy over core-gl.wasm's build: orb-web on WebGL 2, with `extra`
+/// arguments (`--fix`'s).
+fn gl_clippy(extra: &[&str]) -> Result<(), String> {
+    let mut gl = vec![
+        "clippy",
+        "--quiet",
+        "-p",
+        "orb-web",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--no-default-features",
+        "--features",
+        "gl",
+    ];
+    gl.extend(extra);
+    gl.extend(["--", "-D", "warnings"]);
+    cargo(&gl)
+}
+
 /// The fast pre-push check from `AGENTS.md`.
 fn check(args: &[String]) -> Result<(), String> {
     let mut affected = false;
@@ -201,7 +221,8 @@ fn format_check() -> Result<(), String> {
 }
 
 /// `clippy [--fix]`: clippy over the workspace natively and, without the
-/// native-only crates, for wasm32, denying warnings; `--fix` applies its
+/// native-only crates, for wasm32 (and orb-web's WebGL 2 build), denying
+/// warnings; `--fix` applies its
 /// suggestions instead. hk's clippy step runs this.
 fn clippy(args: &[String]) -> Result<(), String> {
     let fix = match args {
@@ -230,7 +251,8 @@ fn clippy(args: &[String]) -> Result<(), String> {
     }
     wasm.extend(fix_args);
     wasm.extend(["--", "-D", "warnings"]);
-    cargo(&wasm)
+    cargo(&wasm)?;
+    gl_clippy(fix_args)
 }
 
 /// `check --affected`: the same steps, for the packages that changed since
@@ -268,6 +290,9 @@ fn affected_check(base: &str) -> Result<(), String> {
         }
         wasm.extend(["--", "-D", "warnings"]);
         cargo(&wasm)?;
+        if selection.contains("orb-web") {
+            gl_clippy(&[])?;
+        }
     }
 
     if selection.contains("orb-hal-wgpu") {

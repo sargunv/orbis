@@ -1,5 +1,7 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
-//! `web/pkg/` and reports its sizes, raw, brotli and by crate (twiggy).
+//! `web/pkg/` and reports its sizes, raw, brotli and by crate (twiggy);
+//! then `core-gl.wasm`, the same crates on WebGL 2 for browsers without a
+//! WebGPU adapter, and `shaper.wasm`.
 //! Size is watched, not a gate: it warns when a module grows past its
 //! watch level, and never fails. `--names` also writes core.wasm with its
 //! function names, for `pnpm -C web coverage`.
@@ -15,12 +17,13 @@ const OUT_DIR: &str = "web/pkg";
 /// Where `cargo xtask web --names` writes `core.wasm` with its function names.
 const NAMED_CORE: &str = "target/web/core-names.wasm";
 
-/// The brotli sizes, in KiB, past which `core.wasm` and `shaper.wasm` warn:
-/// a few percent above what each weighs now, so crossing one means
-/// something grew. Find what in the per-crate report; if the growth earns
-/// its bytes, raise the level to the new size plus the same margin, and
-/// when a change shrinks a module, lower it.
+/// The brotli sizes, in KiB, past which `core.wasm`, `core-gl.wasm` and
+/// `shaper.wasm` warn: a few percent above what each weighs now, so
+/// crossing one means something grew. Find what in the per-crate report;
+/// if the growth earns its bytes, raise the level to the new size plus the
+/// same margin, and when a change shrinks a module, lower it.
 const CORE_WATCH_KIB: usize = 855;
+const CORE_GL_WATCH_KIB: usize = 1100;
 const SHAPER_WATCH_KIB: usize = 380;
 
 /// Crates whose code the size report attributes separately.
@@ -44,12 +47,11 @@ const CRATES: &[&str] = &[
     "std",
 ];
 
-/// Builds both modules; `names` also writes `core.wasm` with its function
+/// Builds the modules; `names` also writes `core.wasm` with its function
 /// names to [`NAMED_CORE`], for `pnpm -C web coverage`.
 pub(crate) fn build(names: bool) -> Result<(), String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let out = root.join(OUT_DIR);
-    let built = root.join("target/wasm32-unknown-unknown/wasm-release/orb_web.wasm");
 
     let named = root.join(NAMED_CORE);
     // A copy from an earlier build no longer matches web/pkg's: if its
@@ -58,8 +60,8 @@ pub(crate) fn build(names: bool) -> Result<(), String> {
         let _ = std::fs::remove_file(&named);
     }
     let named = names.then_some(named);
-    let core = module(&root, "orb-web", "core", named.as_deref())?;
-    report_crates(&built);
+    let core = module(&root, "orb-web", "core", &[], named.as_deref())?;
+    report_crates(&core.built);
     let js = std::fs::read(out.join("core.js")).map_err(|e| format!("core.js: {e}"))?;
     eprintln!(
         "core.wasm: {} KiB raw, {} KiB brotli ({} bytes); core.js {} KiB raw ({OUT_DIR})",
@@ -69,8 +71,23 @@ pub(crate) fn build(names: bool) -> Result<(), String> {
         js.len() / 1024,
     );
     watch("core.wasm", core.brotli, CORE_WATCH_KIB);
+    // The same map on WebGL 2, fetched only where WebGPU has no adapter.
+    let gl = module(
+        &root,
+        "orb-web",
+        "core-gl",
+        &["--no-default-features", "--features", "gl"],
+        None,
+    )?;
+    report_crates(&gl.built);
+    eprintln!(
+        "core-gl.wasm: {} KiB raw, {} KiB brotli (WebGL 2 only)",
+        gl.raw / 1024,
+        gl.brotli / 1024,
+    );
+    watch("core-gl.wasm", gl.brotli, CORE_GL_WATCH_KIB);
     // `font-faces` drawing, loaded the first time a style declares a file.
-    let shaper = module(&root, "orb-shaper", "shaper", None)?;
+    let shaper = module(&root, "orb-shaper", "shaper", &[], None)?;
     eprintln!(
         "shaper.wasm: {} KiB raw, {} KiB brotli (lazy)",
         shaper.raw / 1024,
@@ -101,23 +118,27 @@ pub(crate) fn pages() -> Result<(), String> {
 struct Sizes {
     raw: usize,
     brotli: usize,
+    /// The module cargo built, before wasm-opt, with its function names.
+    built: std::path::PathBuf,
 }
 
-/// Builds `package`, binds it as `<name>.js` and `<name>_bg.wasm` in
-/// [`OUT_DIR`] and shrinks it; and shrinks it into `names` too, keeping
-/// its function names.
-fn module(root: &Path, package: &str, name: &str, names: Option<&Path>) -> Result<Sizes, String> {
-    let built = root.join(format!(
-        "target/wasm32-unknown-unknown/wasm-release/{}.wasm",
-        package.replace('-', "_")
-    ));
+/// Builds `package` with `features` (cargo's feature arguments), binds it
+/// as `<name>.js` and `<name>_bg.wasm` in [`OUT_DIR`] and shrinks it; and
+/// shrinks it into `names` too, keeping its function names.
+fn module(
+    root: &Path,
+    package: &str,
+    name: &str,
+    features: &[&str],
+    names: Option<&Path>,
+) -> Result<Sizes, String> {
     // A panic traps at once, with no message. On wasm32-unknown-unknown
     // std's stderr is a sink: the message was formatted only to be dropped,
     // and that formatting, with the `Debug` impls and source locations it
     // reaches, was 5% of core.wasm. It takes std rebuilt with the module
     // and a flag stable Rust keeps unstable, so this build alone sets
     // RUSTC_BOOTSTRAP.
-    let args = [
+    let mut args = vec![
         "build",
         "--quiet",
         "-p",
@@ -130,10 +151,17 @@ fn module(root: &Path, package: &str, name: &str, names: Option<&Path>) -> Resul
         "--config",
         r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort"]"#,
     ];
+    args.extend(features);
     eprintln!("$ RUSTC_BOOTSTRAP=1 cargo {}", args.join(" "));
     run(Command::new(env!("CARGO"))
         .env("RUSTC_BOOTSTRAP", "1")
-        .args(args))?;
+        .args(&args))?;
+    // Builds with other features share the path: each is read before the
+    // next.
+    let built = root.join(format!(
+        "target/wasm32-unknown-unknown/wasm-release/{}.wasm",
+        package.replace('-', "_")
+    ));
     let out = root.join(OUT_DIR);
     run(Command::new("wasm-bindgen")
         .arg(&built)
@@ -148,7 +176,7 @@ fn module(root: &Path, package: &str, name: &str, names: Option<&Path>) -> Resul
     }
     run(&mut wasm_opt(&wasm, &wasm))?;
     let bytes = std::fs::read(&wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
-    sizes(&bytes)
+    sizes(&bytes, built)
 }
 
 /// Shrinks `input` into `output`.
@@ -186,7 +214,7 @@ fn wasm_opt(input: &Path, output: &Path) -> Command {
     command
 }
 
-fn sizes(bytes: &[u8]) -> Result<Sizes, String> {
+fn sizes(bytes: &[u8], built: std::path::PathBuf) -> Result<Sizes, String> {
     let mut brotli = Vec::new();
     {
         let mut writer = brotli::CompressorWriter::new(&mut brotli, 4096, 11, 22);
@@ -195,6 +223,7 @@ fn sizes(bytes: &[u8]) -> Result<Sizes, String> {
     Ok(Sizes {
         raw: bytes.len(),
         brotli: brotli.len(),
+        built,
     })
 }
 

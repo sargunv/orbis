@@ -5,11 +5,11 @@
 //! and makes the pipelines with wgpu, whose device is shared between
 //! threads; a request the view needs moves to the front. Each task notes
 //! when it started its job, so a compile that never returns (a driver hung
-//! in its compiler) shows as [`Compiler::hung`]. In the browser, jobs compile with
+//! in its compiler) shows as [`Compiler::hung`]. On WebGPU, jobs compile with
 //! `createRenderPipelineAsync` / `createComputePipelineAsync`; once the
 //! promise resolves, wgpu makes the same pipeline, which the browser's
 //! pipeline cache (Dawn's, keyed by content) returns without compiling it
-//! again. wgpu has no async creation yet (gfx-rs/wgpu#3794).
+//! again. wgpu has no async creation yet (gfx-rs/wgpu#3794). WebGL 2's: `webgl`.
 
 use std::sync::OnceLock;
 
@@ -37,7 +37,7 @@ pub(crate) struct Module {
     entries: Vec<EntryModule>,
     made: OnceLock<wgpu::ShaderModule>,
     /// The browser's module for async compiles.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgpu)]
     raw: std::cell::OnceCell<wasm_bindgen::JsValue>,
 }
 
@@ -56,7 +56,7 @@ impl Module {
                 })
                 .collect(),
             made: OnceLock::new(),
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(webgpu)]
             raw: Default::default(),
         })
     }
@@ -183,7 +183,7 @@ pub(crate) struct Done {
 }
 
 impl Job {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), webgl))]
     pub(crate) fn id(&self) -> PipelineId {
         match self {
             Self::Render(slot, _) => PipelineId::Render(RenderPipelineId(*slot)),
@@ -243,7 +243,7 @@ impl Job {
 impl Job {
     /// Makes the pipeline the browser compiled: errors already rejected
     /// its promise.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgpu)]
     fn compile(&self, device: &wgpu::Device) -> Result<Built, String> {
         Ok(self.build(device))
     }
@@ -307,8 +307,8 @@ impl RenderJob {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::Compiler;
-#[cfg(target_arch = "wasm32")]
-pub(crate) use web::Compiler;
+#[cfg(webgpu)]
+pub(crate) use webgpu::Compiler;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
@@ -591,8 +591,8 @@ mod native {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-mod web {
+#[cfg(webgpu)]
+mod webgpu {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::rc::Rc;
@@ -947,5 +947,15 @@ mod web {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) use web::bind_group_layout as raw_bind_group_layout;
+#[cfg(webgpu)]
+pub(crate) use webgpu::bind_group_layout as raw_bind_group_layout;
+
+#[cfg(all(target_arch = "wasm32", not(any(webgpu, webgl))))]
+compile_error!("orb-hal-wgpu on the web needs one of the `webgpu` and `gl` features");
+#[cfg(all(webgpu, webgl))]
+compile_error!("orb-hal-wgpu on the web takes one of the `webgpu` and `gl` features, not both");
+
+#[cfg(webgl)]
+mod webgl;
+#[cfg(webgl)]
+pub(crate) use webgl::Compiler;

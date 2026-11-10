@@ -178,9 +178,15 @@ export default defineConfig({
     assetsInlineLimit: 0,
     rolldownOptions: {
       input: Object.fromEntries(
-        ["index", "bench", "fixture", "load", "measure", "scenario"].map(
-          (name) => [name, `${demo}${name}.html`],
-        ),
+        [
+          "index",
+          "bench",
+          "boot",
+          "fixture",
+          "load",
+          "measure",
+          "scenario",
+        ].map((name) => [name, `${demo}${name}.html`]),
       ),
     },
   },

@@ -5,6 +5,7 @@
 // (map.ts) reaches it through a link (link.ts) and hears from it by
 // reports: the map's state after each frame, with its events.
 
+import type { Backend, Build } from "./builds.ts";
 import { frameLoop } from "./frames.ts";
 import { startHost, type Core, type CoreOptions, type Host } from "./hosts.ts";
 import type {
@@ -222,10 +223,10 @@ export class Engine {
     );
   }
 
-  /** The map in `setup.canvas` once `compiling` has compiled core.wasm,
-   * with `workers` (spawned on the same module); `report` hears from it. */
+  /** The map in `setup.canvas` once `compiling` has compiled its build,
+   * with `workers` (spawned on the same build); `report` hears from it. */
   static async start(
-    compiling: Promise<WebAssembly.Module>,
+    compiling: Promise<Build>,
     workers: Workers,
     setup: EngineSetup,
     report: (report: Report) => void,
@@ -257,6 +258,11 @@ export class Engine {
 
   get #core(): Core {
     return this.#host.core;
+  }
+
+  /** The GPU API the map draws with. */
+  get backend(): Backend {
+    return this.#host.backend;
   }
 
   /** What the page reads without asking. */

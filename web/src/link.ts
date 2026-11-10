@@ -3,6 +3,7 @@
 // calls where the map runs on the page. Either way calls answer with
 // promises, in order, and the map reports after its frames.
 
+import type { Backend } from "./builds.ts";
 import type { Engine, InputKind, MapState, Report } from "./engine.ts";
 import type { CoreOptions } from "./hosts.ts";
 import { answerWorker, connectWorker } from "./requests.ts";
@@ -11,7 +12,7 @@ import type { CameraOptions, Constraints } from "./types.ts";
 /** The map's methods the page calls. */
 type Calls = Omit<
   { [K in keyof Engine]: Engine[K] },
-  "state" | "input" | "wake"
+  "state" | "input" | "wake" | "backend"
 >;
 export type Method = keyof Calls;
 type Result<K extends Method> = Awaited<ReturnType<Calls[K]>>;
@@ -19,6 +20,8 @@ type Result<K extends Method> = Awaited<ReturnType<Calls[K]>>;
 export interface Link {
   /** Whether the map runs in the map worker. */
   readonly worker: boolean;
+  /** The GPU API the map draws with. */
+  readonly backend: Backend;
   /** The map's state: now on the page; from a worker, as of its last
    * report or answer. */
   state(): MapState;
@@ -58,6 +61,7 @@ export async function directLink(
   let stopped = false;
   return {
     worker: false,
+    backend: engine.backend,
     state: () => engine.state(),
     call(method, ...args) {
       // As from a worker: the wasm map is freed.
@@ -94,11 +98,14 @@ export interface WorkerInit {
   jobWorkers: number;
   /** The page's `performance.timeOrigin`: event times are on its clock. */
   origin: number;
+  /** Whether the page has WebGPU: a worker without it then leaves the map
+   * to the page, rather than draw WebGL 2. */
+  pageWebgpu: boolean;
 }
 
 /** The map worker's messages to the page. */
 export type FromWorker =
-  | { ready: MapState }
+  | { ready: MapState; backend: Backend }
   | { unsupported: string }
   | { failed: string }
   | { reply: number; result?: unknown; error?: string; state: MapState }
@@ -113,9 +120,10 @@ export type ToWorker =
 
 /**
  * Starts the map in a worker, drawing into `canvas`'s offscreen self,
- * where it compiles core.wasm and starts its job and placement workers.
- * Resolves to its link, or to why the worker can't draw (no WebGPU
- * there): the page can still run the map itself, on another canvas.
+ * where it compiles its build and starts its job and placement workers.
+ * Resolves to its link, or to why the worker can't draw (no WebGPU there
+ * while the page has it, or no GPU at all): the page can still run the
+ * map itself, on another canvas.
  */
 export function workerLink(
   canvas: HTMLCanvasElement,
@@ -132,6 +140,7 @@ export function workerLink(
   post({ init: { ...init, canvas: offscreen } }, [offscreen]);
   const { deliver, listen } = reports();
   let state: MapState | undefined;
+  let backend: Backend = "webgpu";
   let next = 0;
   const waiting = new Map<
     number,
@@ -140,6 +149,9 @@ export function workerLink(
   let stopped = false;
   const link: Link = {
     worker: true,
+    get backend() {
+      return backend;
+    },
     state: () => state!,
     call(method, ...args) {
       if (stopped) return Promise.reject(new Error("the map was removed"));
@@ -191,6 +203,7 @@ export function workerLink(
         else call?.resolve(data.result as never);
       } else if ("ready" in data) {
         state = data.ready;
+        backend = data.backend;
         resolve(link);
       } else {
         link.destroy();

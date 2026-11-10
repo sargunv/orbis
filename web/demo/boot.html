@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Orbis · boot check</title>
+<style>
+  html,
+  body {
+    margin: 0;
+    background: #fff;
+  }
+  #map {
+    width: 200px;
+    height: 200px;
+  }
+</style>
+<div id="map"></div>
+<script type="module">
+  // `pnpm -C web e2e --only=boot`'s page: a map on an empty style.
+  // `window.booted` resolves, once it has drawn a frame, to the backend it
+  // drew with and whether it runs in a worker (`?worker=0` keeps it on the
+  // page), or to why it couldn't start.
+  import { createMap } from "orbis";
+
+  const params = new URLSearchParams(location.search);
+  window.booted = (async () => {
+    const map = await createMap({
+      container: document.getElementById("map"),
+      style: { version: 8, sources: {}, layers: [] },
+      worker: params.get("worker") !== "0",
+    });
+    await new Promise((resolve) => {
+      const drawn = () =>
+        map.stats ? resolve() : requestAnimationFrame(drawn);
+      drawn();
+    });
+    return { backend: map.backend, inWorker: map.inWorker };
+  })().catch((e) => ({ error: String(e instanceof Error ? e.message : e) }));
+</script>

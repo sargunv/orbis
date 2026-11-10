@@ -28,7 +28,7 @@ pub(crate) struct Readback {
     height: u32,
 }
 
-/// An instance, configured from the environment, and its default adapter.
+/// An instance, configured from the environment ([`with_env`]), and its default adapter.
 ///
 /// Without wgpu's indirect-call validation unless the environment asks
 /// for it (`WGPU_VALIDATION_INDIRECT_CALL=1`): Orbis's indirect arguments
@@ -46,7 +46,7 @@ async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter, Option<String>), St
         .flags
         .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut descriptor = descriptor.with_env();
+    let mut descriptor = with_env(descriptor);
     #[cfg(windows)]
     let compiler = Some(crate::dx12::choose(&mut descriptor));
     #[cfg(not(windows))]
@@ -70,18 +70,18 @@ async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter, Option<String>), St
 
 impl WgpuGpu {
     /// A device on the default adapter with WebGPU's default limits, without
-    /// a surface. `WGPU_BACKEND` and the other wgpu environment variables
+    /// a surface. `ORB_BACKEND`, `WGPU_BACKEND` and wgpu's other variables
     /// choose the adapter. Natively the device keeps its instance, so it can
     /// also draw to window surfaces.
     pub async fn offscreen() -> Result<Self, String> {
         let (instance, adapter, compiler) = adapter().await?;
         // Orbis draws indirectly from compute; devices without that (the
-        // iOS simulator's Metal) can't draw it.
+        // iOS simulator's Metal) can't draw it; GL boots to flat frames (#140).
         let downlevel = adapter.get_downlevel_capabilities().flags;
         let needed = wgpu::DownlevelFlags::COMPUTE_SHADERS
             | wgpu::DownlevelFlags::INDIRECT_EXECUTION
             | wgpu::DownlevelFlags::VERTEX_STORAGE;
-        if !downlevel.contains(needed) {
+        if !downlevel.contains(needed) && adapter.get_info().backend != wgpu::Backend::Gl {
             return Err(format!(
                 "{} lacks {:?}, which Orbis needs",
                 adapter.get_info().name,
@@ -311,4 +311,22 @@ pub(crate) async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wg
         .slice(..)
         .get_mapped_range()
         .expect("readback buffer is mapped")
+}
+
+/// Picks the backends a native device may run on, over wgpu's own
+/// `WGPU_BACKEND`: a comma list of `vulkan`, `metal`, `dx12` and `gl`, for
+/// testing one a platform has beside its default (GLES on Android).
+#[cfg(not(target_arch = "wasm32"))]
+const BACKEND: &str = "ORB_BACKEND";
+
+/// `descriptor` configured from wgpu's environment variables and
+/// [`BACKEND`].
+fn with_env(descriptor: wgpu::InstanceDescriptor) -> wgpu::InstanceDescriptor {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut descriptor = descriptor.with_env();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(names) = std::env::var(BACKEND) {
+        descriptor.backends = wgpu::Backends::from_comma_list(&names);
+    }
+    descriptor
 }

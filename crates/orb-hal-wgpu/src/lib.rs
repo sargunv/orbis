@@ -1,5 +1,6 @@
-//! [`orb_hal::Gpu`] on wgpu: browser WebGPU, Vulkan, Metal and D3D12, chosen
-//! at runtime.
+//! [`orb_hal::Gpu`] on wgpu: Vulkan, Metal, D3D12 and GLES natively, chosen
+//! at runtime; in the browser, WebGPU or WebGL 2, chosen by the build
+//! (the `webgpu` and `gl` features).
 //!
 //! [`WgpuGpu`] owns every wgpu handle behind the ids it hands out. Hosts
 //! register their own targets (a surface frame, an offscreen texture) with
@@ -140,7 +141,8 @@ pub struct Uploaded {
     /// with [`WgpuGpu::register_bytes`].
     pub from_core: u64,
     /// From JS `ArrayBuffer`s registered with
-    /// `WgpuGpu::register_array_buffer`, never copied into wasm memory.
+    /// `WgpuGpu::register_array_buffer`: on WebGPU never copied into wasm
+    /// memory, on WebGL 2 copied through it.
     pub from_js: u64,
     /// Texel bytes written to textures from Rust memory.
     pub texels_from_core: u64,
@@ -150,7 +152,10 @@ pub struct Uploaded {
 }
 
 /// A write from core memory: gathered when small, or when it overlaps a
-/// gathered one it must land after; otherwise straight to the queue.
+/// gathered one it must land after; otherwise straight to the queue. On
+/// WebGL 2 index buffers always take the queue: WebGL copies nothing into
+/// an element buffer from any other kind of buffer, and wgpu's own writes
+/// land through its CPU-side staging.
 fn write_core(
     writes: &mut writes::Writes,
     queue: &wgpu::Queue,
@@ -159,6 +164,11 @@ fn write_core(
     offset: u64,
     data: &[u8],
 ) {
+    #[cfg(webgl)]
+    if buffers[id.0].usage().contains(wgpu::BufferUsages::INDEX) {
+        queue.write_buffer(&buffers[id.0], offset, data);
+        return;
+    }
     if data.len() <= writes::GATHERED || writes.overlaps(id, offset, data.len() as u64) {
         writes.gather(id, offset, data);
     } else {
@@ -170,7 +180,7 @@ fn write_core(
 #[derive(Debug)]
 enum HostBytes {
     /// A JS `ArrayBuffer`, written with `GPUQueue.writeBuffer` without
-    /// entering wasm memory.
+    /// entering wasm memory (on WebGL 2, copied through it).
     #[cfg(target_arch = "wasm32")]
     Js(js_sys::ArrayBuffer),
     /// Bytes in Rust memory, for native hosts and tests.
@@ -181,7 +191,7 @@ enum HostBytes {
 struct BindGroupLayout {
     layout: wgpu::BindGroupLayout,
     /// The browser's own, for async compiles.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgpu)]
     raw: wasm_bindgen::JsValue,
 }
 
@@ -252,6 +262,12 @@ impl WgpuGpu {
     }
 
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        // GLES runs the CPU frame driver, as WebGL 2 does, even where it
+        // offers compute (#140); WebGL 2's limits already say so.
+        #[cfg(not(target_arch = "wasm32"))]
+        let gl = device.adapter_info().backend == wgpu::Backend::Gl;
+        #[cfg(target_arch = "wasm32")]
+        let gl = false;
         let limits = device.limits();
         let caps = Caps {
             limits: Limits {
@@ -268,9 +284,9 @@ impl WgpuGpu {
             // WebGPU and the native back ends have all of these; a
             // downlevel device (wgpu's GL back end) reports no compute
             // and no vertex-stage storage in its limits.
-            compute: limits.max_compute_invocations_per_workgroup > 0,
-            indirect: limits.max_compute_invocations_per_workgroup > 0,
-            vertex_storage: limits.max_storage_buffers_per_shader_stage > 0,
+            compute: !gl && limits.max_compute_invocations_per_workgroup > 0,
+            indirect: !gl && limits.max_compute_invocations_per_workgroup > 0,
+            vertex_storage: !gl && limits.max_storage_buffers_per_shader_stage > 0,
             float_targets: limits.max_compute_invocations_per_workgroup > 0,
             multi_draw: false,
         };
@@ -431,8 +447,8 @@ impl WgpuGpu {
     }
 
     /// Calls `wake` whenever a pipeline's `create*PipelineAsync` promise
-    /// settles, so a host that stopped drawing draws the layers that waited
-    /// for it.
+    /// settles (on WebGL 2, while pipelines wait to compile), so a host
+    /// that stopped drawing draws the layers that waited for it.
     #[cfg(target_arch = "wasm32")]
     pub fn set_compile_wake(&self, wake: std::rc::Rc<dyn Fn()>) {
         self.compiler.set_wake(wake);
@@ -468,11 +484,16 @@ impl WgpuGpu {
         self.hung.as_deref()
     }
 
-    fn take_compiled(&mut self) {
+    /// Takes the compiles that finished; on WebGL 2, `compile` compiles
+    /// the next for a frame's share of time first.
+    #[cfg_attr(not(webgl), allow(unused_variables))]
+    fn take_compiled(&mut self, compile: bool) {
         #[cfg(not(target_arch = "wasm32"))]
         let done: Vec<_> = self.compiler.take().collect();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(webgpu)]
         let done: Vec<_> = self.compiler.take(&self.device).collect();
+        #[cfg(webgl)]
+        let done = self.compiler.take(&self.device, compile);
         for done in done {
             self.pending -= 1;
             let built = match done.built {
@@ -517,13 +538,18 @@ impl WgpuGpu {
             let _ = layouts;
             self.compiler.submit(&self.device, job);
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(webgpu)]
         {
             let raw = layouts
                 .iter()
                 .map(|id| self.bind_group_layouts[id.0].raw.clone())
                 .collect();
             self.compiler.submit(&self.device, raw, job);
+        }
+        #[cfg(webgl)]
+        {
+            let _ = layouts;
+            self.compiler.submit(job);
         }
     }
 
@@ -812,7 +838,25 @@ impl Gpu for WgpuGpu {
                     &data[range],
                 );
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(webgl)]
+            HostBytes::Js(data) => {
+                self.uploaded.from_js += len;
+                let data = js_sys::Uint8Array::new_with_byte_offset_and_length(
+                    data,
+                    range.start as u32,
+                    len as u32,
+                )
+                .to_vec();
+                write_core(
+                    &mut self.writes,
+                    &self.queue,
+                    &self.buffers,
+                    id,
+                    offset,
+                    &data,
+                );
+            }
+            #[cfg(webgpu)]
             HostBytes::Js(data) => {
                 self.uploaded.from_js += len;
                 // It lands before gathered writes: those it overlaps go first.
@@ -998,6 +1042,10 @@ impl Gpu for WgpuGpu {
                 depth_or_array_layers: 1,
             },
         );
+        // WebGL 2 copies at the next submission, which must come before
+        // the image is released (an `ImageBitmap` closed).
+        #[cfg(webgl)]
+        self.queue.submit([]);
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1081,7 +1129,7 @@ impl Gpu for WgpuGpu {
                     label: Some(desc.label),
                     entries: &entries,
                 }),
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(webgpu)]
             raw: compile::raw_bind_group_layout(
                 self.device
                     .as_webgpu()
@@ -1195,12 +1243,12 @@ impl Gpu for WgpuGpu {
         if ready(self) {
             return true;
         }
-        self.take_compiled();
+        self.take_compiled(false);
         ready(self)
     }
 
     fn poll_pipelines(&mut self) -> PipelineCounts {
-        self.take_compiled();
+        self.take_compiled(true);
         PipelineCounts {
             made: self.pipelines_created,
             pending: self.pending,
@@ -1448,4 +1496,26 @@ impl Gpu for WgpuGpu {
             timing.end(timing::now() - started);
         }
     }
+}
+
+/// What a device the renderer can't draw on yet shows (premultiplied RGBA):
+/// a flat colour no style draws by accident, so a host can tell the map
+/// booted. GL devices draw only this until the CPU frame driver draws on
+/// them (#140).
+pub const BOOT_COLOR: [f64; 4] = [0.25, 0.5, 0.75, 1.0];
+
+/// Clears `target` to [`BOOT_COLOR`]: a frame on a device the renderer
+/// can't draw on yet.
+pub fn boot_frame(gpu: &mut dyn Gpu, target: TextureId) {
+    gpu.submit(&[Pass::Render(RenderPass {
+        label: "boot",
+        colors: vec![ColorAttachment {
+            target,
+            resolve: None,
+            store: StoreOp::Store,
+            load: LoadOp::Clear(BOOT_COLOR),
+        }],
+        depth: None,
+        commands: Vec::new(),
+    })]);
 }

@@ -1,13 +1,8 @@
 // The wasm map, with its job workers and placement worker (workers.ts),
 // and its recovery from a lost GPU: in the map worker or on the page.
 
-import init, {
-  createMap as createCoreMap,
-  reloadRegions,
-  setPreloads,
-  setRequestHook,
-  type OrbisMap as Core,
-} from "../pkg/core.js";
+import type { OrbisMap as Core } from "../pkg/core.js";
+import { bindings, type Backend, type Build } from "./builds.ts";
 import { takePreload } from "./preload.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
@@ -48,6 +43,8 @@ export interface HostCallbacks {
 /** The wasm map and what it runs on. */
 export interface Host {
   readonly core: Core;
+  /** The GPU API it draws with: its build's. */
+  readonly backend: Backend;
   resize(width: number, height: number, ratio: number): void;
   /** Loses the GPU on purpose, to exercise recovery. */
   loseDevice(): void;
@@ -64,9 +61,9 @@ export interface Host {
 }
 
 /** The map on this thread, drawing into `canvas`, once `compiling` has
- * compiled core.wasm; `workers`, spawned on the same module, are its. */
+ * compiled its build; `workers`, spawned on the same build, are its. */
 export async function startHost(
-  compiling: Promise<WebAssembly.Module>,
+  compiling: Promise<Build>,
   workers: Workers,
   canvas: HTMLCanvasElement | OffscreenCanvas,
   style: string,
@@ -91,11 +88,15 @@ export async function startHost(
   const jobs = workers.jobs;
   const ports = jobs.map((j) => j.port);
   let placement = workers.placement;
-  let module: WebAssembly.Module;
+  let build: Build;
   let core: Core;
+  let reloadRegions: () => void;
   try {
-    module = await compiling;
-    await init({ module_or_path: module });
+    build = await compiling;
+    const glue = await bindings(build.backend);
+    const { createMap: createCoreMap, setPreloads, setRequestHook } = glue;
+    reloadRegions = glue.reloadRegions;
+    await glue.default({ module_or_path: build.module });
     connectModule(setRequestHook);
     setPreloads(takePreload);
     core = await createCoreMap(
@@ -111,6 +112,12 @@ export async function startHost(
     );
   } catch (e) {
     terminateWorkers(workers);
+    // Neither WebGPU nor WebGL 2 draws here.
+    const why = (await compiling.catch(() => undefined))?.noWebgpu;
+    if (why)
+      throw new Error(
+        `Orbis needs WebGPU or WebGL 2. WebGPU: ${why}; WebGL 2: ${e instanceof Error ? e.message : e}`,
+      );
     throw e;
   }
   // A placement worker whose wasm trapped says so and closes; one that
@@ -121,7 +128,7 @@ export async function startHost(
     const replace = (why: string) => {
       if (placement !== current) return;
       current.worker.terminate();
-      placement = spawnPlacement(module);
+      placement = spawnPlacement(build);
       listen();
       core.placementWorkerLost(why);
     };
@@ -154,7 +161,7 @@ export async function startHost(
       const replace = at(replaced, i) < REPLACEMENTS;
       replaced[i] = at(replaced, i) + 1;
       if (replace) {
-        const job = spawnJob(module);
+        const job = spawnJob(build);
         jobs[i] = job;
         ports[i] = job.port;
         released[i] = connectWorker(job.port);
@@ -178,6 +185,7 @@ export async function startHost(
   let size: [number, number, number] | undefined;
   return {
     core,
+    backend: build.backend,
     resize: (width, height, ratio) => {
       size = [width, height, ratio];
       core.resize(width, height, ratio);

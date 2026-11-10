@@ -415,6 +415,11 @@ pub async fn create_map(
     let canvas = Canvas::new(canvas, size, id)
         .await
         .map_err(|e| JsError::new(&e))?;
+    if canvas::GL {
+        web_sys::console::warn_1(
+            &"orbis: on WebGL 2 the map draws only a flat colour so far (#140)".into(),
+        );
+    }
     Ok(OrbisMap {
         id,
         map,
@@ -934,6 +939,11 @@ impl OrbisMap {
     /// frame is drawn.
     #[wasm_bindgen(js_name = readNextFrame)]
     pub fn read_next_frame(&mut self, premultiplied: bool) -> js_sys::Promise {
+        if canvas::GL {
+            return js_sys::Promise::reject(&JsValue::from_str(
+                "a WebGL 2 canvas's frames can't be read back; take a snapshot",
+            ));
+        }
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.read_next = Some(sender);
         let bgra = snapshot::bgra(self.canvas.format().color);
@@ -1014,6 +1024,13 @@ impl OrbisMap {
         let (report, pixels) = self
             .canvas
             .frame(self.read_next.is_some(), |gpu, target, format| {
+                if canvas::GL {
+                    orb_hal_wgpu::boot_frame(gpu, target);
+                    return orb_runtime::FrameReport {
+                        idle: true,
+                        ..Default::default()
+                    };
+                }
                 let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
                 map.render(gpu, renderer, target, viewport, ratio, frame_time)
             })
@@ -1066,7 +1083,7 @@ impl OrbisMap {
     /// and once the map is made: its style's tiles are asked for before
     /// its first frame draws.
     pub fn prepare(&mut self) {
-        if self.canvas.lost() || self.snapshot.is_some() {
+        if self.canvas.lost() || self.snapshot.is_some() || canvas::GL {
             return;
         }
         let viewport = self.viewport();

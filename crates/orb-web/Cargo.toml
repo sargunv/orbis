@@ -9,6 +9,13 @@ version.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["webgpu"]
+# The GPU backend, one of the two: core.wasm draws with WebGPU, core-gl.wasm
+# (`--no-default-features --features gl`) with WebGL 2.
+webgpu = ["orb-hal-wgpu/webgpu"]
+gl = ["orb-hal-wgpu/gl"]
+
 [dependencies]
 futures-channel.workspace = true
 glam.workspace = true

@@ -68,6 +68,10 @@ impl OrbisMap {
         if self.canvas.lost() {
             return Err(JsError::new("the GPU was lost"));
         }
+        if crate::canvas::GL {
+            orb_hal_wgpu::boot_frame(self.canvas.gpu(), snapshot.texture);
+            return Ok(true);
+        }
         let format = self.canvas.format();
         let (map, gpu) = (&mut self.map, self.canvas.gpu());
         let renderer = self

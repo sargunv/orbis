@@ -5,6 +5,7 @@
 //
 // Page → worker: `ToWorker` (link.ts), and the page's answers to request
 // transform questions (requests.ts). Worker → page: `FromWorker`.
+import { pickBuild } from "./builds.ts";
 import { Engine, type Report } from "./engine.ts";
 import type { FromWorker, ToWorker, WorkerInit } from "./link.ts";
 import { preloadStyle } from "./preload.ts";
@@ -20,7 +21,6 @@ const post = (message: FromWorker, transfer: Transferable[] = []) =>
 /** The page's request transform, asked over this worker's port. */
 const page = askPage(self as unknown as MessagePort);
 let engine: Engine | undefined;
-const CORE = new URL("../pkg/core_bg.wasm", import.meta.url);
 
 /** An answer's pixels, which move to the page. */
 const buffers = (value: unknown): Transferable[] => {
@@ -30,22 +30,22 @@ const buffers = (value: unknown): Transferable[] => {
 };
 
 async function start(init: WorkerInit): Promise<void> {
-  // Without WebGPU here the page runs the map itself.
+  // Without WebGPU here, a page that has it runs the map itself; one
+  // without draws WebGL 2 here.
   const gpu = (navigator as WorkerNavigator & { gpu?: GPU }).gpu;
-  if (!gpu) {
+  if (!gpu && init.pageWebgpu) {
     post({ unsupported: "this browser has no WebGPU in workers" });
     return;
   }
-  // The style's first fetches start, the workers load and the GPU adapter
-  // wakes while core.wasm compiles.
+  // The style's first fetches start and the workers load while the build
+  // is picked and compiles.
   preloadStyle(init.preload, init.size[2], init.camera?.zoom);
-  const module = WebAssembly.compileStreaming(fetch(CORE));
-  module.catch(() => {});
-  const workers = spawnWorkers(module, init.jobWorkers);
-  void gpu.requestAdapter().catch(() => {});
+  const build = pickBuild(gpu);
+  build.catch(() => {});
+  const workers = spawnWorkers(build, init.jobWorkers);
   try {
     engine = await Engine.start(
-      module,
+      build,
       workers,
       {
         canvas: init.canvas,
@@ -70,7 +70,7 @@ async function start(init: WorkerInit): Promise<void> {
     post({ unsupported: String(e instanceof Error ? e.message : e) });
     return;
   }
-  post({ ready: engine.state() });
+  post({ ready: engine.state(), backend: engine.backend });
 }
 
 self.onmessage = ({ data }: MessageEvent<ToWorker>) => {

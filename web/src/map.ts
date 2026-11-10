@@ -1,7 +1,7 @@
 // The page's side of a map: its DOM, input, events, annotations and video
 // players, and the API. The map itself (engine.ts: the wasm map, its
 // camera, gestures, drawing and queries) runs in the map worker where the
-// browser can draw WebGPU into an OffscreenCanvas there and deliver
+// browser can draw into an OffscreenCanvas there and deliver
 // pointer moves as they come (`pointerrawupdate`): Chromium-based
 // browsers. Elsewhere it runs on the page. Either way tile jobs and labels
 // run in workers of their own, and the page reaches the map through a
@@ -9,6 +9,7 @@
 // frames.
 
 import { Annotations } from "./annotations.ts";
+import { pickBuild } from "./builds.ts";
 import type { EngineEvent, MapState, Pixels, Report } from "./engine.ts";
 import { Emitter, type Listener } from "./events.ts";
 import { attachInput } from "./input.ts";
@@ -288,6 +289,13 @@ export class OrbisMap {
    * allows it), not on the page's thread. */
   get inWorker(): boolean {
     return this.#link.worker;
+  }
+
+  /** The GPU API the map draws with: WebGPU, or WebGL 2 where the browser
+   * gives WebGPU no adapter. On WebGL 2 it draws only a flat colour so far
+   * (#140). */
+  get backend(): "webgpu" | "webgl2" {
+    return this.#link.backend;
   }
 
   /**
@@ -743,22 +751,9 @@ const workerCapable = () =>
   typeof HTMLCanvasElement.prototype.transferControlToOffscreen ===
     "function" && "onpointerrawupdate" in HTMLElement.prototype;
 
-/** Why WebGPU gives no adapter here, if it doesn't. */
-async function noWebgpu(): Promise<string | undefined> {
-  const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
-  if (!gpu) return "this browser has none";
-  try {
-    if (await gpu.requestAdapter()) return undefined;
-    return "it found no GPU here";
-  } catch (e) {
-    return `it failed: ${e instanceof Error ? e.message : e}`;
-  }
-}
-
-const CORE = new URL("../pkg/core_bg.wasm", import.meta.url);
-
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on.
- * Rejects, saying why, where the browser has no WebGPU. */
+ * It draws with WebGPU, or WebGL 2 where WebGPU gives no adapter ({@link OrbisMap.backend});
+ * rejects, saying why, where the browser has neither. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
   const ratio = options.pixelRatio ?? devicePixelRatio;
   const style =
@@ -825,8 +820,9 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
         size: size(),
         jobWorkers: options.jobWorkers ?? defaultJobWorkers(),
         origin: performance.timeOrigin,
+        pageWebgpu: "gpu" in navigator,
       });
-      // A worker without WebGPU leaves the page to run the map, on a
+      // A worker that can't draw leaves the page to run the map, on a
       // canvas of its own.
       if (typeof link === "string") element = canvas();
     }
@@ -866,23 +862,21 @@ async function startOnPage(
   size: [number, number, number],
   jobWorkers?: number,
 ): Promise<Link> {
-  // The style's first fetches start, core.wasm downloads and compiles,
-  // and the workers load, while WebGPU is checked.
+  // The style's first fetches start, the build is picked, downloads and
+  // compiles, and the workers load.
   preloadStyle(preload, size[2], setup.camera?.zoom);
-  const module = WebAssembly.compileStreaming(fetch(CORE));
-  module.catch(() => {});
-  // A page whose map runs in a worker never loads core.js.
+  const build = pickBuild();
+  build.catch(() => {});
+  // A page whose map runs in a worker never loads the bindings.
   const engine = import("./engine.ts");
-  const workers = spawnWorkers(module, jobWorkers ?? defaultJobWorkers());
-  const missing = await noWebgpu();
-  if (missing) {
-    terminateWorkers(workers);
-    throw new Error(`Orbis needs WebGPU, and ${missing}`);
-  }
+  const workers = spawnWorkers(build, jobWorkers ?? defaultJobWorkers());
   [canvas.width, canvas.height] = size;
-  const { Engine } = await engine;
+  const { Engine } = await engine.catch((e) => {
+    terminateWorkers(workers);
+    throw e;
+  });
   return directLink((report) =>
-    Engine.start(module, workers, { ...setup, canvas, size, clock: 0 }, report),
+    Engine.start(build, workers, { ...setup, canvas, size, clock: 0 }, report),
   );
 }
 

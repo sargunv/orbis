@@ -218,7 +218,7 @@ export interface MapOptions {
    * `clamp(hardwareConcurrency − 2, 1, 4)`. */
   jobWorkers?: number;
   /** Whether the map may run in a worker, off the page's thread: where
-   * the browser can draw WebGPU into an OffscreenCanvas there and tells
+   * the browser can draw into an OffscreenCanvas there and tells
    * the page of pointer moves as they come (Chromium-based browsers).
    * True by default; false keeps it on the page. */
   worker?: boolean;

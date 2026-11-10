@@ -4,31 +4,32 @@
 // map's labels. Requests and replies are Rust's messages (orb-web's `jobs`
 // and `placement` modules); this file only carries them.
 //
-// Spawner → worker: {module, port, placement}, `placement` true for the
-// placement worker. A job worker transfers each reply's message, packed
+// Spawner → worker: {backend, module, port, placement}: the map's compiled
+// build, `placement` true for the placement worker. A job worker transfers each reply's message, packed
 // tile or DEM pixels and image tile's ImageBitmap; the placement worker
 // answers each frame with its commit, transferred, or with `{error}` when
 // it couldn't place it. A trapped worker says it is lost and closes.
-import init, {
-  JobWorker,
-  PlacementWorker,
-  reloadRegions,
-  setRequestHook,
+import type {
+  JobWorker as Jobs,
+  PlacementWorker as Placer,
 } from "../pkg/core.js";
+import { bindings, type Backend, type Bindings } from "./builds.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { askPage } from "./requests.ts";
 import { loadShaper } from "./shaper.ts";
 
 interface Start {
+  backend: Backend;
   module: WebAssembly.Module;
   port: MessagePort;
   placement?: boolean;
 }
 
 self.onmessage = async ({
-  data: { module, port, placement },
+  data: { backend, module, port, placement },
 }: MessageEvent<Start>) => {
-  await init({ module_or_path: module });
+  const glue = await bindings(backend);
+  await glue.default({ module_or_path: module });
   // A trap (a Rust panic) leaves the wasm unusable: the worker says it is
   // lost and closes, and the map replaces it.
   const trapped = (e: unknown) => {
@@ -43,14 +44,17 @@ self.onmessage = async ({
   self.addEventListener("error", (e) => {
     if (trapped(e.error)) e.preventDefault();
   });
-  port.onmessage = placement ? placer(port, trapped) : jobs(port, trapped);
+  port.onmessage = placement
+    ? placer(glue, port, trapped)
+    : jobs(glue, port, trapped);
 };
 
 function placer(
+  glue: Bindings,
   port: MessagePort,
   trapped: (e: unknown) => boolean,
 ): (e: MessageEvent) => void {
-  const placer = new PlacementWorker();
+  const placer: Placer = new glue.PlacementWorker();
   return ({ data }) => {
     try {
       if (data?.trap) placer.trap();
@@ -70,11 +74,12 @@ function placer(
 }
 
 function jobs(
+  glue: Bindings,
   port: MessagePort,
   trapped: (e: unknown) => boolean,
 ): (e: MessageEvent) => Promise<void> {
-  const jobs = new JobWorker();
-  onRegionsChanged(reloadRegions);
+  const jobs: Jobs = new glue.JobWorker();
+  onRegionsChanged(glue.reloadRegions);
   // Styles with `font-faces` draw their files with shaper.wasm.
   jobs.setShaperLoader(loadShaper);
   // The page's request transform, asked for each fetch while it has one.
@@ -83,7 +88,7 @@ function jobs(
     if (page.answer(data)) return;
     const { requestHook } = data as { requestHook?: boolean };
     if (requestHook !== undefined) {
-      setRequestHook(requestHook ? page.hook : undefined);
+      glue.setRequestHook(requestHook ? page.hook : undefined);
       return;
     }
     try {
