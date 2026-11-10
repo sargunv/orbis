@@ -1,21 +1,27 @@
-// Which of core.wasm's functions a map's first frame runs, by scene, and
-// what a module split along that line would weigh: the measure for
-// whether lazily loaded wasm modules would earn their complexity.
+// Which of core.wasm's functions a map's first frames run, by scene, and
+// what a module split along that line weighs; `--write` sets that line
+// for `cargo xtask web`, which moves what no scene ran into
+// core-deferred.wasm (xtask/src/split.rs).
 //
 //   cargo xtask web --names
 //   pnpm coverage [--scenes=liberty,paris,globe,terrain,raster,tokyo,
-//     tokyo-mlt,protomaps,versatiles] [--tour] [--out=<dir>] [--reuse]
+//     tokyo-mlt,protomaps,versatiles,chicago,nepal,norway,sanfrancisco,
+//     uruguay] [--tour] [--out=<dir>] [--reuse] [--write]
+//
+// The last five are MapLibre Native's real-world render tests, offline
+// from the render-test cache `cargo xtask h2h` checks out, when it has.
 //
 // `--names` leaves `target/web/core-names.wasm`: core.wasm as `cargo xtask
-// web` optimizes it, with its function names. binaryen's `wasm-split
+// web` optimizes it, whole, with its function names. binaryen's `wasm-split
 // --instrument` adds a first-call stamp to each function of it, and each
 // scene loads demo/load.html in headless Chromium with that module in
 // place of core.wasm, once to its first idle (so the map's style, tiles,
 // layout, placement and first frames ran, in the page and every worker);
 // with `--tour`, through load.js's gesture tour after that too (pan, zoom,
-// turn and tilt, until idle again). Every instance then writes its
-// profile, and the scene's is their union. `--reuse` reports on the
-// profiles already in `--out` instead.
+// turn and tilt, until idle again), then a user's first drags, wheel
+// zooms, double click and keys. Every instance then writes its profile,
+// and the scene's is their union. `--reuse` reports on the profiles
+// already in `--out` instead.
 //
 // It prints, per scene and for the union of them all:
 // - the share of functions and code bytes that ran, and the brotli sizes
@@ -23,6 +29,9 @@
 //   first frame needs, and the rest, which could load later;
 // - the code only that scene ran, and that none ran, split out of the
 //   rest: what a module of that feature would take off every other load;
+// - what web/deferred.txt defers that ran (which would load
+//   core-deferred.wasm before first idle); `--write`, with every scene
+//   and `--tour`, rewrites the list from what none ran;
 // - code by crate and by module of ours, with the share each scene ran (a
 //   function's crate is the first `orb_` crate in its name, else its first).
 // Profiles and modules stay in `--out` (by default target/coverage), for
@@ -45,7 +54,7 @@ import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants } from "node:zlib";
 
 import { launchChromium, serveDemo } from "./serve.mjs";
-import { VIEWS } from "./views.mjs";
+import { extractCache, realWorldCache, VIEWS } from "./views.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) =>
@@ -58,6 +67,7 @@ if (!existsSync(named))
     "no target/web/core-names.wasm: run `cargo xtask web --names` (a build without it removes it)",
   );
 const out = option("out", join(root, "target/coverage"));
+const DEFERRED = join(root, "web/deferred.txt");
 mkdirSync(out, { recursive: true });
 
 /** Each scene's load.html query: a style and a camera. */
@@ -73,6 +83,12 @@ const SCENES = {
   protomaps: { style: "protomaps-light", at: VIEWS.liberty.ams13 },
   versatiles: { style: "versatiles-colorful", at: VIEWS.liberty.ams13 },
 };
+// MapLibre Native's real-world render tests, offline from the render-test
+// cache `cargo xtask h2h` checks out (load.mjs's `--cache`), where it is.
+const cache = realWorldCache();
+if (cache)
+  for (const [view, at] of Object.entries(VIEWS.realWorld))
+    SCENES[view] = { realWorld: view, at };
 const tour = args.includes("--tour");
 const scenes = option("scenes", Object.keys(SCENES).join(",")).split(",");
 for (const s of scenes)
@@ -178,8 +194,23 @@ function functions(wasm) {
   // binaryen calls a function without a name by its index among those defined.
   return sizes.map((size, i) => ({
     name: names.get(imported + i) ?? String(i),
+    named: names.has(imported + i),
     size,
   }));
+}
+
+/** A crate's hash after its name in a function's name. */
+const HASH = /(?<=[A-Za-z0-9_])\[[0-9a-f]+\]/g;
+
+/** A function's key in web/deferred.txt: FNV-1a 64 of its name without
+ * its crates' hashes, which change with a crate's build settings (as
+ * xtask/src/split.rs computes it). */
+function key(name) {
+  const unhashed = name.replace(HASH, "");
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(unhashed))
+    hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
+  return hash.toString(16).padStart(16, "0");
 }
 
 const funcs = functions(readFileSync(named));
@@ -311,6 +342,41 @@ async function sessions(context, page) {
   };
 }
 
+/** A user's first gestures, as DOM input: a drag, a fling, wheel zooms,
+ * a right-drag turn and tilt, a double click and arrow keys. */
+async function gestures(page) {
+  const { mouse, keyboard } = page;
+  const [x, y] = [512, 384];
+  const drag = async (dx, dy, steps, options) => {
+    await mouse.move(x, y);
+    await mouse.down(options);
+    await mouse.move(x + dx, y + dy, { steps });
+    await mouse.up(options);
+  };
+  await drag(-200, -100, 20);
+  await drag(300, 0, 3);
+  await page.waitForTimeout(500);
+  for (const deltaY of [-300, -300, 300, 300]) {
+    await mouse.wheel(0, deltaY);
+    await page.waitForTimeout(50);
+  }
+  await drag(150, -80, 15, { button: "right" });
+  await mouse.dblclick(x, y);
+  await page.waitForTimeout(300);
+  await page.locator("canvas").first().focus();
+  for (const key of ["ArrowLeft", "ArrowUp", "+", "-"])
+    await keyboard.press(key);
+  await page.waitForTimeout(1000);
+}
+
+/** `scene`'s load.html query on `server`. */
+function query(scene, server) {
+  const { realWorld, ...rest } = SCENES[scene];
+  return realWorld
+    ? { ...rest, style: `${server.url}real-world/styles/${realWorld}.json` }
+    : rest;
+}
+
 /** Loads each scene with the instrumented module and saves its profile in `out`. */
 async function run() {
   const work = mkdtempSync(join(tmpdir(), "orbis-coverage-"));
@@ -319,7 +385,11 @@ async function run() {
     split("--instrument", named, "-o", instrumented);
     // The demo as built, with the instrumented module in core.wasm's place.
     const assets = join(work, "assets");
-    const server = await serveDemo({ mounts: { "assets/": assets } });
+    const extracted = join(work, "real-world/");
+    const server = await serveDemo({
+      mounts: { "assets/": assets, "real-world/": extracted },
+    });
+    if (cache) extractCache(cache, extracted, `${server.url}real-world/`);
     const dist = fileURLToPath(new URL("../dist/assets/", import.meta.url));
     mkdirSync(assets);
     for (const file of readdirSync(dist)) {
@@ -337,7 +407,7 @@ async function run() {
         const page = await context.newPage();
         const evaluate = await sessions(context, page);
         await page.goto(
-          `${server.url}load.html?${new URLSearchParams({ engine: "orbis", ...SCENES[scene] })}`,
+          `${server.url}load.html?${new URLSearchParams({ engine: "orbis", ...query(scene, server) })}`,
         );
         await page.waitForFunction(
           () => /^(done|error)/.test(document.title),
@@ -346,7 +416,10 @@ async function run() {
         );
         const title = await page.title();
         if (!title.startsWith("done")) throw new Error(`${scene}: ${title}`);
-        if (tour) await page.evaluate(() => window.tour());
+        if (tour) {
+          await page.evaluate(() => window.tour());
+          await gestures(page);
+        }
         await page.screenshot({ path: join(out, `${scene}.png`) });
         const written = (await evaluate(DUMP)).map((b) =>
           Buffer.from(b, "base64"),
@@ -383,9 +456,11 @@ const columns = Object.keys(profiles);
 const bytes = (filter) =>
   funcs.reduce((sum, f, i) => sum + (filter(i) ? f.size : 0), 0);
 const code = bytes(() => true);
-const shipped = readFileSync(join(root, "web/pkg/core_bg.wasm"));
+const [shipped, rest] = ["core_bg.wasm", "core-deferred.wasm"].map((f) =>
+  readFileSync(join(root, "web/pkg", f)),
+);
 const lines = [
-  `core.wasm: ${funcs.length} functions, ${kib(code)} of code; ${kib(shipped.length)} raw, ${kib(brotli(shipped))} brotli as shipped (web/pkg)`,
+  `core.wasm: ${funcs.length} functions, ${kib(code)} of code; as shipped (web/pkg), ${kib(shipped.length)} raw and ${kib(brotli(shipped))} brotli, and core-deferred.wasm ${kib(rest.length)} raw and ${kib(brotli(rest))} brotli`,
   "",
   `| profile | functions run | code run | code beyond ${scenes[0]} | first-frame module | deferred module |`,
   "|---|---|---|---|---|---|",
@@ -464,6 +539,74 @@ if (scenes.length > 1) {
     "",
     `The rest's module against the whole, ${kib(whole)} brotli with its names stripped (${stripped}).`,
   );
+}
+
+// Code a scene runs or not by how much data it has rather than by which
+// features it uses: sorts' merge paths, hash tables', vectors' and
+// trees' growth, number formatting and parsing, the allocator's rarer
+// paths. What no scene ran of these stays in core.wasm, so a bigger tile
+// or style doesn't wait on core-deferred.wasm.
+const DATA_DEPENDENT =
+  /^<*(core(\[[0-9a-f]+\])?::(slice::sort|num|fmt::float|fmt::num|str::pattern)::|alloc(\[[0-9a-f]+\])?::(raw_vec|collections)::|(hashbrown|dlmalloc|compiler_builtins)(\[[0-9a-f]+\])?::)/;
+
+// web/deferred.txt, the functions `cargo xtask web` moves into
+// core-deferred.wasm: what it lists that ran here would load that module
+// before the scene's first idle. `--write` rewrites it from what no scene
+// ran.
+{
+  const anyRan = (i) => scenes.some((s) => ran[s][i]);
+  const keys = funcs.map((f) => (f.named ? key(f.name) : undefined));
+  // Deferred keys, and `+`keys of functions some earlier run saw run.
+  const list = existsSync(DEFERRED)
+    ? readFileSync(DEFERRED, "utf8")
+        .split("\n")
+        .filter((line) => line && !line.startsWith("#"))
+    : [];
+  const listed = new Set(list.filter((line) => !line.startsWith("+")));
+  const seen = new Set(
+    list.filter((line) => line.startsWith("+")).map((line) => line.slice(1)),
+  );
+  const stale = funcs
+    .filter((_, i) => anyRan(i) && listed.has(keys[i]))
+    .sort((a, b) => b.size - a.size);
+  lines.push(
+    "",
+    stale.length
+      ? `${stale.length} functions web/deferred.txt defers ran here (${kib(stale.reduce((s, f) => s + f.size, 0))}), so these scenes load core-deferred.wasm early; \`--tour --write\` refreshes the list. The largest: ${stale
+          .slice(0, 10)
+          .map((f) => `\`${f.name.replace(HASH, "").slice(0, 100)}\``)
+          .join(", ")}`
+      : `Nothing web/deferred.txt defers ran here.`,
+  );
+  if (args.includes("--write")) {
+    if (!tour || scenes.length !== Object.keys(SCENES).length || !cache)
+      throw new Error(
+        "--write takes every scene, the real-world ones too (`cargo xtask h2h mirror` checks out their cache), and --tour: the list defers what none ran",
+      );
+    // What runs can turn on timing (which pipelines a frame prepares
+    // together): what any run saw run stays, so runs only add to it.
+    for (const [i, k] of keys.entries()) if (k && anyRan(i)) seen.add(k);
+    const keep = new Set(seen);
+    for (const [i, k] of keys.entries())
+      if (k && DATA_DEPENDENT.test(funcs[i].name)) keep.add(k);
+    const deferred = [...new Set(keys.filter((k) => k && !keep.has(k)))];
+    writeFileSync(
+      DEFERRED,
+      [
+        "# The functions core.wasm leaves to core-deferred.wasm, which loads once the",
+        "# map is idle or first calls one: those no scene of `pnpm -C web coverage",
+        "# --tour` has run. Each is the FNV-1a 64 hash of the function's name without",
+        "# its crates' hashes (xtask/src/split.rs); a `+` marks one a run has seen run,",
+        "# which stays in core.wasm. Written by `pnpm -C web coverage --tour --write`.",
+        ...deferred.sort(),
+        ...[...seen].sort().map((k) => `+${k}`),
+        "",
+      ].join("\n"),
+    );
+    lines.push(
+      `Wrote ${deferred.length} functions to defer, and ${seen.size} seen running, to ${DEFERRED}.`,
+    );
+  }
 }
 
 /** A table of code by `group` (of a function's name), with the share of it each profile ran. */

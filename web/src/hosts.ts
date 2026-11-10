@@ -2,7 +2,13 @@
 // and its recovery from a lost GPU: in the map worker or on the page.
 
 import type { OrbisMap as Core } from "../pkg/core.js";
-import { bindings, type Backend, type Build } from "./builds.ts";
+import {
+  bindings,
+  fetchDeferred,
+  instantiate,
+  type Backend,
+  type Build,
+} from "./builds.ts";
 import { takePreload } from "./preload.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
@@ -61,6 +67,9 @@ export interface Host {
   readonly jobWorkers: number;
   /** Draws on a new GPU after a loss, on the same canvas. */
   recover(): Promise<void>;
+  /** Fetches the build's deferred half, if it has one, for the map and
+   * its workers (once). */
+  fetchDeferred(): void;
   destroy(): void;
 }
 
@@ -102,7 +111,7 @@ export async function startHost(
     const glue = await bindings(build.backend);
     const { createMap: createCoreMap, setPreloads, setRequestHook } = glue;
     reloadRegions = glue.reloadRegions;
-    await glue.default({ module_or_path: build.module });
+    instantiate(glue, build);
     connectModule(setRequestHook);
     setPreloads(takePreload);
     const created: Core = await createCoreMap(
@@ -228,6 +237,7 @@ export async function startHost(
   };
   callbacks.setup(core);
   let size: [number, number, number] | undefined;
+  let deferring = false;
   return {
     core,
     backend: build.backend,
@@ -243,6 +253,20 @@ export async function startHost(
     async recover() {
       await core.recover(canvas);
       if (size) core.resize(...size);
+    },
+    fetchDeferred() {
+      if (deferring || stopped) return;
+      deferring = true;
+      // Workers spawned after this get it with their build.
+      fetchDeferred(build)?.then(
+        (deferred) => {
+          if (stopped) return;
+          for (const { worker } of [...jobs, placement])
+            worker.postMessage({ deferred });
+        },
+        // A placeholder's call fetches it then.
+        (e) => console.warn("core-deferred.wasm:", e),
+      );
     },
     destroy: () => {
       if (stopped) return;

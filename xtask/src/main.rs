@@ -14,6 +14,7 @@ mod labels;
 mod mln_ffi;
 mod native_fixtures;
 mod pmtiles;
+mod split;
 mod support;
 mod sweep;
 mod unicode;
@@ -38,10 +39,11 @@ cargo xtask <task>
                packaged with Gradle; --run installs it on this worktree's
                Android emulator and starts it; --leakcheck checks that maps
                dropped there leave no GPU resources behind
-  web [--names]  build core.wasm and core-gl.wasm (WebGL 2) into web/pkg,
-               report sizes; --names also
-               writes it with its function names to target/web/core-names.wasm
-               (for `pnpm -C web coverage`)
+  web [--names]  build core.wasm, split along web/deferred.txt into what a
+               map's first frames run and core-deferred.wasm, and
+               core-gl.wasm (WebGL 2) into web/pkg, and report sizes;
+               --names also writes core.wasm whole, with its function
+               names, to target/web/core-names.wasm (for `pnpm -C web coverage`)
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
   rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|lavapipe|all]

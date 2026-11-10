@@ -140,6 +140,8 @@ function plain<T extends object>(object: T): T {
 const STABLE_MS = 30_000;
 /** How long after each loss of a run a new device is made. */
 const BACKOFF_MS = [0, 250, 1000];
+/** How long a map that hasn't been idle waits to fetch core-deferred.wasm. */
+const DEFER_AT_MOST = 5000;
 
 /** Runs `f` in a task of its own, soon: a message, not a timer, which
  * browsers delay. */
@@ -261,6 +263,9 @@ export class Engine {
     // The style goes in and its tiles are asked for as soon as the map is
     // made, without waiting for the first frame.
     engine.wake();
+    // What the first frames don't run comes once the map is idle, out of
+    // their way, or after a while for a map that doesn't settle.
+    setTimeout(() => host.fetchDeferred(), DEFER_AT_MOST);
     return engine;
   }
 
@@ -770,9 +775,12 @@ export class Engine {
     const out = this.#events;
     for (const event of this.#core.takeEvents() as CoreEvent[]) {
       switch (event.type) {
+        case "idle":
+          this.#host.fetchDeferred();
+          out.push({ type: event.type, data: {} });
+          break;
         case "styleload":
         case "load":
-        case "idle":
           out.push({ type: event.type, data: {} });
           break;
         case "styledata":

@@ -4,15 +4,8 @@
 // opens offline. Each JS context reads the regions once; one that changes
 // them tells the others on the `orbis-regions` broadcast channel.
 
-/** core.wasm on this thread, loaded on first use: a page whose map runs
- * in a worker loads it only for regions. */
-const core = async () => {
-  const module = await import("../pkg/core.js");
-  await module.default({ module_or_path: CORE });
-  return module;
-};
+import { loadCore as core } from "./builds.ts";
 
-const CORE = new URL("../pkg/core_bg.wasm", import.meta.url);
 const CHANNEL = "orbis-regions";
 
 export interface RegionDefinition {

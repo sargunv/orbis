@@ -1,10 +1,12 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
-//! `web/pkg/` and reports its sizes, raw, brotli and by crate (twiggy);
-//! then `core-gl.wasm`, the same crates on WebGL 2 for browsers without a
-//! WebGPU adapter, and `shaper.wasm`.
+//! `web/pkg/`, split in two along `web/deferred.txt` (split.rs) into
+//! `core.wasm`, what a map's first frames run, and `core-deferred.wasm`,
+//! which loads later; reports their sizes, raw, brotli and by crate
+//! (twiggy); then `core-gl.wasm`, the same crates on WebGL 2 for browsers
+//! without a WebGPU adapter, and `shaper.wasm`.
 //! Size is watched, not a gate: it warns when a module grows past its
-//! watch level, and never fails. `--names` also writes core.wasm with its
-//! function names, for `pnpm -C web coverage`.
+//! watch level, and never fails. `--names` also writes core.wasm whole,
+//! with its function names, for `pnpm -C web coverage`.
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
@@ -13,16 +15,22 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-const OUT_DIR: &str = "web/pkg";
-/// Where `cargo xtask web --names` writes `core.wasm` with its function names.
-const NAMED_CORE: &str = "target/web/core-names.wasm";
+use crate::split;
 
-/// The brotli sizes, in KiB, past which `core.wasm`, `core-gl.wasm` and
-/// `shaper.wasm` warn: a few percent above what each weighs now, so
+const OUT_DIR: &str = "web/pkg";
+/// Where `cargo xtask web --names` writes `core.wasm` whole, with its
+/// function names.
+const NAMED_CORE: &str = "target/web/core-names.wasm";
+/// `core.wasm` whole, and wasm-opt's symbol map of it, for the split.
+const WHOLE_CORE: &str = "target/web/core-whole.wasm";
+
+/// The brotli sizes, in KiB, past which `core.wasm`, `core-deferred.wasm`,
+/// `core-gl.wasm` and `shaper.wasm` warn: a few percent above what each weighs now, so
 /// crossing one means something grew. Find what in the per-crate report;
 /// if the growth earns its bytes, raise the level to the new size plus the
 /// same margin, and when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 855;
+const CORE_WATCH_KIB: usize = 700;
+const CORE_DEFERRED_WATCH_KIB: usize = 215;
 const CORE_GL_WATCH_KIB: usize = 1100;
 const SHAPER_WATCH_KIB: usize = 380;
 
@@ -47,30 +55,47 @@ const CRATES: &[&str] = &[
     "std",
 ];
 
-/// Builds the modules; `names` also writes `core.wasm` with its function
-/// names to [`NAMED_CORE`], for `pnpm -C web coverage`.
+/// Builds the modules; `names` also writes `core.wasm` whole with its
+/// function names to [`NAMED_CORE`], for `pnpm -C web coverage`.
 pub(crate) fn build(names: bool) -> Result<(), String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let out = root.join(OUT_DIR);
 
-    let named = root.join(NAMED_CORE);
     // A copy from an earlier build no longer matches web/pkg's: if its
     // imports still fit core.js, coverage would measure the old code.
     if !names {
-        let _ = std::fs::remove_file(&named);
+        let _ = std::fs::remove_file(root.join(NAMED_CORE));
     }
-    let named = names.then_some(named);
-    let core = module(&root, "orb-web", "core", &[], named.as_deref())?;
+    let core = module(&root, "orb-web", "core", &[], Some(names))?;
     report_crates(&core.built);
     let js = std::fs::read(out.join("core.js")).map_err(|e| format!("core.js: {e}"))?;
+    let deferred = core.deferred.as_ref().expect("core.wasm splits");
     eprintln!(
-        "core.wasm: {} KiB raw, {} KiB brotli ({} bytes); core.js {} KiB raw ({OUT_DIR})",
+        "core.wasm: {} KiB raw, {} KiB brotli ({} bytes); core-deferred.wasm: {} KiB raw, \
+         {} KiB brotli, {} functions; core.js {} KiB raw ({OUT_DIR})",
         core.raw / 1024,
         core.brotli / 1024,
         core.brotli,
+        deferred.raw / 1024,
+        deferred.brotli / 1024,
+        deferred.split.deferred,
         js.len() / 1024,
     );
+    if deferred.split.missing > 0 {
+        eprintln!(
+            "{} of the {} functions {} lists are gone or renamed (any new ones stay in \
+             core.wasm); `pnpm -C web coverage --tour --write` refreshes it",
+            deferred.split.missing,
+            deferred.split.listed,
+            split::LIST,
+        );
+    }
     watch("core.wasm", core.brotli, CORE_WATCH_KIB);
+    watch(
+        "core-deferred.wasm",
+        deferred.brotli,
+        CORE_DEFERRED_WATCH_KIB,
+    );
     // The same map on WebGL 2, fetched only where WebGPU has no adapter.
     let gl = module(
         &root,
@@ -120,17 +145,27 @@ struct Sizes {
     brotli: usize,
     /// The module cargo built, before wasm-opt, with its function names.
     built: std::path::PathBuf,
+    /// The deferred half of a split module.
+    deferred: Option<Deferred>,
+}
+
+struct Deferred {
+    raw: usize,
+    brotli: usize,
+    split: split::Split,
 }
 
 /// Builds `package` with `features` (cargo's feature arguments), binds it
-/// as `<name>.js` and `<name>_bg.wasm` in [`OUT_DIR`] and shrinks it; and
-/// shrinks it into `names` too, keeping its function names.
+/// as `<name>.js` and `<name>_bg.wasm` in [`OUT_DIR`] and shrinks it.
+/// `split` splits it along [`split::LIST`], the rest into
+/// `<name>-deferred.wasm`; `Some(true)` also writes it whole with its
+/// function names to [`NAMED_CORE`].
 fn module(
     root: &Path,
     package: &str,
     name: &str,
     features: &[&str],
-    names: Option<&Path>,
+    split: Option<bool>,
 ) -> Result<Sizes, String> {
     // A panic traps at once, with no message. On wasm32-unknown-unknown
     // std's stderr is a sink: the message was formatted only to be dropped,
@@ -167,17 +202,89 @@ fn module(
         .arg(&built)
         .args(["--target", "web", "--out-name", name, "--out-dir"])
         .arg(&out))?;
+    expose_instantiation(&out, name)?;
     let wasm = out.join(format!("{name}_bg.wasm"));
-    if let Some(names) = names {
-        let dir = names.parent().expect("a file in a directory");
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        run(wasm_opt(&wasm, names).arg("-g"))?;
-        eprintln!("{name}.wasm with its names: {}", names.display());
+    let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
+    let Some(names) = split else {
+        run(&mut wasm_opt(&wasm, &wasm))?;
+        let bytes = read(&wasm)?;
+        return Ok(Sizes {
+            raw: bytes.len(),
+            brotli: brotli(&bytes)?,
+            built,
+            deferred: None,
+        });
+    };
+    let named = root.join(NAMED_CORE);
+    let dir = named.parent().expect("a file in a directory");
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if names {
+        run(wasm_opt(&wasm, &named).arg("-g"))?;
+        eprintln!("{name}.wasm with its names: {}", named.display());
     }
-    run(&mut wasm_opt(&wasm, &wasm))?;
-    let bytes = std::fs::read(&wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
-    sizes(&bytes, built)
+    // Shrunk with its names, binaryen optimizes a little less: the split
+    // takes them from the symbol map instead.
+    let whole = root.join(WHOLE_CORE);
+    let symbols = whole.with_extension("symbols");
+    run(wasm_opt(&wasm, &whole).arg(format!("--symbolmap={}", symbols.display())))?;
+    let deferred = out.join(format!("{name}-deferred.wasm"));
+    let list = split::read_list(root)?;
+    let split = split::split(&whole, &symbols, &wasm, &deferred, &list, FEATURES)?;
+    let (bytes, rest) = (read(&wasm)?, read(&deferred)?);
+    Ok(Sizes {
+        raw: bytes.len(),
+        brotli: brotli(&bytes)?,
+        built,
+        deferred: Some(Deferred {
+            raw: rest.len(),
+            brotli: brotli(&rest)?,
+            split,
+        }),
+    })
 }
+
+/// Exports the two steps of wasm-bindgen's `initSync` from `<name>.js`, so
+/// web/src/builds.ts can give the instance imports of its own: a split
+/// module's placeholders.
+fn expose_instantiation(out: &Path, name: &str) -> Result<(), String> {
+    let patch = |file: &str, from: &str, to: &str| {
+        let path = out.join(file);
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if !text.contains(from) {
+            return Err(format!(
+                "{}: no `{from}`: wasm-bindgen's output changed, so update expose_instantiation",
+                path.display()
+            ));
+        }
+        std::fs::write(&path, text.replacen(from, to, 1))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
+    patch(
+        &format!("{name}.js"),
+        "export { initSync, __wbg_init as default };",
+        "export { initSync, __wbg_init as default, __wbg_get_imports, __wbg_finalize_init };",
+    )?;
+    patch(
+        &format!("{name}.d.ts"),
+        "export type SyncInitInput",
+        "/** The imports an instance takes (exported by `cargo xtask web`). */\n\
+         export function __wbg_get_imports(): WebAssembly.Imports;\n\
+         /** Binds these bindings to `instance` of `module` and starts it. */\n\
+         export function __wbg_finalize_init(instance: WebAssembly.Instance, module: WebAssembly.Module): InitOutput;\n\n\
+         export type SyncInitInput",
+    )
+}
+
+/// The wasm features the modules are built with.
+const FEATURES: &[&str] = &[
+    "--enable-simd",
+    "--enable-bulk-memory",
+    "--enable-sign-ext",
+    "--enable-nontrapping-float-to-int",
+    "--enable-multivalue",
+    "--enable-reference-types",
+];
 
 /// Shrinks `input` into `output`.
 fn wasm_opt(input: &Path, output: &Path) -> Command {
@@ -199,32 +306,21 @@ fn wasm_opt(input: &Path, output: &Path) -> Command {
             // runs. Kept apart, functions compile only when they run, and
             // the module compresses better.
             "--one-caller-inline-max-function-size=20",
-            "--enable-simd",
-            "--enable-bulk-memory",
-            "--enable-sign-ext",
         ])
-        .args([
-            "--enable-nontrapping-float-to-int",
-            "--enable-multivalue",
-            "--enable-reference-types",
-        ])
+        .args(FEATURES)
         .arg(input)
         .arg("-o")
         .arg(output);
     command
 }
 
-fn sizes(bytes: &[u8], built: std::path::PathBuf) -> Result<Sizes, String> {
+fn brotli(bytes: &[u8]) -> Result<usize, String> {
     let mut brotli = Vec::new();
     {
         let mut writer = brotli::CompressorWriter::new(&mut brotli, 4096, 11, 22);
         writer.write_all(bytes).map_err(|e| e.to_string())?;
     }
-    Ok(Sizes {
-        raw: bytes.len(),
-        brotli: brotli.len(),
-        built,
-    })
+    Ok(brotli.len())
 }
 
 /// Prints the code size per crate of the build before wasm-opt, which
@@ -273,7 +369,7 @@ fn report_crates(wasm: &Path) {
     }
 }
 
-fn run(command: &mut Command) -> Result<(), String> {
+pub(crate) fn run(command: &mut Command) -> Result<(), String> {
     let name = command.get_program().to_string_lossy().into_owned();
     let status = command
         .status()

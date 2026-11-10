@@ -4,16 +4,25 @@
 // map's labels. Requests and replies are Rust's messages (orb-web's `jobs`
 // and `placement` modules); this file only carries them.
 //
-// Spawner → worker: {backend, module, port, placement}: the map's compiled
-// build, `placement` true for the placement worker. A job worker transfers each reply's message, packed
-// tile or DEM pixels and image tile's ImageBitmap; the placement worker
-// answers each frame with its commit, transferred, or with `{error}` when
-// it couldn't place it. A trapped worker says it is lost and closes.
+// Spawner → worker: {backend, module, deferred?, port, placement}: the
+// map's compiled build, with its deferred half once the map has it, and
+// `placement` true for the placement worker; then {deferred} when the map
+// gets the deferred half later. A job worker transfers each reply's
+// message, packed tile or DEM pixels and image tile's ImageBitmap; the
+// placement worker answers each frame with its commit, transferred, or
+// with `{error}` when it couldn't place it. A trapped worker says it is
+// lost and closes.
 import type {
   JobWorker as Jobs,
   PlacementWorker as Placer,
 } from "../pkg/core.js";
-import { bindings, type Backend, type Bindings } from "./builds.ts";
+import {
+  bindings,
+  instantiate,
+  takeDeferred,
+  type Backend,
+  type Bindings,
+} from "./builds.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { askPage } from "./requests.ts";
 import { loadShaper } from "./shaper.ts";
@@ -21,15 +30,19 @@ import { loadShaper } from "./shaper.ts";
 interface Start {
   backend: Backend;
   module: WebAssembly.Module;
+  deferred?: WebAssembly.Module;
   port: MessagePort;
   placement?: boolean;
 }
 
 self.onmessage = async ({
-  data: { backend, module, port, placement },
-}: MessageEvent<Start>) => {
+  data,
+}: MessageEvent<Start | { deferred: WebAssembly.Module }>) => {
+  if (data.deferred) takeDeferred(data.deferred);
+  if (!("port" in data)) return;
+  const { backend, module, port, placement } = data;
   const glue = await bindings(backend);
-  await glue.default({ module_or_path: module });
+  instantiate(glue, { backend, module });
   // A trap (a Rust panic) leaves the wasm unusable: the worker says it is
   // lost and closes, and the map replaces it.
   const trapped = (e: unknown) => {
