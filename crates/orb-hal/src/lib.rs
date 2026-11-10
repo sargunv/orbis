@@ -69,9 +69,15 @@ pub trait Gpu {
         format: TextureFormat,
     ) -> TextureId;
     /// A view of one layer of an array texture's first mip level as a 2D
-    /// texture, to render into (WebGPU's `baseArrayLayer`). Destroying it
+    /// texture, to render into (WebGPU's `baseArrayLayer`), in `format`
+    /// when given, one of the texture's `view_formats`. Destroying it
     /// leaves the texture.
-    fn create_layer_view(&mut self, texture: TextureId, layer: u32) -> TextureId;
+    fn create_layer_view(
+        &mut self,
+        texture: TextureId,
+        layer: u32,
+        format: Option<TextureFormat>,
+    ) -> TextureId;
     fn destroy_texture(&mut self, id: TextureId);
     /// Queues a write of tightly packed texel rows into a region; it lands
     /// before the next submitted pass.
@@ -197,7 +203,14 @@ pub struct Limits {
     pub max_buffer_size: u64,
     pub max_storage_buffer_binding_size: u64,
     pub max_storage_buffers_per_shader_stage: u32,
+    /// The 2D texture side everything sizes by: the device's, up to
+    /// WebGPU's default (8192), so that what a map draws doesn't depend on
+    /// a device that offers more.
     pub max_texture_dimension_2d: u32,
+    /// The device's own largest 2D texture side, at least the above: for
+    /// textures whose size changes only how they pack what they hold (the
+    /// terrain drape's pages, whose stacks then share a layer).
+    pub largest_texture_dimension_2d: u32,
     pub max_texture_array_layers: u32,
     pub min_storage_buffer_offset_alignment: u32,
     pub min_uniform_buffer_offset_alignment: u32,

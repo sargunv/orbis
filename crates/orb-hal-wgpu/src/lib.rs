@@ -45,9 +45,12 @@ const DRIVER: &str = "ORB_DRIVER";
 /// The limits Orbis asks `adapter`'s device for: WebGPU's defaults, lowered
 /// where the adapter falls short of them (the iOS simulator has 15
 /// inter-stage variables), with buffers and storage bindings as large as it
-/// allows up to 1 GiB. The scene's pools grow within one storage binding,
-/// up to the map's memory budget and past it for the tiles in view: at
-/// WebGPU's default 128 MiB, a pitched view over a dense city ran out.
+/// allows up to 1 GiB, and 2D textures as large as it allows. The scene's
+/// pools grow within one storage binding, up to the map's memory budget
+/// and past it for the tiles in view: at WebGPU's default 128 MiB, a
+/// pitched view over a dense city ran out. Textures past WebGPU's default
+/// side are only for those whose size changes how they pack what they
+/// hold ([`Limits::largest_texture_dimension_2d`]).
 pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let offered = adapter.limits();
     let mut limits = wgpu::Limits::default().or_worse_values_from(&offered);
@@ -56,6 +59,8 @@ pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     limits.max_storage_buffer_binding_size = (offered.max_storage_buffer_binding_size)
         .min(LARGEST_BUFFER as _)
         .max(limits.max_storage_buffer_binding_size);
+    limits.max_texture_dimension_2d =
+        (offered.max_texture_dimension_2d).max(limits.max_texture_dimension_2d);
     limits
 }
 
@@ -288,7 +293,9 @@ impl WgpuGpu {
                 max_buffer_size: limits.max_buffer_size,
                 max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
                 max_storage_buffers_per_shader_stage: limits.max_storage_buffers_per_shader_stage,
-                max_texture_dimension_2d: limits.max_texture_dimension_2d,
+                max_texture_dimension_2d: (limits.max_texture_dimension_2d)
+                    .min(wgpu::Limits::default().max_texture_dimension_2d),
+                largest_texture_dimension_2d: limits.max_texture_dimension_2d,
                 max_texture_array_layers: limits.max_texture_array_layers,
                 min_storage_buffer_offset_alignment: limits.min_storage_buffer_offset_alignment,
                 min_uniform_buffer_offset_alignment: limits.min_uniform_buffer_offset_alignment,
@@ -1106,9 +1113,17 @@ impl Gpu for WgpuGpu {
         self.view_of(texture, levels, Some(convert::texture_format(format)))
     }
 
-    fn create_layer_view(&mut self, texture: TextureId, layer: u32) -> TextureId {
+    fn create_layer_view(
+        &mut self,
+        texture: TextureId,
+        layer: u32,
+        format: Option<TextureFormat>,
+    ) -> TextureId {
         let texture = self.texture(texture).clone();
+        let format = format.map(convert::texture_format);
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format,
+            usage: view_usage(&texture, format),
             dimension: Some(wgpu::TextureViewDimension::D2),
             base_mip_level: 0,
             mip_level_count: Some(1),
@@ -1120,7 +1135,7 @@ impl Gpu for WgpuGpu {
             texture: Some(texture),
             view,
             levels: Some(0..1),
-            format: None,
+            format,
         }))
     }
 

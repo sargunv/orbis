@@ -447,9 +447,17 @@ impl<G: Gpu> Gpu for Recording<G> {
         id
     }
 
-    fn create_layer_view(&mut self, texture: TextureId, layer: u32) -> TextureId {
-        let id = self.inner.create_layer_view(texture, layer);
-        let text = format!("layer {layer}");
+    fn create_layer_view(
+        &mut self,
+        texture: TextureId,
+        layer: u32,
+        format: Option<TextureFormat>,
+    ) -> TextureId {
+        let id = self.inner.create_layer_view(texture, layer, format);
+        let text = match format {
+            Some(format) => format!("layer {layer} as {format:?}"),
+            None => format!("layer {layer}"),
+        };
         self.def(Ref::Texture(id.0), Def::View { of: texture, text });
         id
     }
@@ -673,7 +681,12 @@ mod tests {
         ) -> TextureId {
             TextureId(self.id())
         }
-        fn create_layer_view(&mut self, _: TextureId, _: u32) -> TextureId {
+        fn create_layer_view(
+            &mut self,
+            _: TextureId,
+            _: u32,
+            _: Option<TextureFormat>,
+        ) -> TextureId {
             TextureId(self.id())
         }
         fn destroy_texture(&mut self, _: TextureId) {}

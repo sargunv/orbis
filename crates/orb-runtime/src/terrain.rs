@@ -1499,6 +1499,7 @@ mod tests {
         let tms = tms();
         let layout = DrapeLayout {
             stacks: [2, 1],
+            per_layer: [2, 1],
             columns: [8, 4],
             strides: [4, 4],
             tile_slots: 4,
@@ -1573,7 +1574,7 @@ mod tests {
             (rows[0].origin, rows[0].scale)
         );
         assert_eq!(rows[1].target, PlacementTarget::Drape(1));
-        // Stack 1's slots follow stack 0's 4: atlas slot 5.
+        // Stack 1's slots follow stack 0's 4 in its layer: slot 5.
         assert_eq!(rows[1].origin[0], 5.5 * px);
         // Stack 2 holds slopes: slot 1 of the slope page, half the texels.
         let slope = px / 2.0;

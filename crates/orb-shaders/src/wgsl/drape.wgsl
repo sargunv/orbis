@@ -1,8 +1,9 @@
 // Drape atlas upkeep: clearing the slots a frame redraws, one instanced
 // quad per region of `regions` (the downsampler's: layer, corner and side
-// in texels), before their layers draw into them.
+// in texels), before their layers draw into them. A pass draws into one
+// layer, and clears the instances of its regions.
 
-// The atlas's size in texels.
+// An atlas layer's size in texels.
 @group(0) @binding(0) var<uniform> atlas_size: vec4<f32>;
 
 @vertex

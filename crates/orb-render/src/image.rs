@@ -951,7 +951,7 @@ mod prepare {
                 }
                 let views = *targets.views[layer].get_or_insert_with(|| {
                     [DEM_PADDED, DEM_SLOPES]
-                        .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer))
+                        .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer, None))
                 });
                 let dim = page.page.size(DEM_RAW)[0];
                 for (pipeline, group, target, border) in [
