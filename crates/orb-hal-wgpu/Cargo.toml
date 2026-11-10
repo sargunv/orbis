@@ -40,6 +40,8 @@ wgpu = { workspace = true, features = ["vulkan"] }
 # Vulkan there depends on the vendor's driver.
 [target.'cfg(windows)'.dependencies]
 wgpu = { workspace = true, features = ["dx12"] }
+# Loads DXC's validator beside the compiler it picked (src/dx12.rs).
+libloading.workspace = true
 
 
 [dev-dependencies]

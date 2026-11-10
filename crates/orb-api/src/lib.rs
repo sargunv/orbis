@@ -113,6 +113,8 @@ struct Shared {
     adapter: RefCell<String>,
     /// Counts devices made: maps and targets of an older one rebuild.
     generation: std::cell::Cell<u64>,
+    /// Device losses in a row, and how the next is answered.
+    recovery: RefCell<Recovery>,
     /// Fetches, through the HTTP cache with a state directory.
     fetch: Arc<NativeFetch>,
     /// Offline regions, with a state directory.
@@ -163,6 +165,51 @@ pub struct RuntimeStats {
     pub live_resources: usize,
 }
 
+/// A device that ran this long before it was lost ends a run of losses:
+/// the next loss is the first of a new run.
+const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long after each loss of a run a new device is made: the first at
+/// once (an app switch, a driver reset), later ones after a pause. A loss
+/// past the last isn't answered: a driver that loses every device it gives
+/// (Adreno X1's Vulkan lost one a second, #141) would otherwise reset
+/// the map forever.
+const BACKOFF: [std::time::Duration; 3] = [
+    std::time::Duration::ZERO,
+    std::time::Duration::from_millis(250),
+    std::time::Duration::from_secs(1),
+];
+
+/// How the runtime answers device losses.
+#[derive(Debug)]
+struct Recovery {
+    /// When the device was made.
+    made: std::time::Instant,
+    /// Losses in the current run.
+    losses: u32,
+    /// When the loss being answered gets its new device.
+    due: Option<std::time::Instant>,
+    /// Why the runtime stopped making devices.
+    failed: Option<String>,
+}
+
+impl Recovery {
+    fn new() -> Self {
+        Self {
+            made: std::time::Instant::now(),
+            losses: 0,
+            due: None,
+            failed: None,
+        }
+    }
+
+    /// Stops making devices, for `why`.
+    fn fail(&mut self, why: String) -> Error {
+        self.failed = Some(why.clone());
+        Error::Native(why)
+    }
+}
+
 /// Every map's wake, held weakly: a dropped map's goes.
 type Wakes = Arc<std::sync::Mutex<Vec<std::sync::Weak<dyn Fn() + Send + Sync>>>>;
 
@@ -204,6 +251,7 @@ impl Runtime {
                 options: options.clone(),
                 adapter: RefCell::new(adapter),
                 generation: std::cell::Cell::new(0),
+                recovery: RefCell::new(Recovery::new()),
                 fetch: fetch.clone(),
                 regions: options
                     .state_dir
@@ -309,18 +357,75 @@ impl Runtime {
         self.shared.gpu.borrow_mut().lose();
     }
 
-    /// Makes a new device after a loss, with the pipeline cache started
-    /// again. Maps lay their tiles out again on their next frame from
-    /// cached data; texture targets are made again, window targets fail
-    /// with [`Error::TargetLost`]. A device lost to a driver that hung or
-    /// failed compiling isn't replaced: another would do the same.
-    pub(crate) fn recover(&self) -> Result<(), Error> {
-        if let Some(hung) = self.shared.gpu.borrow().hung() {
-            return Err(Error::Native(format!(
-                "the GPU driver hung or failed making {hung}"
-            )));
+    /// Whether a lost device's replacement is due ([`BACKOFF`]): `false`
+    /// while it waits, with every map woken when it's due. An error once the
+    /// runtime has stopped making devices: after a run of losses past the
+    /// backoff's, or for a driver that hung or failed compiling, which
+    /// another device would do the same in.
+    pub(crate) fn recovery_due(&self) -> Result<bool, Error> {
+        let mut recovery = self.shared.recovery.borrow_mut();
+        if let Some(failed) = &recovery.failed {
+            return Err(Error::Native(failed.clone()));
         }
-        let (mut gpu, adapter) = device::make()?;
+        if let Some(hung) = self.shared.gpu.borrow().hung() {
+            return Err(recovery.fail(format!("the GPU driver hung or failed making {hung}")));
+        }
+        let now = std::time::Instant::now();
+        let due = match recovery.due {
+            Some(due) => due,
+            None => {
+                let lived = now - recovery.made;
+                recovery.losses = if lived < STABLE {
+                    recovery.losses + 1
+                } else {
+                    1
+                };
+                let Some(&wait) = BACKOFF.get(recovery.losses as usize - 1) else {
+                    let reason = (self.shared.gpu.borrow().lost_reason())
+                        .map(|r| format!("; the last: {r}"))
+                        .unwrap_or_default();
+                    let why = format!(
+                        "the GPU was lost {} times in a row, each device within {} s of \
+                         the last, so no other is made{reason}",
+                        recovery.losses,
+                        STABLE.as_secs()
+                    );
+                    return Err(recovery.fail(why));
+                };
+                let due = now + wait;
+                recovery.due = Some(due);
+                if !wait.is_zero() {
+                    let wake = wake_all(&self.shared.wakes);
+                    std::thread::Builder::new()
+                        .name("orbis device backoff".into())
+                        .spawn(move || {
+                            std::thread::sleep(wait);
+                            wake();
+                        })
+                        .map_err(|e| Error::Native(format!("a backoff timer: {e}")))?;
+                }
+                due
+            }
+        };
+        Ok(now >= due)
+    }
+
+    /// Makes a new device after a loss, once [`recovery_due`](Self::recovery_due),
+    /// with the pipeline cache started again. Maps lay their tiles out
+    /// again on their next frame from cached data; texture targets are
+    /// made again, window targets fail with [`Error::TargetLost`].
+    pub(crate) fn recover(&self) -> Result<(), Error> {
+        let made = device::make();
+        let mut recovery = self.shared.recovery.borrow_mut();
+        recovery.due = None;
+        let (mut gpu, adapter) = made.map_err(|e| {
+            recovery.fail(format!(
+                "the GPU was lost and no other could be made: {}",
+                e.message()
+            ))
+        })?;
+        recovery.made = std::time::Instant::now();
+        drop(recovery);
         device::set_compiler(
             &mut gpu,
             self.shared.executor.clone(),

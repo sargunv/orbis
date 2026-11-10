@@ -77,6 +77,11 @@ impl WgpuGpu {
     /// `raw` must point to a live object of its kind, and the object must
     /// outlive the returned surface.
     #[allow(unsafe_code)]
+    // Elsewhere (Windows, Linux) no raw handle is a surface here.
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "ios", target_os = "android")),
+        allow(unused_variables, unreachable_code)
+    )]
     pub unsafe fn create_surface_raw(
         &self,
         raw: RawSurface,
@@ -197,7 +202,10 @@ impl WgpuGpu {
         if let Some((_, id)) = surface.frame.take() {
             self.destroy_texture(id);
         }
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        // A lost device holds nothing, and wgpu panics when its wait fails.
+        if !self.lost() {
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        }
     }
 
     /// Shows the frame started with [`acquire`](Self::acquire).

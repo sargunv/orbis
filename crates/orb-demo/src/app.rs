@@ -56,6 +56,9 @@ pub(crate) struct Demo {
     flight: Option<Flight>,
     fly: bool,
     frames: u32,
+    /// Whether the map stopped drawing (the runtime stopped replacing lost
+    /// GPUs, say), once it has.
+    stopped: bool,
     idle_at: Option<(Instant, u32)>,
     count_frames: Option<f64>,
 }
@@ -112,6 +115,7 @@ impl Demo {
             flight: None,
             fly: launch.flight,
             frames: 0,
+            stopped: false,
             idle_at: None,
             count_frames: launch.count_frames,
         };
@@ -441,7 +445,7 @@ impl Demo {
         self.target
             .resize(width, height, f64::from(pixels_per_point));
         self.fly();
-        if self.map.needs_frame() || self.texture.is_none() {
+        if !self.stopped && (self.map.needs_frame() || self.texture.is_none()) {
             let now = self.now();
             match self.map.render(&mut self.target, now) {
                 Ok(Some(report)) => {
@@ -456,7 +460,11 @@ impl Demo {
                     self.target =
                         Target::texture(&self.runtime, width, height, f64::from(pixels_per_point));
                 }
-                Err(e) => panic!("orb-demo: {e}"),
+                Err(e) => {
+                    eprintln!("orb-demo: stopped drawing: {e}");
+                    self.say(format!("Stopped drawing: {e}"), true);
+                    self.stopped = true;
+                }
             }
         }
         self.events();

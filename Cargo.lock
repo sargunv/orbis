@@ -3164,6 +3164,7 @@ version = "0.0.0"
 dependencies = [
  "futures-channel",
  "js-sys",
+ "libloading",
  "naga",
  "orb-hal",
  "orb-host",

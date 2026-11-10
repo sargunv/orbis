@@ -1,5 +1,6 @@
 //! Device robustness: a lost device is replaced with the map drawing the
-//! same pixels again, and a driver that hangs compiling is reported.
+//! same pixels again, losses in a row back off and then stop, and a driver
+//! that hangs compiling is reported.
 
 use std::time::{Duration, Instant};
 
@@ -139,4 +140,45 @@ fn a_lost_device_recovers() {
         "the added image, again"
     );
     assert!(after == before, "the same picture again");
+}
+
+/// A driver that loses every device it gives (Adreno X1's Vulkan, #141):
+/// each loss of a run is answered later than the one before, and past the
+/// backoff's last the runtime stops, saying why once as an error event
+/// and failing every frame after, rather than reset the map forever.
+#[test]
+fn losses_in_a_row_back_off_then_stop() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(STYLE).unwrap();
+    settle(&mut map, &mut target).unwrap();
+    let mut waits = Vec::new();
+    for _ in 0..3 {
+        runtime.lose_device();
+        let lost = Instant::now();
+        settle(&mut map, &mut target).unwrap();
+        waits.push(lost.elapsed());
+    }
+    eprintln!("recovered after {waits:?}");
+    assert!(waits[1] >= Duration::from_millis(250), "{waits:?}");
+    assert!(waits[2] >= Duration::from_secs(1), "{waits:?}");
+    runtime.lose_device();
+    let error = map.render(&mut target, 0.0).unwrap_err();
+    assert!(error.message().contains("lost 4 times"), "{error}");
+    let events: Vec<_> = std::iter::from_fn(|| map.poll_event()).collect();
+    let reported = events
+        .iter()
+        .filter(|e| {
+            matches!(e, orb_api::Event::Map(orb_api::MapEvent::Error { message })
+                if *message == error.message())
+        })
+        .count();
+    assert_eq!(reported, 1, "{events:?}");
+    assert_eq!(map.render(&mut target, 0.0).unwrap_err(), error);
+    assert!(
+        std::iter::from_fn(|| map.poll_event())
+            .all(|e| !matches!(e, orb_api::Event::Map(orb_api::MapEvent::Error { .. }))),
+        "once"
+    );
 }

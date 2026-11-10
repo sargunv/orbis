@@ -37,17 +37,31 @@ pub(crate) struct Readback {
 /// sparse 512 px views a sixth of the frame: 0.06 ms of CPU, 0.15 ms of
 /// wall). After it, Qualcomm's Vulkan driver also draws nothing from
 /// drawIndexedIndirect (Adreno 619 measured; gfx-rs/wgpu#8801 on 650/740).
-async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter), String> {
+///
+/// On Windows, D3D12's shader compiler too ([`crate::dx12`]): what it is,
+/// when the adapter is D3D12's.
+async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter, Option<String>), String> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor
         .flags
         .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
-    let instance = wgpu::Instance::new(descriptor.with_env());
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut descriptor = descriptor.with_env();
+    #[cfg(windows)]
+    let compiler = Some(crate::dx12::choose(&mut descriptor));
+    #[cfg(not(windows))]
+    let compiler = None;
+    let instance = wgpu::Instance::new(descriptor);
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions::default())
         .await
         .map_err(|e| format!("no adapter: {e}"))?;
-    Ok((instance, adapter))
+    let compiler = compiler.filter(|_| adapter.get_info().backend == wgpu::Backend::Dx12);
+    #[cfg(windows)]
+    if let Some(compiler) = &compiler {
+        crate::dx12::warn_if_fxc(compiler);
+    }
+    Ok((instance, adapter, compiler))
 }
 
 impl WgpuGpu {
@@ -56,7 +70,7 @@ impl WgpuGpu {
     /// choose the adapter. Natively the device keeps its instance, so it can
     /// also draw to window surfaces.
     pub async fn offscreen() -> Result<Self, String> {
-        let (instance, adapter) = adapter().await?;
+        let (instance, adapter, compiler) = adapter().await?;
         // Orbis draws indirectly from compute; devices without that (the
         // iOS simulator's Metal) can't draw it.
         let downlevel = adapter.get_downlevel_capabilities().flags;
@@ -89,17 +103,12 @@ impl WgpuGpu {
         let mut gpu = Self::new(device, queue);
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let lost = std::sync::Arc::clone(&gpu.lost);
-            gpu.device.set_device_lost_callback(move |_, _| {
-                lost.store(true, std::sync::atomic::Ordering::Relaxed)
-            });
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+            gpu.watch_loss();
             gpu.native = Some((instance, adapter));
+            gpu.shader_compiler = compiler;
         }
         #[cfg(target_arch = "wasm32")]
-        let _ = instance;
+        let _ = (instance, compiler);
         Ok(gpu)
     }
 

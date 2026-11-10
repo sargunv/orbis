@@ -5,13 +5,16 @@
 //! register their own targets (a surface frame, an offscreen texture) with
 //! [`WgpuGpu::register_view`].
 
-// `unsafe` only where a surface is made from a raw platform handle.
+// `unsafe` only where a surface is made from a raw platform handle, and
+// where D3D12's compiler is loaded.
 #![deny(unsafe_code)]
 
 #[cfg(not(target_arch = "wasm32"))]
 mod cache;
 mod compile;
 mod convert;
+#[cfg(windows)]
+mod dx12;
 mod offscreen;
 mod slots;
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,7 +85,9 @@ pub struct WgpuGpu {
     /// Each pipeline compiled, how long it took, in the order they
     /// finished.
     compiled: Vec<(String, std::time::Duration)>,
-    render_bundles: Slots<wgpu::RenderBundle>,
+    /// `None` for a bundle recorded on a lost device, which wgpu can't
+    /// finish.
+    render_bundles: Slots<Option<wgpu::RenderBundle>>,
     /// Submissions' times, while timing ([`WgpuGpu::set_timing`]).
     timing: Option<timing::Timing>,
     /// The last submission, and each unfinished frame's
@@ -119,6 +124,12 @@ pub struct WgpuGpu {
     /// Set when the device made by `offscreen` is lost.
     #[cfg(not(target_arch = "wasm32"))]
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// What the driver said when it lost the device.
+    #[cfg(not(target_arch = "wasm32"))]
+    lost_reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// D3D12's shader compiler, on a D3D12 device `offscreen` made.
+    #[cfg(not(target_arch = "wasm32"))]
+    shader_compiler: Option<String>,
 }
 
 /// Bytes written to buffers and textures since the device was created, by
@@ -303,6 +314,10 @@ impl WgpuGpu {
             debug_groups: false,
             #[cfg(not(target_arch = "wasm32"))]
             lost: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            lost_reason: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            shader_compiler: None,
         }
     }
 
@@ -534,11 +549,61 @@ impl WgpuGpu {
         self.lost.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether the device is known to be lost: natively, as `lost`; in
+    /// the browser, whose failures don't stop the page, never.
+    fn known_lost(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.lost();
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
+
+    /// What the driver said when the device was lost, if it was.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn lost_reason(&self) -> Option<String> {
+        self.lost_reason.lock().expect("loss poisoned").clone()
+    }
+
     /// Loses the device on purpose (`destroy`), to exercise recovery.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn lose(&self) {
         self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
         self.device.destroy();
+    }
+
+    /// Marks the device lost when the driver loses it, and takes the
+    /// errors calls on a lost device raise as part of the loss: a loss
+    /// can come in the middle of a frame (in a render bundle's `finish`, at
+    /// a submit), and the frame's remaining calls each fail with "Parent
+    /// device is lost", which wgpu's default handler would panic on. Any
+    /// other uncaptured error still panics, as it would without this.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn watch_loss(&self) {
+        let (lost, reason) = (self.lost.clone(), self.lost_reason.clone());
+        self.device.set_device_lost_callback(move |why, message| {
+            reason
+                .lock()
+                .expect("loss poisoned")
+                .get_or_insert_with(|| format!("{why:?}: {message}"));
+            lost.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let lost = self.lost.clone();
+        self.device
+            .on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
+                let loss = lost.load(std::sync::atomic::Ordering::Relaxed)
+                    || error.to_string().contains("device is lost");
+                if !loss {
+                    panic!("wgpu error: {error}");
+                }
+                lost.store(true, std::sync::atomic::Ordering::Relaxed);
+            }));
+    }
+
+    /// D3D12's shader compiler ([`offscreen`](Self::offscreen) chooses DXC
+    /// over FXC): where it was found, or `FXC`. `None` on other back ends.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn shader_compiler(&self) -> Option<&str> {
+        self.shader_compiler.as_deref()
     }
 
     /// The adapter behind a device `offscreen` made.
@@ -623,6 +688,10 @@ impl WgpuGpu {
     /// `in_flight` frames are unfinished, as a swapchain does.
     pub fn end_frame(&mut self, in_flight: usize) {
         self.frames.extend(self.last.take());
+        // wgpu panics when a wait fails, as it does on a lost device.
+        if self.known_lost() {
+            self.frames.clear();
+        }
         while self.frames.len() > in_flight {
             let index = self.frames.pop_front();
             let _ = self.device.poll(wgpu::PollType::Wait {
@@ -1168,8 +1237,13 @@ impl Gpu for WgpuGpu {
         for command in commands {
             self.encode_render(&mut encoder, command);
         }
-        let bundle = encoder.finish(&wgpu::RenderBundleDescriptor {
-            label: Some(desc.label),
+        // wgpu panics when `finish` fails, whatever the error handler, and
+        // on a lost device it fails ("Parent device is lost"): the frame
+        // goes on without the bundle, and the next one makes a new device.
+        let bundle = (!self.known_lost()).then(|| {
+            encoder.finish(&wgpu::RenderBundleDescriptor {
+                label: Some(desc.label),
+            })
         });
         RenderBundleId(self.render_bundles.insert(bundle))
     }
@@ -1349,8 +1423,10 @@ impl Gpu for WgpuGpu {
                     });
                     for command in &render.commands {
                         match command {
-                            RenderCommand::ExecuteBundles(ids) => pass
-                                .execute_bundles(ids.iter().map(|id| &self.render_bundles[id.0])),
+                            RenderCommand::ExecuteBundles(ids) => pass.execute_bundles(
+                                ids.iter()
+                                    .filter_map(|id| self.render_bundles[id.0].as_ref()),
+                            ),
                             &RenderCommand::SetScissor([x, y, width, height]) => {
                                 pass.set_scissor_rect(x, y, width, height)
                             }

@@ -32,7 +32,11 @@ pub(crate) fn make() -> Result<(WgpuGpu, String), Error> {
             gpu.set_compile_watchdog(std::time::Duration::from_millis(ms));
         }
     }
-    Ok((gpu, format!("{} ({:?})", info.name, info.backend)))
+    let compiler = gpu
+        .shader_compiler()
+        .map(|c| format!(", shaders by {c}"))
+        .unwrap_or_default();
+    Ok((gpu, format!("{} ({:?}{compiler})", info.name, info.backend)))
 }
 
 /// Compiles `gpu`'s pipelines on `executor`, calling `wake` whenever one

@@ -131,6 +131,11 @@ function plain<T extends object>(object: T): T {
   return out as T;
 }
 
+/** A device that lasted this long before its loss ends a run of losses. */
+const STABLE_MS = 30_000;
+/** How long after each loss of a run a new device is made. */
+const BACKOFF_MS = [0, 250, 1000];
+
 /** Runs `f` in a task of its own, soon: a message, not a timer, which
  * browsers delay. */
 const afterTask = (() => {
@@ -157,6 +162,9 @@ export class Engine {
   #lostAt: number | undefined;
   /** The last device loss's start, until the new device draws. */
   #recovering: number | undefined;
+  /** When the device was made, and the losses in the current run. */
+  #deviceAt = performance.now();
+  #losses = 0;
   #removed = false;
   /** Whether a prepare is queued. */
   #preparing = false;
@@ -676,20 +684,37 @@ export class Engine {
       : new Float64Array(0);
   }
 
-  /** Gets a new GPU after a loss and draws on. */
+  /** Gets a new GPU after a loss and draws on: at once after the first
+   * loss of a run, later after each one after (a device that lasted
+   * `STABLE_MS` ends a run), and past `BACKOFF_MS`'s last not at all, with
+   * an `error` event, so a driver that loses every device doesn't reset
+   * the map forever. Native runtimes answer losses the same way. */
   #recover(): void {
     if (this.#lostAt !== undefined) return;
-    this.#lostAt = performance.now();
+    const now = (this.#lostAt = performance.now());
+    this.#losses = now - this.#deviceAt < STABLE_MS ? this.#losses + 1 : 1;
     this.#events.push({ type: "lost", data: {} });
+    const wait = BACKOFF_MS[this.#losses - 1];
+    if (wait === undefined) {
+      this.#fail(
+        `the GPU was lost ${this.#losses} times in a row, each device within ` +
+          `${STABLE_MS / 1000} s of the last, so no other is made`,
+      );
+      return;
+    }
     this.#send({});
-    this.#host.recover().then(
-      () => {
-        this.#recovering = this.#lostAt;
-        this.#lostAt = undefined;
-        this.#request();
-      },
-      (e) => this.#fail(`the GPU was lost and no other could be made: ${e}`),
-    );
+    setTimeout(() => {
+      if (this.#removed) return;
+      this.#host.recover().then(
+        () => {
+          this.#recovering = this.#lostAt;
+          this.#lostAt = undefined;
+          this.#deviceAt = performance.now();
+          this.#request();
+        },
+        (e) => this.#fail(`the GPU was lost and no other could be made: ${e}`),
+      );
+    }, wait);
   }
 
   /** A failure, as an `error` event. */

@@ -41,6 +41,7 @@ glam = { version = "0.34.2", default-features = false, features = [
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 png = "0.18.1"
 pollster = "1.0.1"
+libloading = "0.8.9"
 # Process CPU time for the bench tools (orb-bench, orb-cli).
 rustix = { version = "1.1.6", default-features = false, features = [
   "std",

@@ -174,6 +174,9 @@ pub struct Map {
     renderer: Option<orb_runtime::Renderer>,
     /// The runtime's device generation the map's GPU state is of.
     device: u64,
+    /// Whether the map has reported that the runtime stopped replacing
+    /// lost devices.
+    gave_up: bool,
     /// The last frame left work: loads, fades or placement.
     busy: bool,
     /// A command or input since the last frame changed what it shows.
@@ -269,6 +272,7 @@ impl Map {
             next_query: 0,
             renderer: None,
             device: runtime.shared.generation.get(),
+            gave_up: false,
             busy: true,
             dirty: true,
             mode: RenderMode::Continuous,
@@ -974,7 +978,9 @@ impl Map {
         frame_time: f64,
     ) -> Result<Option<FrameReport>, Error> {
         self.last_frame = Some((frame_time, Instant::now()));
-        self.ready_for(target)?;
+        if !self.ready_for(target)? {
+            return Ok(None);
+        }
         let format = target.format();
         let viewport = target.viewport();
         // The frame borrows the device once: the target begins and ends
@@ -1020,8 +1026,9 @@ impl Map {
     }
 
     /// Checks that this map can draw into `target`, after bringing it to
-    /// the runtime's current device.
-    fn ready_for(&mut self, target: &mut Target) -> Result<(), Error> {
+    /// the runtime's current device: `false` while a lost device's
+    /// replacement waits out its backoff (the map is woken when it's due).
+    fn ready_for(&mut self, target: &mut Target) -> Result<bool, Error> {
         if !target.same_runtime(&self.shared) {
             return Err(Error::InvalidArgument(
                 "the target belongs to another runtime".into(),
@@ -1029,12 +1036,34 @@ impl Map {
         }
         // A lost GPU is replaced before the frame: texture
         // targets are made again, and window targets fail with
-        // `TargetLost` for the host to make on the new one.
+        // `TargetLost` for the host to make on the new one. After too
+        // many losses in a row the runtime stops, and the map says why
+        // once, as an error event, besides failing each frame.
         if self.runtime.lost() {
-            if target.is_window() {
-                target.release();
+            let recovered = self.runtime.recovery_due().and_then(|due| {
+                if due {
+                    if target.is_window() {
+                        target.release();
+                    }
+                    self.runtime.recover()?;
+                }
+                Ok(due)
+            });
+            match recovered {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.dirty = false;
+                    return Ok(false);
+                }
+                Err(e) => {
+                    if !std::mem::replace(&mut self.gave_up, true) {
+                        self.events.push_back(Event::Map(MapEvent::Error {
+                            message: e.message().to_owned(),
+                        }));
+                    }
+                    return Err(e);
+                }
             }
-            self.runtime.recover()?;
         }
         // The runtime replaced its device: draw on the new one, laying the
         // tiles out again.
@@ -1053,14 +1082,16 @@ impl Map {
                 format.color
             )));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Applies what has arrived without drawing a frame
     /// ([`orb_runtime::Map::apply_arrivals`]), with the renderer of
     /// `target`'s format.
     fn arrive(&mut self, target: &mut Target) -> Result<(), Error> {
-        self.ready_for(target)?;
+        if !self.ready_for(target)? {
+            return Ok(());
+        }
         let format = target.format();
         {
             let mut device = self.shared.gpu.borrow_mut();
