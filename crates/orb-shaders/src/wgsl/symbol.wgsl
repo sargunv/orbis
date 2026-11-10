@@ -8,6 +8,12 @@
 // symbol meshes), six vertices each. A mesh's tables sit behind a header in
 // the vertex arena; its state words, paint rows and the glyph row table in
 // the property arena.
+//
+// Qualcomm's Vulkan driver on the Adreno X1 lost the device making these
+// stages' pipelines (#141) when they were the only stages using some
+// instructions, so they keep to instructions other stages use: no
+// `degrees`, no `&` on `i32`, no `select` between bools and no `vec4`
+// comparison.
 
 // Paint slots: opacity, colour, halo colour, halo width, halo blur, and
 // with `["dev.sargunv.orbis:daylight"]` the colour's and halo colour's
@@ -242,7 +248,7 @@ fn label_daylight(anchor: Ground) -> f32 {
         let sphere = normalize(anchor.globe + frame.globe_target);
         normal = normalize(mix(normal, sphere, frame.globe_amount));
     }
-    let elevation = degrees(asin(clamp(dot(normal, frame.ground_sun.xyz), -1.0, 1.0)));
+    let elevation = asin(clamp(dot(normal, frame.ground_sun.xyz), -1.0, 1.0)) * (180.0 / PI);
     let half = frame.ground_sun.w;
     var day = select(0.0, 1.0, elevation >= 0.0);
     if half > 0.0 {
@@ -410,7 +416,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     // The block of the placement's world copy; the placed table runs up to
     // the glyph offsets.
     let placed_count = (vertex_at(base + H_GLYPH_OFFSETS) - vertex_at(base + H_PLACED)) / PLACED_WORDS;
-    let copy = u32(tile.wrap & i32(vertex_at(base + H_COPIES) - 1u));
+    let copy = bitcast<u32>(tile.wrap) & (vertex_at(base + H_COPIES) - 1u);
     let state_at = vertex_at(base + H_STATES) + (copy * placed_count + placed_index) * STATE_WORDS;
     let state = prop_at(state_at);
     if (state & S_HIDDEN) != 0u { return out; }
@@ -547,7 +553,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
                 plane_pos = projected + shift;
             }
         }
-        let quarter = select(placed.writing_mode == 2u, (state & S_QUARTER_TURN) != 0u, !is_text);
+        let quarter = (is_text && placed.writing_mode == 2u) || (!is_text && (state & S_QUARTER_TURN) != 0u);
         segment_angle = select(0.0, -PI / 2.0, quarter);
         in_plane = true;
     }
@@ -691,7 +697,7 @@ fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
         let g = gamma * gamma_scale;
         text = total_opacity * smoothstep(inner_edge - g, inner_edge + g, dist) * in.fill;
     }
-    let has_halo = halo_width != 0.0 && any(in.halo != vec4<f32>(0.0));
+    let has_halo = halo_width != 0.0 && dot(in.halo, in.halo) != 0.0;
     if symbol_pass.x != 2u && has_halo {
         let gamma_halo = (halo_blur * 1.19 / SDF_PX + edge_gamma) / (font_scale * u_gamma_scale);
         let inner_edge_halo = inner_edge + gamma_halo * gamma_scale;
