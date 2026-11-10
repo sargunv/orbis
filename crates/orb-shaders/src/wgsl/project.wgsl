@@ -346,9 +346,18 @@ fn terrain_seen(projected: vec4<f32>, g: Ground, z: f32) -> vec4<f32> {
     return ground_clip_3d(g, vec2<f32>(0.0), z);
 }
 
-// Whether the sphere stands between the eye and camera-relative `p`. A
-// point in front of the horizon plane never is; only behind it does the
-// ray test run (in f32 it cancels badly for grazing rays).
+// Whether the solid globe stands between the eye and camera-relative `p`:
+// the sphere through the lowest ground the terrain shows, so that ground
+// below sea level near the limb (the Caspian's, the Dead Sea's) stays in
+// view while what hangs under it (skirts) hides. A point in front of the
+// sea-level horizon plane, which lies nearer the eye than that sphere's,
+// never is; only behind it does the ray test run.
+//
+// The sphere sinks by a pixel at `p`'s distance: the ground's last rows
+// before the horizon lie on it to within their patches' tolerance and
+// f32's, and a ray grazing it there would otherwise enter it just short
+// of them by that rounding alone, hiding them in a line along the
+// horizon. A skirt hangs a fifth of a tile, many pixels, below it.
 fn sphere_hides(p: vec3<f32>) -> bool {
     if dot(frame.globe_horizon.xyz, p) + frame.globe_horizon.w >= 0.0 {
         return false;
@@ -356,8 +365,13 @@ fn sphere_hides(p: vec3<f32>) -> bool {
     let from_center = frame.globe_eye + frame.globe_target;
     let d = p - frame.globe_eye;
     let a = dot(d, d);
+    let lowest = SPHERE_RADIUS + frame.terrain_lowest * frame.extrusion_scale * frame.globe_metres;
+    let radius = lowest - sqrt(a) / frame.camera_to_center;
     let b = dot(from_center, d);
-    let c = dot(from_center, from_center) - SPHERE_RADIUS * SPHERE_RADIUS;
+    // The eye's height over it, taken whole: a difference of squares
+    // would cancel.
+    let reach = length(from_center);
+    let c = (reach - radius) * (reach + radius);
     let disc = b * b - a * c;
     if disc <= 0.0 {
         return false;

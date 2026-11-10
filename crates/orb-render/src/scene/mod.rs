@@ -173,6 +173,11 @@ pub struct FrameTerrain {
     /// The ground's elevation under the camera target, metres: the plane
     /// the ground mask lies on (`project.wgsl`'s `ground_mask_clip`).
     pub ground: f32,
+    /// The lowest elevation the frame's terrain tiles can show, metres
+    /// with exaggeration: on a globe, ground below sea level near the
+    /// limb stays in front of the sphere that hides solid points
+    /// (`project.wgsl`'s `sphere_hides`).
+    pub lowest: f32,
 }
 
 const FRAME_WORDS: usize = layout::frame::WORDS;
@@ -235,6 +240,7 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
         b.f(f::TERRAIN_EXAGGERATION, &[t.exaggeration]);
         b.f(f::DEM_DIM, &[t.dem_dim]);
         b.f(f::TERRAIN_GROUND, &[t.ground]);
+        b.f(f::TERRAIN_LOWEST, &[t.lowest.min(0.0)]);
     }
     let [red, green, blue] = frame.light.color;
     b.f(f::LIGHT_COLOR, &[red, green, blue, frame.light.intensity]);

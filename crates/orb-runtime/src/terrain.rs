@@ -423,12 +423,19 @@ impl Terrain {
             }
         }
         let dem_dim = self.page.map_or(1, |page| renderer.page_size(page)[0]) as f32;
+        // The DEM tiles the terrain tiles read, as `plan` gives them: a
+        // tile without one draws at sea level.
+        let lowest = (self.tiles.iter())
+            .filter_map(|t| self.dem_for(t.index))
+            .map(|(_, d)| d.dem.grid.min())
+            .fold(0.0, f32::min);
         let frame = orb_render::FrameTerrain {
             unpack,
             exaggeration,
             dem_dim,
             // The map sets it from the camera.
             ground: 0.0,
+            lowest: lowest * exaggeration,
         };
         (frame, requests)
     }

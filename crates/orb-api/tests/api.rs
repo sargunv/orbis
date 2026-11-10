@@ -1768,6 +1768,80 @@ fn equator_dem(metres: &dyn Fn(f64) -> f64) -> DemDir {
     DemDir(dir)
 }
 
+/// Terrarium DEM tiles of the whole world, zooms 0 to 2, `metres` high
+/// everywhere, written to a fresh directory.
+fn level_dem(metres: f64) -> DemDir {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "orb-api-level-dem-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ));
+    const SIZE: u32 = 256;
+    let v = ((metres + 32768.0) * 256.0).round() as u32;
+    let pixels: Vec<u8> = (0..SIZE * SIZE)
+        .flat_map(|_| [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255])
+        .collect();
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, SIZE, SIZE);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    (encoder.write_header().unwrap())
+        .write_image_data(&pixels)
+        .unwrap();
+    for z in 0..=2u32 {
+        for x in 0..1 << z {
+            for y in 0..1 << z {
+                let path = dir.join(format!("{z}/{x}/{y}.png"));
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, &png).unwrap();
+            }
+        }
+    }
+    DemDir(dir)
+}
+
+/// #165: ground below sea level runs on to the horizon, where the sky
+/// meets it, at a high pitch in the globe's handover to the plane and on
+/// the plane. Hidden as if behind the sea-level sphere, or cut off where
+/// sea-level ground would end, its last rows left a line of the clear
+/// colour; with the eye nearer the sea than the ground is below it, the
+/// globe's cover dropped all of it. The sky takes the row the horizon
+/// crosses, so no pixel there is left partly clear either.
+#[test]
+fn ground_below_sea_level_reaches_the_horizon() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    for (projection, metres) in [("globe", -300.0), ("globe", -1000.0), ("mercator", -1000.0)] {
+        let dem = level_dem(metres);
+        let style = format!(
+            r##"{{"version": 8, "projection": {{"type": "{projection}"}},
+              "center": [50.6, 40.3], "zoom": 11.7, "pitch": 80, "bearing": 90,
+              "terrain": {{"source": "dem"}}, "sky": {{"sky-color": "#7fb3e6",
+                "horizon-color": "#e8eef2", "fog-color": "#dfe7ee", "sky-horizon-blend": 0.6,
+                "horizon-fog-blend": 0.7, "fog-ground-blend": 0.6}},
+              "sources": {{"dem": {{"type": "raster-dem", "encoding": "terrarium",
+                "tileSize": 256, "maxzoom": 2, "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}}}},
+              "layers": [{{"id": "background", "type": "background",
+                "paint": {{"background-color": "#40a040"}}}}]}}"##,
+            dem.0.display()
+        );
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&style).expect("style");
+        const WIDTH: u32 = 400;
+        let image = map.snapshot(WIDTH, 300, 1.0).expect("snapshot");
+        let clear: Vec<(u32, u32, u8)> = (image.pixels.as_chunks::<4>().0.iter().enumerate())
+            .filter(|(_, p)| p[3] < 255)
+            .map(|(i, p)| (i as u32 % WIDTH, i as u32 / WIDTH, p[3]))
+            .collect();
+        assert!(
+            clear.is_empty(),
+            "{projection} at {metres} m: {} pixels not opaque: {:?}",
+            clear.len(),
+            &clear[..clear.len().min(8)]
+        );
+    }
+}
+
 fn pixel_of(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
     let at = ((y * width + x) * 4) as usize;
     pixels[at..at + 4].try_into().unwrap()

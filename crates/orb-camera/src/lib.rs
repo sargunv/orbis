@@ -175,6 +175,10 @@ pub struct GlobeView {
     pub metres_per_px: f64,
     /// On a low-zoom plane, the camera's view of it.
     pub plane: Option<Box<View>>,
+    /// The radius of the sphere through the lowest ground near the target
+    /// (sea level's, or lower where the ground is): its horizon ends the
+    /// ground.
+    pub floor: f64,
 }
 
 impl GlobeView {
@@ -188,9 +192,11 @@ impl GlobeView {
         (p + self.target).dot(eye) >= sphere::RADIUS * sphere::RADIUS
     }
 
-    /// The angle from the point under the eye to the horizon, in radians.
+    /// The angle from the point under the eye to the lowest ground's
+    /// horizon, in radians.
+    #[cfg(test)]
     pub(crate) fn horizon_angle(&self) -> f64 {
-        (sphere::RADIUS / (self.target + self.eye).length())
+        (self.floor / (self.target + self.eye).length())
             .min(1.0)
             .acos()
     }
@@ -267,7 +273,8 @@ impl View {
         let sea_level_px = (eye_distance_px / 2.0)
             .max(eye_distance_px + camera.elevation * px_per_m / limited.cos());
         let altitude = camera.elevation + eye_distance_px * pitch.cos() / px_per_m;
-        let lowest = camera.elevation.min(lowest).min(altitude - 100.0);
+        let ground = camera.elevation.min(lowest);
+        let lowest = ground.min(altitude - 100.0);
         let lowest_plane_px = if lowest < 0.0 {
             sea_level_px - lowest * px_per_m / limited.cos()
         } else {
@@ -293,7 +300,12 @@ impl View {
         let top = (above_center / eye_distance_px * limited.tan()).clamp(0.0, HORIZON_SHARE);
         // The deepest ground drawn.
         let mut deepest = lowest_plane_px / (1.0 - HORIZON_SHARE);
-        let altitude_px = altitude * px_per_m;
+        // The ground ends where the far plane or the sphere's horizon cuts
+        // the lowest ground near the target, which below sea level lies
+        // deeper, and ends lower on screen, than the sea.
+        let floor = ground.min(0.0);
+        let above = (altitude - floor).max(1.0);
+        let above_px = above * px_per_m;
         let (pitch_sin, pitch_cos) = (pitch.sin(), pitch.cos());
         // How far along the ground, ahead of the point beneath the eye,
         // the ground ends, when the sphere's horizon ends it.
@@ -301,12 +313,12 @@ impl View {
         // A surface that is a sphere at low zoom ends its plane's ground
         // at the sphere's horizon, as far along the ground as the eye sees
         // over the sphere, so the two meet through the handover and the
-        // ground reaches no farther past it.
+        // ground reaches no farther past it. That horizon is the lowest
+        // ground's: ground below sea level runs on past the sea's.
         if surface.globe.is_some_and(|g| g.plane.is_none()) {
-            let altitude = altitude.max(1.0);
-            let r = sphere::RADIUS;
-            let ahead = ((r + altitude).powi(2) - r * r).sqrt() * px_per_m;
-            let limb = ahead * pitch_sin + altitude * px_per_m * pitch_cos;
+            let r = sphere::RADIUS + floor;
+            let ahead = ((r + above).powi(2) - r * r).sqrt() * px_per_m;
+            let limb = ahead * pitch_sin + above_px * pitch_cos;
             if limb >= lowest_plane_px && limb < deepest {
                 limb_reach = Some(ahead);
             }
@@ -314,7 +326,7 @@ impl View {
         }
         // Otherwise where the ground is that deep.
         let reach = limb_reach.unwrap_or_else(|| {
-            (deepest - altitude_px * pitch_cos) / pitch_sin.max(lowest_pitch_sin())
+            (deepest - above_px * pitch_cos) / pitch_sin.max(lowest_pitch_sin())
         });
         let far_px = (lowest_plane_px / (1.0 - top)).min(deepest) * 1.01;
         // Where the ground ends on screen and the sky starts, above the
@@ -323,8 +335,8 @@ impl View {
         // looking straight down at the sphere's horizon is the eye's
         // altitude, the depth of everything in view, and would put the
         // horizon at the target.
-        let horizon_px = eye_distance_px * (reach * pitch_cos - altitude_px * pitch_sin)
-            / (reach * pitch_sin + altitude_px * pitch_cos);
+        let horizon_px = eye_distance_px * (reach * pitch_cos - above_px * pitch_sin)
+            / (reach * pitch_sin + above_px * pitch_cos);
         let near_px = viewport.height / 50.0;
 
         let to_px = DMat4::from_scale(DVec3::splat(1.0 / world_per_px));
@@ -365,6 +377,7 @@ impl View {
                     eye: low.eye,
                     metres_per_px: low.world_per_px,
                     plane: Some(Box::new(low)),
+                    floor: sphere::RADIUS,
                 };
             }
             // The plane's view, turned from the target's east, north and up
@@ -391,6 +404,7 @@ impl View {
                 eye: view.inverse().transform_point3(DVec3::ZERO),
                 metres_per_px: camera.resolution,
                 plane: None,
+                floor: sphere::RADIUS + floor,
             }
         });
 
@@ -962,11 +976,13 @@ impl View {
             // The heights its ground and the content on it span, in metres.
             let (base, top) = terrain.and_then(|t| t.range(b, index.z)).unwrap_or(unknown);
             let top = top.max(base) + height;
-            let horizon =
-                globe.horizon_angle() + (sphere::RADIUS / (sphere::RADIUS + top.max(0.0))).acos();
+            // Over the lowest ground, the view's or the tile's own.
+            let floor = globe.floor.min(sphere::RADIUS + base);
+            let eye_horizon = (floor / eye.length()).min(1.0).acos();
+            let horizon = eye_horizon + (floor / (sphere::RADIUS + top).max(floor)).acos();
             // Points that can face the eye, or hold content that can, lie
             // in front of the horizon's plane.
-            let horizon_plane = sphere::RADIUS * horizon.cos();
+            let horizon_plane = floor * horizon.cos();
             // A grid of the tile's points on the sphere, row by row: 5×5
             // for the widest tiles, 3×3 below.
             let steps = if index.z < 3 { 4 } else { 2 };
@@ -1170,6 +1186,8 @@ struct GlobeFrustum {
     eye: DVec3,
     forward: DVec3,
     ground: Option<f64>,
+    /// The lowest ground's radius ([`GlobeView::floor`]).
+    floor: f64,
 }
 
 /// A [`GlobeFrustum`] cut off for content of one height.
@@ -1190,10 +1208,12 @@ impl GlobeFrustum {
                 eye,
                 forward,
                 ground: None,
+                floor: globe.floor,
             };
         }
         let up = eye.normalize();
-        let plane = sphere::RADIUS * sphere::RADIUS / eye.length();
+        let floor = globe.floor;
+        let plane = floor * floor / eye.length();
         let depth = |p: DVec3| (p - eye).dot(forward);
         // The farthest depth at which the edges meet the horizon's plane
         // (or their full length where they don't)...
@@ -1212,12 +1232,10 @@ impl GlobeFrustum {
         // on the horizon, or where the sphere faces straight back along
         // the view if it can be seen there.
         let ring = (plane * up - eye).dot(forward)
-            + (sphere::RADIUS * sphere::RADIUS - plane * plane)
-                .max(0.0)
-                .sqrt()
+            + (floor * floor - plane * plane).max(0.0).sqrt()
                 * (forward - up * forward.dot(up)).length();
-        let back = forward * sphere::RADIUS;
-        let visible = if back.dot(eye) >= sphere::RADIUS * sphere::RADIUS {
+        let back = forward * floor;
+        let visible = if back.dot(eye) >= floor * floor {
             ring.max(depth(back))
         } else {
             ring
@@ -1227,6 +1245,7 @@ impl GlobeFrustum {
             eye,
             forward,
             ground: Some(rays.min(visible)),
+            floor,
         }
     }
 
@@ -1240,8 +1259,8 @@ impl GlobeFrustum {
         // Content standing on the sphere shows farther along a ray that
         // grazes it, by up to the tangent's length from it to the
         // content's top.
-        let shell = sphere::RADIUS + height;
-        let far = ground + (shell * shell - sphere::RADIUS * sphere::RADIUS).sqrt();
+        let shell = (sphere::RADIUS + height).max(self.floor);
+        let far = ground + (shell * shell - self.floor * self.floor).sqrt();
         let depth = |p: DVec3| (p - self.eye).dot(self.forward);
         for i in 0..4 {
             let (near, along) = (corners[i], corners[i + 4] - corners[i]);

@@ -85,6 +85,10 @@ struct Frame {
     // The ground's elevation under the camera target, metres: the plane
     // the ground mask lies on (`GROUND_MASK_SCALE`).
     terrain_ground: f32,
+    // The lowest ground the frame's terrain tiles can show, metres with
+    // exaggeration, 0 when none is lower: what a solid point on the
+    // globe must be behind to be hidden (`sphere_hides`).
+    terrain_lowest: f32,
     // v8's `light` (see lighting.wgsl): its premultiplied colour with its
     // intensity in w, and its position in GL JS's extrusion axes.
     light_color: vec4<f32>,
