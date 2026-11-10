@@ -5,8 +5,9 @@
 //
 // `--name=value` pairs become the page's query (format, style, frames,
 // warmup, rounds, size, ratio, at, experiment, backend (`webgl2` draws
-// Orbis with WebGL 2) and engine (`orbis,gl`: GL JS too, the engines
-// taking turns view by view); workers (job workers),
+// Orbis with WebGL 2), views (`0,2`: the first and third alone), drop
+// (`symbol,line`: the style without those layers) and engine (`orbis,gl`:
+// GL JS too, the engines taking turns view by view); workers (job workers),
 // paths, engine and gpu (`--gpu=1`: GPU passes on frames that laid the
 // cull's candidates out again and on the rest) and pace (`--pace=wall`:
 // each path takes 6 s however slowly frames come, as a hand's gesture

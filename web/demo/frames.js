@@ -161,9 +161,13 @@ async function orbisEngine(
       for (const [f, { passes, span, cpu }] of submissions.entries()) {
         if (f % each < counts.warmup || !passes.length) continue;
         s.gpu.push(span);
-        for (const label of ["cull", "main", "extrusion"]) {
+        for (const [key, label] of [
+          ["cull", "cull"],
+          ["main", "main"],
+          ["extrusion", "3d layer"],
+        ]) {
           const pass = passes.find(([l]) => l === label);
-          if (pass) s[label].push(pass[1]);
+          if (pass) s[key].push(pass[1]);
         }
         s.submit.push(cpu);
       }
@@ -223,7 +227,12 @@ async function glEngine(container, style, center, ratio) {
   };
 }
 
-/** Runs every view in each engine of `engines` (`orbis`, `gl`); resolves to the Markdown report. */
+/**
+ * Runs every view (or those whose indices `views` lists) in each engine of
+ * `engines` (`orbis`, `gl`), with the style's layers of the types `drop`
+ * lists left out (what those families cost); resolves to the Markdown
+ * report.
+ */
 export async function runFrames({
   style,
   center,
@@ -237,7 +246,15 @@ export async function runFrames({
   engines = ["orbis"],
   worker,
   backend,
+  views,
+  drop,
 }) {
+  if (drop?.length) {
+    const doc = await glStyle(style);
+    doc.layers = doc.layers.filter((l) => !drop.includes(l.type));
+    style = doc;
+    about.push(`layers left out: ${drop.join(", ")}`);
+  }
   // The engines' maps lie on one another, the one measured on top: each
   // is shown, and so paced, as one map on its own would be. A canvas
   // scrolled out of view isn't presented, and its frames don't wait for
@@ -287,6 +304,7 @@ export async function runFrames({
       containers.set(made.at(-1), container);
     }
     for (const [v, [name, zoom, pitch, buildings]] of VIEWS.entries()) {
+      if (views && !views.includes(v)) continue;
       // The engines' order turns each view, so a busy spell falls on both.
       for (const engine of v % 2 ? [...made].reverse() : made) {
         show(`${engine.name}, ${name}: loading`);
