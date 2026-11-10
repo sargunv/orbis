@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 /// A first-fit allocator over a fixed range of words, coalescing on free.
@@ -11,6 +11,10 @@ pub(crate) struct Arena {
     /// Free blocks by start.
     free: BTreeMap<u32, u32>,
     used: u32,
+    capacity: u32,
+    /// The words it would have needed for the allocations it refused since
+    /// [`take_needed`](Self::take_needed) last asked.
+    needed: u32,
 }
 
 impl Arena {
@@ -19,15 +23,21 @@ impl Arena {
         if capacity > 0 {
             free.insert(0, capacity);
         }
-        Self { free, used: 0 }
+        Self {
+            free,
+            used: 0,
+            capacity,
+            needed: 0,
+        }
     }
 
     /// Extends the arena from `old` to `new` words: a larger buffer took
     /// its place, with its contents at the same offsets.
     pub(crate) fn grow(&mut self, old: u32, new: u32) {
-        assert!(new > old, "arenas only grow");
+        assert!(new > old && old == self.capacity, "arenas only grow");
         self.used += new - old;
         self.free(old..new);
+        self.capacity = new;
     }
 
     /// Where the free block reaching `capacity` starts: every word from
@@ -48,6 +58,7 @@ impl Arena {
         if start < new {
             self.free.insert(start, new - start);
         }
+        self.capacity = new;
     }
 
     /// The largest block one allocation can take.
@@ -64,13 +75,26 @@ impl Arena {
         if len == 0 {
             return Some(0..0);
         }
-        let (&start, &size) = self.free.iter().find(|(_, size)| **size >= len)?;
+        let Some((&start, &size)) = self.free.iter().find(|(_, size)| **size >= len) else {
+            // Growth extends the free tail.
+            let needed = self.free_from(self.capacity).saturating_add(len);
+            self.needed = self.needed.max(needed);
+            return None;
+        };
         self.free.remove(&start);
         if size > len {
             self.free.insert(start + len, size - len);
         }
         self.used += len;
         Some(start..start + len)
+    }
+
+    /// The size, in words, that would have held each allocation refused
+    /// since the last call when it was refused, or 0. It counts what the
+    /// arena held then, which an upload that failed may have given back
+    /// since: retried, it takes that room again.
+    pub(crate) fn take_needed(&mut self) -> u32 {
+        std::mem::take(&mut self.needed)
     }
 
     pub(crate) fn free(&mut self, range: Range<u32>) {
@@ -95,12 +119,18 @@ impl Arena {
     }
 }
 
-/// Fixed-capacity slot indices with reuse.
+/// Fixed-capacity slot indices with reuse, the lowest free one first, so
+/// that held slots stay low and a table can shrink once they go.
 #[derive(Debug)]
 pub(crate) struct Slots {
     capacity: u32,
+    /// Every slot from here up is free; the one below, if any, is held.
     next: u32,
-    free: Vec<u32>,
+    /// Free slots below `next`.
+    free: BTreeSet<u32>,
+    /// The capacity that would have held each reservation refused since
+    /// [`take_needed`](Self::take_needed) last asked.
+    needed: u32,
 }
 
 impl Slots {
@@ -108,12 +138,13 @@ impl Slots {
         Self {
             capacity,
             next: 0,
-            free: Vec::new(),
+            free: BTreeSet::new(),
+            needed: 0,
         }
     }
 
     pub(crate) fn alloc(&mut self) -> Option<u32> {
-        self.free.pop().or_else(|| {
+        self.free.pop_first().or_else(|| {
             (self.next < self.capacity).then(|| {
                 self.next += 1;
                 self.next - 1
@@ -122,7 +153,39 @@ impl Slots {
     }
 
     pub(crate) fn free(&mut self, slot: u32) {
-        self.free.push(slot);
+        debug_assert!(slot < self.next, "a held slot");
+        self.free.insert(slot);
+        while self.next > 0 && self.free.remove(&(self.next - 1)) {
+            self.next -= 1;
+        }
+    }
+
+    /// Where the free slots above every held one start.
+    pub(crate) fn held_below(&self) -> u32 {
+        self.next
+    }
+
+    /// Gives up the slots from `capacity` up, which must all be free.
+    pub(crate) fn shrink(&mut self, capacity: u32) {
+        assert!(self.next <= capacity && capacity < self.capacity);
+        self.capacity = capacity;
+    }
+
+    /// Whether `count` slots are available; if not, the capacity that
+    /// would have held them is kept for [`take_needed`](Self::take_needed).
+    pub(crate) fn reserve(&mut self, count: u32) -> bool {
+        let available = self.available();
+        if count > available {
+            let needed = self.capacity.saturating_add(count - available);
+            self.needed = self.needed.max(needed);
+        }
+        count <= available
+    }
+
+    /// The capacity that would have held each reservation refused since
+    /// the last call when it was refused, or 0.
+    pub(crate) fn take_needed(&mut self) -> u32 {
+        std::mem::take(&mut self.needed)
     }
 
     pub(crate) fn available(&self) -> u32 {
@@ -184,6 +247,43 @@ mod tests {
         assert_eq!(slots.alloc(), None);
         slots.free(a);
         assert_eq!(slots.alloc(), Some(a));
+    }
+
+    /// The lowest free slot goes first, and freeing the highest held slots
+    /// lowers where the free tail starts, so a table can shrink to it.
+    #[test]
+    fn slots_stay_low() {
+        let mut slots = Slots::new(8);
+        let held: Vec<u32> = (0..6).map(|_| slots.alloc().unwrap()).collect();
+        for slot in [1, 4, 5] {
+            slots.free(held[slot]);
+        }
+        assert_eq!(slots.held_below(), 4);
+        assert_eq!((slots.alloc(), slots.alloc()), (Some(1), Some(4)));
+        for slot in [0, 1, 2, 3, 4] {
+            slots.free(slot);
+        }
+        assert_eq!(
+            (slots.held_below(), slots.used(), slots.available()),
+            (0, 0, 8)
+        );
+        slots.shrink(2);
+        assert_eq!(slots.available(), 2);
+    }
+
+    /// A refusal keeps the size that would have held it then, so room
+    /// given back after it doesn't hide what the retry needs.
+    #[test]
+    fn refusals_keep_the_size_they_needed() {
+        let mut arena = Arena::new(100);
+        let held = arena.alloc(60).unwrap();
+        assert_eq!((arena.alloc(50), arena.alloc(70)), (None, None));
+        arena.free(held);
+        assert_eq!((arena.take_needed(), arena.take_needed()), (130, 0));
+        let mut slots = Slots::new(4);
+        slots.alloc().unwrap();
+        assert!(slots.reserve(3) && !slots.reserve(5) && !slots.reserve(4));
+        assert_eq!((slots.take_needed(), slots.take_needed()), (6, 0));
     }
 
     #[test]

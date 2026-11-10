@@ -111,7 +111,7 @@ impl Scene {
             data.colors,
         ];
         let words = SYMBOL_HEADER_WORDS as u32 + tables.iter().map(Words::len).sum::<u32>();
-        if self.chunk_slots.available() < data.chunks.len() as u32 {
+        if !self.chunk_slots.reserve(data.chunks.len() as u32) {
             return Err(OutOfSpace);
         }
         let vertices = self.vertex_arena.alloc(words).ok_or(OutOfSpace)?;

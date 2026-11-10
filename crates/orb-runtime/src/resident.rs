@@ -489,6 +489,23 @@ pub(crate) fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize>
         .collect()
 }
 
+/// Runs `upload` until the scene has room for it: after each refusal,
+/// while `grow` allows, the scene grows what refused it (to its
+/// ceilings) and `upload` runs again.
+pub(crate) fn with_room<T>(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    grow: bool,
+    mut upload: impl FnMut(&mut dyn Gpu, &mut Renderer) -> Result<T, OutOfSpace>,
+) -> Result<T, OutOfSpace> {
+    loop {
+        match upload(gpu, renderer) {
+            Err(OutOfSpace) if grow && renderer.grow(gpu) => {}
+            done => return done,
+        }
+    }
+}
+
 /// Whether the map's GPU memory (the scene's pools and tables, its
 /// textures, and the image atlas's `atlas` bytes) is under `budget`: the
 /// pools grow for arriving tiles before cached ones go, and the cache is

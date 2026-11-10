@@ -612,13 +612,13 @@ impl Renderer {
         fits
     }
 
-    /// Halves the pools a view that emptied left mostly free; whether any
-    /// shrank.
+    /// Halves the pools, tables and image tile pages a view that emptied
+    /// left mostly free; whether any shrank.
     pub fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
         let shrank = self.scene.shrink(gpu);
         self.glyphs
             .set_table(self.scene.tables().writer(Table::Props));
-        shrank
+        self.images.shrink(gpu) | shrank
     }
 
     /// Grows the pools once, within their limits; whether they grew.

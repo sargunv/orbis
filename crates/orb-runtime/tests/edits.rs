@@ -922,3 +922,87 @@ fn sky_and_light_edits_ease_then_match_a_fresh_map() {
     assert!(eased > 2, "the sky eased over {eased} frames");
     assert_matches_fresh(&mut map);
 }
+
+/// Layers added to a loaded, pitched view get the scene room they need,
+/// as in a fresh load of the edited style: an edit's upload once grew the
+/// pools by one doubling and never the chunk table, so heavy layers added
+/// over a loaded view, as a style editor adds them, went undrawn. Taking
+/// them out again gives the room back.
+#[test]
+fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
+    let scratch = Scratch::new("room");
+    let full: serde_json::Value = serde_json::from_str(&tokyo_json()).unwrap();
+    let kept = ["background", "water", "label_city"];
+    let added = || {
+        full["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| !kept.contains(&l["id"].as_str().unwrap()))
+    };
+    let mut reduced = full.clone();
+    reduced["layers"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|l| kept.contains(&l["id"].as_str().unwrap()));
+    let path = scratch.0.join("reduced.json");
+    std::fs::write(&path, reduced.to_string()).unwrap();
+    // First sizes far below what the full style needs, which only the
+    // edit finds out.
+    let capacity = orb_runtime::SceneCapacity {
+        vertex_words: 1 << 12,
+        index_words: 1 << 12,
+        prop_words: 1 << 12,
+        compacted_words: 1 << 12,
+        chunks: 64,
+        candidates: 64,
+        ..orb_runtime::SceneCapacity::growable()
+    };
+    let options = Options {
+        style: Some(format!("file://{}", path.display())),
+        encoding: "mvt".into(),
+        at: Some((orb_crs::Geodetic::new(139.765, 35.68), 15.5, -20.0, 60.0)),
+    };
+    let (mut map, _, _) = Offscreen::load_with(&options, capacity).unwrap();
+    let (_, loaded) = settle(&mut map);
+    let buildings = serde_json::json!({"id": "buildings-3d", "type": "fill-extrusion",
+        "source": "openmaptiles", "source-layer": "building",
+        "paint": {"fill-extrusion-height": ["coalesce", ["get", "render_height"], 20],
+            "fill-extrusion-color": "#a0a0a0"}});
+    let commands: Vec<serde_json::Value> = [serde_json::json!(["setTransition", {"duration": 0}])]
+        .into_iter()
+        .chain(added().map(|l| serde_json::json!(["addLayer", l, "label_city"])))
+        .chain([serde_json::json!(["addLayer", buildings, "label_city"])])
+        .collect();
+    let (_, _, jobs) = measure(&mut map, &serde_json::Value::from(commands).to_string());
+    assert_eq!(jobs.loads, 0, "{jobs:?}");
+    let (_, edited) = settle(&mut map);
+    let words = |r: &FrameReport| r.memory.scene.vertices.allocated;
+    assert!(
+        words(&edited) > 4 * words(&loaded),
+        "the edit must need the pools grown: {} bytes loaded, {} edited",
+        words(&loaded),
+        words(&edited)
+    );
+    assert_matches_fresh(&mut map);
+    let remove: Vec<serde_json::Value> = added()
+        .map(|l| serde_json::json!(["removeLayer", l["id"]]))
+        .chain([serde_json::json!(["removeLayer", "buildings-3d"])])
+        .collect();
+    measure(&mut map, &serde_json::Value::from(remove).to_string());
+    let (_, removed) = settle(&mut map);
+    for (name, r) in [
+        ("loaded", &loaded),
+        ("edited", &edited),
+        ("removed", &removed),
+    ] {
+        eprintln!("{name}: {:?}", r.memory.scene);
+    }
+    let compacted = |r: &FrameReport| r.memory.scene.compacted.allocated;
+    assert!(
+        words(&removed) * 4 <= words(&edited) && compacted(&removed) * 4 <= compacted(&edited),
+        "the pools give back what the layers took: {:?}, then {:?}",
+        edited.memory.scene,
+        removed.memory.scene
+    );
+}

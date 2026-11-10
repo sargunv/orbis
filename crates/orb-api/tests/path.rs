@@ -1007,7 +1007,8 @@ fn an_emptied_view_gives_its_memory_back() {
     // The cache keeps what it holds of the city (a quarter of the budget):
     // the pools hold it too.
     assert!(ocean <= dense);
-    // Nothing left to draw or keep: the pools go back to a fresh map's.
+    // Nothing left to draw or keep: the pools, the lists and tables, and
+    // the tile pages go back to a fresh map's.
     let empty = r#"{"version": 8, "sources": {}, "layers": []}"#;
     map.set_style_json(empty).expect("style");
     let emptied = memory(&mut map, (Geodetic::new(150.0, 30.0), 15.5, 30.0, 60.0));
@@ -1015,8 +1016,15 @@ fn an_emptied_view_gives_its_memory_back() {
         let report = map
             .render_until_idle(target, Duration::from_secs(60))
             .unwrap();
-        let s = report.memory.scene;
-        [s.vertices.allocated, s.indices.allocated, s.props.allocated]
+        let (m, s) = (&report.memory, report.memory.scene);
+        [
+            s.vertices.allocated,
+            s.indices.allocated,
+            s.compacted.allocated,
+            s.props.allocated,
+            s.tables,
+            m.tile_textures,
+        ]
     };
     let mut fresh = Map::new(&runtime, options());
     fresh.set_style_json(empty).expect("style");

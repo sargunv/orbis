@@ -293,20 +293,8 @@ mod tests {
     /// tile-shaped gaps.
     #[test]
     fn raster_tiles_evict_unused_tiles_for_room() {
-        let dir = std::env::temp_dir().join(format!("orbis-raster-room-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let tile = dir.join("tile.png");
-        let mut png = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png, 256, 256);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().unwrap();
-            writer
-                .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
-                .unwrap();
-        }
-        std::fs::write(&tile, png).unwrap();
+        let dir = test_dir("orbis-raster-room");
+        let tile = solid_tile(&dir);
         // A polygon that only low zooms draw, and imagery.
         let ring: Vec<String> = (0..=360)
             .map(|i| {
@@ -369,20 +357,8 @@ mod tests {
     /// nothing there, as in GL JS.
     #[test]
     fn sources_load_nothing_where_their_layers_hide() {
-        let dir = std::env::temp_dir().join(format!("orbis-hidden-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let tile = dir.join("tile.png");
-        let mut png = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png, 256, 256);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().unwrap();
-            writer
-                .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
-                .unwrap();
-        }
-        std::fs::write(&tile, png).unwrap();
+        let dir = test_dir("orbis-hidden");
+        let tile = solid_tile(&dir);
         let path = dir.join("style.json");
         std::fs::write(
             &path,
@@ -407,6 +383,53 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(shown.0 > 0 && shown.1 > 0, "{shown:?}");
         assert_eq!(hidden, (0, 0));
+    }
+
+    /// Raster tile pages give back what a view of many tiles grew them
+    /// to once fewer tiles hold layers, as the scene's pools do.
+    #[test]
+    fn tile_pages_shrink_with_their_tiles() {
+        let dir = test_dir("orbis-pages");
+        let tile = solid_tile(&dir);
+        let path = dir.join("style.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"version":8,"sources":{{
+                    "imagery":{{"type":"raster","tiles":["file://{}"],"tileSize":256}}}},
+                  "layers":[{{"id":"raster","type":"raster","source":"imagery","maxzoom":5}}]}}"#,
+                tile.display()
+            ),
+        )
+        .unwrap();
+        let options = |zoom: f64, pitch: f64| crate::common::Options {
+            style: Some(format!("file://{}", path.display())),
+            at: Some((orb_crs::Geodetic::new(0.0, 0.0), zoom, 0.0, pitch)),
+            ..tokyo(zoom)
+        };
+        let pages = |offscreen: &mut crate::common::Offscreen| {
+            // The cache keeps nothing out of view.
+            offscreen.map.set_memory_budget(0);
+            settle(offscreen).memory.tile_textures
+        };
+        let (mut offscreen, _, _) = crate::common::Offscreen::load(&options(4.5, 60.0)).unwrap();
+        let many = pages(&mut offscreen);
+        // Past the layer's maxzoom no tile holds a layer; back at zoom 1,
+        // sixteen do.
+        for zoom in [6.0, 1.0] {
+            offscreen.map.jump_to_state(orb_runtime::CameraState::new(
+                orb_crs::Geodetic::new(0.0, 0.0),
+                zoom,
+                &offscreen.map.projection(),
+            ));
+            settle(&mut offscreen);
+        }
+        let few = pages(&mut offscreen);
+        let (mut fresh, _, _) = crate::common::Offscreen::load(&options(1.0, 0.0)).unwrap();
+        let fresh = pages(&mut fresh);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(many > 4 * fresh, "{many} bytes of pages at the tilted view");
+        assert_eq!(few, fresh, "pages of {many} bytes shrank to {few}");
     }
 
     /// Tiles out of view stay cached by their memory, within a
@@ -992,20 +1015,8 @@ mod tests {
     /// fade in. Frames all show one instant, so a fade would never end.
     #[test]
     fn raster_tiles_skip_fades_until_first_idle() {
-        let dir = std::env::temp_dir().join(format!("orbis-raster-fade-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let tile = dir.join("tile.png");
-        let mut png = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png, 256, 256);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().unwrap();
-            writer
-                .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
-                .unwrap();
-        }
-        std::fs::write(&tile, png).unwrap();
+        let dir = test_dir("orbis-raster-fade");
+        let tile = solid_tile(&dir);
         let mut offscreen = null_island(&format!(
             r#"{{"version":8,
             "sources":{{"imagery":{{"type":"raster","tiles":["file://{}"],"tileSize":256}}}},
@@ -1147,5 +1158,29 @@ mod tests {
         }
         let differing = crate::common::differing_pixels(&images[0], &images[1]);
         assert_eq!(differing, 0, "MVT/MLT differing pixels");
+    }
+
+    /// A new, empty directory for a test's files.
+    fn test_dir(prefix: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A 256-pixel tile of one colour, as `tile.png` in `dir`.
+    fn solid_tile(dir: &std::path::Path) -> std::path::PathBuf {
+        let tile = dir.join("tile.png");
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 256, 256);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
+                .unwrap();
+        }
+        std::fs::write(&tile, png).unwrap();
+        tile
     }
 }

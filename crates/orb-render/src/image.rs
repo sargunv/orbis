@@ -480,6 +480,16 @@ impl Images {
             .sum()
     }
 
+    /// Shrinks the pages whose layers in use went down to a quarter;
+    /// whether any did.
+    pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let mut shrank = false;
+        for page in self.pages.iter_mut().flatten() {
+            shrank |= page.page.shrink(gpu);
+        }
+        shrank
+    }
+
     /// A layer the page already has, without growing it.
     pub(crate) fn alloc_existing_layer(&mut self, id: PageId) -> Option<u32> {
         self.page_mut(id).page.alloc_existing()

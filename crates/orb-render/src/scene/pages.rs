@@ -162,28 +162,54 @@ impl TilePage {
     }
 
     /// Grows the arrays by half (at least 8 layers): pages of large tiles
-    /// overshoot less than by doubling. The copy is submitted at once, so
-    /// writes queued before it land in the old arrays first and later ones
-    /// after it.
+    /// overshoot less than by doubling.
     pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu) -> Result<(), OutOfSpace> {
         if self.capacity >= self.max_layers {
             return Err(OutOfSpace);
         }
         let capacity =
             (self.capacity + (self.capacity / 2).max(INITIAL_LAYERS)).min(self.max_layers);
+        self.resize(gpu, capacity);
+        self.layers.grow(capacity);
+        Ok(())
+    }
+
+    /// Halves the arrays while every held layer lies in their lowest
+    /// quarter, down to their first size: a view of fewer tiles gives back
+    /// what a view of many grew them to (layers are handed out lowest
+    /// first, so they stay low). Returns whether they shrank.
+    pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let first = INITIAL_LAYERS.min(self.max_layers);
+        let capacity = super::shrunk(self.capacity, self.layers.held_below(), first);
+        if capacity == self.capacity {
+            return false;
+        }
+        self.layers.shrink(capacity);
+        self.resize(gpu, capacity);
+        true
+    }
+
+    /// Moves the arrays into ones of `capacity` layers, the layers held
+    /// copied over. The copy is submitted at once, so writes queued before
+    /// it land in the old arrays first and later ones after it.
+    fn resize(&mut self, gpu: &mut dyn Gpu, capacity: u32) {
+        let kept = self.layers.held_below().min(capacity);
         let mut copies = Vec::with_capacity(self.textures.len());
         for (desc, texture) in &mut self.textures {
-            let grown = create(gpu, desc, capacity);
+            let moved = create(gpu, desc, capacity);
             copies.push(Pass::CopyTexture {
                 source: *texture,
-                destination: grown,
-                copies: vec![orb_hal::TextureCopy {
-                    from: [0; 3],
-                    to: [0; 3],
-                    size: [desc.width, desc.height, self.capacity],
-                }],
+                destination: moved,
+                copies: (kept > 0)
+                    .then_some(orb_hal::TextureCopy {
+                        from: [0; 3],
+                        to: [0; 3],
+                        size: [desc.width, desc.height, kept],
+                    })
+                    .into_iter()
+                    .collect(),
             });
-            *texture = grown;
+            *texture = moved;
         }
         gpu.submit(&copies);
         for copy in copies {
@@ -192,9 +218,7 @@ impl TilePage {
             }
         }
         self.capacity = capacity;
-        self.layers.grow(capacity);
         self.revision += 1;
-        Ok(())
     }
 }
 

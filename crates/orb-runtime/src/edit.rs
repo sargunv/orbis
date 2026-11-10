@@ -27,7 +27,10 @@ use orb_style::{Binding, Change, Class, LayerKey, PropertyId};
 
 use crate::jobs::TileResult;
 use crate::map::{Map, NodeState, revise};
-use crate::resident::{SourceState, record_maxima, resolve_rows, upload_mesh, words};
+use crate::resident::{
+    SourceState, evict_unused, mesh_sizes, record_maxima, remove_resident, resolve_rows,
+    under_budget, upload_mesh, with_room, words,
+};
 use crate::worker::StyleUpdate;
 
 /// The class a paint change costs this renderer for one node:
@@ -453,15 +456,45 @@ impl Map {
             &mut self.events,
         );
         style.relayout_after_pixels |= style.awaits_sprite_pixels(&build);
-        let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
+        let SourceState::Ready { pyramid, .. } = &style.sources[index] else {
             return;
+        };
+        if pyramid.get(tile).is_none() {
+            return;
+        }
+        let wanted = pyramid.wants(tile);
+        let mut images = self.services.images.0.lock().expect("images poisoned");
+        let atlas = images.atlas.as_mut().expect("initialized");
+        // Room as for an arriving tile: what's free first; over the budget,
+        // tiles out of view go before the pools grow (this one, if it is
+        // one, ends the edit's result).
+        let mut sizes = mesh_sizes(plan, &build);
+        if build.rows_only {
+            for size in &mut sizes {
+                *size = orb_render::MeshSize {
+                    props: size.props,
+                    ..Default::default()
+                };
+            }
+        }
+        while !renderer.fits(&sizes) && !under_budget(renderer, atlas.bytes(), self.budget) {
+            let Some(victim) = evict_unused(&mut style.sources, index) else {
+                break;
+            };
+            self.retired_ramps
+                .extend(remove_resident(renderer, victim, &mut style.states));
+        }
+        let grow = wanted || under_budget(renderer, atlas.bytes(), self.budget);
+        let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
+            unreachable!("checked above");
         };
         let Some(resident) = pyramid.get_mut(tile) else {
             return;
         };
+        // An upload that finds no room even so leaves the tile to load
+        // again, as a fresh map would, rather than draw without a layer.
+        let mut no_room = false;
         let tile_zoom = resident.zoom;
-        let mut images = self.services.images.0.lock().expect("images poisoned");
-        let atlas = images.atlas.as_mut().expect("initialized");
         let namespace = style.image_namespace.expect("namespace");
         let mut stale_rows = Vec::new();
         if build.rows_only {
@@ -497,17 +530,18 @@ impl Map {
                     &mut style.states,
                     &mut self.warnings,
                 );
-                let set = renderer.set_mesh_rows(
-                    gpu,
-                    current.mesh,
-                    (&props, mesh.row_words),
-                    &rows.rows(),
-                );
+                let set = with_room(gpu, renderer, grow, |gpu, renderer| {
+                    renderer.set_mesh_rows(
+                        gpu,
+                        current.mesh,
+                        (&props, mesh.row_words),
+                        &rows.rows(),
+                    )
+                });
                 if set.is_err() {
                     rows.release(gpu, atlas, &mut style.states);
-                    self.warnings
-                        .push("out of property memory; a paint edit is not drawn".into());
-                    continue;
+                    no_room = true;
+                    break;
                 }
                 self.retired_ramps.append(&mut current.ramps);
                 for index in current.states.drain(..) {
@@ -553,31 +587,21 @@ impl Map {
                     continue;
                 }
                 for mesh in build.meshes.iter().filter(|m| m.node == key) {
-                    let mut upload = |gpu: &mut dyn Gpu,
-                                      renderer: &mut orb_render::Renderer,
-                                      states: &mut _,
-                                      warnings: &mut _| {
+                    let (states, warnings) = (&mut style.states, &mut self.warnings);
+                    let uploaded = with_room(gpu, renderer, grow, |gpu, renderer| {
                         upload_mesh(
                             gpu, renderer, plan, &build, mesh, resident, atlas, namespace, states,
                             warnings,
                         )
-                    };
-                    let mut uploaded = upload(gpu, renderer, &mut style.states, &mut self.warnings);
-                    // The scene grows within its budget before a layer goes.
-                    if uploaded.is_err() && renderer.grow(gpu) {
-                        uploaded = upload(gpu, renderer, &mut style.states, &mut self.warnings);
-                    }
+                    });
                     if uploaded.is_err() {
-                        let message = format!(
-                            "tile {tile:?} doesn't fit in scene memory; a layer is not drawn"
-                        );
-                        self.events.push(crate::MapEvent::Error {
-                            message: message.clone(),
-                        });
-                        self.warnings.push(message);
+                        no_room = true;
                         break;
                     }
                     self.counts.meshes_uploaded += 1;
+                }
+                if no_room {
+                    break;
                 }
             }
             build.symbols.retain(|s| {
@@ -586,28 +610,34 @@ impl Map {
                     .get(&crate::style::node_key(s.layer, 0))
                     .is_some_and(|state| build.revision >= state.layout_epoch)
             });
-            if self
-                .labels
-                .upload(
-                    gpu,
-                    renderer,
-                    plan,
-                    &build,
-                    resident,
-                    atlas,
-                    namespace,
-                    &mut style.states,
-                    tile_zoom,
-                    true,
-                )
-                .is_err()
-            {
-                self.warnings.push(format!(
-                    "tile {tile:?} doesn't fit in scene memory; a symbol layer is not drawn"
-                ));
-            }
+            let labels = &mut self.labels;
+            no_room = no_room
+                || with_room(gpu, renderer, grow, |gpu, renderer| {
+                    labels.upload(
+                        gpu,
+                        renderer,
+                        plan,
+                        &build,
+                        resident,
+                        atlas,
+                        namespace,
+                        &mut style.states,
+                        tile_zoom,
+                        true,
+                    )
+                })
+                .is_err();
             // New meshes and parts take their place in the tile order.
             style.placed[index].clear();
+        }
+        if no_room {
+            drop(images);
+            let Some(resident) = pyramid.remove(tile) else {
+                unreachable!("the tile is ready");
+            };
+            self.retired_ramps
+                .extend(remove_resident(renderer, resident, &mut style.states));
+            return;
         }
         // Rows from a column job can raise a node's maxima (a radius made
         // per feature, say), which culling pads by; results skipped as

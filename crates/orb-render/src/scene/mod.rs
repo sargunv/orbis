@@ -925,8 +925,9 @@ pub(crate) struct Scene {
     /// Vertex and index ranges more than one mesh draws, by their first
     /// word: how many meshes beyond the first. The last to go frees it.
     shared: [std::collections::HashMap<u32, u32>; 2],
-    /// The growable pools' first sizes, which they don't shrink below.
-    first_words: [u32; 3],
+    /// The capacity the scene started with: the first sizes the growable
+    /// pools and lists don't shrink below.
+    first: SceneCapacity,
     tiles: Vec<Option<TileEntry>>,
     free_tiles: Vec<u32>,
     meshes: Vec<Option<MeshEntry>>,
@@ -1068,7 +1069,7 @@ impl Scene {
             index_arena: Arena::new(c.index_words),
             prop_arena,
             shared: Default::default(),
-            first_words: [c.vertex_words, c.index_words, c.prop_words],
+            first: capacity,
             tiles: Vec::new(),
             free_tiles: Vec::new(),
             meshes: Vec::new(),
@@ -1487,7 +1488,7 @@ impl Scene {
         );
         assert!(self.tiles[tile.0 as usize].is_some(), "unknown tile");
         let len = |v: usize| u32::try_from(v).map_err(|_| OutOfSpace);
-        if self.chunk_slots.available() < len(mesh.chunks.len())? {
+        if !self.chunk_slots.reserve(len(mesh.chunks.len())?) {
             return Err(OutOfSpace);
         }
         // A shared range is the earlier mesh's; the others are allocated.
@@ -1757,13 +1758,21 @@ impl Scene {
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;
-            let (compacted, candidates) = self.rebuild_candidates(gpu);
             // The cull rewrites every compacted slot, and every list is
             // written whole: larger buffers need no copy, only the
-            // candidates laid out again.
-            let grew = (compacted > 0 && self.grow_compacted(gpu, compacted))
-                | (candidates > 0 && self.grow_candidates(gpu, candidates));
-            if grew {
+            // candidates laid out again. Room in one can show a want of it
+            // in the other (candidates left out for the compacted words
+            // weren't counted against the lists), so both grow until
+            // everything fits or neither can.
+            loop {
+                let (compacted, candidates) = self.rebuild_candidates(gpu);
+                let grew = (compacted > 0 && self.grow_compacted(gpu, compacted))
+                    | (candidates > 0 && self.grow_candidates(gpu, candidates));
+                if !grew {
+                    break;
+                }
+            }
+            if self.shrink_lists(gpu) {
                 self.rebuild_candidates(gpu);
             }
         } else if std::mem::take(&mut self.params_dirty) && !self.node_rows.is_empty() {
@@ -1945,8 +1954,10 @@ impl Scene {
                 grew |= self.grow_pool(gpu, Pool::Props);
             }
             let chunks: u64 = meshes.iter().map(|m| u64::from(m.chunks)).sum();
-            if chunks > u64::from(self.chunk_slots.available()) {
-                grew |= self.grow_chunks(gpu);
+            let available = u64::from(self.chunk_slots.available());
+            if chunks > available {
+                let needed = u64::from(self.capacity.chunks) + chunks - available;
+                grew |= self.grow_chunks(gpu, needed);
             }
             if !grew {
                 return false;
@@ -1954,13 +1965,42 @@ impl Scene {
         }
     }
 
-    /// Doubles the vertex and index pools where their ceilings allow, for
-    /// an upload whose sizes aren't known ahead. Returns whether either
-    /// grew.
+    /// Grows what refused an upload whose sizes aren't known ahead: each
+    /// pool, and the chunk table, that refused it since the last grow, to
+    /// the smallest doubling that would have held what it refused, within
+    /// its ceiling. Returns whether any grew; an upload retries until it
+    /// fits or nothing grows.
     pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let vertices = self.grow_pool(gpu, Pool::Vertices);
-        let props = self.grow_pool(gpu, Pool::Props);
-        self.grow_pool(gpu, Pool::Indices) || vertices || props
+        let mut grew = false;
+        for pool in [Pool::Vertices, Pool::Indices, Pool::Props] {
+            let (old, max) = self.pool_words(pool);
+            let needed = self.arena_mut(pool).take_needed();
+            let new = grown(old, u64::from(needed), max);
+            if needed > old && new > old {
+                self.resize_pool(gpu, pool, new);
+                grew = true;
+            }
+        }
+        let chunks = self.chunk_slots.take_needed();
+        grew | (chunks > self.capacity.chunks && self.grow_chunks(gpu, u64::from(chunks)))
+    }
+
+    fn arena_mut(&mut self, pool: Pool) -> &mut Arena {
+        match pool {
+            Pool::Vertices => &mut self.vertex_arena,
+            Pool::Indices => &mut self.index_arena,
+            Pool::Props => &mut self.prop_arena,
+        }
+    }
+
+    /// Forgets the pools' and chunk table's refusals: they are for the
+    /// upload retrying after them, and one that made room another way
+    /// asks no growth later.
+    fn forget_refusals(&mut self) {
+        for pool in [Pool::Vertices, Pool::Indices, Pool::Props] {
+            self.arena_mut(pool).take_needed();
+        }
+        self.chunk_slots.take_needed();
     }
 
     /// Moves a pool into a buffer twice its size (or its ceiling's): the
@@ -1974,16 +2014,22 @@ impl Scene {
         }
     }
 
-    /// Halves the vertex, index and property pools while their allocations
-    /// all lie in their lowest quarter, down to their first sizes: a view
-    /// that emptied gives back what it grew them to, and each pool keeps
-    /// room to grow fourfold before it doubles again. Returns whether any
-    /// shrank.
+    /// Halves the vertex, index and property pools and the chunk table
+    /// while what they hold all lies in their lowest quarter, down to their
+    /// first sizes: a view that emptied gives back what it grew them to,
+    /// and each keeps room to grow fourfold before it doubles again.
+    /// Returns whether any shrank.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+        self.forget_refusals();
         let mut shrank = false;
+        let first = [
+            self.first.vertex_words,
+            self.first.index_words,
+            self.first.prop_words,
+        ];
         for (pool, first) in [Pool::Vertices, Pool::Indices, Pool::Props]
             .into_iter()
-            .zip(self.first_words)
+            .zip(first)
         {
             let (old, _) = self.pool_words(pool);
             let held = match pool {
@@ -1991,14 +2037,22 @@ impl Scene {
                 Pool::Indices => self.index_arena.free_from(old),
                 Pool::Props => self.prop_arena.free_from(old),
             };
-            let mut new = old;
-            while new > first && held <= new / 4 {
-                new = (new / 2).max(first);
-            }
+            let new = shrunk(old, held, first);
             if new < old {
                 self.resize_pool(gpu, pool, new);
                 shrank = true;
             }
+        }
+        let old = self.capacity.chunks;
+        let new = shrunk(old, self.chunk_slots.held_below(), self.first.chunks);
+        if new < old {
+            let words = |count: u32| u64::from(count) * CHUNK_WORDS as u64;
+            let kept = words(self.chunk_slots.held_below());
+            self.tables.resize(gpu, Table::Chunks, words(new), kept);
+            self.chunk_slots.shrink(new);
+            self.capacity.chunks = new;
+            self.buffers_revision += 1;
+            shrank = true;
         }
         shrank
     }
@@ -2034,11 +2088,12 @@ impl Scene {
         self.buffers_revision += 1;
     }
 
-    /// Moves the chunk table into a buffer twice its size, to its ceiling,
-    /// its rows copied over.
-    fn grow_chunks(&mut self, gpu: &mut dyn Gpu) -> bool {
+    /// Moves the chunk table into the smallest doubling of at least
+    /// `needed` rows, to its ceiling, its rows copied over. Returns whether
+    /// it grew.
+    fn grow_chunks(&mut self, gpu: &mut dyn Gpu, needed: u64) -> bool {
         let old = self.capacity.chunks;
-        let new = grown(old, u64::from(old) + 1, self.capacity.max_chunks);
+        let new = grown(old, needed, self.capacity.max_chunks);
         if new <= old {
             return false;
         }
@@ -2057,9 +2112,15 @@ impl Scene {
     fn grow_candidates(&mut self, gpu: &mut dyn Gpu, short: u64) -> bool {
         let old = self.capacity.candidates;
         let new = grown(old, u64::from(old) + short, self.capacity.max_candidates);
-        if new <= old {
-            return false;
+        new > old && {
+            self.resize_candidates(gpu, new);
+            true
         }
+    }
+
+    /// Moves the candidate and visible lists into buffers of `new`
+    /// candidates, nothing copied: the next layout writes them whole.
+    fn resize_candidates(&mut self, gpu: &mut dyn Gpu, new: u32) {
         for (table, words) in [
             (Table::Candidates, CANDIDATE_WORDS),
             (Table::Visible, VISIBLE_WORDS),
@@ -2069,7 +2130,6 @@ impl Scene {
         }
         self.capacity.candidates = new;
         self.buffers_revision += 1;
-        true
     }
 
     /// Grows the compacted index buffer by at least `short` words, to its
@@ -2078,9 +2138,15 @@ impl Scene {
         let old = self.capacity.compacted_words;
         let max = self.capacity.max_compacted_words;
         let new = grown(old, u64::from(old) + short, max);
-        if new <= old {
-            return false;
+        new > old && {
+            self.resize_compacted(gpu, new);
+            true
         }
+    }
+
+    /// Moves the compacted indices into a buffer of `new` words, nothing
+    /// copied: the next cull writes every slot of laid-out candidates.
+    fn resize_compacted(&mut self, gpu: &mut dyn Gpu, new: u32) {
         let desc = BufferDesc {
             label: "compacted indices",
             size: u64::from(new) * 4,
@@ -2089,7 +2155,27 @@ impl Scene {
         move_buffer(gpu, &mut self.tables.buffers.compacted, &desc, 0);
         self.capacity.compacted_words = new;
         self.buffers_revision += 1;
-        true
+    }
+
+    /// Halves the candidate lists and the compacted indices while what the
+    /// candidates take lies in their lowest quarter, down to their first
+    /// sizes, as the pools shrink. Returns whether either shrank: the
+    /// candidates are then laid out again.
+    fn shrink_lists(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let (c, first) = (self.capacity, self.first);
+        let compacted = shrunk(
+            c.compacted_words,
+            self.compacted_words,
+            first.compacted_words,
+        );
+        let candidates = shrunk(c.candidates, self.candidate_count, first.candidates);
+        if compacted < c.compacted_words {
+            self.resize_compacted(gpu, compacted);
+        }
+        if candidates < c.candidates {
+            self.resize_candidates(gpu, candidates);
+        }
+        compacted < c.compacted_words || candidates < c.candidates
     }
 
     /// GPU bytes a mesh takes in the pools.
@@ -2160,6 +2246,17 @@ const ARGS_USAGE: BufferUsages = BufferUsages::STORAGE
 const COMPACTED_USAGE: BufferUsages = BufferUsages::INDEX
     .union(BufferUsages::COPY_DST)
     .union(BufferUsages::STORAGE);
+
+/// `old` halved while `held` lies in its lowest quarter, no lower than
+/// `first`: a capacity's size once what it held went, keeping room to grow
+/// fourfold before it doubles again.
+fn shrunk(old: u32, held: u32, first: u32) -> u32 {
+    let mut new = old;
+    while new > first && held <= new / 4 {
+        new = (new / 2).max(first);
+    }
+    new
+}
 
 /// The smallest of `old`'s doublings (from 1 when it is 0) that holds
 /// `need`, at most `max`: a capacity's next size.
