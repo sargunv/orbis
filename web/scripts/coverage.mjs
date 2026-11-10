@@ -5,8 +5,9 @@
 //
 //   cargo xtask web --names
 //   pnpm coverage [--scenes=liberty,paris,globe,terrain,raster,tokyo,
-//     tokyo-mlt,protomaps,versatiles,chicago,nepal,norway,sanfrancisco,
-//     uruguay] [--tour] [--out=<dir>] [--reuse] [--write]
+//     tokyo-mlt,protomaps,versatiles,app,app-tokyo,app-offline,chicago,
+//     nepal,norway,sanfrancisco,uruguay] [--tour] [--out=<dir>] [--reuse]
+//     [--write]
 //
 // The last five are MapLibre Native's real-world render tests, offline
 // from the render-test cache `cargo xtask h2h` checks out, when it has.
@@ -83,6 +84,15 @@ const SCENES = {
   protomaps: { style: "protomaps-light", at: VIEWS.liberty.ams13 },
   versatiles: { style: "versatiles-colorful", at: VIEWS.liberty.ams13 },
 };
+// The map app itself, as the site opens it (its default entry, the Globe)
+// and on the Tokyo extract: its panels and options call into the map
+// beyond what load.html does. `app-offline` is the Globe with every
+// request off the demo server failing (the Tokyo extract's style standing
+// in for Protomaps Light), as `pnpm e2e`'s offline checks load it: what a
+// map runs when its tiles, DEM tiles, glyphs and sprites fail.
+SCENES.app = { app: "" };
+SCENES["app-tokyo"] = { app: "tokyo" };
+SCENES["app-offline"] = { app: "globe", offline: true };
 // MapLibre Native's real-world render tests, offline from the render-test
 // cache `cargo xtask h2h` checks out (load.mjs's `--cache`), where it is.
 const cache = realWorldCache();
@@ -369,12 +379,33 @@ async function gestures(page) {
   await page.waitForTimeout(1000);
 }
 
-/** `scene`'s load.html query on `server`. */
-function query(scene, server) {
-  const { realWorld, ...rest } = SCENES[scene];
-  return realWorld
+/** Fails every request of `page`'s off `server`, but Protomaps Light's
+ * style, which the Tokyo extract's stands in for (as e2e.mjs's
+ * `offlineGlobe`). */
+async function failOffServer(page, server) {
+  const tokyo = JSON.parse(
+    readFileSync(join(root, "web/demo/data/tokyo-mvt.json"), "utf8")
+      .replaceAll('"./', `"${server.url}demo-data/`)
+      .replaceAll("pmtiles://./", `pmtiles://${server.url}demo-data/`),
+  );
+  await page.route(
+    (u) => !u.href.startsWith(server.url),
+    (route) =>
+      route.request().url().includes("api.protomaps.com/styles/")
+        ? route.fulfill({ json: tokyo })
+        : route.abort("internetdisconnected"),
+  );
+}
+
+/** `scene`'s page on `server`: load.html's query, or the map app's entry. */
+function url(scene, server) {
+  const { realWorld, app, ...rest } = SCENES[scene];
+  if (app !== undefined)
+    return `${server.url}${app ? `?${new URLSearchParams({ style: app })}` : ""}`;
+  const query = realWorld
     ? { ...rest, style: `${server.url}real-world/styles/${realWorld}.json` }
     : rest;
+  return `${server.url}load.html?${new URLSearchParams({ engine: "orbis", ...query })}`;
 }
 
 /** Loads each scene with the instrumented module and saves its profile in `out`. */
@@ -387,7 +418,11 @@ async function run() {
     const assets = join(work, "assets");
     const extracted = join(work, "real-world/");
     const server = await serveDemo({
-      mounts: { "assets/": assets, "real-world/": extracted },
+      mounts: {
+        "assets/": assets,
+        "real-world/": extracted,
+        "demo-data/": join(root, "web/demo/data"),
+      },
     });
     if (cache) extractCache(cache, extracted, `${server.url}real-world/`);
     const dist = fileURLToPath(new URL("../dist/assets/", import.meta.url));
@@ -406,18 +441,34 @@ async function run() {
         });
         const page = await context.newPage();
         const evaluate = await sessions(context, page);
-        await page.goto(
-          `${server.url}load.html?${new URLSearchParams({ engine: "orbis", ...query(scene, server) })}`,
-        );
-        await page.waitForFunction(
-          () => /^(done|error)/.test(document.title),
-          null,
-          { timeout: 120_000 },
-        );
-        const title = await page.title();
-        if (!title.startsWith("done")) throw new Error(`${scene}: ${title}`);
+        if (SCENES[scene].offline) await failOffServer(page, server);
+        await page.goto(url(scene, server));
+        const app = SCENES[scene].app !== undefined;
+        if (app) {
+          await page.waitForFunction(
+            () =>
+              ["idle", "error"].includes(
+                document.getElementById("app")?.dataset.map,
+              ),
+            null,
+            { timeout: 120_000 },
+          );
+          const state = await page.evaluate(
+            () => document.getElementById("app").dataset.map,
+          );
+          if (state !== "idle") throw new Error(`${scene}: ${state}`);
+        } else {
+          await page.waitForFunction(
+            () => /^(done|error)/.test(document.title),
+            null,
+            { timeout: 120_000 },
+          );
+          const title = await page.title();
+          if (!title.startsWith("done")) throw new Error(`${scene}: ${title}`);
+        }
         if (tour) {
-          await page.evaluate(() => window.tour());
+          // The app has no scripted tour; a user's input stands in.
+          if (!app) await page.evaluate(() => window.tour());
           await gestures(page);
         }
         await page.screenshot({ path: join(out, `${scene}.png`) });

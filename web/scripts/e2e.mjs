@@ -72,13 +72,17 @@
 //   WebGL 2 (#140), with no errors or other warnings. Then the map app's
 //   `?backend=webgl2` draws WebGL 2, its renderer row saying so, and Auto
 //   starts it again on WebGPU at the same camera.
+// - `split`: the Tokyo extract and the Globe, offline, reach their first
+//   idle without calling into core-deferred.wasm (a call would fetch it
+//   synchronously: web/deferred.txt defers something first frames run,
+//   and `pnpm coverage --tour --write` refreshes it), then fetch it.
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,offline]
+//   pnpm e2e [--only=scenario,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -98,7 +102,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot",
+  "scenario,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split",
 ).split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
@@ -2088,6 +2092,45 @@ async function offline(browser, server) {
   await page.close();
 }
 
+async function split(browser, server) {
+  const entries = [
+    ["tokyo", () => {}],
+    ["globe", (page) => offlineGlobe(page, server)],
+  ];
+  for (const [entry, offline] of entries) {
+    // Offline, the Globe's tiles fail and say so: `failing` checks that.
+    const page = await browser.newPage({
+      viewport: { width: 800, height: 600 },
+    });
+    // How each request for core-deferred.wasm went: `fetch` once the map is
+    // idle, `xhr` from a placeholder, in any of the map's threads.
+    const loads = [];
+    page.context().on("request", (r) => {
+      if (/\/core-deferred[^/]*\.wasm/.test(r.url()))
+        loads.push(r.resourceType());
+    });
+    await offline(page);
+    await page.goto(`${server.url}?style=${entry}`);
+    await page.waitForFunction(
+      () => document.getElementById("app")?.dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
+    assert.ok(
+      !loads.includes("xhr"),
+      `${entry}: its first frames called into core-deferred.wasm; \`pnpm coverage --tour --write\` refreshes web/deferred.txt`,
+    );
+    const deadline = Date.now() + 10_000;
+    while (!loads.includes("fetch") && Date.now() < deadline)
+      await page.waitForTimeout(100);
+    assert.deepEqual(loads, ["fetch"], `${entry}: fetched once idle`);
+    await page.close();
+    console.log(
+      `split: ${entry} idle without core-deferred.wasm, then fetched it`,
+    );
+  }
+}
+
 /** The comparison's pairs the check opens, as `?compare=` values: `""` is Orbis and GL JS. */
 const PAIRS = arg(
   "pairs",
@@ -2845,6 +2888,7 @@ const CHECKS = {
   gestures,
   readback,
   boot,
+  split,
   offline,
 };
 /** What WebGL 2 draws until it draws styles (orb-hal-wgpu's `BOOT_COLOR`),
