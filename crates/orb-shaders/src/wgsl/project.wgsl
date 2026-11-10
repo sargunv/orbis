@@ -134,34 +134,49 @@ fn snap_texel(v: vec2<f32>) -> vec2<f32> {
     return round(v * 256.0) / 256.0;
 }
 
-// World units per data unit at `p`: the tile's scale, or a warp's local
-// scale there (the square root of its area scale).
-fn tile_scale_at(tile: Tile, p: vec2<f32>) -> f32 {
-    let flat = plane_scale_at(tile, p);
+// The metric of a tile's map onto the view's surface at data point `p`:
+// JᵀJ, J the map's Jacobian in world units per data unit (columns along
+// data x and y). An affine tile's is its scale squared times the
+// identity; a warp's or a sphere's can stretch one direction more than
+// the other (geographic tiles on Web Mercator near a pole), and its
+// square root of the determinant is the area scale's.
+fn tile_metric_at(tile: Tile, p: vec2<f32>) -> mat2x2<f32> {
+    let flat = plane_metric_at(tile, p);
     if frame.globe_amount <= 0.0 || tile.globe_cells == 0u {
         return flat;
     }
     // The sphere's metres per data unit, in plane world units at the
     // target: pixels there and here are the same size.
     let w = globe_patch(tile, p);
-    let ds = globe_sum(w.at, lagrange_slope(w.st.x), lagrange(w.st.y)) * w.per.x;
-    let dt = globe_sum(w.at, lagrange(w.st.x), lagrange_slope(w.st.y)) * w.per.y;
-    let metres = sqrt(length(cross(ds, dt))) / tile.extent;
-    let globe = metres / frame.globe_metres;
+    let per = w.per / (tile.extent * frame.globe_metres);
+    let ds = globe_sum(w.at, lagrange_slope(w.st.x), lagrange(w.st.y)) * per.x;
+    let dt = globe_sum(w.at, lagrange(w.st.x), lagrange_slope(w.st.y)) * per.y;
+    let globe = mat2x2<f32>(dot(ds, ds), dot(ds, dt), dot(ds, dt), dot(dt, dt));
     if (tile.globe_flags & 1u) != 0u {
         return globe;
     }
-    return mix(flat, globe, frame.globe_amount);
+    // Mixed as lengths, not their squares: the metrics' square roots.
+    let r = metric_root(flat) * (1.0 - frame.globe_amount) + metric_root(globe) * frame.globe_amount;
+    return r * r;
 }
 
-fn plane_scale_at(tile: Tile, p: vec2<f32>) -> f32 {
+fn plane_metric_at(tile: Tile, p: vec2<f32>) -> mat2x2<f32> {
     if tile.warp_cells == 0u {
-        return tile.scale;
+        let s = tile.scale * tile.scale;
+        return mat2x2<f32>(s, 0.0, 0.0, s);
     }
     let w = warp_patch(tile, p);
-    let ds = warp_sum(w.at, lagrange_slope(w.st.x), lagrange(w.st.y)) * w.per.x;
-    let dt = warp_sum(w.at, lagrange(w.st.x), lagrange_slope(w.st.y)) * w.per.y;
-    return sqrt(abs(ds.x * dt.y - ds.y * dt.x)) / tile.extent;
+    let per = w.per / tile.extent;
+    let ds = warp_sum(w.at, lagrange_slope(w.st.x), lagrange(w.st.y)) * per.x;
+    let dt = warp_sum(w.at, lagrange(w.st.x), lagrange_slope(w.st.y)) * per.y;
+    return mat2x2<f32>(dot(ds, ds), dot(ds, dt), dot(ds, dt), dot(dt, dt));
+}
+
+// The symmetric square root of a metric.
+fn metric_root(m: mat2x2<f32>) -> mat2x2<f32> {
+    let s = sqrt(max(determinant(m), 0.0));
+    let t = sqrt(max(m[0][0] + m[1][1] + 2.0 * s, 1.0e-30));
+    return mat2x2<f32>(m[0][0] + s, m[0][1], m[1][0], m[1][1] + s) * (1.0 / t);
 }
 
 // On a low-zoom surface (frame.globe_amount > 0), every tile's patches are

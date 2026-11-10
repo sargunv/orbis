@@ -124,6 +124,33 @@ fn pulled_line(index: u32) -> StyledLineOut {
     return line_vertex(v);
 }
 
+// Data units per pixel of extrusion at tile point `p`, for a line whose
+// normal there is along `across` (data units, y down): a pixel vector a
+// across and b along the line goes a pixels across and b along it on
+// screen. GL JS lineUniformValues uses transform.zoom for u_ratio
+// (tileZoom only scales patterned and dashed lines' atlas); in our
+// camera-relative world its reciprocal is world_per_px over the tile's
+// scale. A warp or a sphere can stretch one direction more than the
+// other, where one scale can't be right both ways: with J its Jacobian
+// and K = JᵀJ its metric, the line's normal n goes to J⁻ᵀn on screen and
+// its direction d to Jd, and each part takes its own length. A join
+// takes its bisector's frame, exact for straight runs and caps.
+fn line_px_to_data(tile: Tile, p: vec2<f32>, across: vec2<f32>) -> mat2x2<f32> {
+    let world_per_px = tile_world_per_px(tile);
+    if tile.warp_cells == 0u && (frame.globe_amount <= 0.0 || tile.globe_cells == 0u) {
+        let s = world_per_px / tile.scale;
+        return mat2x2<f32>(s, 0.0, 0.0, s);
+    }
+    let k = tile_metric_at(tile, p);
+    let n = across * inverseSqrt(max(dot(across, across), 1.0e-12));
+    let d = vec2<f32>(-n.y, n.x);
+    // Along: d / |Jd|. Across: J⁻ᵀn / |J⁻ᵀn| back in data units by J⁻¹,
+    // K⁻¹n / |J⁻ᵀn| = adj(K) n / (sqrt(det K) |Jd|), as nᵀ adj(K) n = |Jd|².
+    let along = max(dot(d, k * d), 1.0e-30);
+    let u = mat2x2<f32>(k[1][1], -k[0][1], -k[1][0], k[0][0]) * n * inverseSqrt(max(determinant(k), 1.0e-30));
+    return mat2x2<f32>(u * n.x + d * d.x, u * n.y + d * d.y) * (world_per_px * inverseSqrt(along));
+}
+
 fn line_vertex(v: Pulled) -> StyledLineOut {
     var out: StyledLineOut;
     let tile = tile_at(v.tile);
@@ -167,19 +194,15 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
         outset += antialiasing;
     }
 
-    // GL JS lineUniformValues uses transform.zoom for u_ratio (tileZoom
-    // is used only for patterned/dashed line atlas scaling). In our camera-
-    // relative world space, its reciprocal is world_per_px over the tile's
-    // scale (a warped tile's local scale at the vertex).
-    let px_to_data = tile_world_per_px(tile) / tile_scale_at(tile, pos);
+    let px_to_data = line_px_to_data(tile, pos, select(extrude, offset_normal, any(offset_normal != vec2<f32>(0.0))));
     let dist = outset * extrude * EXTRUDE_SCALE;
     let offset2 = offset * offset_normal * EXTRUDE_SCALE * normal.y;
 
     let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
     let shift = translate_world(px, node.translate_anchor, tile);
-    let center = pos + offset2 * px_to_data + vec2<f32>(shift.x, -shift.y) / tile.scale;
+    let center = pos + px_to_data * offset2 + vec2<f32>(shift.x, -shift.y) / tile.scale;
     let projected_no_extrude = ground_clip(tile_ground(tile, center), vec2<f32>(0.0), 0.0);
-    let extruded = center + dist * px_to_data;
+    let extruded = center + px_to_data * dist;
     let ground = tile_ground(tile, extruded);
     out.position = ground_clip(ground, vec2<f32>(0.0), 0.0);
 
