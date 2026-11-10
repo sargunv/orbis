@@ -87,10 +87,13 @@ export async function open(container, { style, camera, constraints = {} }) {
     },
   });
   container.append(canvas);
+  // Single-sampled, as Native's own platforms draw (Android picks an
+  // EGL config without samples; iOS and its Vulkan and WebGPU back ends
+  // use one sample).
   const context = canvas.getContext("webgl2", {
     depth: true,
     stencil: true,
-    antialias: true,
+    antialias: false,
   });
   if (!context) throw new Error("MapLibre Native needs WebGL 2");
   const rt = await start();
