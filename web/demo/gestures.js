@@ -237,6 +237,8 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     jobWorkers,
     camera: path.camera(center, 0),
     interactive: false,
+    // As the demo draws it: the Globe entry's light and fills are previews.
+    previews: "all",
   });
   try {
     await idle(map, label);

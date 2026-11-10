@@ -30,14 +30,18 @@ const ALPS = [7.7491, 46.0207];
 const ease = (f) => f * f * (3 - 2 * f);
 const lerp = (a, b, f) => a + (b - a) * f;
 
-/** Liberty's buildings lit as the demo's Globe entry lights its own (orb-bench's GLOBE_LIT). */
+/** Liberty's buildings lit as the demo's Globe entry lights its own, ground and night side included (orb-bench's GLOBE_LIT). */
 const lit = (tx) =>
   tx
     .setLight({
       anchor: "viewport",
-      position: [1.15, 210, 30],
+      position: [1.15, 210, 60],
       intensity: 0.35,
       "shadow-intensity": 0.5,
+      "dev.sargunv.orbis:ground-lighting": 1,
+      "dev.sargunv.orbis:ambient-color": "#8d9fd6",
+      "dev.sargunv.orbis:ambient-intensity": 0.5,
+      "dev.sargunv.orbis:twilight": 14,
     })
     .setPaintProperty(
       "building-3d",
@@ -235,6 +239,8 @@ async function runOrbis(container, scenario, style, legs, show) {
     style,
     camera: scenario.camera(0),
     interactive: false,
+    // The lit paths' shadows and ground lighting are previews, as in orb-bench.
+    previews: "all",
   });
   try {
     await idle(() => map.once("idle"), scenario.name);

@@ -95,6 +95,8 @@ export async function runFrames({
     interactive: false,
     pixelRatio: ratio,
     camera: { center, zoom: first[1], pitch: first[2], bearing: 0 },
+    // As the demo draws it: the Globe entry's light and fills are previews.
+    previews: "all",
   });
   map.on("warning", ({ message }) => warnings.add(message));
   let timestamps = false;
