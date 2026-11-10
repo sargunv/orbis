@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! orbis render <style> -o out.png [--at lon,lat,zoom[,bearing,pitch]] [--size WxH] [--scale s]
-//!     [--capture] [--pipelines]
+//!     [--antialias on|off] [--capture] [--pipelines]
 //! orbis tiles <style> [-o dir] [--tms <id|tms.json>] (--zoom z[-z] [--bbox w,s,e,n] | --list file)
 //!     [--size px] [--scale s] [--still] [--times]
 //! ```
@@ -10,7 +10,8 @@
 //! `<style>` is a v8 style: a URL (`https://`, `file://`, `pmtiles://`)
 //! or a path. `render` draws one picture in Still
 //! mode (`--at`'s zoom is Web Mercator's, as the style's own plane is known
-//! only once it loads); with `--capture` it draws the settled picture once
+//! only once it loads; `--antialias` multisamples 3D layers or not, the
+//! map's default otherwise); with `--capture` it draws the settled picture once
 //! more for the graphics debugger it runs under (Xcode, RenderDoc) to
 //! capture; with `--pipelines` it prints each pipeline's compile time,
 //! slowest first. `tiles` draws tiles of a tile matrix set (default
@@ -160,6 +161,17 @@ fn missing_tiles(args: &Args) -> Result<MissingTiles, String> {
     }
 }
 
+/// `--antialias`: whether 3D layers multisample, the map's default unless
+/// given.
+fn antialias(args: &Args) -> Result<bool, String> {
+    match args.get(&["--antialias"]) {
+        None => Ok(MapOptions::default().antialias),
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        Some(other) => Err(format!("--antialias takes on or off, not {other}")),
+    }
+}
+
 /// A URL as given, or a path as a `file://` URL.
 fn style_url(style: &str) -> Result<String, String> {
     if style.contains("://") {
@@ -203,6 +215,7 @@ fn render(
             camera,
             previews: previews(args)?,
             missing_tiles: missing_tiles(args)?,
+            antialias: antialias(args)?,
             ..MapOptions::default()
         },
     );
