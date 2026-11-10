@@ -2,13 +2,14 @@
 // Shared with the build script, which reflects the shaders' uniforms.
 pub(crate) const TYPES: &str = wgsl!("types");
 const PROJECT: &str = wgsl!("project");
+/// Draw pipelines' helpers, and `fetch`: their reads of the scene's tables.
 const DRAW: &str = concat!(
     wgsl!("color"),
     wgsl!("bezier"),
     wgsl!("draw"),
-    wgsl!("project")
+    wgsl!("project"),
+    wgsl!("fetch")
 );
-const FETCH: &str = wgsl!("fetch");
 const PATTERN: &str = wgsl!("pattern");
 const EXTRUSION: &str = wgsl!("extrusion");
 const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
@@ -57,9 +58,6 @@ impl Shader {
         let mut source: String = self.parts.concat();
         if self.parts.contains(&CLIP_PLANES) {
             source = source.replace("//planes ", "");
-        }
-        if self.parts.contains(&DRAW) {
-            source.push_str(FETCH);
         }
         source
     }

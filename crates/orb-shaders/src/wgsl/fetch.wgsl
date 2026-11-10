@@ -1,5 +1,7 @@
 // The `fetch` module: draw pipelines read the scene's tables from storage
-// buffers.
+// buffers, only through these functions, so a device without storage
+// buffers in the vertex stage (WebGPU's compatibility mode) can read them
+// from textures by swapping this module alone.
 
 @group(0) @binding(1) var<storage, read> tiles: array<Tile>;
 @group(0) @binding(2) var<storage, read> chunks: array<Chunk>;
