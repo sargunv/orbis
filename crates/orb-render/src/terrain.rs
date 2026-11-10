@@ -1232,7 +1232,9 @@ impl Terrain {
             // Slots are flat: the terrain carries them onto a globe.
             globe: None,
             // Slots are cached: tiles draw into them as they settle, as GL
-            // JS doesn't fade what it renders to texture.
+            // JS doesn't fade what it renders to texture. Feature-state
+            // fades keep the frame's `state_time`: the runtime redraws the
+            // slots each frame while one runs.
             time: f32::MAX,
             ..*frame
         }

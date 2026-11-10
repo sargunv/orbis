@@ -149,6 +149,7 @@ impl Harness {
             ground_horizon: 0.0,
             symbol_fade_change: 1.0,
             time: 0.0,
+            state_time: 0.0,
             pitch: 0.0,
             roll: 0.0,
             camera_to_center: 1.0,

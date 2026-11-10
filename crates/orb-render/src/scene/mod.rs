@@ -88,6 +88,9 @@ pub struct FrameBlock {
     /// Milliseconds since the map began, which image fades measure from
     /// (their rows hold when each tile arrived).
     pub time: f32,
+    /// The same, which feature-state fades measure from: a drape slot
+    /// takes the frame's, where its `time` holds image fades at their end.
+    pub state_time: f32,
     /// The terrain elevated content stands on, if any.
     pub terrain: Option<FrameTerrain>,
     /// v8's `light`.
@@ -192,6 +195,7 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
     b.f(f::EXTRUSION_SCALE, &[frame.extrusion_scale]);
     b.f(f::GROUND_HORIZON, &[frame.ground_horizon]);
     b.f(f::TIME, &[frame.time]);
+    b.f(f::STATE_TIME, &[frame.state_time]);
     b.f(f::SYMBOL_FADE_CHANGE, &[frame.symbol_fade_change]);
     b.f(f::PITCH, &[frame.pitch]);
     b.f(f::ROLL, &[frame.roll]);

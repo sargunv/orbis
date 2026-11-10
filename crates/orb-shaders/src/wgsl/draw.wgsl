@@ -237,7 +237,7 @@ fn state_fade(block: u32, at: u32) -> f32 {
     }
     let duration = bitcast<f32>(prop_at(at + 2u * STATE_ZOOMS));
     let delay = bitcast<f32>(prop_at(at + 2u * STATE_ZOOMS + 1u));
-    let since = frame.time - bitcast<f32>(prop_at(block + 1u)) - delay;
+    let since = frame.state_time - bitcast<f32>(prop_at(block + 1u)) - delay;
     return ease_cubic_in_out(since / max(duration, 1e-3));
 }
 

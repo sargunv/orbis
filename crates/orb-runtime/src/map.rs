@@ -1618,6 +1618,7 @@ impl Map {
             ground_horizon: view.ground_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
             time: self.shader_time() as f32,
+            state_time: self.shader_time() as f32,
             pitch: self.camera.state().pitch.to_radians() as f32,
             roll: self.camera.state().roll.to_radians() as f32,
             camera_to_center: view.camera_to_center() as f32,

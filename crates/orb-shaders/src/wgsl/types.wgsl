@@ -67,6 +67,9 @@ struct Frame {
     ground_horizon: f32,
     // Milliseconds since the map began, for image fades.
     time: f32,
+    // The same, for feature-state fades: drape slots, which don't fade
+    // images, redraw while a state fades and take the frame's.
+    state_time: f32,
     // How far symbol fades have run since the last placement commit.
     symbol_fade_change: f32,
     // Camera pitch and roll, radians.

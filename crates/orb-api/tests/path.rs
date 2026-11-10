@@ -822,7 +822,8 @@ fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
     moved.jump_to(&camera(at(10.0)));
     settle(&mut moved, &mut target);
     moved.jump_to(&camera(at(16.0)));
-    moved.render(&mut target, 0.0).unwrap();
+    // Its time runs on from the settled frames', past the hover's fade.
+    moved.render(&mut target, 1e6).unwrap();
     let jumped = centre(&target.read_pixels().unwrap());
     drop(moved);
     let mut fresh = Map::new(&runtime, options());
