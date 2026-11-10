@@ -30,7 +30,12 @@ pub(crate) struct StyleState {
     volatile: HashSet<String>,
     /// Whether symbols fade as they're placed; `None` is the default, on.
     placement_transitions: Option<bool>,
+    /// The feature state the map keeps, set through the API, whether or
+    /// not the style has the source yet.
+    feature_states: std::collections::BTreeMap<FeatureKey, FeatureState>,
 }
+
+type FeatureState = Vec<(String, orb_expr::Value<'static>)>;
 
 impl StyleState {
     /// Forgets what belonged to the style a new one replaces.
@@ -336,7 +341,9 @@ fn add_source(entry: &mut MapEntry, id: &str, json: &str) -> Result {
             id: id.to_string(),
             source,
         }],
-    )
+    )?;
+    replay_state(entry, id);
+    Ok(())
 }
 
 command!(
@@ -367,6 +374,11 @@ command!(
                 }],
             )?;
             entry.style.volatile.remove(&source_id);
+            // A source added again starts with no state.
+            entry
+                .style
+                .feature_states
+                .retain(|(source, ..), _| *source != source_id);
             Ok(())
         }))
     }
@@ -1744,3 +1756,281 @@ command!(
         Ok(job(move |entry| geo_json(entry, &source_id)))
     }
 );
+
+// MARK: - Feature state
+
+/// A feature a state selector names: its source, source layer (empty for
+/// none) and ID as text, Native's key for it.
+type FeatureKey = (String, String, String);
+
+/// A feature state selector, checked.
+struct Selector {
+    source: String,
+    layer: String,
+    /// `None` selects every feature of the source layer.
+    id: Option<String>,
+    /// The one key a removal removes, or every key.
+    key: Option<String>,
+}
+
+impl Selector {
+    fn target(&self) -> orb_api::FeatureTarget {
+        orb_api::FeatureTarget {
+            source: self.source.clone(),
+            source_layer: (!self.layer.is_empty()).then(|| self.layer.clone()),
+            id: self.id.clone(),
+        }
+    }
+}
+
+/// A feature ID as text: a number's shortest decimal form.
+unsafe fn feature_id(id: &mln_feature_id) -> Result<String> {
+    // SAFETY: the union's member that `type_` names.
+    unsafe {
+        Ok(match id.type_ {
+            MLN_FEATURE_ID_TYPE_STRING => {
+                let s = id.data.string_value;
+                if s.data.is_null() && s.size != 0 {
+                    return Err(Failure::argument("selector.feature_id must not be null"));
+                }
+                text(s, "selector.feature_id")?
+            }
+            MLN_FEATURE_ID_TYPE_UINT => id.data.uint_value.to_string(),
+            MLN_FEATURE_ID_TYPE_INT => id.data.int_value.to_string(),
+            MLN_FEATURE_ID_TYPE_DOUBLE => {
+                let v = id.data.double_value;
+                if !v.is_finite() {
+                    return Err(Failure::argument("selector.feature_id must be finite"));
+                }
+                // Native's shortest form writes no `+` in the exponent.
+                orb_expr::js_number_string(v).replace("e+", "e")
+            }
+            _ => return Err(Failure::argument("selector.feature_id has an unknown type")),
+        })
+    }
+}
+
+/// Checks a selector at submission. A set or read needs the feature.
+unsafe fn selector(
+    selector: *const mln_feature_state_selector,
+    needs_id: bool,
+) -> Result<Selector> {
+    if selector.is_null() {
+        return Err(Failure::argument("selector must not be null"));
+    }
+    // SAFETY: every sized struct starts with its u32 size.
+    if (unsafe { *selector.cast::<u32>() } as usize)
+        < std::mem::size_of::<mln_feature_state_selector>()
+    {
+        return Err(Failure::argument("selector.size is too small"));
+    }
+    // SAFETY: the caller's selector, of its full size.
+    let s = unsafe { *selector };
+    if s.fields & !MLN_FEATURE_STATE_SELECTOR_FEATURE_ID != 0 {
+        return Err(Failure::argument("selector.fields has unknown fields"));
+    }
+    if s.source_id.data.is_null() && s.source_id.size != 0 {
+        return Err(Failure::argument("selector.source_id must not be null"));
+    }
+    // SAFETY: the caller's views.
+    let source = unsafe { text(s.source_id, "selector.source_id") }?;
+    if source.is_empty() {
+        return Err(Failure::argument("selector.source_id must not be empty"));
+    }
+    if s.source_layer_id.data.is_null() && s.source_layer_id.size != 0 {
+        return Err(Failure::argument(
+            "selector.source_layer_id must not be null",
+        ));
+    }
+    // SAFETY: as above.
+    let layer = unsafe { text(s.source_layer_id, "selector.source_layer_id") }?;
+    if s.state_key.data.is_null() && s.state_key.size != 0 {
+        return Err(Failure::argument("selector.state_key must not be null"));
+    }
+    // SAFETY: as above.
+    let key = unsafe { text(s.state_key, "selector.state_key") }?;
+    let id = if s.fields & MLN_FEATURE_STATE_SELECTOR_FEATURE_ID != 0 {
+        // SAFETY: as above.
+        Some(unsafe { feature_id(&s.feature_id) }?)
+    } else {
+        None
+    };
+    if needs_id && id.is_none() {
+        return Err(Failure::argument("the call requires feature_id"));
+    }
+    if id.is_none() && !key.is_empty() {
+        return Err(Failure::argument("selector.state_key requires feature_id"));
+    }
+    Ok(Selector {
+        source,
+        layer,
+        id,
+        key: (!key.is_empty()).then_some(key),
+    })
+}
+
+/// Hands state the map keeps to Orbis's style, when it has the source: a
+/// source added later takes it then.
+fn push_state(entry: &mut MapEntry, op: Op) {
+    let source = match &op {
+        Op::SetFeatureState { target, .. } | Op::RemoveFeatureState { target, .. } => {
+            target.source.clone()
+        }
+        _ => return,
+    };
+    if entry
+        .map
+        .style()
+        .is_some_and(|d| d.source(&source).is_some())
+        && let Err(e) = edit(entry, vec![op])
+    {
+        crate::logging::log(MLN_LOG_SEVERITY_WARNING, &e.message);
+    }
+}
+
+/// Gives a source just added the state the map keeps for it.
+fn replay_state(entry: &mut MapEntry, source: &str) {
+    let states: Vec<(FeatureKey, FeatureState)> = entry
+        .style
+        .feature_states
+        .iter()
+        .filter(|((s, ..), _)| s == source)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for ((source, layer, id), state) in states {
+        push_state(
+            entry,
+            Op::SetFeatureState {
+                target: orb_api::FeatureTarget {
+                    source,
+                    source_layer: (!layer.is_empty()).then_some(layer),
+                    id: Some(id),
+                },
+                state,
+            },
+        );
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_map_set_feature_state(
+    map: mln_map,
+    selector: *const mln_feature_state_selector,
+    state: mln_buffer_view,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            let s = self::selector(selector, true)?;
+            if state.data.is_null() && state.size != 0 {
+                return Err(Failure::argument("state must not be null"));
+            }
+            let text = text(state, "state")?;
+            if text.is_empty() {
+                return Err(Failure::argument("state must not be empty"));
+            }
+            let json = parse_json(&text, "state")?;
+            let orb_expr::Value::Object(members) = orb_expr::Value::from_json(&json) else {
+                return Err(Failure::argument("state must be a JSON object"));
+            };
+            let members = members.into_owned();
+            post(map, completion, false, true, move |state, id| {
+                let entry = entry(state, id);
+                let key = (
+                    s.source.clone(),
+                    s.layer.clone(),
+                    s.id.clone().unwrap_or_default(),
+                );
+                let kept = entry.style.feature_states.entry(key).or_default();
+                for (k, v) in &members {
+                    kept.retain(|(old, _)| old != k);
+                    kept.push((k.clone(), v.clone()));
+                }
+                push_state(
+                    entry,
+                    Op::SetFeatureState {
+                        target: s.target(),
+                        state: members,
+                    },
+                );
+                Ok(Value::None)
+            })
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_map_get_feature_state(
+    map: mln_map,
+    selector: *const mln_feature_state_selector,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            let s = self::selector(selector, true)?;
+            post(map, completion, true, false, move |state, id| {
+                let entry = entry(state, id);
+                let key = (s.source, s.layer, s.id.unwrap_or_default());
+                let members = entry
+                    .style
+                    .feature_states
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(Value::Text(
+                    orb_expr::Value::Object(members.into()).to_json_string(),
+                ))
+            })
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_map_remove_feature_state(
+    map: mln_map,
+    selector: *const mln_feature_state_selector,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            let s = self::selector(selector, false)?;
+            post(map, completion, false, true, move |state, id| {
+                let entry = entry(state, id);
+                let states = &mut entry.style.feature_states;
+                match (&s.id, &s.key) {
+                    (Some(fid), Some(key)) => {
+                        let k = (s.source.clone(), s.layer.clone(), fid.clone());
+                        if let Some(kept) = states.get_mut(&k) {
+                            kept.retain(|(name, _)| name != key);
+                            if kept.is_empty() {
+                                states.remove(&k);
+                            }
+                        }
+                    }
+                    (Some(fid), None) => {
+                        states.remove(&(s.source.clone(), s.layer.clone(), fid.clone()));
+                    }
+                    (None, _) => {
+                        states.retain(|(source, layer, _), _| {
+                            !(*source == s.source && *layer == s.layer)
+                        });
+                    }
+                }
+                push_state(
+                    entry,
+                    Op::RemoveFeatureState {
+                        target: s.target(),
+                        key: s.key.clone(),
+                    },
+                );
+                Ok(Value::None)
+            })
+        })
+    }
+}

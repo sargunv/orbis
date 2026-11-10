@@ -1189,6 +1189,81 @@ pub(crate) fn hook() -> Arc<Hook> {
     Arc::new(Hook::default())
 }
 
+// MARK: - The ambient cache
+
+/// Runs `job` with the runtime's Orbis runtime on its thread, then
+/// completes; an operation needs its completion.
+fn operation(
+    runtime: mln_runtime,
+    completion: *const mln_completion,
+    job: impl FnOnce(&orb_api::Runtime) -> Result + Send + 'static,
+) -> Result {
+    let handle = handles::runtime(runtime.0)?;
+    // SAFETY: the caller's pointer.
+    let completion = unsafe { Completion::required(completion) }?;
+    handle.post(move |state| {
+        let result = job(&state.runtime).map(|()| Value::None);
+        state.complete(Some(completion), result, 0);
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_runtime_run_cache_database_operation(
+    runtime: mln_runtime,
+    operation: mln_cache_database_operation,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            handles::runtime(runtime.0)?;
+            if !(MLN_CACHE_DATABASE_OPERATION_CLEAR..=MLN_CACHE_DATABASE_OPERATION_RESET)
+                .contains(&operation)
+            {
+                return Err(Failure::argument(format!(
+                    "{operation} names no cache database operation"
+                )));
+            }
+            self::operation(runtime, completion, move |r| {
+                match operation {
+                    MLN_CACHE_DATABASE_OPERATION_CLEAR => r.clear_http_cache(),
+                    MLN_CACHE_DATABASE_OPERATION_INVALIDATE => r.invalidate_http_cache(),
+                    // Orbis keeps each body in a file of its own, which
+                    // leaves nothing to compact.
+                    MLN_CACHE_DATABASE_OPERATION_PACK => {}
+                    _ => {
+                        r.clear_http_cache();
+                        // A runtime without a cache file has no regions.
+                        for region in r.regions().unwrap_or_default() {
+                            r.delete_region(region.id).map_err(Failure::from)?;
+                        }
+                    }
+                }
+                Ok(())
+            })
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_runtime_set_maximum_ambient_cache_size(
+    runtime: mln_runtime,
+    size: u64,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            operation(runtime, completion, move |r| {
+                r.set_http_cache_size(size);
+                Ok(())
+            })
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
