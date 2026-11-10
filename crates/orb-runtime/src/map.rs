@@ -1677,8 +1677,11 @@ impl Map {
         report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
         times.render = report.frame.times;
         // A frame that left something out for a compiling pipeline isn't
-        // complete.
-        report.compiling = report.idle && report.frame.waited;
+        // complete. Only a compile still pending wakes the host when it
+        // finishes: a frame that waited with none pending (a pipeline's
+        // arrival blanked the drape slots, to draw from the next frame)
+        // asks for that frame itself.
+        report.compiling = report.idle && report.frame.waited && report.frame.pipelines_pending > 0;
         report.loaded &= !report.frame.waited;
         report.idle &= !report.frame.waited;
         // Idle once the camera rests too, and once per rest. DEM data that

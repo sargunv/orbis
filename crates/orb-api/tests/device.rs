@@ -182,3 +182,82 @@ fn losses_in_a_row_back_off_then_stop() {
         "once"
     );
 }
+
+/// The child's role in [`a_drape_pipeline_arriving_last_still_idles`].
+const DRAPE_CHILD: &str = "ORB_TEST_DRAPE_CHILD";
+
+/// A draped layer whose pipeline compiles after everything else has
+/// loaded (the last compile on a slow phone): its arrival draws the
+/// drape's slots again from the next frame, so the frame it arrives in
+/// isn't complete. With nothing left compiling, no compile will wake the
+/// map: it asks for that next frame itself, and goes idle after it,
+/// rather than wait forever. In a child process: the fault is set from
+/// the environment.
+#[test]
+fn a_drape_pipeline_arriving_last_still_idles() {
+    if std::env::var_os(DRAPE_CHILD).is_some() {
+        // One flat terrarium tile.
+        let dir = std::env::temp_dir().join(format!("orb-api-flat-dem-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("0/0")).unwrap();
+        let file = std::fs::File::create(dir.join("0/0/0.png")).unwrap();
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), 256, 256);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let flat = [128, 0, 0, 255].repeat(256 * 256);
+        (encoder.write_header().unwrap())
+            .write_image_data(&flat)
+            .unwrap();
+        let style = format!(
+            r##"{{"version":8,"zoom":1,"terrain":{{"source":"dem"}},
+              "sources":{{"dem":{{"type":"raster-dem","encoding":"terrarium","tileSize":256,
+                "maxzoom":0,"tiles":["file://{}/{{z}}/{{x}}/{{y}}.png"]}},
+              "box":{{"type":"geojson","data":{{"type":"Polygon",
+                "coordinates":[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]}}}}}},
+              "layers":[{{"id":"bg","type":"background","paint":{{"background-color":"#ff0000"}}}},
+              {{"id":"box","type":"fill","source":"box","paint":{{"fill-color":"#0000ff"}}}}]}}"##,
+            dir.display()
+        );
+        let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+        let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&style).unwrap();
+        let started = Instant::now();
+        let mut frames = 0;
+        let idled = loop {
+            if started.elapsed() > Duration::from_secs(15) {
+                break false;
+            }
+            // As a host draws: only the frames the map asks for.
+            if !map.needs_frame() {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            let report = map.render(&mut target, 0.0).unwrap();
+            frames += 1;
+            if report.is_some_and(|r| r.idle) {
+                break true;
+            }
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            idled,
+            "the map stopped asking for frames short of idle, after {frames}"
+        );
+        let pixels = target.read_pixels().unwrap();
+        let i = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+        assert_eq!(pixels[i..i + 3], [0, 0, 255], "the draped fill");
+        return;
+    }
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_drape_pipeline_arriving_last_still_idles",
+            "--nocapture",
+        ])
+        .env(DRAPE_CHILD, "1")
+        .env("ORB_FAULT_INJECTION", "slow:fill:1500")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    assert!(child.status.success(), "{stderr}");
+}
