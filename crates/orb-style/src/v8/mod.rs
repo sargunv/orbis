@@ -574,8 +574,9 @@ pub(crate) struct Cx {
     state: Vec<(String, Value<'static>)>,
     /// The previews whose inputs are accepted; others warn.
     pub(crate) previews: Previews,
-    /// A value read an input beyond the spec, which was reported once.
-    portability_warned: bool,
+    /// The properties whose values read an input beyond the spec, each
+    /// reported once.
+    not_portable: std::collections::HashSet<&'static str>,
 }
 
 impl Cx {
@@ -586,7 +587,7 @@ impl Cx {
             diagnostics: Diagnostics::default(),
             state: state.to_vec(),
             previews,
-            portability_warned: false,
+            not_portable: Default::default(),
         }
     }
 
@@ -644,11 +645,11 @@ impl Cx {
         self.warn(path, member.key_span, message);
     }
 
-    /// Warns, once per document, that a value Orbis draws reads an input
+    /// Warns, once per property and document, that a value Orbis draws reads an input
     /// the spec doesn't allow there, so GL JS and MapLibre Native reject
     /// the style.
     pub(crate) fn not_portable(&mut self, path: &str, span: Span, prop: &Prop, beyond: Inputs) {
-        if std::mem::replace(&mut self.portability_warned, true) {
+        if !self.not_portable.insert(prop.name) {
             return;
         }
         let mut inputs: Vec<&str> = beyond.names().collect();
@@ -659,7 +660,7 @@ impl Cx {
             path,
             span,
             format!(
-                "this value of \"{}\" reads {}, beyond the spec: Orbis draws it, but GL JS and MapLibre Native reject the style (further such values aren't reported)",
+                "this value of \"{}\" reads {}, beyond the spec: Orbis draws it, but GL JS and MapLibre Native reject the style (reported once per property)",
                 prop.name,
                 inputs.join(" and "),
             ),

@@ -815,7 +815,7 @@ fn previews_gate_projections_and_tile_matrix_sets() {
 }
 
 /// Paint Orbis evaluates per frame reads the camera, previews or not,
-/// with one warning per document that the style isn't portable. Inputs no
+/// with one warning per property that the style isn't portable. Inputs no
 /// phase honours stay errors, as do the spec's own limits.
 #[test]
 fn extended_inputs_are_drawn_and_warn_once() {
@@ -848,6 +848,14 @@ fn extended_inputs_are_drawn_and_warn_once() {
             Value::Number(0.75)
         );
     }
+    // Another property warns once of its own.
+    let color = r#""fill-color": ["case", [">", ["bearing"], 90], "red", "blue"]"#;
+    let style = parse(&layer(&format!("{pitch}, {color}"), "")).unwrap();
+    let paths: Vec<&str> = style.warnings.iter().map(|w| w.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["layers[0].paint.fill-opacity", "layers[0].paint.fill-color"]
+    );
 
     for (paint, layout) in [
         // Not honoured: the camera where tiles are laid out, or with data.

@@ -189,7 +189,7 @@ export interface MapOptions {
   /** Whether terrain tiles hang skirts hiding the cracks between tiles of
    * different detail; translucent terrain shows them. True by default. */
   terrainSkirts?: boolean;
-  /** The previews the style may use: style inputs beyond the approved v8
+  /** The previews the style may use: new style syntax beyond the approved v8
    * spec, by name (`"style-spec#1865"`, `"orbis:crs"`), or `"all"`. A
    * preview that is off warns and its inputs fall back to their defaults.
    * None by default. */

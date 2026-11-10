@@ -264,11 +264,14 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
 
     out.push_str(
         "## Previews\n\n\
-         Style inputs beyond the approved spec are previews, off unless a map\n\
-         names them: `MapOptions::previews` in orb-api, `previews: [...]` (or\n\
-         `\"all\"`) in the web package, `--previews` on the CLI. With a preview\n\
-         off, its inputs warn and fall back to their defaults. A preview may\n\
-         change or disappear at any time.\n\n\
+         New style syntax beyond the approved spec (keys, values and\n\
+         expressions from unapproved proposals or our own, coordinate\n\
+         reference systems) is a preview, off unless a map names it:\n\
+         `MapOptions::previews` in orb-api, `previews: [...]` (or `\"all\"`) in\n\
+         the web package, `--previews` on the CLI. With a preview off, its\n\
+         inputs warn and fall back to their defaults. A preview may change or\n\
+         disappear at any time. Inputs the spec's syntax already has, read\n\
+         where the spec doesn't allow them, need no preview (see Properties).\n\n\
          | Preview | What it enables |\n|---|---|\n",
     );
     for p in Preview::ALL {
@@ -298,11 +301,12 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          feature's properties, id and geometry; and `state`, its feature state.\n\
          **Spec** lists the spec's expression parameters; **GL JS** and **Native**\n\
          the first versions with the property and its data-driven form (the\n\
-         spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads,\n\
-         the spec's inputs and, after `+`, those it honours beyond the spec\n\
-         (always on, with a warning that GL JS and Native reject them);\n\
-         then, per fixture run (its suite and platform), the tests named for\n\
-         the property that pass.\n",
+         spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads:\n\
+         the spec's inputs, then those it honours beyond the spec, marked\n\
+         *accepted (not portable)*: always on, with a warning, once per\n\
+         property, that GL JS and Native reject the style; then, per fixture\n\
+         run (its suite and platform), the tests named for the property that\n\
+         pass.\n",
     );
     // Runs whose tests are named for properties: the render suites.
     let named = |s: &Suite| {
@@ -337,7 +341,7 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
             let entry = &spec[format!("{section}_{}", ty.name())][prop.name];
             let mut orbis = inputs(prop.spec_inputs());
             if !prop.extended.is_empty() {
-                let _ = write!(orbis, " +{}", inputs(prop.extended));
+                let _ = write!(orbis, "; {} accepted (not portable)", inputs(prop.extended));
             }
             let _ = write!(
                 out,

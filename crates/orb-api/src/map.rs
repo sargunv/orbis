@@ -47,7 +47,7 @@ pub struct MapOptions {
     /// tiles of different detail; translucent terrain shows them (GL JS
     /// `terrainSkirtLength`).
     pub terrain_skirts: bool,
-    /// The previews its styles may use: style inputs beyond the approved
+    /// The previews its styles may use: new style syntax beyond the approved
     /// v8 spec, which warn and fall back to their defaults while off. None
     /// by default.
     pub previews: crate::Previews,

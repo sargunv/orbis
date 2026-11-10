@@ -769,7 +769,7 @@ impl Map {
         self.labels.lane = lane;
     }
 
-    /// The previews, style inputs beyond the approved v8 spec, that styles
+    /// The previews, new style syntax beyond the approved v8 spec, that styles
     /// set after this may use; none by default. With a preview off, its
     /// inputs warn and fall back to their defaults.
     pub fn set_previews(&mut self, previews: orb_style::Previews) {

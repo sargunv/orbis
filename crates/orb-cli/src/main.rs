@@ -22,7 +22,7 @@
 //! Both commands take `--state-dir <dir>`, the runtime's state directory
 //! (compiled pipelines where the platform keeps none, the HTTP cache), so a
 //! later run starts warm; `--previews <names|all>`, the comma-separated
-//! previews (style inputs beyond the approved spec) the style may use; and
+//! previews (new style syntax beyond the approved spec) the style may use; and
 //! `--missing-tiles <parent|empty>`, what a vector tile that 404s draws:
 //! its nearest ancestor (the default) or nothing, as GL JS and MapLibre
 //! Native draw it.

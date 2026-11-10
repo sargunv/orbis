@@ -1,4 +1,4 @@
-//! Previews: style inputs beyond the approved v8 spec (style-spec 26.5.1),
+//! Previews: new style syntax beyond the approved v8 spec (style-spec 26.5.1),
 //! which a map opts into by name. With a preview off, its inputs are
 //! treated like any unknown or invalid style input: a warning, then the
 //! default. A preview may change or disappear at any time.

@@ -7,11 +7,14 @@ task.
 
 ## Previews
 
-Style inputs beyond the approved spec are previews, off unless a map
-names them: `MapOptions::previews` in orb-api, `previews: [...]` (or
-`"all"`) in the web package, `--previews` on the CLI. With a preview
-off, its inputs warn and fall back to their defaults. A preview may
-change or disappear at any time.
+New style syntax beyond the approved spec (keys, values and
+expressions from unapproved proposals or our own, coordinate
+reference systems) is a preview, off unless a map names it:
+`MapOptions::previews` in orb-api, `previews: [...]` (or `"all"`) in
+the web package, `--previews` on the CLI. With a preview off, its
+inputs warn and fall back to their defaults. A preview may change or
+disappear at any time. Inputs the spec's syntax already has, read
+where the spec doesn't allow them, need no preview (see Properties).
 
 | Preview | What it enables |
 |---|---|
@@ -40,11 +43,12 @@ Inputs are `zoom`; `camera`, the camera's pitch and bearing; `data`, the
 feature's properties, id and geometry; and `state`, its feature state.
 **Spec** lists the spec's expression parameters; **GL JS** and **Native**
 the first versions with the property and its data-driven form (the
-spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads,
-the spec's inputs and, after `+`, those it honours beyond the spec
-(always on, with a warning that GL JS and Native reject them);
-then, per fixture run (its suite and platform), the tests named for
-the property that pass.
+spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads:
+the spec's inputs, then those it honours beyond the spec, marked
+*accepted (not portable)*: always on, with a warning, once per
+property, that GL JS and Native reject the style; then, per fixture
+run (its suite and platform), the tests named for the property that
+pass.
 
 ### fill
 
@@ -52,11 +56,11 @@ the property that pass.
 |---|---|---|---|---|---|---|---|---|---|---|
 | `fill-sort-key` | layout | tile | zoom, data | 1.2.0; data 1.2.0 | 9.1.0; data 9.1.0 | zoom, data | — | 1/1 | — | 1/1 |
 | `fill-antialias` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 1/1 | — | 1/1 |
-| `fill-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.21.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 9/9 | — | 9/9 |
-| `fill-layer-opacity` | paint | layer | zoom | 6.0.0 | [no](https://github.com/maplibre/maplibre-native/issues/4298) | zoom +camera | — | 16/16 | — | — |
+| `fill-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.21.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 9/9 | — | 9/9 |
+| `fill-layer-opacity` | paint | layer | zoom | 6.0.0 | [no](https://github.com/maplibre/maplibre-native/issues/4298) | zoom; camera accepted (not portable) | — | 16/16 | — | — |
 | `fill-layer-blend` | paint | layer | constant | [no](https://github.com/maplibre/maplibre-gl-js/issues/48) | [no](https://github.com/maplibre/maplibre-native/issues/2963) | constant | — | — | — | — |
-| `fill-color` | paint | frame | zoom, data, state | 0.10.0; data 0.19.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 9/9 | — | 9/9 |
-| `fill-outline-color` | paint | frame | zoom, data, state | 0.10.0; data 0.19.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 7/8 | — | 8/8 |
+| `fill-color` | paint | frame | zoom, data, state | 0.10.0; data 0.19.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 9/9 | — | 9/9 |
+| `fill-outline-color` | paint | frame | zoom, data, state | 0.10.0; data 0.19.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/8 | — | 8/8 |
 | `fill-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 2/2 | 3/3 | 2/2 | 3/3 |
 | `fill-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 1/2 | 2/2 | 2/2 | 2/2 |
 | `fill-pattern` | paint | tile | zoom, data | 0.10.0; data 0.49.0 | 2.0.1; data 6.5.0 | zoom, data | — | 12/12 | — | 10/10, 1 skipped |
@@ -70,16 +74,16 @@ the property that pass.
 | `line-miter-limit` | layout | tile | zoom, data | 0.10.0; data 5.22.0 | 2.0.1; data [no](https://github.com/maplibre/maplibre-native/issues/4194) | zoom, data | — | 1/3 | — | 1/1 |
 | `line-round-limit` | layout | tile | zoom, data | 0.10.0; data 5.22.0 | 2.0.1; data [no](https://github.com/maplibre/maplibre-native/issues/4194) | zoom, data | — | 3/3 | — | 1/1 |
 | `line-sort-key` | layout | tile | zoom, data | 1.2.0; data 1.2.0 | 9.1.0; data 9.1.0 | zoom, data | — | 1/1 | — | 1/1 |
-| `line-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 7/7 | — | 5/5 |
-| `line-layer-opacity` | paint | layer | zoom | 6.0.0 | [no](https://github.com/maplibre/maplibre-native/issues/4298) | zoom +camera | — | 18/18 | — | — |
+| `line-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 5/5 |
+| `line-layer-opacity` | paint | layer | zoom | 6.0.0 | [no](https://github.com/maplibre/maplibre-native/issues/4298) | zoom; camera accepted (not portable) | — | 18/18 | — | — |
 | `line-layer-blend` | paint | layer | constant | [no](https://github.com/maplibre/maplibre-gl-js/issues/48) | [no](https://github.com/maplibre/maplibre-native/issues/2963) | constant | — | — | — | — |
-| `line-color` | paint | frame | zoom, data, state | 0.10.0; data 0.23.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 8/8 | — | 7/7 |
+| `line-color` | paint | frame | zoom, data, state | 0.10.0; data 0.23.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 8/8 | — | 7/7 |
 | `line-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 2/2 | 3/3 | 2/2 | 3/3 |
 | `line-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 0/2 | 2/2 | 2/2 | 2/2 |
 | `line-width` | paint | frame | zoom, data, state | 0.10.0; data 0.39.0 | 2.0.1; data 5.2.0 | zoom, data, state | 6/6 | 7/7 | 6/6 | 7/7 |
 | `line-gap-width` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state | 6/6 | 4/4 | 6/6 | 4/4 |
 | `line-offset` | paint | frame | zoom, data, state | 0.12.1; data 0.29.0 | 3.0.0; data 5.0.0 | zoom, data, state | 8/8 | 10/10 | 7/7 | 5/5 |
-| `line-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 4/4 | — | 4/4 |
+| `line-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
 | `line-dasharray` | paint | tile | zoom, data | 0.10.0; data 5.8.0 | 2.0.1; data [no](https://github.com/maplibre/maplibre-native/issues/744) | zoom, data | — | 22/22 | — | 9/16 |
 | `line-pattern` | paint | tile | zoom, data | 0.10.0; data 0.49.0 | 2.0.1; data 6.5.0 | zoom, data | — | 11/11 | — | 12/13 |
 | `line-gradient` | paint | tile | line-progress | 0.45.0; data — | 6.5.0; data — | constant | — | 9/9 | — | 4/4 |
@@ -134,18 +138,18 @@ the property that pass.
 | `text-optional` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
 | `symbol-height-offset` | layout | tile | zoom, data | 6.6.0; data 6.6.0 | [no](https://github.com/maplibre/maplibre-native/issues/1929); data [no](https://github.com/maplibre/maplibre-native/issues/1929) | zoom, data | — | 1/1, 1 skipped | — | — |
 | `symbol-height-anchor` | layout | placement | zoom | [no](https://github.com/maplibre/maplibre-gl-js/issues/644) | [no](https://github.com/maplibre/maplibre-native/issues/1929) | zoom | — | — | — | — |
-| `icon-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 7/7 | — | 7/7 |
-| `icon-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 4/4 | — | 4/4 |
-| `icon-halo-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 7/7 | — | 7/7 |
-| `icon-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 4/4 | — | 4/4 |
-| `icon-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 4/4 | — | 4/4 |
+| `icon-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
+| `icon-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `icon-halo-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
+| `icon-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `icon-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
 | `icon-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 3/3 | — | 3/3 |
 | `icon-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 2/2 | — | 2/2 |
-| `text-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 4/4 | — | 4/4 |
-| `text-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 7/8 | — | 7/9 |
-| `text-halo-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 4/4 | — | 4/4 |
-| `text-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 4/4 | — | 4/4 |
-| `text-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 4/4 | — | 4/4 |
+| `text-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `text-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/8 | — | 7/9 |
+| `text-halo-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `text-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `text-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
 | `text-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 3/3 | — | 3/3 |
 | `text-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 10/10 | — | 2/2 |
 
@@ -155,51 +159,51 @@ the property that pass.
 |---|---|---|---|---|---|---|---|---|---|---|
 | `circle-sort-key` | layout | tile | zoom, data | 1.2.0; data 1.2.0 | 9.2.0; data 9.2.0 | zoom, data | — | 1 skipped | — | 1 skipped |
 | `circle-radius` | paint | frame | zoom, data, state | 0.10.0; data 0.18.0 | 2.0.1; data 5.0.0 | zoom, data, state | 7/7 | 8/8 | 7/7 | 8/8 |
-| `circle-color` | paint | frame | zoom, data, state | 0.10.0; data 0.18.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 7/7 | — | 7/7 |
-| `circle-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 7/7 | — | 7/7 |
-| `circle-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state +camera | — | 6/6 | — | 6/6 |
+| `circle-color` | paint | frame | zoom, data, state | 0.10.0; data 0.18.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
+| `circle-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
+| `circle-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 6/6 | — | 6/6 |
 | `circle-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 3/3 | 3/3 | 3/3 | 3/3 |
 | `circle-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 2/2 | 2/2 | 2/2 | 2/2 |
 | `circle-pitch-scale` | paint | frame | zoom | 0.21.0 | 4.2.0 | zoom | 8/8 | 3/3 | 8/8 | 3/3 |
 | `circle-pitch-alignment` | paint | frame | zoom | 0.39.0 | 5.2.0 | zoom | — | 13/13 | — | 4/4 |
 | `circle-stroke-width` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state | 3/3 | 5/5 | 3/3 | 5/5 |
-| `circle-stroke-color` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state +camera | — | 5/5 | — | 5/5 |
-| `circle-stroke-opacity` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state +camera | — | 6/6 | — | 6/6 |
+| `circle-stroke-color` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 5/5 | — | 5/5 |
+| `circle-stroke-opacity` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 6/6 | — | 6/6 |
 
 ### heatmap
 
 | Property | Section | Phase | Spec | GL JS | Native | Orbis | GL JS query (native) | GL JS render (native) | Native query (native) | Native render (native) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `heatmap-radius` | paint | frame | zoom, data, state | 0.41.0; data 0.43.0 | 6.0.0; data 6.0.0 | zoom, data, state | — | 6/6 | — | 6/6 |
-| `heatmap-weight` | paint | frame | zoom, data, state | 0.41.0; data 0.41.0 | 6.0.0; data 6.0.0 | zoom, data, state +camera | — | 3/3 | — | 3/3 |
-| `heatmap-intensity` | paint | layer | zoom | 0.41.0 | 6.0.0 | zoom +camera | — | 3/3 | — | 3/3 |
+| `heatmap-weight` | paint | frame | zoom, data, state | 0.41.0; data 0.41.0 | 6.0.0; data 6.0.0 | zoom, data, state; camera accepted (not portable) | — | 3/3 | — | 3/3 |
+| `heatmap-intensity` | paint | layer | zoom | 0.41.0 | 6.0.0 | zoom; camera accepted (not portable) | — | 3/3 | — | 3/3 |
 | `heatmap-color` | paint | layer | heatmap-density | 0.41.0; data — | 6.0.0; data — | constant | — | 2/2 | — | 2/2 |
-| `heatmap-opacity` | paint | layer | zoom | 0.41.0 | 6.0.0 | zoom +camera | — | 3/3 | — | 3/3 |
+| `heatmap-opacity` | paint | layer | zoom | 0.41.0 | 6.0.0 | zoom; camera accepted (not portable) | — | 3/3 | — | 3/3 |
 
 ### fill-extrusion
 
 | Property | Section | Phase | Spec | GL JS | Native | Orbis | GL JS query (native) | GL JS render (native) | Native query (native) | Native render (native) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `fill-extrusion-rounded-corner-distance` | layout | tile | constant | 6.2.0 | 13.4.0 | constant | — | 5/8 | — | — |
-| `fill-extrusion-color` | paint | frame | zoom, data, state, elevation | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state, elevation +camera | — | 8/8 | — | 8/8 |
-| `fill-extrusion-opacity` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom +camera, data | — | 3/3 | — | 3/3 |
+| `fill-extrusion-color` | paint | frame | zoom, data, state, elevation | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state, elevation; camera accepted (not portable) | — | 8/8 | — | 8/8 |
+| `fill-extrusion-opacity` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom; camera, data accepted (not portable) | — | 3/3 | — | 3/3 |
 | `fill-extrusion-height` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state | — | 5/6 | — | 5/5 |
 | `fill-extrusion-base` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state | — | 6/6 | — | 2/6 |
 | `fill-extrusion-translate` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom | 1/1 | 4/4 | 1/1 | 4/4 |
 | `fill-extrusion-translate-anchor` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom | — | 2/2 | — | 0/2 |
-| `fill-extrusion-vertical-gradient` | paint | frame | zoom | 0.50.0 | 7.0.0 | zoom +data | — | 2/3 | — | 2/2 |
+| `fill-extrusion-vertical-gradient` | paint | frame | zoom | 0.50.0 | 7.0.0 | zoom; data accepted (not portable) | — | 2/3 | — | 2/2 |
 | `fill-extrusion-pattern` | paint | tile | zoom, data | 0.27.0; data 0.49.0 | 5.1.0; data 6.5.0 | zoom, data | — | 6/9 | — | 1/9 |
 
 ### raster
 
 | Property | Section | Phase | Spec | GL JS | Native | Orbis | GL JS query (native) | GL JS render (native) | Native query (native) | Native render (native) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `raster-opacity` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom +camera | — | 3/3 | — | 3/3 |
-| `raster-hue-rotate` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom +camera | — | 3/3 | — | 3/3 |
-| `raster-brightness-min` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom +camera | — | — | — | — |
-| `raster-brightness-max` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom +camera | — | — | — | — |
-| `raster-saturation` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom +camera | — | 3/3 | — | 3/3 |
-| `raster-contrast` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom +camera | — | 3/3 | — | 3/3 |
+| `raster-opacity` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom; camera accepted (not portable) | — | 3/3 | — | 3/3 |
+| `raster-hue-rotate` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom; camera accepted (not portable) | — | 3/3 | — | 3/3 |
+| `raster-brightness-min` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom; camera accepted (not portable) | — | — | — | — |
+| `raster-brightness-max` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom; camera accepted (not portable) | — | — | — | — |
+| `raster-saturation` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom; camera accepted (not portable) | — | 3/3 | — | 3/3 |
+| `raster-contrast` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom; camera accepted (not portable) | — | 3/3 | — | 3/3 |
 | `resampling` | paint | layer | zoom | 5.20.0 | [no](https://github.com/maplibre/maplibre-native/issues/4117) | zoom | — | 10/10 | — | — |
 | `raster-resampling` | paint | layer | zoom | 0.47.0 | 6.3.0 | zoom | — | 3/3 | — | 3/3 |
 | `raster-fade-duration` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
@@ -211,10 +215,10 @@ the property that pass.
 | `hillshade-illumination-direction` | paint | layer | zoom | 0.43.0 | 6.0.0 | zoom | — | — | — | — |
 | `hillshade-illumination-altitude` | paint | layer | zoom | 5.5.0 | 13.0.0 | zoom | — | 3/3 | — | — |
 | `hillshade-illumination-anchor` | paint | layer | zoom | 0.43.0 | 6.0.0 | zoom | — | — | — | — |
-| `hillshade-exaggeration` | paint | layer | zoom | 0.43.0 | 6.0.0 | zoom +camera | — | — | — | — |
+| `hillshade-exaggeration` | paint | layer | zoom | 0.43.0 | 6.0.0 | zoom; camera accepted (not portable) | — | — | — | — |
 | `hillshade-shadow-color` | paint | layer | zoom | 0.43.0 | 6.0.0 | zoom | — | 3/3 | — | 3/3 |
 | `hillshade-highlight-color` | paint | layer | zoom | 0.43.0 | 6.0.0 | zoom | — | 3/3 | — | 3/3 |
-| `hillshade-accent-color` | paint | layer | zoom | 0.43.0 | 6.0.0 | zoom +camera | — | 4/4 | — | 4/4 |
+| `hillshade-accent-color` | paint | layer | zoom | 0.43.0 | 6.0.0 | zoom; camera accepted (not portable) | — | 4/4 | — | 4/4 |
 | `hillshade-method` | paint | layer | zoom | 5.5.0 | 13.0.0 | zoom | — | 4/4 | — | — |
 | `resampling` | paint | layer | zoom | 5.20.0 | [no](https://github.com/maplibre/maplibre-native/issues/4117) | zoom | — | 10/10 | — | — |
 
@@ -222,7 +226,7 @@ the property that pass.
 
 | Property | Section | Phase | Spec | GL JS | Native | Orbis | GL JS query (native) | GL JS render (native) | Native query (native) | Native render (native) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `color-relief-opacity` | paint | layer | zoom | 5.6.0 | 13.0.0 | zoom +camera | — | — | — | — |
+| `color-relief-opacity` | paint | layer | zoom | 5.6.0 | 13.0.0 | zoom; camera accepted (not portable) | — | — | — | — |
 | `color-relief-color` | paint | layer | elevation | 5.6.0; data — | 13.0.0; data — | elevation | — | — | — | — |
 | `resampling` | paint | layer | zoom | 5.20.0 | [no](https://github.com/maplibre/maplibre-native/issues/4117) | zoom | — | 10/10 | — | — |
 
@@ -230,6 +234,6 @@ the property that pass.
 
 | Property | Section | Phase | Spec | GL JS | Native | Orbis | GL JS query (native) | GL JS render (native) | Native query (native) | Native render (native) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `background-color` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom +camera | — | 6/6 | — | 5/6 |
+| `background-color` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom; camera accepted (not portable) | — | 6/6 | — | 5/6 |
 | `background-pattern` | paint | layer | zoom | 0.10.0; data — | 2.0.1; data — | zoom | — | 6/6 | — | 6/6 |
-| `background-opacity` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom +camera | — | 6/6 | — | 3/3 |
+| `background-opacity` | paint | layer | zoom | 0.10.0 | 2.0.1 | zoom; camera accepted (not portable) | — | 6/6 | — | 3/3 |
