@@ -43,7 +43,7 @@ pub(crate) fn run(root: &Path, filter: &str) -> Result<(), String> {
             .expect("under the mirror")
             .to_string_lossy()
             .replace('\\', "/");
-        if !id.contains(filter) {
+        if !crate::matches(&id, filter) {
             continue;
         }
         let mut result = json!({"id": id});

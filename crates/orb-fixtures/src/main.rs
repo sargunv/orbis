@@ -46,11 +46,11 @@ fn run() -> Result<(), String> {
     let mut filter = String::new();
     let mut platform = "native".to_string();
     let mut suite = "render".to_string();
-    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>] [--platform native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]";
+    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>[,<substring>…]] [--platform native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]";
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--suite" => suite = args.next().ok_or(USAGE)?,
-            "--filter" => filter = args.next().ok_or("--filter needs a substring")?,
+            "--filter" => filter = args.next().ok_or("--filter needs a substring (or several, comma-separated)")?,
             "--platform" => {
                 platform = args.next().ok_or(
                     "--platform needs native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl",
@@ -151,6 +151,12 @@ pub(crate) fn assets(root: &Path) -> PathBuf {
     root.join("fixtures/gl-js/assets")
 }
 
+/// Whether test `id` is one `filter` picks: it contains any of the
+/// filter's comma-separated substrings (an empty filter picks every test).
+pub(crate) fn matches(id: &str, filter: &str) -> bool {
+    filter.split(',').any(|f| id.contains(f))
+}
+
 fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     let fixtures = root.join("fixtures/gl-js/render");
     if !fixtures.is_dir() {
@@ -185,7 +191,7 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
-    paths.retain(|path| test_id(path, &fixtures).contains(filter));
+    paths.retain(|path| matches(&test_id(path, &fixtures), filter));
     let assets = assets(root);
     let mut results = Vec::new();
     let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();

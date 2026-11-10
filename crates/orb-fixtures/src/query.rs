@@ -62,7 +62,7 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
-    paths.retain(|path| test_id(path, &fixtures).contains(filter));
+    paths.retain(|path| crate::matches(&test_id(path, &fixtures), filter));
     let assets = assets(root);
     let mut totals = Counts::default();
     let (mut ordered, mut shapes) = (0, 0);

@@ -412,7 +412,7 @@ pub(crate) fn discover(
     let mut tests: Vec<(String, PathBuf)> = paths
         .into_iter()
         .map(|path| (crate::test_id(&path, &base), path))
-        .filter(|(id, _)| id.contains(filter))
+        .filter(|(id, _)| crate::matches(id, filter))
         .collect();
     tests.sort();
     Ok(tests)
