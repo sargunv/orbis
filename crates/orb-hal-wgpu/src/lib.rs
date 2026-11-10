@@ -330,7 +330,9 @@ impl WgpuGpu {
                 min_uniform_buffer_offset_alignment: limits.min_uniform_buffer_offset_alignment,
             },
             timestamp_query: device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
-            clip_distances: device.features().contains(wgpu::Features::CLIP_DISTANCES),
+            // Not on GL: its shaders are WebGL 2's, which has none, though
+            // native GLES (Mesa's) offers them.
+            clip_distances: !gl && device.features().contains(wgpu::Features::CLIP_DISTANCES),
             // WebGPU and the native back ends have all of these; a
             // downlevel device (wgpu's GL back end) reports no compute
             // and no vertex-stage storage in its limits.
