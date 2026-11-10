@@ -116,7 +116,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
     // so a fill crossing tiles moves whole, as it does into a drape slot,
     // bounded by the slot where it lands.
     out.tile_pos = pos;
-    if frame.globe_amount <= 0.0 {
+    if !on_globe() {
         out.tile_pos += vec2<f32>(shift.x, -shift.y) / tile.scale;
     }
     out.owner_pos = select(out.tile_pos, pos, draped_placement(tile));
@@ -136,7 +136,7 @@ fn fill_drawn(in: FillOut) -> bool {
     }
     let tile = tile_at(in.tile);
     var owner = in.owner_pos;
-    if tile.warp_cells != 0u {
+    if warped(tile) {
         owner = clamp(owner, vec2<f32>(0.0), vec2<f32>(tile.extent - 0.5));
     }
     return owned(tile, owner) && landed(tile, in.tile_pos);

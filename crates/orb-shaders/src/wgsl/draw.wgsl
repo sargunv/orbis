@@ -13,7 +13,7 @@
 // `calculate_visibility`.
 // Partly hidden points average with a point just above them.
 fn terrain_visibility(clip: vec4<f32>) -> f32 {
-    if textureDimensions(terrain_depth).x <= 1u || clip.w <= 0.0 {
+    if plane || textureDimensions(terrain_depth).x <= 1u || clip.w <= 0.0 {
         return 1.0;
     }
     let ndc = clip.xyz / clip.w;
@@ -83,8 +83,12 @@ fn dem_bilinear(at: DemAt) -> f32 {
 
 // The terrain's elevation in metres, with exaggeration, under data point
 // `p` of a placement: its DEM, bilinear between pixels as the terrain's
-// mesh samples it. Sea level where it has none.
+// mesh samples it. Sea level where it has none, as in a plane variant,
+// which draws without terrain.
 fn ground_elevation(tile: Tile, p: vec2<f32>) -> f32 {
+    if plane {
+        return 0.0;
+    }
     return dem_bilinear(ground_dem_at(tile, p));
 }
 

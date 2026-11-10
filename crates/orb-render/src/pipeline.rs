@@ -24,6 +24,9 @@ pub(crate) struct Draw<'a> {
     pub(crate) fragment: (&'a Shader, &'a str),
     /// The vertex and fragment stages' override constants.
     pub(crate) constants: [&'a [(&'a str, f64)]; 2],
+    /// Its plane variant ([`orb_shaders::PLANE`], set in the stages that
+    /// read it): for views without the globe, terrain or warped tiles.
+    pub(crate) plane: bool,
     pub(crate) layouts: &'a [BindGroupLayoutId],
     pub(crate) target: ColorTargetState,
     pub(crate) sample_count: u32,
@@ -44,6 +47,7 @@ impl<'a> Draw<'a> {
             vertex: (shader, shader.vertex),
             fragment: (shader, shader.fragment),
             constants: [&[], &[]],
+            plane: false,
             layouts,
             target: ColorTargetState {
                 format: target.color,
@@ -65,18 +69,34 @@ impl<'a> Draw<'a> {
         } else {
             vertex_module
         };
+        let [vertex_constants, fragment_constants] = [
+            (vertex, vertex_entry, self.constants[0]),
+            (fragment, fragment_entry, self.constants[1]),
+        ]
+        .map(|(shader, entry, constants)| {
+            let mut constants = constants.to_vec();
+            if self.plane && shader.takes(entry, orb_shaders::PLANE) {
+                constants.push((orb_shaders::PLANE, 1.0));
+            }
+            constants
+        });
+        debug_assert!(
+            !self.plane || vertex.takes(vertex_entry, orb_shaders::PLANE),
+            "{}: no plane variant",
+            self.label
+        );
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: self.label,
             bind_group_layouts: self.layouts,
             vertex: ShaderStage {
                 module: vertex_module,
                 entry_point: vertex_entry,
-                constants: self.constants[0],
+                constants: &vertex_constants,
             },
             fragment: ShaderStage {
                 module: fragment_module,
                 entry_point: fragment_entry,
-                constants: self.constants[1],
+                constants: &fragment_constants,
             },
             targets: &[self.target],
             depth: self.depth,
@@ -121,4 +141,52 @@ fn module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
         source: shader.source().into(),
         ir: shader.ir(),
     })
+}
+
+/// A draw pipeline's plane and full variants ([`Draw::plane`]), each made
+/// once asked for. The plane variant draws a view of affine tiles on the
+/// plane without terrain exactly as the full one does, and compiles in
+/// about half the time on Adreno (#69).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Variants([Option<RenderPipelineId>; 2]);
+
+impl Variants {
+    /// Makes each of the variants `[plane, full]` asked for that isn't
+    /// made.
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, variants: [bool; 2], draw: Draw<'_>) {
+        for (full, made) in [false, true].into_iter().zip(&mut self.0) {
+            if variants[usize::from(full)] && made.is_none() {
+                *made = Some(
+                    Draw {
+                        plane: !full,
+                        ..draw
+                    }
+                    .make(gpu),
+                );
+            }
+        }
+    }
+
+    /// What a frame draws with, once compiled: the full variant when the
+    /// frame needs it (`full`), the plane one otherwise, or the full one
+    /// in its place while it isn't made or compiled.
+    pub(crate) fn drawn(&self, gpu: &mut dyn Gpu, full: bool) -> Option<RenderPipelineId> {
+        let [plane, whole] = self.0.map(|p| p.filter(|&p| gpu.pipeline_ready(p.into())));
+        if full { whole } else { plane.or(whole) }
+    }
+
+    /// The variant a frame waits for (`full` as in [`drawn`](Self::drawn)).
+    pub(crate) fn wanted(&self, full: bool) -> Option<RenderPipelineId> {
+        if full {
+            self.0[1]
+        } else {
+            self.0[0].or(self.0[1])
+        }
+    }
+}
+
+impl crate::release::Release for Variants {
+    fn release(self, gpu: &mut dyn Gpu) {
+        self.0.release(gpu);
+    }
 }

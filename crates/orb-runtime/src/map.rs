@@ -1436,6 +1436,14 @@ impl Map {
         let plane = self.surface.globe().and_then(|g| g.plane);
         let surface = *self.surface.projection();
         self.globe_warps.set_planes(renderer, surface, plane);
+        // Views need the full projection on a low-zoom surface, and for
+        // tiles that warp onto the surface: likely on any surface but Web
+        // Mercator, known for a source once it resolves.
+        let warped = surface != crate::frame::mercator_projection()
+            || (self.style.as_ref()).is_some_and(|s| {
+                (s.sources.iter()).any(|s| matches!(s, SourceState::Ready { warped: true, .. }))
+            });
+        renderer.set_full_projection(self.surface.globe().is_some() || warped);
         let view = self.view(viewport);
         // What this frame draws, for picking.
         let mut drawn = Vec::new();

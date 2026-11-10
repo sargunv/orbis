@@ -14,6 +14,12 @@
 // target's clamp puts them (Web Mercator's past ±85.05°); past the tile's
 // own edges, its edge patches extrapolate.
 
+// Whether the view is on its low-zoom surface, the globe or its plane, by
+// any amount; never in a plane variant (`plane`).
+fn on_globe() -> bool {
+    return !plane && frame.globe_amount > 0.0;
+}
+
 const WARP_WINDOW_WORDS: u32 = 4u;
 
 // Where a point of a warp's tile is among its patches.
@@ -50,7 +56,7 @@ fn warp_cell(base: u32, cells: u32, words: u32, uv: vec2<f32>) -> WarpCell {
 // Whether a tile's planar position holds all of it: an affine tile's, or
 // a warp's whose window is the whole tile.
 fn warp_whole(tile: Tile) -> bool {
-    if tile.warp_cells == 0u {
+    if !warped(tile) {
         return true;
     }
     let b = tile.warp_base;
@@ -90,7 +96,7 @@ fn warp_sum(at: u32, a: vec3<f32>, b: vec3<f32>) -> vec2<f32> {
 
 // Tile point `p` less the tile's origin, in world units.
 fn tile_local(tile: Tile, p: vec2<f32>) -> vec2<f32> {
-    if tile.warp_cells == 0u {
+    if !warped(tile) {
         return vec2<f32>(p.x, -p.y) * tile.scale;
     }
     let w = warp_patch(tile, p);
@@ -136,7 +142,7 @@ fn snap_texel(v: vec2<f32>) -> vec2<f32> {
 // square root of the determinant is the area scale's.
 fn tile_metric_at(tile: Tile, p: vec2<f32>) -> mat2x2<f32> {
     let flat = plane_metric_at(tile, p);
-    if frame.globe_amount <= 0.0 || tile.globe_cells == 0u {
+    if !on_globe() || tile.globe_cells == 0u {
         return flat;
     }
     // The sphere's metres per data unit, in plane world units at the
@@ -155,7 +161,7 @@ fn tile_metric_at(tile: Tile, p: vec2<f32>) -> mat2x2<f32> {
 }
 
 fn plane_metric_at(tile: Tile, p: vec2<f32>) -> mat2x2<f32> {
-    if tile.warp_cells == 0u {
+    if !warped(tile) {
         let s = tile.scale * tile.scale;
         return mat2x2<f32>(s, 0.0, 0.0, s);
     }
@@ -234,7 +240,7 @@ fn tile_ground(tile: Tile, p: vec2<f32>) -> Ground {
     let pole = north || p.y >= 32766.5;
     let on_edge = vec2<f32>(clamp(p.x, 0.0, tile.extent), select(tile.extent, 0.0, north));
     var g = tile_surface(tile, select(p, on_edge, pole));
-    if pole && frame.globe_amount > 0.0 && frame.globe_plane == 0u && reaches_pole(tile, north) {
+    if pole && on_globe() && frame.globe_plane == 0u && reaches_pole(tile, north) {
         g.globe = vec3<f32>(0.0, 0.0, select(-SPHERE_RADIUS, SPHERE_RADIUS, north)) - frame.globe_target;
         g.pole = true;
     }
@@ -244,7 +250,7 @@ fn tile_ground(tile: Tile, p: vec2<f32>) -> Ground {
 fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     var g: Ground;
     g.on_plane = (tile.globe_flags & 1u) == 0u;
-    let globe = frame.globe_amount > 0.0 && tile.globe_cells > 0u;
+    let globe = on_globe() && tile.globe_cells > 0u;
     // A point past the tile (a translated label or fill, a stroke's edge)
     // goes onto the sphere at the tile's edge through its patches, and on
     // from there exactly: the patches don't extend. Only a plane position
@@ -338,7 +344,7 @@ fn sphere_at(base: u32, cells: u32, origin: vec3<f32>, uv: vec2<f32>) -> vec3<f3
 // and circle translate). On a globe, as in GL JS, the translation moves the
 // point in the tile's own units before it goes onto the sphere.
 fn tile_ground_shifted(tile: Tile, p: vec2<f32>, shift: vec2<f32>) -> Ground {
-    let globe = frame.globe_amount > 0.0;
+    let globe = on_globe();
     var g = tile_ground(tile, select(p, p + vec2<f32>(shift.x, -shift.y) / tile.scale, globe));
     if !globe {
         // On a drape's grid too, a texel position plus it is exact.
@@ -361,7 +367,7 @@ fn ground_clip(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
 // (`ground_clip_3d`), not the horizon plane's, which no surface's depth
 // matches.
 fn terrain_seen(projected: vec4<f32>, g: Ground, z: f32) -> vec4<f32> {
-    if frame.globe_amount <= 0.0 {
+    if !on_globe() {
         return projected;
     }
     return ground_clip_3d(g, vec2<f32>(0.0), z);
@@ -422,7 +428,7 @@ fn ground_clip_3d(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
 // relative error of up to 10^-5, enough for coplanar faces to fight.
 fn ground_clip_reversed(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
     var clip = ground_clip_3d(g, offset, z);
-    clip.z = select(clip.w - clip.z, plane_depth(g.flat + offset, z), frame.globe_amount <= 0.0);
+    clip.z = select(clip.w - clip.z, plane_depth(g.flat + offset, z), !on_globe());
     return clip;
 }
 
@@ -454,7 +460,7 @@ fn ground_mask_clip(p: vec2<f32>) -> vec4<f32> {
 
 fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<f32> {
     let flat = frame.view_proj * vec4<f32>(g.flat + offset, z, 1.0);
-    if frame.globe_amount <= 0.0 {
+    if !on_globe() {
         return flat;
     }
     if frame.globe_plane != 0u {

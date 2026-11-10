@@ -65,7 +65,31 @@ mod split;
 /// A shader's naga modules by entry point, postcard-encoded.
 pub type EntryModules = &'static [(&'static str, &'static [u8])];
 
+/// The override constant that makes a pipeline its plane variant
+/// (`types.wgsl`'s `plane`): for views of affine tiles on the plane,
+/// without the globe or terrain.
+pub const PLANE: &str = "plane";
+
+/// Each shader's override constants by entry point, as the build script
+/// found them in each entry point's module.
+type Overrides = &'static [(
+    &'static str,
+    &'static [(&'static str, &'static [&'static str])],
+)];
+
+include!(concat!(env!("OUT_DIR"), "/overrides.rs"));
+
 impl Shader {
+    /// Whether the stage at entry point `entry` reads override constant
+    /// `name`: a pipeline sets only the constants its stages read (wgpu
+    /// makes each stage from a module of what its entry point uses).
+    pub fn takes(&self, entry: &str, name: &str) -> bool {
+        (OVERRIDES.iter())
+            .find(|(label, _)| *label == self.label)
+            .and_then(|(_, entries)| entries.iter().find(|(e, _)| *e == entry))
+            .is_some_and(|(_, names)| names.contains(&name))
+    }
+
     /// Its naga modules, which the build script parsed from
     /// [`source`](Self::source), one per entry point with only what it
     /// uses, postcard-encoded (the `ir` feature): devices that compile
@@ -411,6 +435,48 @@ mod tests {
             failures.join("\n  ")
         );
         assert!(written > 90, "only {written} stages written");
+    }
+
+    /// The draw pipelines that compile a plane variant first (orb-render's
+    /// paint and symbol pipelines) take [`PLANE`] in their vertex stage,
+    /// and every stage that takes it validates and writes as Metal with it
+    /// set.
+    #[test]
+    fn plane_variants_compile() {
+        for shader in [
+            &FILL_SHADER,
+            &FILL_OUTLINE_SHADER,
+            &LINE_SHADER,
+            &LINE_STYLED_SHADER,
+            &CIRCLE_SHADER,
+            &SYMBOL_SHADERS[0],
+            &SYMBOL_SHADERS[1],
+        ] {
+            assert!(shader.takes(shader.vertex, PLANE), "{}", shader.label);
+            for (entry, one) in split::entry_modules(&validate(shader)) {
+                if !shader.takes(&entry, PLANE) {
+                    continue;
+                }
+                let info = naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::CLIP_DISTANCES,
+                )
+                .validate(&one)
+                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+                let constants = [(PLANE.to_string(), 1.0)].into_iter().collect();
+                let (made, info) = naga::back::pipeline_constants::process_overrides(
+                    &one, &info, None, &constants,
+                )
+                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+                let options = naga::back::msl::Options {
+                    lang_version: (2, 4),
+                    ..Default::default()
+                };
+                let pipeline = naga::back::msl::PipelineOptions::default();
+                naga::back::msl::write_string(&made, &info, &options, &pipeline)
+                    .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+            }
+        }
     }
 
     #[test]

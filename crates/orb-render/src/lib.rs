@@ -66,7 +66,7 @@ pub use tiles::{
     changed_borders, dem_neighbours, tile_latitudes,
 };
 
-use crate::pipeline::Draw;
+use crate::pipeline::{Draw, Variants};
 use crate::release::Release;
 
 use orb_hal::*;
@@ -272,7 +272,14 @@ pub struct Renderer {
     paint: PaintPipelines,
     /// Point and line labels' symbol pipelines, each made for the first
     /// node that draws with it.
-    symbol_pipelines: [Option<RenderPipelineId>; 2],
+    symbol_pipelines: [Variants; 2],
+    /// Whether the map's views may need the full projection
+    /// ([`set_full_projection`](Self::set_full_projection)).
+    full_projection: bool,
+    /// Whether the last frame needed the paint and symbol pipelines' full
+    /// variants, not their plane ones (`Variants`): its bundles drew with
+    /// them.
+    full: bool,
     /// The symbol shader's pass (group 2): halo and fill together, halo
     /// only, fill only.
     symbol_passes: [BindGroupId; 3],
@@ -581,7 +588,9 @@ impl Renderer {
             draw_layout,
             node_layout,
             paint: PaintPipelines::default(),
-            symbol_pipelines: [None; 2],
+            symbol_pipelines: Default::default(),
+            full_projection: false,
+            full: false,
             symbol_passes,
             symbol_pass_buffer: pass_buffer,
             symbol_pass_layout,
@@ -1081,6 +1090,35 @@ impl Renderer {
         self.terrain.as_ref().is_some_and(|t| t.paint.is_some())
     }
 
+    /// Sets whether the map's views may need the full projection: it
+    /// draws on a low-zoom surface (the style's globe, or a projection's
+    /// low-zoom plane) at some zoom, or a source's tiles warp onto its
+    /// surface. Those views need the paint and symbol pipelines' full
+    /// variants, which are then made from the first, so a zoom onto the
+    /// surface or a warped tile's arrival doesn't wait for them.
+    pub fn set_full_projection(&mut self, on: bool) {
+        if self.full_projection != on {
+            self.full_projection = on;
+            self.pipelines_stale = true;
+        }
+    }
+
+    /// Whether a frame needs the paint and symbol pipelines' full
+    /// variants: it is on its low-zoom surface, terrain is on, or a tile
+    /// draws through planar patches.
+    fn needs_full(&self, frame: &FrameBlock) -> bool {
+        frame.globe.is_some_and(|g| g.amount > 0.0) || self.terrain_on() || self.tiles.warped() > 0
+    }
+
+    /// Which variants of the paint and symbol pipelines to make, `[plane,
+    /// full]`: the plane's for a map that never needs the full ones, and
+    /// otherwise the full ones, which draw every view; and whichever the
+    /// last frame needed.
+    fn variants(&self) -> [bool; 2] {
+        let full = self.full_projection || self.terrain_on() || self.tiles.warped() > 0;
+        [!full && !self.full, full || self.full]
+    }
+
     /// How many terrain tiles the drape atlas can hold with this style's
     /// stacks: the most a terrain cover may have.
     pub fn drape_room(&self, gpu: &dyn Gpu) -> u32 {
@@ -1483,6 +1521,7 @@ impl Renderer {
             sample_count: 1,
         };
         let own_drape = self.target.color != drape_target.color;
+        let variants = self.variants();
         let (mut started, mut draped) = (false, false);
         for i in 0..self.nodes.len() {
             // A node that drew keeps its pipelines made for what it draws
@@ -1525,7 +1564,9 @@ impl Renderer {
                         self.downsampler.make(gpu);
                     }
                 } else {
-                    drape.paint.make(gpu, drape_target, &layouts, kind);
+                    drape
+                        .paint
+                        .make(gpu, drape_target, &layouts, kind, variants);
                 }
                 continue;
             }
@@ -1543,19 +1584,18 @@ impl Renderer {
     fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, i: usize) {
         let layouts = [self.draw_layout, self.node_layout];
         let family = self.nodes[i].family;
+        let variants = self.variants();
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
                 let kind = self.nodes[i].paint_kind();
-                self.paint.make(gpu, self.target, &layouts, kind);
+                self.paint.make(gpu, self.target, &layouts, kind, variants);
             }
             Family::SymbolIcon | Family::SymbolText => {
                 let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
                 let line = usize::from(self.nodes[i].along_line);
-                if self.symbol_pipelines[line].is_none() {
-                    let blend = Some(BlendState::PremultipliedAlpha);
-                    let draw = Draw::new(&SYMBOL_SHADERS[line], &layouts, self.target, blend);
-                    self.symbol_pipelines[line] = Some(draw.make(gpu));
-                }
+                let blend = Some(BlendState::PremultipliedAlpha);
+                let draw = Draw::new(&SYMBOL_SHADERS[line], &layouts, self.target, blend);
+                self.symbol_pipelines[line].make(gpu, variants, draw);
             }
             Family::Raster | Family::Hillshade | Family::ColorRelief => {
                 self.images.make(gpu, family);
@@ -1595,7 +1635,7 @@ impl Renderer {
         {
             out.extend(
                 d.paint
-                    .get(node.paint_kind())
+                    .wanted(node.paint_kind(), self.full)
                     .or_else(|| {
                         node.family
                             .is_image()
@@ -1623,7 +1663,8 @@ impl Renderer {
             }
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(
-                    self.symbol_pipelines[usize::from(node.along_line)].map(PipelineId::from),
+                    (self.symbol_pipelines[usize::from(node.along_line)].wanted(self.full))
+                        .map(PipelineId::from),
                 );
             }
             family if family.is_image() => {
@@ -1634,7 +1675,9 @@ impl Renderer {
                     out.extend(self.images.prepare_pipelines());
                 }
             }
-            _ => out.extend(self.paint.get(node.paint_kind()).map(PipelineId::from)),
+            _ => {
+                out.extend((self.paint.wanted(node.paint_kind(), self.full)).map(PipelineId::from))
+            }
         }
     }
 
@@ -1795,6 +1838,14 @@ impl Renderer {
                 node.ground = ground;
                 self.pipelines_stale |= node.drawn;
             }
+        }
+        // The bundles draw with the variants the frame needs, made if
+        // they weren't.
+        let full = self.needs_full(frame);
+        if full != self.full {
+            self.full = full;
+            self.pipelines_stale = true;
+            self.invalidate_bundle(gpu);
         }
         let compiling = self.pipelines(gpu);
         let made = compiling.made;
@@ -2402,8 +2453,8 @@ impl Renderer {
             return true;
         }
         if node.family.is_symbol() {
-            let Some(pipeline) = self.symbol_pipelines[usize::from(node.along_line)]
-                .filter(|&p| gpu.pipeline_ready(p.into()))
+            let Some(pipeline) =
+                self.symbol_pipelines[usize::from(node.along_line)].drawn(gpu, self.full)
             else {
                 return false;
             };
@@ -2443,9 +2494,9 @@ impl Renderer {
         let pipeline = match (drape, node.family.is_image()) {
             _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),
-            (Some(d), false) => d.paint.get(node.paint_kind()),
+            (Some(d), false) => d.paint.drawn(gpu, node.paint_kind(), self.full),
             (None, true) => self.images.pipeline(node.family),
-            (None, false) => self.paint.get(node.paint_kind()),
+            (None, false) => self.paint.drawn(gpu, node.paint_kind(), self.full),
         };
         let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
             return false;
@@ -2540,7 +2591,7 @@ impl Drape {
 /// made for the family's first node.
 #[derive(Clone, Copy, Debug, Default)]
 struct PaintPipelines {
-    pipelines: [Option<RenderPipelineId>; 5],
+    pipelines: [Variants; 5],
 }
 
 impl PaintPipelines {
@@ -2556,16 +2607,31 @@ impl PaintPipelines {
         })
     }
 
-    fn get(&self, kind: (Family, bool)) -> Option<RenderPipelineId> {
-        self.pipelines[Self::index(kind)?]
+    /// What a frame draws a node of `kind` with ([`Variants::drawn`]).
+    fn drawn(
+        &self,
+        gpu: &mut dyn Gpu,
+        kind: (Family, bool),
+        full: bool,
+    ) -> Option<RenderPipelineId> {
+        self.pipelines[Self::index(kind)?].drawn(gpu, full)
     }
 
+    /// What a frame waits for to draw a node of `kind`
+    /// ([`Variants::wanted`]).
+    fn wanted(&self, kind: (Family, bool), full: bool) -> Option<RenderPipelineId> {
+        self.pipelines[Self::index(kind)?].wanted(full)
+    }
+
+    /// Makes the pipeline of a node of `kind` in each of the variants
+    /// `[plane, full]` asked for.
     fn make(
         &mut self,
         gpu: &mut dyn Gpu,
         target: TargetFormat,
         layouts: &[BindGroupLayoutId],
         kind: (Family, bool),
+        variants: [bool; 2],
     ) {
         let Some(index) = Self::index(kind) else {
             return;
@@ -2577,18 +2643,16 @@ impl PaintPipelines {
             4 => (&LINE_STYLED_SHADER, PrimitiveTopology::TriangleList),
             _ => (&CIRCLE_SHADER, PrimitiveTopology::TriangleList),
         };
-        self.pipelines[index].get_or_insert_with(|| {
-            Draw {
-                topology,
-                ..Draw::new(
-                    shader,
-                    layouts,
-                    target,
-                    Some(BlendState::PremultipliedAlpha),
-                )
-            }
-            .make(gpu)
-        });
+        let draw = Draw {
+            topology,
+            ..Draw::new(
+                shader,
+                layouts,
+                target,
+                Some(BlendState::PremultipliedAlpha),
+            )
+        };
+        self.pipelines[index].make(gpu, variants, draw);
     }
 }
 

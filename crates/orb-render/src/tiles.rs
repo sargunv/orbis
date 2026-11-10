@@ -178,9 +178,22 @@ pub(crate) struct Tiles {
     sources: HashMap<u32, Source>,
     /// Pages no source uses any more, for the next frame to destroy.
     retired: Vec<PageId>,
+    /// Vector tiles drawing through planar patches, which only the paint
+    /// and symbol pipelines' full variants draw.
+    warped: u32,
 }
 
 impl Tiles {
+    /// How many vector tiles draw through planar patches.
+    pub(crate) fn warped(&self) -> u32 {
+        self.warped
+    }
+
+    /// Whether an entry is a vector tile drawing through planar patches.
+    fn is_warped(entry: &Entry) -> bool {
+        entry.image.is_none() && entry.warp.cells() > 0
+    }
+
     fn entry(&self, tile: GpuTile) -> &Entry {
         self.entries[tile.0 as usize]
             .as_ref()
@@ -188,6 +201,7 @@ impl Tiles {
     }
 
     fn insert(&mut self, entry: Entry) -> GpuTile {
+        self.warped += u32::from(Self::is_warped(&entry));
         match self.free.pop() {
             Some(i) => {
                 self.entries[i as usize] = Some(entry);
@@ -398,6 +412,7 @@ impl Renderer {
             .take()
             .expect("a tile is released once");
         self.tiles.free.push(tile.0);
+        self.tiles.warped -= u32::from(Tiles::is_warped(&entry));
         for (_, part) in entry.parts {
             self.scene.remove_tile(part);
         }

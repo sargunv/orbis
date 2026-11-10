@@ -145,7 +145,7 @@ fn pulled_line(index: u32) -> StyledLineOut {
 // run's frame.
 fn line_px_to_data(tile: Tile, p: vec2<f32>, across: vec2<f32>, miter: f32) -> mat2x2<f32> {
     let world_per_px = tile_world_per_px(tile);
-    if tile.warp_cells == 0u && (frame.globe_amount <= 0.0 || tile.globe_cells == 0u) {
+    if !warped(tile) && (!on_globe() || tile.globe_cells == 0u) {
         let s = world_per_px / tile.scale;
         return mat2x2<f32>(s, 0.0, 0.0, s);
     }

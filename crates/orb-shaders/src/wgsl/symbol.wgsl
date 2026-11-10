@@ -238,7 +238,7 @@ fn label_daylight(anchor: Ground) -> f32 {
         return 1.0;
     }
     var normal = frame.ground_up.xyz;
-    if frame.globe_amount > 0.0 && frame.globe_plane == 0u {
+    if on_globe() && frame.globe_plane == 0u {
         let sphere = normalize(anchor.globe + frame.globe_target);
         normal = normalize(mix(normal, sphere, frame.globe_amount));
     }
@@ -285,7 +285,7 @@ fn symbol_metres(tile: Tile, p: vec2<f32>) -> f32 {
 // toward the poles: GL JS's pitched text correction, the cosine of the
 // target's latitude over the anchor's, mixed in as the globe hands over.
 fn pitched_correction(anchor: Ground) -> f32 {
-    if frame.globe_amount <= 0.0 || frame.globe_plane != 0u {
+    if !on_globe() || frame.globe_plane != 0u {
         return 1.0;
     }
     let up = normalize(anchor.globe + frame.globe_target);
@@ -297,7 +297,7 @@ fn pitched_correction(anchor: Ground) -> f32 {
 // On a globe, whether the sphere stands between the eye and the symbol's
 // anchor at its height, as GL JS hides symbols behind the planet.
 fn globe_hides_anchor(anchor: Ground, metres: f32) -> bool {
-    if frame.globe_amount <= 0.0 || frame.globe_plane != 0u {
+    if !on_globe() || frame.globe_plane != 0u {
         return false;
     }
     let up = normalize(anchor.globe + frame.globe_target);

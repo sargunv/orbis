@@ -355,6 +355,20 @@ fn clips_box(tile: Tile) -> vec4<f32> {
     return vec4<f32>(max(lo, unpack_i16x2(tile.bound.x)), min(hi, unpack_i16x2(tile.bound.y)));
 }
 
+// A pipeline's plane variant (orb-render's plane pipelines): every tile is
+// affine on the plane, with no globe and no terrain, so the projections
+// leave out the warps', the sphere's and the terrain's terms. Adreno's
+// compilers inline every call, so those terms cost each projection's
+// compile whether a frame runs them or not; without them a cold load
+// compiles its labels in half the time (#69). Off by default: the full
+// variant draws every view.
+override plane: bool = false;
+
+// Whether a placement draws through a planar warp's patches.
+fn warped(tile: Tile) -> bool {
+    return !plane && tile.warp_cells != 0u;
+}
+
 // A placement's clip as its fragments test it (`clip_drawn`), packed as
 // a clip rectangle: the one rectangle it owns, within its bound, where its
 // tile is affine and its content lands where it was (`moved` false, or a
@@ -366,7 +380,7 @@ fn clips_box(tile: Tile) -> vec4<f32> {
 const CLIP_FETCHED: vec2<u32> = vec2<u32>(0x80008000u, 0x80008000u);
 fn fragment_clip(tile: Tile, moved: bool) -> vec2<u32> {
     let draped = draped_placement(tile);
-    if (draped && moved) || tile.warp_cells != 0u {
+    if (draped && moved) || warped(tile) {
         return CLIP_FETCHED;
     }
     // None owned: an empty rectangle, never CLIP_FETCHED's.
