@@ -24,29 +24,28 @@ The live demo is at <https://code.sargunv.dev/orbis/>.
 
 MapLibre GL JS and MapLibre Native, and
 [mln-rs](https://github.com/louwers/mln-rs), a file-by-file Rust port of
-Native, share one design: the CPU prepares each tile and issues each tile's
-draw calls every frame. Orbis was designed from scratch around a few
-different ideas:
+Native, share one design: worker threads turn each tile into buffers, and
+every frame the CPU walks the visible tiles of each layer and issues their
+draw calls. Orbis was designed from scratch around a few different ideas:
 
-- **The GPU drives each frame.** Tiles go into large shared buffers once.
-  Each frame, a compute pass picks what's visible and the GPU draws it from
-  pre-recorded command lists, so moving the camera costs the CPU very little.
-- **Three phases.** Work happens once per tile (shaping text, building
-  geometry, on worker threads), once per camera for labels (placement, on its
-  own worker), or every frame in shaders. Each style property lives in the
-  phase that can honour it, which is why Orbis can animate and data-drive
-  more properties than the spec asks for.
-- **The same picture however you got there.** A map you've panned and zoomed
-  draws exactly like a fresh map at that camera. Nothing on screen depends
-  on the path the camera took.
+- **The GPU drives each frame.** All tiles' geometry lives in a few large
+  buffers, and the draw commands are recorded once and replayed. Each frame,
+  a compute shader keeps the visible pieces and writes the draw counts, so
+  the CPU never loops over tiles and layers. That matters most in the
+  browser, where every draw call is expensive.
+- **Style values are read, not baked.** GL JS and Native bake each
+  data-driven property into its own vertex attribute and shader variant,
+  which is why the spec keeps many properties constant. Orbis gives each
+  feature a row of values that shaders read through one generic path, so it
+  can let more properties vary by feature, zoom or camera, and animate them.
+- **Labels are placed on their own worker,** off both the page and the
+  render thread.
 - **Plain workers on the web.** No shared memory, so no cross-origin
-  isolation headers, and the map runs in a worker to keep the page
+  isolation headers, and the map itself runs in a worker to keep the page
   responsive.
 - **Projections are first class.** Geometry is computed relative to the
   camera in double precision, so the globe, other projections and coordinate
   systems aren't special cases of Web Mercator.
-- **Both engines are the reference.** Orbis runs GL JS's and Native's test
-  suites, and where they disagree it aims for whichever looks better.
 
 ## Build and run
 
