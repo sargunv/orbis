@@ -106,7 +106,7 @@ them; they are never silently stringified. The real extract has none.
 ## Other coordinate reference systems (`crs/`)
 
 `arctic.json` is a v8 style whose root `projection` names a coordinate
-reference system and whose sources name their `tileMatrixSet`, written
+reference system and whose sources name their `dev.sargunv.orbis:tileMatrixSet`, written
 for this repository; the web demo opens it as `?style=arctic`, the native
 demo as `file://$PWD/web/demo/data/crs/arctic.json`. It draws on an
 EPSG:3413 (NSIDC polar stereographic) surface:

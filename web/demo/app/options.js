@@ -14,7 +14,7 @@ const COLOR_SPACE = "dev.sargunv.orbis:color-space";
 const GROUND_LIGHTING = "dev.sargunv.orbis:ground-lighting";
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
 const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map(
-  (p) => `fill-extrusion-ambient-occlusion-${p}`,
+  (p) => `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-${p}`,
 );
 
 const ofType = (style, type) => style.layers.filter((l) => l.type === type);
@@ -157,13 +157,16 @@ export const OPTIONS = [
     orbisOnly: true,
     needs: ["buildings", true, "With 3D buildings on"],
     supported: ({ designed }) =>
-      nonzero(designed.light?.["shadow-intensity"], 0) &&
+      nonzero(designed.light?.["dev.sargunv.orbis:shadow-intensity"], 0) &&
       ofType(designed, "fill-extrusion").length > 0,
-    read: (style) => nonzero(style.light?.["shadow-intensity"], 0),
+    read: (style) =>
+      nonzero(style.light?.["dev.sargunv.orbis:shadow-intensity"], 0),
     apply: (tx, on, { style, designed }) =>
       tx.setLight({
         ...style.light,
-        "shadow-intensity": on ? designed.light["shadow-intensity"] : 0,
+        "dev.sargunv.orbis:shadow-intensity": on
+          ? designed.light["dev.sargunv.orbis:shadow-intensity"]
+          : 0,
       }),
   },
   {
@@ -225,7 +228,7 @@ export const OPTIONS = [
     kind: "switch",
     orbisOnly: true,
     needs: ["projection", "globe", "On the globe"],
-    ...skyNumber("star-opacity", 0, 0),
+    ...skyNumber("dev.sargunv.orbis:star-opacity", 0, 0),
   },
   {
     key: "labels",

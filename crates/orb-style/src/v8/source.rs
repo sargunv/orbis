@@ -55,18 +55,23 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
         "image" | "video" | "canvas" => SourceKind::Image(parse_image(cx, json, path, ty)?),
         _ => unreachable!("checked against SOURCE_TYPES"),
     };
-    let tms_path = format!("{path}.tileMatrixSet");
-    let tile_matrix_set = match json
-        .get("tileMatrixSet")
-        .filter(|tms| cx.preview(Preview::Crs, &tms_path, tms.span, "\"tileMatrixSet\""))
-    {
+    let key = Preview::TileMatrixSet.name();
+    let tms_path = format!("{path}.{key}");
+    let tile_matrix_set = match json.get(key).filter(|tms| {
+        cx.preview(
+            Preview::TileMatrixSet,
+            &tms_path,
+            tms.span,
+            format!("\"{key}\""),
+        )
+    }) {
         None => None,
         // GeoJSON is geodetic: Orbis tiles it on the map's own plane.
         Some(tms) if ty == "geojson" => {
             cx.warn(
                 &tms_path,
                 tms.span,
-                "a GeoJSON source tiles on the map's plane; its \"tileMatrixSet\" is ignored",
+                format!("a GeoJSON source tiles on the map's plane; its \"{key}\" is ignored"),
             );
             None
         }
@@ -79,7 +84,8 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
     })
 }
 
-/// A source's `tileMatrixSet`: an identifier `orb_crs` registers or an
+/// A source's `dev.sargunv.orbis:tileMatrixSet`: an identifier `orb_crs`
+/// registers or an
 /// inline OGC 2D-TMS document (version 2.0, or 1.0's `identifier` and
 /// `topLeftCorner`).
 fn parse_tms(cx: &mut Cx, json: &Json, path: &str) -> Option<TileMatrixSet> {

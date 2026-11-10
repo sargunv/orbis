@@ -759,14 +759,14 @@ fn shadows_on_terrain_after_a_gesture_draw_what_a_fresh_map_does() {
     let (hills, _dem) = hills();
     let style = extruded(tokyo(
         r#""terrain": {"source": "hills", "exaggeration": 1.5},
-           "light": {"anchor": "map", "position": [1.15, 210, 60], "shadow-intensity": 0.5},"#,
+           "light": {"anchor": "map", "position": [1.15, 210, 60], "dev.sargunv.orbis:shadow-intensity": 0.5},"#,
         &hills,
     ))
     .replacen(
         r#""fill-extrusion-height": ["get", "render_height"]}"#,
         r#""fill-extrusion-height": ["get", "render_height"],
-           "fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
-           "fill-extrusion-ambient-occlusion-ground-intensity": 0.5}"#,
+           "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
+           "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity": 0.5}"#,
         1,
     );
     assert!(style.contains("ground-intensity"));

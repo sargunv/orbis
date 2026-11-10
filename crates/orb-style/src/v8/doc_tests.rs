@@ -345,7 +345,7 @@ fn planes_and_tile_matrix_sets_restyle() {
     let patch = commands(
         &mut doc,
         r#"[["addSource", "polar", {"type": "raster", "tiles": ["x/{z}/{x}/{y}.png"],
-            "tileMatrixSet": "UPSArcticWGS84Quad"}]]"#,
+            "dev.sargunv.orbis:tileMatrixSet": "UPSArcticWGS84Quad"}]]"#,
     );
     assert!(patch.changes.contains(&Change::Restyle));
     assert_eq!(doc.style().tile_matrix_sets()[0].0, "polar");

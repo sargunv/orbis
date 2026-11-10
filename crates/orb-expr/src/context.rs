@@ -10,7 +10,7 @@ pub struct EvaluationContext<'a> {
     pub pitch: f64,
     pub bearing: f64,
     /// Ground metres per logical pixel at the camera's target, unpitched:
-    /// `["meters-per-pixel"]`. NaN for Web Mercator's on the equator at
+    /// `["dev.sargunv.orbis:meters-per-pixel"]`. NaN for Web Mercator's on the equator at
     /// `zoom`.
     pub meters_per_pixel: f64,
     pub line_progress: f64,
@@ -47,7 +47,7 @@ impl Default for EvaluationContext<'_> {
 }
 
 impl EvaluationContext<'_> {
-    /// `["meters-per-pixel"]`: the context's, else Web Mercator's on the
+    /// `["dev.sargunv.orbis:meters-per-pixel"]`: the context's, else Web Mercator's on the
     /// equator at its zoom, 512 pixels a tile.
     pub fn meters_per_pixel(&self) -> f64 {
         if self.meters_per_pixel.is_nan() {

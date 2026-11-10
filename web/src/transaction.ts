@@ -32,7 +32,7 @@ export interface Transaction {
     key?: string,
   ): Transaction;
   setStyle(style: object): Transaction;
-  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"` or `"mercator"`; with previews, `"equal-earth"`, `"natural-earth"`, `"equirectangular"` or a coordinate reference system such as `"EPSG:3413"`, and `transition: [start, end] | false`. Another CRS plane reloads every tile. */
+  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"` or `"mercator"`; with previews, `"dev.sargunv.orbis:equal-earth"`, `"dev.sargunv.orbis:natural-earth"`, `"dev.sargunv.orbis:equirectangular"` or a coordinate reference system such as `"EPSG:3413"`, and `"dev.sargunv.orbis:transition": [start, end] | false`. Another CRS plane reloads every tile. */
   setProjection(projection: object): Transaction;
   /** v8 `sky`, or `null` for none. */
   setSky(sky: object | null): Transaction;

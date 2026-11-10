@@ -99,7 +99,7 @@ const LIGHT: &[(&str, usize)] = &[
     ("color", 4),
     ("position", 3),
     ("intensity", 1),
-    ("shadow-intensity", 1),
+    ("dev.sargunv.orbis:shadow-intensity", 1),
     ("dev.sargunv.orbis:ground-lighting", 1),
     ("dev.sargunv.orbis:ambient-color", 4),
     ("dev.sargunv.orbis:ambient-intensity", 1),
@@ -111,12 +111,12 @@ const SKY: &[(&str, usize)] = &[
     ("sky-color", 4),
     ("horizon-color", 4),
     ("fog-color", 4),
-    ("backdrop-color", 4),
+    ("dev.sargunv.orbis:backdrop-color", 4),
     ("fog-ground-blend", 1),
     ("horizon-fog-blend", 1),
     ("sky-horizon-blend", 1),
     ("atmosphere-blend", 1),
-    ("star-opacity", 1),
+    ("dev.sargunv.orbis:star-opacity", 1),
 ];
 
 /// The sky's values at `zoom`; GL JS's transparent sky for none.

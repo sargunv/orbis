@@ -863,7 +863,11 @@ fn image_tiles_regrid_for_a_globe_after_leaving_a_plane() {
         )
     };
     let [plane, flat] = ["plane", "flat"].map(|name| scratch.0.join(format!("{name}.json")));
-    std::fs::write(&plane, style(r#""projection": {"type": "equal-earth"},"#)).unwrap();
+    std::fs::write(
+        &plane,
+        style(r#""projection": {"type": "dev.sargunv.orbis:equal-earth"},"#),
+    )
+    .unwrap();
     std::fs::write(&flat, style("")).unwrap();
     let mut map = Offscreen::new(
         &Options {

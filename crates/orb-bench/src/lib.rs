@@ -79,9 +79,9 @@ const BUILDINGS_3D: &str = r#"{"id": "building-3d", "type": "fill-extrusion", "s
 /// Globe entry does: shadows from v8's default light, and occlusion along
 /// the walls' feet and on the ground.
 pub const SHADOWS_AND_OCCLUSION: &str = r#"[
-    ["setLight", {"anchor": "viewport", "position": [1.15, 210, 30], "intensity": 0.5, "shadow-intensity": 0.35}],
-    ["setPaintProperty", "building-3d", "fill-extrusion-ambient-occlusion-wall-intensity", 0.5],
-    ["setPaintProperty", "building-3d", "fill-extrusion-ambient-occlusion-ground-intensity", 0.4]
+    ["setLight", {"anchor": "viewport", "position": [1.15, 210, 30], "intensity": 0.5, "dev.sargunv.orbis:shadow-intensity": 0.35}],
+    ["setPaintProperty", "building-3d", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity", 0.5],
+    ["setPaintProperty", "building-3d", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity", 0.4]
 ]"#;
 /// How long a view may take to load.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(120);

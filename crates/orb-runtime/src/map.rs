@@ -2722,7 +2722,7 @@ mod tests {
         let (_, done) = fetch.pending.lock().unwrap().pop().unwrap();
         done(Ok(br#"{"version": 8, "projection": {"type": "EPSG:3413"},
             "sources": {"s": {"type": "raster", "tiles": ["t/{z}/{x}/{y}.png"],
-                              "tileMatrixSet": "UPSArcticWGS84Quad"}},
+                              "dev.sargunv.orbis:tileMatrixSet": "UPSArcticWGS84Quad"}},
             "layers": []}"#
             .to_vec()));
         while let Ok(Message::Style {

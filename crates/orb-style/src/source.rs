@@ -7,7 +7,7 @@ use crate::property::{DemEncoding, Encoding, Scheme};
 pub struct Source {
     pub id: String,
     pub kind: SourceKind,
-    /// The tile matrix set its tiles are in (its `tileMatrixSet`); `None`
+    /// The tile matrix set its tiles are in (its `dev.sargunv.orbis:tileMatrixSet`); `None`
     /// for `WebMercatorQuad`, and for GeoJSON, which tiles on the map's
     /// plane.
     pub tile_matrix_set: Option<orb_crs::TileMatrixSet>,

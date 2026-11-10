@@ -213,7 +213,7 @@ impl Surface {
         self.projection.wrap_period().unwrap_or(0.0)
     }
 
-    /// A source's tile matrix set: its `tileMatrixSet`, else the
+    /// A source's tile matrix set: its `dev.sargunv.orbis:tileMatrixSet`, else the
     /// surface's own for GeoJSON (which is geodetic and tiles anywhere)
     /// and `WebMercatorQuad` for the rest, as v8 means them.
     pub(crate) fn source_tms(&self, id: &str, geojson: bool) -> TileMatrixSet {

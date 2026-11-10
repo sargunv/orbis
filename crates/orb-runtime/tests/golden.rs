@@ -269,7 +269,7 @@ fn extrusions() {
     );
     let url = style(&dir, "extrusions-lit", |s| {
         s["light"] = json!({"anchor": "viewport", "position": [1.15, 210, 30],
-            "intensity": 0.5, "shadow-intensity": 0.35});
+            "intensity": 0.5, "dev.sargunv.orbis:shadow-intensity": 0.35});
         add_layer(
             s,
             json!({"id": "building-3d", "type": "fill-extrusion",
@@ -277,8 +277,8 @@ fn extrusions() {
             "paint": {"fill-extrusion-color": "hsl(35,8%,85%)",
                 "fill-extrusion-height": ["get", "render_height"],
                 "fill-extrusion-base": ["get", "render_min_height"],
-                "fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
-                "fill-extrusion-ambient-occlusion-ground-intensity": 0.4}}),
+                "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
+                "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity": 0.4}}),
         );
     });
     check(

@@ -110,7 +110,7 @@ fn lines_through_a_stretching_warp_keep_their_width() {
 
     let style = format!(
         r##"{{"version": 8, "center": [{}, {}], "zoom": 1,
-            "sources": {{"g": {{"type": "vector", "maxzoom": 0, "tileMatrixSet": "WorldCRS84Quad",
+            "sources": {{"g": {{"type": "vector", "maxzoom": 0, "dev.sargunv.orbis:tileMatrixSet": "WorldCRS84Quad",
               "tiles": ["file://{}/{{tileMatrix}}/{{tileRow}}/{{tileCol}}.pbf"]}}}},
             "layers": [
               {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
@@ -204,7 +204,7 @@ fn joins_through_a_stretching_warp_meet_on_screen() {
         )
     };
     let geographic = format!(
-        r#"{{"type": "vector", "maxzoom": 0, "tileMatrixSet": "WorldCRS84Quad",
+        r#"{{"type": "vector", "maxzoom": 0, "dev.sargunv.orbis:tileMatrixSet": "WorldCRS84Quad",
             "tiles": ["file://{}/g/{{tileMatrix}}/{{tileRow}}/{{tileCol}}.pbf"]}}"#,
         dir.display()
     );

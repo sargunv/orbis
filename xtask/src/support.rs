@@ -136,6 +136,14 @@ fn phase_row(phase: Phase) -> [&'static str; 4] {
     }
 }
 
+/// A link to the style-spec proposal `preview` follows, if any.
+fn proposal_link(preview: Preview) -> Option<String> {
+    let n = preview.proposal()?;
+    Some(format!(
+        "[style-spec#{n}](https://github.com/maplibre/maplibre-style-spec/issues/{n})"
+    ))
+}
+
 fn inputs(inputs: Inputs) -> String {
     let names: Vec<&str> = inputs.names().collect();
     if names.is_empty() {
@@ -272,10 +280,17 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          inputs warn and fall back to their defaults. A preview may change or\n\
          disappear at any time. Inputs the spec's syntax already has, read\n\
          where the spec doesn't allow them, need no preview (see Properties).\n\n\
-         | Preview | What it enables |\n|---|---|\n",
+         Every such key, property, value and expression is named\n\
+         `dev.sargunv.orbis:<name>`, with the preview of the same name\n\
+         (`dev.sargunv.orbis:crs` gates the CRS projection types), whether\n\
+         it is our own or from a style-spec proposal; once the spec approves a\n\
+         proposal, the spec's name replaces ours. CRS identifiers (`EPSG:3413`)\n\
+         and PROJ parameters keep their standard names.\n\n\
+         | Preview | Proposal | What it enables |\n|---|---|---|\n",
     );
     for p in Preview::ALL {
-        let _ = writeln!(out, "| `{}` | {} |", p.name(), p.summary());
+        let proposal = proposal_link(p).unwrap_or_else(|| "—".to_string());
+        let _ = writeln!(out, "| `{}` | {proposal} | {} |", p.name(), p.summary());
     }
 
     out.push_str(
@@ -298,7 +313,8 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
     out.push_str(
         "\n## Properties\n\n\
          Inputs are `zoom`; `camera`, the camera's pitch and bearing (and with\n\
-         `style-spec#1881` its ground resolution), in values the same for every\n\
+         `dev.sargunv.orbis:meters-per-pixel` its ground resolution), in values\n\
+         the same for every\n\
          feature; `data`, the feature's properties, id and geometry;\n\
          `state`, its feature state; and with `dev.sargunv.orbis:daylight`\n\
          `daylight`, how lit the ground is where a label stands.\n\
@@ -352,7 +368,10 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
             // A proposal's property isn't in the spec yet.
             let spec_inputs = match prop.preview {
                 Some(preview) => {
-                    let _ = write!(orbis, "; preview `{preview}`");
+                    orbis.push_str("; behind its preview");
+                    if let Some(link) = proposal_link(preview) {
+                        let _ = write!(orbis, " ({link})");
+                    }
                     "—".to_string()
                 }
                 None => spec_inputs(entry),

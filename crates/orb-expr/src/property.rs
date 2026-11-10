@@ -318,12 +318,12 @@ impl PropertyExpression {
     }
 
     /// Whether the value reads the camera beyond its zoom: `pitch`,
-    /// `bearing` or `meters-per-pixel`.
+    /// `bearing` or `dev.sargunv.orbis:meters-per-pixel`.
     pub fn reads_camera(&self) -> bool {
         self.expression.deps().contains(Deps::CAMERA)
     }
 
-    /// Whether the value reads `["meters-per-pixel"]`.
+    /// Whether the value reads `["dev.sargunv.orbis:meters-per-pixel"]`.
     pub fn reads_meters_per_pixel(&self) -> bool {
         self.reads_camera()
             && (self.expression.ir.nodes.iter())

@@ -36,8 +36,16 @@
               8,
               0
             ],
-            "backdrop-color": "#070b19",
-            "star-opacity": ["interpolate", ["linear"], ["zoom"], 2, 1, 6, 0]
+            "dev.sargunv.orbis:backdrop-color": "#070b19",
+            "dev.sargunv.orbis:star-opacity": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              2,
+              1,
+              6,
+              0
+            ]
           },
           "restyle": "globe",
           "terrain": {
@@ -62,7 +70,7 @@
           "detail": "The whole world equal-area, handing over to Web Mercator by zoom 7",
           "url": "https://tiles.openfreemap.org/styles/liberty",
           "projection": {
-            "type": "equal-earth"
+            "type": "dev.sargunv.orbis:equal-earth"
           },
           "camera": {
             "center": [0, 10],

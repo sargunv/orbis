@@ -108,11 +108,11 @@ const GLOBE: &str = r#"[["setProjection", {"type": "globe"}]]"#;
 /// all (`web/demo/data/globe.json`'s `light`).
 const GLOBE_LIT: &str = r##"[
     ["setProjection", {"type": "globe"}],
-    ["setLight", {"anchor": "viewport", "position": [1.15, 210, 60], "intensity": 0.35, "shadow-intensity": 0.5,
+    ["setLight", {"anchor": "viewport", "position": [1.15, 210, 60], "intensity": 0.35, "dev.sargunv.orbis:shadow-intensity": 0.5,
         "dev.sargunv.orbis:ground-lighting": 1, "dev.sargunv.orbis:ambient-color": "#8d9fd6",
         "dev.sargunv.orbis:ambient-intensity": 0.5, "dev.sargunv.orbis:twilight": 14}],
-    ["setPaintProperty", "building-3d", "fill-extrusion-ambient-occlusion-wall-intensity", 0.6],
-    ["setPaintProperty", "building-3d", "fill-extrusion-ambient-occlusion-ground-intensity", 0.5]
+    ["setPaintProperty", "building-3d", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity", 0.6],
+    ["setPaintProperty", "building-3d", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity", 0.5]
 ]"##;
 
 fn camera(lon: f64, lat: f64, zoom: f64, bearing: f64, pitch: f64) -> CameraState {

@@ -37,7 +37,7 @@ const lit = (tx) =>
       anchor: "viewport",
       position: [1.15, 210, 60],
       intensity: 0.35,
-      "shadow-intensity": 0.5,
+      "dev.sargunv.orbis:shadow-intensity": 0.5,
       "dev.sargunv.orbis:ground-lighting": 1,
       "dev.sargunv.orbis:ambient-color": "#8d9fd6",
       "dev.sargunv.orbis:ambient-intensity": 0.5,
@@ -45,12 +45,12 @@ const lit = (tx) =>
     })
     .setPaintProperty(
       "building-3d",
-      "fill-extrusion-ambient-occlusion-wall-intensity",
+      "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
       0.6,
     )
     .setPaintProperty(
       "building-3d",
-      "fill-extrusion-ambient-occlusion-ground-intensity",
+      "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity",
       0.5,
     );
 
@@ -100,16 +100,16 @@ const SCENARIOS = [
           anchor: "viewport",
           position: [1.15, 210, 30],
           intensity: 0.5,
-          "shadow-intensity": 0.35,
+          "dev.sargunv.orbis:shadow-intensity": 0.35,
         })
         .setPaintProperty(
           "building-3d",
-          "fill-extrusion-ambient-occlusion-wall-intensity",
+          "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
           0.5,
         )
         .setPaintProperty(
           "building-3d",
-          "fill-extrusion-ambient-occlusion-ground-intensity",
+          "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity",
           0.4,
         ),
     camera: (f) => SCENARIOS[0].camera(f),

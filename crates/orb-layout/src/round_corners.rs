@@ -12,7 +12,8 @@ type Point = [f64; 2];
 /// polygons' corners rounded by `distance` grid units (none at 0): a layer
 /// whose features are their slots. Extrusions lay out from it
 /// (`fill-extrusion-rounded-corner-distance`), and so do fills with
-/// style-spec#1047's `fill-rounded-corner-distance`, on the same arcs.
+/// style-spec#1047's `dev.sargunv.orbis:fill-rounded-corner-distance`, on
+/// the same arcs.
 pub fn rounded_layer(layer: &Layer, features: &[u32], extent: u32, distance: f64) -> Layer {
     let mut out = LayerBuilder::new(layer.name(), extent);
     let rings = || {

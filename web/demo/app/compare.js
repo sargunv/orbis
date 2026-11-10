@@ -36,30 +36,13 @@ const ENGINES = {
   },
 };
 /**
- * Properties of Orbis's previews that the other engines don't know, by
- * where they sit: style-spec#1889's stars, #1797's shadows, ground
- * lighting, #1796's ambient occlusion and #1047's rounded fills. Colours
- * over the daylight draw their day side's (`byDay`).
+ * The namespace of Orbis's previews (style-spec#1889's stars, #1797's
+ * shadows, ground lighting, #1796's ambient occlusion, #1047's rounded
+ * fills and the rest), which the other engines don't know: `without`
+ * drops their properties. Colours over the daylight draw their day side's
+ * (`byDay`).
  */
-const PREVIEWS = {
-  sky: ["backdrop-color", "star-opacity"],
-  light: [
-    "shadow-intensity",
-    ...[
-      "ground-lighting",
-      "ambient-color",
-      "ambient-intensity",
-      "twilight",
-    ].map((p) => `dev.sargunv.orbis:${p}`),
-  ],
-  paint: [
-    "wall-intensity",
-    "wall-radius",
-    "ground-intensity",
-    "ground-radius",
-  ].map((p) => `fill-extrusion-ambient-occlusion-${p}`),
-  layout: ["fill-rounded-corner-distance"],
-};
+const ORBIS = "dev.sargunv.orbis:";
 /**
  * `value` as the day side draws it: each `step` or `interpolate` over
  * Orbis's `["dev.sargunv.orbis:daylight"]` (its preview) replaced by its
@@ -81,13 +64,11 @@ function byDay(value) {
 const daytime = (paint) =>
   paint &&
   Object.fromEntries(Object.entries(paint).map(([k, v]) => [k, byDay(v)]));
-/** `object` less the properties `names` and their transitions; absent stays absent. */
-const without = (object, names) =>
+/** `object` less Orbis's own properties and their transitions; absent stays absent. */
+const without = (object) =>
   object &&
   Object.fromEntries(
-    Object.entries(object).filter(
-      ([k]) => !names.some((p) => k === p || k === `${p}-transition`),
-    ),
+    Object.entries(object).filter(([k]) => !k.startsWith(ORBIS)),
   );
 /** What `?compare` alone compares. */
 const DEFAULT = ["orbis", "gljs"];
@@ -191,12 +172,12 @@ function show(map, scene, pair, { isolating, onPick }) {
   const stage = map.container.parentElement;
   const style = async () => {
     const now = await map.getStyle();
-    const sky = without(now.sky, PREVIEWS.sky);
-    const light = without(now.light, PREVIEWS.light);
+    const sky = without(now.sky);
+    const light = without(now.light);
     const layers = now.layers.map((l) => ({
       ...l,
-      ...(l.paint && { paint: daytime(without(l.paint, PREVIEWS.paint)) }),
-      ...(l.layout && { layout: without(l.layout, PREVIEWS.layout) }),
+      ...(l.paint && { paint: daytime(without(l.paint)) }),
+      ...(l.layout && { layout: without(l.layout) }),
     }));
     return { ...now, ...(sky && { sky }), ...(light && { light }), layers };
   };

@@ -11,8 +11,8 @@ pub fn default_light() -> Light {
 /// The light's spec properties that transition (`anchor` doesn't).
 const TRANSITIONED: &[&str] = &["position", "color", "intensity"];
 
-/// style-spec#1797's shadows, as maplibre/maplibre#555 names them.
-const SHADOW_INTENSITY: &str = "shadow-intensity";
+/// style-spec#1797's shadows, as maplibre/maplibre#555 has them.
+const SHADOW_INTENSITY: &str = "dev.sargunv.orbis:shadow-intensity";
 const GROUND_LIGHTING: &str = "dev.sargunv.orbis:ground-lighting";
 const AMBIENT_COLOR: &str = "dev.sargunv.orbis:ambient-color";
 const AMBIENT_INTENSITY: &str = "dev.sargunv.orbis:ambient-intensity";
@@ -21,7 +21,7 @@ const TWILIGHT: &str = "dev.sargunv.orbis:twilight";
 /// The light's properties beyond the spec, each behind its preview; all
 /// transition.
 const PREVIEWS: [(&str, Preview); 5] = [
-    (SHADOW_INTENSITY, Preview::Shadows),
+    (SHADOW_INTENSITY, Preview::ShadowIntensity),
     (GROUND_LIGHTING, Preview::GroundLighting),
     (AMBIENT_COLOR, Preview::AmbientColor),
     (AMBIENT_INTENSITY, Preview::AmbientIntensity),

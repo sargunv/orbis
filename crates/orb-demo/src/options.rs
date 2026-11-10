@@ -13,8 +13,8 @@ const COLOR_SPACE: &str = "dev.sargunv.orbis:color-space";
 const GROUND_LIGHTING: &str = "dev.sargunv.orbis:ground-lighting";
 const HILLSHADE_ANCHOR: &str = "hillshade-illumination-anchor";
 const AMBIENT_OCCLUSION: [&str; 2] = [
-    "fill-extrusion-ambient-occlusion-wall-intensity",
-    "fill-extrusion-ambient-occlusion-ground-intensity",
+    "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
+    "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity",
 ];
 
 /// The style as the scene designs it, and the terrain its switch puts in:
@@ -215,7 +215,7 @@ impl Opt {
             Opt::Atmosphere => ("atmosphere-blend", 0.8, 0.0, false),
             // Fog draws only over terrain; a blend of 1 puts it past the horizon.
             Opt::Fog => ("fog-ground-blend", 0.5, 1.0, true),
-            Opt::Stars => ("star-opacity", 0.0, 0.0, false),
+            Opt::Stars => ("dev.sargunv.orbis:star-opacity", 0.0, 0.0, false),
             _ => return None,
         };
         Some(SkyNumber {
@@ -248,8 +248,10 @@ impl Opt {
             Opt::Light => cx.scene.light,
             Opt::Night => nonzero(&designed["light"][GROUND_LIGHTING], 0.0),
             Opt::Shadows => {
-                nonzero(&designed["light"]["shadow-intensity"], 0.0)
-                    && layers(designed, "fill-extrusion").next().is_some()
+                nonzero(
+                    &designed["light"]["dev.sargunv.orbis:shadow-intensity"],
+                    0.0,
+                ) && layers(designed, "fill-extrusion").next().is_some()
             }
             Opt::Ao => !occluded(designed).is_empty(),
             Opt::Projection => {
@@ -286,7 +288,10 @@ impl Opt {
                 }
             }
             Opt::Night => json!(nonzero(&style["light"][GROUND_LIGHTING], 0.0)),
-            Opt::Shadows => json!(nonzero(&style["light"]["shadow-intensity"], 0.0)),
+            Opt::Shadows => json!(nonzero(
+                &style["light"]["dev.sargunv.orbis:shadow-intensity"],
+                0.0
+            )),
             Opt::Ao => json!(!occluded(style).is_empty()),
             Opt::Projection => json!(projection_type(style)),
             Opt::Colors => json!(if style["metadata"][COLOR_SPACE] == "linear" {
@@ -378,8 +383,8 @@ impl Opt {
                 };
             }
             Opt::Shadows => {
-                style["light"]["shadow-intensity"] = if on {
-                    cx.designed["light"]["shadow-intensity"].clone()
+                style["light"]["dev.sargunv.orbis:shadow-intensity"] = if on {
+                    cx.designed["light"]["dev.sargunv.orbis:shadow-intensity"].clone()
                 } else {
                     json!(0)
                 };

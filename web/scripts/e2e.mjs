@@ -1574,13 +1574,13 @@ async function options(browser, server) {
       return {
         values: app.options.values,
         style: {
-          shadows: style.light["shadow-intensity"],
+          shadows: style.light["dev.sargunv.orbis:shadow-intensity"],
           projection: style.projection.type,
           terrain: Boolean(style.terrain),
           colors: style.metadata["dev.sargunv.orbis:color-space"],
           buildings: layer("buildings_3d").layout.visibility ?? "visible",
           ao: layer("buildings_3d").paint[
-            "fill-extrusion-ambient-occlusion-wall-intensity"
+            "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity"
           ],
           labels: [
             ...new Set(

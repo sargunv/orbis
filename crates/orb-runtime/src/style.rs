@@ -49,7 +49,7 @@ pub(crate) struct StylePlan {
     /// The layers whose paint reads the camera beyond its zoom
     /// ([`crate::paint::at_camera`]).
     pub(crate) camera_layers: Vec<usize>,
-    /// Whether any of them reads `["meters-per-pixel"]`, which a pan
+    /// Whether any of them reads `["dev.sargunv.orbis:meters-per-pixel"]`, which a pan
     /// changes: paint that reads only the pitch and bearing isn't written
     /// again as the map pans.
     pub(crate) reads_resolution: bool,

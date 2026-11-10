@@ -556,7 +556,7 @@ fn projections_parse_to_globes() {
     // style-spec#1865 and #1866: low-zoom planes, and transitions.
     let equal_earth = orb_crs::Projection::from_descriptor("equal-earth").ok();
     assert_eq!(
-        globe(r#"{"type": "equal-earth"}"#),
+        globe(r#"{"type": "dev.sargunv.orbis:equal-earth"}"#),
         (
             Some(orb_crs::Globe {
                 handover: Some([6.0, 7.0]),
@@ -566,7 +566,9 @@ fn projections_parse_to_globes() {
         )
     );
     assert_eq!(
-        globe(r#"{"type": "equal-earth", "transition": false}"#),
+        globe(
+            r#"{"type": "dev.sargunv.orbis:equal-earth", "dev.sargunv.orbis:transition": false}"#
+        ),
         (
             Some(orb_crs::Globe {
                 handover: None,
@@ -576,7 +578,7 @@ fn projections_parse_to_globes() {
         )
     );
     assert_eq!(
-        globe(r#"{"type": "globe", "transition": [4, 5]}"#),
+        globe(r#"{"type": "globe", "dev.sargunv.orbis:transition": [4, 5]}"#),
         (
             Some(orb_crs::Globe {
                 handover: Some([4.0, 5.0]),
@@ -586,11 +588,11 @@ fn projections_parse_to_globes() {
         )
     );
     assert_eq!(
-        globe(r#"{"type": "globe", "transition": false}"#),
+        globe(r#"{"type": "globe", "dev.sargunv.orbis:transition": false}"#),
         (Some(orb_crs::Globe::SPHERE), 0)
     );
     assert_eq!(
-        globe(r#"{"type": "globe", "transition": [5, 4]}"#),
+        globe(r#"{"type": "globe", "dev.sargunv.orbis:transition": [5, 4]}"#),
         (Some(orb_crs::Globe::V8), 1)
     );
     assert_eq!(globe(r#"{"type": "lcc"}"#), (None, 1));
@@ -670,8 +672,8 @@ fn parses_projection_and_source_matrix_sets() {
             "projection": {"type": "EPSG:3413"},
             "sources": {
                 "linz": {"type": "raster", "tiles": ["a/{z}/{x}/{y}.png"],
-                         "tileMatrixSet": "NZTM2000Quad"},
-                "gibs": {"type": "raster", "tiles": ["b/{z}/{x}/{y}.png"], "tileMatrixSet": {
+                         "dev.sargunv.orbis:tileMatrixSet": "NZTM2000Quad"},
+                "gibs": {"type": "raster", "tiles": ["b/{z}/{x}/{y}.png"], "dev.sargunv.orbis:tileMatrixSet": {
                     "id": "GIBS3413", "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
                     "tileMatrices": [
                         {"id": "0", "scaleDenominator": 29257142.85714286, "pointOfOrigin": [-4194304, 4194304],
@@ -715,7 +717,7 @@ fn world_planes_adapt_to_mercator() {
         .unwrap()
     };
     let equal_earth = orb_crs::Projection::from_descriptor("equal-earth").unwrap();
-    let adaptive = style(r#"{"type": "equal-earth"}"#);
+    let adaptive = style(r#"{"type": "dev.sargunv.orbis:equal-earth"}"#);
     assert_eq!(adaptive.projection, None);
     assert_eq!(
         adaptive.globe,
@@ -724,45 +726,52 @@ fn world_planes_adapt_to_mercator() {
             plane: Some(equal_earth),
         })
     );
-    let utm = style(r#"{"type": "EPSG:32633", "transition": [8, 9]}"#);
+    let utm = style(r#"{"type": "EPSG:32633", "dev.sargunv.orbis:transition": [8, 9]}"#);
     assert_eq!(utm.projection, None);
     assert_eq!(utm.globe.unwrap().handover, Some([8.0, 9.0]));
-    let polar =
-        style(r#"{"type": "polar-stereographic", "lat_0": 90, "lat_ts": 70, "lon_0": -45}"#);
+    let polar = style(
+        r#"{"type": "dev.sargunv.orbis:polar-stereographic", "lat_0": 90, "lat_ts": 70, "lon_0": -45}"#,
+    );
     assert!(polar.projection.is_some() && polar.warnings.is_empty());
-    // Unknown planes and invalid transitions warn and draw Web Mercator.
+    // Unknown planes and invalid transitions warn and draw Web Mercator,
+    // as do Orbis's kinds outside its namespace.
     for bad in [
         r#"{"type": "EPSG:31467"}"#,
-        r#"{"type": "equal-earth", "lon_0": "east"}"#,
+        r#"{"type": "equal-earth"}"#,
+        r#"{"type": "lcc", "lat_1": 30}"#,
+        r#"{"type": "dev.sargunv.orbis:globe"}"#,
+        r#"{"type": "dev.sargunv.orbis:equal-earth", "lon_0": "east"}"#,
     ] {
         let style = style(bad);
         assert_eq!(style.warnings.len(), 1, "{bad}: {:?}", style.warnings);
     }
-    let reversed = style(r#"{"type": "equal-earth", "transition": [9, 8]}"#);
+    let reversed = style(
+        r#"{"type": "dev.sargunv.orbis:equal-earth", "dev.sargunv.orbis:transition": [9, 8]}"#,
+    );
     assert_eq!(reversed.warnings.len(), 1);
     assert_eq!(reversed.globe.unwrap().handover, Some([6.0, 7.0]));
     let bad_tms = crate::v8::parse_with(
         r#"{"version": 8, "sources": {"a": {"type": "raster", "tiles": ["a"],
-            "tileMatrixSet": "GNOSISGlobalGrid"}}, "layers": []}"#,
+            "dev.sargunv.orbis:tileMatrixSet": "GNOSISGlobalGrid"}}, "layers": []}"#,
         Previews::ALL,
         &[],
     )
     .unwrap_err();
     let paths: Vec<_> = bad_tms.errors.iter().map(|e| e.path.as_str()).collect();
-    assert_eq!(paths, ["sources.a.tileMatrixSet"]);
+    assert_eq!(paths, ["sources.a.dev.sargunv.orbis:tileMatrixSet"]);
     // GeoJSON tiles on the plane, whatever set it names: drawn through
     // that set's warp, it would land in the wrong place.
     let geojson = crate::v8::parse_with(
         r#"{"version": 8, "sources": {"g": {"type": "geojson",
             "data": {"type": "FeatureCollection", "features": []},
-            "tileMatrixSet": "WorldCRS84Quad"}}, "layers": []}"#,
+            "dev.sargunv.orbis:tileMatrixSet": "WorldCRS84Quad"}}, "layers": []}"#,
         Previews::ALL,
         &[],
     )
     .unwrap();
     assert!(geojson.tile_matrix_sets().is_empty());
     let paths: Vec<_> = geojson.warnings.iter().map(|w| w.path.as_str()).collect();
-    assert_eq!(paths, ["sources.g.tileMatrixSet"]);
+    assert_eq!(paths, ["sources.g.dev.sargunv.orbis:tileMatrixSet"]);
 }
 
 /// With their previews off, inputs beyond the approved spec warn and fall
@@ -773,7 +782,7 @@ fn previews_gate_projections_and_tile_matrix_sets() {
         crate::v8::parse_with(
             &format!(
                 r#"{{"version": 8, "projection": {projection}, "sources": {{"a": {{"type": "raster",
-                    "tiles": ["a"], "tileMatrixSet": "UPSArcticWGS84Quad"}}}}, "layers": []}}"#
+                    "tiles": ["a"], "dev.sargunv.orbis:tileMatrixSet": "UPSArcticWGS84Quad"}}}}, "layers": []}}"#
             ),
             previews,
             &[],
@@ -786,11 +795,20 @@ fn previews_gate_projections_and_tile_matrix_sets() {
         paths
     };
     for (projection, preview) in [
-        (r#"{"type": "equal-earth"}"#, Preview::EqualEarth),
-        (r#"{"type": "natural-earth"}"#, Preview::Equirectangular),
-        (r#"{"type": "equirectangular"}"#, Preview::Equirectangular),
         (
-            r#"{"type": ["interpolate", ["linear"], ["zoom"], 5, "equal-earth", 7, "mercator"]}"#,
+            r#"{"type": "dev.sargunv.orbis:equal-earth"}"#,
+            Preview::EqualEarth,
+        ),
+        (
+            r#"{"type": "dev.sargunv.orbis:natural-earth"}"#,
+            Preview::NaturalEarth,
+        ),
+        (
+            r#"{"type": "dev.sargunv.orbis:equirectangular"}"#,
+            Preview::Equirectangular,
+        ),
+        (
+            r#"{"type": ["interpolate", ["linear"], ["zoom"], 5, "dev.sargunv.orbis:equal-earth", 7, "mercator"]}"#,
             Preview::EqualEarth,
         ),
         (r#"{"type": "EPSG:3413"}"#, Preview::Crs),
@@ -799,13 +817,19 @@ fn previews_gate_projections_and_tile_matrix_sets() {
         assert_eq!((off.projection, off.globe), (None, None), "{projection}");
         assert_eq!(
             paths(&off),
-            ["projection.type", "sources.a.tileMatrixSet"],
+            [
+                "projection.type",
+                "sources.a.dev.sargunv.orbis:tileMatrixSet"
+            ],
             "{projection}"
         );
         let warning = off.warnings.iter().find(|w| w.path == "projection.type");
         assert!(warning.unwrap().message.contains(preview.name()));
         assert!(off.tile_matrix_sets().is_empty());
-        let on = style(Previews::NONE.with(preview).with(Preview::Crs), projection);
+        let on = style(
+            Previews::NONE.with(preview).with(Preview::TileMatrixSet),
+            projection,
+        );
         assert!(on.warnings.is_empty(), "{projection}: {:?}", on.warnings);
         assert!(
             on.projection.is_some() || on.globe.is_some(),
@@ -815,16 +839,22 @@ fn previews_gate_projections_and_tile_matrix_sets() {
     // A spec projection keeps working; the transition and parameters are
     // ignored without their previews.
     let off = style(
-        Previews::NONE.with(Preview::Crs),
-        r#"{"type": "globe", "transition": false}"#,
+        Previews::NONE.with(Preview::TileMatrixSet),
+        r#"{"type": "globe", "dev.sargunv.orbis:transition": false}"#,
     );
     assert_eq!(off.globe, Some(orb_crs::Globe::V8));
-    assert_eq!(paths(&off), ["projection.transition"]);
+    assert_eq!(paths(&off), ["projection.dev.sargunv.orbis:transition"]);
     let off = style(
         Previews::NONE.with(Preview::EqualEarth),
-        r#"{"type": "equal-earth", "lon_0": 150}"#,
+        r#"{"type": "dev.sargunv.orbis:equal-earth", "lon_0": 150}"#,
     );
-    assert_eq!(paths(&off), ["projection.lon_0", "sources.a.tileMatrixSet"]);
+    assert_eq!(
+        paths(&off),
+        [
+            "projection.lon_0",
+            "sources.a.dev.sargunv.orbis:tileMatrixSet"
+        ]
+    );
 }
 
 /// Paint Orbis evaluates per frame reads the camera, previews or not,
@@ -954,7 +984,7 @@ fn layers_that_lay_out_alike_share_a_group() {
     assert_ne!(group(0), group(3), "another zoom range");
 }
 
-/// style-spec#1881's `["meters-per-pixel"]` is new syntax: with its preview
+/// style-spec#1881's `["dev.sargunv.orbis:meters-per-pixel"]` is new syntax: with its preview
 /// a camera value of paint, without it a warning and the default. Layout
 /// can't read it.
 #[test]
@@ -967,7 +997,7 @@ fn meters_per_pixel_follows_its_preview() {
                 "paint": {{{paint}}}, "layout": {{{layout}}}}}]}}"#
         )
     };
-    let width = r#""line-width": ["/", 10, ["meters-per-pixel"]]"#;
+    let width = r#""line-width": ["/", 10, ["dev.sargunv.orbis:meters-per-pixel"]]"#;
     let on = parse_with(&layer(width, ""), Previews::ALL, &[]).unwrap();
     assert!(on.warnings.is_empty(), "{:?}", on.warnings);
     let w = on.layers[0].get(LINE_WIDTH);
@@ -980,9 +1010,16 @@ fn meters_per_pixel_follows_its_preview() {
     assert_eq!(w.evaluate_camera(0.0, camera), 4.0);
     let off = parse(&layer(width, "")).unwrap();
     assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
-    assert!(off.warnings[0].message.contains("style-spec#1881"));
+    assert!(
+        off.warnings[0]
+            .message
+            .contains(Preview::MetersPerPixel.name())
+    );
+    // The proposal's own spelling is an unknown expression.
+    let bare = r#""line-width": ["/", 10, ["meters-per-pixel"]]"#;
+    assert!(parse_with(&layer(bare, ""), Previews::ALL, &[]).is_err());
     assert!(!off.layers[0].get(LINE_WIDTH).is_set());
-    let layout = r#""line-miter-limit": ["meters-per-pixel"]"#;
+    let layout = r#""line-miter-limit": ["dev.sargunv.orbis:meters-per-pixel"]"#;
     assert!(parse_with(&layer("", layout), Previews::ALL, &[]).is_err());
 }
 
@@ -1062,24 +1099,27 @@ fn color_space_reads_metadata_with_its_preview() {
 }
 
 /// The 3D proposals' syntax follows each one's preview: style-spec#1797's
-/// `light.shadow-intensity`, #1796's ambient occlusion and #1047's rounded
-/// fills. Off, each warns once (a transition too) and stays at its default.
+/// `light["dev.sargunv.orbis:shadow-intensity"]`, #1796's ambient
+/// occlusion and #1047's rounded fills. Off, each warns once (a transition
+/// too) and stays at its default; the proposals' own spellings are unknown.
 #[test]
 fn shadows_occlusion_and_rounded_fills_follow_their_previews() {
     let doc = r#"{"version": 8,
-        "light": {"shadow-intensity": 0.4, "shadow-intensity-transition": {"duration": 0}},
+        "light": {"dev.sargunv.orbis:shadow-intensity": 0.4, "dev.sargunv.orbis:shadow-intensity-transition": {"duration": 0}},
         "sources": {"s": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
         "layers": [
             {"id": "f", "type": "fill", "source": "s",
-             "layout": {"fill-rounded-corner-distance": 2}},
+             "layout": {"dev.sargunv.orbis:fill-rounded-corner-distance": 2}},
             {"id": "b", "type": "fill-extrusion", "source": "s",
-             "paint": {"fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
-                       "fill-extrusion-ambient-occlusion-ground-radius":
+             "paint": {"dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
+                       "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-radius":
                            ["interpolate", ["linear"], ["zoom"], 15, 2, 18, 6]}}]}"#;
     let on = parse_with(doc, Previews::ALL, &[]).unwrap();
     assert!(on.warnings.is_empty(), "{:?}", on.warnings);
     assert_eq!(on.light.shadow_intensity.evaluate(0.0), 0.4);
-    assert!((on.light.transitions.iter()).any(|(name, _)| name == "shadow-intensity"));
+    assert!(
+        (on.light.transitions.iter()).any(|(name, _)| name == "dev.sargunv.orbis:shadow-intensity")
+    );
     assert_eq!(on.layers[0].get(FILL_ROUNDED_CORNER).evaluate(0.0), 2.0);
     let building = &on.layers[1];
     assert_eq!(building.get(EXTRUSION_AO_WALL_INTENSITY).evaluate(0.0), 0.5);
@@ -1093,19 +1133,25 @@ fn shadows_occlusion_and_rounded_fills_follow_their_previews() {
     warned.sort_unstable();
     let expected = [
         (
-            "layers[0].layout.fill-rounded-corner-distance",
-            Preview::RoundedFills,
+            "layers[0].layout.dev.sargunv.orbis:fill-rounded-corner-distance",
+            Preview::FillRoundedCornerDistance,
         ),
         (
-            "layers[1].paint.fill-extrusion-ambient-occlusion-ground-radius",
-            Preview::AmbientOcclusion,
+            "layers[1].paint.dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-radius",
+            Preview::AoGroundRadius,
         ),
         (
-            "layers[1].paint.fill-extrusion-ambient-occlusion-wall-intensity",
-            Preview::AmbientOcclusion,
+            "layers[1].paint.dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
+            Preview::AoWallIntensity,
         ),
-        ("light.shadow-intensity", Preview::Shadows),
-        ("light.shadow-intensity-transition", Preview::Shadows),
+        (
+            "light.dev.sargunv.orbis:shadow-intensity",
+            Preview::ShadowIntensity,
+        ),
+        (
+            "light.dev.sargunv.orbis:shadow-intensity-transition",
+            Preview::ShadowIntensity,
+        ),
     ];
     assert_eq!(warned.len(), expected.len(), "{warned:?}");
     for ((path, message), (want, preview)) in warned.into_iter().zip(expected) {
@@ -1117,18 +1163,22 @@ fn shadows_occlusion_and_rounded_fills_follow_their_previews() {
     assert_eq!(off.layers[0].get(FILL_ROUNDED_CORNER).evaluate(0.0), 0.0);
     assert!(!off.layers[1].get(EXTRUSION_AO_WALL_INTENSITY).is_set());
     assert!(!off.layers[1].get(EXTRUSION_AO_GROUND_RADIUS).is_set());
+    let bare = parse_with(&doc.replace("dev.sargunv.orbis:", ""), Previews::ALL, &[]).unwrap();
+    assert_eq!(bare.warnings.len(), 5, "{:?}", bare.warnings);
+    assert!((bare.warnings.iter()).all(|w| w.message.starts_with("unknown property")));
+    assert_eq!(bare.light.shadow_intensity.evaluate(0.0), 0.0);
 
     // Drawn per frame, ambient occlusion reads the camera as the rest of
     // the extrusion's paint does, warning that it isn't portable.
     let pitch = doc.replace(
-        "\"fill-extrusion-ambient-occlusion-wall-intensity\": 0.5",
-        r#""fill-extrusion-ambient-occlusion-wall-intensity": ["interpolate", ["linear"], ["pitch"], 0, 0, 60, 0.5]"#,
+        "\"dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity\": 0.5",
+        r#""dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": ["interpolate", ["linear"], ["pitch"], 0, 0, 60, 0.5]"#,
     );
     let camera = parse_with(&pitch, Previews::ALL, &[]).unwrap();
     let paths: Vec<&str> = camera.warnings.iter().map(|w| w.path.as_str()).collect();
     assert_eq!(
         paths,
-        ["layers[1].paint.fill-extrusion-ambient-occlusion-wall-intensity"]
+        ["layers[1].paint.dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity"]
     );
     let intensity = camera.layers[1].get(EXTRUSION_AO_WALL_INTENSITY);
     assert_eq!(intensity.kind(), Kind::Camera);

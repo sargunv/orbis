@@ -157,8 +157,8 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
     // style-spec#1881's ground resolution is new syntax: a preview.
     let parsed = match parsed {
         Ok(p) if p.reads_meters_per_pixel() => {
-            let what = "[\"meters-per-pixel\"]";
-            if !cx.preview(Preview::GroundResolution, path, json.span, what) {
+            let what = "[\"dev.sargunv.orbis:meters-per-pixel\"]";
+            if !cx.preview(Preview::MetersPerPixel, path, json.span, what) {
                 return Slot::constant(Value::Null, false);
             }
             Ok(p)

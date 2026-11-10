@@ -321,7 +321,7 @@ fn globe(style: &Value) -> Value {
     {
         let mut buildings = globe["buildings"].clone();
         buildings["source"] = layers[at]["source"].clone();
-        layers[at]["layout"]["fill-rounded-corner-distance"] = json!(2);
+        layers[at]["layout"]["dev.sargunv.orbis:fill-rounded-corner-distance"] = json!(2);
         let at = labels(&layers);
         layers.insert(at, buildings);
     }

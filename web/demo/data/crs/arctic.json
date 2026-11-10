@@ -15,7 +15,7 @@
    "tiles": [
     "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{tileMatrix}/{tileRow}/{tileCol}.jpeg"
    ],
-   "tileMatrixSet": {
+   "dev.sargunv.orbis:tileMatrixSet": {
     "id": "GIBS_EPSG3413_500m",
     "title": "NASA GIBS EPSG:3413 500m",
     "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
@@ -91,7 +91,7 @@
    "tiles": [
     "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/MEaSUREs_Ice_Velocity_Greenland/default/2008-12-01/500m/{tileMatrix}/{tileRow}/{tileCol}.png"
    ],
-   "tileMatrixSet": {
+   "dev.sargunv.orbis:tileMatrixSet": {
     "id": "GIBS_EPSG3413_500m",
     "title": "NASA GIBS EPSG:3413 500m",
     "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
@@ -167,7 +167,7 @@
    "tiles": [
     "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/Coastlines/default/250m/{tileMatrix}/{tileRow}/{tileCol}.png"
    ],
-   "tileMatrixSet": {
+   "dev.sargunv.orbis:tileMatrixSet": {
     "id": "GIBS_EPSG3413_250m",
     "title": "NASA GIBS EPSG:3413 250m",
     "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",

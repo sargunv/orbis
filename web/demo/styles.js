@@ -156,7 +156,10 @@ function globeStyle(style) {
     // (style-spec#1047's preview), so they match as the buildings rise.
     layers[at] = {
       ...buildings,
-      layout: { ...buildings.layout, "fill-rounded-corner-distance": 2 },
+      layout: {
+        ...buildings.layout,
+        "dev.sargunv.orbis:fill-rounded-corner-distance": 2,
+      },
     };
     // Protomaps carries `height` on only some footprints (about half in
     // Tokyo and Manhattan, a tenth in central Paris) and no level counts:

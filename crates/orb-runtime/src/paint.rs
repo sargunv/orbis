@@ -72,7 +72,7 @@ fn read_by(plan: &StylePlan, camera: CameraInputs) -> CameraInputs {
 }
 
 /// The plan with its paint's camera reads (`["pitch"]`, `["bearing"]`,
-/// `["meters-per-pixel"]`, beyond the spec) resolved to `camera`'s: `None`
+/// `["dev.sargunv.orbis:meters-per-pixel"]`, beyond the spec) resolved to `camera`'s: `None`
 /// when no paint reads the camera.
 pub(crate) fn at_camera(plan: &StylePlan, camera: CameraInputs) -> Option<StylePlan> {
     if plan.camera_layers.is_empty() {

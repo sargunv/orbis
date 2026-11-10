@@ -423,14 +423,16 @@ pub(crate) fn parse_projection(
 /// interpolation from a vertical perspective through zoom 11 to Mercator
 /// from zoom 12), `vertical-perspective`, or GL JS's zoom interpolation
 /// from one of them to `mercator`. Previews add more: a low-zoom plane
-/// (`equal-earth`, style-spec#1865; `natural-earth` and `equirectangular`,
-/// style-spec#1623), handing over to Mercator between zooms 6 and 7, and
-/// the zoom interpolation from one of them; a coordinate reference system
-/// `orb_crs` registers (`EPSG:3413`, or a parametric kind such as
-/// `polar-stereographic` with PROJ-named numeric parameters beside the
-/// `type`), which is the plane itself; and style-spec#1866's `transition`,
+/// (`dev.sargunv.orbis:equal-earth`, style-spec#1865;
+/// `dev.sargunv.orbis:equirectangular`, style-spec#1623;
+/// `dev.sargunv.orbis:natural-earth`), handing over to Mercator between
+/// zooms 6 and 7, and the zoom interpolation from one of them; a
+/// coordinate reference system `orb_crs` registers (`EPSG:3413`, or a
+/// parametric kind such as `dev.sargunv.orbis:polar-stereographic` with
+/// PROJ-named numeric parameters beside the `type`), which is the plane
+/// itself; and style-spec#1866's `dev.sargunv.orbis:transition`,
 /// `[start, end]` or `false`, replacing the zooms it hands over between
-/// (a CRS with a `transition` is a low-zoom plane over Web Mercator).
+/// (a CRS with a transition is a low-zoom plane over Web Mercator).
 /// Others, and inputs of previews that are off, warn and stay Web
 /// Mercator.
 fn parse_surface(
@@ -450,7 +452,7 @@ fn parse_surface(
     let mut descriptor = orb_crs::Descriptor::default();
     for m in json.as_object().unwrap_or_default() {
         match (m.key.as_str(), m.value.as_f64()) {
-            ("type" | "transition", _) => {}
+            ("type" | PROJECTION_TRANSITION, _) => {}
             (key, Some(n)) => {
                 let (at, what) = (
                     format!("projection.{key}"),
@@ -463,9 +465,10 @@ fn parse_surface(
             (_, None) => cx.warn_unknown("projection", m),
         }
     }
-    let transition = json.get("transition").and_then(|t| {
-        let at = "projection.transition";
-        if !cx.preview(Preview::ProjectionTransition, at, t.span, "\"transition\"") {
+    let transition = json.get(PROJECTION_TRANSITION).and_then(|t| {
+        let at = format!("projection.{PROJECTION_TRANSITION}");
+        let what = format!("\"{PROJECTION_TRANSITION}\"");
+        if !cx.preview(Preview::ProjectionTransition, &at, t.span, what) {
             return None;
         }
         let parsed = parse_transition(t);
@@ -478,14 +481,6 @@ fn parse_surface(
         }
         parsed
     });
-    // The preview a type needs, if it is beyond the spec: a world plane's,
-    // or a coordinate reference system's.
-    let needs = |kind: &str| match kind {
-        "mercator" | "globe" | "vertical-perspective" => None,
-        "equal-earth" => Some(Preview::EqualEarth),
-        "natural-earth" | "equirectangular" => Some(Preview::Equirectangular),
-        _ => Some(Preview::Crs),
-    };
     // A type from the global state: `["global-state", name]`.
     let from_state = ty.as_array().and_then(|items| match items {
         [op, name] if op.as_str() == Some("global-state") => {
@@ -501,12 +496,15 @@ fn parse_surface(
         if name == "mercator" {
             return (None, None);
         }
-        if let Some(preview) = needs(name)
+        let Some((kind, preview)) = projection_kind(name) else {
+            return unsupported(cx, &format!("{SUPPORTED}, not \"{name}\""));
+        };
+        if let Some(preview) = preview
             && !cx.preview(preview, path, ty.span, format!("projection \"{name}\""))
         {
             return (None, None);
         }
-        descriptor.kind = name.to_string();
+        descriptor.kind = kind.to_string();
         match low_surface(&descriptor) {
             Some(Ok(surface)) => surface,
             Some(Err(e)) => return unsupported(cx, &e.to_string()),
@@ -543,16 +541,16 @@ fn parse_surface(
             .get(2)
             .and_then(Json::as_array)
             .is_some_and(|a| a.len() == 1 && a[0].as_str() == Some("zoom"));
-        let low_kind = text(4).filter(|&t| t != "globe" && t != "mercator");
-        if let Some(kind) = low_kind
-            && let Some(preview) = needs(kind)
+        let low_name = text(4).filter(|&t| t != "globe" && t != "mercator");
+        let low_kind = low_name.and_then(projection_kind);
+        if let (Some(name), Some((kind, Some(preview)))) = (low_name, low_kind)
             && low_surface(&orb_crs::Descriptor::named(kind)).is_some()
-            && !cx.preview(preview, path, ty.span, format!("projection \"{kind}\""))
+            && !cx.preview(preview, path, ty.span, format!("projection \"{name}\""))
         {
             return (None, None);
         }
         let low = low_kind
-            .and_then(|t| low_surface(&orb_crs::Descriptor::named(t)))
+            .and_then(|(kind, _)| low_surface(&orb_crs::Descriptor::named(kind)))
             .and_then(Result::ok);
         match (text(0), linear, zoom, number(3), low, number(5), text(6)) {
             (
@@ -594,7 +592,33 @@ fn low_surface(
     }
 }
 
-/// style-spec#1866's `transition`: `[start, end]` zooms, or `false` for no
+/// The projection key of style-spec#1866's `transition`.
+const PROJECTION_TRANSITION: &str = "dev.sargunv.orbis:transition";
+
+/// What a projection `type` names: its `orb_crs` descriptor kind, and the
+/// preview it needs if it is beyond the spec. Orbis's own kinds are in its
+/// namespace; a CRS identifier (`EPSG:3413`, `OGC:CRS84`) keeps its
+/// standard name. `None` for anything else.
+fn projection_kind(name: &str) -> Option<(&str, Option<Preview>)> {
+    if let Some(kind) = name.strip_prefix(crate::NAMESPACE) {
+        let preview = match kind {
+            "equal-earth" => Preview::EqualEarth,
+            "natural-earth" => Preview::NaturalEarth,
+            "equirectangular" => Preview::Equirectangular,
+            "mercator" | "globe" | "vertical-perspective" => return None,
+            _ if kind.contains(':') => return None,
+            _ => Preview::Crs,
+        };
+        return Some((kind, Some(preview)));
+    }
+    match name {
+        "mercator" | "globe" | "vertical-perspective" => Some((name, None)),
+        _ if name.contains(':') => Some((name, Some(Preview::Crs))),
+        _ => None,
+    }
+}
+
+/// style-spec#1866's transition: `[start, end]` zooms, or `false` for no
 /// handover. `None` if it is neither.
 pub(crate) fn parse_transition(json: &Json) -> Option<Option<[f64; 2]>> {
     match &json.value {

@@ -538,7 +538,7 @@ fn paint_reads_the_camera() {
 fn stars_and_backdrop_draw_behind_the_globe_with_their_preview() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let style = r##"{"version": 8, "projection": {"type": "globe"}, "center": [0, 0], "zoom": 0,
-      "sky": {"backdrop-color": "#000020", "star-opacity": 1, "atmosphere-blend": 0},
+      "sky": {"dev.sargunv.orbis:backdrop-color": "#000020", "dev.sargunv.orbis:star-opacity": 1, "atmosphere-blend": 0},
       "sources": {}, "layers": [{"id": "background", "type": "background",
         "paint": {"background-color": "#808080"}}]}"##;
     let draw = |previews, lon| {
@@ -855,7 +855,7 @@ fn translate_and_circle_pitch_follow_the_feature() {
     );
 }
 
-/// style-spec#1881: `["meters-per-pixel"]` is the ground resolution at the
+/// style-spec#1881: `["dev.sargunv.orbis:meters-per-pixel"]` is the ground resolution at the
 /// camera's target, so a circle 200 km across on the ground draws twice as
 /// wide at 60° north as on the equator, at the same zoom, and picks as
 /// wide; a map moved there draws as one made there. Off, the radius is the
@@ -875,7 +875,7 @@ fn meters_per_pixel_follows_the_target_with_its_preview() {
             {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
             {{"id": "c", "type": "circle", "source": "c", "paint": {{"circle-color": "#ffffff",
               "circle-pitch-alignment": "map",
-              "circle-radius": ["/", 200000, ["meters-per-pixel"]]}}}}]}}"##,
+              "circle-radius": ["/", 200000, ["dev.sargunv.orbis:meters-per-pixel"]]}}}}]}}"##,
         point(0.0),
         point(60.0),
     );
@@ -925,8 +925,11 @@ fn meters_per_pixel_follows_the_target_with_its_preview() {
     let mut off = map(orb_api::Previews::NONE);
     off.jump_to(&at(60.0));
     let default = width(&mut off, &mut target);
-    off.set_style_json(&style.replace(r#"["/", 200000, ["meters-per-pixel"]]"#, "5"))
-        .expect("style");
+    off.set_style_json(&style.replace(
+        r#"["/", 200000, ["dev.sargunv.orbis:meters-per-pixel"]]"#,
+        "5",
+    ))
+    .expect("style");
     assert_eq!(
         default,
         width(&mut off, &mut target),
@@ -1787,7 +1790,7 @@ fn shadows_fall_away_from_the_light() {
     assert!(off.iter().all(|p| p[0] == 255), "{off:?}");
     let on = beside_a_building(
         30.0,
-        r#""intensity": 0.5, "shadow-intensity": 0.6"#,
+        r#""intensity": 0.5, "dev.sargunv.orbis:shadow-intensity": 0.6"#,
         "",
         &at,
     );
@@ -1810,7 +1813,7 @@ fn a_raised_part_shadows_beneath_its_lit_side() {
     let at = [33.0, 36.0, 60.0, -32.0];
     let on = beside_a_building(
         60.0,
-        r#""intensity": 0.5, "shadow-intensity": 0.6"#,
+        r#""intensity": 0.5, "dev.sargunv.orbis:shadow-intensity": 0.6"#,
         r#", "fill-extrusion-base": 50"#,
         &at,
     );
@@ -1828,8 +1831,8 @@ fn a_raised_part_shadows_beneath_its_lit_side() {
 fn ambient_occlusion_darkens_the_ground_along_the_walls() {
     // South of the building 1 m, 4 m and 12 m out, with a radius of 8 m.
     let at = [-23.0, -26.0, -34.0];
-    let paint = r#", "fill-extrusion-ambient-occlusion-ground-intensity": 0.8,
-        "fill-extrusion-ambient-occlusion-ground-radius": 8"#;
+    let paint = r#", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity": 0.8,
+        "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-radius": 8"#;
     let on = beside_a_building(2.0, r#""intensity": 0.5"#, paint, &at);
     assert!(on[0][0] < 80, "at the foot: {on:?}");
     assert!(on[0][0] < on[1][0] && on[1][0] < 255, "fading out: {on:?}");
@@ -1843,7 +1846,7 @@ fn ambient_occlusion_darkens_the_ground_along_the_walls() {
 /// 12.7 m further: 34.7 m north rather than 52 m.
 #[test]
 fn shadows_fall_on_the_terrain() {
-    let light = r#""intensity": 0.5, "shadow-intensity": 0.6"#;
+    let light = r#""intensity": 0.5, "dev.sargunv.orbis:shadow-intensity": 0.6"#;
     let at = [32.0, 47.0, 62.0, -32.0];
     let plateau = beside_a_building_on(Some(&|_| 300.0), 30.0, light, "", &at);
     for p in &plateau[..2] {
@@ -1867,7 +1870,7 @@ fn shadows_fall_on_the_terrain() {
 /// the middle, 30 m up, lands 60 m on, 82 m north.
 #[test]
 fn shadows_down_a_steep_slope_reach_twice_as_far() {
-    let light = r#""intensity": 0.5, "shadow-intensity": 0.6"#;
+    let light = r#""intensity": 0.5, "dev.sargunv.orbis:shadow-intensity": 0.6"#;
     let at = [75.0, 90.0];
     let falling = beside_a_building_on(Some(&|north| 300.0 - north), 30.0, light, "", &at);
     assert!(
@@ -1884,8 +1887,8 @@ fn shadows_down_a_steep_slope_reach_twice_as_far() {
 /// would hide the foot from above.
 #[test]
 fn ambient_occlusion_darkens_the_terrain_along_the_walls() {
-    let paint = r#", "fill-extrusion-ambient-occlusion-ground-intensity": 0.8,
-        "fill-extrusion-ambient-occlusion-ground-radius": 8"#;
+    let paint = r#", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity": 0.8,
+        "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-radius": 8"#;
     let at = [23.0, 26.0, 34.0];
     let grounds: [&dyn Fn(f64) -> f64; 2] = [&|_| 300.0, &|north| 300.0 + north * 0.3];
     for ground in grounds {
@@ -1903,8 +1906,8 @@ fn ambient_occlusion_darkens_the_terrain_along_the_walls() {
 /// it does on a plateau.
 #[test]
 fn walls_darken_toward_the_terrain_they_stand_on() {
-    let paint = r#", "fill-extrusion-ambient-occlusion-wall-intensity": 0.8,
-        "fill-extrusion-ambient-occlusion-wall-radius": 6"#;
+    let paint = r#", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": 0.8,
+        "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-radius": 6"#;
     let light = r#""intensity": 0.5"#;
     // Rows of the south wall's middle, from its foot up, darker with the
     // occlusion than without.
@@ -1970,7 +1973,7 @@ fn fill_corners_round_off_with_their_outline() {
         })
     };
     assert_eq!(corner("")[0], [0, 0, 0, 255]);
-    let [cut, kept] = corner(r#""fill-rounded-corner-distance": 8"#);
+    let [cut, kept] = corner(r#""dev.sargunv.orbis:fill-rounded-corner-distance": 8"#);
     assert_eq!(cut, [255, 255, 255, 255], "the corner is gone");
     assert_eq!(kept, [0, 0, 0, 255], "the edge stays");
     // The outline runs round the arc: red pixels about its middle, 3.3 m in
@@ -1982,8 +1985,10 @@ fn fill_corners_round_off_with_their_outline() {
             ..MapOptions::default()
         },
     );
-    map.set_style_json(&style(r#""fill-rounded-corner-distance": 8"#))
-        .expect("style");
+    map.set_style_json(&style(
+        r#""dev.sargunv.orbis:fill-rounded-corner-distance": 8"#,
+    ))
+    .expect("style");
     let image = map.snapshot(VIEW, VIEW, 1.0).expect("snapshot");
     let arc = 0.0002 - 3.3 / 110_574.0 / 2f64.sqrt();
     let mid = map.project(orb_api::Geodetic::new(arc, arc)).unwrap();
