@@ -77,6 +77,11 @@ impl ImageAtlas {
         u64::from(self.size) * u64::from(self.size) * 4 * self.pages.len() as u64
     }
 
+    /// Image rows held: each style's images and gradient ramps.
+    pub fn rows(&self) -> usize {
+        self.entries.len() - 1 - self.free.len()
+    }
+
     /// An atlas of `size`² pages, one at first and up to `max_pages` as
     /// images need, and `capacity` image rows.
     pub fn new(gpu: &mut dyn Gpu, size: u32, max_pages: u32, capacity: u32) -> Self {
