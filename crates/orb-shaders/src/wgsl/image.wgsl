@@ -111,10 +111,7 @@ fn image_pos(in: ImageOut) -> vec2<f32> {
 // where no other placement draws; it belongs to the edge.
 fn image_clipped(in: ImageOut) -> bool {
     let p = clamp(in.clip_pos, vec2<f32>(0.0), vec2<f32>(IMAGE_EXTENT - 0.5));
-    if any(in.clip != CLIP_FETCHED) {
-        return any(p < unpack_i16x2(in.clip.x)) || any(p >= unpack_i16x2(in.clip.y));
-    }
-    return !inside_clips(tile_at(in.tile), p);
+    return !clip_drawn(in.clip, in.tile, p, p);
 }
 
 // The tile's texel at `uv` (0–1 over its layer) for a footprint of `ddx`
