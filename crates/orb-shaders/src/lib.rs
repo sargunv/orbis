@@ -289,20 +289,11 @@ mod tests {
             let label = shader.label;
             let (module, _) = parse(label, &source);
             let mut textures = std::collections::BTreeSet::new();
-            for (entry, stage) in [
-                (shader.vertex, naga::ShaderStage::Vertex),
-                (shader.fragment, naga::ShaderStage::Fragment),
-            ] {
-                if entry.is_empty() {
-                    continue;
-                }
-                let Some((_, one)) = split::entry_modules(&module)
-                    .into_iter()
-                    .find(|(name, _)| name == entry)
-                else {
-                    failures.push(format!("{label}: no entry point {entry}"));
-                    continue;
-                };
+            // Every entry point, not only the catalog's two: pipelines pair
+            // others too (`fs_terrain_depth`, `vs_extrusion_occlusion`).
+            for (entry, one) in split::entry_modules(&module) {
+                let stage = one.entry_points[0].stage;
+                assert_ne!(stage, naga::ShaderStage::Compute, "{label} {entry}");
                 let info = naga::valid::Validator::new(
                     naga::valid::ValidationFlags::all(),
                     naga::valid::Capabilities::empty(),
@@ -419,7 +410,7 @@ mod tests {
             "WebGL 2's dry run:\n  {}",
             failures.join("\n  ")
         );
-        assert!(written > 40, "only {written} stages written");
+        assert!(written > 90, "only {written} stages written");
     }
 
     #[test]
