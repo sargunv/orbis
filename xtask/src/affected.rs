@@ -50,7 +50,7 @@ impl Selection {
     }
 }
 
-pub(crate) fn select(base: &str) -> Result<Selection, String> {
+pub(crate) fn select(base: Option<&str>) -> Result<Selection, String> {
     let metadata = metadata()?;
     let bad = || "unexpected cargo metadata shape".to_string();
     let root = PathBuf::from(
@@ -85,10 +85,15 @@ pub(crate) fn select(base: &str) -> Result<Selection, String> {
     }
 
     let mut changed = BTreeSet::new();
-    for file in changed_files(&root, base)? {
-        if let Some(name) = owner(&packages, &file) {
-            changed.insert(name);
+    match base {
+        Some(base) => {
+            for file in changed_files(&root, base)? {
+                if let Some(name) = owner(&packages, &file) {
+                    changed.insert(name);
+                }
+            }
         }
+        None => changed.extend(packages.keys().cloned()),
     }
 
     // Reverse dependency closure over the workspace, all dependency kinds:

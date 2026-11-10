@@ -216,23 +216,11 @@ fn check(args: &[String]) -> Result<(), String> {
             other => return Err(format!("check: unknown argument `{other}`")),
         }
     }
-    if !affected {
-        if base.is_some() {
-            return Err("check: `--base` needs `--affected`".to_string());
-        }
-        return full_check();
+    if !affected && base.is_some() {
+        return Err("check: `--base` needs `--affected`".to_string());
     }
-    affected_check(base.as_deref().unwrap_or("origin/main"))
-}
-
-fn full_check() -> Result<(), String> {
-    format_check()?;
-    clippy(&[])?;
-    windows_clippy()?;
-    cargo(&["test", "--workspace", "--quiet"])?;
-    cpu_driver_tests(true, true)?;
-    mln_ffi::check_declarations()?;
-    boundaries::check()
+    let base = affected.then(|| base.unwrap_or_else(|| "origin/main".into()));
+    checks(&affected::select(base.as_deref())?)
 }
 
 /// Every file's formatting, through dprint (rustfmt for Rust, oxc for the
@@ -277,10 +265,10 @@ fn clippy(args: &[String]) -> Result<(), String> {
     gl_clippy(fix_args)
 }
 
-/// `check --affected`: the same steps, for the packages that changed since
-/// `base`'s merge base with `HEAD` and the packages depending on them.
-fn affected_check(base: &str) -> Result<(), String> {
-    let selection = affected::select(base)?;
+/// `check`'s steps for `selection`: every package, or with `--affected` the
+/// packages that changed since the base's merge base with `HEAD` and the
+/// packages depending on them.
+fn checks(selection: &affected::Selection) -> Result<(), String> {
     format_check()?;
     let packages = selection.packages();
     if packages.is_empty() {
