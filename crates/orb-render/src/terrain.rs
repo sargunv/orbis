@@ -321,14 +321,12 @@ struct Atlas {
     /// its format and the texture.
     draw: Vec<TextureId>,
     sampled: TextureId,
-    /// The redrawn slots as the downsampler's regions, which the clear
-    /// reads too.
-    regions: BufferId,
     /// A layer's size, for the clear.
     size_uniform: BufferId,
     clear: BindGroupId,
-    /// The downsampler's group per level after the first.
-    mips: Vec<BindGroupId>,
+    /// The downsampler's chain of its levels, over the redrawn slots as
+    /// its regions, which the clear reads too.
+    mips: crate::downsample::Chain,
 }
 
 impl Atlas {
@@ -369,17 +367,15 @@ impl Atlas {
             .collect();
         let format = linear.then(|| DRAPE_FORMAT.srgb());
         let draw = (0..layers)
-            .map(|layer| gpu.create_layer_view(texture, layer, format))
+            .map(|layer| gpu.create_layer_view(texture, layer, 0, format))
             .collect();
         let sampled = match format {
             Some(srgb) => gpu.create_texture_view_as(texture, 0..levels, srgb),
             None => texture,
         };
-        let regions = gpu.create_buffer(&BufferDesc {
-            label: "drape slots",
-            size: u64::from(columns * rows * layers) * 16,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        });
+        downsampler.make(gpu);
+        let slots = ("drape slots", columns * rows * layers);
+        let mips = downsampler.chain(gpu, (texture, &views), slots, linear);
         let size_uniform = gpu.create_buffer(&BufferDesc {
             label: "drape atlas size",
             size: 16,
@@ -392,11 +388,9 @@ impl Atlas {
             layout: clear_layout,
             entries: &[
                 BindGroupEntry::buffer(0, size_uniform),
-                BindGroupEntry::buffer(1, regions),
+                mips.regions.entry(1),
             ],
         });
-        downsampler.make(gpu);
-        let mips = downsampler.groups(gpu, &views, regions, linear);
         Self {
             texture,
             size,
@@ -405,7 +399,6 @@ impl Atlas {
             levels: views,
             draw,
             sampled,
-            regions,
             size_uniform,
             clear,
             mips,
@@ -426,7 +419,6 @@ impl Atlas {
 
 impl crate::release::Release for Atlas {
     fn release(self, gpu: &mut dyn Gpu) {
-        let buffers = (self.regions, self.size_uniform);
         // A linear page's own view; else it's the texture.
         let sampled = (self.sampled != self.texture).then_some(self.sampled);
         (
@@ -435,7 +427,7 @@ impl crate::release::Release for Atlas {
             self.levels,
             (self.draw, sampled),
             self.texture,
-            buffers,
+            self.size_uniform,
         )
             .release(gpu);
     }
@@ -495,6 +487,9 @@ pub(crate) struct Terrain {
     /// Slots to redraw this frame: (page, stack, slot in its layer). In a
     /// page's order they're each stack's in turn, so each layer's.
     pending: Vec<(usize, u32, u32)>,
+    /// What the last frame's drawn mip levels rendered into, released
+    /// by the next.
+    mip_targets: crate::downsample::Transient,
     pub(crate) paint: Option<TerrainPaint>,
     /// The atmosphere's uniform, for fog.
     atmosphere: BufferId,
@@ -629,6 +624,7 @@ impl Terrain {
             occlusion_size: [0; 2],
             target_samples: 0,
             pending: Vec::new(),
+            mip_targets: Default::default(),
             paint: None,
             atmosphere,
         }
@@ -1203,6 +1199,8 @@ impl Terrain {
             }
             return 0;
         }
+        // The last frame, which drew into them, was submitted.
+        std::mem::take(&mut self.mip_targets).release(gpu);
         let (Some(colour), Some(dem)) = (&self.atlas[0], self.dem) else {
             return 0;
         };
@@ -1230,8 +1228,7 @@ impl Terrain {
                         [layout.layer(stack), s % columns * px, s / columns * px, px]
                     })
                     .collect();
-                gpu.write_buffer(atlas.regions, 0, bytemuck::cast_slice(&regions));
-                let count = pending.len() as u32;
+                atlas.mips.regions.write(gpu, &regions);
                 // A pass a layer: its slots' regions cleared, then each
                 // stack's bundle replayed once per rectangle of its redrawn
                 // slots, scissored to it: what a coarse tile standing in
@@ -1282,13 +1279,12 @@ impl Terrain {
                     }));
                     draws += 1;
                 }
-                // Each level from the one above, one dispatch over the
-                // page's slots.
-                let mips = downsampler.dispatches(gpu, &atlas.mips, px, count);
-                passes.push(Pass::Compute(ComputePass {
-                    label: "drape mips",
-                    commands: mips.expect("ready above"),
-                }));
+                // Each level from the one above, over the page's slots.
+                let chain = ("drape mips", &atlas.mips);
+                let targets = &mut self.mip_targets;
+                let (mips, _) =
+                    (downsampler.mip_passes(gpu, chain, &regions, targets)).expect("ready above");
+                passes.extend(mips);
             }
             self.pending.clear();
             Pass::group(passes, start, "drape");
@@ -1573,7 +1569,13 @@ impl crate::release::Release for Terrain {
         self.tiles.destroy(gpu);
         let buffers = (self.grid_indices, self.params);
         (layouts, pipelines, buffers, self.stack_uniforms).release(gpu);
-        (self.stack_groups, self.linear, self.targets).release(gpu);
+        (
+            self.stack_groups,
+            self.linear,
+            self.targets,
+            self.mip_targets,
+        )
+            .release(gpu);
     }
 }
 

@@ -136,13 +136,20 @@ pub(crate) fn compute(
 
 /// A module of `shader`'s WGSL: reading the tables from data textures
 /// where the device's vertex stage has no storage buffers (the tables'
-/// texture backing).
+/// texture backing), and on a device without compute (WebGL 2) every
+/// other table too, with the built-ins written out
+/// ([`Shader::gl_source`]).
 fn module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
     #[cfg(cpu_driven)]
     if !gpu.caps().vertex_storage {
+        let source = if gpu.caps().compute {
+            shader.texture_tables_source()
+        } else {
+            (shader.gl_source()).unwrap_or_else(|| panic!("{} has no WebGL 2 source", shader.label))
+        };
         return gpu.create_shader_module(&ShaderModuleDesc {
             label: shader.label,
-            source: shader.texture_tables_source().into(),
+            source: source.into(),
             ir: None,
         });
     }

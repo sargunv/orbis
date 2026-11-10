@@ -48,6 +48,14 @@ pub enum MapEvent {
     /// The map draws on a new GPU after a device loss: its first frame
     /// there.
     Restored,
+    /// The renderer's device lacks something the style's `layers` use, so
+    /// they draw otherwise than on WebGPU ([`Gap`](crate::Gap)): once per
+    /// gap for each style revision and renderer that changes what's
+    /// degraded. A gap of the whole style (its terrain) names no layers.
+    Degraded {
+        gap: crate::Gap,
+        layers: Vec<String>,
+    },
     /// What the host's player of a `video` source should do, on a host
     /// that plays video ([`Map::set_plays_video`](crate::Map::set_plays_video)).
     Video {

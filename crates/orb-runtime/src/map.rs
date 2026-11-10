@@ -454,6 +454,9 @@ pub struct GridTile {
     pub center: glam::DVec2,
 }
 
+/// A gap the style uses on the frames' renderer, and the layers it touches.
+type Degraded = (crate::Gap, Vec<String>);
+
 /// A map: a style, a camera and the tiles they need, drawn by
 /// [`render`](Self::render).
 pub struct Map {
@@ -550,6 +553,9 @@ pub struct Map {
     /// The warnings given since the style's last revision: each is given
     /// once.
     pub(crate) warned: HashSet<String>,
+    /// The gaps the style uses on the frames' renderer, and the style
+    /// revision and renderer they were found for: `MapEvent::Degraded`.
+    pub(crate) degraded: (Option<(u64, u64)>, Vec<Degraded>),
     pub(crate) events: crate::events::EventQueue,
     /// Terrain pages of a replaced style, to destroy with the next
     /// frame's GPU.
@@ -712,6 +718,7 @@ impl Map {
             receiver,
             warnings: Vec::new(),
             warned: HashSet::new(),
+            degraded: (None, Vec::new()),
             events: Default::default(),
             retired_pages: Vec::new(),
             retired_images: Vec::new(),
@@ -1466,6 +1473,7 @@ impl Map {
             self.camera.state(),
         );
         renderer.set_atmosphere(gpu, root.sky, at);
+        self.report_gaps(renderer);
 
         let now = frame_time;
         let time = self.shader_time();
@@ -2295,6 +2303,11 @@ impl Map {
             self.warnings.push(warning);
             wanted = None;
         }
+        // A device that can't draw terrain draws the map flat, and says
+        // so (`MapEvent::Degraded`).
+        if renderer.gaps().contains(&crate::Gap::Terrain) {
+            wanted = None;
+        }
         // Terrain turned off falls flat before it goes.
         let same = match (&mut style.terrain, wanted) {
             (Some(t), Some(index)) => {
@@ -2404,6 +2417,49 @@ impl Map {
             self.load(request, None, true);
         }
         Some(frame)
+    }
+
+    /// Reports what of the style `renderer`'s device draws otherwise than
+    /// WebGPU ([`MapEvent::Degraded`]), when the style's revision or the
+    /// renderer changed what that is.
+    fn report_gaps(&mut self, renderer: &Renderer) {
+        let Some(style) = &self.style else {
+            return;
+        };
+        let plan = style.worker.plan();
+        let key = Some((plan.revision, renderer.id()));
+        if self.degraded.0 == key {
+            return;
+        }
+        self.degraded.0 = key;
+        let mut found = Vec::new();
+        for &gap in renderer.gaps() {
+            let uses = |family: Family| match gap {
+                crate::Gap::Terrain => false,
+                crate::Gap::HeatmapPrecision => family == Family::Heatmap,
+                crate::Gap::DepthPrecision => family == Family::FillExtrusion,
+            };
+            let mut layers: Vec<String> = (plan.nodes.iter())
+                .filter(|n| uses(n.family))
+                .map(|n| plan.style.layers[n.layer].id.clone())
+                .collect();
+            layers.dedup();
+            let whole = gap == crate::Gap::Terrain && plan.style.terrain.is_some();
+            if whole || !layers.is_empty() {
+                found.push((gap, layers));
+            }
+        }
+        if found != self.degraded.1 {
+            for (gap, layers) in &found {
+                if !self.degraded.1.iter().any(|(g, l)| g == gap && l == layers) {
+                    self.events.push(MapEvent::Degraded {
+                        gap: *gap,
+                        layers: layers.clone(),
+                    });
+                }
+            }
+            self.degraded.1 = found;
+        }
     }
 
     /// The terrain's CPU elevations, if the style has terrain.

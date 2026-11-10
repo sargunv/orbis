@@ -52,8 +52,15 @@ const NODE_WORDS: usize = layout::node_cull::WORDS;
 const DRAW_IMAGES: u32 = 0;
 const DRAW_POINTS: u32 = 1;
 const DRAW_INDEXED: u32 = 2;
-/// `types.wgsl`'s compacted index that draws nothing.
+/// `types.wgsl`'s compacted index that draws nothing, which the GPU cull
+/// writes.
 const HIDDEN_INDEX: u32 = 0xffff_fffe;
+/// What this driver hides with: the primitive restart index, which WebGL 2
+/// skips without drawing. WebGL rejects element indices from 2^31, and
+/// ANGLE drops a whole draw holding one, such as [`HIDDEN_INDEX`]; where
+/// it isn't a restart (Metal's triangle lists), `pull_indexed` takes it
+/// as hidden too.
+const RESTART_INDEX: u32 = 0xffff_ffff;
 /// `types.wgsl`'s vertices an image chunk draws.
 const CHUNK_VERTICES: u32 = 768;
 /// `types.wgsl`'s metres per unit of a placement's terrain range.
@@ -247,7 +254,7 @@ impl CpuDriver {
                                 })
                                 .collect()
                         } else {
-                            vec![HIDDEN_INDEX; n as usize]
+                            vec![RESTART_INDEX; n as usize]
                         };
                         slots.push((candidate[c::SLOT], words));
                         candidate[c::DRAWN] = u32::from(keep);
@@ -726,6 +733,10 @@ impl DriverCheck {
             }
         }
         let [cpu_compacted, gpu_compacted] = self.compacted.map(&mut *read);
+        // Hidden either way: the GPU cull's index, or this driver's restart.
+        let cpu_compacted: Vec<u32> = (cpu_compacted.into_iter())
+            .map(|w| if w == RESTART_INDEX { HIDDEN_INDEX } else { w })
+            .collect();
         let n = self.compacted_words;
         if let Some(at) = (0..n).find(|&i| cpu_compacted.get(i) != gpu_compacted.get(i)) {
             return Err(format!(

@@ -77,6 +77,8 @@ pub struct WgpuGpu {
     #[cfg(not(target_arch = "wasm32"))]
     pipeline_cache: Option<wgpu::PipelineCache>,
     caps: Caps,
+    /// The device is wgpu's GL back end (WebGL 2, GLES).
+    gl: bool,
     /// Texture usages the platform defines. Browsers before
     /// `GPUTextureUsage.TRANSIENT_ATTACHMENT` (Samsung Internet 30,
     /// Chromium 143) reject it, so that hint is dropped there.
@@ -286,7 +288,7 @@ impl WgpuGpu {
         #[cfg(not(target_arch = "wasm32"))]
         let gl = device.adapter_info().backend == wgpu::Backend::Gl;
         #[cfg(target_arch = "wasm32")]
-        let gl = false;
+        let gl = cfg!(webgl);
         let limits = device.limits();
         let caps = Caps {
             limits: Limits {
@@ -312,6 +314,7 @@ impl WgpuGpu {
             // adapter (WebGL 2 has them with `EXT_color_buffer_float`).
             float_targets: cfg!(webgpu),
             multi_draw: false,
+            zero_to_one_depth: !gl,
         };
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut gpu = Self {
@@ -322,6 +325,7 @@ impl WgpuGpu {
             #[cfg(not(target_arch = "wasm32"))]
             pipeline_cache: None,
             caps,
+            gl,
             texture_usages: platform_texture_usages(),
             buffers: Slots::default(),
             textures: Slots::default(),
@@ -366,10 +370,28 @@ impl WgpuGpu {
         match std::env::var(DRIVER).as_deref() {
             Ok("cpu") => gpu.force_cpu_driver(false),
             Ok("cpu-tex") => gpu.force_cpu_driver(true),
+            Ok("webgl2") => gpu.force_webgl2(),
             Ok("" | "gpu") | Err(_) => {}
-            Ok(other) => panic!("{DRIVER}={other}: expected gpu, cpu or cpu-tex"),
+            Ok(other) => panic!("{DRIVER}={other}: expected gpu, cpu, cpu-tex or webgl2"),
         }
         gpu
+    }
+
+    /// Has a device report everything WebGL 2 lacks, compute and clip
+    /// distances too ([`force_cpu_driver`](Self::force_cpu_driver) with
+    /// textures keeps them): WebGL 2's whole path on a native device, its
+    /// drawn mips and its gaps included, short of GL itself.
+    /// `ORB_DRIVER=webgl2` sets it for every native device.
+    pub fn force_webgl2(&mut self) {
+        self.force_cpu_driver(true);
+        self.caps.compute = false;
+        self.caps.clip_distances = false;
+        // What wgpu asks of WebGL 2 by default (`device_limits`).
+        let limits = &mut self.caps.limits;
+        limits.max_texture_dimension_2d = limits.max_texture_dimension_2d.min(8192);
+        limits.max_texture_array_layers = limits.max_texture_array_layers.min(256);
+        limits.min_uniform_buffer_offset_alignment =
+            limits.min_uniform_buffer_offset_alignment.max(256);
     }
 
     /// Has a device that draws GPU-driven report what WebGL 2 lacks, so
@@ -450,9 +472,15 @@ impl WgpuGpu {
             ),
             #[cfg(target_arch = "wasm32")]
             texture_writes::Source::Host { image, premultiply } => {
+                let source = self.host_images[image.0].clone();
+                // WebGL 2 copies an `ImageBitmap` as it is: the host made
+                // it premultiplied (orb-web's `decode_bitmap`).
+                #[cfg(webgl)]
+                let premultiply =
+                    premultiply && !matches!(source, wgpu::ExternalImageSource::ImageBitmap(_));
                 self.queue.copy_external_image_to_texture(
                     &wgpu::CopyExternalImageSourceInfo {
-                        source: self.host_images[image.0].clone(),
+                        source,
                         origin: wgpu::Origin2d::ZERO,
                         flip_y: false,
                     },
@@ -1069,12 +1097,22 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc<'_>) -> TextureId {
+        // wgpu's GL back end makes a texture of one layer a 2D texture,
+        // which an array's sampler finds incomplete (black): an array of
+        // one gets a second layer it never uses.
+        let one_layer_array =
+            desc.dimension == TextureViewDimension::D2Array && desc.array_layers == 1;
+        let layers = if one_layer_array && self.gl {
+            2
+        } else {
+            desc.array_layers
+        };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(desc.label),
             size: wgpu::Extent3d {
                 width: desc.width,
                 height: desc.height,
-                depth_or_array_layers: desc.array_layers,
+                depth_or_array_layers: layers,
             },
             mip_level_count: desc.mip_levels,
             sample_count: desc.sample_count,
@@ -1117,6 +1155,7 @@ impl Gpu for WgpuGpu {
         &mut self,
         texture: TextureId,
         layer: u32,
+        level: u32,
         format: Option<TextureFormat>,
     ) -> TextureId {
         let texture = self.texture(texture).clone();
@@ -1125,7 +1164,7 @@ impl Gpu for WgpuGpu {
             format,
             usage: view_usage(&texture, format),
             dimension: Some(wgpu::TextureViewDimension::D2),
-            base_mip_level: 0,
+            base_mip_level: level,
             mip_level_count: Some(1),
             base_array_layer: layer,
             array_layer_count: Some(1),
@@ -1134,7 +1173,7 @@ impl Gpu for WgpuGpu {
         TextureId(self.textures.insert(Texture {
             texture: Some(texture),
             view,
-            levels: Some(0..1),
+            levels: Some(level..level + 1),
             format,
         }))
     }
@@ -1657,26 +1696,4 @@ impl Gpu for WgpuGpu {
             timing.end(timing::now() - started);
         }
     }
-}
-
-/// What a device the renderer can't draw on yet shows (premultiplied RGBA):
-/// a flat colour no style draws by accident, so a host can tell the map
-/// booted. GL devices draw only this until the CPU frame driver draws on
-/// them (#140).
-pub const BOOT_COLOR: [f64; 4] = [0.25, 0.5, 0.75, 1.0];
-
-/// Clears `target` to [`BOOT_COLOR`]: a frame on a device the renderer
-/// can't draw on yet.
-pub fn boot_frame(gpu: &mut dyn Gpu, target: TextureId) {
-    gpu.submit(&[Pass::Render(RenderPass {
-        label: "boot",
-        colors: vec![ColorAttachment {
-            target,
-            resolve: None,
-            store: StoreOp::Store,
-            load: LoadOp::Clear(BOOT_COLOR),
-        }],
-        depth: None,
-        commands: Vec::new(),
-    })]);
 }

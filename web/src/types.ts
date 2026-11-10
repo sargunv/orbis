@@ -13,6 +13,12 @@ type Fields<T> = {
   ]: T[K] extends object ? Fields<T[K]> : T[K];
 };
 
+/** What a map on WebGL 2 draws otherwise than on WebGPU: `terrain`
+ * isn't drawn (the map is flat); `heatmap-precision`, heatmap density in 8
+ * bits, which bands; `depth-precision`, far 3D buildings may fight at high
+ * pitch. */
+export type Gap = "terrain" | "heatmap-precision" | "depth-precision";
+
 export type LngLat = [number, number];
 export type Point = [number, number];
 /** [west, south, east, north] in degrees. */
@@ -427,6 +433,10 @@ export interface MapEvents {
    * `webglcontextrestored`): its first frame there, the milliseconds since
    * the loss. */
   restored: { recoveredMs: number };
+  /** The map's GPU lacks something the style uses, so `layers` draw
+   * otherwise than on WebGPU (`gap`; `terrain` names none: the map is flat).
+   * Once per gap whenever the style or the GPU changes what's degraded. */
+  degraded: { gap: Gap; layers: string[] };
   /** A frame was drawn. */
   render: FrameStats;
 }

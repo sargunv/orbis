@@ -26,6 +26,16 @@ pub(crate) struct NodeHeatmap {
     pub(crate) apart: Apart,
 }
 
+/// The density target's format: half floats where they blend, else 8 bits
+/// ([`Gap::HeatmapPrecision`](crate::Gap::HeatmapPrecision)).
+fn density_format(gpu: &dyn Gpu) -> TextureFormat {
+    if gpu.caps().float_targets {
+        TextureFormat::Rgba16Float
+    } else {
+        TextureFormat::Rgba8Unorm
+    }
+}
+
 impl Heatmaps {
     pub(crate) fn new(scene: BindGroupLayoutId, node: BindGroupLayoutId) -> Self {
         Self {
@@ -40,7 +50,7 @@ impl Heatmaps {
             return;
         }
         let target = TargetFormat {
-            color: TextureFormat::Rgba16Float,
+            color: density_format(gpu),
             sample_count: 1,
         };
         let blend = Some(BlendState::Additive);
@@ -124,11 +134,12 @@ impl Heatmaps {
         node: &mut NodeHeatmap,
         size: [u32; 2],
     ) -> bool {
+        let format = density_format(gpu);
         Offscreen::fit(
             &mut node.apart.offscreen,
             gpu,
             composites,
-            ("heatmap density", &[TextureFormat::Rgba16Float]),
+            ("heatmap density", &[format]),
             (size, 1),
             (Mode::Ramp, Some(node.ramp)),
             node.apart.opacity,
@@ -149,7 +160,7 @@ impl Heatmaps {
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "heatmap density",
-                    color_formats: &[TextureFormat::Rgba16Float],
+                    color_formats: &[density_format(gpu)],
                     depth_format: None,
                     sample_count: 1,
                 },

@@ -139,25 +139,25 @@ const GPU_ONLY_FILES: &[(&str, Allows, &str)] = &[
     ),
     (
         "orb-render/src/downsample.rs",
-        Allows::Only(&["ComputeCommand", "BindingType::Storage", "StorageTexture"]),
-        "compute mips and edges: downsample_draw.wgsl's drawn ones",
-    ),
-    (
-        "orb-render/src/image.rs",
         Allows::Only(&[
             "Pass::Compute",
             "ComputePass",
+            "ComputeCommand",
             "BufferUsages::STORAGE",
+            "BindingType::Storage",
+            "StorageTexture",
             "STORAGE_BINDING",
         ]),
-        "raster pages' compute mips and edges: drawn ones; their regions and storage views go with them",
+        "compute mips and edges over regions in storage: downsample_draw.wgsl's drawn ones over regions in a data texture",
+    ),
+    (
+        "orb-render/src/image.rs",
+        Allows::Only(&["Pass::Compute", "STORAGE_BINDING"]),
+        "raster pages' compute mips, one pass for every page, and the views they store to: drawn ones, into render targets",
     ),
     (
         "orb-render/src/terrain.rs",
         Allows::Only(&[
-            "Pass::Compute",
-            "ComputePass",
-            "BufferUsages::STORAGE",
             "E::storage(",
             "STORAGE_BINDING",
             "create_texture_view_as",

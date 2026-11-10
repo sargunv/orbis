@@ -1086,7 +1086,7 @@ impl H2h {
 
 /// The `web` block: core.wasm, then `pnpm -C web load` against the mirror.
 fn web(options: &Options, mirror: &Mirror) -> Result<(), String> {
-    crate::web::build(false)?;
+    crate::web::build(Default::default())?;
     let base = match options.network {
         Network::Cold => UPSTREAM,
         _ => &mirror.base,

@@ -6,9 +6,7 @@ use orb_hal_wgpu::WgpuGpu;
 use orb_runtime::TargetFormat;
 use wasm_bindgen::JsValue;
 
-/// Whether this build draws with WebGL 2 (core-gl.wasm). Until the CPU
-/// frame driver draws on it (#140), a WebGL 2 map's frames are
-/// [`orb_hal_wgpu::boot_frame`]s.
+/// Whether this build draws with WebGL 2 (core-gl.wasm).
 pub(crate) const GL: bool = cfg!(feature = "gl");
 
 /// The GPU API's name, in messages: a literal, for `concat!`.
@@ -41,7 +39,129 @@ pub(crate) struct Canvas {
     format: TargetFormat,
     /// Set by the device's lost callback.
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// WebGL 2's frames read back: drawn here, then copied to the canvas.
+    read: Option<ReadTarget>,
+    /// The canvas, whose WebGL 2 context says when it's lost.
+    #[cfg_attr(not(feature = "gl"), allow(dead_code))]
+    element: JsValue,
 }
+
+/// Where a WebGL 2 frame that's read back draws: its canvas frame is a
+/// renderbuffer wgpu blits to the canvas, which nothing else may read. The
+/// frame draws into a texture, which is read and then drawn onto the
+/// canvas.
+#[derive(Debug)]
+struct ReadTarget {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    group: wgpu::BindGroup,
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl ReadTarget {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        (width, height): (u32, u32),
+    ) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("read frame"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("read frame"),
+            source: wgpu::ShaderSource::Wgsl(READ_BLIT.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("read frame"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(format.into())],
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("read frame"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        });
+        Self {
+            texture,
+            view,
+            group,
+            pipeline,
+        }
+    }
+
+    /// Draws the frame read onto the canvas's, `onto`.
+    fn copy_to(&self, device: &wgpu::Device, queue: &wgpu::Queue, onto: &wgpu::TextureView) {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("read frame"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: onto,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit([encoder.finish()]);
+    }
+}
+
+/// A triangle over the canvas, each pixel the read frame's.
+const READ_BLIT: &str = "
+@group(0) @binding(0) var frame: texture_2d<f32>;
+
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(frame, vec2<i32>(at.xy), 0);
+}
+";
 
 impl Canvas {
     pub(crate) fn gpu(&mut self) -> &mut WgpuGpu {
@@ -73,9 +193,12 @@ impl Canvas {
         self.lost.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Loses the device on purpose (`device.destroy()`), to exercise
-    /// recovery.
+    /// Loses the device on purpose (`device.destroy()`; on WebGL 2, the
+    /// context, as `WEBGL_lose_context` does), to exercise recovery.
     pub(crate) fn lose(&mut self) {
+        #[cfg(feature = "gl")]
+        let _ = crate::gl_context::lose(&self.element);
+        #[cfg(not(feature = "gl"))]
         self.gpu.device().destroy();
     }
 
@@ -114,12 +237,29 @@ impl Canvas {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let target = self.gpu.register_view(view);
+        // WebGL 2's frame read back draws into a texture first.
+        let size = self.size();
+        let read_target = (read && GL).then(|| {
+            let fits = |r: &ReadTarget| (r.texture.width(), r.texture.height()) == size;
+            if !self.read.as_ref().is_some_and(fits) {
+                let format = frame.texture.format();
+                self.read = Some(ReadTarget::new(self.gpu.device(), format, size));
+            }
+            self.read.as_ref().expect("made above").view.clone()
+        });
+        let target = self
+            .gpu
+            .register_view(read_target.unwrap_or_else(|| view.clone()));
         let result = draw(&mut self.gpu, target, self.format);
-        // WebGL 2's frames are a renderbuffer wgpu blits to the canvas,
-        // which nothing else may read.
-        let pixels =
-            (read && !GL).then(|| Box::pin(self.gpu.read_wgpu_texture(&frame.texture)) as Pixels);
+        let pixels = match (read, &self.read) {
+            (false, _) => None,
+            (true, Some(drawn)) if GL => {
+                let pixels = Box::pin(self.gpu.read_wgpu_texture(&drawn.texture)) as Pixels;
+                drawn.copy_to(self.gpu.device(), self.gpu.queue(), &view);
+                Some(pixels)
+            }
+            (true, _) => Some(Box::pin(self.gpu.read_wgpu_texture(&frame.texture)) as Pixels),
+        };
         self.gpu.destroy_texture(target);
         self.gpu.queue().present(frame);
         Ok((result, pixels))
@@ -145,7 +285,7 @@ impl Canvas {
         let target = if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
             wgpu::SurfaceTarget::Canvas(canvas.clone())
         } else {
-            wgpu::SurfaceTarget::OffscreenCanvas(canvas.unchecked_into())
+            wgpu::SurfaceTarget::OffscreenCanvas(canvas.clone().unchecked_into())
         };
         let surface = instance
             .create_surface(target)
@@ -179,6 +319,8 @@ impl Canvas {
             // The next frame sees the loss and the host recovers.
             crate::wake(map);
         });
+        #[cfg(feature = "gl")]
+        crate::gl_context::watch(&canvas, lost.clone(), map);
         let caps = surface.get_capabilities(&adapter);
         let surface_format = caps
             .formats
@@ -228,6 +370,8 @@ impl Canvas {
                 sample_count: 1,
             },
             lost,
+            read: None,
+            element: canvas,
         })
     }
 }

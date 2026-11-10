@@ -15,6 +15,9 @@ default = ["webgpu"]
 # (`--no-default-features --features gl`) with WebGL 2.
 webgpu = ["orb-hal-wgpu/webgpu"]
 gl = ["orb-hal-wgpu/gl", "orb-runtime/cpu-driven"]
+# Panics say why on the console (`cargo xtask web --panics`): for debugging,
+# at the cost of the formatting the shipped builds leave out.
+panic-messages = []
 
 [dependencies]
 futures-channel.workspace = true

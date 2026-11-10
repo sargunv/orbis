@@ -115,6 +115,33 @@ pub(crate) fn color_in(c: [f32; 4], linear: bool) -> [f32; 4] {
     [decode(c[0]), decode(c[1]), decode(c[2]), a]
 }
 
+/// What a renderer draws otherwise than on WebGPU, for want of something
+/// its device lacks (WebGL 2, #140): reported, never silent. Each is
+/// decided from the device's caps where the renderer picks what it draws
+/// with; a map reports those its style uses (`MapEvent::Degraded`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Gap {
+    /// No compute: terrain isn't drawn yet, and the map is flat.
+    Terrain,
+    /// No blendable `Rgba16Float` target: heatmap density accumulates in 8
+    /// bits, which bands and saturates (GL JS's own fallback).
+    HeatmapPrecision,
+    /// Depth remapped from 0–1 into GL's −1–1: far 3D buildings may fight
+    /// at high pitch.
+    DepthPrecision,
+}
+
+impl Gap {
+    /// Its name, as events and fixtures give it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Terrain => "terrain",
+            Self::HeatmapPrecision => "heatmap-precision",
+            Self::DepthPrecision => "depth-precision",
+        }
+    }
+}
+
 /// The attachment a renderer draws into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TargetFormat {
@@ -265,6 +292,8 @@ pub struct Renderer {
     host: TargetFormat,
     /// Colours mix in linear light.
     linear: Option<offscreen::LinearScene>,
+    /// What it draws otherwise than on WebGPU.
+    gaps: Vec<Gap>,
     atmosphere: atmosphere::Atmosphere,
     scene: Scene,
     draw_group: BindGroupId,
@@ -411,12 +440,33 @@ impl Renderer {
             .release(gpu);
     }
 
-    /// Whether a renderer draws on a device of `caps`: one with compute,
-    /// which image mips, DEM prepares and the terrain's drape still need
-    /// whichever driver culls. WebGL 2 boots to a flat colour until they
-    /// draw another way (#140).
+    /// Whether a renderer draws on a device of `caps`: one that draws
+    /// GPU-driven, or any device in a build with the CPU frame driver
+    /// (WebGL 2's, #140).
     pub fn draws_on(caps: &Caps) -> bool {
-        caps.compute
+        caps.gpu_driven() || cfg!(cpu_driven)
+    }
+
+    /// What a renderer on a device of `caps` draws otherwise than on
+    /// WebGPU, whether or not a style uses it: [`Gap`].
+    pub fn gaps_on(caps: &Caps) -> Vec<Gap> {
+        let mut gaps = Vec::new();
+        if !caps.compute {
+            gaps.push(Gap::Terrain);
+        }
+        if !caps.float_targets {
+            gaps.push(Gap::HeatmapPrecision);
+        }
+        if !caps.zero_to_one_depth {
+            gaps.push(Gap::DepthPrecision);
+        }
+        gaps
+    }
+
+    /// What this renderer draws otherwise than on WebGPU: its device's
+    /// [`gaps_on`](Self::gaps_on).
+    pub fn gaps(&self) -> &[Gap] {
+        &self.gaps
     }
 
     pub fn new(gpu: &mut dyn Gpu, target: TargetFormat, capacity: SceneCapacity) -> Self {
@@ -589,6 +639,7 @@ impl Renderer {
             target,
             host,
             linear,
+            gaps: Self::gaps_on(gpu.caps()),
             atmosphere,
             scene,
             draw_group,

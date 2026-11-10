@@ -278,7 +278,10 @@ struct NodeCull {
     run_shift: u32,
 };
 
-// A compacted index that draws nothing; no run reaches it.
+// A compacted index that draws nothing; no run reaches it. The CPU driver
+// hides with the one above it instead, the primitive restart index, which
+// WebGL 2 skips (it drops a whole draw holding an index from 2^31 on);
+// where it isn't a restart, a vertex takes either as hidden.
 const HIDDEN_INDEX: u32 = 0xfffffffeu;
 
 // Every chunk is drawn as this many vertices; the excess is degenerate.

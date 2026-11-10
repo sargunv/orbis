@@ -72,11 +72,11 @@ pub use orb_camera::{
 };
 pub use orb_expr::json;
 pub use orb_layout::fill::Bend;
-pub use orb_render::Renderer;
 pub use orb_render::{
     ARGS_WORDS, DESKTOP_BUDGET, ImageMetadata, MOBILE_BUDGET, PoolMemory, SceneCapacity,
     SceneMemory, TargetFormat,
 };
+pub use orb_render::{Gap, Renderer};
 pub use orb_source::endpoint::{HOST_TILES, HostTile};
 pub use orb_style::v8::{FeatureTarget, Op, StyleDoc, Transaction};
 pub use orb_style::{Preview, Previews};

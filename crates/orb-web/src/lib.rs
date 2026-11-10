@@ -14,6 +14,8 @@
 
 mod camera;
 mod canvas;
+#[cfg(feature = "gl")]
+mod gl_context;
 mod host;
 mod jobs;
 mod placement;
@@ -35,6 +37,17 @@ use web_sys::HtmlCanvasElement;
 use crate::canvas::Canvas;
 use crate::jobs::WorkerJobs;
 use crate::placement::WorkerPlacement;
+
+/// Panics say why on the console in a build with `panic-messages`
+/// (`cargo xtask web --panics`), in every instance: the map's and its
+/// workers'.
+#[cfg(feature = "panic-messages")]
+#[wasm_bindgen(start)]
+fn panic_messages() {
+    std::panic::set_hook(Box::new(|info| {
+        web_sys::console::error_1(&format!("orbis panicked: {info}").into());
+    }));
+}
 
 thread_local! {
     /// Each map's callback for "draw a frame soon", by map. Wasm in a page
@@ -72,6 +85,9 @@ pub struct OrbisMap {
     ///
     /// [`read_next_frame`]: OrbisMap::read_next_frame
     read_next: Option<futures_channel::oneshot::Sender<Vec<u8>>>,
+    /// Whether a pipeline the device failed to make was said on the
+    /// console: the layers drawing with it are missing.
+    said_hung: bool,
 }
 
 impl Drop for OrbisMap {
@@ -419,11 +435,6 @@ pub async fn create_map(
     let canvas = Canvas::new(canvas, size, id)
         .await
         .map_err(|e| JsError::new(&e))?;
-    if canvas::GL {
-        web_sys::console::warn_1(
-            &"orbis: on WebGL 2 the map draws only a flat colour so far (#140)".into(),
-        );
-    }
     Ok(OrbisMap {
         id,
         map,
@@ -434,6 +445,7 @@ pub async fn create_map(
         worker_jobs,
         snapshot: None,
         read_next: None,
+        said_hung: false,
     })
 }
 
@@ -590,7 +602,8 @@ impl OrbisMap {
     /// What the map did since the last call, as plain objects by `type`:
     /// `styleload`, `styledata` (`generation`), `sourcedata` (`source`,
     /// `loaded`), `load`, `idle`, `error` and `warning` (`message`),
-    /// `styleimagemissing` (`id`), `restored`, `camera`
+    /// `styleimagemissing` (`id`), `restored`, `degraded` (`gap` and the
+    /// `layers` it touches), `camera`
     /// (`change`: move, zoom, rotate or pitch; `phase`: start, progress or
     /// end; `user`), `animationend` (`id`, `interrupted`), `click`,
     /// `dblclick` and `contextmenu` (a right click or a touch held still;
@@ -660,6 +673,12 @@ impl OrbisMap {
                     "video"
                 }
                 MapEvent::Restored => "restored",
+                MapEvent::Degraded { gap, layers } => {
+                    set(&object, "gap", name(gap.name()));
+                    let layers: js_sys::Array = layers.iter().map(JsValue::from).collect();
+                    set(&object, "layers", layers.into());
+                    "degraded"
+                }
                 MapEvent::Camera(orb_runtime::CameraEvent::Changed {
                     change,
                     phase,
@@ -946,11 +965,6 @@ impl OrbisMap {
     /// frame is drawn.
     #[wasm_bindgen(js_name = readNextFrame)]
     pub fn read_next_frame(&mut self, premultiplied: bool) -> js_sys::Promise {
-        if canvas::GL {
-            return js_sys::Promise::reject(&JsValue::from_str(
-                "a WebGL 2 canvas's frames can't be read back; take a snapshot",
-            ));
-        }
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.read_next = Some(sender);
         let bgra = snapshot::bgra(self.canvas.format().color);
@@ -1011,6 +1025,11 @@ impl OrbisMap {
     /// tiles out again.
     pub async fn recover(&mut self, canvas: JsValue) -> Result<(), JsError> {
         let size = self.canvas.size();
+        // A WebGL 2 context comes back on the same canvas once restored.
+        #[cfg(feature = "gl")]
+        gl_context::restored(&canvas)
+            .await
+            .map_err(|e| JsError::new(&format!("{e:?}")))?;
         self.canvas = Canvas::new(canvas, size, self.id)
             .await
             .map_err(|e| JsError::new(&e))?;
@@ -1037,13 +1056,6 @@ impl OrbisMap {
         let (report, pixels) = self
             .canvas
             .frame(self.read_next.is_some(), |gpu, target, format| {
-                if canvas::GL {
-                    orb_hal_wgpu::boot_frame(gpu, target);
-                    return orb_runtime::FrameReport {
-                        idle: true,
-                        ..Default::default()
-                    };
-                }
                 let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
                 map.render(gpu, renderer, target, viewport, ratio, frame_time)
             })
@@ -1052,6 +1064,14 @@ impl OrbisMap {
             wasm_bindgen_futures::spawn_local(async move {
                 let _ = sender.send(pixels.await);
             });
+        }
+        if !self.said_hung
+            && let Some(failed) = self.canvas.gpu_ref().hung()
+        {
+            self.said_hung = true;
+            let message =
+                format!("orbis: a pipeline failed, and what draws with it is missing: {failed}");
+            web_sys::console::error_1(&message.into());
         }
         let uploaded = orb_hal_wgpu::WgpuGpu::uploaded(self.canvas.gpu_ref());
         let jobs = self.worker_jobs.stats();
@@ -1097,7 +1117,7 @@ impl OrbisMap {
     /// and once the map is made: its style's tiles are asked for before
     /// its first frame draws.
     pub fn prepare(&mut self) {
-        if self.canvas.lost() || self.snapshot.is_some() || canvas::GL {
+        if self.canvas.lost() || self.snapshot.is_some() {
             return;
         }
         let viewport = self.viewport();

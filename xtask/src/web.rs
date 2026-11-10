@@ -31,7 +31,7 @@ const WHOLE_CORE: &str = "target/web/core-whole.wasm";
 /// same margin, and when a change shrinks a module, lower it.
 const CORE_WATCH_KIB: usize = 700;
 const CORE_DEFERRED_WATCH_KIB: usize = 215;
-const CORE_GL_WATCH_KIB: usize = 1100;
+const CORE_GL_WATCH_KIB: usize = 1330;
 const SHAPER_WATCH_KIB: usize = 380;
 
 /// Crates whose code the size report attributes separately.
@@ -57,16 +57,31 @@ const CRATES: &[&str] = &[
 
 /// Builds the modules; `names` also writes `core.wasm` whole with its
 /// function names to [`NAMED_CORE`], for `pnpm -C web coverage`.
-pub(crate) fn build(names: bool) -> Result<(), String> {
+/// How `cargo xtask web` builds.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Options {
+    /// `--names`: also core.wasm whole with its function names.
+    pub(crate) names: bool,
+    /// `--panics`: panics say why on the console.
+    pub(crate) panics: bool,
+    /// `--gl`: core-gl.wasm alone, for work on WebGL 2.
+    pub(crate) gl: bool,
+}
+
+pub(crate) fn build(options: Options) -> Result<(), String> {
+    let Options { names, panics, gl } = options;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let out = root.join(OUT_DIR);
+    if gl {
+        return build_gl(&root, panics);
+    }
 
     // A copy from an earlier build no longer matches web/pkg's: if its
     // imports still fit core.js, coverage would measure the old code.
     if !names {
         let _ = std::fs::remove_file(root.join(NAMED_CORE));
     }
-    let core = module(&root, "orb-web", "core", &[], Some(names))?;
+    let core = module(&root, "orb-web", "core", &[], panics, Some(names))?;
     report_crates(&core.built);
     let js = std::fs::read(out.join("core.js")).map_err(|e| format!("core.js: {e}"))?;
     let deferred = core.deferred.as_ref().expect("core.wasm splits");
@@ -96,14 +111,22 @@ pub(crate) fn build(names: bool) -> Result<(), String> {
         deferred.brotli,
         CORE_DEFERRED_WATCH_KIB,
     );
-    // The same map on WebGL 2, fetched only where WebGPU has no adapter.
-    let gl = module(
-        &root,
-        "orb-web",
-        "core-gl",
-        &["--no-default-features", "--features", "gl"],
-        None,
-    )?;
+    build_gl(&root, panics)?;
+    // `font-faces` drawing, loaded the first time a style declares a file.
+    let shaper = module(&root, "orb-shaper", "shaper", &[], false, None)?;
+    eprintln!(
+        "shaper.wasm: {} KiB raw, {} KiB brotli (lazy)",
+        shaper.raw / 1024,
+        shaper.brotli / 1024
+    );
+    watch("shaper.wasm", shaper.brotli, SHAPER_WATCH_KIB);
+    Ok(())
+}
+
+/// The same map on WebGL 2, fetched only where WebGPU has no adapter.
+fn build_gl(root: &Path, panics: bool) -> Result<(), String> {
+    let features = ["--no-default-features", "--features", "gl"];
+    let gl = module(root, "orb-web", "core-gl", &features, panics, None)?;
     report_crates(&gl.built);
     eprintln!(
         "core-gl.wasm: {} KiB raw, {} KiB brotli (WebGL 2 only)",
@@ -111,14 +134,6 @@ pub(crate) fn build(names: bool) -> Result<(), String> {
         gl.brotli / 1024,
     );
     watch("core-gl.wasm", gl.brotli, CORE_GL_WATCH_KIB);
-    // `font-faces` drawing, loaded the first time a style declares a file.
-    let shaper = module(&root, "orb-shaper", "shaper", &[], None)?;
-    eprintln!(
-        "shaper.wasm: {} KiB raw, {} KiB brotli (lazy)",
-        shaper.raw / 1024,
-        shaper.brotli / 1024
-    );
-    watch("shaper.wasm", shaper.brotli, SHAPER_WATCH_KIB);
     Ok(())
 }
 
@@ -133,7 +148,7 @@ fn watch(name: &str, brotli: usize, level_kib: usize) {
 }
 
 pub(crate) fn pages() -> Result<(), String> {
-    build(false)?;
+    build(Options::default())?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     run(Command::new("pnpm")
         .current_dir(root.join("web"))
@@ -165,6 +180,7 @@ fn module(
     package: &str,
     name: &str,
     features: &[&str],
+    panics: bool,
     split: Option<bool>,
 ) -> Result<Sizes, String> {
     // A panic traps at once, with no message. On wasm32-unknown-unknown
@@ -183,9 +199,16 @@ fn module(
         "--profile",
         "wasm-release",
         "-Zbuild-std=std,panic_abort",
-        "--config",
-        r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort"]"#,
     ];
+    // `--panics`: messages, formatted and logged by orb-web's hook.
+    if panics {
+        args.extend(["--features", "panic-messages"]);
+    } else {
+        args.extend([
+            "--config",
+            r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort"]"#,
+        ]);
+    }
     args.extend(features);
     eprintln!("$ RUSTC_BOOTSTRAP=1 cargo {}", args.join(" "));
     run(Command::new(env!("CARGO"))

@@ -68,7 +68,7 @@ pub trait Gpu {
         levels: std::ops::Range<u32>,
         format: TextureFormat,
     ) -> TextureId;
-    /// A view of one layer of an array texture's first mip level as a 2D
+    /// A view of one layer of an array texture at one mip level as a 2D
     /// texture, to render into (WebGPU's `baseArrayLayer`), in `format`
     /// when given, one of the texture's `view_formats`. Destroying it
     /// leaves the texture.
@@ -76,6 +76,7 @@ pub trait Gpu {
         &mut self,
         texture: TextureId,
         layer: u32,
+        level: u32,
         format: Option<TextureFormat>,
     ) -> TextureId;
     fn destroy_texture(&mut self, id: TextureId);
@@ -188,6 +189,10 @@ pub struct Caps {
     pub float_targets: bool,
     /// Many direct draws in one call (`WEBGL_multi_draw`).
     pub multi_draw: bool,
+    /// Clip-space depth from 0 to 1 as the shaders write it. wgpu's GL
+    /// back end remaps it into GL's −1 to 1 (`2z − w`), which spends
+    /// reversed Z's precision far from the camera.
+    pub zero_to_one_depth: bool,
 }
 
 impl Caps {

@@ -296,19 +296,39 @@ fn keep(readbacks: &Readbacks, buffer: wgpu::Buffer) {
 }
 
 pub(crate) async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wgpu::BufferView {
-    let (sender, receiver) = futures_channel::oneshot::channel();
+    #[cfg_attr(not(webgl), allow(unused_mut))]
+    let (sender, mut receiver) = futures_channel::oneshot::channel();
     buffer
         .slice(..)
         .map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("device lost during readback");
-    receiver
-        .await
-        .expect("mapping callback dropped")
-        .expect("readback mapping failed");
+    // WebGL 2 can't wait for its fence: each task polls it once, until the
+    // mapping lands.
+    #[cfg(webgl)]
+    let mapped = loop {
+        let _ = device.poll(wgpu::PollType::Poll);
+        if let Some(mapped) = receiver.try_recv().expect("mapping callback dropped") {
+            break mapped;
+        }
+        let tick = js_sys::Promise::new(&mut |resolve, _| {
+            let global = js_sys::global();
+            let set_timeout = js_sys::Reflect::get(&global, &"setTimeout".into())
+                .ok()
+                .and_then(|f| wasm_bindgen::JsCast::dyn_into::<js_sys::Function>(f).ok())
+                .expect("setTimeout");
+            let _ = set_timeout.call2(&global, &resolve, &1.into());
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(tick).await;
+    };
+    #[cfg(not(webgl))]
+    let mapped = {
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device lost during readback");
+        receiver.await.expect("mapping callback dropped")
+    };
+    mapped.expect("readback mapping failed");
     buffer
         .slice(..)
         .get_mapped_range()

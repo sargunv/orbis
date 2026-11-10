@@ -799,7 +799,7 @@ impl JobWorker {
                 }
                 JobAnswer::Load(Ok(Loaded::Image {
                     bytes, warp_grid, ..
-                })) => match crate::host::decode_bitmap(&bytes).await {
+                })) => match crate::host::decode_bitmap(&bytes, true).await {
                     Ok(bitmap) => {
                         let warp_grid = warp_grid.map(Arc::unwrap_or_clone);
                         let message = JobReply::Image { id, warp_grid };

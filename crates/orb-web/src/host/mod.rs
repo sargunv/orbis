@@ -100,7 +100,7 @@ fn word_starts(segmenter: Option<&JsValue>, text: &str) -> Vec<usize> {
 
 /// Decodes an image to straight RGBA8 texels.
 pub(crate) async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
-    let bitmap = decode_bitmap(bytes).await?;
+    let bitmap = decode_bitmap(bytes, false).await?;
     let image = read_bitmap(&bitmap).await;
     bitmap.close();
     image
@@ -196,15 +196,25 @@ fn read_canvas(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
     })
 }
 
-/// Decodes an image into an `ImageBitmap` with straight alpha and no colour
-/// conversion, on the page or in a worker. Its pixels stay with the
-/// browser: a job worker transfers the bitmap to the map's thread, which
-/// copies it to a texture.
-pub(crate) async fn decode_bitmap(bytes: &[u8]) -> Result<web_sys::ImageBitmap, JsValue> {
+/// Decodes an image into an `ImageBitmap` with no colour conversion, on the
+/// page or in a worker, its alpha straight. With `texture`, its pixels stay
+/// with the browser: a job worker transfers the bitmap to the map's thread,
+/// which copies it to a texture, premultiplying it; WebGL 2 copies an
+/// `ImageBitmap` as it is, so there such a bitmap comes premultiplied (only
+/// raster tiles arrive as bitmaps).
+pub(crate) async fn decode_bitmap(
+    bytes: &[u8],
+    texture: bool,
+) -> Result<web_sys::ImageBitmap, JsValue> {
     let parts = js_sys::Array::of1(&Uint8Array::from(bytes));
     let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)?;
     let options = js_sys::Object::new();
-    Reflect::set(&options, &"premultiplyAlpha".into(), &"none".into())?;
+    let alpha = if texture && crate::canvas::GL {
+        "premultiply"
+    } else {
+        "none"
+    };
+    Reflect::set(&options, &"premultiplyAlpha".into(), &alpha.into())?;
     Reflect::set(&options, &"colorSpaceConversion".into(), &"none".into())?;
     let global = js_sys::global();
     let create =

@@ -451,12 +451,17 @@ impl<G: Gpu> Gpu for Recording<G> {
         &mut self,
         texture: TextureId,
         layer: u32,
+        level: u32,
         format: Option<TextureFormat>,
     ) -> TextureId {
-        let id = self.inner.create_layer_view(texture, layer, format);
+        let id = self.inner.create_layer_view(texture, layer, level, format);
+        let level = match level {
+            0 => String::new(),
+            level => format!(" level {level}"),
+        };
         let text = match format {
-            Some(format) => format!("layer {layer} as {format:?}"),
-            None => format!("layer {layer}"),
+            Some(format) => format!("layer {layer}{level} as {format:?}"),
+            None => format!("layer {layer}{level}"),
         };
         self.def(Ref::Texture(id.0), Def::View { of: texture, text });
         id
@@ -684,6 +689,7 @@ mod tests {
         fn create_layer_view(
             &mut self,
             _: TextureId,
+            _: u32,
             _: u32,
             _: Option<TextureFormat>,
         ) -> TextureId {

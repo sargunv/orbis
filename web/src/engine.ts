@@ -17,6 +17,7 @@ import type {
   FlyOptions,
   FrameStats,
   FreeCamera,
+  Gap,
   GestureMomentum,
   GestureOptions,
   GpuSubmission,
@@ -76,6 +77,7 @@ type CoreEvent =
   | { type: "error" | "warning"; message: string }
   | { type: "styleimagemissing"; id: string }
   | { type: "restored" }
+  | { type: "degraded"; gap: Gap; layers: string[] }
   | {
       type: "camera";
       change: "move" | "zoom" | "rotate" | "pitch";
@@ -169,6 +171,8 @@ export class Engine {
   #lostAt: number | undefined;
   /** The last device loss's start, until the new device draws. */
   #recovering: number | undefined;
+  /** The gaps warned of on the console: each once per map. */
+  #warnedGaps = new Set<Gap>();
   /** When the device was made, and the losses in the current run. */
   #deviceAt = performance.now();
   #losses = 0;
@@ -804,6 +808,21 @@ export class Engine {
           break;
         case "styleimagemissing":
           out.push({ type: "styleimagemissing", data: { id: event.id } });
+          break;
+        case "degraded":
+          if (!this.#warnedGaps.has(event.gap)) {
+            this.#warnedGaps.add(event.gap);
+            const layers = event.layers.length
+              ? ` (${event.layers.join(", ")})`
+              : "";
+            console.warn(
+              `orbis: on ${this.backend === "webgl2" ? "WebGL 2" : "this GPU"} the map draws ${event.gap} otherwise than on WebGPU${layers}`,
+            );
+          }
+          out.push({
+            type: "degraded",
+            data: { gap: event.gap, layers: event.layers },
+          });
           break;
         case "restored": {
           if (this.#recovering === undefined) break;

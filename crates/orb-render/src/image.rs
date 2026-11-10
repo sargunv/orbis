@@ -132,18 +132,17 @@ struct Page {
 }
 
 /// A raster page's mip bindings, for one revision of its
-/// texture: views of each level, the downsampler's group per level after
-/// the first, and the regions they read (whole layers).
+/// texture: views of each level, and the downsampler's chain over them
+/// (whole layers).
 #[derive(Debug)]
 struct Mips {
     revision: u32,
-    regions: BufferId,
     views: Vec<TextureId>,
-    groups: Vec<BindGroupId>,
+    chain: crate::downsample::Chain,
 }
 
 fn destroy_mips(gpu: &mut dyn Gpu, mips: Mips) {
-    (mips.groups, mips.views, mips.regions).release(gpu);
+    (mips.chain, mips.views).release(gpu);
 }
 
 /// What an image node's bind group holds.
@@ -201,9 +200,9 @@ pub(crate) struct Images {
     /// The prepare draws, made for the first DEM page.
     prepare: Option<prepare::Draws>,
     pages: Vec<Option<Page>>,
-    /// What the last frame's edge extensions used (scratch layers, their
-    /// regions and group), released by the next mip pass.
-    edges: Vec<(TextureId, BufferId, BindGroupId)>,
+    /// What the last frame's levels and edge extensions used (scratch
+    /// layers, drawn levels' targets), released by the next mip pass.
+    edges: crate::downsample::Transient,
 }
 
 impl Images {
@@ -275,7 +274,7 @@ impl Images {
             placeholder_ramp,
             prepare: None,
             pages: Vec::new(),
-            edges: Vec::new(),
+            edges: Default::default(),
         }
     }
 
@@ -377,15 +376,20 @@ impl Images {
             usage,
             mip_levels: 1,
         };
-        // Raster pages are mipmapped: a compute pass makes the levels once
-        // a raster node draws.
+        // Raster pages are mipmapped: compute passes make the levels once
+        // a raster node draws, or without compute render passes draw them.
         if kind == PageKind::Dem {
             self.make_prepare(gpu);
         }
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
+        let written = if gpu.caps().compute {
+            TextureUsages::STORAGE_BINDING
+        } else {
+            TextureUsages::empty()
+        };
         let textures = match kind {
             PageKind::Raster => vec![PageTexture {
-                usage: uploaded | TextureUsages::STORAGE_BINDING,
+                usage: uploaded | written,
                 mip_levels: levels(0),
                 ..texture("raster tiles", 0, uploaded)
             }],
@@ -528,9 +532,9 @@ impl Images {
         }
     }
 
-    /// The compute pass that makes mip levels for raster layers uploaded
-    /// since the last, if any, after the passes that extend their edges;
-    /// and its dispatches.
+    /// The passes that make mip levels for raster layers uploaded since
+    /// the last, if any, after the passes that extend their edges; and
+    /// their dispatches or draws.
     pub(crate) fn mip_pass(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -543,8 +547,8 @@ impl Images {
         // The last frame, which used them, was submitted.
         std::mem::take(&mut self.edges).release(gpu);
         let mut passes = Vec::new();
-        let mut commands = Vec::new();
-        let mut dispatches = 0;
+        let mut levels = Vec::new();
+        let mut work = 0;
         for page in self.pages.iter_mut().flatten() {
             if page.mip_layers.is_empty() {
                 continue;
@@ -554,81 +558,51 @@ impl Images {
                 destroy_mips(gpu, page.mips.take().expect("checked"));
             }
             let texture = page.page.texture(0);
-            let levels = page.page.mip_levels(0);
             let mips = page.mips.get_or_insert_with(|| {
-                let regions = gpu.create_buffer(&BufferDesc {
-                    label: "image mip regions",
-                    size: u64::from(capacity) * 16,
-                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-                });
-                let views: Vec<TextureId> = (0..levels)
+                let views: Vec<TextureId> = (0..page.page.mip_levels(0))
                     .map(|level| gpu.create_texture_view(texture, level..level + 1))
                     .collect();
-                let groups = downsampler.groups(gpu, &views, regions, false);
+                let chain = downsampler.chain(
+                    gpu,
+                    (texture, &views),
+                    ("image mip regions", capacity),
+                    false,
+                );
                 Mips {
                     revision,
-                    regions,
                     views,
-                    groups,
+                    chain,
                 }
             });
             let [side, _] = page.page.size(0);
             let edges = std::mem::take(&mut page.edges);
             if !edges.is_empty() {
-                let count = edges.len() as u32;
-                let scratch = gpu.create_texture(&TextureDesc {
-                    label: "extended tiles",
-                    width: side,
-                    height: side,
-                    array_layers: count,
-                    dimension: TextureViewDimension::D2Array,
-                    format: TextureFormat::Rgba8Unorm,
-                    usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
-                    sample_count: 1,
-                    mip_levels: 1,
-                    view_formats: &[],
-                });
-                let regions = gpu.create_buffer(&BufferDesc {
-                    label: "extended tile areas",
-                    size: u64::from(count) * 16,
-                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-                });
-                let words: Vec<[u32; 4]> = (edges.iter())
-                    .map(|&(layer, [x0, y0, x1, y1])| [layer, x0 | y0 << 16, x1 | y1 << 16, 0])
-                    .collect();
-                gpu.write_buffer(regions, 0, bytemuck::cast_slice(&words));
-                let group = downsampler.extend_group(gpu, mips.views[0], scratch, regions);
-                self.edges.push((scratch, regions, group));
-                passes.push(Pass::Compute(ComputePass {
-                    label: "image edges",
-                    commands: downsampler.extend(gpu, group, side, count)?,
-                }));
-                passes.push(Pass::CopyTexture {
-                    source: scratch,
-                    destination: texture,
-                    copies: (edges.iter().zip(0..))
-                        .map(|(&(layer, _), i)| TextureCopy {
-                            from: [0, 0, i],
-                            to: [0, 0, layer],
-                            size: [side, side, 1],
-                        })
-                        .collect(),
-                });
-                dispatches += 1;
+                let extend = (texture, mips.views[0], side);
+                let extended = downsampler.extend_passes(gpu, extend, &edges, &mut self.edges)?;
+                work += extended.len() as u32 - 1;
+                passes.extend(extended);
             }
             let layers = std::mem::take(&mut page.mip_layers);
             let regions: Vec<[u32; 4]> = layers.iter().map(|&layer| [layer, 0, 0, side]).collect();
-            gpu.write_buffer(mips.regions, 0, bytemuck::cast_slice(&regions));
-            let count = layers.len() as u32;
-            commands.extend(downsampler.dispatches(gpu, &mips.groups, side, count)?);
-            dispatches += mips.groups.len() as u32;
+            mips.chain.regions.write(gpu, &regions);
+            let chain = ("image mips", &mips.chain);
+            let (made, n) = downsampler.mip_passes(gpu, chain, &regions, &mut self.edges)?;
+            work += n;
+            levels.extend(made);
         }
-        (!commands.is_empty()).then(|| {
-            passes.push(Pass::Compute(ComputePass {
-                label: "image mips",
-                commands,
-            }));
-            (passes, dispatches)
+        // One compute pass makes every page's levels.
+        let mut merged: Vec<Pass> = Vec::new();
+        for pass in levels {
+            match (merged.last_mut(), pass) {
+                (Some(Pass::Compute(last)), Pass::Compute(next)) => {
+                    last.commands.extend(next.commands);
+                }
+                (_, pass) => merged.push(pass),
+            }
+        }
+        (!merged.is_empty()).then(|| {
+            passes.extend(merged);
+            (passes, work)
         })
     }
 
@@ -951,7 +925,7 @@ mod prepare {
                 }
                 let views = *targets.views[layer].get_or_insert_with(|| {
                     [DEM_PADDED, DEM_SLOPES]
-                        .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer, None))
+                        .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer, 0, None))
                 });
                 let dim = page.page.size(DEM_RAW)[0];
                 for (pipeline, group, target, border) in [

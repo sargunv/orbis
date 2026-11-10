@@ -148,7 +148,9 @@ impl Place {
                 Words::Core(words) => write_texels(gpu, texture, base + at, words),
                 Words::Host { bytes, offset, len } => {
                     let bytes = gpu.read_host_bytes(bytes, offset..offset + u64::from(len) * 4);
-                    write_texels(gpu, texture, base + at, bytemuck::cast_slice(&bytes));
+                    // Host bytes come unaligned (copied from a JS buffer).
+                    let words: Vec<u32> = bytemuck::pod_collect_to_vec(&bytes);
+                    write_texels(gpu, texture, base + at, &words);
                 }
             },
             #[cfg(cpu_driven)]
@@ -444,7 +446,7 @@ impl Mirrors {
             Words::Core(words) => mirror[at..end].copy_from_slice(words),
             Words::Host { bytes, offset, len } => {
                 let bytes = gpu.read_host_bytes(bytes, offset..offset + u64::from(len) * 4);
-                mirror[at..end].copy_from_slice(bytemuck::cast_slice(&bytes));
+                bytemuck::cast_slice_mut(&mut mirror[at..end]).copy_from_slice(&bytes);
             }
         }
     }

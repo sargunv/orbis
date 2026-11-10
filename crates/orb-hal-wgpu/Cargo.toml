@@ -15,6 +15,9 @@ gl = ["wgpu/webgl", "wgpu/gles"]
 # Vulkan beside Metal on Apple platforms (MoltenVK), for checking the Vulkan
 # path under the validation layer there; Linux and Android always have it.
 vulkan = ["wgpu/vulkan-portability"]
+# Natively on macOS, GLES through ANGLE (`libEGL.dylib`, `libGLESv2.dylib`, which
+# Chromium ships): WebGL 2's back end run outside a browser, `ORB_BACKEND=gl`.
+angle = ["gl", "wgpu/angle"]
 
 [dependencies]
 futures-channel.workspace = true
@@ -25,6 +28,8 @@ wgpu.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
 wasm-bindgen.workspace = true
+# WebGL 2's readbacks wait for their fence a task at a time.
+wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["HtmlVideoElement", "ImageBitmap"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

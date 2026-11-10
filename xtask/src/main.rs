@@ -39,14 +39,18 @@ cargo xtask <task>
                packaged with Gradle; --run installs it on this worktree's
                Android emulator and starts it; --leakcheck checks that maps
                dropped there leave no GPU resources behind
-  web [--names]  build core.wasm, split along web/deferred.txt into what a
+  web [--names] [--panics] [--gl]
+               build core.wasm, split along web/deferred.txt into what a
                map's first frames run and core-deferred.wasm, and
                core-gl.wasm (WebGL 2) into web/pkg, and report sizes;
                --names also writes core.wasm whole, with its function
-               names, to target/web/core-names.wasm (for `pnpm -C web coverage`)
+               names, to target/web/core-names.wasm (for `pnpm -C web coverage`);
+               --panics builds both to say on the console why they panic
+               (bigger: for debugging, never to ship); --gl builds
+               core-gl.wasm alone
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
-  rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|lavapipe|all|native-cpu|native-cpu-tex]
+  rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2]
                the fixtures: GL JS's render (default) and query suites, or
                MapLibre Native's native-render, native-query and
                native-expression suites; lavapipe runs the render suites
@@ -95,7 +99,11 @@ fn main() -> ExitCode {
         Some("check") => check(&args[1..]),
         Some("clippy") => clippy(&args[1..]),
         Some("android") => android::run(&args[1..]),
-        Some("web") => web::build(args.iter().any(|a| a == "--names")),
+        Some("web") => web::build(web::Options {
+            names: args.iter().any(|a| a == "--names"),
+            panics: args.iter().any(|a| a == "--panics"),
+            gl: args.iter().any(|a| a == "--gl"),
+        }),
         Some("pages") => web::pages(),
         Some("rt") => rt(&args[1..]),
         Some("bench") if args.iter().any(|a| a == "--compare") => compare::bench(&args[1..]),
@@ -153,11 +161,10 @@ fn rt(args: &[String]) -> Result<(), String> {
     if suite == "native-render" {
         fixtures::ensure()?;
     }
-    if args
-        .windows(2)
-        .any(|pair| pair[0] == "--platform" && ["chrome", "all"].contains(&pair[1].as_str()))
-    {
-        web::build(false)?;
+    if args.windows(2).any(|pair| {
+        pair[0] == "--platform" && ["chrome", "chrome-webgl2", "all"].contains(&pair[1].as_str())
+    }) {
+        web::build(Default::default())?;
     }
     let mut command = vec!["run", "--release", "-p", "orb-fixtures", "--"];
     command.extend(args.iter().map(String::as_str));
