@@ -135,6 +135,20 @@ impl Offscreen {
 
     /// The map with its style set, before anything has loaded.
     pub(crate) fn new(options: &Options, capacity: SceneCapacity) -> Result<Self, String> {
+        let services = native_services(Arc::new(|| {}));
+        let mut map = Map::new(services, camera(options));
+        // Snapshots use the same white backing as the native demo window.
+        map.set_clear_color([1.0; 4]);
+        map.set_scene_capacity(capacity);
+        // Tests compare maps reached by different paths: labels placed by
+        // the camera alone, as AGENTS.md's path rule has the path tests.
+        map.set_stable_labels(false);
+        load_style(&mut map, options)?;
+        Self::with_map(map)
+    }
+
+    /// `map` drawing offscreen, as it is.
+    pub(crate) fn with_map(map: Map) -> Result<Self, String> {
         // Tests count frames: with no executor, pipelines compile when
         // asked for.
         let mut gpu = pollster::block_on(WgpuGpu::offscreen())?;
@@ -154,15 +168,6 @@ impl Offscreen {
             mip_levels: 1,
             view_formats: &[],
         });
-        let services = native_services(Arc::new(|| {}));
-        let mut map = Map::new(services, camera(options));
-        // Snapshots use the same white backing as the native demo window.
-        map.set_clear_color([1.0; 4]);
-        map.set_scene_capacity(capacity);
-        // Tests compare maps reached by different paths: labels placed by
-        // the camera alone, as AGENTS.md's path rule has the path tests.
-        map.set_stable_labels(false);
-        load_style(&mut map, options)?;
         Ok(Self {
             gpu,
             target,

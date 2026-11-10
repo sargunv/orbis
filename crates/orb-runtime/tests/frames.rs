@@ -479,9 +479,8 @@ mod tests {
         let services = crate::common::native_services(Arc::new(move || {
             wake_count.fetch_add(1, Ordering::SeqCst);
         }));
-        let mut offscreen = crate::common::Offscreen::load(&tokyo(15.0)).unwrap().0;
-        offscreen.map = crate::common::Map::new(services, crate::common::camera(&tokyo(15.0)));
-        offscreen.renderer = None;
+        let map = crate::common::Map::new(services, crate::common::camera(&tokyo(15.0)));
+        let mut offscreen = crate::common::Offscreen::with_map(map).unwrap();
         crate::common::load_style(&mut offscreen.map, &tokyo(15.0)).unwrap();
         let started = std::time::Instant::now();
         let mut events = Vec::new();
@@ -521,12 +520,6 @@ mod tests {
 
     #[test]
     fn delayed_results_wake_and_publish_without_camera_input() {
-        let options = crate::common::Options {
-            style: None,
-            encoding: "mvt".into(),
-            at: None,
-        };
-        let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
         let executor = Arc::new(HeldExecutor::default());
         let wakes = Arc::new(AtomicUsize::new(0));
         let wake_count = wakes.clone();
@@ -550,8 +543,9 @@ mod tests {
             1.5,
             &crate::common::web_mercator(),
         );
-        offscreen.map = crate::common::Map::new(services, Some(camera));
-        offscreen.renderer = None;
+        let mut offscreen =
+            crate::common::Offscreen::with_map(crate::common::Map::new(services, Some(camera)))
+                .unwrap();
         offscreen
             .map
             .set_style_json(
@@ -717,12 +711,6 @@ mod tests {
             ]
         }"#,
         ] {
-            let options = crate::common::Options {
-                style: None,
-                encoding: "mvt".into(),
-                at: None,
-            };
-            let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
             let fetch = crate::common::NativeFetch::new();
             let services = crate::common::Services {
                 clock: Arc::new(orb_host_native::NativeClock::default()),
@@ -741,8 +729,9 @@ mod tests {
                 1.5,
                 &crate::common::web_mercator(),
             );
-            offscreen.map = crate::common::Map::new(services, Some(camera));
-            offscreen.renderer = None;
+            let mut offscreen =
+                crate::common::Offscreen::with_map(crate::common::Map::new(services, Some(camera)))
+                    .unwrap();
             offscreen.map.set_style_json(style).unwrap();
             // Inline jobs publish their completion on the following frame.
             let mut loaded = false;
@@ -1094,12 +1083,6 @@ mod tests {
     /// A map of `style` at Null Island, with labels faded over GL JS's
     /// default 300 ms and placed on the placement thread with local fonts.
     fn null_island(style: &str) -> crate::common::Offscreen {
-        let options = crate::common::Options {
-            style: None,
-            encoding: "mvt".into(),
-            at: None,
-        };
-        let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
         let fetch = crate::common::NativeFetch::new();
         let jobs = crate::common::PoolJobs::new(
             fetch.clone(),
@@ -1120,20 +1103,15 @@ mod tests {
             1.5,
             &crate::common::web_mercator(),
         );
-        offscreen.map = crate::common::Map::new(services, Some(camera));
-        offscreen.renderer = None;
+        let mut offscreen =
+            crate::common::Offscreen::with_map(crate::common::Map::new(services, Some(camera)))
+                .unwrap();
         offscreen.map.set_style_json(style).unwrap();
         offscreen
     }
 
     #[test]
     fn styles_with_symbol_layers_render() {
-        let options = crate::common::Options {
-            style: None,
-            encoding: "mvt".into(),
-            at: None,
-        };
-        let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
         let fetch = crate::common::NativeFetch::new();
         let services = crate::common::Services {
             clock: Arc::new(orb_host_native::NativeClock::default()),
@@ -1152,8 +1130,9 @@ mod tests {
             1.5,
             &crate::common::web_mercator(),
         );
-        offscreen.map = crate::common::Map::new(services, Some(camera));
-        offscreen.renderer = None;
+        let mut offscreen =
+            crate::common::Offscreen::with_map(crate::common::Map::new(services, Some(camera)))
+                .unwrap();
         offscreen
             .map
             .set_style_json(
