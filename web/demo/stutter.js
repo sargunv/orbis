@@ -308,16 +308,14 @@ async function runOrbis(container, scenario, style, legs, show) {
     if (gpuMatched) {
       timed.forEach((f, i) => {
         f.passes = submissions[i].passes;
-        f.gpu = f.passes.reduce((sum, [, d]) => sum + d, 0);
+        f.gpu = submissions[i].span;
       });
     }
     const settled = performance.now();
     await idle(() => map.once("idle"), scenario.name);
     off();
     const moving = frames.filter((f) => f.t > started && f.t <= ended);
-    const gpu = submissions.map((s) =>
-      s.passes.reduce((sum, [, d]) => sum + d, 0),
-    );
+    const gpu = submissions.map((s) => s.span);
     return {
       frames: moving,
       longTasks: long.tasks,
@@ -579,8 +577,10 @@ function engineReport(rows, gl) {
       (gl
         ? ""
         : " Between frames: `prepare`'s work on the page since the frame " +
-          "before (arrived tiles applied and asked for between frames); GPU: the frame's passes, where the device has timestamp " +
-          "queries; uploaded and tiles arrived: since the frame before, between frames included."),
+          "before (arrived tiles applied and asked for between frames); GPU: the frame's " +
+          "submission, from its first pass's start to its last one's end, where the device has " +
+          "timestamp queries (tiled GPUs overlap passes, whose times then sum to more); " +
+          "uploaded and tiles arrived: since the frame before, between frames included."),
   );
   for (const r of rows) {
     lines.push("", `#### ${r.scenario.name}`, "", `- style: ${r.style}`);

@@ -42,6 +42,13 @@ const LARGEST_BUFFER: u64 = 1 << 30;
 #[cfg(not(target_arch = "wasm32"))]
 const DRIVER: &str = "ORB_DRIVER";
 
+/// A native device's 2D texture side, lowered to this to stand in for a
+/// device that offers no more ([`Limits::largest_texture_dimension_2d`]):
+/// at `8192`, as in Firefox's WebGL 2, a terrain view of more than 32
+/// tiles gives each drape stack a layer of its own.
+#[cfg(not(target_arch = "wasm32"))]
+const TEXTURE_SIDE: &str = "ORB_TEXTURE_SIDE";
+
 /// The limits Orbis asks `adapter`'s device for: WebGPU's defaults, lowered
 /// where the adapter falls short of them (the iOS simulator has 15
 /// inter-stage variables), with buffers and storage bindings as large as it
@@ -394,6 +401,13 @@ impl WgpuGpu {
             Ok("webgl2") => gpu.force_webgl2(),
             Ok("" | "gpu") | Err(_) => {}
             Ok(other) => panic!("{DRIVER}={other}: expected gpu, cpu, cpu-tex or webgl2"),
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(side) = std::env::var(TEXTURE_SIDE) {
+            let side: u32 = (side.parse()).unwrap_or_else(|e| panic!("{TEXTURE_SIDE}={side}: {e}"));
+            let limits = &mut gpu.caps.limits;
+            limits.largest_texture_dimension_2d = limits.largest_texture_dimension_2d.min(side);
+            limits.max_texture_dimension_2d = limits.max_texture_dimension_2d.min(side);
         }
         gpu
     }

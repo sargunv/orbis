@@ -231,8 +231,12 @@ struct Frame {
     cpu: Duration,
     /// Per stage in [`STAGES`].
     stages: [Duration; STAGES.len()],
+    /// Its submissions' GPU time, each's from its first pass's start to
+    /// its last one's end, as the gestures and frames benches time them.
     gpu: Option<Duration>,
-    /// The GPU's time by pass label, slowest first.
+    /// The GPU's time by pass label, slowest first. On tiled GPUs passes
+    /// overlap, so they sum to more than [`gpu`](Self::gpu), and a pass
+    /// split in two takes longer here without the frame doing so.
     passes: Vec<(String, Duration)>,
     uploaded: u64,
     arrived: u32,
@@ -425,8 +429,9 @@ fn run_path(
         // timestamp queries never run out.
         if gpu_timestamps {
             let frame = frames.last_mut().expect("pushed");
-            frame.passes = by_name(runtime.gpu_timings().into_iter().flat_map(|s| s.passes));
-            frame.gpu = Some(frame.passes.iter().map(|(_, d)| *d).sum());
+            let timings = runtime.gpu_timings();
+            frame.gpu = Some(timings.iter().map(|s| s.gpu()).sum());
+            frame.passes = by_name(timings.into_iter().flat_map(|s| s.passes));
         }
     }
     runtime.set_gpu_timing(false);
@@ -474,7 +479,8 @@ impl StutterReport {
             self.size.0,
             self.size.1,
             if self.gpu_timestamps {
-                "timestamp queries around every pass"
+                "timestamp queries around every pass, a frame's GPU time from its first pass's \
+                 start to its last one's end"
             } else {
                 "**no timestamp queries**"
             },
@@ -529,9 +535,10 @@ impl StutterReport {
         writeln!(out)?;
         writeln!(
             out,
-            "Times in ms. CPU: `Map::render`; GPU: its submissions' passes; worst of both: the \
-             slower of the two, what a display waits for; settle: from the path's end until the \
-             map is idle."
+            "Times in ms. CPU: `Map::render`; GPU: its submissions, from the first pass's start \
+             to the last one's end; worst of both: the slower of the two, what a display waits \
+             for; settle: from the path's end until the map is idle. Passes overlap on tiled \
+             GPUs, so their times below sum to more than the frame's."
         )?;
         for p in &self.paths {
             writeln!(out)?;
