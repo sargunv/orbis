@@ -20,9 +20,6 @@ importers:
       '@maplibre/native-ffi-opengl-wasm32':
         specifier: 0.202611.0
         version: 0.202611.0
-      '@maplibre/native-ffi-webgpu-wasm32':
-        specifier: 0.202611.0
-        version: 0.202611.0
       '@webgpu/types':
         specifier: 0.1.74
         version: 0.1.74
@@ -103,9 +100,6 @@ packages:
 
   '@maplibre/native-ffi-opengl-wasm32@0.202611.0':
     resolution: {integrity: sha512-YPt1Jw6G6BKF0CiGxD6xpECfxKxOhyNkehPU/+Aw7ar3Rhp4uzeN1sNXEYf+Roi4irSErBU8ja0BeuS6jj0tAg==}
-
-  '@maplibre/native-ffi-webgpu-wasm32@0.202611.0':
-    resolution: {integrity: sha512-VHyenFgP/9riRiqKjTQL44+Rwt7os45EojkyVjmS20PzgLIPZ2ABySIk00qgZLCuAT0iwoLKUWBA8pvB5TNuQg==}
 
   '@maplibre/native-ffi@0.202611.0':
     resolution: {integrity: sha512-pXm2GZ7Aqnx3GHiqvzlmKzf9WezXwVdUmZeWO4FmBQvVlRQu6uS5O39SSgDUajqPo5J7mu26eEPV4qwYX5OrbQ==}
@@ -1406,8 +1400,6 @@ snapshots:
       '@mapbox/point-geometry': 1.1.0
 
   '@maplibre/native-ffi-opengl-wasm32@0.202611.0': {}
-
-  '@maplibre/native-ffi-webgpu-wasm32@0.202611.0': {}
 
   '@maplibre/native-ffi@0.202611.0': {}
 
