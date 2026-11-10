@@ -25,6 +25,8 @@ pub(crate) struct MapHandle {
     snapshot: Mutex<Option<mln_map_snapshot>>,
     /// Whether a render session is attached, for release to refuse at once.
     pub(crate) has_session: AtomicBool,
+    /// Fixed when the map is made.
+    pub(crate) mode: mln_map_mode,
 }
 
 impl MapHandle {
@@ -133,6 +135,10 @@ pub(crate) struct MapEntry {
     /// the ids of a query's further parts.
     pub(crate) queries: std::collections::HashMap<u64, crate::queries::Query>,
     pub(crate) query_aliases: std::collections::HashMap<u64, u64>,
+    /// The completion of the still image the map's session draws next, a
+    /// frame at a time, as Native renders stills asynchronously: the
+    /// runtime's other work goes on meanwhile.
+    pub(crate) still: Option<Completion>,
 }
 
 impl MapEntry {
@@ -210,9 +216,13 @@ impl MapEntry {
         self.handle.has_session.store(attached, Ordering::Release);
     }
 
-    /// Whether the map moves or loads with nothing drawing it.
+    /// Whether the map moves or loads with nothing drawing it, or its
+    /// session's still image needs another frame.
     fn busy(&self) -> bool {
-        self.session.is_none() && (self.map.is_moving() || self.woken.load(Ordering::Acquire))
+        match self.session {
+            None => self.map.is_moving() || self.woken.load(Ordering::Acquire),
+            Some(_) => self.still.is_some() && self.map.needs_frame(),
+        }
     }
 }
 
@@ -482,6 +492,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                 id: OnceLock::new(),
                 snapshot: Mutex::new(None),
                 has_session: AtomicBool::new(false),
+                mode: options.map_mode,
             });
             let id = handles::insert(Object::Map(handle.clone()));
             let _ = handle.id.set(id);
@@ -539,6 +550,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         style: Default::default(),
                         queries: Default::default(),
                         query_aliases: Default::default(),
+                        still: None,
                     },
                 );
                 // Native's map moves its camera into place as it's made.
@@ -618,7 +630,8 @@ fn release(map: mln_map, completion: Option<Completion>, force: bool) -> Result 
                     .end(MLN_CAMERA_TRANSITION_OUTCOME_CLOSED, entry.generation);
             }
             let queries = entry.queries.drain().map(|(_, q)| q.completion);
-            for c in entry.style_waiters.drain(..).chain(queries) {
+            let still = entry.still.take();
+            for c in entry.style_waiters.drain(..).chain(queries).chain(still) {
                 c.complete(
                     Err(Failure::new(MLN_STATUS_CANCELLED, "the map was released")),
                     0,

@@ -798,19 +798,41 @@ impl Map {
     /// takes, waiting for data in between; an error after [`STILL_TIMEOUT`].
     pub fn snapshot(&mut self, width: u32, height: u32, scale: f64) -> Result<Image, Error> {
         let deadline = Instant::now() + STILL_TIMEOUT;
+        loop {
+            if let Some(image) = self.snapshot_step(width, height, scale)? {
+                return Ok(image);
+            }
+            self.wait(deadline)?;
+        }
+    }
+
+    /// [`snapshot`](Self::snapshot) for a host that can't wait on it:
+    /// draws the frames the picture needs now and returns it once the map
+    /// has settled, `None` until then. Call it again when the map is woken
+    /// or [`needs_frame`](Self::needs_frame); it never times out.
+    pub fn snapshot_step(
+        &mut self,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> Result<Option<Image>, Error> {
         let px = |v: u32| (f64::from(v) * scale).round() as u32;
         let mut target = self.offscreen(px(width), px(height), scale);
         self.set_mode(RenderMode::Still);
-        let pixels = self
-            .settle(&mut target, deadline)
-            .and_then(|_| target.read_pixels());
-        let (width, height) = target.size();
+        let image = match self.settle_step(&mut target) {
+            Ok(Some(_)) => target.read_pixels().map(|pixels| {
+                let (width, height) = target.size();
+                Some(Image {
+                    width,
+                    height,
+                    pixels,
+                })
+            }),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        };
         self.offscreen = Some(target);
-        Ok(Image {
-            width,
-            height,
-            pixels: pixels?,
-        })
+        image
     }
 
     /// Draws one tile of a tile matrix set on the map's plane as still
@@ -822,6 +844,44 @@ impl Map {
     /// was. An error after [`STILL_TIMEOUT`].
     pub fn render_tile(&mut self, tile: &TileRequest) -> Result<Image, Error> {
         let deadline = Instant::now() + STILL_TIMEOUT;
+        let (index, px) = Self::tile_pixels(tile)?;
+        let mut target = self.offscreen(px, px, tile.scale);
+        let drawn = self.draw_tile(&mut target, tile, index, deadline);
+        let pixels = drawn.and_then(|()| target.read_pixels());
+        self.offscreen = Some(target);
+        Ok(Image {
+            width: px,
+            height: px,
+            pixels: pixels?,
+        })
+    }
+
+    /// [`render_tile`](Self::render_tile) for a host that can't wait on
+    /// it, as [`snapshot_step`](Self::snapshot_step) is
+    /// [`snapshot`](Self::snapshot)'s: the picture once the map has
+    /// settled, `None` until then. The camera is the interactive one again
+    /// between calls, so commands may move it meanwhile.
+    pub fn render_tile_step(&mut self, tile: &TileRequest) -> Result<Option<Image>, Error> {
+        let (index, px) = Self::tile_pixels(tile)?;
+        let mut target = self.offscreen(px, px, tile.scale);
+        let image = match self.tile_step(&mut target, tile, index) {
+            Ok(true) => target.read_pixels().map(|pixels| {
+                Some(Image {
+                    width: px,
+                    height: px,
+                    pixels,
+                })
+            }),
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        };
+        self.offscreen = Some(target);
+        image
+    }
+
+    /// `tile`'s index, once it's checked to be in its grid, and its pixels
+    /// a side.
+    fn tile_pixels(tile: &TileRequest) -> Result<(TileIndex, u32), Error> {
         let index = TileIndex::new(tile.z, tile.col, tile.row);
         let tms = &tile.tile_matrix_set;
         if !tms.contains(index) {
@@ -840,16 +900,7 @@ impl Map {
                 tile.size, tile.scale
             )));
         }
-        let px = px as u32;
-        let mut target = self.offscreen(px, px, tile.scale);
-        let drawn = self.draw_tile(&mut target, tile, index, deadline);
-        let pixels = drawn.and_then(|()| target.read_pixels());
-        self.offscreen = Some(target);
-        Ok(Image {
-            width: px,
-            height: px,
-            pixels: pixels?,
-        })
+        Ok((index, px as u32))
     }
 
     /// Applies what has arrived, the style among it, without drawing: a
@@ -881,16 +932,58 @@ impl Map {
         index: TileIndex,
         deadline: Instant,
     ) -> Result<(), Error> {
-        // The style's projection sets the plane. Until it is in, nothing
-        // draws: a frame would load what the interactive camera shows.
-        self.set_mode(RenderMode::Still);
-        while self.map.style_doc().is_none() {
-            self.arrive(target)?;
-            self.style_failed()?;
-            if self.map.style_doc().is_none() {
-                self.wait(deadline)?;
-            }
+        while !self.tile_style_in(target)? {
+            self.wait(deadline)?;
         }
+        let (camera, tiles) = self.tile_scene(tile, index)?;
+        let interactive = *self.map.camera();
+        self.map.jump_to_state(camera);
+        self.set_mode(RenderMode::Tile(tiles));
+        let drawn = self.settle(target, deadline).map(|_| ());
+        self.map.jump_to_state(interactive);
+        drawn
+    }
+
+    /// One step of [`draw_tile`](Self::draw_tile): whether the map has
+    /// settled on the tile. The interactive camera is back after it.
+    fn tile_step(
+        &mut self,
+        target: &mut Target,
+        tile: &TileRequest,
+        index: TileIndex,
+    ) -> Result<bool, Error> {
+        if !self.tile_style_in(target)? {
+            return Ok(false);
+        }
+        let (camera, tiles) = self.tile_scene(tile, index)?;
+        let interactive = *self.map.camera();
+        self.map.jump_to_state(camera);
+        self.set_mode(RenderMode::Tile(tiles));
+        let settled = self.settle_step(target).map(|report| report.is_some());
+        self.map.jump_to_state(interactive);
+        settled
+    }
+
+    /// Whether the style is in, after taking in what arrived. The style's
+    /// projection sets a tile's plane. Until it is in, nothing draws: a
+    /// frame would load what the interactive camera shows.
+    fn tile_style_in(&mut self, target: &mut Target) -> Result<bool, Error> {
+        if self.map.style_doc().is_some() {
+            return Ok(true);
+        }
+        self.set_mode(RenderMode::Still);
+        self.arrive(target)?;
+        self.style_failed()?;
+        Ok(self.map.style_doc().is_some())
+    }
+
+    /// The camera that draws `tile`, and the grid of it and its
+    /// neighbours whose labels it places.
+    fn tile_scene(
+        &self,
+        tile: &TileRequest,
+        index: TileIndex,
+    ) -> Result<(CameraState, Vec<GridTile>), Error> {
         let surface = self.map.surface();
         let tms = &tile.tile_matrix_set;
         if surface.globe.is_some() || !tms.projection().same_plane(&surface.projection) {
@@ -945,12 +1038,7 @@ impl Map {
                     .to_degrees(),
             ..grid(col, row).expect("checked above").camera
         };
-        let interactive = *self.map.camera();
-        self.map.jump_to_state(camera);
-        self.set_mode(RenderMode::Tile(tiles));
-        let drawn = self.settle(target, deadline).map(|_| ());
-        self.map.jump_to_state(interactive);
-        drawn
+        Ok((camera, tiles))
     }
 
     fn set_mode(&mut self, mode: RenderMode) {
@@ -964,21 +1052,28 @@ impl Map {
     /// Renders until two frames in a row are idle, the second drawing what
     /// the first's messages brought, waiting for data between frames.
     fn settle(&mut self, target: &mut Target, deadline: Instant) -> Result<FrameReport, Error> {
+        loop {
+            if let Some(report) = self.settle_step(target)? {
+                return Ok(report);
+            }
+            self.wait(deadline)?;
+        }
+    }
+
+    /// Renders until two frames in a row are idle, and returns the second
+    /// one's report, or `None` at the first frame that leaves work to wait
+    /// for.
+    fn settle_step(&mut self, target: &mut Target) -> Result<Option<FrameReport>, Error> {
         let mut was_idle = false;
         loop {
             let report = self.frame(target, self.now())?;
             // A style that failed to load never settles: say why at once.
             self.style_failed()?;
-            if let Some(report) = report {
-                if report.idle && was_idle {
-                    return Ok(report);
-                }
-                was_idle = report.idle;
-                if was_idle {
-                    continue;
-                }
+            match report {
+                Some(report) if report.idle && was_idle => return Ok(Some(report)),
+                Some(report) if report.idle => was_idle = true,
+                _ => return Ok(None),
             }
-            self.wait(deadline)?;
         }
     }
 
@@ -1000,13 +1095,24 @@ impl Map {
                 self.map.job_counts()
             )));
         }
+        self.wait_woken((deadline - now).min(Duration::from_millis(16)));
+        Ok(())
+    }
+
+    /// Blocks until the map is woken (data arrived, or a pipeline a frame
+    /// waited for compiled) or `timeout` passes: for a host that must show
+    /// a whole frame now, between frames whose report says they waited
+    /// for one.
+    pub fn wait_woken(&self, timeout: Duration) {
         let (lock, condvar) = &*self.signal;
         let guard = lock.lock().expect("signal poisoned");
         if !self.woken.load(Ordering::Acquire) {
-            let wait = (deadline - now).min(Duration::from_millis(16));
-            drop(condvar.wait_timeout(guard, wait).expect("signal poisoned"));
+            drop(
+                condvar
+                    .wait_timeout(guard, timeout)
+                    .expect("signal poisoned"),
+            );
         }
-        Ok(())
     }
 
     /// The time of a frame the map times itself: the host's last frame's

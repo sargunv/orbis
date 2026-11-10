@@ -507,7 +507,9 @@ pub unsafe extern "C" fn mln_render_session_demand_frame(
                 ));
             }
             if demand.token == MLN_FRAME_DEMAND_TOKEN_STILL_IMAGE {
-                return Err(Failure::argument("the still image token is the library's"));
+                return Err(Failure::argument(
+                    "the still image token is reserved for the library's still images",
+                ));
             }
             let id = handle.id();
             handle.runtime.post(move |state| {
@@ -584,9 +586,14 @@ fn render_whole(
     let deadline = std::time::Instant::now() + PIPELINE_WAIT;
     loop {
         let report = map.render(target, now)?;
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
         match &report {
-            Some(r) if r.frame.waited && std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+            // A compile wakes the map when it's done. A frame that waited
+            // with none pending (a compile's arrival) draws it in the next.
+            Some(r) if r.frame.waited && !left.is_zero() => {
+                if r.frame.pipelines_pending > 0 {
+                    map.wait_woken(left.min(std::time::Duration::from_millis(16)));
+                }
             }
             _ => return Ok(report),
         }
@@ -598,6 +605,7 @@ fn render_whole(
 pub(crate) fn pump(state: &mut State) {
     let now = state.now();
     let mut rendered = Vec::new();
+    let mut stills = Vec::new();
     let State { sessions, maps, .. } = state;
     for entry in sessions.values_mut() {
         let Some(map) = maps.get_mut(&entry.map) else {
@@ -606,6 +614,9 @@ pub(crate) fn pump(state: &mut State) {
         // An open command group holds the map's changes back from every
         // frame, forced ones too, until the outermost group ends.
         let held = map.groups > 0;
+        if !held && entry.target.is_some() && entry.handle.failed().is_ok() {
+            stills.extend(step_still(map, entry));
+        }
         if entry.handle.tick.swap(false, Ordering::AcqRel)
             && entry.demands.is_empty()
             && !held
@@ -709,6 +720,9 @@ pub(crate) fn pump(state: &mut State) {
             Payload::RenderFrame { needs_repaint },
             String::new(),
         );
+    }
+    for (completion, result, generation) in stills {
+        state.complete(Some(completion), result, generation);
     }
 }
 
@@ -912,43 +926,55 @@ pub unsafe extern "C" fn mln_map_request_still_image(
     unsafe {
         boundary(out_diagnostic, || {
             let handle = handles::map(map.0)?;
+            // A refused call leaves the completion with the caller.
             let completion = Completion::required(completion)?;
+            if !matches!(handle.mode, MLN_MAP_MODE_STATIC | MLN_MAP_MODE_TILE) {
+                return Err(Failure::state("the map is not in static or tile mode"));
+            }
             let id = map.0;
             handle.runtime.post(move |state| {
-                let result = still_image(state, id);
-                let generation = state.maps.get(&id).map_or(0, |m| m.generation);
-                state.complete(Some(completion), result.map(|()| Value::None), generation);
+                let refused = match state.maps.get_mut(&id) {
+                    None => Failure::state("the map was released"),
+                    Some(map) if map.still.is_some() => {
+                        Failure::state("the map already has a still image pending")
+                    }
+                    Some(map) if map.groups > 0 => {
+                        Failure::state("a still image can't be drawn inside a command group")
+                    }
+                    // The map's session draws it from its next step on.
+                    Some(map) => {
+                        map.still = Some(completion);
+                        return;
+                    }
+                };
+                state.complete(Some(completion), Err(refused), 0);
             })
         })
     }
 }
 
-/// Renders a STATIC or TILE map's image into its session (Orbis's Still and
-/// Tile modes), and reports it as a frame with the still image token.
-fn still_image(state: &mut State, id: u64) -> Result {
-    let State { sessions, maps, .. } = state;
-    let map = maps
-        .get_mut(&id)
-        .ok_or_else(|| Failure::state("the map was released"))?;
-    let session = map
-        .session
-        .ok_or_else(|| Failure::state("the map has no render session"))?;
-    let entry = sessions.get_mut(&session).expect("session");
-    let image = match map.mode {
-        MLN_MAP_MODE_STATIC => {
-            map.map
-                .snapshot(entry.logical.width, entry.logical.height, entry.scale)?
-        }
-        MLN_MAP_MODE_TILE => {
-            let mut tile = tile_of(&map.camera(), entry.logical)?;
+/// Draws the next frames of the still image a STATIC or TILE map waits on
+/// (Orbis's Still and Tile modes), and once it is done reports it as a
+/// frame with the still image token and returns its completion's outcome.
+fn step_still(
+    map: &mut crate::map::MapEntry,
+    entry: &mut SessionEntry,
+) -> Option<(Completion, Result<Value>, u64)> {
+    map.still.as_ref()?;
+    let step = match map.mode {
+        MLN_MAP_MODE_STATIC => map
+            .map
+            .snapshot_step(entry.logical.width, entry.logical.height, entry.scale)
+            .map_err(Failure::from),
+        _ => tile_of(&map.camera(), entry.logical).and_then(|mut tile| {
             tile.scale = entry.scale;
-            map.map.render_tile(&tile)?
-        }
-        _ => {
-            return Err(Failure::state(
-                "still images are for MLN_MAP_MODE_STATIC and MLN_MAP_MODE_TILE maps",
-            ));
-        }
+            map.map.render_tile_step(&tile).map_err(Failure::from)
+        }),
+    };
+    let image = match step {
+        Ok(None) => return None,
+        Ok(Some(image)) => image,
+        Err(failure) => return Some((map.still.take()?, Err(failure), map.generation)),
     };
     entry.still = Some(image);
     entry.frame_generation += 1;
@@ -961,7 +987,7 @@ fn still_image(state: &mut State, id: u64) -> Result {
         Some((map.view(), generation, false)),
     ));
     entry.sync_state();
-    Ok(())
+    Some((map.still.take()?, Ok(Value::None), generation))
 }
 
 fn end(
@@ -1270,6 +1296,15 @@ pub(crate) fn drop_session(state: &mut State, id: u64) {
         if let Some(map) = state.maps.get_mut(&entry.map) {
             map.session = None;
             map.handle_flag(false);
+            // The map's still image waits for its next session.
+            if map.still.is_some() {
+                entry.handle.push(result(
+                    MLN_FRAME_DEMAND_TOKEN_STILL_IMAGE,
+                    MLN_RENDER_RESULT_TARGET_NOT_READY,
+                    entry.frame_generation,
+                    None,
+                ));
+            }
         }
         entry.publish();
         if let Some(wake) = entry.handle.frame_wake {
