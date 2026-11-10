@@ -3,11 +3,11 @@
 // `?globe`, on the globe under the demo's sky) at
 // `?at=lon,lat,zoom,bearing,pitch` in Orbis (`?engine=orbis`), the pinned
 // GL JS (`gljs`), MapLibre Native's browser build (`native`, which needs
-// the page cross-origin isolated) or mln-rs's web build (`mlnrs`, its
-// module at `?mlnrs=<url>`), timed from this script's start to the
-// engine's first `idle`. With `?worker=0` Orbis runs on the page's
-// thread, where `?nonce=` compiles its pipelines cold (`cold.js`). The
-// title becomes `done {json}` with `performance.now()` at the script's
+// the page cross-origin isolated) or mln-rs's browser build (`mlnrs`, its
+// module at `?mlnrs=<url>`: `scripts/mlnrs-map.js`, which has no `tour`),
+// timed from this script's start to the engine's first `idle`. With
+// `?worker=0` Orbis runs on the page's thread, where `?nonce=` compiles
+// its pipelines cold (`cold.js`). The title becomes `done {json}` with `performance.now()` at the script's
 // start, the map's creation and idle
 // (and `performance.timeOrigin`, to place them against the harness's
 // request times), or `error <message>`. `window.tour()` then flies the map

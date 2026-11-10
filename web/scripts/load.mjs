@@ -1,11 +1,12 @@
 // Load times in headless Chromium with WebGPU: Orbis, the pinned GL JS and
-// mln-rs's web build (@bartlwrs/mln-rs, fetched by version and checked
-// against its npm integrity into the h2h cache) on demo/load.html, from
-// the page's script start to the engine's first `idle`, 1024×768 at 1×.
-// Each sample opens a fresh browser context, so the HTTP cache is empty;
-// the browser (and its shader cache) is shared, after one untimed pass of
-// each engine and view. Pages are cross-origin isolated, which mln-rs's
-// threads need, for every engine alike.
+// mln-rs's browser build (its examples/web at the commit `cargo xtask h2h`
+// pins, built once into the h2h cache: `views.mjs`'s `mlnrs`) on
+// demo/load.html, from the page's script start to the engine's first
+// `idle` (mln-rs's: fully loaded), 1024×768 at 1×. Each sample opens a
+// fresh browser context, so the HTTP cache is empty; the browser (and its
+// shader cache) is shared, after one untimed pass of each engine and view.
+// Pages are cross-origin isolated, which MapLibre Native's threads need,
+// for every engine alike.
 //
 //   pnpm load --style=<url> [--runs=5] [--engines=orbis,gljs,mlnrs]
 //     [--views=ams13,paris14p60,world2,tokyo16] [--throttle=<Mbit/s>] [--out=<dir>]
@@ -134,7 +135,7 @@ const out = option(
 mkdirSync(out, { recursive: true });
 const extracted = cache ? join(out, "real-world/") : undefined;
 const mounts = {
-  ...(engines.includes("mlnrs") ? { "mlnrs/": await mlnrs() } : {}),
+  ...(engines.includes("mlnrs") ? { "mlnrs/": mlnrs() } : {}),
   ...(extracted ? { "real-world/": extracted } : {}),
 };
 const server = await serveDemo({
@@ -332,7 +333,7 @@ const about = cache
   ? `the real-world render tests, from ${cache}`
   : `${style}${scene === "globe" ? " on the globe" : ""}`;
 lines.push(
-  `Medians [min–max]. ${throttle ? `Engine files compressed over a ${option("throttle")} Mbit/s link. ` : ""}Style ${about}; mln-rs ${MLNRS.name}; GL JS ${gljs}. "Idle" is each engine's own event (MapLibre Native's: its snapshot fully loaded, polled each frame); GL JS's may not wait for symbol fades. Rows and screenshots: ${out}`,
+  `Medians [min–max]. ${throttle ? `Engine files compressed over a ${option("throttle")} Mbit/s link. ` : ""}Style ${about}; mln-rs ${MLNRS.name}; GL JS ${gljs}. "Idle" is each engine's own event (MapLibre Native's: its snapshot fully loaded, polled each frame; mln-rs's: its map fully loaded); GL JS's may not wait for symbol fades, and mln-rs's doesn't. Rows and screenshots: ${out}`,
 );
 console.log(lines.join("\n"));
 if (android) process.exit(0);

@@ -1,18 +1,21 @@
 // What the head-to-head page scripts (load.mjs, memory.mjs) load: their
-// cameras, the h2h cache, mln-rs's web build and MapLibre Native's
+// cameras, the h2h cache, mln-rs's browser build and MapLibre Native's
 // real-world render tests served offline.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 
 /** Cameras as lon,lat,zoom,bearing,pitch. */
@@ -82,33 +85,117 @@ export function realWorldCache() {
   return undefined;
 }
 
-export const MLNRS = {
-  name: "@bartlwrs/mln-rs@0.1.0",
-  tarball: "https://registry.npmjs.org/@bartlwrs/mln-rs/-/mln-rs-0.1.0.tgz",
-  integrity:
-    "sha512-6rLjFbfTOpqYJz7HC4r4Ci3IrF34WuRjFZxHRW4+2vyLatA6VHMGcVYw3bV8SffvfH6+zplemkOCudP380ydAA==",
-};
+const root = fileURLToPath(new URL("../../", import.meta.url));
+/** The mln-rs commit `xtask/h2h/Cargo.toml` pins, which `cargo xtask h2h` builds natively. */
+const MLNRS_REV = readFileSync(
+  join(root, "xtask/h2h/Cargo.toml"),
+  "utf8",
+).match(/^mln-rs = .*rev = "([0-9a-f]{40})"/m)?.[1];
+if (!MLNRS_REV) throw new Error("xtask/h2h/Cargo.toml pins no mln-rs rev");
 
-/** mln-rs's web build, fetched by version, checked against its npm integrity and unpacked into the cache: its `dist/` directory. */
-export async function mlnrs() {
-  const dir = join(cacheDir(), "mln-rs-web-0.1.0");
-  const dist = join(dir, "package/dist/");
-  if (existsSync(join(dist, "index.js"))) return dist;
-  const bytes = Buffer.from(await (await fetch(MLNRS.tarball)).arrayBuffer());
-  const integrity =
-    "sha512-" + createHash("sha512").update(bytes).digest("base64");
-  if (integrity !== MLNRS.integrity)
+export const MLNRS = { name: `louwers/mln-rs@${MLNRS_REV.slice(0, 8)}` };
+
+/**
+ * mln-rs's browser build (its examples/web) at the h2h pin, as its
+ * `just profile=release web` builds it, in the cache: wasm-bindgen's
+ * package, the map's and the tile workers' Web Workers, and as index.js
+ * `mlnrs-map.js`, the `Map` demo/load.js drives. Built once per pin, with
+ * the wasm-bindgen and wasm-opt mise provides.
+ */
+export function mlnrs() {
+  const dir = join(cacheDir(), `mln-rs-web-${MLNRS_REV.slice(0, 8)}`);
+  if (!existsSync(join(dir, "pkg/mln_web_bg.wasm"))) buildMlnrs(dir);
+  copyFileSync(
+    fileURLToPath(new URL("./mlnrs-map.js", import.meta.url)),
+    join(dir, "index.js"),
+  );
+  return dir + "/";
+}
+
+function buildMlnrs(dir) {
+  // Cargo's checkout of the pin, fetched if need be.
+  const metadata = JSON.parse(
+    execFileSync(
+      "cargo",
+      [
+        "metadata",
+        "--format-version=1",
+        "--locked",
+        "--manifest-path",
+        join(root, "xtask/h2h/Cargo.toml"),
+      ],
+      { maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "inherit"] },
+    ),
+  );
+  const checkout = dirname(
+    metadata.packages.find(
+      (p) => p.name === "mln-rs" && p.source?.includes(MLNRS_REV),
+    ).manifest_path,
+  );
+  const bindgen = readFileSync(join(checkout, "Cargo.lock"), "utf8").match(
+    /name = "wasm-bindgen"\nversion = "([^"]+)"/,
+  )?.[1];
+  const have = execFileSync("wasm-bindgen", ["--version"], {
+    encoding: "utf8",
+  });
+  if (!have.includes(` ${bindgen}`))
     throw new Error(
-      `${MLNRS.tarball}: integrity ${integrity}, not ${MLNRS.integrity}`,
+      `${MLNRS.name} needs wasm-bindgen ${bindgen}, not ${have.trim()}: pin that version in mise.toml`,
     );
+  const target = join(cacheDir(), "target");
+  // Cargo's output on stderr: load.mjs's stdout is its report.
+  const run = (command, args, env = {}) =>
+    execFileSync(command, args, {
+      cwd: checkout,
+      env: { ...process.env, ...env },
+      stdio: ["ignore", 2, "inherit"],
+    });
+  console.error(`mlnrs: building ${MLNRS.name}'s browser build`);
+  // The checkout's own toolchain and Cargo config, from its directory; the
+  // `s` opt-level is `just web`'s, for the browser build only.
+  run(
+    "cargo",
+    [
+      "build",
+      "--release",
+      "--locked",
+      "--target=wasm32-unknown-unknown",
+      "-p=mln-rs-web",
+      "-p=mln-rs-web-shaper",
+      "--target-dir",
+      target,
+    ],
+    { CARGO_PROFILE_RELEASE_OPT_LEVEL: "s" },
+  );
   const partial = `${dir}.partial-${process.pid}`;
   rmSync(partial, { recursive: true, force: true });
-  mkdirSync(partial, { recursive: true });
-  writeFileSync(join(partial, "package.tgz"), bytes);
-  execFileSync("tar", ["-xzf", join(partial, "package.tgz"), "-C", partial]);
+  for (const module of ["mln_web", "mln_web_shaper"]) {
+    run("wasm-bindgen", [
+      "--target=web",
+      "--out-dir",
+      join(partial, "pkg"),
+      join(target, `wasm32-unknown-unknown/release/${module}.wasm`),
+    ]);
+    const wasm = join(partial, `pkg/${module}_bg.wasm`);
+    // `just web`'s flags.
+    run("wasm-opt", [
+      "-Oz",
+      "--converge",
+      "--one-caller-inline-max-function-size=20",
+      "--zero-filled-memory",
+      "--low-memory-unused",
+      "--strip-debug",
+      "--strip-producers",
+      "--strip-target-features",
+      wasm,
+      "-o",
+      wasm,
+    ]);
+  }
+  for (const file of ["map-worker.js", "worker.js"])
+    copyFileSync(join(checkout, "examples/web/web", file), join(partial, file));
   rmSync(dir, { recursive: true, force: true });
-  execFileSync("mv", [partial, dir]);
-  return dist;
+  renameSync(partial, dir);
 }
 
 /**
