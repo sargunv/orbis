@@ -200,10 +200,10 @@ pass.
 | `fill-extrusion-translate-anchor` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom | — | 2/2 | — | 0/2 |
 | `fill-extrusion-vertical-gradient` | paint | frame | zoom | 0.50.0 | 7.0.0 | zoom; data accepted (not portable) | — | 2/3 | — | 2/2 |
 | `fill-extrusion-pattern` | paint | tile | zoom, data | 0.27.0; data 0.49.0 | 5.1.0; data 6.5.0 | zoom, data | — | 6/9 | — | 1/9 |
-| `fill-extrusion-ambient-occlusion-wall-intensity` | paint | frame | — | — | — | zoom; preview `style-spec#1796` | — | — | — | — |
-| `fill-extrusion-ambient-occlusion-wall-radius` | paint | frame | — | — | — | zoom; preview `style-spec#1796` | — | — | — | — |
-| `fill-extrusion-ambient-occlusion-ground-intensity` | paint | frame | — | — | — | zoom; preview `style-spec#1796` | — | — | — | — |
-| `fill-extrusion-ambient-occlusion-ground-radius` | paint | frame | — | — | — | zoom; preview `style-spec#1796` | — | — | — | — |
+| `fill-extrusion-ambient-occlusion-wall-intensity` | paint | frame | — | — | — | zoom; camera accepted (not portable); preview `style-spec#1796` | — | — | — | — |
+| `fill-extrusion-ambient-occlusion-wall-radius` | paint | frame | — | — | — | zoom; camera accepted (not portable); preview `style-spec#1796` | — | — | — | — |
+| `fill-extrusion-ambient-occlusion-ground-intensity` | paint | frame | — | — | — | zoom; camera accepted (not portable); preview `style-spec#1796` | — | — | — | — |
+| `fill-extrusion-ambient-occlusion-ground-radius` | paint | frame | — | — | — | zoom; camera accepted (not portable); preview `style-spec#1796` | — | — | — | — |
 
 ### raster
 

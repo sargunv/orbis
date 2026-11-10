@@ -1085,4 +1085,19 @@ fn shadows_occlusion_and_rounded_fills_follow_their_previews() {
     assert_eq!(off.layers[0].get(FILL_ROUNDED_CORNER).evaluate(0.0), 0.0);
     assert!(!off.layers[1].get(EXTRUSION_AO_WALL_INTENSITY).is_set());
     assert!(!off.layers[1].get(EXTRUSION_AO_GROUND_RADIUS).is_set());
+
+    // Drawn per frame, ambient occlusion reads the camera as the rest of
+    // the extrusion's paint does, warning that it isn't portable.
+    let pitch = doc.replace(
+        "\"fill-extrusion-ambient-occlusion-wall-intensity\": 0.5",
+        r#""fill-extrusion-ambient-occlusion-wall-intensity": ["interpolate", ["linear"], ["pitch"], 0, 0, 60, 0.5]"#,
+    );
+    let camera = parse_with(&pitch, Previews::ALL, &[]).unwrap();
+    let paths: Vec<&str> = camera.warnings.iter().map(|w| w.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["layers[1].paint.fill-extrusion-ambient-occlusion-wall-intensity"]
+    );
+    let intensity = camera.layers[1].get(EXTRUSION_AO_WALL_INTENSITY);
+    assert_eq!(intensity.kind(), Kind::Camera);
 }
