@@ -58,7 +58,14 @@ pub(crate) fn run(
     let mut warnings = Vec::new();
     for (view, camera, size) in settings.cameras() {
         progress(&format!("{}: warming the shared runtime", view.name));
-        load(runtime, style, camera, size, &mut warnings)?;
+        load(
+            runtime,
+            style,
+            camera,
+            size,
+            settings.antialias,
+            &mut warnings,
+        )?;
         let (mut cold, mut warm) = (Loads::default(), Loads::default());
         for sample in 0..settings.samples {
             progress(&format!(
@@ -70,9 +77,23 @@ pub(crate) fn run(
             let started = clock::now();
             let fresh = Runtime::new(&RuntimeOptions::default()).map_err(|e| e.to_string())?;
             cold.setup.push(clock::now() - started);
-            cold.push(load(&fresh, style, camera, size, &mut warnings)?);
+            cold.push(load(
+                &fresh,
+                style,
+                camera,
+                size,
+                settings.antialias,
+                &mut warnings,
+            )?);
             drop(fresh);
-            warm.push(load(runtime, style, camera, size, &mut warnings)?);
+            warm.push(load(
+                runtime,
+                style,
+                camera,
+                size,
+                settings.antialias,
+                &mut warnings,
+            )?);
         }
         let name = if view.buildings != crate::Buildings::None {
             format!("{} (without them)", view.name)
@@ -111,12 +132,13 @@ fn load(
     style: &str,
     camera: CameraState,
     size: ViewSize,
+    antialias: bool,
     warnings: &mut Vec<String>,
 ) -> Result<(Duration, Option<Duration>, u32), String> {
     let pipelines = runtime.stats().pipelines_created;
     let cpu = clock::cpu();
     let started = clock::now();
-    let mut map = new_map(runtime, style, camera);
+    let mut map = new_map(runtime, style, camera, antialias);
     map.snapshot(size.width, size.height, f64::from(size.ratio))
         .map_err(|e| format!("loading: {e}"))?;
     let wall = clock::now() - started;

@@ -124,6 +124,9 @@ impl FramesReport {
             "- {w}×{h} px ({}×{} @{}x) offscreen at {:.4}, {:.4} unless a view has its own; {} rounds × {} frames after {} warm-up per view",
             s.width, s.height, s.ratio, s.center.lon, s.center.lat, s.rounds, s.frames, s.warmup,
         )?;
+        if !s.antialias {
+            writeln!(out, "- 3D layers without multisampling (`--antialias off`)")?;
+        }
         if s.nudge {
             writeln!(
                 out,

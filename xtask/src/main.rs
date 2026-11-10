@@ -58,7 +58,8 @@ cargo xtask <task>
                spec's v8.json, orb-style's property table and the latest
                fixture results in docs/scratch/rt; run it after the fixtures
   bench [args]  native benchmarks (release): --experiment frames (GPU/CPU
-               frame timings; --nudge for whole frames read back), gestures,
+               frame timings; --nudge for whole frames read back,
+               --antialias off for 3D layers without MSAA), gestures,
                load (style load to first complete still) or tiles (the
                extract's tiles through decode, layout and pack); --views
                <file> takes mln-rs's views.txt cameras; web/demo/bench.html

@@ -63,7 +63,7 @@ pub(crate) fn run(
         progress(&format!("{}: loading", view.name));
         let (map, target) = prepare_view(
             runtime,
-            style,
+            (style, settings.antialias),
             (&mut map, &mut target),
             (&view, camera, size),
             &mut warnings,

@@ -2,7 +2,7 @@
 //! [--experiment frames|gestures|load|tiles|stutter] [--frames N] [--warmup N]
 //! [--rounds N] [--samples N] [--size WxH] [--ratio R] [--at lon,lat]
 //! [--view zoom,pitch,bearing]... [--views file] [--filter s] [--nudge]
-//! [--paths city|alps] [--legs N] [--capture N]`.
+//! [--antialias on|off] [--paths city|alps] [--legs N] [--capture N]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract, as the browser
 //! bench (`web/demo/bench.html`) does; `alps` is the Alps terrain style

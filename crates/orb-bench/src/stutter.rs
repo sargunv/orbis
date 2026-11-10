@@ -265,7 +265,7 @@ pub(crate) fn run(
             Style::Alps => alps,
         };
         progress(&format!("{}: loading its first view", scenario.name));
-        let mut map = crate::new_map(runtime, style, (scenario.camera)(0.0));
+        let mut map = crate::new_map(runtime, style, (scenario.camera)(0.0), settings.antialias);
         let epoch = clock::now();
         frame(&mut map, &mut target, 0.0)?;
         settle(&mut map, &mut target, &mut warnings)?;

@@ -202,6 +202,9 @@ pub struct Settings {
     pub filter: Option<String>,
     /// Frames alternate the zoom by [`NUDGE`] and are read back.
     pub nudge: bool,
+    /// Whether 3D layers draw multisampled, as maps do by default
+    /// ([`MapOptions::antialias`]); `--antialias off` measures them without.
+    pub antialias: bool,
     /// Only a flight's first legs (`stutter`).
     pub legs: Option<usize>,
 }
@@ -222,6 +225,7 @@ impl Default for Settings {
             views: Vec::new(),
             filter: None,
             nudge: false,
+            antialias: true,
             legs: None,
         }
     }
@@ -278,6 +282,13 @@ impl Settings {
                 });
             }
             "filter" => self.filter = Some(value.to_string()),
+            "antialias" => {
+                self.antialias = match value {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("antialias needs on or off".into()),
+                }
+            }
             "at" => {
                 let (lon, lat) = value.split_once(',').ok_or("at needs lon,lat")?;
                 self.center = Geodetic::new(number(lon)?, number(lat)?);
@@ -437,13 +448,14 @@ struct Samples {
 }
 
 /// A map on `runtime` loading `style` at `camera`, with every preview on,
-/// as the demo has them.
-pub(crate) fn new_map(runtime: &Runtime, style: &str, camera: CameraState) -> Map {
+/// as the demo has them, and 3D layers multisampled or not.
+pub(crate) fn new_map(runtime: &Runtime, style: &str, camera: CameraState, antialias: bool) -> Map {
     let mut map = Map::new(
         runtime,
         MapOptions {
             camera: Some(camera),
             previews: orb_api::Previews::ALL,
+            antialias,
             ..MapOptions::default()
         },
     );
@@ -492,7 +504,7 @@ pub fn run(
             (&mut target, (width, height)),
             settings,
             about,
-            |camera| new_map(runtime, style, camera),
+            |camera| new_map(runtime, style, camera, settings.antialias),
             progress,
         )
         .map(Report::Gestures);
@@ -511,7 +523,7 @@ pub fn run(
         progress(&format!("{name}: loading"));
         let (map, target) = prepare_view(
             runtime,
-            style,
+            (style, settings.antialias),
             (&mut map, &mut target),
             (&view, camera, size),
             &mut warnings,
@@ -588,10 +600,11 @@ pub fn run(
 
 /// The bench's map at a view, loaded until idle: the map before, moved
 /// there (or one made for it), with the view's buildings, on a target of
-/// its size (the one before, if the size is the same).
+/// its size (the one before, if the size is the same). A new map draws 3D
+/// layers multisampled when `antialias` says so.
 pub(crate) fn prepare_view<'a>(
     runtime: &Runtime,
-    style: &str,
+    (style, antialias): (&str, bool),
     (map, target): (&'a mut Option<Map>, &'a mut Option<(ViewSize, Target)>),
     (view, camera, size): (&View, CameraState, ViewSize),
     warnings: &mut Vec<String>,
@@ -606,7 +619,7 @@ pub(crate) fn prepare_view<'a>(
             map.jump_to_state(camera);
             map
         }
-        None => map.insert(new_map(runtime, style, camera)),
+        None => map.insert(new_map(runtime, style, camera, antialias)),
     };
     settle(map, target, warnings)?;
     // The map carries on from the view before, which may have added
