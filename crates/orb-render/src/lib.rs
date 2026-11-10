@@ -278,9 +278,14 @@ pub struct Renderer {
     pipelines_stale: bool,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
-    /// Nodes the main bundle left out, waiting for a pipeline (draped
-    /// nodes a drape bundle left out: [`DrapeZoom::waiting`]).
+    /// Nodes the main bundle left out, waiting for a pipeline.
     waiting: u32,
+    /// Whether a drape bundle has left out a draped node waiting for a
+    /// pipeline since every slot was last redrawn. A slot keeps lacking
+    /// the node whatever later recordings leave out (one whose slots the
+    /// node has no candidates in leaves out nothing), so the pipeline's
+    /// arrival redraws every slot.
+    drape_waiting: bool,
     /// Nodes the main bundles record draws for.
     recorded: u32,
     node_uniforms: BufferId,
@@ -598,6 +603,7 @@ impl Renderer {
             pipelines_stale: false,
             made_seen: 0,
             waiting: 0,
+            drape_waiting: false,
             recorded: 0,
             node_uniforms,
             node_stride,
@@ -1088,7 +1094,6 @@ impl Renderer {
             written: Vec::new(),
             scene: [None; 2],
             bundle: [None, None],
-            waiting: [0; 2],
         });
         level.written.resize(self.nodes.len(), None);
         let before = &level.written[node as usize];
@@ -1704,8 +1709,7 @@ impl Renderer {
         if compiling.made != self.made_seen {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
-            let drape_waiting =
-                (self.drape_zooms.values()).any(|z| z.waiting.iter().any(|&w| w > 0));
+            let drape_waiting = std::mem::take(&mut self.drape_waiting);
             if self.waiting > 0 || drape_waiting {
                 self.invalidate_bundle(gpu);
             }
@@ -1713,9 +1717,6 @@ impl Renderer {
                 // Slots drawn without them lack those layers, at whichever
                 // zoom: all draw again, each zoom's bundle recorded anew.
                 terrain.redraw_all();
-                for zoom in self.drape_zooms.values_mut() {
-                    zoom.waiting = [0; 2];
-                }
             }
         }
         if compiling.pending > 0 {
@@ -2117,7 +2118,7 @@ impl Renderer {
             buffer: self.scene.buffers().compacted,
             offset: 0,
         }];
-        let (mut groups, mut waiting) = (Vec::new(), 0);
+        let mut groups = Vec::new();
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
             let on_page = node
@@ -2144,7 +2145,7 @@ impl Renderer {
             };
             groups.push(group);
             if !self.node_commands(gpu, &ready, i, (scene, group), &mut commands) {
-                waiting += 1;
+                self.drape_waiting = true;
             }
         }
         // The slope page stays as it is in linear light.
@@ -2164,10 +2165,6 @@ impl Renderer {
         );
         let level = self.drape_zooms.get_mut(&zoom).expect("found above");
         level.bundle[page] = Some((bundle, groups));
-        // Slots drawn by an earlier recording keep lacking what it left
-        // out, though this one, whose nodes may have no candidates in the
-        // slots it draws, leaves out nothing.
-        level.waiting[page] += waiting;
         Some(bundle)
     }
 
@@ -2355,11 +2352,6 @@ struct DrapeZoom {
     /// nodes drawing into its stacks with the node groups it binds.
     scene: [Option<BindGroupId>; 2],
     bundle: [Option<(RenderBundleId, Vec<BindGroupId>)>; 2],
-    /// Draped nodes the slots drawn at this zoom since they were all last
-    /// redrawn left out, per page, waiting for a pipeline: each zoom keeps
-    /// its own, as a frame records only the bundles of the zooms its
-    /// redrawn slots draw at.
-    waiting: [u32; 2],
 }
 
 impl release::Release for Node {
