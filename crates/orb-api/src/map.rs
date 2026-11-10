@@ -15,77 +15,11 @@ use orb_camera::{
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_runtime::{
-    CameraState, ClusterQuery, FrameReport, GridTile, Hit, HostTile, MapEvent, RenderMode,
-    StyleImage, Transaction, VideoRequest, Viewport,
+    CameraState, ClusterQuery, FrameReport, GridTile, Hit, HostTile, MapEvent, MapOptions,
+    RenderMode, StyleImage, Transaction, VideoRequest, Viewport,
 };
 
 use crate::{Error, Runtime, Target};
-
-/// How a map starts.
-#[derive(Clone, Debug)]
-pub struct MapOptions {
-    /// The camera; the first style's when `None`, as GL JS does.
-    pub camera: Option<CameraState>,
-    /// The backing colour behind transparent style pixels, premultiplied
-    /// RGBA; opaque surfaces want their view's background.
-    pub clear_color: [f64; 4],
-    /// How long labels fade in and out, in milliseconds (GL JS
-    /// `fadeDuration`); still output doesn't fade.
-    pub fade_duration: f64,
-    /// Whether labels of different sources collide with each other (GL JS
-    /// `crossSourceCollisions`).
-    pub cross_source_collisions: bool,
-    /// The CSS font family ideographs of the default font stack are drawn
-    /// with instead of the style's glyphs (GL JS
-    /// `localIdeographFontFamily`); `None` draws the glyphs.
-    pub local_ideograph_font_family: Option<String>,
-    /// Multisampling for 3D surfaces (GL JS `antialias`, which is off by
-    /// default there).
-    pub antialias: bool,
-    /// Whether terrain tiles hang skirts that hide the cracks between
-    /// tiles of different detail; translucent terrain shows them (GL JS
-    /// `terrainSkirtLength`).
-    pub terrain_skirts: bool,
-    /// The previews its styles may use: new style syntax beyond the approved
-    /// v8 spec, which warn and fall back to their defaults while off. None
-    /// by default.
-    pub previews: crate::Previews,
-    /// Whether labels keep their place while the camera moves, as
-    /// MapLibre Native keeps them: a label tries its previous variable
-    /// anchor first (in tilted views, only that anchor), and in tilted views
-    /// labels shown before are placed before new and hidden ones. What
-    /// labels show then depends on how the camera got there; off, it
-    /// depends on the camera alone. On by default; still and tile output
-    /// places afresh either way.
-    pub stable_labels: bool,
-    /// How tiles coarsen with distance in pitched views: MapLibre Native's
-    /// tile level of detail (maplibre-native-ffi's tile options), whose
-    /// defaults it takes.
-    pub tile_lod: orb_camera::TileLod,
-    /// What a vector tile the tileset doesn't have (HTTP 404) draws: its
-    /// nearest ancestor by default, or nothing, as GL JS and MapLibre
-    /// Native draw it. Raster and raster-dem tiles draw their ancestor
-    /// either way ([`MissingTiles`](orb_runtime::MissingTiles)).
-    pub missing_tiles: orb_runtime::MissingTiles,
-}
-
-impl Default for MapOptions {
-    fn default() -> Self {
-        Self {
-            camera: None,
-            clear_color: [0.0; 4],
-            fade_duration: 300.0,
-            cross_source_collisions: true,
-            local_ideograph_font_family: Some("sans-serif".into()),
-            antialias: true,
-            terrain_skirts: true,
-            previews: crate::Previews::NONE,
-            stable_labels: true,
-            tile_lod: orb_camera::TileLod::default(),
-            missing_tiles: orb_runtime::MissingTiles::Parent,
-        }
-    }
-}
 
 /// Something a map, its camera or a gesture did.
 #[derive(Clone, Debug, PartialEq)]
@@ -243,16 +177,7 @@ impl Map {
         if cfg!(any(target_os = "android", target_os = "ios")) {
             map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
         }
-        map.set_clear_color(options.clear_color);
-        map.set_fade_duration(options.fade_duration);
-        map.set_cross_source_collisions(options.cross_source_collisions);
-        map.set_local_ideograph_font_family(options.local_ideograph_font_family.as_deref());
-        map.set_antialias_3d(options.antialias);
-        map.set_terrain_skirts(options.terrain_skirts);
-        map.set_previews(options.previews);
-        map.set_stable_labels(options.stable_labels);
-        map.set_tile_lod(options.tile_lod);
-        map.set_missing_tiles(options.missing_tiles);
+        map.set_options(&options);
         // Measurements and the fixtures' cull check draw with nothing
         // culled.
         map.set_keep_all_cull(std::env::var_os("ORB_CULL").is_some_and(|v| v == "keep-all"));

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-pub use map::{CullCount, Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
+pub use map::{CullCount, Event, Image, Map, STILL_TIMEOUT, TileRequest};
 pub use orb_camera::input::{
     Button, Fling, GestureOptions, GesturePhase, Input, Key, Modifiers, Movement, PointerKind,
     Thresholds, WheelSource, WheelUnit,
@@ -39,8 +39,8 @@ pub use orb_host::{
 };
 pub use orb_runtime::{
     CameraState, ClusterQuery, FeatureTarget, FrameReport, FrameTimes, HOST_TILES, Hit, HostTile,
-    MapEvent, MissingTiles, Op, Preview, Previews, StyleDoc, StyleImage, Transaction, VideoRequest,
-    json,
+    MapEvent, MapOptions, MissingTiles, Op, Preview, Previews, StyleDoc, StyleImage, Transaction,
+    VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Target;

@@ -641,7 +641,8 @@ fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_l
 }
 
 impl Labels {
-    pub(crate) fn new(lane: Arc<dyn PlacementLane>) -> Self {
+    /// Labels placed on `lane`, with `options`' label settings.
+    pub(crate) fn new(lane: Arc<dyn PlacementLane>, options: &crate::MapOptions) -> Self {
         Self {
             lane,
             retired: Arc::default(),
@@ -657,10 +658,10 @@ impl Labels {
             committed_request: 0,
             held: HashMap::new(),
             drawn: Vec::new(),
-            fade_duration: 300.0,
-            cross_source_collisions: true,
-            ideographs: Some("sans-serif".into()),
-            stable_labels: true,
+            fade_duration: options.fade_duration,
+            cross_source_collisions: options.cross_source_collisions,
+            ideographs: options.local_ideograph_font_family.clone(),
+            stable_labels: options.stable_labels,
         }
     }
 
@@ -1849,7 +1850,10 @@ mod tests {
                 states: FeatureStates::default(),
                 worker,
                 result,
-                labels: Labels::new(Arc::new(crate::InlinePlacement::default())),
+                labels: Labels::new(
+                    Arc::new(crate::InlinePlacement::default()),
+                    &crate::MapOptions::default(),
+                ),
             }
         }
 

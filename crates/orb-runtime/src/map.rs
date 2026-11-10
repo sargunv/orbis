@@ -655,6 +655,7 @@ impl Map {
     /// A map with no style. With `camera: None`, the first style's camera
     /// is used, as GL JS does when a map is created without one.
     pub fn new(services: Services, camera: Option<CameraState>) -> Self {
+        let defaults = crate::MapOptions::default();
         let (sender, receiver) = channel();
         let surface = Surface::default();
         let start = CameraState::new(orb_crs::Geodetic::new(0.0, 0.0), 0.0, surface.projection());
@@ -700,11 +701,11 @@ impl Map {
             style: None,
             renderer: None,
             retired: Retired::default(),
-            terrain_skirts: true,
-            tile_lod: orb_camera::TileLod::default(),
-            missing_tiles: MissingTiles::Parent,
-            previews: orb_style::Previews::NONE,
-            antialias_3d: true,
+            terrain_skirts: defaults.terrain_skirts,
+            tile_lod: defaults.tile_lod,
+            missing_tiles: defaults.missing_tiles,
+            previews: defaults.previews,
+            antialias_3d: defaults.antialias,
             keep_all_cull: false,
             nodes_stale: false,
             capacity: SceneCapacity::default(),
@@ -713,7 +714,7 @@ impl Map {
             version: 0,
             pending: BTreeMap::new(),
             counts: JobCounts::default(),
-            clear_color: [0.0; 4],
+            clear_color: defaults.clear_color,
             sender,
             receiver,
             warnings: Vec::new(),
@@ -724,7 +725,7 @@ impl Map {
             retired_images: Vec::new(),
             retired_ramps: Vec::new(),
             terrains: 0,
-            labels: crate::labels::Labels::new(default_lane()),
+            labels: crate::labels::Labels::new(default_lane(), &defaults),
             label_epoch: 0,
         }
     }
@@ -1098,7 +1099,8 @@ impl Map {
         self.retired_images.clear();
         self.retired_ramps.clear();
         let old = &self.labels;
-        let mut labels = crate::labels::Labels::new(Arc::clone(&old.lane));
+        let mut labels =
+            crate::labels::Labels::new(Arc::clone(&old.lane), &crate::MapOptions::default());
         labels.fade_duration = old.fade_duration;
         labels.cross_source_collisions = old.cross_source_collisions;
         labels.ideographs = old.ideographs.clone();

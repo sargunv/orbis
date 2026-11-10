@@ -26,6 +26,7 @@ mod loader;
 mod map;
 mod meshes;
 pub mod offline;
+mod options;
 mod paint;
 mod placement;
 mod point;
@@ -66,6 +67,7 @@ pub use map::{
     FrameReport, FrameTimes, GridTile, Images, JobCounts, Map, Memory, MissingTiles, RenderMode,
     Services,
 };
+pub use options::MapOptions;
 pub use orb_camera::input::{Button, Input};
 pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraState, CameraTarget, Constraints, EaseOptions,

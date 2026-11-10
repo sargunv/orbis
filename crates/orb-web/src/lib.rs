@@ -334,6 +334,69 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 /// `previews`, an array of preview names or `"all"`, `stableLabels`,
 /// `tileLod` (as [`OrbisMap::set_tile_lod`] takes it) and `missingTiles`,
 /// `"parent"` or `"empty"` ([`orb_runtime::MissingTiles`]).
+/// The map options `options` holds by name ([`create_map`]'s), the rest
+/// their defaults.
+fn map_options(options: &JsValue) -> orb_runtime::MapOptions {
+    let mut map = orb_runtime::MapOptions::default();
+    let option = |name: &str| js_sys::Reflect::get(options, &name.into()).ok();
+    if let Some(ms) = option("fadeDuration").and_then(|v| v.as_f64()) {
+        map.fade_duration = ms;
+    }
+    if let Some(collide) = option("crossSourceCollisions").and_then(|v| v.as_bool()) {
+        map.cross_source_collisions = collide;
+    }
+    match option("localIdeographFontFamily") {
+        Some(family) if family.as_bool() == Some(false) || family.is_null() => {
+            map.local_ideograph_font_family = None;
+        }
+        Some(family) => {
+            if let Some(family) = family.as_string() {
+                map.local_ideograph_font_family = Some(family);
+            }
+        }
+        None => {}
+    }
+    if let Some(antialias) = option("antialias").and_then(|v| v.as_bool()) {
+        map.antialias = antialias;
+    }
+    if let Some(skirts) = option("terrainSkirts").and_then(|v| v.as_bool()) {
+        map.terrain_skirts = skirts;
+    }
+    if let Some(previews) = option("previews").filter(|v| !v.is_undefined()) {
+        let names: Vec<String> = match previews.as_string() {
+            Some(name) => vec![name],
+            None => js_sys::Array::from(&previews)
+                .iter()
+                .filter_map(|v| v.as_string())
+                .collect(),
+        };
+        let (previews, unknown) =
+            orb_runtime::Previews::from_names(names.iter().map(String::as_str));
+        if !unknown.is_empty() {
+            web_sys::console::warn_1(&format!("orbis: unknown previews {unknown:?}").into());
+        }
+        map.previews = previews;
+    }
+    if let Some(stable) = option("stableLabels").and_then(|v| v.as_bool()) {
+        map.stable_labels = stable;
+    }
+    if let Some(lod) = option("tileLod").filter(JsValue::is_object) {
+        map.tile_lod = camera::tile_lod(map.tile_lod, &lod);
+    }
+    match option("missingTiles")
+        .and_then(|v| v.as_string())
+        .as_deref()
+    {
+        Some("parent") => map.missing_tiles = orb_runtime::MissingTiles::Parent,
+        Some("empty") => map.missing_tiles = orb_runtime::MissingTiles::Empty,
+        Some(other) => web_sys::console::warn_1(
+            &format!("orbis: unknown missingTiles {other:?}; known: parent, empty").into(),
+        ),
+        None => {}
+    }
+    map
+}
+
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(
@@ -374,62 +437,7 @@ pub async fn create_map(
     map.set_placement_lane(lane);
     // The page plays video sources (`web/src/videos.ts`).
     map.set_plays_video(true);
-    let option = |name: &str| js_sys::Reflect::get(&options, &name.into()).ok();
-    if let Some(ms) = option("fadeDuration").and_then(|v| v.as_f64()) {
-        map.set_fade_duration(ms);
-    }
-    if let Some(collide) = option("crossSourceCollisions").and_then(|v| v.as_bool()) {
-        map.set_cross_source_collisions(collide);
-    }
-    match option("localIdeographFontFamily") {
-        Some(family) if family.as_bool() == Some(false) || family.is_null() => {
-            map.set_local_ideograph_font_family(None);
-        }
-        Some(family) => {
-            if let Some(family) = family.as_string() {
-                map.set_local_ideograph_font_family(Some(&family));
-            }
-        }
-        None => {}
-    }
-    if let Some(antialias) = option("antialias").and_then(|v| v.as_bool()) {
-        map.set_antialias_3d(antialias);
-    }
-    if let Some(skirts) = option("terrainSkirts").and_then(|v| v.as_bool()) {
-        map.set_terrain_skirts(skirts);
-    }
-    if let Some(previews) = option("previews").filter(|v| !v.is_undefined()) {
-        let names: Vec<String> = match previews.as_string() {
-            Some(name) => vec![name],
-            None => js_sys::Array::from(&previews)
-                .iter()
-                .filter_map(|v| v.as_string())
-                .collect(),
-        };
-        let (previews, unknown) =
-            orb_runtime::Previews::from_names(names.iter().map(String::as_str));
-        if !unknown.is_empty() {
-            web_sys::console::warn_1(&format!("orbis: unknown previews {unknown:?}").into());
-        }
-        map.set_previews(previews);
-    }
-    if let Some(stable) = option("stableLabels").and_then(|v| v.as_bool()) {
-        map.set_stable_labels(stable);
-    }
-    if let Some(lod) = option("tileLod").filter(JsValue::is_object) {
-        map.set_tile_lod(camera::tile_lod(map.tile_lod(), &lod));
-    }
-    match option("missingTiles")
-        .and_then(|v| v.as_string())
-        .as_deref()
-    {
-        Some("parent") => map.set_missing_tiles(orb_runtime::MissingTiles::Parent),
-        Some("empty") => map.set_missing_tiles(orb_runtime::MissingTiles::Empty),
-        Some(other) => web_sys::console::warn_1(
-            &format!("orbis: unknown missingTiles {other:?}; known: parent, empty").into(),
-        ),
-        None => {}
-    }
+    map.set_options(&map_options(&options));
     // The style loads while the GPU device is made.
     map.load_style_url(&style_url);
     let canvas = Canvas::new(canvas, size, id)
