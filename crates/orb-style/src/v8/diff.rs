@@ -237,12 +237,11 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             }
         }
     }
-    let new_sources: HashSet<SourceKey> = draft.sources.iter().map(|s| s.key).collect();
-    changes.extend(
-        (doc.source_keys())
-            .filter(|k| !new_sources.contains(k))
-            .map(Change::SourceRemoved),
-    );
+    for key in doc.source_keys() {
+        if !draft.sources.iter().any(|s| s.key == key) {
+            changes.push(Change::SourceRemoved(key));
+        }
+    }
 
     // Another plane, or sources in other tile matrix sets: the surface is
     // planned again and every tile loads on it.
@@ -264,6 +263,11 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         .enumerate()
         .map(|(i, (k, l))| (k, (i, l)))
         .collect();
+    // Which old layers the draft keeps, by index.
+    let mut kept = vec![false; old.layers.len()];
+    let mut dirty = draft.dirty.clone();
+    dirty.sort_unstable();
+    let dirty = |key| dirty.binary_search(key).is_ok();
     let mut ids = HashSet::new();
     for (index, entry) in draft.layers.iter().enumerate() {
         let id = entry
@@ -282,8 +286,11 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             });
         }
         let old_entry = old_layers.get(&entry.key);
+        if let Some(&(i, _)) = old_entry {
+            kept[i] = true;
+        }
         if let Some(&(_, old)) = old_entry
-            && !draft.dirty.contains(&entry.key)
+            && !dirty(&entry.key)
             && !reads_global(&entry.json, &changed)
         {
             style.layers.push(Arc::clone(old));
@@ -304,14 +311,14 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         }
         style.layers.push(Arc::new(layer));
     }
-    let new_layers: HashSet<LayerKey> = draft.layers.iter().map(|l| l.key).collect();
+    let old_keys = || doc.layer_keys().zip(&kept);
     changes.extend(
-        (doc.layer_keys())
-            .filter(|k| !new_layers.contains(k))
-            .map(Change::LayerRemoved),
+        old_keys()
+            .filter(|(_, kept)| !**kept)
+            .map(|(key, _)| Change::LayerRemoved(key)),
     );
     // The layers both have, in their old order and in their new.
-    let before = doc.layer_keys().filter(|k| new_layers.contains(k));
+    let before = old_keys().filter(|(_, kept)| **kept).map(|(key, _)| key);
     let after = (draft.layers.iter().map(|l| l.key)).filter(|k| old_layers.contains_key(k));
     if !before.eq(after) {
         changes.push(Change::LayersReordered);
@@ -320,7 +327,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     debug_assert!(draft.layers.iter().all(|l| {
         old_layers
             .get(&l.key)
-            .is_none_or(|&(i, _)| draft.dirty.contains(&l.key) || same(doc.layer_json(i), &l.json))
+            .is_none_or(|&(i, _)| dirty(&l.key) || same(doc.layer_json(i), &l.json))
     }));
     style.warnings = warnings.clone();
     Ok((

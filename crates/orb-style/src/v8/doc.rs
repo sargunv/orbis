@@ -1,7 +1,6 @@
 //! The persistent document.
 
 use crate::*;
-use rustc_hash::FxHashSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -46,8 +45,8 @@ pub(crate) struct Draft {
     pub(crate) sources: Vec<SourceEntry>,
     pub(crate) layers: Vec<LayerEntry>,
     pub(crate) overrides: Vec<(String, Value<'static>)>,
-    /// Layers whose JSON changed.
-    pub(crate) dirty: FxHashSet<LayerKey>,
+    /// Layers whose JSON changed, each once or more.
+    pub(crate) dirty: Vec<LayerKey>,
     /// Sources given new data.
     pub(crate) new_data: Vec<SourceKey>,
     /// Sources whose data changed by diffs alone, with the diffs.
@@ -284,7 +283,7 @@ impl StyleDoc {
             sources: self.sources.clone(),
             layers: self.layers.clone(),
             overrides: self.overrides.clone(),
-            dirty: FxHashSet::default(),
+            dirty: Vec::new(),
             new_data: Vec::new(),
             diffs: Vec::new(),
             new_root: false,
@@ -365,7 +364,7 @@ impl Draft {
         let mut members = entry.json.as_object().expect("layers are objects").to_vec();
         edit(&mut members);
         entry.json = Arc::new(synthetic(JsonValue::Object(members)));
-        self.dirty.insert(entry.key);
+        self.dirty.push(entry.key);
         Ok(())
     }
 
@@ -642,7 +641,7 @@ impl Draft {
             let key = match kept {
                 Some(old) => {
                     if !same(&old.json, json) {
-                        self.dirty.insert(old.key);
+                        self.dirty.push(old.key);
                     }
                     old.key
                 }
