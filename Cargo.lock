@@ -2232,7 +2232,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -2258,7 +2258,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
@@ -2868,6 +2868,7 @@ version = "0.0.0"
 dependencies = [
  "bytemuck",
  "glam",
+ "log",
  "orb-camera",
  "orb-crs",
  "orb-expr",
@@ -4656,7 +4657,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wgpu"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -4685,7 +4686,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -4719,7 +4720,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4727,7 +4728,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4735,7 +4736,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4743,7 +4744,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4751,7 +4752,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -4806,7 +4807,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -4815,7 +4816,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#2a1055ea5830c20a784e25285c56030846010561"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#90f51f7078afea4b4ce56f5ad92b081f23a554ec"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",

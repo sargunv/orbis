@@ -7,79 +7,16 @@
 
 mod common;
 
-use std::sync::Arc;
-
-use common::scenes::scenes;
-use common::{Geodetic, Map, TargetFormat, Viewport, WgpuGpu};
-use orb_hal::{Gpu, Recording};
+use common::WgpuGpu;
+use common::scenes::{scenes, settle};
+use orb_hal::Recording;
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/golden");
-const SIZE: (u32, u32) = (512, 384);
 
-/// A map of the style at `url`, settled, and the text of one frame more,
-/// after `edit` if given (which a frame of a settled map may not draw
-/// otherwise: the terrain's drape redraws on a paint change).
-fn stream(url: &str, at: (f64, f64, f64), previews: bool, edit: Option<&str>) -> String {
+/// The text of `scene`'s last frame (`scenes::settle`).
+fn stream(scene: &common::scenes::Scene) -> String {
     let mut gpu = Recording::new(pollster::block_on(WgpuGpu::offscreen()).unwrap());
-    let format = TargetFormat {
-        color: orb_hal::TextureFormat::Rgba8Unorm,
-        sample_count: 1,
-    };
-    let target = gpu.create_texture(&orb_hal::TextureDesc {
-        label: "target",
-        width: SIZE.0,
-        height: SIZE.1,
-        array_layers: 1,
-        dimension: orb_hal::TextureViewDimension::D2,
-        format: format.color,
-        usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
-        sample_count: 1,
-        mip_levels: 1,
-        view_formats: &[],
-    });
-    let (zoom, bearing, pitch) = at;
-    let camera = common::camera(&common::Options {
-        style: None,
-        encoding: "mvt".into(),
-        at: Some((Geodetic::new(139.74, 35.685), zoom, bearing, pitch)),
-    });
-    let mut map = Map::new(common::native_services(Arc::new(|| {})), camera);
-    map.set_clear_color([1.0; 4]);
-    map.set_stable_labels(false);
-    if previews {
-        map.set_previews(orb_runtime::Previews::ALL);
-    }
-    map.load_style_url(url);
-    let viewport = Viewport {
-        width: f64::from(SIZE.0),
-        height: f64::from(SIZE.1),
-    };
-    let mut renderer = map.create_renderer(&mut gpu, format);
-    let mut time = 0.0;
-    let mut frame = |map: &mut Map, gpu: &mut Recording<WgpuGpu>| {
-        time += 1000.0 / 60.0;
-        map.render(gpu, &mut renderer, target, viewport, 1.0, time)
-    };
-    let started = std::time::Instant::now();
-    let mut idle = 0;
-    while idle < 3 {
-        let report = frame(&mut map, &mut gpu);
-        for warning in common::take_warnings(&mut map) {
-            eprintln!("{url}: {warning}");
-        }
-        idle = if report.idle { idle + 1 } else { 0 };
-        assert!(
-            started.elapsed().as_secs() < 60,
-            "{url}: timed out settling"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    if let Some(edit) = edit {
-        let tx = orb_runtime::Transaction::from_commands(edit).unwrap();
-        map.edit(&tx).unwrap();
-    }
-    gpu.start();
-    frame(&mut map, &mut gpu);
+    settle(&mut gpu, scene, Recording::start);
     gpu.finish()
 }
 
@@ -108,10 +45,7 @@ fn check(name: &str, text: &str) {
 /// Checks the streams of the scenes named `names` (`common::scenes`).
 fn check_scenes(names: &[&str]) {
     for scene in scenes(names) {
-        check(
-            scene.name,
-            &stream(&scene.url, scene.at, scene.previews, scene.edit),
-        );
+        check(scene.name, &stream(&scene));
     }
 }
 

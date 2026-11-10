@@ -40,6 +40,8 @@ orb-text = { workspace = true, features = ["sea-dictionaries"] }
 orb-hal = { workspace = true, features = ["recording"] }
 orb-host-native.workspace = true
 orb-hal-wgpu.workspace = true
+# The graphics API's validation errors, which wgpu-hal logs.
+log.workspace = true
 png.workspace = true
 pollster.workspace = true
 # GL JS golden vectors hold shortest round-trip doubles; parse them exactly.

@@ -37,6 +37,8 @@ naga = { version = "30.0.1", features = ["wgsl-in"] }
 png = "0.18.1"
 pollster = "1.0.1"
 libloading = "0.8.9"
+# wgpu-hal's reports, which the validation test reads.
+log = "0.4.35"
 # Process CPU time for the bench tools (orb-bench, orb-cli).
 rustix = { version = "1.1.6", default-features = false, features = [
   "std",
@@ -108,9 +110,13 @@ orb-web = { path = "crates/orb-web" }
 # The same branch carries naga's SPIR-V fixes: no explicit layout on
 # Function, Private and Workgroup variables (VUID-StandaloneSpirv-None-10684,
 # gfx-rs/wgpu#7696), and a u32 one clamping u32 image coordinates; orb-shaders'
-# `spirv_validates_for_vulkan` checks every stage. Every crate of wgpu's
-# workspace comes from the fork, since its path dependencies resolve there.
-# #35 tracks sending it upstream.
+# `spirv_validates_for_vulkan` checks every stage. And wgpu-core's tracker
+# starting a command buffer's untracked mip levels in the state a compute
+# pass first needs them in (the drape's mips, VUID-vkCmdDraw-None-09600,
+# #170), and MoltenVK fixes: naga's workgroup zeroing, and twin types named
+# apart. orb-runtime's `validation` test checks the scenes under Vulkan's
+# validation layer. Every crate of wgpu's workspace comes from the fork,
+# since its path dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
 naga-types = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
 wgpu = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }

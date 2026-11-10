@@ -12,6 +12,9 @@ version.workspace = true
 # the platform's own backend (Android always has it).
 webgpu = ["wgpu/webgpu"]
 gl = ["wgpu/webgl", "wgpu/gles"]
+# Vulkan beside Metal on Apple platforms (MoltenVK), for checking the Vulkan
+# path under the validation layer there; Linux and Android always have it.
+vulkan = ["wgpu/vulkan-portability"]
 
 [dependencies]
 futures-channel.workspace = true

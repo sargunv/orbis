@@ -214,3 +214,91 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
     assert_eq!(out.len(), names.len(), "unknown scenes among {names:?}");
     out
 }
+
+/// The names of every scene.
+pub(crate) const ALL: &[&str] = &[
+    "liberty-z12",
+    "liberty-z15-pitched",
+    "globe",
+    "terrain",
+    "terrain-drape",
+    "heatmap",
+    "raster",
+    "extrusions",
+    "extrusions-lit",
+    "linear",
+];
+
+const SIZE: (u32, u32) = (512, 384);
+
+/// `scene`'s map on `gpu`, settled, then one frame more after the scene's
+/// edit if it has one (which a frame of a settled map may not draw
+/// otherwise: the terrain's drape redraws on a paint change), with
+/// `before_last` called on `gpu` just before that frame.
+pub(crate) fn settle<G: orb_hal::Gpu>(
+    gpu: &mut G,
+    scene: &Scene,
+    before_last: impl FnOnce(&mut G),
+) {
+    use super::{Geodetic, Map, TargetFormat, Viewport};
+    let url = &scene.url;
+    let format = TargetFormat {
+        color: orb_hal::TextureFormat::Rgba8Unorm,
+        sample_count: 1,
+    };
+    let target = gpu.create_texture(&orb_hal::TextureDesc {
+        label: "target",
+        width: SIZE.0,
+        height: SIZE.1,
+        array_layers: 1,
+        dimension: orb_hal::TextureViewDimension::D2,
+        format: format.color,
+        usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
+        sample_count: 1,
+        mip_levels: 1,
+        view_formats: &[],
+    });
+    let (zoom, bearing, pitch) = scene.at;
+    let camera = super::camera(&super::Options {
+        style: None,
+        encoding: "mvt".into(),
+        at: Some((Geodetic::new(139.74, 35.685), zoom, bearing, pitch)),
+    });
+    let mut map = Map::new(super::native_services(std::sync::Arc::new(|| {})), camera);
+    map.set_clear_color([1.0; 4]);
+    map.set_stable_labels(false);
+    if scene.previews {
+        map.set_previews(orb_runtime::Previews::ALL);
+    }
+    map.load_style_url(url);
+    let viewport = Viewport {
+        width: f64::from(SIZE.0),
+        height: f64::from(SIZE.1),
+    };
+    let mut renderer = map.create_renderer(gpu, format);
+    let mut time = 0.0;
+    let mut frame = |map: &mut Map, gpu: &mut G| {
+        time += 1000.0 / 60.0;
+        map.render(gpu, &mut renderer, target, viewport, 1.0, time)
+    };
+    let started = std::time::Instant::now();
+    let mut idle = 0;
+    while idle < 3 {
+        let report = frame(&mut map, gpu);
+        for warning in super::take_warnings(&mut map) {
+            eprintln!("{url}: {warning}");
+        }
+        idle = if report.idle { idle + 1 } else { 0 };
+        assert!(
+            started.elapsed().as_secs() < 60,
+            "{url}: timed out settling"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    if let Some(edit) = scene.edit {
+        let tx = orb_runtime::Transaction::from_commands(edit).unwrap();
+        map.edit(&tx).unwrap();
+    }
+    before_last(gpu);
+    frame(&mut map, gpu);
+}
