@@ -18,13 +18,13 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod host;
 mod options;
 mod scenes;
 
-use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupExisting};
 use orb_api::{Runtime, RuntimeOptions};
 
-use crate::app::{Demo, Launch};
+use crate::app::Launch;
 use crate::scenes::{Camera, Catalogue};
 
 /// The scene a fresh window opens, as the web demo's.
@@ -84,7 +84,7 @@ fn options() -> Result<Options, String> {
     Ok(options)
 }
 
-fn main() -> eframe::Result {
+fn main() -> Result<(), winit::error::EventLoopError> {
     let options = match options() {
         Ok(options) => options,
         Err(e) => {
@@ -92,34 +92,13 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
-    let runtime = Runtime::new(&RuntimeOptions {
-        state_dir: options.cache.as_ref().map(Into::into),
-        ..RuntimeOptions::default()
-    })
-    .expect("runtime");
-    eprintln!("orb-demo: {}", runtime.stats().adapter);
-    // egui draws with the runtime's device, so the map's texture is one
-    // it can sample.
-    let existing = runtime.with_device(|gpu| {
-        let (instance, adapter) = gpu
-            .instance_and_adapter()
-            .expect("the runtime made its own device");
-        WgpuSetupExisting {
-            instance: instance.clone(),
-            adapter: adapter.clone(),
-            device: gpu.device().clone(),
-            queue: gpu.queue().clone(),
-        }
-    });
-    let native = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Orbis")
-            .with_inner_size([1280.0, 800.0]),
-        wgpu_options: WgpuConfiguration {
-            wgpu_setup: WgpuSetup::Existing(existing),
-            ..WgpuConfiguration::default()
-        },
-        ..eframe::NativeOptions::default()
+    let state_dir = options.cache.map(Into::into);
+    let runtime = move || {
+        Runtime::new(&RuntimeOptions {
+            state_dir,
+            ..RuntimeOptions::default()
+        })
+        .expect("runtime")
     };
     let catalogue = Catalogue::read();
     let scene = catalogue.scene_for(options.scene.as_deref().unwrap_or(DEFAULT_SCENE));
@@ -129,9 +108,5 @@ fn main() -> eframe::Result {
         flight: options.flight,
         count_frames: options.count_frames,
     };
-    eframe::run_native(
-        "Orbis",
-        native,
-        Box::new(move |cc| Ok(Box::new(Demo::new(cc, runtime, launch)))),
-    )
+    host::run(runtime, launch)
 }

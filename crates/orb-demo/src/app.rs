@@ -6,11 +6,10 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, Frame, Id, Margin, Order, Pos2, Rect,
-    Response, RichText, Sense, Shadow, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+use egui::{
+    Align2, Color32, CornerRadius, CursorIcon, Frame, Id, Margin, Order, Pos2, Rect, Response,
+    RichText, Sense, Shadow, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
-use eframe::wgpu;
 use glam::DVec2;
 use orb_api::{
     Button, CameraTarget, EaseOptions, Error, Event, Input, Key, Map, MapEvent, MapOptions,
@@ -75,7 +74,7 @@ struct InputState {
 }
 
 impl Demo {
-    pub(crate) fn new(cc: &eframe::CreationContext<'_>, runtime: Runtime, launch: Launch) -> Self {
+    pub(crate) fn new(ctx: &egui::Context, runtime: Runtime, launch: Launch) -> Self {
         let catalogue = Catalogue::read();
         let camera = launch
             .camera
@@ -91,9 +90,9 @@ impl Demo {
                 ..MapOptions::default()
             },
         );
-        let ctx = cc.egui_ctx.clone();
-        map.set_wake(move || ctx.request_repaint());
-        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        let wake = ctx.clone();
+        map.set_wake(move || wake.request_repaint());
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let target = Target::texture(&runtime, 1, 1, 1.0);
         let mut demo = Self {
             catalogue,
@@ -439,7 +438,13 @@ impl Demo {
 
     /// Draws a frame of the map into the target, sized to `rect`, if it
     /// needs one, and keeps egui's view of its texture current.
-    fn draw_map(&mut self, rect: Rect, pixels_per_point: f32, frame: &eframe::Frame) {
+    fn draw_map(
+        &mut self,
+        rect: Rect,
+        pixels_per_point: f32,
+        device: &wgpu::Device,
+        renderer: &mut egui_wgpu::Renderer,
+    ) {
         let width = (rect.width() * pixels_per_point).round().max(1.0) as u32;
         let height = (rect.height() * pixels_per_point).round().max(1.0) as u32;
         self.target
@@ -474,26 +479,18 @@ impl Demo {
         if self.texture.as_ref().is_some_and(|(_, t)| *t == texture) {
             return;
         }
-        let Some(render_state) = frame.wgpu_render_state() else {
-            return;
-        };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut renderer = render_state.renderer.write();
         let id = match &self.texture {
             Some((id, _)) => {
                 renderer.update_egui_texture_from_wgpu_texture(
-                    &render_state.device,
+                    device,
                     &view,
                     wgpu::FilterMode::Linear,
                     *id,
                 );
                 *id
             }
-            None => renderer.register_native_texture(
-                &render_state.device,
-                &view,
-                wgpu::FilterMode::Linear,
-            ),
+            None => renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
         };
         self.texture = Some((id, texture));
     }
@@ -516,15 +513,21 @@ impl Demo {
     }
 }
 
-impl eframe::App for Demo {
-    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+impl Demo {
+    /// A frame of the window: the map under the controls.
+    pub(crate) fn ui(
+        &mut self,
+        ui: &mut Ui,
+        device: &wgpu::Device,
+        renderer: &mut egui_wgpu::Renderer,
+    ) {
         let ctx = ui.ctx().clone();
         let palette =
             Palette::new(self.scene.dark || ctx.system_theme() == Some(egui::Theme::Dark));
         palette.apply(&ctx);
         self.forward_input(&ctx);
         let rect = ui.max_rect();
-        self.draw_map(rect, ctx.pixels_per_point(), frame);
+        self.draw_map(rect, ctx.pixels_per_point(), device, renderer);
         if let Some((id, _)) = &self.texture {
             ui.painter().image(
                 *id,
