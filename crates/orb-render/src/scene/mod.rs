@@ -1099,21 +1099,24 @@ impl Scene {
         }
         let new = nodes.next_power_of_two();
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        let mut buffer = |label: &str, words: usize, usage: BufferUsages| {
-            gpu.create_buffer(&BufferDesc {
+        let args_usage =
+            storage | BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
+        for (buffer, label, words, usage) in [
+            (
+                &mut self.buffers.node_cull,
+                "node cull",
+                NODE_CULL_WORDS,
+                storage,
+            ),
+            (&mut self.buffers.args, "draw args", ARGS_WORDS, args_usage),
+        ] {
+            let desc = BufferDesc {
                 label,
                 size: (u64::from(new) * words as u64 * 4).max(16),
                 usage,
-            })
-        };
-        let node_cull = buffer("node cull", NODE_CULL_WORDS, storage);
-        let args = buffer(
-            "draw args",
-            ARGS_WORDS,
-            storage | BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        );
-        gpu.destroy_buffer(std::mem::replace(&mut self.buffers.node_cull, node_cull));
-        gpu.destroy_buffer(std::mem::replace(&mut self.buffers.args, args));
+            };
+            move_buffer(gpu, buffer, &desc, 0);
+        }
         self.capacity.nodes = new;
         self.candidates_dirty = true;
         self.buffers_revision += 1;
@@ -1913,7 +1916,7 @@ impl Scene {
     /// contents copy over on the GPU, at the same offsets.
     fn grow_pool(&mut self, gpu: &mut dyn Gpu, pool: Pool) -> bool {
         let (old, max) = self.pool_words(pool);
-        let new = old.saturating_mul(2).min(max);
+        let new = grown(old, u64::from(old) + 1, max);
         new > old && {
             self.resize_pool(gpu, pool, new);
             true
@@ -1984,20 +1987,12 @@ impl Scene {
             ),
         };
         let old = *words;
-        let resized = gpu.create_buffer(&BufferDesc {
+        let desc = BufferDesc {
             label,
             size: u64::from(new) * 4,
             usage: POOL_USAGE,
-        });
-        gpu.submit(&[orb_hal::Pass::CopyBuffer {
-            source: *buffer,
-            source_offset: 0,
-            destination: resized,
-            destination_offset: 0,
-            size: u64::from(old.min(new)) * 4,
-        }]);
-        gpu.destroy_buffer(*buffer);
-        *buffer = resized;
+        };
+        move_buffer(gpu, buffer, &desc, u64::from(old.min(new)) * 4);
         if new > old {
             arena.grow(old, new);
         } else {
@@ -2011,25 +2006,17 @@ impl Scene {
     /// its rows copied over.
     fn grow_chunks(&mut self, gpu: &mut dyn Gpu) -> bool {
         let old = self.capacity.chunks;
-        let new = old.saturating_mul(2).min(self.capacity.max_chunks);
+        let new = grown(old, u64::from(old) + 1, self.capacity.max_chunks);
         if new <= old {
             return false;
         }
         let bytes = |count: u32| u64::from(count) * CHUNK_WORDS as u64 * 4;
-        let grown = gpu.create_buffer(&BufferDesc {
+        let desc = BufferDesc {
             label: "chunks",
             size: bytes(new),
             usage: POOL_USAGE,
-        });
-        gpu.submit(&[orb_hal::Pass::CopyBuffer {
-            source: self.buffers.chunks,
-            source_offset: 0,
-            destination: grown,
-            destination_offset: 0,
-            size: bytes(old),
-        }]);
-        gpu.destroy_buffer(self.buffers.chunks);
-        self.buffers.chunks = grown;
+        };
+        move_buffer(gpu, &mut self.buffers.chunks, &desc, bytes(old));
         self.chunk_slots.grow(new);
         self.capacity.chunks = new;
         self.buffers_revision += 1;
@@ -2041,27 +2028,21 @@ impl Scene {
     /// whole.
     fn grow_candidates(&mut self, gpu: &mut dyn Gpu, short: u64) -> bool {
         let old = self.capacity.candidates;
-        let need = u64::from(old) + short;
-        let mut new = u64::from(old.max(1));
-        while new < need {
-            new *= 2;
-        }
-        let new = new.min(u64::from(self.capacity.max_candidates)) as u32;
+        let new = grown(old, u64::from(old) + short, self.capacity.max_candidates);
         if new <= old {
             return false;
         }
-        let candidates = gpu.create_buffer(&BufferDesc {
-            label: "candidates",
-            size: u64::from(new) * CANDIDATE_WORDS as u64 * 4,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        });
-        let visible = gpu.create_buffer(&BufferDesc {
-            label: "visible",
-            size: u64::from(new) * VISIBLE_WORDS as u64 * 4,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        });
-        gpu.destroy_buffer(std::mem::replace(&mut self.buffers.candidates, candidates));
-        gpu.destroy_buffer(std::mem::replace(&mut self.buffers.visible, visible));
+        for (buffer, label, words) in [
+            (&mut self.buffers.candidates, "candidates", CANDIDATE_WORDS),
+            (&mut self.buffers.visible, "visible", VISIBLE_WORDS),
+        ] {
+            let desc = BufferDesc {
+                label,
+                size: u64::from(new) * words as u64 * 4,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            };
+            move_buffer(gpu, buffer, &desc, 0);
+        }
         self.capacity.candidates = new;
         self.buffers_revision += 1;
         true
@@ -2071,22 +2052,17 @@ impl Scene {
     /// ceiling.
     fn grow_compacted(&mut self, gpu: &mut dyn Gpu, short: u64) -> bool {
         let old = self.capacity.compacted_words;
-        let need = u64::from(old) + short;
-        let mut new = u64::from(old);
-        while new < need {
-            new *= 2;
-        }
-        let new = new.min(u64::from(self.capacity.max_compacted_words)) as u32;
+        let max = self.capacity.max_compacted_words;
+        let new = grown(old, u64::from(old) + short, max);
         if new <= old {
             return false;
         }
-        let grown = gpu.create_buffer(&BufferDesc {
+        let desc = BufferDesc {
             label: "compacted indices",
             size: u64::from(new) * 4,
             usage: COMPACTED_USAGE,
-        });
-        gpu.destroy_buffer(self.buffers.compacted);
-        self.buffers.compacted = grown;
+        };
+        move_buffer(gpu, &mut self.buffers.compacted, &desc, 0);
         self.capacity.compacted_words = new;
         self.buffers_revision += 1;
         true
@@ -2158,3 +2134,48 @@ const POOL_USAGE: BufferUsages = BufferUsages::STORAGE
 const COMPACTED_USAGE: BufferUsages = BufferUsages::INDEX
     .union(BufferUsages::COPY_DST)
     .union(BufferUsages::STORAGE);
+
+/// The smallest of `old`'s doublings (from 1 when it is 0) that holds
+/// `need`, at most `max`: a capacity's next size.
+fn grown(old: u32, need: u64, max: u32) -> u32 {
+    let mut new = u64::from(old.max(1));
+    while new < need {
+        new *= 2;
+    }
+    new.min(u64::from(max)) as u32
+}
+
+/// Replaces `buffer` with a new one, its first `keep` bytes copied over on
+/// the GPU at the same offsets, and destroys the old one.
+fn move_buffer(gpu: &mut dyn Gpu, buffer: &mut BufferId, desc: &BufferDesc<'_>, keep: u64) {
+    let moved = gpu.create_buffer(desc);
+    if keep > 0 {
+        gpu.submit(&[orb_hal::Pass::CopyBuffer {
+            source: *buffer,
+            source_offset: 0,
+            destination: moved,
+            destination_offset: 0,
+            size: keep,
+        }]);
+    }
+    gpu.destroy_buffer(std::mem::replace(buffer, moved));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grown;
+
+    #[test]
+    fn capacities_double_to_their_need_and_ceiling() {
+        assert_eq!(grown(4, 5, 100), 8);
+        assert_eq!(grown(4, 33, 100), 64);
+        assert_eq!(grown(4, 330, 100), 100);
+        // From nothing, without spinning.
+        assert_eq!(grown(0, 3, 100), 4);
+        assert_eq!(grown(0, 1, 100), 1);
+        assert_eq!(
+            grown(u32::MAX / 2 + 1, u64::from(u32::MAX) + 1, u32::MAX),
+            u32::MAX
+        );
+    }
+}
