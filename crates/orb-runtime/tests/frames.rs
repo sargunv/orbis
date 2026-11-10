@@ -948,6 +948,9 @@ mod tests {
         );
         let center = (h / 2 * w + w / 2) * 4;
         assert_eq!(pixels[center..center + 4], rgba);
+        // Nor does a reload fetch it: only the app's sources reload.
+        assert!(offscreen.map.reload_host_tiles("c").is_err());
+        settle(&mut offscreen);
     }
 
     /// While the camera moves, frames come at the display's rate and the

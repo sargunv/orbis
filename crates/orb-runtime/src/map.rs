@@ -2062,6 +2062,13 @@ impl Map {
             .iter()
             .position(|s| s.id == id)
             .ok_or_else(|| format!("no source {id}"))?;
+        // Another source's tiles would go out as fetches: a video's or a
+        // canvas's has no URL.
+        if let SourceState::Ready { endpoint, .. } = &style.sources[index]
+            && !endpoint.host()
+        {
+            return Err(format!("{id} isn't a source the app feeds"));
+        }
         let key = plan.sources[index].key;
         self.host_tiles.forget(key);
         // Relayouts of the resident tiles, as an edit's: each replaces its
