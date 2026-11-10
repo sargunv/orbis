@@ -67,6 +67,7 @@ pub(crate) fn texture_format(format: TextureFormat) -> wgpu::TextureFormat {
         TextureFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
         TextureFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
         TextureFormat::R32Float => wgpu::TextureFormat::R32Float,
+        TextureFormat::R32Uint => wgpu::TextureFormat::R32Uint,
         TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
         TextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
@@ -81,6 +82,7 @@ pub fn from_texture_format(format: wgpu::TextureFormat) -> Option<TextureFormat>
         wgpu::TextureFormat::Rgba16Float => TextureFormat::Rgba16Float,
         wgpu::TextureFormat::R8Unorm => TextureFormat::R8Unorm,
         wgpu::TextureFormat::R32Float => TextureFormat::R32Float,
+        wgpu::TextureFormat::R32Uint => TextureFormat::R32Uint,
         wgpu::TextureFormat::Rgba8Unorm => TextureFormat::Rgba8Unorm,
         wgpu::TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8UnormSrgb,
         wgpu::TextureFormat::Bgra8Unorm => TextureFormat::Bgra8Unorm,
@@ -118,6 +120,11 @@ pub(crate) fn bind_group_layout_entry(entry: &BindGroupLayoutEntry) -> wgpu::Bin
             } else {
                 wgpu::SamplerBindingType::NonFiltering
             }),
+            BindingType::DataTexture => wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Uint,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             BindingType::StorageTexture { format, dimension } => {
                 wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::WriteOnly,

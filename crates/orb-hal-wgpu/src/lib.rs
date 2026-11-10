@@ -36,6 +36,12 @@ pub use wgpu;
 /// The largest buffer, and storage binding, Orbis asks a device for.
 const LARGEST_BUFFER: u64 = 1 << 30;
 
+/// The frame driver a native device's renderers take: `gpu` (the default
+/// where the device has it), or `cpu` and `cpu-tex`
+/// ([`WgpuGpu::force_cpu_driver`]).
+#[cfg(not(target_arch = "wasm32"))]
+const DRIVER: &str = "ORB_DRIVER";
+
 /// The limits Orbis asks `adapter`'s device for: WebGPU's defaults, lowered
 /// where the adapter falls short of them (the iOS simulator has 15
 /// inter-stage variables), with buffers and storage bindings as large as it
@@ -300,7 +306,8 @@ impl WgpuGpu {
             float_targets: cfg!(webgpu),
             multi_draw: false,
         };
-        Self {
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+        let mut gpu = Self {
             device,
             queue,
             #[cfg(not(target_arch = "wasm32"))]
@@ -347,7 +354,26 @@ impl WgpuGpu {
             lost_reason: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             shader_compiler: None,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        match std::env::var(DRIVER).as_deref() {
+            Ok("cpu") => gpu.force_cpu_driver(false),
+            Ok("cpu-tex") => gpu.force_cpu_driver(true),
+            Ok("" | "gpu") | Err(_) => {}
+            Ok(other) => panic!("{DRIVER}={other}: expected gpu, cpu or cpu-tex"),
         }
+        gpu
+    }
+
+    /// Has a device that draws GPU-driven report what WebGL 2 lacks, so
+    /// renderers made on it after take the CPU frame driver (no indirect
+    /// draws) and, with `textures`, keep their tables in data textures (no
+    /// vertex-stage storage): the WebGL 2 path's logic on a native device,
+    /// for tests that hold it to the GPU-driven one (#140).
+    /// `ORB_DRIVER=cpu` or `cpu-tex` sets it for every native device.
+    pub fn force_cpu_driver(&mut self, textures: bool) {
+        self.caps.indirect = false;
+        self.caps.vertex_storage &= !textures;
     }
 
     /// Copies the gathered writes into place ahead of what `encoder`

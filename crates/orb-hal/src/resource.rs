@@ -70,6 +70,9 @@ pub enum TextureFormat {
     R8Unorm,
     /// Unfilterable single floats: the terrain's depth as a colour.
     R32Float,
+    /// Unsigned words: tables in data textures, where the vertex stage
+    /// has no storage buffers (WebGL 2).
+    R32Uint,
     /// Filterable, blendable half-float density targets.
     Rgba16Float,
     Rgba8Unorm,
@@ -86,6 +89,7 @@ impl TextureFormat {
             Self::R8Unorm => 1,
             Self::Rgba16Float => 8,
             Self::R32Float
+            | Self::R32Uint
             | Self::Rgba8Unorm
             | Self::Rgba8UnormSrgb
             | Self::Bgra8Unorm
@@ -238,6 +242,16 @@ impl BindGroupLayoutEntry {
             ty: BindingType::Sampler { filtering },
         }
     }
+
+    /// An [`R32Uint`](TextureFormat::R32Uint) 2D texture shaders read
+    /// words from: a table in a data texture.
+    pub const fn data_texture(binding: u32, visibility: ShaderStages) -> Self {
+        Self {
+            binding,
+            visibility,
+            ty: BindingType::DataTexture,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,6 +268,9 @@ pub enum BindingType {
     Sampler {
         filtering: bool,
     },
+    /// An unsigned-integer 2D texture, read texel by texel: a table in a
+    /// data texture.
+    DataTexture,
     /// A write-only storage texture.
     StorageTexture {
         format: TextureFormat,
