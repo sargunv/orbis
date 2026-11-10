@@ -64,7 +64,6 @@ struct Frame {
     // grid (GL JS's aligned projection matrix).
     align: vec2<f32>,
     extrusion_scale: f32,
-    ground_horizon: f32,
     // Milliseconds since the map began, for image fades.
     time: f32,
     // The same, for feature-state fades: drape slots, which don't fade

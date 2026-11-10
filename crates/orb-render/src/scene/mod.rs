@@ -74,8 +74,6 @@ pub struct FrameBlock {
     pub align: [f32; 2],
     /// Projected world units per v8 extrusion metre at the camera target.
     pub extrusion_scale: f32,
-    /// Top logical row where the finite view frustum intersects ground.
-    pub ground_horizon: f32,
     /// How far symbol fades have run since the last placement commit (GL
     /// JS `symbolFadeChange`).
     pub symbol_fade_change: f32,
@@ -193,7 +191,6 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
     b.f(f::ZOOM, &[frame.zoom as f32, frame.bearing]);
     b.f(f::ALIGN, &frame.align);
     b.f(f::EXTRUSION_SCALE, &[frame.extrusion_scale]);
-    b.f(f::GROUND_HORIZON, &[frame.ground_horizon]);
     b.f(f::TIME, &[frame.time]);
     b.f(f::STATE_TIME, &[frame.state_time]);
     b.f(f::SYMBOL_FADE_CHANGE, &[frame.symbol_fade_change]);

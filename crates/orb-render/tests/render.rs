@@ -146,7 +146,6 @@ impl Harness {
             bearing: 0.0,
             align: [0.0; 2],
             extrusion_scale: 1.0,
-            ground_horizon: 0.0,
             symbol_fade_change: 1.0,
             time: 0.0,
             state_time: 0.0,

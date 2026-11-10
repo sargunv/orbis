@@ -1626,7 +1626,6 @@ impl Map {
             zoom,
             bearing: self.camera.state().bearing.to_radians() as f32,
             extrusion_scale: self.extrusion_scale() as f32,
-            ground_horizon: view.ground_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
             time: self.shader_time() as f32,
             state_time: self.shader_time() as f32,
