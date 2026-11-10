@@ -164,8 +164,18 @@ impl State {
         generation: u64,
     ) {
         self.settle();
-        if let Some(c) = completion {
-            c.complete(result, generation);
+        match (completion, result) {
+            (Some(c), result) => c.complete(result, generation),
+            // A command posted without a completion has nobody to tell of
+            // its failure but the log, as in Native.
+            (None, Err(failure)) => crate::logging::log(
+                MLN_LOG_SEVERITY_WARNING,
+                &format!(
+                    "a discarded command failed (status {}): {}",
+                    failure.status, failure.message
+                ),
+            ),
+            (None, Ok(_)) => {}
         }
     }
 }

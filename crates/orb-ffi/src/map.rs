@@ -122,6 +122,9 @@ pub(crate) struct MapEntry {
     /// What ends the transitions an interruption ends: a cancel, or by
     /// default a replacement.
     ending: mln_camera_transition_outcome,
+    /// Command groups open: while any is, a session draws none of the
+    /// map's changes, so they show together once the outermost ends.
+    pub(crate) groups: u32,
     /// Draws the map's frames while no session does, so animations run.
     idle: Option<orb_api::Target>,
 }
@@ -504,6 +507,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         style_waiters: Vec::new(),
                         transitions: Vec::new(),
                         ending: MLN_CAMERA_TRANSITION_OUTCOME_REPLACED,
+                        groups: 0,
                         idle: None,
                     },
                 );
@@ -753,11 +757,18 @@ command!(mln_map_request_repaint(), false, false, |state, id| {
 });
 
 command!(mln_map_begin_command_group(), false, false, |state, id| {
-    Ok(job(|_| Ok(())))
+    Ok(job(|entry| {
+        entry.groups += 1;
+        Ok(())
+    }))
 });
 
 command!(mln_map_end_command_group(), false, true, |state, id| {
-    Ok(job(|_| Ok(())))
+    Ok(job(|entry| {
+        entry.groups = (entry.groups.checked_sub(1))
+            .ok_or_else(|| Failure::state("the map has no open command group"))?;
+        Ok(())
+    }))
 });
 
 command!(mln_map_get_style_url(), true, false, |state, id| {

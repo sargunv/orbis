@@ -565,8 +565,12 @@ pub(crate) fn pump(state: &mut State) {
         let Some(map) = maps.get_mut(&entry.map) else {
             continue;
         };
+        // An open command group holds the map's changes back from every
+        // frame, forced ones too, until the outermost group ends.
+        let held = map.groups > 0;
         if entry.handle.tick.swap(false, Ordering::AcqRel)
             && entry.demands.is_empty()
+            && !held
             && map.map.needs_frame()
         {
             entry.demands.push_back(mln_frame_demand {
@@ -597,7 +601,7 @@ pub(crate) fn pump(state: &mut State) {
             };
             let continuous = map.mode == MLN_MAP_MODE_CONTINUOUS;
             let force = demand.flags & MLN_FRAME_DEMAND_FORCE != 0;
-            if !continuous || !(force || map.map.needs_frame()) {
+            if !continuous || held || !(force || map.map.needs_frame()) {
                 if continuous && demand.flags & MLN_FRAME_DEMAND_WAIT_FOR_UPDATE != 0 {
                     entry.demands.push_front(demand);
                     break;
@@ -652,6 +656,7 @@ pub(crate) fn pump(state: &mut State) {
         if entry.target.is_some()
             && entry.demands.is_empty()
             && !entry.redraw_signaled
+            && !held
             && map.map.needs_frame()
             && let Some(wake) = &entry.redraw_wake
         {
