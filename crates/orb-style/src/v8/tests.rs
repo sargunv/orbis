@@ -214,11 +214,11 @@ fn errors_carry_json_paths() {
     );
 
     let e = errors(
-        r#"[{"id": "l", "type": "line", "source": "v", "source-layer": "x", "paint": {"line-translate": ["get", "t"]}}]"#,
+        r#"[{"id": "l", "type": "line", "source": "v", "source-layer": "x", "paint": {"line-translate-anchor": ["get", "t"]}}]"#,
     );
     assert_eq!(
         e,
-        ["layers[0].paint.line-translate: data expressions not supported"]
+        ["layers[0].paint.line-translate-anchor: data expressions not supported"]
     );
 
     let e = errors(

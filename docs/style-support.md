@@ -61,7 +61,7 @@ pass.
 | `fill-layer-blend` | paint | layer | constant | [no](https://github.com/maplibre/maplibre-gl-js/issues/48) | [no](https://github.com/maplibre/maplibre-native/issues/2963) | constant | — | — | — | — |
 | `fill-color` | paint | frame | zoom, data, state | 0.10.0; data 0.19.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 9/9 | — | 9/9 |
 | `fill-outline-color` | paint | frame | zoom, data, state | 0.10.0; data 0.19.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/8 | — | 8/8 |
-| `fill-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 2/2 | 3/3 | 2/2 | 3/3 |
+| `fill-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; data accepted (not portable) | 2/2 | 3/3 | 2/2 | 3/3 |
 | `fill-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 1/2 | 2/2 | 2/2 | 2/2 |
 | `fill-pattern` | paint | tile | zoom, data | 0.10.0; data 0.49.0 | 2.0.1; data 6.5.0 | zoom, data | — | 12/12 | — | 10/10, 1 skipped |
 
@@ -78,7 +78,7 @@ pass.
 | `line-layer-opacity` | paint | layer | zoom | 6.0.0 | [no](https://github.com/maplibre/maplibre-native/issues/4298) | zoom; camera accepted (not portable) | — | 18/18 | — | — |
 | `line-layer-blend` | paint | layer | constant | [no](https://github.com/maplibre/maplibre-gl-js/issues/48) | [no](https://github.com/maplibre/maplibre-native/issues/2963) | constant | — | — | — | — |
 | `line-color` | paint | frame | zoom, data, state | 0.10.0; data 0.23.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 8/8 | — | 7/7 |
-| `line-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 2/2 | 3/3 | 2/2 | 3/3 |
+| `line-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; data accepted (not portable) | 2/2 | 3/3 | 2/2 | 3/3 |
 | `line-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 0/2 | 2/2 | 2/2 | 2/2 |
 | `line-width` | paint | frame | zoom, data, state | 0.10.0; data 0.39.0 | 2.0.1; data 5.2.0 | zoom, data, state | 6/6 | 7/7 | 6/6 | 7/7 |
 | `line-gap-width` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state | 6/6 | 4/4 | 6/6 | 4/4 |
@@ -162,10 +162,10 @@ pass.
 | `circle-color` | paint | frame | zoom, data, state | 0.10.0; data 0.18.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
 | `circle-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
 | `circle-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 6/6 | — | 6/6 |
-| `circle-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 3/3 | 3/3 | 3/3 | 3/3 |
+| `circle-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; data accepted (not portable) | 3/3 | 3/3 | 3/3 | 3/3 |
 | `circle-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 2/2 | 2/2 | 2/2 | 2/2 |
-| `circle-pitch-scale` | paint | frame | zoom | 0.21.0 | 4.2.0 | zoom | 8/8 | 3/3 | 8/8 | 3/3 |
-| `circle-pitch-alignment` | paint | frame | zoom | 0.39.0 | 5.2.0 | zoom | — | 13/13 | — | 4/4 |
+| `circle-pitch-scale` | paint | frame | zoom | 0.21.0 | 4.2.0 | zoom; data accepted (not portable) | 8/8 | 3/3 | 8/8 | 3/3 |
+| `circle-pitch-alignment` | paint | frame | zoom | 0.39.0 | 5.2.0 | zoom; data accepted (not portable) | — | 13/13 | — | 4/4 |
 | `circle-stroke-width` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state | 3/3 | 5/5 | 3/3 | 5/5 |
 | `circle-stroke-color` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 5/5 | — | 5/5 |
 | `circle-stroke-opacity` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 6/6 | — | 6/6 |
@@ -189,7 +189,7 @@ pass.
 | `fill-extrusion-opacity` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom; camera, data accepted (not portable) | — | 3/3 | — | 3/3 |
 | `fill-extrusion-height` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state | — | 5/6 | — | 5/5 |
 | `fill-extrusion-base` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state | — | 6/6 | — | 2/6 |
-| `fill-extrusion-translate` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom | 1/1 | 4/4 | 1/1 | 4/4 |
+| `fill-extrusion-translate` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom; data accepted (not portable) | 1/1 | 4/4 | 1/1 | 4/4 |
 | `fill-extrusion-translate-anchor` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom | — | 2/2 | — | 0/2 |
 | `fill-extrusion-vertical-gradient` | paint | frame | zoom | 0.50.0 | 7.0.0 | zoom; data accepted (not portable) | — | 2/3 | — | 2/2 |
 | `fill-extrusion-pattern` | paint | tile | zoom, data | 0.27.0; data 0.49.0 | 5.1.0; data 6.5.0 | zoom, data | — | 6/9 | — | 1/9 |

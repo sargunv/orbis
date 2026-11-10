@@ -23,6 +23,18 @@ const EXTRUSION_ROW_WORDS: u32 = 11u;
 // Then, for a colour over the elevation, two words for each of its stops
 // after the first that come from the row.
 const CIRCLE_ROW_WORDS: u32 = 14u;
+// Then, where `circle-pitch-scale` or `-alignment` is per feature
+// (`CIRCLE_PITCH_ROW_MASK`), a word of the feature's flags: bit 1 map
+// pitch scale, bit 2 map alignment.
+const CIRCLE_ROW_PITCH: u32 = 14u;
+const CIRCLE_PITCH_ROW_MASK: u32 = 128u;
+// A fill, line, extrusion or circle node's per-feature `*-translate`
+// (`table_mask` bit `TRANSLATE_ROW_MASK`) ends each row: its pixels at the
+// tile's zoom and the next, each an i16 pair in `TRANSLATE_ROW_UNITS` per
+// pixel.
+const TRANSLATE_ROW_MASK: u32 = 32768u;
+const TRANSLATE_ROW_WORDS: u32 = 2u;
+const TRANSLATE_ROW_UNITS: u32 = 16u;
 const HEATMAP_ROW_WORDS: u32 = 4u;
 const SYMBOL_ROW_WORDS: u32 = 10u;
 

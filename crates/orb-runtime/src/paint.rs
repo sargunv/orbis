@@ -470,8 +470,9 @@ fn write_paint(
 /// a viewport-anchored translate.
 fn turns_with_bearing(l: &orb_style::Layer, zoom: f64) -> bool {
     let translates = |px: orb_style::Key<[f32; 2]>, anchor: orb_style::Key<TranslateAnchor>| {
+        let px = l.get(px);
         l.get(anchor).evaluate(zoom) == TranslateAnchor::Viewport
-            && l.get(px).evaluate(zoom) != [0.0; 2]
+            && (is_per_feature(px.kind()) || px.evaluate(zoom) != [0.0; 2])
     };
     match l.ty {
         LayerType::Hillshade => {
@@ -552,19 +553,7 @@ fn node_paint(
         }
     }
     let layer = &plan.style.layers[node.layer];
-    let translate = match layer.ty {
-        LayerType::Fill => Some((orb_style::FILL_TRANSLATE, orb_style::FILL_TRANSLATE_ANCHOR)),
-        LayerType::Line => Some((orb_style::LINE_TRANSLATE, orb_style::LINE_TRANSLATE_ANCHOR)),
-        LayerType::FillExtrusion => Some((
-            orb_style::EXTRUSION_TRANSLATE,
-            orb_style::EXTRUSION_TRANSLATE_ANCHOR,
-        )),
-        _ => None,
-    }
-    .map_or(Translate::default(), |(px, anchor)| Translate {
-        px: layer.get(px).evaluate(zoom),
-        viewport: layer.get(anchor).evaluate(zoom) == TranslateAnchor::Viewport,
-    });
+    let translate = translate(plan, node, zoom, maxima.get(properties.len()));
     let paint = match node.family {
         Family::Fill | Family::FillOutline => NodePaint::Fill(FillPaint {
             color,
@@ -825,6 +814,33 @@ fn line_paint(
 /// How a property's row values blend with zoom.
 pub(crate) fn curve(property: &PaintProperty<'_>) -> Curve {
     property.expression().map_or(Curve::Step, expression_curve)
+}
+
+/// A fill, line, extrusion or circle node's translate at `zoom`. Per
+/// feature (beyond the spec) it ends the rows, and `reach`, the node's
+/// maximum after its slots, is the farthest any feature's goes.
+pub(crate) fn translate(
+    plan: &StylePlan,
+    node: &crate::style::NodePlan,
+    zoom: f64,
+    reach: Option<&f32>,
+) -> Translate {
+    let Some((px, anchor)) = plan.translate(node) else {
+        return Translate::default();
+    };
+    let viewport = anchor.evaluate(zoom) == TranslateAnchor::Viewport;
+    match px.as_expression().filter(|e| is_per_feature(e.kind())) {
+        Some(e) => Translate {
+            px: [reach.copied().unwrap_or(0.0), 0.0],
+            viewport,
+            rows: Some(expression_curve(e)),
+        },
+        None => Translate {
+            px: px.evaluate(zoom),
+            viewport,
+            rows: None,
+        },
+    }
 }
 
 /// Whether values of `kind` come from per-feature rows.

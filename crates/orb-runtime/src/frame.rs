@@ -691,17 +691,11 @@ impl Map {
         // whose content moves into it.
         let reach_px = (plan.nodes.iter())
             .filter(|n| n.family.is_draped())
-            .filter_map(|n| {
-                let layer = &plan.style.layers[n.layer];
-                match layer.ty {
-                    orb_style::LayerType::Fill => Some(layer.get(orb_style::FILL_TRANSLATE)),
-                    orb_style::LayerType::Line => Some(layer.get(orb_style::LINE_TRANSLATE)),
-                    _ => None,
-                }
-            })
-            .flat_map(|translate| {
+            .flat_map(|n| {
+                let slots = plan.paint_properties(n).len();
+                let reach = style.nodes.get(&n.key).and_then(|s| s.maxima.get(slots));
                 zooms.iter().map(move |&z| {
-                    let [x, y] = translate.evaluate(f64::from(z));
+                    let [x, y] = crate::paint::translate(plan, n, f64::from(z), reach).px;
                     f64::from(x.hypot(y))
                 })
             })

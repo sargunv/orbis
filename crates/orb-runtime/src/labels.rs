@@ -1580,6 +1580,7 @@ pub(crate) fn paint(
         table_mask: 0,
         curves: [orb_render::Curve::Step; 5],
         translate: orb_render::Translate {
+            rows: None,
             px: l.get(part.translate).evaluate(zoom),
             viewport: l.get(part.translate_anchor).evaluate(zoom)
                 == orb_style::TranslateAnchor::Viewport,

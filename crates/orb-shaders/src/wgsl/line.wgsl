@@ -29,6 +29,7 @@ struct LineNode {
     image_from: u32,
     image_to: u32,
     curves: array<Curve, 6>,
+    translate_curve: Curve,
     pattern: Pattern,
     dash_from: u32,
     dash_to: u32,
@@ -174,7 +175,8 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     let dist = outset * extrude * EXTRUDE_SCALE;
     let offset2 = offset * offset_normal * EXTRUDE_SCALE * normal.y;
 
-    let shift = translate_world(node.translate, node.translate_anchor, tile);
+    let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
+    let shift = translate_world(px, node.translate_anchor, tile);
     let center = pos + offset2 * px_to_data + vec2<f32>(shift.x, -shift.y) / tile.scale;
     let projected_no_extrude = ground_clip(tile_ground(tile, center), vec2<f32>(0.0), 0.0);
     let extruded = center + dist * px_to_data;

@@ -17,6 +17,7 @@ struct FillNode {
     image_from: u32,
     image_to: u32,
     curves: array<Curve, 2>,
+    translate_curve: Curve,
     pattern: Pattern,
     state: StateLookup,
 };
@@ -97,7 +98,8 @@ fn fill_vertex(v: Pulled) -> FillOut {
         opacity = state_number(state, node.state, 1u, node.curves[1], opacity);
     }
 
-    let shift = translate_world(node.translate, node.translate_anchor, tile);
+    let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
+    let shift = translate_world(px, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip(ground, vec2<f32>(0.0), 0.0);
     out.color = color * opacity;

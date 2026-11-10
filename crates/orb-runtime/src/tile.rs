@@ -8,7 +8,7 @@ use std::ops::Range;
 use orb_layout::{Family, ImageKey, pack_color};
 use orb_layout::{Mesh, extrusion, fill, line, point};
 use orb_shaders::layout;
-use orb_style::{Kind, LayerType, SourceKind};
+use orb_style::{Kind, LayerType, SourceKind, TranslateAnchor};
 use orb_tile::{GeometryType, Layer, LayerBuilder, TileFrame};
 
 use crate::glyphs::GlyphCatalog;
@@ -800,9 +800,13 @@ pub(crate) fn build(
             let line_effects = crate::line::has_textures(style_layer);
             // Extrusion rows carry each feature's centroid, for terrain and
             // ownership.
+            let translate_rows = plan.translate_rows(node);
+            let pitch_rows = plan.circle_pitch_rows(node);
             let per_feature = line_effects
                 || node.family == Family::FillExtrusion
                 || pattern.is_some()
+                || translate_rows
+                || pitch_rows
                 || properties.iter().any(PaintProperty::per_feature);
             let props = if per_feature {
                 let mut rows = vec![0u32; features.len() * row_words];
@@ -879,6 +883,43 @@ pub(crate) fn build(
                         }
                         rows[i * row_words + layout::EXTRUSION_ROW_WHOLE] = flags;
                     }
+                }
+                if pitch_rows {
+                    // Beyond the spec: each circle's pitch scale and
+                    // alignment, as the node's flags word has them.
+                    let map = |key| {
+                        let bound = style_layer.get(key).bind(layer);
+                        move |f| u32::from(bound.evaluate(zoom, f) == TranslateAnchor::Map)
+                    };
+                    let scale = map(orb_style::CIRCLE_PITCH_SCALE);
+                    let alignment = map(orb_style::CIRCLE_PITCH_ALIGNMENT);
+                    for (i, &feature) in features.iter().enumerate() {
+                        let f = feature as usize;
+                        rows[i * row_words + layout::CIRCLE_ROW_PITCH] =
+                            scale(f) << 1 | alignment(f) << 2;
+                    }
+                }
+                if translate_rows {
+                    // Beyond the spec: each feature's translate ends its
+                    // row, and its farthest is the node's culling margin.
+                    let (px, _) = plan.translate(node).expect("a translated node");
+                    let composite = px.kind() == Kind::Composite;
+                    let bound = px.bind(layer).with_tile(geometry_tile);
+                    let mut reach = 0.0f32;
+                    for (i, &feature) in features.iter().enumerate() {
+                        let f = feature as usize;
+                        let at = bound.evaluate(zoom, f);
+                        let next = if composite {
+                            bound.evaluate(zoom + 1.0, f)
+                        } else {
+                            at
+                        };
+                        let (at, next) = (pack_translate(at), pack_translate(next));
+                        reach = reach.max(at.1).max(next.1);
+                        rows[(i + 1) * row_words - layout::TRANSLATE_ROW_WORDS..][..2]
+                            .copy_from_slice(&[at.0, next.0]);
+                    }
+                    maxima.push(reach);
                 }
                 rows
             } else {
@@ -970,7 +1011,24 @@ pub(crate) fn build(
                 _ => None,
             };
             let geometry = &mut build.hits[hit_layer].1;
-            let mut hits = crate::query::MeshHits::new(hit_layer as u32);
+            // Beyond the spec, a feature's own translate and circle pitch.
+            use crate::query::HitExtras;
+            let translate = plan
+                .translate_rows(node)
+                .then(|| plan.translate(node).expect("translated").0.bind(layer));
+            let pitch = plan.circle_pitch_rows(node).then(|| {
+                let map = |key| style_layer.get(key).bind(layer);
+                (
+                    map(orb_style::CIRCLE_PITCH_SCALE),
+                    map(orb_style::CIRCLE_PITCH_ALIGNMENT),
+                )
+            });
+            let extras = if translate.is_some() {
+                HitExtras::TRANSLATE
+            } else {
+                0
+            } | if pitch.is_some() { HitExtras::PITCH } else { 0 };
+            let mut hits = crate::query::MeshHits::new(hit_layer as u32, extras);
             // What a hit test reads of each feature's paint.
             let dimensions: &[_] = match style_layer.ty {
                 LayerType::Circle => &[orb_style::CIRCLE_RADIUS, orb_style::CIRCLE_STROKE_WIDTH],
@@ -1016,7 +1074,17 @@ pub(crate) fn build(
                 };
                 let parts = kind != crate::query::LABEL;
                 let record = geometry.add(tile_layer, feature, id, parts);
-                hits.push(geometry, record, feature, kind, dimensions);
+                let mut words = Vec::new();
+                if let Some(translate) = &translate {
+                    words.push(pack_translate(translate.evaluate(zoom, i)).0);
+                }
+                if let Some((scale, alignment)) = &pitch {
+                    let map = |p: &orb_style::BoundProperty<'_, TranslateAnchor>| {
+                        u32::from(p.evaluate(zoom, i) == TranslateAnchor::Map)
+                    };
+                    words.push(map(scale) << 1 | map(alignment) << 2);
+                }
+                hits.push(geometry, record, feature, kind, dimensions, &words);
             }
             build.meshes.push(NodeMesh {
                 hits,
@@ -1043,6 +1111,16 @@ pub(crate) fn build(
     table.sort_unstable_by_key(|&(_, i)| i);
     build.ids = table.into_iter().map(|(id, _)| id).collect();
     Ok(build)
+}
+
+/// A translate's row word (`types.wgsl`'s `TRANSLATE_ROW_UNITS`): an i16
+/// pair, clamped to what it holds, and the length in pixels it holds.
+fn pack_translate([x, y]: [f32; 2]) -> (u32, f32) {
+    let units = layout::TRANSLATE_ROW_UNITS as f32;
+    let fixed = |v: f32| (v * units).round().clamp(-32768.0, 32767.0) as i16;
+    let (x, y) = (fixed(x), fixed(y));
+    let length = f32::from(x).hypot(f32::from(y)) / units;
+    (u32::from(x as u16) | u32::from(y as u16) << 16, length)
 }
 
 #[cfg(test)]

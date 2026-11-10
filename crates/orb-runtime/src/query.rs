@@ -193,8 +193,10 @@ impl HitGeometry {
 ///
 /// Words: the feature count; the largest radius, stroke and height (or
 /// base) of any feature (f32); the features' extent;
-/// their bounds `min_x, min_y, max_x, max_y` (i32); then per feature
-/// `geometry, feature, kind, radius, stroke, height, base`.
+/// their bounds `min_x, min_y, max_x, max_y` (i32); the [`HitExtras`]
+/// each record carries and the farthest any feature is translated, in
+/// pixels (f32); then per feature `geometry, feature, kind, radius,
+/// stroke, height, base` and its extras' words.
 ///
 /// Records cross between workers as their words, the tile's geometry once
 /// beside them; a malformed one is skipped when picked.
@@ -221,8 +223,22 @@ struct Bounds {
     max: DVec2,
 }
 
-const MESH_HEADER: usize = 9;
+const MESH_HEADER: usize = 11;
 const NODE_RECORD: usize = 7;
+
+/// What a node's records carry beyond their dimensions, read per feature
+/// beyond the spec: bits of [`MeshHits`]' header, and a word each, in this
+/// order.
+pub(crate) struct HitExtras;
+
+impl HitExtras {
+    /// The feature's translate in pixels at the tile's zoom, as its row
+    /// holds it (`types.wgsl`'s `TRANSLATE_ROW_UNITS`).
+    pub(crate) const TRANSLATE: u32 = 1;
+    /// A circle's pitch flags, as its row holds them: bit 1 map pitch
+    /// scale, bit 2 map alignment.
+    pub(crate) const PITCH: u32 = 2;
+}
 
 /// One feature of a [`MeshHits`], unpacked but for its geometry.
 struct FeatureRef<'a> {
@@ -239,6 +255,11 @@ struct FeatureRef<'a> {
     stroke: f32,
     height: f32,
     base: f32,
+    /// Its own translate in pixels, where the node's is per feature.
+    translate: Option<[f32; 2]>,
+    /// A circle's own pitch scale and alignment on the map, where the
+    /// node's are per feature.
+    pitch: Option<(bool, bool)>,
     geometry: &'a [u32],
 }
 
@@ -297,19 +318,35 @@ fn clip_ring(ring: &[[f64; 2]], lo: f64, hi: f64) -> Vec<DVec2> {
     out.into_iter().map(DVec2::from).collect()
 }
 
+/// A translate row word's pixels (`types.wgsl`'s `TRANSLATE_ROW_UNITS`).
+fn unpack_translate(word: u32) -> [f32; 2] {
+    let units = orb_shaders::layout::TRANSLATE_ROW_UNITS as f32;
+    [word as u16 as i16, (word >> 16) as u16 as i16].map(|v| f32::from(v) / units)
+}
+
 fn point(words: &[u32; 2]) -> [i32; 2] {
     [words[0] as i32, words[1] as i32]
 }
 
 impl MeshHits {
-    /// A node's hits, their records in the tile's `layer`th geometry.
-    pub(crate) fn new(layer: u32) -> Self {
+    /// A node's hits, their records in the tile's `layer`th geometry,
+    /// each carrying `extras` ([`HitExtras`]).
+    pub(crate) fn new(layer: u32, extras: u32) -> Self {
         let (lo, hi) = (i32::MAX as u32, i32::MIN as u32);
         Self {
-            words: vec![0, 0, 0, 0, 0, lo, lo, hi, hi],
+            words: vec![0, 0, 0, 0, 0, lo, lo, hi, hi, extras, 0],
             layer,
             ..Self::default()
         }
+    }
+
+    fn extras(&self) -> u32 {
+        self.words.get(9).copied().unwrap_or(0)
+    }
+
+    /// Words per feature record.
+    fn stride(&self) -> usize {
+        NODE_RECORD + self.extras().count_ones() as usize
     }
 
     /// Adds feature `feature` of its source layer, its record at `at` in
@@ -317,7 +354,8 @@ impl MeshHits {
     /// a label's feature, which labels pick from placement), with the
     /// node's `[radius, stroke, height, base]` of it: a circle's radius
     /// and stroke width; half a line's width, its gap width, and its
-    /// offset's size and offset; an extrusion's height and base.
+    /// offset's size and offset; an extrusion's height and base; and the
+    /// words of the node's extras.
     pub(crate) fn push(
         &mut self,
         geometry: &HitGeometry,
@@ -325,7 +363,14 @@ impl MeshHits {
         feature: u32,
         kind: u32,
         dimensions: [f32; 4],
+        extras: &[u32],
     ) {
+        debug_assert_eq!(extras.len(), self.stride() - NODE_RECORD);
+        if self.extras() & HitExtras::TRANSLATE != 0 {
+            let [x, y] = unpack_translate(extras[0]);
+            let reach = x.hypot(y).max(self.header(10));
+            self.words[10] = reach.to_bits();
+        }
         let w = &mut self.words;
         w[0] += 1;
         let [radius, stroke, height, base] = dimensions;
@@ -341,6 +386,7 @@ impl MeshHits {
         }
         w.extend([at, feature, kind]);
         w.extend(dimensions.map(f32::to_bits));
+        w.extend_from_slice(extras);
     }
 
     /// Points its records at the tile's hit geometries, as the tile
@@ -348,6 +394,16 @@ impl MeshHits {
     pub(crate) fn link(&mut self, geometries: &[Arc<HitGeometry>]) {
         if let Some(geometry) = geometries.get(self.layer as usize) {
             self.geometry = Arc::clone(geometry);
+        }
+    }
+
+    /// The farthest a feature is translated, in pixels, where the
+    /// translate is per feature.
+    fn translate_reach(&self, at: &LayerAt) -> f32 {
+        if at.feature_translate.is_some() {
+            self.header(10)
+        } else {
+            0.0
         }
     }
 
@@ -367,8 +423,9 @@ impl MeshHits {
 
     /// Its features, by their records' first words.
     fn features(&self) -> impl Iterator<Item = (u32, FeatureRef<'_>)> {
+        let stride = self.stride();
         (0..self.words.first().copied().unwrap_or(0) as usize)
-            .map(|i| (MESH_HEADER + i * NODE_RECORD) as u32)
+            .map(move |i| (MESH_HEADER + i * stride) as u32)
             .filter_map(|at| Some((at, self.feature(at).ok()?)))
     }
 
@@ -376,7 +433,7 @@ impl MeshHits {
     /// error, never a panic.
     fn feature(&self, at: u32) -> Result<FeatureRef<'_>, String> {
         let at = at as usize;
-        let node = self.words.get(at..at + NODE_RECORD).ok_or(MALFORMED)?;
+        let node = self.words.get(at..at + self.stride()).ok_or(MALFORMED)?;
         let record = self.geometry.record(node[0])?;
         let mut r = Reader::new(record);
         let bounds = r.take(4)?;
@@ -390,7 +447,17 @@ impl MeshHits {
             None
         };
         let f = |i: usize| f32::from_bits(node[i]);
+        let mut extras = node[NODE_RECORD..].iter();
+        let extra = |bit| self.extras() & bit != 0;
+        let translate = extra(HitExtras::TRANSLATE)
+            .then(|| extras.next().map(|&w| unpack_translate(w)))
+            .flatten();
+        let pitch = extra(HitExtras::PITCH)
+            .then(|| extras.next().map(|&w| (w & 2 != 0, w & 4 != 0)))
+            .flatten();
         Ok(FeatureRef {
+            translate,
+            pitch,
             bounds,
             id,
             feature: node[1],
@@ -878,8 +945,11 @@ struct LayerAt {
     /// Circles: whether they scale with the map under pitch, and whether
     /// they lie on it.
     circle_pitch: (bool, bool),
-    /// The translation in world units.
+    /// The translation in world units; zero where per feature.
     shift: DVec2,
+    /// Where the translate is per feature: whether it turns with the
+    /// bearing (its anchor is `viewport`).
+    feature_translate: Option<bool>,
 }
 
 /// One query's pixels in world space, and what the camera asks of layers.
@@ -950,19 +1020,16 @@ impl Query<'_> {
             ),
             _ => (false, false),
         };
-        let shift = match layer.paint.translate() {
+        let (shift, feature_translate) = match layer.paint.translate() {
             Some((translate, anchor)) => {
-                let [x, y] = translate.evaluate(zoom);
-                let mut shift = DVec2::new(f64::from(x), f64::from(y));
-                if anchor.evaluate(zoom) == TranslateAnchor::Viewport {
-                    let (sin, cos) = self.camera.bearing.to_radians().sin_cos();
-                    shift =
-                        DVec2::new(shift.x * cos - shift.y * sin, shift.x * sin + shift.y * cos);
+                let viewport = anchor.evaluate(zoom) == TranslateAnchor::Viewport;
+                if per_feature(translate.kind()) {
+                    (DVec2::ZERO, Some(viewport))
+                } else {
+                    (self.shift(translate.evaluate(zoom), viewport), None)
                 }
-                shift.y = -shift.y;
-                shift * self.view.world_per_px()
             }
-            None => DVec2::ZERO,
+            None => (DVec2::ZERO, None),
         };
         LayerAt {
             radius,
@@ -973,7 +1040,29 @@ impl Query<'_> {
             offset,
             circle_pitch,
             shift,
+            feature_translate,
         }
+    }
+
+    /// A translate of `px` pixels in world units, turned with the bearing
+    /// for the `viewport` anchor.
+    fn shift(&self, [x, y]: [f32; 2], viewport: bool) -> DVec2 {
+        let mut shift = DVec2::new(f64::from(x), f64::from(y));
+        if viewport {
+            let (sin, cos) = self.camera.bearing.to_radians().sin_cos();
+            shift = DVec2::new(shift.x * cos - shift.y * sin, shift.x * sin + shift.y * cos);
+        }
+        shift.y = -shift.y;
+        shift * self.view.world_per_px()
+    }
+
+    /// The feature's translation in world units and its circle pitch.
+    fn feature_shift(&self, at: &LayerAt, f: &FeatureRef<'_>) -> (DVec2, (bool, bool)) {
+        let shift = match (at.feature_translate, f.translate) {
+            (Some(viewport), Some(px)) => self.shift(px, viewport),
+            _ => at.shift,
+        };
+        (shift, f.pitch.unwrap_or(at.circle_pitch))
     }
 
     /// The feature's tolerance in pixels, its line offset in pixels, and
@@ -1020,10 +1109,12 @@ impl Query<'_> {
         (radius, offset, elevation)
     }
 
-    /// The largest tolerance and top any of a mesh's features can have.
+    /// The largest tolerance and top any of a mesh's features can have,
+    /// its farthest per-feature translate included.
     fn mesh_bound(&self, layer: &HitLayer, at: &LayerAt, mesh: &MeshHits) -> (f32, f64) {
         let (radius, stroke, height) = (mesh.header(1), mesh.header(2), mesh.header(3));
-        match &layer.paint {
+        let reach = mesh.translate_reach(at);
+        let (pad, top) = match &layer.paint {
             HitPaint::Circle { .. } => (
                 at.radius.unwrap_or(radius) + at.stroke.unwrap_or(stroke),
                 0.0,
@@ -1039,7 +1130,8 @@ impl Query<'_> {
                 (0.0, f64::from(top) * self.view.height_scale())
             }
             _ => (radius, 0.0),
-        }
+        };
+        (pad + reach, top)
     }
 
     /// World bounds of everything at heights `0..=top` that projects into
@@ -1112,9 +1204,14 @@ impl Scene<'_> {
                     continue;
                 };
                 let layer = &self.layers.nodes[node];
+                // Features translated each their own way may land as far
+                // as the farthest.
+                let slack =
+                    DVec2::splat(f64::from(mesh.translate_reach(&at)) * q.view.world_per_px());
                 let outside = |(min, max): (DVec2, DVec2), offset: DVec2| {
                     ground.is_some_and(|(lo, hi)| {
-                        (max + offset).cmplt(lo).any() || (min + offset).cmpgt(hi).any()
+                        (max + offset + slack).cmplt(lo).any()
+                            || (min + offset - slack).cmpgt(hi).any()
                     })
                 };
                 let offsets: Vec<DVec2> = drawn
@@ -1215,7 +1312,7 @@ impl Scene<'_> {
                     self.period,
                     (f64::from(radius), f64::from(offset)),
                     elevation,
-                    (at.shift, at.circle_pitch),
+                    q.feature_shift(&at, &f),
                 )?;
                 // An overzoom slice's feature answers as its data tile's,
                 // once, as MapLibre Native's overscaled tiles answer.
@@ -2211,9 +2308,9 @@ mod tests {
         let point = geometry.add(&layer, 0, Some(orb_tile::ValueRef::Str("seven")), true);
         let polygon = geometry.add(&layer, 1, None, true);
         assert_eq!(geometry.add(&layer, 1, None, true), polygon);
-        let mut hits = MeshHits::new(0);
-        hits.push(&geometry, point, 0, 2, [5.0, 0.0, 0.0, 0.0]);
-        hits.push(&geometry, polygon, 1, 0, [0.0; 4]);
+        let mut hits = MeshHits::new(0, 0);
+        hits.push(&geometry, point, 0, 2, [5.0, 0.0, 0.0, 0.0], &[]);
+        hits.push(&geometry, polygon, 1, 0, [0.0; 4], &[]);
         hits.link(&[Arc::new(geometry)]);
         let decoded = hits.decode();
         assert_eq!(decoded[0].id.as_deref(), Some("seven"));

@@ -685,6 +685,7 @@ fn translates_fills_and_clips_where_they_land() {
             translate: orb_render::Translate {
                 px: [16.0, 0.0],
                 viewport: false,
+                rows: None,
             },
             table_mask: 0,
             curves: [Curve::Step; 2],
@@ -740,6 +741,7 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
             translate: orb_render::Translate {
                 px: [px, 0.0],
                 viewport: false,
+                rows: None,
             },
             table_mask: 0,
             curves: [Curve::Step; 2],
@@ -846,6 +848,7 @@ fn circle_paint(color: [f32; 4]) -> NodePaint {
         translate: Default::default(),
         pitch_scale_map: false,
         pitch_alignment_map: false,
+        pitch_rows: false,
         table_mask: 0,
         curves: [Curve::Step; 7],
         state: Default::default(),

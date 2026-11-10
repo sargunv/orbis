@@ -13,6 +13,7 @@ struct ExtrusionNode {
     image_from: u32, image_to: u32,
     // Color, height, base, and per-feature opacity.
     curves: array<Curve, 4>,
+    translate_curve: Curve,
     pattern: Pattern,
     state: StateLookup,
     elevation: ElevationColor,
@@ -219,7 +220,8 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let top = f32(packed & 1u);
     let normal = vec3<f32>(unpack_i16x2(packed), unpack_i16x2(vertex_at(v.vertex+3u)).x) / select(16384.0, 16383.0, node.pattern.enabled != 0u);
     let elevation = mix(base, height, top);
-    let shift = translate_world(node.translate, node.translate_anchor, tile);
+    let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
+    let shift = translate_world(px, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip_3d(ground, vec2<f32>(0.0), elevation * frame.extrusion_scale);
     // Modern uses reversed Z; the shared camera matrix remains usable by 2D.

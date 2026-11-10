@@ -379,8 +379,55 @@ impl StylePlan {
         }
     }
 
-    /// Words per feature of the node's property rows.
+    /// Words per feature of the node's property rows: the family's, then a
+    /// circle's pitch flags and the feature's translate where they are per
+    /// feature.
     pub(crate) fn row_words(&self, node: &NodePlan) -> usize {
+        let family = self.family_row_words(node);
+        let pitch = usize::from(self.circle_pitch_rows(node));
+        let translate = if self.translate_rows(node) {
+            layout::TRANSLATE_ROW_WORDS
+        } else {
+            0
+        };
+        family + pitch + translate
+    }
+
+    /// A fill, line, extrusion or circle node's `*-translate` and its
+    /// anchor.
+    pub(crate) fn translate<'a>(
+        &'a self,
+        node: &NodePlan,
+    ) -> Option<(
+        PropertyRef<'a, [f32; 2]>,
+        PropertyRef<'a, orb_style::TranslateAnchor>,
+    )> {
+        let l = &self.style.layers[node.layer];
+        let (px, anchor) = translate_keys(l.ty)?;
+        Some((l.get(px), l.get(anchor)))
+    }
+
+    /// Whether each feature's translate ends the node's rows, read per
+    /// feature beyond the spec.
+    pub(crate) fn translate_rows(&self, node: &NodePlan) -> bool {
+        self.translate(node)
+            .is_some_and(|(px, _)| matches!(px.kind(), Kind::Source | Kind::Composite))
+    }
+
+    /// Whether a circle node's rows carry each feature's pitch scale and
+    /// alignment, read per feature beyond the spec.
+    pub(crate) fn circle_pitch_rows(&self, node: &NodePlan) -> bool {
+        let l = &self.style.layers[node.layer];
+        node.family == Family::Circle
+            && [
+                orb_style::CIRCLE_PITCH_SCALE,
+                orb_style::CIRCLE_PITCH_ALIGNMENT,
+            ]
+            .into_iter()
+            .any(|key| matches!(l.get(key).kind(), Kind::Source | Kind::Composite))
+    }
+
+    fn family_row_words(&self, node: &NodePlan) -> usize {
         match node.family {
             Family::Fill | Family::FillOutline => layout::FILL_ROW_WORDS,
             Family::Line => layout::LINE_ROW_WORDS,
@@ -568,4 +615,22 @@ impl StylePlan {
         let p = l.get(key);
         (p.constant() != Some(None)).then_some(p)
     }
+}
+
+/// A layer type's `*-translate` and anchor properties, for those that can
+/// have one per feature: fills, lines, extrusions and circles.
+pub(crate) fn translate_keys(
+    ty: LayerType,
+) -> Option<(
+    orb_style::Key<[f32; 2]>,
+    orb_style::Key<orb_style::TranslateAnchor>,
+)> {
+    use orb_style::*;
+    Some(match ty {
+        LayerType::Fill => (FILL_TRANSLATE, FILL_TRANSLATE_ANCHOR),
+        LayerType::Line => (LINE_TRANSLATE, LINE_TRANSLATE_ANCHOR),
+        LayerType::FillExtrusion => (EXTRUSION_TRANSLATE, EXTRUSION_TRANSLATE_ANCHOR),
+        LayerType::Circle => (CIRCLE_TRANSLATE, CIRCLE_TRANSLATE_ANCHOR),
+        _ => return None,
+    })
 }

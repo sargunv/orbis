@@ -22,7 +22,12 @@ pub struct CirclePaint {
     pub stroke_opacity: f32,
     pub translate: Translate,
     pub pitch_scale_map: bool,
+    /// Map-aligned; with `pitch_rows`, whether any feature may be, for the
+    /// cells its quads need.
     pub pitch_alignment_map: bool,
+    /// Each feature's pitch scale and alignment come from its row
+    /// (`types.wgsl`'s `CIRCLE_ROW_PITCH`).
+    pub pitch_rows: bool,
     pub table_mask: u32,
     pub curves: [Curve; 7],
     pub state: StateLookup,
@@ -67,14 +72,29 @@ pub enum Curve {
 /// A `*-translate` offset in pixels and its anchor.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Translate {
+    /// The node's offset; per feature, the farthest any feature's reaches,
+    /// for culling.
     pub px: [f32; 2],
     /// Turn with the map's bearing (`translate-anchor: viewport`).
     pub viewport: bool,
+    /// Each feature's offset ends its property row, blended by `curve`
+    /// (`types.wgsl`'s `TRANSLATE_ROW_MASK`); fill, line, extrusion and
+    /// circle nodes only.
+    pub rows: Option<Curve>,
 }
 
 impl Translate {
     fn length(self) -> f32 {
         self.px[0].hypot(self.px[1])
+    }
+
+    /// Its bit of a node's `table_mask`.
+    fn mask(self) -> u32 {
+        if self.rows.is_some() {
+            orb_shaders::layout::TRANSLATE_ROW_MASK as u32
+        } else {
+            0
+        }
     }
 }
 
@@ -417,8 +437,12 @@ impl NodePaint {
                 use fill_node as n;
                 b = Block::new(n::WORDS);
                 b.f(n::COLOR, &p.color).f(n::OPACITY, &[p.opacity]);
-                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
-                b.translate(n::TRANSLATE_ANCHOR, n::TRANSLATE, p.translate);
+                let mask = p.table_mask | p.translate.mask();
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[mask]);
+                b.translate(
+                    [n::TRANSLATE_ANCHOR, n::TRANSLATE, n::TRANSLATE_CURVE],
+                    p.translate,
+                );
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
                 b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
             }
@@ -428,8 +452,12 @@ impl NodePaint {
                 b.f(n::COLOR, &p.color)
                     .f(n::HEIGHT, &[p.height])
                     .f(n::BASE, &[p.base]);
-                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
-                b.translate(n::TRANSLATE_ANCHOR, n::TRANSLATE, p.translate);
+                let mask = p.table_mask | p.translate.mask();
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[mask]);
+                b.translate(
+                    [n::TRANSLATE_ANCHOR, n::TRANSLATE, n::TRANSLATE_CURVE],
+                    p.translate,
+                );
                 b.u(n::VERTICAL_GRADIENT, &[u32::from(p.vertical_gradient)]);
                 b.f(n::OPACITY, &[p.opacity]);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
@@ -455,8 +483,12 @@ impl NodePaint {
                 b.f(n::GAP_WIDTH, &[p.gap_width])
                     .f(n::OFFSET, &[p.offset])
                     .f(n::BLUR, &[p.blur]);
-                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
-                b.translate(n::TRANSLATE_ANCHOR, n::TRANSLATE, p.translate);
+                let mask = p.table_mask | p.translate.mask();
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[mask]);
+                b.translate(
+                    [n::TRANSLATE_ANCHOR, n::TRANSLATE, n::TRANSLATE_CURVE],
+                    p.translate,
+                );
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
                 b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
                 let dash = p.dash.unwrap_or(PatternPaint {
@@ -484,7 +516,11 @@ impl NodePaint {
                     .f(n::OPACITY, &[p.opacity]);
                 b.f(n::STROKE_WIDTH, &[p.stroke_width])
                     .f(n::STROKE_OPACITY, &[p.stroke_opacity]);
-                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
+                let mut mask = p.table_mask | p.translate.mask();
+                if p.pitch_rows {
+                    mask |= orb_shaders::layout::CIRCLE_PITCH_ROW_MASK as u32;
+                }
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[mask]);
                 let flags = [
                     p.translate.viewport,
                     p.pitch_scale_map,
@@ -493,6 +529,7 @@ impl NodePaint {
                 b.u(n::FLAGS, &[bits(&flags)])
                     .f(n::TRANSLATE, &p.translate.px);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
+                b.curves(n::TRANSLATE_CURVE, &[p.translate.rows.unwrap_or_default()]);
             }
             Self::Heatmap(p) => {
                 use heatmap_node as n;
@@ -639,7 +676,7 @@ fn bits(flags: &[bool]) -> u32 {
 trait PaintBlock {
     fn curves(&mut self, at: usize, curves: &[Curve]) -> &mut Self;
     fn state(&mut self, at: usize, s: StateLookup) -> &mut Self;
-    fn translate(&mut self, anchor: usize, at: usize, t: Translate) -> &mut Self;
+    fn translate(&mut self, at: [usize; 3], t: Translate) -> &mut Self;
     fn pattern(&mut self, at: [usize; 3], p: Option<&PatternPaint>) -> &mut Self;
 }
 
@@ -666,8 +703,10 @@ impl PaintBlock for Block {
             .f(at + n::ZOOM, &[s.zoom])
     }
 
-    fn translate(&mut self, anchor: usize, at: usize, t: Translate) -> &mut Self {
-        self.u(anchor, &[u32::from(t.viewport)]).f(at, &t.px)
+    /// Its anchor, pixels and curve.
+    fn translate(&mut self, [anchor, at, curve]: [usize; 3], t: Translate) -> &mut Self {
+        self.u(anchor, &[u32::from(t.viewport)]).f(at, &t.px);
+        self.curves(curve, &[t.rows.unwrap_or_default()])
     }
 
     /// A pattern's image ids and cross-fade, or none: scale 1, off.

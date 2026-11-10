@@ -3,9 +3,7 @@
 
 use crate::style::{NodePlan, PaintProperty, StylePlan};
 use orb_hal::Gpu;
-use orb_render::{
-    CirclePaint, Curve, HeatmapPaint, NodePaint, Renderer, StateLookup, Translate, pack_color,
-};
+use orb_render::{CirclePaint, Curve, HeatmapPaint, NodePaint, Renderer, StateLookup, pack_color};
 use orb_style::{LayerType, TranslateAnchor};
 
 #[allow(clippy::too_many_arguments)]
@@ -27,7 +25,8 @@ pub(crate) fn paint(
     let mut numbers = [0.0; 7];
     let mut colors = [[0.0; 4]; 7];
     let mut table_mask = 0;
-    for (slot, property) in plan.paint_properties(node).iter().enumerate() {
+    let properties = plan.paint_properties(node);
+    for (slot, property) in properties.iter().enumerate() {
         if property.per_feature() {
             table_mask |= 1 << slot;
             curves[slot] = crate::paint::curve(property);
@@ -47,10 +46,11 @@ pub(crate) fn paint(
     }
     let paint = match l.ty {
         LayerType::Circle => {
-            use orb_style::{
-                CIRCLE_PITCH_ALIGNMENT, CIRCLE_PITCH_SCALE, CIRCLE_TRANSLATE,
-                CIRCLE_TRANSLATE_ANCHOR,
-            };
+            use orb_style::{CIRCLE_PITCH_ALIGNMENT, CIRCLE_PITCH_SCALE};
+            let map = |key| l.get(key).evaluate(zoom) == TranslateAnchor::Map;
+            // Per feature (beyond the spec), from the rows; the quads have
+            // the cells map-aligned circles need.
+            let pitch_rows = plan.circle_pitch_rows(node);
             NodePaint::Circle(CirclePaint {
                 color: colors[0],
                 radius: numbers[1],
@@ -59,14 +59,10 @@ pub(crate) fn paint(
                 stroke_color: colors[4],
                 stroke_width: numbers[5],
                 stroke_opacity: numbers[6],
-                translate: Translate {
-                    px: l.get(CIRCLE_TRANSLATE).evaluate(zoom),
-                    viewport: l.get(CIRCLE_TRANSLATE_ANCHOR).evaluate(zoom)
-                        == TranslateAnchor::Viewport,
-                },
-                pitch_scale_map: l.get(CIRCLE_PITCH_SCALE).evaluate(zoom) == TranslateAnchor::Map,
-                pitch_alignment_map: l.get(CIRCLE_PITCH_ALIGNMENT).evaluate(zoom)
-                    == TranslateAnchor::Map,
+                translate: crate::paint::translate(plan, node, zoom, maxima.get(properties.len())),
+                pitch_scale_map: map(CIRCLE_PITCH_SCALE),
+                pitch_alignment_map: pitch_rows || map(CIRCLE_PITCH_ALIGNMENT),
+                pitch_rows,
                 table_mask,
                 curves,
                 state: lookup,

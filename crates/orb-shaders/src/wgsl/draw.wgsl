@@ -318,6 +318,17 @@ fn table_color(row: u32, slot: u32, c: Curve, tile_zoom: f32) -> vec4<f32> {
     return mix(a, b, curve_t(c, tile_zoom));
 }
 
+// A node's `*-translate` in pixels: the node's, or with
+// `TRANSLATE_ROW_MASK` the feature's, from the end of its row.
+fn node_translate(px: vec2<f32>, table_mask: u32, row: u32, row_words: u32, c: Curve, tile_zoom: f32) -> vec2<f32> {
+    if (table_mask & TRANSLATE_ROW_MASK) == 0u {
+        return px;
+    }
+    let at = row + row_words - TRANSLATE_ROW_WORDS;
+    let t = mix(unpack_i16x2(prop_at(at)), unpack_i16x2(prop_at(at + 1u)), curve_t(c, tile_zoom));
+    return t / f32(TRANSLATE_ROW_UNITS);
+}
+
 // A `*-translate` in pixels as a camera-relative world offset, after GL JS's
 // `translatePosition`: map-anchored, or turned with the map's bearing for
 // the `viewport` anchor.

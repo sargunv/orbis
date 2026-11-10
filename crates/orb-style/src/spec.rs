@@ -568,7 +568,7 @@ properties! {
         paint FILL_LAYER_BLEND: LayerBlend = prop("fill-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent().in_phase(Phase::Layer);
         paint FILL_COLOR: Color = prop("fill-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA);
         paint FILL_OUTLINE_COLOR: Option<Color> = prop("fill-outline-color", COLOR, None).data_driven().interpolated().extends(Inputs::CAMERA);
-        paint FILL_TRANSLATE: [f32; 2] = prop("fill-translate", TRANSLATE, Some("[0, 0]")).interpolated();
+        paint FILL_TRANSLATE: [f32; 2] = prop("fill-translate", TRANSLATE, Some("[0, 0]")).interpolated().extends(Inputs::DATA);
         paint FILL_TRANSLATE_ANCHOR: TranslateAnchor = prop("fill-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
         paint FILL_PATTERN: Option<String> = prop("fill-pattern", IMAGE, None).data_driven().in_phase(Phase::Tile);
     }
@@ -579,7 +579,7 @@ properties! {
         paint EXTRUSION_OPACITY: f32 = prop("fill-extrusion-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA).extends(Inputs::DATA);
         paint EXTRUSION_HEIGHT: f32 = prop("fill-extrusion-height", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
         paint EXTRUSION_BASE: f32 = prop("fill-extrusion-base", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
-        paint EXTRUSION_TRANSLATE: [f32; 2] = prop("fill-extrusion-translate", TRANSLATE, Some("[0,0]")).interpolated();
+        paint EXTRUSION_TRANSLATE: [f32; 2] = prop("fill-extrusion-translate", TRANSLATE, Some("[0,0]")).interpolated().extends(Inputs::DATA);
         paint EXTRUSION_TRANSLATE_ANCHOR: TranslateAnchor = prop("fill-extrusion-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
         paint EXTRUSION_VERTICAL_GRADIENT: bool = prop("fill-extrusion-vertical-gradient", PropertyType::Boolean, Some("true")).extends(Inputs::DATA);
         paint EXTRUSION_PATTERN: Option<String> = prop("fill-extrusion-pattern", IMAGE, None).data_driven().in_phase(Phase::Tile);
@@ -596,7 +596,7 @@ properties! {
         /// How the layer composites with what is beneath it (style-spec 26).
         paint LINE_LAYER_BLEND: LayerBlend = prop("line-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent().in_phase(Phase::Layer);
         paint LINE_COLOR: Color = prop("line-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA);
-        paint LINE_TRANSLATE: [f32; 2] = prop("line-translate", TRANSLATE, Some("[0, 0]")).interpolated();
+        paint LINE_TRANSLATE: [f32; 2] = prop("line-translate", TRANSLATE, Some("[0, 0]")).interpolated().extends(Inputs::DATA);
         paint LINE_TRANSLATE_ANCHOR: TranslateAnchor = prop("line-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
         paint LINE_WIDTH: f32 = prop("line-width", NUMBER, Some("1")).data_driven().interpolated().range(0.0, None);
         paint LINE_GAP_WIDTH: f32 = prop("line-gap-width", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
@@ -613,10 +613,10 @@ properties! {
         paint CIRCLE_COLOR: Color = prop("circle-color", COLOR, Some(r##""#000000""##)).data_driven().interpolated().extends(Inputs::CAMERA);
         paint CIRCLE_BLUR: f32 = prop("circle-blur", NUMBER, Some(r#"0"#)).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint CIRCLE_OPACITY: f32 = prop("circle-opacity", NUMBER, Some(r#"1"#)).data_driven().interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
-        paint CIRCLE_TRANSLATE: [f32; 2] = prop("circle-translate", TRANSLATE, Some(r#"[0, 0]"#)).interpolated();
+        paint CIRCLE_TRANSLATE: [f32; 2] = prop("circle-translate", TRANSLATE, Some(r#"[0, 0]"#)).interpolated().extends(Inputs::DATA);
         paint CIRCLE_TRANSLATE_ANCHOR: TranslateAnchor = prop("circle-translate-anchor", enumeration::<TranslateAnchor>(), Some(r#""map""#));
-        paint CIRCLE_PITCH_SCALE: TranslateAnchor = prop("circle-pitch-scale", enumeration::<TranslateAnchor>(), Some(r#""map""#));
-        paint CIRCLE_PITCH_ALIGNMENT: TranslateAnchor = prop("circle-pitch-alignment", enumeration::<TranslateAnchor>(), Some(r#""viewport""#));
+        paint CIRCLE_PITCH_SCALE: TranslateAnchor = prop("circle-pitch-scale", enumeration::<TranslateAnchor>(), Some(r#""map""#)).extends(Inputs::DATA);
+        paint CIRCLE_PITCH_ALIGNMENT: TranslateAnchor = prop("circle-pitch-alignment", enumeration::<TranslateAnchor>(), Some(r#""viewport""#)).extends(Inputs::DATA);
         paint CIRCLE_STROKE_WIDTH: f32 = prop("circle-stroke-width", NUMBER, Some(r#"0"#)).data_driven().interpolated().range(0.0, None);
         paint CIRCLE_STROKE_COLOR: Color = prop("circle-stroke-color", COLOR, Some(r##""#000000""##)).data_driven().interpolated().extends(Inputs::CAMERA);
         paint CIRCLE_STROKE_OPACITY: f32 = prop("circle-stroke-opacity", NUMBER, Some(r#"1"#)).data_driven().interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);

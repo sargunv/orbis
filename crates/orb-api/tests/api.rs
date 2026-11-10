@@ -656,6 +656,115 @@ fn extrusion_opacity_follows_the_feature() {
     }
 }
 
+/// Each feature takes its own translate from its data, beyond the spec:
+/// fills and circles draw and pick where their own translate puts them,
+/// and a circle takes its own pitch alignment: tilted, one on the map is
+/// squashed and one facing the viewport stays round.
+#[test]
+fn translate_and_circle_pitch_follow_the_feature() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let square = |lon: f64, lat: f64, k: &str| {
+        format!(
+            r#"{{"type": "Feature", "id": "{k}", "properties": {{"k": "{k}"}}, "geometry": {{"type": "Polygon",
+              "coordinates": [[[{a}, {b}], [{c}, {b}], [{c}, {d}], [{a}, {d}], [{a}, {b}]]]}}}}"#,
+            a = lon - 5.0,
+            c = lon + 5.0,
+            b = lat - 5.0,
+            d = lat + 5.0
+        )
+    };
+    let point = |lon: f64, lat: f64, k: &str| {
+        format!(
+            r#"{{"type": "Feature", "id": "{k}", "properties": {{"k": "{k}"}},
+              "geometry": {{"type": "Point", "coordinates": [{lon}, {lat}]}}}}"#
+        )
+    };
+    let shifted = r#"["match", ["get", "k"], "b", ["literal", [12, 0]], ["literal", [0, 0]]]"#;
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 0, "sources": {{
+          "f": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": [{}, {}]}}}},
+          "c": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": [{}, {}]}}}}}},
+          "layers": [
+            {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+            {{"id": "f", "type": "fill", "source": "f", "paint": {{"fill-color": "#ff0000",
+              "fill-translate": {shifted}}}}},
+            {{"id": "c", "type": "circle", "source": "c", "paint": {{"circle-color": "#0000ff",
+              "circle-radius": 4, "circle-translate": {shifted}}}}}]}}"##,
+        square(-12.0, 10.0, "a"),
+        square(3.0, 10.0, "b"),
+        point(-12.0, -12.0, "a"),
+        point(3.0, -12.0, "b"),
+    );
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).expect("style");
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    let at = |x: f64, y: f64| pixel(&pixels, x.round() as u32, y.round() as u32);
+    // Zoom 0: 512 / 360 pixels a degree about the centre.
+    let x = |lon: f64| 32.0 + lon * 512.0 / 360.0;
+    let (fill_y, circle_y) = (32.0 - 14.3, 32.0 + 17.2);
+    assert_eq!(at(x(-12.0), fill_y), [255, 0, 0, 255], "a in place");
+    assert_eq!(at(x(3.0) + 12.0, fill_y), [255, 0, 0, 255], "b moved");
+    assert_eq!(at(x(3.0) - 5.0, fill_y), [0, 0, 0, 255], "b left");
+    assert_eq!(at(x(-12.0), circle_y), [0, 0, 255, 255], "circle a");
+    assert_eq!(at(x(3.0) + 12.0, circle_y), [0, 0, 255, 255], "circle b");
+    assert_eq!(at(x(3.0), circle_y), [0, 0, 0, 255], "circle b left");
+    let hit = |px: f64, py: f64| {
+        map.hit_test(glam::DVec2::new(px, py))
+            .map(|h| (h.layer, h.id.unwrap_or_default()))
+    };
+    let b = |layer: &str| Some((layer.to_string(), "b".to_string()));
+    assert_eq!(hit(x(3.0) + 12.0, fill_y), b("f"));
+    assert_eq!(hit(x(3.0) - 5.0, fill_y), None);
+    assert_eq!(hit(x(3.0) + 12.0, circle_y), b("c"));
+    assert_eq!(hit(x(3.0), circle_y), None);
+
+    // Circle pitch alignment per feature, under a tilt.
+    let style = format!(
+        r##"{{"version": 8, "sources": {{
+          "c": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": [{}, {}]}}}}}},
+          "layers": [
+            {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+            {{"id": "c", "type": "circle", "source": "c", "paint": {{"circle-color": "#ffffff",
+              "circle-radius": 8, "circle-pitch-scale": "viewport",
+              "circle-pitch-alignment": ["match", ["get", "k"], "a", "map", "viewport"]}}}}]}}"##,
+        point(-3.0, 0.0, "a"),
+        point(3.0, 0.0, "b"),
+    );
+    map.set_style_json(&style).expect("style");
+    map.jump_to(&CameraTarget {
+        zoom: Some(2.0),
+        pitch: Some(70.0),
+        ..CameraTarget::default()
+    });
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    // Each circle's lit width and height in pixels.
+    let extent = |left: bool| {
+        let lit: Vec<(u32, u32)> = (0..SIZE)
+            .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+            .filter(|&(x, _)| (x < SIZE / 2) == left)
+            .filter(|&(x, y)| pixel(&pixels, x, y)[0] > 128)
+            .collect();
+        assert!(!lit.is_empty(), "nothing lit, left {left}");
+        let span = |v: Vec<u32>| v.iter().max().unwrap() - v.iter().min().unwrap() + 1;
+        (
+            span(lit.iter().map(|p| p.0).collect()),
+            span(lit.iter().map(|p| p.1).collect()),
+        )
+    };
+    let (on_map, facing) = (extent(true), extent(false));
+    assert!(
+        on_map.1 * 2 < on_map.0,
+        "on the map, squashed: {on_map:?} {facing:?}"
+    );
+    assert!(
+        facing.1.abs_diff(facing.0) <= 1,
+        "facing, round: {facing:?}"
+    );
+}
+
 /// Buildings larger than an overzoom slice draw whole at z15, z16 and z19
 /// below a source's z14 tiles, looking down and tilted, where the view's
 /// tiles span several zooms (#143): a long slab, a building whose

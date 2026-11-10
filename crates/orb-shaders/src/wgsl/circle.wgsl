@@ -16,6 +16,7 @@ struct CircleNode {
     translate: vec2<f32>,
     _pad: vec2<f32>,
     curves: array<Curve, 7>,
+    translate_curve: Curve,
     state: StateLookup,
 };
 @group(1) @binding(0) var<uniform> node: CircleNode;
@@ -66,15 +67,22 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     if (node.table_mask & 16u) != 0u { stroke = table_color(row, 4u, node.curves[4], tile.zoom); }
     if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0], color); }
     if from_state(state, node.state, 4u) { stroke = state_color(state, node.state, 4u, node.curves[4], stroke); }
+    // Per feature, the pitch flags from the row (`CIRCLE_ROW_PITCH`); the
+    // node's quads have the cells a map-aligned one needs.
+    var flags = node.flags;
+    if (node.table_mask & CIRCLE_PITCH_ROW_MASK) != 0u {
+        flags = (flags & 1u) | (prop_at(row + CIRCLE_ROW_PITCH) & 6u);
+    }
     let corner = point_corner(index, node_point_cells((node.flags & 4u) != 0u));
-    let shift = translate_world(node.translate, node.flags & 1u, tile);
+    let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
+    let shift = translate_world(px, flags & 1u, tile);
     // On terrain, the ground under the anchor (GL JS `get_elevation`).
     let z = ground_elevation(tile, p) * frame.extrusion_scale;
     let center = tile_ground_shifted(tile, p, shift);
     let projected = ground_clip(center, vec2<f32>(0.0), z);
     let camera_distance = frame.camera_to_center;
-    let scale_map = (node.flags & 2u) != 0u;
-    if (node.flags & 4u) != 0u {
+    let scale_map = (flags & 2u) != 0u;
+    if (flags & 4u) != 0u {
         var scale = total * tile_world_per_px(tile);
         if !scale_map { scale *= projected.w / camera_distance; }
         let offset = corner * vec2<f32>(1.0, -1.0) * scale;
