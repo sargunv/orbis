@@ -909,7 +909,6 @@ async function startOnPage(
   );
 }
 
-/** The two numbers a query answered, or null when it had no answer. */
 /** A style as the map loads it: a URL resolved against the page's, or a
  * style object as a `data:` URL. */
 function styleUrl(style: string | object): string {
@@ -918,6 +917,7 @@ function styleUrl(style: string | object): string {
     : `data:application/json,${encodeURIComponent(JSON.stringify(style))}`;
 }
 
+/** The two numbers a query answered, or null when it had no answer. */
 function pair(xy: Float64Array | undefined): [number, number] | null {
   const [x, y] = xy ?? [];
   return x === undefined || y === undefined ? null : [x, y];

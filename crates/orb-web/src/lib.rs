@@ -316,25 +316,6 @@ impl From<&orb_runtime::Memory> for FrameMemory {
     }
 }
 
-/// Creates a map in `canvas` (an `HTMLCanvasElement` or an
-/// `OffscreenCanvas`) showing the style at `style_url`, drawing on this
-/// thread. Its tile jobs go to `job_workers` job workers through
-/// `post(worker, message)`, whose replies come back through
-/// [`receive_job`](OrbisMap::receive_job); labels are placed by the
-/// placement worker `place(message, transfer)` reaches, whose replies come
-/// back through [`receive_placement`](OrbisMap::receive_placement).
-/// `on_wake` is called when the map has new data to draw; its host should
-/// call `render` on its next animation frame. The camera is the style's
-/// until it moves. Video sources play on the page (`web/src/videos.ts`):
-/// see [`take_events`](OrbisMap::take_events) and
-/// [`video_frame`](OrbisMap::video_frame); canvas sources show what
-/// [`source_frame`](OrbisMap::source_frame) hands in. `options` holds map
-/// options by name, each optional: `fadeDuration`,
-/// `crossSourceCollisions`, `localIdeographFontFamily` (`false` draws the
-/// style's glyphs), `antialias` and `terrainSkirts`; and Orbis's
-/// `previews`, an array of preview names or `"all"`, `stableLabels`,
-/// `tileLod` (as [`OrbisMap::set_tile_lod`] takes it) and `missingTiles`,
-/// `"parent"` or `"empty"` ([`orb_runtime::MissingTiles`]).
 /// The map options `options` holds by name ([`create_map`]'s), the rest
 /// their defaults.
 fn map_options(options: &JsValue) -> orb_runtime::MapOptions {
@@ -392,6 +373,25 @@ fn map_options(options: &JsValue) -> orb_runtime::MapOptions {
     map
 }
 
+/// Creates a map in `canvas` (an `HTMLCanvasElement` or an
+/// `OffscreenCanvas`) showing the style at `style_url`, drawing on this
+/// thread. Its tile jobs go to `job_workers` job workers through
+/// `post(worker, message)`, whose replies come back through
+/// [`receive_job`](OrbisMap::receive_job); labels are placed by the
+/// placement worker `place(message, transfer)` reaches, whose replies come
+/// back through [`receive_placement`](OrbisMap::receive_placement).
+/// `on_wake` is called when the map has new data to draw; its host should
+/// call `render` on its next animation frame. The camera is the style's
+/// until it moves. Video sources play on the page (`web/src/videos.ts`):
+/// see [`take_events`](OrbisMap::take_events) and
+/// [`video_frame`](OrbisMap::video_frame); canvas sources show what
+/// [`source_frame`](OrbisMap::source_frame) hands in. `options` holds map
+/// options by name, each optional: `fadeDuration`,
+/// `crossSourceCollisions`, `localIdeographFontFamily` (`false` draws the
+/// style's glyphs), `antialias` and `terrainSkirts`; and Orbis's
+/// `previews`, an array of preview names or `"all"`, `stableLabels`,
+/// `tileLod` (as [`OrbisMap::set_tile_lod`] takes it) and `missingTiles`,
+/// `"parent"` or `"empty"` ([`orb_runtime::MissingTiles`]).
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(

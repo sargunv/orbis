@@ -1078,7 +1078,6 @@ fn mln_checkout(manifest: &Path) -> Result<PathBuf, String> {
         .to_path_buf())
 }
 
-/// A table column: its name, a row's value, and the digits shown.
 /// A Markdown table, built a row at a time.
 struct Table(String);
 
@@ -1106,6 +1105,7 @@ impl Table {
         count
     }
 
+    /// The table's Markdown.
     fn finish(self) -> String {
         self.0
     }
@@ -1117,6 +1117,7 @@ fn cell(value: Option<f64>, digits: usize) -> String {
     value.map_or("—".into(), |v| format!("{v:.digits$}"))
 }
 
+/// A table column: its name, a row's value, and the digits shown.
 type Metric<'a> = (&'a str, &'a dyn Fn(&StillRow) -> Option<f64>, usize);
 
 /// Per engine and tile set, each run's wall and CPU totals and tile count.
