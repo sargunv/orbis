@@ -1,11 +1,16 @@
 // The package's public types. Coordinates are [longitude, latitude] in
 // degrees; points are [x, y] in CSS pixels from the map's top-left corner.
 
-import type { FrameMemory as CoreMemory, FrameStats as CoreStats } from "../pkg/core.js";
+import type {
+  FrameMemory as CoreMemory,
+  FrameStats as CoreStats,
+} from "../pkg/core.js";
 
 /** A wasm-bindgen object's fields, as a plain object, its objects' too. */
 type Fields<T> = {
-  -readonly [K in keyof T as T[K] extends (...args: never[]) => unknown ? never : K]: T[K] extends object ? Fields<T[K]> : T[K]
+  -readonly [
+    K in keyof T as T[K] extends (...args: never[]) => unknown ? never : K
+  ]: T[K] extends object ? Fields<T[K]> : T[K];
 };
 
 export type LngLat = [number, number];
@@ -254,7 +259,13 @@ export interface Hit {
 
 /** A GeoJSON geometry in longitude and latitude. */
 export interface Geometry {
-  type: "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon" | "MultiPolygon";
+  type:
+    | "Point"
+    | "MultiPoint"
+    | "LineString"
+    | "MultiLineString"
+    | "Polygon"
+    | "MultiPolygon";
   coordinates: unknown;
 }
 
@@ -327,16 +338,29 @@ export interface StyleImageOptions {
   textFitHeight?: "stretchOrShrink" | "stretchOnly" | "proportional";
 }
 
-
-export interface CameraEventData { user: boolean }
-export interface PointerEventData { point: Point; lngLat: LngLat | null; button?: number }
+export interface CameraEventData {
+  user: boolean;
+}
+export interface PointerEventData {
+  point: Point;
+  lngLat: LngLat | null;
+  button?: number;
+}
 
 /** Every event, by name, with what its listeners receive. */
 export interface MapEvents {
-  movestart: CameraEventData; move: CameraEventData; moveend: CameraEventData;
-  zoomstart: CameraEventData; zoom: CameraEventData; zoomend: CameraEventData;
-  rotatestart: CameraEventData; rotate: CameraEventData; rotateend: CameraEventData;
-  pitchstart: CameraEventData; pitch: CameraEventData; pitchend: CameraEventData;
+  movestart: CameraEventData;
+  move: CameraEventData;
+  moveend: CameraEventData;
+  zoomstart: CameraEventData;
+  zoom: CameraEventData;
+  zoomend: CameraEventData;
+  rotatestart: CameraEventData;
+  rotate: CameraEventData;
+  rotateend: CameraEventData;
+  pitchstart: CameraEventData;
+  pitch: CameraEventData;
+  pitchend: CameraEventData;
   click: PointerEventData;
   dblclick: PointerEventData;
   /** The map needs a tile of a source the app feeds (`"tiles":
@@ -367,4 +391,3 @@ export interface MapEvents {
   /** A frame was drawn. */
   render: FrameStats;
 }
-

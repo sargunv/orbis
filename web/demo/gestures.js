@@ -19,6 +19,7 @@
 // `style.placement`'s opacities after each frame; `engine=orbis,gl` runs
 // both, path by path.
 import { createMap } from "orbis";
+
 import alpsFlight from "./data/alps-flight.json";
 
 /** Frames per path: 6 s at 60 Hz. */
@@ -29,40 +30,131 @@ const LATE_SLACK = 1;
 const CITY_PATHS = [
   {
     name: "rotate and tilt at z14",
-    camera: (center, f) => ({ center, zoom: 14, bearing: 360 * f, pitch: 30 - 30 * Math.cos(f * 2 * Math.PI) }),
+    camera: (center, f) => ({
+      center,
+      zoom: 14,
+      bearing: 360 * f,
+      pitch: 30 - 30 * Math.cos(f * 2 * Math.PI),
+    }),
   },
   {
     name: "zoom z12 → z16 → z12",
-    camera: (center, f) => ({ center, zoom: 14 - 2 * Math.cos(f * 2 * Math.PI), bearing: 0, pitch: 0 }),
+    camera: (center, f) => ({
+      center,
+      zoom: 14 - 2 * Math.cos(f * 2 * Math.PI),
+      bearing: 0,
+      pitch: 0,
+    }),
   },
   {
     name: "zoom z12 → z16 → z12, 3 times",
-    camera: (center, f) => ({ center, zoom: 14 - 2 * Math.cos(3 * f * 2 * Math.PI), bearing: 0, pitch: 0 }),
+    camera: (center, f) => ({
+      center,
+      zoom: 14 - 2 * Math.cos(3 * f * 2 * Math.PI),
+      bearing: 0,
+      pitch: 0,
+    }),
   },
 ];
 /** The Alps terrain style's view: z11.6, bearing −32, pitch 72. */
-const alpsView = (center, lon, bearing, pitch = 72) =>
-  ({ center: [center[0] + lon, center[1]], zoom: 11.6, bearing, pitch });
+const alpsView = (center, lon, bearing, pitch = 72) => ({
+  center: [center[0] + lon, center[1]],
+  zoom: 11.6,
+  bearing,
+  pitch,
+});
 const ALPS_PATHS = [
-  { name: "rotate at z11.6, pitch 72", camera: (center, f) => alpsView(center, 0, -32 + 360 * f) },
-  { name: "fast turns at z11.6, pitch 80", camera: (center, f) => alpsView(center, 0, -32 + 3 * 360 * f, 80) },
-  { name: "pan at z11.6, pitch 72", camera: (center, f) => alpsView(center, 0.15 * Math.sin(f * 2 * Math.PI), -32) },
-  { name: "Alps flight (60 s)", camera: (center) => alpsView(center, 0, -32), flight: alpsFlight.legs },
+  {
+    name: "rotate at z11.6, pitch 72",
+    camera: (center, f) => alpsView(center, 0, -32 + 360 * f),
+  },
+  {
+    name: "fast turns at z11.6, pitch 80",
+    camera: (center, f) => alpsView(center, 0, -32 + 3 * 360 * f, 80),
+  },
+  {
+    name: "pan at z11.6, pitch 72",
+    camera: (center, f) =>
+      alpsView(center, 0.15 * Math.sin(f * 2 * Math.PI), -32),
+  },
+  {
+    name: "Alps flight (60 s)",
+    camera: (center) => alpsView(center, 0, -32),
+    flight: alpsFlight.legs,
+  },
 ];
 /** Dense city views at pitch 60: what a user's pan, pinch and twist do in a city. */
 const DENSE_PATHS = [
-  { name: "pan at z15, pitch 60", camera: ([lon, lat], f) => ({ center: [lon + 0.012 * Math.sin(f * 2 * Math.PI), lat], zoom: 15, bearing: 30, pitch: 60 }) },
-  { name: "zoom z14 → z17 → z14, pitch 60", camera: (center, f) => ({ center, zoom: 15.5 - 1.5 * Math.cos(f * 2 * Math.PI), bearing: 30, pitch: 60 }) },
-  { name: "rotate at z15, pitch 60", camera: (center, f) => ({ center, zoom: 15, bearing: 30 + 360 * f, pitch: 60 }) },
+  {
+    name: "pan at z15, pitch 60",
+    camera: ([lon, lat], f) => ({
+      center: [lon + 0.012 * Math.sin(f * 2 * Math.PI), lat],
+      zoom: 15,
+      bearing: 30,
+      pitch: 60,
+    }),
+  },
+  {
+    name: "zoom z14 → z17 → z14, pitch 60",
+    camera: (center, f) => ({
+      center,
+      zoom: 15.5 - 1.5 * Math.cos(f * 2 * Math.PI),
+      bearing: 30,
+      pitch: 60,
+    }),
+  },
+  {
+    name: "rotate at z15, pitch 60",
+    camera: (center, f) => ({
+      center,
+      zoom: 15,
+      bearing: 30 + 360 * f,
+      pitch: 60,
+    }),
+  },
 ];
 const GLOBE_PATHS = [
-  { name: "spin the globe at z1.5", camera: ([lon, lat], f) => ({ center: [lon + 360 * f, lat], zoom: 1.5, bearing: 0, pitch: 0 }) },
-  { name: "zoom z1.5 → z6 → z1.5", camera: (center, f) => ({ center, zoom: 3.75 - 2.25 * Math.cos(f * 2 * Math.PI), bearing: 0, pitch: 0 }) },
-  { name: "turn and tilt at z3", camera: (center, f) => ({ center, zoom: 3, bearing: 360 * f, pitch: 20 - 20 * Math.cos(f * 2 * Math.PI) }) },
+  {
+    name: "spin the globe at z1.5",
+    camera: ([lon, lat], f) => ({
+      center: [lon + 360 * f, lat],
+      zoom: 1.5,
+      bearing: 0,
+      pitch: 0,
+    }),
+  },
+  {
+    name: "zoom z1.5 → z6 → z1.5",
+    camera: (center, f) => ({
+      center,
+      zoom: 3.75 - 2.25 * Math.cos(f * 2 * Math.PI),
+      bearing: 0,
+      pitch: 0,
+    }),
+  },
+  {
+    name: "turn and tilt at z3",
+    camera: (center, f) => ({
+      center,
+      zoom: 3,
+      bearing: 360 * f,
+      pitch: 20 - 20 * Math.cos(f * 2 * Math.PI),
+    }),
+  },
 ];
-const PATH_SETS = { city: CITY_PATHS, dense: DENSE_PATHS, alps: ALPS_PATHS, globe: GLOBE_PATHS };
+const PATH_SETS = {
+  city: CITY_PATHS,
+  dense: DENSE_PATHS,
+  alps: ALPS_PATHS,
+  globe: GLOBE_PATHS,
+};
 /** Where each path set runs unless the page says otherwise. */
-export const PATH_CENTERS = { city: [139.74, 35.685], dense: [2.35, 48.857], alps: [7.7491, 46.0207], globe: [10, 30] };
+export const PATH_CENTERS = {
+  city: [139.74, 35.685],
+  dense: [2.35, 48.857],
+  alps: [7.7491, 46.0207],
+  globe: [10, 30],
+};
 const LOAD_TIMEOUT = 120_000;
 /** Within this many frames, a label that all but vanished (under 0.1) and is back in full (0.9) blinked, or returned. */
 const FLASH_FRAMES = 10;
@@ -70,10 +162,13 @@ const RETURN_FRAMES = 60;
 
 const percentile = (xs, p) => {
   const s = [...xs].sort((a, b) => a - b);
-  return s.length ? s[Math.min(s.length - 1, Math.round((s.length - 1) * p))] : NaN;
+  return s.length
+    ? s[Math.min(s.length - 1, Math.round((s.length - 1) * p))]
+    : NaN;
 };
 const ms = (x) => (Number.isFinite(x) ? x.toFixed(1) : "—");
-const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+const nextFrame = () =>
+  new Promise((resolve) => requestAnimationFrame(resolve));
 /** The current animation frame's time: a frame drawn in it reaches the screen with that frame. */
 const frameTime = () => document.timeline.currentTime;
 
@@ -82,31 +177,52 @@ function pacing(times) {
   const gaps = times.slice(1).map((t, i) => t - times[i]);
   return {
     interval: [0.5, 0.95, 0.99, 1].map((p) => percentile(gaps, p)),
-    late: LATE.map((limit) => gaps.filter((g) => g > limit + LATE_SLACK).length),
+    late: LATE.map(
+      (limit) => gaps.filter((g) => g > limit + LATE_SLACK).length,
+    ),
   };
 }
 const PACING_HEAD = `interval p50 | p95 | p99 | max | ${LATE.map((l) => `gaps > ${l} ms`).join(" | ")}`;
-const pacingCells = (r) => `${r.interval.map(ms).join(" | ")} | ${r.late.join(" | ")}`;
-const PACING_NOTE = "Interval: between the animation frames that drew a frame while the camera moved, each a display frame " +
+const pacingCells = (r) =>
+  `${r.interval.map(ms).join(" | ")} | ${r.late.join(" | ")}`;
+const PACING_NOTE =
+  "Interval: between the animation frames that drew a frame while the camera moved, each a display frame " +
   `when the map keeps up; gaps over ${LATE.join(" and ")} ms (with ${LATE_SLACK} ms for the coarsened clock) are frames that came late ` +
   "on the page's thread. Animation frames keep their pace while the GPU runs behind: `pnpm bench` adds the GPU process's presents.";
 
 /** The page's long tasks from now until `stop()`, as `{ start, duration }`. */
 function longTasks() {
   const longs = [];
-  const add = (entries) => { for (const e of entries) longs.push({ start: e.startTime, duration: e.duration }); };
-  const observer = typeof PerformanceObserver !== "undefined" &&
+  const add = (entries) => {
+    for (const e of entries)
+      longs.push({ start: e.startTime, duration: e.duration });
+  };
+  const observer =
+    typeof PerformanceObserver !== "undefined" &&
     PerformanceObserver.supportedEntryTypes?.includes("longtask")
-    ? new PerformanceObserver((list) => add(list.getEntries()))
-    : null;
+      ? new PerformanceObserver((list) => add(list.getEntries()))
+      : null;
   observer?.observe({ type: "longtask" });
-  return { longs, stop: () => { add(observer?.takeRecords() ?? []); observer?.disconnect(); } };
+  return {
+    longs,
+    stop: () => {
+      add(observer?.takeRecords() ?? []);
+      observer?.disconnect();
+    },
+  };
 }
 
 function idle(map, label) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label}: not idle after ${LOAD_TIMEOUT / 1000} s`)), LOAD_TIMEOUT);
-    map.once("idle").then(() => { clearTimeout(timer); resolve(); });
+    const timer = setTimeout(
+      () =>
+        reject(new Error(`${label}: not idle after ${LOAD_TIMEOUT / 1000} s`)),
+      LOAD_TIMEOUT,
+    );
+    map.once("idle").then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
   });
 }
 
@@ -115,13 +231,21 @@ async function runPath(container, style, jobWorkers, center, path, show) {
   const label = path.name;
   show(`${label}: loading`);
   const created = performance.now();
-  const map = await createMap({ container, style, jobWorkers, camera: path.camera(center, 0), interactive: false });
+  const map = await createMap({
+    container,
+    style,
+    jobWorkers,
+    camera: path.camera(center, 0),
+    interactive: false,
+  });
   try {
     await idle(map, label);
     const load = performance.now() - created;
     show(`${label}: moving`);
     const acks = [];
-    const off = map.on("render", (ack) => acks.push({ t: frameTime(), ms: ack.ms, placement: ack.times.placement }));
+    const off = map.on("render", (ack) =>
+      acks.push({ t: frameTime(), ms: ack.ms, placement: ack.times.placement }),
+    );
     const { longs, stop } = longTasks();
     const started = await nextFrame();
     performance.mark(`gestures:orbis:${path.name}:start`);
@@ -141,15 +265,30 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     off();
     const moving = acks.filter((a) => a.t > started && a.t <= ended);
     const after = acks.filter((a) => a.t > ended);
-    const longsMoving = longs.filter((l) => l.start <= ended).map((l) => l.duration);
-    const longsAfter = longs.filter((l) => l.start > ended).map((l) => l.duration);
+    const longsMoving = longs
+      .filter((l) => l.start <= ended)
+      .map((l) => l.duration);
+    const longsAfter = longs
+      .filter((l) => l.start > ended)
+      .map((l) => l.duration);
     const cpu = moving.map((a) => a.ms);
     return {
-      path: path.name, frames: moving.length, load, ...pacing(moving.map((a) => a.t)),
+      path: path.name,
+      frames: moving.length,
+      load,
+      ...pacing(moving.map((a) => a.t)),
       cpu: [0.5, 0.95, 1].map((p) => percentile(cpu, p)),
-      placement: [0.5, 0.95].map((p) => percentile(moving.map((a) => a.placement), p)),
-      longs: longsMoving.length, longest: Math.max(0, ...longsMoving),
-      settle, settleCpu: Math.max(0, ...after.map((a) => a.ms)), settleLong: Math.max(0, ...longsAfter),
+      placement: [0.5, 0.95].map((p) =>
+        percentile(
+          moving.map((a) => a.placement),
+          p,
+        ),
+      ),
+      longs: longsMoving.length,
+      longest: Math.max(0, ...longsMoving),
+      settle,
+      settleCpu: Math.max(0, ...after.map((a) => a.ms)),
+      settleLong: Math.max(0, ...longsAfter),
     };
   } finally {
     map.remove();
@@ -179,20 +318,33 @@ function glShown(map, maplibregl, texts) {
       if (!names) {
         // The texts the layer's `text-field` evaluates to for each instance's feature.
         const index = tile.latestFeatureIndex;
-        const source = index.loadVTLayers()[index.sourceLayerCoder.decode(bucket.sourceLayerIndex)];
+        const source =
+          index.loadVTLayers()[
+            index.sourceLayerCoder.decode(bucket.sourceLayerIndex)
+          ];
         const field = layer.layout.get("text-field");
         names = [];
         for (let i = 0; i < bucket.symbolInstances.length; i++) {
           const f = source.feature(bucket.symbolInstances.get(i).featureIndex);
-          const text = field.evaluate({ type: f.type, id: f.id, properties: f.properties, geometry: [] }, {}, tile.tileID.canonical);
+          const text = field.evaluate(
+            { type: f.type, id: f.id, properties: f.properties, geometry: [] },
+            {},
+            tile.tileID.canonical,
+          );
           names.push(text ? text.toString() : "");
         }
         texts.set(bucket, names);
       }
       for (let i = 0; i < names.length; i++) {
         if (!names[i]) continue;
-        const o = placement.opacities[bucket.symbolInstances.get(i).crossTileID];
-        const v = o ? Math.min(1, Math.max(0, o.text.opacity + (o.text.placed ? change : -change))) : 0;
+        const o =
+          placement.opacities[bucket.symbolInstances.get(i).crossTileID];
+        const v = o
+          ? Math.min(
+              1,
+              Math.max(0, o.text.opacity + (o.text.placed ? change : -change)),
+            )
+          : 0;
         if (v > (shown.get(names[i]) ?? 0)) shown.set(names[i], v);
       }
     }
@@ -209,15 +361,21 @@ function labelCounter() {
     frame(f, shown) {
       for (const [name, since] of labels) {
         const opacity = shown.get(name) ?? 0;
-        if (since === null && opacity < 0.1) { labels.set(name, f); counts.drops++; }
-        else if (since !== null && opacity >= 0.9) {
+        if (since === null && opacity < 0.1) {
+          labels.set(name, f);
+          counts.drops++;
+        } else if (since !== null && opacity >= 0.9) {
           const gone = f - since;
-          if (gone <= FLASH_FRAMES) { counts.blinks++; counts.blinkFrames += gone; }
+          if (gone <= FLASH_FRAMES) {
+            counts.blinks++;
+            counts.blinkFrames += gone;
+          }
           if (gone <= RETURN_FRAMES) counts.returns++;
           labels.set(name, null);
         }
       }
-      for (const [name, opacity] of shown) if (opacity >= 0.9 && !labels.has(name)) labels.set(name, null);
+      for (const [name, opacity] of shown)
+        if (opacity >= 0.9 && !labels.has(name)) labels.set(name, null);
     },
   };
 }
@@ -227,7 +385,9 @@ let glModule;
 export async function loadGl() {
   if (!glModule) {
     const [gl, { Protocol }, { default: workerUrl }] = await Promise.all([
-      import("maplibre-gl"), import("pmtiles"), import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
+      import("maplibre-gl"),
+      import("pmtiles"),
+      import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
     ]);
     glModule = gl.default ?? gl;
     glModule.setWorkerUrl(workerUrl);
@@ -238,13 +398,21 @@ export async function loadGl() {
 
 /** `style`, a URL or a style, as GL JS takes it: with absolute URLs. */
 export async function glStyle(style) {
-  const base = typeof style === "string" ? new URL(style, location.href) : new URL(location.href);
-  const doc = typeof style === "string" ? await (await fetch(style)).json() : structuredClone(style);
+  const base =
+    typeof style === "string"
+      ? new URL(style, location.href)
+      : new URL(location.href);
+  const doc =
+    typeof style === "string"
+      ? await (await fetch(style)).json()
+      : structuredClone(style);
   const absolute = (url) => new URL(url, base).href;
   if (typeof doc.sprite === "string") doc.sprite = absolute(doc.sprite);
-  if (doc.glyphs) doc.glyphs = absolute(doc.glyphs).replace(/%7B/g, "{").replace(/%7D/g, "}");
+  if (doc.glyphs)
+    doc.glyphs = absolute(doc.glyphs).replace(/%7B/g, "{").replace(/%7D/g, "}");
   for (const source of Object.values(doc.sources)) {
-    if (source.url?.startsWith("pmtiles://")) source.url = `pmtiles://${absolute(source.url.slice(10))}`;
+    if (source.url?.startsWith("pmtiles://"))
+      source.url = `pmtiles://${absolute(source.url.slice(10))}`;
   }
   return doc;
 }
@@ -255,8 +423,14 @@ async function runGlPath(container, style, center, path, show) {
   show(`${path.name}: loading (GL JS)`);
   const created = performance.now();
   // GL JS stops pitch at 60° unless told otherwise; Orbis goes to 85°.
-  const map = new maplibregl.Map({ container, style: await glStyle(style), ...path.camera(center, 0), maxPitch: 85,
-    interactive: false, attributionControl: false });
+  const map = new maplibregl.Map({
+    container,
+    style: await glStyle(style),
+    ...path.camera(center, 0),
+    maxPitch: 85,
+    interactive: false,
+    attributionControl: false,
+  });
   try {
     await idle(map, path.name);
     const load = performance.now() - created;
@@ -282,8 +456,14 @@ async function runGlPath(container, style, center, path, show) {
     map.triggerRepaint();
     await settled;
     return {
-      path: path.name, load, frames: times.length, ...pacing(times), ...counter.counts, settle: performance.now() - ended,
-      longs: longs.length, longest: Math.max(0, ...longs.map((l) => l.duration)),
+      path: path.name,
+      load,
+      frames: times.length,
+      ...pacing(times),
+      ...counter.counts,
+      settle: performance.now() - ended,
+      longs: longs.length,
+      longest: Math.max(0, ...longs.map((l) => l.duration)),
     };
   } finally {
     map.remove();
@@ -292,23 +472,29 @@ async function runGlPath(container, style, center, path, show) {
 
 /** The GL JS rows' Markdown report. */
 function glReport({ rows, center, size, about }) {
-  return [
-    "### Gestures bench (page, MapLibre GL JS)", "",
-    ...about.map((line) => `- ${line}`),
-    `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
-      "the camera moved once a display frame (`jumpTo`), each path from a fresh map at rest; flights left out",
-    "",
-    `| path | load to idle ms | frames | ${PACING_HEAD} | long tasks (max ms) | label blinks (frames) | label returns (drops) | idle after ms |`,
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-    ...rows.map((r) => `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ${r.longs} (${ms(r.longest)}) | ` +
-      `${r.blinks} (${r.blinkFrames}) | ${r.returns} (${r.drops}) | ${r.settle.toFixed(0)} |`),
-    "",
-    `Times in ms. ${PACING_NOTE} Long tasks: the page's, over 50 ms, while the camera moved. Label blinks: label texts drawn in full ` +
-      `that all but vanished (opacity under 0.1) and were back in full within ${FLASH_FRAMES} frames, and the frames they were gone; ` +
-      `label returns: back in full within ${RETURN_FRAMES} frames (1 s), blinks included, of the label texts drawn in full that all but vanished. ` +
-      "Opacities are `style.placement`'s, moved on by the fade since its commit, over the tiles GL JS draws, read after each frame " +
-      "on the page's thread (some 0.2 ms a frame at p95 on the Tokyo extract), which GL JS's pacing includes.",
-  ].join("\n") + "\n";
+  return (
+    [
+      "### Gestures bench (page, MapLibre GL JS)",
+      "",
+      ...about.map((line) => `- ${line}`),
+      `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
+        "the camera moved once a display frame (`jumpTo`), each path from a fresh map at rest; flights left out",
+      "",
+      `| path | load to idle ms | frames | ${PACING_HEAD} | long tasks (max ms) | label blinks (frames) | label returns (drops) | idle after ms |`,
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      ...rows.map(
+        (r) =>
+          `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ${r.longs} (${ms(r.longest)}) | ` +
+          `${r.blinks} (${r.blinkFrames}) | ${r.returns} (${r.drops}) | ${r.settle.toFixed(0)} |`,
+      ),
+      "",
+      `Times in ms. ${PACING_NOTE} Long tasks: the page's, over 50 ms, while the camera moved. Label blinks: label texts drawn in full ` +
+        `that all but vanished (opacity under 0.1) and were back in full within ${FLASH_FRAMES} frames, and the frames they were gone; ` +
+        `label returns: back in full within ${RETURN_FRAMES} frames (1 s), blinks included, of the label texts drawn in full that all but vanished. ` +
+        "Opacities are `style.placement`'s, moved on by the fade since its commit, over the tiles GL JS draws, read after each frame " +
+        "on the page's thread (some 0.2 ms a frame at p95 on the Tokyo extract), which GL JS's pacing includes.",
+    ].join("\n") + "\n"
+  );
 }
 
 /**
@@ -317,32 +503,59 @@ function glReport({ rows, center, size, about }) {
  * the engines' order turning each path, so a busy spell on the machine
  * falls on both. Resolves to each engine's Markdown report.
  */
-export async function runGestures({ style, center, paths, jobWorkers, size, about, show, engines = ["orbis"] }) {
+export async function runGestures({
+  style,
+  center,
+  paths,
+  jobWorkers,
+  size,
+  about,
+  show,
+  engines = ["orbis"],
+}) {
   const run = PATH_SETS[paths];
-  if (!run) throw new Error(`paths must be one of ${Object.keys(PATH_SETS).join(", ")}`);
-  for (const engine of engines) if (!["orbis", "gl"].includes(engine)) throw new Error(`engine must be orbis or gl, not ${engine}`);
+  if (!run)
+    throw new Error(
+      `paths must be one of ${Object.keys(PATH_SETS).join(", ")}`,
+    );
+  for (const engine of engines)
+    if (!["orbis", "gl"].includes(engine))
+      throw new Error(`engine must be orbis or gl, not ${engine}`);
   const container = document.createElement("div");
-  Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
+  Object.assign(container.style, {
+    width: `${size[0]}px`,
+    height: `${size[1]}px`,
+    position: "relative",
+  });
   document.body.append(container);
   const rows = { orbis: [], gl: [] };
   try {
     for (const [i, path] of run.entries()) {
       for (const engine of i % 2 ? [...engines].reverse() : engines) {
-        if (engine === "orbis") rows.orbis.push(await runPath(container, style, jobWorkers, center, path, show));
-        else if (!path.flight) rows.gl.push(await runGlPath(container, style, center, path, show));
+        if (engine === "orbis")
+          rows.orbis.push(
+            await runPath(container, style, jobWorkers, center, path, show),
+          );
+        else if (!path.flight)
+          rows.gl.push(await runGlPath(container, style, center, path, show));
       }
     }
   } finally {
     container.remove();
   }
   const report = { orbis: orbisReport, gl: glReport };
-  return engines.map((engine) => report[engine]({ rows: rows[engine], center, size, about, jobWorkers })).join("\n");
+  return engines
+    .map((engine) =>
+      report[engine]({ rows: rows[engine], center, size, about, jobWorkers }),
+    )
+    .join("\n");
 }
 
 /** The Orbis rows' Markdown report. */
 function orbisReport({ rows, center, size, about, jobWorkers }) {
   const lines = [
-    "### Gestures bench (page)", "",
+    "### Gestures bench (page)",
+    "",
     ...about.map((line) => `- ${line}`),
     `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
       "the camera moved once a display frame (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest; " +
@@ -350,8 +563,11 @@ function orbisReport({ rows, center, size, about, jobWorkers }) {
     "",
     `| path | load to idle ms | frames | ${PACING_HEAD} | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 |`,
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-    ...rows.map((r) => `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ` +
-      `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} |`),
+    ...rows.map(
+      (r) =>
+        `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ` +
+        `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} |`,
+    ),
     "",
     `Times in ms. ${PACING_NOTE} Render CPU: the frame's ` +
       "`render`; long tasks: the page's, over 50 ms, while the camera moved; idle after: " +

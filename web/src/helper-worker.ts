@@ -9,7 +9,12 @@
 // tile or DEM pixels and image tile's ImageBitmap; the placement worker
 // answers each frame with its commit, transferred, or with `{error}` when
 // it couldn't place it. A trapped worker says it is lost and closes.
-import init, { JobWorker, PlacementWorker, reloadRegions, setRequestHook } from "../pkg/core.js";
+import init, {
+  JobWorker,
+  PlacementWorker,
+  reloadRegions,
+  setRequestHook,
+} from "../pkg/core.js";
 import { onRegionsChanged } from "./regions.ts";
 import { askPage } from "./requests.ts";
 import { loadShaper } from "./shaper.ts";
@@ -20,7 +25,9 @@ interface Start {
   placement?: boolean;
 }
 
-self.onmessage = async ({ data: { module, port, placement } }: MessageEvent<Start>) => {
+self.onmessage = async ({
+  data: { module, port, placement },
+}: MessageEvent<Start>) => {
   await init({ module_or_path: module });
   // A trap (a Rust panic) leaves the wasm unusable: the worker says it is
   // lost and closes, and the map replaces it.
@@ -30,12 +37,19 @@ self.onmessage = async ({ data: { module, port, placement } }: MessageEvent<Star
     self.close();
     return true;
   };
-  self.addEventListener("unhandledrejection", (e) => { if (trapped(e.reason)) e.preventDefault(); });
-  self.addEventListener("error", (e) => { if (trapped(e.error)) e.preventDefault(); });
+  self.addEventListener("unhandledrejection", (e) => {
+    if (trapped(e.reason)) e.preventDefault();
+  });
+  self.addEventListener("error", (e) => {
+    if (trapped(e.error)) e.preventDefault();
+  });
   port.onmessage = placement ? placer(port, trapped) : jobs(port, trapped);
 };
 
-function placer(port: MessagePort, trapped: (e: unknown) => boolean): (e: MessageEvent) => void {
+function placer(
+  port: MessagePort,
+  trapped: (e: unknown) => boolean,
+): (e: MessageEvent) => void {
   const placer = new PlacementWorker();
   return ({ data }) => {
     try {
@@ -48,13 +62,17 @@ function placer(port: MessagePort, trapped: (e: unknown) => boolean): (e: Messag
       // ask the same dead worker again. Any other failure answers a frame
       // asked for, so the map asks again.
       if (trapped(e)) return;
-      if (data?.place) port.postMessage({ error: String(e instanceof Error ? e.message : e) });
+      if (data?.place)
+        port.postMessage({ error: String(e instanceof Error ? e.message : e) });
       else console.error(e);
     }
   };
 }
 
-function jobs(port: MessagePort, trapped: (e: unknown) => boolean): (e: MessageEvent) => Promise<void> {
+function jobs(
+  port: MessagePort,
+  trapped: (e: unknown) => boolean,
+): (e: MessageEvent) => Promise<void> {
   const jobs = new JobWorker();
   onRegionsChanged(reloadRegions);
   // Styles with `font-faces` draw their files with shaper.wasm.
@@ -71,7 +89,11 @@ function jobs(port: MessagePort, trapped: (e: unknown) => boolean): (e: MessageE
     try {
       if ((data as { trap?: boolean }).trap) jobs.trap();
       const reply = await jobs.receive(data);
-      if (reply) port.postMessage(reply, [reply.message.buffer, reply.buffer, reply.image].filter(Boolean));
+      if (reply)
+        port.postMessage(
+          reply,
+          [reply.message.buffer, reply.buffer, reply.image].filter(Boolean),
+        );
     } catch (e) {
       // Requests with an id reply with their failure; this is a malformed
       // message or a style update that didn't apply.

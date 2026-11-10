@@ -1,168 +1,278 @@
 <!doctype html>
-<meta charset="utf-8">
+<meta charset="utf-8" />
 <title>Orbis · fixture driver</title>
 <script type="module">
-// `cargo xtask rt --platform chrome`'s page (web/scripts/render-fixtures.mjs):
-// one fixture through the orbis package, settled as orb-fixtures settles it
-// natively: a GL JS fixture as GL JS's harness does, a MapLibre Native one
-// (`native` set) as Native's runner does. `window.fixture(request)`
-// resolves to its RGBA pixels as base64 (a GL JS fixture's premultiplied, a
-// Native one's straight, from `snapshot()`), or with `query` set to its
-// features' JSON.
-import { createMap } from "orbis";
+  // `cargo xtask rt --platform chrome`'s page (web/scripts/render-fixtures.mjs):
+  // one fixture through the orbis package, settled as orb-fixtures settles it
+  // natively: a GL JS fixture as GL JS's harness does, a MapLibre Native one
+  // (`native` set) as Native's runner does. `window.fixture(request)`
+  // resolves to its RGBA pixels as base64 (a GL JS fixture's premultiplied, a
+  // Native one's straight, from `snapshot()`), or with `query` set to its
+  // features' JSON.
+  import { createMap } from "orbis";
 
-const assets = new URL("fixtures/", location.href).href;
-// GL JS's harness reads a video's first frame: videos here stay on it.
-HTMLMediaElement.prototype.play = () => Promise.resolve();
-const local = (text) => text.replaceAll("local://", assets).replaceAll("http://localhost:2900/", assets);
+  const assets = new URL("fixtures/", location.href).href;
+  // GL JS's harness reads a video's first frame: videos here stay on it.
+  HTMLMediaElement.prototype.play = () => Promise.resolve();
+  const local = (text) =>
+    text
+      .replaceAll("local://", assets)
+      .replaceAll("http://localhost:2900/", assets);
 
-/** One operation; what to settle until after it: "loaded", "idle" or ms. */
-async function apply(map, [name, ...args]) {
-  const jump = (camera) => map.camera.jumpTo(camera);
-  switch (name) {
-    case "wait": return args.length ? args[0] : "loaded";
-    case "idle": return "idle";
-    case "setZoom": jump({ zoom: args[0] }); break;
-    case "setBearing": jump({ bearing: args[0] }); break;
-    case "setPitch": jump({ pitch: args[0] }); break;
-    case "setRoll": jump({ roll: args[0] }); break;
-    case "setCenter": jump({ center: args[0] }); break;
-    case "setCenterElevation": map.camera.setCenterElevation(args[0]); break;
-    case "setCenterClampedToGround": map.camera.centerClampedToGround = args[0]; break;
-    case "removeImage": await map.removeImage(args[0]); break;
-    case "addImage": {
-      const bitmap = await createImageBitmap(await (await fetch(new URL(args[1], assets))).blob(),
-        { premultiplyAlpha: "none", colorSpaceConversion: "none" });
-      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
-      context.drawImage(bitmap, 0, 0);
-      await map.addImage(args[0], context.getImageData(0, 0, bitmap.width, bitmap.height), args[2]);
-      break;
+  /** One operation; what to settle until after it: "loaded", "idle" or ms. */
+  async function apply(map, [name, ...args]) {
+    const jump = (camera) => map.camera.jumpTo(camera);
+    switch (name) {
+      case "wait":
+        return args.length ? args[0] : "loaded";
+      case "idle":
+        return "idle";
+      case "setZoom":
+        jump({ zoom: args[0] });
+        break;
+      case "setBearing":
+        jump({ bearing: args[0] });
+        break;
+      case "setPitch":
+        jump({ pitch: args[0] });
+        break;
+      case "setRoll":
+        jump({ roll: args[0] });
+        break;
+      case "setCenter":
+        jump({ center: args[0] });
+        break;
+      case "setCenterElevation":
+        map.camera.setCenterElevation(args[0]);
+        break;
+      case "setCenterClampedToGround":
+        map.camera.centerClampedToGround = args[0];
+        break;
+      case "removeImage":
+        await map.removeImage(args[0]);
+        break;
+      case "addImage": {
+        const bitmap = await createImageBitmap(
+          await (await fetch(new URL(args[1], assets))).blob(),
+          { premultiplyAlpha: "none", colorSpaceConversion: "none" },
+        );
+        const context = new OffscreenCanvas(
+          bitmap.width,
+          bitmap.height,
+        ).getContext("2d");
+        context.drawImage(bitmap, 0, 0);
+        await map.addImage(
+          args[0],
+          context.getImageData(0, 0, bitmap.width, bitmap.height),
+          args[2],
+        );
+        break;
+      }
+      default:
+        await map.edit((tx) => tx[name](...args));
     }
-    default: await map.edit((tx) => tx[name](...args));
   }
-}
 
-const base64 = (data) => {
-  let binary = "";
-  for (let i = 0; i < data.length; i += 8192) binary += String.fromCharCode(...data.subarray(i, i + 8192));
-  return btoa(binary);
-};
+  const base64 = (data) => {
+    let binary = "";
+    for (let i = 0; i < data.length; i += 8192)
+      binary += String.fromCharCode(...data.subarray(i, i + 8192));
+    return btoa(binary);
+  };
 
-// MapLibre Native's runner reads every request from its cache: its
-// `https://` and `mapbox://` URLs are files under the assets too.
-const offline = (text) => local(text).replaceAll("https://", `${assets}https/`).replaceAll("mapbox://", `${assets}mapbox/`);
+  // MapLibre Native's runner reads every request from its cache: its
+  // `https://` and `mapbox://` URLs are files under the assets too.
+  const offline = (text) =>
+    local(text)
+      .replaceAll("https://", `${assets}https/`)
+      .replaceAll("mapbox://", `${assets}mapbox/`);
 
-/** A Native fixture: operations apply before the first frame, `wait` and
- * the feature-state calls draw a still first, and the picture is a still
- * (orb-fixtures' `native.rs`). */
-async function native(r) {
-  const container = document.createElement("div");
-  Object.assign(container.style, { width: `${r.width}px`, height: `${r.height}px` });
-  document.body.replaceChildren(container);
-  const warnings = [];
-  const map = await createMap({
-    container, style: JSON.parse(offline(r.style)), interactive: false, pixelRatio: r.ratio,
-    constraints: { minZoom: 0, maxZoom: 25.5, maxPitch: r.max_pitch }, fadeDuration: 0, antialias: false,
-    crossSourceCollisions: r.cross_source_collisions, localIdeographFontFamily: false,
-  });
-  map.on("warning", ({ message }) => warnings.push(message));
-  map.on("error", ({ message }) => warnings.push(message));
-  const still = () => map.snapshot(r.width, r.height, r.ratio);
-  try {
-    // Native loads a style document before the runner goes on; here it
-    // loads in a frame or two.
-    for (const end = performance.now() + r.timeout_ms; ;) {
-      try { await map.getStyle(); break; } catch (e) { if (performance.now() > end) throw e; }
-      map.triggerRepaint();
-      await new Promise((resolve) => setTimeout(resolve, 16));
-    }
-    for (const op of JSON.parse(offline(JSON.stringify(r.operations)))) {
-      const [name, ...args] = op;
-      try {
-        if (["wait", "setFeatureState", "getFeatureState", "removeFeatureState"].includes(name)) await still();
-        if (["wait", "sleep", "getFeatureState"].includes(name) || name.startsWith("probe")) continue;
-        if (name === "setStyle") map.setStyle(args[0]);
-        else if (name === "addImage" || name === "updateImage") {
-          // Native's addImage replaces an image of the same name.
-          if (await map.hasImage(args[0])) await map.removeImage(args[0]);
-          await apply(map, ["addImage", args[0], `mapbox/render-tests/${args[1]}`, args[2]]);
-        } else await apply(map, op);
-      } catch (e) { warnings.push(`operation ${JSON.stringify(op)}: ${e?.message ?? e}`); }
-    }
-    if (r.query) {
-      await still();
-      // Queries read the last interactive frame, which stills don't
-      // replace: draw the settled map as one.
+  /** A Native fixture: operations apply before the first frame, `wait` and
+   * the feature-state calls draw a still first, and the picture is a still
+   * (orb-fixtures' `native.rs`). */
+  async function native(r) {
+    const container = document.createElement("div");
+    Object.assign(container.style, {
+      width: `${r.width}px`,
+      height: `${r.height}px`,
+    });
+    document.body.replaceChildren(container);
+    const warnings = [];
+    const map = await createMap({
+      container,
+      style: JSON.parse(offline(r.style)),
+      interactive: false,
+      pixelRatio: r.ratio,
+      constraints: { minZoom: 0, maxZoom: 25.5, maxPitch: r.max_pitch },
+      fadeDuration: 0,
+      antialias: false,
+      crossSourceCollisions: r.cross_source_collisions,
+      localIdeographFontFamily: false,
+    });
+    map.on("warning", ({ message }) => warnings.push(message));
+    map.on("error", ({ message }) => warnings.push(message));
+    const still = () => map.snapshot(r.width, r.height, r.ratio);
+    try {
+      // Native loads a style document before the runner goes on; here it
+      // loads in a frame or two.
       for (const end = performance.now() + r.timeout_ms; ;) {
+        try {
+          await map.getStyle();
+          break;
+        } catch (e) {
+          if (performance.now() > end) throw e;
+        }
+        map.triggerRepaint();
+        await new Promise((resolve) => setTimeout(resolve, 16));
+      }
+      for (const op of JSON.parse(offline(JSON.stringify(r.operations)))) {
+        const [name, ...args] = op;
+        try {
+          if (
+            [
+              "wait",
+              "setFeatureState",
+              "getFeatureState",
+              "removeFeatureState",
+            ].includes(name)
+          )
+            await still();
+          if (
+            ["wait", "sleep", "getFeatureState"].includes(name) ||
+            name.startsWith("probe")
+          )
+            continue;
+          if (name === "setStyle") map.setStyle(args[0]);
+          else if (name === "addImage" || name === "updateImage") {
+            // Native's addImage replaces an image of the same name.
+            if (await map.hasImage(args[0])) await map.removeImage(args[0]);
+            await apply(map, [
+              "addImage",
+              args[0],
+              `mapbox/render-tests/${args[1]}`,
+              args[2],
+            ]);
+          } else await apply(map, op);
+        } catch (e) {
+          warnings.push(`operation ${JSON.stringify(op)}: ${e?.message ?? e}`);
+        }
+      }
+      if (r.query) {
+        await still();
+        // Queries read the last interactive frame, which stills don't
+        // replace: draw the settled map as one.
+        for (const end = performance.now() + r.timeout_ms; ;) {
+          const drawn = map.once("render");
+          map.triggerRepaint();
+          if ((await drawn).idle || performance.now() > end) break;
+        }
+        return JSON.stringify(
+          await map.queryRenderedFeatures([
+            r.query.slice(0, 2),
+            r.query.slice(2),
+          ]),
+        );
+      }
+      const image = await still();
+      return {
+        rgba: base64(image.data),
+        warnings,
+        width: image.width,
+        height: image.height,
+      };
+    } finally {
+      map.remove();
+    }
+  }
+
+  window.fixture = async (r) => {
+    if (r.native) return native(r);
+    const container = document.createElement("div");
+    Object.assign(container.style, {
+      width: `${r.width / r.ratio}px`,
+      height: `${r.height / r.ratio}px`,
+    });
+    document.body.replaceChildren(container);
+    const warnings = [];
+    const map = await createMap({
+      container,
+      style: JSON.parse(local(r.style)),
+      interactive: false,
+      pixelRatio: r.ratio,
+      constraints: { maxPitch: r.max_pitch },
+      fadeDuration: r.fade_duration,
+      antialias: false,
+      crossSourceCollisions: r.cross_source_collisions,
+      localIdeographFontFamily: r.local_ideographs ?? false,
+      terrainSkirts: r.terrain_skirts,
+      // GL JS's tests expect labels placed for the camera alone, not as MapLibre
+      // Native's stabilisers keep them from the placements while the test loads.
+      stableLabels: false,
+      // Both engines draw nothing where a vector tile 404s.
+      missingTiles: "empty",
+    });
+    map.on("warning", ({ message }) => warnings.push(message));
+    map.on("error", ({ message }) => warnings.push(message));
+    const started = performance.now();
+    let frames = 0,
+      stats,
+      timedOut = false;
+    // Draws until `until` ("loaded", "idle", ms of wall time, or one frame);
+    // false on the test's timeout.
+    const settle = async (until) => {
+      const from = performance.now();
+      for (;;) {
         const drawn = map.once("render");
         map.triggerRepaint();
-        if ((await drawn).idle || performance.now() > end) break;
+        stats = await drawn;
+        frames++;
+        if (
+          until === undefined ||
+          (until === "loaded" && stats.loaded) ||
+          (until === "idle" && stats.idle) ||
+          (typeof until === "number" && performance.now() - from >= until)
+        )
+          return true;
+        if (performance.now() - started >= r.timeout_ms)
+          return !(timedOut = true);
       }
-      return JSON.stringify(await map.queryRenderedFeatures([r.query.slice(0, 2), r.query.slice(2)]));
-    }
-    const image = await still();
-    return { rgba: base64(image.data), warnings, width: image.width, height: image.height };
-  } finally {
-    map.remove();
-  }
-}
-
-window.fixture = async (r) => {
-  if (r.native) return native(r);
-  const container = document.createElement("div");
-  Object.assign(container.style, { width: `${r.width / r.ratio}px`, height: `${r.height / r.ratio}px` });
-  document.body.replaceChildren(container);
-  const warnings = [];
-  const map = await createMap({
-    container, style: JSON.parse(local(r.style)), interactive: false, pixelRatio: r.ratio,
-    constraints: { maxPitch: r.max_pitch }, fadeDuration: r.fade_duration, antialias: false,
-    crossSourceCollisions: r.cross_source_collisions, localIdeographFontFamily: r.local_ideographs ?? false,
-    terrainSkirts: r.terrain_skirts,
-    // GL JS's tests expect labels placed for the camera alone, not as MapLibre
-    // Native's stabilisers keep them from the placements while the test loads.
-    stableLabels: false,
-    // Both engines draw nothing where a vector tile 404s.
-    missingTiles: "empty",
-  });
-  map.on("warning", ({ message }) => warnings.push(message));
-  map.on("error", ({ message }) => warnings.push(message));
-  const started = performance.now();
-  let frames = 0, stats, timedOut = false;
-  // Draws until `until` ("loaded", "idle", ms of wall time, or one frame);
-  // false on the test's timeout.
-  const settle = async (until) => {
-    const from = performance.now();
-    for (;;) {
-      const drawn = map.once("render");
-      map.triggerRepaint();
-      stats = await drawn;
-      frames++;
-      if (until === undefined || (until === "loaded" && stats.loaded) || (until === "idle" && stats.idle) ||
-        (typeof until === "number" && performance.now() - from >= until)) return true;
-      if (performance.now() - started >= r.timeout_ms) return !(timedOut = true);
+    };
+    try {
+      const fades = r.fade_duration > 0;
+      let settled = await settle(fades ? "loaded" : "idle");
+      for (const op of JSON.parse(local(JSON.stringify(r.operations)))) {
+        if (!settled) break;
+        try {
+          const next = await apply(map, op);
+          if (next !== undefined)
+            settled = await settle(next === "loaded" && !fades ? "idle" : next);
+        } catch (e) {
+          warnings.push(`operation ${JSON.stringify(op)}: ${e?.message ?? e}`);
+        }
+      }
+      // A fading test reads after its last operation, a transition where its
+      // waits left it; the rest after one more settle.
+      if (settled)
+        await settle(fades || stats.transitioning ? undefined : "idle");
+      if (r.query) {
+        await settle();
+        return JSON.stringify(
+          await map.queryRenderedFeatures([
+            r.query.slice(0, 2),
+            r.query.slice(2),
+          ]),
+        );
+      }
+      const { data } = await map.readPixels({ premultiplied: true });
+      return {
+        rgba: base64(data),
+        warnings,
+        frames,
+        tiles_drawn: stats.tilesDrawn,
+        timed_out: timedOut,
+      };
+    } finally {
+      map.remove();
     }
   };
-  try {
-    const fades = r.fade_duration > 0;
-    let settled = await settle(fades ? "loaded" : "idle");
-    for (const op of JSON.parse(local(JSON.stringify(r.operations)))) {
-      if (!settled) break;
-      try {
-        const next = await apply(map, op);
-        if (next !== undefined) settled = await settle(next === "loaded" && !fades ? "idle" : next);
-      } catch (e) { warnings.push(`operation ${JSON.stringify(op)}: ${e?.message ?? e}`); }
-    }
-    // A fading test reads after its last operation, a transition where its
-    // waits left it; the rest after one more settle.
-    if (settled) await settle(fades || stats.transitioning ? undefined : "idle");
-    if (r.query) {
-      await settle();
-      return JSON.stringify(await map.queryRenderedFeatures([r.query.slice(0, 2), r.query.slice(2)]));
-    }
-    const { data } = await map.readPixels({ premultiplied: true });
-    return { rgba: base64(data), warnings, frames, tiles_drawn: stats.tilesDrawn, timed_out: timedOut };
-  } finally {
-    map.remove();
-  }
-};
 </script>

@@ -24,16 +24,28 @@ bytemuck = "1.25.2"
 rustc-hash = "2.1.3"
 diplomat = "0.17.0"
 diplomat-runtime = "0.16.1"
-diplomat_core = { version = "0.17.0", default-features = false, features = ["hir"] }
+diplomat_core = { version = "0.17.0", default-features = false, features = [
+  "hir",
+] }
 js-sys = "0.3.107"
 libm = "0.2.16"
-image = { version = "0.25.10", default-features = false, features = ["png", "webp"] }
-glam = { version = "0.34.2", default-features = false, features = ["std", "f64", "serde"] }
+image = { version = "0.25.10", default-features = false, features = [
+  "png",
+  "webp",
+] }
+glam = { version = "0.34.2", default-features = false, features = [
+  "std",
+  "f64",
+  "serde",
+] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 png = "0.18.1"
 pollster = "1.0.1"
 # Process CPU time for the bench tools (orb-bench, orb-cli).
-rustix = { version = "1.1.6", default-features = false, features = ["std", "time"] }
+rustix = { version = "1.1.6", default-features = false, features = [
+  "std",
+  "time",
+] }
 ureq = "3.5.1"
 # Reads MapLibre Native's render-test cache (cargo xtask fixtures native).
 rusqlite = { version = "0.41.1", features = ["bundled"] }
@@ -44,13 +56,21 @@ tar = "0.4"
 sha2 = "0.11.1"
 base64 = "0.23.1"
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
-serde = { version = "1.0.229", default-features = false, features = ["std", "derive", "rc"] }
+serde = { version = "1.0.229", default-features = false, features = [
+  "std",
+  "derive",
+  "rc",
+] }
 serde_json = "1.0.154"
 winit = "0.30.13"
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
 web-sys = "0.3.107"
-wgpu = { version = "30.0.1", default-features = false, features = ["wgsl", "std", "parking_lot"] }
+wgpu = { version = "30.0.1", default-features = false, features = [
+  "wgsl",
+  "std",
+  "parking_lot",
+] }
 
 orb-api = { path = "crates/orb-api" }
 orb-camera = { path = "crates/orb-camera" }

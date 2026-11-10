@@ -9,7 +9,10 @@ import { answerWorker, connectWorker } from "./requests.ts";
 import type { CameraOptions, Constraints } from "./types.ts";
 
 /** The map's methods the page calls. */
-type Calls = Omit<{ [K in keyof Engine]: Engine[K] }, "state" | "input" | "wake">;
+type Calls = Omit<
+  { [K in keyof Engine]: Engine[K] },
+  "state" | "input" | "wake"
+>;
 export type Method = keyof Calls;
 type Result<K extends Method> = Awaited<ReturnType<Calls[K]>>;
 
@@ -19,7 +22,10 @@ export interface Link {
   /** The map's state: now on the page; from a worker, as of its last
    * report or answer. */
   state(): MapState;
-  call<K extends Method>(method: K, ...args: Parameters<Calls[K]>): Promise<Result<K>>;
+  call<K extends Method>(
+    method: K,
+    ...args: Parameters<Calls[K]>
+  ): Promise<Result<K>>;
   /** Input at the page's event time, without an answer. */
   input(kind: InputKind, args: (number | string)[], time: number): void;
   /** Sends reports to `onreport`, those that came before it first. */
@@ -32,7 +38,10 @@ function reports() {
   const held: Report[] = [];
   let target: ((report: Report) => void) | undefined;
   return {
-    deliver: (report: Report) => { if (target) target(report); else held.push(report); },
+    deliver: (report: Report) => {
+      if (target) target(report);
+      else held.push(report);
+    },
     listen: (onreport: (report: Report) => void) => {
       target = onreport;
       for (const report of held.splice(0)) onreport(report);
@@ -41,7 +50,9 @@ function reports() {
 }
 
 /** A link to an engine on this thread, made with `start(report)`. */
-export async function directLink(start: (report: (r: Report) => void) => Promise<Engine>): Promise<Link> {
+export async function directLink(
+  start: (report: (r: Report) => void) => Promise<Engine>,
+): Promise<Link> {
   const { deliver, listen } = reports();
   const engine = await start(deliver);
   let stopped = false;
@@ -52,7 +63,9 @@ export async function directLink(start: (report: (r: Report) => void) => Promise
       // As from a worker: the wasm map is freed.
       if (stopped) return Promise.reject(new Error("the map was removed"));
       try {
-        return Promise.resolve((engine[method] as (...a: unknown[]) => never)(...args));
+        return Promise.resolve(
+          (engine[method] as (...a: unknown[]) => never)(...args),
+        );
       } catch (e) {
         return Promise.reject(e);
       }
@@ -104,17 +117,26 @@ export type ToWorker =
  * Resolves to its link, or to why the worker can't draw (no WebGPU
  * there): the page can still run the map itself, on another canvas.
  */
-export function workerLink(canvas: HTMLCanvasElement, init: Omit<WorkerInit, "canvas">): Promise<Link | string> {
-  const worker = new Worker(new URL("./map-worker.ts", import.meta.url), { type: "module" });
+export function workerLink(
+  canvas: HTMLCanvasElement,
+  init: Omit<WorkerInit, "canvas">,
+): Promise<Link | string> {
+  const worker = new Worker(new URL("./map-worker.ts", import.meta.url), {
+    type: "module",
+  });
   const offscreen = canvas.transferControlToOffscreen();
-  const post = (message: ToWorker, transfer: Transferable[] = []) => worker.postMessage(message, transfer);
+  const post = (message: ToWorker, transfer: Transferable[] = []) =>
+    worker.postMessage(message, transfer);
   // The page's request transform reaches the worker's fetches through it.
   const release = connectWorker(worker);
   post({ init: { ...init, canvas: offscreen } }, [offscreen]);
   const { deliver, listen } = reports();
   let state: MapState | undefined;
   let next = 0;
-  const waiting = new Map<number, { resolve: (v: never) => void; reject: (e: Error) => void }>();
+  const waiting = new Map<
+    number,
+    { resolve: (v: never) => void; reject: (e: Error) => void }
+  >();
   let stopped = false;
   const link: Link = {
     worker: true,
@@ -123,17 +145,25 @@ export function workerLink(canvas: HTMLCanvasElement, init: Omit<WorkerInit, "ca
       if (stopped) return Promise.reject(new Error("the map was removed"));
       const call = next++;
       // Video frames move to the worker rather than copy.
-      post({ call, method, args }, args.filter((a) => a instanceof ImageBitmap) as ImageBitmap[]);
-      return new Promise((resolve, reject) => waiting.set(call, { resolve, reject }));
+      post(
+        { call, method, args },
+        args.filter((a) => a instanceof ImageBitmap) as ImageBitmap[],
+      );
+      return new Promise((resolve, reject) =>
+        waiting.set(call, { resolve, reject }),
+      );
     },
-    input: (kind, args, time) => { if (!stopped) post({ input: kind, args, time }); },
+    input: (kind, args, time) => {
+      if (!stopped) post({ input: kind, args, time });
+    },
     listen,
     destroy() {
       if (stopped) return;
       stopped = true;
       release();
       worker.terminate();
-      for (const { reject } of waiting.values()) reject(new Error("the map was removed"));
+      for (const { reject } of waiting.values())
+        reject(new Error("the map was removed"));
       waiting.clear();
     },
   };
@@ -141,7 +171,8 @@ export function workerLink(canvas: HTMLCanvasElement, init: Omit<WorkerInit, "ca
     worker.onerror = (e) => {
       e.preventDefault();
       const message = e.message || "the map worker died";
-      if (state) deliver({ state, events: [{ type: "error", data: { message } }] });
+      if (state)
+        deliver({ state, events: [{ type: "error", data: { message } }] });
       else {
         link.destroy();
         reject(new Error(message));

@@ -13,14 +13,36 @@ const STYLE = {
     box: {
       type: "geojson",
       data: {
-        type: "Feature", id: 7, properties: {},
-        geometry: { type: "Polygon", coordinates: [[[-10, -10], [10, -10], [10, 10], [-10, 10], [-10, -10]]] },
+        type: "Feature",
+        id: 7,
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [-10, -10],
+              [10, -10],
+              [10, 10],
+              [-10, 10],
+              [-10, -10],
+            ],
+          ],
+        },
       },
     },
   },
   layers: [
-    { id: "background", type: "background", paint: { "background-color": "#ff0000" } },
-    { id: "box", type: "fill", source: "box", paint: { "fill-color": "#0000ff" } },
+    {
+      id: "background",
+      type: "background",
+      paint: { "background-color": "#ff0000" },
+    },
+    {
+      id: "box",
+      type: "fill",
+      source: "box",
+      paint: { "fill-color": "#0000ff" },
+    },
   ],
 };
 
@@ -29,19 +51,43 @@ const events = [];
 let renders = 0;
 let rafs = 0;
 const raf = requestAnimationFrame.bind(window);
-window.requestAnimationFrame = (callback) => raf((t) => { rafs++; callback(t); });
+window.requestAnimationFrame = (callback) =>
+  raf((t) => {
+    rafs++;
+    callback(t);
+  });
 
 window.scenario = (async () => {
   const map = await createMap({
-    container: document.getElementById("map"), style: STYLE, worker: params.get("worker") !== "0",
+    container: document.getElementById("map"),
+    style: STYLE,
+    worker: params.get("worker") !== "0",
   });
   // Before a frame: the canvas's size, for fits and projections.
   const firstProjection = await map.project([0, 0]);
   const generations = [];
-  for (const type of ["styleload", "load", "idle", "movestart", "moveend", "click", "error", "styleimagemissing"]) {
-    map.on(type, (e) => events.push({ type, ...(type === "click" ? { point: e.point, lngLat: e.lngLat } : {}), ...(e.id ? { id: e.id } : {}) }));
+  for (const type of [
+    "styleload",
+    "load",
+    "idle",
+    "movestart",
+    "moveend",
+    "click",
+    "error",
+    "styleimagemissing",
+  ]) {
+    map.on(type, (e) =>
+      events.push({
+        type,
+        ...(type === "click" ? { point: e.point, lngLat: e.lngLat } : {}),
+        ...(e.id ? { id: e.id } : {}),
+      }),
+    );
   }
-  map.on("render", (stats) => { renders++; generations.push(stats.generation); });
+  map.on("render", (stats) => {
+    renders++;
+    generations.push(stats.generation);
+  });
   await map.once("idle");
   return {
     map,
@@ -55,12 +101,18 @@ window.scenario = (async () => {
       if (!map.stats?.idle || map.camera.moving) await map.once("idle");
     },
     /** Resolves once the next frame draws and the map idles again. */
-    drawn: () => map.once("render").then(() => (map.stats?.idle ? undefined : map.once("idle"))),
+    drawn: () =>
+      map
+        .once("render")
+        .then(() => (map.stats?.idle ? undefined : map.once("idle"))),
     /** Resolves once a frame shows `generation` (or the one it resolves to). */
     shows: async (generation) => {
       const shown = await generation;
       await new Promise((resolve) => {
-        const check = () => (generations.some((g) => g >= shown) ? resolve() : setTimeout(check, 10));
+        const check = () =>
+          generations.some((g) => g >= shown)
+            ? resolve()
+            : setTimeout(check, 10);
         check();
       });
     },

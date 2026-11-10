@@ -9,23 +9,33 @@ const mib = (bytes) => `${(bytes / 1048576).toFixed(1)} MiB`;
  * (used / allocated / ceiling) and the tile cache. */
 function memoryRows(m) {
   if (!m?.budget) return [];
-  const pool = (used, allocated, ceiling) => `${mib(used)} / ${mib(allocated)} / ${mib(ceiling)}`;
+  const pool = (used, allocated, ceiling) =>
+    `${mib(used)} / ${mib(allocated)} / ${mib(ceiling)}`;
   return [
     ["GPU memory", `${mib(m.allocated)} of ${mib(m.budget)}`],
     ["vertices", pool(m.verticesUsed, m.verticesAllocated, m.verticesCeiling)],
     ["indices", pool(m.indicesUsed, m.indicesAllocated, m.indicesCeiling)],
     ["compacted", `${mib(m.compactedUsed)} / ${mib(m.compactedAllocated)}`],
     ["textures", mib(m.textures)],
-    ["cache", `${m.cachedTiles} tiles, ${mib(m.cached)} of ${mib(m.cacheBudget)}`],
+    [
+      "cache",
+      `${m.cachedTiles} tiles, ${mib(m.cached)} of ${mib(m.cacheBudget)}`,
+    ],
   ];
 }
 
 export function hud() {
   const root = document.getElementById("hud");
   const list = h("dl");
-  const commit = h("a", { href: `https://github.com/sargunv/orbis/commit/${COMMIT.sha}` },
-    `${COMMIT.short}${COMMIT.dirty ? "-dirty" : ""}`);
-  root.replaceChildren(list, h("div", { class: "hud-foot" }, h("span", {}, "Build ", commit)));
+  const commit = h(
+    "a",
+    { href: `https://github.com/sargunv/orbis/commit/${COMMIT.sha}` },
+    `${COMMIT.short}${COMMIT.dirty ? "-dirty" : ""}`,
+  );
+  root.replaceChildren(
+    list,
+    h("div", { class: "hud-foot" }, h("span", {}, "Build ", commit)),
+  );
   let latest;
   let hovered = "";
   let recovery = "";
@@ -41,32 +51,75 @@ export function hud() {
       ["draws", ack.draws],
       ["dispatches", ack.dispatches],
       ["candidates", ack.candidates],
-      ["tiles", ack.tilesLoading ? `${ack.tilesDrawn}, ${ack.tilesLoading} loading` : ack.tilesDrawn],
+      [
+        "tiles",
+        ack.tilesLoading
+          ? `${ack.tilesDrawn}, ${ack.tilesLoading} loading`
+          : ack.tilesDrawn,
+      ],
       ["bundle", ack.bundleRecorded ? "recorded" : "replayed"],
       ...(ack.pipelinesPending || ack.layersWaiting
-        ? [["pipelines", `${ack.pipelinesPending} compiling, ${ack.layersWaiting} layers waiting`]] : []),
+        ? [
+            [
+              "pipelines",
+              `${ack.pipelinesPending} compiling, ${ack.layersWaiting} layers waiting`,
+            ],
+          ]
+        : []),
       ["placements", ack.placementsWritten],
       ["paints", ack.paintsWritten],
       ["from JS", kib(ack.uploadedFromJs)],
       ["from wasm", kib(ack.uploadedFromWasm)],
       ...(ack.texelsFromJs || ack.texelsFromWasm
-        ? [["texels JS", kib(ack.texelsFromJs)], ["texels wasm", kib(ack.texelsFromWasm)]] : []),
-      ...(ack.jobsDone ? [["jobs", ack.jobsDone], ["headers", kib(ack.headerBytes)]] : []),
+        ? [
+            ["texels JS", kib(ack.texelsFromJs)],
+            ["texels wasm", kib(ack.texelsFromWasm)],
+          ]
+        : []),
+      ...(ack.jobsDone
+        ? [
+            ["jobs", ack.jobsDone],
+            ["headers", kib(ack.headerBytes)],
+          ]
+        : []),
       ...memoryRows(ack.memory),
       ["generation", ack.generation],
       ["state", ack.idle ? "idle" : "drawing"],
       ...(recovery ? [["recovered", recovery]] : []),
       ...(hovered ? [["hover", hovered]] : []),
     ];
-    list.replaceChildren(...rows.map(([key, value]) => h("div", {}, h("dt", {}, key), h("dd", {}, String(value)))));
+    list.replaceChildren(
+      ...rows.map(([key, value]) =>
+        h("div", {}, h("dt", {}, key), h("dd", {}, String(value))),
+      ),
+    );
   };
-  const request = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
+  const request = () => {
+    if (!queued) {
+      queued = true;
+      requestAnimationFrame(draw);
+    }
+  };
 
   return {
-    get visible() { return !root.hidden; },
-    set visible(on) { root.hidden = !on; request(); },
-    frame(ack) { latest = ack; request(); },
-    hover(text) { hovered = text; request(); },
-    recovered(text) { recovery = text; request(); },
+    get visible() {
+      return !root.hidden;
+    },
+    set visible(on) {
+      root.hidden = !on;
+      request();
+    },
+    frame(ack) {
+      latest = ack;
+      request();
+    },
+    hover(text) {
+      hovered = text;
+      request();
+    },
+    recovered(text) {
+      recovery = text;
+      request();
+    },
   };
 }

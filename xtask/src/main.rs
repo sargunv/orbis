@@ -25,11 +25,14 @@ use std::process::{Command, ExitCode};
 const HELP: &str = "\
 cargo xtask <task>
 
-  check [--affected [--base <rev>]]  fmt, clippy (native and wasm32), tests,
+  check [--affected [--base <rev>]]  formatting (dprint), clippy (native and
+               wasm32), tests,
                generated bindings and boundary rules; --affected scopes them
                to the packages changed since <rev>'s merge base with HEAD
                (default origin/main), the working tree and untracked files,
                and every package depending on those
+  clippy [--fix]  clippy over the workspace, native and wasm32, denying
+               warnings; --fix applies its suggestions
   bindings [--check | --test]  the C header, Kotlin and Swift bindings from
                orb-capi; --check fails when they're stale;
                --test runs the emitters' tests and the C, Kotlin and Swift
@@ -84,6 +87,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("check") => check(&args[1..]),
+        Some("clippy") => clippy(&args[1..]),
         Some("bindings") => bindings::run(&args[1..]),
         Some("capi") => capi::build().map(|_| ()),
         Some("android") => android::run(&args[1..]),
@@ -180,16 +184,46 @@ fn check(args: &[String]) -> Result<(), String> {
 }
 
 fn full_check() -> Result<(), String> {
-    cargo(&["fmt", "--all", "--check"])?;
-    cargo(&[
-        "clippy",
-        "--workspace",
-        "--all-targets",
-        "--quiet",
-        "--",
-        "-D",
-        "warnings",
-    ])?;
+    format_check()?;
+    clippy(&[])?;
+    cargo(&["test", "--workspace", "--quiet"])?;
+    bindings::run(&["--check".into()])?;
+    boundaries::check()
+}
+
+/// Every file's formatting, through dprint (rustfmt for Rust, oxc for the
+/// web, ktfmt, clang-format and ruff), as `dprint.jsonc` configures it.
+fn format_check() -> Result<(), String> {
+    eprintln!("$ dprint check");
+    let status = Command::new("dprint")
+        .arg("check")
+        .status()
+        .map_err(|e| format!("failed to run dprint ({e}); `mise install` provides it"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("formatting differs; `dprint fmt` fixes it".to_string())
+    }
+}
+
+/// `clippy [--fix]`: clippy over the workspace natively and, without the
+/// native-only crates, for wasm32, denying warnings; `--fix` applies its
+/// suggestions instead. hk's clippy step runs this.
+fn clippy(args: &[String]) -> Result<(), String> {
+    let fix = match args {
+        [] => false,
+        [flag] if flag == "--fix" => true,
+        _ => return Err("clippy: the only option is --fix".to_string()),
+    };
+    let fix_args: &[&str] = if fix {
+        &["--fix", "--allow-dirty", "--allow-staged"]
+    } else {
+        &[]
+    };
+    let mut native = vec!["clippy", "--workspace", "--all-targets", "--quiet"];
+    native.extend(fix_args);
+    native.extend(["--", "-D", "warnings"]);
+    cargo(&native)?;
     let mut wasm = vec![
         "clippy",
         "--workspace",
@@ -200,18 +234,16 @@ fn full_check() -> Result<(), String> {
     for name in boundaries::NATIVE_ONLY {
         wasm.extend(["--exclude", name]);
     }
+    wasm.extend(fix_args);
     wasm.extend(["--", "-D", "warnings"]);
-    cargo(&wasm)?;
-    cargo(&["test", "--workspace", "--quiet"])?;
-    bindings::run(&["--check".into()])?;
-    boundaries::check()
+    cargo(&wasm)
 }
 
 /// `check --affected`: the same steps, for the packages that changed since
 /// `base`'s merge base with `HEAD` and the packages depending on them.
 fn affected_check(base: &str) -> Result<(), String> {
     let selection = affected::select(base)?;
-    cargo(&["fmt", "--all", "--check"])?;
+    format_check()?;
     let packages = selection.packages();
     if packages.is_empty() {
         eprintln!("affected: no workspace package changed, so fmt and boundaries only");

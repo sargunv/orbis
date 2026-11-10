@@ -5,15 +5,17 @@
 #include <jni.h>
 #include <stdint.h>
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_android_NativeWindows_fromSurface(JNIEnv* env, jclass cls,
-                                                                        jobject surface) {
-    (void)cls;
-    return (jlong)(intptr_t)ANativeWindow_fromSurface(env, surface);
+JNIEXPORT jlong JNICALL Java_dev_orbis_android_NativeWindows_fromSurface(
+  JNIEnv* env, jclass cls, jobject surface
+) {
+  (void)cls;
+  return (jlong)(intptr_t)ANativeWindow_fromSurface(env, surface);
 }
 
-JNIEXPORT void JNICALL Java_dev_orbis_android_NativeWindows_release(JNIEnv* env, jclass cls,
-                                                                   jlong window) {
-    (void)env;
-    (void)cls;
-    ANativeWindow_release((ANativeWindow*)(intptr_t)window);
+JNIEXPORT void JNICALL Java_dev_orbis_android_NativeWindows_release(
+  JNIEnv* env, jclass cls, jlong window
+) {
+  (void)env;
+  (void)cls;
+  ANativeWindow_release((ANativeWindow*)(intptr_t)window);
 }

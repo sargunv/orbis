@@ -3,7 +3,8 @@ import { test } from "node:test";
 
 // A deterministic animation clock.
 const callbacks: ((now: number) => void)[] = [];
-globalThis.requestAnimationFrame = ((callback: (now: number) => void) => callbacks.push(callback)) as typeof requestAnimationFrame;
+globalThis.requestAnimationFrame = ((callback: (now: number) => void) =>
+  callbacks.push(callback)) as typeof requestAnimationFrame;
 const { frameLoop } = await import("./frames.ts");
 
 const tick = () => {
@@ -15,7 +16,15 @@ test("frames run only while asked for: a loading map keeps drawing, an idle one 
   callbacks.length = 0;
   let loading = 2;
   let frames = 0;
-  const loop = frameLoop(() => { frames++; return --loading > 0; }, (e) => { throw e; });
+  const loop = frameLoop(
+    () => {
+      frames++;
+      return --loading > 0;
+    },
+    (e) => {
+      throw e;
+    },
+  );
   assert.equal(callbacks.length, 0, "nothing until requested");
   loop.request();
   loop.request();
@@ -29,10 +38,18 @@ test("frames run only while asked for: a loading map keeps drawing, an idle one 
 test("a request during a frame schedules the next", () => {
   callbacks.length = 0;
   let again = true;
-  const loop = frameLoop(() => {
-    if (again) { again = false; loop.request(); }
-    return false;
-  }, (e) => { throw e; });
+  const loop = frameLoop(
+    () => {
+      if (again) {
+        again = false;
+        loop.request();
+      }
+      return false;
+    },
+    (e) => {
+      throw e;
+    },
+  );
   loop.request();
   tick();
   assert.equal(callbacks.length, 1);
@@ -43,7 +60,12 @@ test("a request during a frame schedules the next", () => {
 test("errors reach the handler and stop the loop", () => {
   callbacks.length = 0;
   const errors: unknown[] = [];
-  const loop = frameLoop(() => { throw new Error("boom"); }, (e) => errors.push(e));
+  const loop = frameLoop(
+    () => {
+      throw new Error("boom");
+    },
+    (e) => errors.push(e),
+  );
   loop.request();
   tick();
   assert.equal(errors.length, 1);

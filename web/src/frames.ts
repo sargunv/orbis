@@ -7,7 +7,10 @@
  * Runs `frame` on the next display frame after each `request()`, and again
  * while it returns true. `stop()` ends it for good.
  */
-export function frameLoop(frame: (now: number) => boolean, onError: (e: unknown) => void) {
+export function frameLoop(
+  frame: (now: number) => boolean,
+  onError: (e: unknown) => void,
+) {
   let scheduled = false;
   let stopped = false;
   const request = () => {
@@ -23,5 +26,13 @@ export function frameLoop(frame: (now: number) => boolean, onError: (e: unknown)
       }
     });
   };
-  return { request, stop: () => { stopped = true; }, get scheduled() { return scheduled; } };
+  return {
+    request,
+    stop: () => {
+      stopped = true;
+    },
+    get scheduled() {
+      return scheduled;
+    },
+  };
 }

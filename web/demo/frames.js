@@ -18,11 +18,17 @@ const VIEWS = [
 /** OpenFreeMap Liberty's extrusion layer, which the reduced style leaves
  * out, added before the labels. */
 const BUILDINGS_3D = {
-  id: "building-3d", type: "fill-extrusion", source: "openmaptiles", "source-layer": "building", minzoom: 14,
+  id: "building-3d",
+  type: "fill-extrusion",
+  source: "openmaptiles",
+  "source-layer": "building",
+  minzoom: 14,
   filter: ["!", ["has", "hide_3d"]],
   paint: {
-    "fill-extrusion-base": ["get", "render_min_height"], "fill-extrusion-color": "hsl(35,8%,85%)",
-    "fill-extrusion-height": ["get", "render_height"], "fill-extrusion-opacity": 0.8,
+    "fill-extrusion-base": ["get", "render_min_height"],
+    "fill-extrusion-color": "hsl(35,8%,85%)",
+    "fill-extrusion-height": ["get", "render_height"],
+    "fill-extrusion-opacity": 0.8,
   },
 };
 const LOAD_TIMEOUT = 120_000;
@@ -32,14 +38,25 @@ function summary(xs) {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
   const at = (p) => s[Math.round((s.length - 1) * p)];
-  return { median: at(0.5), p90: at(0.9), mean: s.reduce((a, b) => a + b, 0) / s.length };
+  return {
+    median: at(0.5),
+    p90: at(0.9),
+    mean: s.reduce((a, b) => a + b, 0) / s.length,
+  };
 }
 const ms = (x) => (x == null ? "—" : x.toFixed(3));
 
 function idle(map, label) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label}: not idle after ${LOAD_TIMEOUT / 1000} s`)), LOAD_TIMEOUT);
-    map.once("idle").then(() => { clearTimeout(timer); resolve(); });
+    const timer = setTimeout(
+      () =>
+        reject(new Error(`${label}: not idle after ${LOAD_TIMEOUT / 1000} s`)),
+      LOAD_TIMEOUT,
+    );
+    map.once("idle").then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
   });
 }
 
@@ -51,15 +68,32 @@ function repaint(map) {
 }
 
 /** Runs every view; resolves to the Markdown report. */
-export async function runFrames({ style, center, size, ratio, frames, warmup, rounds, about, show }) {
+export async function runFrames({
+  style,
+  center,
+  size,
+  ratio,
+  frames,
+  warmup,
+  rounds,
+  about,
+  show,
+}) {
   const container = document.createElement("div");
-  Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
+  Object.assign(container.style, {
+    width: `${size[0]}px`,
+    height: `${size[1]}px`,
+    position: "relative",
+  });
   document.body.append(container);
   const views = [];
   const warnings = new Set();
   const [first] = VIEWS;
   const map = await createMap({
-    container, style, interactive: false, pixelRatio: ratio,
+    container,
+    style,
+    interactive: false,
+    pixelRatio: ratio,
     camera: { center, zoom: first[1], pitch: first[2], bearing: 0 },
   });
   map.on("warning", ({ message }) => warnings.add(message));
@@ -73,13 +107,25 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
       // A style with extrusions of its own (the Globe entry's), or without
       // OpenMapTiles' buildings, draws as it is.
       const now = await map.getStyle();
-      if (buildings && now.sources.openmaptiles && !now.layers.some((l) => l.type === "fill-extrusion")) {
+      if (
+        buildings &&
+        now.sources.openmaptiles &&
+        !now.layers.some((l) => l.type === "fill-extrusion")
+      ) {
         const before = now.layers.find((l) => l.type === "symbol")?.id;
         const built = idle(map, name);
         await map.edit((tx) => tx.addLayer(BUILDINGS_3D, before));
         await built;
       }
-      const s = { gpu: [], cull: [], main: [], extrusion: [], cpu: [], submit: [], stats: null };
+      const s = {
+        gpu: [],
+        cull: [],
+        main: [],
+        extrusion: [],
+        cpu: [],
+        submit: [],
+        stats: null,
+      };
       map.setGpuTiming(true);
       for (let round = 0; round < rounds; round++) {
         show(`${name}: round ${round + 1} of ${rounds}`);
@@ -90,7 +136,9 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
         }
         const submissions = await map.gpuTimings();
         if (submissions.length !== cpu.length) {
-          throw new Error(`${submissions.length} GPU submissions for ${cpu.length} frames`);
+          throw new Error(
+            `${submissions.length} GPU submissions for ${cpu.length} frames`,
+          );
         }
         for (let f = warmup; f < cpu.length; f++) {
           const passes = submissions[f].passes;
@@ -113,7 +161,8 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
   }
   const [w, h] = [Math.round(size[0] * ratio), Math.round(size[1] * ratio)];
   const lines = [
-    "### Frame bench (page)", "",
+    "### Frame bench (page)",
+    "",
     ...about.map((line) => `- ${line}`),
     `- ${w}×${h} px (${size[0]}×${size[1]} @${ratio}x) at ${center[0]}, ${center[1]}; ${rounds} rounds × ${frames} ` +
       `repaints after ${warmup} warm-up per view, one a display frame`,
@@ -123,13 +172,19 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
     "",
     "| view | GPU mean | p90 | cull pass | main pass | extrusion pass | render CPU | encode+submit CPU | draws | dispatches |",
     "|---|---|---|---|---|---|---|---|---|---|",
-    ...views.map((v) => `| ${v.name} | ${ms(summary(v.gpu)?.mean)} | ${ms(summary(v.gpu)?.p90)} | ` +
-      `${ms(summary(v.cull)?.mean)} | ${ms(summary(v.main)?.mean)} | ${ms(summary(v.extrusion)?.mean)} | ` +
-      `${ms(summary(v.cpu)?.mean)} | ${ms(summary(v.submit)?.mean)} | ${v.stats.draws} | ${v.stats.dispatches} |`),
+    ...views.map(
+      (v) =>
+        `| ${v.name} | ${ms(summary(v.gpu)?.mean)} | ${ms(summary(v.gpu)?.p90)} | ` +
+        `${ms(summary(v.cull)?.mean)} | ${ms(summary(v.main)?.mean)} | ${ms(summary(v.extrusion)?.mean)} | ` +
+        `${ms(summary(v.cpu)?.mean)} | ${ms(summary(v.submit)?.mean)} | ${v.stats.draws} | ${v.stats.dispatches} |`,
+    ),
     "",
     "Times in ms, means over every measured frame: browsers coarsen timestamps (Chrome to 65.5 µs on a Mac) " +
       "and `performance.now()` (to 100 µs), which means don't bias. Render CPU: the frame's `render` on the page.",
-    ...views.map((v) => `- ${v.name}: ${v.stats.tilesDrawn} tiles drawn, ${v.stats.candidates} candidates`),
+    ...views.map(
+      (v) =>
+        `- ${v.name}: ${v.stats.tilesDrawn} tiles drawn, ${v.stats.candidates} candidates`,
+    ),
     ...[...warnings].map((w) => `- warning: ${w}`),
   ];
   return `${lines.join("\n")}\n`;

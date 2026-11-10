@@ -28,19 +28,35 @@
 // Profiles and modules stay in `--out` (by default target/coverage), for
 // `wasm-split --split --profile=…` runs of your own.
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants } from "node:zlib";
+
 import { launchChromium, serveDemo } from "./serve.mjs";
 import { VIEWS } from "./views.mjs";
 
 const args = process.argv.slice(2);
-const option = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
+const option = (name, fallback) =>
+  args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ??
+  fallback;
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const named = join(root, "target/web/core-names.wasm");
-if (!existsSync(named)) throw new Error("no target/web/core-names.wasm: run `cargo xtask web --names` (a build without it removes it)");
+if (!existsSync(named))
+  throw new Error(
+    "no target/web/core-names.wasm: run `cargo xtask web --names` (a build without it removes it)",
+  );
 const out = option("out", join(root, "target/coverage"));
 mkdirSync(out, { recursive: true });
 
@@ -59,62 +75,132 @@ const SCENES = {
 };
 const tour = args.includes("--tour");
 const scenes = option("scenes", Object.keys(SCENES).join(",")).split(",");
-for (const s of scenes) if (!SCENES[s]) throw new Error(`--scenes: no ${s}; ${Object.keys(SCENES).join(", ")}`);
+for (const s of scenes)
+  if (!SCENES[s])
+    throw new Error(`--scenes: no ${s}; ${Object.keys(SCENES).join(", ")}`);
 
 // The features core.wasm is built with (xtask/src/web.rs).
-const FEATURES = ["simd", "bulk-memory", "sign-ext", "nontrapping-float-to-int", "multivalue", "reference-types"]
-  .map((f) => `--enable-${f}`);
-const split = (...a) => execFileSync("wasm-split", [...FEATURES, ...a], { stdio: ["ignore", "pipe", "inherit"], maxBuffer: 1 << 28 });
-const brotli = (bytes) => brotliCompressSync(bytes, {
-  params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_LGWIN]: 22 },
-}).length;
+const FEATURES = [
+  "simd",
+  "bulk-memory",
+  "sign-ext",
+  "nontrapping-float-to-int",
+  "multivalue",
+  "reference-types",
+].map((f) => `--enable-${f}`);
+const split = (...a) =>
+  execFileSync("wasm-split", [...FEATURES, ...a], {
+    stdio: ["ignore", "pipe", "inherit"],
+    maxBuffer: 1 << 28,
+  });
+const brotli = (bytes) =>
+  brotliCompressSync(bytes, {
+    params: {
+      [constants.BROTLI_PARAM_QUALITY]: 11,
+      [constants.BROTLI_PARAM_LGWIN]: 22,
+    },
+  }).length;
 const kib = (bytes) => `${(bytes / 1024).toFixed(0)} KiB`;
 const pct = (part, whole) => `${((part * 100) / whole).toFixed(1)}%`;
 
 /** The module's defined functions, in index order, as { name, size } (code bytes). */
 function functions(wasm) {
   let at = 8;
-  const u32 = () => { let v = 0, shift = 0, b; do { b = wasm[at++]; v |= (b & 0x7f) << shift; shift += 7; } while (b & 0x80); return v >>> 0; };
-  const name = () => { const n = u32(); const s = new TextDecoder().decode(wasm.subarray(at, at + n)); at += n; return s; };
+  const u32 = () => {
+    let v = 0,
+      shift = 0,
+      b;
+    do {
+      b = wasm[at++];
+      v |= (b & 0x7f) << shift;
+      shift += 7;
+    } while (b & 0x80);
+    return v >>> 0;
+  };
+  const name = () => {
+    const n = u32();
+    const s = new TextDecoder().decode(wasm.subarray(at, at + n));
+    at += n;
+    return s;
+  };
   let imported = 0;
-  const sizes = [], names = new Map();
+  const sizes = [],
+    names = new Map();
   while (at < wasm.length) {
-    const id = wasm[at++], size = u32(), end = at + size;
+    const id = wasm[at++],
+      size = u32(),
+      end = at + size;
     if (id === 2) {
       for (let n = u32(); n--;) {
-        name(); name();
+        name();
+        name();
         const kind = wasm[at++];
-        if (kind === 0) { u32(); imported++; }
-        else if (kind === 1) { at++; const flags = u32(); u32(); if (flags & 1) u32(); }
-        else if (kind === 2) { const flags = u32(); u32(); if (flags & 1) u32(); }
-        else if (kind === 3) { at += 2; }
-        else { at++; u32(); }
+        if (kind === 0) {
+          u32();
+          imported++;
+        } else if (kind === 1) {
+          at++;
+          const flags = u32();
+          u32();
+          if (flags & 1) u32();
+        } else if (kind === 2) {
+          const flags = u32();
+          u32();
+          if (flags & 1) u32();
+        } else if (kind === 3) {
+          at += 2;
+        } else {
+          at++;
+          u32();
+        }
       }
     } else if (id === 10) {
-      for (let n = u32(); n--;) { const body = u32(); sizes.push(body); at += body; }
+      for (let n = u32(); n--;) {
+        const body = u32();
+        sizes.push(body);
+        at += body;
+      }
     } else if (id === 0 && name() === "name") {
       while (at < end) {
-        const sub = wasm[at++], length = u32(), next = at + length;
-        if (sub === 1) for (let n = u32(); n--;) { const index = u32(); names.set(index, name()); }
+        const sub = wasm[at++],
+          length = u32(),
+          next = at + length;
+        if (sub === 1)
+          for (let n = u32(); n--;) {
+            const index = u32();
+            names.set(index, name());
+          }
         at = next;
       }
     }
     at = end;
   }
   // binaryen calls a function without a name by its index among those defined.
-  return sizes.map((size, i) => ({ name: names.get(imported + i) ?? String(i), size }));
+  return sizes.map((size, i) => ({
+    name: names.get(imported + i) ?? String(i),
+    size,
+  }));
 }
 
 const funcs = functions(readFileSync(named));
 
 /** A profile's first-call stamps, one per defined function (wasm-split's format: an 8-byte module hash, then u32s). */
-const stamps = (profile) => new Uint32Array(profile.buffer.slice(profile.byteOffset + 8, profile.byteOffset + profile.length));
+const stamps = (profile) =>
+  new Uint32Array(
+    profile.buffer.slice(
+      profile.byteOffset + 8,
+      profile.byteOffset + profile.length,
+    ),
+  );
 
 /** The union of profiles of one module: a function ran if it ran in any. */
 function union(profiles) {
   const result = Buffer.from(profiles[0]);
   const all = stamps(result);
-  for (const p of profiles.slice(1)) stamps(p).forEach((s, i) => { if (s && !all[i]) all[i] = s; });
+  for (const p of profiles.slice(1))
+    stamps(p).forEach((s, i) => {
+      if (s && !all[i]) all[i] = s;
+    });
   Buffer.from(all.buffer).copy(result, 8);
   return result;
 }
@@ -159,18 +245,26 @@ async function sessions(context, page) {
         const child = { pending: new Map(), listeners: [], id: 0 };
         children.set(params.sessionId, child);
         // A worker that ends with a message in flight never answers it.
-        const sendChild = (m, p = {}) => new Promise((resolve) => {
-          const id = ++child.id;
-          child.pending.set(id, resolve);
-          setTimeout(() => resolve({}), 10_000);
-          const message = JSON.stringify({ id, method: m, params: p });
-          send("Target.sendMessageToTarget", { sessionId: params.sessionId, message }).catch(() => resolve({}));
-        });
+        const sendChild = (m, p = {}) =>
+          new Promise((resolve) => {
+            const id = ++child.id;
+            child.pending.set(id, resolve);
+            setTimeout(() => resolve({}), 10_000);
+            const message = JSON.stringify({ id, method: m, params: p });
+            send("Target.sendMessageToTarget", {
+              sessionId: params.sessionId,
+              message,
+            }).catch(() => resolve({}));
+          });
         targets.set(child, sendChild);
         follow(sendChild, (listener) => child.listeners.push(listener));
         (async () => {
           await sendChild("Runtime.evaluate", { expression: HOOK });
-          await sendChild("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: false });
+          await sendChild("Target.setAutoAttach", {
+            autoAttach: true,
+            waitForDebuggerOnStart: true,
+            flatten: false,
+          });
           await sendChild("Runtime.runIfWaitingForDebugger");
         })();
       } else if (method === "Target.receivedMessageFromTarget") {
@@ -181,7 +275,8 @@ async function sessions(context, page) {
           child.pending.get(message.id)?.(message.result ?? {});
           child.pending.delete(message.id);
         } else {
-          for (const listener of child.listeners) listener(message.method, message.params);
+          for (const listener of child.listeners)
+            listener(message.method, message.params);
         }
       } else if (method === "Target.detachedFromTarget") {
         targets.delete(children.get(params.sessionId));
@@ -189,15 +284,29 @@ async function sessions(context, page) {
       }
     });
   };
-  follow((m, p) => cdp.send(m, p), (listener) => {
-    for (const event of ["Target.attachedToTarget", "Target.receivedMessageFromTarget", "Target.detachedFromTarget"]) {
-      cdp.on(event, (params) => listener(event, params));
-    }
+  follow(
+    (m, p) => cdp.send(m, p),
+    (listener) => {
+      for (const event of [
+        "Target.attachedToTarget",
+        "Target.receivedMessageFromTarget",
+        "Target.detachedFromTarget",
+      ]) {
+        cdp.on(event, (params) => listener(event, params));
+      }
+    },
+  );
+  await cdp.send("Target.setAutoAttach", {
+    autoAttach: true,
+    waitForDebuggerOnStart: true,
+    flatten: false,
   });
-  await cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: false });
   return async (expression) => {
     const params = { expression, returnByValue: true };
-    const results = await Promise.all([cdp.send("Runtime.evaluate", params), ...[...targets.values()].map((send) => send("Runtime.evaluate", params))]);
+    const results = await Promise.all([
+      cdp.send("Runtime.evaluate", params),
+      ...[...targets.values()].map((send) => send("Runtime.evaluate", params)),
+    ]);
     return results.flatMap((r) => r.result?.value ?? []);
   };
 }
@@ -214,23 +323,36 @@ async function run() {
     const dist = fileURLToPath(new URL("../dist/assets/", import.meta.url));
     mkdirSync(assets);
     for (const file of readdirSync(dist)) {
-      if (/^core_bg-.*\.wasm$/.test(file)) copyFileSync(instrumented, join(assets, file));
+      if (/^core_bg-.*\.wasm$/.test(file))
+        copyFileSync(instrumented, join(assets, file));
       else symlinkSync(join(dist, file), join(assets, file));
     }
     const browser = await launchChromium();
     try {
       for (const scene of scenes) {
-        const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1 });
+        const context = await browser.newContext({
+          viewport: { width: 1024, height: 768 },
+          deviceScaleFactor: 1,
+        });
         const page = await context.newPage();
         const evaluate = await sessions(context, page);
-        await page.goto(`${server.url}load.html?${new URLSearchParams({ engine: "orbis", ...SCENES[scene] })}`);
-        await page.waitForFunction(() => /^(done|error)/.test(document.title), null, { timeout: 120_000 });
+        await page.goto(
+          `${server.url}load.html?${new URLSearchParams({ engine: "orbis", ...SCENES[scene] })}`,
+        );
+        await page.waitForFunction(
+          () => /^(done|error)/.test(document.title),
+          null,
+          { timeout: 120_000 },
+        );
         const title = await page.title();
         if (!title.startsWith("done")) throw new Error(`${scene}: ${title}`);
         if (tour) await page.evaluate(() => window.tour());
         await page.screenshot({ path: join(out, `${scene}.png`) });
-        const written = (await evaluate(DUMP)).map((b) => Buffer.from(b, "base64"));
-        if (!written.length) throw new Error(`${scene}: no instance wrote a profile`);
+        const written = (await evaluate(DUMP)).map((b) =>
+          Buffer.from(b, "base64"),
+        );
+        if (!written.length)
+          throw new Error(`${scene}: no instance wrote a profile`);
         writeFileSync(join(out, `${scene}.profile`), union(written));
         console.error(`${scene}: profiles from ${written.length} instances`);
         await context.close();
@@ -245,52 +367,103 @@ async function run() {
 }
 
 if (!args.includes("--reuse")) await run();
-const profiles = Object.fromEntries(scenes.map((s) => [s, readFileSync(join(out, `${s}.profile`))]));
+const profiles = Object.fromEntries(
+  scenes.map((s) => [s, readFileSync(join(out, `${s}.profile`))]),
+);
 if (scenes.length > 1) profiles.union = union(Object.values(profiles));
-writeFileSync(join(out, "union.profile"), profiles.union ?? profiles[scenes[0]]);
+writeFileSync(
+  join(out, "union.profile"),
+  profiles.union ?? profiles[scenes[0]],
+);
 
-const ran = Object.fromEntries(Object.entries(profiles).map(([s, p]) => [s, stamps(p)]));
+const ran = Object.fromEntries(
+  Object.entries(profiles).map(([s, p]) => [s, stamps(p)]),
+);
 const columns = Object.keys(profiles);
-const bytes = (filter) => funcs.reduce((sum, f, i) => sum + (filter(i) ? f.size : 0), 0);
+const bytes = (filter) =>
+  funcs.reduce((sum, f, i) => sum + (filter(i) ? f.size : 0), 0);
 const code = bytes(() => true);
 const shipped = readFileSync(join(root, "web/pkg/core_bg.wasm"));
 const lines = [
-  `core.wasm: ${funcs.length} functions, ${kib(code)} of code; ${kib(shipped.length)} raw, ${kib(brotli(shipped))} brotli as shipped (web/pkg)`, "",
-  `| profile | functions run | code run | code beyond ${scenes[0]} | first-frame module | deferred module |`, "|---|---|---|---|---|---|",
+  `core.wasm: ${funcs.length} functions, ${kib(code)} of code; ${kib(shipped.length)} raw, ${kib(brotli(shipped))} brotli as shipped (web/pkg)`,
+  "",
+  `| profile | functions run | code run | code beyond ${scenes[0]} | first-frame module | deferred module |`,
+  "|---|---|---|---|---|---|",
 ];
 for (const scene of columns) {
-  const primary = join(out, `${scene}.primary.wasm`), secondary = join(out, `${scene}.deferred.wasm`);
-  split("--split", "--strip-debug", `--profile=${join(out, `${scene}.profile`)}`, named, "-o1", primary, "-o2", secondary);
+  const primary = join(out, `${scene}.primary.wasm`),
+    secondary = join(out, `${scene}.deferred.wasm`);
+  split(
+    "--split",
+    "--strip-debug",
+    `--profile=${join(out, `${scene}.profile`)}`,
+    named,
+    "-o1",
+    primary,
+    "-o2",
+    secondary,
+  );
   const [a, b] = [primary, secondary].map((f) => readFileSync(f));
-  const count = ran[scene].filter(Boolean).length, run = bytes((i) => ran[scene][i]);
-  lines.push(`| ${scene} | ${count} (${pct(count, funcs.length)}) | ${kib(run)} (${pct(run, code)}) | ${kib(bytes((i) => ran[scene][i] && !ran[scenes[0]][i]))} ` +
-    `| ${kib(brotli(a))} brotli (${kib(a.length)} raw) | ${kib(brotli(b))} brotli (${kib(b.length)} raw) |`);
+  const count = ran[scene].filter(Boolean).length,
+    run = bytes((i) => ran[scene][i]);
+  lines.push(
+    `| ${scene} | ${count} (${pct(count, funcs.length)}) | ${kib(run)} (${pct(run, code)}) | ${kib(bytes((i) => ran[scene][i] && !ran[scenes[0]][i]))} ` +
+      `| ${kib(brotli(a))} brotli (${kib(a.length)} raw) | ${kib(brotli(b))} brotli (${kib(b.length)} raw) |`,
+  );
 }
 
 // What each scene alone ran, and what none did, split out of the rest:
 // what a module of that feature would take off every other scene's load.
 if (scenes.length > 1) {
   const stripped = join(out, "core.wasm");
-  execFileSync("wasm-opt", [...FEATURES, "--strip-debug", named, "-o", stripped]);
+  execFileSync("wasm-opt", [
+    ...FEATURES,
+    "--strip-debug",
+    named,
+    "-o",
+    stripped,
+  ]);
   const whole = brotli(readFileSync(stripped));
-  lines.push("", `| code that only it ran | functions | code | the rest's module | its module |`, "|---|---|---|---|---|");
+  lines.push(
+    "",
+    `| code that only it ran | functions | code | the rest's module | its module |`,
+    "|---|---|---|---|---|",
+  );
   for (const scene of [...scenes, "no scene"]) {
-    const only = funcs.filter((_, i) => scene === "no scene"
-      ? scenes.every((s) => !ran[s][i]) : ran[scene][i] && scenes.every((s) => s === scene || !ran[s][i]));
+    const only = funcs.filter((_, i) =>
+      scene === "no scene"
+        ? scenes.every((s) => !ran[s][i])
+        : ran[scene][i] && scenes.every((s) => s === scene || !ran[s][i]),
+    );
     if (!only.length) {
       lines.push(`| ${scene} | 0 | | | |`);
       continue;
     }
     const list = join(out, `${scene.replace(" ", "-")}.only.txt`);
     writeFileSync(list, only.map((f) => f.name).join("\n"));
-    const rest = join(out, "rest.wasm"), part = join(out, "part.wasm");
-    split("--split", "--strip-debug", `--split-funcs=@${list}`, named, "-o1", rest, "-o2", part);
+    const rest = join(out, "rest.wasm"),
+      part = join(out, "part.wasm");
+    split(
+      "--split",
+      "--strip-debug",
+      `--split-funcs=@${list}`,
+      named,
+      "-o1",
+      rest,
+      "-o2",
+      part,
+    );
     const [a, b] = [rest, part].map((f) => brotli(readFileSync(f)));
     rmSync(rest);
     rmSync(part);
-    lines.push(`| ${scene} | ${only.length} | ${kib(only.reduce((s, f) => s + f.size, 0))} | ${kib(a)} brotli (${kib(a - whole)}) | ${kib(b)} brotli |`);
+    lines.push(
+      `| ${scene} | ${only.length} | ${kib(only.reduce((s, f) => s + f.size, 0))} | ${kib(a)} brotli (${kib(a - whole)}) | ${kib(b)} brotli |`,
+    );
   }
-  lines.push("", `The rest's module against the whole, ${kib(whole)} brotli with its names stripped (${stripped}).`);
+  lines.push(
+    "",
+    `The rest's module against the whole, ${kib(whole)} brotli with its names stripped (${stripped}).`,
+  );
 }
 
 /** A table of code by `group` (of a function's name), with the share of it each profile ran. */
@@ -298,22 +471,52 @@ function table(title, group, limit) {
   const groups = new Map();
   funcs.forEach((f, i) => {
     const key = group(f.name);
-    const g = groups.get(key) ?? groups.set(key, { code: 0, ...Object.fromEntries(columns.map((s) => [s, 0])) }).get(key);
+    const g =
+      groups.get(key) ??
+      groups
+        .set(key, {
+          code: 0,
+          ...Object.fromEntries(columns.map((s) => [s, 0])),
+        })
+        .get(key);
     g.code += f.size;
     for (const s of columns) if (ran[s][i]) g[s] += f.size;
   });
-  lines.push("", `| ${title} | code | ${columns.map((s) => `${s} ran`).join(" | ")} |`, `|---|---|${columns.map(() => "---|").join("")}`);
-  for (const [key, g] of [...groups].sort((a, b) => b[1].code - a[1].code).slice(0, limit)) {
-    lines.push(`| ${key} | ${kib(g.code)} | ${columns.map((s) => pct(g[s], g.code)).join(" | ")} |`);
+  lines.push(
+    "",
+    `| ${title} | code | ${columns.map((s) => `${s} ran`).join(" | ")} |`,
+    `|---|---|${columns.map(() => "---|").join("")}`,
+  );
+  for (const [key, g] of [...groups]
+    .sort((a, b) => b[1].code - a[1].code)
+    .slice(0, limit)) {
+    lines.push(
+      `| ${key} | ${kib(g.code)} | ${columns.map((s) => pct(g[s], g.code)).join(" | ")} |`,
+    );
   }
 }
 // A function's crate is the first of ours its name mentions, else its first crate.
 const HASHED = /([A-Za-z_][A-Za-z0-9_]*)\[[0-9a-f]{16}\]/g;
 const crateOf = (name) => {
   const crates = [...name.matchAll(HASHED)].map((m) => m[1]);
-  return crates.find((c) => c.startsWith("orb_")) ?? crates[0] ?? "(no crate in name: JS exports, shims)";
+  return (
+    crates.find((c) => c.startsWith("orb_")) ??
+    crates[0] ??
+    "(no crate in name: JS exports, shims)"
+  );
 };
 table("crate", crateOf, 25);
-table("module of ours", (name) => name.match(/(orb_\w+)\[[0-9a-f]{16}\]::(\w+)/)?.slice(1).join("::") ?? "(other crates)", 50);
-lines.push("", `Code is function bodies before brotli; the modules are wasm-split's (names stripped). Profiles, modules and screenshots: ${out}`);
+table(
+  "module of ours",
+  (name) =>
+    name
+      .match(/(orb_\w+)\[[0-9a-f]{16}\]::(\w+)/)
+      ?.slice(1)
+      .join("::") ?? "(other crates)",
+  50,
+);
+lines.push(
+  "",
+  `Code is function bodies before brotli; the modules are wasm-split's (names stripped). Profiles, modules and screenshots: ${out}`,
+);
 console.log(lines.join("\n"));

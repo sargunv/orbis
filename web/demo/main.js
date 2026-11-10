@@ -15,14 +15,22 @@
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
-import { DEFAULT_SCENE, GROUPS, LIVE_CAMERA, sceneFor, sceneStyle, sceneUrl } from "./styles.js";
-import { expose, hashCamera } from "./expose.js";
+
 import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
 import { hud as createHud } from "./app/hud.js";
+import { offline as createOffline } from "./app/offline.js";
 import { mapOptions, OPTION_PARAMS } from "./app/options.js";
 import { picker as createPicker } from "./app/picker.js";
-import { offline as createOffline } from "./app/offline.js";
+import { expose, hashCamera } from "./expose.js";
+import {
+  DEFAULT_SCENE,
+  GROUPS,
+  LIVE_CAMERA,
+  sceneFor,
+  sceneStyle,
+  sceneUrl,
+} from "./styles.js";
 
 const app = document.getElementById("app");
 const container = document.getElementById("map");
@@ -43,7 +51,8 @@ let designed;
 // Chrome tone: dark maps and a dark system preference turn it dark.
 const prefersDark = matchMedia("(prefers-color-scheme: dark)");
 function tone() {
-  document.documentElement.dataset.tone = current?.scene.dark || prefersDark.matches ? "dark" : "light";
+  document.documentElement.dataset.tone =
+    current?.scene.dark || prefersDark.matches ? "dark" : "light";
 }
 prefersDark.addEventListener("change", tone);
 
@@ -67,22 +76,33 @@ const searchOf = (query) => {
  * chosen on (or with `keepOptions`, for a page or a history entry that
  * names them).
  */
-function urlFor(next, camera, { keepOptions = next.scene === current?.scene } = {}) {
+function urlFor(
+  next,
+  camera,
+  { keepOptions = next.scene === current?.scene } = {},
+) {
   const query = params();
   query.delete("format");
   if (!next.scene.flight) query.delete("flight");
   if (!keepOptions) for (const name of OPTION_PARAMS) query.delete(name);
   const style = styleParam(next);
-  if (style) query.set("style", style); else query.delete("style");
+  if (style) query.set("style", style);
+  else query.delete("style");
   return `${location.pathname}${searchOf(query)}${camera ? hashOf(camera) : ""}`;
 }
 function hashOf({ center: [lon, lat], zoom, bearing = 0, pitch = 0 }) {
   const parts = [zoom.toFixed(2), lat.toFixed(5), lon.toFixed(5)];
-  if (Math.abs(bearing) > 0.05 || pitch > 0.05) parts.push(bearing.toFixed(1), pitch.toFixed(0));
+  if (Math.abs(bearing) > 0.05 || pitch > 0.05)
+    parts.push(bearing.toFixed(1), pitch.toFixed(0));
   return `#${parts.join("/")}`;
 }
 function writeHash() {
-  if (map) history.replaceState(history.state, "", `${location.pathname}${location.search}${hashOf(map.camera.current)}`);
+  if (map)
+    history.replaceState(
+      history.state,
+      "",
+      `${location.pathname}${location.search}${hashOf(map.camera.current)}`,
+    );
 }
 /** Sets the URL's `name` to `value` (`true` for a bare flag), or removes it for a falsy one. */
 function setParam(name, value) {
@@ -90,12 +110,18 @@ function setParam(name, value) {
   if (value === true) query.set(name, "");
   else if (value) query.set(name, value);
   else query.delete(name);
-  history.replaceState(history.state, "", `${location.pathname}${searchOf(query)}${location.hash}`);
+  history.replaceState(
+    history.state,
+    "",
+    `${location.pathname}${searchOf(query)}${location.hash}`,
+  );
 }
 
 // The chrome.
 const attributionControl = attribution();
-const picker = createPicker(GROUPS, { onPick: (scene, format) => go({ scene, format }) });
+const picker = createPicker(GROUPS, {
+  onPick: (scene, format) => go({ scene, format }),
+});
 const hudControl = createHud();
 const compare = comparison({
   onChange(pair) {
@@ -117,7 +143,9 @@ function setDebug(on) {
   debugToggle.setAttribute("aria-checked", String(on));
   setParam("debug", on);
 }
-debugToggle.addEventListener("click", () => setDebug(debugToggle.getAttribute("aria-checked") !== "true"));
+debugToggle.addEventListener("click", () =>
+  setDebug(debugToggle.getAttribute("aria-checked") !== "true"),
+);
 
 const menu = document.getElementById("menu");
 menu.addEventListener("beforetoggle", (e) => {
@@ -130,39 +158,69 @@ const offlineAreas = createOffline({
   async view() {
     if (!map) return null;
     const { width, height } = map.canvas.getBoundingClientRect();
-    const corners = await Promise.all([[0, 0], [width, 0], [width, height], [0, height]].map((p) => map.unproject(p)));
+    const corners = await Promise.all(
+      [
+        [0, 0],
+        [width, 0],
+        [width, height],
+        [0, height],
+      ].map((p) => map.unproject(p)),
+    );
     if (corners.some((c) => !c)) return null;
     const lons = corners.map((c) => c[0]);
     const lats = corners.map((c) => c[1]);
     const zoom = Math.floor(map.camera.current.zoom);
     return {
-      name: `${current.scene.name} near ${map.camera.current.center.map((v) => v.toFixed(3)).reverse().join(", ")}`,
+      name: `${current.scene.name} near ${map.camera.current.center
+        .map((v) => v.toFixed(3))
+        .reverse()
+        .join(", ")}`,
       style: sceneUrl(current.scene, current.format),
-      bounds: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)],
+      bounds: [
+        Math.min(...lons),
+        Math.min(...lats),
+        Math.max(...lons),
+        Math.max(...lats),
+      ],
       zooms: [zoom, Math.min(zoom + 3, 16)],
     };
   },
 });
-document.getElementById("offline-button").addEventListener("click", () => { menu.hidePopover(); offlineAreas.open(); });
-// A still of the view, once everything in it has loaded, as a PNG.
-document.getElementById("picture-button").addEventListener("click", async () => {
+document.getElementById("offline-button").addEventListener("click", () => {
   menu.hidePopover();
-  if (!map) return;
-  say("Drawing the picture…");
-  try {
-    const image = await map.snapshot();
-    const canvas = new OffscreenCanvas(image.width, image.height);
-    canvas.getContext("2d").putImageData(image, 0, 0);
-    const url = URL.createObjectURL(await canvas.convertToBlob({ type: "image/png" }));
-    Object.assign(document.createElement("a"), { href: url, download: `${current.scene.key}.png` }).click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    say("");
-  } catch (e) {
-    say(`The picture failed: ${e instanceof Error ? e.message : e}`, { error: true });
-  }
+  offlineAreas.open();
 });
+// A still of the view, once everything in it has loaded, as a PNG.
+document
+  .getElementById("picture-button")
+  .addEventListener("click", async () => {
+    menu.hidePopover();
+    if (!map) return;
+    say("Drawing the picture…");
+    try {
+      const image = await map.snapshot();
+      const canvas = new OffscreenCanvas(image.width, image.height);
+      canvas.getContext("2d").putImageData(image, 0, 0);
+      const url = URL.createObjectURL(
+        await canvas.convertToBlob({ type: "image/png" }),
+      );
+      Object.assign(document.createElement("a"), {
+        href: url,
+        download: `${current.scene.key}.png`,
+      }).click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      say("");
+    } catch (e) {
+      say(`The picture failed: ${e instanceof Error ? e.message : e}`, {
+        error: true,
+      });
+    }
+  });
 const about = document.getElementById("about");
-document.getElementById("about-button").addEventListener("click", () => { menu.hidePopover(); about.showModal(); });
+document.getElementById("about-button").addEventListener("click", () => {
+  menu.hidePopover();
+  about.showModal();
+});
 {
   const commit = __ORBIS_COMMIT__;
   const link = document.createElement("a");
@@ -173,19 +231,38 @@ document.getElementById("about-button").addEventListener("click", () => { menu.h
 
 // The map's focus ring shows for keyboard users only: the canvas takes
 // focus on every pointer press too.
-addEventListener("keydown", (e) => { if (e.key === "Tab") app.classList.add("keyboard"); }, true);
+addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key === "Tab") app.classList.add("keyboard");
+  },
+  true,
+);
 addEventListener("pointerdown", () => app.classList.remove("keyboard"), true);
 
 // Camera controls.
 const compass = document.getElementById("compass");
 document.getElementById("zoom-in").addEventListener("click", () => {
-  map?.camera.easeTo({ zoom: map.camera.current.zoom + 1, duration: reducedMotion() ? 0 : 300 });
+  map?.camera.easeTo({
+    zoom: map.camera.current.zoom + 1,
+    duration: reducedMotion() ? 0 : 300,
+  });
 });
 document.getElementById("zoom-out").addEventListener("click", () => {
-  map?.camera.easeTo({ zoom: map.camera.current.zoom - 1, duration: reducedMotion() ? 0 : 300 });
+  map?.camera.easeTo({
+    zoom: map.camera.current.zoom - 1,
+    duration: reducedMotion() ? 0 : 300,
+  });
 });
-compass.addEventListener("click", () => map?.camera.easeTo({ bearing: 0, pitch: 0, duration: reducedMotion() ? 0 : 400 }));
-const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+compass.addEventListener("click", () =>
+  map?.camera.easeTo({
+    bearing: 0,
+    pitch: 0,
+    duration: reducedMotion() ? 0 : 400,
+  }),
+);
+const reducedMotion = () =>
+  matchMedia("(prefers-reduced-motion: reduce)").matches;
 function showCompass() {
   const { bearing, pitch } = map.camera.current;
   compass.style.setProperty("--bearing", `${-bearing}deg`);
@@ -210,8 +287,11 @@ function go(next, { camera, history: mode = "push" } = {}) {
     return;
   }
   const switched = ++switches;
-  const url = urlFor(next, camera ?? map.camera.current, { keepOptions: mode !== "push" || next.scene === current.scene });
-  if (mode === "push") history.pushState(null, "", url); else history.replaceState(history.state, "", url);
+  const url = urlFor(next, camera ?? map.camera.current, {
+    keepOptions: mode !== "push" || next.scene === current.scene,
+  });
+  if (mode === "push") history.pushState(null, "", url);
+  else history.replaceState(history.state, "", url);
   const previous = current;
   current = next;
   tone();
@@ -219,22 +299,32 @@ function go(next, { camera, history: mode = "push" } = {}) {
   map.camera.stop();
   map.camera.setConstraints(next.scene.constraints ?? {});
   if (camera) map.camera.jumpTo(camera);
-  if (sceneUrl(previous.scene, previous.format) === sceneUrl(next.scene, next.format)
-    && !previous.scene.restyle && !next.scene.restyle) {
+  if (
+    sceneUrl(previous.scene, previous.format) ===
+      sceneUrl(next.scene, next.format) &&
+    !previous.scene.restyle &&
+    !next.scene.restyle
+  ) {
     // The same style on another surface or under another sky: one edit,
     // and nothing loads again.
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-    const projection = !same(projectionOf(previous.scene), projectionOf(next.scene));
+    const projection = !same(
+      projectionOf(previous.scene),
+      projectionOf(next.scene),
+    );
     const sky = !same(previous.scene.sky, next.scene.sky);
     if (projection || sky) {
       options.loading();
-      void map.edit((tx) => {
-        if (projection) tx.setProjection(projectionOf(next.scene));
-        if (sky) tx.setSky(next.scene.sky ?? styleSky);
-      }).then(() => {
-        // The other entry's options, from the style as it designs it.
-        if (switched === switches) void options.attach(map, { ...designed, scene: next.scene });
-      });
+      void map
+        .edit((tx) => {
+          if (projection) tx.setProjection(projectionOf(next.scene));
+          if (sky) tx.setSky(next.scene.sky ?? styleSky);
+        })
+        .then(() => {
+          // The other entry's options, from the style as it designs it.
+          if (switched === switches)
+            void options.attach(map, { ...designed, scene: next.scene });
+        });
       // The comparison reopens with the projection, if it can draw it.
       compare.attach(map, next.scene);
     }
@@ -249,12 +339,19 @@ function go(next, { camera, history: mode = "push" } = {}) {
   // The style's `styleload` applies the entry's projection and sky, unless
   // it restyles, which puts them in the style. The style's own camera is a
   // fresh page's (load), never a switch's.
-  sceneStyle(next.scene, next.format, { terrain: wantedTerrain() === true }).then((style) => { if (switched === switches) map.setStyle(style); }, (e) => {
-    if (switched !== switches) return;
-    styleLoading = false;
-    app.dataset.map = "error";
-    say(e instanceof Error ? e.message : String(e), { error: true });
-  });
+  sceneStyle(next.scene, next.format, {
+    terrain: wantedTerrain() === true,
+  }).then(
+    (style) => {
+      if (switched === switches) map.setStyle(style);
+    },
+    (e) => {
+      if (switched !== switches) return;
+      styleLoading = false;
+      app.dataset.map = "error";
+      say(e instanceof Error ? e.message : String(e), { error: true });
+    },
+  );
   const loaded = map.on("styleload", () => {
     loaded();
     startFlight(switched);
@@ -267,14 +364,18 @@ async function startFlight(switched) {
   const { flight } = current.scene;
   if (!flight || !params().has("flight")) return;
   for (let leg = 0; switched === switches; leg = (leg + 1) % flight.length) {
-    if (!await map.camera.flyTo(flight[leg])) return;
+    if (!(await map.camera.flyTo(flight[leg]))) return;
   }
 }
 
 // Back and forward move between entries as picking them did.
 addEventListener("popstate", () => {
   let next;
-  try { next = sceneFor(params()); } catch { return; }
+  try {
+    next = sceneFor(params());
+  } catch {
+    return;
+  }
   go(next, { camera: hashCamera(), history: "none" });
 });
 
@@ -289,7 +390,9 @@ async function load(next, { camera }) {
   try {
     created = await createMap({
       container,
-      style: await sceneStyle(next.scene, next.format, { terrain: wantedTerrain() === true }),
+      style: await sceneStyle(next.scene, next.format, {
+        terrain: wantedTerrain() === true,
+      }),
       camera,
       constraints: next.scene.constraints,
       // The demo shows what Orbis can do beyond the spec too.
@@ -297,7 +400,9 @@ async function load(next, { camera }) {
     });
   } catch (e) {
     app.dataset.map = "error";
-    say(`The map couldn't start: ${e instanceof Error ? e.message : e}`, { error: true });
+    say(`The map couldn't start: ${e instanceof Error ? e.message : e}`, {
+      error: true,
+    });
     console.error(e);
     return;
   }
@@ -305,7 +410,11 @@ async function load(next, { camera }) {
   expose(map);
   map.on("error", ({ message }) => {
     console.error(message);
-    if (app.dataset.map === "loading" || toast.textContent.startsWith("Loading")) say(message, { error: true });
+    if (
+      app.dataset.map === "loading" ||
+      toast.textContent.startsWith("Loading")
+    )
+      say(message, { error: true });
   });
   // Each style, the first and those switched to: the entry's projection and
   // sky (unless it restyles, which put them in the style), then the options,
@@ -325,15 +434,24 @@ async function load(next, { camera }) {
     // URL's: the terrain the switch turns on is the entry's own, or the
     // style's as it loaded (`&terrain=1` put the entry's in the style).
     designed = {
-      designed: { ...loaded, ...(!scene.restyle && scene.projection && { projection: scene.projection }),
-        ...(!scene.restyle && scene.sky && { sky: scene.sky }) },
-      terrain: scene.terrain === true ? loaded.terrain ?? null : scene.terrain ?? null,
+      designed: {
+        ...loaded,
+        ...(!scene.restyle &&
+          scene.projection && { projection: scene.projection }),
+        ...(!scene.restyle && scene.sky && { sky: scene.sky }),
+      },
+      terrain:
+        scene.terrain === true
+          ? (loaded.terrain ?? null)
+          : (scene.terrain ?? null),
     };
     await options.attach(map, { ...designed, scene });
     attributionControl.update(loaded);
     compare.attach(map, scene);
   });
-  map.on("load", () => { if (!toast.classList.contains("error")) say(""); });
+  map.on("load", () => {
+    if (!toast.classList.contains("error")) say("");
+  });
   map.on("warning", ({ message }) => console.warn(message));
   map.on("render", (ack) => {
     app.dataset.map = styleLoading ? "loading" : ack.idle ? "idle" : "drawing";
@@ -347,8 +465,11 @@ async function load(next, { camera }) {
   map.on("restored", ({ recoveredMs }) => {
     const idle = map.on("idle", () => {
       idle();
-      const recovered = `first frame ${Math.round(recoveredMs)} ms` +
-        (lostAt === undefined ? "" : `, complete ${Math.round(performance.now() - lostAt)} ms`);
+      const recovered =
+        `first frame ${Math.round(recoveredMs)} ms` +
+        (lostAt === undefined
+          ? ""
+          : `, complete ${Math.round(performance.now() - lostAt)} ms`);
       hudControl.recovered(recovered);
       console.info(`orbis: recovered from device loss: ${recovered}`);
       app.dataset.recovered = "true";
@@ -358,14 +479,22 @@ async function load(next, { camera }) {
   if (query.has("lose")) {
     const loaded = map.on("load", () => {
       loaded();
-      setTimeout(() => { lostAt = performance.now(); map.loseDevice(); },
-        Number(query.get("lose")) || 0);
+      setTimeout(
+        () => {
+          lostAt = performance.now();
+          map.loseDevice();
+        },
+        Number(query.get("lose")) || 0,
+      );
     });
   }
   hoverNames(map);
   // From the style's own camera, which it adopts as it loads.
   const switched = switches;
-  const loaded = map.on("styleload", () => { loaded(); startFlight(switched); });
+  const loaded = map.on("styleload", () => {
+    loaded();
+    startFlight(switched);
+  });
 }
 
 /** While the debug overlay shows, it names the feature under the pointer. */
@@ -380,23 +509,41 @@ function hoverNames(target) {
         const point = pointer;
         pointer = undefined;
         if (!hudControl.visible) continue;
-        const hit = point && await target.hitTest(point);
-        hudControl.hover(hit ? `${hit.layer}${hit.id !== null ? ` #${hit.id}` : ""}` : "");
+        const hit = point && (await target.hitTest(point));
+        hudControl.hover(
+          hit ? `${hit.layer}${hit.id !== null ? ` #${hit.id}` : ""}` : "",
+        );
       }
-    } finally { busy = false; }
+    } finally {
+      busy = false;
+    }
   };
   target.canvas.addEventListener("pointermove", (e) => {
     if (e.buttons || e.pointerType === "touch") return;
     pointer = [e.offsetX, e.offsetY];
     void hover();
   });
-  target.canvas.addEventListener("pointerleave", () => { pointer = null; void hover(); });
+  target.canvas.addEventListener("pointerleave", () => {
+    pointer = null;
+    void hover();
+  });
 }
 
 // Hooks for the headless checks and the console.
-window.app = { get map() { return map; }, compare, options, get scene() { return current?.scene.key; },
+window.app = {
+  get map() {
+    return map;
+  },
+  compare,
+  options,
+  get scene() {
+    return current?.scene.key;
+  },
   /** Switches to `style`, a catalogue key or a style URL, as picking an entry does. */
-  show(style) { go(sceneFor(new URLSearchParams({ style }))); } };
+  show(style) {
+    go(sceneFor(new URLSearchParams({ style })));
+  },
+};
 
 // Start.
 const start = params();
@@ -405,8 +552,21 @@ compare.want(parsePair(start.get("compare")));
 {
   const camera = hashCamera();
   let first;
-  try { first = sceneFor(start); } catch (e) { say(String(e.message), { error: true }); throw e; }
-  history.replaceState(history.state, "", urlFor(first, camera, { keepOptions: true }));
-  await load(first, { camera: camera ?? first.scene.camera ?? (first.scene.basemap ? LIVE_CAMERA : undefined) });
+  try {
+    first = sceneFor(start);
+  } catch (e) {
+    say(String(e.message), { error: true });
+    throw e;
+  }
+  history.replaceState(
+    history.state,
+    "",
+    urlFor(first, camera, { keepOptions: true }),
+  );
+  await load(first, {
+    camera:
+      camera ??
+      first.scene.camera ??
+      (first.scene.basemap ? LIVE_CAMERA : undefined),
+  });
 }
-

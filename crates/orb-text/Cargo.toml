@@ -17,13 +17,24 @@ fonts = ["dep:harfrust", "dep:skrifa", "dep:wuff", "dep:zeno"]
 
 [dependencies]
 serde.workspace = true
-harfrust = { version = "0.15.0", default-features = false, features = ["std"], optional = true }
+harfrust = { version = "0.15.0", default-features = false, features = [
+  "std",
+], optional = true }
 icu_provider = { version = "2.4.0", default-features = false, optional = true }
-icu_segmenter = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
-skrifa = { version = "0.49.0", default-features = false, features = ["std"], optional = true }
-zeno = { version = "0.3.3", default-features = false, features = ["eval", "std"], optional = true }
+icu_segmenter = { version = "2.4.0", default-features = false, features = [
+  "compiled_data",
+] }
+skrifa = { version = "0.49.0", default-features = false, features = [
+  "std",
+], optional = true }
+zeno = { version = "0.3.3", default-features = false, features = [
+  "eval",
+  "std",
+], optional = true }
 wuff = { version = "0.2.9", optional = true }
-unicode-bidi = { version = "0.3.18", default-features = false, features = ["hardcoded-data"] }
+unicode-bidi = { version = "0.3.18", default-features = false, features = [
+  "hardcoded-data",
+] }
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -11,7 +11,10 @@ publish = false
 
 [dependencies]
 mln-rs = { git = "https://github.com/louwers/mln-rs", rev = "38cc1a177559e61e168bef9e6ea6a42ed0aae378" }
-rustix = { version = "1.1.6", default-features = false, features = ["std", "time"] }
+rustix = { version = "1.1.6", default-features = false, features = [
+  "std",
+  "time",
+] }
 
 [workspace]
 

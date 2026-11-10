@@ -12,7 +12,9 @@ import { h } from "./dom.js";
 
 const COLOR_SPACE = "dev.sargunv.orbis:color-space";
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
-const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map((p) => `fill-extrusion-ambient-occlusion-${p}`);
+const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map(
+  (p) => `fill-extrusion-ambient-occlusion-${p}`,
+);
 
 const ofType = (style, type) => style.layers.filter((l) => l.type === type);
 const visible = (layer) => layer.layout?.visibility !== "none";
@@ -24,30 +26,52 @@ const layersOf = (type) => ({
   supported: ({ designed }) => ofType(designed, type).some(visible),
   read: (style) => ofType(style, type).some(visible),
   apply(tx, on, { style, designed }) {
-    const designedShown = new Set(ofType(designed, type).filter(visible).map((l) => l.id));
+    const designedShown = new Set(
+      ofType(designed, type)
+        .filter(visible)
+        .map((l) => l.id),
+    );
     for (const layer of ofType(style, type)) {
-      tx.setLayoutProperty(layer.id, "visibility", on && designedShown.has(layer.id) ? "visible" : "none");
+      tx.setLayoutProperty(
+        layer.id,
+        "visibility",
+        on && designedShown.has(layer.id) ? "visible" : "none",
+      );
     }
   },
 });
 
 /** An option that sets one number in the style's `sky`: `off` for off, the designed value (or unset) for on. */
-const skyNumber = (name, fallback, off, isOn = (v) => (v ?? fallback) !== off) => ({
-  supported: ({ designed }) => Boolean(designed.sky) && isOn(designed.sky[name]),
+const skyNumber = (
+  name,
+  fallback,
+  off,
+  isOn = (v) => (v ?? fallback) !== off,
+) => ({
+  supported: ({ designed }) =>
+    Boolean(designed.sky) && isOn(designed.sky[name]),
   read: (style) => Boolean(style.sky) && isOn(style.sky[name]),
-  apply: (tx, on, { style, designed }) => tx.setSky({ ...style.sky, [name]: on ? designed.sky[name] : off }),
+  apply: (tx, on, { style, designed }) =>
+    tx.setSky({ ...style.sky, [name]: on ? designed.sky[name] : off }),
 });
 
 const projectionType = (style) => {
   const type = style.projection?.type;
-  return type === undefined ? "mercator" : typeof type === "string" ? type : "globe";
+  return type === undefined
+    ? "mercator"
+    : typeof type === "string"
+      ? type
+      : "globe";
 };
 /** The entry's projection: the one it applies, else its style's. */
-const projectionByDesign = ({ scene, designed }) => scene.projection?.type ?? projectionType(designed);
+const projectionByDesign = ({ scene, designed }) =>
+  scene.projection?.type ?? projectionType(designed);
 
 /** The extrusion layers whose ambient occlusion the style designs. */
-const occluded = (style) => ofType(style, "fill-extrusion")
-  .filter((l) => AMBIENT_OCCLUSION.some((p) => nonzero(l.paint?.[p], 0)));
+const occluded = (style) =>
+  ofType(style, "fill-extrusion").filter((l) =>
+    AMBIENT_OCCLUSION.some((p) => nonzero(l.paint?.[p], 0)),
+  );
 
 /**
  * The options, in the panel's order. Each has a `key` (its URL parameter
@@ -63,7 +87,10 @@ const occluded = (style) => ofType(style, "fill-extrusion")
  */
 export const OPTIONS = [
   {
-    key: "terrain", group: "Terrain and light", label: "Terrain", kind: "switch",
+    key: "terrain",
+    group: "Terrain and light",
+    label: "Terrain",
+    kind: "switch",
     supported: ({ scene, terrain }) => Boolean(scene.terrain && terrain),
     read: (style) => Boolean(style.terrain),
     apply: (tx, on, { terrain }) => tx.setTerrain(on ? terrain : null),
@@ -71,70 +98,154 @@ export const OPTIONS = [
     // terrain of its own puts it in only when asked.
     initial: ({ scene }) => scene.terrain === true,
   },
-  { key: "hillshade", group: "Terrain and light", label: "Hillshade", kind: "switch", ...layersOf("hillshade") },
   {
-    key: "light", group: "Terrain and light", label: "Light",
+    key: "hillshade",
+    group: "Terrain and light",
+    label: "Hillshade",
+    kind: "switch",
+    ...layersOf("hillshade"),
+  },
+  {
+    key: "light",
+    group: "Terrain and light",
+    label: "Light",
     note: "Fixed to the ground, or turning with the view",
-    choices: [["map", "Map"], ["viewport", "Viewport"]],
+    choices: [
+      ["map", "Map"],
+      ["viewport", "Viewport"],
+    ],
     supported: ({ scene }) => Boolean(scene.light),
     // The first hillshade layer's anchor, else the light's, else the spec's default.
-    read: (style) => ofType(style, "hillshade")[0]?.paint?.[HILLSHADE_ANCHOR] ?? style.light?.anchor ?? "viewport",
+    read: (style) =>
+      ofType(style, "hillshade")[0]?.paint?.[HILLSHADE_ANCHOR] ??
+      style.light?.anchor ??
+      "viewport",
     apply(tx, anchor, { style }) {
-      for (const layer of ofType(style, "hillshade")) tx.setPaintProperty(layer.id, HILLSHADE_ANCHOR, anchor);
+      for (const layer of ofType(style, "hillshade"))
+        tx.setPaintProperty(layer.id, HILLSHADE_ANCHOR, anchor);
       tx.setLight({ ...style.light, anchor });
     },
   },
-  { key: "buildings", group: "Buildings", label: "3D buildings", kind: "switch", ...layersOf("fill-extrusion") },
   {
-    key: "shadows", group: "Buildings", label: "Shadows", kind: "switch", orbisOnly: true, needs: ["buildings", true, "With 3D buildings on"],
-    supported: ({ designed }) => nonzero(designed.light?.["shadow-intensity"], 0) && ofType(designed, "fill-extrusion").length > 0,
-    read: (style) => nonzero(style.light?.["shadow-intensity"], 0),
-    apply: (tx, on, { style, designed }) =>
-      tx.setLight({ ...style.light, "shadow-intensity": on ? designed.light["shadow-intensity"] : 0 }),
+    key: "buildings",
+    group: "Buildings",
+    label: "3D buildings",
+    kind: "switch",
+    ...layersOf("fill-extrusion"),
   },
   {
-    key: "ao", group: "Buildings", label: "Ambient occlusion", kind: "switch", orbisOnly: true, needs: ["buildings", true, "With 3D buildings on"],
+    key: "shadows",
+    group: "Buildings",
+    label: "Shadows",
+    kind: "switch",
+    orbisOnly: true,
+    needs: ["buildings", true, "With 3D buildings on"],
+    supported: ({ designed }) =>
+      nonzero(designed.light?.["shadow-intensity"], 0) &&
+      ofType(designed, "fill-extrusion").length > 0,
+    read: (style) => nonzero(style.light?.["shadow-intensity"], 0),
+    apply: (tx, on, { style, designed }) =>
+      tx.setLight({
+        ...style.light,
+        "shadow-intensity": on ? designed.light["shadow-intensity"] : 0,
+      }),
+  },
+  {
+    key: "ao",
+    group: "Buildings",
+    label: "Ambient occlusion",
+    kind: "switch",
+    orbisOnly: true,
+    needs: ["buildings", true, "With 3D buildings on"],
     supported: ({ designed }) => occluded(designed).length > 0,
     read: (style) => occluded(style).length > 0,
     apply(tx, on, { style, designed }) {
       const present = new Set(style.layers.map((l) => l.id));
       for (const layer of occluded(designed).filter((l) => present.has(l.id))) {
         for (const name of AMBIENT_OCCLUSION) {
-          if (layer.paint[name] !== undefined) tx.setPaintProperty(layer.id, name, on ? layer.paint[name] : 0);
+          if (layer.paint[name] !== undefined)
+            tx.setPaintProperty(layer.id, name, on ? layer.paint[name] : 0);
         }
       }
     },
   },
   {
-    key: "projection", group: "Globe and sky", label: "Projection",
-    choices: [["globe", "Globe"], ["mercator", "Mercator"]],
-    supported: (context) => ["globe", "mercator"].includes(projectionByDesign(context)),
+    key: "projection",
+    group: "Globe and sky",
+    label: "Projection",
+    choices: [
+      ["globe", "Globe"],
+      ["mercator", "Mercator"],
+    ],
+    supported: (context) =>
+      ["globe", "mercator"].includes(projectionByDesign(context)),
     read: projectionType,
-    apply: (tx, type, { style }) => tx.setProjection({ ...style.projection, type }),
+    apply: (tx, type, { style }) =>
+      tx.setProjection({ ...style.projection, type }),
     initial: projectionByDesign,
   },
   // The spec's defaults: atmosphere 0.8, fog over the far half of the view.
-  { key: "atmosphere", group: "Globe and sky", label: "Atmosphere", kind: "switch", needs: ["projection", "globe", "On the globe"],
-    ...skyNumber("atmosphere-blend", 0.8, 0) },
-  // Fog draws only over terrain; a fog-ground blend of 1 puts it past the horizon.
-  { key: "fog", group: "Globe and sky", label: "Fog", kind: "switch", needs: ["terrain", true, "With terrain on"],
-    ...skyNumber("fog-ground-blend", 0.5, 1, (v) => (v ?? 0.5) < 1) },
-  { key: "stars", group: "Globe and sky", label: "Stars", kind: "switch", orbisOnly: true, needs: ["projection", "globe", "On the globe"],
-    ...skyNumber("star-opacity", 0, 0) },
-  { key: "labels", group: "Map", label: "Labels", kind: "switch", ...layersOf("symbol") },
   {
-    key: "colors", group: "Map", label: "Colours", note: "Mixed in linear light, or in sRGB as GL JS mixes them",
-    orbisOnly: true, choices: [["linear", "Linear"], ["srgb", "sRGB"]],
-    supported: ({ designed }) => ["linear", "srgb"].includes(designed.metadata?.[COLOR_SPACE]),
-    read: (style) => (style.metadata?.[COLOR_SPACE] === "linear" ? "linear" : "srgb"),
+    key: "atmosphere",
+    group: "Globe and sky",
+    label: "Atmosphere",
+    kind: "switch",
+    needs: ["projection", "globe", "On the globe"],
+    ...skyNumber("atmosphere-blend", 0.8, 0),
+  },
+  // Fog draws only over terrain; a fog-ground blend of 1 puts it past the horizon.
+  {
+    key: "fog",
+    group: "Globe and sky",
+    label: "Fog",
+    kind: "switch",
+    needs: ["terrain", true, "With terrain on"],
+    ...skyNumber("fog-ground-blend", 0.5, 1, (v) => (v ?? 0.5) < 1),
+  },
+  {
+    key: "stars",
+    group: "Globe and sky",
+    label: "Stars",
+    kind: "switch",
+    orbisOnly: true,
+    needs: ["projection", "globe", "On the globe"],
+    ...skyNumber("star-opacity", 0, 0),
+  },
+  {
+    key: "labels",
+    group: "Map",
+    label: "Labels",
+    kind: "switch",
+    ...layersOf("symbol"),
+  },
+  {
+    key: "colors",
+    group: "Map",
+    label: "Colours",
+    note: "Mixed in linear light, or in sRGB as GL JS mixes them",
+    orbisOnly: true,
+    choices: [
+      ["linear", "Linear"],
+      ["srgb", "sRGB"],
+    ],
+    supported: ({ designed }) =>
+      ["linear", "srgb"].includes(designed.metadata?.[COLOR_SPACE]),
+    read: (style) =>
+      style.metadata?.[COLOR_SPACE] === "linear" ? "linear" : "srgb",
     // The metadata isn't an edit of its own: the style, diffed, with it changed.
-    apply: (tx, space, { style }) => tx.setStyle({ ...style, metadata: { ...style.metadata, [COLOR_SPACE]: space } }),
+    apply: (tx, space, { style }) =>
+      tx.setStyle({
+        ...style,
+        metadata: { ...style.metadata, [COLOR_SPACE]: space },
+      }),
   },
 ];
-const encode = (option, value) => (option.kind === "switch" ? (value ? "1" : "0") : value);
+const encode = (option, value) =>
+  option.kind === "switch" ? (value ? "1" : "0") : value;
 function decode(option, text) {
   if (text === null) return undefined;
-  if (option.kind === "switch") return text === "1" ? true : text === "0" ? false : undefined;
+  if (option.kind === "switch")
+    return text === "1" ? true : text === "0" ? false : undefined;
   return option.choices.some(([value]) => value === text) ? text : undefined;
 }
 
@@ -164,14 +275,21 @@ export function mapOptions({ params, setParam }) {
   let generation = 0;
   const enqueue = (work) => {
     editing++;
-    queue = queue.then(work).catch((e) => console.error(e)).finally(() => { editing--; });
+    queue = queue
+      .then(work)
+      .catch((e) => console.error(e))
+      .finally(() => {
+        editing--;
+      });
     return queue;
   };
 
   // On wide screens the panel opens beside its button.
   panel.addEventListener("beforetoggle", (e) => {
     if (e.newState !== "open") return;
-    const rect = document.getElementById("options-button").getBoundingClientRect();
+    const rect = document
+      .getElementById("options-button")
+      .getBoundingClientRect();
     panel.style.setProperty("--sheet-top", `${rect.top}px`);
     panel.style.setProperty("--sheet-right", `${innerWidth - rect.left + 8}px`);
   });
@@ -179,9 +297,12 @@ export function mapOptions({ params, setParam }) {
   /** The entry's default: off where it says so, else the option's own, else as designed. */
   const initial = (option) => {
     if (context.scene.off?.includes(option.key)) return false;
-    return option.initial ? option.initial(context) : option.read(context.designed);
+    return option.initial
+      ? option.initial(context)
+      : option.read(context.designed);
   };
-  const wanted = (option) => decode(option, params().get(option.key)) ?? initial(option);
+  const wanted = (option) =>
+    decode(option, params().get(option.key)) ?? initial(option);
   const disabled = (option) => {
     if (!ready) return true;
     const [key, value] = option.needs ?? [];
@@ -195,62 +316,141 @@ export function mapOptions({ params, setParam }) {
       if (!groups.has(option.group)) groups.set(option.group, []);
       groups.get(option.group).push(option);
     }
-    body.replaceChildren(...[...groups].map(([name, options], i) => h("section", {
-      class: "option-group", "aria-labelledby": `option-group-${i}`,
-    }, h("h3", { id: `option-group-${i}` }, name), options.map(control))));
+    body.replaceChildren(
+      ...[...groups].map(([name, options], i) =>
+        h(
+          "section",
+          {
+            class: "option-group",
+            "aria-labelledby": `option-group-${i}`,
+          },
+          h("h3", { id: `option-group-${i}` }, name),
+          options.map(control),
+        ),
+      ),
+    );
     if (!available.length) {
-      body.replaceChildren(h("p", { class: "options-empty" }, loading ? "Loading the map…" : "This map has no options."));
+      body.replaceChildren(
+        h(
+          "p",
+          { class: "options-empty" },
+          loading ? "Loading the map…" : "This map has no options.",
+        ),
+      );
     }
   }
 
-  const text = (option) => h("span", { class: "option-text" },
-    h("span", { class: "option-label", id: `option-${option.key}` }, option.label,
-      option.orbisOnly && h("span", { class: "option-tag", title: "A preview of a style-spec proposal: GL JS and MapLibre Native don't draw it" }, "Orbis only")),
-    option.note && h("span", { class: "option-note" }, option.note));
+  const text = (option) =>
+    h(
+      "span",
+      { class: "option-text" },
+      h(
+        "span",
+        { class: "option-label", id: `option-${option.key}` },
+        option.label,
+        option.orbisOnly &&
+          h(
+            "span",
+            {
+              class: "option-tag",
+              title:
+                "A preview of a style-spec proposal: GL JS and MapLibre Native don't draw it",
+            },
+            "Orbis only",
+          ),
+      ),
+      option.note && h("span", { class: "option-note" }, option.note),
+    );
 
   function control(option) {
     if (option.kind === "switch") {
-      const row = h("button", { type: "button", class: "option-row", role: "switch", "data-option": option.key,
-        "aria-checked": "false", "aria-labelledby": `option-${option.key}`,
-        onclick: () => pick(option, row.getAttribute("aria-checked") !== "true") },
-      text(option), h("span", { class: "switch", "aria-hidden": "true" }));
-      controls.set(option.key, { show(value, off) {
-        row.setAttribute("aria-checked", String(value === true));
-        row.disabled = off;
-        row.title = off && ready ? option.needs[2] : "";
-      } });
+      const row = h(
+        "button",
+        {
+          type: "button",
+          class: "option-row",
+          role: "switch",
+          "data-option": option.key,
+          "aria-checked": "false",
+          "aria-labelledby": `option-${option.key}`,
+          onclick: () =>
+            pick(option, row.getAttribute("aria-checked") !== "true"),
+        },
+        text(option),
+        h("span", { class: "switch", "aria-hidden": "true" }),
+      );
+      controls.set(option.key, {
+        show(value, off) {
+          row.setAttribute("aria-checked", String(value === true));
+          row.disabled = off;
+          row.title = off && ready ? option.needs[2] : "";
+        },
+      });
       return row;
     }
-    const buttons = option.choices.map(([value, label]) => h("button", {
-      type: "button", role: "radio", "data-value": value, "aria-checked": "false", tabindex: "-1",
-      onclick: () => pick(option, value),
-    }, label));
-    const group = h("span", { class: "segmented", role: "radiogroup", "aria-labelledby": `option-${option.key}`,
-      // The arrow keys move the choice, as in a radio group.
-      onkeydown(e) {
-        const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
-        if (!step) return;
-        e.preventDefault();
-        const at = buttons.findIndex((b) => b.getAttribute("aria-checked") === "true");
-        const next = buttons[(at + step + buttons.length) % buttons.length];
-        next.focus();
-        pick(option, next.dataset.value);
-      } }, buttons);
-    controls.set(option.key, { show(value, off) {
-      row.title = off && ready ? option.needs?.[2] ?? "" : "";
-      for (const button of buttons) {
-        const on = button.dataset.value === value;
-        button.setAttribute("aria-checked", String(on));
-        button.tabIndex = on ? 0 : -1;
-        button.disabled = off;
-      }
-    } });
-    const row = h("div", { class: "option-row", "data-option": option.key }, text(option), group);
+    const buttons = option.choices.map(([value, label]) =>
+      h(
+        "button",
+        {
+          type: "button",
+          role: "radio",
+          "data-value": value,
+          "aria-checked": "false",
+          tabindex: "-1",
+          onclick: () => pick(option, value),
+        },
+        label,
+      ),
+    );
+    const group = h(
+      "span",
+      {
+        class: "segmented",
+        role: "radiogroup",
+        "aria-labelledby": `option-${option.key}`,
+        // The arrow keys move the choice, as in a radio group.
+        onkeydown(e) {
+          const step = {
+            ArrowLeft: -1,
+            ArrowUp: -1,
+            ArrowRight: 1,
+            ArrowDown: 1,
+          }[e.key];
+          if (!step) return;
+          e.preventDefault();
+          const at = buttons.findIndex(
+            (b) => b.getAttribute("aria-checked") === "true",
+          );
+          const next = buttons[(at + step + buttons.length) % buttons.length];
+          next.focus();
+          pick(option, next.dataset.value);
+        },
+      },
+      buttons,
+    );
+    controls.set(option.key, {
+      show(value, off) {
+        row.title = off && ready ? (option.needs?.[2] ?? "") : "";
+        for (const button of buttons) {
+          const on = button.dataset.value === value;
+          button.setAttribute("aria-checked", String(on));
+          button.tabIndex = on ? 0 : -1;
+          button.disabled = off;
+        }
+      },
+    });
+    const row = h(
+      "div",
+      { class: "option-row", "data-option": option.key },
+      text(option),
+      group,
+    );
     return row;
   }
 
   function showAll() {
-    for (const option of available) controls.get(option.key).show(values[option.key], disabled(option));
+    for (const option of available)
+      controls.get(option.key).show(values[option.key], disabled(option));
   }
 
   /** Applies `option`'s `value` to `style`, the map's as it now stands, if it differs; the style after. */
@@ -280,7 +480,12 @@ export function mapOptions({ params, setParam }) {
     showAll();
     for (const option of OPTIONS) {
       const value = values[option.key];
-      setParam(option.key, available.includes(option) && value !== initial(option) ? encode(option, value) : null);
+      setParam(
+        option.key,
+        available.includes(option) && value !== initial(option)
+          ? encode(option, value)
+          : null,
+      );
     }
   }
 
@@ -309,16 +514,21 @@ export function mapOptions({ params, setParam }) {
       const attached = ++generation;
       await enqueue(async () => {
         let style = await map.getStyle();
-        for (const option of available) style = await set(option, wanted(option), style);
+        for (const option of available)
+          style = await set(option, wanted(option), style);
       });
       if (attached !== generation) return;
       ready = true;
       await refresh();
     },
     /** Each available option's value, for the headless checks. */
-    get values() { return ready ? { ...values } : null; },
+    get values() {
+      return ready ? { ...values } : null;
+    },
     /** Whether the panel is open. */
-    get open() { return panel.matches(":popover-open"); },
+    get open() {
+      return panel.matches(":popover-open");
+    },
   };
 }
 

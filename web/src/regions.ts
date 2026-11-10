@@ -56,14 +56,23 @@ let starting: Promise<unknown> = Promise.resolve();
 
 /** Downloads a region; `onEvent` follows its progress. Resolves to its id
  * once it starts. */
-export async function downloadRegion(definition: RegionDefinition,
-  onEvent?: (event: RegionEvent) => void): Promise<number> {
+export async function downloadRegion(
+  definition: RegionDefinition,
+  onEvent?: (event: RegionEvent) => void,
+): Promise<number> {
   const { downloadRegion: downloadCore } = await core();
-  const start = starting.then(() => downloadCore(definition.name, definition.style,
-    new Float64Array(definition.bounds), new Float64Array(definition.zooms), (event: RegionEvent) => {
-      if (event.type === "complete") changed();
-      onEvent?.(event);
-    }));
+  const start = starting.then(() =>
+    downloadCore(
+      definition.name,
+      definition.style,
+      new Float64Array(definition.bounds),
+      new Float64Array(definition.zooms),
+      (event: RegionEvent) => {
+        if (event.type === "complete") changed();
+        onEvent?.(event);
+      },
+    ),
+  );
   starting = start.catch(() => {});
   return start;
 }

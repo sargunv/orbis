@@ -3,12 +3,27 @@
 
 import type { LngLat, Point } from "./types.ts";
 
-export type Anchor = "center" | "top" | "bottom" | "left" | "right" |
-  "top-left" | "top-right" | "bottom-left" | "bottom-right";
+export type Anchor =
+  | "center"
+  | "top"
+  | "bottom"
+  | "left"
+  | "right"
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right";
 
 const SHIFT: Record<Anchor, string> = {
-  center: "-50%,-50%", top: "-50%,0", bottom: "-50%,-100%", left: "0,-50%", right: "-100%,-50%",
-  "top-left": "0,0", "top-right": "-100%,0", "bottom-left": "0,-100%", "bottom-right": "-100%,-100%",
+  center: "-50%,-50%",
+  top: "-50%,0",
+  bottom: "-50%,-100%",
+  left: "0,-50%",
+  right: "-100%,-50%",
+  "top-left": "0,0",
+  "top-right": "-100%,0",
+  "bottom-left": "0,-100%",
+  "bottom-right": "-100%,-100%",
 };
 
 export interface AnnotationOptions {
@@ -37,14 +52,23 @@ export class Annotation {
     this.#lngLat = options.lngLat;
     this.#anchor = options.anchor ?? "center";
     this.#offset = options.offset ?? [0, 0];
-    Object.assign(this.element.style, { position: "absolute", left: "0", top: "0", willChange: "transform" });
+    Object.assign(this.element.style, {
+      position: "absolute",
+      left: "0",
+      top: "0",
+      willChange: "transform",
+    });
   }
 
-  get lngLat(): LngLat { return this.#lngLat; }
+  get lngLat(): LngLat {
+    return this.#lngLat;
+  }
 
   /** The pixel it was last placed at, null where the map doesn't show its
    * point, or undefined before the map has drawn. */
-  get point(): Point | null | undefined { return this.#at && [this.#at[0], this.#at[1]]; }
+  get point(): Point | null | undefined {
+    return this.#at && [this.#at[0], this.#at[1]];
+  }
 
   setLngLat(lngLat: LngLat): this {
     this.#lngLat = lngLat;
@@ -52,7 +76,9 @@ export class Annotation {
     return this;
   }
 
-  remove(): void { this.#layer.remove(this); }
+  remove(): void {
+    this.#layer.remove(this);
+  }
 
   /** @internal */
   place(x: number, y: number): void {
@@ -107,7 +133,9 @@ export class Annotations {
     this.#changed(points);
   }
 
-  get size(): number { return this.#items.size; }
+  get size(): number {
+    return this.#items.size;
+  }
 
   /** @internal Positions every annotation at its pixel, [x, y, …] in the
    * order of the points last given; pixels for other points are dropped. */
@@ -115,7 +143,7 @@ export class Annotations {
     if (pixels.length !== this.#items.size * 2) return;
     let i = 0;
     for (const a of this.#items) {
-      a.place(pixels[i], pixels[i + 1]);
+      a.place(pixels[i] ?? NaN, pixels[i + 1] ?? NaN);
       i += 2;
     }
   }

@@ -18,9 +18,17 @@ export function encodePng(width, height, pixels) {
   header[9] = 6; // RGBA
   const stride = width * 4;
   const raw = Buffer.alloc(height * (stride + 1));
-  for (let y = 0; y < height; y++) Buffer.from(pixels.buffer, pixels.byteOffset + y * stride, stride).copy(raw, y * (stride + 1) + 1);
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header),
-    chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+  for (let y = 0; y < height; y++)
+    Buffer.from(pixels.buffer, pixels.byteOffset + y * stride, stride).copy(
+      raw,
+      y * (stride + 1) + 1,
+    );
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 /** Decodes an 8-bit RGB or RGBA, non-interlaced PNG. */
@@ -50,10 +58,20 @@ export function decodePng(buffer) {
     for (let x = 0; x < stride; x++) {
       const a = x >= channels ? pixels[y * stride + x - channels] : 0;
       const b = y > 0 ? pixels[(y - 1) * stride + x] : 0;
-      const c = x >= channels && y > 0 ? pixels[(y - 1) * stride + x - channels] : 0;
+      const c =
+        x >= channels && y > 0 ? pixels[(y - 1) * stride + x - channels] : 0;
       const p = a + b - c;
-      const predictor = [0, a, b, (a + b) >> 1,
-        Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c][filter];
+      const predictor = [
+        0,
+        a,
+        b,
+        (a + b) >> 1,
+        Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c)
+          ? a
+          : Math.abs(p - b) <= Math.abs(p - c)
+            ? b
+            : c,
+      ][filter];
       pixels[y * stride + x] = (line[x] + predictor) & 255;
     }
   }

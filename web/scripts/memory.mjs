@@ -32,31 +32,50 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
 import { launchChromium, serveDemo } from "./serve.mjs";
-import { extractCache, median, realWorldCache, VIEWS as CAMERAS } from "./views.mjs";
+import {
+  extractCache,
+  median,
+  realWorldCache,
+  VIEWS as CAMERAS,
+} from "./views.mjs";
 
 const args = process.argv.slice(2);
-const option = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
+const option = (name, fallback) =>
+  args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ??
+  fallback;
 const style = option("style");
-const cache = style ? undefined : option("cache") ?? realWorldCache();
-if (!style && !cache) throw new Error("no render-test cache: build `cargo xtask h2h size` once, or give --cache=<cache-style.db> or --style=<url>");
+const cache = style ? undefined : (option("cache") ?? realWorldCache());
+if (!style && !cache)
+  throw new Error(
+    "no render-test cache: build `cargo xtask h2h size` once, or give --cache=<cache-style.db> or --style=<url>",
+  );
 const engines = option("engines", "orbis,gljs,native").split(",");
 const VIEWS = CAMERAS[cache ? "realWorld" : "liberty"];
 const views = option("views", Object.keys(VIEWS).join(",")).split(",");
 const runs = Number(option("runs", "1"));
-const viewport = cache ? { width: 512, height: 512 } : { width: 1024, height: 768 };
+const viewport = cache
+  ? { width: 512, height: 512 }
+  : { width: 1024, height: 768 };
 const MB = 2 ** 20;
 
 /** A process's physical footprint and its graphics memory, in bytes, from macOS `footprint`. */
 function footprint(pid) {
   if (process.platform !== "darwin") return { total: NaN, graphics: NaN };
-  const text = execFileSync("footprint", ["-f", "bytes", "-p", String(pid)], { encoding: "utf8" });
+  const text = execFileSync("footprint", ["-f", "bytes", "-p", String(pid)], {
+    encoding: "utf8",
+  });
   let graphics = 0;
   for (const line of text.split("\n")) {
     const row = line.match(/^\s*(\d+) B\s+\d+ B\s+\d+ B\s+\d+\s+(.*)$/);
-    if (row && /graphics|IOAccelerator|IOSurface/.test(row[2])) graphics += Number(row[1]);
+    if (row && /graphics|IOAccelerator|IOSurface/.test(row[2]))
+      graphics += Number(row[1]);
   }
-  return { total: Number(text.match(/phys_footprint: (\d+) B/)?.[1] ?? NaN), graphics };
+  return {
+    total: Number(text.match(/phys_footprint: (\d+) B/)?.[1] ?? NaN),
+    graphics,
+  };
 }
 
 /** The browser's processes' footprints: the renderers' summed, and the GPU process's. */
@@ -64,9 +83,14 @@ async function processes(browser) {
   const session = await browser.newBrowserCDPSession();
   const { processInfo } = await session.send("SystemInfo.getProcessInfo");
   await session.detach();
-  const renderer = processInfo.filter((p) => p.type === "renderer").reduce((sum, p) => sum + footprint(p.id).total, 0);
+  const renderer = processInfo
+    .filter((p) => p.type === "renderer")
+    .reduce((sum, p) => sum + footprint(p.id).total, 0);
   const gpu = processInfo.find((p) => p.type === "GPU");
-  return { renderer, gpu: gpu ? footprint(gpu.id) : { total: NaN, graphics: NaN } };
+  return {
+    renderer,
+    gpu: gpu ? footprint(gpu.id) : { total: NaN, graphics: NaN },
+  };
 }
 
 /**
@@ -102,11 +126,17 @@ async function sessions(context, page) {
   const pending = new Map();
   let id = 0;
   // A worker that ends with a message in flight never answers it.
-  const send = (sessionId, method, params = {}) => new Promise((resolve) => {
-    pending.set(++id, resolve);
-    setTimeout(() => resolve({}), 10_000);
-    cdp.send("Target.sendMessageToTarget", { sessionId, message: JSON.stringify({ id, method, params }) }).catch(() => resolve({}));
-  });
+  const send = (sessionId, method, params = {}) =>
+    new Promise((resolve) => {
+      pending.set(++id, resolve);
+      setTimeout(() => resolve({}), 10_000);
+      cdp
+        .send("Target.sendMessageToTarget", {
+          sessionId,
+          message: JSON.stringify({ id, method, params }),
+        })
+        .catch(() => resolve({}));
+    });
   cdp.on("Target.attachedToTarget", async ({ sessionId }) => {
     workers.add(sessionId);
     await send(sessionId, "Runtime.evaluate", { expression: WASM_HOOK });
@@ -118,37 +148,63 @@ async function sessions(context, page) {
     pending.get(message.id)?.(message.result ?? {});
     pending.delete(message.id);
   });
-  await cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: false });
-  return (method, params) => Promise.all([cdp.send(method, params), ...[...workers].map((s) => send(s, method, params))]);
+  await cdp.send("Target.setAutoAttach", {
+    autoAttach: true,
+    waitForDebuggerOnStart: true,
+    flatten: false,
+  });
+  return (method, params) =>
+    Promise.all([
+      cdp.send(method, params),
+      ...[...workers].map((s) => send(s, method, params)),
+    ]);
 }
 
 async function sample(server, engine, view) {
   const browser = await launchChromium({ unsafe: false });
   try {
     const launched = await processes(browser);
-    const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+    const context = await browser.newContext({
+      viewport,
+      deviceScaleFactor: 1,
+    });
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const all = await sessions(context, page);
-    const styleUrl = cache ? `${server.url}real-world/styles/${view}.json` : style;
-    await page.goto(`${server.url}load.html?${new URLSearchParams({ engine, style: styleUrl, at: VIEWS[view] })}`);
-    await page.waitForFunction(() => /^(done|error)/.test(document.title), null, { timeout: 120_000 });
+    const styleUrl = cache
+      ? `${server.url}real-world/styles/${view}.json`
+      : style;
+    await page.goto(
+      `${server.url}load.html?${new URLSearchParams({ engine, style: styleUrl, at: VIEWS[view] })}`,
+    );
+    await page.waitForFunction(
+      () => /^(done|error)/.test(document.title),
+      null,
+      { timeout: 120_000 },
+    );
     const title = await page.title();
-    if (!title.startsWith("done")) throw new Error(`${engine} ${view}: ${title}`);
+    if (!title.startsWith("done"))
+      throw new Error(`${engine} ${view}: ${title}`);
     const read = async () => {
       await page.waitForTimeout(1000);
       await all("HeapProfiler.collectGarbage");
       const heaps = await all("Runtime.getHeapUsage");
-      const memories = (await all("Runtime.evaluate", { expression: WASM_BYTES, returnByValue: true }))
-        .flatMap((r) => r.result?.value ?? []);
+      const memories = (
+        await all("Runtime.evaluate", {
+          expression: WASM_BYTES,
+          returnByValue: true,
+        })
+      ).flatMap((r) => r.result?.value ?? []);
       // The GPU process lets go of tens of MB a second or two after a load
       // or a tour settles: read the footprints until they hold still.
       let now = await processes(browser);
       for (let i = 0; i < 5; i++) {
         await page.waitForTimeout(1000);
         const next = await processes(browser);
-        const still = Math.abs(next.gpu.graphics - now.gpu.graphics) < MB && Math.abs(next.renderer - now.renderer) < MB;
+        const still =
+          Math.abs(next.gpu.graphics - now.gpu.graphics) < MB &&
+          Math.abs(next.renderer - now.renderer) < MB;
         now = next;
         if (still) break;
       }
@@ -156,8 +212,14 @@ async function sample(server, engine, view) {
         heap: heaps.reduce((s, h) => s + (h.usedSize ?? 0), 0),
         buffers: heaps.reduce((s, h) => s + (h.backingStorageSize ?? 0), 0),
         // Threads that share a memory each see it: it counts once.
-        wasm: memories.filter(([, shared]) => !shared).reduce((s, [bytes]) => s + bytes, 0) +
-          Math.max(0, ...memories.filter(([, shared]) => shared).map(([bytes]) => bytes)),
+        wasm:
+          memories
+            .filter(([, shared]) => !shared)
+            .reduce((s, [bytes]) => s + bytes, 0) +
+          Math.max(
+            0,
+            ...memories.filter(([, shared]) => shared).map(([bytes]) => bytes),
+          ),
         contexts: heaps.length,
         renderer: now.renderer,
         gpu: now.gpu.total - launched.gpu.total,
@@ -168,10 +230,22 @@ async function sample(server, engine, view) {
     console.error(`memory: ${engine} ${view}: loaded`);
     const loaded = await read();
     console.error(`memory: ${engine} ${view}: touring`);
-    await page.evaluate(() => Promise.race([window.tour(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("not idle 120 s after the tour")), 120_000))]));
+    await page.evaluate(() =>
+      Promise.race([
+        window.tour(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("not idle 120 s after the tour")),
+            120_000,
+          ),
+        ),
+      ]),
+    );
     const toured = await read();
-    if (errors.length) console.error(`memory: ${engine} ${view}: ${errors.slice(0, 3).join("; ")}`);
+    if (errors.length)
+      console.error(
+        `memory: ${engine} ${view}: ${errors.slice(0, 3).join("; ")}`,
+      );
     return { loaded, toured };
   } finally {
     await browser.close();
@@ -181,7 +255,10 @@ async function sample(server, engine, view) {
 const out = fileURLToPath(new URL("../../target/h2h/web/", import.meta.url));
 mkdirSync(out, { recursive: true });
 const extracted = cache ? join(out, "real-world/") : undefined;
-const server = await serveDemo({ isolated: true, mounts: extracted ? { "real-world/": extracted } : {} });
+const server = await serveDemo({
+  isolated: true,
+  mounts: extracted ? { "real-world/": extracted } : {},
+});
 if (extracted) extractCache(cache, extracted, `${server.url}real-world/`);
 const rows = [];
 try {
@@ -204,33 +281,64 @@ try {
 }
 
 const mb = (x) => (Number.isFinite(x) ? (x / MB).toFixed(1) : "—");
-const cell = (engine, view, phase, key) => median(rows
-  .filter((r) => r.engine === engine && r.view === view && r[phase])
-  .map((r) => r[phase][key]).filter((x) => x !== undefined && x !== null));
-const KEYS = [["heap", "JS heap"], ["buffers", "buffers"], ["wasm", "wasm"], ["renderer", "renderer"], ["graphics", "GPU graphics Δ"],
-  ["gpu", "GPU process Δ"], ["own", "Orbis's own GPU"]];
+const cell = (engine, view, phase, key) =>
+  median(
+    rows
+      .filter((r) => r.engine === engine && r.view === view && r[phase])
+      .map((r) => r[phase][key])
+      .filter((x) => x !== undefined && x !== null),
+  );
+const KEYS = [
+  ["heap", "JS heap"],
+  ["buffers", "buffers"],
+  ["wasm", "wasm"],
+  ["renderer", "renderer"],
+  ["graphics", "GPU graphics Δ"],
+  ["gpu", "GPU process Δ"],
+  ["own", "Orbis's own GPU"],
+];
 const lines = [
-  `### Browser memory, MB (Chromium, ${viewport.width}×${viewport.height} @1×; ${runs > 1 ? `medians of ${runs} runs` : "1 run"})`, "",
+  `### Browser memory, MB (Chromium, ${viewport.width}×${viewport.height} @1×; ${runs > 1 ? `medians of ${runs} runs` : "1 run"})`,
+  "",
   `| engine | phase | view | ${KEYS.map(([, name]) => name).join(" | ")} |`,
   `|---|---|---|${KEYS.map(() => "---|").join("")}`,
 ];
 for (const engine of engines) {
-  for (const [phase, label] of [["loaded", "loaded"], ["toured", "after tour"]]) {
+  for (const [phase, label] of [
+    ["loaded", "loaded"],
+    ["toured", "after tour"],
+  ]) {
     for (const view of views) {
-      const failed = rows.find((r) => r.engine === engine && r.view === view && r.error);
-      if (failed && !rows.some((r) => r.engine === engine && r.view === view && r[phase])) {
-        lines.push(`| ${engine} | ${label} | ${view} | failed: ${failed.error} |`);
+      const failed = rows.find(
+        (r) => r.engine === engine && r.view === view && r.error,
+      );
+      if (
+        failed &&
+        !rows.some((r) => r.engine === engine && r.view === view && r[phase])
+      ) {
+        lines.push(
+          `| ${engine} | ${label} | ${view} | failed: ${failed.error} |`,
+        );
         continue;
       }
-      lines.push(`| ${engine} | ${label} | ${view} | ${KEYS.map(([key]) => mb(cell(engine, view, phase, key))).join(" | ")} |`);
+      lines.push(
+        `| ${engine} | ${label} | ${view} | ${KEYS.map(([key]) => mb(cell(engine, view, phase, key))).join(" | ")} |`,
+      );
     }
     if (views.length > 1) {
-      const mean = (key) => views.reduce((s, view) => s + cell(engine, view, phase, key), 0) / views.length;
-      lines.push(`| **${engine}** | **${label}** | **mean** | ${KEYS.map(([key]) => `**${mb(mean(key))}**`).join(" | ")} |`);
+      const mean = (key) =>
+        views.reduce((s, view) => s + cell(engine, view, phase, key), 0) /
+        views.length;
+      lines.push(
+        `| **${engine}** | **${label}** | **mean** | ${KEYS.map(([key]) => `**${mb(mean(key))}**`).join(" | ")} |`,
+      );
     }
   }
 }
-lines.push("", `JS heap, buffers and wasm memory: summed over the page and its workers, after a garbage collection; renderer: the renderer processes' footprint; ` +
-  `GPU: the GPU process's graphics memory and footprint less its own at launch, an estimate of the engine's GPU memory. ` +
-  `Style: ${cache ? `the real-world render tests, from ${cache}` : style}.`);
+lines.push(
+  "",
+  `JS heap, buffers and wasm memory: summed over the page and its workers, after a garbage collection; renderer: the renderer processes' footprint; ` +
+    `GPU: the GPU process's graphics memory and footprint less its own at launch, an estimate of the engine's GPU memory. ` +
+    `Style: ${cache ? `the real-world render tests, from ${cache}` : style}.`,
+);
 console.log(lines.join("\n"));

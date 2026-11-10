@@ -1,12 +1,23 @@
 // The wasm map, with its job workers and placement worker (workers.ts),
 // and its recovery from a lost GPU: in the map worker or on the page.
 
-import init, { createMap as createCoreMap, reloadRegions, setPreloads, setRequestHook, type OrbisMap as Core } from "../pkg/core.js";
+import init, {
+  createMap as createCoreMap,
+  reloadRegions,
+  setPreloads,
+  setRequestHook,
+  type OrbisMap as Core,
+} from "../pkg/core.js";
 import { takePreload } from "./preload.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
-import { spawnJob, spawnPlacement, terminateWorkers, type Workers } from "./workers.ts";
 import type { TileLod } from "./types.ts";
+import {
+  spawnJob,
+  spawnPlacement,
+  terminateWorkers,
+  type Workers,
+} from "./workers.ts";
 
 export type { Core };
 
@@ -54,19 +65,29 @@ export interface Host {
 
 /** The map on this thread, drawing into `canvas`, once `compiling` has
  * compiled core.wasm; `workers`, spawned on the same module, are its. */
-export async function startHost(compiling: Promise<WebAssembly.Module>, workers: Workers,
+export async function startHost(
+  compiling: Promise<WebAssembly.Module>,
+  workers: Workers,
   canvas: HTMLCanvasElement | OffscreenCanvas,
-  style: string, options: CoreOptions, callbacks: HostCallbacks): Promise<Host> {
-  const receive = (apply: (data: unknown) => void) => ({ data }: MessageEvent) => {
-    try {
-      apply(data);
-    } catch (e) {
-      callbacks.error(e);
-    }
-  };
+  style: string,
+  options: CoreOptions,
+  callbacks: HostCallbacks,
+): Promise<Host> {
+  const receive =
+    (apply: (data: unknown) => void) =>
+    ({ data }: MessageEvent) => {
+      try {
+        apply(data);
+      } catch (e) {
+        callbacks.error(e);
+      }
+    };
   // Replies still on their way when the map stops find it gone.
   let stopped = false;
-  const reply = (apply: (data: unknown) => void) => receive((data) => { if (!stopped) apply(data); });
+  const reply = (apply: (data: unknown) => void) =>
+    receive((data) => {
+      if (!stopped) apply(data);
+    });
   const jobs = workers.jobs;
   const ports = jobs.map((j) => j.port);
   let placement = workers.placement;
@@ -77,9 +98,17 @@ export async function startHost(compiling: Promise<WebAssembly.Module>, workers:
     await init({ module_or_path: module });
     connectModule(setRequestHook);
     setPreloads(takePreload);
-    core = await createCoreMap(canvas, style, options, callbacks.wake, ports.length,
-      (worker: number, message: unknown) => ports[worker].postMessage(message),
-      (message: unknown, transfer: Transferable[]) => placement.port.postMessage(message, transfer));
+    core = await createCoreMap(
+      canvas,
+      style,
+      options,
+      callbacks.wake,
+      ports.length,
+      (worker: number, message: unknown) =>
+        at(ports, worker).postMessage(message),
+      (message: unknown, transfer: Transferable[]) =>
+        placement.port.postMessage(message, transfer),
+    );
   } catch (e) {
     terminateWorkers(workers);
     throw e;
@@ -101,7 +130,10 @@ export async function startHost(compiling: Promise<WebAssembly.Module>, workers:
       if (lost !== undefined) replace(lost);
       else core.receivePlacement(data);
     });
-    current.worker.addEventListener("error", (e) => { e.preventDefault(); if (!stopped) replace(e.message || "the worker died"); });
+    current.worker.addEventListener("error", (e) => {
+      e.preventDefault();
+      if (!stopped) replace(e.message || "the worker died");
+    });
   };
   listen();
   // A job worker whose wasm trapped says so and closes; one that dies
@@ -111,19 +143,21 @@ export async function startHost(compiling: Promise<WebAssembly.Module>, workers:
   const released = ports.map(connectWorker);
   const replaced = jobs.map(() => 0);
   const listenJob = (i: number) => {
-    const { port, worker } = jobs[i];
+    const { port, worker } = at(jobs, i);
     let gone = false;
     const lose = (why: string) => {
       if (gone || stopped) return;
       gone = true;
       worker.terminate();
       port.close();
-      released[i]();
-      const replace = replaced[i]++ < REPLACEMENTS;
+      at(released, i)();
+      const replace = at(replaced, i) < REPLACEMENTS;
+      replaced[i] = at(replaced, i) + 1;
       if (replace) {
-        jobs[i] = spawnJob(module);
-        ports[i] = jobs[i].port;
-        released[i] = connectWorker(ports[i]);
+        const job = spawnJob(module);
+        jobs[i] = job;
+        ports[i] = job.port;
+        released[i] = connectWorker(job.port);
         listenJob(i);
       }
       core.jobWorkerLost(i, why, replace);
@@ -133,7 +167,10 @@ export async function startHost(compiling: Promise<WebAssembly.Module>, workers:
       if (lost !== undefined) lose(lost);
       else if (!answerWorker(port, data)) core.receiveJob(data);
     });
-    worker.addEventListener("error", (e) => { e.preventDefault(); lose(e.message || "the worker died"); });
+    worker.addEventListener("error", (e) => {
+      e.preventDefault();
+      lose(e.message || "the worker died");
+    });
   };
   jobs.forEach((_, i) => listenJob(i));
   const regions = onRegionsChanged(reloadRegions);
@@ -147,7 +184,8 @@ export async function startHost(compiling: Promise<WebAssembly.Module>, workers:
     },
     loseDevice: () => core.loseDevice(),
     trapPlacementWorker: () => placement.port.postMessage({ trap: true }),
-    trapJobWorker: (index) => ports[index % ports.length].postMessage({ trap: true }),
+    trapJobWorker: (index) =>
+      at(ports, index % ports.length).postMessage({ trap: true }),
     jobWorkers: ports.length,
     async recover() {
       await core.recover(canvas);
@@ -158,8 +196,16 @@ export async function startHost(compiling: Promise<WebAssembly.Module>, workers:
       for (const port of [...ports, placement.port]) port.close();
       regions();
       for (const r of released) r();
-      for (const w of [...jobs.map((j) => j.worker), placement.worker]) w.terminate();
+      for (const w of [...jobs.map((j) => j.worker), placement.worker])
+        w.terminate();
       core.free();
     },
   };
+}
+
+/** The slot at `i` of an array the caller keeps one entry per worker in. */
+function at<T>(slots: T[], i: number): T {
+  const slot = slots[i];
+  if (slot === undefined) throw new RangeError(`no worker slot ${i}`);
+  return slot;
 }

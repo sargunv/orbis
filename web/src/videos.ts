@@ -30,16 +30,26 @@ export class Videos {
   request(event: VideoEventObject): void {
     const video = this.#videos.get(event.source);
     switch (event.request) {
-      case "open": this.#open(event.source, event.urls); break;
-      case "play": void video?.play().catch(() => {}); break;
-      case "pause": video?.pause(); break;
-      case "seek": if (video) video.currentTime = event.seconds; break;
-      case "close": this.#close(event.source); break;
+      case "open":
+        this.#open(event.source, event.urls);
+        break;
+      case "play":
+        void video?.play().catch(() => {});
+        break;
+      case "pause":
+        video?.pause();
+        break;
+      case "seek":
+        if (video) video.currentTime = event.seconds;
+        break;
+      case "close":
+        this.#close(event.source);
+        break;
     }
   }
 
   destroy(): void {
-    for (const source of [...this.#videos.keys()]) this.#close(source);
+    for (const source of this.#videos.keys()) this.#close(source);
   }
 
   #open(source: string, urls: string[]): void {
@@ -77,7 +87,11 @@ export class Videos {
     video.addEventListener("seeked", frame);
     // The last source failing means none plays.
     video.lastElementChild?.addEventListener("error", () => {
-      if (current()) this.#core()?.videoFailed(source, `none of ${urls.join(", ")} plays here`);
+      if (current())
+        this.#core()?.videoFailed(
+          source,
+          `none of ${urls.join(", ")} plays here`,
+        );
     });
     void video.play().catch(() => {});
   }

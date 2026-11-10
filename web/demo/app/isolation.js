@@ -16,14 +16,23 @@ export async function isolate(engines, { beforeReload } = {}) {
   const tried = read();
   write(null);
   if (tried !== null && Date.now() - tried < 60_000) {
-    throw new Error("this browser didn't isolate the page, which its threads need");
+    throw new Error(
+      "this browser didn't isolate the page, which its threads need",
+    );
   }
-  if (!("serviceWorker" in navigator)) throw new Error("it needs service workers, which this browser doesn't have");
+  if (!("serviceWorker" in navigator))
+    throw new Error(
+      "it needs service workers, which this browser doesn't have",
+    );
   const base = import.meta.env.BASE_URL;
-  await navigator.serviceWorker.register(`${base}isolate.js?engines=${engines.join(",")}`, { scope: base });
+  await navigator.serviceWorker.register(
+    `${base}isolate.js?engines=${engines.join(",")}`,
+    { scope: base },
+  );
   await navigator.serviceWorker.ready;
   // Without a note of this attempt, a browser that won't isolate would reload forever.
-  if (!write(Date.now())) throw new Error("this browser blocks the session storage its reload needs");
+  if (!write(Date.now()))
+    throw new Error("this browser blocks the session storage its reload needs");
   beforeReload?.();
   location.reload();
   // The page goes; nothing after this runs.
@@ -37,11 +46,19 @@ export function isolated() {
 }
 
 function read() {
-  try { const at = sessionStorage.getItem(TRIED); return at === null ? null : Number(at); } catch { return null; }
+  try {
+    const at = sessionStorage.getItem(TRIED);
+    return at === null ? null : Number(at);
+  } catch {
+    return null;
+  }
 }
 function write(value) {
   try {
-    if (value === null) sessionStorage.removeItem(TRIED); else sessionStorage.setItem(TRIED, String(value));
+    if (value === null) sessionStorage.removeItem(TRIED);
+    else sessionStorage.setItem(TRIED, String(value));
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }

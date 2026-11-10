@@ -1,207 +1,338 @@
 <!doctype html>
 <html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Orbis · frame bench</title>
-<style>
-  body { font: 14px/1.5 ui-monospace, monospace; margin: 16px; max-width: 72em; }
-  #status { padding: 8px 12px; background: #f4f4f0; border-radius: 6px; }
-  #status[data-state="error"] { background: #fbe3e0; }
-  #status[data-state="done"] { background: #e3f3e0; }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; font-size: 12px; margin: 8px 0; }
-  th, td { border: 1px solid #ccc; padding: 2px 6px; text-align: right; white-space: nowrap; }
-  th:first-child, td:first-child { text-align: left; }
-  textarea { width: 100%; height: 12em; font: 11px ui-monospace, monospace; }
-  button { font: inherit; padding: 6px 14px; margin: 4px 4px 4px 0; }
-</style>
-<h1>Frame bench</h1>
-<p>Still frames of five views of the committed Tokyo extract, timed on the
-GPU and CPU through the <code>orbis</code> package; the views of
-<code>cargo xtask bench</code>.
-<code>?experiment=gestures</code> runs rotate, tilt and zoom paths through the
-<code>orbis</code> package; <code>?experiment=stutter</code> runs paths that
-bring many tiles in, with each frame's CPU time by stage. It takes several minutes on a phone. Keep the phone
-plugged in, the screen on and this tab in front, then copy the result into the
-issue.</p>
-<p id="status" data-state="running">starting…</p>
-<div id="buttons" hidden>
-  <button id="copy">Copy as Markdown</button>
-  <button id="again">Run again</button>
-</div>
-<div id="result" class="scroll"></div>
-<textarea id="markdown" readonly hidden></textarea>
-<script type="module">
-// Query: format=mvt|mlt or style=<url or catalogue key> (the Tokyo extract
-// by default), globe (that style on the globe under the demo's sky);
-// size=WxH, at=lon,lat, experiment=frames|gestures|stutter; for frames, frames,
-// warmup, rounds and ratio; for gestures, workers=<job workers> and
-// paths=city|dense|alps|globe (alps by default with style=alps, globe
-// with style=globe or globe, each at its own view; dense on live Liberty
-// unless style says otherwise), and engine=orbis|gl|both (gl: MapLibre
-// GL JS along the same paths, counting its labels' blinks and returns;
-// both, or orbis,gl: path by path, interleaved); for stutter,
-// style=<url|key> for its Liberty scenarios
-// (live Liberty by default), filter=<substring of a scenario's name>,
-// legs=<the flight's first legs> and engine=orbis|gl|both (both: per path
-// an untimed pass of each engine, then each timed in turn).
-import { runFrames } from "./frames.js";
-import { PATH_CENTERS, runGestures } from "./gestures.js";
-import { runStutter } from "./stutter.js";
-import { demoStyle, demoStyleWithScene, LIVE } from "./styles.js";
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Orbis · frame bench</title>
+  <style>
+    body {
+      font:
+        14px/1.5 ui-monospace,
+        monospace;
+      margin: 16px;
+      max-width: 72em;
+    }
+    #status {
+      padding: 8px 12px;
+      background: #f4f4f0;
+      border-radius: 6px;
+    }
+    #status[data-state="error"] {
+      background: #fbe3e0;
+    }
+    #status[data-state="done"] {
+      background: #e3f3e0;
+    }
+    .scroll {
+      overflow-x: auto;
+    }
+    table {
+      border-collapse: collapse;
+      font-size: 12px;
+      margin: 8px 0;
+    }
+    th,
+    td {
+      border: 1px solid #ccc;
+      padding: 2px 6px;
+      text-align: right;
+      white-space: nowrap;
+    }
+    th:first-child,
+    td:first-child {
+      text-align: left;
+    }
+    textarea {
+      width: 100%;
+      height: 12em;
+      font:
+        11px ui-monospace,
+        monospace;
+    }
+    button {
+      font: inherit;
+      padding: 6px 14px;
+      margin: 4px 4px 4px 0;
+    }
+  </style>
+  <h1>Frame bench</h1>
+  <p>
+    Still frames of five views of the committed Tokyo extract, timed on the GPU
+    and CPU through the <code>orbis</code> package; the views of
+    <code>cargo xtask bench</code>. <code>?experiment=gestures</code> runs
+    rotate, tilt and zoom paths through the <code>orbis</code> package;
+    <code>?experiment=stutter</code> runs paths that bring many tiles in, with
+    each frame's CPU time by stage. It takes several minutes on a phone. Keep
+    the phone plugged in, the screen on and this tab in front, then copy the
+    result into the issue.
+  </p>
+  <p id="status" data-state="running">starting…</p>
+  <div id="buttons" hidden>
+    <button id="copy">Copy as Markdown</button>
+    <button id="again">Run again</button>
+  </div>
+  <div id="result" class="scroll"></div>
+  <textarea id="markdown" readonly hidden></textarea>
+  <script type="module">
+    // Query: format=mvt|mlt or style=<url or catalogue key> (the Tokyo extract
+    // by default), globe (that style on the globe under the demo's sky);
+    // size=WxH, at=lon,lat, experiment=frames|gestures|stutter; for frames, frames,
+    // warmup, rounds and ratio; for gestures, workers=<job workers> and
+    // paths=city|dense|alps|globe (alps by default with style=alps, globe
+    // with style=globe or globe, each at its own view; dense on live Liberty
+    // unless style says otherwise), and engine=orbis|gl|both (gl: MapLibre
+    // GL JS along the same paths, counting its labels' blinks and returns;
+    // both, or orbis,gl: path by path, interleaved); for stutter,
+    // style=<url|key> for its Liberty scenarios
+    // (live Liberty by default), filter=<substring of a scenario's name>,
+    // legs=<the flight's first legs> and engine=orbis|gl|both (both: per path
+    // an untimed pass of each engine, then each timed in turn).
+    import { runFrames } from "./frames.js";
+    import { PATH_CENTERS, runGestures } from "./gestures.js";
+    import { runStutter } from "./stutter.js";
+    import { demoStyle, demoStyleWithScene, LIVE } from "./styles.js";
 
-const params = new URLSearchParams(location.search);
-const format = params.get("format") ?? "mvt";
-if (!["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");
-const experiment = params.get("experiment") ?? "frames";
-const paths = params.get("paths") ?? (params.get("style") === "alps" ? "alps"
-  : params.has("globe") || params.get("style") === "globe" ? "globe" : "city");
-/** Without a style: live Liberty for the dense and globe paths, which go beyond the Tokyo extract. */
-const scene = experiment === "gestures" && ["dense", "globe"].includes(paths) ? "live" : "tokyo";
-/** The style's URL, or the style with the globe in it: `run` resolves it. */
-let style;
-const status = document.getElementById("status");
-const markdown = document.getElementById("markdown");
+    const params = new URLSearchParams(location.search);
+    const format = params.get("format") ?? "mvt";
+    if (!["mvt", "mlt"].includes(format))
+      throw new Error("format must be mvt or mlt");
+    const experiment = params.get("experiment") ?? "frames";
+    const paths =
+      params.get("paths") ??
+      (params.get("style") === "alps"
+        ? "alps"
+        : params.has("globe") || params.get("style") === "globe"
+          ? "globe"
+          : "city");
+    /** Without a style: live Liberty for the dense and globe paths, which go beyond the Tokyo extract. */
+    const scene =
+      experiment === "gestures" && ["dense", "globe"].includes(paths)
+        ? "live"
+        : "tokyo";
+    /** The style's URL, or the style with the globe in it: `run` resolves it. */
+    let style;
+    const status = document.getElementById("status");
+    const markdown = document.getElementById("markdown");
 
-function show(text, state = "running") {
-  status.textContent = text;
-  status.dataset.state = state;
-}
+    function show(text, state = "running") {
+      status.textContent = text;
+      status.dataset.state = state;
+    }
 
-// What the browser says about the adapter: wgpu's adapter info has only the
-// description on the web.
-async function about() {
-  const lines = [];
-  const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
-  if (adapter) {
-    const info = adapter.info ?? {};
-    const parts = [info.vendor, info.architecture, info.device, info.description].filter(Boolean);
-    lines.push(`adapter: ${parts.join(" · ") || "(no info)"}; timestamp-query ` +
-      (adapter.features.has("timestamp-query") ? "available" : "**missing**"));
-  }
-  lines.push(`user agent: ${navigator.userAgent}`);
-  lines.push(`browser, WebGPU; devicePixelRatio ${devicePixelRatio}; ` +
-    `${navigator.hardwareConcurrency ?? "?"} threads; cross-origin isolated: ${crossOriginIsolated}`);
-  // The display's frame interval, over 60 animation frames.
-  const frame = await new Promise((resolve) => {
-    const times = [];
-    const step = (t) => { times.push(t); if (times.length < 61) requestAnimationFrame(step); else resolve((t - times[0]) / 60); };
-    requestAnimationFrame(step);
-  });
-  lines.push(`display frame ${frame.toFixed(2)} ms`);
-  const data = params.has("style") ? `data: ${params.get("style")}`
-    : demoStyle(params, scene) === LIVE ? `data: ${LIVE}` : `data: Tokyo extract (${format}, reduced Liberty)`;
-  lines.push(typeof style === "string" ? data : `${data}, ${style.projection ? "on the globe, " : ""}fetched by the page`);
-  return lines;
-}
-
-// The report's Markdown subset: headings, lists, paragraphs and pipe tables.
-function render(md) {
-  const escape = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
-  const inline = (s) => escape(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`(.+?)`/g, "<code>$1</code>");
-  const cells = (line) => line.slice(1, -1).split("|").map((c) => inline(c.trim()));
-  let html = "", list = null, table = null;
-  const close = () => {
-    if (list) { html += `</${list}>`; list = null; }
-    if (table) { html += "</table>"; table = null; }
-  };
-  for (const line of md.split("\n")) {
-    if (line.startsWith("|")) {
-      if (/^\|[-| ]+\|$/.test(line)) continue;
-      if (!table) {
-        close();
-        table = true;
-        html += `<table><tr>${cells(line).map((c) => `<th>${c}</th>`).join("")}</tr>`;
-      } else {
-        html += `<tr>${cells(line).map((c) => `<td>${c}</td>`).join("")}</tr>`;
+    // What the browser says about the adapter: wgpu's adapter info has only the
+    // description on the web.
+    async function about() {
+      const lines = [];
+      const adapter = await navigator.gpu?.requestAdapter({
+        powerPreference: "high-performance",
+      });
+      if (adapter) {
+        const info = adapter.info ?? {};
+        const parts = [
+          info.vendor,
+          info.architecture,
+          info.device,
+          info.description,
+        ].filter(Boolean);
+        lines.push(
+          `adapter: ${parts.join(" · ") || "(no info)"}; timestamp-query ` +
+            (adapter.features.has("timestamp-query")
+              ? "available"
+              : "**missing**"),
+        );
       }
-      continue;
+      lines.push(`user agent: ${navigator.userAgent}`);
+      lines.push(
+        `browser, WebGPU; devicePixelRatio ${devicePixelRatio}; ` +
+          `${navigator.hardwareConcurrency ?? "?"} threads; cross-origin isolated: ${crossOriginIsolated}`,
+      );
+      // The display's frame interval, over 60 animation frames.
+      const frame = await new Promise((resolve) => {
+        const times = [];
+        const step = (t) => {
+          times.push(t);
+          if (times.length < 61) requestAnimationFrame(step);
+          else resolve((t - times[0]) / 60);
+        };
+        requestAnimationFrame(step);
+      });
+      lines.push(`display frame ${frame.toFixed(2)} ms`);
+      const data = params.has("style")
+        ? `data: ${params.get("style")}`
+        : demoStyle(params, scene) === LIVE
+          ? `data: ${LIVE}`
+          : `data: Tokyo extract (${format}, reduced Liberty)`;
+      lines.push(
+        typeof style === "string"
+          ? data
+          : `${data}, ${style.projection ? "on the globe, " : ""}fetched by the page`,
+      );
+      return lines;
     }
-    const heading = line.match(/^(#{1,4}) (.*)/);
-    const item = line.match(/^(- |\d+\. )(.*)/);
-    if (item) {
-      const kind = item[1] === "- " ? "ul" : "ol";
-      if (list !== kind) { close(); list = kind; html += `<${kind}>`; }
-      html += `<li>${inline(item[2])}</li>`;
-    } else {
+
+    // The report's Markdown subset: headings, lists, paragraphs and pipe tables.
+    function render(md) {
+      const escape = (s) =>
+        s.replace(
+          /[&<>]/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c],
+        );
+      const inline = (s) =>
+        escape(s)
+          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+          .replace(/`(.+?)`/g, "<code>$1</code>");
+      const cells = (line) =>
+        line
+          .slice(1, -1)
+          .split("|")
+          .map((c) => inline(c.trim()));
+      let html = "",
+        list = null,
+        table = null;
+      const close = () => {
+        if (list) {
+          html += `</${list}>`;
+          list = null;
+        }
+        if (table) {
+          html += "</table>";
+          table = null;
+        }
+      };
+      for (const line of md.split("\n")) {
+        if (line.startsWith("|")) {
+          if (/^\|[-| ]+\|$/.test(line)) continue;
+          if (!table) {
+            close();
+            table = true;
+            html += `<table><tr>${cells(line)
+              .map((c) => `<th>${c}</th>`)
+              .join("")}</tr>`;
+          } else {
+            html += `<tr>${cells(line)
+              .map((c) => `<td>${c}</td>`)
+              .join("")}</tr>`;
+          }
+          continue;
+        }
+        const heading = line.match(/^(#{1,4}) (.*)/);
+        const item = line.match(/^(- |\d+\. )(.*)/);
+        if (item) {
+          const kind = item[1] === "- " ? "ul" : "ol";
+          if (list !== kind) {
+            close();
+            list = kind;
+            html += `<${kind}>`;
+          }
+          html += `<li>${inline(item[2])}</li>`;
+        } else {
+          close();
+          if (heading)
+            html += `<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`;
+          else if (line.trim()) html += `<p>${inline(line)}</p>`;
+        }
+      }
       close();
-      if (heading) html += `<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`;
-      else if (line.trim()) html += `<p>${inline(line)}</p>`;
+      return html;
     }
-  }
-  close();
-  return html;
-}
 
-async function run() {
-  document.getElementById("buttons").hidden = true;
-  document.getElementById("result").innerHTML = "";
-  markdown.hidden = true;
-  let hidden = false;
-  const onHide = () => { if (document.hidden) hidden = true; };
-  document.addEventListener("visibilitychange", onHide);
-  const lock = await navigator.wakeLock?.request("screen").catch(() => null);
-  try {
-    if (!navigator.gpu) throw new Error("this browser has no WebGPU");
-    style ??= await demoStyleWithScene(params, scene);
-    const lines = await about();
-    const started = performance.now();
-    const [w, h] = (params.get("size") ?? "1024x768").split("x").map(Number);
-    const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
-    let report;
-    if (experiment === "stutter") {
-      const liberty = params.has("style") ? demoStyle(params) : LIVE;
-      lines[lines.length - 1] = `data: ${liberty}, and the Alps terrain style`;
-      report = await runStutter({
-        liberty, size: [w, h], about: lines, show: (line) => show(line),
-        filter: params.get("filter") ?? undefined, legs: params.has("legs") ? Number(params.get("legs")) : undefined,
-        engine: params.get("engine") ?? "orbis",
-      });
-    } else if (experiment === "gestures") {
-      const center = params.get("at")?.split(",").map(Number) ?? PATH_CENTERS[paths];
-      report = await runGestures({
-        style, center, paths, size: [w, h], about: lines,
-        jobWorkers: params.has("workers") ? Number(params.get("workers")) : undefined,
-        engines: params.get("engine") === "both" ? ["orbis", "gl"] : (params.get("engine") ?? "orbis").split(","),
-        show: (line) => show(line),
-      });
-    } else {
-      report = await runFrames({
-        style, size: [w, h], about: lines, show: (line) => show(line),
-        center: (params.get("at") ?? "139.74,35.685").split(",").map(Number),
-        ratio: number("ratio", 2), frames: number("frames", 100), warmup: number("warmup", 50),
-        rounds: number("rounds", 3),
-      });
+    async function run() {
+      document.getElementById("buttons").hidden = true;
+      document.getElementById("result").innerHTML = "";
+      markdown.hidden = true;
+      let hidden = false;
+      const onHide = () => {
+        if (document.hidden) hidden = true;
+      };
+      document.addEventListener("visibilitychange", onHide);
+      const lock = await navigator.wakeLock
+        ?.request("screen")
+        .catch(() => null);
+      try {
+        if (!navigator.gpu) throw new Error("this browser has no WebGPU");
+        style ??= await demoStyleWithScene(params, scene);
+        const lines = await about();
+        const started = performance.now();
+        const [w, h] = (params.get("size") ?? "1024x768")
+          .split("x")
+          .map(Number);
+        const number = (name, fallback) =>
+          params.has(name) ? Number(params.get(name)) : fallback;
+        let report;
+        if (experiment === "stutter") {
+          const liberty = params.has("style") ? demoStyle(params) : LIVE;
+          lines[lines.length - 1] =
+            `data: ${liberty}, and the Alps terrain style`;
+          report = await runStutter({
+            liberty,
+            size: [w, h],
+            about: lines,
+            show: (line) => show(line),
+            filter: params.get("filter") ?? undefined,
+            legs: params.has("legs") ? Number(params.get("legs")) : undefined,
+            engine: params.get("engine") ?? "orbis",
+          });
+        } else if (experiment === "gestures") {
+          const center =
+            params.get("at")?.split(",").map(Number) ?? PATH_CENTERS[paths];
+          report = await runGestures({
+            style,
+            center,
+            paths,
+            size: [w, h],
+            about: lines,
+            jobWorkers: params.has("workers")
+              ? Number(params.get("workers"))
+              : undefined,
+            engines:
+              params.get("engine") === "both"
+                ? ["orbis", "gl"]
+                : (params.get("engine") ?? "orbis").split(","),
+            show: (line) => show(line),
+          });
+        } else {
+          report = await runFrames({
+            style,
+            size: [w, h],
+            about: lines,
+            show: (line) => show(line),
+            center: (params.get("at") ?? "139.74,35.685")
+              .split(",")
+              .map(Number),
+            ratio: number("ratio", 2),
+            frames: number("frames", 100),
+            warmup: number("warmup", 50),
+            rounds: number("rounds", 3),
+          });
+        }
+        const seconds = ((performance.now() - started) / 1000).toFixed(0);
+        if (hidden) {
+          report +=
+            "\n**The page was hidden during the run: these timings are suspect.**\n";
+        }
+        markdown.value = report;
+        document.getElementById("result").innerHTML = render(report);
+        show(`done in ${seconds} s`, "done");
+      } catch (e) {
+        show(`Error: ${e?.message ?? e}`, "error");
+        console.error(e);
+      } finally {
+        document.removeEventListener("visibilitychange", onHide);
+        await lock?.release();
+        document.getElementById("buttons").hidden = false;
+        markdown.hidden = !markdown.value;
+      }
     }
-    const seconds = ((performance.now() - started) / 1000).toFixed(0);
-    if (hidden) {
-      report += "\n**The page was hidden during the run: these timings are suspect.**\n";
-    }
-    markdown.value = report;
-    document.getElementById("result").innerHTML = render(report);
-    show(`done in ${seconds} s`, "done");
-  } catch (e) {
-    show(`Error: ${e?.message ?? e}`, "error");
-    console.error(e);
-  } finally {
-    document.removeEventListener("visibilitychange", onHide);
-    await lock?.release();
-    document.getElementById("buttons").hidden = false;
-    markdown.hidden = !markdown.value;
-  }
-}
 
-document.getElementById("copy").onclick = async () => {
-  try {
-    await navigator.clipboard.writeText(markdown.value);
-    show("copied as Markdown", "done");
-  } catch {
-    markdown.select();
-    show("select the Markdown below and copy it", "done");
-  }
-};
-document.getElementById("again").onclick = run;
-await run();
-</script>
+    document.getElementById("copy").onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(markdown.value);
+        show("copied as Markdown", "done");
+      } catch {
+        markdown.select();
+        show("select the Markdown below and copy it", "done");
+      }
+    };
+    document.getElementById("again").onclick = run;
+    await run();
+  </script>
 </html>

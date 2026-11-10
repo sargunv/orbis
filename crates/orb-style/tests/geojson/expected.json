@@ -1,1 +1,711 @@
-[{"z":0,"x":0,"y":0,"features":[{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0,"geojsonvt_clip_end":0.2923118667571581},"geometry":[[[7282,3631],[8215,3631],[10240,3380],[10240,3380]]],"id":9},{"type":1,"tags":{"name":"points"},"geometry":[[8169,13]],"id":11},{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[-910,3631],[23,3631],[2048,3380],[4096,3631],[5461,3631],[8169,3867],[9102,3380]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[3641,4561],[3641,3631],[4551,3631],[4551,4561],[3641,4561]],[[3982,4210],[4210,4210],[4210,3982],[3982,3982],[3982,4210]],[[7964,4325],[7964,3867],[8420,3867],[8420,4325],[7964,4325]]],"id":10},{"type":1,"tags":{"name":"points"},"geometry":[[-23,13],[4096,4096],[8169,3101],[8215,8179]],"id":11},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[4096,4096],[6144,4096]]],"id":12},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[4096,4096],[3868,4325],[3072,4325]]],"id":12},{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.69670040479317,"geojsonvt_clip_end":1},"geometry":[[[-2048,3691],[-23,3867],[910,3380]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[-228,4325],[-228,3867],[228,3867],[228,4325],[-228,4325]]],"id":10},{"type":1,"tags":{"name":"points"},"geometry":[[-23,3101],[23,8179]],"id":11},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":1,"geojsonvt_clip_end":1},"geometry":[[[-2048,4096],[-2048,4096]]],"id":12}]},{"z":1,"x":0,"y":0,"features":[{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0,"geojsonvt_clip_end":0.5957907995174445},"geometry":[[[-1820,7263],[46,7263],[4096,6760],[8192,7263],[10240,7263]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[7282,9121],[7282,7263],[9102,7263],[9102,9121],[7282,9121]],[[7964,8420],[8420,8420],[8420,7964],[7964,7964],[7964,8420]]],"id":10},{"type":1,"tags":{"name":"points"},"geometry":[[-46,27],[8192,8192]],"id":11},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":0.5},"geometry":[[[8192,8192],[10240,8192]]],"id":12},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[8192,8192],[7737,8649],[6144,8649]]],"id":12},{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.7977371100238496,"geojsonvt_clip_end":1},"geometry":[[[-2048,7560],[-46,7735],[1820,6760]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[-455,8649],[-455,7735],[455,7735],[455,8649],[-455,8649]]],"id":10},{"type":1,"tags":{"name":"points"},"geometry":[[-46,6203]],"id":11}]},{"z":1,"x":1,"y":0,"features":[{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0,"geojsonvt_clip_end":0.19088307592487025},"geometry":[[[6372,7263],[8238,7263],[10240,7014]]],"id":9},{"type":1,"tags":{"name":"points"},"geometry":[[8146,27]],"id":11},{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.39372363045439285,"geojsonvt_clip_end":1},"geometry":[[[-2048,7011],[0,7263],[2731,7263],[8146,7735],[10012,6760]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[-910,9121],[-910,7263],[910,7263],[910,9121],[-910,9121]],[[-228,8420],[228,8420],[228,7964],[-228,7964],[-228,8420]],[[7737,8649],[7737,7735],[8647,7735],[8647,8649],[7737,8649]]],"id":10},{"type":1,"tags":{"name":"points"},"geometry":[[0,8192],[8146,6203]],"id":11},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[0,8192],[4096,8192]]],"id":12},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[0,8192],[-455,8649],[-2048,8649]]],"id":12}]},{"z":1,"x":1,"y":1,"features":[{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0,"geojsonvt_clip_end":0.19088307592487025},"geometry":[[[6372,-929],[8238,-929],[10240,-1178]]],"id":9},{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.39372363045439285,"geojsonvt_clip_end":1},"geometry":[[[-2048,-1181],[0,-929],[2731,-929],[8146,-457],[10012,-1432]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[-910,929],[-910,-929],[910,-929],[910,929],[-910,929]],[[-228,228],[228,228],[228,-228],[-228,-228],[-228,228]],[[7737,457],[7737,-457],[8647,-457],[8647,457],[7737,457]]],"id":10},{"type":1,"tags":{"name":"points"},"geometry":[[0,0],[8146,-1989],[8238,8165]],"id":11},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[0,0],[4096,0]]],"id":12},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[0,0],[-455,457],[-2048,457]]],"id":12}]},{"z":2,"x":2,"y":1,"features":[{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.4444295123030102,"geojsonvt_clip_end":0.7472187574085098},"geometry":[[[-2048,6082],[0,6333],[5461,6333],[10240,6750]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[-1820,10051],[-1820,6333],[1820,6333],[1820,10051],[-1820,10051]],[[-455,8648],[455,8648],[455,7736],[-455,7736],[-455,8648]]],"id":10},{"type":1,"tags":{"name":"points"},"geometry":[[0,8192]],"id":11},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":1},"geometry":[[[0,8192],[8192,8192]]],"id":12},{"type":2,"tags":{"name":"multi","geojsonvt_clip_start":0,"geojsonvt_clip_end":0.5424816663153499},"geometry":[[[0,8192],[-910,9107],[-2048,9107]]],"id":12}]},{"z":4,"x":0,"y":7,"features":[{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.07688954576555464,"geojsonvt_clip_end":0.1528472793627623},"geometry":[[[-2048,758],[364,758],[10240,-469]]],"id":9},{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.8861442271006945,"geojsonvt_clip_end":0.9700311363967614},"geometry":[[[-2048,4386],[-364,4532],[10240,-1008]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[3641,10240],[-2048,10240],[-2048,4532],[3641,4532],[3641,10240]]],"id":10}]},{"z":4,"x":15,"y":7,"features":[{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.026561843082646173,"geojsonvt_clip_end":0.10213288394661837},"geometry":[[[-2048,758],[8556,758],[10240,549]]],"id":9},{"type":2,"tags":{"name":"line","geojsonvt_clip_start":0.8356258744853546,"geojsonvt_clip_end":0.9132480264116777},"geometry":[[[-2048,3672],[7828,4532],[10240,3272]]],"id":9},{"type":3,"tags":{"name":"poly"},"geometry":[[[10240,10240],[4551,10240],[4551,4532],[10240,4532],[10240,10240]]],"id":10}]}]
+[
+  {
+    "z": 0,
+    "x": 0,
+    "y": 0,
+    "features": [
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 0.2923118667571581
+        },
+        "geometry": [
+          [
+            [7282, 3631],
+            [8215, 3631],
+            [10240, 3380],
+            [10240, 3380]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [[8169, 13]],
+        "id": 11
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [-910, 3631],
+            [23, 3631],
+            [2048, 3380],
+            [4096, 3631],
+            [5461, 3631],
+            [8169, 3867],
+            [9102, 3380]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [3641, 4561],
+            [3641, 3631],
+            [4551, 3631],
+            [4551, 4561],
+            [3641, 4561]
+          ],
+          [
+            [3982, 4210],
+            [4210, 4210],
+            [4210, 3982],
+            [3982, 3982],
+            [3982, 4210]
+          ],
+          [
+            [7964, 4325],
+            [7964, 3867],
+            [8420, 3867],
+            [8420, 4325],
+            [7964, 4325]
+          ]
+        ],
+        "id": 10
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [
+          [-23, 13],
+          [4096, 4096],
+          [8169, 3101],
+          [8215, 8179]
+        ],
+        "id": 11
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [4096, 4096],
+            [6144, 4096]
+          ]
+        ],
+        "id": 12
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [4096, 4096],
+            [3868, 4325],
+            [3072, 4325]
+          ]
+        ],
+        "id": 12
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.69670040479317,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [-2048, 3691],
+            [-23, 3867],
+            [910, 3380]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [-228, 4325],
+            [-228, 3867],
+            [228, 3867],
+            [228, 4325],
+            [-228, 4325]
+          ]
+        ],
+        "id": 10
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [
+          [-23, 3101],
+          [23, 8179]
+        ],
+        "id": 11
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 1,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [-2048, 4096],
+            [-2048, 4096]
+          ]
+        ],
+        "id": 12
+      }
+    ]
+  },
+  {
+    "z": 1,
+    "x": 0,
+    "y": 0,
+    "features": [
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 0.5957907995174445
+        },
+        "geometry": [
+          [
+            [-1820, 7263],
+            [46, 7263],
+            [4096, 6760],
+            [8192, 7263],
+            [10240, 7263]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [7282, 9121],
+            [7282, 7263],
+            [9102, 7263],
+            [9102, 9121],
+            [7282, 9121]
+          ],
+          [
+            [7964, 8420],
+            [8420, 8420],
+            [8420, 7964],
+            [7964, 7964],
+            [7964, 8420]
+          ]
+        ],
+        "id": 10
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [
+          [-46, 27],
+          [8192, 8192]
+        ],
+        "id": 11
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 0.5
+        },
+        "geometry": [
+          [
+            [8192, 8192],
+            [10240, 8192]
+          ]
+        ],
+        "id": 12
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [8192, 8192],
+            [7737, 8649],
+            [6144, 8649]
+          ]
+        ],
+        "id": 12
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.7977371100238496,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [-2048, 7560],
+            [-46, 7735],
+            [1820, 6760]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [-455, 8649],
+            [-455, 7735],
+            [455, 7735],
+            [455, 8649],
+            [-455, 8649]
+          ]
+        ],
+        "id": 10
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [[-46, 6203]],
+        "id": 11
+      }
+    ]
+  },
+  {
+    "z": 1,
+    "x": 1,
+    "y": 0,
+    "features": [
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 0.19088307592487025
+        },
+        "geometry": [
+          [
+            [6372, 7263],
+            [8238, 7263],
+            [10240, 7014]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [[8146, 27]],
+        "id": 11
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.39372363045439285,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [-2048, 7011],
+            [0, 7263],
+            [2731, 7263],
+            [8146, 7735],
+            [10012, 6760]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [-910, 9121],
+            [-910, 7263],
+            [910, 7263],
+            [910, 9121],
+            [-910, 9121]
+          ],
+          [
+            [-228, 8420],
+            [228, 8420],
+            [228, 7964],
+            [-228, 7964],
+            [-228, 8420]
+          ],
+          [
+            [7737, 8649],
+            [7737, 7735],
+            [8647, 7735],
+            [8647, 8649],
+            [7737, 8649]
+          ]
+        ],
+        "id": 10
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [
+          [0, 8192],
+          [8146, 6203]
+        ],
+        "id": 11
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [0, 8192],
+            [4096, 8192]
+          ]
+        ],
+        "id": 12
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [0, 8192],
+            [-455, 8649],
+            [-2048, 8649]
+          ]
+        ],
+        "id": 12
+      }
+    ]
+  },
+  {
+    "z": 1,
+    "x": 1,
+    "y": 1,
+    "features": [
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 0.19088307592487025
+        },
+        "geometry": [
+          [
+            [6372, -929],
+            [8238, -929],
+            [10240, -1178]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.39372363045439285,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [-2048, -1181],
+            [0, -929],
+            [2731, -929],
+            [8146, -457],
+            [10012, -1432]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [-910, 929],
+            [-910, -929],
+            [910, -929],
+            [910, 929],
+            [-910, 929]
+          ],
+          [
+            [-228, 228],
+            [228, 228],
+            [228, -228],
+            [-228, -228],
+            [-228, 228]
+          ],
+          [
+            [7737, 457],
+            [7737, -457],
+            [8647, -457],
+            [8647, 457],
+            [7737, 457]
+          ]
+        ],
+        "id": 10
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [
+          [0, 0],
+          [8146, -1989],
+          [8238, 8165]
+        ],
+        "id": 11
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [0, 0],
+            [4096, 0]
+          ]
+        ],
+        "id": 12
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [0, 0],
+            [-455, 457],
+            [-2048, 457]
+          ]
+        ],
+        "id": 12
+      }
+    ]
+  },
+  {
+    "z": 2,
+    "x": 2,
+    "y": 1,
+    "features": [
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.4444295123030102,
+          "geojsonvt_clip_end": 0.7472187574085098
+        },
+        "geometry": [
+          [
+            [-2048, 6082],
+            [0, 6333],
+            [5461, 6333],
+            [10240, 6750]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [-1820, 10051],
+            [-1820, 6333],
+            [1820, 6333],
+            [1820, 10051],
+            [-1820, 10051]
+          ],
+          [
+            [-455, 8648],
+            [455, 8648],
+            [455, 7736],
+            [-455, 7736],
+            [-455, 8648]
+          ]
+        ],
+        "id": 10
+      },
+      {
+        "type": 1,
+        "tags": { "name": "points" },
+        "geometry": [[0, 8192]],
+        "id": 11
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 1
+        },
+        "geometry": [
+          [
+            [0, 8192],
+            [8192, 8192]
+          ]
+        ],
+        "id": 12
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "multi",
+          "geojsonvt_clip_start": 0,
+          "geojsonvt_clip_end": 0.5424816663153499
+        },
+        "geometry": [
+          [
+            [0, 8192],
+            [-910, 9107],
+            [-2048, 9107]
+          ]
+        ],
+        "id": 12
+      }
+    ]
+  },
+  {
+    "z": 4,
+    "x": 0,
+    "y": 7,
+    "features": [
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.07688954576555464,
+          "geojsonvt_clip_end": 0.1528472793627623
+        },
+        "geometry": [
+          [
+            [-2048, 758],
+            [364, 758],
+            [10240, -469]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.8861442271006945,
+          "geojsonvt_clip_end": 0.9700311363967614
+        },
+        "geometry": [
+          [
+            [-2048, 4386],
+            [-364, 4532],
+            [10240, -1008]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [3641, 10240],
+            [-2048, 10240],
+            [-2048, 4532],
+            [3641, 4532],
+            [3641, 10240]
+          ]
+        ],
+        "id": 10
+      }
+    ]
+  },
+  {
+    "z": 4,
+    "x": 15,
+    "y": 7,
+    "features": [
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.026561843082646173,
+          "geojsonvt_clip_end": 0.10213288394661837
+        },
+        "geometry": [
+          [
+            [-2048, 758],
+            [8556, 758],
+            [10240, 549]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 2,
+        "tags": {
+          "name": "line",
+          "geojsonvt_clip_start": 0.8356258744853546,
+          "geojsonvt_clip_end": 0.9132480264116777
+        },
+        "geometry": [
+          [
+            [-2048, 3672],
+            [7828, 4532],
+            [10240, 3272]
+          ]
+        ],
+        "id": 9
+      },
+      {
+        "type": 3,
+        "tags": { "name": "poly" },
+        "geometry": [
+          [
+            [10240, 10240],
+            [4551, 10240],
+            [4551, 4532],
+            [10240, 4532],
+            [10240, 10240]
+          ]
+        ],
+        "id": 10
+      }
+    ]
+  }
+]

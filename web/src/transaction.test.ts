@@ -5,9 +5,11 @@ import { test } from "node:test";
 const { transaction } = await import("./transaction.ts");
 
 test("a transaction collects GL JS calls in order as one JSON array", () => {
-  const json = transaction((tx) => tx
-    .setPaintProperty("water", "fill-color", "blue")
-    .setFeatureState({ source: "s", id: 1 }, { hover: true }));
+  const json = transaction((tx) =>
+    tx
+      .setPaintProperty("water", "fill-color", "blue")
+      .setFeatureState({ source: "s", id: 1 }, { hover: true }),
+  );
   assert.deepEqual(JSON.parse(json), [
     ["setPaintProperty", "water", "fill-color", "blue"],
     ["setFeatureState", { source: "s", id: 1 }, { hover: true }],

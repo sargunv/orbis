@@ -1,34 +1,34 @@
 # Camera reference vectors
 
-`data/covers.json` contains 66 Web Mercator and 74 globe **tile sets returned
-by GL JS itself**, at the commit pinned in `xtask/src/fixtures.rs`.
+`data/covers.json` contains 66 Web Mercator and 74 globe **tile sets returned by
+GL JS itself**, at the commit pinned in `xtask/src/fixtures.rs`.
 `generate-covers.mjs` constructs the upstream `MercatorTransform` (or
-`GlobeTransform`) and calls upstream `coveringTiles` in Node; it
-contains no copy of their camera, culling or LOD implementation. SHA-256 checks
-reject changed reference implementations before generation. Neither Node nor
-upstream sources are needed to run the Rust tests.
+`GlobeTransform`) and calls upstream `coveringTiles` in Node; it contains no
+copy of their camera, culling or LOD implementation. SHA-256 checks reject
+changed reference implementations before generation. Neither Node nor upstream
+sources are needed to run the Rust tests.
 
 The cases cover zooms 2.2, 10.3, 14.48 and 18 at pitches 0°, 45°, 60°, 60.1°,
-80° and 85°, north-up and rotated 30°. Additional cases cover 256/1024 px
-source tiles, source min/max zoom, a wider FOV, antimeridian crossings, repeated
+80° and 85°, north-up and rotated 30°. Additional cases cover 256/1024 px source
+tiles, source min/max zoom, a wider FOV, antimeridian crossings, repeated
 worlds, 1200 m elevated content, the close-to-ground camera at zoom 24, GL JS's
 default maxPitch=60 clamp and our maxPitch=85 interaction clamp. Cameras in the
-JSON are the resolved upstream cameras (after its viewport constraints).
-The Rust comparison filters source minzoom just as `TilePyramid` does, and
-compares sorted `(wrap, zoom, column, row)` sets, not traversal order.
+JSON are the resolved upstream cameras (after its viewport constraints). The
+Rust comparison filters source minzoom just as `TilePyramid` does, and compares
+sorted `(wrap, zoom, column, row)` sets, not traversal order.
 
 Its `globe` set holds 74 covers from upstream's `GlobeTransform`: GL JS's own
-globe cases (`covering_tiles.test.ts` and `globe_covering_tiles.test.ts`:
-zoomed out and in, pitched, pitched and rotated, distant narrow-FOV cameras,
-both sides of the antimeridian, zoom 11 at five latitudes, the south pole)
-and a sweep over Tokyo at zooms 1.5–10 and pitches 0–60°, north-up and
-rotated, plus the hand-off zooms 11.5 and 11.9, both poles, a pitched
-antimeridian, overzoomed and minzoom sources, 256 px tiles and rounded raster
-covers. Orbis measures detail on the sphere where GL JS measures it on the
-Mercator plane, and each culls with its own conservative volumes, so
-`globe_covers_match_pinned_gl_js` holds every visible point of the view to be
-covered within a zoom level of GL JS's tile there and no case to take many
-more tiles; most cases match exactly, and their count is a floor.
+globe cases (`covering_tiles.test.ts` and `globe_covering_tiles.test.ts`: zoomed
+out and in, pitched, pitched and rotated, distant narrow-FOV cameras, both sides
+of the antimeridian, zoom 11 at five latitudes, the south pole) and a sweep over
+Tokyo at zooms 1.5–10 and pitches 0–60°, north-up and rotated, plus the hand-off
+zooms 11.5 and 11.9, both poles, a pitched antimeridian, overzoomed and minzoom
+sources, 256 px tiles and rounded raster covers. Orbis measures detail on the
+sphere where GL JS measures it on the Mercator plane, and each culls with its
+own conservative volumes, so `globe_covers_match_pinned_gl_js` holds every
+visible point of the view to be covered within a zoom level of GL JS's tile
+there and no case to take many more tiles; most cases match exactly, and their
+count is a floor.
 
 Regenerate from the pinned tarball (from the repository root, Node 24):
 
@@ -52,22 +52,21 @@ cargo test -p orb-camera
 ```
 
 `data/pins.json` is the 4,000-camera Web Mercator pin that `pins.rs` checks,
-generated the same way by `generate-pins.mjs`: seeded random
-cameras (five viewport sizes, zoom 0–22, latitude ±84°, any bearing, pitch 0
-for every fourth camera and 0–85° otherwise), the location GL JS's
-`screenPointToLocation` gives for five screen points below any horizon, and
-every tenth camera's `coveringTiles` for 512 px tiles. Regenerate it with
-`"$TASK_GL/node_modules/.bin/tsx" crates/orb-camera/tests/generate-pins.mjs
-"$TASK_GL"` after the setup above. The test projects each location back to its
-screen point and unprojects the point to the location, both within 1/100 px,
-and compares covers exactly. At the pinned commit, the worst errors are
-3.2e-3 px (projected, at zoom 21.7) and 3.0e-4 px (unprojected), and all 400
-covers match.
+generated the same way by `generate-pins.mjs`: seeded random cameras (five
+viewport sizes, zoom 0–22, latitude ±84°, any bearing, pitch 0 for every fourth
+camera and 0–85° otherwise), the location GL JS's `screenPointToLocation` gives
+for five screen points below any horizon, and every tenth camera's
+`coveringTiles` for 512 px tiles. Regenerate it with
+`"$TASK_GL/node_modules/.bin/tsx" crates/orb-camera/tests/generate-pins.mjs "$TASK_GL"`
+after the setup above. The test projects each location back to its screen point
+and unprojects the point to the location, both within 1/100 px, and compares
+covers exactly. At the pinned commit, the worst errors are 3.2e-3 px (projected,
+at zoom 21.7) and 3.0e-4 px (unprojected), and all 400 covers match.
 
-`polar.rs` has no reference data: cameras on and around both poles of the
-UPS sets and EPSG:3413, at four zooms, three bearings and three pitches,
-check that ground under a grid of screen points round-trips through the
-projection and lies in a covered tile.
+`polar.rs` has no reference data: cameras on and around both poles of the UPS
+sets and EPSG:3413, at four zooms, three bearings and three pitches, check that
+ground under a grid of screen points round-trips through the projection and lies
+in a covered tile.
 
 The generated types above are needed because upstream's transform imports its
 symbol projection helpers; those helpers are never used by the generators.

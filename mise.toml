@@ -9,8 +9,10 @@ min_version = "2026.10.0"
 [settings]
 experimental = true
 pin = true
-minimum_release_age = "3d"
 lockfile = true
+# Rust comes from rust-toolchain.toml, which rustup, rust-analyzer and the
+# Pages workflow also read; mise installs that toolchain through rustup.
+idiomatic_version_file_enable_tools = ["rust"]
 # The Pages workflow runs on linux-x64.
 lockfile_platforms = ["macos-arm64", "linux-x64"]
 
@@ -28,13 +30,13 @@ ORB_ANDROID_EMULATOR_API = "{{vars.android_system_image_api}}"
 "github:wasm-bindgen/wasm-bindgen" = "0.2.130"
 "aqua:WebAssembly/binaryen" = "133"
 "cargo:twiggy" = "0.8.0"
-node = "24.22.2"
+"core:node" = "24.22.2"
 "aqua:pnpm/pnpm" = "11.25.0"
 # Native hosts and bindings: a JDK for the JNI shim and Gradle (Android),
 # kotlinc for the binding run tests, CMake for the C ABI's config test.
-java = "temurin-21.0.13+9.0.LTS"
-gradle = "9.8.2"
-kotlin = { version = "2.4.21", asset_pattern = "kotlin-compiler-*.zip", bin_path = "kotlinc/bin" }
+"core:java" = "temurin-21.0.13+9.0.LTS"
+"aqua:gradle/gradle-distributions" = "9.8.2"
+"github:JetBrains/kotlin" = { version = "2.4.21", asset_pattern = "kotlin-compiler-*.zip", bin_path = "kotlinc/bin" }
 "aqua:Kitware/CMake" = "4.4.5"
 # Android device access: devices-cli gives each worktree its own emulator,
 # started on demand and stopped when the worktree goes away
@@ -45,3 +47,20 @@ kotlin = { version = "2.4.21", asset_pattern = "kotlin-compiler-*.zip", bin_path
   "linux",
   "macos",
 ] }
+"github:jdx/hk" = "2.11.1"
+"aqua:jdx/jactionlint" = "2.5.0"
+"aqua:dprint/dprint" = "0.64.3"
+"aqua:koalaman/shellcheck" = "0.11.0"
+
+[tasks.check]
+run = "hk check --all"
+
+[tasks.fix]
+run = "hk fix --all"
+
+# No hk git hook: worktrees share .git/hooks, so one would break commits on
+# any branch without hk.pkl. `cargo xtask check` runs `dprint check` instead.
+
+[deps.pnpm]
+auto = true
+dir = "web"

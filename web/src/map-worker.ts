@@ -8,10 +8,15 @@
 import { Engine, type Report } from "./engine.ts";
 import type { FromWorker, ToWorker, WorkerInit } from "./link.ts";
 import { preloadStyle } from "./preload.ts";
-import { askPage, setRequestTransform, type RequestTransform } from "./requests.ts";
+import {
+  askPage,
+  setRequestTransform,
+  type RequestTransform,
+} from "./requests.ts";
 import { spawnWorkers } from "./workers.ts";
 
-const post = (message: FromWorker, transfer: Transferable[] = []) => self.postMessage(message, transfer);
+const post = (message: FromWorker, transfer: Transferable[] = []) =>
+  self.postMessage(message, transfer);
 /** The page's request transform, asked over this worker's port. */
 const page = askPage(self as unknown as MessagePort);
 let engine: Engine | undefined;
@@ -39,13 +44,26 @@ async function start(init: WorkerInit): Promise<void> {
   const workers = spawnWorkers(module, init.jobWorkers);
   void gpu.requestAdapter().catch(() => {});
   try {
-    engine = await Engine.start(module, workers, {
-      canvas: init.canvas, style: init.style, options: init.options, camera: init.camera,
-      constraints: init.constraints, size: init.size,
-      // Event times are on the page's clock.
-      clock: init.origin - performance.timeOrigin,
-      drawOnInput: true,
-    }, (report: Report) => post({ report }, report.points ? [report.points.buffer as ArrayBuffer] : []));
+    engine = await Engine.start(
+      module,
+      workers,
+      {
+        canvas: init.canvas,
+        style: init.style,
+        options: init.options,
+        camera: init.camera,
+        constraints: init.constraints,
+        size: init.size,
+        // Event times are on the page's clock.
+        clock: init.origin - performance.timeOrigin,
+        drawOnInput: true,
+      },
+      (report: Report) =>
+        post(
+          { report },
+          report.points ? [report.points.buffer as ArrayBuffer] : [],
+        ),
+    );
   } catch (e) {
     // No adapter, or no device, is likely this worker's lack: the page
     // tries on its own thread, and says why if it can't either.
@@ -59,7 +77,9 @@ self.onmessage = ({ data }: MessageEvent<ToWorker>) => {
   if (page.answer(data)) return;
   const { requestHook } = data as { requestHook?: boolean };
   if (requestHook !== undefined) {
-    setRequestTransform(requestHook ? page.hook as RequestTransform : undefined);
+    setRequestTransform(
+      requestHook ? (page.hook as RequestTransform) : undefined,
+    );
   } else if ("input" in data) {
     try {
       engine?.input(data.input, data.args, data.time);
@@ -69,9 +89,17 @@ self.onmessage = ({ data }: MessageEvent<ToWorker>) => {
   } else if ("call" in data) {
     const { call, method, args } = data;
     const map = engine!;
-    new Promise((resolve) => resolve((map[method] as (...a: unknown[]) => unknown)(...args))).then(
-      (result) => post({ reply: call, result, state: map.state() }, buffers(result)),
-      (e) => post({ reply: call, error: String(e instanceof Error ? e.message : e), state: map.state() }),
+    new Promise((resolve) =>
+      resolve((map[method] as (...a: unknown[]) => unknown)(...args)),
+    ).then(
+      (result) =>
+        post({ reply: call, result, state: map.state() }, buffers(result)),
+      (e) =>
+        post({
+          reply: call,
+          error: String(e instanceof Error ? e.message : e),
+          state: map.state(),
+        }),
     );
   } else if ("init" in data) {
     void start(data.init);

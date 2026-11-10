@@ -16,45 +16,89 @@ import { demoStyleWithScene } from "./styles.js";
 const t0 = performance.now();
 const params = new URLSearchParams(location.search);
 const engine = params.get("engine") ?? "orbis";
-const [lon, lat, zoom, bearing, pitch] = (params.get("at") ?? "0,0,0,0,0").split(",").map(Number);
+const [lon, lat, zoom, bearing, pitch] = (params.get("at") ?? "0,0,0,0,0")
+  .split(",")
+  .map(Number);
 const container = document.getElementById("map");
-const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
-const json = async (style) => (typeof style === "string" ? (await fetch(style)).json() : style);
+const nextFrame = () =>
+  new Promise((resolve) => requestAnimationFrame(resolve));
+const json = async (style) =>
+  typeof style === "string" ? (await fetch(style)).json() : style;
 
 // Each resolves to the map's creation time, a promise of its first idle,
 // and how to jump its camera and wait for idle again.
 const engines = {
   async orbis(style) {
     const { createMap } = await import("orbis");
-    const map = await createMap({ container, style, camera: { center: [lon, lat], zoom, bearing, pitch } });
+    const map = await createMap({
+      container,
+      style,
+      camera: { center: [lon, lat], zoom, bearing, pitch },
+    });
     // GPU bytes the map allocated, by its own count (memory.mjs).
     window.gpuBytes = () => map.stats?.memory.allocated;
-    return { created: performance.now(), idle: () => map.once("idle"), jumpTo: (c) => map.camera.jumpTo(c) };
+    return {
+      created: performance.now(),
+      idle: () => map.once("idle"),
+      jumpTo: (c) => map.camera.jumpTo(c),
+    };
   },
   async gljs(style) {
     const [gl, { default: workerUrl }] = await Promise.all([
-      import("maplibre-gl"), import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
+      import("maplibre-gl"),
+      import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
       import("maplibre-gl/dist/maplibre-gl.css"),
     ]);
     const maplibregl = gl.default ?? gl;
     maplibregl.setWorkerUrl(workerUrl);
     // GL JS stops pitch at 60° unless told otherwise; Orbis and Native go to 85°.
-    const map = new maplibregl.Map({ container, style, center: [lon, lat], zoom, bearing, pitch, maxPitch: 85, attributionControl: false });
+    const map = new maplibregl.Map({
+      container,
+      style,
+      center: [lon, lat],
+      zoom,
+      bearing,
+      pitch,
+      maxPitch: 85,
+      attributionControl: false,
+    });
     map.on("error", (e) => console.error(String(e.error)));
-    return { created: performance.now(), idle: () => new Promise((resolve) => map.once("idle", resolve)), jumpTo: (c) => map.jumpTo(c) };
+    return {
+      created: performance.now(),
+      idle: () => new Promise((resolve) => map.once("idle", resolve)),
+      jumpTo: (c) => map.jumpTo(c),
+    };
   },
   async native(style) {
     const { open } = await import("./app/native.js");
-    const map = await open(container, { style: await json(style), camera: { center: [lon, lat], zoom, bearing, pitch } });
+    const map = await open(container, {
+      style: await json(style),
+      camera: { center: [lon, lat], zoom, bearing, pitch },
+    });
     // Native has no idle event: its snapshot says when it's fully loaded and still.
-    const idle = async () => { do await nextFrame(); while (!map.loaded()); };
+    const idle = async () => {
+      do await nextFrame();
+      while (!map.loaded());
+    };
     return { created: performance.now(), idle, jumpTo: map.jumpTo };
   },
   async mlnrs(style) {
     const { Map } = await import(/* @vite-ignore */ params.get("mlnrs"));
-    const map = new Map({ container, style, center: [lon, lat], zoom, bearing, pitch, interactive: false });
+    const map = new Map({
+      container,
+      style,
+      center: [lon, lat],
+      zoom,
+      bearing,
+      pitch,
+      interactive: false,
+    });
     map.on("error", (e) => console.error(String(e.error)));
-    return { created: performance.now(), idle: () => map.once("idle"), jumpTo: (c) => map.jumpTo(c) };
+    return {
+      created: performance.now(),
+      idle: () => map.once("idle"),
+      jumpTo: (c) => map.jumpTo(c),
+    };
   },
 };
 
@@ -62,8 +106,10 @@ const engines = {
 function tourCamera(f) {
   const wave = Math.sin(f * 2 * Math.PI);
   return {
-    center: [lon + (720 / 2 ** zoom) * wave, lat], zoom: zoom + 2 * Math.sin(f * Math.PI),
-    bearing: bearing + 180 * f, pitch: Math.max(pitch, 60 * Math.sin(f * Math.PI)),
+    center: [lon + (720 / 2 ** zoom) * wave, lat],
+    zoom: zoom + 2 * Math.sin(f * Math.PI),
+    bearing: bearing + 180 * f,
+    pitch: Math.max(pitch, 60 * Math.sin(f * Math.PI)),
   };
 }
 
@@ -80,7 +126,14 @@ try {
     map.jumpTo(tourCamera(1));
     await idle;
   };
-  document.title = "done " + JSON.stringify({ origin: performance.timeOrigin, script: t0, created: map.created, idle: performance.now() });
+  document.title =
+    "done " +
+    JSON.stringify({
+      origin: performance.timeOrigin,
+      script: t0,
+      created: map.created,
+      idle: performance.now(),
+    });
 } catch (e) {
   document.title = "error " + e;
 }

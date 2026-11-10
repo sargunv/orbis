@@ -40,18 +40,24 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { chromium } from "playwright";
+
 import { decodePng } from "./png.mjs";
 import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
 
 const args = process.argv.slice(2);
-const option = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
+const option = (name, fallback) =>
+  args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ??
+  fallback;
 const physical = args.includes("--physical");
 const android = physical || args.includes("--android");
 const runs = Number(option("runs", "3"));
 const configs = option("configs", "orbis,orbis-page,gljs").split(",");
 // The page's style and starting camera, for a dense or tilted scene.
-const view = Object.fromEntries(["style", "at"].filter((k) => option(k)).map((k) => [k, option(k)]));
+const view = Object.fromEntries(
+  ["style", "at"].filter((k) => option(k)).map((k) => [k, option(k)]),
+);
 // Busy time and idle frames only, without frame capture (whose PNG encoding
 // also loads the device).
 const capture = !args.includes("--no-capture");
@@ -69,7 +75,11 @@ function centroid(image, test) {
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * channels;
-      if (test(pixels[i], pixels[i + 1], pixels[i + 2])) { sx += x; sy += y; n++; }
+      if (test(pixels[i], pixels[i + 1], pixels[i + 2])) {
+        sx += x;
+        sy += y;
+        n++;
+      }
     }
   }
   return n >= 12 ? [sx / n + 0.5, sy / n + 0.5] : null;
@@ -92,11 +102,17 @@ function gesture(kind, [cx, cy]) {
     if (kind === "pan") return [[cx + 100 - 300 * t, cy]];
     if (kind === "pinch") {
       const d = 60 + 30 * t;
-      return [[cx - d, cy], [cx + d, cy]];
+      return [
+        [cx - d, cy],
+        [cx + d, cy],
+      ];
     }
     const angle = (t * Math.PI) / 2;
     const [dx, dy] = [150 * Math.cos(angle), 150 * Math.sin(angle)];
-    return [[cx - dx, cy - dy], [cx + dx, cy + dy]];
+    return [
+      [cx - dx, cy - dy],
+      [cx + dx, cy + dy],
+    ];
   };
 }
 
@@ -110,7 +126,9 @@ function parameter(kind, [x, y], [cx, cy]) {
 /** The log with each run of equal positions cut to its last input: the
  * one a frame showing that position shows (gestures arm before they move). */
 function monotonic(log) {
-  return log.filter((e, i) => i === log.length - 1 || Math.abs(log[i + 1].p - e.p) > 1e-6);
+  return log.filter(
+    (e, i) => i === log.length - 1 || Math.abs(log[i + 1].p - e.p) > 1e-6,
+  );
 }
 
 /** The input time at which the logged circle position reached `value`. */
@@ -133,10 +151,16 @@ async function run(page, config, viewport) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await cdp.send("Performance.enable");
-  const busy = async () => (await cdp.send("Performance.getMetrics")).metrics
-    .find((m) => m.name === "TaskDuration").value * 1000;
-  const query = new URLSearchParams({ engine, ...(thread === "page" ? { worker: "0" } : {}),
-    ...(annotation ? {} : { annotation: "0" }), ...view });
+  const busy = async () =>
+    (await cdp.send("Performance.getMetrics")).metrics.find(
+      (m) => m.name === "TaskDuration",
+    ).value * 1000;
+  const query = new URLSearchParams({
+    engine,
+    ...(thread === "page" ? { worker: "0" } : {}),
+    ...(annotation ? {} : { annotation: "0" }),
+    ...view,
+  });
   await page.goto("about:blank");
   const before = await busy();
   await page.goto(`${server.url}measure.html?${query}`);
@@ -147,18 +171,35 @@ async function run(page, config, viewport) {
     return { engine: m.engine, loadMs: m.loadMs, timeOrigin: m.timeOrigin };
   });
   const loadBusy = (await busy()) - before;
-  const idleQuiet = await page.evaluate(() => window.measure.then((m) => m.quiet(2000)));
+  const idleQuiet = await page.evaluate(() =>
+    window.measure.then((m) => m.quiet(2000)),
+  );
   // The page's own viewport: a blank page's can differ on phones.
-  Object.assign(viewport, await page.evaluate(() => ({ width: innerWidth, height: innerHeight })));
+  Object.assign(
+    viewport,
+    await page.evaluate(() => ({ width: innerWidth, height: innerHeight })),
+  );
   const center = [viewport.width / 2, viewport.height / 2];
-  const result = { config, loadMs: info.loadMs, loadBusyMs: loadBusy, idle: idleQuiet, gestures: {} };
+  const result = {
+    config,
+    loadMs: info.loadMs,
+    loadBusyMs: loadBusy,
+    idle: idleQuiet,
+    gestures: {},
+  };
   if (profile) {
     await cdp.send("Profiler.enable");
     await cdp.send("Profiler.setSamplingInterval", { interval: 100 });
     await cdp.send("Profiler.start");
   }
   for (const kind of GESTURES) {
-    await page.evaluate(() => window.measure.then(async (m) => { await m.home(); await new Promise((r) => setTimeout(r, 300)); m.reset(); }));
+    await page.evaluate(() =>
+      window.measure.then(async (m) => {
+        await m.home();
+        await new Promise((r) => setTimeout(r, 300));
+        m.reset();
+      }),
+    );
     const frames = [];
     // A session per capture: Android's Chrome stops sending frames to one
     // that captured before.
@@ -167,39 +208,68 @@ async function run(page, config, viewport) {
       frames.push({ data, metadata });
       session.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
     });
-    await session?.send("Page.startScreencast", { format: "png", everyNthFrame: 1, maxWidth: Math.min(viewport.width, 800) });
+    await session?.send("Page.startScreencast", {
+      format: "png",
+      everyNthFrame: 1,
+      maxWidth: Math.min(viewport.width, 800),
+    });
     await sleep(300);
     const busyStart = await busy();
     const path = gesture(kind, center);
-    const touches = (t) => path(t).map(([x, y], id) => ({ x, y, id, radiusX: 2, radiusY: 2, force: 1 }));
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: touches(0) });
+    const touches = (t) =>
+      path(t).map(([x, y], id) => ({
+        x,
+        y,
+        id,
+        radiusX: 2,
+        radiusY: 2,
+        force: 1,
+      }));
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: touches(0),
+    });
     const started = performance.now();
     for (;;) {
       const t = (performance.now() - started) / 1000;
       if (t >= 1) break;
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: touches(t) });
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: touches(t),
+      });
       await sleep(8);
     }
     // Android's Chrome keeps a gesture open unless the end names its points.
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: touches(1) });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: touches(1),
+    });
     await sleep(700);
     const gestureBusy = (await busy()) - busyStart;
     await session?.send("Page.stopScreencast");
     await session?.detach();
-    const log = monotonic((await page.evaluate(() => window.measure.then((m) => m.log())))
-      .map((e) => ({ t: e.t, p: parameter(kind, [e.x, e.y], center) })));
+    const log = monotonic(
+      (await page.evaluate(() => window.measure.then((m) => m.log()))).map(
+        (e) => ({ t: e.t, p: parameter(kind, [e.x, e.y], center) }),
+      ),
+    );
     const latencies = [];
     const skews = [];
     for (const { data, metadata } of frames) {
       const image = decodePng(Buffer.from(data, "base64"));
       const scale = metadata.deviceWidth / image.width;
-      const toCss = (p) => p && [p[0] * scale, p[1] * scale - (metadata.offsetTop ?? 0)];
+      const toCss = (p) =>
+        p && [p[0] * scale, p[1] * scale - (metadata.offsetTop ?? 0)];
       const blue = toCss(centroid(image, isBlue));
       const cyan = toCss(centroid(image, isCyan));
       if (!blue) continue;
       const value = parameter(kind, blue, center);
       // Not moved yet: which input it shows is undetermined.
-      if (!log.length || Math.abs(value - log[0].p) < (kind === "rotate" ? 0.005 : 0.5)) continue;
+      if (
+        !log.length ||
+        Math.abs(value - log[0].p) < (kind === "rotate" ? 0.005 : 0.5)
+      )
+        continue;
       const shown = inputTime(log, value);
       if (!Number.isFinite(shown)) continue;
       latencies.push(metadata.timestamp * 1000 - (info.timeOrigin + shown));
@@ -209,9 +279,13 @@ async function run(page, config, viewport) {
       }
     }
     result.gestures[kind] = {
-      inputs: log.length, frames: frames.length, measured: latencies.length,
-      latencyP50: percentile(latencies, 0.5), latencyP95: percentile(latencies, 0.95),
-      skewP50: percentile(skews.map(Math.abs), 0.5), skewP95: percentile(skews.map(Math.abs), 0.95),
+      inputs: log.length,
+      frames: frames.length,
+      measured: latencies.length,
+      latencyP50: percentile(latencies, 0.5),
+      latencyP95: percentile(latencies, 0.95),
+      skewP50: percentile(skews.map(Math.abs), 0.5),
+      skewP95: percentile(skews.map(Math.abs), 0.95),
       skewMean: skews.reduce((a, b) => a + b, 0) / Math.max(skews.length, 1),
       busyMs: gestureBusy,
     };
@@ -221,7 +295,9 @@ async function run(page, config, viewport) {
     const { profile: p } = await cdp.send("Profiler.stop");
     const nodes = new Map(p.nodes.map((n) => [n.id, n]));
     const self = new Map();
-    p.samples.forEach((id, i) => self.set(id, (self.get(id) ?? 0) + (p.timeDeltas[i] ?? 0) / 1000));
+    p.samples.forEach((id, i) =>
+      self.set(id, (self.get(id) ?? 0) + (p.timeDeltas[i] ?? 0) / 1000),
+    );
     const wasm = new Map();
     const all = new Map();
     for (const [id, ms] of self) {
@@ -229,16 +305,25 @@ async function run(page, config, viewport) {
       const key = `${f.functionName || "(anonymous)"} ${f.url.split("/").pop()}`;
       all.set(key, (all.get(key) ?? 0) + ms);
     }
-    result.top = [...all].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([f, ms]) => `${ms.toFixed(1)} ${f}`);
+    result.top = [...all]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([f, ms]) => `${ms.toFixed(1)} ${f}`);
     for (const [id, ms] of self) {
       const frame = nodes.get(id).callFrame;
-      if (!frame.url.includes(".wasm") && !frame.url.startsWith("wasm://")) continue;
+      if (!frame.url.includes(".wasm") && !frame.url.startsWith("wasm://"))
+        continue;
       wasm.set(frame.functionName, (wasm.get(frame.functionName) ?? 0) + ms);
     }
     result.wasmMs = [...wasm.values()].reduce((a, b) => a + b, 0);
-    result.wasmTop = [...wasm].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([f, ms]) => `${ms.toFixed(1)} ${f}`);
+    result.wasmTop = [...wasm]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([f, ms]) => `${ms.toFixed(1)} ${f}`);
   }
-  result.afterQuiet = await page.evaluate(() => window.measure.then((m) => m.quiet(3000)));
+  result.afterQuiet = await page.evaluate(() =>
+    window.measure.then((m) => m.quiet(3000)),
+  );
   result.errors = errors;
   await cdp.detach();
   return result;
@@ -253,20 +338,40 @@ let browser, page, close;
 if (android) {
   ({ browser, page, close } = await openAndroid(server, { physical }));
 } else {
-  browser = await launchChromium({ unsafe: false, headed: args.includes("--headed") });
-  page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: true });
+  browser = await launchChromium({
+    unsafe: false,
+    headed: args.includes("--headed"),
+  });
+  page = await browser.newPage({
+    viewport: { width: 800, height: 600 },
+    hasTouch: true,
+  });
   close = () => browser.close();
 }
 try {
-  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, ratio: devicePixelRatio,
-    refresh: null, ua: navigator.userAgent }));
-  // The display's frame interval, from animation frames.
-  viewport.frameMs = await page.evaluate(() => new Promise((resolve) => {
-    const times = [];
-    const step = (t) => { times.push(t); if (times.length < 61) requestAnimationFrame(step); else resolve((times[60] - times[0]) / 60); };
-    requestAnimationFrame(step);
+  const viewport = await page.evaluate(() => ({
+    width: innerWidth,
+    height: innerHeight,
+    ratio: devicePixelRatio,
+    refresh: null,
+    ua: navigator.userAgent,
   }));
-  console.error(`measure: ${viewport.ua}; ${viewport.width}×${viewport.height} @${viewport.ratio}, frame ${viewport.frameMs.toFixed(2)} ms`);
+  // The display's frame interval, from animation frames.
+  viewport.frameMs = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const times = [];
+        const step = (t) => {
+          times.push(t);
+          if (times.length < 61) requestAnimationFrame(step);
+          else resolve((times[60] - times[0]) / 60);
+        };
+        requestAnimationFrame(step);
+      }),
+  );
+  console.error(
+    `measure: ${viewport.ua}; ${viewport.width}×${viewport.height} @${viewport.ratio}, frame ${viewport.frameMs.toFixed(2)} ms`,
+  );
   const results = [];
   for (let r = 0; r < runs; r++) {
     for (const config of configs) {
@@ -277,7 +382,9 @@ try {
         ({ browser, page, close } = await openAndroid(server, { physical }));
       }
       const result = await run(page, config, viewport);
-      console.error(`measure: run ${r + 1} ${config}: ${JSON.stringify(result)}`);
+      console.error(
+        `measure: run ${r + 1} ${config}: ${JSON.stringify(result)}`,
+      );
       results.push(result);
     }
   }
@@ -291,27 +398,49 @@ try {
     rows.push({
       config,
       loadBusy: median(mine.map((r) => r.loadBusyMs)),
-      gestureBusy: median(mine.map((r) => GESTURES.reduce((s, k) => s + r.gestures[k].busyMs, 0))),
+      gestureBusy: median(
+        mine.map((r) => GESTURES.reduce((s, k) => s + r.gestures[k].busyMs, 0)),
+      ),
       wasm: median(mine.map((r) => r.wasmMs ?? NaN)),
-      idle: mine.map((r) => `${r.idle.rafs}/${r.idle.renders}, ${r.afterQuiet.rafs}/${r.afterQuiet.renders}`).join("; "),
-      ...Object.fromEntries(GESTURES.flatMap((k) => [
-        [`${k}P50`, g(k, "latencyP50")], [`${k}P95`, g(k, "latencyP95")],
-        [`${k}Skew`, g(k, "skewP95")], [`${k}Frames`, g(k, "measured")],
-      ])),
+      idle: mine
+        .map(
+          (r) =>
+            `${r.idle.rafs}/${r.idle.renders}, ${r.afterQuiet.rafs}/${r.afterQuiet.renders}`,
+        )
+        .join("; "),
+      ...Object.fromEntries(
+        GESTURES.flatMap((k) => [
+          [`${k}P50`, g(k, "latencyP50")],
+          [`${k}P95`, g(k, "latencyP95")],
+          [`${k}Skew`, g(k, "skewP95")],
+          [`${k}Frames`, g(k, "measured")],
+        ]),
+      ),
     });
   }
-  console.log(`\n${viewport.ua}\n${viewport.width}×${viewport.height} CSS px @${viewport.ratio}, display frame ${viewport.frameMs.toFixed(2)} ms; medians of ${runs} runs\n`);
-  console.log("| config | pan p50/p95 ms | pinch p50/p95 ms | rotate p50/p95 ms | skew p95 ms (pan/pinch/rotate) | main busy: load / gestures ms | idle frames (main rAF / map), before and after gestures |");
+  console.log(
+    `\n${viewport.ua}\n${viewport.width}×${viewport.height} CSS px @${viewport.ratio}, display frame ${viewport.frameMs.toFixed(2)} ms; medians of ${runs} runs\n`,
+  );
+  console.log(
+    "| config | pan p50/p95 ms | pinch p50/p95 ms | rotate p50/p95 ms | skew p95 ms (pan/pinch/rotate) | main busy: load / gestures ms | idle frames (main rAF / map), before and after gestures |",
+  );
   console.log("|---|---|---|---|---|---|---|");
   for (const r of rows) {
-    console.log(`| ${r.config} | ${fmt(r.panP50)} / ${fmt(r.panP95)} | ${fmt(r.pinchP50)} / ${fmt(r.pinchP95)} | ` +
-      `${fmt(r.rotateP50)} / ${fmt(r.rotateP95)} | ${fmt(r.panSkew)} / ${fmt(r.pinchSkew)} / ${fmt(r.rotateSkew)} | ` +
-      `${fmt(r.loadBusy)} / ${fmt(r.gestureBusy)} | ${r.idle} |`);
+    console.log(
+      `| ${r.config} | ${fmt(r.panP50)} / ${fmt(r.panP95)} | ${fmt(r.pinchP50)} / ${fmt(r.pinchP95)} | ` +
+        `${fmt(r.rotateP50)} / ${fmt(r.rotateP95)} | ${fmt(r.panSkew)} / ${fmt(r.pinchSkew)} / ${fmt(r.rotateSkew)} | ` +
+        `${fmt(r.loadBusy)} / ${fmt(r.gestureBusy)} | ${r.idle} |`,
+    );
   }
   if (profile) {
-    for (const r of rows) console.log(`\n${r.config}: wasm self time over the gestures ${fmt(r.wasm)} ms (median)`);
+    for (const r of rows)
+      console.log(
+        `\n${r.config}: wasm self time over the gestures ${fmt(r.wasm)} ms (median)`,
+      );
   }
-  console.log(`\nframes measured per gesture: ${rows.map((r) => `${r.config} ${GESTURES.map((k) => r[`${k}Frames`]).join("/")}`).join("; ")}`);
+  console.log(
+    `\nframes measured per gesture: ${rows.map((r) => `${r.config} ${GESTURES.map((k) => r[`${k}Frames`]).join("/")}`).join("; ")}`,
+  );
   console.log(`\n${JSON.stringify(results)}`);
 } finally {
   await close();
@@ -320,9 +449,12 @@ try {
 
 /** One load in a profile, the browser started for it and closed after. */
 async function load(server, profile) {
-  const context = await chromium.launchPersistentContext(profile, { args: ["--enable-features=Vulkan,WebGPU", "--use-angle=metal"], viewport: { width: 1024, height: 768 } });
+  const context = await chromium.launchPersistentContext(profile, {
+    args: ["--enable-features=Vulkan,WebGPU", "--use-angle=metal"],
+    viewport: { width: 1024, height: 768 },
+  });
   try {
-    const page = context.pages()[0] ?? await context.newPage();
+    const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(`${server.url}measure.html?pipelines`);
     await page.waitForFunction(() => window.pipelines);
     return await page.evaluate(() => window.pipelines);
@@ -357,7 +489,9 @@ async function pipelines(server) {
         const cold = await loadAndroid(server, true);
         const warm = await loadAndroid(server, false);
         rows.push({ cold, warm });
-        console.error(`pipelines: run ${r + 1}: ${JSON.stringify({ cold, warm })}`);
+        console.error(
+          `pipelines: run ${r + 1}: ${JSON.stringify({ cold, warm })}`,
+        );
         continue;
       }
       const profile = await mkdtemp(join(tmpdir(), "orbis-pipelines-"));
@@ -365,7 +499,9 @@ async function pipelines(server) {
         const cold = await load(server, profile);
         const warm = await load(server, profile);
         rows.push({ cold, warm });
-        console.error(`pipelines: run ${r + 1}: ${JSON.stringify({ cold, warm })}`);
+        console.error(
+          `pipelines: run ${r + 1}: ${JSON.stringify({ cold, warm })}`,
+        );
       } finally {
         await rm(profile, { recursive: true, force: true });
       }
@@ -373,16 +509,26 @@ async function pipelines(server) {
   } finally {
     server.close();
   }
-  const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  const median = (xs) =>
+    [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
   const f = (x) => x.toFixed(0);
-  const { ua, adapter, shaders, render, compute, renderAsync, computeAsync } = rows[0].cold;
-  console.log(`\n${ua}; ${adapter}; medians of ${runs} ${android ? "runs" : "fresh profiles"}\n`);
-  console.log(`${shaders} shader modules, ${render} render and ${compute} compute pipelines ` +
-    `(${renderAsync} and ${computeAsync} compiled asynchronously first)\n`);
-  console.log("| | first draw / last pipeline / idle ms | GPU queue wait during load: total / largest / first submission ms | pipeline calls on the page ms |");
+  const { ua, adapter, shaders, render, compute, renderAsync, computeAsync } =
+    rows[0].cold;
+  console.log(
+    `\n${ua}; ${adapter}; medians of ${runs} ${android ? "runs" : "fresh profiles"}\n`,
+  );
+  console.log(
+    `${shaders} shader modules, ${render} render and ${compute} compute pipelines ` +
+      `(${renderAsync} and ${computeAsync} compiled asynchronously first)\n`,
+  );
+  console.log(
+    "| | first draw / last pipeline / idle ms | GPU queue wait during load: total / largest / first submission ms | pipeline calls on the page ms |",
+  );
   console.log("|---|---|---|---|");
   for (const key of ["cold", "warm"]) {
     const m = (k) => median(rows.map((r) => r[key][k]));
-    console.log(`| ${key} | ${f(m("firstDrawMs"))} / ${f(m("compiledMs"))} / ${f(m("idleMs"))} | ${f(m("waitTotalMs"))} / ${f(m("waitMaxMs"))} / ${f(m("firstWaitMs"))} | ${m("createMs").toFixed(1)} |`);
+    console.log(
+      `| ${key} | ${f(m("firstDrawMs"))} / ${f(m("compiledMs"))} / ${f(m("idleMs"))} | ${f(m("waitTotalMs"))} / ${f(m("waitMaxMs"))} / ${f(m("firstWaitMs"))} | ${m("createMs").toFixed(1)} |`,
+    );
   }
 }

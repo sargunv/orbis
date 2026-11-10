@@ -1,0 +1,27 @@
+amends "package://github.com/jdx/hk/releases/download/v2.11.1/hk@2.11.1#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.11.1/hk@2.11.1#/Builtins.pkl"
+
+steps {
+  ["dprint"] = Builtins.dprint
+  ["jactionlint"] = Builtins.jactionlint
+  ["shellcheck"] = Builtins.shellcheck
+  ["vp-check"] {
+    glob = List("web/**/*.ts", "web/**/*.js", "web/**/*.mjs")
+    check = "pnpm -C web exec vp check --no-fmt"
+    fix = "pnpm -C web exec vp check --no-fmt --fix"
+  }
+}
+
+// Clippy builds the workspace twice (native and wasm32), too slow for every
+// commit, so it runs on check and fix only.
+local clippy = new Step {
+  glob = List("**/*.rs", "**/Cargo.toml", "Cargo.lock")
+  check = "cargo xtask clippy"
+  fix = "cargo xtask clippy --fix"
+  exclusive = true
+}
+
+hooks {
+  ["check"] { steps { ["clippy"] = clippy } }
+  ["fix"] { fix = true; steps { ["clippy"] = clippy } }
+}

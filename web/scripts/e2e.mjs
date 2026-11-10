@@ -72,11 +72,19 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
 import { decodePng, encodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
-const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback").split(",");
+const arg = (name, fallback) =>
+  process.argv
+    .slice(2)
+    .find((a) => a.startsWith(`--${name}=`))
+    ?.slice(name.length + 3) ?? fallback;
+const only = arg(
+  "only",
+  "scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback",
+).split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -85,23 +93,85 @@ const CENTER = [SIZE / 2, SIZE / 2];
 // A grid of points with generated ids, drawn through a state lookup.
 const features = [];
 for (let i = 0; i < 1600; i++) {
-  features.push({ type: "Feature", properties: {}, geometry: { type: "Point",
-    coordinates: [139.735 + (i % 40) * 0.0004, 35.682 + Math.floor(i / 40) * 0.0003] } });
+  features.push({
+    type: "Feature",
+    properties: {},
+    geometry: {
+      type: "Point",
+      coordinates: [
+        139.735 + (i % 40) * 0.0004,
+        35.682 + Math.floor(i / 40) * 0.0003,
+      ],
+    },
+  });
 }
 const GRID = [
-  ["addSource", "grid", { type: "geojson", generateId: true, data: { type: "FeatureCollection", features } }],
-  ["addLayer", { id: "grid", type: "circle", source: "grid", paint: { "circle-radius": 4,
-    "circle-color": ["case", ["boolean", ["feature-state", "hover"], false], "#f00", "#00f"] } }],
+  [
+    "addSource",
+    "grid",
+    {
+      type: "geojson",
+      generateId: true,
+      data: { type: "FeatureCollection", features },
+    },
+  ],
+  [
+    "addLayer",
+    {
+      id: "grid",
+      type: "circle",
+      source: "grid",
+      paint: {
+        "circle-radius": 4,
+        "circle-color": [
+          "case",
+          ["boolean", ["feature-state", "hover"], false],
+          "#f00",
+          "#00f",
+        ],
+      },
+    },
+  ],
 ];
 const EDITS = [
   ["paint", [["setPaintProperty", "water", "fill-color", "#f00"]]],
-  ["binding flip", [["setPaintProperty", "road_minor", "line-color",
-    ["match", ["get", "class"], "minor", "#f00", "#00f"]]]],
-  ["filter", [["setFilter", "road_minor", ["==", ["get", "class"], "service"]]]],
-  ["layers", [["moveLayer", "water", "road_minor"], ["removeLayer", "park"]]],
+  [
+    "binding flip",
+    [
+      [
+        "setPaintProperty",
+        "road_minor",
+        "line-color",
+        ["match", ["get", "class"], "minor", "#f00", "#00f"],
+      ],
+    ],
+  ],
+  [
+    "filter",
+    [["setFilter", "road_minor", ["==", ["get", "class"], "service"]]],
+  ],
+  [
+    "layers",
+    [
+      ["moveLayer", "water", "road_minor"],
+      ["removeLayer", "park"],
+    ],
+  ],
   ["source", GRID],
-  ["source data", [["setSourceData", "grid", { type: "FeatureCollection", features: features.slice(0, 800) }]]],
-  ["feature state", [["setFeatureState", { source: "grid", id: 7 }, { hover: true }]]],
+  [
+    "source data",
+    [
+      [
+        "setSourceData",
+        "grid",
+        { type: "FeatureCollection", features: features.slice(0, 800) },
+      ],
+    ],
+  ],
+  [
+    "feature state",
+    [["setFeatureState", { source: "grid", id: 7 }, { hover: true }]],
+  ],
   ["global state", [["setGlobalStateProperty", "unused", 1]]],
 ];
 
@@ -110,7 +180,9 @@ async function open(browser, viewport) {
   const page = await browser.newPage({ viewport });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  page.on("console", (m) => { if (["error", "warning"].includes(m.type())) errors.push(m.text()); });
+  page.on("console", (m) => {
+    if (["error", "warning"].includes(m.type())) errors.push(m.text());
+  });
   return { page, errors };
 }
 
@@ -122,9 +194,22 @@ async function scenario(browser, server) {
 
 async function scenarioOn(browser, server, thread) {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
-  await page.goto(`${server.url}scenario.html${thread === "page" ? "?worker=0" : ""}`);
-  assert.equal(await page.evaluate(() => window.scenario.then((s) => s.map.inWorker)), thread === "worker", thread);
-  const scenario =(fn, arg) => page.evaluate(([fn, arg]) => window.scenario.then((s) => new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg)), [fn.toString(), arg]);
+  await page.goto(
+    `${server.url}scenario.html${thread === "page" ? "?worker=0" : ""}`,
+  );
+  assert.equal(
+    await page.evaluate(() => window.scenario.then((s) => s.map.inWorker)),
+    thread === "worker",
+    thread,
+  );
+  const scenario = (fn, arg) =>
+    page.evaluate(
+      ([fn, arg]) =>
+        window.scenario.then((s) =>
+          new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg),
+        ),
+      [fn.toString(), arg],
+    );
   const pixels = async () => decodePng(await page.locator("#map").screenshot());
   const pixel = (image, [x, y]) => {
     const i = (Math.round(y) * image.width + Math.round(x)) * image.channels;
@@ -132,7 +217,9 @@ async function scenarioOn(browser, server, thread) {
   };
 
   // The style loads, draws and idles: styleload, load, then idle.
-  const first = await scenario((s) => ({ events: s.events().map((e) => e.type) }));
+  const first = await scenario((s) => ({
+    events: s.events().map((e) => e.type),
+  }));
   assert.equal(first.events[0], "styleload", first.events.join());
   assert.ok(first.events.includes("load"), first.events.join());
   assert.equal(first.events.at(-1), "idle", first.events.join());
@@ -141,23 +228,44 @@ async function scenarioOn(browser, server, thread) {
   assert.deepEqual(pixel(image, [2, 2]), [255, 0, 0], "the background");
 
   // Picking and queries.
-  const picked = await scenario(async (s, [c, corner]) => ({
-    hit: await s.map.hitTest(c), none: await s.map.hitTest(corner),
-  }), [CENTER, [2, 2]]);
-  assert.deepEqual([picked.hit?.layer, picked.hit?.id, picked.hit?.source], ["box", "7", "box"]);
+  const picked = await scenario(
+    async (s, [c, corner]) => ({
+      hit: await s.map.hitTest(c),
+      none: await s.map.hitTest(corner),
+    }),
+    [CENTER, [2, 2]],
+  );
+  assert.deepEqual(
+    [picked.hit?.layer, picked.hit?.id, picked.hit?.source],
+    ["box", "7", "box"],
+  );
   assert.equal(picked.none, null);
-  const features = await scenario((s, c) => s.map.queryRenderedFeatures(c), CENTER);
+  const features = await scenario(
+    (s, c) => s.map.queryRenderedFeatures(c),
+    CENTER,
+  );
   assert.equal(features.length, 1);
-  assert.deepEqual([features[0].id, features[0].layer.id, features[0].geometry.type], [7, "box", "Polygon"]);
+  assert.deepEqual(
+    [features[0].id, features[0].layer.id, features[0].geometry.type],
+    [7, "box", "Polygon"],
+  );
 
   // Before the first frame, the map knew its size.
   const unframed = await scenario((s) => s.firstProjection);
   assert.deepEqual(unframed, CENTER, "projected before a frame");
 
   // Projection.
-  const projected = await scenario(async (s, c) => ({ p: await s.map.project([0, 0]), g: await s.map.unproject(c) }),
-    CENTER);
-  assert.ok(Math.hypot(projected.p[0] - CENTER[0], projected.p[1] - CENTER[1]) < 1e-6, String(projected.p));
+  const projected = await scenario(
+    async (s, c) => ({
+      p: await s.map.project([0, 0]),
+      g: await s.map.unproject(c),
+    }),
+    CENTER,
+  );
+  assert.ok(
+    Math.hypot(projected.p[0] - CENTER[0], projected.p[1] - CENTER[1]) < 1e-6,
+    String(projected.p),
+  );
   assert.ok(Math.hypot(...projected.g) < 1e-6, String(projected.g));
 
   // Padding moves the center; a camera's projection answers before any
@@ -165,7 +273,9 @@ async function scenarioOn(browser, server, thread) {
   const camera = await scenario(async (s) => {
     s.map.camera.jumpTo({ padding: { top: 40 } });
     const padded = await s.map.project([0, 0]);
-    const closer = await s.map.project([10, 0], { zoom: s.map.camera.current.zoom + 1 });
+    const closer = await s.map.project([10, 0], {
+      zoom: s.map.camera.current.zoom + 1,
+    });
     const zoom = s.map.camera.current.zoom;
     s.map.camera.jumpToFree(s.map.camera.free);
     await s.sync();
@@ -173,13 +283,27 @@ async function scenarioOn(browser, server, thread) {
     s.map.camera.jumpTo({ padding: 0 });
     return { padded, closer, zoom, after };
   });
-  assert.ok(Math.abs(camera.padded[1] - CENTER[1] - 20) < 1e-6, String(camera.padded));
-  assert.ok(Math.abs(camera.closer[0] - CENTER[0] - 2 ** camera.zoom * 1024 * 10 / 360) < 1e-6, String(camera.closer));
-  assert.ok(Math.abs(camera.after.zoom - camera.zoom) < 1e-9 && camera.after.padding.top === 40, JSON.stringify(camera.after));
+  assert.ok(
+    Math.abs(camera.padded[1] - CENTER[1] - 20) < 1e-6,
+    String(camera.padded),
+  );
+  assert.ok(
+    Math.abs(
+      camera.closer[0] - CENTER[0] - (2 ** camera.zoom * 1024 * 10) / 360,
+    ) < 1e-6,
+    String(camera.closer),
+  );
+  assert.ok(
+    Math.abs(camera.after.zoom - camera.zoom) < 1e-9 &&
+      camera.after.padding.top === 40,
+    JSON.stringify(camera.after),
+  );
 
   // An edit resolves to the generation whose frames show it.
   const generation = await scenario(async (s) => {
-    const generation = await s.map.edit((tx) => tx.setPaintProperty("box", "fill-color", "#00ff00"));
+    const generation = await s.map.edit((tx) =>
+      tx.setPaintProperty("box", "fill-color", "#00ff00"),
+    );
     await s.shows(generation);
     await s.idle();
     return generation;
@@ -190,37 +314,72 @@ async function scenarioOn(browser, server, thread) {
 
   // A pattern the style lacks is reported; added, it draws, and new
   // pixels replace it in place.
-  const solid = (rgb) => ({ width: 8, height: 8, data: Array.from({ length: 64 }, () => [...rgb, 255]).flat() });
+  const solid = (rgb) => ({
+    width: 8,
+    height: 8,
+    data: Array.from({ length: 64 }, () => [...rgb, 255]).flat(),
+  });
   const missing = await scenario(async (s) => {
     s.events();
-    await s.shows(await s.map.edit((tx) => tx.setPaintProperty("box", "fill-pattern", "dot")));
+    await s.shows(
+      await s.map.edit((tx) =>
+        tx.setPaintProperty("box", "fill-pattern", "dot"),
+      ),
+    );
     await s.idle();
     return { events: s.events(), has: await s.map.hasImage("dot") };
   });
-  assert.ok(missing.events.some((e) => e.type === "styleimagemissing" && e.id === "dot"), JSON.stringify(missing.events));
+  assert.ok(
+    missing.events.some(
+      (e) => e.type === "styleimagemissing" && e.id === "dot",
+    ),
+    JSON.stringify(missing.events),
+  );
   assert.equal(missing.has, false);
-  const added = await scenario(async (s, image) => {
-    const data = (rgb) => ({ ...image, data: new Uint8Array(image.data.map((v, i) => (i % 4 === 3 ? 255 : rgb[i % 4]))) });
-    await s.map.addImage("dot", data([255, 255, 0]), { pixelRatio: 1 });
-    const drawn = s.drawn();
-    const again = await s.map.addImage("dot", data([0, 0, 0])).then(() => null, (e) => String(e));
-    await drawn;
-    return { has: await s.map.hasImage("dot"), again };
-  }, solid([0, 0, 0]));
+  const added = await scenario(
+    async (s, image) => {
+      const data = (rgb) => ({
+        ...image,
+        data: new Uint8Array(
+          image.data.map((v, i) => (i % 4 === 3 ? 255 : rgb[i % 4])),
+        ),
+      });
+      await s.map.addImage("dot", data([255, 255, 0]), { pixelRatio: 1 });
+      const drawn = s.drawn();
+      const again = await s.map.addImage("dot", data([0, 0, 0])).then(
+        () => null,
+        (e) => String(e),
+      );
+      await drawn;
+      return { has: await s.map.hasImage("dot"), again };
+    },
+    solid([0, 0, 0]),
+  );
   assert.ok(added.has && added.again, JSON.stringify(added));
   image = await pixels();
   assert.deepEqual(pixel(image, CENTER), [255, 255, 0], "the added pattern");
-  await scenario(async (s, image) => {
-    const drawn = s.drawn();
-    await s.map.updateImage("dot", { ...image, data: new Uint8Array(image.data) });
-    await drawn;
-  }, solid([255, 0, 255]));
+  await scenario(
+    async (s, image) => {
+      const drawn = s.drawn();
+      await s.map.updateImage("dot", {
+        ...image,
+        data: new Uint8Array(image.data),
+      });
+      await drawn;
+    },
+    solid([255, 0, 255]),
+  );
   image = await pixels();
   assert.deepEqual(pixel(image, CENTER), [255, 0, 255], "the updated pattern");
   const removed = await scenario(async (s) => {
     await s.map.removeImage("dot");
-    const again = await s.map.removeImage("dot").then(() => null, (e) => String(e));
-    const generation = await s.map.edit((tx) => tx.setPaintProperty("box", "fill-pattern", null));
+    const again = await s.map.removeImage("dot").then(
+      () => null,
+      (e) => String(e),
+    );
+    const generation = await s.map.edit((tx) =>
+      tx.setPaintProperty("box", "fill-pattern", null),
+    );
     await s.shows(generation);
     await s.idle();
     return { has: await s.map.hasImage("dot"), again };
@@ -244,7 +403,13 @@ async function scenarioOn(browser, server, thread) {
     await s.idle();
     return { rolled, raised, arrived, roll, elevation };
   });
-  assert.deepEqual(moved, { rolled: 30, raised: 120, arrived: true, roll: 0, elevation: 0 });
+  assert.deepEqual(moved, {
+    rolled: 30,
+    raised: 120,
+    arrived: true,
+    roll: 0,
+    elevation: 0,
+  });
 
   // A drag moves the camera, with move events.
   await scenario((s) => s.events());
@@ -253,16 +418,31 @@ async function scenarioOn(browser, server, thread) {
   await page.mouse.down();
   for (const x of [50, 70, 100, 140]) await page.mouse.move(x, 100);
   await page.mouse.up();
-  const dragged = await scenario(async (s) => { await s.idle(); return { center: s.map.camera.current.center, events: s.events().map((e) => e.type) }; });
-  assert.ok(Math.abs(dragged.center[0] - before[0]) > 1, `${before} → ${dragged.center}`);
-  assert.ok(dragged.events.includes("movestart") && dragged.events.includes("moveend"), dragged.events.join());
+  const dragged = await scenario(async (s) => {
+    await s.idle();
+    return {
+      center: s.map.camera.current.center,
+      events: s.events().map((e) => e.type),
+    };
+  });
+  assert.ok(
+    Math.abs(dragged.center[0] - before[0]) > 1,
+    `${before} → ${dragged.center}`,
+  );
+  assert.ok(
+    dragged.events.includes("movestart") && dragged.events.includes("moveend"),
+    dragged.events.join(),
+  );
 
   // A click is reported where it was, and an idle map draws nothing.
   await page.mouse.click(...CENTER);
   // Gesture events are reported with the frame that follows.
   const clicked = await scenario(async (s) => {
     const events = [];
-    for (const until = performance.now() + 1000; !events.some((e) => e.type === "click") && performance.now() < until;) {
+    for (
+      const until = performance.now() + 1000;
+      !events.some((e) => e.type === "click") && performance.now() < until;
+    ) {
       await new Promise((resolve) => setTimeout(resolve, 10));
       events.push(...s.events());
     }
@@ -275,22 +455,49 @@ async function scenarioOn(browser, server, thread) {
   assert.deepEqual(quiet, { rafs: 0, renders: 0 }, "idle draws nothing");
 
   // Errors: an edit of a layer that isn't there fails, and the map keeps its style.
-  const rejected = await scenario((s) => s.map.edit((tx) => tx.setPaintProperty("nope", "fill-color", "#000"))
-    .then(() => null, (e) => String(e)));
+  const rejected = await scenario((s) =>
+    s.map
+      .edit((tx) => tx.setPaintProperty("nope", "fill-color", "#000"))
+      .then(
+        () => null,
+        (e) => String(e),
+      ),
+  );
   assert.ok(rejected, "a bad edit rejects");
-  const hit = await scenario(async (s) => (await s.map.hitTest(await s.map.project([0, 0])))?.layer);
+  const hit = await scenario(
+    async (s) => (await s.map.hitTest(await s.map.project([0, 0])))?.layer,
+  );
   assert.equal(hit, "box");
 
   // A clustered source: its points' cluster, whose queries answer.
   const clustered = await scenario(async (s) => {
-    const features = Array.from({ length: 12 }, (_, i) => ({ type: "Feature", id: i, properties: { n: i },
-      geometry: { type: "Point", coordinates: [i * 0.0001, 0] } }));
-    await s.shows(s.map.edit((tx) => tx
-      .addSource("points", { type: "geojson", cluster: true, clusterProperties: { sum: ["+", ["get", "n"]] },
-        data: { type: "FeatureCollection", features } })
-      .addLayer({ id: "points", type: "circle", source: "points", paint: { "circle-radius": 6 } })));
+    const features = Array.from({ length: 12 }, (_, i) => ({
+      type: "Feature",
+      id: i,
+      properties: { n: i },
+      geometry: { type: "Point", coordinates: [i * 0.0001, 0] },
+    }));
+    await s.shows(
+      s.map.edit((tx) =>
+        tx
+          .addSource("points", {
+            type: "geojson",
+            cluster: true,
+            clusterProperties: { sum: ["+", ["get", "n"]] },
+            data: { type: "FeatureCollection", features },
+          })
+          .addLayer({
+            id: "points",
+            type: "circle",
+            source: "points",
+            paint: { "circle-radius": 6 },
+          }),
+      ),
+    );
     await s.idle();
-    const [cluster] = await s.map.querySourceFeatures("points", { filter: ["has", "point_count"] });
+    const [cluster] = await s.map.querySourceFeatures("points", {
+      filter: ["has", "point_count"],
+    });
     const id = cluster.properties.cluster_id;
     return {
       sum: cluster.properties.sum,
@@ -301,16 +508,48 @@ async function scenarioOn(browser, server, thread) {
   });
   assert.equal(clustered.sum, 66, JSON.stringify(clustered));
   assert.equal(clustered.leaves, 2, JSON.stringify(clustered));
-  assert.ok(clustered.zoom >= 1 && clustered.children > 0, JSON.stringify(clustered));
+  assert.ok(
+    clustered.zoom >= 1 && clustered.children > 0,
+    JSON.stringify(clustered),
+  );
 
   // A canvas source shows the pixels handed in.
   await scenario(async (s) => {
-    await s.shows(s.map.edit((tx) => tx
-      .addSource("drawing", { type: "canvas", canvas: "drawing",
-        coordinates: [[-120, 70], [120, 70], [120, -70], [-120, -70]] })
-      .addLayer({ id: "drawing", type: "raster", source: "drawing", paint: { "raster-fade-duration": 0 } })));
-    s.map.camera.jumpTo({ center: [0, 0], zoom: 0, bearing: 0, pitch: 0, roll: 0 });
-    s.map.setSourceFrame("drawing", { width: 2, height: 2, data: new Uint8Array(16).map((_, i) => (i % 4 === 1 || i % 4 === 3 ? 255 : 0)) });
+    await s.shows(
+      s.map.edit((tx) =>
+        tx
+          .addSource("drawing", {
+            type: "canvas",
+            canvas: "drawing",
+            coordinates: [
+              [-120, 70],
+              [120, 70],
+              [120, -70],
+              [-120, -70],
+            ],
+          })
+          .addLayer({
+            id: "drawing",
+            type: "raster",
+            source: "drawing",
+            paint: { "raster-fade-duration": 0 },
+          }),
+      ),
+    );
+    s.map.camera.jumpTo({
+      center: [0, 0],
+      zoom: 0,
+      bearing: 0,
+      pitch: 0,
+      roll: 0,
+    });
+    s.map.setSourceFrame("drawing", {
+      width: 2,
+      height: 2,
+      data: new Uint8Array(16).map((_, i) =>
+        i % 4 === 1 || i % 4 === 3 ? 255 : 0,
+      ),
+    });
     await s.idle();
   });
   image = await pixels();
@@ -318,47 +557,128 @@ async function scenarioOn(browser, server, thread) {
 
   // A diff changes a GeoJSON source's data in the job workers.
   const updated = await scenario(async (s, c) => {
-    await s.shows(s.map.edit((tx) => tx.updateSourceData("box",
-      { update: [{ id: 7, addOrUpdateProperties: [{ key: "name", value: "seven" }] }] })));
+    await s.shows(
+      s.map.edit((tx) =>
+        tx.updateSourceData("box", {
+          update: [
+            { id: 7, addOrUpdateProperties: [{ key: "name", value: "seven" }] },
+          ],
+        }),
+      ),
+    );
     await s.idle();
-    return (await s.map.queryRenderedFeatures(c, { layers: ["box"] }))[0]?.properties;
+    return (await s.map.queryRenderedFeatures(c, { layers: ["box"] }))[0]
+      ?.properties;
   }, CENTER);
   assert.deepEqual(updated, { name: "seven" });
 
   // The style reads back.
   const readback = await scenario(async (s) => ({
-    order: await s.map.getLayersOrder(), sources: await s.map.getSourceIds(), box: await s.map.getLayer("box"),
+    order: await s.map.getLayersOrder(),
+    sources: await s.map.getSourceIds(),
+    box: await s.map.getLayer("box"),
     none: await s.map.getLayer("nope"),
   }));
   assert.deepEqual(readback.order.slice(0, 2), ["background", "box"]);
-  assert.ok(readback.sources.includes("box") && readback.box.type === "fill" && readback.none === undefined, JSON.stringify(readback));
+  assert.ok(
+    readback.sources.includes("box") &&
+      readback.box.type === "fill" &&
+      readback.none === undefined,
+    JSON.stringify(readback),
+  );
 
   // A request transform rewrites what the job workers fetch.
   await scenario(async (s) => {
-    const square = { type: "Feature", properties: {}, geometry: { type: "Polygon",
-      coordinates: [[[-5, -5], [5, -5], [5, 5], [-5, 5], [-5, -5]]] } };
-    s.setRequestTransform((url) => (url.startsWith("app://")
-      ? { url: `data:application/json,${encodeURIComponent(JSON.stringify(square))}`, headers: { "X-Orbis": "1" } }
-      : undefined));
-    await s.shows(s.map.edit((tx) => tx
-      .addSource("remote", { type: "geojson", data: "app://square.json" })
-      .addLayer({ id: "remote", type: "fill", source: "remote", paint: { "fill-color": "#00ffff" } })));
+    const square = {
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [-5, -5],
+            [5, -5],
+            [5, 5],
+            [-5, 5],
+            [-5, -5],
+          ],
+        ],
+      },
+    };
+    s.setRequestTransform((url) =>
+      url.startsWith("app://")
+        ? {
+            url: `data:application/json,${encodeURIComponent(JSON.stringify(square))}`,
+            headers: { "X-Orbis": "1" },
+          }
+        : undefined,
+    );
+    await s.shows(
+      s.map.edit((tx) =>
+        tx
+          .addSource("remote", { type: "geojson", data: "app://square.json" })
+          .addLayer({
+            id: "remote",
+            type: "fill",
+            source: "remote",
+            paint: { "fill-color": "#00ffff" },
+          }),
+      ),
+    );
     await s.idle();
     s.setRequestTransform(undefined);
   });
   image = await pixels();
-  assert.deepEqual(pixel(image, CENTER), [0, 255, 255], "the transformed source");
+  assert.deepEqual(
+    pixel(image, CENTER),
+    [0, 255, 255],
+    "the transformed source",
+  );
 
   // A source the app feeds: the map asks for its tile, the app answers.
   await scenario(async (s) => {
     s.map.on("tilerequest", ({ source, z, x, y }) => {
       if (source !== "app") return;
-      s.map.setHostTile("app", { z, x, y }, { shapes: { type: "Feature", properties: {}, geometry: { type: "Polygon",
-        coordinates: [[[-20, -20], [20, -20], [20, 20], [-20, 20], [-20, -20]]] } } });
+      s.map.setHostTile(
+        "app",
+        { z, x, y },
+        {
+          shapes: {
+            type: "Feature",
+            properties: {},
+            geometry: {
+              type: "Polygon",
+              coordinates: [
+                [
+                  [-20, -20],
+                  [20, -20],
+                  [20, 20],
+                  [-20, 20],
+                  [-20, -20],
+                ],
+              ],
+            },
+          },
+        },
+      );
     });
-    await s.shows(s.map.edit((tx) => tx
-      .addSource("app", { type: "vector", tiles: ["orbis-host:"], maxzoom: 0 })
-      .addLayer({ id: "app", type: "fill", source: "app", "source-layer": "shapes", paint: { "fill-color": "#ff00ff" } })));
+    await s.shows(
+      s.map.edit((tx) =>
+        tx
+          .addSource("app", {
+            type: "vector",
+            tiles: ["orbis-host:"],
+            maxzoom: 0,
+          })
+          .addLayer({
+            id: "app",
+            type: "fill",
+            source: "app",
+            "source-layer": "shapes",
+            paint: { "fill-color": "#ff00ff" },
+          }),
+      ),
+    );
     await s.idle();
   });
   image = await pixels();
@@ -371,22 +691,36 @@ async function scenarioOn(browser, server, thread) {
 async function edits(browser, server) {
   const { page, errors } = await open(browser, { width: 1024, height: 768 });
   await page.goto(`${server.url}?style=tokyo-mvt#15/35.685/139.74`);
-  const idle = () => page.waitForFunction(() =>
-    document.getElementById("app").dataset.map === "idle", null, { timeout: 60_000 });
+  const idle = () =>
+    page.waitForFunction(
+      () => document.getElementById("app").dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
   await idle();
   for (const [name, commands] of EDITS) {
     const started = Date.now();
     const generation = await page.evaluate(
-      (commands) => globalThis.orbis.edit((tx) => {
-        for (const [call, ...args] of commands) tx[call](...args);
-      }), commands);
+      (commands) =>
+        globalThis.orbis.edit((tx) => {
+          for (const [call, ...args] of commands) tx[call](...args);
+        }),
+      commands,
+    );
     await page.waitForTimeout(50);
     await idle();
-    console.log(`edits: ${name} → generation ${generation}, idle in ${Date.now() - started} ms`);
+    console.log(
+      `edits: ${name} → generation ${generation}, idle in ${Date.now() - started} ms`,
+    );
   }
   // A placement worker that traps is replaced: labels place again.
-  const labels = () => page.evaluate(async () =>
-    (await globalThis.orbis.map.queryRenderedFeatures()).filter((f) => f.layer?.type === "symbol").length);
+  const labels = () =>
+    page.evaluate(
+      async () =>
+        (await globalThis.orbis.map.queryRenderedFeatures()).filter(
+          (f) => f.layer?.type === "symbol",
+        ).length,
+    );
   const before = await labels();
   await page.evaluate(() => globalThis.orbis.trapPlacementWorker());
   await page.waitForTimeout(100);
@@ -394,50 +728,124 @@ async function edits(browser, server) {
   await page.waitForTimeout(50);
   await idle();
   const after = await labels();
-  assert.ok(before > 0 && after > 0, `labels before the trap ${before}, after ${after}`);
-  console.log(`edits: placement worker trapped and replaced; ${before} → ${after} labels`);
+  assert.ok(
+    before > 0 && after > 0,
+    `labels before the trap ${before}, after ${after}`,
+  );
+  console.log(
+    `edits: placement worker trapped and replaced; ${before} → ${after} labels`,
+  );
 
   // Job workers that trap while a new view loads are replaced, and the
   // new ones have the style with the app's edits: the loads lost go again,
   // and the view's tiles draw without errors, the grid's among them.
-  await page.evaluate(() => globalThis.orbis.map.camera.jumpTo({ center: [139.741, 35.6835], zoom: 16.2 }));
-  await page.waitForFunction(() => document.getElementById("app").dataset.map !== "idle");
+  await page.evaluate(() =>
+    globalThis.orbis.map.camera.jumpTo({
+      center: [139.741, 35.6835],
+      zoom: 16.2,
+    }),
+  );
+  await page.waitForFunction(
+    () => document.getElementById("app").dataset.map !== "idle",
+  );
   await page.waitForTimeout(20);
   await page.evaluate(() => globalThis.orbis.trapJobWorkers());
   await page.waitForTimeout(50);
   await idle();
   const drawn = await page.evaluate(async () => {
     const { map } = globalThis.orbis;
-    return { all: (await map.queryRenderedFeatures()).length, grid: (await map.queryRenderedFeatures(undefined, { layers: ["grid"] })).length };
+    return {
+      all: (await map.queryRenderedFeatures()).length,
+      grid: (await map.queryRenderedFeatures(undefined, { layers: ["grid"] }))
+        .length,
+    };
   });
-  assert.ok(drawn.all > 0 && drawn.grid > 0, `features after the trap ${JSON.stringify(drawn)}`);
-  console.log(`edits: job workers trapped and replaced; ${drawn.all} features drawn, ${drawn.grid} of the grid`);
+  assert.ok(
+    drawn.all > 0 && drawn.grid > 0,
+    `features after the trap ${JSON.stringify(drawn)}`,
+  );
+  console.log(
+    `edits: job workers trapped and replaced; ${drawn.all} features drawn, ${drawn.grid} of the grid`,
+  );
 
   // A device loss keeps what the app set at run time:
   // feature state (the grid's feature 7 above), images, a
   // GeoJSON source's diffed data and a transformed request.
   const recovered = await page.evaluate(async () => {
     const { map, setRequestTransform } = globalThis.orbis;
-    map.camera.jumpTo({ center: [139.74, 35.688], zoom: 15, bearing: 0, pitch: 0 });
-    map.addImage("e2e-dot", { width: 2, height: 2, data: new Uint8Array(16).fill(255) });
+    map.camera.jumpTo({
+      center: [139.74, 35.688],
+      zoom: 15,
+      bearing: 0,
+      pitch: 0,
+    });
+    map.addImage("e2e-dot", {
+      width: 2,
+      height: 2,
+      data: new Uint8Array(16).fill(255),
+    });
     // Squares north of the grid, one per source.
-    const box = (x) => [[x, 35.691], [x + 0.002, 35.691], [x + 0.002, 35.693], [x, 35.693], [x, 35.691]];
-    const square = (x, properties = {}) => ({ type: "Feature", id: 1, properties, geometry: { type: "Polygon", coordinates: [box(x)] } });
+    const box = (x) => [
+      [x, 35.691],
+      [x + 0.002, 35.691],
+      [x + 0.002, 35.693],
+      [x, 35.693],
+      [x, 35.691],
+    ];
+    const square = (x, properties = {}) => ({
+      type: "Feature",
+      id: 1,
+      properties,
+      geometry: { type: "Polygon", coordinates: [box(x)] },
+    });
     const centre = (x) => [x + 0.001, 35.692];
     const [geoX, remoteX] = [139.734, 139.744];
-    setRequestTransform((url) => (url.startsWith("app://")
-      ? { url: `data:application/json,${encodeURIComponent(JSON.stringify(square(remoteX)))}` } : undefined));
-    const fill = (id, color, extra = {}) => ({ id, type: "fill", source: id, paint: { "fill-color": color }, ...extra });
-    await map.edit((tx) => tx
-      .addSource("e2e-geo", { type: "geojson", data: { type: "FeatureCollection", features: [square(geoX, { name: "a" })] } })
-      .addLayer(fill("e2e-geo", "#ff0000"))
-      .addSource("e2e-remote", { type: "geojson", data: "app://square.json" })
-      .addLayer(fill("e2e-remote", "#00ffff")));
-    await map.edit((tx) => tx.updateSourceData("e2e-geo", { update: [{ id: 1, addOrUpdateProperties: [{ key: "name", value: "b" }] }] }));
+    setRequestTransform((url) =>
+      url.startsWith("app://")
+        ? {
+            url: `data:application/json,${encodeURIComponent(JSON.stringify(square(remoteX)))}`,
+          }
+        : undefined,
+    );
+    const fill = (id, color, extra = {}) => ({
+      id,
+      type: "fill",
+      source: id,
+      paint: { "fill-color": color },
+      ...extra,
+    });
+    await map.edit((tx) =>
+      tx
+        .addSource("e2e-geo", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: [square(geoX, { name: "a" })],
+          },
+        })
+        .addLayer(fill("e2e-geo", "#ff0000"))
+        .addSource("e2e-remote", { type: "geojson", data: "app://square.json" })
+        .addLayer(fill("e2e-remote", "#00ffff")),
+    );
+    await map.edit((tx) =>
+      tx.updateSourceData("e2e-geo", {
+        update: [
+          { id: 1, addOrUpdateProperties: [{ key: "name", value: "b" }] },
+        ],
+      }),
+    );
     await map.once("idle");
     const shown = async () => {
-      const query = async (id, x) => (await map.queryRenderedFeatures(await map.project(centre(x)), { layers: [id] }))[0]?.properties ?? null;
-      return { geo: await query("e2e-geo", geoX), remote: await query("e2e-remote", remoteX) };
+      const query = async (id, x) =>
+        (
+          await map.queryRenderedFeatures(await map.project(centre(x)), {
+            layers: [id],
+          })
+        )[0]?.properties ?? null;
+      return {
+        geo: await query("e2e-geo", geoX),
+        remote: await query("e2e-remote", remoteX),
+      };
     };
     const before = await shown();
     const restored = map.once("restored");
@@ -449,17 +857,28 @@ async function edits(browser, server) {
     const after = await shown();
     map.edit((tx) => tx.removeLayer("e2e-geo").removeLayer("e2e-remote"));
     setRequestTransform(undefined);
-    return { image: await map.hasImage("e2e-dot"), state: feature?.state, before, after };
+    return {
+      image: await map.hasImage("e2e-dot"),
+      state: feature?.state,
+      before,
+      after,
+    };
   });
   const sources = { geo: { name: "b" }, remote: {} };
   assert.deepEqual(recovered.before, sources, JSON.stringify(recovered));
-  assert.deepEqual(recovered, { image: true, state: { hover: true }, before: sources, after: sources },
-    JSON.stringify(recovered));
-  console.log("edits: lost the GPU, recovered with the app's state and sources");
+  assert.deepEqual(
+    recovered,
+    { image: true, state: { hover: true }, before: sources, after: sources },
+    JSON.stringify(recovered),
+  );
+  console.log(
+    "edits: lost the GPU, recovered with the app's state and sources",
+  );
 
   const cost = await page.evaluate(async (writes) => {
     const { map } = globalThis.orbis;
-    const write = (i) => map.setFeatureState({ source: "grid", id: 123 }, { hover: i % 2 === 0 });
+    const write = (i) =>
+      map.setFeatureState({ source: "grid", id: 123 }, { hover: i % 2 === 0 });
     // Frames' render times over `writes` frames, each asked for by `poke`.
     const frames = async (poke) => {
       let total = 0;
@@ -478,8 +897,10 @@ async function edits(browser, server) {
     const edits = performance.now() - t;
     return { still, written, edit: edits / writes };
   }, writes);
-  console.log(`edits: feature-state write: edit call ${cost.edit.toFixed(4)} ms; frame with a write ` +
-    `${cost.written.toFixed(3)} ms, without ${cost.still.toFixed(3)} ms (${writes} frames each)`);
+  console.log(
+    `edits: feature-state write: edit call ${cost.edit.toFixed(4)} ms; frame with a write ` +
+      `${cost.written.toFixed(3)} ms, without ${cost.still.toFixed(3)} ms (${writes} frames each)`,
+  );
   assert.deepEqual(errors, []);
   await page.close();
 }
@@ -488,8 +909,12 @@ async function playground(browser, server) {
   const { page, errors } = await open(browser, { width: 1280, height: 800 });
   const style = encodeURIComponent(`${server.url}e2e/data/playground.json`);
   await page.goto(`${server.url}?style=${style}#15/35.6835/139.7655`);
-  const idle = () => page.waitForFunction(() => document.querySelector("#app").dataset.map === "idle", null,
-    { timeout: 60_000 });
+  const idle = () =>
+    page.waitForFunction(
+      () => document.querySelector("#app").dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
   await idle();
   // The topmost feature at the centre: station 31, by hit test and by query.
   const centre = await page.evaluate(async () => {
@@ -497,44 +922,94 @@ async function playground(browser, server) {
     const point = [map.canvas.clientWidth / 2, map.canvas.clientHeight / 2];
     const { layer, id, source, sourceLayer } = await map.hitTest(point);
     const [feature] = await map.queryRenderedFeatures(point);
-    return { hit: { layer, id, source, sourceLayer },
-      feature: feature && { layer: feature.layer?.id, id: String(feature.id), kind: feature.properties.kind } };
+    return {
+      hit: { layer, id, source, sourceLayer },
+      feature: feature && {
+        layer: feature.layer?.id,
+        id: String(feature.id),
+        kind: feature.properties.kind,
+      },
+    };
   });
-  assert.deepEqual(centre.hit, { layer: "stations", id: "31", source: "district", sourceLayer: null });
-  assert.deepEqual(centre.feature, { layer: "stations", id: "31", kind: "station" });
+  assert.deepEqual(centre.hit, {
+    layer: "stations",
+    id: "31",
+    source: "district",
+    sourceLayer: null,
+  });
+  assert.deepEqual(centre.feature, {
+    layer: "stations",
+    id: "31",
+    kind: "station",
+  });
 
   // The style's own hover state, through feature state: the station's
   // pixels turn the style's hover colour, and back when the state goes.
   // A state write keeps the style's generation: the frame that shows it
   // is polled for.
-  const station = () => page.evaluate(async () => {
-    const image = await app.map.readPixels();
-    const i = (Math.floor(image.height / 2) * image.width + Math.floor(image.width / 2)) * 4;
-    return [...image.data.slice(i, i + 3)];
-  });
+  const station = () =>
+    page.evaluate(async () => {
+      const image = await app.map.readPixels();
+      const i =
+        (Math.floor(image.height / 2) * image.width +
+          Math.floor(image.width / 2)) *
+        4;
+      return Array.from(image.data.slice(i, i + 3));
+    });
   assert.deepEqual(await station(), [255, 255, 255], "the station draws white");
-  await page.evaluate(() => app.map.setFeatureState({ source: "district", id: 31 }, { hover: true }));
-  await settles(page, station, [0xe7, 0x5f, 0x35], "hover state turns the station orange");
-  await page.evaluate(() => app.map.removeFeatureState({ source: "district", id: 31 }, "hover"));
-  await settles(page, station, [255, 255, 255], "removing the state draws the station as before");
+  await page.evaluate(() =>
+    app.map.setFeatureState({ source: "district", id: 31 }, { hover: true }),
+  );
+  await settles(
+    page,
+    station,
+    [0xe7, 0x5f, 0x35],
+    "hover state turns the station orange",
+  );
+  await page.evaluate(() =>
+    app.map.removeFeatureState({ source: "district", id: 31 }, "hover"),
+  );
+  await settles(
+    page,
+    station,
+    [255, 255, 255],
+    "removing the state draws the station as before",
+  );
 
   // Paint and layout edits show in the style; a bad edit rejects and applies none.
-  await page.evaluate(() => app.map.edit((tx) => {
-    tx.setPaintProperty("paper", "background-color", "#ccddee");
-    tx.setLayoutProperty("route", "visibility", "none");
-  }));
-  const read = () => page.evaluate(async () => {
-    const style = await app.map.getStyle();
-    const layer = (id) => style.layers.find((l) => l.id === id);
-    return { paper: layer("paper").paint["background-color"], route: layer("route").layout?.visibility };
-  });
+  await page.evaluate(() =>
+    app.map.edit((tx) => {
+      tx.setPaintProperty("paper", "background-color", "#ccddee");
+      tx.setLayoutProperty("route", "visibility", "none");
+    }),
+  );
+  const read = () =>
+    page.evaluate(async () => {
+      const style = await app.map.getStyle();
+      const layer = (id) => style.layers.find((l) => l.id === id);
+      return {
+        paper: layer("paper").paint["background-color"],
+        route: layer("route").layout?.visibility,
+      };
+    });
   assert.deepEqual(await read(), { paper: "#ccddee", route: "none" });
-  const rejected = await page.evaluate(() => app.map.edit((tx) => {
-    tx.setPaintProperty("paper", "background-color", "#aabbcc");
-    tx.setPaintProperty("nope", "fill-color", "#000");
-  }).then(() => false, () => true));
+  const rejected = await page.evaluate(() =>
+    app.map
+      .edit((tx) => {
+        tx.setPaintProperty("paper", "background-color", "#aabbcc");
+        tx.setPaintProperty("nope", "fill-color", "#000");
+      })
+      .then(
+        () => false,
+        () => true,
+      ),
+  );
   assert.ok(rejected, "an edit naming a missing layer rejects");
-  assert.deepEqual(await read(), { paper: "#ccddee", route: "none" }, "a rejected edit applies none of its calls");
+  assert.deepEqual(
+    await read(),
+    { paper: "#ccddee", route: "none" },
+    "a rejected edit applies none of its calls",
+  );
 
   // Measure frame acknowledgements, rather than elapsed wall time.
   const measurements = await page.evaluate(async () => {
@@ -543,22 +1018,44 @@ async function playground(browser, server) {
       const before = app.map.stats;
       const listener = (e) => frames.push(e.detail);
       window.addEventListener("orbis-frame", listener);
-      const generation = await app.map.edit((tx) => { for (const [method, ...args] of commands) tx[method](...args); });
+      const generation = await app.map.edit((tx) => {
+        for (const [method, ...args] of commands) tx[method](...args);
+      });
       await new Promise((resolve) => {
         if (frames.some((f) => f.generation >= generation)) return resolve();
-        const done = (e) => { if (e.detail.generation >= generation) { window.removeEventListener("orbis-frame", done); resolve(); } };
+        const done = (e) => {
+          if (e.detail.generation >= generation) {
+            window.removeEventListener("orbis-frame", done);
+            resolve();
+          }
+        };
         window.addEventListener("orbis-frame", done);
       });
       window.removeEventListener("orbis-frame", listener);
       const visible = frames.find((f) => f.generation >= generation);
-      return { name, frames: frames.findIndex((f) => f.generation >= generation) + 1, generation,
+      return {
+        name,
+        frames: frames.findIndex((f) => f.generation >= generation) + 1,
+        generation,
         meshUploads: visible.meshesUploaded - before.meshesUploaded,
-        rowUploads: visible.rowsUploaded - before.rowsUploaded };
+        rowUploads: visible.rowsUploaded - before.rowsUploaded,
+      };
     };
     return [
-      await apply("paint", [["setPaintProperty", "stations", "circle-color", "#345678"]]),
-      await apply("binding flip", [["setPaintProperty", "stations", "circle-color", ["match", ["get", "kind"], "station", "#aabbcc", "#ffffff"]]]),
-      await apply("layout", [["setLayoutProperty", "route", "line-cap", "round"]]),
+      await apply("paint", [
+        ["setPaintProperty", "stations", "circle-color", "#345678"],
+      ]),
+      await apply("binding flip", [
+        [
+          "setPaintProperty",
+          "stations",
+          "circle-color",
+          ["match", ["get", "kind"], "station", "#aabbcc", "#ffffff"],
+        ],
+      ]),
+      await apply("layout", [
+        ["setLayoutProperty", "route", "line-cap", "round"],
+      ]),
     ];
   });
   console.log(`playground: ${JSON.stringify(measurements)}`);
@@ -566,20 +1063,48 @@ async function playground(browser, server) {
   assert.equal(measurements[1].meshUploads, 0);
 
   // A style replaced whole drops its features: nothing to hit at the centre.
-  await page.evaluate(() => app.map.edit((tx) => tx.setStyle({ version: 8, sources: {},
-    layers: [{ id: "paper", type: "background", paint: { "background-color": "#aabbcc" } }] })));
-  await settles(page, () => page.evaluate(() => app.map.hitTest([app.map.canvas.clientWidth / 2, app.map.canvas.clientHeight / 2])),
-    null, "nothing to hit once the style is replaced");
+  await page.evaluate(() =>
+    app.map.edit((tx) =>
+      tx.setStyle({
+        version: 8,
+        sources: {},
+        layers: [
+          {
+            id: "paper",
+            type: "background",
+            paint: { "background-color": "#aabbcc" },
+          },
+        ],
+      }),
+    ),
+  );
+  await settles(
+    page,
+    () =>
+      page.evaluate(() =>
+        app.map.hitTest([
+          app.map.canvas.clientWidth / 2,
+          app.map.canvas.clientHeight / 2,
+        ]),
+      ),
+    null,
+    "nothing to hit once the style is replaced",
+  );
   assert.deepEqual(errors, []);
   await page.close();
-  console.log("playground: station 31 on top, hover state, edits, a rejected edit and a replaced style passed");
+  console.log(
+    "playground: station 31 on top, hover state, edits, a rejected edit and a replaced style passed",
+  );
 }
 
 /** The Tokyo extract's style with its URLs absolute under the e2e mount, so a copy elsewhere draws alike. */
 async function tokyoStyle(server) {
   const text = await readFile(join(DATA, "tokyo-mvt.json"), "utf8");
-  return JSON.parse(text.replaceAll('"./', `"${server.url}e2e/data/`)
-    .replaceAll("pmtiles://./", `pmtiles://${server.url}e2e/data/`));
+  return JSON.parse(
+    text
+      .replaceAll('"./', `"${server.url}e2e/data/`)
+      .replaceAll("pmtiles://./", `pmtiles://${server.url}e2e/data/`),
+  );
 }
 
 async function switching(browser, server) {
@@ -587,76 +1112,115 @@ async function switching(browser, server) {
   // Two basemaps on the one source: the second's water is red, and each
   // eases paint over a second and a half.
   const transition = { duration: 1500, delay: 0 };
-  const plain = { ...await tokyoStyle(server), transition };
+  const plain = { ...(await tokyoStyle(server)), transition };
   const red = structuredClone(plain);
   red.layers.find((l) => l.id === "water").paint["fill-color"] = "#ff0000";
   await writeFile(join(server.styles, "plain.json"), JSON.stringify(plain));
   await writeFile(join(server.styles, "red.json"), JSON.stringify(red));
-  const [first, second] = ["plain", "red"].map((name) => `${server.url}e2e/styles/${name}.json`);
-  const idle = () => page.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null,
-    { timeout: 60_000 });
+  const [first, second] = ["plain", "red"].map(
+    (name) => `${server.url}e2e/styles/${name}.json`,
+  );
+  const idle = () =>
+    page.waitForFunction(
+      () => document.getElementById("app").dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
   // The extract's range requests, from the page and its workers.
   let archive = 0;
-  page.on("request", (r) => { if (r.url().includes("tokyo-mvt.pmtiles")) archive++; });
-  await page.goto(`${server.url}?style=${encodeURIComponent(first)}#15/35.685/139.74`);
+  page.on("request", (r) => {
+    if (r.url().includes("tokyo-mvt.pmtiles")) archive++;
+  });
+  await page.goto(
+    `${server.url}?style=${encodeURIComponent(first)}#15/35.685/139.74`,
+  );
   await idle();
   assert.ok(archive > 0, "the first load reads the archive");
 
   // A point the water draws, and its colour through a switch to `style`.
   // Points on the map itself, not under its controls.
-  const onMap = (test) => page.evaluate(async (test) => {
-    const canvas = app.map.canvas;
-    const rect = canvas.getBoundingClientRect();
-    for (let y = 20; y < canvas.clientHeight; y += 20) {
-      for (let x = 20; x < canvas.clientWidth; x += 20) {
-        if (document.elementFromPoint(rect.x + x, rect.y + y) !== canvas) continue;
-        const hit = await app.map.hitTest([x, y]);
-        if (hit && (test === "any" || hit.layer === test)) return [x, y];
+  const onMap = (test) =>
+    page.evaluate(async (test) => {
+      const canvas = app.map.canvas;
+      const rect = canvas.getBoundingClientRect();
+      for (let y = 20; y < canvas.clientHeight; y += 20) {
+        for (let x = 20; x < canvas.clientWidth; x += 20) {
+          if (document.elementFromPoint(rect.x + x, rect.y + y) !== canvas)
+            continue;
+          const hit = await app.map.hitTest([x, y]);
+          if (hit && (test === "any" || hit.layer === test)) return [x, y];
+        }
       }
-    }
-    return null;
-  }, test);
+      return null;
+    }, test);
   const water = await onMap("water");
   assert.ok(water, "the view has water");
   const through = async (style) => {
     archive = 0;
-    const seen = await page.evaluate(async ([style, [x, y]]) => {
-      const { map } = app;
-      const colour = async () => {
-        const image = await map.readPixels();
-        const ratio = image.width / map.canvas.clientWidth;
-        const i = (Math.round(y * ratio) * image.width + Math.round(x * ratio)) * 4;
-        return [...image.data.slice(i, i + 3)];
-      };
-      const before = await colour();
-      const loaded = map.once("styleload");
-      if (style) app.show(style); else history.back();
-      const late = new Promise((_, reject) => setTimeout(() => reject(new Error("no styleload")), 20_000));
-      await Promise.race([loaded, late]);
-      // The transition takes 1.5 s: past it, the colour has settled.
-      const colours = [];
-      for (const until = performance.now() + 2500; performance.now() < until;) colours.push(await colour());
-      return { before, colours, after: await colour() };
-    }, [style, water]);
+    const seen = await page.evaluate(
+      async ([style, [x, y]]) => {
+        const { map } = app;
+        const colour = async () => {
+          const image = await map.readPixels();
+          const ratio = image.width / map.canvas.clientWidth;
+          const i =
+            (Math.round(y * ratio) * image.width + Math.round(x * ratio)) * 4;
+          return Array.from(image.data.slice(i, i + 3));
+        };
+        const before = await colour();
+        const loaded = map.once("styleload");
+        if (style) app.show(style);
+        else history.back();
+        const late = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("no styleload")), 20_000),
+        );
+        await Promise.race([loaded, late]);
+        // The transition takes 1.5 s: past it, the colour has settled.
+        const colours = [];
+        for (const until = performance.now() + 2500; performance.now() < until;)
+          colours.push(await colour());
+        return { before, colours, after: await colour() };
+      },
+      [style, water],
+    );
     return { ...seen, requests: archive };
   };
-  await page.evaluate(() => { window.firstMap = app.map; window.notReloaded = true; });
+  await page.evaluate(() => {
+    window.firstMap = app.map;
+    window.notReloaded = true;
+  });
   const close = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 6);
-  const eases = ({ before, colours, after }) => !close(before, after)
-    && colours.some((c) => !close(c, before) && !close(c, after));
+  const eases = ({ before, colours, after }) =>
+    !close(before, after) &&
+    colours.some((c) => !close(c, before) && !close(c, after));
   const there = await through(second);
-  assert.ok(close(there.after, [255, 0, 0]), `the water turns red: ${JSON.stringify(there.after)}`);
+  assert.ok(
+    close(there.after, [255, 0, 0]),
+    `the water turns red: ${JSON.stringify(there.after)}`,
+  );
   assert.ok(eases(there), `the water eases: ${JSON.stringify(there)}`);
   assert.equal(there.requests, 0, "the shared source reads no tiles again");
   // Back, by the browser's history, on the same page and map.
   const back = await through(null);
-  assert.ok(eases(back) && close(back.after, there.before), `back eases to the first: ${JSON.stringify(back)}`);
+  assert.ok(
+    eases(back) && close(back.after, there.before),
+    `back eases to the first: ${JSON.stringify(back)}`,
+  );
   assert.equal(back.requests, 0);
-  assert.ok(await page.evaluate(() => window.notReloaded && app.map === window.firstMap
-    && document.querySelectorAll("#map canvas").length === 1), "one page, one map");
+  assert.ok(
+    await page.evaluate(
+      () =>
+        window.notReloaded &&
+        app.map === window.firstMap &&
+        document.querySelectorAll("#map canvas").length === 1,
+    ),
+    "one page, one map",
+  );
   assert.ok(page.url().includes(encodeURIComponent(first)), page.url());
-  console.log(`switching: one map; the water eases over ${there.colours.length} frames read, ` +
-    `back over ${back.colours.length}, requesting no tiles`);
+  console.log(
+    `switching: one map; the water eases over ${there.colours.length} frames read, ` +
+      `back over ${back.colours.length}, requesting no tiles`,
+  );
   assert.deepEqual(errors, []);
   await page.close();
 
@@ -664,41 +1228,77 @@ async function switching(browser, server) {
   // every remote style here is the extract's, set at a view far away, and
   // the rest of the network fails. Arctic's plane ends short of Tokyo, so
   // its constraint clamps the camera, last.
-  const far = { ...await tokyoStyle(server), center: [7.75, 46.02], zoom: 3, bearing: -32, pitch: 72 };
-  const picking = await browser.newPage({ viewport: { width: 800, height: 600 } });
-  await picking.route((u) => !u.href.startsWith(server.url), (route) => {
-    if (/\/styles?\/|style\.json/.test(route.request().url())) route.fulfill({ json: far });
-    else route.abort("internetdisconnected");
+  const far = {
+    ...(await tokyoStyle(server)),
+    center: [7.75, 46.02],
+    zoom: 3,
+    bearing: -32,
+    pitch: 72,
+  };
+  const picking = await browser.newPage({
+    viewport: { width: 800, height: 600 },
   });
+  await picking.route(
+    (u) => !u.href.startsWith(server.url),
+    (route) => {
+      if (/\/styles?\/|style\.json/.test(route.request().url()))
+        route.fulfill({ json: far });
+      else route.abort("internetdisconnected");
+    },
+  );
   await picking.goto(`${server.url}#15/35.687/139.74/20/30`);
-  await picking.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null, { timeout: 60_000 });
-  const camera = () => picking.evaluate(() => {
-    const { center, zoom, bearing, pitch } = app.map.camera.current;
-    return { center, zoom, bearing, pitch };
-  });
+  await picking.waitForFunction(
+    () => document.getElementById("app").dataset.map === "idle",
+    null,
+    { timeout: 60_000 },
+  );
+  const camera = () =>
+    picking.evaluate(() => {
+      const { center, zoom, bearing, pitch } = app.map.camera.current;
+      return { center, zoom, bearing, pitch };
+    });
   const start = await camera();
-  const keys = await picking.evaluate(() => [...document.querySelectorAll("[data-scene]")].map((e) => e.dataset.scene));
+  const keys = await picking.evaluate(() =>
+    [...document.querySelectorAll("[data-scene]")].map((e) => e.dataset.scene),
+  );
   assert.ok(keys.length > 10 && keys.includes("arctic"), keys.join());
   const pick = async (key) => {
     await picking.click("#scene-button");
     await picking.click(`[data-scene="${key}"]`);
-    await picking.waitForFunction(() => document.getElementById("app").dataset.map !== "loading", null, { timeout: 20_000 });
+    await picking.waitForFunction(
+      () => document.getElementById("app").dataset.map !== "loading",
+      null,
+      { timeout: 20_000 },
+    );
     // Past the style's load, where a style's camera or a flight would move it.
     await picking.waitForTimeout(500);
     return camera();
   };
-  const same = (a, b) => Math.hypot(a.center[0] - b.center[0], a.center[1] - b.center[1]) < 1e-6
-    && ["zoom", "bearing", "pitch"].every((k) => Math.abs(a[k] - b[k]) < 1e-6);
+  const same = (a, b) =>
+    Math.hypot(a.center[0] - b.center[0], a.center[1] - b.center[1]) < 1e-6 &&
+    ["zoom", "bearing", "pitch"].every((k) => Math.abs(a[k] - b[k]) < 1e-6);
   for (const key of [...keys.filter((k) => k !== "arctic"), "liberty"]) {
     const now = await pick(key);
-    assert.ok(same(now, start), `${key} keeps the camera: ${JSON.stringify(now)}, not ${JSON.stringify(start)}`);
+    assert.ok(
+      same(now, start),
+      `${key} keeps the camera: ${JSON.stringify(now)}, not ${JSON.stringify(start)}`,
+    );
   }
   const arctic = await pick("arctic");
-  assert.ok(arctic.zoom > 10 && Math.abs(arctic.bearing - start.bearing) < 1e-6 && arctic.pitch === start.pitch
-    && Math.hypot(arctic.center[0] - start.center[0], arctic.center[1] - start.center[1]) < 20,
-  `Arctic clamps the camera into its plane: ${JSON.stringify(arctic)}`);
+  assert.ok(
+    arctic.zoom > 10 &&
+      Math.abs(arctic.bearing - start.bearing) < 1e-6 &&
+      arctic.pitch === start.pitch &&
+      Math.hypot(
+        arctic.center[0] - start.center[0],
+        arctic.center[1] - start.center[1],
+      ) < 20,
+    `Arctic clamps the camera into its plane: ${JSON.stringify(arctic)}`,
+  );
   await picking.close();
-  console.log(`switching: ${keys.length} entries keep the camera; Arctic clamps it into its plane`);
+  console.log(
+    `switching: ${keys.length} entries keep the camera; Arctic clamps it into its plane`,
+  );
 }
 
 /** Opens the map options panel on `page`, if it's closed. */
@@ -712,7 +1312,11 @@ const option = (page, key) => page.locator(`#options [data-option="${key}"]`);
 /** Polls `read` until it gives `expected`: the map answers edits and queries in its own time. */
 async function settles(page, read, expected, message) {
   let seen;
-  for (const until = Date.now() + 10_000; Date.now() < until; await page.waitForTimeout(50)) {
+  for (
+    const until = Date.now() + 10_000;
+    Date.now() < until;
+    await page.waitForTimeout(50)
+  ) {
     seen = await read();
     if (JSON.stringify(seen) === JSON.stringify(expected)) return;
   }
@@ -721,161 +1325,360 @@ async function settles(page, read, expected, message) {
 
 async function light(browser, server) {
   // Wide enough that the panel opens beside its button.
-  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+  const page = await browser.newPage({
+    viewport: { width: 1200, height: 800 },
+  });
   // The style is the demo's; its tiles would come from the network, which
   // fails here: the switch only edits the style.
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
+  await page.route(
+    (u) => !u.href.startsWith(server.url),
+    (route) => route.abort("internetdisconnected"),
+  );
   await page.goto(`${server.url}?style=alps&light=viewport`);
-  await page.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
-  // Every illumination anchor in the map's style.
-  const anchors = () => page.evaluate(async () => {
-    const of = (style) => style && [...style.layers.filter((l) => l.type === "hillshade")
-      .map((l) => l.paint["hillshade-illumination-anchor"]), style.light.anchor];
-    return { map: of(await app.map.getStyle()),
-      checked: document.querySelector('#options [data-option="light"] [aria-checked="true"]')?.dataset.value,
-      light: new URLSearchParams(location.search).get("light") };
+  await page.waitForFunction(() => app.options.values, null, {
+    timeout: 60_000,
   });
-  const all = (anchor) => ({ map: [anchor, anchor], checked: anchor,
-    light: anchor === "map" ? null : anchor });
-  await settles(page, anchors, all("viewport"), "&light=viewport applies as the style loads");
+  // Every illumination anchor in the map's style.
+  const anchors = () =>
+    page.evaluate(async () => {
+      const of = (style) =>
+        style && [
+          ...style.layers
+            .filter((l) => l.type === "hillshade")
+            .map((l) => l.paint["hillshade-illumination-anchor"]),
+          style.light.anchor,
+        ];
+      return {
+        map: of(await app.map.getStyle()),
+        checked: document.querySelector(
+          '#options [data-option="light"] [aria-checked="true"]',
+        )?.dataset.value,
+        light: new URLSearchParams(location.search).get("light"),
+      };
+    });
+  const all = (anchor) => ({
+    map: [anchor, anchor],
+    checked: anchor,
+    light: anchor === "map" ? null : anchor,
+  });
+  await settles(
+    page,
+    anchors,
+    all("viewport"),
+    "&light=viewport applies as the style loads",
+  );
   await openOptions(page);
   await option(page, "light").locator('[data-value="map"]').click();
-  await settles(page, anchors, all("map"), "the style's own anchor, map, leaves the URL without &light");
+  await settles(
+    page,
+    anchors,
+    all("map"),
+    "the style's own anchor, map, leaves the URL without &light",
+  );
   // The arrow keys move the choice, as in a radio group.
   await page.keyboard.press("ArrowRight");
-  await settles(page, anchors, all("viewport"), "the arrow keys choose the viewport");
-  assert.equal(await page.evaluate(() => document.activeElement?.dataset.value), "viewport", "focus follows the choice");
+  await settles(
+    page,
+    anchors,
+    all("viewport"),
+    "the arrow keys choose the viewport",
+  );
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.dataset.value),
+    "viewport",
+    "focus follows the choice",
+  );
   // And back.
   await page.keyboard.press("ArrowLeft");
   await settles(page, anchors, all("map"), "the arrow keys choose the map");
   await page.evaluate(() => app.show("tokyo"));
-  await page.waitForFunction(() => app.scene === "tokyo" && !document.querySelector('#options [data-option="light"]'));
-  assert.equal(new URL(page.url()).searchParams.has("light"), false, "another entry drops &light");
+  await page.waitForFunction(
+    () =>
+      app.scene === "tokyo" &&
+      !document.querySelector('#options [data-option="light"]'),
+  );
+  assert.equal(
+    new URL(page.url()).searchParams.has("light"),
+    false,
+    "another entry drops &light",
+  );
   assert.deepEqual(errors, []);
   await page.close();
-  console.log("light: &light, the switch and another entry agree on the anchor");
+  console.log(
+    "light: &light, the switch and another entry agree on the anchor",
+  );
 }
 
 async function terrain(browser, server) {
-  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+  const page = await browser.newPage({
+    viewport: { width: 1200, height: 800 },
+  });
   // As in `light`: the switch only edits the style.
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
+  await page.route(
+    (u) => !u.href.startsWith(server.url),
+    (route) => route.abort("internetdisconnected"),
+  );
   await page.goto(`${server.url}?style=alps`);
   const toggle = option(page, "terrain");
-  await page.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
+  await page.waitForFunction(() => app.options.values, null, {
+    timeout: 60_000,
+  });
   // Whether the map's style has terrain, the switch, and the URL.
-  const state = () => page.evaluate(async () => ({
-    map: Boolean((await app.map.getStyle()).terrain),
-    checked: document.querySelector('#options [data-option="terrain"]').getAttribute("aria-checked"),
-    terrain: new URLSearchParams(location.search).get("terrain") }));
+  const state = () =>
+    page.evaluate(async () => ({
+      map: Boolean((await app.map.getStyle()).terrain),
+      checked: document
+        .querySelector('#options [data-option="terrain"]')
+        .getAttribute("aria-checked"),
+      terrain: new URLSearchParams(location.search).get("terrain"),
+    }));
   const on = { map: true, checked: "true", terrain: null };
   const off = { map: false, checked: "false", terrain: "0" };
-  await settles(page, state, on, "the Alps draw their terrain by default, with no &terrain");
+  await settles(
+    page,
+    state,
+    on,
+    "the Alps draw their terrain by default, with no &terrain",
+  );
   // A page that reloads loses this.
-  await page.evaluate(() => { window.stayed = true; });
+  await page.evaluate(() => {
+    window.stayed = true;
+  });
   await openOptions(page);
   await toggle.click();
-  await settles(page, state, off, "the switch takes the terrain away, with &terrain=0");
+  await settles(
+    page,
+    state,
+    off,
+    "the switch takes the terrain away, with &terrain=0",
+  );
   await toggle.focus();
   await page.keyboard.press("Space");
-  await settles(page, state, on, "the keyboard puts the style's terrain back, and the URL drops &terrain");
-  assert.ok(await page.evaluate(() => window.stayed === true), "the switch edits the style without a reload");
+  await settles(
+    page,
+    state,
+    on,
+    "the keyboard puts the style's terrain back, and the URL drops &terrain",
+  );
+  assert.ok(
+    await page.evaluate(() => window.stayed === true),
+    "the switch edits the style without a reload",
+  );
   // &terrain=0 applies as the style loads.
   await page.goto(`${server.url}?style=alps&terrain=0`);
-  await page.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
+  await page.waitForFunction(() => app.options.values, null, {
+    timeout: 60_000,
+  });
   await settles(page, state, off, "&terrain=0 applies as the style loads");
   await openOptions(page);
   await toggle.click();
-  await settles(page, state, on, "turning it on restores the style's own terrain");
+  await settles(
+    page,
+    state,
+    on,
+    "turning it on restores the style's own terrain",
+  );
   await page.evaluate(() => app.show("tokyo"));
-  await page.waitForFunction(() => app.scene === "tokyo" && !document.querySelector('#options [data-option="terrain"]'));
-  assert.equal(new URL(page.url()).searchParams.has("terrain"), false, "another entry drops &terrain");
+  await page.waitForFunction(
+    () =>
+      app.scene === "tokyo" &&
+      !document.querySelector('#options [data-option="terrain"]'),
+  );
+  assert.equal(
+    new URL(page.url()).searchParams.has("terrain"),
+    false,
+    "another entry drops &terrain",
+  );
   assert.deepEqual(errors, []);
   await page.close();
-  console.log("terrain: the switch, &terrain and another entry agree, with no reload");
+  console.log(
+    "terrain: the switch, &terrain and another entry agree, with no reload",
+  );
 }
 
 /** The Globe entry offline: Protomaps Light stood in for by the Tokyo extract's style, with a buildings layer to extrude. */
 async function offlineGlobe(page, server) {
   const tokyo = await tokyoStyle(server);
-  const style = { ...tokyo, layers: [...tokyo.layers,
-    { id: "buildings", type: "fill", source: "openmaptiles", "source-layer": "buildings", paint: { "fill-color": "#ccc" } }] };
-  await page.route((u) => !u.href.startsWith(server.url), (route) => {
-    if (route.request().url().includes("api.protomaps.com/styles/")) route.fulfill({ json: style });
-    else route.abort("internetdisconnected");
-  });
+  const style = {
+    ...tokyo,
+    layers: [
+      ...tokyo.layers,
+      {
+        id: "buildings",
+        type: "fill",
+        source: "openmaptiles",
+        "source-layer": "buildings",
+        paint: { "fill-color": "#ccc" },
+      },
+    ],
+  };
+  await page.route(
+    (u) => !u.href.startsWith(server.url),
+    (route) => {
+      if (route.request().url().includes("api.protomaps.com/styles/"))
+        route.fulfill({ json: style });
+      else route.abort("internetdisconnected");
+    },
+  );
 }
 
 // The Globe's options, in the panel's order, and the entry's defaults: shadows and AO off.
 const GLOBE_OPTIONS = {
-  terrain: false, hillshade: true, light: "viewport", buildings: true, shadows: false, ao: false,
-  projection: "globe", atmosphere: true, fog: true, stars: true, labels: true, colors: "linear",
+  terrain: false,
+  hillshade: true,
+  light: "viewport",
+  buildings: true,
+  shadows: false,
+  ao: false,
+  projection: "globe",
+  atmosphere: true,
+  fog: true,
+  stars: true,
+  labels: true,
+  colors: "linear",
 };
 
 async function options(browser, server) {
-  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+  const page = await browser.newPage({
+    viewport: { width: 1200, height: 800 },
+  });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await offlineGlobe(page, server);
-  await page.goto(`${server.url}?style=globe&shadows=1&projection=mercator&colors=srgb#14/35.687/139.74`);
-  await page.waitForFunction(() => app.scene === "globe" && app.options.values, null, { timeout: 60_000 });
+  await page.goto(
+    `${server.url}?style=globe&shadows=1&projection=mercator&colors=srgb#14/35.687/139.74`,
+  );
+  await page.waitForFunction(
+    () => app.scene === "globe" && app.options.values,
+    null,
+    { timeout: 60_000 },
+  );
   // The panel's values, what the map's style draws, the disabled rows and the URL's choices.
-  const state = () => page.evaluate(async () => {
-    const style = await app.map.getStyle();
-    const layer = (id) => style.layers.find((l) => l.id === id);
-    const query = new URLSearchParams(location.search);
-    return {
-      values: app.options.values,
-      style: {
-        shadows: style.light["shadow-intensity"], projection: style.projection.type, terrain: Boolean(style.terrain),
-        colors: style.metadata["dev.sargunv.orbis:color-space"],
-        buildings: layer("buildings_3d").layout.visibility ?? "visible",
-        ao: layer("buildings_3d").paint["fill-extrusion-ambient-occlusion-wall-intensity"],
-        labels: [...new Set(style.layers.filter((l) => l.type === "symbol").map((l) => l.layout?.visibility ?? "visible"))],
-      },
-      disabled: [...document.querySelectorAll("#options [data-option]")]
-        .filter((row) => row.disabled || row.querySelector("button:disabled")).map((row) => row.dataset.option),
-      url: Object.fromEntries([...query].filter(([k]) => k !== "style").sort()),
-    };
+  const state = () =>
+    page.evaluate(async () => {
+      const style = await app.map.getStyle();
+      const layer = (id) => style.layers.find((l) => l.id === id);
+      const query = new URLSearchParams(location.search);
+      return {
+        values: app.options.values,
+        style: {
+          shadows: style.light["shadow-intensity"],
+          projection: style.projection.type,
+          terrain: Boolean(style.terrain),
+          colors: style.metadata["dev.sargunv.orbis:color-space"],
+          buildings: layer("buildings_3d").layout.visibility ?? "visible",
+          ao: layer("buildings_3d").paint[
+            "fill-extrusion-ambient-occlusion-wall-intensity"
+          ],
+          labels: [
+            ...new Set(
+              style.layers
+                .filter((l) => l.type === "symbol")
+                .map((l) => l.layout?.visibility ?? "visible"),
+            ),
+          ],
+        },
+        disabled: [...document.querySelectorAll("#options [data-option]")]
+          .filter((row) => row.disabled || row.querySelector("button:disabled"))
+          .map((row) => row.dataset.option),
+        url: Object.fromEntries(
+          [...query].filter(([k]) => k !== "style").sort(),
+        ),
+      };
+    });
+  const expect = (values, style, disabled, url) => ({
+    values: { ...GLOBE_OPTIONS, ...values },
+    style: {
+      shadows: 0,
+      projection: "globe",
+      terrain: false,
+      colors: "linear",
+      buildings: "visible",
+      ao: 0,
+      labels: ["visible"],
+      ...style,
+    },
+    disabled,
+    url: Object.fromEntries(Object.entries(url).sort()),
   });
-  const expect = (values, style, disabled, url) => ({ values: { ...GLOBE_OPTIONS, ...values },
-    style: { shadows: 0, projection: "globe", terrain: false, colors: "linear", buildings: "visible", ao: 0,
-      labels: ["visible"], ...style }, disabled, url: Object.fromEntries(Object.entries(url).sort()) });
   // The URL's choices apply as the style loads; fog waits for terrain.
-  await settles(page, state, expect({ shadows: true, projection: "mercator", colors: "srgb" },
-    { shadows: 0.5, projection: "mercator", colors: "srgb" }, ["atmosphere", "fog", "stars"],
-  { shadows: "1", projection: "mercator", colors: "srgb" }), "the URL's choices apply as the Globe loads");
-  await page.evaluate(() => { window.stayed = true; });
+  await settles(
+    page,
+    state,
+    expect(
+      { shadows: true, projection: "mercator", colors: "srgb" },
+      { shadows: 0.5, projection: "mercator", colors: "srgb" },
+      ["atmosphere", "fog", "stars"],
+      { shadows: "1", projection: "mercator", colors: "srgb" },
+    ),
+    "the URL's choices apply as the Globe loads",
+  );
+  await page.evaluate(() => {
+    window.stayed = true;
+  });
 
   // Opening the panel moves nothing; it lists the Globe's options, grouped, clear of its button.
-  const boxes = () => page.evaluate(() => ["scene-button", "options-button", "menu-button", "zoom-in", "map"]
-    .map((id) => document.getElementById(id).getBoundingClientRect().toJSON()));
+  const boxes = () =>
+    page.evaluate(() =>
+      ["scene-button", "options-button", "menu-button", "zoom-in", "map"].map(
+        (id) => document.getElementById(id).getBoundingClientRect().toJSON(),
+      ),
+    );
   const before = await boxes();
   await openOptions(page);
   assert.deepEqual(await boxes(), before, "opening the panel moves nothing");
   const panel = await page.evaluate(() => ({
-    keys: [...document.querySelectorAll("#options [data-option]")].map((row) => row.dataset.option),
-    groups: [...document.querySelectorAll("#options .option-group h3")].map((h) => h.textContent),
+    keys: [...document.querySelectorAll("#options [data-option]")].map(
+      (row) => row.dataset.option,
+    ),
+    groups: [...document.querySelectorAll("#options .option-group h3")].map(
+      (h) => h.textContent,
+    ),
     box: document.getElementById("options").getBoundingClientRect().toJSON(),
-    button: document.getElementById("options-button").getBoundingClientRect().toJSON(),
+    button: document
+      .getElementById("options-button")
+      .getBoundingClientRect()
+      .toJSON(),
   }));
   assert.deepEqual(panel.keys, Object.keys(GLOBE_OPTIONS));
-  assert.deepEqual(panel.groups, ["Terrain and light", "Buildings", "Globe and sky", "Map"]);
-  assert.ok(panel.box.right <= panel.button.left && panel.box.top >= 0 && panel.box.bottom <= 800,
-    `the panel opens beside its button: ${JSON.stringify(panel)}`);
+  assert.deepEqual(panel.groups, [
+    "Terrain and light",
+    "Buildings",
+    "Globe and sky",
+    "Map",
+  ]);
+  assert.ok(
+    panel.box.right <= panel.button.left &&
+      panel.box.top >= 0 &&
+      panel.box.bottom <= 800,
+    `the panel opens beside its button: ${JSON.stringify(panel)}`,
+  );
 
   // Each choice edits the live style and keeps the URL.
   await option(page, "shadows").click();
   await option(page, "projection").locator('[data-value="globe"]').click();
-  await settles(page, state, expect({ colors: "srgb" }, { colors: "srgb" }, ["fog"], { colors: "srgb" }),
-    "shadows back off and the globe leave the URL");
+  await settles(
+    page,
+    state,
+    expect({ colors: "srgb" }, { colors: "srgb" }, ["fog"], { colors: "srgb" }),
+    "shadows back off and the globe leave the URL",
+  );
   await option(page, "buildings").click();
-  await settles(page, state, expect({ colors: "srgb", buildings: false }, { colors: "srgb", buildings: "none" },
-    ["shadows", "ao", "fog"], { colors: "srgb", buildings: "0" }), "without 3D buildings, shadows and AO wait");
+  await settles(
+    page,
+    state,
+    expect(
+      { colors: "srgb", buildings: false },
+      { colors: "srgb", buildings: "none" },
+      ["shadows", "ao", "fog"],
+      { colors: "srgb", buildings: "0" },
+    ),
+    "without 3D buildings, shadows and AO wait",
+  );
   await option(page, "buildings").click();
   await option(page, "ao").click();
   await option(page, "terrain").click();
@@ -884,18 +1687,37 @@ async function options(browser, server) {
   await page.keyboard.press("Space");
   await option(page, "colors").locator('[aria-checked="true"]').focus();
   await page.keyboard.press("ArrowLeft");
-  const chosen = expect({ ao: true, terrain: true, labels: false }, { ao: 0.6, terrain: true, labels: ["none"] }, [],
-    { ao: "1", terrain: "1", labels: "0" });
-  await settles(page, state, chosen, "AO, terrain, labels and colours by click and key");
-  assert.ok(await page.evaluate(() => window.stayed), "the switches edit the style without a reload");
+  const chosen = expect(
+    { ao: true, terrain: true, labels: false },
+    { ao: 0.6, terrain: true, labels: ["none"] },
+    [],
+    { ao: "1", terrain: "1", labels: "0" },
+  );
+  await settles(
+    page,
+    state,
+    chosen,
+    "AO, terrain, labels and colours by click and key",
+  );
+  assert.ok(
+    await page.evaluate(() => window.stayed),
+    "the switches edit the style without a reload",
+  );
 
   // Escape closes the panel, focus back on its button.
   await page.keyboard.press("Escape");
-  assert.deepEqual(await page.evaluate(() => [app.options.open, document.activeElement?.id]), [false, "options-button"]);
+  assert.deepEqual(
+    await page.evaluate(() => [app.options.open, document.activeElement?.id]),
+    [false, "options-button"],
+  );
 
   // The link reproduces the view.
   await page.reload();
-  await page.waitForFunction(() => app.scene === "globe" && app.options.values, null, { timeout: 60_000 });
+  await page.waitForFunction(
+    () => app.scene === "globe" && app.options.values,
+    null,
+    { timeout: 60_000 },
+  );
   await settles(page, state, chosen, "a reload draws the same choices");
   // (`light` and `terrain` check that another entry drops them: a switch
   // away from this offline Globe, its DEM tiles failing, loses the job
@@ -905,27 +1727,47 @@ async function options(browser, server) {
 
   // At phone width the panel is a sheet across the bottom: on screen, under
   // the picker, scrolling to its last option, with no sideways scroll.
-  const phone = await browser.newPage({ viewport: { width: 360, height: 640 } });
+  const phone = await browser.newPage({
+    viewport: { width: 360, height: 640 },
+  });
   await offlineGlobe(phone, server);
   await phone.goto(`${server.url}?style=globe#14/35.687/139.74`);
-  await phone.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
-  const scene = await phone.evaluate(() => document.getElementById("scene-button").getBoundingClientRect().toJSON());
+  await phone.waitForFunction(() => app.options.values, null, {
+    timeout: 60_000,
+  });
+  const scene = await phone.evaluate(() =>
+    document.getElementById("scene-button").getBoundingClientRect().toJSON(),
+  );
   await openOptions(phone);
   // Once it has risen into place.
   const sheet = await phone.evaluate(async () => {
     const panel = document.getElementById("options");
     await Promise.all(panel.getAnimations().map((a) => a.finished));
-    return { box: panel.getBoundingClientRect().toJSON(), scroll: document.documentElement.scrollWidth };
+    return {
+      box: panel.getBoundingClientRect().toJSON(),
+      scroll: document.documentElement.scrollWidth,
+    };
   });
-  assert.ok(sheet.box.left === 0 && sheet.box.right === 360 && Math.abs(sheet.box.bottom - 640) < 1
-    && sheet.box.top > scene.bottom && sheet.scroll <= 360, `the sheet: ${JSON.stringify(sheet)}`);
+  assert.ok(
+    sheet.box.left === 0 &&
+      sheet.box.right === 360 &&
+      Math.abs(sheet.box.bottom - 640) < 1 &&
+      sheet.box.top > scene.bottom &&
+      sheet.scroll <= 360,
+    `the sheet: ${JSON.stringify(sheet)}`,
+  );
   await option(phone, "labels").click();
   // An option below the fold, scrolled to, takes a tap and keeps the URL.
-  await phone.waitForFunction(() => app.options.values?.labels === false
-    && new URLSearchParams(location.search).get("labels") === "0");
+  await phone.waitForFunction(
+    () =>
+      app.options.values?.labels === false &&
+      new URLSearchParams(location.search).get("labels") === "0",
+  );
   await phone.close();
-  console.log("options: the Globe's options apply from the URL, edit the style in place by click and key, "
-    + "keep the URL, survive a reload, move nothing as the panel opens, and fit a phone");
+  console.log(
+    "options: the Globe's options apply from the URL, edit the style in place by click and key, " +
+      "keep the URL, survive a reload, move nothing as the panel opens, and fit a phone",
+  );
 }
 
 /** Logs every WebGPU submit's validation errors on the page's console, from
@@ -935,7 +1777,9 @@ async function options(browser, server) {
  * and, through `Worker`, in each worker. */
 function reportGpuErrors() {
   const channel = new BroadcastChannel("e2e-gpu-errors");
-  const report = globalThis.document ? (m) => console.error(m) : (m) => channel.postMessage(m);
+  const report = globalThis.document
+    ? (m) => console.error(m)
+    : (m) => channel.postMessage(m);
   if (globalThis.document) channel.onmessage = (e) => report(e.data);
   const request = globalThis.GPUAdapter?.prototype.requestDevice;
   if (request) {
@@ -957,7 +1801,10 @@ function reportGpuErrors() {
   globalThis.Worker = class extends Base {
     constructor(url, options) {
       const source = `import ${JSON.stringify(patch)}; import ${JSON.stringify(String(url))};`;
-      super(URL.createObjectURL(new Blob([source], { type: "text/javascript" })), options);
+      super(
+        URL.createObjectURL(new Blob([source], { type: "text/javascript" })),
+        options,
+      );
     }
   };
 }
@@ -965,9 +1812,16 @@ function reportGpuErrors() {
 async function resize(browser, server) {
   const { page, errors } = await open(browser, { width: 1000, height: 700 });
   await page.addInitScript(`(${reportGpuErrors})()`);
-  await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
-  const idle = () => page.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null,
-    { timeout: 60_000 });
+  await page.route(
+    (u) => !u.href.startsWith(server.url),
+    (route) => route.abort("internetdisconnected"),
+  );
+  const idle = () =>
+    page.waitForFunction(
+      () => document.getElementById("app").dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
   await page.goto(`${server.url}?style=alps`);
   await page.waitForFunction(() => app.map, null, { timeout: 60_000 });
   await idle();
@@ -978,20 +1832,48 @@ async function resize(browser, server) {
     const [lon, lat] = map.camera.current.center;
     const features = [];
     for (let i = 0; i < 100; i++) {
-      const at = [lon + ((i % 10) - 4.5) * 0.02, lat + (Math.floor(i / 10) - 4.5) * 0.015];
-      features.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: at } });
+      const at = [
+        lon + ((i % 10) - 4.5) * 0.02,
+        lat + (Math.floor(i / 10) - 4.5) * 0.015,
+      ];
+      features.push({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "Point", coordinates: at },
+      });
     }
-    await map.edit((tx) => tx
-      .addSource("e2e-points", { type: "geojson", data: { type: "FeatureCollection", features } })
-      .addLayer({ id: "e2e-points", type: "circle", source: "e2e-points", paint: { "circle-radius": 6 } }));
+    await map.edit((tx) =>
+      tx
+        .addSource("e2e-points", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features },
+        })
+        .addLayer({
+          id: "e2e-points",
+          type: "circle",
+          source: "e2e-points",
+          paint: { "circle-radius": 6 },
+        }),
+    );
   });
   await idle();
-  for (const viewport of [{ width: 1200, height: 800 }, { width: 640, height: 480 }, { width: 1000, height: 700 }]) {
+  for (const viewport of [
+    { width: 1200, height: 800 },
+    { width: 640, height: 480 },
+    { width: 1000, height: 700 },
+  ]) {
     await page.setViewportSize(viewport);
     // Frames at the new size, then rest.
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await page.evaluate(
+      () =>
+        new Promise((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(r)),
+        ),
+    );
     await idle();
-    const { width, height, channels, pixels } = decodePng(await page.locator("#map").screenshot());
+    const { width, height, channels, pixels } = decodePng(
+      await page.locator("#map").screenshot(),
+    );
     let dark = 0;
     const colours = new Set();
     for (let i = 0; i < pixels.length; i += channels) {
@@ -999,13 +1881,21 @@ async function resize(browser, server) {
       colours.add((pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2]);
     }
     const share = dark / (width * height);
-    assert.ok(share < 0.2 && colours.size > 256,
-      `at ${viewport.width}×${viewport.height} the map is ${(share * 100).toFixed(0)}% black in ${colours.size} colours`);
+    assert.ok(
+      share < 0.2 && colours.size > 256,
+      `at ${viewport.width}×${viewport.height} the map is ${(share * 100).toFixed(0)}% black in ${colours.size} colours`,
+    );
     // Offline, the style's live basemap fails to load; nothing else may.
-    assert.deepEqual(errors.filter((e) => !/network error/.test(e)), [], `at ${viewport.width}×${viewport.height}`);
+    assert.deepEqual(
+      errors.filter((e) => !/network error/.test(e)),
+      [],
+      `at ${viewport.width}×${viewport.height}`,
+    );
   }
   await page.close();
-  console.log("resize: the Alps terrain draws after each of three resizes, without a WebGPU error");
+  console.log(
+    "resize: the Alps terrain draws after each of three resizes, without a WebGPU error",
+  );
 }
 
 async function offline(browser, server) {
@@ -1017,26 +1907,42 @@ async function offline(browser, server) {
     // The browser logs each request the cut network refuses.
     if (!m.text().includes("ERR_INTERNET_DISCONNECTED")) errors.push(m.text());
   });
-  const idle = () => page.waitForFunction(() => ["idle", "error"].includes(document.getElementById("app")?.dataset.map),
-    null, { timeout: 60_000 });
+  const idle = () =>
+    page.waitForFunction(
+      () =>
+        ["idle", "error"].includes(document.getElementById("app")?.dataset.map),
+      null,
+      { timeout: 60_000 },
+    );
   await page.goto(`${server.url}?style=liberty${at}`);
   await idle();
   await page.click("#menu-button");
   await page.click("#offline-button");
   const started = Date.now();
   await page.click("#offline .primary");
-  await page.waitForFunction(() => /Downloaded|failed/.test(document.querySelector(".offline-status")?.textContent ?? ""),
-    null, { timeout: 180_000 });
+  await page.waitForFunction(
+    () =>
+      /Downloaded|failed/.test(
+        document.querySelector(".offline-status")?.textContent ?? "",
+      ),
+    null,
+    { timeout: 180_000 },
+  );
   const status = await page.textContent(".offline-status");
   console.log(`offline: ${status} (${Date.now() - started} ms)`);
   assert.ok(status.startsWith("Downloaded"), status);
 
   cut = true;
-  await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
+  await page.route(
+    (u) => !u.href.startsWith(server.url),
+    (route) => route.abort("internetdisconnected"),
+  );
   const reopened = Date.now();
   await page.reload();
   await idle();
-  const state = await page.evaluate(() => document.getElementById("app").dataset.map);
+  const state = await page.evaluate(
+    () => document.getElementById("app").dataset.map,
+  );
   console.log(`offline: reopened ${state} in ${Date.now() - reopened} ms`);
   assert.equal(state, "idle");
   assert.deepEqual(errors, []);
@@ -1044,7 +1950,10 @@ async function offline(browser, server) {
 }
 
 /** The comparison's pairs the check opens, as `?compare=` values: `""` is Orbis and GL JS. */
-const PAIRS = arg("pairs", ";gljs,orbis;orbis,native;native,gljs;orbis,orbis;gljs,gljs").split(";");
+const PAIRS = arg(
+  "pairs",
+  ";gljs,orbis;orbis,native;native,gljs;orbis,orbis;gljs,gljs",
+).split(";");
 const ENGINE_REQUESTS = {
   gljs: /maplibre-gl|\/gljs-/,
   native: /\/native-|\/native\/\d|isolate\.js/,
@@ -1053,7 +1962,9 @@ const ENGINE_REQUESTS = {
 async function compare(browser, server) {
   // One context, as one browser: the isolating service worker, once
   // registered, stays for later pages.
-  const context = await browser.newContext({ viewport: { width: 800, height: 500 } });
+  const context = await browser.newContext({
+    viewport: { width: 800, height: 500 },
+  });
   const open = async (url) => {
     const page = await context.newPage();
     const pageErrors = [];
@@ -1061,41 +1972,68 @@ async function compare(browser, server) {
     // Console errors explain a failure, but resources missing on purpose (the
     // Tokyo extract's glyph ranges) log some.
     const logged = [];
-    page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource/.test(m.text())) logged.push(m.text()); });
+    page.on("console", (m) => {
+      if (m.type() === "error" && !/Failed to load resource/.test(m.text()))
+        logged.push(m.text());
+    });
     const requests = [];
     page.on("request", (r) => requests.push(r.url()));
     await page.goto(url);
-    const loaded = (engine) => requests.filter((url) => ENGINE_REQUESTS[engine].test(url));
+    const loaded = (engine) =>
+      requests.filter((url) => ENGINE_REQUESTS[engine].test(url));
     return { page, pageErrors, loaded, logged };
   };
-  const idle = (page) => page.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null,
-    { timeout: 60_000 });
+  const idle = (page) =>
+    page.waitForFunction(
+      () => document.getElementById("app").dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
   // Every side's map at one camera once they settle. A page comparing with
   // Native reloads into isolation first, which ends a wait in the page, so
   // this polls.
   const settled = async ({ page, logged }, name) => {
-    const state = () => page.evaluate(() => {
-      const sides = window.app?.map && app.compare.sides;
-      const own = sides && app.map.camera.current;
-      const close = (a, b) => Math.abs(a - b) < 1e-7;
-      const done = Boolean(sides?.every((s) => s.loaded) && document.getElementById("app").dataset.map === "idle"
-        && sides.every(({ camera }) => close(camera.center[0], own.center[0]) && close(camera.center[1], own.center[1])
-          && close(camera.zoom, own.zoom) && close(camera.bearing, own.bearing)));
-      return { done, own, sides };
-    }).catch((e) => ({ done: false, error: e.message }));
+    const state = () =>
+      page
+        .evaluate(() => {
+          const sides = window.app?.map && app.compare.sides;
+          const own = sides && app.map.camera.current;
+          const close = (a, b) => Math.abs(a - b) < 1e-7;
+          const done = Boolean(
+            sides?.every((s) => s.loaded) &&
+            document.getElementById("app").dataset.map === "idle" &&
+            sides.every(
+              ({ camera }) =>
+                close(camera.center[0], own.center[0]) &&
+                close(camera.center[1], own.center[1]) &&
+                close(camera.zoom, own.zoom) &&
+                close(camera.bearing, own.bearing),
+            ),
+          );
+          return { done, own, sides };
+        })
+        .catch((e) => ({ done: false, error: e.message }));
     const start = Date.now();
     for (let now = await state(); !now.done; now = await state()) {
       if (Date.now() - start > 60_000) {
-        throw new Error(`${name}: the maps didn't settle at one camera: ${JSON.stringify(now)}; logged ${JSON.stringify(logged)}`);
+        throw new Error(
+          `${name}: the maps didn't settle at one camera: ${JSON.stringify(now)}; logged ${JSON.stringify(logged)}`,
+        );
       }
       await page.waitForTimeout(100);
     }
   };
 
   {
-    const { page, pageErrors, loaded } = await open(`${server.url}?style=tokyo-mvt`);
+    const { page, pageErrors, loaded } = await open(
+      `${server.url}?style=tokyo-mvt`,
+    );
     await idle(page);
-    assert.deepEqual([...loaded("gljs"), ...loaded("native")], [], "the plain page fetches no other engine");
+    assert.deepEqual(
+      [...loaded("gljs"), ...loaded("native")],
+      [],
+      "the plain page fetches no other engine",
+    );
     assert.equal(await page.evaluate(() => crossOriginIsolated), false);
     assert.deepEqual(pageErrors, []);
     await page.close();
@@ -1104,33 +2042,76 @@ async function compare(browser, server) {
   {
     // Native draws one side at a time: a second is GL JS instead, and the
     // other side's picker offers no Native.
-    const { page } = await open(`${server.url}?style=tokyo-mvt&compare=native,native`);
-    await page.waitForFunction(() => app.compare.sides?.length === 2 && crossOriginIsolated, null, { timeout: 60_000 });
-    assert.deepEqual(await page.evaluate(() => app.compare.sides.map((s) => s.engine)), ["native", "gljs"]);
-    assert.equal(await page.evaluate(() => document.querySelector('.compare-label.right option[value="native"]').disabled), true,
-      "the right side offers no second Native");
+    const { page } = await open(
+      `${server.url}?style=tokyo-mvt&compare=native,native`,
+    );
+    await page.waitForFunction(
+      () => app.compare.sides?.length === 2 && crossOriginIsolated,
+      null,
+      { timeout: 60_000 },
+    );
+    assert.deepEqual(
+      await page.evaluate(() => app.compare.sides.map((s) => s.engine)),
+      ["native", "gljs"],
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          document.querySelector('.compare-label.right option[value="native"]')
+            .disabled,
+      ),
+      true,
+      "the right side offers no second Native",
+    );
     await page.close();
   }
 
   for (const pair of PAIRS) {
     const engines = pair ? pair.split(",") : ["orbis", "gljs"];
-    const opened = await open(`${server.url}?style=tokyo-mvt&compare${pair ? `=${pair}` : ""}#15/35.687/139.74`);
+    const opened = await open(
+      `${server.url}?style=tokyo-mvt&compare${pair ? `=${pair}` : ""}#15/35.687/139.74`,
+    );
     const { page, pageErrors, loaded } = opened;
     const name = engines.join(" and ");
     await settled(opened, name);
     // Only a page comparing with MapLibre Native is isolated; it reloads into it.
-    assert.equal(await page.evaluate(() => crossOriginIsolated), engines.includes("native"), `${name}: isolation`);
+    assert.equal(
+      await page.evaluate(() => crossOriginIsolated),
+      engines.includes("native"),
+      `${name}: isolation`,
+    );
     for (const engine of ["gljs", "native"]) {
-      assert.equal(loaded(engine).length > 0, engines.includes(engine), `${name}: ${engine} loads only when picked`);
+      assert.equal(
+        loaded(engine).length > 0,
+        engines.includes(engine),
+        `${name}: ${engine} loads only when picked`,
+      );
     }
     // Each side's canvas fills the stage, and the side's half is its own.
     const sides = await page.evaluate(() => app.compare.sides);
-    assert.deepEqual(sides.map((s) => s.engine), engines);
+    assert.deepEqual(
+      sides.map((s) => s.engine),
+      engines,
+    );
     for (const [i, side] of ["left", "right"].entries()) {
-      const box = await page.locator(sides[i].own ? "#map canvas" : `.compare-map.${side} canvas`).first().boundingBox();
-      assert.ok(box && box.width === 800 && box.height === 500, `${name}: the ${side} canvas fills the stage: ${JSON.stringify(box)}`);
-      assert.ok(await page.evaluate(([own, side, x]) => document.querySelector(own ? "#map" : `.compare-map.${side}`)
-        .contains(document.elementFromPoint(x, 250)), [sides[i].own, side, 200 + 400 * i]), `${name}: the ${side} half is its map's`);
+      const box = await page
+        .locator(sides[i].own ? "#map canvas" : `.compare-map.${side} canvas`)
+        .first()
+        .boundingBox();
+      assert.ok(
+        box && box.width === 800 && box.height === 500,
+        `${name}: the ${side} canvas fills the stage: ${JSON.stringify(box)}`,
+      );
+      assert.ok(
+        await page.evaluate(
+          ([own, side, x]) =>
+            document
+              .querySelector(own ? "#map" : `.compare-map.${side}`)
+              .contains(document.elementFromPoint(x, 250)),
+          [sides[i].own, side, 200 + 400 * i],
+        ),
+        `${name}: the ${side} half is its map's`,
+      );
     }
     // A drag on either side reaches that side's map, which leads; the other follows.
     for (const [i, x] of [600, 200, 600].entries()) {
@@ -1141,10 +2122,19 @@ async function compare(browser, server) {
       await page.mouse.move(x - 100, 300, { steps: 10 });
       await page.mouse.up();
       await settled(opened, name);
-      const after = await page.evaluate(() => ({ center: app.map.camera.current.center, leads: app.compare.sides.map((s) => s.leads) }));
-      assert.ok(Math.hypot(after.center[0] - before[0], after.center[1] - before[1]) > 1e-4,
-        `${name}: a drag on the ${engines[side]} side moves the maps`);
-      assert.ok(after.leads[side], `${name}: the ${engines[side]} side leads after its drag`);
+      const after = await page.evaluate(() => ({
+        center: app.map.camera.current.center,
+        leads: app.compare.sides.map((s) => s.leads),
+      }));
+      assert.ok(
+        Math.hypot(after.center[0] - before[0], after.center[1] - before[1]) >
+          1e-4,
+        `${name}: a drag on the ${engines[side]} side moves the maps`,
+      );
+      assert.ok(
+        after.leads[side],
+        `${name}: the ${engines[side]} side leads after its drag`,
+      );
     }
     assert.deepEqual(pageErrors, [], name);
     await page.close();
@@ -1152,27 +2142,48 @@ async function compare(browser, server) {
   {
     // The map options reach the other engine: GL JS's map hides the labels
     // and turns to the globe with Orbis's.
-    const opened = await open(`${server.url}?style=tokyo-mvt&compare#15/35.687/139.74`);
+    const opened = await open(
+      `${server.url}?style=tokyo-mvt&compare#15/35.687/139.74`,
+    );
     const { page, pageErrors } = opened;
     await settled(opened, "options");
-    const other = () => page.evaluate(async () => {
-      const style = (await app.compare.styles())[1];
-      return { projection: style.projection?.type ?? "mercator",
-        labels: [...new Set(style.layers.filter((l) => l.type === "symbol").map((l) => l.layout?.visibility ?? "visible"))] };
+    const other = () =>
+      page.evaluate(async () => {
+        const style = (await app.compare.styles())[1];
+        return {
+          projection: style.projection?.type ?? "mercator",
+          labels: [
+            ...new Set(
+              style.layers
+                .filter((l) => l.type === "symbol")
+                .map((l) => l.layout?.visibility ?? "visible"),
+            ),
+          ],
+        };
+      });
+    assert.deepEqual(await other(), {
+      projection: "mercator",
+      labels: ["visible"],
     });
-    assert.deepEqual(await other(), { projection: "mercator", labels: ["visible"] });
     await openOptions(page);
     await option(page, "labels").click();
     await option(page, "projection").locator('[data-value="globe"]').click();
-    await settles(page, other, { projection: "globe", labels: ["none"] }, "GL JS follows the map options");
+    await settles(
+      page,
+      other,
+      { projection: "globe", labels: ["none"] },
+      "GL JS follows the map options",
+    );
     assert.deepEqual(pageErrors, []);
     await page.close();
   }
   await context.close();
   console.log("compare: GL JS follows the map options");
-  console.log(`compare: the plain page fetches no other engine and isn't isolated; ${PAIRS.length} pairs `
-    + "fill the stage, load only their engines, isolate only for MapLibre Native, and follow drags on either side; "
-    + "a second Native is GL JS");
+  console.log(
+    `compare: the plain page fetches no other engine and isn't isolated; ${PAIRS.length} pairs ` +
+      "fill the stage, load only their engines, isolate only for MapLibre Native, and follow drags on either side; " +
+      "a second Native is GL JS",
+  );
 }
 
 /** The slope at the newest sample of the least-squares quadratic through
@@ -1191,7 +2202,11 @@ function releaseVelocity(samples, release) {
   }
   if (points.length < 3) return 0;
   // Normal equations for y = a + b x + c x², solved by elimination.
-  const m = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  const m = [
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+  ];
   for (const [x, y] of points) {
     const p = [1, x, x * x];
     for (let i = 0; i < 3; i++) {
@@ -1220,50 +2235,108 @@ async function gestures(browser, server) {
   // On the page's thread, where the log below reads each frame's time, and a
   // projection answers for the camera at its call.
   await page.goto(`${server.url}scenario.html?worker=0`);
-  const scenario = (fn, arg) => page.evaluate(([fn, arg]) => window.scenario.then((s) => new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg)), [fn.toString(), arg]);
+  const scenario = (fn, arg) =>
+    page.evaluate(
+      ([fn, arg]) =>
+        window.scenario.then((s) =>
+          new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg),
+        ),
+      [fn.toString(), arg],
+    );
   const cdp = await page.context().newCDPSession(page);
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const SHIFT = 8;
-  const mouse = (type, x, y, { button = "left", modifiers = 0, clickCount = 1 } = {}) =>
+  const mouse = (
+    type,
+    x,
+    y,
+    { button = "left", modifiers = 0, clickCount = 1 } = {},
+  ) =>
     cdp.send("Input.dispatchMouseEvent", {
-      type, x, y, button, modifiers, clickCount,
+      type,
+      x,
+      y,
+      button,
+      modifiers,
+      clickCount,
       buttons: type === "mouseReleased" ? 0 : { left: 1, right: 2 }[button],
     });
   const touch = (type, points) =>
-    cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
+    cdp.send("Input.dispatchTouchEvent", {
+      type,
+      touchPoints: points.map(([x, y], id) => ({ x, y, id })),
+    });
   /** The camera at rest, at zoom 4 over the box unless `at` says otherwise. */
-  const reset = (at = {}) => scenario(async (s, at) => {
-    s.map.camera.jumpTo({ center: [0, 0], zoom: 4, bearing: 0, pitch: 0, ...at });
-    await s.idle();
-  }, at);
-  const camera = () => scenario(async (s) => { await s.idle(); return s.map.camera.current; });
+  const reset = (at = {}) =>
+    scenario(async (s, at) => {
+      s.map.camera.jumpTo({
+        center: [0, 0],
+        zoom: 4,
+        bearing: 0,
+        pitch: 0,
+        ...at,
+      });
+      await s.idle();
+    }, at);
+  const camera = () =>
+    scenario(async (s) => {
+      await s.idle();
+      return s.map.camera.current;
+    });
 
   // The page logs pointer events (before the map takes them) and, on each
   // camera move, the frame's time and where the origin shows.
   await scenario((s) => {
     const raf = window.requestAnimationFrame;
     let frameTime = 0;
-    window.requestAnimationFrame = (callback) => raf((t) => { frameTime = t; callback(t); });
+    window.requestAnimationFrame = (callback) =>
+      raf((t) => {
+        frameTime = t;
+        callback(t);
+      });
     window.gestureLog = { pointers: [], frames: [], atRelease: null };
     for (const type of ["pointerdown", "pointermove", "pointerup"]) {
-      addEventListener(type, (e) => {
-        window.gestureLog.pointers.push({ type, t: e.timeStamp, x: e.clientX, y: e.clientY, kind: e.pointerType });
-        if (type !== "pointerup") return;
-        const release = window.gestureLog.atRelease = { t: e.timeStamp, at: null };
-        s.map.project([0, 0]).then((at) => { release.at = at; });
-      }, true);
+      addEventListener(
+        type,
+        (e) => {
+          window.gestureLog.pointers.push({
+            type,
+            t: e.timeStamp,
+            x: e.clientX,
+            y: e.clientY,
+            kind: e.pointerType,
+          });
+          if (type !== "pointerup") return;
+          const release = (window.gestureLog.atRelease = {
+            t: e.timeStamp,
+            at: null,
+          });
+          s.map.project([0, 0]).then((at) => {
+            release.at = at;
+          });
+        },
+        true,
+      );
     }
     s.map.on("move", () => {
       const frame = { t: frameTime, at: null, zoom: s.map.camera.current.zoom };
       window.gestureLog.frames.push(frame);
-      s.map.project([0, 0]).then((at) => { frame.at = at; });
+      s.map.project([0, 0]).then((at) => {
+        frame.at = at;
+      });
     });
   });
-  const log = (clear) => page.evaluate((clear) => {
-    const out = structuredClone(window.gestureLog);
-    if (clear) Object.assign(window.gestureLog, { pointers: [], frames: [], atRelease: null });
-    return out;
-  }, clear);
+  const log = (clear) =>
+    page.evaluate((clear) => {
+      const out = structuredClone(window.gestureLog);
+      if (clear)
+        Object.assign(window.gestureLog, {
+          pointers: [],
+          frames: [],
+          atRelease: null,
+        });
+      return out;
+    }, clear);
 
   /** A horizontal fling: `steps` moves of `dx` px, one a frame (the
    * protocol answers each once a frame has taken it), released at once.
@@ -1272,36 +2345,52 @@ async function gestures(browser, server) {
     await reset();
     await log(true);
     let x = 40;
-    if (kind === "mouse") await mouse("mousePressed", x, 100); else await touch("touchStart", [[x, 100]]);
+    if (kind === "mouse") await mouse("mousePressed", x, 100);
+    else await touch("touchStart", [[x, 100]]);
     for (let i = 0; i < steps; i++) {
       x += dx;
-      if (kind === "mouse") await mouse("mouseMoved", x, 100); else await touch("touchMove", [[x, 100]]);
+      if (kind === "mouse") await mouse("mouseMoved", x, 100);
+      else await touch("touchMove", [[x, 100]]);
     }
-    if (kind === "mouse") await mouse("mouseReleased", x, 100); else await touch("touchEnd", []);
+    if (kind === "mouse") await mouse("mouseReleased", x, 100);
+    else await touch("touchEnd", []);
     await camera();
     const { pointers, frames, atRelease } = await log(true);
-    const moves = pointers.filter((p) => p.type === "pointermove").map((p) => [p.t, p.x]);
+    const moves = pointers
+      .filter((p) => p.type === "pointermove")
+      .map((p) => [p.t, p.x]);
     const velocity = releaseVelocity(moves, atRelease.t);
     const k = Math.LN2 / (PAN.halfLife / 1000);
     const speed = Math.min(velocity, PAN.max);
-    const expected = speed >= PAN.min ? {
-      distance: (speed - PAN.stop) / k,
-      duration: Math.log(speed / PAN.stop) / k * 1000,
-    } : { distance: 0, duration: 0 };
+    const expected =
+      speed >= PAN.min
+        ? {
+            distance: (speed - PAN.stop) / k,
+            duration: (Math.log(speed / PAN.stop) / k) * 1000,
+          }
+        : { distance: 0, duration: 0 };
     const glide = frames.filter((f) => f.t > atRelease.t);
     const last = glide.at(-1) ?? { t: atRelease.t, at: atRelease.at };
     const distance = last.at[0] - atRelease.at[0];
     // The remaining distance plus stop / k falls as e^(−kt): its log's
     // slope over the glide's frames gives the measured half-life.
-    const fit = glide.slice(0, -1).map((f) => [(f.t - atRelease.t) / 1000,
-      Math.log(last.at[0] - f.at[0] + PAN.stop / k)]).filter(([, y]) => Number.isFinite(y));
+    const fit = glide
+      .slice(0, -1)
+      .map((f) => [
+        (f.t - atRelease.t) / 1000,
+        Math.log(last.at[0] - f.at[0] + PAN.stop / k),
+      ])
+      .filter(([, y]) => Number.isFinite(y));
     const n = fit.length;
     const [sx, sy] = fit.reduce(([a, b], [x, y]) => [a + x, b + y], [0, 0]);
     const sxx = fit.reduce((a, [x]) => a + x * x, 0);
     const sxy = fit.reduce((a, [x, y]) => a + x * y, 0);
     const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
     return {
-      kind, velocity, distance, expected,
+      kind,
+      velocity,
+      distance,
+      expected,
       halfLife: (Math.LN2 / -slope) * 1000,
       duration: last.t - atRelease.t,
       frames: glide.length,
@@ -1309,17 +2398,34 @@ async function gestures(browser, server) {
   }
 
   const results = [];
-  for (const [kind, dx] of [["mouse", 6], ["mouse", 20], ["touch", 10], ["touch", 30]]) {
+  for (const [kind, dx] of [
+    ["mouse", 6],
+    ["mouse", 20],
+    ["touch", 10],
+    ["touch", 30],
+  ]) {
     const r = await fling(kind, dx);
     results.push(r);
-    assert.ok(r.velocity > PAN.min, `${kind} fling of ${dx} px/move: ${r.velocity} px/s`);
-    assert.ok(Math.abs(r.distance - r.expected.distance) < Math.max(1, r.expected.distance * 0.02),
-      `${kind}: glided ${r.distance.toFixed(1)} px, mln-ffi's decay gives ${r.expected.distance.toFixed(1)} from ${r.velocity.toFixed(0)} px/s`);
-    assert.ok(Math.abs(r.halfLife - PAN.halfLife) < 5, `${kind}: half-life ${r.halfLife.toFixed(1)} ms`);
+    assert.ok(
+      r.velocity > PAN.min,
+      `${kind} fling of ${dx} px/move: ${r.velocity} px/s`,
+    );
+    assert.ok(
+      Math.abs(r.distance - r.expected.distance) <
+        Math.max(1, r.expected.distance * 0.02),
+      `${kind}: glided ${r.distance.toFixed(1)} px, mln-ffi's decay gives ${r.expected.distance.toFixed(1)} from ${r.velocity.toFixed(0)} px/s`,
+    );
+    assert.ok(
+      Math.abs(r.halfLife - PAN.halfLife) < 5,
+      `${kind}: half-life ${r.halfLife.toFixed(1)} ms`,
+    );
     // Frames land on vsync: the last moving one is the first at or after
     // the end (allowing a dropped frame).
-    assert.ok(r.duration >= r.expected.duration - 1 && r.duration < r.expected.duration + 40,
-      `${kind}: glided ${r.duration.toFixed(0)} ms of ${r.expected.duration.toFixed(0)}`);
+    assert.ok(
+      r.duration >= r.expected.duration - 1 &&
+        r.duration < r.expected.duration + 40,
+      `${kind}: glided ${r.duration.toFixed(0)} ms of ${r.expected.duration.toFixed(0)}`,
+    );
   }
 
   // A slow drag and a drag held still before release don't glide.
@@ -1327,31 +2433,52 @@ async function gestures(browser, server) {
     await reset();
     await log(true);
     await mouse("mousePressed", 40, 100);
-    for (let i = 1; i <= 8; i++) await mouse("mouseMoved", 40 + (held ? 10 : 1) * i, 100);
+    for (let i = 1; i <= 8; i++)
+      await mouse("mouseMoved", 40 + (held ? 10 : 1) * i, 100);
     await wait(held);
     await mouse("mouseReleased", held ? 120 : 48, 100);
     await camera();
     const { frames, atRelease } = await log(true);
-    assert.equal(frames.filter((f) => f.t > atRelease.t + 1).length, 0, held ? "held still" : "slow");
+    assert.equal(
+      frames.filter((f) => f.t > atRelease.t + 1).length,
+      0,
+      held ? "held still" : "slow",
+    );
   }
 
   // A pinch spreading fast keeps zooming after release, by at most 2.5.
   await reset();
   await log(true);
-  await touch("touchStart", [[90, 100], [110, 100]]);
-  for (let i = 1; i <= 8; i++) await touch("touchMove", [[90 - 8 * i, 100], [110 + 8 * i, 100]]);
+  await touch("touchStart", [
+    [90, 100],
+    [110, 100],
+  ]);
+  for (let i = 1; i <= 8; i++)
+    await touch("touchMove", [
+      [90 - 8 * i, 100],
+      [110 + 8 * i, 100],
+    ]);
   const pinched = await scenario((s) => s.map.camera.current.zoom);
   await touch("touchEnd", []);
   const pinchEnd = (await camera()).zoom;
-  assert.ok(pinchEnd - pinched > 0.1 && pinchEnd - pinched <= 2.5, `pinch glide: ${pinched} → ${pinchEnd}`);
+  assert.ok(
+    pinchEnd - pinched > 0.1 && pinchEnd - pinched <= 2.5,
+    `pinch glide: ${pinched} → ${pinchEnd}`,
+  );
 
   // Shift-drag draws a box and zooms to it: 100 × 80 in 200 × 200 is one level.
   await reset();
   await mouse("mousePressed", 50, 50, { modifiers: SHIFT });
   await mouse("mouseMoved", 100, 90, { modifiers: SHIFT });
   await mouse("mouseMoved", 150, 130, { modifiers: SHIFT });
-  const shown = await page.evaluate(() => [...document.querySelectorAll("#map div")]
-    .map((d) => d.getBoundingClientRect()).find((r) => r.width === 100 && r.height === 80 && r.left === 50 && r.top === 50));
+  const shown = await page.evaluate(() =>
+    [...document.querySelectorAll("#map div")]
+      .map((d) => d.getBoundingClientRect())
+      .find(
+        (r) =>
+          r.width === 100 && r.height === 80 && r.left === 50 && r.top === 50,
+      ),
+  );
   assert.ok(shown, "the box shows while it's drawn");
   await mouse("mouseReleased", 150, 130, { modifiers: SHIFT });
   const boxed = await camera();
@@ -1359,7 +2486,11 @@ async function gestures(browser, server) {
 
   // Shift-double-click zooms out; double-tap zooms in; a two-finger tap
   // zooms out; double-tap-and-drag zooms.
-  const zoomAfter = async (gesture) => { await reset(); await gesture(); return (await camera()).zoom - 4; };
+  const zoomAfter = async (gesture) => {
+    await reset();
+    await gesture();
+    return (await camera()).zoom - 4;
+  };
   const clicks = await zoomAfter(async () => {
     for (const clickCount of [1, 2]) {
       await mouse("mousePressed", 100, 100, { modifiers: SHIFT, clickCount });
@@ -1369,11 +2500,18 @@ async function gestures(browser, server) {
   });
   assert.ok(Math.abs(clicks + 1) < 1e-6, `shift-double-click: ${clicks}`);
   const taps = await zoomAfter(async () => {
-    for (let i = 0; i < 2; i++) { await touch("touchStart", [[100, 100]]); await touch("touchEnd", []); await wait(50); }
+    for (let i = 0; i < 2; i++) {
+      await touch("touchStart", [[100, 100]]);
+      await touch("touchEnd", []);
+      await wait(50);
+    }
   });
   assert.ok(Math.abs(taps - 1) < 1e-6, `double-tap: ${taps}`);
   const twoFinger = await zoomAfter(async () => {
-    await touch("touchStart", [[80, 100], [120, 100]]);
+    await touch("touchStart", [
+      [80, 100],
+      [120, 100],
+    ]);
     await wait(50);
     await touch("touchEnd", []);
   });
@@ -1387,12 +2525,16 @@ async function gestures(browser, server) {
     await wait(100);
     await touch("touchEnd", []);
   });
-  assert.ok(Math.abs(quick - 0.5) < 0.05, `double-tap-drag 64 px down: ${quick}`);
+  assert.ok(
+    Math.abs(quick - 0.5) < 0.05,
+    `double-tap-drag 64 px down: ${quick}`,
+  );
 
   // A right-drag turn of a few degrees, held, settles on north.
   await reset();
   await mouse("mousePressed", 100, 100, { button: "right" });
-  for (let i = 1; i <= 4; i++) await mouse("mouseMoved", 100 + 2 * i, 100, { button: "right" });
+  for (let i = 1; i <= 4; i++)
+    await mouse("mouseMoved", 100 + 2 * i, 100, { button: "right" });
   const turned = await scenario((s) => s.map.camera.current.bearing);
   await wait(100);
   await mouse("mouseReleased", 108, 100, { button: "right" });
@@ -1403,12 +2545,16 @@ async function gestures(browser, server) {
   assert.deepEqual(errors, []);
   await page.close();
   for (const r of results) {
-    console.log(`gestures: ${r.kind} fling at ${r.velocity.toFixed(0)} px/s glided ${r.distance.toFixed(1)} px `
-      + `(mln-ffi: ${r.expected.distance.toFixed(1)}) over ${r.duration.toFixed(0)} ms `
-      + `(${r.expected.duration.toFixed(0)}) in ${r.frames} frames, half-life ${r.halfLife.toFixed(1)} ms (140)`);
+    console.log(
+      `gestures: ${r.kind} fling at ${r.velocity.toFixed(0)} px/s glided ${r.distance.toFixed(1)} px ` +
+        `(mln-ffi: ${r.expected.distance.toFixed(1)}) over ${r.duration.toFixed(0)} ms ` +
+        `(${r.expected.duration.toFixed(0)}) in ${r.frames} frames, half-life ${r.halfLife.toFixed(1)} ms (140)`,
+    );
   }
-  console.log(`gestures: pinch glide +${(pinchEnd - pinched).toFixed(2)} levels; box, shift-double-click, double-tap, `
-    + `two-finger tap, double-tap-drag (${quick.toFixed(3)}) and north snap (from ${turned.toFixed(1)}°) as expected`);
+  console.log(
+    `gestures: pinch glide +${(pinchEnd - pinched).toFixed(2)} levels; box, shift-double-click, double-tap, ` +
+      `two-finger tap, double-tap-drag (${quick.toFixed(3)}) and north snap (from ${turned.toFixed(1)}°) as expected`,
+  );
 }
 
 /** Patches this context, and every worker it starts, before their own
@@ -1417,12 +2563,16 @@ async function gestures(browser, server) {
  * encoding), `!frames` takes `VideoFrame` away. */
 function perturbReadback(noise, frames) {
   if (noise) {
-    for (const Context of [globalThis.CanvasRenderingContext2D, globalThis.OffscreenCanvasRenderingContext2D]) {
+    for (const Context of [
+      globalThis.CanvasRenderingContext2D,
+      globalThis.OffscreenCanvasRenderingContext2D,
+    ]) {
       if (!Context) continue;
       const read = Context.prototype.getImageData;
       Context.prototype.getImageData = function (...args) {
         const image = read.apply(this, args);
-        for (let i = 0; i < image.data.length; i += 4) image.data[i] ^= Math.imul(i, 0x9e3779b1) >>> 31;
+        for (let i = 0; i < image.data.length; i += 4)
+          image.data[i] ^= Math.imul(i, 0x9e3779b1) >>> 31;
         return image;
       };
     }
@@ -1435,7 +2585,10 @@ function perturbReadback(noise, frames) {
     constructor(url, options) {
       // Static imports run in order: the patch, then the worker's script.
       const source = `import ${JSON.stringify(patch)}; import ${JSON.stringify(String(url))};`;
-      super(URL.createObjectURL(new Blob([source], { type: "text/javascript" })), options);
+      super(
+        URL.createObjectURL(new Blob([source], { type: "text/javascript" })),
+        options,
+      );
     }
   };
 }
@@ -1456,27 +2609,61 @@ async function readback(browser, server) {
     version: 8,
     sprite: `${server.url}e2e/data/sprites/ofm`,
     sources: {
-      dem: { type: "raster-dem", tiles: [`${server.url}e2e/styles/dem.png`], tileSize: size, encoding: "mapbox", maxzoom: 14 },
+      dem: {
+        type: "raster-dem",
+        tiles: [`${server.url}e2e/styles/dem.png`],
+        tileSize: size,
+        encoding: "mapbox",
+        maxzoom: 14,
+      },
       point: { type: "geojson", data: { type: "Point", coordinates: [0, 0] } },
     },
     terrain: { source: "dem" },
     layers: [
-      { id: "background", type: "background", paint: { "background-color": "#ddd" } },
+      {
+        id: "background",
+        type: "background",
+        paint: { "background-color": "#ddd" },
+      },
       { id: "hillshade", type: "hillshade", source: "dem" },
-      { id: "icon", type: "symbol", source: "point", layout: { "icon-image": "pedestrian_polygon", "icon-size": 2 } },
+      {
+        id: "icon",
+        type: "symbol",
+        source: "point",
+        layout: { "icon-image": "pedestrian_polygon", "icon-size": 2 },
+      },
     ],
-    center: [0, 0], zoom: 12, pitch: 60,
+    center: [0, 0],
+    zoom: 12,
+    pitch: 60,
   };
-  const request = { native: true, style: JSON.stringify(style), width: 256, height: 256, ratio: 1, max_pitch: 60,
-    cross_source_collisions: true, timeout_ms: 20_000, operations: [] };
+  const request = {
+    native: true,
+    style: JSON.stringify(style),
+    width: 256,
+    height: 256,
+    ratio: 1,
+    max_pitch: 60,
+    cross_source_collisions: true,
+    timeout_ms: 20_000,
+    operations: [],
+  };
   const draw = async (noise, frames) => {
     const { page, errors } = await open(browser, { width: 256, height: 256 });
     try {
-      if (noise || !frames) await page.addInitScript(`(${perturbReadback})(${noise}, ${frames})`);
+      if (noise || !frames)
+        await page.addInitScript(`(${perturbReadback})(${noise}, ${frames})`);
       await page.goto(`${server.url}fixture.html`);
       await page.waitForFunction(() => window.fixture);
-      const { rgba, warnings } = await page.evaluate((r) => window.fixture(r), request);
-      assert.deepEqual([...warnings, ...errors], [], `noise ${noise}, frames ${frames}`);
+      const { rgba, warnings } = await page.evaluate(
+        (r) => window.fixture(r),
+        request,
+      );
+      assert.deepEqual(
+        [...warnings, ...errors],
+        [],
+        `noise ${noise}, frames ${frames}`,
+      );
       return Buffer.from(rgba, "base64");
     } finally {
       await page.close();
@@ -1486,11 +2673,20 @@ async function readback(browser, server) {
   const noisy = await draw(true, true);
   const canvas = await draw(true, false);
   const differing = (a, b) => a.reduce((n, v, i) => n + (v !== b[i]), 0);
-  assert.equal(differing(clean, noisy), 0, "a perturbed canvas changed what was drawn");
+  assert.equal(
+    differing(clean, noisy),
+    0,
+    "a perturbed canvas changed what was drawn",
+  );
   // Spikes in the DEM change most of the picture.
   const reached = differing(clean, canvas) / clean.length;
-  assert.ok(reached > 0.25, `the noise never reached a canvas readback (${reached})`);
-  console.log(`readback: the DEM and sprite exact under a perturbed canvas (${(reached * 100).toFixed(0)}% of bytes differ through it)`);
+  assert.ok(
+    reached > 0.25,
+    `the noise never reached a canvas readback (${reached})`,
+  );
+  console.log(
+    `readback: the DEM and sprite exact under a perturbed canvas (${(reached * 100).toFixed(0)}% of bytes differ through it)`,
+  );
 }
 
 const CHECKS = {
@@ -1510,7 +2706,12 @@ const CHECKS = {
 const DATA = fileURLToPath(new URL("../demo/data/", import.meta.url));
 // Styles a check writes, served beside the demo's data.
 const styles = await mkdtemp(join(tmpdir(), "orbis-e2e-"));
-const server = { ...await serveDemo({ mounts: { "e2e/data/": DATA, "e2e/styles/": styles } }), styles };
+const server = {
+  ...(await serveDemo({
+    mounts: { "e2e/data/": DATA, "e2e/styles/": styles },
+  })),
+  styles,
+};
 const browser = await launchChromium();
 let failed = 0;
 try {

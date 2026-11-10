@@ -11,8 +11,13 @@ export interface RequestParameters {
 
 /** Answers a request's parameters (or a promise of them), `null` to refuse
  * it, or `undefined` to leave it as it is. */
-export type RequestTransform = (url: string) =>
-  RequestParameters | null | undefined | Promise<RequestParameters | null | undefined>;
+export type RequestTransform = (
+  url: string,
+) =>
+  | RequestParameters
+  | null
+  | undefined
+  | Promise<RequestParameters | null | undefined>;
 
 type SetHook = (hook?: (url: string) => unknown) => void;
 
@@ -32,7 +37,9 @@ export function setRequestTransform(fn?: RequestTransform): void {
 }
 
 /** What the transform makes of a request for `url`; null when it refuses. */
-export async function transformed(url: string): Promise<RequestParameters | null> {
+export async function transformed(
+  url: string,
+): Promise<RequestParameters | null> {
   const result = await transform?.(url);
   return result === undefined ? { url } : result;
 }
@@ -62,17 +69,24 @@ export function answerWorker(port: Port, data: unknown): boolean {
 }
 
 /** A worker's hook: the page's transform, asked over `port`. */
-export function askPage(port: Port): { hook: (url: string) => Promise<unknown>; answer: (data: unknown) => boolean } {
+export function askPage(port: Port): {
+  hook: (url: string) => Promise<unknown>;
+  answer: (data: unknown) => boolean;
+} {
   let next = 0;
   const waiting = new Map<number, (result: unknown) => void>();
   return {
-    hook: (url) => new Promise((resolve) => {
-      const request = next++;
-      waiting.set(request, resolve);
-      port.postMessage({ request, url });
-    }),
+    hook: (url) =>
+      new Promise((resolve) => {
+        const request = next++;
+        waiting.set(request, resolve);
+        port.postMessage({ request, url });
+      }),
     answer: (data) => {
-      const { request, result } = data as { request?: number; result?: unknown };
+      const { request, result } = data as {
+        request?: number;
+        result?: unknown;
+      };
       const resolve = request === undefined ? undefined : waiting.get(request);
       if (!resolve) return false;
       waiting.delete(request!);

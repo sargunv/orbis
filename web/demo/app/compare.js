@@ -20,11 +20,20 @@ import { isolate, isolated } from "./isolation.js";
 
 const ENGINES = {
   orbis: { name: "Orbis", load: () => import("./orbis.js") },
-  gljs: { name: "GL JS", load: () => import("./gljs.js"), unsupported: (scene) => scene.unsupported?.gljs },
+  gljs: {
+    name: "GL JS",
+    load: () => import("./gljs.js"),
+    unsupported: (scene) => scene.unsupported?.gljs,
+  },
   // Of two Native maps on a page, one sometimes stopped short of its last
   // update until the next input moved it.
-  native: { name: "MapLibre Native", load: () => import("./native.js"), unsupported: (scene) => scene.unsupported?.native,
-    once: "MapLibre Native draws one side at a time", isolated: true },
+  native: {
+    name: "MapLibre Native",
+    load: () => import("./native.js"),
+    unsupported: (scene) => scene.unsupported?.native,
+    once: "MapLibre Native draws one side at a time",
+    isolated: true,
+  },
 };
 /**
  * Properties of Orbis's previews that the other engines don't know, by
@@ -34,13 +43,22 @@ const ENGINES = {
 const PREVIEWS = {
   sky: ["backdrop-color", "star-opacity"],
   light: ["shadow-intensity"],
-  paint: ["wall-intensity", "wall-radius", "ground-intensity", "ground-radius"]
-    .map((p) => `fill-extrusion-ambient-occlusion-${p}`),
+  paint: [
+    "wall-intensity",
+    "wall-radius",
+    "ground-intensity",
+    "ground-radius",
+  ].map((p) => `fill-extrusion-ambient-occlusion-${p}`),
   layout: ["fill-rounded-corner-distance"],
 };
 /** `object` less the properties `names` and their transitions; absent stays absent. */
-const without = (object, names) => object && Object.fromEntries(Object.entries(object)
-  .filter(([k]) => !names.some((p) => k === p || k === `${p}-transition`)));
+const without = (object, names) =>
+  object &&
+  Object.fromEntries(
+    Object.entries(object).filter(
+      ([k]) => !names.some((p) => k === p || k === `${p}-transition`),
+    ),
+  );
 /** What `?compare` alone compares. */
 const DEFAULT = ["orbis", "gljs"];
 const SIDES = ["left", "right"];
@@ -49,12 +67,15 @@ const SIDES = ["left", "right"];
 export function parsePair(value) {
   if (value === null) return null;
   const named = value.split(",");
-  const [left, right] = DEFAULT.map((fallback, i) => (ENGINES[named[i]] ? named[i] : fallback));
+  const [left, right] = DEFAULT.map((fallback, i) =>
+    ENGINES[named[i]] ? named[i] : fallback,
+  );
   if (left !== right || !ENGINES[left].once) return [left, right];
   return [left, left === DEFAULT[1] ? DEFAULT[0] : DEFAULT[1]];
 }
 /** `?compare`'s value for `pair`: empty for the default. */
-export const formatPair = (pair) => (pair.every((key, i) => key === DEFAULT[i]) ? "" : pair.join(","));
+export const formatPair = (pair) =>
+  pair.every((key, i) => key === DEFAULT[i]) ? "" : pair.join(",");
 
 // Where the divider sits, as a fraction of the stage's width; it stays for
 // the next comparison.
@@ -76,10 +97,16 @@ export function comparison({ onChange, beforeReload }) {
 
   // A side's engine that needs isolation reloads the page into it, once.
   function checkIsolation() {
-    const needed = pair?.some((key) => ENGINES[key].isolated && !(scene && ENGINES[key].unsupported?.(scene)));
+    const needed = pair?.some(
+      (key) =>
+        ENGINES[key].isolated && !(scene && ENGINES[key].unsupported?.(scene)),
+    );
     if (!needed || isolated() || isolating) return;
     // On success the page reloads; on failure the sides that need it say why.
-    isolating = isolate(Object.keys(ENGINES).filter((k) => ENGINES[k].isolated), { beforeReload });
+    isolating = isolate(
+      Object.keys(ENGINES).filter((k) => ENGINES[k].isolated),
+      { beforeReload },
+    );
     isolating.catch(update);
   }
 
@@ -114,11 +141,19 @@ export function comparison({ onChange, beforeReload }) {
       update();
     },
     /** Compares `next`'s map of `entry`, once its style is in; with no map, closes. */
-    attach(next, entry) { map = next; scene = entry; update(); },
+    attach(next, entry) {
+      map = next;
+      scene = entry;
+      update();
+    },
     /** Each side's engine, camera, whether it's settled and leads, and its note, for the headless checks. */
-    get sides() { return shown?.sides(); },
+    get sides() {
+      return shown?.sides();
+    },
     /** Each side's style, where its engine gives it, for the headless checks. */
-    styles() { return shown?.styles(); },
+    styles() {
+      return shown?.styles();
+    },
   };
 }
 
@@ -147,14 +182,36 @@ function show(map, scene, pair, { isolating, onPick }) {
   let closed = false;
   const sides = pair.map((key, index) => {
     const engine = ENGINES[key];
-    const side = { key, index, engine, map: index === ownSide ? own : undefined, note: undefined };
-    const select = h("select", { class: "compare-engine-picker", "aria-label": `The ${SIDES[index]} map's engine`,
-      onchange: () => onPick(index, select.value) },
-    Object.entries(ENGINES).map(([k, e]) => {
-      const reason = e.unsupported?.(scene) ?? (e.once && pair[1 - index] === k ? e.once : undefined);
-      return h("option", { value: k, selected: k === key, disabled: Boolean(reason) && k !== key,
-        title: reason }, reason ? `${e.name} (can't)` : e.name);
-    }));
+    const side = {
+      key,
+      index,
+      engine,
+      map: index === ownSide ? own : undefined,
+      note: undefined,
+    };
+    const select = h(
+      "select",
+      {
+        class: "compare-engine-picker",
+        "aria-label": `The ${SIDES[index]} map's engine`,
+        onchange: () => onPick(index, select.value),
+      },
+      Object.entries(ENGINES).map(([k, e]) => {
+        const reason =
+          e.unsupported?.(scene) ??
+          (e.once && pair[1 - index] === k ? e.once : undefined);
+        return h(
+          "option",
+          {
+            value: k,
+            selected: k === key,
+            disabled: Boolean(reason) && k !== key,
+            title: reason,
+          },
+          reason ? `${e.name} (can't)` : e.name,
+        );
+      }),
+    );
     side.select = select;
     side.label = h("label", { class: `compare-label ${SIDES[index]}` }, select);
     if (side.map) return side;
@@ -174,43 +231,72 @@ function show(map, scene, pair, { isolating, onPick }) {
       if (!isolating) say(`${engine.name} needs a cross-origin isolated page`);
       else {
         say(`Reloading so ${engine.name} can share memory between threads…`);
-        isolating.catch((e) => say(`${engine.name} can't run here: ${e instanceof Error ? e.message : e}`));
+        isolating.catch((e) =>
+          say(
+            `${engine.name} can't run here: ${e instanceof Error ? e.message : e}`,
+          ),
+        );
       }
     } else {
-      side.inner.append(h("p", { class: "compare-note" }, `Loading ${engine.name}…`));
+      side.inner.append(
+        h("p", { class: "compare-note" }, `Loading ${engine.name}…`),
+      );
       side.opening = (async () => {
         const module = await engine.load();
         if (closed) return;
         side.inner.replaceChildren();
-        const opened = await module.open(side.inner,
-          { style: await style(), camera: map.camera.current, constraints: scene.constraints });
-        if (closed) { opened.remove(); return; }
+        const opened = await module.open(side.inner, {
+          style: await style(),
+          camera: map.camera.current,
+          constraints: scene.constraints,
+        });
+        if (closed) {
+          opened.remove();
+          return;
+        }
         side.map = opened;
         const option = select.querySelector(`option[value="${key}"]`);
         option.textContent = module.label;
         // It opened at the camera of when it started; it catches up with the leader's.
         opened.jumpTo(leader.camera());
-        offs.push(opened.onMove(() => { if (leader === opened) follow(opened); }));
+        offs.push(
+          opened.onMove(() => {
+            if (leader === opened) follow(opened);
+          }),
+        );
       })().catch((e) => {
         if (closed) return;
         console.error(e);
-        say(`${engine.name} couldn't start: ${e instanceof Error ? e.message : e}`);
+        say(
+          `${engine.name} couldn't start: ${e instanceof Error ? e.message : e}`,
+        );
       });
     }
     return side;
   });
   const divider = h("div", {
-    class: "compare-divider", role: "slider", tabindex: "0", "aria-label": "Divider between the maps",
-    "aria-valuemin": "0", "aria-valuemax": "100",
+    class: "compare-divider",
+    role: "slider",
+    tabindex: "0",
+    "aria-label": "Divider between the maps",
+    "aria-valuemin": "0",
+    "aria-valuemax": "100",
   });
-  const added = [...sides.map((s) => s.layer).filter(Boolean), divider, ...sides.map((s) => s.label)];
+  const added = [
+    ...sides.map((s) => s.layer).filter(Boolean),
+    divider,
+    ...sides.map((s) => s.label),
+  ];
   map.container.after(...added);
 
   // Input on a side makes its map lead and stops the others' motion, such
   // as a drag's momentum; input off the maps (the zoom buttons, say) makes
   // the app's lead. The capture phase sees it before any map does.
   let leader = own;
-  const maps = () => [own, ...sides.map((s) => s.map).filter((m) => m && m !== own)];
+  const maps = () => [
+    own,
+    ...sides.map((s) => s.map).filter((m) => m && m !== own),
+  ];
   const follow = (from) => {
     const camera = from.camera();
     for (const m of maps()) if (m !== from) m.jumpTo(camera);
@@ -218,30 +304,48 @@ function show(map, scene, pair, { isolating, onPick }) {
   const listening = new AbortController();
   const { signal } = listening;
   for (const type of ["pointerdown", "wheel", "keydown"]) {
-    stage.addEventListener(type, (e) => {
-      if (e.target === divider || sides.some((s) => s.label.contains(e.target))) return;
-      const layer = sides.find((s) => s.layer?.contains(e.target));
-      // A press keeps its pointer on the map it began on, so a release over
-      // the chrome still ends a GL JS drag, which listens on its container.
-      if (layer && type === "pointerdown" && !e.target.hasPointerCapture(e.pointerId)) {
-        e.target.setPointerCapture(e.pointerId);
-      }
-      const next = layer?.map ?? own;
-      if (next === leader) return;
-      leader = next;
-      for (const m of maps()) if (m !== leader) m.stop();
-    }, { capture: true, passive: true, signal });
+    stage.addEventListener(
+      type,
+      (e) => {
+        if (
+          e.target === divider ||
+          sides.some((s) => s.label.contains(e.target))
+        )
+          return;
+        const layer = sides.find((s) => s.layer?.contains(e.target));
+        // A press keeps its pointer on the map it began on, so a release over
+        // the chrome still ends a GL JS drag, which listens on its container.
+        if (
+          layer &&
+          type === "pointerdown" &&
+          !e.target.hasPointerCapture(e.pointerId)
+        ) {
+          e.target.setPointerCapture(e.pointerId);
+        }
+        const next = layer?.map ?? own;
+        if (next === leader) return;
+        leader = next;
+        for (const m of maps()) if (m !== leader) m.stop();
+      },
+      { capture: true, passive: true, signal },
+    );
   }
-  const offs = [map.on("move", () => { if (leader === own) follow(own); })];
+  const offs = [
+    map.on("move", () => {
+      if (leader === own) follow(own);
+    }),
+  ];
   // Style edits, at most once a frame.
   let restyle = 0;
-  offs.push(map.on("styledata", () => {
-    restyle ||= requestAnimationFrame(async () => {
-      restyle = 0;
-      const next = await style();
-      for (const m of maps()) if (m !== own) m.setStyle(next);
-    });
-  }));
+  offs.push(
+    map.on("styledata", () => {
+      restyle ||= requestAnimationFrame(async () => {
+        restyle = 0;
+        const next = await style();
+        for (const m of maps()) if (m !== own) m.setStyle(next);
+      });
+    }),
+  );
 
   // The divider: a drag or the arrow keys move it.
   const place = (fraction) => {
@@ -250,25 +354,47 @@ function show(map, scene, pair, { isolating, onPick }) {
     divider.setAttribute("aria-valuenow", String(Math.round(split * 100)));
   };
   place(split);
-  divider.addEventListener("pointerdown", (e) => divider.setPointerCapture(e.pointerId), { signal });
-  divider.addEventListener("pointermove", (e) => {
-    if (!divider.hasPointerCapture(e.pointerId)) return;
-    const rect = stage.getBoundingClientRect();
-    place((e.clientX - rect.left) / rect.width);
-  }, { signal });
-  divider.addEventListener("keydown", (e) => {
-    const step = e.shiftKey ? 0.1 : 0.02;
-    const next = { ArrowLeft: split - step, ArrowRight: split + step, Home: 0, End: 1 }[e.key];
-    if (next === undefined) return;
-    e.preventDefault();
-    place(next);
-  }, { signal });
+  divider.addEventListener(
+    "pointerdown",
+    (e) => divider.setPointerCapture(e.pointerId),
+    { signal },
+  );
+  divider.addEventListener(
+    "pointermove",
+    (e) => {
+      if (!divider.hasPointerCapture(e.pointerId)) return;
+      const rect = stage.getBoundingClientRect();
+      place((e.clientX - rect.left) / rect.width);
+    },
+    { signal },
+  );
+  divider.addEventListener(
+    "keydown",
+    (e) => {
+      const step = e.shiftKey ? 0.1 : 0.02;
+      const next = {
+        ArrowLeft: split - step,
+        ArrowRight: split + step,
+        Home: 0,
+        End: 1,
+      }[e.key];
+      if (next === undefined) return;
+      e.preventDefault();
+      place(next);
+    },
+    { signal },
+  );
 
   return {
-    sides: () => sides.map((s) => ({
-      engine: s.key, note: s.note, own: s.map === own, leads: Boolean(s.map) && s.map === leader,
-      camera: s.map?.camera(), loaded: s.map?.loaded() ?? false,
-    })),
+    sides: () =>
+      sides.map((s) => ({
+        engine: s.key,
+        note: s.note,
+        own: s.map === own,
+        leads: Boolean(s.map) && s.map === leader,
+        camera: s.map?.camera(),
+        loaded: s.map?.loaded() ?? false,
+      })),
     styles: () => Promise.all(sides.map((s) => s.map?.style?.() ?? null)),
     close() {
       closed = true;

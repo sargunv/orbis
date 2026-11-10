@@ -1,1 +1,91 @@
-{"type":"FeatureCollection","features":[{"type":"Feature","id":9,"properties":{"name":"line"},"geometry":{"type":"LineString","coordinates":[[-220,20],[-179,20],[-90,30],[0,20],[60,20],[179,10],[220,30]]}},{"type":"Feature","id":10,"properties":{"name":"poly"},"geometry":{"type":"MultiPolygon","coordinates":[[[[-20,-20],[20,-20],[20,20],[-20,20],[-20,-20]],[[-5,-5],[5,-5],[5,5],[-5,5],[-5,-5]]],[[[170,-10],[190,-10],[190,10],[170,10],[170,-10]]]]}},{"type":"Feature","id":11,"properties":{"name":"points"},"geometry":{"type":"MultiPoint","coordinates":[[-181,85],[0,0],[179,40],[181,-85]]}},{"type":"Feature","id":12,"properties":{"name":"multi"},"geometry":{"type":"MultiLineString","coordinates":[[[0,0],[45,0.00001],[90,0]],[[0,0],[-10,-10],[-45,-10]]]}}]}
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": 9,
+      "properties": { "name": "line" },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-220, 20],
+          [-179, 20],
+          [-90, 30],
+          [0, 20],
+          [60, 20],
+          [179, 10],
+          [220, 30]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 10,
+      "properties": { "name": "poly" },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [-20, -20],
+              [20, -20],
+              [20, 20],
+              [-20, 20],
+              [-20, -20]
+            ],
+            [
+              [-5, -5],
+              [5, -5],
+              [5, 5],
+              [-5, 5],
+              [-5, -5]
+            ]
+          ],
+          [
+            [
+              [170, -10],
+              [190, -10],
+              [190, 10],
+              [170, 10],
+              [170, -10]
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 11,
+      "properties": { "name": "points" },
+      "geometry": {
+        "type": "MultiPoint",
+        "coordinates": [
+          [-181, 85],
+          [0, 0],
+          [179, 40],
+          [181, -85]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 12,
+      "properties": { "name": "multi" },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [0, 0],
+            [45, 0.00001],
+            [90, 0]
+          ],
+          [
+            [0, 0],
+            [-10, -10],
+            [-45, -10]
+          ]
+        ]
+      }
+    }
+  ]
+}

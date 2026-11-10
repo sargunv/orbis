@@ -16,7 +16,9 @@ export function expose(map) {
     trapJobWorkers: () => map.trapJobWorkers(),
     setRequestTransform,
   };
-  map.on("render", (ack) => window.dispatchEvent(new CustomEvent("orbis-frame", { detail: ack })));
+  map.on("render", (ack) =>
+    window.dispatchEvent(new CustomEvent("orbis-frame", { detail: ack })),
+  );
 }
 
 /** `#zoom/lat/lon[/bearing/pitch]`, or undefined. */

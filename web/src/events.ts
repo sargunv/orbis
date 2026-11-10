@@ -6,7 +6,10 @@ export type Listener<T> = (event: T) => void;
 export class Emitter<Events> {
   #listeners = new Map<keyof Events, Set<Listener<never>>>();
 
-  on<K extends keyof Events>(type: K, listener: Listener<Events[K]>): () => void {
+  on<K extends keyof Events>(
+    type: K,
+    listener: Listener<Events[K]>,
+  ): () => void {
     let set = this.#listeners.get(type);
     if (!set) this.#listeners.set(type, (set = new Set()));
     set.add(listener as Listener<never>);
@@ -19,7 +22,10 @@ export class Emitter<Events> {
 
   once<K extends keyof Events>(type: K): Promise<Events[K]> {
     return new Promise((resolve) => {
-      const off = this.on(type, (event) => { off(); resolve(event); });
+      const off = this.on(type, (event) => {
+        off();
+        resolve(event);
+      });
     });
   }
 
@@ -27,11 +33,16 @@ export class Emitter<Events> {
   async *events<K extends keyof Events>(type: K): AsyncGenerator<Events[K]> {
     const queue: Events[K][] = [];
     let wake: (() => void) | null = null;
-    const off = this.on(type, (event) => { queue.push(event); wake?.(); });
+    const off = this.on(type, (event) => {
+      queue.push(event);
+      wake?.();
+    });
     try {
       for (;;) {
         while (queue.length) yield queue.shift() as Events[K];
-        await new Promise<void>((resolve) => { wake = resolve; });
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
         wake = null;
       }
     } finally {
@@ -42,6 +53,8 @@ export class Emitter<Events> {
   emit<K extends keyof Events>(type: K, event: Events[K]): void {
     const set = this.#listeners.get(type);
     if (!set) return;
+    // A snapshot: a listener added during dispatch waits for the next event.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const listener of [...set]) (listener as Listener<Events[K]>)(event);
   }
 

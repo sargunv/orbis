@@ -6,7 +6,11 @@ export interface Transaction {
   setPaintProperty(layer: string, name: string, value: unknown): Transaction;
   setLayoutProperty(layer: string, name: string, value: unknown): Transaction;
   setFilter(layer: string, filter: unknown): Transaction;
-  setLayerZoomRange(layer: string, minzoom: number, maxzoom: number): Transaction;
+  setLayerZoomRange(
+    layer: string,
+    minzoom: number,
+    maxzoom: number,
+  ): Transaction;
   addLayer(layer: object, before?: string): Transaction;
   removeLayer(layer: string): Transaction;
   moveLayer(layer: string, before?: string): Transaction;
@@ -19,8 +23,14 @@ export interface Transaction {
    * only the diff goes to the map and its workers. */
   updateSourceData(id: string, diff: GeoJSONSourceDiff): Transaction;
   setGlobalStateProperty(name: string, value: unknown): Transaction;
-  setFeatureState(feature: FeatureTarget, state: Record<string, unknown>): Transaction;
-  removeFeatureState(feature: Partial<FeatureTarget>, key?: string): Transaction;
+  setFeatureState(
+    feature: FeatureTarget,
+    state: Record<string, unknown>,
+  ): Transaction;
+  removeFeatureState(
+    feature: Partial<FeatureTarget>,
+    key?: string,
+  ): Transaction;
   setStyle(style: object): Transaction;
   /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"` or `"mercator"`; with previews, `"equal-earth"`, `"natural-earth"`, `"equirectangular"` or a coordinate reference system such as `"EPSG:3413"`, and `transition: [start, end] | false`. Another CRS plane reloads every tile. */
   setProjection(projection: object): Transaction;
@@ -57,18 +67,41 @@ export interface FeatureTarget {
 }
 
 const CALLS = [
-  "setPaintProperty", "setLayoutProperty", "setFilter", "setLayerZoomRange",
-  "addLayer", "removeLayer", "moveLayer", "addSource", "removeSource", "setSourceData", "updateSourceData",
-  "setGlobalStateProperty", "setFeatureState", "removeFeatureState", "setStyle",
-  "setProjection", "setSky", "setTerrain", "setLight", "setTransition", "setSprite",
+  "setPaintProperty",
+  "setLayoutProperty",
+  "setFilter",
+  "setLayerZoomRange",
+  "addLayer",
+  "removeLayer",
+  "moveLayer",
+  "addSource",
+  "removeSource",
+  "setSourceData",
+  "updateSourceData",
+  "setGlobalStateProperty",
+  "setFeatureState",
+  "removeFeatureState",
+  "setStyle",
+  "setProjection",
+  "setSky",
+  "setTerrain",
+  "setLight",
+  "setTransition",
+  "setSprite",
 ] as const;
 
 /** A transaction's calls as the JSON array the core applies. */
 export function transaction(build: (tx: Transaction) => void): string {
   const commands: unknown[][] = [];
-  const tx = Object.fromEntries(CALLS.map((name) =>
-    [name, (...args: unknown[]) => { commands.push([name, ...args]); return tx; }])) as unknown as Transaction;
+  const tx = Object.fromEntries(
+    CALLS.map((name) => [
+      name,
+      (...args: unknown[]) => {
+        commands.push([name, ...args]);
+        return tx;
+      },
+    ]),
+  ) as unknown as Transaction;
   build(tx);
   return JSON.stringify(commands);
 }
-

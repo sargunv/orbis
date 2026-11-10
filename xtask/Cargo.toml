@@ -15,7 +15,9 @@ orb-style.workspace = true
 orb-text.workspace = true
 orb-tile.workspace = true
 # Typed staging preserves wire types; tooling only, pinned to this API.
-mlt-core = { version = "=0.22.1", default-features = false, features = ["__private"] }
+mlt-core = { version = "=0.22.1", default-features = false, features = [
+  "__private",
+] }
 brotli.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 ureq.workspace = true
