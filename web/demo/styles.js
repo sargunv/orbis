@@ -100,8 +100,8 @@ const PROTOMAPS_SKY = { "sky-color": "#9fd3e0", "horizon-color": "#eef1ef", "fog
 /**
  * Protomaps Light (v5) with what it lacks for a 3D map: Mapterhorn's DEM
  * for PROTOMAPS_TERRAIN, a hillshade from a DEM source of its own over the
- * land and water fills and under the roads and labels, a map-anchored
- * light, and the buildings extruded under the labels. Each addition is
+ * land and water fills and under the roads and labels, a viewport-anchored
+ * light (the spec's default, which reads best on the globe in both engines), and the buildings extruded under the labels. Each addition is
  * placed by the layers it finds, so a style with other ids still draws.
  */
 function protomaps3d(style) {
@@ -115,7 +115,7 @@ function protomaps3d(style) {
   layers.splice(water < 0 ? labels() : water + 1, 0, {
     id: "hillshade", type: "hillshade", source: "hillshade",
     paint: {
-      "hillshade-illumination-anchor": "map",
+      "hillshade-illumination-anchor": "viewport",
       "hillshade-exaggeration": ["interpolate", ["linear"], ["zoom"], 3, 0.6, 12, 0.35],
       "hillshade-shadow-color": "#6f6a63",
       "hillshade-highlight-color": "#fbfaf7",
@@ -147,7 +147,7 @@ function protomaps3d(style) {
     ...style,
     sources: { ...style.sources, terrain: { ...MAPTERHORN, attribution: "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>" },
       hillshade: MAPTERHORN },
-    light: { anchor: "map", position: [1.15, 210, 30], intensity: 0.35 },
+    light: { anchor: "viewport", position: [1.15, 210, 30], intensity: 0.35 },
     layers,
   };
 }
