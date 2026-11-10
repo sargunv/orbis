@@ -33,6 +33,8 @@ pub(crate) struct StyleState {
     /// The feature state the map keeps, set through the API, whether or
     /// not the style has the source yet.
     feature_states: std::collections::BTreeMap<FeatureKey, FeatureState>,
+    /// The custom sources' callbacks, by source.
+    custom: HashMap<String, CustomSource>,
 }
 
 type FeatureState = Vec<(String, orb_expr::Value<'static>)>;
@@ -374,6 +376,7 @@ command!(
                 }],
             )?;
             entry.style.volatile.remove(&source_id);
+            entry.style.custom.remove(&source_id);
             // A source added again starts with no state.
             entry
                 .style
@@ -441,6 +444,13 @@ fn source_info(entry: &MapEntry, id: &str, json: &Json, lent: &mut Lent) -> Sour
         "video" => MLN_STYLE_SOURCE_TYPE_VIDEO,
         _ => MLN_STYLE_SOURCE_TYPE_UNKNOWN,
     };
+    if let Some(custom) = entry.style.custom.get(id) {
+        info.type_ = if custom.geometry {
+            MLN_STYLE_SOURCE_TYPE_CUSTOM_GEOMETRY
+        } else {
+            MLN_STYLE_SOURCE_TYPE_CUSTOM_VECTOR
+        };
+    }
     info.is_volatile = entry.style.volatile.contains(id);
     info.attribution = lent.text(
         json.get("attribution")
@@ -2034,3 +2044,522 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
         })
     }
 }
+
+// MARK: - Custom sources
+
+/// The source layer a custom geometry source's GeoJSON fills: the one a
+/// layer without a `source-layer` reads, as a GeoJSON source's does.
+const GEOMETRY_LAYER: &str = "_geojsonTileLayer";
+
+/// A custom source's callbacks, released when the style drops the source.
+pub(crate) struct CustomSource {
+    geometry: bool,
+    fetch: TileCallback,
+    cancel: Option<TileCallback>,
+    user_data: crate::base::UserData,
+    release_user_data: mln_user_data_release,
+    queue: u64,
+    /// The tiles asked for and not cancelled since.
+    requested: HashSet<orb_api::TileIndex>,
+}
+
+type TileCallback =
+    unsafe extern "C" fn(*mut std::ffi::c_void, mln_map, mln_buffer_view, mln_canonical_tile_id);
+
+impl Drop for CustomSource {
+    fn drop(&mut self) {
+        crate::delivery::release_later(self.queue, self.release_user_data, self.user_data);
+    }
+}
+
+impl CustomSource {
+    /// Asks the host for a tile of source `id` of map `map`.
+    pub(crate) fn fetch(&mut self, map: u64, id: &str, tile: orb_api::TileIndex) {
+        self.requested.insert(tile);
+        self.call(self.fetch, map, id, tile);
+    }
+
+    /// Tells the host the map no longer needs the tiles `which` picks.
+    fn cancel(&mut self, map: u64, id: &str, which: &dyn Fn(orb_api::TileIndex) -> bool) {
+        let cancelled: Vec<_> = self
+            .requested
+            .iter()
+            .copied()
+            .filter(|t| which(*t))
+            .collect();
+        for tile in cancelled {
+            self.requested.remove(&tile);
+            if let Some(cancel) = self.cancel {
+                self.call(cancel, map, id, tile);
+            }
+        }
+    }
+
+    fn call(&self, callback: TileCallback, map: u64, id: &str, tile: orb_api::TileIndex) {
+        let (fetch, user_data) = (callback, self.user_data);
+        let id = id.to_string();
+        crate::delivery::deliver(
+            self.queue,
+            Box::new(move || {
+                let mut id = id;
+                let view = crate::base::lend(&mut id);
+                let tile = mln_canonical_tile_id {
+                    z: u32::from(tile.z),
+                    x: tile.col,
+                    y: tile.row,
+                };
+                // SAFETY: the source's registration; the id lives until it
+                // returns.
+                unsafe { fetch(user_data.get(), mln_map(map), view, tile) };
+            }),
+        );
+    }
+}
+
+impl StyleState {
+    /// The custom source `id`, if the style has one.
+    pub(crate) fn custom(&mut self, id: &str) -> Option<&mut CustomSource> {
+        self.custom.get_mut(id)
+    }
+}
+
+fn custom_zoom(v: f64, what: &str) -> Result<f64> {
+    if !(v.is_finite() && v.fract() == 0.0 && (0.0..=32.0).contains(&v)) {
+        return Err(Failure::argument(format!(
+            "options.{what} must be an integer within [0, 32]"
+        )));
+    }
+    Ok(v)
+}
+
+/// The source JSON of a custom source the host feeds.
+fn custom_json(min: Option<f64>, max: Option<f64>) -> Result<String> {
+    if min.unwrap_or(0.0) > max.unwrap_or(32.0) {
+        return Err(Failure::argument(
+            "options.min_zoom must be less than or equal to max_zoom",
+        ));
+    }
+    let mut json = format!(
+        "{{\"type\":\"vector\",\"tiles\":[\"{}\"]",
+        orb_api::HOST_TILES
+    );
+    if let Some(min) = min {
+        json.push_str(&format!(",\"minzoom\":{min}"));
+    }
+    if let Some(max) = max {
+        json.push_str(&format!(",\"maxzoom\":{max}"));
+    }
+    json.push('}');
+    Ok(json)
+}
+
+/// Adds a custom source; a failure still releases its callbacks.
+fn add_custom(entry: &mut MapEntry, id: String, json: String, source: CustomSource) -> Result {
+    add_source(entry, &id, &json)?;
+    entry.style.custom.insert(id, source);
+    Ok(())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_map_add_custom_geometry_source(
+    map: mln_map,
+    source_id: mln_buffer_view,
+    options: *const mln_custom_geometry_source_options,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            let id = id(source_id, "source_id")?;
+            let o = sized(options, "options")?;
+            let fetch = o
+                .fetch_tile
+                .ok_or_else(|| Failure::argument("options.fetch_tile is null"))?;
+            crate::delivery::check_queue(o.queue.0, "options.queue")?;
+            let has = |bit| o.fields & bit != 0;
+            let min = has(MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_MIN_ZOOM)
+                .then(|| custom_zoom(o.min_zoom, "min_zoom"))
+                .transpose()?;
+            let max = has(MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_MAX_ZOOM)
+                .then(|| custom_zoom(o.max_zoom, "max_zoom"))
+                .transpose()?;
+            if has(MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_TOLERANCE)
+                && !(o.tolerance.is_finite() && o.tolerance >= 0.0)
+            {
+                return Err(Failure::argument(
+                    "options.tolerance must be finite and not negative",
+                ));
+            }
+            let tile_size = if has(MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_TILE_SIZE) {
+                if !(o.tile_size.is_power_of_two() && o.tile_size <= 8192) {
+                    return Err(Failure::argument(
+                        "options.tile_size must be a power of two within [1, 8192]",
+                    ));
+                }
+                o.tile_size
+            } else {
+                512
+            };
+            // Tiles hold coordinates of 8192 units a side in 16 bits.
+            let widest = 65535 * u64::from(tile_size) / 8192;
+            if has(MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_BUFFER) && u64::from(o.buffer) > widest {
+                return Err(Failure::argument(format!(
+                    "options.buffer must be at most {widest} for a tile_size of {tile_size}"
+                )));
+            }
+            let json = custom_json(min, max)?;
+            let source = CustomSource {
+                geometry: true,
+                fetch,
+                cancel: o.cancel_tile,
+                requested: HashSet::new(),
+                user_data: crate::base::UserData(o.user_data),
+                release_user_data: o.release_user_data,
+                queue: o.queue.0,
+            };
+            post(map, completion, false, true, move |state, map| {
+                add_custom(entry(state, map), id, json, source).map(|()| Value::None)
+            })
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_map_add_custom_vector_source(
+    map: mln_map,
+    source_id: mln_buffer_view,
+    options: *const mln_custom_vector_source_options,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            let id = id(source_id, "source_id")?;
+            let o = sized(options, "options")?;
+            let fetch = o
+                .fetch_tile
+                .ok_or_else(|| Failure::argument("options.fetch_tile is null"))?;
+            crate::delivery::check_queue(o.queue.0, "options.queue")?;
+            let has = |bit| o.fields & bit != 0;
+            let min = has(MLN_CUSTOM_VECTOR_SOURCE_OPTION_MIN_ZOOM)
+                .then(|| custom_zoom(o.min_zoom, "min_zoom"))
+                .transpose()?;
+            let max = has(MLN_CUSTOM_VECTOR_SOURCE_OPTION_MAX_ZOOM)
+                .then(|| custom_zoom(o.max_zoom, "max_zoom"))
+                .transpose()?;
+            let json = custom_json(min, max)?;
+            let source = CustomSource {
+                geometry: false,
+                fetch,
+                cancel: o.cancel_tile,
+                requested: HashSet::new(),
+                user_data: crate::base::UserData(o.user_data),
+                release_user_data: o.release_user_data,
+                queue: o.queue.0,
+            };
+            post(map, completion, false, true, move |state, map| {
+                add_custom(entry(state, map), id, json, source).map(|()| Value::None)
+            })
+        })
+    }
+}
+
+/// The custom source `id` of the kind a call names.
+fn custom<'a>(entry: &'a MapEntry, id: &str, geometry: bool) -> Result<&'a CustomSource> {
+    source(entry, id)?;
+    entry
+        .style
+        .custom
+        .get(id)
+        .filter(|c| c.geometry == geometry)
+        .ok_or_else(|| {
+            Failure::argument(format!(
+                "source \"{id}\" is not a custom {} source",
+                if geometry { "geometry" } else { "vector" }
+            ))
+        })
+}
+
+fn tile_index(tile: mln_canonical_tile_id) -> Result<orb_api::TileIndex> {
+    if tile.z > 32 || u64::from(tile.x) >= 1u64 << tile.z || u64::from(tile.y) >= 1u64 << tile.z {
+        return Err(Failure::argument(
+            "tile_id must name a tile within zoom bounds",
+        ));
+    }
+    Ok(orb_api::TileIndex {
+        z: tile.z as u8,
+        col: tile.x,
+        row: tile.y,
+    })
+}
+
+/// Hands a custom source's answer for a tile to Orbis.
+fn answer_tile(
+    entry: &mut MapEntry,
+    id: &str,
+    geometry: bool,
+    tile: orb_api::TileIndex,
+    answer: orb_api::HostTile,
+) -> Result {
+    custom(entry, id, geometry)?;
+    // A source still loading has asked for no tile, and ignores data for
+    // one it hasn't asked for.
+    let _ = entry.map.host_tile(id, tile, answer);
+    Ok(())
+}
+
+command!(
+    mln_map_set_custom_geometry_source_tile_data(
+        source_id: mln_buffer_view,
+        tile_id: mln_canonical_tile_id,
+        data: mln_buffer_view,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let tile = tile_index(tile_id);
+        let data = json_text(data, "data")?;
+        let json = parse_json(&data, "the tile's GeoJSON")?;
+        if !json
+            .get("type")
+            .and_then(Json::as_str)
+            .is_some_and(|t| GEOJSON_TYPES.contains(&t))
+        {
+            return Err(Failure::argument("the tile's data isn't GeoJSON"));
+        }
+        let layers = format!("{{\"{GEOMETRY_LAYER}\":{json}}}");
+        Ok(job(move |entry| {
+            let tile = tile?;
+            answer_tile(
+                entry,
+                &source_id,
+                true,
+                tile,
+                orb_api::HostTile::GeoJson(layers),
+            )
+        }))
+    }
+);
+
+command!(
+    mln_map_set_custom_vector_source_tile_data(
+        source_id: mln_buffer_view,
+        tile_id: mln_canonical_tile_id,
+        encoding: mln_style_vector_tile_encoding,
+        data: mln_buffer_view,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let tile = tile_index(tile_id);
+        if encoding > MLN_STYLE_VECTOR_TILE_ENCODING_MLT {
+            return Err(Failure::argument("encoding is invalid"));
+        }
+        if data.data.is_null() && data.size != 0 {
+            return Err(Failure::argument("data is null"));
+        }
+        let bytes = crate::base::bytes(data).to_vec();
+        Ok(job(move |entry| {
+            let tile = tile?;
+            let answer = if bytes.is_empty() {
+                orb_api::HostTile::Empty
+            } else {
+                orb_api::HostTile::Encoded(bytes)
+            };
+            answer_tile(entry, &source_id, false, tile, answer)
+        }))
+    }
+);
+
+/// A tile the host couldn't load draws nothing, and the failure is logged.
+fn fail_tile(
+    entry: &mut MapEntry,
+    id: &str,
+    geometry: bool,
+    tile: orb_api::TileIndex,
+    message: &str,
+) -> Result {
+    answer_tile(entry, id, geometry, tile, orb_api::HostTile::Empty)?;
+    crate::logging::log(
+        MLN_LOG_SEVERITY_ERROR,
+        &format!(
+            "tile {}/{}/{} failed to load for source {id}: {message}",
+            tile.z, tile.col, tile.row
+        ),
+    );
+    Ok(())
+}
+
+command!(
+    mln_map_set_custom_geometry_source_tile_error(
+        source_id: mln_buffer_view,
+        tile_id: mln_canonical_tile_id,
+        message: mln_buffer_view,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let tile = tile_index(tile_id);
+        let message = optional(message, "message")?.unwrap_or_default();
+        Ok(job(move |entry| {
+            let tile = tile?;
+            fail_tile(entry, &source_id, true, tile, &message)
+        }))
+    }
+);
+
+command!(
+    mln_map_set_custom_vector_source_tile_error(
+        source_id: mln_buffer_view,
+        tile_id: mln_canonical_tile_id,
+        message: mln_buffer_view,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let tile = tile_index(tile_id);
+        let message = optional(message, "message")?.unwrap_or_default();
+        Ok(job(move |entry| {
+            let tile = tile?;
+            fail_tile(entry, &source_id, false, tile, &message)
+        }))
+    }
+);
+
+/// Asks the host again for the tiles of a custom source that `which`
+/// picks: those asked for before are cancelled first, and those the map
+/// still needs are asked for again; the drawn ones stay until the answers
+/// come.
+fn invalidate(
+    state: &mut State,
+    map: u64,
+    id: &str,
+    geometry: bool,
+    which: &dyn Fn(orb_api::TileIndex) -> bool,
+) -> Result {
+    let entry = entry(state, map);
+    custom(entry, id, geometry)?;
+    if let Some(source) = entry.style.custom(id) {
+        source.cancel(map, id, which);
+    }
+    // A source still loading has no tiles to ask for again.
+    let _ = entry.map.reload_host_tiles_where(id, which);
+    Ok(())
+}
+
+/// Whether a tile overlaps a box of coordinates.
+fn tile_meets(tile: orb_api::TileIndex, b: &mln_lat_lng_bounds) -> bool {
+    let n = f64::from(1u32 << tile.z.min(31));
+    let lon = |x: f64| x / n * 360.0 - 180.0;
+    let lat = |y: f64| {
+        (std::f64::consts::PI * (1.0 - 2.0 * y / n))
+            .sinh()
+            .atan()
+            .to_degrees()
+    };
+    let (west, east) = (lon(f64::from(tile.col)), lon(f64::from(tile.col) + 1.0));
+    let (north, south) = (lat(f64::from(tile.row)), lat(f64::from(tile.row) + 1.0));
+    // Corners given the other way round name the same box.
+    let (s1, s2) = (b.southwest, b.northeast);
+    west < s1.longitude.max(s2.longitude)
+        && east > s1.longitude.min(s2.longitude)
+        && south < s1.latitude.max(s2.latitude)
+        && north > s1.latitude.min(s2.latitude)
+}
+
+command!(
+    mln_map_invalidate_custom_geometry_source_tile(
+        source_id: mln_buffer_view,
+        tile_id: mln_canonical_tile_id,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let tile = tile_index(tile_id);
+        Ok(move |state: &mut State, map: u64| {
+            let tile = tile?;
+            invalidate(state, map, &source_id, true, &|t| t == tile).map(|()| Value::None)
+        })
+    }
+);
+
+command!(
+    mln_map_invalidate_custom_vector_source_tile(
+        source_id: mln_buffer_view,
+        tile_id: mln_canonical_tile_id,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let tile = tile_index(tile_id);
+        Ok(move |state: &mut State, map: u64| {
+            let tile = tile?;
+            invalidate(state, map, &source_id, false, &|t| t == tile).map(|()| Value::None)
+        })
+    }
+);
+
+fn check_region(b: &mln_lat_lng_bounds) -> Result {
+    let ok = [
+        b.southwest.latitude,
+        b.southwest.longitude,
+        b.northeast.latitude,
+        b.northeast.longitude,
+    ]
+    .iter()
+    .all(|v| v.is_finite());
+    let ordered = b.southwest.latitude <= b.northeast.latitude
+        && b.southwest.longitude <= b.northeast.longitude;
+    if ok && !ordered {
+        return Err(Failure::argument(
+            "bounds.southwest must be less than or equal to bounds.northeast",
+        ));
+    }
+    if ok {
+        Ok(())
+    } else {
+        Err(Failure::argument("bounds must be finite"))
+    }
+}
+
+command!(
+    mln_map_invalidate_custom_geometry_source_region(
+        source_id: mln_buffer_view,
+        bounds: mln_lat_lng_bounds,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        Ok(move |state: &mut State, map: u64| {
+            check_region(&bounds)?;
+            invalidate(state, map, &source_id, true, &|t| tile_meets(t, &bounds))
+                .map(|()| Value::None)
+        })
+    }
+);
+
+command!(
+    mln_map_invalidate_custom_vector_source_region(
+        source_id: mln_buffer_view,
+        bounds: mln_lat_lng_bounds,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        Ok(move |state: &mut State, map: u64| {
+            check_region(&bounds)?;
+            invalidate(state, map, &source_id, false, &|t| tile_meets(t, &bounds))
+                .map(|()| Value::None)
+        })
+    }
+);

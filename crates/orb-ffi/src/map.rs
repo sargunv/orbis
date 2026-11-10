@@ -295,6 +295,11 @@ pub(crate) fn take_events(state: &mut State, id: u64) {
                         out.push((MLN_RUNTIME_EVENT_MAP_IDLE, Payload::None, String::new()));
                     }
                 }
+                E::TileRequest { source, tile } => {
+                    if let Some(custom) = entry.style.custom(&source) {
+                        custom.fetch(id, &source, tile);
+                    }
+                }
                 E::StyleImageMissing { name } => out.push((
                     MLN_RUNTIME_EVENT_MAP_STYLE_IMAGE_MISSING,
                     Payload::StyleImage(name),

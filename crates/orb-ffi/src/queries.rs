@@ -49,6 +49,15 @@ impl Lent {
     }
 }
 
+/// A feature's source layer, as the C API names it: none for GeoJSON a
+/// custom geometry source gave.
+fn source_layer(feature: &Json) -> String {
+    match feature.get("sourceLayer").and_then(Json::as_str) {
+        Some("_geojsonTileLayer") | None => String::new(),
+        Some(layer) => layer.to_string(),
+    }
+}
+
 /// `feature` without the members a query adds to a GeoJSON feature.
 fn bare_feature(feature: &Json) -> String {
     let members: Vec<json::Member> = feature
@@ -107,7 +116,7 @@ pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) 
                     feature: lent.text(bare_feature(f)),
                     layer_id: lent.text(layer),
                     source_id: lent.text(get("source")),
-                    source_layer_id: lent.text(get("sourceLayer")),
+                    source_layer_id: lent.text(source_layer(f)),
                     state: lent.text(state),
                 });
             }
@@ -143,12 +152,7 @@ pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) 
                         .filter(|f| keeps(filter.as_ref(), f))
                         .map(|f| mln_source_feature {
                             feature: lent.text(bare_feature(f)),
-                            source_layer_id: lent.text(
-                                f.get("sourceLayer")
-                                    .and_then(Json::as_str)
-                                    .unwrap_or_default()
-                                    .to_string(),
-                            ),
+                            source_layer_id: lent.text(source_layer(f)),
                         })
                         .collect();
                     Ok(Value::array(&out, Some(Box::new(lent))))
