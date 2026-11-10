@@ -308,7 +308,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         var pattern_pos = pos;
         if normal.z == 0.0 {
             let distance = f32(vertex_at(v.vertex+3u) >> 16u);
-            pattern_pos = vec2<f32>(distance, -elevation * exp2(floor(frame.zoom)) / 65536.0 / tile_pixel_ratio(tile));
+            pattern_pos = vec2<f32>(distance, -elevation * exp2(pattern_zoom()) / 65536.0 / tile_pixel_ratio(tile));
         }
         // Keep atlas reads in the fragment stage, within core WebGPU's eight
         // storage slots per stage.

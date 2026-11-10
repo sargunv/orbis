@@ -1155,7 +1155,8 @@ pub(crate) fn placements<'a>(
     // One placement has four clip rectangles. Split larger partitions into
     // disjoint rows instead of expanding to quadrants that overlap loaded
     // descendants (and render translucent geometry twice).
-    let pixel_size = TILE_PX * 2.0f64.powf(zoom.floor() - tile_zoom);
+    // Patterns' whole zoom, never below 0 (`pattern.wgsl`'s `pattern_zoom`).
+    let pixel_size = TILE_PX * 2.0f64.powf(zoom.floor().max(0.0) - tile_zoom);
     let copy = tms.projection().wrap_period().unwrap_or(0.0) / tms.tile_span(tile.z);
     let x = f64::from(tile.col) + f64::from(draw.wrap) * copy;
     let pattern_origin = [

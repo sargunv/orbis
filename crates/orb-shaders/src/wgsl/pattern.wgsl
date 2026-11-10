@@ -18,8 +18,17 @@ fn pattern_ids(row: u32, base: u32, image_from: u32, image_to: u32, mask: u32, p
     return vec2<u32>(image_from, image_to);
 }
 
+// The zoom patterns and dashes take their size at: the view's whole
+// zoom, never below 0, where tiles stop (GL JS's `tileZoom`). Below it
+// they shrink with the map, as they do between whole zooms above it,
+// rather than doubling at every whole zoom down: a low globe over a pole
+// is drawn at a negative style zoom.
+fn pattern_zoom() -> f32 {
+    return max(floor(frame.zoom), 0.0);
+}
+
 fn tile_pixel_ratio(tile: Tile) -> f32 {
-    return tile.scale / tile_world_per_px(tile) * exp2(floor(frame.zoom) - frame.zoom);
+    return tile.scale / tile_world_per_px(tile) * exp2(pattern_zoom() - frame.zoom);
 }
 
 fn modulo(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return a - b * floor(a / b); }
