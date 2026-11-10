@@ -1,9 +1,16 @@
 // The frame bench in the browser (`bench.html`, the default experiment):
 // `orb-bench`'s views through the orbis package. One map visits each view,
 // waits for `idle`, then draws `rounds` runs of `warmup` + `frames` repaints
-// of the still view, a display frame each, timing the GPU's passes with
-// timestamp queries (`setGpuTiming`) and the page's render CPU per frame.
+// of the still view, back to back (a display frame each, or as fast as the
+// browser draws them where it runs unpaced), timing the GPU's passes with
+// timestamp queries (`setGpuTiming`, where the backend has them), the
+// render CPU and the interval between repaints, and counting draws.
+// `engine=orbis,gl` adds MapLibre GL JS at the same views, the engines
+// taking turns view by view: its render CPU is its `_render`, its draws the
+// WebGL draw calls that makes.
 import { createMap } from "orbis";
+
+import { glStyle, instrumentGl, loadGl } from "./gestures.js";
 
 /** Name, zoom, pitch, and whether the style gains `BUILDINGS_3D` (when
  * it has OpenMapTiles' buildings and no extrusions): the native bench's
@@ -35,7 +42,7 @@ const LOAD_TIMEOUT = 120_000;
 
 /** The median, p90 and mean of `xs`, or null without any. */
 function summary(xs) {
-  if (!xs.length) return null;
+  if (!xs?.length) return null;
   const s = [...xs].sort((a, b) => a - b);
   const at = (p) => s[Math.round((s.length - 1) * p)];
   return {
@@ -60,14 +67,163 @@ function idle(map, label) {
   });
 }
 
-/** A repaint of the still view, and its stats. */
-function repaint(map) {
-  const drawn = map.once("render");
-  map.triggerRepaint();
-  return drawn;
+/** Whether a style draws as it is at a view that asks for 3D buildings: one with extrusions of its own (the Globe entry's), or without OpenMapTiles' buildings. */
+function needsBuildings(style) {
+  return (
+    style.sources.openmaptiles &&
+    !style.layers.some((l) => l.type === "fill-extrusion")
+  );
 }
 
-/** Runs every view; resolves to the Markdown report. */
+/** Times `repaint` (a still view's frame, resolving to its CPU ms and draws) back to back: `rounds` × `warmup` + `frames`. */
+async function repaints(repaint, { rounds, warmup, frames }, show) {
+  const s = { cpu: [], interval: [], draws: [] };
+  for (let round = 0; round < rounds; round++) {
+    show(round);
+    let last = null;
+    for (let f = 0; f < warmup + frames; f++) {
+      const stats = await repaint();
+      const now = performance.now();
+      if (f >= warmup) {
+        s.cpu.push(stats.ms);
+        s.draws.push(stats.draws);
+        if (last !== null) s.interval.push(now - last);
+      }
+      last = now;
+    }
+  }
+  return s;
+}
+
+/** An Orbis map at `center`. */
+async function orbisEngine(
+  container,
+  style,
+  center,
+  ratio,
+  { backend, worker, keepAll },
+) {
+  // Half a zoom off the first view, so that its `jumpTo` moves the camera
+  // and ends in `idle` however long the other engine took to start.
+  const [zoom, pitch] = [VIEWS[0][1] - 0.5, VIEWS[0][2]];
+  const map = await createMap({
+    container,
+    style,
+    interactive: false,
+    pixelRatio: ratio,
+    camera: { center, zoom, pitch, bearing: 0 },
+    // As the demo draws it: the Globe entry's light and fills are previews.
+    previews: "all",
+    ...(backend && { backend }),
+    ...(worker === false && { worker }),
+  });
+  if (keepAll) map.setKeepAllCull(true);
+  const warnings = new Set();
+  map.on("warning", ({ message }) => warnings.add(message));
+  return {
+    name: `Orbis (${map.backend}${keepAll ? ", the cull keeping every candidate" : ""})`,
+    warnings,
+    remove: () => map.remove(),
+    async view(name, zoom, pitch, buildings) {
+      const loaded = idle(map, name);
+      map.camera.jumpTo({ center, zoom, pitch, bearing: 0 });
+      await loaded;
+      const now = await map.getStyle();
+      if (buildings && needsBuildings(now)) {
+        const before = now.layers.find((l) => l.type === "symbol")?.id;
+        const built = idle(map, name);
+        await map.edit((tx) => tx.addLayer(BUILDINGS_3D, before));
+        await built;
+      }
+    },
+    async measure(counts, show) {
+      const s = { gpu: [], cull: [], main: [], extrusion: [], submit: [] };
+      let stats = null;
+      map.setGpuTiming(true);
+      const timed = await repaints(
+        async () => {
+          const drawn = map.once("render");
+          map.triggerRepaint();
+          return (stats = await drawn);
+        },
+        counts,
+        show,
+      );
+      // A backend without timestamp queries gives no submissions.
+      const submissions = await map.gpuTimings();
+      map.setGpuTiming(false);
+      const each = counts.warmup + counts.frames;
+      if (submissions.length && submissions.length !== counts.rounds * each) {
+        throw new Error(
+          `${submissions.length} GPU submissions for ${counts.rounds * each} frames`,
+        );
+      }
+      for (const [f, { passes, span, cpu }] of submissions.entries()) {
+        if (f % each < counts.warmup || !passes.length) continue;
+        s.gpu.push(span);
+        for (const label of ["cull", "main", "extrusion"]) {
+          const pass = passes.find(([l]) => l === label);
+          if (pass) s[label].push(pass[1]);
+        }
+        s.submit.push(cpu);
+      }
+      return { ...s, ...timed, stats };
+    },
+  };
+}
+
+/** A GL JS map at `center`, its draw calls counted. */
+async function glEngine(container, style, center, ratio) {
+  const maplibregl = await loadGl();
+  // Half a zoom off the first view, so that its `jumpTo` moves the camera
+  // and ends in `idle` however long the other engine took to start.
+  const [zoom, pitch] = [VIEWS[0][1] - 0.5, VIEWS[0][2]];
+  const map = new maplibregl.Map({
+    container,
+    style: await glStyle(style),
+    center,
+    zoom,
+    pitch,
+    bearing: 0,
+    pixelRatio: ratio,
+    interactive: false,
+    attributionControl: false,
+  });
+  const gl = instrumentGl(map);
+  const warnings = new Set();
+  await idle(map, "GL JS");
+  return {
+    name: "GL JS",
+    warnings,
+    remove: () => map.remove(),
+    async view(name, zoom, pitch, buildings) {
+      const loaded = idle(map, name);
+      map.jumpTo({ center, zoom, pitch, bearing: 0 });
+      await loaded;
+      const now = map.getStyle();
+      if (buildings && needsBuildings(now)) {
+        const before = now.layers.find((l) => l.type === "symbol")?.id;
+        const built = idle(map, name);
+        map.addLayer(BUILDINGS_3D, before);
+        await built;
+      }
+    },
+    async measure(counts, show) {
+      const timed = await repaints(
+        () =>
+          new Promise((resolve) => {
+            map.once("render", () => resolve(gl.last()));
+            map.triggerRepaint();
+          }),
+        counts,
+        show,
+      );
+      return { gpu: [], ...timed, stats: null };
+    },
+  };
+}
+
+/** Runs every view in each engine of `engines` (`orbis`, `gl`); resolves to the Markdown report. */
 export async function runFrames({
   style,
   center,
@@ -78,88 +234,74 @@ export async function runFrames({
   rounds,
   about,
   show,
+  engines = ["orbis"],
+  worker,
+  backend,
 }) {
-  const container = document.createElement("div");
-  Object.assign(container.style, {
+  // The engines' maps lie on one another, the one measured on top: each
+  // is shown, and so paced, as one map on its own would be. A canvas
+  // scrolled out of view isn't presented, and its frames don't wait for
+  // the GPU.
+  const stack = document.createElement("div");
+  Object.assign(stack.style, {
     width: `${size[0]}px`,
     height: `${size[1]}px`,
     position: "relative",
   });
-  document.body.append(container);
-  const views = [];
-  const warnings = new Set();
-  const [first] = VIEWS;
-  const map = await createMap({
-    container,
-    style,
-    interactive: false,
-    pixelRatio: ratio,
-    camera: { center, zoom: first[1], pitch: first[2], bearing: 0 },
-    // As the demo draws it: the Globe entry's light and fills are previews.
-    previews: "all",
-  });
-  map.on("warning", ({ message }) => warnings.add(message));
-  let timestamps = false;
+  document.body.prepend(stack);
+  const containers = new Map();
+  const made = [];
+  const counts = { frames, warmup, rounds };
+  const results = new Map();
   try {
-    for (const [name, zoom, pitch, buildings] of VIEWS) {
-      show(`${name}: loading`);
-      const loaded = idle(map, name);
-      map.camera.jumpTo({ center, zoom, pitch, bearing: 0 });
-      await loaded;
-      // A style with extrusions of its own (the Globe entry's), or without
-      // OpenMapTiles' buildings, draws as it is.
-      const now = await map.getStyle();
-      if (
-        buildings &&
-        now.sources.openmaptiles &&
-        !now.layers.some((l) => l.type === "fill-extrusion")
-      ) {
-        const before = now.layers.find((l) => l.type === "symbol")?.id;
-        const built = idle(map, name);
-        await map.edit((tx) => tx.addLayer(BUILDINGS_3D, before));
-        await built;
+    for (const engine of engines) {
+      const container = document.createElement("div");
+      Object.assign(container.style, {
+        width: `${size[0]}px`,
+        height: `${size[1]}px`,
+        position: "absolute",
+        inset: "0",
+      });
+      stack.append(container);
+      show(`${engine}: starting`);
+      if (engine === "orbis")
+        made.push(
+          await orbisEngine(container, style, center, ratio, {
+            backend,
+            worker,
+          }),
+        );
+      else if (engine === "gl")
+        made.push(await glEngine(container, style, center, ratio));
+      else if (engine === "keep-all")
+        made.push(
+          await orbisEngine(container, style, center, ratio, {
+            backend,
+            worker,
+            keepAll: true,
+          }),
+        );
+      else
+        throw new Error(`engine must be orbis, keep-all or gl, not ${engine}`);
+      results.set(made.at(-1), []);
+      containers.set(made.at(-1), container);
+    }
+    for (const [v, [name, zoom, pitch, buildings]] of VIEWS.entries()) {
+      // The engines' order turns each view, so a busy spell falls on both.
+      for (const engine of v % 2 ? [...made].reverse() : made) {
+        show(`${engine.name}, ${name}: loading`);
+        for (const [other, container] of containers)
+          container.style.zIndex = other === engine ? "1" : "0";
+        await engine.view(name, zoom, pitch, buildings);
+        const s = await engine.measure(counts, (round) =>
+          show(`${engine.name}, ${name}: round ${round + 1} of ${rounds}`),
+        );
+        results.get(engine).push({ name, ...s });
       }
-      const s = {
-        gpu: [],
-        cull: [],
-        main: [],
-        extrusion: [],
-        cpu: [],
-        submit: [],
-        stats: null,
-      };
-      map.setGpuTiming(true);
-      for (let round = 0; round < rounds; round++) {
-        show(`${name}: round ${round + 1} of ${rounds}`);
-        const cpu = [];
-        for (let f = 0; f < warmup + frames; f++) {
-          s.stats = await repaint(map);
-          cpu.push(s.stats.ms);
-        }
-        const submissions = await map.gpuTimings();
-        if (submissions.length !== cpu.length) {
-          throw new Error(
-            `${submissions.length} GPU submissions for ${cpu.length} frames`,
-          );
-        }
-        for (let f = warmup; f < cpu.length; f++) {
-          const passes = submissions[f].passes;
-          timestamps ||= passes.length > 0;
-          s.gpu.push(submissions[f].span);
-          for (const label of ["cull", "main", "extrusion"]) {
-            const pass = passes.find(([l]) => l === label);
-            if (pass) s[label].push(pass[1]);
-          }
-          s.cpu.push(cpu[f]);
-          s.submit.push(submissions[f].cpu);
-        }
-      }
-      map.setGpuTiming(false);
-      views.push({ name, ...s });
     }
   } finally {
-    map.remove();
-    container.remove();
+    for (const engine of made) engine.remove();
+    stack.remove();
   }
   const [w, h] = [Math.round(size[0] * ratio), Math.round(size[1] * ratio)];
   const lines = [
@@ -167,27 +309,43 @@ export async function runFrames({
     "",
     ...about.map((line) => `- ${line}`),
     `- ${w}×${h} px (${size[0]}×${size[1]} @${ratio}x) at ${center[0]}, ${center[1]}; ${rounds} rounds × ${frames} ` +
-      `repaints after ${warmup} warm-up per view, one a display frame`,
-    timestamps
-      ? "- GPU: timestamp queries around every pass (`setGpuTiming`), a frame's GPU time from its first pass's start to its last one's end"
-      : "- GPU: **no timestamp queries: no GPU times**",
-    "",
-    "| view | GPU mean | p90 | cull pass | main pass | extrusion pass | render CPU | encode+submit CPU | draws | dispatches |",
-    "|---|---|---|---|---|---|---|---|---|---|",
-    ...views.map(
-      (v) =>
-        `| ${v.name} | ${ms(summary(v.gpu)?.mean)} | ${ms(summary(v.gpu)?.p90)} | ` +
-        `${ms(summary(v.cull)?.mean)} | ${ms(summary(v.main)?.mean)} | ${ms(summary(v.extrusion)?.mean)} | ` +
-        `${ms(summary(v.cpu)?.mean)} | ${ms(summary(v.submit)?.mean)} | ${v.stats.draws} | ${v.stats.dispatches} |`,
-    ),
+      `repaints after ${warmup} warm-up per view, back to back`,
+  ];
+  for (const [engine, views] of results) {
+    const timestamps = views.some((v) => v.gpu.length);
+    const mean = (xs) => ms(summary(xs)?.mean);
+    lines.push(
+      "",
+      `#### ${engine.name}`,
+      "",
+      timestamps
+        ? "- GPU: timestamp queries around every pass (`setGpuTiming`), a frame's GPU time from its first pass's start to its last one's end"
+        : "- GPU: **no timestamp queries: no GPU times**",
+      "",
+      "| view | interval mean | p50 | p90 | GPU mean | p90 | cull pass | main pass | extrusion pass | render CPU | encode+submit CPU | draws |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|",
+      ...views.map(
+        (v) =>
+          `| ${v.name} | ${mean(v.interval)} | ${ms(summary(v.interval)?.median)} | ${ms(summary(v.interval)?.p90)} | ` +
+          `${mean(v.gpu)} | ${ms(summary(v.gpu)?.p90)} | ${mean(v.cull)} | ${mean(v.main)} | ${mean(v.extrusion)} | ` +
+          `${mean(v.cpu)} | ${mean(v.submit)} | ${summary(v.draws)?.median ?? "—"} |`,
+      ),
+      "",
+      ...views
+        .filter((v) => v.stats)
+        .map(
+          (v) =>
+            `- ${v.name}: ${v.stats.tilesDrawn} tiles drawn, ${v.stats.candidates} candidates`,
+        ),
+      ...[...engine.warnings].map((w) => `- warning: ${w}`),
+    );
+  }
+  lines.push(
     "",
     "Times in ms, means over every measured frame: browsers coarsen timestamps (Chrome to 65.5 µs on a Mac) " +
-      "and `performance.now()` (to 100 µs), which means don't bias. Render CPU: the frame's `render` on the page.",
-    ...views.map(
-      (v) =>
-        `- ${v.name}: ${v.stats.tilesDrawn} tiles drawn, ${v.stats.candidates} candidates`,
-    ),
-    ...[...warnings].map((w) => `- warning: ${w}`),
-  ];
+      "and `performance.now()` (to 100 µs), which means don't bias. Interval: from one repaint's `render` event on the page " +
+      "to the next's, a display frame where the browser paces frames. Render CPU: Orbis's frame `render` (in its worker " +
+      "where it runs in one), GL JS's `_render` on the page. Draws: Orbis's recorded draws, GL JS's WebGL draw calls; the median frame's.",
+  );
   return `${lines.join("\n")}\n`;
 }

@@ -255,7 +255,7 @@ async function runPath(
   center,
   path,
   show,
-  { gpu, wall },
+  { gpu, wall, backend },
 ) {
   const label = path.name;
   show(`${label}: loading`);
@@ -268,6 +268,7 @@ async function runPath(
     interactive: false,
     // As the demo draws it: the Globe entry's light and fills are previews.
     previews: "all",
+    ...(backend && { backend }),
   });
   try {
     await idle(map, label);
@@ -283,6 +284,7 @@ async function runPath(
         loading: ack.tilesLoading,
         loaded: ack.loaded,
         rebuilt: ack.candidatesRebuilt,
+        draws: ack.draws,
       }),
     );
     if (gpu) map.setGpuTiming(true);
@@ -357,6 +359,10 @@ async function runPath(
       load,
       ...pacing(moving.map((a) => a.t)),
       cpu: [0.5, 0.95, 1].map((p) => percentile(cpu, p)),
+      draws: percentile(
+        moving.map((a) => a.draws),
+        0.5,
+      ),
       placement: [0.5, 0.95].map((p) =>
         percentile(
           moving.map((a) => a.placement),
@@ -496,6 +502,38 @@ export async function glStyle(style) {
   return doc;
 }
 
+/**
+ * Counts a GL JS map's WebGL draw calls and times its `_render` on the
+ * CPU; `last()` gives the latest frame's `{ ms, draws }`.
+ */
+export function instrumentGl(map) {
+  let draws = 0;
+  let last = null;
+  const gl = map.painter.context.gl;
+  for (const name of [
+    "drawElements",
+    "drawArrays",
+    "drawElementsInstanced",
+    "drawArraysInstanced",
+    "drawRangeElements",
+  ]) {
+    const call = gl[name].bind(gl);
+    gl[name] = (...args) => {
+      draws++;
+      return call(...args);
+    };
+  }
+  const render = map._render.bind(map);
+  map._render = (t) => {
+    draws = 0;
+    const started = performance.now();
+    const out = render(t);
+    last = { ms: performance.now() - started, draws };
+    return out;
+  };
+  return { last: () => last };
+}
+
 /** Runs one path through GL JS on a fresh map; resolves to its row. */
 async function runGlPath(container, style, center, path, show, wall) {
   const maplibregl = await loadGl();
@@ -510,6 +548,7 @@ async function runGlPath(container, style, center, path, show, wall) {
     interactive: false,
     attributionControl: false,
   });
+  const gl = instrumentGl(map);
   try {
     await idle(map, path.name);
     const load = performance.now() - created;
@@ -517,7 +556,11 @@ async function runGlPath(container, style, center, path, show, wall) {
     const texts = new WeakMap();
     const counter = labelCounter();
     const times = [];
-    const drawn = () => times.push(frameTime());
+    const frames = [];
+    const drawn = () => {
+      times.push(frameTime());
+      frames.push(gl.last());
+    };
     map.on("render", drawn);
     const { longs, stop } = longTasks();
     performance.mark(`gestures:gl:${path.name}:start`);
@@ -541,6 +584,16 @@ async function runGlPath(container, style, center, path, show, wall) {
       load,
       frames: times.length,
       ...pacing(times),
+      cpu: [0.5, 0.95, 1].map((p) =>
+        percentile(
+          frames.map((f) => f.ms),
+          p,
+        ),
+      ),
+      draws: percentile(
+        frames.map((f) => f.draws),
+        0.5,
+      ),
       ...counter.counts,
       settle: performance.now() - ended,
       longs: longs.length,
@@ -561,15 +614,15 @@ function glReport({ rows, center, size, about, wall }) {
       `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${pace(wall)}` +
         " (`jumpTo`), each path from a fresh map at rest; flights left out",
       "",
-      `| path | load to idle ms | frames | ${PACING_HEAD} | long tasks (max ms) | label blinks (frames) | label returns (drops) | idle after ms |`,
-      "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      `| path | load to idle ms | frames | ${PACING_HEAD} | render CPU p50 | p95 | max | draws p50 | long tasks (max ms) | label blinks (frames) | label returns (drops) | idle after ms |`,
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
       ...rows.map(
         (r) =>
-          `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ${r.longs} (${ms(r.longest)}) | ` +
+          `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ${r.cpu.map(ms).join(" | ")} | ${r.draws} | ${r.longs} (${ms(r.longest)}) | ` +
           `${r.blinks} (${r.blinkFrames}) | ${r.returns} (${r.drops}) | ${r.settle.toFixed(0)} |`,
       ),
       "",
-      `Times in ms. ${PACING_NOTE} Long tasks: the page's, over 50 ms, while the camera moved. Label blinks: label texts drawn in full ` +
+      `Times in ms. ${PACING_NOTE} Render CPU: \`_render\` on the page; draws: its WebGL draw calls, the median frame's. Long tasks: the page's, over 50 ms, while the camera moved. Label blinks: label texts drawn in full ` +
         `that all but vanished (opacity under 0.1) and were back in full within ${FLASH_FRAMES} frames, and the frames they were gone; ` +
         `label returns: back in full within ${RETURN_FRAMES} frames (1 s), blinks included, of the label texts drawn in full that all but vanished. ` +
         "Opacities are `style.placement`'s, moved on by the fade since its commit, over the tiles GL JS draws, read after each frame " +
@@ -595,6 +648,7 @@ export async function runGestures({
   engines = ["orbis"],
   gpu = false,
   wall = false,
+  backend,
 }) {
   const run = PATH_SETS[paths];
   if (!run)
@@ -620,6 +674,7 @@ export async function runGestures({
             await runPath(container, style, jobWorkers, center, path, show, {
               gpu,
               wall,
+              backend,
             }),
           );
         else if (!path.flight)
@@ -656,12 +711,12 @@ function orbisReport({ rows, center, size, about, jobWorkers, wall }) {
       " (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest; " +
       `${jobWorkers ?? "default"} job workers`,
     "",
-    `| path | load to idle ms | frames | ${PACING_HEAD} | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 | loads in flight max | at end | loaded after ms | drained after ms |`,
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    `| path | load to idle ms | frames | ${PACING_HEAD} | render CPU p50 | p95 | max | draws p50 | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 | loads in flight max | at end | loaded after ms | drained after ms |`,
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...rows.map(
       (r) =>
         `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ` +
-        `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} | ` +
+        `${r.cpu.map(ms).join(" | ")} | ${r.draws} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} | ` +
         `${r.loads.max} | ${r.loads.end} | ${whole(r.loads.loaded)} | ${whole(r.loads.drained)} |`,
     ),
     "",

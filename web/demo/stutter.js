@@ -231,6 +231,9 @@ function longTasks() {
   return { tasks, stop: () => observer.disconnect() };
 }
 
+/** The GPU API Orbis's maps draw with: `runStutter`'s `backend`. */
+let orbisBackend;
+
 /** One scenario through the orbis package on a fresh map; resolves to its frames. */
 async function runOrbis(container, scenario, style, legs, show) {
   show(`${scenario.name}: loading`);
@@ -241,6 +244,7 @@ async function runOrbis(container, scenario, style, legs, show) {
     interactive: false,
     // The lit paths' shadows and ground lighting are previews, as in orb-bench.
     previews: "all",
+    ...(orbisBackend && { backend: orbisBackend }),
   });
   try {
     await idle(() => map.once("idle"), scenario.name);
@@ -648,7 +652,9 @@ export async function runStutter({
   filter,
   legs,
   engine = "orbis",
+  backend,
 }) {
+  orbisBackend = backend;
   const keys = engine === "both" ? ["orbis", "gl"] : [engine];
   if (!keys.every((key) => ENGINES[key]))
     throw new Error("engine must be orbis, gl or both");

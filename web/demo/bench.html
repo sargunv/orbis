@@ -75,8 +75,12 @@
   <script type="module">
     // Query: format=mvt|mlt or style=<url or catalogue key> (the Tokyo extract
     // by default), globe (that style on the globe under the demo's sky);
-    // size=WxH, at=lon,lat, experiment=frames|gestures|stutter; for frames, frames,
-    // warmup, rounds and ratio; for gestures, workers=<job workers> and
+    // size=WxH, at=lon,lat, experiment=frames|gestures|stutter, backend=webgl2|webgpu
+    // (the GPU API Orbis draws with); for frames, frames, warmup, rounds, ratio,
+    // worker=0 (Orbis on the page's thread) and engine=orbis|keep-all|gl, any
+    // of them comma-separated (keep-all: Orbis with the cull keeping every
+    // candidate; gl: GL JS), the engines taking turns view by view; for
+    // gestures, workers=<job workers> and
     // paths=city|dense|alps|globe (alps by default with style=alps, globe
     // with style=globe or globe, each at its own view; dense on live Liberty
     // unless style says otherwise), and engine=orbis|gl|both (gl: MapLibre
@@ -96,6 +100,8 @@
     if (!["mvt", "mlt"].includes(format))
       throw new Error("format must be mvt or mlt");
     const experiment = params.get("experiment") ?? "frames";
+    /** The GPU API Orbis draws with: `webgl2`, `webgpu` or `auto` (the default). */
+    const backend = params.get("backend") ?? undefined;
     const paths =
       params.get("paths") ??
       (params.get("style") === "alps"
@@ -123,7 +129,19 @@
     // Windows): wgpu's adapter info has only the description on the web.
     async function about() {
       const lines = [];
-      const adapter = await navigator.gpu?.requestAdapter();
+      const adapter =
+        backend === "webgl2" ? null : await navigator.gpu?.requestAdapter();
+      if (backend === "webgl2" || !adapter) {
+        // WebGL 2's renderer, where the browser names it, and its extensions.
+        const gl = document.createElement("canvas").getContext("webgl2");
+        const named = gl?.getExtension("WEBGL_debug_renderer_info");
+        lines.push(
+          gl
+            ? `WebGL 2: ${gl.getParameter(named ? named.UNMASKED_RENDERER_WEBGL : gl.RENDERER)}; ` +
+                `extensions: ${gl.getSupportedExtensions().join(", ")}`
+            : "**no WebGL 2**",
+        );
+      }
       if (adapter) {
         const info = adapter.info ?? {};
         const parts = [
@@ -141,7 +159,7 @@
       }
       lines.push(`user agent: ${navigator.userAgent}`);
       lines.push(
-        `browser, WebGPU; devicePixelRatio ${devicePixelRatio}; ` +
+        `browser, ${backend === "webgl2" || !adapter ? "WebGL 2" : "WebGPU"}; devicePixelRatio ${devicePixelRatio}; ` +
           `${navigator.hardwareConcurrency ?? "?"} threads; cross-origin isolated: ${crossOriginIsolated}`,
       );
       // The display's frame interval, over 60 animation frames.
@@ -247,7 +265,6 @@
         ?.request("screen")
         .catch(() => null);
       try {
-        if (!navigator.gpu) throw new Error("this browser has no WebGPU");
         style ??= await demoStyleWithScene(params, scene);
         const lines = await about();
         const started = performance.now();
@@ -269,6 +286,7 @@
             filter: params.get("filter") ?? undefined,
             legs: params.has("legs") ? Number(params.get("legs")) : undefined,
             engine: params.get("engine") ?? "orbis",
+            backend,
           });
         } else if (experiment === "gestures") {
           const center =
@@ -289,6 +307,7 @@
                 ? ["orbis", "gl"]
                 : (params.get("engine") ?? "orbis").split(","),
             show: (line) => show(line),
+            backend,
           });
         } else {
           report = await runFrames({
@@ -303,6 +322,13 @@
             frames: number("frames", 100),
             warmup: number("warmup", 50),
             rounds: number("rounds", 3),
+            engines:
+              params.get("engine") === "both"
+                ? ["orbis", "gl"]
+                : (params.get("engine") ?? "orbis").split(","),
+            backend,
+            // `worker=0` keeps Orbis on the page's thread, as GL JS runs.
+            worker: params.get("worker") !== "0",
           });
         }
         const seconds = ((performance.now() - started) / 1000).toFixed(0);

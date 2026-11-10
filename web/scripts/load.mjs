@@ -40,7 +40,11 @@
 // empties the GPU process's shader cache. The phone's driver keeps
 // compiled shaders of its own, so Orbis runs on the page's thread with
 // shaders unique to the sample (`demo/cold.js`): cold, as a first visit
-// compiles them. `--style=tokyo` loads the committed extract, which GL JS
+// compiles them; `--warm` keeps both caches and the shaders as they are,
+// as a later visit finds them. `--page` runs Orbis on the page's thread on
+// this machine too, and `--cold` with it gives it shaders unique to the
+// sample. `--backend=webgl2` draws Orbis with WebGL 2 (`createMap`'s
+// `backend`). `--style=tokyo` loads the committed extract, which GL JS
 // can't (it has no `pmtiles://`).
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -114,6 +118,11 @@ const viewport = cache
   : { width: 1024, height: 768 };
 const throttle = option("throttle") && (Number(option("throttle")) * 1e6) / 8;
 const physical = args.includes("--physical");
+const warm = args.includes("--warm");
+const onPage = args.includes("--page");
+const cold = args.includes("--cold");
+if (cold && !onPage && !android) throw new Error("--cold runs with --page");
+const backend = option("backend");
 const android = physical || args.includes("--android");
 if (android && settings.some((s) => s !== "normal"))
   throw new Error("--android takes no --settings");
@@ -158,9 +167,11 @@ async function samplePage() {
       close: () => context.close(),
     };
   }
-  const clean = await openAndroid(server, { physical });
-  await clean.page.goto("chrome://gpuclean").catch(() => {});
-  await clean.close();
+  if (!warm) {
+    const clean = await openAndroid(server, { physical });
+    await clean.page.goto("chrome://gpuclean").catch(() => {});
+    await clean.close();
+  }
   const { page, close } = await openAndroid(server, { physical });
   await (
     await page.context().newCDPSession(page)
@@ -188,11 +199,14 @@ try {
             mlnrs: `${new URL(server.url).pathname}mlnrs/index.js`,
             ...(scene === "globe" && { globe: "" }),
             // Orbis's shaders unique to the sample, on the page's thread.
-            ...(android &&
+            ...((android || onPage) &&
               engine.startsWith("orbis") && {
                 worker: "0",
-                nonce: 1 + Math.floor(Math.random() * 9999),
+                ...((android ? !warm : cold) && {
+                  nonce: 1 + Math.floor(Math.random() * 9999),
+                }),
               }),
+            ...(backend && engine.startsWith("orbis") && { backend }),
           });
           const row = { engine, view, setting, run };
           // When the style's fetch starts, on the epoch clock: from whichever
@@ -221,6 +235,11 @@ try {
               const origin =
                 done.origin ??
                 (await page.evaluate(() => performance.timeOrigin));
+              if (engine.startsWith("orbis"))
+                Object.assign(
+                  row,
+                  await page.evaluate(() => window.loadDetails?.()),
+                );
               const started = styleRequest?.timing().startTime;
               if (started > 0) row.style = started - origin;
             } else {
@@ -264,7 +283,7 @@ for (const [what, from] of [
   ["the style's fetch", "style"],
 ]) {
   lines.push(
-    `### Web load: ms from ${what} to first idle (${android ? "Chrome on Android, cold GPU cache" : "Chromium"}, WebGPU, ${width}×${height}${android ? "" : " @1×"}; ${runs} runs)`,
+    `### Web load: ms from ${what} to first idle (${android ? `Chrome on Android, ${warm ? "warm" : "cold"} GPU cache` : `Chromium${onPage ? `, Orbis on the page${cold ? " with cold shaders" : ""}` : ""}`}, ${backend === "webgl2" ? "Orbis on WebGL 2" : "WebGPU"}, ${width}×${height}${android ? "" : " @1×"}; ${runs} runs)`,
     "",
     `| view | ${tagged ? "setting | " : ""}${engines.join(" | ")} |`,
     `|---|${tagged ? "---|" : ""}${engines.map(() => "---|").join("")}`,

@@ -34,15 +34,19 @@ const engines = {
   async orbis(style) {
     const { createMap } = await import("orbis");
     const worker = params.get("worker") !== "0";
-    if (!worker) bustShaderCaches(params);
+    const busted = worker ? () => null : bustShaderCaches(params);
+    const backend = params.get("backend") ?? undefined;
     const map = await createMap({
       container,
       style,
       camera: { center: [lon, lat], zoom, bearing, pitch },
       worker,
+      ...(backend && { backend }),
     });
     // GPU bytes the map allocated, by its own count (memory.mjs).
     window.gpuBytes = () => map.stats?.memory.allocated;
+    // The shaders `?nonce=` made cold, and the backend (load.mjs).
+    window.loadDetails = () => ({ busted: busted(), backend: map.backend });
     return {
       created: performance.now(),
       idle: () => map.once("idle"),

@@ -983,6 +983,13 @@ impl OrbisMap {
         self.canvas.gpu().set_timing(on);
     }
 
+    /// Has the cull keep every candidate, for measurements of what it
+    /// saves (native maps' `ORB_CULL=keep-all`).
+    #[wasm_bindgen(js_name = setKeepAllCull)]
+    pub fn set_keep_all_cull(&mut self, on: bool) {
+        self.map.set_keep_all_cull(on);
+    }
+
     /// Each submission's times since the last call, once the GPU has
     /// finished them: `{ passes: [label, ms][], span: ms, cpu: ms }`,
     /// passes and their span (first start to last end) timed where the
