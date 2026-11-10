@@ -507,12 +507,23 @@ impl H2h {
         let style = self.style_url();
         // Each Orbis build's state directory, which the untimed pass
         // fills: its pipeline cache where the platform keeps none (D3D12's
-        // compiler output, Vulkan's pipelines), as an app's would be. The
-        // mirror's answers are `no-store`, so its HTTP cache stays empty.
+        // compiler output, Vulkan's pipelines), as an app's would be.
         let state = self.out.join("state");
         if state.exists() {
             std::fs::remove_dir_all(&state).map_err(|e| format!("{}: {e}", state.display()))?;
         }
+        // Its HTTP cache goes before every run: the mirror answers
+        // `no-store`, but the live server (`--network cold`) doesn't, and
+        // mln-rs keeps nothing between processes.
+        let fresh = |engine: &Engine| {
+            let http = state.join(engine.name()).join("http");
+            match std::fs::remove_dir_all(&http) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    Err(format!("{}: {e}", http.display()))
+                }
+                _ => Ok(()),
+            }
+        };
         let command = |engine: &Engine, name: &str, v: &[String; 8], png: &Path| {
             let at = format!("{},{},{},{},{}", v[0], v[1], v[2], v[3], v[4]);
             let size = format!("{}x{}", v[6], v[7]);
@@ -553,6 +564,7 @@ impl H2h {
         for (name, v) in &views {
             for engine in &self.engines {
                 eprintln!("h2h: stills, untimed: {} {name}", engine.name());
+                fresh(engine)?;
                 timed(&command(engine, name, v, &png))?;
             }
         }
@@ -567,6 +579,7 @@ impl H2h {
                         engine.name()
                     );
                     self.mirror.reset();
+                    fresh(engine)?;
                     let t = timed(&command(engine, name, v, &png))?;
                     rows.push(StillRow {
                         engine: engine.name().to_string(),
