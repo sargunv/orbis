@@ -114,9 +114,11 @@ function isLegacyFilter(filter) {
  * Mapterhorn's DEM for the entry's terrain (which keeps the sea at sea
  * level) and a hillshade over the land and lakes, under the roads and
  * labels; the buildings extruded under the labels with their footprints
- * rounded (with shadows and ambient occlusion); and a light that shades
- * the ground too (`dev.sargunv.orbis:ground-lighting`), from a sun 60°
- * from overhead so the globe shows its night side by the far limb, and
+ * rounded (with shadows and ambient occlusion); a light that shades the
+ * ground too (`dev.sargunv.orbis:ground-lighting`), from a sun 60° from
+ * overhead so the globe shows its night side by the far limb, fading out
+ * by zoom 7 so a region or city keeps its own colours, with labels light
+ * on dark halos where it's night (`dev.sargunv.orbis:daylight`); and
  * colours mixed in linear light (`dev.sargunv.orbis:color-space`), in
  * which the haze tints the sunlit face rather than washing it out. Each
  * addition is placed by the layers it finds, so a style with other ids

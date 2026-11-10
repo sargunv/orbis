@@ -38,7 +38,8 @@ const ENGINES = {
 /**
  * Properties of Orbis's previews that the other engines don't know, by
  * where they sit: style-spec#1889's stars, #1797's shadows, ground
- * lighting, #1796's ambient occlusion and #1047's rounded fills.
+ * lighting, #1796's ambient occlusion and #1047's rounded fills. Colours
+ * over the daylight draw their day side's (`byDay`).
  */
 const PREVIEWS = {
   sky: ["backdrop-color", "star-opacity"],
@@ -59,6 +60,27 @@ const PREVIEWS = {
   ].map((p) => `fill-extrusion-ambient-occlusion-${p}`),
   layout: ["fill-rounded-corner-distance"],
 };
+/**
+ * `value` as the day side draws it: each `step` or `interpolate` over
+ * Orbis's `["dev.sargunv.orbis:daylight"]` (its preview) replaced by its
+ * last output, which is its value at full daylight.
+ */
+function byDay(value) {
+  if (!Array.isArray(value)) return value;
+  const [op, ...args] = value;
+  const input = op === "step" ? args[0] : args[1];
+  if (
+    (op === "step" || op.startsWith?.("interpolate")) &&
+    Array.isArray(input) &&
+    input[0] === "dev.sargunv.orbis:daylight"
+  )
+    return byDay(value.at(-1));
+  return value.map(byDay);
+}
+/** `paint` with its colours over the daylight as the day side draws them. */
+const daytime = (paint) =>
+  paint &&
+  Object.fromEntries(Object.entries(paint).map(([k, v]) => [k, byDay(v)]));
 /** `object` less the properties `names` and their transitions; absent stays absent. */
 const without = (object, names) =>
   object &&
@@ -173,7 +195,7 @@ function show(map, scene, pair, { isolating, onPick }) {
     const light = without(now.light, PREVIEWS.light);
     const layers = now.layers.map((l) => ({
       ...l,
-      ...(l.paint && { paint: without(l.paint, PREVIEWS.paint) }),
+      ...(l.paint && { paint: daytime(without(l.paint, PREVIEWS.paint)) }),
       ...(l.layout && { layout: without(l.layout, PREVIEWS.layout) }),
     }));
     return { ...now, ...(sky && { sky }), ...(light && { light }), layers };
