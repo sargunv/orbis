@@ -253,14 +253,14 @@ impl Demo {
                     }
                 }
                 MapEvent::Click { position } | MapEvent::LongClick { position } => {
+                    let verb = if matches!(event, MapEvent::Click { .. }) {
+                        "clicked"
+                    } else {
+                        "long-clicked"
+                    };
                     match self.map.hit_test(position) {
                         Some(hit) => println!(
-                            "{} {} ({}{}) id {}",
-                            if matches!(event, MapEvent::Click { .. }) {
-                                "clicked"
-                            } else {
-                                "long-clicked"
-                            },
+                            "{verb} {} ({}{}) id {}",
                             hit.layer,
                             hit.source,
                             hit.source_layer
@@ -268,7 +268,7 @@ impl Demo {
                                 .unwrap_or_default(),
                             hit.id.as_deref().unwrap_or("none")
                         ),
-                        None => println!("clicked nothing"),
+                        None => println!("{verb} nothing"),
                     }
                 }
                 MapEvent::Error { message } => {
