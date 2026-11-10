@@ -227,7 +227,7 @@ function idle(map, label) {
 }
 
 /** Runs one path on a fresh map; resolves to its row. */
-async function runPath(container, style, jobWorkers, center, path, show) {
+async function runPath(container, style, jobWorkers, center, path, show, gpu) {
   const label = path.name;
   show(`${label}: loading`);
   const created = performance.now();
@@ -246,8 +246,17 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     show(`${label}: moving`);
     const acks = [];
     const off = map.on("render", (ack) =>
-      acks.push({ t: frameTime(), ms: ack.ms, placement: ack.times.placement }),
+      acks.push({
+        t: frameTime(),
+        now: performance.now(),
+        ms: ack.ms,
+        placement: ack.times.placement,
+        loading: ack.tilesLoading,
+        loaded: ack.loaded,
+        rebuilt: ack.candidatesRebuilt,
+      }),
     );
+    if (gpu) map.setGpuTiming(true);
     const { longs, stop } = longTasks();
     const started = await nextFrame();
     performance.mark(`gestures:orbis:${path.name}:start`);
@@ -265,6 +274,31 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     const settle = performance.now() - ended;
     stop();
     off();
+    // GPU passes frame by frame, split by whether the frame laid the
+    // candidate lists out again: a render's submission is the one with a
+    // main pass (others upload).
+    let passes;
+    if (gpu) {
+      const submissions = (await map.gpuTimings()).filter((s) =>
+        s.passes.some(([l]) => l === "main"),
+      );
+      map.setGpuTiming(false);
+      if (submissions.length === acks.length) {
+        const of = (rebuilt, label) =>
+          submissions
+            .filter((_, i) => acks[i].rebuilt === rebuilt)
+            .map((s) => s.passes.find(([l]) => l === label)?.[1])
+            .filter((t) => t !== undefined);
+        passes = [true, false].map((rebuilt) => ({
+          frames: acks.filter((a) => a.rebuilt === rebuilt).length,
+          cull: of(rebuilt, "cull"),
+          main: of(rebuilt, "main"),
+          span: submissions
+            .filter((_, i) => acks[i].rebuilt === rebuilt)
+            .map((s) => s.span),
+        }));
+      }
+    }
     const moving = acks.filter((a) => a.t > started && a.t <= ended);
     const after = acks.filter((a) => a.t > ended);
     const longsMoving = longs
@@ -274,7 +308,19 @@ async function runPath(container, style, jobWorkers, center, path, show) {
       .filter((l) => l.start > ended)
       .map((l) => l.duration);
     const cpu = moving.map((a) => a.ms);
+    // A backlog of tile loads: how many are in flight while the camera
+    // moves, and how long after it stops the view's own tiles take to
+    // arrive and all loads to drain.
+    const since = (a) => (a ? a.now - ended : NaN);
+    const loads = {
+      max: Math.max(0, ...moving.map((a) => a.loading)),
+      end: moving.at(-1)?.loading ?? 0,
+      loaded: since(after.find((a) => a.loaded)),
+      drained: since(after.find((a) => a.loading === 0)),
+    };
     return {
+      passes,
+      loads,
       path: path.name,
       frames: moving.length,
       load,
@@ -514,6 +560,7 @@ export async function runGestures({
   about,
   show,
   engines = ["orbis"],
+  gpu = false,
 }) {
   const run = PATH_SETS[paths];
   if (!run)
@@ -536,7 +583,15 @@ export async function runGestures({
       for (const engine of i % 2 ? [...engines].reverse() : engines) {
         if (engine === "orbis")
           rows.orbis.push(
-            await runPath(container, style, jobWorkers, center, path, show),
+            await runPath(
+              container,
+              style,
+              jobWorkers,
+              center,
+              path,
+              show,
+              gpu,
+            ),
           );
         else if (!path.flight)
           rows.gl.push(await runGlPath(container, style, center, path, show));
@@ -563,18 +618,48 @@ function orbisReport({ rows, center, size, about, jobWorkers }) {
       "the camera moved once a display frame (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest; " +
       `${jobWorkers ?? "default"} job workers`,
     "",
-    `| path | load to idle ms | frames | ${PACING_HEAD} | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 |`,
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    `| path | load to idle ms | frames | ${PACING_HEAD} | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 | loads in flight max | at end | loaded after ms | drained after ms |`,
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...rows.map(
       (r) =>
         `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ` +
-        `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} |`,
+        `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} | ` +
+        `${r.loads.max} | ${r.loads.end} | ${r.loads.loaded.toFixed(0)} | ${r.loads.drained.toFixed(0)} |`,
     ),
     "",
     `Times in ms. ${PACING_NOTE} Render CPU: the frame's ` +
       "`render`; long tasks: the page's, over 50 ms, while the camera moved; idle after: " +
       "from the path's end until the map's `idle` event; after: the frames and the page's long tasks from the path's end to `idle`; " +
-      "placement: the page thread's share of render CPU (building the placement worker's frame, applying commits; 0.2 ms).",
+      "placement: the page thread's share of render CPU (building the placement worker's frame, applying commits; 0.2 ms); " +
+      "loads in flight: the map's tile loads (`tilesLoading`), most while the camera moved and at its last frame; " +
+      "loaded after: from the path's end to the first frame the map reports loaded (the view's tiles in, its labels placed); drained after: to the first with no load in flight.",
   ];
+  if (rows.some((r) => r.passes)) {
+    const mean = (xs) =>
+      xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN;
+    const max = (xs) => (xs.length ? Math.max(...xs) : NaN);
+    lines.push(
+      "",
+      "| path | frames rebuilt | cull mean | max | main mean | GPU frame mean | frames kept | cull mean | max | main mean | GPU frame mean |",
+      "|---|---|---|---|---|---|---|---|---|---|---|",
+      ...rows
+        .filter((r) => r.passes)
+        .map(
+          (r) =>
+            `| ${r.path} | ` +
+            r.passes
+              .map(
+                (p) =>
+                  `${p.frames} | ${ms(mean(p.cull))} | ${ms(max(p.cull))} | ${ms(mean(p.main))} | ${ms(mean(p.span))}`,
+              )
+              .join(" | ") +
+            " |",
+        ),
+      "",
+      "GPU passes (`gpu`: timestamp queries around every pass, which cost a little themselves) from the path's start to `idle`, " +
+        "in ms: frames whose candidate lists were laid out again (a tile came or went), where the cull rewrites every indexed node's " +
+        "compacted indices, and frames that kept them.",
+    );
+  }
   return `${lines.join("\n")}\n`;
 }

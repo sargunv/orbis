@@ -5,7 +5,9 @@
 //
 // `--name=value` pairs become the page's query (format, style, frames,
 // warmup, rounds, size, ratio, at, experiment; workers (job workers),
-// paths and engine for `--experiment=gestures`; filter, legs and engine
+// paths, engine and gpu (`--gpu=1`: GPU passes on frames that laid the
+// cull's candidates out again and on the rest) for
+// `--experiment=gestures`; filter, legs and engine
 // for `--experiment=stutter`). Gesture paths are city, dense (pan, zoom
 // and turn at pitch 60 over Paris, on live Liberty unless `--style` gives
 // another, such as a `cargo xtask h2h mirror`'s Liberty), alps (the

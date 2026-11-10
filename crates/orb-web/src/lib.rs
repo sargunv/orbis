@@ -124,6 +124,10 @@ pub struct FrameStats {
     pub dispatches: u32,
     #[wasm_bindgen(readonly)]
     pub candidates: u32,
+    /// The candidate lists were laid out again (a tile came or went):
+    /// the cull rewrote every indexed node's compacted indices.
+    #[wasm_bindgen(readonly, js_name = candidatesRebuilt)]
+    pub candidates_rebuilt: bool,
     #[wasm_bindgen(readonly, js_name = tilesDrawn)]
     pub tiles_drawn: u32,
     #[wasm_bindgen(readonly, js_name = tilesLoading)]
@@ -1063,6 +1067,7 @@ impl OrbisMap {
             draws: report.frame.draws,
             dispatches: report.frame.dispatches,
             candidates: report.frame.candidates,
+            candidates_rebuilt: report.frame.candidates_rebuilt,
             tiles_drawn: report.tiles_drawn,
             tiles_loading: report.tiles_loading,
             bundle_recorded: report.frame.bundle_recorded,

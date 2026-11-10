@@ -322,8 +322,8 @@ export async function sceneStyle(scene, format, { terrain = false } = {}) {
  * "tokyo" (the committed extract, for benchmarks and offline work).
  */
 export function demoStyle(params, fallback = "live") {
-  if (!params.get("style") && !params.get("format") && fallback === "tokyo")
-    return sceneUrl(SCENES.tokyo, "mvt");
+  if (!params.get("style") && !params.get("format"))
+    return fallback === "tokyo" ? sceneUrl(SCENES.tokyo, "mvt") : LIVE;
   const { scene, format } = sceneFor(params);
   return sceneUrl(scene, format);
 }

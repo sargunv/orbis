@@ -279,6 +279,7 @@
             paths,
             size: [w, h],
             about: lines,
+            gpu: params.has("gpu"),
             jobWorkers: params.has("workers")
               ? Number(params.get("workers"))
               : undefined,
