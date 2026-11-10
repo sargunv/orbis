@@ -261,3 +261,99 @@ fn a_drape_pipeline_arriving_last_still_idles() {
     let stderr = String::from_utf8_lossy(&child.stderr);
     assert!(child.status.success(), "{stderr}");
 }
+
+/// The child's role in [`hidden_layers_compile_ahead_of_need`].
+const PREWARM_CHILD: &str = "ORB_TEST_PREWARM_CHILD";
+
+/// A layer a zoom shows later has its pipelines compiled once the map
+/// rests, in the background: the rest isn't broken by them (no frame
+/// asked for while they compile), and the zoom that shows the layer
+/// waits for nothing. Zoomed in while its compile still runs, the map
+/// waits for it and is woken when it ends. In a child process: compiles
+/// of the layer's pipeline are slowed from the environment.
+#[test]
+fn hidden_layers_compile_ahead_of_need() {
+    const COMPILE: Duration = Duration::from_millis(800);
+    if std::env::var_os(PREWARM_CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "hidden_layers_compile_ahead_of_need",
+                "--nocapture",
+            ])
+            .env(PREWARM_CHILD, "1")
+            .env(
+                "ORB_FAULT_INJECTION",
+                format!("slow:circle:{}", COMPILE.as_millis()),
+            )
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(child.status.success(), "{stderr}");
+        return;
+    }
+    let style = r##"{"version":8,"zoom":1,"sources":{"point":{"type":"geojson","data":
+      {"type":"Point","coordinates":[0,0]}}},
+      "layers":[{"id":"bg","type":"background","paint":{"background-color":"#ff0000"}},
+      {"id":"dot","type":"circle","source":"point","minzoom":4,
+        "paint":{"circle-radius":20,"circle-color":"#00ff00"}}]}"##;
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    // Draws the frames the map asks for until idle: whether any waited
+    // for a compile.
+    let rest = |map: &mut Map, target: &mut Target| {
+        let started = Instant::now();
+        let mut compiling = false;
+        loop {
+            assert!(started.elapsed() < Duration::from_secs(15), "never idle");
+            if !map.needs_frame() {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            if let Some(report) = map.render(target, 0.0).unwrap() {
+                compiling |= report.frame.pipelines_pending > 0;
+                if report.idle {
+                    return compiling;
+                }
+            }
+        }
+    };
+    let center = |target: &Target| {
+        let pixels = target.read_pixels().unwrap();
+        let i = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    let zoom_in = |map: &mut Map| {
+        map.jump_to(&orb_api::CameraTarget {
+            zoom: Some(5.0),
+            ..Default::default()
+        });
+    };
+
+    // Compiled at rest, ahead of the zoom.
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).unwrap();
+    rest(&mut map, &mut target);
+    // The frame at rest asks for one more, which asks for them.
+    assert!(map.needs_frame());
+    rest(&mut map, &mut target);
+    let rested = Instant::now();
+    while rested.elapsed() < COMPILE * 2 {
+        assert!(!map.needs_frame(), "a background compile woke the map");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    zoom_in(&mut map);
+    assert!(
+        !rest(&mut map, &mut target),
+        "the zoom waited for a compile"
+    );
+    assert_eq!(center(&target), [0, 255, 0], "the circle");
+
+    // Shown while it compiles: waited for, and woken for.
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).unwrap();
+    rest(&mut map, &mut target);
+    zoom_in(&mut map);
+    rest(&mut map, &mut target);
+    assert_eq!(center(&target), [0, 255, 0], "the circle, once compiled");
+}

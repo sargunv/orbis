@@ -18,8 +18,45 @@ pub(crate) fn paint(
     lookup: StateLookup,
 ) -> bool {
     let l = &plan.style.layers[node.layer];
-    if !matches!(l.ty, LayerType::Circle | LayerType::Heatmap) {
+    if l.ty == LayerType::Heatmap {
+        let ramp = l
+            .ramp(orb_style::HEATMAP_COLOR)
+            .expect("heatmaps have a default ramp");
+        let colors: Vec<u32> = (0..256)
+            .map(|i| {
+                let context = orb_expr::EvaluationContext {
+                    heatmap_density: f64::from(i) / 255.0,
+                    ..Default::default()
+                };
+                let color = ramp
+                    .expression()
+                    .evaluate_with(&context)
+                    .ok()
+                    .and_then(|v| v.as_color())
+                    .map_or([0.0; 4], |c| c.premultiplied());
+                pack_color(color)
+            })
+            .collect();
+        renderer.set_heatmap_ramp(gpu, index, &colors);
+    }
+    let Some(paint) = node_paint(plan, node, zoom, maxima, lookup) else {
         return false;
+    };
+    renderer.set_paint(gpu, index, &paint);
+    true
+}
+
+/// A circle or heatmap node's paint at `zoom`.
+pub(crate) fn node_paint(
+    plan: &StylePlan,
+    node: &NodePlan,
+    zoom: f64,
+    maxima: &[f32],
+    lookup: StateLookup,
+) -> Option<NodePaint> {
+    let l = &plan.style.layers[node.layer];
+    if !matches!(l.ty, LayerType::Circle | LayerType::Heatmap) {
+        return None;
     }
     let mut curves = [Curve::Step; 7];
     let mut numbers = [0.0; 7];
@@ -68,37 +105,15 @@ pub(crate) fn paint(
                 state: lookup,
             })
         }
-        LayerType::Heatmap => {
-            let ramp = l
-                .ramp(orb_style::HEATMAP_COLOR)
-                .expect("heatmaps have a default ramp");
-            let colors: Vec<u32> = (0..256)
-                .map(|i| {
-                    let context = orb_expr::EvaluationContext {
-                        heatmap_density: f64::from(i) / 255.0,
-                        ..Default::default()
-                    };
-                    let color = ramp
-                        .expression()
-                        .evaluate_with(&context)
-                        .ok()
-                        .and_then(|v| v.as_color())
-                        .map_or([0.0; 4], |c| c.premultiplied());
-                    pack_color(color)
-                })
-                .collect();
-            renderer.set_heatmap_ramp(gpu, index, &colors);
-            NodePaint::Heatmap(HeatmapPaint {
-                radius: numbers[0],
-                weight: numbers[1],
-                intensity: l.get(orb_style::HEATMAP_INTENSITY).evaluate(zoom),
-                opacity: l.get(orb_style::HEATMAP_OPACITY).evaluate(zoom),
-                table_mask,
-                curves: [curves[0], curves[1]],
-            })
-        }
+        LayerType::Heatmap => NodePaint::Heatmap(HeatmapPaint {
+            radius: numbers[0],
+            weight: numbers[1],
+            intensity: l.get(orb_style::HEATMAP_INTENSITY).evaluate(zoom),
+            opacity: l.get(orb_style::HEATMAP_OPACITY).evaluate(zoom),
+            table_mask,
+            curves: [curves[0], curves[1]],
+        }),
         _ => unreachable!(),
     };
-    renderer.set_paint(gpu, index, &paint);
-    true
+    Some(paint)
 }

@@ -540,12 +540,17 @@ impl Images {
         gpu: &mut dyn Gpu,
         downsampler: &crate::downsample::Downsampler,
     ) -> Option<(Vec<Pass>, u32)> {
-        // Layers wait for the pipelines to compile.
-        if !downsampler.ready(gpu) {
+        // Without layers, the pipelines aren't asked after: made ahead of
+        // need, they compile in the background. Layers wait for them.
+        let layers = (self.pages.iter().flatten()).any(|p| !p.mip_layers.is_empty());
+        if layers && !downsampler.ready(gpu) {
             return None;
         }
         // The last frame, which used them, was submitted.
         std::mem::take(&mut self.edges).release(gpu);
+        if !layers {
+            return None;
+        }
         let mut passes = Vec::new();
         let mut levels = Vec::new();
         let mut work = 0;

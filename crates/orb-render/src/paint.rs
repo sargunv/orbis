@@ -448,6 +448,16 @@ impl NodePaint {
         }
     }
 
+    /// A line's dashes, pattern or gradient: it draws with the styled
+    /// line pipeline.
+    pub(crate) fn styled(&self) -> bool {
+        match self {
+            Self::Line(p) => p.dash.is_some() || p.gradient,
+            Self::LinePattern(..) => true,
+            _ => false,
+        }
+    }
+
     /// Whether a vector or symbol family's paint reads a feature's property
     /// row or state: its pipeline's variant without rows can't draw it
     /// ([`orb_shaders::FEATURE_ROWS`]). True for the other families.

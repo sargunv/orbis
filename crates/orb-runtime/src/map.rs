@@ -483,6 +483,9 @@ pub struct Map {
     pub(crate) waiting: Vec<WaitingTile>,
     /// Chunks the last frame's cull left out for want of room.
     pub(crate) candidates_dropped: u32,
+    /// A frame at rest asked for the style's pipelines to be made ahead of
+    /// need ([`crate::paint::prewarm`]) by the next.
+    prewarm_due: bool,
     pub(crate) services: Services,
     pub(crate) videos: crate::video::Videos,
     pub(crate) host_tiles: crate::host_tiles::HostTiles,
@@ -685,6 +688,7 @@ impl Map {
             tiles_deferred: false,
             waiting: Vec::new(),
             candidates_dropped: 0,
+            prewarm_due: false,
             services,
             videos: Default::default(),
             host_tiles: Default::default(),
@@ -1443,6 +1447,7 @@ impl Map {
         renderer.set_antialias_3d(gpu, self.antialias_3d);
         renderer.set_keep_all(gpu, self.keep_all_cull);
         self.apply_arrivals(gpu, renderer, pixel_ratio);
+        self.prewarm(gpu, renderer);
         // A style that arrived may mix colours in another space.
         if self.fit_color_space(gpu, renderer) {
             renderer.set_antialias_3d(gpu, self.antialias_3d);
@@ -1717,6 +1722,18 @@ impl Map {
         self.events
             .frame(report.loaded, report.idle && !moving && !held);
         report.idle &= !moving;
+        // At rest, the pipelines later views may need compile ahead of
+        // them: asked for by the next frame or prepare, which this one
+        // wakes the host for, so the idle it reports isn't held up.
+        if report.idle
+            && !held
+            && self.mode == RenderMode::Continuous
+            && !self.prewarm_due
+            && (self.style.as_ref()).is_some_and(|s| crate::paint::prewarm_needed(renderer, s))
+        {
+            self.prewarm_due = true;
+            (self.services.wake)();
+        }
         self.globe_warps.end_frame();
         report.scene = renderer.stats();
         report.memory = self.memory(renderer);
@@ -1733,6 +1750,24 @@ impl Map {
         times.total = micros(started, clock.now());
         report.times = times;
         report
+    }
+
+    /// Asks for the style's pipelines ahead of need, if a frame at rest
+    /// asked for that.
+    fn prewarm(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        if !std::mem::take(&mut self.prewarm_due) {
+            return;
+        }
+        let zoom = self.zoom();
+        let inputs = crate::paint::camera_inputs(self.camera.state());
+        let Some(style) = &mut self.style else {
+            return;
+        };
+        let mut images = self.services.images.0.lock().expect("images poisoned");
+        let Some(atlas) = images.atlas.as_mut() else {
+            return;
+        };
+        crate::paint::prewarm(gpu, renderer, style, (zoom, inputs), atlas);
     }
 
     /// Makes the renderer's nodes the plan's: removes the meshes of nodes

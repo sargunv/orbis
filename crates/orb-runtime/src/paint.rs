@@ -38,6 +38,10 @@ pub(crate) struct PaintState {
     /// This frame's plan with its transitions eased in, which the drape
     /// paints from too; `None` with nothing easing.
     pub(crate) overlay: Option<Arc<StylePlan>>,
+    /// The renderer, plan (its style's address) and nodes
+    /// (`LoadedStyle::drawn`) whose pipelines were asked for ahead of need
+    /// ([`prewarm`]).
+    prewarmed: Option<(u64, usize, Vec<u32>)>,
 }
 
 impl PaintState {
@@ -157,6 +161,96 @@ pub(crate) fn frame(
         atlas,
     );
     (fading, missing)
+}
+
+/// What [`prewarm`] asked for pipelines for: the renderer, the plan (its
+/// style's address) and its nodes.
+fn prewarm_key(renderer: &Renderer, style: &LoadedStyle) -> (u64, usize, Vec<u32>) {
+    let plan = style.worker.plan();
+    (
+        renderer.id(),
+        Arc::as_ptr(&plan.style) as usize,
+        style.drawn.clone(),
+    )
+}
+
+/// Whether [`prewarm`] has yet to ask for these nodes' pipelines.
+pub(crate) fn prewarm_needed(renderer: &Renderer, style: &LoadedStyle) -> bool {
+    style.paint.prewarmed.as_ref() != Some(&prewarm_key(renderer, style))
+}
+
+/// Asks the renderer, in the background, for the pipelines the style's
+/// nodes may draw with at any zoom, unless it was asked for these nodes of
+/// this plan: each node painted at every whole zoom its layer draws at
+/// (from `zoom`, outwards), so a gesture that brings a layer in, or
+/// changes what a layer's paint reads, doesn't wait for compiles. Called
+/// once the map is idle: what the view needs compiled first.
+pub(crate) fn prewarm(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    style: &mut LoadedStyle,
+    (zoom, inputs): (f64, CameraInputs),
+    atlas: &mut ImageAtlas,
+) {
+    if !prewarm_needed(renderer, style) {
+        return;
+    }
+    let worker = Arc::clone(&style.worker);
+    let plan = worker.plan();
+    style.paint.prewarmed = Some(prewarm_key(renderer, style));
+    let camera = at_camera(plan, inputs);
+    let plan = camera.as_ref().unwrap_or(plan);
+    let crossfade = Crossfade {
+        from_scale: 1.0,
+        mix: 1.0,
+    };
+    // Whole zooms nearest the camera's first.
+    let mut zooms: Vec<f64> = (0..=24).map(f64::from).collect();
+    zooms.sort_by(|a, b| (a - zoom).abs().total_cmp(&(b - zoom).abs()));
+    let mut paints = Vec::new();
+    for (index, node) in plan.nodes.iter().enumerate() {
+        let layer = &plan.style.layers[node.layer];
+        if node.family.is_image() || node.family == Family::Heatmap {
+            // Their family alone picks their pipelines.
+            if (zooms.iter()).any(|&z| drawn_at(layer, node, z)) {
+                paints.push((index as u32, None));
+            }
+            continue;
+        }
+        let state = style.nodes.entry(node.key).or_default();
+        let properties = plan.paint_properties(node).len();
+        if state.maxima.len() < properties {
+            state.maxima.resize(properties, 0.0);
+        }
+        let lookup = style.states.lookup(index);
+        let first = paints.len();
+        for &at in zooms.iter().filter(|&&z| drawn_at(layer, node, z)) {
+            let state = style.nodes.entry(node.key).or_default();
+            let paint = if node.family.is_symbol() {
+                crate::labels::paint(plan, node, at, &state.maxima, lookup).map(NodePaint::Symbol)
+            } else if node.family == Family::Circle {
+                crate::point::node_paint(plan, node, at, &state.maxima, lookup)
+            } else {
+                let at = PaintAt {
+                    zoom: at,
+                    bearing: inputs.bearing,
+                    crossfade,
+                };
+                node_paint(gpu, renderer, (style, plan), index as u32, at, atlas)
+            };
+            let Some(paint) = paint else {
+                continue;
+            };
+            // The renderer makes each pipeline once: only paint that may
+            // pick others is kept.
+            let seen = (paints[first..].iter().flat_map(|(_, p)| p))
+                .any(|p| orb_render::same_pipelines(p, &paint));
+            if !seen {
+                paints.push((index as u32, Some(paint)));
+            }
+        }
+    }
+    renderer.prewarm(gpu, &paints);
 }
 
 /// Writes the draped nodes' paint at the camera's `zoom` for drape layout

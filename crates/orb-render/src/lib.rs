@@ -271,6 +271,40 @@ struct Node {
     left_out: std::cell::Cell<bool>,
 }
 
+/// Whether a node painted with `a` draws with the pipelines it does
+/// painted with `b`.
+pub fn same_pipelines(a: &NodePaint, b: &NodePaint) -> bool {
+    PaintShape::of(a) == PaintShape::of(b)
+}
+
+/// What of a node's paint picks its pipelines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PaintShape {
+    styled: bool,
+    rows: bool,
+    along_line: Option<bool>,
+    elevation: Option<(paint::ElevationShape, bool)>,
+}
+
+impl PaintShape {
+    fn of(paint: &NodePaint) -> Self {
+        Self {
+            styled: paint.styled(),
+            rows: paint.reads_rows(),
+            along_line: match paint {
+                NodePaint::Symbol(p) => Some(p.along_line),
+                _ => None,
+            },
+            elevation: match paint {
+                NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
+                    Some((p.elevation_shape(), p.ground_occlusion()))
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
 impl Node {
     /// A hillshade the terrain pass lights: its stack holds its slopes.
     fn shades_on_terrain(&self) -> bool {
@@ -349,6 +383,10 @@ pub struct Renderer {
     /// Nodes changed since pipelines were last made for them, or one
     /// was shown.
     pipelines_stale: bool,
+    /// What the last frame's extrusions darkened on the ground besides
+    /// their paint's occlusion: what [`prewarm`](Self::prewarm)ed
+    /// extrusions are made for.
+    frame_ground: extrusion::Ground,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
     /// The main bundles light the ground beneath the labels
@@ -694,6 +732,7 @@ impl Renderer {
             background_fills: false,
             beneath: None,
             pipelines_stale: false,
+            frame_ground: extrusion::Ground::default(),
             made_seen: 0,
             ground_lit: false,
             waiting: 0,
@@ -1554,12 +1593,7 @@ impl Renderer {
                 std::mem::take(&mut self.bundles).release(gpu);
             }
         }
-        let styled = match paint {
-            NodePaint::Line(p) => p.dash.is_some() || p.gradient,
-            NodePaint::LinePattern(..) => true,
-            _ => false,
-        };
-        let rows = paint.reads_rows();
+        let (styled, rows) = (paint.styled(), paint.reads_rows());
         if (entry.styled, entry.rows) != (styled, rows) {
             entry.styled = styled;
             entry.rows = rows;
@@ -1701,13 +1735,6 @@ impl Renderer {
     /// compiles still overlap the tiles' loading. A node shown for the
     /// first time records the bundles again, which left it out.
     fn make_pipelines(&mut self, gpu: &mut dyn Gpu) {
-        let layouts = [self.draw_layout, self.node_layout];
-        let drape_target = TargetFormat {
-            color: self.drape_format(),
-            sample_count: 1,
-        };
-        let own_drape = self.target.color != drape_target.color;
-        let variants = self.variants();
         let (mut started, mut draped) = (false, false);
         for i in 0..self.nodes.len() {
             // A node that drew keeps its pipelines made for what it draws
@@ -1721,42 +1748,7 @@ impl Renderer {
                 started = true;
                 draped |= node.stack.is_some();
             }
-            let (family, kind) = (node.family, node.paint_kind());
-            if node.shades_on_terrain() {
-                // Its slopes into the drape atlas, which the terrain pass
-                // lights.
-                self.images.make_slopes(gpu);
-                continue;
-            }
-            if node.stack.is_some() {
-                // Into the drape atlas, with its format's pipelines if
-                // the target's differs.
-                if !own_drape {
-                    self.make_node_pipeline(gpu, i);
-                    continue;
-                }
-                let drape = self
-                    .drape_pipelines
-                    .get_or_insert_with(DrapePipelines::default);
-                if family.is_image() {
-                    self.images.make_for(
-                        gpu,
-                        &mut drape.images,
-                        drape_target,
-                        self.draw_layout,
-                        family,
-                    );
-                    if family == Family::Raster {
-                        self.downsampler.make(gpu);
-                    }
-                } else {
-                    drape
-                        .paint
-                        .make(gpu, drape_target, &layouts, kind, variants);
-                }
-                continue;
-            }
-            self.make_node_pipeline(gpu, i);
+            self.make_for_node(gpu, i, false);
         }
         if started {
             self.invalidate_bundle(gpu);
@@ -1767,7 +1759,104 @@ impl Renderer {
         }
     }
 
-    fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, i: usize) {
+    /// Asks, in the background, for the pipelines node `i` draws with for
+    /// each `(i, paint)` (its paint at a zoom it shows at; `None` for a
+    /// family whose pipelines its paint doesn't pick), so a gesture
+    /// that shows it later, or changes what its paint reads, doesn't wait
+    /// for their compiles: for the map's variants, sample count and
+    /// terrain as they are now. They compile after every pipeline a frame
+    /// asks for, and frames don't wait for them until a node shown draws
+    /// with one.
+    pub fn prewarm(&mut self, gpu: &mut dyn Gpu, paints: &[(u32, Option<NodePaint>)]) {
+        gpu.set_background_compiles(true);
+        for (i, paint) in paints {
+            let i = *i as usize;
+            let shape = match paint {
+                _ if i >= self.nodes.len() => continue,
+                None => None,
+                Some(paint) if paint.fits(self.nodes[i].family) => Some(paint),
+                Some(_) => continue,
+            };
+            let node = &mut self.nodes[i];
+            let kept = (
+                node.styled,
+                node.rows,
+                node.along_line,
+                node.elevation,
+                node.ground,
+            );
+            if let Some(paint) = shape {
+                (node.styled, node.rows) = (paint.styled(), paint.reads_rows());
+                match paint {
+                    NodePaint::Symbol(p) => node.along_line = p.along_line,
+                    NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
+                        node.elevation = p.elevation_shape();
+                        node.ground = extrusion::Ground {
+                            occlusion: p.ground_occlusion(),
+                            ..self.frame_ground
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            self.make_for_node(gpu, i, true);
+            let node = &mut self.nodes[i];
+            (
+                node.styled,
+                node.rows,
+                node.along_line,
+                node.elevation,
+                node.ground,
+            ) = kept;
+        }
+        gpu.set_background_compiles(false);
+    }
+
+    /// Makes node `i`'s pipelines as it draws now, or (`warm`) ahead of
+    /// its drawing.
+    fn make_for_node(&mut self, gpu: &mut dyn Gpu, i: usize, warm: bool) {
+        let layouts = [self.draw_layout, self.node_layout];
+        let drape_target = TargetFormat {
+            color: self.drape_format(),
+            sample_count: 1,
+        };
+        let own_drape = self.target.color != drape_target.color;
+        let variants = self.variants();
+        let node = &self.nodes[i];
+        let (family, kind) = (node.family, node.paint_kind());
+        if node.shades_on_terrain() {
+            // Its slopes into the drape atlas, which the terrain pass
+            // lights.
+            self.images.make_slopes(gpu);
+            return;
+        }
+        if node.stack.is_some() && own_drape {
+            // Into the drape atlas, with its format's pipelines.
+            let drape = self
+                .drape_pipelines
+                .get_or_insert_with(DrapePipelines::default);
+            if family.is_image() {
+                self.images.make_for(
+                    gpu,
+                    &mut drape.images,
+                    drape_target,
+                    self.draw_layout,
+                    family,
+                );
+                if family == Family::Raster {
+                    self.downsampler.make(gpu);
+                }
+            } else {
+                drape
+                    .paint
+                    .make(gpu, drape_target, &layouts, kind, variants);
+            }
+            return;
+        }
+        self.make_node_pipeline(gpu, i, warm);
+    }
+
+    fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, i: usize, warm: bool) {
         let layouts = [self.draw_layout, self.node_layout];
         let family = self.nodes[i].family;
         let variants = self.variants();
@@ -1794,9 +1883,15 @@ impl Renderer {
                     self.downsampler.make(gpu);
                 }
             }
-            Family::Heatmap => self.heatmaps.make(gpu),
+            Family::Heatmap => {
+                self.heatmaps.make(gpu);
+                // Its target's composite through the ramp.
+                self.composites.make(gpu, offscreen::Mode::Ramp);
+            }
             Family::FillExtrusion => {
-                self.extrusions.make(gpu, self.nodes[i].elevation);
+                self.extrusions.make(gpu, self.nodes[i].elevation, warm);
+                // Its target's composite.
+                self.composites.make(gpu, offscreen::Mode::Over);
                 let ground = self.nodes[i].ground;
                 self.extrusions.make_ground(gpu, ground);
                 if ground.mask
@@ -2016,6 +2111,11 @@ impl Renderer {
         let shadows = frame.light.shadow().1 > 0.0;
         let mask = frame.globe.is_none_or(|g| g.amount <= 0.0)
             && self.terrain.as_ref().is_some_and(terrain::Terrain::active);
+        self.frame_ground = extrusion::Ground {
+            shadows,
+            occlusion: false,
+            mask,
+        };
         for node in self.nodes.iter_mut().filter(|n| n.extrusion.is_some()) {
             let ground = extrusion::Ground {
                 shadows,
@@ -2486,8 +2586,17 @@ impl Renderer {
     }
 
     /// What a bundle record finds compiled besides the nodes' own
-    /// pipelines.
+    /// pipelines. Those only a family needs are asked after once a node of
+    /// it drew: made ahead of need ([`prewarm`](Self::prewarm)), they
+    /// compile in the background until then.
     fn ready(&mut self, gpu: &mut dyn Gpu, terrain_on: bool) -> Ready {
+        let drawn = |families: &[Family]| {
+            (self.nodes.iter()).any(|n| n.drawn && families.contains(&n.family))
+        };
+        let (rasters, dems) = (
+            drawn(&[Family::Raster]),
+            drawn(&[Family::Hillshade, Family::ColorRelief]),
+        );
         Ready {
             cull: self.driver.ready(gpu),
             terrain: self
@@ -2496,8 +2605,8 @@ impl Renderer {
                 .filter(|_| terrain_on)
                 .is_some_and(|t| t.ready(gpu))
                 && self.composites.ready(gpu, offscreen::Mode::Over),
-            prepare: self.images.prepare_ready(gpu),
-            mips: self.downsampler.ready(gpu),
+            prepare: !dems || self.images.prepare_ready(gpu),
+            mips: !rasters || self.downsampler.ready(gpu),
         }
     }
 

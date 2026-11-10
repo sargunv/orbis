@@ -201,10 +201,17 @@ impl Variants {
 
     /// What a frame draws with, once compiled: the full variant when the
     /// frame needs it (`full`), the plane one otherwise, or the full one
-    /// in its place while it isn't made or compiled.
+    /// in its place while it isn't made or compiled. Only what it may draw
+    /// with is asked after: a variant made ahead of need
+    /// ([`Gpu::set_background_compiles`]) stays in the background.
     pub(crate) fn drawn(&self, gpu: &mut dyn Gpu, full: bool) -> Option<RenderPipelineId> {
-        let [plane, whole] = self.0.map(|p| p.filter(|&p| gpu.pipeline_ready(p.into())));
-        if full { whole } else { plane.or(whole) }
+        let [plane, whole] = self.0;
+        let mut ready = |p: Option<RenderPipelineId>| p.filter(|&p| gpu.pipeline_ready(p.into()));
+        if full {
+            ready(whole)
+        } else {
+            ready(plane).or_else(|| ready(whole))
+        }
     }
 
     /// The variant a frame waits for (`full` as in [`drawn`](Self::drawn)).

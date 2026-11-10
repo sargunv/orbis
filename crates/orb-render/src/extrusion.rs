@@ -68,6 +68,10 @@ pub(crate) struct Extrusions {
     /// and where clip distances are, cut ones clipped by planes; at one
     /// sample and at four.
     pipelines: Vec<((ElevationShape, bool), Pipelines)>,
+    /// The shapes and variants of `pipelines` made ahead of need
+    /// ([`Renderer::prewarm`](crate::Renderer::prewarm)) that no node has
+    /// drawn with: what draws waits for none of them.
+    warm: Vec<(ElevationShape, bool)>,
     /// The pipelines are made in their full variants, not their plane
     /// ones ([`Draw::plane`]): the paint pipelines' plane variants aren't
     /// made. On the moto g, the plane variant's vertex stage took 40% less
@@ -109,6 +113,7 @@ impl Extrusions {
     ) -> Self {
         Self {
             pipelines: Vec::new(),
+            warm: Vec::new(),
             full: true,
             drawn_full: true,
             ground: [[None; 2]; 2],
@@ -136,7 +141,7 @@ impl Extrusions {
     pub(crate) fn settle(&mut self, gpu: &mut dyn Gpu) -> bool {
         let samples = usize::from(self.samples == 4);
         let made = |full: bool| {
-            (self.pipelines.iter())
+            (self.drawing())
                 .filter(move |((_, f), p)| *f == full && p.iter().any(|p| p[samples].is_some()))
         };
         let plane_compiled = made(false).all(|(_, p)| {
@@ -146,6 +151,11 @@ impl Extrusions {
             made(false).all(|((shape, _), _)| made(true).any(|((s, _), _)| s == shape));
         let drawn = self.full || (!plane_compiled && full_cover);
         std::mem::replace(&mut self.drawn_full, drawn) != drawn
+    }
+
+    /// The pipelines of shapes nodes draw with.
+    fn drawing(&self) -> impl Iterator<Item = &((ElevationShape, bool), Pipelines)> {
+        (self.pipelines.iter()).filter(|(key, _)| !self.warm.contains(key))
     }
 
     /// The whole, cut and planes pipelines for `shape` at the current
@@ -164,17 +174,24 @@ impl Extrusions {
     }
 
     /// Makes the pipelines for `shape` at the current sample count and
-    /// variant, for the first extrusion node of that shape.
-    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, shape: ElevationShape) {
+    /// variant, for the first extrusion node of that shape, or (`warm`)
+    /// ahead of any.
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, shape: ElevationShape, warm: bool) {
         let samples = usize::from(self.samples == 4);
         let key = (shape, self.full);
         let index = match self.pipelines.iter().position(|(s, _)| *s == key) {
             Some(i) => i,
             None => {
                 self.pipelines.push((key, [[None; 2]; 3]));
+                if warm {
+                    self.warm.push(key);
+                }
                 self.pipelines.len() - 1
             }
         };
+        if !warm {
+            self.warm.retain(|k| *k != key);
+        }
         let (whole, cut) = (EXTRUSION_SHADER, EXTRUSION_CUT_SHADER);
         // With clip distances, the cut pipeline keeps the buildings of
         // placements with several clip rectangles, and the planes one draws
@@ -328,7 +345,7 @@ impl Extrusions {
     /// in the variant they draw in, and the composites', compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
         let samples = usize::from(self.samples == 4);
-        let made: Vec<_> = (self.pipelines.iter())
+        let made: Vec<_> = (self.drawing())
             .filter(|((_, full), _)| *full == self.drawn_full)
             .flat_map(|(_, p)| p.map(|p| p[samples]))
             .collect();
