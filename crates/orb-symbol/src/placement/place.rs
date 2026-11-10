@@ -14,7 +14,8 @@ use crate::bucket::{
 use crate::geometry::{EXTENT, Point};
 use crate::layout::{anchor_justification, justification_slot};
 use crate::placement::collision::{
-    BoxPlacement, CollisionBox, CollisionIndex, LineLabel, PlacedBox, Scratch, Viewport,
+    BoxPlacement, CollisionBox, CollisionIndex, LineLabel, PlacedBox, PlacedCircles, Scratch,
+    Viewport,
 };
 use crate::placement::cross_tile::{CrossTileIndex, Indexed};
 use crate::placement::grid::{GridKey, Overlap};
@@ -1017,24 +1018,10 @@ impl<'a> Pass<'a> {
         self.now.orientations.insert(id, orientation);
     }
 
-    /// GL JS `placeLayerBucketPart`.
-    fn place_part(
-        &mut self,
-        p: &LayerParams,
-        group: Option<u32>,
-        tile: &PlacedTile,
-        b: &Bucket,
-        range: std::ops::Range<usize>,
-        seen: &mut HashSet<u32>,
-    ) {
-        let t = &b.tables;
-        let has_text_data = !t.text_placed.is_empty();
-        let has_icon_data = !t.icon_placed.is_empty();
-        let pixel_ratio = 512.0 / EXTENT;
-        let text_translation = translation(self.camera, &tile.view, p.text_translate);
-        let icon_translation = translation(self.camera, &tile.view, p.icon_translate);
+    /// The order a bucket part's instances are placed in.
+    fn order(&self, p: &LayerParams, b: &Bucket, range: std::ops::Range<usize>) -> Vec<usize> {
         let mut order: Vec<usize> = if p.z_order_viewport_y {
-            let mut order = viewport_y_order(t, -self.camera.bearing);
+            let mut order = viewport_y_order(&b.tables, -self.camera.bearing);
             order.reverse();
             order
         } else {
@@ -1049,263 +1036,68 @@ impl<'a> Pass<'a> {
                 Some(_) => 2,
             });
         }
-        for i in order {
+        order
+    }
+
+    /// GL JS `placeLayerBucketPart`.
+    fn place_part(
+        &mut self,
+        p: &LayerParams,
+        group: Option<u32>,
+        tile: &PlacedTile,
+        b: &Bucket,
+        range: std::ops::Range<usize>,
+        seen: &mut HashSet<u32>,
+    ) {
+        let t = &b.tables;
+        let has_text_data = !t.text_placed.is_empty();
+        let has_icon_data = !t.icon_placed.is_empty();
+        let text_translation = translation(self.camera, &tile.view, p.text_translate);
+        let icon_translation = translation(self.camera, &tile.view, p.icon_translate);
+        for i in self.order(p, b, range) {
             let instance = &t.instances[i];
             let id = b.ids[i];
             if seen.contains(&id) {
                 continue;
             }
-            let f = p.flags_of(instance);
-            let (always_text, always_icon) = f.always(has_text_data, has_icon_data);
             // Tile scope: a tile places the labels anchored in it.
             if self.record.is_some() && !self.index.view.in_view(&tile.view, instance.anchor) {
                 continue;
             }
-            let ground = self.ground;
-            let base = |overlap, translation| BoxPlacement {
-                tile: &tile.view,
-                overlap,
-                pixel_ratio,
-                pitch_with_map: p.pitch_with_map,
-                rotate_with_map: p.rotate_with_map,
-                translation,
+            let c = Candidate {
+                p,
+                tile,
+                t,
+                instance,
+                id,
+                f: p.flags_of(instance),
                 group,
-                height_offset: f64::from(instance.height_offset),
-                height_anchor_ground: p.height_anchor_ground,
-                ground,
+                text_translation,
+                icon_translation,
+                ground: self.ground,
             };
-            let text_box = collision_box(instance, 0, instance_flags::TEXT_BOX);
-            let vertical_text_box = collision_box(instance, 1, instance_flags::VERTICAL_TEXT_BOX);
-            let icon_box = collision_box(instance, 2, instance_flags::ICON_BOX);
-            let vertical_icon_box = collision_box(instance, 3, instance_flags::VERTICAL_ICON_BOX);
-            let vertical_glyphs = quads(&t.text_placed, instance.text[justification::VERTICAL]);
-            let horizontal_glyphs = instance.text[..3]
-                .iter()
-                .map(|&i| quads(&t.text_placed, i))
-                .max()
-                .unwrap_or(0);
-            let allow_vertical = t.allow_vertical_placement && vertical_glyphs > 0;
-
-            let mut placed: Option<PlacedBox> = None;
-            let mut placed_vertical = false;
-            let mut offscreen;
-            let mut shift: Option<Point> = None;
-            let mut place_text;
-
-            if let Some(text_box) = text_box {
-                let offsets = &t.anchor_offsets
-                    [instance.anchor_offsets[0] as usize..instance.anchor_offsets[1] as usize];
-                // Modes in order; the first that fits wins.
-                let modes: &[WritingMode] = if allow_vertical && vertical_text_box.is_some() {
-                    &p.writing_modes
-                } else {
-                    &[WritingMode::Horizontal]
-                };
-                if offsets.is_empty() {
-                    for &mode in modes {
-                        let (bx, orientation) = match mode {
-                            WritingMode::Vertical => (
-                                vertical_text_box.expect("checked"),
-                                SymbolWritingMode::Vertical,
-                            ),
-                            WritingMode::Horizontal => (text_box, SymbolWritingMode::Horizontal),
-                        };
-                        let result = self.index.place_box(
-                            &bx,
-                            &base(f.text_overlap, text_translation),
-                            None,
-                        );
-                        if result.placeable {
-                            self.mark_orientation(id, orientation as u8);
-                        }
-                        placed = Some(result);
-                        placed_vertical = mode == WritingMode::Vertical;
-                        if result.placeable {
-                            break;
-                        }
-                    }
-                } else {
-                    for &mode in modes {
-                        if mode == WritingMode::Vertical && placed.is_some_and(|b| b.placeable) {
-                            break;
-                        }
-                        let (bx, ibox, orientation) = match mode {
-                            WritingMode::Vertical => (
-                                vertical_text_box.expect("checked"),
-                                vertical_icon_box,
-                                SymbolWritingMode::Vertical,
-                            ),
-                            WritingMode::Horizontal => {
-                                (text_box, icon_box, SymbolWritingMode::Horizontal)
-                            }
-                        };
-                        let variable_icon = if p.icon_text_fit && f.icon_overlap == Overlap::Never {
-                            ibox
-                        } else {
-                            None
-                        };
-                        let result = self.place_variable(
-                            p,
-                            &base,
-                            text_translation,
-                            icon_translation,
-                            instance,
-                            id,
-                            offsets,
-                            &bx,
-                            variable_icon,
-                            // GL JS records the orientation only when the
-                            // bucket may place vertically.
-                            if t.allow_vertical_placement {
-                                orientation
-                            } else {
-                                SymbolWritingMode::None
-                            },
-                            &mut shift,
-                        );
-                        placed = result;
-                        placed_vertical = mode == WritingMode::Vertical;
-                        if result.is_some_and(|b| b.placeable) {
-                            break;
-                        }
-                    }
-                    // Not placed: keep the last placement's anchor while it
-                    // fades.
-                    if !placed.is_some_and(|b| b.placeable)
-                        && let Some(prev) = self.prev.and_then(|p| p.variable_offsets.get(&id))
-                    {
-                        self.now.variable_offsets.insert(id, *prev);
-                    }
-                }
-                // GL JS `updatePreviousOrientationIfNotPlaced`.
-                if t.allow_vertical_placement
-                    && !placed.is_some_and(|b| b.placeable)
-                    && let Some(&o) = self.prev.and_then(|p| p.orientations.get(&id))
-                {
-                    self.now.orientations.insert(id, o);
-                }
-            }
-            place_text = placed.is_some_and(|b| b.placeable);
+            let text = self.place_text(&c);
+            let mut place_text = text.placeable();
             // Without a text box GL JS's `offscreen` is undefined: falsy.
-            offscreen = placed.is_some_and(|b| b.offscreen);
-
-            let mut circles = None;
-            let center = instance.text[justification::CENTER];
-            if instance.flags & instance_flags::RUNTIME_COLLISION_CIRCLES != 0 && center != NONE {
-                let symbol = &t.text_placed[center as usize];
-                let label = LineLabel {
-                    symbol,
-                    lines: &t.lines,
-                    glyph_offsets: &t.text_glyph_offsets,
-                    font_size: feature_size(t.text_size, tile.text_size, symbol),
-                    circle_diameter: f64::from(instance.collision_circle_diameter),
-                    padding: p.text_padding,
-                };
-                let result = self
-                    .index
-                    .place_circles(&base(f.text_overlap, text_translation), &label);
-                place_text = f.text_overlap == Overlap::Always
+            let mut offscreen = text.placed.is_some_and(|b| b.offscreen);
+            let circles = self.place_line_circles(&c);
+            if let Some(result) = &circles {
+                place_text = c.f.text_overlap == Overlap::Always
                     || (!result.circles.is_empty() && !result.collision_detected);
                 offscreen &= result.offscreen;
-                circles = Some(result);
             }
-
-            let mut placed_icon = None;
-            let mut place_icon = false;
-            if icon_box.is_some() {
-                let bx = if placed_vertical
-                    && placed.is_some_and(|b| b.placeable)
-                    && vertical_icon_box.is_some()
-                {
-                    vertical_icon_box
-                } else {
-                    icon_box
-                }
-                .expect("checked");
-                let icon_shift = if p.icon_text_fit { shift } else { None };
-                let result =
-                    self.index
-                        .place_box(&bx, &base(f.icon_overlap, icon_translation), icon_shift);
-                place_icon = result.placeable;
+            let icon = self.place_icon(&c, &text);
+            let mut place_icon = icon.is_some_and(|b| b.placeable);
+            if let Some(result) = icon {
                 offscreen &= result.offscreen;
-                placed_icon = Some(result);
             }
+            (place_text, place_icon) = c.together(place_text, place_icon);
 
-            let icon_without_text =
-                f.text_optional || (horizontal_glyphs == 0 && vertical_glyphs == 0);
-            let text_without_icon = f.icon_optional || quads(&t.icon_placed, instance.icon[0]) == 0;
-            if !icon_without_text && !text_without_icon {
-                place_icon = place_icon && place_text;
-                place_text = place_icon;
-            } else if !text_without_icon {
-                place_text = place_icon && place_text;
-            } else if !icon_without_text {
-                place_icon = place_icon && place_text;
-            }
-
-            let key = |overlap| GridKey {
-                overlap,
-                group: group.unwrap_or(0),
-            };
-            // Recorded in tile scope only.
-            let recording = self.record.is_some();
-            let mut shapes = Vec::new();
-            let shape = |geometry, overlap, ignore: bool| RecordedShape {
-                geometry,
-                overlap,
-                group,
-                key: key(overlap),
-                blocks: !ignore,
-            };
-            if place_text && let Some(b) = placed.filter(|b| b.placeable) {
-                self.index
-                    .insert_box(b.bounds, key(f.text_overlap), f.text_ignore_placement);
-                shapes.extend(recording.then(|| {
-                    shape(
-                        ShapeGeometry::Box(b.bounds),
-                        f.text_overlap,
-                        f.text_ignore_placement,
-                    )
-                }));
-            }
-            if place_icon && let Some(b) = placed_icon.filter(|b| b.placeable) {
-                self.index
-                    .insert_box(b.bounds, key(f.icon_overlap), f.icon_ignore_placement);
-                shapes.extend(recording.then(|| {
-                    shape(
-                        ShapeGeometry::Box(b.bounds),
-                        f.icon_overlap,
-                        f.icon_ignore_placement,
-                    )
-                }));
-            }
-            if place_text && let Some(c) = &circles {
-                self.index
-                    .insert_circles(&c.circles, key(f.text_overlap), f.text_ignore_placement);
-                for &circle in c.circles.iter().filter(|_| recording) {
-                    shapes.push(shape(
-                        ShapeGeometry::Circle(circle),
-                        f.text_overlap,
-                        f.text_ignore_placement,
-                    ));
-                }
-            }
-            if let Some(record) = &mut self.record
-                && !shapes.is_empty()
-            {
-                let start = record.shapes.len();
-                record.shapes.extend(shapes);
-                record.labels.push(RecordedLabel {
-                    id,
-                    layer: self.layer,
-                    sort_key: self.sort_key,
-                    order: record.next,
-                    shapes: start..record.shapes.len(),
-                    always_text,
-                    always_icon,
-                });
-                record.next += 1;
-            }
+            let (always_text, always_icon) = c.f.always(has_text_data, has_icon_data);
+            let text_box = text.placed.filter(|b| place_text && b.placeable);
+            let icon_box = icon.filter(|b| place_icon && b.placeable);
+            let circles = circles.filter(|_| place_text);
+            self.insert(&c, text_box, icon_box, circles, (always_text, always_icon));
             self.now.placements.insert(
                 id,
                 JointPlacement {
@@ -1318,16 +1110,203 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// GL JS `placeBoxForVariableAnchors` with `attemptAnchorPlacement`.
-    #[allow(clippy::too_many_arguments)]
-    fn place_variable<'b>(
+    /// A label's text box, in the first writing mode (and variable anchor)
+    /// that fits, or the last tried.
+    fn place_text(&mut self, c: &Candidate<'_>) -> PlacedText {
+        let (t, instance, id) = (c.t, c.instance, c.id);
+        let mut text = PlacedText::default();
+        let Some(text_box) = c.collision_box(0, instance_flags::TEXT_BOX) else {
+            return text;
+        };
+        let vertical_text_box = c.collision_box(1, instance_flags::VERTICAL_TEXT_BOX);
+        let icon_box = c.collision_box(2, instance_flags::ICON_BOX);
+        let vertical_icon_box = c.collision_box(3, instance_flags::VERTICAL_ICON_BOX);
+        let vertical_glyphs = quads(&t.text_placed, instance.text[justification::VERTICAL]);
+        let allow_vertical = t.allow_vertical_placement && vertical_glyphs > 0;
+        let offsets = &t.anchor_offsets
+            [instance.anchor_offsets[0] as usize..instance.anchor_offsets[1] as usize];
+        // Modes in order; the first that fits wins.
+        let modes: &[WritingMode] = if allow_vertical && vertical_text_box.is_some() {
+            &c.p.writing_modes
+        } else {
+            &[WritingMode::Horizontal]
+        };
+        if offsets.is_empty() {
+            for &mode in modes {
+                let (bx, orientation) = match mode {
+                    WritingMode::Vertical => (
+                        vertical_text_box.expect("checked"),
+                        SymbolWritingMode::Vertical,
+                    ),
+                    WritingMode::Horizontal => (text_box, SymbolWritingMode::Horizontal),
+                };
+                let result =
+                    self.index
+                        .place_box(&bx, &c.base(c.f.text_overlap, c.text_translation), None);
+                if result.placeable {
+                    self.mark_orientation(id, orientation as u8);
+                }
+                text.placed = Some(result);
+                text.vertical = mode == WritingMode::Vertical;
+                if result.placeable {
+                    break;
+                }
+            }
+        } else {
+            for &mode in modes {
+                if mode == WritingMode::Vertical && text.placeable() {
+                    break;
+                }
+                let (bx, ibox, orientation) = match mode {
+                    WritingMode::Vertical => (
+                        vertical_text_box.expect("checked"),
+                        vertical_icon_box,
+                        SymbolWritingMode::Vertical,
+                    ),
+                    WritingMode::Horizontal => (text_box, icon_box, SymbolWritingMode::Horizontal),
+                };
+                let variable_icon = if c.p.icon_text_fit && c.f.icon_overlap == Overlap::Never {
+                    ibox
+                } else {
+                    None
+                };
+                // GL JS records the orientation only when the bucket may
+                // place vertically.
+                let orientation = if t.allow_vertical_placement {
+                    orientation
+                } else {
+                    SymbolWritingMode::None
+                };
+                text.placed = self.place_variable(
+                    c,
+                    offsets,
+                    &bx,
+                    variable_icon,
+                    orientation,
+                    &mut text.shift,
+                );
+                text.vertical = mode == WritingMode::Vertical;
+                if text.placeable() {
+                    break;
+                }
+            }
+            // Not placed: keep the last placement's anchor while it fades.
+            if !text.placeable()
+                && let Some(prev) = self.prev.and_then(|p| p.variable_offsets.get(&id))
+            {
+                self.now.variable_offsets.insert(id, *prev);
+            }
+        }
+        // GL JS `updatePreviousOrientationIfNotPlaced`.
+        if t.allow_vertical_placement
+            && !text.placeable()
+            && let Some(&o) = self.prev.and_then(|p| p.orientations.get(&id))
+        {
+            self.now.orientations.insert(id, o);
+        }
+        text
+    }
+
+    /// A line label's collision circles, if it has them.
+    fn place_line_circles(&mut self, c: &Candidate<'_>) -> Option<PlacedCircles> {
+        let (t, instance) = (c.t, c.instance);
+        let center = instance.text[justification::CENTER];
+        if instance.flags & instance_flags::RUNTIME_COLLISION_CIRCLES == 0 || center == NONE {
+            return None;
+        }
+        let symbol = &t.text_placed[center as usize];
+        let label = LineLabel {
+            symbol,
+            lines: &t.lines,
+            glyph_offsets: &t.text_glyph_offsets,
+            font_size: feature_size(t.text_size, c.tile.text_size, symbol),
+            circle_diameter: f64::from(instance.collision_circle_diameter),
+            padding: c.p.text_padding,
+        };
+        let placement = c.base(c.f.text_overlap, c.text_translation);
+        Some(self.index.place_circles(&placement, &label))
+    }
+
+    /// A label's icon box, turned with its text and moved by the text's
+    /// variable anchor when fitted to it.
+    fn place_icon(&mut self, c: &Candidate<'_>, text: &PlacedText) -> Option<PlacedBox> {
+        let icon_box = c.collision_box(2, instance_flags::ICON_BOX)?;
+        let vertical_icon_box = c.collision_box(3, instance_flags::VERTICAL_ICON_BOX);
+        let bx = match vertical_icon_box {
+            Some(vertical) if text.vertical && text.placeable() => vertical,
+            _ => icon_box,
+        };
+        let shift = if c.p.icon_text_fit { text.shift } else { None };
+        let placement = c.base(c.f.icon_overlap, c.icon_translation);
+        Some(self.index.place_box(&bx, &placement, shift))
+    }
+
+    /// Inserts what a label placed into the collision index, and in tile
+    /// scope records it.
+    fn insert(
         &mut self,
-        p: &LayerParams,
-        base: &dyn Fn(Overlap, [f64; 2]) -> BoxPlacement<'b>,
-        text_translation: [f64; 2],
-        icon_translation: [f64; 2],
-        instance: &SymbolInstance,
-        id: u32,
+        c: &Candidate<'_>,
+        text: Option<PlacedBox>,
+        icon: Option<PlacedBox>,
+        circles: Option<PlacedCircles>,
+        (always_text, always_icon): (bool, bool),
+    ) {
+        let (f, group) = (c.f, c.group);
+        let key = |overlap| GridKey {
+            overlap,
+            group: group.unwrap_or(0),
+        };
+        // Recorded in tile scope only.
+        let recording = self.record.is_some();
+        let mut shapes = Vec::new();
+        let shape = |geometry, overlap, ignore: bool| RecordedShape {
+            geometry,
+            overlap,
+            group,
+            key: key(overlap),
+            blocks: !ignore,
+        };
+        if let Some(b) = text {
+            let (overlap, ignore) = (f.text_overlap, f.text_ignore_placement);
+            self.index.insert_box(b.bounds, key(overlap), ignore);
+            shapes.extend(recording.then(|| shape(ShapeGeometry::Box(b.bounds), overlap, ignore)));
+        }
+        if let Some(b) = icon {
+            let (overlap, ignore) = (f.icon_overlap, f.icon_ignore_placement);
+            self.index.insert_box(b.bounds, key(overlap), ignore);
+            shapes.extend(recording.then(|| shape(ShapeGeometry::Box(b.bounds), overlap, ignore)));
+        }
+        if let Some(circles) = circles {
+            let (overlap, ignore) = (f.text_overlap, f.text_ignore_placement);
+            self.index
+                .insert_circles(&circles.circles, key(overlap), ignore);
+            for &circle in circles.circles.iter().filter(|_| recording) {
+                shapes.push(shape(ShapeGeometry::Circle(circle), overlap, ignore));
+            }
+        }
+        if let Some(record) = &mut self.record
+            && !shapes.is_empty()
+        {
+            let start = record.shapes.len();
+            record.shapes.extend(shapes);
+            record.labels.push(RecordedLabel {
+                id: c.id,
+                layer: self.layer,
+                sort_key: self.sort_key,
+                order: record.next,
+                shapes: start..record.shapes.len(),
+                always_text,
+                always_icon,
+            });
+            record.next += 1;
+        }
+    }
+
+    /// GL JS `placeBoxForVariableAnchors` with `attemptAnchorPlacement`:
+    /// `icon_box` is an icon fitted to the text, which must fit too.
+    fn place_variable(
+        &mut self,
+        c: &Candidate<'_>,
         offsets: &[AnchorOffset],
         text_box: &CollisionBox,
         icon_box: Option<CollisionBox>,
@@ -1335,7 +1314,7 @@ impl<'a> Pass<'a> {
         orientation: SymbolWritingMode,
         shift_out: &mut Option<Point>,
     ) -> Option<PlacedBox> {
-        let f = p.flags_of(instance);
+        let (instance, id, f) = (c.instance, c.id, c.f);
         let width = text_box.x2 - text_box.x1;
         let height = text_box.y2 - text_box.y1;
         let scale = f64::from(instance.text_box_scale);
@@ -1368,14 +1347,11 @@ impl<'a> Pass<'a> {
                 let anchor = o.text_anchor();
                 let text_offset = o.offset.map(f64::from);
                 let shift = layout_shift(anchor, width, height, text_offset, scale);
-                let result =
-                    self.index
-                        .place_box(text_box, &base(overlap, text_translation), Some(shift));
+                let text = c.base(overlap, c.text_translation);
+                let result = self.index.place_box(text_box, &text, Some(shift));
                 if let Some(ib) = &icon_box {
-                    let icon =
-                        self.index
-                            .place_box(ib, &base(overlap, icon_translation), Some(shift));
-                    if !icon.placeable {
+                    let icon = c.base(overlap, c.icon_translation);
+                    if !self.index.place_box(ib, &icon, Some(shift)).placeable {
                         continue;
                     }
                 }
@@ -1401,6 +1377,87 @@ impl<'a> Pass<'a> {
             overlap = f.text_overlap;
         }
         placed
+    }
+}
+
+/// One label as a pass places it: its layer, tile and bucket, and how it
+/// collides.
+struct Candidate<'b> {
+    p: &'b LayerParams,
+    tile: &'b PlacedTile,
+    t: &'b PlacementTables,
+    instance: &'b SymbolInstance,
+    id: u32,
+    f: SymbolFlags,
+    /// The collision group it tests against, unless sources collide.
+    group: Option<u32>,
+    text_translation: [f64; 2],
+    icon_translation: [f64; 2],
+    ground: Option<&'b dyn super::Ground>,
+}
+
+impl<'b> Candidate<'b> {
+    /// How a box or circle of the label is placed, with `overlap`.
+    fn base(&self, overlap: Overlap, translation: [f64; 2]) -> BoxPlacement<'b> {
+        BoxPlacement {
+            tile: &self.tile.view,
+            overlap,
+            pixel_ratio: 512.0 / EXTENT,
+            pitch_with_map: self.p.pitch_with_map,
+            rotate_with_map: self.p.rotate_with_map,
+            translation,
+            group: self.group,
+            height_offset: f64::from(self.instance.height_offset),
+            height_anchor_ground: self.p.height_anchor_ground,
+            ground: self.ground,
+        }
+    }
+
+    /// The instance's `i`th collision box, if `flag` says it has one.
+    fn collision_box(&self, i: usize, flag: u32) -> Option<CollisionBox> {
+        collision_box(self.instance, i, flag)
+    }
+
+    /// Whether text and icon show, from whether each was placed: each
+    /// shows only with the other unless it is optional or the other is
+    /// missing.
+    fn together(&self, text: bool, icon: bool) -> (bool, bool) {
+        let (t, instance, f) = (self.t, self.instance, self.f);
+        let vertical_glyphs = quads(&t.text_placed, instance.text[justification::VERTICAL]);
+        let horizontal_glyphs = instance.text[..3]
+            .iter()
+            .map(|&i| quads(&t.text_placed, i))
+            .max()
+            .unwrap_or(0);
+        let icon_without_text = f.text_optional || (horizontal_glyphs == 0 && vertical_glyphs == 0);
+        let text_without_icon = f.icon_optional || quads(&t.icon_placed, instance.icon[0]) == 0;
+        if !icon_without_text && !text_without_icon {
+            let both = icon && text;
+            (both, both)
+        } else if !text_without_icon {
+            (icon && text, icon)
+        } else if !icon_without_text {
+            (text, icon && text)
+        } else {
+            (text, icon)
+        }
+    }
+}
+
+/// Where a label's text box landed.
+#[derive(Clone, Copy, Debug, Default)]
+struct PlacedText {
+    /// The last box tried; `None` without a text box.
+    placed: Option<PlacedBox>,
+    /// It was the vertical one.
+    vertical: bool,
+    /// The variable anchor's shift, when one placed it.
+    shift: Option<Point>,
+}
+
+impl PlacedText {
+    fn placeable(&self) -> bool {
+        self.placed.is_some_and(|b| b.placeable)
     }
 }
 
