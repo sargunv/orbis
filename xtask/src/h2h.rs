@@ -4,6 +4,8 @@
 //! - `stills`: one process per still (`orbis render`, `mlnstill`) per view
 //!   of mln-rs's `tools/liberty-compare/views.txt`: wall time, CPU,
 //!   peak RSS, instructions retired (macOS; Linux with `perf`) and requests.
+//!   Each Orbis build keeps a state directory across its runs, as an app
+//!   would: its pipeline cache, on D3D12 and Vulkan.
 //! - `tiles`: one process per pass over `xtask/h2h/tiles.txt`'s 4×4 tile
 //!   blocks (`orbis tiles --list --times`, `mlntiles`), as Still-mode views
 //!   of each tile and in Tile mode: per-set wall and CPU totals.
@@ -503,6 +505,14 @@ impl H2h {
     fn stills(&self) -> Result<String, String> {
         let views = self.views()?;
         let style = self.style_url();
+        // Each Orbis build's state directory, which the untimed pass
+        // fills: its pipeline cache where the platform keeps none (D3D12's
+        // compiler output, Vulkan's pipelines), as an app's would be. The
+        // mirror's answers are `no-store`, so its HTTP cache stays empty.
+        let state = self.out.join("state");
+        if state.exists() {
+            std::fs::remove_dir_all(&state).map_err(|e| format!("{}: {e}", state.display()))?;
+        }
         let command = |engine: &Engine, name: &str, v: &[String; 8], png: &Path| {
             let at = format!("{},{},{},{},{}", v[0], v[1], v[2], v[3], v[4]);
             let size = format!("{}x{}", v[6], v[7]);
@@ -521,6 +531,8 @@ impl H2h {
                     size,
                     "--scale".into(),
                     v[5].clone(),
+                    "--state-dir".into(),
+                    state.join(engine.name()).display().to_string(),
                 ],
                 Engine::Mln => vec![
                     self.mln.join(crate::exe("mlnstill")).display().to_string(),
