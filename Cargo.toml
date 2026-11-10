@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "crates/diplomat-swift-kotlin/fixture", "xtask"]
+members = ["crates/*", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -22,11 +22,6 @@ bitflags = "2.13.2"
 earcut = "0.4.12"
 bytemuck = "1.25.2"
 rustc-hash = "2.1.3"
-diplomat = "0.17.0"
-diplomat-runtime = "0.16.1"
-diplomat_core = { version = "0.17.0", default-features = false, features = [
-  "hir",
-] }
 js-sys = "0.3.107"
 libm = "0.2.16"
 image = { version = "0.25.10", default-features = false, features = [
@@ -129,8 +124,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
-# Native libraries for apps (cargo xtask capi, android, apple): small and
-# whole-program optimized; panics abort, as they do at the C ABI anyway.
+# What ships natively (the Android app, h2h's size table): small and
+# whole-program optimized; panics abort.
 [profile.dist]
 inherits = "release"
 lto = true

@@ -2,23 +2,6 @@
 
 lockfile_version = 3
 
-[[tools."aqua:Kitware/CMake"]]
-version = "4.4.5"
-backend = "aqua:Kitware/CMake"
-specifiers = ["4.4.5"]
-
-[tools."aqua:Kitware/CMake"."platforms.linux-x64"]
-checksum = "sha256:ed85135c5a5135b45e50423cb406dea04ca3338da0b8ef3c9ede963559680be0"
-checksum_source = "mise-versions"
-url = "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-linux-x86_64.tar.gz"
-url_api = "https://api.github.com/repos/Kitware/CMake/releases/assets/682699189"
-
-[tools."aqua:Kitware/CMake"."platforms.macos-arm64"]
-checksum = "sha256:679e77a96b9ef9484cc6c1445255fc4f84206b48a65420efbedf16bdab55fbff"
-checksum_source = "mise-versions"
-url = "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-macos-universal.tar.gz"
-url_api = "https://api.github.com/repos/Kitware/CMake/releases/assets/682699600"
-
 [[tools."aqua:WebAssembly/binaryen"]]
 version = "133"
 backend = "aqua:WebAssembly/binaryen"
@@ -124,26 +107,6 @@ provenance = "github-attestations"
 version = "0.8.0"
 backend = "cargo:twiggy"
 specifiers = ["0.8.0"]
-
-[[tools."github:JetBrains/kotlin"]]
-version = "2.4.21"
-backend = "github:JetBrains/kotlin"
-specifiers = ["2.4.21"]
-
-[tools."github:JetBrains/kotlin".options]
-asset_pattern = "kotlin-compiler-*.zip"
-
-[tools."github:JetBrains/kotlin"."platforms.linux-x64"]
-checksum = "sha256:7cc140e76daf416a0424a5557f99afd7ca89ebd463ea1101261e3e01c33e75cd"
-checksum_source = "mise-versions"
-url = "https://github.com/JetBrains/kotlin/releases/download/v2.4.21/kotlin-compiler-2.4.21.zip"
-url_api = "https://api.github.com/repos/JetBrains/kotlin/releases/assets/621287401"
-
-[tools."github:JetBrains/kotlin"."platforms.macos-arm64"]
-checksum = "sha256:7cc140e76daf416a0424a5557f99afd7ca89ebd463ea1101261e3e01c33e75cd"
-checksum_source = "mise-versions"
-url = "https://github.com/JetBrains/kotlin/releases/download/v2.4.21/kotlin-compiler-2.4.21.zip"
-url_api = "https://api.github.com/repos/JetBrains/kotlin/releases/assets/621287401"
 
 [[tools."github:jdx/hk"]]
 version = "2.11.1"

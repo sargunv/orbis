@@ -374,7 +374,7 @@ fn wake_callbacks_die_with_their_map() {
 /// and lets it go before the pipeline cache is saved on going idle: frames
 /// to idle with a state directory keep the cache in its `pipelines/`
 /// where the driver has one.
-/// Window targets on this path: the Swift smoke test's `CAMetalLayer`.
+/// Window targets take this path too.
 #[test]
 fn frames_to_idle_save_the_pipeline_cache() {
     let dir = std::env::temp_dir().join(format!("orb-api-state-{}", std::process::id()));

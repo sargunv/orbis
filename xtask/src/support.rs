@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use orb_style::{Inputs, LayerType, Phase, Preview, Prop};
 use serde_json::Value;
 
-use crate::bindings::root;
+use crate::root;
 
 const SPEC: &str = "web/node_modules/@maplibre/maplibre-gl-style-spec";
 const OUTPUT: &str = "docs/style-support.md";

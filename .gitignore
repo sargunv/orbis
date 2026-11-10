@@ -11,10 +11,8 @@
 /fixtures/gl-js.partial/
 /fixtures/native/
 /fixtures/native.partial/
-# Built by `cargo xtask apple` and `cargo xtask android`.
-/hosts/apple/OrbisC.xcframework/
-/hosts/apple/.build/
+# Built by `cargo xtask android`.
 /hosts/android/.gradle/
 /hosts/android/**/build/
-/hosts/android/orbis/src/main/jniLibs/
+/hosts/android/app/src/main/jniLibs/
 /hosts/android/local.properties

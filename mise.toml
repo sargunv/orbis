@@ -32,12 +32,9 @@ ORB_ANDROID_EMULATOR_API = "{{vars.android_system_image_api}}"
 "cargo:twiggy" = "0.8.0"
 "core:node" = "24.22.2"
 "aqua:pnpm/pnpm" = "11.25.0"
-# Native hosts and bindings: a JDK for the JNI shim and Gradle (Android),
-# kotlinc for the binding run tests, CMake for the C ABI's config test.
+# The Android app: Gradle and its JDK package and sign the APK.
 "core:java" = "temurin-21.0.13+9.0.LTS"
 "aqua:gradle/gradle-distributions" = "9.8.2"
-"github:JetBrains/kotlin" = { version = "2.4.21", asset_pattern = "kotlin-compiler-*.zip", bin_path = "kotlinc/bin" }
-"aqua:Kitware/CMake" = "4.4.5"
 # Android device access: devices-cli gives each worktree its own emulator,
 # started on demand and stopped when the worktree goes away
 # (`scripts/android-serial`). It builds from a Go commit, so Go is pinned here

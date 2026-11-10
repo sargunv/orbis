@@ -40,6 +40,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::root;
+
 /// The fixtures' pixelmatch port, for `--diff`.
 #[path = "../../crates/orb-fixtures/src/pixelmatch.rs"]
 mod pixelmatch;
@@ -287,13 +289,6 @@ fn cache_dir() -> Result<PathBuf, String> {
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     Ok(dir)
-}
-
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the workspace root")
-        .to_path_buf()
 }
 
 /// An engine: an Orbis build (its `orbis`, with `orb-bench` beside it) or

@@ -6,9 +6,8 @@
 # ANDROID_SERIAL wins when it is set. Otherwise devices-cli gives this worktree
 # its own emulator at ORB_ANDROID_EMULATOR_API, booted on demand, which keeps
 # running until `devices-cli release`. Functional Android checks run there,
-# though its Vulkan (gfxstream) currently loses the device while the reference
-# app's map loads, so checks that draw need a phone until that is fixed.
-# The image is the Google APIs variant of the AOSP release: the bench and
+# the demo app's drawing included (its Vulkan compiles pipelines slowly when
+# cold, about 90 s for the Tokyo extract). The image is the Google APIs variant of the AOSP release: the bench and
 # measure scripts drive Chrome, which the plain AOSP image lacks.
 #
 # --physical is for measuring a real phone's performance, which is rarely

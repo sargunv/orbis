@@ -7,7 +7,7 @@
 //! the host's thread as the scene thread: jobs,
 //! fetches and placement run on the runtime's pools, and a map's
 //! [`Map::set_wake`] callback tells the host, from any thread, that a frame
-//! is needed. `orb-capi` exports this API to C, Kotlin and Swift.
+//! is needed. `orb-demo` and `orb-android` draw through it.
 
 #![forbid(unsafe_code)]
 
@@ -545,8 +545,9 @@ impl Runtime {
             .map_err(Error::Unsupported)
     }
 
-    /// Lets `f` make a surface from a raw platform handle with the device;
-    /// `orb-capi` does so for `CAMetalLayer`s and `ANativeWindow`s.
+    /// Lets `f` make a surface from a raw platform handle with the device,
+    /// such as a `CAMetalLayer` or an `ANativeWindow`
+    /// ([`WgpuGpu::create_surface_raw`]).
     pub fn with_device<R>(&self, f: impl FnOnce(&WgpuGpu) -> R) -> R {
         f(&self.shared.gpu.borrow())
     }

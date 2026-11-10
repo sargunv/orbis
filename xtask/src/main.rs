@@ -4,10 +4,7 @@
 
 mod affected;
 mod android;
-mod apple;
-mod bindings;
 mod boundaries;
-mod capi;
 mod compare;
 mod expression_fixtures;
 mod fixtures;
@@ -20,6 +17,7 @@ mod sweep;
 mod unicode;
 mod web;
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const HELP: &str = "\
@@ -27,24 +25,17 @@ cargo xtask <task>
 
   check [--affected [--base <rev>]]  formatting (dprint), clippy (native,
                wasm32, and orb-hal-wgpu for Windows when its Rust target is
-               installed), tests, generated bindings and boundary rules; --affected scopes them
+               installed), tests and boundary rules; --affected scopes them
                to the packages changed since <rev>'s merge base with HEAD
                (default origin/main), the working tree and untracked files,
                and every package depending on those
   clippy [--fix]  clippy over the workspace, native and wasm32, denying
                warnings; --fix applies its suggestions
-  bindings [--check | --test]  the C header, Kotlin and Swift bindings from
-               orb-capi; --check fails when they're stale;
-               --test runs the emitters' tests and the C, Kotlin and Swift
-               smoke tests
-  capi         the C library for this host: static library, headers,
-               pkg-config and CMake files in target/capi
-  android [--run]  liborbis.so for arm64-v8a (NDK, API 24), the AAR and
-               the reference app with Gradle; --run installs it on this
-               worktree's Android emulator and starts it
-  apple [--test] [--ios-sim[=name]]  hosts/apple/OrbisC.xcframework (macOS,
-               iOS, iOS simulator) and the Swift package; --test runs the
-               Swift smoke test; --ios-sim runs the iOS app on a simulator
+  android [--run [--leakcheck]]  the Android app: orb-android as
+               liborbis.so for arm64-v8a (NDK, API 24) in a NativeActivity,
+               packaged with Gradle; --run installs it on this worktree's
+               Android emulator and starts it; --leakcheck checks that maps
+               dropped there leave no GPU resources behind
   web [--names]  build core.wasm into web/pkg, report sizes; --names also
                writes it with its function names to target/web/core-names.wasm
                (for `pnpm -C web coverage`)
@@ -89,10 +80,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("check") => check(&args[1..]),
         Some("clippy") => clippy(&args[1..]),
-        Some("bindings") => bindings::run(&args[1..]),
-        Some("capi") => capi::build().map(|_| ()),
         Some("android") => android::run(&args[1..]),
-        Some("apple") => apple::run(&args[1..]),
         Some("web") => web::build(args.iter().any(|a| a == "--names")),
         Some("pages") => web::pages(),
         Some("rt") => rt(&args[1..]),
@@ -189,7 +177,6 @@ fn full_check() -> Result<(), String> {
     clippy(&[])?;
     windows_clippy()?;
     cargo(&["test", "--workspace", "--quiet"])?;
-    bindings::run(&["--check".into()])?;
     boundaries::check()
 }
 
@@ -282,14 +269,6 @@ fn affected_check(base: &str) -> Result<(), String> {
         windows_clippy()?;
     }
     cargo(&test)?;
-    // The bindings are generated from orb-capi's bridge through
-    // diplomat-swift-kotlin.
-    if ["orb-capi", "diplomat-swift-kotlin"]
-        .iter()
-        .any(|name| selection.contains(name))
-    {
-        bindings::run(&["--check".into()])?;
-    }
     boundaries::check()
 }
 
@@ -327,6 +306,14 @@ fn windows_clippy() -> Result<(), String> {
 /// A binary's file name on this platform (`orbis.exe` on Windows).
 pub(crate) fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The repository's root.
+pub(crate) fn root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the workspace root")
+        .to_path_buf()
 }
 
 pub(crate) fn cargo(args: &[&str]) -> Result<(), String> {

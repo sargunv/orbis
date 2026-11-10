@@ -132,7 +132,7 @@ pub(crate) fn select(base: &str) -> Result<Selection, String> {
 }
 
 /// The workspace package owning `file`: the deepest manifest directory that
-/// contains it (`dsk-fixture` sits inside `diplomat-swift-kotlin`).
+/// contains it.
 fn owner(packages: &BTreeMap<String, PathBuf>, file: &Path) -> Option<String> {
     packages
         .iter()

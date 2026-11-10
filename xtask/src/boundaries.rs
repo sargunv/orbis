@@ -18,15 +18,13 @@ const PLATFORM: &[&str] = &[
     "orb-host-native",
     "orb-hal-wgpu",
     "orb-api",
-    "orb-capi",
+    "orb-android",
     "orb-cli",
     "orb-web",
     "orb-shaper",
     "orb-demo",
     "orb-fixtures",
     "orb-bench",
-    "diplomat-swift-kotlin",
-    "dsk-fixture",
     "xtask",
 ];
 
@@ -50,10 +48,9 @@ const UNSAFE_ALLOWED: &[&str] = &[
     "orb-hal-wgpu",
     // System font files are mapped, not copied (`fonts.rs`).
     "orb-host-native",
-    "orb-capi",
+    // The Android app's entry point, JNI and logcat.
+    "orb-android",
     "orb-web",
-    // The binding emitters' test bridge: Diplomat's macro writes `extern "C"`.
-    "dsk-fixture",
 ];
 
 /// Job-side crates are share-nothing and never depend on scene-side crates.
@@ -78,10 +75,8 @@ pub(crate) const NATIVE_ONLY: &[&str] = &[
     "orb-host-native",
     "orb-api",
     "orb-bench",
+    "orb-android",
     "orb-cli",
-    "diplomat-swift-kotlin",
-    "dsk-fixture",
-    "orb-capi",
     "orb-demo",
     "orb-fixtures",
     "xtask",

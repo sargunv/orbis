@@ -12,6 +12,8 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::root;
+
 /// A revision's build in `target/compare/`, which stays locked until this
 /// drops.
 pub(crate) struct Build {
@@ -300,13 +302,6 @@ fn median(v: &mut [f64]) -> f64 {
     } else {
         (v[n / 2 - 1] + v[n / 2]) / 2.0
     }
-}
-
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the workspace root")
-        .to_path_buf()
 }
 
 fn path(p: &Path) -> Result<&str, String> {
