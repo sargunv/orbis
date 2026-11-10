@@ -29,6 +29,10 @@
 //   edits the style's terrain away and back without a reload, keeping the
 //   URL in step, `&terrain=0` applies as the style loads, and another
 //   entry hides it and drops `&terrain`.
+// - `failing`: the Alps terrain style and the Globe, offline, their tiles
+//   and DEM tiles failing, switched to the Tokyo extract, which draws; then
+//   the map's wasm trapped on purpose stops it with one `error` saying so,
+//   and calls after fail with that message.
 // - `options`: the Globe's map options, offline (the Tokyo extract's style
 //   standing in for Protomaps Light): the URL's choices apply as it loads,
 //   every option is listed in its group, clicks and keys edit the live
@@ -70,7 +74,7 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback,boot,offline]
+//   pnpm e2e [--only=scenario,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -90,7 +94,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback,boot",
+  "scenario,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot",
 ).split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
@@ -1546,6 +1550,76 @@ async function terrain(browser, server) {
   );
 }
 
+async function failing(browser, server) {
+  // Errors that say the map itself broke, not that a tile failed.
+  const broke = (errors) =>
+    errors.filter((e) =>
+      /unreachable|recursive use|RuntimeError|stopped/.test(e),
+    );
+  const entries = [
+    [
+      "alps",
+      (page) =>
+        page.route(
+          (u) => !u.href.startsWith(server.url),
+          (route) => route.abort("internetdisconnected"),
+        ),
+    ],
+    ["globe", (page) => offlineGlobe(page, server)],
+  ];
+  let page, errors;
+  for (const [entry, offline] of entries) {
+    ({ page, errors } = await open(browser, { width: 800, height: 600 }));
+    await offline(page);
+    await page.goto(`${server.url}?style=${entry}`);
+    // Long enough for tiles and DEM tiles to fail between frames too, whose
+    // sources a switch to a style with fewer took away (#160).
+    await page.waitForFunction(() => app.map, null, { timeout: 60_000 });
+    await page.waitForTimeout(3000);
+    await page.evaluate(() => app.show("tokyo"));
+    await page.waitForFunction(
+      () =>
+        app.scene === "tokyo" &&
+        document.getElementById("app").dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
+    assert.deepEqual(broke(errors), [], `${entry} → tokyo`);
+    console.log(`failing: ${entry} with its tiles failing → tokyo draws`);
+    if (entry !== "globe") await page.close();
+  }
+
+  // A trap stops the map cleanly: one `error` says so, and calls after
+  // fail with its message rather than "recursive use of an object".
+  const seen = await page.evaluate(async () => {
+    const { map } = app;
+    const events = [];
+    map.on("error", ({ message }) => events.push(message));
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+    map.trap();
+    await settle();
+    const call = await map.getStyle().then(
+      () => "resolved",
+      (e) => e.message,
+    );
+    map.camera.jumpTo({ zoom: 14 });
+    await settle();
+    return { events, call };
+  });
+  assert.equal(seen.events.length, 1, JSON.stringify(seen));
+  assert.match(seen.events[0], /^the map stopped: its wasm trapped/);
+  assert.equal(seen.call, seen.events[0]);
+  assert.deepEqual(
+    errors.filter((e) => /recursive use/.test(e)),
+    [],
+    "no call reaches the trapped module",
+  );
+  await page.close();
+  console.log(
+    `failing: a trap stops the map with one error: ${seen.events[0]}`,
+  );
+}
+
 /** The Globe entry offline: Protomaps Light stood in for by the Tokyo extract's style, with a buildings layer to extrude. */
 async function offlineGlobe(page, server) {
   const tokyo = await tokyoStyle(server);
@@ -1766,9 +1840,8 @@ async function options(browser, server) {
     { timeout: 60_000 },
   );
   await settles(page, state, chosen, "a reload draws the same choices");
-  // (`light` and `terrain` check that another entry drops them: a switch
-  // away from this offline Globe, its DEM tiles failing, loses the job
-  // workers, #160.)
+  // (`light` and `terrain` check that another entry drops them, and
+  // `failing` that a switch away from this offline Globe draws.)
   assert.deepEqual(errors, []);
   await page.close();
 
@@ -2746,6 +2819,7 @@ const CHECKS = {
   switching,
   light,
   terrain,
+  failing,
   options,
   resize,
   compare,

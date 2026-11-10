@@ -36,6 +36,9 @@ export interface HostCallbacks {
   /** The map has new data to draw. */
   wake(): void;
   error(e: unknown): void;
+  /** The wasm map trapped, a bug: it takes no more calls, every one
+   * throwing `e`, and its workers are gone. */
+  trapped(e: Error): void;
   /** Sets up the new wasm map. */
   setup(core: Core): void;
 }
@@ -90,6 +93,8 @@ export async function startHost(
   let placement = workers.placement;
   let build: Build;
   let core: Core;
+  let stop: (e: unknown) => Error;
+  let destroy = () => {};
   let reloadRegions: () => void;
   try {
     build = await compiling;
@@ -99,7 +104,7 @@ export async function startHost(
     await glue.default({ module_or_path: build.module });
     connectModule(setRequestHook);
     setPreloads(takePreload);
-    core = await createCoreMap(
+    const created: Core = await createCoreMap(
       canvas,
       style,
       options,
@@ -110,6 +115,10 @@ export async function startHost(
       (message: unknown, transfer: Transferable[]) =>
         placement.port.postMessage(message, transfer),
     );
+    ({ core, stop } = guard(created, (e) => {
+      destroy();
+      callbacks.trapped(e);
+    }));
   } catch (e) {
     terminateWorkers(workers);
     // Neither WebGPU nor WebGL 2 draws here.
@@ -181,6 +190,36 @@ export async function startHost(
   };
   jobs.forEach((_, i) => listenJob(i));
   const regions = onRegionsChanged(reloadRegions);
+  // In the map worker the module is the map's alone: a trap outside a
+  // call (a future's poll, a callback from the browser) stops it too. On
+  // the page the module may serve other maps, and a trap there can't be
+  // told apart from other code's.
+  const inWorker =
+    typeof WorkerGlobalScope !== "undefined" &&
+    self instanceof WorkerGlobalScope;
+  const uncaught = (e: ErrorEvent | PromiseRejectionEvent) => {
+    const error = e instanceof ErrorEvent ? e.error : e.reason;
+    if (!(error instanceof WebAssembly.RuntimeError)) return;
+    e.preventDefault();
+    stop(error);
+  };
+  if (inWorker) {
+    self.addEventListener("error", uncaught);
+    self.addEventListener("unhandledrejection", uncaught);
+  }
+  destroy = () => {
+    if (stopped) return;
+    stopped = true;
+    for (const port of [...ports, placement.port]) port.close();
+    regions();
+    for (const r of released) r();
+    for (const w of [...jobs.map((j) => j.worker), placement.worker])
+      w.terminate();
+    if (inWorker) {
+      self.removeEventListener("error", uncaught);
+      self.removeEventListener("unhandledrejection", uncaught);
+    }
+  };
   callbacks.setup(core);
   let size: [number, number, number] | undefined;
   return {
@@ -200,15 +239,58 @@ export async function startHost(
       if (size) core.resize(...size);
     },
     destroy: () => {
-      stopped = true;
-      for (const port of [...ports, placement.port]) port.close();
-      regions();
-      for (const r of released) r();
-      for (const w of [...jobs.map((j) => j.worker), placement.worker])
-        w.terminate();
+      if (stopped) return;
+      destroy();
       core.free();
     },
   };
+}
+
+/**
+ * `core`, stopping at its first trap. A Rust panic traps the module
+ * (`-Cpanic=immediate-abort`) partway through a call, leaving the object
+ * borrowed and its memory half-written: called again, every method would
+ * throw "recursive use of an object". The trapping call throws an error
+ * that says what happened instead, `trapped` hears it once, and every
+ * call after throws it too without entering the module. `stop` stops it
+ * for a trap outside a call.
+ */
+function guard(
+  core: Core,
+  trapped: (e: Error) => void,
+): { core: Core; stop: (e: unknown) => Error } {
+  let stopped: Error | undefined;
+  const stop = (e: unknown): Error => {
+    if (stopped) return stopped;
+    console.error(e);
+    stopped = new Error(
+      `the map stopped: its wasm trapped (${e instanceof Error ? e.message : e}), a bug in Orbis`,
+    );
+    trapped(stopped);
+    return stopped;
+  };
+  // A method's guarded self, made once: frames call many.
+  const methods = new Map<PropertyKey, (...args: unknown[]) => unknown>();
+  const guarded = new Proxy(core, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key, target);
+      if (typeof value !== "function") return value;
+      let method = methods.get(key);
+      if (!method) {
+        method = (...args) => {
+          if (stopped) throw stopped;
+          try {
+            return value.apply(target, args);
+          } catch (e) {
+            throw e instanceof WebAssembly.RuntimeError ? stop(e) : e;
+          }
+        };
+        methods.set(key, method);
+      }
+      return method;
+    },
+  });
+  return { core: guarded, stop };
 }
 
 /** The slot at `i` of an array the caller keeps one entry per worker in. */

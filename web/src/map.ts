@@ -211,6 +211,8 @@ export class OrbisMap {
   #showBox: ((corners: number[] | null) => void) | undefined;
   #allow: ((allowed: Allowed) => void) | undefined;
   #removed = false;
+  /** Why the map stopped, if its wasm trapped. */
+  #stopped: string | undefined;
 
   /** @internal */
   constructor(
@@ -339,6 +341,12 @@ export class OrbisMap {
    * replacement: tiles load again on the new workers. */
   trapJobWorkers(): void {
     this.#send(this.#link.call("trapJobWorkers"));
+  }
+  /** Traps the map's own wasm, as a bug would, to exercise how it fails:
+   * one `error` event says the map stopped, and every call after rejects
+   * with the same message. */
+  trap(): void {
+    this.#send(this.#link.call("trap"));
   }
 
   /** The last frame's counters. */
@@ -724,6 +732,7 @@ export class OrbisMap {
     for (const event of report.events) this.#emit(event);
     if (report.stats && this.#events.has("render"))
       this.#events.emit("render", report.stats);
+    this.#stopped ??= report.stopped;
   }
 
   #emit(event: EngineEvent): void {
@@ -747,10 +756,12 @@ export class OrbisMap {
   }
 
   /** A failure, as the map's `error` event or on the console; none once
-   * removed, when calls still on their way fail for that alone. */
+   * removed, when calls still on their way fail for that alone, nor for
+   * calls after the map stopped, which its `error` event said once. */
   #error(e: unknown): void {
     if (this.#removed) return;
     const message = String(e instanceof Error ? e.message : e);
+    if (message === this.#stopped) return;
     if (this.#events.has("error")) this.#events.emit("error", { message });
     else console.error(`orbis: ${message}`);
   }

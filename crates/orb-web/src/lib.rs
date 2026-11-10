@@ -993,6 +993,12 @@ impl OrbisMap {
         self.canvas.lose();
     }
 
+    /// Traps while borrowed, as a bug in a frame would: the map stops and
+    /// says so. To exercise that.
+    pub fn trap(&mut self) {
+        panic!("a trap asked for");
+    }
+
     /// Draws on a new GPU in `canvas` after a loss. The map keeps its
     /// style, camera and cached tiles; the next frames lay the visible
     /// tiles out again.

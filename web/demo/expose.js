@@ -14,6 +14,7 @@ export function expose(map) {
     loseDevice: () => map.loseDevice(),
     trapPlacementWorker: () => map.trapPlacementWorker(),
     trapJobWorkers: () => map.trapJobWorkers(),
+    trap: () => map.trap(),
     setRequestTransform,
   };
   map.on("render", (ack) =>

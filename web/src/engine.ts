@@ -56,6 +56,9 @@ export interface Report {
   /** The box a Shift-drag zooms to, as corners, or null once it's gone;
    * absent when unchanged. */
   box?: number[] | null;
+  /** Why the map stopped, once its wasm trapped: the message its calls
+   * fail with from now on, which its `error` event said. */
+  stopped?: string;
 }
 
 /** Pixels the map read back: straight RGBA, or the canvas's bytes. */
@@ -243,6 +246,10 @@ export class Engine {
       {
         wake: () => engine?.wake(),
         error: (e) => (engine ? engine.#fail(e) : console.error(e)),
+        // Before the map exists, the trapping call's error fails its start.
+        trapped: (e) => {
+          if (engine) engine.#trapped(e);
+        },
         setup: (core) => {
           if (setup.constraints) core.setConstraints(setup.constraints);
           if (setup.camera) core.jumpTo(setup.camera);
@@ -269,8 +276,11 @@ export class Engine {
   /** What the page reads without asking. */
   state(): MapState {
     // A snapshot's end and a recovery hold the wasm map while they wait:
-    // the state stays as it was.
-    if (this.#state && (this.#snapshotting || this.#lostAt !== undefined))
+    // the state stays as it was, as it does once the map is gone.
+    if (
+      this.#state &&
+      (this.#removed || this.#snapshotting || this.#lostAt !== undefined)
+    )
       return this.#state;
     const core = this.#core;
     const c = core.camera();
@@ -604,6 +614,9 @@ export class Engine {
   trapJobWorkers(): void {
     for (let i = 0; i < this.#host.jobWorkers; i++) this.#host.trapJobWorker(i);
   }
+  trap(): void {
+    this.#core.trap();
+  }
 
   /** Stops drawing and releases the map's workers. */
   remove(): void {
@@ -728,8 +741,25 @@ export class Engine {
     }, wait);
   }
 
+  /** The wasm map trapped: it draws no more, and says why once. Its
+   * calls throw `e` from now on. */
+  #trapped(e: Error): void {
+    if (this.#removed) return;
+    this.#removed = true;
+    this.#loop.stop();
+    clearTimeout(this.#fallback);
+    const events = this.#events;
+    this.#events = [];
+    events.push({ type: "error", data: { message: e.message } });
+    // The state as the last frame left it: the wasm map can't say.
+    if (this.#state)
+      this.#report({ state: this.#state, events, stopped: e.message });
+  }
+
   /** A failure, as an `error` event. */
   #fail(e: unknown): void {
+    // Once the map is gone, what fails is a call into it.
+    if (this.#removed) return;
     const message = String(e instanceof Error ? e.message : e);
     this.#events.push({ type: "error", data: { message } });
     this.#send({});
