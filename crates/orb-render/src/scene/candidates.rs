@@ -25,11 +25,12 @@
 //!   outnumber what its indices can address, or the nodes or lists
 //!   themselves change, everything is laid out again from the start.
 
-use std::collections::HashMap;
 use std::ops::Range;
 
 use orb_hal::Gpu;
+use orb_layout::Chunk;
 use orb_shaders::layout;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::driver::SubmitLimits;
 
@@ -157,7 +158,7 @@ pub(super) struct LaidNode {
     run_shift: u32,
     /// For a node that keeps its runs where they are: them, and which run
     /// numbers are taken.
-    runs: Option<HashMap<RunKey, LaidRun>>,
+    runs: Option<FxHashMap<RunKey, LaidRun>>,
     numbers: Vec<bool>,
     /// Its candidates, holes aside.
     pub(super) live: u32,
@@ -165,13 +166,24 @@ pub(super) struct LaidNode {
 
 /// A run to lay out: a mesh's chunks in one placement.
 #[derive(Clone)]
-struct RunPlan {
+struct RunPlan<'a> {
     key: RunKey,
-    /// The mesh's first chunk slot, which its run row names.
-    first: u32,
     placement: u32,
+    /// The mesh's chunk slots (the first names the run in its run row) and
+    /// chunks.
+    slots: &'a [u32],
+    chunks: &'a [Chunk],
+}
+
+impl RunPlan<'_> {
     /// Its chunks: slot, index count, sort key.
-    chunks: Vec<(u32, u32, Option<f32>)>,
+    fn chunks(&self) -> impl Iterator<Item = (u32, u32, Option<f32>)> + '_ {
+        (self.slots.iter().zip(self.chunks)).map(|(&slot, c)| (slot, c.index_count, c.sort_key))
+    }
+
+    fn first(&self) -> u32 {
+        self.slots[0]
+    }
 }
 
 fn shape(node: &NodeEntry) -> (NodeDraw, PlacementTarget, bool, bool) {
@@ -193,7 +205,7 @@ fn headroom(used: u32, step: u32) -> u32 {
 impl Scene {
     /// A node's runs, in mesh, placement and chunk order, and the most
     /// vertex words a mesh of it has.
-    fn node_runs(&self, node: &NodeEntry) -> (Vec<RunPlan>, u32) {
+    fn node_runs<'a>(&'a self, node: &NodeEntry) -> (Vec<RunPlan<'a>>, u32) {
         let mut runs = Vec::new();
         let mut vertex_words = 1u32;
         for mesh in &node.meshes {
@@ -203,9 +215,9 @@ impl Scene {
             let tile = self.tiles[entry.tile.0 as usize]
                 .as_ref()
                 .expect("meshes have tiles");
-            let Some(&first) = entry.chunk_slots.first() else {
+            if entry.chunk_slots.is_empty() {
                 continue;
-            };
+            }
             vertex_words = vertex_words.max(entry.vertices.len() as u32);
             for placement in &tile.placements {
                 if !node.cull.draws(placement.row.target) {
@@ -213,11 +225,9 @@ impl Scene {
                 }
                 runs.push(RunPlan {
                     key: (self.mesh_serials[mesh.0 as usize], placement.slot),
-                    first,
                     placement: placement.slot,
-                    chunks: (entry.chunk_slots.iter().zip(&entry.chunks))
-                        .map(|(&chunk, record)| (chunk, record.index_count, record.sort_key))
-                        .collect(),
+                    slots: &entry.chunk_slots,
+                    chunks: &entry.chunks,
                 });
             }
         }
@@ -293,7 +303,7 @@ impl Scene {
     /// only the runs that came or went; any other node whose candidates
     /// changed is laid out again in its slices, or, past their room, in new
     /// ones past every node's (its old ones left unused until everything
-    /// is laid out again).
+    /// is laid out again). When it couldn't, the last layout is gone too.
     pub(super) fn lay_out_changes(&mut self, gpu: &mut dyn Gpu) -> bool {
         if self.nodes.is_empty()
             || self.laid.len() != self.nodes.len()
@@ -302,7 +312,9 @@ impl Scene {
             return false;
         }
         let limits = self.limits();
-        let mut laid = self.laid.clone();
+        // Changed in place: a node that can't keep its runs is laid out
+        // again whole, and a layout that can't be changed, from the start.
+        let mut laid = std::mem::take(&mut self.laid);
         let mut writes = Writes::default();
         let (mut rows_end, mut words_end) = (self.rows_end, self.compacted_words);
         for (node, laid) in self.nodes.iter().zip(&mut laid) {
@@ -313,10 +325,8 @@ impl Scene {
             let (runs, vertex_words) = self.node_runs(node);
             let shift = if indexed { run_shift(vertex_words) } else { 0 };
             if laid.runs.is_some() && shift == laid.run_shift {
-                let mut changed = laid.clone();
                 let mut node_writes = Writes::default();
-                if changed.lay_out_changes(&runs, &limits, &mut node_writes) {
-                    *laid = changed;
+                if laid.lay_out_changes(&runs, &limits, &mut node_writes) {
                     writes.append(node_writes);
                     continue;
                 }
@@ -354,17 +364,20 @@ impl Scene {
         &mut self,
         gpu: &mut dyn Gpu,
         laid: Vec<LaidNode>,
-        writes: Writes,
+        mut writes: Writes,
         rows_end: u32,
         words_end: u32,
     ) {
-        let hidden = self.driver.hidden_index();
+        // Runs that went side by side hide in one write: each is a call
+        // across to the GPU (to JavaScript, on the web).
+        writes.hidden = joined(writes.hidden);
+        let longest = writes.hidden.iter().map(|r| r.end - r.start).max();
+        let words = vec![self.driver.hidden_index(); longest.unwrap_or(0) as usize];
         for range in &writes.hidden {
-            let words = vec![hidden; (range.end - range.start) as usize];
             gpu.write_buffer(
                 self.buffers.compacted,
                 u64::from(range.start) * 4,
-                bytemuck::cast_slice(&words),
+                bytemuck::cast_slice(&words[..(range.end - range.start) as usize]),
             );
         }
         for (at, words) in &writes.rows {
@@ -420,6 +433,19 @@ impl Writes {
     }
 }
 
+/// `ranges` in order, those that touch or overlap joined.
+fn joined(mut ranges: Vec<Range<u32>>) -> Vec<Range<u32>> {
+    ranges.sort_unstable_by_key(|r| r.start);
+    let mut out: Vec<Range<u32>> = Vec::with_capacity(ranges.len());
+    for range in ranges.into_iter().filter(|r| !r.is_empty()) {
+        match out.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => out.push(range),
+        }
+    }
+    out
+}
+
 /// Room left in the lists as nodes are laid out, and what didn't fit.
 struct Budget {
     rows: usize,
@@ -457,18 +483,26 @@ impl LaidNode {
     /// slots (else it is left part changed).
     fn lay_out_changes(
         &mut self,
-        runs: &[RunPlan],
+        runs: &[RunPlan<'_>],
         limits: &SubmitLimits,
         writes: &mut Writes,
     ) -> bool {
         let kept = self.runs.as_mut().expect("a node that keeps its runs");
-        let wanted: HashMap<RunKey, &RunPlan> = runs.iter().map(|r| (r.key, r)).collect();
-        // Runs that went: their rows become holes, their slots hidden.
-        let gone: Vec<RunKey> = kept
-            .keys()
-            .filter(|k| !wanted.contains_key(k))
-            .copied()
+        // Each listed run's slots, if it was laid out before.
+        let stays: Vec<Option<Range<u32>>> = (runs.iter())
+            .map(|r| kept.get(&r.key).map(|laid| laid.words.clone()))
             .collect();
+        let staying = stays.iter().flatten().count();
+        // Runs that went: their rows become holes, their slots hidden.
+        let gone: Vec<RunKey> = if staying < kept.len() {
+            let listed: FxHashSet<RunKey> = runs.iter().map(|r| r.key).collect();
+            (kept.keys())
+                .filter(|k| !listed.contains(k))
+                .copied()
+                .collect()
+        } else {
+            Vec::new()
+        };
         for key in gone {
             let run = kept.remove(&key).expect("a laid run");
             let n = run.rows.end - run.rows.start;
@@ -488,23 +522,27 @@ impl LaidNode {
         }
         // The runs that stay draw in the order they're listed in: their
         // slots must be in it already.
-        let stays = runs.iter().filter_map(|r| kept.get(&r.key));
-        if !stays.map(|r| r.words.start).is_sorted() {
+        if !stays.iter().flatten().map(|w| w.start).is_sorted() {
             return false;
         }
         // Runs that came: rows anywhere, a run number, and slots between
-        // the runs before and after it.
+        // the runs that stay before and after it.
+        let mut after = vec![u32::MAX; runs.len()];
+        let mut next = u32::MAX;
+        for (i, stay) in stays.iter().enumerate().rev() {
+            after[i] = next;
+            if let Some(words) = stay {
+                next = words.start;
+            }
+        }
         let mut before = 0;
-        for (i, run) in runs.iter().enumerate() {
-            if let Some(laid) = kept.get(&run.key) {
-                before = laid.words.end;
+        for ((run, stay), &after) in runs.iter().zip(&stays).zip(&after) {
+            if let Some(words) = stay {
+                before = words.end;
                 continue;
             }
-            let after = (runs[i + 1..].iter())
-                .find_map(|r| kept.get(&r.key))
-                .map_or(u32::MAX, |r| r.words.start);
-            let n = run.chunks.len() as u32;
-            let words: u32 = run.chunks.iter().map(|c| c.1).sum();
+            let n = run.slots.len() as u32;
+            let words: u32 = run.chunks.iter().map(|c| c.index_count).sum();
             let number = match self.numbers.iter().position(|taken| !taken) {
                 Some(free) => free as u32,
                 None => {
@@ -525,7 +563,7 @@ impl LaidNode {
             self.numbers[number as usize] = true;
             let mut rows = Vec::with_capacity(n as usize * CANDIDATE_WORDS);
             let mut at = self.word_base + slot;
-            for &(chunk, index_count, _) in &run.chunks {
+            for (chunk, index_count, _) in run.chunks() {
                 rows.extend([chunk, run.placement, at, number, UNKNOWN]);
                 at += index_count;
             }
@@ -534,7 +572,7 @@ impl LaidNode {
                 .push(((self.row_base + row) * CANDIDATE_WORDS as u32, rows));
             writes.visible.push((
                 (self.row_base + number) * VISIBLE_WORDS as u32,
-                vec![run.first, run.placement],
+                vec![run.first(), run.placement],
             ));
             kept.insert(
                 run.key,
@@ -563,14 +601,14 @@ struct NodePlan {
     words: u32,
     run_shift: u32,
     /// Its runs as laid out, for a node that keeps them where they are.
-    kept: Option<HashMap<RunKey, LaidRun>>,
+    kept: Option<FxHashMap<RunKey, LaidRun>>,
 }
 
 impl NodePlan {
     /// Its candidates in run order, or by sort key, as many as `budget`
     /// has room for and its indices can number runs.
     fn new(
-        runs: &[RunPlan],
+        runs: &[RunPlan<'_>],
         indexed: bool,
         run_shift: u32,
         limits: &SubmitLimits,
@@ -578,8 +616,8 @@ impl NodePlan {
     ) -> Self {
         let mut candidates: Vec<_> = (runs.iter().enumerate())
             .flat_map(|(r, run)| {
-                (run.chunks.iter())
-                    .map(move |&(chunk, count, key)| (key, chunk, run.placement, count, r as u32))
+                run.chunks()
+                    .map(move |(chunk, count, key)| (key, chunk, run.placement, count, r as u32))
             })
             .collect();
         let sorted = candidates.iter().any(|c| c.0.is_some());
@@ -625,7 +663,7 @@ impl NodePlan {
             let number = &mut renumbered[run as usize];
             if *number == u32::MAX {
                 *number = plan.runs.len() as u32;
-                plan.runs.push([runs[run as usize].first, tile]);
+                plan.runs.push([runs[run as usize].first(), tile]);
             }
             let slot = plan.words;
             plan.rows.push([chunk, tile, slot, *number, UNKNOWN]);
@@ -708,19 +746,27 @@ mod tests {
     use super::*;
 
     /// A run of `chunks` chunks of 3 indices each, mesh `serial`.
-    fn run(serial: u64, chunks: u32) -> RunPlan {
+    fn run(serial: u64, chunks: u32) -> RunPlan<'static> {
+        let chunk = Chunk {
+            first_index: 0,
+            index_count: 3,
+            first_vertex: 0,
+            bounds: orb_layout::TileBox {
+                min: [0; 2],
+                max: [0; 2],
+            },
+            sort_key: None,
+        };
         RunPlan {
             key: (serial, 0),
-            first: serial as u32 * 100,
             placement: 0,
-            chunks: (0..chunks)
-                .map(|c| (serial as u32 * 100 + c, 3, None))
-                .collect(),
+            slots: Vec::leak((0..chunks).map(|c| serial as u32 * 100 + c).collect()),
+            chunks: Vec::leak(vec![chunk; chunks as usize]),
         }
     }
 
     /// An indexed node laid out from `runs`, with room past them.
-    fn laid(runs: &[RunPlan], limits: &SubmitLimits) -> LaidNode {
+    fn laid(runs: &[RunPlan<'_>], limits: &SubmitLimits) -> LaidNode {
         let plan = NodePlan::new(runs, true, 8, limits, &mut Budget::unbounded());
         let [rows, words] = plan.room();
         let mut node = LaidNode {
@@ -775,7 +821,7 @@ mod tests {
         assert_eq!((slots(&node, 4), slots(&node, 5)), (6..9, 30..36));
         assert_eq!((slots(&node, 1), slots(&node, 3)), (0..6, 12..18));
         assert!(writes.hidden.is_empty());
-        let fits = |runs: &[RunPlan]| {
+        let fits = |runs: &[RunPlan<'_>]| {
             node.clone()
                 .lay_out_changes(runs, &limits, &mut Writes::default())
         };
@@ -794,6 +840,14 @@ mod tests {
         ]));
         // Nor so many going that holes fill over a quarter of its slots.
         assert!(!fits(&[run(1, 2), run(5, 2)]));
+    }
+
+    #[test]
+    fn hidden_ranges_join_where_they_touch() {
+        assert_eq!(
+            joined(vec![12..18, 0..6, 6..12, 30..30, 20..24, 22..26]),
+            vec![0..18, 20..26]
+        );
     }
 
     #[test]

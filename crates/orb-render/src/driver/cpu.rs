@@ -146,12 +146,13 @@ impl CpuDriver {
             // The slots of runs that went, which the scene hid in its own
             // compacted buffer.
             if let Some(twin) = &self.twin {
+                let longest = scene.hidden().iter().map(|r| r.end - r.start).max();
+                let words = vec![HIDDEN_INDEX; longest.unwrap_or(0) as usize];
                 for range in scene.hidden() {
-                    let words = vec![HIDDEN_INDEX; (range.end - range.start) as usize];
                     gpu.write_buffer(
                         twin.compacted,
                         u64::from(range.start) * 4,
-                        bytemuck::cast_slice(&words),
+                        bytemuck::cast_slice(&words[..(range.end - range.start) as usize]),
                     );
                 }
             }
