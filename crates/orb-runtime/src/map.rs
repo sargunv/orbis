@@ -522,6 +522,9 @@ pub struct Map {
     pub(crate) root_frame: Option<crate::root::RootFrame>,
     /// The latest `load_style_url` request; earlier ones are ignored.
     pub(crate) style_request: u64,
+    /// The latest request is a style URL still loading: the style drawn
+    /// is not the one asked for, so the map is not loaded.
+    pub(crate) style_fetching: bool,
     /// Why the latest style request failed: nothing will load until
     /// another style replaces it.
     pub(crate) style_error: Option<String>,
@@ -695,6 +698,7 @@ impl Map {
             root: Default::default(),
             root_frame: None,
             style_request: 0,
+            style_fetching: false,
             style_error: None,
             generation: 0,
             tile_generation: 0,
@@ -992,6 +996,7 @@ impl Map {
     pub fn load_style_url(&mut self, url: &str) {
         self.style_error = None;
         self.style_request += 1;
+        self.style_fetching = true;
         let request = self.style_request;
         let owned = url.to_string();
         self.fetch_text(ResourceKind::Style, url, move |result| Message::Style {
@@ -1005,6 +1010,20 @@ impl Map {
     /// error. Frames draw nothing until another style replaces it.
     pub fn style_error(&self) -> Option<&str> {
         self.style_error.as_deref()
+    }
+
+    /// The style asked for last is installed, with its sprites and its
+    /// sources' TileJSON: not while a style URL is loading to replace the
+    /// one drawn, which would otherwise settle a still of the old style.
+    fn style_loaded(&self) -> bool {
+        !self.style_fetching
+            && self.style.as_ref().is_some_and(|s| {
+                s.sprites_loading == 0
+                    && s.sprite_pixels_loading == 0
+                    && s.sources
+                        .iter()
+                        .all(|source| !matches!(source, SourceState::Resolving))
+            })
     }
 
     /// Replaces the style with a v8 document. Its tiles load as frames
@@ -1025,6 +1044,7 @@ impl Map {
         // A style URL still loading is superseded, and the old style's
         // paint transitions with it.
         self.style_request += 1;
+        self.style_fetching = false;
         self.style_error = None;
         self.transitions = Default::default();
         self.root = Default::default();
@@ -1582,13 +1602,8 @@ impl Map {
             times.place = micros(placing, clock.now());
         }
         // Everything the frame shows has arrived, labels aside.
-        let data_loaded = self.style.as_ref().is_some_and(|s| {
-            s.sprites_loading == 0
-                && s.sprite_pixels_loading == 0
-                && s.sources
-                    .iter()
-                    .all(|source| !matches!(source, SourceState::Resolving))
-        }) && report.tiles_loading == 0
+        let data_loaded = self.style_loaded()
+            && report.tiles_loading == 0
             && !self.tiles_deferred
             && self.waiting.is_empty()
             && self.pending.is_empty();
@@ -2501,6 +2516,7 @@ impl Map {
         if request != self.style_request {
             return;
         }
+        self.style_fetching = false;
         let installed = result.map_err(|e| e.to_string()).and_then(|json| {
             if self.style.is_some() {
                 self.diff_document(&json, url)
@@ -2771,6 +2787,45 @@ mod tests {
         }
         let name = map.style.as_ref().unwrap().worker.plan().style.name.clone();
         assert_eq!(name.as_deref(), Some("b"));
+    }
+
+    /// A style URL loading to replace a loaded style keeps the map from
+    /// loading until it arrives, failed or not: a still taken in the
+    /// meantime drew the old style (a blank picture of a fixture's empty
+    /// first style, now and then, when the fetch came late).
+    #[test]
+    fn a_style_url_loading_keeps_the_map_unloaded() {
+        let fetch = Arc::new(crate::testing::HeldFetch::default());
+        let services = crate::testing::services(fetch.clone());
+        let mut map = Map::new(services, None);
+        let apply = |map: &mut Map| {
+            while let Ok(Message::Style {
+                request,
+                url,
+                result,
+            }) = map.receiver.try_recv()
+            {
+                map.apply_style(request, &url, result);
+            }
+        };
+        map.set_style_json(&style("empty")).unwrap();
+        assert!(map.style_loaded());
+        for reply in [Ok(style("a").into_bytes()), Err(FetchError::NotFound)] {
+            let failed = reply.is_err();
+            map.load_style_url("https://example.com/a.json");
+            assert!(!map.style_loaded());
+            let (_, done) = fetch.pending.lock().unwrap().pop().unwrap();
+            done(reply);
+            apply(&mut map);
+            // A failed one settles nothing: stills give its error.
+            assert!(!map.style_fetching);
+            assert_eq!(map.style_error().is_some(), failed);
+            assert!(failed || map.style_loaded());
+        }
+        // A style set directly supersedes one loading.
+        map.load_style_url("https://example.com/b.json");
+        map.set_style_json(&style("c")).unwrap();
+        assert!(map.style_loaded());
     }
 
     /// Sources that had data between frames report it at the next drawn
