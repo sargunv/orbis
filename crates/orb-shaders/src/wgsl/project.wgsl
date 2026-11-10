@@ -274,34 +274,55 @@ fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     if globe {
         g.globe = sphere_at(tile.globe_base, tile.globe_cells, tile_globe_origin(tile), edge / tile.extent);
         if carry {
-            var from_point = vec3<f32>(0.0);
-            var from_edge = vec3<f32>(0.0);
-            for (var k = 0u; k < 2u; k++) {
-                let m = mercator_sphere(select(g.flat, tile_origin(tile) + edge_local, k == 1u));
-                if k == 0u {
-                    from_point = m;
-                } else {
-                    from_edge = m;
-                }
-            }
-            g.globe += from_point - from_edge;
+            g.globe += mercator_step(tile_origin(tile) + edge_local, g.flat);
         }
     }
     return g;
 }
 
-// A camera-relative Web Mercator world position (metres) on the sphere,
-// camera-relative: exact, for points no tile's patches hold. Differences
-// of two nearby points keep f32's precision about the target.
-fn mercator_sphere(world: vec2<f32>) -> vec3<f32> {
+// The step on the sphere between two camera-relative Web Mercator world
+// positions (metres), `start` to `end`: exact to f32's precision of the
+// step itself, for points no tile's patches hold. The sphere's positions
+// are millions of metres long, and their difference in f32 would be no
+// better than half a metre (#162), a pixel from zoom 18: so the step
+// comes from the differences of the two points' longitudes and latitudes
+// alone, and `start`'s place, known only to f32's precision, just turns it.
+fn mercator_step(start: vec2<f32>, end: vec2<f32>) -> vec3<f32> {
     let up = normalize(frame.globe_target);
     let target_lat = asin(clamp(up.z, -1.0, 1.0));
     let target_lon = atan2(up.y, up.x);
     let target_y = SPHERE_RADIUS * log(tan(0.7853982 + target_lat * 0.5));
-    let lon = target_lon + world.x / SPHERE_RADIUS;
-    let lat = 2.0 * atan(exp((target_y + world.y) / SPHERE_RADIUS)) - 1.5707964;
-    let at = vec3<f32>(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat)) * SPHERE_RADIUS;
-    return at - up * SPHERE_RADIUS;
+    let lon = target_lon + start.x / SPHERE_RADIUS;
+    // tan(π/4 + lat/2), Mercator's e^(y/R).
+    let e = exp((target_y + start.y) / SPHERE_RADIUS);
+    let lat = 2.0 * atan(e) - 1.5707964;
+    let d_lon = (end.x - start.x) / SPHERE_RADIUS;
+    // The latitudes' difference, 2 (atan(e q) - atan(e)) with q the
+    // step's e^(dy/R), taken whole.
+    let q1 = exp_minus_one((end.y - start.y) / SPHERE_RADIUS);
+    let d_lat = 2.0 * atan(e * q1 / (1.0 + e * e * (1.0 + q1)));
+    // cos a − cos b and sin a − sin b as products with the half step's
+    // sine, which keep its precision.
+    let lat_sine = 2.0 * sin(d_lat * 0.5);
+    let lon_sine = 2.0 * sin(d_lon * 0.5);
+    let cos_lat = cos(lat + d_lat);
+    let d_cos_lat = -sin(lat + d_lat * 0.5) * lat_sine;
+    let d_sin_lat = cos(lat + d_lat * 0.5) * lat_sine;
+    let d_cos_lon = -sin(lon + d_lon * 0.5) * lon_sine;
+    let d_sin_lon = cos(lon + d_lon * 0.5) * lon_sine;
+    return vec3<f32>(
+        cos_lat * d_cos_lon + d_cos_lat * cos(lon),
+        cos_lat * d_sin_lon + d_cos_lat * sin(lon),
+        d_sin_lat,
+    ) * SPHERE_RADIUS;
+}
+
+// e^x − 1 to f32's precision relative to x, for small x too.
+fn exp_minus_one(x: f32) -> f32 {
+    if abs(x) >= 0.1 {
+        return exp(x) - 1.0;
+    }
+    return x * (1.0 + x * 0.5 * (1.0 + x / 3.0 * (1.0 + x * 0.25 * (1.0 + x * 0.2))));
 }
 
 // A tile's point on the sphere, camera-relative, from its patches in space
@@ -445,8 +466,13 @@ fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<
         let east = select(vec3<f32>(0.0, 1.0, 0.0), normalize(level), length(level) > 1e-6);
         let north = cross(up, east);
         let t = tan(offset * frame.globe_metres / SPHERE_RADIUS);
-        let turned = normalize(up + east * t.x + north * t.y);
-        p += (turned - up) * (SPHERE_RADIUS + z * frame.globe_metres);
+        // normalize(up + v) − up, taken whole: as a difference of two
+        // unit vectors it would round to a metre at the sphere's scale.
+        let v = east * t.x + north * t.y;
+        let vv = dot(v, v);
+        let s = sqrt(1.0 + vv);
+        let turned = v / s - up * (vv / (s * (1.0 + s)));
+        p += turned * (SPHERE_RADIUS + z * frame.globe_metres);
     }
     var clip = frame.globe_view_proj * vec4<f32>(p, 1.0);
     if solid {

@@ -1842,6 +1842,57 @@ fn ground_below_sea_level_reaches_the_horizon() {
     }
 }
 
+/// #162: on the sphere at street zooms, a line and a fill across a tile's
+/// edge draw where they do on the plane, without a jog at the edge. The
+/// points past a tile's edge (a stroke's side, a polygon's buffer) go on
+/// from it by a step taken in f32, which as a difference of positions
+/// millions of metres long was off by up to a metre, several pixels here.
+#[test]
+fn the_sphere_draws_across_tile_edges_as_the_plane_does() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    // A corner of four zoom-18 tiles near Tokyo, where GeoJSON's tiles end.
+    let n = f64::from(1u32 << 18);
+    let col = ((139.74 + 180.0) / 360.0 * n).round();
+    let mercator_y = 35.685f64.to_radians().tan().asinh() / std::f64::consts::PI;
+    let row = (n / 2.0 * (1.0 - mercator_y)).round();
+    let lon = col / n * 360.0 - 180.0;
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * row / n))
+        .sinh()
+        .atan()
+        .to_degrees();
+    let d = 0.0002;
+    let draw = |projection: &str| {
+        let style = format!(
+            r##"{{"version": 8, "projection": {{"type": "{projection}"}},
+              "center": [{lon}, {lat}], "zoom": 20, "bearing": 20,
+              "sources": {{
+                "line": {{"type": "geojson", "data": {{"type": "LineString",
+                  "coordinates": [[{w}, {s}], [{e}, {n}]]}}}},
+                "fill": {{"type": "geojson", "data": {{"type": "Polygon",
+                  "coordinates": [[[{w}, {inside}], [{e}, {inside}], [{e}, {n}], [{w}, {inside}]]]}}}}}},
+              "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+                {{"id": "fill", "type": "fill", "source": "fill", "paint": {{"fill-color": "#0000ff"}}}},
+                {{"id": "line", "type": "line", "source": "line",
+                  "paint": {{"line-color": "#000000", "line-width": 6}}}}]}}"##,
+            w = lon - d,
+            e = lon + d,
+            s = lat - d,
+            n = lat + d,
+            inside = lat - d / 4.0,
+        );
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&style).expect("style");
+        map.snapshot(256, 256, 1.0).expect("snapshot").pixels
+    };
+    let (plane, sphere) = (draw("mercator"), draw("vertical-perspective"));
+    let (plane, sphere) = (plane.as_chunks::<4>().0, sphere.as_chunks::<4>().0);
+    let apart = (plane.iter().zip(sphere))
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(a, b)| a.abs_diff(*b) > 48))
+        .count();
+    assert_eq!(apart, 0, "{apart} pixels apart");
+}
+
 fn pixel_of(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
     let at = ((y * width + x) * 4) as usize;
     pixels[at..at + 4].try_into().unwrap()
