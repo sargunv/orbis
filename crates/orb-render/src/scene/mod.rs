@@ -17,6 +17,7 @@ pub use image::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload}
 
 use std::ops::Range;
 
+use crate::driver::SubmitLimits;
 use arena::{Arena, Slots};
 use orb_hal::{BufferDesc, BufferId, BufferUsages, Gpu, HostBytesId};
 use orb_layout::Chunk;
@@ -914,6 +915,9 @@ const UNCLIPPED: u32 = 1 << 11;
 pub(crate) struct Scene {
     buffers: SceneBuffers,
     capacity: SceneCapacity,
+    /// Bits of a compacted index on the renderer's driver
+    /// ([`SubmitLimits::index_bits`]).
+    index_bits: u32,
     placement_slots: Slots,
     chunk_slots: Slots,
     vertex_arena: Arena,
@@ -1067,6 +1071,7 @@ impl Scene {
         Self {
             buffers,
             capacity,
+            index_bits: 32,
             placement_slots: Slots::new(c.placements),
             chunk_slots: Slots::new(c.chunks),
             vertex_arena: Arena::new(c.vertex_words),
@@ -1100,6 +1105,21 @@ impl Scene {
 
     pub(crate) fn capacity(&self) -> &SceneCapacity {
         &self.capacity
+    }
+
+    /// What candidates are laid out within: the pools' sizes now, and
+    /// the driver's index bits.
+    pub(crate) fn limits(&self) -> SubmitLimits {
+        SubmitLimits::new(&self.capacity, self.index_bits)
+    }
+
+    /// Lays candidates out for a driver whose compacted indices have
+    /// `bits` bits, from the next frame.
+    pub(crate) fn set_index_bits(&mut self, bits: u32) {
+        if bits != self.index_bits {
+            self.index_bits = bits;
+            self.candidates_dirty = true;
+        }
     }
 
     /// The cull dispatch's grid, as of the last [`prepare`](Self::prepare):
@@ -1788,7 +1808,8 @@ impl Scene {
     /// Returns the compacted index words the candidates left out for want
     /// of room there.
     fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu) -> (u64, u64) {
-        let limit = self.capacity.candidates as usize;
+        let limits = self.limits();
+        let limit = limits.candidates as usize;
         let mut compacted_short = 0u64;
         let mut candidates_short = 0u64;
         let mut rows: Vec<u32> = Vec::new();
@@ -1838,7 +1859,7 @@ impl Scene {
             // An indexed node's index is `run << run_shift | vertex`; the
             // all-ones run is reserved for hidden indices.
             let run_shift = 32 - (vertex_words - 1).leading_zeros().min(31);
-            let max_runs = (1u64 << 32u32.saturating_sub(run_shift)) - 1;
+            let max_runs = limits.max_runs(run_shift);
             let index_base = compacted;
             // Runs in order of first use by a kept candidate: no more than
             // the kept candidates, so they fit the node's visible slice.
@@ -1846,7 +1867,7 @@ impl Scene {
             let mut used = 0u32;
             for (_, chunk, tile, index_count, run) in candidates {
                 let room = u64::from(compacted) + u64::from(index_count)
-                    <= u64::from(self.capacity.compacted_words);
+                    <= u64::from(limits.compacted_words);
                 let fits = (rows.len() / CANDIDATE_WORDS) < limit
                     && (!indexed
                         || ((renumbered[run as usize] != u32::MAX || u64::from(used) < max_runs)

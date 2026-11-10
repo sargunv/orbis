@@ -22,6 +22,7 @@
 
 mod atmosphere;
 mod downsample;
+mod driver;
 mod extrusion;
 mod heatmap;
 mod image;
@@ -71,7 +72,7 @@ use std::collections::BTreeMap;
 
 use orb_hal::*;
 use orb_shaders::{
-    CIRCLE_SHADER, CULL_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, LINE_STYLED_SHADER,
+    CIRCLE_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, LINE_STYLED_SHADER,
     SYMBOL_SHADERS,
 };
 use scene::Scene;
@@ -88,11 +89,6 @@ fn draw_of(family: Family) -> NodeDraw {
         }
         Family::Raster | Family::Hillshade | Family::ColorRelief => NodeDraw::Images,
     }
-}
-
-/// Where node `index`'s draw arguments start in the scene's args buffer.
-fn args_offset(index: u32) -> u64 {
-    u64::from(index) * crate::scene::ARGS_WORDS as u64 * 4
 }
 
 /// A premultiplied sRGB-encoded colour as it mixes: itself, or when
@@ -264,10 +260,8 @@ pub struct Renderer {
     atmosphere: atmosphere::Atmosphere,
     scene: Scene,
     draw_group: BindGroupId,
-    /// The cull dispatch's pipeline and group.
-    cull: (ComputePipelineId, BindGroupId),
-    /// The cull keeps every candidate ([`Renderer::set_keep_all`]).
-    keep_all: bool,
+    /// How the frame's draws learn their counts: on the GPU, its cull.
+    driver: driver::Driver,
     draw_layout: BindGroupLayoutId,
     node_layout: BindGroupLayoutId,
     /// The vector families' pipelines, each made for the family's first
@@ -344,7 +338,6 @@ pub struct Renderer {
     glyphs_bound: u32,
     /// The scene's buffer revision its groups bind.
     buffers_bound: u64,
-    cull_layout: BindGroupLayoutId,
     /// What the scene group binds besides the scene's buffers.
     image_bindings: ImageBindings,
     /// The image texture the scene group binds.
@@ -363,18 +356,9 @@ impl Renderer {
         use release::Release;
         self.scene.destroy(gpu);
         self.glyphs.destroy(gpu);
-        let layouts = (
-            self.draw_layout,
-            self.node_layout,
-            self.symbol_pass_layout,
-            self.cull_layout,
-        );
-        let groups = (
-            self.draw_group,
-            self.cull,
-            self.symbol_passes,
-            self.symbol_pass_buffer,
-        );
+        let layouts = (self.draw_layout, self.node_layout, self.symbol_pass_layout);
+        self.driver.destroy(gpu);
+        let groups = (self.draw_group, self.symbol_passes, self.symbol_pass_buffer);
         let pipelines = (self.paint.pipelines, self.symbol_pipelines);
         (
             layouts,
@@ -441,13 +425,12 @@ impl Renderer {
             },
             ..host
         };
-        let scene = Scene::new(gpu, capacity);
+        let mut scene = Scene::new(gpu, capacity);
         let b = *scene.buffers();
-        let (vs, fs, cs) = (
-            ShaderStages::VERTEX,
-            ShaderStages::FRAGMENT,
-            ShaderStages::COMPUTE,
-        );
+        // The driver's pipeline first: nothing draws without it.
+        let driver = driver::Driver::new(gpu, &b);
+        scene.set_index_bits(driver.index_bits());
+        let (vs, fs) = (ShaderStages::VERTEX, ShaderStages::FRAGMENT);
         let vf = vs | fs;
         use BindGroupLayoutEntry as E;
         use TextureViewDimension::{D2, D2Array};
@@ -479,20 +462,6 @@ impl Renderer {
         let node_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "node",
             entries: &[E::uniform(0, vf)],
-        });
-        let cull_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "cull",
-            entries: &[
-                E::uniform(0, cs),
-                E::storage(1, cs),
-                E::storage(2, cs),
-                E::storage_rw(3, cs),
-                E::storage(4, cs),
-                E::storage_rw(5, cs),
-                E::storage_rw(6, cs),
-                E::storage(7, cs),
-                E::storage_rw(8, cs),
-            ],
         });
 
         let glyphs = GlyphAtlas::new(gpu, capacity.glyph_rows, b.props);
@@ -536,7 +505,6 @@ impl Renderer {
             &images,
             (glyphs.texture(), nearest, no_dem, no_terrain_depth),
         );
-        let cull_group = cull_group(gpu, cull_layout, &b);
 
         let symbol_pass_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "symbol pass",
@@ -565,12 +533,6 @@ impl Renderer {
                 )],
             })
         });
-        // The cull pipeline first: nothing draws without it.
-        let cull = (
-            pipeline::compute(gpu, &CULL_SHADER, &[cull_layout], &[]),
-            cull_group,
-        );
-
         let image_bindings = images;
         let images = image::Images::new(gpu, target, draw_layout);
         let downsampler = downsample::Downsampler::new(gpu);
@@ -603,8 +565,7 @@ impl Renderer {
             atmosphere,
             scene,
             draw_group,
-            cull,
-            keep_all: false,
+            driver,
             draw_layout,
             node_layout,
             paint: PaintPipelines::default(),
@@ -643,7 +604,6 @@ impl Renderer {
             terrain_depth_bound: no_terrain_depth,
             glyphs_bound: glyphs.revision(),
             buffers_bound: 0,
-            cull_layout,
             nearest,
             glyphs,
             images_bound: image_bindings.texture,
@@ -724,18 +684,9 @@ impl Renderer {
     /// tests and measurements: what the cull saves, and that it only drops
     /// what draws nothing.
     pub fn set_keep_all(&mut self, gpu: &mut dyn Gpu, on: bool) {
-        if self.keep_all == on {
-            return;
+        if self.driver.set_keep_all(gpu, on) {
+            self.invalidate_bundle(gpu);
         }
-        self.keep_all = on;
-        let pipeline = pipeline::compute(
-            gpu,
-            &CULL_SHADER,
-            &[self.cull_layout],
-            &[("keep_all", f64::from(u8::from(on)))],
-        );
-        gpu.destroy_pipeline(std::mem::replace(&mut self.cull.0, pipeline).into());
-        self.invalidate_bundle(gpu);
     }
 
     /// The scene's per-node draw arguments and cull counters, for
@@ -1627,7 +1578,7 @@ impl Renderer {
     /// the view), the cull before everything.
     fn prioritize(&self, gpu: &mut dyn Gpu) {
         let mut wanted = Vec::new();
-        wanted.push(self.cull.0.into());
+        wanted.extend(self.driver.pipelines());
         wanted.extend(self.linear.as_ref().map(offscreen::LinearScene::pipeline));
         for i in 0..self.nodes.len() {
             if self.scene.node_has_meshes(i as u32) {
@@ -1701,8 +1652,7 @@ impl Renderer {
             self.images_bound = self.image_bindings.texture;
             if buffers != self.buffers_bound {
                 self.buffers_bound = buffers;
-                gpu.destroy_bind_group(self.cull.1);
-                self.cull.1 = cull_group(gpu, self.cull_layout, self.scene.buffers());
+                self.driver.rebind(gpu, self.scene.buffers());
             }
             gpu.destroy_bind_group(self.draw_group);
             let b = *self.scene.buffers();
@@ -1998,32 +1948,14 @@ impl Renderer {
             passes.extend(mips);
             Pass::group(&mut passes, start, "image mips");
         }
-        // The dispatch writes every node's arguments, zeros included, so it
-        // runs even when nothing is resident. Indexed nodes' batches add to
-        // cleared arguments.
-        let (pipeline, group) = self.cull;
-        let cull_ready = gpu.pipeline_ready(pipeline.into());
-        if !self.nodes.is_empty() && cull_ready {
-            let start = passes.len();
-            if self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed) {
-                passes.push(Pass::ClearBuffer {
-                    buffer: self.scene.buffers().args,
-                    offset: 0,
-                    size: Some(args_offset(self.nodes.len() as u32)),
-                });
-            }
-            let [x, y] = self.scene.cull_grid();
-            stats.dispatches += 1;
-            passes.push(Pass::Compute(ComputePass {
-                label: "cull",
-                commands: vec![
-                    ComputeCommand::SetPipeline(pipeline),
-                    ComputeCommand::SetBindGroup { index: 0, group },
-                    ComputeCommand::Dispatch { x, y, z: 1 },
-                ],
-            }));
-            Pass::group(&mut passes, start, "cull");
-        }
+        let cull_ready = self.driver.ready(gpu);
+        let cull = driver::Cull {
+            buffers: self.scene.buffers(),
+            nodes: self.nodes.len() as u32,
+            indexed: self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed),
+            grid: self.scene.cull_grid(),
+        };
+        stats.dispatches += self.driver.cull(gpu, cull, &mut passes);
         let start = passes.len();
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
@@ -2035,8 +1967,8 @@ impl Renderer {
                     heatmap,
                     self.draw_group,
                     node.group,
-                    self.scene.buffers().args,
-                    index as u32,
+                    self.driver
+                        .draw(self.scene.buffers(), index as u32, NodeDraw::Points),
                 )
             {
                 stats.draws += 1;
@@ -2091,7 +2023,11 @@ impl Renderer {
                 target,
                 (draw_group, node.group),
                 &buffers,
-                (index as u32, node.elevation, ground),
+                (
+                    self.driver.draw(&buffers, index as u32, NodeDraw::Indexed),
+                    node.elevation,
+                    ground,
+                ),
                 first,
             );
             passes.push(Pass::Render(pass));
@@ -2145,7 +2081,7 @@ impl Renderer {
     /// pipelines.
     fn ready(&mut self, gpu: &mut dyn Gpu, terrain_on: bool) -> Ready {
         Ready {
-            cull: gpu.pipeline_ready(self.cull.0.into()),
+            cull: self.driver.ready(gpu),
             terrain: self
                 .terrain
                 .as_mut()
@@ -2266,7 +2202,9 @@ impl Renderer {
             return false;
         }
         let node = &self.nodes[i];
-        let args = args_offset(i as u32);
+        let draw = self
+            .driver
+            .draw(self.scene.buffers(), i as u32, node.cull.draw);
         if let (Some(layer), true) = (node.terrain_layer, scene == self.draw_group) {
             let first = i == 0 || self.nodes[i - 1].terrain_layer != Some(layer);
             if !ready.terrain {
@@ -2335,10 +2273,7 @@ impl Renderer {
             for &group in passes {
                 commands.extend([
                     RenderCommand::SetBindGroup { index: 2, group },
-                    RenderCommand::DrawIndirect {
-                        buffer: self.scene.buffers().args,
-                        offset: args,
-                    },
+                    draw.clone(),
                 ]);
             }
             return true;
@@ -2372,17 +2307,7 @@ impl Renderer {
                 group: scene,
             },
             RenderCommand::SetBindGroup { index: 1, group },
-            if node.cull.draw == NodeDraw::Indexed {
-                RenderCommand::DrawIndexedIndirect {
-                    buffer: self.scene.buffers().args,
-                    offset: args,
-                }
-            } else {
-                RenderCommand::DrawIndirect {
-                    buffer: self.scene.buffers().args,
-                    offset: args,
-                }
-            },
+            draw,
         ]);
         true
     }
@@ -2517,34 +2442,6 @@ impl PaintPipelines {
             .make(gpu)
         });
     }
-}
-
-/// The cull pass's group: the scene's tables and index buffers.
-fn cull_group(
-    gpu: &mut dyn Gpu,
-    layout: BindGroupLayoutId,
-    b: &crate::scene::SceneBuffers,
-) -> BindGroupId {
-    let entries: Vec<BindGroupEntry> = [
-        b.frame,
-        b.tiles,
-        b.chunks,
-        b.candidates,
-        b.node_cull,
-        b.visible,
-        b.args,
-        b.indices,
-        b.compacted,
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, &buffer)| BindGroupEntry::buffer(i as u32, buffer))
-    .collect();
-    gpu.create_bind_group(&BindGroupDesc {
-        label: "cull",
-        layout,
-        entries: &entries,
-    })
 }
 
 /// The scene's group: its buffers, the image pages and the glyph pages.

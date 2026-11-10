@@ -310,16 +310,12 @@ impl Extrusions {
         node: &mut NodeExtrusion,
         (scene, group): (BindGroupId, BindGroupId),
         buffers: &SceneBuffers,
-        (index, shape, ground): (u32, ElevationShape, Ground),
+        (draw, shape, ground): (RenderCommand, ElevationShape, Ground),
         first: bool,
     ) -> RenderPass {
         let ground = self.ground_made(ground);
         let pipelines = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
-            let draw = RenderCommand::DrawIndexedIndirect {
-                buffer: buffers.args,
-                offset: crate::args_offset(index),
-            };
             let mut commands = vec![
                 RenderCommand::SetBindGroup {
                     index: 0,

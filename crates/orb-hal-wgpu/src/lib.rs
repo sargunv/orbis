@@ -254,6 +254,14 @@ impl WgpuGpu {
             },
             timestamp_query: device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
             clip_distances: device.features().contains(wgpu::Features::CLIP_DISTANCES),
+            // WebGPU and the native back ends have all of these; a
+            // downlevel device (wgpu's GL back end) reports no compute
+            // and no vertex-stage storage in its limits.
+            compute: limits.max_compute_invocations_per_workgroup > 0,
+            indirect: limits.max_compute_invocations_per_workgroup > 0,
+            vertex_storage: limits.max_storage_buffers_per_shader_stage > 0,
+            float_targets: limits.max_compute_invocations_per_workgroup > 0,
+            multi_draw: false,
         };
         Self {
             device,

@@ -253,7 +253,12 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
 /// Mip levels over regions of array layers: drape slots, raster pages.
 pub const DOWNSAMPLE_SHADER: Shader = Shader {
     label: "downsample",
-    parts: &[wgsl!("color"), FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_compute")],
+    parts: &[
+        wgsl!("color"),
+        FETCH_REGIONS,
+        DOWNSAMPLE,
+        wgsl!("downsample_compute"),
+    ],
     vertex: "",
     fragment: "",
     compute: "downsample",
@@ -263,7 +268,12 @@ pub const DOWNSAMPLE_SHADER: Shader = Shader {
 /// their mip levels, in the downsampler's bindings.
 pub const EXTEND_SHADER: Shader = Shader {
     label: "extend",
-    parts: &[wgsl!("color"), FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_compute")],
+    parts: &[
+        wgsl!("color"),
+        FETCH_REGIONS,
+        DOWNSAMPLE,
+        wgsl!("downsample_compute"),
+    ],
     vertex: "",
     fragment: "",
     compute: "extend",
@@ -273,7 +283,12 @@ pub const EXTEND_SHADER: Shader = Shader {
 /// region into a view of the level's layer.
 pub const MIP_DRAW_SHADER: Shader = Shader {
     label: "mip draw",
-    parts: &[wgsl!("color"), FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_draw")],
+    parts: &[
+        wgsl!("color"),
+        FETCH_REGIONS,
+        DOWNSAMPLE,
+        wgsl!("downsample_draw"),
+    ],
     vertex: "vs_mip",
     fragment: "fs_mip",
     compute: "",

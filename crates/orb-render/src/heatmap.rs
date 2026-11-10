@@ -141,8 +141,7 @@ impl Heatmaps {
         node: &mut NodeHeatmap,
         scene: BindGroupId,
         group: BindGroupId,
-        args: BufferId,
-        index: u32,
+        draw: RenderCommand,
     ) -> Option<RenderPass> {
         let pipeline = self.pipeline?;
         let target = &node.apart.offscreen.as_ref()?.target;
@@ -161,10 +160,7 @@ impl Heatmaps {
                         group: scene,
                     },
                     RenderCommand::SetBindGroup { index: 1, group },
-                    RenderCommand::DrawIndirect {
-                        buffer: args,
-                        offset: crate::args_offset(index),
-                    },
+                    draw,
                 ],
             )
         });
