@@ -411,7 +411,12 @@ impl H2h {
     fn about(&self) -> String {
         let mut out = String::from("## Orbis head to head\n\n");
         let cpu = output(Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]))
-            .or_else(|| std::env::var("PROCESSOR_IDENTIFIER").ok());
+            .or_else(|| std::env::var("PROCESSOR_IDENTIFIER").ok())
+            .or_else(|| {
+                let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+                let line = info.lines().find(|l| l.starts_with("model name"))?;
+                Some(line.split_once(':')?.1.trim().to_string())
+            });
         let rev = output(Command::new("git").args(["rev-parse", "--short", "HEAD"]));
         let planet = std::fs::read_to_string(self.mirror.cache.join("planet.__f"))
             .ok()
