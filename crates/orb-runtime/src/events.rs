@@ -87,8 +87,9 @@ pub(crate) struct EventQueue {
     idle: bool,
     /// The map has been idle once (GL JS `_idleTriggered`).
     pub(crate) idled: bool,
-    /// Sources with data this frame, by plan index.
-    pub(crate) sources: BTreeSet<usize>,
+    /// Sources with data since the last drawn frame, by key: an edit
+    /// renumbers the plan's sources, and a new style drops the set.
+    pub(crate) sources: BTreeSet<u32>,
 }
 
 impl EventQueue {

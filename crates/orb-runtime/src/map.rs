@@ -1613,18 +1613,7 @@ impl Map {
             && !self.root.running()
             && !(self.style.as_ref()).is_some_and(|s| s.states.fading(self.shader_time()))
             && now >= self.image_fades_until;
-        if let Some(style) = &self.style {
-            let plan = style.worker.plan();
-            for index in std::mem::take(&mut self.events.sources) {
-                let loaded = match &style.sources[index] {
-                    SourceState::Ready { loading, .. } => *loading == 0,
-                    SourceState::Resolving => false,
-                    _ => true,
-                };
-                let source = plan.source_def(index).id.clone();
-                self.events.push(MapEvent::SourceData { source, loaded });
-            }
-        }
+        self.source_events();
 
         let globe = view.globe().map(|globe| frame_globe(globe, &view));
         let frame = FrameBlock {
@@ -2572,6 +2561,8 @@ impl Map {
 
     /// Drops the style and its tiles.
     fn clear_style(&mut self) {
+        // The old style's sources report nothing more.
+        self.events.sources.clear();
         if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
             self.retired_images.push(namespace);
         }
@@ -2583,6 +2574,27 @@ impl Map {
             self.retired.tables.extend(style.states.take_table());
         }
         self.style = None;
+    }
+
+    /// A `sourcedata` event for each source with data since the last
+    /// drawn frame. Arrivals between frames (`prepare`) add to the set
+    /// before an edit or a new style can change the sources: one an edit
+    /// removed reports nothing.
+    fn source_events(&mut self) {
+        let Some(style) = &self.style else { return };
+        let plan = style.worker.plan();
+        for key in std::mem::take(&mut self.events.sources) {
+            let Some(index) = plan.source(key) else {
+                continue;
+            };
+            let loaded = match &style.sources[index] {
+                SourceState::Ready { loading, .. } => *loading == 0,
+                SourceState::Resolving => false,
+                _ => true,
+            };
+            let source = plan.source_def(index).id.clone();
+            self.events.push(MapEvent::SourceData { source, loaded });
+        }
     }
 
     /// Removes the style's tiles from the scene; they reload as needed.
@@ -2700,6 +2712,81 @@ mod tests {
         }
         let name = map.style.as_ref().unwrap().worker.plan().style.name.clone();
         assert_eq!(name.as_deref(), Some("b"));
+    }
+
+    /// Sources that had data between frames report it at the next drawn
+    /// frame by key, after an edit or another style changed the sources
+    /// meanwhile: a style with fewer sources trapped the web map (#160).
+    #[test]
+    fn source_data_between_frames_survives_new_sources() {
+        let fetch = Arc::new(HeldFetch::default());
+        let services = Services {
+            clock: Arc::new(NoClock),
+            image_decode: Arc::new(NoDecode),
+            images: Default::default(),
+            jobs: PoolJobs::new(
+                fetch.clone(),
+                Arc::new(crate::worker::tests::NoImages),
+                Arc::new(Inline),
+            ),
+            fetch,
+            wake: Arc::new(|| {}),
+        };
+        let raster = |name: &str| {
+            format!(
+                r#""{name}": {{"type": "raster", "tiles": ["https://example.com/{name}/{{z}}/{{x}}/{{y}}.png"]}}"#
+            )
+        };
+        let layer =
+            |name: &str| format!(r#"{{"id": "{name}", "type": "raster", "source": "{name}"}}"#);
+        let style = |names: &[&str]| {
+            let sources: Vec<_> = names.iter().map(|n| raster(n)).collect();
+            let layers: Vec<_> = names.iter().map(|n| layer(n)).collect();
+            format!(
+                r#"{{"version": 8, "sources": {{{}}}, "layers": [{}]}}"#,
+                sources.join(","),
+                layers.join(",")
+            )
+        };
+        let key = |map: &Map, name: &str| {
+            let plan = map.style.as_ref().unwrap().worker.plan();
+            let index = (0..plan.sources.len())
+                .find(|&i| plan.source_def(i).id == name)
+                .unwrap();
+            plan.sources[index].key
+        };
+        let reported = |map: &mut Map| -> Vec<String> {
+            map.source_events();
+            map.take_events()
+                .into_iter()
+                .filter_map(|e| match e {
+                    MapEvent::SourceData { source, .. } => Some(source),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut map = Map::new(services, None);
+        map.set_style_json(&style(&["a", "b", "c"])).unwrap();
+        // `c`'s tiles arrive between frames, then an edit removes `a`: `c`
+        // is second now, and still reports.
+        map.events.sources.insert(key(&map, "c"));
+        let remove = r#"[["removeLayer", "a"], ["removeSource", "a"]]"#;
+        map.edit(&crate::Transaction::from_commands(remove).unwrap())
+            .unwrap();
+        assert_eq!(reported(&mut map), ["c"]);
+        // An edit that removes the source reports nothing for it.
+        map.events.sources.insert(key(&map, "c"));
+        let remove = r#"[["removeLayer", "c"], ["removeSource", "c"]]"#;
+        map.edit(&crate::Transaction::from_commands(remove).unwrap())
+            .unwrap();
+        assert!(reported(&mut map).is_empty());
+        // Nor does another style for the last one's, though its keys
+        // start over.
+        let b = key(&map, "b");
+        map.events.sources.insert(b);
+        map.set_style_json(&style(&["d", "e"])).unwrap();
+        assert!(["d", "e"].iter().any(|n| key(&map, n) == b));
+        assert!(reported(&mut map).is_empty());
     }
 
     #[test]

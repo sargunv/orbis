@@ -140,7 +140,7 @@ impl Map {
                     };
                     let image = plan.image_kind(index).is_some();
                     style.sources[index] = ready_source(endpoint, &def.id, image, &mut self.events);
-                    self.events.sources.insert(index);
+                    self.events.sources.insert(source);
                     // Color-relief ramps wait for their source's encoding.
                     style.paint.invalidate();
                     for node in plan.nodes.iter().filter(|n| n.source == index) {
@@ -378,7 +378,8 @@ impl Map {
             return None;
         };
         let plan = style.worker.plan();
-        let source = plan.source(source)?;
+        let key = source;
+        let source = plan.source(key)?;
         let SourceState::Ready {
             pyramid,
             loading,
@@ -392,7 +393,7 @@ impl Map {
         let warped = *warped;
         if arrived {
             *loading = loading.saturating_sub(1);
-            self.events.sources.insert(source);
+            self.events.sources.insert(key);
         }
         let mut build = match result {
             Ok(build) => build,
