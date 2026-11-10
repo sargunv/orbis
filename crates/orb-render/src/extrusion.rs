@@ -83,9 +83,6 @@ pub(crate) struct Extrusions {
     /// likewise.
     ground: [[Option<RenderPipelineId>; 2]; 2],
     mask: [[Option<RenderPipelineId>; 2]; 2],
-    /// The sphere's depth (`fs_sphere_depth`), at one sample and at four:
-    /// what the first 3D pass on a whole globe draws before its buildings.
-    sphere: [Option<RenderPipelineId>; 2],
     /// The ground mask, its size and samples, made for the first node
     /// drawing into it. It draws multisampled as the layer's target does,
     /// resolved into the texture the decal samples: drawn at one sample,
@@ -116,7 +113,6 @@ impl Extrusions {
             drawn_full: true,
             ground: [[None; 2]; 2],
             mask: [[None; 2]; 2],
-            sphere: [None; 2],
             mask_target: None,
             layouts: [scene, node],
             samples: 1,
@@ -209,21 +205,6 @@ impl Extrusions {
                 let pipeline = self.pipeline(gpu, vertex, fragment, shape);
                 self.pipelines[index].1[kind][samples] = Some(pipeline);
             }
-        }
-        // Only a full variant draws a globe.
-        if self.full && self.sphere[samples].is_none() {
-            let target = TargetFormat {
-                color: self.format,
-                sample_count: self.samples,
-            };
-            let draw = Draw {
-                label: "sphere depth",
-                vertex: (&whole, "vs_sphere_depth"),
-                fragment: (&whole, "fs_sphere_depth"),
-                depth: DEPTH,
-                ..Draw::new(&whole, &self.layouts, target, None)
-            };
-            self.sphere[samples] = Some(draw.make(gpu));
         }
     }
 
@@ -351,18 +332,16 @@ impl Extrusions {
             .filter(|((_, full), _)| *full == self.drawn_full)
             .flat_map(|(_, p)| p.map(|p| p[samples]))
             .collect();
-        let sphere = self.sphere[samples].filter(|_| self.full);
         made.iter().any(Option::is_some)
-            && (made.iter().flatten().chain(&sphere)).all(|&p| gpu.pipeline_ready(p.into()))
+            && made.iter().flatten().all(|&p| gpu.pipeline_ready(p.into()))
             && composites.ready(gpu, Mode::Over)
     }
 
     /// What a frame waits for to draw `shape`: the pipelines in the
     /// variant they're made in.
     pub(crate) fn pipelines(&self, shape: ElevationShape) -> Vec<PipelineId> {
-        let samples = usize::from(self.samples == 4);
-        let sphere = self.sphere[samples].filter(|_| self.full);
-        (self.slot_in(shape, self.full).iter().chain([&sphere]))
+        self.slot_in(shape, self.full)
+            .iter()
             .flatten()
             .map(|&p| p.into())
             .collect()
@@ -446,10 +425,7 @@ impl Extrusions {
     /// covered: three times the layer's GPU time over Midtown at pitch 60.
     /// After, the depth test drops what the buildings cover before it
     /// shades, and the max blend can't change a building's opaque pixel
-    /// where a shadow on terrain, pulled nearer, still passes. The first
-    /// pass on the shared depth clears it, and on a whole globe (`sphere`)
-    /// draws the sphere's depth into it first, which hides what stands
-    /// behind the sphere.
+    /// where a shadow on terrain, pulled nearer, still passes.
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
@@ -457,7 +433,7 @@ impl Extrusions {
         (scene, group): (BindGroupId, BindGroupId),
         buffers: &SceneBuffers,
         (draw, shape, ground): (RenderCommand, ElevationShape, Ground),
-        (first, sphere): (bool, bool),
+        first: bool,
     ) -> RenderPass {
         let ground = self.ground_made(ground.recorded());
         let pipelines = self.slot(shape);
@@ -486,24 +462,6 @@ impl Extrusions {
                 &commands,
             )
         });
-        let mut commands = Vec::new();
-        if let Some(pipeline) =
-            self.sphere[usize::from(self.samples == 4)].filter(|_| first && sphere)
-        {
-            commands.extend([
-                RenderCommand::SetBindGroup {
-                    index: 0,
-                    group: scene,
-                },
-                RenderCommand::SetBindGroup { index: 1, group },
-                RenderCommand::SetPipeline(pipeline),
-                RenderCommand::Draw {
-                    vertices: 0..3,
-                    instances: 0..1,
-                },
-            ]);
-        }
-        commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
         RenderPass {
             label: "3d layer",
             colors: vec![
@@ -522,7 +480,7 @@ impl Extrusions {
                     LoadOp::Load
                 },
             }),
-            commands,
+            commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],
         }
     }
 }
@@ -588,14 +546,6 @@ impl crate::release::Release for Extrusions {
     fn release(self, gpu: &mut dyn Gpu) {
         let pipelines: Vec<Pipelines> = self.pipelines.into_iter().map(|(_, p)| p).collect();
         let mask = self.mask_target.map(|(t, ..)| t);
-        (
-            pipelines,
-            self.ground,
-            self.mask,
-            self.sphere,
-            self.depth,
-            mask,
-        )
-            .release(gpu);
+        (pipelines, self.ground, self.mask, self.depth, mask).release(gpu);
     }
 }

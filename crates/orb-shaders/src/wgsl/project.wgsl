@@ -367,7 +367,7 @@ fn tile_ground_shifted(tile: Tile, p: vec2<f32>, shift: vec2<f32>) -> Ground {
 // globe along its east, north and up there, mixed as the globe hands over.
 // Depth on the globe comes from the horizon plane, which hides its far side.
 fn ground_clip(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
-    return ground_clip_depth(g, offset, z, CLIP_HORIZON);
+    return ground_clip_depth(g, offset, z, false);
 }
 
 // A ground point raised `z` world units, for the terrain's depth test
@@ -425,31 +425,18 @@ fn sphere_hides(p: vec3<f32>, solid: bool) -> bool {
     return t > 0.0 && t < 0.999;
 }
 
-// `ground_clip` for 3D content (the terrain), with perspective depth on
-// the globe, as GL JS's `projectTileFor3D` keeps.
+// `ground_clip` for 3D content (extrusions), with perspective depth on the
+// globe, as GL JS's `projectTileFor3D` keeps.
 fn ground_clip_3d(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
-    return ground_clip_depth(g, offset, z, CLIP_SOLID);
+    return ground_clip_depth(g, offset, z, true);
 }
 
-// How `ground_clip_depth` gives a globe point its depth: from the horizon
-// plane, as GL JS's flat layers; in perspective, past the far plane where
-// the sphere hides it (`sphere_hides`); or in perspective for what stands
-// on the ground (extrusions and what they darken), which the sphere hides
-// per fragment by the depth the 3D passes share (`fs_sphere_depth`, or the
-// terrain's) once the view is the whole sphere. A wall rising past the
-// limb from a foot behind it would clip at its middle per vertex; while
-// the globe hands over, the sphere hides those per vertex still.
-const CLIP_HORIZON: u32 = 0u;
-const CLIP_SOLID: u32 = 1u;
-const CLIP_STANDING: u32 = 2u;
-
-// `ground_clip` for what stands on the ground, with reversed-Z depth, as
-// 3D passes draw. On the plane it comes from the frame's depth row, as
-// clip w less z taken whole: w and z are nearly equal there, and
-// subtracting them in f32 would leave a relative error of up to 10^-5,
-// enough for coplanar faces to fight.
+// `ground_clip_3d` with reversed-Z depth, as 3D passes draw. On the plane
+// it comes from the frame's depth row, as clip w less z taken whole: w and
+// z are nearly equal there, and subtracting them in f32 would leave a
+// relative error of up to 10^-5, enough for coplanar faces to fight.
 fn ground_clip_reversed(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
-    var clip = ground_clip_depth(g, offset, z, CLIP_STANDING);
+    var clip = ground_clip_3d(g, offset, z);
     clip.z = select(clip.w - clip.z, plane_depth(g.flat + offset, z), !on_globe());
     return clip;
 }
@@ -480,7 +467,7 @@ fn ground_mask_clip(p: vec2<f32>) -> vec4<f32> {
     return clip;
 }
 
-fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, depth: u32) -> vec4<f32> {
+fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<f32> {
     let flat = frame.view_proj * vec4<f32>(g.flat + offset, z, 1.0);
     if !on_globe() {
         return flat;
@@ -512,12 +499,12 @@ fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, depth: u32) -> vec4<f
         p += turned * (SPHERE_RADIUS + z * frame.globe_metres);
     }
     var clip = frame.globe_view_proj * vec4<f32>(p, 1.0);
-    if depth != CLIP_HORIZON {
+    if solid {
         // Behind the sphere from the eye: past the far plane, before and
         // after the 3D passes reverse the depth, so a triangle the sphere
         // partly hides (a skirt hanging into it) runs away from the eye
         // there rather than in front of the surface.
-        if (depth == CLIP_SOLID || frame.globe_amount < 1.0) && sphere_hides(p, true) {
+        if sphere_hides(p, true) {
             clip.z = 2.0 * clip.w;
         }
         if !g.on_plane {
