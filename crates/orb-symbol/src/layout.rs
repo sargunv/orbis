@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use orb_text::{
     Anchor, FontStack, GlyphMap, GlyphRequests, Justify, Label, ONE_EM, ShapeContext, ShapeOptions,
-    Shaping, WordBreaker, WritingMode, shape_text, unicode,
+    Shaping, Unjustified, WordBreaker, WritingMode, shape_unjustified, unicode,
 };
 use orb_tile::{Ancestor, GeometryType, Layer, Value};
 
@@ -731,6 +731,17 @@ impl<'a> Builder<'a> {
     }
 
     fn shape(&self, label: &Label, f: &FeatureLayout, options: ShapeOptions) -> Option<Shaping> {
+        self.shape_unjustified(label, f, options)
+            .map(|shaped| shaped.into_justified(options.justify))
+    }
+
+    /// [`Self::shape`] short of justification (see [`shape_unjustified`]).
+    fn shape_unjustified(
+        &self,
+        label: &Label,
+        f: &FeatureLayout,
+        options: ShapeOptions,
+    ) -> Option<Unjustified> {
         let images = self.context.images;
         let lookup = |name: &str| images.get(name).map(|(_, image)| image.inline());
         let context = ShapeContext {
@@ -738,7 +749,7 @@ impl<'a> Builder<'a> {
             images: &lookup,
             words: self.context.words,
         };
-        shape_text(label, &f.text_font, context, &options)
+        shape_unjustified(label, &f.text_font, context, &options)
     }
 
     /// The loop body of GL JS `performSymbolLayout`.
@@ -810,23 +821,22 @@ impl<'a> Builder<'a> {
                 } else {
                     justifications.push(resolve_justify(f.text_justify, f.text_anchor));
                 }
+                // Shaped once, justified for each justification.
+                let mut shaped = None;
                 let mut single_line = false;
                 for justification in justifications {
                     if shapings.contains(justification) {
                         continue;
                     }
+                    let shaped = shaped.get_or_insert_with(|| {
+                        let horizontal = WritingMode::Horizontal;
+                        let options = options(Anchor::Center, justification, horizontal, false);
+                        self.shape_unjustified(label, f, options)
+                    });
                     if single_line {
                         shapings.horizontal.push((justification, None));
-                    } else if let Some(shaping) = self.shape(
-                        label,
-                        f,
-                        options(
-                            Anchor::Center,
-                            justification,
-                            WritingMode::Horizontal,
-                            false,
-                        ),
-                    ) {
+                    } else if let Some(shaping) = shaped.as_ref().map(|s| s.justify(justification))
+                    {
                         single_line = shaping.lines.len() == 1;
                         shapings
                             .horizontal

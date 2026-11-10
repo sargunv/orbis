@@ -180,6 +180,58 @@ pub fn shape_text(
     context: ShapeContext<'_>,
     options: &ShapeOptions,
 ) -> Option<Shaping> {
+    shape_unjustified(label, default_stack, context, options)
+        .map(|shaped| shaped.into_justified(options.justify))
+}
+
+/// A label shaped into lines but not yet justified, which every
+/// justification of the label shares: a label with variable anchors is
+/// shaped once for all of them.
+#[derive(Clone, Debug)]
+pub struct Unjustified {
+    shaping: Shaping,
+    block: Block,
+}
+
+/// What justifying a label's lines reads of their block.
+#[derive(Clone, Copy, Debug)]
+struct Block {
+    horizontal_align: f64,
+    vertical_align: f64,
+    max_line_length: f64,
+    max_line_height: f64,
+    /// `text-line-height` × [`ONE_EM`].
+    line_height: f64,
+    height: f64,
+    line_count: usize,
+}
+
+impl Unjustified {
+    /// The label justified to `justify`, as [`shape_text`] shapes it.
+    pub fn justify(&self, justify: Justify) -> Shaping {
+        self.clone().into_justified(justify)
+    }
+
+    pub fn into_justified(mut self, justify: Justify) -> Shaping {
+        let justify = justify.factor();
+        for line in &mut self.shaping.lines {
+            if !line.glyphs.is_empty() {
+                justify_line(&mut line.glyphs, justify);
+            }
+        }
+        align(&mut self.shaping.lines, justify, &self.block);
+        self.shaping
+    }
+}
+
+/// [`shape_text`] short of justification, which it leaves to
+/// [`Unjustified::justify`]: `options.justify` is not read.
+pub fn shape_unjustified(
+    label: &Label,
+    default_stack: &FontStack,
+    context: ShapeContext<'_>,
+    options: &ShapeOptions,
+) -> Option<Unjustified> {
     let ShapeContext {
         glyphs,
         images,
@@ -220,11 +272,11 @@ pub fn shape_text(
             })
             .collect(),
     };
-    shape_lines(&mut shaping, glyphs, images, lines, options);
+    let block = shape_lines(&mut shaping, glyphs, images, lines, options);
     if shaping.lines.iter().all(|l| l.glyphs.is_empty()) {
         return None;
     }
-    Some(shaping)
+    Some(Unjustified { shaping, block })
 }
 
 fn break_lines(input: &Tagged, breaks: &[usize]) -> Vec<Tagged> {
@@ -442,12 +494,11 @@ fn shape_lines(
     images: Images<'_>,
     mut lines: Vec<Tagged>,
     options: &ShapeOptions,
-) {
+) -> Block {
     let mut x = 0.0;
     let mut y = 0.0;
     let mut max_line_length: f64 = 0.0;
     let mut max_line_height: f64 = 0.0;
-    let justify = options.justify.factor();
     let size_factor = ONE_EM / options.layout_text_size_this_zoom;
     let spacing = options.spacing;
     let line_count = lines.len();
@@ -586,7 +637,6 @@ fn shape_lines(
         if !positioned.glyphs.is_empty() {
             let line_length = x - spacing;
             max_line_length = js_max(line_length, max_line_length);
-            justify_line(&mut positioned.glyphs, justify);
         }
 
         x = 0.0;
@@ -599,21 +649,19 @@ fn shape_lines(
     }
 
     let (horizontal_align, vertical_align) = options.anchor.alignment();
-    align(
-        &mut shaping.lines,
-        justify,
-        horizontal_align,
-        vertical_align,
-        max_line_length,
-        max_line_height,
-        options.line_height,
-        y,
-        line_count,
-    );
     shaping.top += -vertical_align * y;
     shaping.bottom = shaping.top + y;
     shaping.left += -horizontal_align * max_line_length;
     shaping.right = shaping.left + max_line_length;
+    Block {
+        horizontal_align,
+        vertical_align,
+        max_line_length,
+        max_line_height,
+        line_height: options.line_height,
+        height: y,
+        line_count,
+    }
 }
 
 fn justify_line(glyphs: &mut [PositionedGlyph], justify: f64) {
@@ -627,21 +675,19 @@ fn justify_line(glyphs: &mut [PositionedGlyph], justify: f64) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn align(
-    lines: &mut [PositionedLine],
-    justify: f64,
-    horizontal_align: f64,
-    vertical_align: f64,
-    max_line_length: f64,
-    max_line_height: f64,
-    line_height: f64,
-    block_height: f64,
-    line_count: usize,
-) {
+fn align(lines: &mut [PositionedLine], justify: f64, block: &Block) {
+    let Block {
+        horizontal_align,
+        vertical_align,
+        max_line_length,
+        max_line_height,
+        line_height,
+        height,
+        line_count,
+    } = *block;
     let shift_x = (justify - horizontal_align) * max_line_length;
     let shift_y = if max_line_height != line_height {
-        -block_height * vertical_align - DEFAULT_OFFSET
+        -height * vertical_align - DEFAULT_OFFSET
     } else {
         -vertical_align * line_count as f64 * line_height + 0.5 * line_height
     };

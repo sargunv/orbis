@@ -35,7 +35,8 @@ pub use label::{
 pub use segment::{HostWords, WordBreaker};
 pub use shaping::{
     Anchor, DEFAULT_OFFSET, GlyphSource, Justify, ONE_EM, PositionedGlyph, PositionedLine,
-    ShapeContext, ShapeOptions, ShapedSection, Shaping, WritingMode, shape_text,
+    ShapeContext, ShapeOptions, ShapedSection, Shaping, Unjustified, WritingMode, shape_text,
+    shape_unjustified,
 };
 pub use transform::{TextTransform, transform_text};
 
