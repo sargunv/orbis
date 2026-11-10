@@ -2,7 +2,6 @@
 //! still output and the device it draws on.
 
 use std::collections::VecDeque;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -153,7 +152,7 @@ pub struct CullCount {
 /// A map: style, camera, gestures and events. Draw it with
 /// [`render`](Self::render) whenever [`needs_frame`](Self::needs_frame).
 pub struct Map {
-    shared: Rc<Shared>,
+    shared: Arc<Shared>,
     runtime: Runtime,
     map: orb_runtime::Map,
     /// Set from any thread when data arrived.
@@ -212,9 +211,9 @@ impl Drop for Map {
         drop(hook);
         // What the map drew with goes with it, on the device that made it.
         if let Some(renderer) = self.renderer.take()
-            && self.device == self.shared.generation.get()
+            && self.device == self.shared.generation()
         {
-            renderer.destroy(&mut *self.shared.gpu.borrow_mut());
+            renderer.destroy(&mut *self.shared.gpu());
         }
     }
 }
@@ -271,7 +270,7 @@ impl Map {
             finished: Arc::default(),
             next_query: 0,
             renderer: None,
-            device: runtime.shared.generation.get(),
+            device: runtime.shared.generation(),
             gave_up: false,
             busy: true,
             dirty: true,
@@ -297,8 +296,7 @@ impl Map {
         let Some(renderer) = &self.renderer else {
             return Vec::new();
         };
-        let bytes =
-            pollster::block_on(self.shared.gpu.borrow().read_buffer(renderer.draw_args().0));
+        let bytes = pollster::block_on(self.shared.gpu().read_buffer(renderer.draw_args().0));
         (renderer.cull_counts(&bytes).into_iter())
             .map(|(family, candidates, kept)| CullCount {
                 family: format!("{family:?}"),
@@ -986,7 +984,7 @@ impl Map {
         // The frame borrows the device once: the target begins and ends
         // with it, and it's let go before anything else here borrows it.
         let report = {
-            let mut device = self.shared.gpu.borrow_mut();
+            let mut device = self.shared.gpu();
             let Some(texture) = target.begin(&mut device)? else {
                 return Ok(None);
             };
@@ -1081,8 +1079,8 @@ impl Map {
         }
         // The runtime replaced its device: draw on the new one, laying the
         // tiles out again.
-        if self.device != self.shared.generation.get() {
-            self.device = self.shared.generation.get();
+        if self.device != self.shared.generation() {
+            self.device = self.shared.generation();
             self.renderer = None;
             self.dirty = true;
         }
@@ -1108,7 +1106,7 @@ impl Map {
         }
         let format = target.format();
         {
-            let mut device = self.shared.gpu.borrow_mut();
+            let mut device = self.shared.gpu();
             self.woken.store(false, Ordering::Release);
             if !orb_hal::Gpu::caps(&*device).gpu_driven() {
                 return Ok(());

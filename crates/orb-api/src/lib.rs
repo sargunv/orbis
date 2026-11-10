@@ -3,11 +3,11 @@
 //! camera store and its gestures, and a [`Target`] is what a map draws
 //! into: a window surface or a texture the runtime owns.
 //!
-//! Everything here belongs to the thread that created the runtime, with
-//! the host's thread as the scene thread: jobs,
-//! fetches and placement run on the runtime's pools, and a map's
-//! [`Map::set_wake`] callback tells the host, from any thread, that a frame
-//! is needed. `orb-demo` and `orb-android` draw through it.
+//! Everything here is `Send`, so a host calls from whichever
+//! thread it draws on, which becomes the scene thread: jobs, fetches and
+//! placement run on the runtime's pools, and a map's [`Map::set_wake`]
+//! callback tells the host, from any thread, that a frame is needed.
+//! `orb-demo`, `orb-android` and `orb-ffi` draw through it.
 
 #![forbid(unsafe_code)]
 
@@ -16,10 +16,9 @@ mod map;
 mod regions;
 mod target;
 
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use map::{CullCount, Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
 pub use orb_camera::input::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
@@ -95,26 +94,26 @@ pub struct RuntimeOptions {
 }
 
 /// A GPU device and host services, shared by the maps made from it. A
-/// runtime and its maps and targets belong to the thread that made it,
-/// which needn't be the main thread: an embedder draws on a render thread
-/// of its own by making them there. On macOS a `CAMetalLayer` inside a
-/// window's view must still present from the main thread: wgpu-hal asks
-/// the view for its window when it acquires a frame.
+/// runtime, its maps and its targets are `Send`, and a runtime is `Sync`:
+/// an embedder can make them on one thread and draw on another, such as
+/// a render thread of its own, on macOS too (`orb-demo` presents from
+/// one). The device is locked for each call that uses it, so maps of one
+/// runtime on different threads take turns on it.
 #[derive(Clone, Debug)]
 pub struct Runtime {
-    shared: Rc<Shared>,
+    shared: Arc<Shared>,
 }
 
 #[derive(Debug)]
 struct Shared {
-    gpu: RefCell<WgpuGpu>,
+    gpu: Mutex<WgpuGpu>,
     options: RuntimeOptions,
     /// The device's adapter.
-    adapter: RefCell<String>,
+    adapter: Mutex<String>,
     /// Counts devices made: maps and targets of an older one rebuild.
-    generation: std::cell::Cell<u64>,
+    generation: AtomicU64,
     /// Device losses in a row, and how the next is answered.
-    recovery: RefCell<Recovery>,
+    recovery: Mutex<Recovery>,
     /// Fetches, through the HTTP cache with a state directory.
     fetch: Arc<NativeFetch>,
     /// Offline regions, with a state directory.
@@ -124,12 +123,12 @@ struct Shared {
     images: orb_runtime::Images,
     /// Where the pipeline cache is kept, and the pipeline count it was
     /// last saved at.
-    cache: RefCell<Option<(PathBuf, u32)>>,
+    cache: Mutex<Option<(PathBuf, u32)>>,
     /// Every map's wake: the device calls them all when a pipeline
     /// compiles.
     wakes: Wakes,
     /// Whether submissions are timed ([`Runtime::set_gpu_timing`]).
-    timing: std::cell::Cell<bool>,
+    timing: AtomicBool,
 }
 
 /// What a runtime's device is and has done ([`Runtime::stats`]).
@@ -246,12 +245,12 @@ impl Runtime {
         device::set_compiler(&mut gpu, executor.clone(), wake_all(&wakes));
         let fetch = NativeFetch::with_cache(http_cache(options)?);
         let runtime = Self {
-            shared: Rc::new(Shared {
-                gpu: RefCell::new(gpu),
+            shared: Arc::new(Shared {
+                gpu: Mutex::new(gpu),
                 options: options.clone(),
-                adapter: RefCell::new(adapter),
-                generation: std::cell::Cell::new(0),
-                recovery: RefCell::new(Recovery::new()),
+                adapter: Mutex::new(adapter),
+                generation: AtomicU64::new(0),
+                recovery: Mutex::new(Recovery::new()),
                 fetch: fetch.clone(),
                 regions: options
                     .state_dir
@@ -259,9 +258,9 @@ impl Runtime {
                     .map(|dir| regions::Regions::new(dir, fetch)),
                 executor,
                 images: Default::default(),
-                cache: RefCell::new(None),
+                cache: Mutex::new(None),
                 wakes,
-                timing: std::cell::Cell::new(false),
+                timing: AtomicBool::new(false),
             }),
         };
         runtime.start_pipeline_cache()?;
@@ -269,7 +268,7 @@ impl Runtime {
             .ok()
             .and_then(|n| n.parse::<u64>().ok())
         {
-            let mut gpu = runtime.shared.gpu.borrow_mut();
+            let mut gpu = runtime.shared.gpu();
             gpu.set_debug_groups(true);
             if let Some(skip) = frame.checked_sub(1) {
                 gpu.capture_frames(skip, 1);
@@ -288,7 +287,7 @@ impl Runtime {
     /// carries its debug groups, for captures the debugger's own controls
     /// start.
     pub fn capture_gpu_frames(&self, skip: u64, count: u64) {
-        self.shared.gpu.borrow_mut().capture_frames(skip, count);
+        self.shared.gpu().capture_frames(skip, count);
     }
 
     /// Rewrites every request the runtime's maps and region downloads make
@@ -312,11 +311,11 @@ impl Runtime {
     /// What the runtime's device is and has done: for diagnostics and
     /// measurements.
     pub fn stats(&self) -> RuntimeStats {
-        let gpu = self.shared.gpu.borrow();
+        let gpu = self.shared.gpu();
         let caps = orb_hal::Gpu::caps(&*gpu);
         let u = gpu.uploaded();
         RuntimeStats {
-            adapter: self.shared.adapter.borrow().clone(),
+            adapter: lock(&self.shared.adapter).clone(),
             pipelines_created: gpu.pipelines_created(),
             pipeline_time: gpu.pipeline_time(),
             pipeline_timings: gpu.pipeline_timings().to_vec(),
@@ -336,8 +335,8 @@ impl Runtime {
     /// Times every submission from now on, for measurements:
     /// [`gpu_timings`](Self::gpu_timings) collects them.
     pub fn set_gpu_timing(&self, on: bool) {
-        self.shared.timing.set(on);
-        self.shared.gpu.borrow_mut().set_timing(on);
+        self.shared.timing.store(on, Ordering::Relaxed);
+        self.shared.gpu().set_timing(on);
     }
 
     /// Each submission's times since the last call, in order, once the GPU
@@ -348,17 +347,17 @@ impl Runtime {
         if self.lost() {
             return Vec::new();
         }
-        pollster::block_on(self.shared.gpu.borrow_mut().take_timings())
+        pollster::block_on(self.shared.gpu().take_timings())
     }
 
     /// Whether the GPU was lost; the next frame drawn makes another.
     pub fn lost(&self) -> bool {
-        self.shared.gpu.borrow().lost()
+        self.shared.gpu().lost()
     }
 
     /// Loses the GPU on purpose, to exercise recovery.
     pub fn lose_device(&self) {
-        self.shared.gpu.borrow_mut().lose();
+        self.shared.gpu().lose();
     }
 
     /// Whether a lost device's replacement is due ([`BACKOFF`]): `false`
@@ -367,11 +366,11 @@ impl Runtime {
     /// backoff's, or for a driver that hung or failed compiling, which
     /// another device would do the same in.
     pub(crate) fn recovery_due(&self) -> Result<bool, Error> {
-        let mut recovery = self.shared.recovery.borrow_mut();
+        let mut recovery = lock(&self.shared.recovery);
         if let Some(failed) = &recovery.failed {
             return Err(Error::Native(failed.clone()));
         }
-        if let Some(hung) = self.shared.gpu.borrow().hung() {
+        if let Some(hung) = self.shared.gpu().hung() {
             return Err(recovery.fail(format!("the GPU driver hung or failed making {hung}")));
         }
         let now = std::time::Instant::now();
@@ -385,7 +384,7 @@ impl Runtime {
                     1
                 };
                 let Some(&wait) = BACKOFF.get(recovery.losses as usize - 1) else {
-                    let reason = (self.shared.gpu.borrow().lost_reason())
+                    let reason = (self.shared.gpu().lost_reason())
                         .map(|r| format!("; the last: {r}"))
                         .unwrap_or_default();
                     let why = format!(
@@ -420,7 +419,7 @@ impl Runtime {
     /// made again, window targets fail with [`Error::TargetLost`].
     pub(crate) fn recover(&self) -> Result<(), Error> {
         let made = device::make();
-        let mut recovery = self.shared.recovery.borrow_mut();
+        let mut recovery = lock(&self.shared.recovery);
         recovery.due = None;
         let (mut gpu, adapter) = made.map_err(|e| {
             recovery.fail(format!(
@@ -435,14 +434,14 @@ impl Runtime {
             self.shared.executor.clone(),
             wake_all(&self.shared.wakes),
         );
-        drop(std::mem::replace(&mut *self.shared.gpu.borrow_mut(), gpu));
-        *self.shared.adapter.borrow_mut() = adapter;
-        self.shared.generation.set(self.shared.generation.get() + 1);
+        drop(std::mem::replace(&mut *self.shared.gpu(), gpu));
+        *lock(&self.shared.adapter) = adapter;
+        self.shared.generation.fetch_add(1, Ordering::AcqRel);
         // The maps' images were on the old device.
         self.shared.images.reset();
-        *self.shared.cache.borrow_mut() = None;
+        *lock(&self.shared.cache) = None;
         self.start_pipeline_cache()?;
-        self.set_gpu_timing(self.shared.timing.get());
+        self.set_gpu_timing(self.shared.timing.load(Ordering::Relaxed));
         Ok(())
     }
 
@@ -461,7 +460,7 @@ impl Runtime {
         else {
             return Ok(());
         };
-        let mut device = self.shared.gpu.borrow_mut();
+        let mut device = self.shared.gpu();
         let Some(key) = device.pipeline_cache_key() else {
             return Ok(());
         };
@@ -470,18 +469,22 @@ impl Runtime {
         let file = dir.join(key);
         let data = std::fs::read(&file).ok();
         device.start_pipeline_cache(data.as_deref());
-        *self.shared.cache.borrow_mut() = Some((file, device.pipelines_created()));
+        let made = device.pipelines_created();
+        // The cache's lock goes before the device's, as in
+        // `save_pipeline_cache`.
+        drop(device);
+        *lock(&self.shared.cache) = Some((file, made));
         Ok(())
     }
 
     /// Writes the pipeline cache if pipelines were made since it was last
     /// written.
     fn save_pipeline_cache(&self) -> Result<(), Error> {
-        let mut cache = self.shared.cache.borrow_mut();
+        let mut cache = lock(&self.shared.cache);
         let Some((file, saved)) = cache.as_mut() else {
             return Ok(());
         };
-        let device = self.shared.gpu.borrow();
+        let device = self.shared.gpu();
         let made = device.pipelines_created();
         if made == *saved {
             return Ok(());
@@ -543,8 +546,7 @@ impl Runtime {
         height: u32,
     ) -> Result<Surface, Error> {
         self.shared
-            .gpu
-            .borrow()
+            .gpu()
             .create_surface(window, width, height)
             .map_err(Error::Unsupported)
     }
@@ -553,7 +555,7 @@ impl Runtime {
     /// such as a `CAMetalLayer` or an `ANativeWindow`
     /// ([`WgpuGpu::create_surface_raw`]).
     pub fn with_device<R>(&self, f: impl FnOnce(&WgpuGpu) -> R) -> R {
-        f(&self.shared.gpu.borrow())
+        f(&self.shared.gpu())
     }
 
     /// Wakes `wake` when a pipeline compiles, while it lives.
@@ -586,6 +588,38 @@ impl Runtime {
             wake,
         }
     }
+}
+
+// Hosts move these across threads (`orb-ffi`'s owner thread, a render
+// thread of the host's), so losing `Send` is a breaking change. A runtime
+// is shared by its maps, so it's `Sync` too; a map isn't (the scene keeps
+// `RefCell`s), and needn't be, since its calls take turns behind `&mut`.
+const _: () = {
+    const fn send<T: Send>() {}
+    const fn sync<T: Sync>() {}
+    send::<Runtime>();
+    sync::<Runtime>();
+    send::<Map>();
+    send::<Target>();
+};
+
+impl Shared {
+    /// The device, for the call.
+    fn gpu(&self) -> MutexGuard<'_, WgpuGpu> {
+        lock(&self.gpu)
+    }
+
+    /// Counts devices made: maps and targets of an older one rebuild.
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+}
+
+/// Locks `mutex`, past a panic that poisoned it: a caller that catches
+/// a panic (a C boundary) goes on with the state as the panic left it,
+/// as `RefCell` did.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The most response bodies the HTTP cache keeps: fresh ones load without

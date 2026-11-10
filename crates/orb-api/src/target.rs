@@ -1,7 +1,8 @@
 //! What a map draws into: a window surface, or a texture the
 //! runtime owns and the host reads back or composites.
 
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureId, TextureUsages};
 use orb_hal_wgpu::{Surface, SurfaceError, WgpuGpu};
@@ -13,7 +14,7 @@ use crate::{Error, Runtime, Shared};
 /// (physical pixels per logical pixel).
 #[derive(Debug)]
 pub struct Target {
-    shared: Rc<Shared>,
+    shared: Arc<Shared>,
     kind: Kind,
     width: u32,
     height: u32,
@@ -22,7 +23,7 @@ pub struct Target {
     generation: u64,
     /// The last frame was read back: the next one copies its pixels out
     /// in its own submission, as the read after it will want them.
-    read_back: std::cell::Cell<bool>,
+    read_back: AtomicBool,
 }
 
 /// Frames a texture target lets the GPU queue before the next one waits,
@@ -51,7 +52,7 @@ impl Target {
             width,
             height,
             scale: sane_scale(scale),
-            generation: runtime.shared.generation.get(),
+            generation: runtime.shared.generation(),
             read_back: Default::default(),
         }
     }
@@ -59,14 +60,14 @@ impl Target {
     /// Draws into an RGBA8 texture the runtime owns.
     pub fn texture(runtime: &Runtime, width: u32, height: u32, scale: f64) -> Self {
         let (width, height) = (width.max(1), height.max(1));
-        let id = create_texture(&mut runtime.shared.gpu.borrow_mut(), width, height);
+        let id = create_texture(&mut runtime.shared.gpu(), width, height);
         Self {
             shared: runtime.shared.clone(),
             kind: Kind::Texture(id),
             width,
             height,
             scale: sane_scale(scale),
-            generation: runtime.shared.generation.get(),
+            generation: runtime.shared.generation(),
             read_back: Default::default(),
         }
     }
@@ -98,17 +99,17 @@ impl Target {
         }
         self.width = width;
         self.height = height;
-        let mut device = self.shared.gpu.borrow_mut();
+        let mut device = self.shared.gpu();
         match &mut self.kind {
             Kind::Surface(surface) => device.resize_surface(surface, width, height),
             Kind::Released => {}
             Kind::Texture(id) => {
                 // A texture of a replaced device went with it.
-                if self.generation == self.shared.generation.get() {
+                if self.generation == self.shared.generation() {
                     device.destroy_texture(*id);
                 }
                 *id = create_texture(&mut device, width, height);
-                self.generation = self.shared.generation.get();
+                self.generation = self.shared.generation();
             }
         }
     }
@@ -118,8 +119,8 @@ impl Target {
     /// target, or once the GPU was replaced until the next frame.
     pub fn wgpu_texture(&self) -> Option<orb_hal_wgpu::wgpu::Texture> {
         match self.kind {
-            Kind::Texture(id) if self.generation == self.shared.generation.get() => {
-                Some(self.shared.gpu.borrow().texture(id).clone())
+            Kind::Texture(id) if self.generation == self.shared.generation() => {
+                Some(self.shared.gpu().texture(id).clone())
             }
             _ => None,
         }
@@ -130,18 +131,16 @@ impl Target {
     /// replaced GPU went with it: draw a frame first.
     pub fn read_pixels(&self) -> Result<Vec<u8>, Error> {
         match self.kind {
-            Kind::Texture(_) if self.generation != self.shared.generation.get() => Err(
+            Kind::Texture(_) if self.generation != self.shared.generation() => Err(
                 Error::InvalidState("the GPU was replaced since the last frame".into()),
             ),
             // wgpu panics when a lost device's wait fails.
-            Kind::Texture(_) if self.shared.gpu.borrow().lost() => Err(Error::InvalidState(
+            Kind::Texture(_) if self.shared.gpu().lost() => Err(Error::InvalidState(
                 "the GPU was lost: draw a frame on its replacement first".into(),
             )),
             Kind::Texture(id) => {
-                self.read_back.set(true);
-                Ok(pollster::block_on(
-                    self.shared.gpu.borrow_mut().read_texture(id),
-                ))
+                self.read_back.store(true, Ordering::Relaxed);
+                Ok(pollster::block_on(self.shared.gpu().read_texture(id)))
             }
             Kind::Surface(_) => Err(Error::Unsupported(
                 "surface targets can't be read back".into(),
@@ -164,8 +163,8 @@ impl Target {
         matches!(self.kind, Kind::Surface(_))
     }
 
-    pub(crate) fn same_runtime(&self, shared: &Rc<Shared>) -> bool {
-        Rc::ptr_eq(&self.shared, shared)
+    pub(crate) fn same_runtime(&self, shared: &Arc<Shared>) -> bool {
+        Arc::ptr_eq(&self.shared, shared)
     }
 
     /// Starts a frame on `device`, the runtime's, which the frame holds:
@@ -173,11 +172,11 @@ impl Target {
     pub(crate) fn begin(&mut self, device: &mut WgpuGpu) -> Result<Option<TextureId>, Error> {
         // Made before the device was replaced: textures are made again;
         // windows need the host.
-        if self.generation != self.shared.generation.get() {
+        if self.generation != self.shared.generation() {
             match &mut self.kind {
                 Kind::Texture(id) => {
                     *id = create_texture(device, self.width, self.height);
-                    self.generation = self.shared.generation.get();
+                    self.generation = self.shared.generation();
                 }
                 Kind::Surface(_) | Kind::Released => {
                     return Err(Error::TargetLost("the GPU was replaced".into()));
@@ -187,7 +186,7 @@ impl Target {
         match &mut self.kind {
             Kind::Texture(id) => {
                 // A host reading frames back reads the next one too.
-                if self.read_back.replace(false) {
+                if self.read_back.swap(false, Ordering::Relaxed) {
                     device.read_with_next_submit(*id);
                 }
                 Ok(Some(*id))
@@ -214,9 +213,9 @@ impl Target {
     /// Frees a window target's surface, so a lost device's go before the
     /// new device's come. The target then reports [`Error::TargetLost`].
     pub(crate) fn release(&mut self) {
-        let mut device = self.shared.gpu.borrow_mut();
+        let mut device = self.shared.gpu();
         let kind = std::mem::replace(&mut self.kind, Kind::Released);
-        if self.generation != self.shared.generation.get() {
+        if self.generation != self.shared.generation() {
             // Its resources went with the old device.
             return;
         }
