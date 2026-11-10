@@ -25,22 +25,8 @@ pub(crate) fn symbol_tile() -> (TileWorker, TileResult) {
     let worker = TileWorker::new(SYMBOLS).unwrap();
     let (z, x, y) = SYMBOL_TILE;
     let tile = TileIndex::new(z, x, y);
-    let request = TileRequest {
-        style: 1,
-        source: 1,
-        tile,
-        zoom: f64::from(tile.z),
-        bend: None,
-        warp: false,
-        data_zoom: tile.z,
-        location: TileLocation::Url(format!("local://tiles/{z}-{x}-{y}.mvt")),
-        encoding: Encoding::Mvt,
-        nodes: None,
-        rows_only: false,
-        neighbour: false,
-        dem_unpack: None,
-        icons: 0,
-    };
+    let location = TileLocation::Url(format!("local://tiles/{z}-{x}-{y}.mvt"));
+    let request = TileRequest::whole(1, 1, tile, location, Encoding::Mvt);
     let bytes = std::fs::read(format!("{ASSETS}/tiles/{z}-{x}-{y}.mvt")).unwrap();
     let Built::Fetch(urls) = worker.build(&bytes, Encoding::Mvt, &request).unwrap() else {
         panic!("labels need glyph ranges first")

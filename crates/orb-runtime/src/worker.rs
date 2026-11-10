@@ -942,6 +942,35 @@ impl PartialEq for DemUnpack {
 impl Eq for DemUnpack {}
 
 impl TileRequest {
+    /// The whole of `tile`, every node of source `source` of style `style`
+    /// laid out at the tile's own zoom from its own bytes at `location`:
+    /// no bend, warp, DEM or icons to wait for. Requests that differ
+    /// update it.
+    pub fn whole(
+        style: u64,
+        source: u32,
+        tile: TileIndex,
+        location: TileLocation,
+        encoding: Encoding,
+    ) -> Self {
+        Self {
+            style,
+            source,
+            tile,
+            zoom: f64::from(tile.z),
+            bend: None,
+            warp: false,
+            data_zoom: tile.z,
+            location,
+            encoding,
+            nodes: None,
+            rows_only: false,
+            neighbour: false,
+            dem_unpack: None,
+            icons: 0,
+        }
+    }
+
     /// The ancestor whose bytes the host fetches (including archive reads).
     pub fn data_tile(&self) -> TileIndex {
         let depth = self.tile.z - self.data_zoom;
@@ -960,22 +989,8 @@ pub(crate) mod tests {
     use orb_host::{Fetch, ImageDecode};
 
     fn request(tile: TileIndex) -> TileRequest {
-        TileRequest {
-            style: 1,
-            source: 1,
-            tile,
-            zoom: f64::from(tile.z),
-            bend: None,
-            warp: false,
-            data_zoom: tile.z,
-            location: TileLocation::Url("test://data.json".into()),
-            encoding: Encoding::Mvt,
-            nodes: None,
-            rows_only: false,
-            neighbour: false,
-            dem_unpack: None,
-            icons: 0,
-        }
+        let location = TileLocation::Url("test://data.json".into());
+        TileRequest::whole(1, 1, tile, location, Encoding::Mvt)
     }
 
     const INLINE: &str = r#"{"version":8,"sources":{"geo":{"type":"geojson","maxzoom":2,"data":{"type":"Feature","properties":{"color":"red"},"geometry":{"type":"Polygon","coordinates":[[[-20,-20],[20,-20],[20,20],[-20,20],[-20,-20]]]}}}},"layers":[{"id":"fill","type":"fill","source":"geo","paint":{"fill-color":["get","color"]}},{"id":"line","type":"line","source":"geo"}]}"#;

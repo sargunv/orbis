@@ -82,22 +82,13 @@ impl Stages {
 
     /// The whole tile at its own zoom, as a map requests it.
     fn request(&self, source: u32, tile: TileIndex) -> TileRequest {
-        TileRequest {
-            style: 1,
+        TileRequest::whole(
+            1,
             source,
             tile,
-            zoom: f64::from(tile.z),
-            bend: None,
-            warp: false,
-            data_zoom: tile.z,
-            location: TileLocation::Url(String::new()),
-            encoding: self.encoding,
-            nodes: None,
-            rows_only: false,
-            neighbour: false,
-            dem_unpack: None,
-            icons: 0,
-        }
+            TileLocation::Url(String::new()),
+            self.encoding,
+        )
     }
 }
 

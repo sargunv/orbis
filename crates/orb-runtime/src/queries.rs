@@ -235,25 +235,14 @@ impl crate::Map {
             Some(answer) if endpoint.host() => crate::TileLocation::Host(answer.clone()),
             _ => endpoint.location(data_tile),
         };
+        // Features are read as the tile has them: unbent.
         Some(TileRequest {
-            style: style.id,
-            source: key,
-            tile,
             // The zoom it laid out at.
             zoom: pyramid
                 .get(tile)
                 .map_or_else(|| endpoint.tms.style_zoom(tile), |r| r.zoom),
-            // Features are read as the tile has them.
-            bend: None,
-            warp: false,
             data_zoom: tile.z.min(endpoint.maxzoom),
-            location,
-            encoding: endpoint.encoding,
-            nodes: None,
-            rows_only: false,
-            neighbour: false,
-            dem_unpack: None,
-            icons: 0,
+            ..TileRequest::whole(style.id, key, tile, location, endpoint.encoding)
         })
     }
 

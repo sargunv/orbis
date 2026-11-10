@@ -1974,23 +1974,18 @@ impl Map {
             }
         }
         let host = endpoint.host();
+        let location = endpoint.location(endpoint.data_tile(tile));
         let mut request = TileRequest {
-            style: style.id,
-            source: key,
-            tile,
             zoom,
             bend,
             // A raster tile on another plane draws through its warp's mesh
             // there (on a globe, through a grid the sphere bends).
             warp: warped && !vector && endpoint.quad.is_none() && self.surface.globe().is_none(),
             data_zoom: tile.z.min(endpoint.maxzoom),
-            location: endpoint.location(endpoint.data_tile(tile)),
-            encoding: endpoint.encoding,
             nodes,
             rows_only,
             neighbour,
-            dem_unpack: None,
-            icons: 0,
+            ..TileRequest::whole(style.id, key, tile, location, endpoint.encoding)
         };
         // Symbol layout needs the sprites' metadata: while the sprites load,
         // a source with symbol layers lays out once they're in (GL JS's
@@ -2392,21 +2387,11 @@ impl Map {
                 terrain.pyramid.insert_empty(tile);
                 continue;
             }
+            let location = endpoint.location(tile);
             loads.push(TileRequest {
-                style: style.id,
-                source: terrain.key,
-                tile,
                 zoom: endpoint.tms.style_zoom(tile),
-                bend: None,
-                warp: false,
-                data_zoom: tile.z,
-                location: endpoint.location(tile),
-                encoding: endpoint.encoding,
-                nodes: None,
-                rows_only: false,
-                neighbour: false,
                 dem_unpack: endpoint.dem_unpack.map(crate::DemUnpack),
-                icons: 0,
+                ..TileRequest::whole(style.id, terrain.key, tile, location, endpoint.encoding)
             });
         }
         terrain.loading += loads.len() as u32;
