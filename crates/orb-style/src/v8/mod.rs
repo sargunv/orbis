@@ -574,6 +574,8 @@ pub(crate) struct Cx {
     state: Vec<(String, Value<'static>)>,
     /// The previews whose inputs are accepted; others warn.
     pub(crate) previews: Previews,
+    /// A value read an input beyond the spec, which was reported once.
+    portability_warned: bool,
 }
 
 impl Cx {
@@ -584,6 +586,7 @@ impl Cx {
             diagnostics: Diagnostics::default(),
             state: state.to_vec(),
             previews,
+            portability_warned: false,
         }
     }
 
@@ -639,6 +642,28 @@ impl Cx {
         };
         let message = format!("unknown property \"{}\"", member.key);
         self.warn(path, member.key_span, message);
+    }
+
+    /// Warns, once per document, that a value Orbis draws reads an input
+    /// the spec doesn't allow there, so GL JS and MapLibre Native reject
+    /// the style.
+    pub(crate) fn not_portable(&mut self, path: &str, span: Span, prop: &Prop, beyond: Inputs) {
+        if std::mem::replace(&mut self.portability_warned, true) {
+            return;
+        }
+        let mut inputs: Vec<&str> = beyond.names().collect();
+        if inputs.is_empty() {
+            inputs.push("inputs");
+        }
+        self.warn(
+            path,
+            span,
+            format!(
+                "this value of \"{}\" reads {}, beyond the spec: Orbis draws it, but GL JS and MapLibre Native reject the style (further such values aren't reported)",
+                prop.name,
+                inputs.join(" and "),
+            ),
+        );
     }
 
     pub(crate) fn warn(&mut self, path: impl Into<String>, span: Span, message: impl Into<String>) {

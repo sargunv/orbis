@@ -187,7 +187,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
     if from_state(state, node.state, 1u) { height = state_number(state, node.state, 1u, node.curves[1]); }
     if from_state(state, node.state, 2u) { base = state_number(state, node.state, 2u, node.curves[2]); }
-    // Per-feature opacity and vertical gradient (`orbis:expressions`),
+    // Per-feature opacity and vertical gradient (beyond the spec),
     // packed beside the whole-building bit.
     let flags = prop_at(row + EXTRUSION_ROW_WHOLE);
     var opacity = 1.0;

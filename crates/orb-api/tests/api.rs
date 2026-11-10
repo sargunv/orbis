@@ -475,12 +475,11 @@ fn a_camera_given_keeps_its_pitch_and_bearing() {
     }
 }
 
-/// With the `orbis:expressions` preview, paint reads the camera's pitch
-/// and bearing, and follows them as the camera moves: a map moved to a
-/// camera draws as one made there. Without it, the value warns and draws
-/// the default.
+/// Paint reads the camera's pitch and bearing, beyond the spec and
+/// without a preview, and follows them as the camera moves: a map moved to
+/// a camera draws as one made there.
 #[test]
-fn paint_reads_the_camera_with_the_expressions_preview() {
+fn paint_reads_the_camera() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let style = r##"{"version": 8, "center": [0, 0], "zoom": 2, "sources": {},
       "layers": [{"id": "background", "type": "background", "paint": {
@@ -497,12 +496,11 @@ fn paint_reads_the_camera_with_the_expressions_preview() {
                 .projection(),
         )
     };
-    let map = |previews| {
+    let map = || {
         let mut map = Map::new(
             &runtime,
             MapOptions {
                 camera: Some(at(0.0, 0.0)),
-                previews,
                 ..MapOptions::default()
             },
         );
@@ -513,7 +511,7 @@ fn paint_reads_the_camera_with_the_expressions_preview() {
         let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
         pixel(&image.pixels, SIZE / 2, SIZE / 2)
     };
-    let mut moved = map(orb_api::Previews::ALL);
+    let mut moved = map();
     assert_eq!(centre(&mut moved), [255, 0, 0, 255], "flat");
     for (pitch, bearing, expected) in [
         (60.0, 0.0, [0, 0, 255, 255]),
@@ -521,7 +519,7 @@ fn paint_reads_the_camera_with_the_expressions_preview() {
         (60.0, 120.0, [0, 0, 128, 128]),
     ] {
         moved.jump_to_state(at(pitch, bearing));
-        let mut fresh = map(orb_api::Previews::ALL);
+        let mut fresh = map();
         fresh.jump_to_state(at(pitch, bearing));
         for (how, map) in [("moved", &mut moved), ("fresh", &mut fresh)] {
             let got = centre(map);
@@ -531,10 +529,6 @@ fn paint_reads_the_camera_with_the_expressions_preview() {
             );
         }
     }
-    // Off, the values are the defaults: opaque black.
-    let mut off = map(orb_api::Previews::NONE);
-    off.jump_to_state(at(60.0, 120.0));
-    assert_eq!(centre(&mut off), [0, 0, 0, 255]);
 }
 
 /// style-spec#1889: behind a globe, the backdrop with stars on it, which
@@ -629,11 +623,11 @@ fn the_atmosphere_preview_composites_scattering_in_linear_light() {
     );
 }
 
-/// With `orbis:expressions`, each building takes its own opacity from its
-/// data: over black, a building at a quarter draws a quarter as bright as
-/// one at full. Off, both draw opaque.
+/// Each building takes its own opacity from its data, beyond the spec:
+/// over black, a building at a quarter draws a quarter as bright as one at
+/// full.
 #[test]
-fn extrusion_opacity_follows_the_feature_with_the_expressions_preview() {
+fn extrusion_opacity_follows_the_feature() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let style = r##"{"version": 8, "center": [0, 0], "zoom": 2, "sources": {"b": {"type": "geojson",
         "data": {"type": "FeatureCollection", "features": [
@@ -647,20 +641,11 @@ fn extrusion_opacity_follows_the_feature_with_the_expressions_preview() {
           "fill-extrusion-color": "#ffffff", "fill-extrusion-height": 1000,
           "fill-extrusion-opacity": ["get", "o"],
           "fill-extrusion-vertical-gradient": ["==", ["get", "o"], 1]}}]}"##;
-    let draw = |previews| {
-        let mut map = Map::new(
-            &runtime,
-            MapOptions {
-                previews,
-                ..MapOptions::default()
-            },
-        );
-        map.set_style_json(style).expect("style");
-        let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
-        let roof = |x| pixel(&image.pixels, x, SIZE / 2);
-        (roof(SIZE / 2 - 12), roof(SIZE / 2 + 12))
-    };
-    let (full, quarter) = draw(orb_api::Previews::ALL);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).expect("style");
+    let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+    let roof = |x| pixel(&image.pixels, x, SIZE / 2);
+    let (full, quarter) = (roof(SIZE / 2 - 12), roof(SIZE / 2 + 12));
     assert!(full[0] > 100, "{full:?}");
     for c in 0..3 {
         let expected = f32::from(full[c]) * 0.25;
@@ -669,8 +654,6 @@ fn extrusion_opacity_follows_the_feature_with_the_expressions_preview() {
             "{quarter:?} is not a quarter of {full:?}"
         );
     }
-    let (a, b) = draw(orb_api::Previews::NONE);
-    assert_eq!(a, b, "without the preview both draw opaque");
 }
 
 /// Buildings larger than an overzoom slice draw whole at z15, z16 and z19

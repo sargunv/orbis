@@ -46,7 +46,7 @@ impl PaintState {
 }
 
 /// The plan with its paint's camera reads (`["pitch"]`, `["bearing"]`,
-/// with the `orbis:expressions` preview) resolved to the camera's: `None`
+/// beyond the spec) resolved to the camera's: `None`
 /// when no paint reads the camera.
 pub(crate) fn at_camera(plan: &StylePlan, pitch: f64, bearing: f64) -> Option<StylePlan> {
     if plan.camera_layers.is_empty() {
@@ -575,7 +575,7 @@ fn node_paint(
         }),
         Family::FillExtrusion => {
             let e = layer;
-            // Per feature (`orbis:expressions`), from the rows' flags: the
+            // Per feature (beyond the spec), from the rows' flags: the
             // layer composites at full opacity.
             let opacity = e.get(orb_style::EXTRUSION_OPACITY);
             let gradient = e.get(orb_style::EXTRUSION_VERTICAL_GRADIENT);

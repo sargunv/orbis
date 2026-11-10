@@ -125,8 +125,8 @@ pub(crate) fn typed_property_at<T: PropertyValue>(
 fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
     let parsed =
         PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state).or_else(|errors| {
-            // Inputs beyond the spec's that Orbis honours: accepted with
-            // the preview, else a warning and the default.
+            // Inputs beyond the spec's that Orbis honours: drawn, with a
+            // warning that GL JS and Native reject the style.
             let extended = (!prop.extended.is_empty())
                 .then(|| {
                     let spec = prop.spec_with(prop.orbis_inputs());
@@ -135,12 +135,9 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
                 .flatten();
             match extended {
                 Some(parsed) => {
-                    let what = format!("this value of \"{}\"", prop.name);
-                    if cx.preview(Preview::Expressions, path, json.span, what) {
-                        Ok(parsed)
-                    } else {
-                        Err(Vec::new())
-                    }
+                    let beyond = reads(&parsed).minus(prop.spec_inputs());
+                    cx.not_portable(path, json.span, prop, beyond);
+                    Ok(parsed)
                 }
                 None => Err(errors),
             }
@@ -163,13 +160,19 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
         }
         Ok(parsed) => {
             // The spec's validator lets data-driven paint read state, but
-            // values laid out per tile (patterns, dashes) never see it.
+            // values laid out per tile (patterns, dashes) and values read
+            // per feature beyond the spec never see it.
             if parsed.reads_feature_state() && !prop.orbis_inputs().contains(Inputs::STATE) {
+                let per_tile = if prop.phase() == Phase::Tile {
+                    "per tile, "
+                } else {
+                    ""
+                };
                 cx.warn(
                     path,
                     json.span,
                     format!(
-                        "\"{}\" is evaluated per tile, without feature state",
+                        "\"{}\" is evaluated {per_tile}without feature state",
                         prop.name
                     ),
                 );
@@ -177,6 +180,24 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
             Slot::expression(parsed)
         }
     }
+}
+
+/// The inputs a parsed value reads.
+fn reads(parsed: &PropertyExpression) -> Inputs {
+    let mut inputs = Inputs::NONE;
+    if parsed.zoom_curve().is_some() {
+        inputs = inputs.union(Inputs::ZOOM);
+    }
+    if parsed.reads_camera() {
+        inputs = inputs.union(Inputs::CAMERA);
+    }
+    if parsed.reads_feature_properties() {
+        inputs = inputs.union(Inputs::DATA);
+    }
+    if parsed.reads_feature_state() {
+        inputs = inputs.union(Inputs::STATE);
+    }
+    inputs
 }
 
 fn check_constant(cx: &mut Cx, prop: &Prop, json: &Json, value: &Value<'_>, path: &str) {

@@ -21,11 +21,6 @@ pub enum Preview {
     /// or a parametric kind with PROJ-named numeric parameters beside the
     /// `type`) and OGC tile matrix sets on sources (`tileMatrixSet`).
     Crs,
-    /// Extended expressions: a property reads each input Orbis honours in
-    /// its evaluation [`Phase`](crate::Phase) ([`Prop::extended`](crate::Prop)),
-    /// whatever the spec's `property-type` says, among them the camera's
-    /// `["pitch"]` and `["bearing"]` in paint drawn per frame.
-    Expressions,
     /// style-spec#1889: `sky.backdrop-color` and `sky.star-opacity`, a
     /// colour and a fixed pattern of stars behind the sky.
     Stars,
@@ -35,13 +30,12 @@ pub enum Preview {
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 6] = [
         Self::Equirectangular,
         Self::EqualEarth,
         Self::ProjectionTransition,
         Self::Stars,
         Self::Crs,
-        Self::Expressions,
         Self::Atmosphere,
     ];
 
@@ -54,7 +48,6 @@ impl Preview {
             Self::ProjectionTransition => "style-spec#1866",
             Self::Stars => "style-spec#1889",
             Self::Crs => "orbis:crs",
-            Self::Expressions => "orbis:expressions",
             Self::Atmosphere => "orbis:atmosphere",
         }
     }
@@ -80,9 +73,6 @@ impl Preview {
             }
             Self::Crs => {
                 "Coordinate reference systems as the projection type (`EPSG:3413`, or a parametric kind such as `polar-stereographic` with PROJ-named numeric parameters beside the `type`) and OGC 2D tile matrix sets on sources (`tileMatrixSet`: a registered identifier or an inline document). Our own design; no proposal yet."
-            }
-            Self::Expressions => {
-                "Each property reads every input Orbis honours in the phase it is evaluated in, whatever the spec's `property-type` says; the support matrix lists them. Among them are the camera's `[\"pitch\"]` and `[\"bearing\"]` (degrees) in paint drawn every frame, for values the same for every feature. Our own design; no proposal yet."
             }
             Self::Atmosphere => {
                 "The globe's scattering (`sky.atmosphere-blend`) composited in linear light rather than added gamma-encoded as GL JS does: a map's sunlit face keeps its colours, tinted, rather than lifted toward white, the haze gathers toward the limb, and over the sky and the backdrop it adds to what they show. No style input; a rendering change of our own."

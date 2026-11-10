@@ -851,7 +851,7 @@ pub(crate) fn build(
                 if node.family == Family::FillExtrusion {
                     let whole = orb_layout::extrusion::whole(layer, &features, bend.is_some());
                     // Per-feature opacity and vertical gradient
-                    // (`orbis:expressions`) share the flags word.
+                    // (beyond the spec) share the flags word.
                     let opacity = style_layer.get(orb_style::EXTRUSION_OPACITY);
                     let gradient = style_layer.get(orb_style::EXTRUSION_VERTICAL_GRADIENT);
                     let per_feature = |kind| matches!(kind, Kind::Source | Kind::Composite);

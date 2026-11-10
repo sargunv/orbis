@@ -2,8 +2,8 @@
 //! table of every layer property, which [`PropertyId`]s index. Each entry
 //! has its layer type, section, value type, default and the inputs the
 //! spec lets it read, and Orbis's own: the [`Phase`] it is evaluated in
-//! and the further [`Inputs`] Orbis honours there, which the
-//! `orbis:expressions` preview accepts. Parsing, validation, the diff, the
+//! and the further [`Inputs`] Orbis honours there, which it draws with a
+//! warning that the style isn't portable. Parsing, validation, the diff, the
 //! renderer and the generated support matrix all read it.
 
 use orb_expr::json::{self, Json};
@@ -50,8 +50,8 @@ pub struct Prop {
     /// When it is evaluated; the section's default until [`Prop::at`]
     /// gives one.
     pub(crate) phase: Option<Phase>,
-    /// Inputs beyond the spec's that Orbis honours in its phase, accepted
-    /// with the `orbis:expressions` preview.
+    /// Inputs beyond the spec's that Orbis honours in its phase, always
+    /// accepted, with a warning that GL JS and Native reject them.
     pub extended: Inputs,
 }
 
@@ -184,8 +184,8 @@ impl Prop {
         inputs
     }
 
-    /// What it reads with the `orbis:expressions` preview: the spec's
-    /// inputs and the further ones Orbis honours.
+    /// What Orbis lets it read: the spec's inputs and the further ones
+    /// Orbis honours.
     pub const fn orbis_inputs(&self) -> Inputs {
         self.spec_inputs().union(self.extended)
     }

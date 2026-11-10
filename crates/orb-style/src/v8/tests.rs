@@ -814,40 +814,40 @@ fn previews_gate_projections_and_tile_matrix_sets() {
     assert_eq!(paths(&off), ["projection.lon_0", "sources.a.tileMatrixSet"]);
 }
 
-/// With `orbis:expressions`, paint Orbis evaluates per frame reads the
-/// camera; without it, such a value warns and is the default. Inputs no
+/// Paint Orbis evaluates per frame reads the camera, previews or not,
+/// with one warning per document that the style isn't portable. Inputs no
 /// phase honours stay errors, as do the spec's own limits.
 #[test]
-fn extended_inputs_follow_the_preview() {
+fn extended_inputs_are_drawn_and_warn_once() {
     let layer = |paint: &str, layout: &str| {
         format!(
             r#"{{"version": 8, "sources": {{"s": {{"type": "geojson",
                 "data": {{"type": "FeatureCollection", "features": []}}}}}},
                 "layers": [{{"id": "f", "type": "fill", "source": "s",
+                "paint": {{{paint}}}, "layout": {{{layout}}}}},
+                {{"id": "g", "type": "fill", "source": "s",
                 "paint": {{{paint}}}, "layout": {{{layout}}}}}]}}"#
         )
     };
     let pitch = r#""fill-opacity": ["interpolate", ["linear"], ["pitch"], 0, 1, 60, 0.5]"#;
-    let on = parse_with(&layer(pitch, ""), Previews::ALL, &[]).unwrap();
-    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
-    let opacity = on.layers[0].get(FILL_OPACITY);
-    assert_eq!(opacity.kind(), Kind::Camera);
-    let folded = opacity
-        .as_expression()
-        .unwrap()
-        .at_camera(30.0, 0.0)
-        .unwrap();
-    assert_eq!(folded.kind(), Kind::Constant);
-    assert_eq!(
-        folded.expression().evaluate(0.0).unwrap(),
-        Value::Number(0.75)
-    );
-
-    let off = parse(&layer(pitch, "")).unwrap();
-    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
-    assert_eq!(off.warnings[0].path, "layers[0].paint.fill-opacity");
-    assert!(off.warnings[0].message.contains("orbis:expressions"));
-    assert!(!off.layers[0].get(FILL_OPACITY).is_set());
+    for previews in [Previews::NONE, Previews::ALL] {
+        let style = parse_with(&layer(pitch, ""), previews, &[]).unwrap();
+        assert_eq!(style.warnings.len(), 1, "{:?}", style.warnings);
+        assert_eq!(style.warnings[0].path, "layers[0].paint.fill-opacity");
+        assert!(style.warnings[0].message.contains("reads camera"));
+        let opacity = style.layers[1].get(FILL_OPACITY);
+        assert_eq!(opacity.kind(), Kind::Camera);
+        let folded = opacity
+            .as_expression()
+            .unwrap()
+            .at_camera(30.0, 0.0)
+            .unwrap();
+        assert_eq!(folded.kind(), Kind::Constant);
+        assert_eq!(
+            folded.expression().evaluate(0.0).unwrap(),
+            Value::Number(0.75)
+        );
+    }
 
     for (paint, layout) in [
         // Not honoured: the camera where tiles are laid out, or with data.

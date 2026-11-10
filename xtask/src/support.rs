@@ -299,7 +299,8 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          **Spec** lists the spec's expression parameters; **GL JS** and **Native**\n\
          the first versions with the property and its data-driven form (the\n\
          spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads,\n\
-         the spec's inputs and, after `+`, those `orbis:expressions` adds;\n\
+         the spec's inputs and, after `+`, those it honours beyond the spec\n\
+         (always on, with a warning that GL JS and Native reject them);\n\
          then, per fixture run (its suite and platform), the tests named for\n\
          the property that pass.\n",
     );
