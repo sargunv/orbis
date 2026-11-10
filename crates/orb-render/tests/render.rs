@@ -1675,7 +1675,9 @@ fn sky_gradient_composites_over_the_host_backing() {
 #[test]
 fn stars_show_on_the_backdrop_above_the_horizon_where_the_sky_is_clear() {
     let mut h = Harness::new();
-    let backdrop = [0.0, 0.0, 0.1, 1.0];
+    // A blue that 8 bits hold exactly (51 / 255): 0.1 is 25.5, which GPUs
+    // may round either way (RADV writes 25).
+    let backdrop = [0.0, 0.0, 0.2, 1.0];
     let mut sky = orb_render::AtmospherePaint {
         sky_color: [0.0; 4],
         horizon_color: [0.0; 4],
