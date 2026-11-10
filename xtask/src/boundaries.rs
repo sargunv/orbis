@@ -20,6 +20,7 @@ const PLATFORM: &[&str] = &[
     "orb-api",
     "orb-android",
     "orb-cli",
+    "orb-ffi",
     "orb-web",
     "orb-shaper",
     "orb-demo",
@@ -50,6 +51,8 @@ const UNSAFE_ALLOWED: &[&str] = &[
     "orb-host-native",
     // The Android app's entry point, JNI and logcat.
     "orb-android",
+    // maplibre-native-ffi's C API.
+    "orb-ffi",
     "orb-web",
 ];
 
@@ -78,6 +81,7 @@ pub(crate) const NATIVE_ONLY: &[&str] = &[
     "orb-android",
     "orb-cli",
     "orb-demo",
+    "orb-ffi",
     "orb-fixtures",
     "xtask",
 ];

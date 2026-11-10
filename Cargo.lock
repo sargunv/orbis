@@ -2772,6 +2772,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orb-ffi"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "orb-api",
+]
+
+[[package]]
 name = "orb-fixtures"
 version = "0.0.0"
 dependencies = [

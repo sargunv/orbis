@@ -1,0 +1,20 @@
+[package]
+name = "orb-ffi"
+description = "maplibre-native-ffi's C API on orb-api: the `maplibre-native-c` library its bindings load"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[lib]
+# The library mln-ffi's bindings link or load; `cargo xtask mln-ffi`
+# installs it as `libmaplibre-native-c`.
+name = "maplibre_native_c"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+glam.workspace = true
+orb-api.workspace = true
+
+[lints]
+workspace = true

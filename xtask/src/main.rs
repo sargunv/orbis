@@ -11,6 +11,7 @@ mod expression_fixtures;
 mod fixtures;
 mod h2h;
 mod labels;
+mod mln_ffi;
 mod native_fixtures;
 mod pmtiles;
 mod support;
@@ -70,9 +71,15 @@ cargo xtask <task>
   sweep [--dry-run] [--target-dir <path>] [--keep-hours <n>]  prune stale build
                artifacts: keep every build compiled in the last <n> hours
                (default 6) and the 2 newest builds of each crate
-  fixtures [gl-js|native|expressions]  fetch and verify the pinned GL JS
-               and MapLibre Native fixture mirrors (fixtures/gl-js and
-               fixtures/native, not committed), or one of them; with
+  mln-ffi [--filter <substring>] [--verbose]  build orb-ffi's
+               maplibre-native-c, compile maplibre-native-ffi's pinned C ABI
+               suite against it and score it case by case (results in
+               target/mln-ffi/results.json); `mln-ffi declarations [--check]`
+               regenerates orb-ffi's declarations and stubs from the pin
+  fixtures [gl-js|native|mln-ffi|expressions]  fetch and verify the pinned
+               GL JS, MapLibre Native and maplibre-native-ffi mirrors
+               (fixtures/gl-js, fixtures/native and fixtures/mln-ffi, not
+               committed), or one of them; with
                `expressions`, bundle the pinned style-spec expression
                fixtures into orb-expr
   demo-data    reproduce the committed Tokyo MVT/MLT PMTiles extracts, then
@@ -99,13 +106,17 @@ fn main() -> ExitCode {
         Some("sweep") => sweep::run(&args[1..]),
         Some("dxc") => dxc::run(&args[1..]),
         Some("support") => support::run(),
+        Some("mln-ffi") => mln_ffi::run(&args[1..]),
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()
         }
         Some("fixtures") => match args.get(1).map(String::as_str) {
             Some("gl-js") => fixtures::ensure(),
             Some("native") => native_fixtures::ensure(),
-            None => fixtures::ensure().and_then(|()| native_fixtures::ensure()),
+            Some("mln-ffi") => mln_ffi::ensure(),
+            None => fixtures::ensure()
+                .and_then(|()| native_fixtures::ensure())
+                .and_then(|()| mln_ffi::ensure()),
             Some(other) => Err(format!("fixtures: unknown mirror `{other}`")),
         },
         Some("demo-data") => pmtiles::extract().and_then(|()| labels::generate()),
@@ -202,6 +213,7 @@ fn full_check() -> Result<(), String> {
     clippy(&[])?;
     windows_clippy()?;
     cargo(&["test", "--workspace", "--quiet"])?;
+    mln_ffi::check_declarations()?;
     boundaries::check()
 }
 
@@ -299,6 +311,9 @@ fn affected_check(base: &str) -> Result<(), String> {
         windows_clippy()?;
     }
     cargo(&test)?;
+    if selection.contains("orb-ffi") {
+        mln_ffi::check_declarations()?;
+    }
     boundaries::check()
 }
 

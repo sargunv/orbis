@@ -6,11 +6,14 @@
 /web/pkg/
 /web/node_modules/
 /web/dist/
-# The GL JS and MapLibre Native fixture mirrors, fetched by `cargo xtask fixtures`.
+# The GL JS, MapLibre Native and maplibre-native-ffi mirrors, fetched by
+# `cargo xtask fixtures`.
 /fixtures/gl-js/
 /fixtures/gl-js.partial/
 /fixtures/native/
 /fixtures/native.partial/
+/fixtures/mln-ffi/
+/fixtures/mln-ffi.partial/
 # Built by `cargo xtask android`.
 /hosts/android/.gradle/
 /hosts/android/**/build/
