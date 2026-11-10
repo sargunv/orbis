@@ -3,15 +3,17 @@
 //! keeps occlusion between 3D layers and the terrain.
 //!
 //! What a layer darkens on the ground beneath its buildings (style-spec
-//! #1797's shadows, #1796's ground occlusion) draws first in the same
-//! pass, from the buildings' own vertices (`extrusion_ground.wgsl`): black
-//! whose alpha is how dark, the darkest kept where shapes overlap. The
-//! buildings then cover what they stand over, and the composite darkens
+//! #1797's shadows, #1796's ground occlusion) draws after them in the
+//! same pass, from the buildings' own vertices (`extrusion_ground.wgsl`):
+//! black whose alpha is how dark, the darkest kept where shapes overlap,
+//! depth-tested against the buildings, so what they stand over is never
+//! shaded (in a city at a pitch, most of it), and the composite darkens
 //! the map beneath by what is left.
 //!
 //! On a plane's terrain they draw instead into the ground mask, flat, one
 //! pass before the layer's, and the layer's pass draws the terrain's mesh
-//! first, reading the mask where it lies (`Terrain`'s decal): the darkness
+//! after the buildings, reading the mask where it lies (`Terrain`'s
+//! decal), depth-tested against them in the same way: the darkness
 //! falls on the surface drawn, wherever the DEM bends between the
 //! buildings' vertices.
 use crate::TargetFormat;
@@ -160,8 +162,8 @@ impl Extrusions {
 
     /// Makes the ground passes `ground` draws at the current sample count,
     /// unless they are made: depth-tested against what stands before them
-    /// (the terrain, earlier 3D layers) without writing it, keeping the
-    /// darkest of what overlaps.
+    /// (the terrain, earlier 3D layers, the node's own buildings) without
+    /// writing it, keeping the darkest of what overlaps.
     pub(crate) fn make_ground(&mut self, gpu: &mut dyn Gpu, ground: Ground) {
         if ground.mask {
             self.make_mask(gpu, ground);
@@ -364,8 +366,13 @@ impl Extrusions {
     }
 
     /// An extrusion node's pass into its target over the shared depth,
-    /// replaying its draws, recorded once: what `ground` darkens on the
-    /// ground, then its buildings.
+    /// replaying its draws, recorded once: its buildings, then what
+    /// `ground` darkens on the ground around them. Drawn first, the
+    /// ground passes shaded every shadow's whole area, most of it then
+    /// covered: three times the layer's GPU time over Midtown at pitch 60.
+    /// After, the depth test drops what the buildings cover before it
+    /// shades, and the max blend can't change a building's opaque pixel
+    /// where a shadow on terrain, pulled nearer, still passes.
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
@@ -389,7 +396,7 @@ impl Extrusions {
                     offset: 0,
                 },
             ];
-            for &pipeline in ground.iter().chain(&pipelines).flatten() {
+            for &pipeline in pipelines.iter().chain(&ground).flatten() {
                 commands.extend([RenderCommand::SetPipeline(pipeline), draw.clone()]);
             }
             gpu.create_render_bundle(

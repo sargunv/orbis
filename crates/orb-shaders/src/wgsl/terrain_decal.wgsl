@@ -1,7 +1,7 @@
 // What an extrusion layer darkens on the ground beneath its buildings, on
 // terrain (orb-render's terrain decal): the terrain's mesh drawn again into
-// the layer's target before its buildings, depth-tested against the
-// terrain's own depth, as black whose alpha is the darkness the ground
+// the layer's target after its buildings, depth-tested against the
+// terrain's own depth and theirs, as black whose alpha is the darkness the ground
 // mask holds where the point falls on the mask's plane
 // (`ground_mask_clip`, extrusion_ground.wgsl). It lies on the surface the
 // terrain draws, wherever the DEM bends.

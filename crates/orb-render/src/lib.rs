@@ -2080,7 +2080,8 @@ impl Renderer {
             depth_cleared = true;
             // Ground passes join the recorded draw as they compile. On
             // terrain they draw into the mask first, and the terrain's
-            // decal carries it into the layer's pass.
+            // decal carries it into the layer's pass after the buildings,
+            // which hide what they cover from it as from the ground passes.
             let mut ground = self.extrusions.ground_ready(gpu, node.ground);
             let mut decal = None;
             if ground.mask && ground.any() {
@@ -2110,9 +2111,7 @@ impl Renderer {
                 (draw, node.elevation, ground),
                 first,
             );
-            if let Some(decal) = decal {
-                pass.commands.splice(0..0, decal);
-            }
+            pass.commands.extend(decal.into_iter().flatten());
             passes.push(Pass::Render(pass));
             stats.draws += 1;
         }

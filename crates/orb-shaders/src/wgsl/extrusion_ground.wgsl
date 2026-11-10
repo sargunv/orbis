@@ -1,10 +1,10 @@
 // What an extrusion layer darkens on the ground beneath its buildings:
 // style-spec#1797's shadows and style-spec#1796's ground occlusion. They
-// draw into the layer's target before its buildings, as black whose alpha
-// is how dark, the darkest kept where shapes overlap (a max blend), so
-// overlapping shadows darken once. The buildings then cover what they
-// stand over, and the target composites over the map, darkening what lies
-// beneath the layer by what is left.
+// draw into the layer's target after its buildings, depth-tested against
+// them so what they stand over isn't shaded, as black whose alpha is how
+// dark, the darkest kept where shapes overlap (a max blend), so
+// overlapping shadows darken once. The target composites over the map,
+// darkening what lies beneath the layer by what is left.
 //
 // Both reuse the buildings' own vertices, drawn again by these vertex
 // stages. A shadow is every roof and the walls turned from the light,

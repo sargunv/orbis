@@ -49,10 +49,6 @@ group "scene"#0: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 b
 layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512)
-module "extrusion ground"#0: wgsl
-render "extrusion ground"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion ground"#0 vs_extrusion_shadow []; module "extrusion ground"#0 fs_extrusion_ground []; [ColorTargetState { format: Rgba8Unorm, blend: Some(Max) }] Some(DepthState { format: Depth32Float, write: false }) TriangleList cull back false samples 4
-module "extrusion ground"#1: wgsl
-render "extrusion ground"#1: layouts [layout "scene"#0, layout "node"#0]; module "extrusion ground"#1 vs_extrusion_occlusion []; module "extrusion ground"#1 fs_extrusion_ground []; [ColorTargetState { format: Rgba8Unorm, blend: Some(Max) }] Some(DepthState { format: Depth32Float, write: false }) TriangleList cull back false samples 4
 module "extrusion"#0: wgsl
 render "extrusion"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion"#0 vs_extrusion []; module "extrusion"#0 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 4
 module "extrusion cut"#0: wgsl
@@ -60,19 +56,23 @@ render "extrusion cut"#0: layouts [layout "scene"#0, layout "node"#0]; module "e
 module "extrusion planes"#0: wgsl
 module "extrusion"#1: wgsl
 render "extrusion planes"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion planes"#0 vs_extrusion_cut_planes []; module "extrusion"#1 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 4
+module "extrusion ground"#0: wgsl
+render "extrusion ground"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion ground"#0 vs_extrusion_shadow []; module "extrusion ground"#0 fs_extrusion_ground []; [ColorTargetState { format: Rgba8Unorm, blend: Some(Max) }] Some(DepthState { format: Depth32Float, write: false }) TriangleList cull back false samples 4
+module "extrusion ground"#1: wgsl
+render "extrusion ground"#1: layouts [layout "scene"#0, layout "node"#0]; module "extrusion ground"#1 vs_extrusion_occlusion []; module "extrusion ground"#1 fs_extrusion_ground []; [ColorTargetState { format: Rgba8Unorm, blend: Some(Max) }] Some(DepthState { format: Depth32Float, write: false }) TriangleList cull back false samples 4
 bundle "3d layer"#0: [Rgba8Unorm] depth Some(Depth32Float) samples 4
     group 0 group "scene"#0
     group 1 group "node"#0
     index buffer "compacted indices"#0 at 0
-    pipeline render "extrusion ground"#0
-    draw indexed indirect buffer "draw args"#0 at 1824
-    pipeline render "extrusion ground"#1
-    draw indexed indirect buffer "draw args"#0 at 1824
     pipeline render "extrusion"#0
     draw indexed indirect buffer "draw args"#0 at 1824
     pipeline render "extrusion cut"#0
     draw indexed indirect buffer "draw args"#0 at 1824
     pipeline render "extrusion planes"#0
+    draw indexed indirect buffer "draw args"#0 at 1824
+    pipeline render "extrusion ground"#0
+    draw indexed indirect buffer "draw args"#0 at 1824
+    pipeline render "extrusion ground"#1
     draw indexed indirect buffer "draw args"#0 at 1824
 texture "target"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
 module "fill"#0: wgsl

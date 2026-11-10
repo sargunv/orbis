@@ -19,7 +19,7 @@
 //!
 //! Its decal is what an extrusion layer darkens on the ground beneath its
 //! buildings, on a plane's terrain: the terrain's mesh drawn again into
-//! the layer's target before its buildings, where the extrusion layer's
+//! the layer's target after its buildings, where the extrusion layer's
 //! ground mask says (`terrain_decal.wgsl`).
 
 use crate::TargetFormat;
@@ -1002,8 +1002,8 @@ impl Terrain {
     }
 
     /// Makes the decal's pipeline into `format` targets at `samples`,
-    /// unless made: depth-tested against the terrain without writing it,
-    /// keeping the darkest of what overlaps.
+    /// unless made: depth-tested against the terrain and the layer's
+    /// buildings without writing it, keeping the darkest of what overlaps.
     pub(crate) fn make_decal(&mut self, gpu: &mut dyn Gpu, format: TextureFormat, samples: u32) {
         let slot = &mut self.decal_pipelines[usize::from(samples > 1)];
         if slot.is_some() {
