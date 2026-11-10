@@ -29,6 +29,7 @@ impl<'a> Evaluator<'_, 'a> {
             Call::Heatmap => Value::Number(self.context.heatmap_density),
             Call::Pitch => Value::Number(self.context.pitch),
             Call::Bearing => Value::Number(self.context.bearing),
+            Call::MetersPerPixel => Value::Number(self.context.meters_per_pixel()),
             Call::Elevation => Value::Number(self.context.elevation),
             Call::Accumulated => self.context.accumulated.reborrow().into_owned(),
             Call::SupportedScript => Value::Bool(

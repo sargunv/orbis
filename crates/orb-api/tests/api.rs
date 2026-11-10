@@ -765,6 +765,85 @@ fn translate_and_circle_pitch_follow_the_feature() {
     );
 }
 
+/// style-spec#1881: `["meters-per-pixel"]` is the ground resolution at the
+/// camera's target, so a circle 200 km across on the ground draws twice as
+/// wide at 60° north as on the equator, at the same zoom, and picks as
+/// wide; a map moved there draws as one made there. Off, the radius is the
+/// default.
+#[test]
+fn meters_per_pixel_follows_the_target_with_its_preview() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let point = |lat: f64| {
+        format!(
+            r#"{{"type": "Feature", "properties": {{}}, "geometry": {{"type": "Point", "coordinates": [0, {lat}]}}}}"#
+        )
+    };
+    let style = format!(
+        r##"{{"version": 8, "sources": {{"c": {{"type": "geojson",
+          "data": {{"type": "FeatureCollection", "features": [{}, {}]}}}}}},
+          "layers": [
+            {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+            {{"id": "c", "type": "circle", "source": "c", "paint": {{"circle-color": "#ffffff",
+              "circle-pitch-alignment": "map",
+              "circle-radius": ["/", 200000, ["meters-per-pixel"]]}}}}]}}"##,
+        point(0.0),
+        point(60.0),
+    );
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let at = |lat: f64| CameraTarget {
+        center: Some(orb_api::Geodetic::new(0.0, lat)),
+        zoom: Some(2.0),
+        ..CameraTarget::default()
+    };
+    let width = |map: &mut Map, target: &mut Target| {
+        settle(map, target);
+        let pixels = target.read_pixels().unwrap();
+        let lit: Vec<u32> = (0..SIZE)
+            .filter(|&x| pixel(&pixels, x, SIZE / 2)[0] > 128)
+            .collect();
+        lit.last().map_or(0, |last| last - lit[0] + 1)
+    };
+    let map = |previews| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(&style).expect("style");
+        map
+    };
+    let mut moved = map(orb_api::Previews::ALL);
+    moved.jump_to(&at(0.0));
+    let equator = width(&mut moved, &mut target);
+    // 200 km over 19568 m a pixel at zoom 2, twice: 20 px.
+    assert!(equator.abs_diff(20) <= 2, "{equator} px on the equator");
+    moved.jump_to(&at(60.0));
+    let north = width(&mut moved, &mut target);
+    assert!(
+        north.abs_diff(2 * equator) <= 2,
+        "{north} px at 60°, {equator} on the equator"
+    );
+    let edge = f64::from(SIZE) / 2.0 + f64::from(north) / 2.0 - 2.0;
+    let hit = moved.hit_test(glam::DVec2::new(edge, f64::from(SIZE) / 2.0));
+    assert_eq!(hit.map(|h| h.layer).as_deref(), Some("c"), "picks as wide");
+    let mut fresh = map(orb_api::Previews::ALL);
+    fresh.jump_to(&at(60.0));
+    assert_eq!(width(&mut fresh, &mut target), north, "fresh at 60°");
+
+    let mut off = map(orb_api::Previews::NONE);
+    off.jump_to(&at(60.0));
+    let default = width(&mut off, &mut target);
+    off.set_style_json(&style.replace(r#"["/", 200000, ["meters-per-pixel"]]"#, "5"))
+        .expect("style");
+    assert_eq!(
+        default,
+        width(&mut off, &mut target),
+        "the default radius, 5"
+    );
+}
+
 /// Buildings larger than an overzoom slice draw whole at z15, z16 and z19
 /// below a source's z14 tiles, looking down and tilted, where the view's
 /// tiles span several zooms (#143): a long slab, a building whose

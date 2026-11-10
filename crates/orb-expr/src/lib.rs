@@ -39,7 +39,7 @@ mod value;
 use std::fmt;
 
 pub use color::Color;
-pub use context::{CanonicalTile, EvaluationContext, FeatureGeometry};
+pub use context::{CameraInputs, CanonicalTile, EvaluationContext, FeatureGeometry};
 pub use elevation::{ElevationCurve, ElevationOp};
 pub use eval::{EvalError, interpolation_factor};
 pub use filter::{Filter, FilterGroups};

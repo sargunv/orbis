@@ -1407,7 +1407,7 @@ impl Map {
                 renderer,
                 style,
                 &mut self.transitions,
-                (zoom, self.camera.state().bearing, self.camera.state().pitch),
+                (zoom, crate::paint::camera_inputs(self.camera.state())),
                 (now, time),
                 images.atlas.as_mut().expect("initialized"),
             );

@@ -536,6 +536,27 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
         self.evaluate_state(zoom, &[], None)
     }
 
+    /// The value at `zoom` without a feature, under `camera`: exact for
+    /// constant and camera values.
+    pub fn evaluate_camera(&self, zoom: f64, camera: orb_expr::CameraInputs) -> T {
+        let slot = self.slot.items().first().unwrap_or(self.slot);
+        match &slot.value {
+            Inner::Constant(v) => self.fit(Some(v)),
+            Inner::Expression(expression) => {
+                let context = orb_expr::EvaluationContext {
+                    zoom,
+                    pitch: camera.pitch,
+                    bearing: camera.bearing,
+                    meters_per_pixel: camera.meters_per_pixel,
+                    ..Default::default()
+                };
+                let value = expression.expression().evaluate_with(&context);
+                self.fit(value.ok().as_ref())
+            }
+            Inner::List(_) => unreachable!("a list's items are values"),
+        }
+    }
+
     /// The value at `zoom` for a feature with `state`: exact for constant,
     /// camera and state-only values, and with the feature's captured `data`
     /// for values that read both state and data.
@@ -650,6 +671,10 @@ impl<T: PropertyValue> Property<T> {
 
     pub fn evaluate(&self, zoom: f64) -> T {
         self.get().evaluate(zoom)
+    }
+
+    pub fn evaluate_camera(&self, zoom: f64, camera: orb_expr::CameraInputs) -> T {
+        self.get().evaluate_camera(zoom, camera)
     }
 
     pub fn as_expression(&self) -> Option<&PropertyExpression> {

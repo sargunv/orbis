@@ -26,7 +26,7 @@ pub use change::{
 };
 pub use layer::Layer;
 pub use light::Light;
-pub use orb_expr::{Color, Kind, PropertyExpression, Value};
+pub use orb_expr::{CameraInputs, Color, Kind, PropertyExpression, Value};
 pub use preview::{Preview, Previews};
 pub use property::*;
 pub use resources::{FontFace, FontFaces, Sprite, Terrain};

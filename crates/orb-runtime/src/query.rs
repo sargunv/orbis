@@ -993,11 +993,15 @@ impl Query<'_> {
 
     fn layer(&self, layer: &HitLayer) -> LayerAt {
         let zoom = self.zoom;
-        let uniform = |p: &Property<f32>| (!per_feature(p.kind())).then(|| p.evaluate(zoom));
+        // Values that read the camera read the query's, as frames do.
+        let camera = crate::paint::camera_inputs(self.camera);
+        let uniform =
+            |p: &Property<f32>| (!per_feature(p.kind())).then(|| p.evaluate_camera(zoom, camera));
         // Extrusions bind their base and height per feature unless constant
         // or zoom-only.
         let level = |p: &Property<f32>| {
-            matches!(p.kind(), Kind::Constant | Kind::Camera).then(|| p.evaluate(zoom))
+            matches!(p.kind(), Kind::Constant | Kind::Camera)
+                .then(|| p.evaluate_camera(zoom, camera))
         };
         let (radius, stroke, base, height) = match &layer.paint {
             HitPaint::Circle { radius, stroke, .. } => {
@@ -1026,7 +1030,10 @@ impl Query<'_> {
                 if per_feature(translate.kind()) {
                     (DVec2::ZERO, Some(viewport))
                 } else {
-                    (self.shift(translate.evaluate(zoom), viewport), None)
+                    (
+                        self.shift(translate.evaluate_camera(zoom, camera), viewport),
+                        None,
+                    )
                 }
             }
             None => (DVec2::ZERO, None),

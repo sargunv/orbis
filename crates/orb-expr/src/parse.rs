@@ -207,6 +207,10 @@ fn compound(name: &str) -> Option<(Type, Vec<(Params, Build)>)> {
         "heatmap-density" => (N, vec![(none(), |_, _| Op::Call(Call::Heatmap, vec![]))]),
         "pitch" => (N, vec![(none(), |_, _| Op::Call(Call::Pitch, vec![]))]),
         "bearing" => (N, vec![(none(), |_, _| Op::Call(Call::Bearing, vec![]))]),
+        "meters-per-pixel" => (
+            N,
+            vec![(none(), |_, _| Op::Call(Call::MetersPerPixel, vec![]))],
+        ),
         "elevation" => (N, vec![(none(), |_, _| Op::Call(Call::Elevation, vec![]))]),
         "accumulated" => (
             V,

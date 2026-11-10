@@ -307,24 +307,32 @@ impl PropertyExpression {
         }
     }
 
-    /// Whether the value reads the camera beyond its zoom: `pitch` or
-    /// `bearing`.
+    /// Whether the value reads the camera beyond its zoom: `pitch`,
+    /// `bearing` or `meters-per-pixel`.
     pub fn reads_camera(&self) -> bool {
         self.expression.deps().contains(Deps::CAMERA)
     }
 
-    /// The value with its camera reads resolved to `pitch` and `bearing`:
-    /// a camera value over its zoom curve, or a constant without one.
-    /// `None` when it reads no camera.
-    pub fn at_camera(&self, pitch: f64, bearing: f64) -> Option<Self> {
+    /// Whether the value reads `["meters-per-pixel"]`.
+    pub fn reads_meters_per_pixel(&self) -> bool {
+        self.reads_camera()
+            && (self.expression.ir.nodes.iter())
+                .any(|n| matches!(n.op, Op::Call(Call::MetersPerPixel, _)))
+    }
+
+    /// The value with its camera reads resolved to `camera`'s: a camera
+    /// value over its zoom curve, or a constant without one. `None` when
+    /// it reads no camera.
+    pub fn at_camera(&self, camera: crate::CameraInputs) -> Option<Self> {
         if !self.reads_camera() {
             return None;
         }
         let mut ir = self.expression.ir.clone();
         for node in &mut ir.nodes {
             let value = match node.op {
-                Op::Call(Call::Pitch, _) => pitch,
-                Op::Call(Call::Bearing, _) => bearing,
+                Op::Call(Call::Pitch, _) => camera.pitch,
+                Op::Call(Call::Bearing, _) => camera.bearing,
+                Op::Call(Call::MetersPerPixel, _) => camera.meters_per_pixel,
                 _ => continue,
             };
             node.op = Op::Literal(crate::Value::Number(value));

@@ -24,17 +24,21 @@ pub enum Preview {
     /// style-spec#1889: `sky.backdrop-color` and `sky.star-opacity`, a
     /// colour and a fixed pattern of stars behind the sky.
     Stars,
+    /// style-spec#1881: `["meters-per-pixel"]`, the ground resolution at
+    /// the camera's target, wherever paint reads the camera.
+    GroundResolution,
     /// The globe's scattering composited in linear light.
     Atmosphere,
 }
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Equirectangular,
         Self::EqualEarth,
         Self::ProjectionTransition,
         Self::Stars,
+        Self::GroundResolution,
         Self::Crs,
         Self::Atmosphere,
     ];
@@ -47,6 +51,7 @@ impl Preview {
             Self::EqualEarth => "style-spec#1865",
             Self::ProjectionTransition => "style-spec#1866",
             Self::Stars => "style-spec#1889",
+            Self::GroundResolution => "style-spec#1881",
             Self::Crs => "orbis:crs",
             Self::Atmosphere => "orbis:atmosphere",
         }
@@ -70,6 +75,9 @@ impl Preview {
             }
             Self::Stars => {
                 "`sky.backdrop-color` (default transparent), the colour the map is drawn on, and `sky.star-opacity` (0 to 1, default 0), a fixed procedural pattern of stars on it that turns with the globe. Both take expressions like the rest of `sky`. The draw order is backdrop, stars, then the sky, which covers them where it's opaque and reveals them as it fades with altitude; on a flat map they show above the horizon where the sky is transparent."
+            }
+            Self::GroundResolution => {
+                "`[\"meters-per-pixel\"]`: ground metres per logical pixel at the camera's target, unpitched, from the projection's scale there (Web Mercator's shrinks toward the poles), so `[\"/\", 10, [\"meters-per-pixel\"]]` is 10 m in pixels. Paint evaluated per frame or per layer reads it, in values the same for every feature, as it reads `[\"pitch\"]`; layout doesn't. The name is still open (`[\"scale\"]`, `[\"meters-per-px\"]`, `[\"px-per-meter\"]`, `[\"meters-to-px\", n]`, or an engine-provided `global-state` key); Orbis takes the spelled-out form the discussion leans to, after the platform SDKs' meters-per-pixel."
             }
             Self::Crs => {
                 "Coordinate reference systems as the projection type (`EPSG:3413`, or a parametric kind such as `polar-stereographic` with PROJ-named numeric parameters beside the `type`) and OGC 2D tile matrix sets on sources (`tileMatrixSet`: a registered identifier or an inline document). Our own design; no proposal yet."

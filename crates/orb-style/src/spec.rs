@@ -112,8 +112,9 @@ impl Inputs {
     pub const NONE: Self = Self(0);
     /// `["zoom"]`.
     pub const ZOOM: Self = Self(1);
-    /// The camera beyond its zoom: `["pitch"]` and `["bearing"]`, in values
-    /// the same for every feature.
+    /// The camera beyond its zoom: `["pitch"]`, `["bearing"]` and
+    /// style-spec#1881's `["meters-per-pixel"]`, in values the same for
+    /// every feature.
     pub const CAMERA: Self = Self(2);
     /// The feature's properties, id and geometry.
     pub const DATA: Self = Self(4);
@@ -568,7 +569,7 @@ properties! {
         paint FILL_LAYER_BLEND: LayerBlend = prop("fill-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent().in_phase(Phase::Layer);
         paint FILL_COLOR: Color = prop("fill-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA);
         paint FILL_OUTLINE_COLOR: Option<Color> = prop("fill-outline-color", COLOR, None).data_driven().interpolated().extends(Inputs::CAMERA);
-        paint FILL_TRANSLATE: [f32; 2] = prop("fill-translate", TRANSLATE, Some("[0, 0]")).interpolated().extends(Inputs::DATA);
+        paint FILL_TRANSLATE: [f32; 2] = prop("fill-translate", TRANSLATE, Some("[0, 0]")).interpolated().extends(Inputs::DATA).extends(Inputs::CAMERA);
         paint FILL_TRANSLATE_ANCHOR: TranslateAnchor = prop("fill-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
         paint FILL_PATTERN: Option<String> = prop("fill-pattern", IMAGE, None).data_driven().in_phase(Phase::Tile);
     }
@@ -577,9 +578,9 @@ properties! {
         /// Per fragment over `["elevation"]`, the height above the ground.
         paint EXTRUSION_COLOR: Color = prop("fill-extrusion-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().elevation().extends(Inputs::CAMERA);
         paint EXTRUSION_OPACITY: f32 = prop("fill-extrusion-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA).extends(Inputs::DATA);
-        paint EXTRUSION_HEIGHT: f32 = prop("fill-extrusion-height", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
-        paint EXTRUSION_BASE: f32 = prop("fill-extrusion-base", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
-        paint EXTRUSION_TRANSLATE: [f32; 2] = prop("fill-extrusion-translate", TRANSLATE, Some("[0,0]")).interpolated().extends(Inputs::DATA);
+        paint EXTRUSION_HEIGHT: f32 = prop("fill-extrusion-height", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
+        paint EXTRUSION_BASE: f32 = prop("fill-extrusion-base", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
+        paint EXTRUSION_TRANSLATE: [f32; 2] = prop("fill-extrusion-translate", TRANSLATE, Some("[0,0]")).interpolated().extends(Inputs::DATA).extends(Inputs::CAMERA);
         paint EXTRUSION_TRANSLATE_ANCHOR: TranslateAnchor = prop("fill-extrusion-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
         paint EXTRUSION_VERTICAL_GRADIENT: bool = prop("fill-extrusion-vertical-gradient", PropertyType::Boolean, Some("true")).extends(Inputs::DATA);
         paint EXTRUSION_PATTERN: Option<String> = prop("fill-extrusion-pattern", IMAGE, None).data_driven().in_phase(Phase::Tile);
@@ -596,11 +597,11 @@ properties! {
         /// How the layer composites with what is beneath it (style-spec 26).
         paint LINE_LAYER_BLEND: LayerBlend = prop("line-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent().in_phase(Phase::Layer);
         paint LINE_COLOR: Color = prop("line-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA);
-        paint LINE_TRANSLATE: [f32; 2] = prop("line-translate", TRANSLATE, Some("[0, 0]")).interpolated().extends(Inputs::DATA);
+        paint LINE_TRANSLATE: [f32; 2] = prop("line-translate", TRANSLATE, Some("[0, 0]")).interpolated().extends(Inputs::DATA).extends(Inputs::CAMERA);
         paint LINE_TRANSLATE_ANCHOR: TranslateAnchor = prop("line-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
-        paint LINE_WIDTH: f32 = prop("line-width", NUMBER, Some("1")).data_driven().interpolated().range(0.0, None);
-        paint LINE_GAP_WIDTH: f32 = prop("line-gap-width", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
-        paint LINE_OFFSET: f32 = prop("line-offset", NUMBER, Some("0")).data_driven().interpolated();
+        paint LINE_WIDTH: f32 = prop("line-width", NUMBER, Some("1")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
+        paint LINE_GAP_WIDTH: f32 = prop("line-gap-width", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
+        paint LINE_OFFSET: f32 = prop("line-offset", NUMBER, Some("0")).data_driven().interpolated().extends(Inputs::CAMERA);
         paint LINE_BLUR: f32 = prop("line-blur", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint LINE_DASHARRAY: Option<Vec<f32>> = prop("line-dasharray", PropertyType::Array(Type::Number, None), None).data_driven().range(0.0, None).in_phase(Phase::Tile);
         paint LINE_PATTERN: Option<String> = prop("line-pattern", IMAGE, None).data_driven().in_phase(Phase::Tile);
@@ -609,20 +610,20 @@ properties! {
     }
     Circle {
         layout CIRCLE_SORT_KEY: Option<f32> = prop("circle-sort-key", NUMBER, None).data_driven();
-        paint CIRCLE_RADIUS: f32 = prop("circle-radius", NUMBER, Some(r#"5"#)).data_driven().interpolated().range(0.0, None);
+        paint CIRCLE_RADIUS: f32 = prop("circle-radius", NUMBER, Some(r#"5"#)).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint CIRCLE_COLOR: Color = prop("circle-color", COLOR, Some(r##""#000000""##)).data_driven().interpolated().extends(Inputs::CAMERA);
         paint CIRCLE_BLUR: f32 = prop("circle-blur", NUMBER, Some(r#"0"#)).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint CIRCLE_OPACITY: f32 = prop("circle-opacity", NUMBER, Some(r#"1"#)).data_driven().interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
-        paint CIRCLE_TRANSLATE: [f32; 2] = prop("circle-translate", TRANSLATE, Some(r#"[0, 0]"#)).interpolated().extends(Inputs::DATA);
+        paint CIRCLE_TRANSLATE: [f32; 2] = prop("circle-translate", TRANSLATE, Some(r#"[0, 0]"#)).interpolated().extends(Inputs::DATA).extends(Inputs::CAMERA);
         paint CIRCLE_TRANSLATE_ANCHOR: TranslateAnchor = prop("circle-translate-anchor", enumeration::<TranslateAnchor>(), Some(r#""map""#));
         paint CIRCLE_PITCH_SCALE: TranslateAnchor = prop("circle-pitch-scale", enumeration::<TranslateAnchor>(), Some(r#""map""#)).extends(Inputs::DATA);
         paint CIRCLE_PITCH_ALIGNMENT: TranslateAnchor = prop("circle-pitch-alignment", enumeration::<TranslateAnchor>(), Some(r#""viewport""#)).extends(Inputs::DATA);
-        paint CIRCLE_STROKE_WIDTH: f32 = prop("circle-stroke-width", NUMBER, Some(r#"0"#)).data_driven().interpolated().range(0.0, None);
+        paint CIRCLE_STROKE_WIDTH: f32 = prop("circle-stroke-width", NUMBER, Some(r#"0"#)).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint CIRCLE_STROKE_COLOR: Color = prop("circle-stroke-color", COLOR, Some(r##""#000000""##)).data_driven().interpolated().extends(Inputs::CAMERA);
         paint CIRCLE_STROKE_OPACITY: f32 = prop("circle-stroke-opacity", NUMBER, Some(r#"1"#)).data_driven().interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
     }
     Heatmap {
-        paint HEATMAP_RADIUS: f32 = prop("heatmap-radius", NUMBER, Some(r#"30"#)).data_driven().interpolated().range(1.0, None);
+        paint HEATMAP_RADIUS: f32 = prop("heatmap-radius", NUMBER, Some(r#"30"#)).data_driven().interpolated().range(1.0, None).extends(Inputs::CAMERA);
         paint HEATMAP_WEIGHT: f32 = prop("heatmap-weight", NUMBER, Some(r#"1"#)).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint HEATMAP_INTENSITY: f32 = prop("heatmap-intensity", NUMBER, Some(r#"1"#)).interpolated().range(0.0, None).in_phase(Phase::Layer).extends(Inputs::CAMERA);
         paint HEATMAP_COLOR: Ramp = prop("heatmap-color", COLOR, Some(r#"["interpolate",["linear"],["heatmap-density"],0,"rgba(0, 0, 255, 0)",0.1,"royalblue",0.3,"cyan",0.5,"lime",0.7,"yellow",1,"red"]"#)).interpolated().zoom_independent().ramp().in_phase(Phase::Layer);

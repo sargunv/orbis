@@ -297,8 +297,10 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
 
     out.push_str(
         "\n## Properties\n\n\
-         Inputs are `zoom`; `camera`, the camera's pitch and bearing; `data`, the\n\
-         feature's properties, id and geometry; and `state`, its feature state.\n\
+         Inputs are `zoom`; `camera`, the camera's pitch and bearing (and with\n\
+         `style-spec#1881` its ground resolution), in values the same for every\n\
+         feature; `data`, the feature's properties, id and geometry; and\n\
+         `state`, its feature state.\n\
          **Spec** lists the spec's expression parameters; **GL JS** and **Native**\n\
          the first versions with the property and its data-driven form (the\n\
          spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads:\n\

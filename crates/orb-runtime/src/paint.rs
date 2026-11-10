@@ -11,8 +11,8 @@ use orb_render::{
     Translate,
 };
 use orb_style::{
-    Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH, LayerType, LineCap,
-    TranslateAnchor, Value,
+    CameraInputs, Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH,
+    LayerType, LineCap, TranslateAnchor, Value,
 };
 
 use crate::image;
@@ -34,8 +34,8 @@ pub(crate) struct PaintState {
     zoom_history: ZoomHistory,
     /// The draped nodes' paint at drape zooms.
     drape: DrapePaint,
-    /// The pitch and bearing paint that reads the camera was written at.
-    camera: Option<(f64, f64)>,
+    /// The camera inputs paint that reads the camera was written at.
+    camera: Option<CameraInputs>,
 }
 
 impl PaintState {
@@ -45,10 +45,20 @@ impl PaintState {
     }
 }
 
+/// What `state` gives values that read the camera: its pitch, bearing
+/// and ground resolution at the target.
+pub(crate) fn camera_inputs(state: &orb_camera::CameraState) -> CameraInputs {
+    CameraInputs {
+        pitch: state.pitch,
+        bearing: state.bearing,
+        meters_per_pixel: state.resolution,
+    }
+}
+
 /// The plan with its paint's camera reads (`["pitch"]`, `["bearing"]`,
-/// beyond the spec) resolved to the camera's: `None`
+/// `["meters-per-pixel"]`, beyond the spec) resolved to `camera`'s: `None`
 /// when no paint reads the camera.
-pub(crate) fn at_camera(plan: &StylePlan, pitch: f64, bearing: f64) -> Option<StylePlan> {
+pub(crate) fn at_camera(plan: &StylePlan, camera: CameraInputs) -> Option<StylePlan> {
     if plan.camera_layers.is_empty() {
         return None;
     }
@@ -58,10 +68,7 @@ pub(crate) fn at_camera(plan: &StylePlan, pitch: f64, bearing: f64) -> Option<St
         let ids: Vec<_> = layer.slots().map(|(id, _)| id).collect();
         for id in ids {
             let slot = layer.slot_mut(id);
-            let Some(folded) = slot
-                .as_expression()
-                .and_then(|e| e.at_camera(pitch, bearing))
-            else {
+            let Some(folded) = slot.as_expression().and_then(|e| e.at_camera(camera)) else {
                 continue;
             };
             *slot = if folded.kind() == Kind::Constant {
@@ -78,7 +85,7 @@ pub(crate) fn at_camera(plan: &StylePlan, pitch: f64, bearing: f64) -> Option<St
     })
 }
 
-/// Writes this frame's node paint: at `zoom`, `bearing` and `pitch`, with
+/// Writes this frame's node paint: at `zoom` and `camera`, with
 /// paint transitions eased in at `now`, and feature state as of frame time
 /// `time` (the shaders'). Returns whether the pattern and dash cross-fade
 /// is still fading, and images the style lacks.
@@ -87,7 +94,7 @@ pub(crate) fn frame(
     renderer: &mut Renderer,
     style: &mut LoadedStyle,
     transitions: &mut crate::transitions::Transitions,
-    (zoom, bearing, pitch): (f64, f64, f64),
+    (zoom, inputs): (f64, CameraInputs),
     (now, time): (f64, f64),
     atlas: &mut ImageAtlas,
 ) -> (bool, Vec<String>) {
@@ -97,9 +104,10 @@ pub(crate) fn frame(
         style.paint.invalidate();
     }
     // Paint that reads the camera is written again as it moves.
-    let camera = at_camera(plan, pitch, bearing);
-    if camera.is_some() && style.paint.camera != Some((pitch, bearing)) {
-        style.paint.camera = Some((pitch, bearing));
+    let bearing = inputs.bearing;
+    let camera = at_camera(plan, inputs);
+    if camera.is_some() && style.paint.camera != Some(inputs) {
+        style.paint.camera = Some(inputs);
         style.paint.invalidate();
     }
     let plan = camera.as_ref().unwrap_or(plan);
@@ -138,10 +146,11 @@ pub(crate) fn drape(
     renderer: &mut Renderer,
     (style, plan): (&mut LoadedStyle, &StylePlan),
     zooms: &std::collections::BTreeSet<u8>,
-    (generation, bearing, pitch): (u64, f64, f64),
+    (generation, inputs): (u64, CameraInputs),
     atlas: &mut ImageAtlas,
 ) {
-    let camera = at_camera(plan, pitch, bearing);
+    let bearing = inputs.bearing;
+    let camera = at_camera(plan, inputs);
     let plan = camera.as_ref().unwrap_or(plan);
     let drape = &mut style.paint.drape;
     if drape.generation != Some(generation) {
@@ -150,8 +159,8 @@ pub(crate) fn drape(
         drape.painted.clear();
     }
     // Paint that reads the camera is draped again as it moves.
-    if camera.is_some() && drape.camera != Some((pitch, bearing)) {
-        drape.camera = Some((pitch, bearing));
+    if camera.is_some() && drape.camera != Some(inputs) {
+        drape.camera = Some(inputs);
         drape.painted.clear();
     }
     if drape.bearing != bearing {
@@ -242,8 +251,8 @@ struct DrapePaint {
     bearing: f64,
     /// The drape layout generation written for.
     generation: Option<u64>,
-    /// The pitch and bearing paint that reads the camera was draped at.
-    camera: Option<(f64, f64)>,
+    /// The camera inputs paint that reads the camera was draped at.
+    camera: Option<CameraInputs>,
 }
 
 #[derive(Debug, Default)]

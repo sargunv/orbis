@@ -840,7 +840,11 @@ fn extended_inputs_are_drawn_and_warn_once() {
         let folded = opacity
             .as_expression()
             .unwrap()
-            .at_camera(30.0, 0.0)
+            .at_camera(orb_expr::CameraInputs {
+                pitch: 30.0,
+                bearing: 0.0,
+                meters_per_pixel: 1.0,
+            })
             .unwrap();
         assert_eq!(folded.kind(), Kind::Constant);
         assert_eq!(
@@ -935,4 +939,36 @@ fn layers_that_lay_out_alike_share_a_group() {
     assert_eq!(group(0), group(1), "paint and key order aside");
     assert_ne!(group(0), group(2), "another layout");
     assert_ne!(group(0), group(3), "another zoom range");
+}
+
+/// style-spec#1881's `["meters-per-pixel"]` is new syntax: with its preview
+/// a camera value of paint, without it a warning and the default. Layout
+/// can't read it.
+#[test]
+fn meters_per_pixel_follows_its_preview() {
+    let layer = |paint: &str, layout: &str| {
+        format!(
+            r#"{{"version": 8, "sources": {{"s": {{"type": "geojson",
+                "data": {{"type": "FeatureCollection", "features": []}}}}}},
+                "layers": [{{"id": "l", "type": "line", "source": "s",
+                "paint": {{{paint}}}, "layout": {{{layout}}}}}]}}"#
+        )
+    };
+    let width = r#""line-width": ["/", 10, ["meters-per-pixel"]]"#;
+    let on = parse_with(&layer(width, ""), Previews::ALL, &[]).unwrap();
+    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+    let w = on.layers[0].get(LINE_WIDTH);
+    assert_eq!(w.kind(), Kind::Camera);
+    let camera = orb_expr::CameraInputs {
+        pitch: 0.0,
+        bearing: 0.0,
+        meters_per_pixel: 2.5,
+    };
+    assert_eq!(w.evaluate_camera(0.0, camera), 4.0);
+    let off = parse(&layer(width, "")).unwrap();
+    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
+    assert!(off.warnings[0].message.contains("style-spec#1881"));
+    assert!(!off.layers[0].get(LINE_WIDTH).is_set());
+    let layout = r#""line-miter-limit": ["meters-per-pixel"]"#;
+    assert!(parse_with(&layer("", layout), Previews::ALL, &[]).is_err());
 }

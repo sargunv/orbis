@@ -188,6 +188,9 @@ pub(crate) enum Call {
     Pitch,
     /// The camera's bearing, degrees.
     Bearing,
+    /// Ground metres per logical pixel at the camera's target, unpitched
+    /// (style-spec#1881).
+    MetersPerPixel,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -416,7 +419,7 @@ impl Op {
                 Call::Image => Deps::IMAGE,
                 Call::SupportedScript => Deps::SCRIPT,
                 Call::Geometry { .. } => Deps::GEOMETRY,
-                Call::Pitch | Call::Bearing => Deps::CAMERA,
+                Call::Pitch | Call::Bearing | Call::MetersPerPixel => Deps::CAMERA,
                 _ => Deps::NONE,
             },
             Op::Zoom => Deps::ZOOM,
