@@ -915,6 +915,41 @@ mod tests {
         assert_eq!((report.idle, shown), (true, Some(1.0)));
     }
 
+    /// A canvas's (or video's) tile that `prepare` asks for before any
+    /// frame waits for the host's frame, as a frame's request does: the
+    /// source has no URL to fetch (#175).
+    #[test]
+    fn prepare_before_the_first_frame_waits_for_a_canvas_frame() {
+        let mut offscreen = null_island(
+            r##"{"version":8,
+            "sources":{"c":{"type":"canvas","canvas":"drawing",
+                "coordinates":[[-120,70],[120,70],[120,-70],[-120,-70]]}},
+            "layers":[{"id":"c","type":"raster","source":"c","paint":{"raster-fade-duration":0}}]}"##,
+        );
+        for _ in 0..3 {
+            let (map, gpu, format) = (&mut offscreen.map, &mut offscreen.gpu, offscreen.format);
+            let renderer = offscreen
+                .renderer
+                .get_or_insert_with(|| map.create_renderer(gpu, format));
+            map.prepare(gpu, renderer, offscreen.viewport, 1.0);
+        }
+        let rgba = [0, 255, 0, 255];
+        let frame = orb_runtime::TileImage {
+            width: 4,
+            height: 4,
+            pixels: orb_runtime::ImagePixels::Core(rgba.repeat(16)),
+        };
+        offscreen.map.source_frame("c", frame).unwrap();
+        settle(&mut offscreen);
+        let pixels = offscreen.pixels();
+        let (w, h) = (
+            offscreen.viewport.width as usize,
+            offscreen.viewport.height as usize,
+        );
+        let center = (h / 2 * w + w / 2) * 4;
+        assert_eq!(pixels[center..center + 4], rgba);
+    }
+
     /// While the camera moves, frames come at the display's rate and the
     /// view is about to change: `prepare` leaves arrivals to them.
     #[test]

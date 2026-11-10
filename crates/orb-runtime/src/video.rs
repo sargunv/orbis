@@ -131,12 +131,28 @@ impl Videos {
             .ok_or_else(|| format!("no video or canvas source \"{id}\""))
     }
 
-    /// Whether source `key` is a video's or a canvas's; then its tile waits
-    /// for a frame.
-    pub(crate) fn want(&mut self, key: u32, tile: TileIndex) -> bool {
-        let Some(open) = self.open.get_mut(&key) else {
+    /// Whether `plan`'s source `index` is a video's or a canvas's; then its
+    /// tile waits for a frame. The plan says, not what the last sync
+    /// opened: a `prepare` between frames asks for the tiles of a style
+    /// no frame has synced yet, and such a source has no URL to fetch.
+    pub(crate) fn want(
+        &mut self,
+        plan: &StylePlan,
+        index: usize,
+        tile: TileIndex,
+        events: &mut Vec<MapEvent>,
+    ) -> bool {
+        let SourceKind::Image(image) = &plan.source_def(index).kind else {
             return false;
         };
+        if let ImageContent::Image(_) = image.content {
+            return false;
+        }
+        let key = plan.sources[index].key;
+        if !self.open.contains_key(&key) {
+            self.sync(Some(plan), events);
+        }
+        let open = self.open.get_mut(&key).expect("synced with the plan");
         if !open.wanted.iter().any(|(t, _)| *t == tile) {
             open.wanted.push((tile, false));
         }

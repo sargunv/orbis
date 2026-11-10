@@ -1916,9 +1916,13 @@ impl Map {
         edit: Option<u64>,
     ) {
         let style = self.style.as_mut().expect("jobs need a style");
-        // A video's tile waits for a frame from the host.
         let key = style.worker.plan().sources[index].key;
-        if edit.is_none() && self.videos.want(key, tile) {
+        // A video's tile waits for a frame from the host.
+        if edit.is_none()
+            && self
+                .videos
+                .want(style.worker.plan(), index, tile, &mut self.events.queue)
+        {
             return;
         }
         let vector = style.worker.plan().image_kind(index).is_none();
@@ -3094,8 +3098,7 @@ mod gpu_tests {
         .unwrap();
         videos.sync(Some(style.plan()), &mut events);
         assert!(events.is_empty());
-        let key = style.plan().sources[0].key;
-        assert!(videos.want(key, TileIndex::new(0, 0, 0)));
+        assert!(videos.want(style.plan(), 0, TileIndex::new(0, 0, 0), &mut events));
         let work = videos.work();
         assert_eq!(work[0].failed, Some(crate::NO_VIDEO));
         assert_eq!(work[0].wanted.len(), 1);
