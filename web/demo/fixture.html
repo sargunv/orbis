@@ -21,7 +21,10 @@
     const degraded = [];
     map.on("warning", ({ message }) => warnings.push(message));
     map.on("error", ({ message }) => warnings.push(message));
-    map.on("degraded", ({ gap }) => degraded.push(gap));
+    map.on(
+      "degraded",
+      ({ gap }) => degraded.includes(gap) || degraded.push(gap),
+    );
     return degraded;
   };
   // GL JS's harness reads a video's first frame: videos here stay on it.

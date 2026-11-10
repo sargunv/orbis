@@ -440,13 +440,6 @@ impl Renderer {
             .release(gpu);
     }
 
-    /// Whether a renderer draws on a device of `caps`: one that draws
-    /// GPU-driven, or any device in a build with the CPU frame driver
-    /// (WebGL 2's, #140).
-    pub fn draws_on(caps: &Caps) -> bool {
-        caps.gpu_driven() || cfg!(cpu_driven)
-    }
-
     /// What a renderer on a device of `caps` draws otherwise than on
     /// WebGPU, whether or not a style uses it: [`Gap`].
     pub fn gaps_on(caps: &Caps) -> Vec<Gap> {

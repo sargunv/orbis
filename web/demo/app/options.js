@@ -588,7 +588,7 @@ function rendererGroup(wanted, onPick) {
         tabindex: value === wanted ? "0" : "-1",
         title:
           value === "webgl2"
-            ? "In progress: draws a flat colour until #140's S3"
+            ? "In progress (#140): terrain draws flat, and the map says what else it draws otherwise"
             : undefined,
         onclick: () => value !== wanted && onPick(value),
       },
@@ -605,7 +605,7 @@ function rendererGroup(wanted, onPick) {
       h(
         "span",
         { class: "option-note" },
-        "In progress, WebGL 2 draws a flat colour until #140's S3",
+        "In progress, WebGL 2 draws terrain flat (#140)",
       ),
     ),
     h(

@@ -308,8 +308,8 @@ export class OrbisMap {
 
   /** The GPU API the map draws with: WebGPU, or WebGL 2 where the browser
    * gives WebGPU no adapter or the map asked for it ({@link
-   * MapOptions.backend}). On WebGL 2 it draws only a flat colour so far
-   * (#140). */
+   * MapOptions.backend}). What WebGL 2 draws otherwise than WebGPU, the
+   * map says with `degraded` events (#140). */
   get backend(): "webgpu" | "webgl2" {
     return this.#link.backend;
   }
