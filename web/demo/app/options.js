@@ -56,7 +56,8 @@ const occluded = (style) => ofType(style, "fill-extrusion")
  * `read(style)` gives its value in a style, `apply(tx, value, context)`
  * edits the style to it, and `initial(context)`, where given, is the
  * entry's default when not as the style was designed (terrain the switch
- * puts in). `needs` names an option, and its value, without which this
+ * puts in). An entry's `off` lists switches its style designs that start
+ * off (styles.js). `needs` names an option, and its value, without which this
  * one draws nothing, and says so: it's disabled then. `orbisOnly` marks a preview GL JS
  * and MapLibre Native don't draw.
  */
@@ -175,7 +176,11 @@ export function mapOptions({ params, setParam }) {
     panel.style.setProperty("--sheet-right", `${innerWidth - rect.left + 8}px`);
   });
 
-  const initial = (option) => (option.initial ? option.initial(context) : option.read(context.designed));
+  /** The entry's default: off where it says so, else the option's own, else as designed. */
+  const initial = (option) => {
+    if (context.scene.off?.includes(option.key)) return false;
+    return option.initial ? option.initial(context) : option.read(context.designed);
+  };
   const wanted = (option) => decode(option, params().get(option.key)) ?? initial(option);
   const disabled = (option) => {
     if (!ready) return true;

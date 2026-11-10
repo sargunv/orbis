@@ -810,9 +810,9 @@ async function offlineGlobe(page, server) {
   });
 }
 
-// The Globe's options, in the panel's order, and their values as it designs them.
+// The Globe's options, in the panel's order, and the entry's defaults: shadows and AO off.
 const GLOBE_OPTIONS = {
-  terrain: false, hillshade: true, light: "viewport", buildings: true, shadows: true, ao: true,
+  terrain: false, hillshade: true, light: "viewport", buildings: true, shadows: false, ao: false,
   projection: "globe", atmosphere: true, fog: true, stars: true, labels: true, colors: "linear",
 };
 
@@ -821,7 +821,7 @@ async function options(browser, server) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await offlineGlobe(page, server);
-  await page.goto(`${server.url}?style=globe&shadows=0&projection=mercator&colors=srgb#14/35.687/139.74`);
+  await page.goto(`${server.url}?style=globe&shadows=1&projection=mercator&colors=srgb#14/35.687/139.74`);
   await page.waitForFunction(() => app.scene === "globe" && app.options.values, null, { timeout: 60_000 });
   // The panel's values, what the map's style draws, the disabled rows and the URL's choices.
   const state = () => page.evaluate(async () => {
@@ -839,16 +839,16 @@ async function options(browser, server) {
       },
       disabled: [...document.querySelectorAll("#options [data-option]")]
         .filter((row) => row.disabled || row.querySelector("button:disabled")).map((row) => row.dataset.option),
-      url: Object.fromEntries([...query].filter(([k]) => !["style", "edit"].includes(k)).sort()),
+      url: Object.fromEntries([...query].filter(([k]) => k !== "style").sort()),
     };
   });
   const expect = (values, style, disabled, url) => ({ values: { ...GLOBE_OPTIONS, ...values },
-    style: { shadows: 0.5, projection: "globe", terrain: false, colors: "linear", buildings: "visible", ao: 0.6,
+    style: { shadows: 0, projection: "globe", terrain: false, colors: "linear", buildings: "visible", ao: 0,
       labels: ["visible"], ...style }, disabled, url: Object.fromEntries(Object.entries(url).sort()) });
   // The URL's choices apply as the style loads; fog waits for terrain.
-  await settles(page, state, expect({ shadows: false, projection: "mercator", colors: "srgb" },
-    { shadows: 0, projection: "mercator", colors: "srgb" }, ["atmosphere", "fog", "stars"],
-  { shadows: "0", projection: "mercator", colors: "srgb" }), "the URL's choices apply as the Globe loads");
+  await settles(page, state, expect({ shadows: true, projection: "mercator", colors: "srgb" },
+    { shadows: 0.5, projection: "mercator", colors: "srgb" }, ["atmosphere", "fog", "stars"],
+  { shadows: "1", projection: "mercator", colors: "srgb" }), "the URL's choices apply as the Globe loads");
   await page.evaluate(() => { window.stayed = true; });
 
   // Opening the panel moves nothing; it lists the Globe's options, grouped, clear of its button.
@@ -872,7 +872,7 @@ async function options(browser, server) {
   await option(page, "shadows").click();
   await option(page, "projection").locator('[data-value="globe"]').click();
   await settles(page, state, expect({ colors: "srgb" }, { colors: "srgb" }, ["fog"], { colors: "srgb" }),
-    "shadows back on and the globe leave the URL");
+    "shadows back off and the globe leave the URL");
   await option(page, "buildings").click();
   await settles(page, state, expect({ colors: "srgb", buildings: false }, { colors: "srgb", buildings: "none" },
     ["shadows", "ao", "fog"], { colors: "srgb", buildings: "0" }), "without 3D buildings, shadows and AO wait");
@@ -884,8 +884,8 @@ async function options(browser, server) {
   await page.keyboard.press("Space");
   await option(page, "colors").locator('[aria-checked="true"]').focus();
   await page.keyboard.press("ArrowLeft");
-  const chosen = expect({ ao: false, terrain: true, labels: false }, { ao: 0, terrain: true, labels: ["none"] }, [],
-    { ao: "0", terrain: "1", labels: "0" });
+  const chosen = expect({ ao: true, terrain: true, labels: false }, { ao: 0.6, terrain: true, labels: ["none"] }, [],
+    { ao: "1", terrain: "1", labels: "0" });
   await settles(page, state, chosen, "AO, terrain, labels and colours by click and key");
   assert.ok(await page.evaluate(() => window.stayed), "the switches edit the style without a reload");
 

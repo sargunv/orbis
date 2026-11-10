@@ -51,14 +51,15 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * between a map- and a viewport-anchored light, and `terrain` their
  * terrain switch, with the terrain it turns on, off by default, or `true`
  * for the style's own, on by default (app/options.js, which offers the
- * rest by what the style draws). `unsupported` says, by
+ * rest by what the style draws); `off` names those of its switches that
+ * start off though the style designs them. `unsupported` says, by
  * engine, why that engine can't show the entry in the comparison
  * (app/compare.js).
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
- *   light?: boolean, terrain?: object | true, projection?: object, sky?: object,
+ *   light?: boolean, terrain?: object | true, off?: string[], projection?: object, sky?: object,
  *   restyle?: (style: object) => object,
  *   unsupported?: { gljs?: string, native?: string } }} Scene
  */
@@ -104,7 +105,7 @@ const PROTOMAPS_SKY = { "sky-color": "#9fd3e0", "horizon-color": "#eef1ef", "fog
  * land and water fills and under the roads and labels, a viewport-anchored
  * light (the spec's default, which reads best on the globe in both engines),
  * the buildings extruded under the labels with their footprints rounded
- * (shadows and ambient occlusion off until switched on), and colours mixed in linear
+ * (with shadows and ambient occlusion), and colours mixed in linear
  * light (`dev.sargunv.orbis:color-space`). Each
  * addition is placed by the layers it finds, so a style with other ids
  * still draws.
@@ -151,12 +152,10 @@ function protomaps3d(style) {
         "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 14, 0, 15,
           ["min", ["coalesce", ["get", "min_height"], 0], height]],
         "fill-extrusion-opacity": 0.9,
-        // Ambient occlusion (style-spec#1796's preview) is off by default:
-        // switched on, walls darken toward their feet (0.6) and the ground
-        // along them (0.5). Off until zooming into a city with it on no
-        // longer stutters as the buildings arrive.
-        "fill-extrusion-ambient-occlusion-wall-intensity": 0,
-        "fill-extrusion-ambient-occlusion-ground-intensity": 0,
+        // Grounded by ambient occlusion (style-spec#1796's preview): walls
+        // darken toward their feet and the ground along them.
+        "fill-extrusion-ambient-occlusion-wall-intensity": 0.6,
+        "fill-extrusion-ambient-occlusion-ground-intensity": 0.5,
       },
     });
   }
@@ -164,11 +163,10 @@ function protomaps3d(style) {
     ...style,
     sources: { ...style.sources, terrain: { ...MAPTERHORN, attribution: "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>" },
       hillshade: MAPTERHORN },
-    // Shadows on the ground (style-spec#1797's preview) are off by default,
-    // for the same reason as the ambient occlusion; switched on they take
-    // 0.5, turning with the view or fixed to the ground as the entry's
-    // light switch anchors it.
-    light: { anchor: "viewport", position: [1.15, 210, 30], intensity: 0.35, "shadow-intensity": 0 },
+    // The buildings cast shadows on the ground from it (style-spec#1797's
+    // preview), turning with the view or fixed to the ground as the
+    // entry's light switch anchors it.
+    light: { anchor: "viewport", position: [1.15, 210, 30], intensity: 0.35, "shadow-intensity": 0.5 },
     // Colours mix in linear light: the scattering tints the sunlit face
     // rather than washing it out, fog and the hillshade blend as light
     // does, and lines and labels antialias evenly. GL JS and Native ignore
@@ -186,7 +184,9 @@ export const GROUPS = [
       { key: "globe", name: "Globe",
         detail: "Protomaps Light on the globe in 3D: hillshade, buildings, a night sky, and Mapterhorn terrain",
         url: protomaps("light"), projection: { type: "globe" }, sky: PROTOMAPS_SKY, restyle: protomaps3d,
-        terrain: PROTOMAPS_TERRAIN,
+        // Shadows and ambient occlusion start off: zooming fast from space
+        // into a city stutters as the buildings arrive with either on.
+        terrain: PROTOMAPS_TERRAIN, off: ["shadows", "ao"],
         camera: { center: [10, 30], zoom: 1.5 }, constraints: { minZoom: 0 }, flight: alpsFlight.legs, light: true,
         dark: true, swatch: ["#e2dfda", "#80deea", "#060a17"] },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
