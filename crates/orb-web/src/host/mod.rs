@@ -388,7 +388,15 @@ async fn read(
         .dyn_into()
         .map_err(|e: js_sys::Object| network(e.into()))?;
     let limit = range.map_or(64 << 20, |(_, length)| length) as usize;
-    let mut bytes = Vec::new();
+    // A range's length is known; a whole body's is as its header says,
+    // which is the encoded length, a lower bound for compressed bodies.
+    let expected = match range {
+        Some(_) => limit,
+        None => (response.headers().get("content-length").ok().flatten())
+            .and_then(|length| length.parse().ok())
+            .unwrap_or(0),
+    };
+    let mut bytes = Vec::with_capacity(expected.min(limit));
     loop {
         let chunk = JsFuture::from(reader.read()).await.map_err(network)?;
         if Reflect::get(&chunk, &"done".into())
@@ -403,7 +411,10 @@ async fn read(
             let _ = reader.cancel();
             return Err(FetchError::Range("oversized response body".into()));
         }
-        bytes.extend_from_slice(&chunk.to_vec());
+        // Straight from the JS chunk into the body: one copy.
+        let start = bytes.len();
+        bytes.resize(start + chunk.length() as usize, 0);
+        chunk.copy_to(&mut bytes[start..]);
     }
     if range.is_some() && bytes.len() != limit {
         return Err(FetchError::Range("short range body".into()));
