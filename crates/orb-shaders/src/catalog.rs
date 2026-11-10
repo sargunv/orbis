@@ -12,6 +12,36 @@ const DRAW: &str = concat!(
     wgsl!("project"),
     wgsl!("fetch")
 );
+/// The modules a WebGL 2 build swaps (#140), modern first, then each's
+/// GL counterpart: built-ins written out, and tables read from data
+/// textures where the modern path reads storage buffers.
+const GL_SWAPS: &[(&str, &str)] = &[
+    (wgsl!("builtins"), wgsl!("builtins_gl")),
+    (
+        wgsl!("fetch"),
+        concat!(
+            wgsl!("data_texture"),
+            wgsl!("fetch_texture"),
+            generated!("rows_texture")
+        ),
+    ),
+    (
+        wgsl!("fetch_terrain"),
+        concat!(
+            wgsl!("data_texture"),
+            wgsl!("fetch_terrain_texture"),
+            generated!("terrain_rows_texture")
+        ),
+    ),
+    (
+        wgsl!("fetch_drape"),
+        concat!(wgsl!("data_texture"), wgsl!("fetch_drape_texture")),
+    ),
+    (
+        wgsl!("fetch_regions"),
+        concat!(wgsl!("data_texture"), wgsl!("fetch_regions_texture")),
+    ),
+];
 const PATTERN: &str = wgsl!("pattern");
 const EXTRUSION: &str = wgsl!("extrusion");
 const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
@@ -68,6 +98,20 @@ impl Shader {
             source = source.replace("//planes ", "");
         }
         source
+    }
+
+    /// Its source for WebGL 2 (#140), its swapped modules (`GL_SWAPS`)
+    /// replaced; `None` for what WebGL 2 can't run: compute, and clip
+    /// distances, which a device without them draws another way.
+    pub fn gl_source(&self) -> Option<String> {
+        if !self.compute.is_empty() || self.parts.contains(&CLIP_PLANES) {
+            return None;
+        }
+        let mut source = self.source();
+        for (modern, gl) in GL_SWAPS {
+            source = source.replace(modern, gl);
+        }
+        Some(source)
     }
 }
 

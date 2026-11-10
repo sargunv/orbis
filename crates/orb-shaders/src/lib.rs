@@ -13,6 +13,13 @@ macro_rules! wgsl {
     };
 }
 
+/// A WGSL module the build script generated.
+macro_rules! generated {
+    ($name:literal) => {
+        include_str!(concat!(env!("OUT_DIR"), "/wgsl/", $name, ".wgsl"))
+    };
+}
+
 mod catalog;
 pub use catalog::*;
 
@@ -228,6 +235,191 @@ mod tests {
             changed.is_empty() && golden.lines().count() == text.lines().count(),
             "stages changed from {path}: {changed:?}; UPDATE_GOLDEN=1 rewrites it, once the change is the one meant"
         );
+    }
+
+    /// GLSL ES 3.10 built-ins, which WebGL 2's ES 3.00 lacks.
+    const ES_310_ONLY: &[&str] = &[
+        "bitCount(",
+        "findLSB(",
+        "findMSB(",
+        "bitfieldExtract(",
+        "bitfieldInsert(",
+        "bitfieldReverse(",
+        "packUnorm4x8(",
+        "unpackUnorm4x8(",
+        "packSnorm4x8(",
+        "unpackSnorm4x8(",
+        "imageLoad(",
+        "imageStore(",
+        "textureGather(",
+        "atomicAdd(",
+        "memoryBarrier",
+        "uaddCarry(",
+        "umulExtended(",
+        "frexp(",
+        "ldexp(",
+    ];
+
+    /// The WebGL 2 dry run (#140): every pipeline's GL variant
+    /// (`Shader::gl_source`) written as GLSL ES 3.00 by naga, one entry
+    /// point at a time as wgpu's GL back end compiles them, within
+    /// WebGL 2's guaranteed limits. A shader change that breaks the GL
+    /// path fails here, on the author's machine, in the same commit.
+    #[test]
+    fn gl_variants_fit_webgl2() {
+        use naga::back::glsl;
+        // WebGL 2's minimums (`MAX_VARYING_VECTORS`,
+        // `MAX_TEXTURE_IMAGE_UNITS`, `MAX_*_UNIFORM_BLOCKS`,
+        // `MAX_UNIFORM_BLOCK_SIZE`).
+        const VARYINGS: usize = 15;
+        const TEXTURES: usize = 16;
+        const UNIFORM_BLOCKS: usize = 12;
+        const UNIFORM_BLOCK_BYTES: u32 = 16 << 10;
+        let mut failures = Vec::new();
+        let mut written = 0;
+        for shader in SHADERS {
+            let Some(source) = shader.gl_source() else {
+                assert!(
+                    !shader.compute.is_empty() || !shader.vertex.is_empty(),
+                    "{}",
+                    shader.label
+                );
+                continue;
+            };
+            let label = shader.label;
+            let (module, _) = parse(label, &source);
+            let mut textures = std::collections::BTreeSet::new();
+            for (entry, stage) in [
+                (shader.vertex, naga::ShaderStage::Vertex),
+                (shader.fragment, naga::ShaderStage::Fragment),
+            ] {
+                if entry.is_empty() {
+                    continue;
+                }
+                let Some((_, one)) = split::entry_modules(&module)
+                    .into_iter()
+                    .find(|(name, _)| name == entry)
+                else {
+                    failures.push(format!("{label}: no entry point {entry}"));
+                    continue;
+                };
+                let info = naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::empty(),
+                )
+                .validate(&one)
+                .unwrap_or_else(|e| panic!("{label} {entry}: {e}"));
+                // Overrides at their defaults, as a pipeline without
+                // constants makes them.
+                let (one, info) = naga::back::pipeline_constants::process_overrides(
+                    &one,
+                    &info,
+                    None,
+                    &Default::default(),
+                )
+                .unwrap_or_else(|e| panic!("{label} {entry}: {e}"));
+                let (one, info) = (one.into_owned(), info.into_owned());
+                let mut fail = |what: String| failures.push(format!("{label} {entry}: {what}"));
+                for (_, var) in one.global_variables.iter() {
+                    if let naga::AddressSpace::Storage { .. } = var.space {
+                        fail(format!(
+                            "reads storage `{}`",
+                            var.name.as_deref().unwrap_or("?")
+                        ));
+                    }
+                }
+                let options = glsl::Options {
+                    version: glsl::Version::Embedded {
+                        version: 300,
+                        is_webgl: true,
+                    },
+                    writer_flags: glsl::WriterFlags::ADJUST_COORDINATE_SPACE
+                        | glsl::WriterFlags::FORCE_POINT_SIZE,
+                    binding_map: Default::default(),
+                    zero_initialize_workgroup_memory: true,
+                };
+                let pipeline = glsl::PipelineOptions {
+                    shader_stage: stage,
+                    entry_point: entry.to_string(),
+                    multiview: None,
+                };
+                let mut glsl = String::new();
+                let reflection = match glsl::Writer::new(
+                    &mut glsl,
+                    &one,
+                    &info,
+                    &options,
+                    &pipeline,
+                    naga::proc::BoundsCheckPolicies::default(),
+                )
+                .and_then(|mut w| w.write())
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        fail(format!("doesn't write as GLSL ES 3.00: {e}"));
+                        continue;
+                    }
+                };
+                written += 1;
+                for builtin in ES_310_ONLY.iter().filter(|b| glsl.contains(*b)) {
+                    fail(format!("calls `{builtin}`, which GLSL ES 3.00 lacks"));
+                }
+                if stage == naga::ShaderStage::Vertex && reflection.varying.len() > VARYINGS {
+                    fail(format!(
+                        "{} varyings, past WebGL 2's {VARYINGS}",
+                        reflection.varying.len()
+                    ));
+                }
+                // A texture sampled with two samplers would take one of
+                // them on wgpu's GL back end.
+                let mut samplers = std::collections::BTreeMap::new();
+                for mapping in reflection.texture_mapping.values() {
+                    let texture = one.global_variables[mapping.texture].name.clone();
+                    if samplers
+                        .insert(texture.clone(), mapping.sampler)
+                        .is_some_and(|s| s != mapping.sampler)
+                    {
+                        fail(format!(
+                            "samples `{}` with two samplers",
+                            texture.as_deref().unwrap_or_default()
+                        ));
+                    }
+                    textures.insert(texture);
+                }
+                let mut layouter = naga::proc::Layouter::default();
+                layouter.update(one.to_ctx()).expect("lays out the module");
+                let uniforms: Vec<_> = (one.global_variables.iter())
+                    .filter(|(_, v)| v.space == naga::AddressSpace::Uniform)
+                    .collect();
+                if uniforms.len() > UNIFORM_BLOCKS {
+                    fail(format!(
+                        "{} uniform blocks, past WebGL 2's {UNIFORM_BLOCKS}",
+                        uniforms.len()
+                    ));
+                }
+                for (_, var) in uniforms {
+                    let size = layouter[var.ty].size;
+                    if size > UNIFORM_BLOCK_BYTES {
+                        fail(format!(
+                            "uniform `{}` of {size} bytes, past WebGL 2's {UNIFORM_BLOCK_BYTES}",
+                            var.name.as_deref().unwrap_or("?")
+                        ));
+                    }
+                }
+            }
+            if textures.len() > TEXTURES {
+                failures.push(format!(
+                    "{label}: {} textures, past WebGL 2's {TEXTURES} units",
+                    textures.len()
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "WebGL 2's dry run:\n  {}",
+            failures.join("\n  ")
+        );
+        assert!(written > 40, "only {written} stages written");
     }
 
     #[test]

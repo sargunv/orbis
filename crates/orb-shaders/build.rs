@@ -115,6 +115,18 @@ mod reflect {
         ("Visible", "visible"),
     ];
 
+    /// The rows WebGL 2's fetch modules read from data textures (#140):
+    /// type, the reader's prefix (`{prefix}_at` from `{prefix}_word`) and
+    /// the generated module it goes in.
+    const ROWS: &[(&str, &str, &str)] = &[
+        ("Tile", "tile", "rows_texture"),
+        ("Chunk", "chunk", "rows_texture"),
+        ("NodeCull", "node_cull", "rows_texture"),
+        ("Visible", "visible", "rows_texture"),
+        ("ImageRect", "image", "rows_texture"),
+        ("TerrainTile", "terrain_tile", "terrain_rows_texture"),
+    ];
+
     pub(crate) fn write() {
         let types = std::fs::read_to_string("src/wgsl/types.wgsl").expect("reads types.wgsl");
         // Its helpers read the frame block.
@@ -166,6 +178,7 @@ mod reflect {
             rust.push_str("}\n");
         }
         let mut done = std::collections::HashSet::new();
+        let mut rows: std::collections::BTreeMap<&str, String> = Default::default();
         for shader in crate::catalog::SHADERS {
             let source = shader.source();
             let module = naga::front::wgsl::parse_str(&source)
@@ -174,6 +187,33 @@ mod reflect {
             layouter
                 .update(module.to_ctx())
                 .expect("lays out the shader");
+            for (_, ty) in module.types.iter() {
+                let Some(&(name, prefix, file)) =
+                    ROWS.iter().find(|(n, _, _)| ty.name.as_deref() == Some(n))
+                else {
+                    continue;
+                };
+                let TypeInner::Struct { members, span } = &ty.inner else {
+                    continue;
+                };
+                if !done.insert(prefix) {
+                    continue;
+                }
+                let out = rows.entry(file).or_default();
+                writeln!(
+                    out,
+                    "fn {prefix}_at(i: u32) -> {name} {{\nlet b = i * {}u;\nvar r: {name};",
+                    span / 4
+                )
+                .unwrap();
+                for m in members {
+                    let member = m.name.as_deref().expect("named members");
+                    let place = format!("r.{member}");
+                    let word = format!("{prefix}_word");
+                    read(&module, m.ty, &place, m.offset / 4, &word, out);
+                }
+                out.push_str("return r;\n}\n");
+            }
             for (_, ty) in module.types.iter() {
                 let Some(&(name, module_name)) =
                     STRUCTS.iter().find(|(n, _)| ty.name.as_deref() == Some(n))
@@ -210,8 +250,56 @@ mod reflect {
         if let Some(missing) = STRUCTS.iter().find(|(n, _)| !done.contains(n)) {
             panic!("no shader declares {}", missing.0);
         }
+        if let Some(missing) = ROWS.iter().find(|(_, p, _)| !done.contains(p)) {
+            panic!("no shader declares {}", missing.0);
+        }
         let dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
         std::fs::write(format!("{dir}/layout.rs"), rust).expect("writes OUT_DIR");
+        std::fs::create_dir_all(format!("{dir}/wgsl")).expect("creates OUT_DIR/wgsl");
+        for (file, text) in rows {
+            std::fs::write(format!("{dir}/wgsl/{file}.wgsl"), text).expect("writes OUT_DIR");
+        }
+    }
+
+    /// Assigns `place` from the words at `at` on: scalars bitcast,
+    /// vectors and arrays element by element.
+    fn read(
+        module: &naga::Module,
+        ty: naga::Handle<naga::Type>,
+        place: &str,
+        at: u32,
+        word: &str,
+        out: &mut String,
+    ) {
+        let scalar = |kind: naga::ScalarKind| match kind {
+            naga::ScalarKind::Uint => "u32",
+            naga::ScalarKind::Sint => "i32",
+            naga::ScalarKind::Float => "f32",
+            other => panic!("no {other:?} in a table"),
+        };
+        match &module.types[ty].inner {
+            TypeInner::Scalar(s) => {
+                let ty = scalar(s.kind);
+                writeln!(out, "{place} = bitcast<{ty}>({word}(b + {at}u));").unwrap();
+            }
+            TypeInner::Vector { size, scalar: s } => {
+                let (n, ty) = (*size as u32, scalar(s.kind));
+                let parts: Vec<String> = (0..n)
+                    .map(|k| format!("bitcast<{ty}>({word}(b + {}u))", at + k))
+                    .collect();
+                writeln!(out, "{place} = vec{n}<{ty}>({});", parts.join(", ")).unwrap();
+            }
+            TypeInner::Array { base, size, stride } => {
+                let naga::ArraySize::Constant(n) = size else {
+                    panic!("fixed-size arrays in tables");
+                };
+                for k in 0..n.get() {
+                    let place = format!("{place}[{k}]");
+                    read(module, *base, &place, at + k * stride / 4, word, out);
+                }
+            }
+            other => panic!("no {other:?} in a table"),
+        }
     }
 }
 
@@ -224,6 +312,13 @@ macro_rules! wgsl {
             $name,
             ".wgsl"
         ))
+    };
+}
+
+/// Modules this script writes, which it doesn't read back.
+macro_rules! generated {
+    ($name:literal) => {
+        ""
     };
 }
 
