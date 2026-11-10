@@ -76,6 +76,18 @@ pub(crate) const STYLE_ZOOM_TILE_PX: f64 = 512.0;
 /// horizontal bounds the far range and the LOD integral, as in GL JS.
 const MAX_HORIZON_PITCH: f64 = 89.25;
 
+/// How far up toward a flat surface's true horizon the ground is drawn, as
+/// a share of the target's distance below it on screen (MapLibre Native's
+/// bound on the far plane): the farthest ground lies about 100 times as
+/// deep as the target, and the sky starts there.
+const HORIZON_SHARE: f64 = 0.99;
+
+/// The sine of the lowest pitch the sky's horizon is placed for, which
+/// keeps it finite looking straight down.
+fn lowest_pitch_sin() -> f64 {
+    (90.0 - MAX_HORIZON_PITCH).to_radians().sin()
+}
+
 impl CameraState {
     /// GL JS's default vertical field of view.
     pub const DEFAULT_FOV: f64 = 36.869_897_645_844_02;
@@ -210,6 +222,9 @@ pub struct View {
     eye_distance_px: f64,
     /// Distance from the eye to the farthest visible ground point, in pixels.
     far_px: f64,
+    /// How far above the target's place the ground ends and the sky
+    /// starts, logical pixels, without roll.
+    horizon_px: f64,
     height_scale: f64,
     projection: Projection,
     globe: Option<GlobeView>,
@@ -259,9 +274,11 @@ impl View {
             sea_level_px
         };
 
-        // Distance to the ground point at the top edge of the viewport, after
-        // GL JS's transform.
-        let ground_angle = FRAC_PI_2 + pitch;
+        // MapLibre Native's far plane (`TransformState::getProjMatrix`): the
+        // depth of the ground point at the top edge, out to where the ground
+        // shows `HORIZON_SHARE` of the way up to the true horizon. GL JS
+        // stops at 85% of the angle to it and fills the rest with sky; the
+        // ground is drawn on instead, and the sky starts where it ends.
         // GL JS's `zfov`: a rolled view's vertical extent spans some of its
         // width, so the far plane reaches farther.
         let (roll_sin, roll_cos) = camera.roll.to_radians().sin_cos();
@@ -272,21 +289,26 @@ impl View {
             * (roll_cos.abs() * (viewport.height + 2.0 * offset.y)
                 + roll_sin.abs() * (viewport.width + 2.0 * offset.x.abs()))
             / viewport.height;
-        let top_half_surface = above_center.sin() * lowest_plane_px
-            / (PI - ground_angle - above_center)
-                .clamp(0.01, PI - 0.01)
-                .sin();
-        let horizon_angle = ((FRAC_PI_2 - pitch).tan() * 0.85)
-            .min((MAX_HORIZON_PITCH.to_radians() - pitch).tan())
-            .atan();
-        let horizon_fov = horizon_angle.max((90.0 - MAX_HORIZON_PITCH).to_radians());
-        let horizon_surface = horizon_fov.sin() * lowest_plane_px
-            / (PI - ground_angle - horizon_fov)
-                .clamp(0.01, PI - 0.01)
-                .sin();
-        let far_px = ((FRAC_PI_2 - pitch).cos() * top_half_surface.min(horizon_surface)
-            + lowest_plane_px)
-            * 1.01;
+        let top = (above_center.min(FRAC_PI_2).tan() * limited.tan()).clamp(0.0, HORIZON_SHARE);
+        // The deepest ground drawn.
+        let mut deepest = lowest_plane_px / (1.0 - HORIZON_SHARE);
+        let altitude_px = altitude * px_per_m;
+        // A surface that is a sphere at low zoom ends its plane's ground
+        // at the sphere's horizon, as far along the ground as the eye sees
+        // over the sphere, so the two meet through the handover and the
+        // ground reaches no farther past it.
+        if surface.globe.is_some_and(|g| g.plane.is_none()) {
+            let altitude = altitude.max(1.0);
+            let r = sphere::RADIUS;
+            let ahead = ((r + altitude).powi(2) - r * r).sqrt() * px_per_m;
+            let limb = ahead * pitch.sin() + altitude * px_per_m * pitch.cos();
+            deepest = deepest.min(limb.max(lowest_plane_px));
+        }
+        let far_px = (lowest_plane_px / (1.0 - top)).min(deepest) * 1.01;
+        // Where the ground ends on screen and the sky starts, above the
+        // target's place: the ground point that deep below the eye.
+        let horizon_px = eye_distance_px * (pitch.cos() - altitude_px / deepest)
+            / pitch.sin().max(lowest_pitch_sin());
         let near_px = viewport.height / 50.0;
 
         let to_px = DMat4::from_scale(DVec3::splat(1.0 / world_per_px));
@@ -370,6 +392,7 @@ impl View {
             sea_level_px,
             eye_distance_px,
             far_px,
+            horizon_px,
             height_scale,
             projection: *projection,
             globe,
@@ -433,7 +456,7 @@ impl View {
     /// Top logical row of the apparent horizon without roll, for tests.
     #[cfg(test)]
     pub(crate) fn sky_horizon(&self) -> f64 {
-        self.center.y - self.horizon_offset()
+        self.center.y - self.horizon_px
     }
 
     /// The apparent horizon as a line: a point on it and its unit normal
@@ -441,19 +464,11 @@ impl View {
     /// target's place (GL JS's `u_horizon`, `u_horizon_normal`).
     pub fn sky_horizon_line(&self) -> (DVec2, DVec2) {
         let (sin, cos) = self.roll.to_radians().sin_cos();
-        let h = self.horizon_offset();
+        let h = self.horizon_px;
         (
             DVec2::new(self.center.x - h * sin, self.center.y - h * cos),
             DVec2::new(-sin, -cos),
         )
-    }
-
-    /// The horizon's distance from the target's place, logical pixels
-    /// (GL JS's `getMercatorHorizon`).
-    fn horizon_offset(&self) -> f64 {
-        let pitch = self.pitch.to_radians();
-        self.eye_distance_px
-            * ((FRAC_PI_2 - pitch).tan() * 0.85).min((MAX_HORIZON_PITCH.to_radians() - pitch).tan())
     }
 
     pub fn viewport(&self) -> Viewport {
@@ -1451,6 +1466,62 @@ mod tests {
         );
         assert!(view.ground_horizon() > 0.0);
         assert!(view.ground_horizon() < view.viewport().height / 2.0);
+    }
+
+    /// Past the pitch where the top edge reaches the horizon, the ground
+    /// runs out to MapLibre Native's far plane, 100 times as deep as the
+    /// target, within a percent of the true horizon, and the sky starts
+    /// where it ends.
+    #[test]
+    fn high_pitch_ground_reaches_natives_far_plane_and_meets_the_sky() {
+        let viewport = Viewport {
+            width: 1200.0,
+            height: 700.0,
+        };
+        for pitch in [75.0, 80.0, 85.0] {
+            let mut camera = CameraState::new(Geodetic::new(-74.0, 40.7), 14.0, &mercator());
+            camera.pitch = pitch;
+            let view = View::new(&camera, viewport, &Surface::plane(mercator()));
+            let depth = view.far_px / 1.01 / view.eye_distance_px;
+            assert!((depth - 100.0).abs() < 1e-6, "{pitch}: {depth}");
+            assert!((view.ground_horizon() - view.sky_horizon()).abs() < 0.5);
+            let below_true = view.eye_distance_px / pitch.to_radians().tan();
+            let below_sky = view.center().y - view.sky_horizon();
+            assert!((below_sky / below_true - HORIZON_SHARE).abs() < 1e-9);
+        }
+    }
+
+    /// On the v8 globe the plane's ground stops where the sphere's does,
+    /// at its horizon from the eye's altitude, short of Native's far plane:
+    /// the two surfaces meet through the handover, and the sky meets both.
+    #[test]
+    fn globe_planes_end_their_ground_at_the_spheres_horizon() {
+        let viewport = Viewport {
+            width: 1200.0,
+            height: 700.0,
+        };
+        let globe = Surface {
+            projection: mercator(),
+            globe: Some(Globe::V8),
+        };
+        for zoom in [12.0, 14.0] {
+            let mut camera = CameraState::new(Geodetic::new(-74.0, 40.7), zoom, &mercator());
+            camera.pitch = 80.0;
+            let view = View::new(&camera, viewport, &globe);
+            let flat = View::new(&camera, viewport, &Surface::plane(mercator()));
+            assert!(view.far_px < flat.far_px / 2.0, "{zoom}");
+            assert!((view.ground_horizon() - view.sky_horizon()).abs() < 0.5);
+            // The ground's far end is the sphere's horizon: the ground point
+            // straight ahead as far as the eye sees over the sphere shows
+            // there.
+            let altitude = view.eye.z / view.height_scale;
+            let r = sphere::RADIUS;
+            let reach = ((r + altitude).powi(2) - r * r).sqrt() * view.height_scale;
+            let under_eye = view.eye.truncate();
+            let ahead = under_eye - under_eye.normalize() * reach;
+            let end = view.project_3d(ahead + view.camera_world, 0.0).unwrap();
+            assert!((end.y - view.sky_horizon()).abs() < 0.5, "{zoom}: {end}");
+        }
     }
 
     #[test]

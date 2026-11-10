@@ -8,8 +8,9 @@ use orb_crs::TileMatrixSet;
 /// Up to 60° of pitch, where neither GL JS nor Native's level of detail
 /// varies the zoom, covers are GL JS's tile for tile: they cull alike.
 /// Past it Orbis takes Native's level of detail, which keeps detail
-/// farther out than GL JS's: its cover must hold every point of the view
-/// GL JS's holds, in no more than three times GL JS's tiles (or 96).
+/// farther out than GL JS's, and Native's far plane, which reaches past
+/// GL JS's shortened horizon: its cover must hold every point of the view
+/// GL JS's holds, in no more than four times GL JS's tiles (or 128).
 #[test]
 fn covers_match_pinned_gl_js() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("data/covers.json")).unwrap();
@@ -57,7 +58,7 @@ fn covers_match_pinned_gl_js() {
         actual.sort();
         let expected: Vec<[i64; 4]> = serde_json::from_value(case["tiles"].clone()).unwrap();
         if n("pitch") > 60.0 {
-            if actual.len() > 3 * expected.len().max(32) {
+            if actual.len() > 4 * expected.len().max(32) {
                 failures.push(format!(
                     "{}: {} tiles to {}",
                     case["name"],
