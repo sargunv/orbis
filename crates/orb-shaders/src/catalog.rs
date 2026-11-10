@@ -46,6 +46,10 @@ const PREPARE_PAD: &str = wgsl!("prepare_pad");
 /// clip distances, so such a shader leaves its fragment stages out.
 const CLIP_PLANES: &str = "enable clip_distances;\n";
 const PREPARE_SLOPE: &str = wgsl!("prepare_slope");
+/// The downsampler's texels (`mip_texel`, `extend_texel`), and its reads
+/// of its regions.
+const DOWNSAMPLE: &str = wgsl!("downsample");
+const FETCH_REGIONS: &str = wgsl!("fetch_regions");
 
 /// A composed shader module and its entry points.
 #[derive(Clone, Copy, Debug)]
@@ -249,7 +253,7 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
 /// Mip levels over regions of array layers: drape slots, raster pages.
 pub const DOWNSAMPLE_SHADER: Shader = Shader {
     label: "downsample",
-    parts: &[wgsl!("color"), wgsl!("downsample")],
+    parts: &[wgsl!("color"), FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_compute")],
     vertex: "",
     fragment: "",
     compute: "downsample",
@@ -259,10 +263,28 @@ pub const DOWNSAMPLE_SHADER: Shader = Shader {
 /// their mip levels, in the downsampler's bindings.
 pub const EXTEND_SHADER: Shader = Shader {
     label: "extend",
-    parts: &[wgsl!("color"), wgsl!("downsample")],
+    parts: &[wgsl!("color"), FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_compute")],
     vertex: "",
     fragment: "",
     compute: "extend",
+};
+
+/// [`DOWNSAMPLE_SHADER`] drawn, for devices without compute: one quad per
+/// region into a view of the level's layer.
+pub const MIP_DRAW_SHADER: Shader = Shader {
+    label: "mip draw",
+    parts: &[wgsl!("color"), FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_draw")],
+    vertex: "vs_mip",
+    fragment: "fs_mip",
+    compute: "",
+};
+
+/// [`EXTEND_SHADER`] drawn, into a view of the extended layer.
+pub const EXTEND_DRAW_SHADER: Shader = Shader {
+    label: "extend draw",
+    vertex: "vs_extend",
+    fragment: "fs_extend",
+    ..MIP_DRAW_SHADER
 };
 
 /// The DEM prepare pass's border fill, from a raw tile into its padded
@@ -370,5 +392,7 @@ pub const SHADERS: &[Shader] = &[
     PREPARE_SLOPE_SHADER,
     DOWNSAMPLE_SHADER,
     EXTEND_SHADER,
+    MIP_DRAW_SHADER,
+    EXTEND_DRAW_SHADER,
     CULL_SHADER,
 ];

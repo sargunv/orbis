@@ -87,8 +87,16 @@ prepare pad vs_prepare ea116bca462dc866
 prepare pad fs_pad 4a94be78e58d58e7
 prepare slope vs_prepare 1236b0e52eb708d4
 prepare slope fs_slope 52d84c44e7df0547
-downsample downsample fa48b739b50a6407
-downsample extend 838459195308bab8
-extend downsample fa48b739b50a6407
-extend extend 838459195308bab8
+downsample downsample 104e3be673f7d215
+downsample extend 14edb74fe9168de8
+extend downsample 104e3be673f7d215
+extend extend 14edb74fe9168de8
+mip draw vs_mip f5d4de61f22b1ec3
+mip draw fs_mip 9f85dcefc807ec5d
+mip draw vs_extend 6bc6993feb343828
+mip draw fs_extend 078179eac3dca1cb
+extend draw vs_mip f5d4de61f22b1ec3
+extend draw fs_mip 9f85dcefc807ec5d
+extend draw vs_extend 6bc6993feb343828
+extend draw fs_extend 078179eac3dca1cb
 cull cull 24e861723248bbae
