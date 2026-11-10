@@ -596,6 +596,10 @@ impl<G: Gpu> Gpu for Recording<G> {
         self.inner.prioritize_pipeline(id);
     }
 
+    fn set_background_compiles(&mut self, on: bool) {
+        self.inner.set_background_compiles(on);
+    }
+
     fn create_render_bundle(
         &mut self,
         desc: &RenderBundleDesc<'_>,

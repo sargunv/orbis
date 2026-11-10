@@ -115,12 +115,22 @@ pub trait Gpu {
     /// Whether a pipeline compiled, so commands may use it.
     fn pipeline_ready(&mut self, id: PipelineId) -> bool;
     /// Takes compiles that finished, and counts pipelines made and still
-    /// compiling.
+    /// compiling (background ones aside).
     fn poll_pipelines(&mut self) -> PipelineCounts;
     /// Compiles a pending pipeline before those queued ahead of it, where
     /// the implementation keeps a queue: what the current view needs
     /// first.
     fn prioritize_pipeline(&mut self, id: PipelineId);
+    /// Makes the pipelines asked for from now on background ones (`on`),
+    /// or ones a frame waits for again: a background pipeline compiles
+    /// after every other, a few at a time, while the device is otherwise
+    /// idle, and isn't counted in [`PipelineCounts`] nor wakes the host.
+    /// [`pipeline_ready`](Self::pipeline_ready) asking for one still
+    /// compiling makes it an ordinary request, compiled first. An
+    /// implementation without a queue compiles them as any other.
+    fn set_background_compiles(&mut self, on: bool) {
+        let _ = on;
+    }
 
     /// Records render commands once for replay with
     /// [`RenderCommand::ExecuteBundles`]. Bundles may not contain
@@ -161,7 +171,9 @@ impl From<ComputePipelineId> for PipelineId {
 /// Pipelines a device has compiled, and those it is still compiling.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PipelineCounts {
-    /// Pipelines compiled since the device was made; it only grows.
+    /// Pipelines compiled since the device was made, background ones
+    /// aside (unless a frame asked for one before it compiled); it only
+    /// grows.
     pub made: u32,
     pub pending: u32,
 }

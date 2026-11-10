@@ -126,6 +126,9 @@ orb-web = { path = "crates/orb-web" }
 # the runtime keeps in its state directory as it keeps Vulkan's (#141).
 # And Vulkan destroying a failed pipeline's temporary shader modules
 # (VUID-vkDestroyDevice-device-05137, #141); orb-hal-wgpu's `leaks` test.
+# And GLES deferring a render pipeline's link where programs link in the
+# background (KHR_parallel_shader_compile), polled through
+# `RenderPipeline::as_hal` (orb-hal-wgpu's WebGL 2 compiler, #182).
 # Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }

@@ -111,8 +111,15 @@ pub struct WgpuGpu {
     /// and grown to the most instances a pass or bundle draws.
     attribute_zero: Option<wgpu::Buffer>,
     compiler: compile::Compiler,
-    /// Pipelines asked for and not yet compiled.
+    /// Pipelines asked for and not yet compiled, background ones aside.
     pending: u32,
+    /// Later requests are background ones
+    /// ([`Gpu::set_background_compiles`]).
+    background: bool,
+    /// Background pipelines compiling that no frame asked for.
+    background_pending: std::collections::HashSet<PipelineId>,
+    /// Pipelines compiled that a frame asked for ([`PipelineCounts::made`]).
+    made: u32,
     /// A compile that ran past the watchdog's limit, or failed: the device
     /// is lost.
     hung: Option<String>,
@@ -381,6 +388,9 @@ impl WgpuGpu {
             attribute_zero: None,
             compiler: compile::Compiler::new(),
             pending: 0,
+            background: false,
+            background_pending: Default::default(),
+            made: 0,
             hung: None,
             compiled: Vec::new(),
             render_bundles: Slots::default(),
@@ -642,8 +652,11 @@ impl WgpuGpu {
     /// and tests that want a complete frame now.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn finish_pipelines(&mut self) {
-        self.compiler.wait(self.pending);
         self.poll_pipelines();
+        while self.pending > 0 && self.hung.is_none() {
+            self.compiler.wait();
+            self.poll_pipelines();
+        }
     }
 
     /// Calls `wake` from a compile thread whenever a pipeline compiles, so
@@ -729,11 +742,14 @@ impl WgpuGpu {
         #[cfg(not(target_arch = "wasm32"))]
         let done: Vec<_> = self.compiler.take().collect();
         #[cfg(webgpu)]
-        let done: Vec<_> = self.compiler.take(&self.device).collect();
+        let done = self.compiler.take();
         #[cfg(webgl)]
         let done = self.compiler.take(&self.device, compile);
         for done in done {
-            self.pending -= 1;
+            if !self.background_pending.remove(&done.id) {
+                self.pending -= 1;
+                self.made += 1;
+            }
             let built = match done.built {
                 Ok(built) => built,
                 // A pipeline the driver can't make goes the way of a hung
@@ -770,11 +786,20 @@ impl WgpuGpu {
     }
 
     fn submit_job(&mut self, job: compile::Job, layouts: &[BindGroupLayoutId]) {
-        self.pending += 1;
+        let background = self.background;
+        if background {
+            self.background_pending.insert(job.id());
+        } else {
+            self.pending += 1;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let _ = layouts;
-            self.compiler.submit(&self.device, job);
+            if background {
+                self.compiler.submit_background(&self.device, job);
+            } else {
+                self.compiler.submit(&self.device, job);
+            }
         }
         #[cfg(webgpu)]
         {
@@ -782,12 +807,12 @@ impl WgpuGpu {
                 .iter()
                 .map(|id| self.bind_group_layouts[id.0].raw.clone())
                 .collect();
-            self.compiler.submit(&self.device, raw, job);
+            self.compiler.submit(&self.device, raw, job, background);
         }
         #[cfg(webgl)]
         {
             let _ = layouts;
-            self.compiler.submit(job);
+            self.compiler.submit(&self.device, job, background);
         }
     }
 
@@ -1533,19 +1558,34 @@ impl Gpu for WgpuGpu {
             return true;
         }
         self.take_compiled(false);
-        ready(self)
+        if ready(self) {
+            return true;
+        }
+        // A frame asks for a background pipeline: it waits for it now.
+        if self.background_pending.remove(&id) {
+            self.pending += 1;
+            #[cfg(not(target_arch = "wasm32"))]
+            self.compiler.promote(&self.device, id);
+            #[cfg(target_arch = "wasm32")]
+            self.compiler.promote(id);
+        }
+        false
     }
 
     fn poll_pipelines(&mut self) -> PipelineCounts {
         self.take_compiled(true);
         PipelineCounts {
-            made: self.pipelines_created,
+            made: self.made,
             pending: self.pending,
         }
     }
 
     fn prioritize_pipeline(&mut self, id: PipelineId) {
         self.compiler.prioritize(id);
+    }
+
+    fn set_background_compiles(&mut self, on: bool) {
+        self.background = on;
     }
 
     fn create_render_bundle(
