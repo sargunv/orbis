@@ -350,8 +350,8 @@ pub(crate) struct LoadedStyle {
     pub(crate) added_images: std::collections::BTreeMap<String, Arc<crate::StyleImage>>,
     /// Image names reported missing since they were last added.
     pub(crate) reported_missing: HashSet<String>,
-    /// The scene tile of the background layers' quads.
-    pub(crate) background: Option<GpuTile>,
+    /// The scene tiles of the background layers' quads.
+    pub(crate) background: Option<crate::meshes::Background>,
     /// Tiles with placements in publication order, parallel to sources.
     pub(crate) placed: Vec<Vec<TileIndex>>,
     /// Tiles that left the draw list but whose labels still draw until a
@@ -1735,7 +1735,7 @@ impl Map {
             return;
         }
         style.globe_meshes = globe;
-        if let Some(tile) = style.background.take() {
+        for tile in style.background.take().into_iter().flat_map(|b| b.tiles()) {
             renderer.release_tile(tile);
         }
         for source in &mut style.sources {
@@ -2578,7 +2578,8 @@ impl Map {
         self.generation += 1;
         self.clear_style_tiles();
         if let Some(style) = &mut self.style {
-            self.retired.tiles.extend(style.background.take());
+            let background = style.background.take();
+            (self.retired.tiles).extend(background.into_iter().flat_map(|b| b.tiles()));
             self.retired.tables.extend(style.states.take_table());
         }
         self.style = None;

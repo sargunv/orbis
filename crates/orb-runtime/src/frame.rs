@@ -826,7 +826,7 @@ impl Map {
         };
         // Backgrounds draw on every covered tile, as GL JS's do: never
         // beyond the world's edge.
-        let Some(tile) = style.background else {
+        let Some(background) = style.background else {
             return;
         };
         let zoom = self.camera.state().zoom(self.surface.projection());
@@ -892,6 +892,7 @@ impl Map {
             .collect();
         report.tiles_drawn += rows.len() as u32;
         // Into each slot, the background's quad on its terrain tile.
+        let mut slots = Vec::new();
         for (drape, (terrain, _, _)) in drape
             .iter()
             .flat_map(|d| d.redraw.iter().map(move |r| (d, r)))
@@ -904,9 +905,21 @@ impl Map {
             let tile_zoom = tms.style_zoom(terrain.index);
             let stacks: Vec<u8> = (0..drape.layout.stack_count() as u8).collect();
             let at = (Placement { tile_zoom, ..at }, &stacks[..]);
-            drape.rows(tms, &draw, at, &mut rows);
+            drape.rows(tms, &draw, at, &mut slots);
         }
-        if renderer.place(tile, 8192, &rows).is_err() {
+        // The map's tiles on the view's surface; the slots, flat, take
+        // the quad.
+        let tile = background.drawn(view.globe().is_some());
+        let mut placed = Ok(());
+        if tile == background.quad {
+            rows.append(&mut slots);
+            if let Some(grid) = background.grid {
+                renderer.unplace(grid);
+            }
+        } else {
+            placed = renderer.place(background.quad, 8192, &slots);
+        }
+        if placed.and(renderer.place(tile, 8192, &rows)).is_err() {
             self.warnings
                 .push("out of tile placements; the background is not drawn".into());
         }

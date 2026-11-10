@@ -82,14 +82,40 @@ pub(crate) fn image_mesh(
 /// whole-world tile.
 pub(crate) const BACKGROUND_GLOBE_CELLS: u32 = 64;
 
-/// One scene tile with a tile-sized quad for every background layer, or on
-/// a globe a grid the sphere bends.
+/// The background layers' scene tiles: a tile-sized quad for every
+/// background layer and, on a surface with a globe, a grid the sphere
+/// bends as well.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Background {
+    pub(crate) quad: GpuTile,
+    pub(crate) grid: Option<GpuTile>,
+}
+
+impl Background {
+    /// The tile a view draws: the grid while it shows the low-zoom
+    /// surface; once the view has handed over to the plane, and in drape
+    /// slots, the quad, which draws the same with a 4000th of the grid's
+    /// triangles (#163).
+    pub(crate) fn drawn(&self, globe: bool) -> GpuTile {
+        match (globe, self.grid) {
+            (true, Some(grid)) => grid,
+            _ => self.quad,
+        }
+    }
+
+    pub(crate) fn tiles(self) -> impl Iterator<Item = GpuTile> {
+        std::iter::once(self.quad).chain(self.grid)
+    }
+}
+
+/// The background's tiles for `plan`'s layers, with its grid if the
+/// surface has a `globe`.
 pub(crate) fn make_background(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     plan: &crate::style::StylePlan,
     globe: bool,
-) -> Option<GpuTile> {
+) -> Option<Background> {
     let nodes: Vec<u32> = (plan.nodes.iter().enumerate())
         .filter(|(_, n)| n.source == usize::MAX)
         .map(|(i, _)| i as u32)
@@ -97,7 +123,21 @@ pub(crate) fn make_background(
     if nodes.is_empty() {
         return None;
     }
-    let cells = if globe { BACKGROUND_GLOBE_CELLS } else { 1 };
+    Some(Background {
+        quad: background_tile(gpu, renderer, &nodes, 1),
+        grid: globe.then(|| background_tile(gpu, renderer, &nodes, BACKGROUND_GLOBE_CELLS)),
+    })
+}
+
+/// One scene tile of `cells` per side for each background node: on a
+/// globe's grid, with caps out to the poles.
+fn background_tile(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    nodes: &[u32],
+    cells: u32,
+) -> GpuTile {
+    let globe = cells > 1;
     let n = cells + 1;
     let step = 8192 / cells;
     let mut vertices: Vec<u32> = (0..n * n)
@@ -162,10 +202,10 @@ pub(crate) fn make_background(
         .add_tile(gpu, key, None)
         .expect("a tile without patches fits");
     let data = MeshData::new(&mesh, &[], 0);
-    for node in nodes {
+    for &node in nodes {
         renderer
             .add_mesh(gpu, tile, (node, 8192), &data, &Default::default())
             .expect("background mesh fits");
     }
-    Some(tile)
+    tile
 }
