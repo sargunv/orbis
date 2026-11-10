@@ -141,10 +141,13 @@ fn prop_row(v: Pulled, slot: u32, stride: u32) -> u32 {
 // A node's feature-state lookups (StateLookup): bit i of
 // `mask` reads property slot i from the feature's state row when it has
 // one. Rows live in the property arena: the node's block of state row s
-// starts at `base + s * stride` with a word that is non-zero once the
-// feature has state, then per masked slot STATE_ZOOMS words: its values at
-// the integer zooms from `zoom` on, which a drape slot reads at its own
-// zoom and the camera between two.
+// starts at `base + s * stride` with a flags word (STATE_HAS: the feature
+// has state; STATE_FADING: what it shows changed at the frame time in the
+// next word; zero for neither), then per masked slot STATE_SLOT_WORDS
+// words: STATE_ZOOMS values at the integer zooms from `zoom` on, which a
+// drape slot reads at its own zoom and the camera between two; as many of
+// what the feature showed before the change; and the slot's transition,
+// its duration and delay in milliseconds.
 struct StateLookup {
     mask: u32,
     base: u32,
@@ -152,8 +155,13 @@ struct StateLookup {
     zoom: f32,
 };
 
-// The values of a feature's state block for a node, or NO_STATE when the
-// feature has the default state.
+const STATE_HAS: u32 = 1u;
+const STATE_FADING: u32 = 2u;
+const STATE_ZOOMS: u32 = 8u;
+const STATE_SLOT_WORDS: u32 = 2u * STATE_ZOOMS + 2u;
+
+// A feature's state block for a node, or NO_STATE when the feature has
+// the default state and nothing fades.
 fn state_block(v: Pulled, feature: u32, lookup: StateLookup) -> u32 {
     if lookup.stride == 0u || v.state_base == NO_STATE {
         return NO_STATE;
@@ -166,7 +174,7 @@ fn state_block(v: Pulled, feature: u32, lookup: StateLookup) -> u32 {
     if prop_at(block) == 0u {
         return NO_STATE;
     }
-    return block + 1u;
+    return block;
 }
 
 // Whether property `slot` comes from the state block.
@@ -174,40 +182,92 @@ fn from_state(block: u32, lookup: StateLookup, slot: u32) -> bool {
     return block != NO_STATE && (lookup.mask & (1u << slot)) != 0u;
 }
 
-// Property `slot`'s position among the block's values.
-fn state_slot(lookup: StateLookup, slot: u32) -> u32 {
-    return countOneBits(lookup.mask & ((1u << slot) - 1u));
+// The first word of property `slot`'s values in the block.
+fn state_slot(block: u32, lookup: StateLookup, slot: u32) -> u32 {
+    return block + 2u + countOneBits(lookup.mask & ((1u << slot) - 1u)) * STATE_SLOT_WORDS;
 }
 
-const STATE_ZOOMS: u32 = 8u;
-
-// Where property `slot`'s values at the frame's zoom are: the word of the
-// integer zoom at or below it (the first or last past the row's zooms),
-// and how far toward the next to go, 0 past the last.
-fn state_at(block: u32, lookup: StateLookup, slot: u32, c: Curve) -> vec2<u32> {
+// Where the values from word `at` on are at the frame's zoom: the word of
+// the integer zoom at or below it (the first or last past the row's
+// zooms), and how far toward the next to go, 0 past the last.
+fn state_at(at: u32, lookup: StateLookup, c: Curve) -> vec2<u32> {
     let k = u32(clamp(floor(frame.zoom) - lookup.zoom, 0.0, f32(STATE_ZOOMS - 1u)));
     let t = select(curve_t(c, lookup.zoom + f32(k)), 0.0, k + 1u == STATE_ZOOMS);
-    return vec2<u32>(block + state_slot(lookup, slot) * STATE_ZOOMS + k, bitcast<u32>(t));
+    return vec2<u32>(at + k, bitcast<u32>(t));
 }
 
-fn state_number(block: u32, lookup: StateLookup, slot: u32, c: Curve) -> f32 {
-    let at = state_at(block, lookup, slot, c);
-    let t = bitcast<f32>(at.y);
-    let a = bitcast<f32>(prop_at(at.x));
+fn state_number_at(at: u32, lookup: StateLookup, c: Curve) -> f32 {
+    let w = state_at(at, lookup, c);
+    let t = bitcast<f32>(w.y);
+    let a = bitcast<f32>(prop_at(w.x));
     if t == 0.0 {
         return a;
     }
-    return mix(a, bitcast<f32>(prop_at(at.x + 1u)), t);
+    return mix(a, bitcast<f32>(prop_at(w.x + 1u)), t);
 }
 
-fn state_color(block: u32, lookup: StateLookup, slot: u32, c: Curve) -> vec4<f32> {
-    let at = state_at(block, lookup, slot, c);
-    let t = bitcast<f32>(at.y);
-    let a = unpack4x8unorm(prop_at(at.x));
+fn state_color_at(at: u32, lookup: StateLookup, c: Curve) -> vec4<f32> {
+    let w = state_at(at, lookup, c);
+    let t = bitcast<f32>(w.y);
+    let a = unpack4x8unorm(prop_at(w.x));
     if t == 0.0 {
         return a;
     }
-    return mix(a, unpack4x8unorm(prop_at(at.x + 1u)), t);
+    return mix(a, unpack4x8unorm(prop_at(w.x + 1u)), t);
+}
+
+// GL JS's `easeCubicInOut`.
+fn ease_cubic_in_out(t: f32) -> f32 {
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
+    let t2 = t * t;
+    let t3 = t2 * t;
+    return 4.0 * select(3.0 * (t - t2) + t3 - 0.75, t3, t < 0.5);
+}
+
+// How far the change of a block whose slot's values start at `at` has
+// eased at the frame's time: 1 once done, or with nothing fading.
+fn state_fade(block: u32, at: u32) -> f32 {
+    if (prop_at(block) & STATE_FADING) == 0u {
+        return 1.0;
+    }
+    let duration = bitcast<f32>(prop_at(at + 2u * STATE_ZOOMS));
+    let delay = bitcast<f32>(prop_at(at + 2u * STATE_ZOOMS + 1u));
+    let since = frame.time - bitcast<f32>(prop_at(block + 1u)) - delay;
+    return ease_cubic_in_out(since / max(duration, 1e-3));
+}
+
+// Property `slot` of a feature with a state block: its state's value, or
+// `base`, its value without state, once its state is removed; eased from
+// what it showed before while its state changes.
+fn state_number(block: u32, lookup: StateLookup, slot: u32, c: Curve, base: f32) -> f32 {
+    let at = state_slot(block, lookup, slot);
+    var value = base;
+    if (prop_at(block) & STATE_HAS) != 0u {
+        value = state_number_at(at, lookup, c);
+    }
+    let t = state_fade(block, at);
+    if t >= 1.0 {
+        return value;
+    }
+    return mix(state_number_at(at + STATE_ZOOMS, lookup, c), value, t);
+}
+
+fn state_color(block: u32, lookup: StateLookup, slot: u32, c: Curve, base: vec4<f32>) -> vec4<f32> {
+    let at = state_slot(block, lookup, slot);
+    var value = base;
+    if (prop_at(block) & STATE_HAS) != 0u {
+        value = state_color_at(at, lookup, c);
+    }
+    let t = state_fade(block, at);
+    if t >= 1.0 {
+        return value;
+    }
+    return mix(state_color_at(at + STATE_ZOOMS, lookup, c), value, t);
 }
 
 // How a feature-dependent property interpolates between its values at the

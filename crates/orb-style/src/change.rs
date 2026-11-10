@@ -116,6 +116,8 @@ pub enum Change {
     },
     /// `visibility`: shows or hides the layer's nodes.
     Visibility(LayerKey),
+    /// A paint property's `*-transition`: how its next changes ease.
+    Transitions(LayerKey),
     Layout {
         layer: LayerKey,
         change: LayoutChange,
@@ -149,7 +151,7 @@ impl Change {
             Self::Projection | Self::Sprite | Self::SourceData(_) => Class::Relayout,
             Self::SourceAdded(_) | Self::SourceRemoved(_) => Class::Reload,
             Self::LayerAdded(_) | Self::LayerRemoved(_) | Self::LayersReordered => Class::Nodes,
-            Self::Visibility(_) => Class::Block,
+            Self::Visibility(_) | Self::Transitions(_) => Class::Block,
             Self::Layout { .. } => Class::Relayout,
             Self::Paint { from, to, .. } => {
                 if to.is_rows() {
@@ -169,6 +171,7 @@ impl Change {
             Self::LayerAdded(l)
             | Self::LayerRemoved(l)
             | Self::Visibility(l)
+            | Self::Transitions(l)
             | Self::Paint { layer: l, .. }
             | Self::Layout { layer: l, .. } => Some(*l),
             _ => None,

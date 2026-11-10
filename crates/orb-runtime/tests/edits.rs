@@ -238,8 +238,9 @@ fn feature_state_writes_one_row() {
             r##"[["setFeatureState", {{"source": "grid", "id": {id}}}, {{"hover": {hover}}}]]"##
         )
     };
+    // The change fades over frames, in the shaders: one row, written once.
     let (frames, first, jobs) = measure(&mut map, &set(7, true));
-    assert_eq!(frames, 1);
+    assert!(frames > 1, "it fades");
     assert_eq!(first.frame.paints_written, 0, "no uniform changes");
     assert_eq!(
         jobs,
@@ -301,9 +302,10 @@ fn paint_reads_feature_state_and_data_together() {
         .collect();
     let plain = map.pixels();
     let before = map.map.job_counts();
+    edit(&mut map, r#"[["setTransition", {"duration": 0}]]"#);
     edit(&mut map, &format!("[{}]", all.join(",")));
-    // The very next frame draws the state: the scene evaluates the
-    // features' captured data, with no job.
+    // Without a fade, the very next frame draws the state: the scene
+    // evaluates the features' captured data, with no job.
     assert!(map.frame().idle);
     assert_eq!(
         delta(before, map.map.job_counts()),
@@ -322,6 +324,71 @@ fn paint_reads_feature_state_and_data_together() {
     );
     settle(&mut map);
     assert_eq!(map.pixels(), hovered);
+}
+
+/// A feature-state change fades by the property's transition: mid-fade a
+/// hovered feature draws between its colours, and once the fade ends, in
+/// and back out, the map draws what a map that never faded draws.
+#[test]
+fn feature_state_changes_fade() {
+    let mut map = tokyo();
+    measure(&mut map, &grid(4));
+    edit(
+        &mut map,
+        r##"[["setPaintProperty", "grid", "circle-color-transition", {"duration": 400}]]"##,
+    );
+    settle(&mut map);
+    let plain = map.pixels();
+    let hover = |on: bool| {
+        let all: Vec<String> = (0..16)
+            .map(|id| {
+                format!(
+                    r##"["setFeatureState", {{"source": "grid", "id": {id}}}, {{"hover": {on}}}]"##
+                )
+            })
+            .collect();
+        format!("[{}]", all.join(","))
+    };
+    edit(&mut map, &hover(true));
+    // The red channel of each frame until the fade ends, per pixel.
+    let started = Instant::now();
+    let mut frames = Vec::new();
+    loop {
+        let report = map.frame();
+        frames.push(map.pixels());
+        if report.idle {
+            break;
+        }
+        assert!(started.elapsed().as_secs() < 10, "the fade never ended");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    settle(&mut map);
+    let hovered = map.pixels();
+    // A circle's middle: blue without hover, red with it, and between
+    // the two in some frame of the fade.
+    let middle = (0..plain.len() / 4)
+        .max_by_key(|&i| hovered[4 * i].saturating_sub(plain[4 * i]))
+        .unwrap();
+    let (from, to) = (plain[4 * middle], hovered[4 * middle]);
+    assert!(to > from + 200, "{from} → {to}");
+    assert!(
+        frames
+            .iter()
+            .any(|f| f[4 * middle] > from + 20 && f[4 * middle] < to - 20),
+        "the circle's red went {:?}",
+        frames.iter().map(|f| f[4 * middle]).collect::<Vec<_>>()
+    );
+    // Back out, interrupted halfway by a second change.
+    edit(&mut map, &hover(false));
+    map.frame();
+    std::thread::sleep(Duration::from_millis(150));
+    map.frame();
+    edit(&mut map, &hover(true));
+    settle(&mut map);
+    assert_eq!(map.pixels(), hovered);
+    edit(&mut map, &hover(false));
+    settle(&mut map);
+    assert_eq!(map.pixels(), plain);
 }
 
 /// The CPU cost of a feature-state write on the scene thread: the edit

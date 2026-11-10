@@ -492,6 +492,14 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
         self.slot
     }
 
+    /// The property it reads, unless it was read with a typed default.
+    pub fn id(&self) -> Option<crate::PropertyId> {
+        match self.default {
+            Fallback::Table(id) => Some(id),
+            Fallback::Typed(_) => None,
+        }
+    }
+
     pub fn kind(&self) -> Kind {
         self.slot.kind()
     }

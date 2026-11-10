@@ -87,14 +87,14 @@ fn fill_vertex(v: Pulled) -> FillOut {
         color = table_color(row, 0u, node.curves[0], tile.zoom);
     }
     if from_state(state, node.state, 0u) {
-        color = state_color(state, node.state, 0u, node.curves[0]);
+        color = state_color(state, node.state, 0u, node.curves[0], color);
     }
     var opacity = node.opacity;
     if (node.table_mask & 2u) != 0u {
         opacity = table_number(row, 1u, node.curves[1], tile.zoom);
     }
     if from_state(state, node.state, 1u) {
-        opacity = state_number(state, node.state, 1u, node.curves[1]);
+        opacity = state_number(state, node.state, 1u, node.curves[1], opacity);
     }
 
     let shift = translate_world(node.translate, node.translate_anchor, tile);

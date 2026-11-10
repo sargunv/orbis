@@ -88,13 +88,14 @@ struct LineOut {
 };
 
 fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {
-    if from_state(state, node.state, bit) {
-        return state_number(state, node.state, bit, node.curves[bit]);
-    }
+    var value = constant;
     if (node.table_mask & (1u << bit)) != 0u {
-        return table_number(row, bit, node.curves[bit], tile_zoom);
+        value = table_number(row, bit, node.curves[bit], tile_zoom);
     }
-    return constant;
+    if from_state(state, node.state, bit) {
+        value = state_number(state, node.state, bit, node.curves[bit], value);
+    }
+    return value;
 }
 
 fn signed_byte(w: u32, shift: u32) -> f32 {
@@ -136,7 +137,7 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
         color = table_color(row, 0u, node.curves[0], tile.zoom);
     }
     if from_state(state, node.state, 0u) {
-        color = state_color(state, node.state, 0u, node.curves[0]);
+        color = state_color(state, node.state, 0u, node.curves[0], color);
     }
     let opacity = line_prop(row, state, 1u, node.opacity, tile.zoom);
     if opacity < 0.01 {

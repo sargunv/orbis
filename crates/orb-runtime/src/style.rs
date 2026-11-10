@@ -111,6 +111,20 @@ impl PaintProperty<'_> {
         }
     }
 
+    /// The property it reads.
+    pub(crate) fn id(&self) -> Option<orb_style::PropertyId> {
+        match self {
+            Self::Color(p) => p.id(),
+            Self::OptionalColor(p) => p.id(),
+            Self::Number(p) => p.id(),
+        }
+    }
+
+    /// Whether its row words are colours (rgba8) rather than numbers (f32).
+    pub(crate) fn is_color(&self) -> bool {
+        !matches!(self, Self::Number(_))
+    }
+
     /// Whether the value comes from per-feature property rows.
     pub(crate) fn per_feature(&self) -> bool {
         matches!(self.kind(), Kind::Source | Kind::Composite) && !self.is_state_lookup()

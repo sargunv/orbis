@@ -907,6 +907,12 @@ impl Map {
         view.with_tile_lod(self.tile_lod)
     }
 
+    /// The frame's time as the shaders take it: milliseconds since the
+    /// first frame.
+    pub(crate) fn shader_time(&self) -> f64 {
+        self.frame_time - self.born.unwrap_or(self.frame_time)
+    }
+
     /// Whether a transition is running: paint, light, sky or terrain.
     pub fn transitioning(&self) -> bool {
         self.transitions.running() || self.root.running()
@@ -1385,6 +1391,7 @@ impl Map {
         renderer.set_atmosphere(gpu, root.sky, at);
 
         let now = frame_time;
+        let time = self.shader_time();
         let mut fading = false;
         // A prepared frame leaves paint to the frame that draws: it asks
         // for tiles sooner.
@@ -1399,7 +1406,7 @@ impl Map {
                 style,
                 &mut self.transitions,
                 (zoom, self.camera.state().bearing, self.camera.state().pitch),
-                now,
+                (now, time),
                 images.atlas.as_mut().expect("initialized"),
             );
             drop(images);
@@ -1534,6 +1541,7 @@ impl Map {
             && !self.labels.fading(now)
             && !self.transitions.running()
             && !self.root.running()
+            && !(self.style.as_ref()).is_some_and(|s| s.states.fading(self.shader_time()))
             && now >= self.image_fades_until;
         if let Some(style) = &self.style {
             let plan = style.worker.plan();
@@ -1566,7 +1574,7 @@ impl Map {
             extrusion_scale: self.extrusion_scale() as f32,
             ground_horizon: view.ground_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
-            time: (now - self.born.unwrap_or(now)) as f32,
+            time: self.shader_time() as f32,
             pitch: self.camera.state().pitch.to_radians() as f32,
             roll: self.camera.state().roll.to_radians() as f32,
             camera_to_center: view.camera_to_center() as f32,

@@ -188,23 +188,25 @@ fn feature_size(s: SymbolSize, packed: vec2<f32>, layout_size: f32, lo: f32, hi:
 
 // `state` is the feature's state block (see `state_block`).
 fn paint_number(row: u32, state: u32, slot: u32, constant: f32, z: f32) -> f32 {
-    if from_state(state, node.state, slot) {
-        return state_number(state, node.state, slot, node.curves[slot]);
-    }
+    var value = constant;
     if (node.table_mask & (1u << slot)) != 0u {
-        return table_number(row, slot, node.curves[slot], z);
+        value = table_number(row, slot, node.curves[slot], z);
     }
-    return constant;
+    if from_state(state, node.state, slot) {
+        value = state_number(state, node.state, slot, node.curves[slot], value);
+    }
+    return value;
 }
 
 fn paint_color(row: u32, state: u32, slot: u32, constant: vec4<f32>, z: f32) -> vec4<f32> {
-    if from_state(state, node.state, slot) {
-        return state_color(state, node.state, slot, node.curves[slot]);
-    }
+    var value = constant;
     if (node.table_mask & (1u << slot)) != 0u {
-        return table_color(row, slot, node.curves[slot], z);
+        value = table_color(row, slot, node.curves[slot], z);
     }
-    return constant;
+    if from_state(state, node.state, slot) {
+        value = state_color(state, node.state, slot, node.curves[slot], value);
+    }
+    return value;
 }
 
 // The drawn symbol's `symbol-height-offset`, metres.

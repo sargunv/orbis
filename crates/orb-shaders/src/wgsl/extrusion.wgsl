@@ -184,9 +184,9 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     if (node.table_mask & 1u) != 0u { color = table_color(row, 0u, node.curves[0], tile.zoom); }
     if (node.table_mask & 2u) != 0u { height = table_number(row, 1u, node.curves[1], tile.zoom); }
     if (node.table_mask & 4u) != 0u { base = table_number(row, 2u, node.curves[2], tile.zoom); }
-    if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
-    if from_state(state, node.state, 1u) { height = state_number(state, node.state, 1u, node.curves[1]); }
-    if from_state(state, node.state, 2u) { base = state_number(state, node.state, 2u, node.curves[2]); }
+    if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0], color); }
+    if from_state(state, node.state, 1u) { height = state_number(state, node.state, 1u, node.curves[1], height); }
+    if from_state(state, node.state, 2u) { base = state_number(state, node.state, 2u, node.curves[2], base); }
     // Per-feature opacity and vertical gradient (beyond the spec),
     // packed beside the whole-building bit.
     let flags = prop_at(row + EXTRUSION_ROW_WHOLE);
@@ -280,14 +280,15 @@ fn elevation_op(i: u32, v: f32) -> f32 {
 // it may come from, else `color`, the node's, packed.
 fn elevation_stop(i: u32, color: u32, in: ExtrusionOut) -> vec4<f32> {
     let slot = select(2u + i, 0u, i == 0u);
-    if (elevation_dynamic & 2u) != 0u && from_state(in.images.y, node.state, slot) {
-        return state_color(in.images.y, node.state, slot, node.curves[0]);
-    }
+    var value = unpack4x8unorm(color);
     if (elevation_dynamic & 1u) != 0u && (node.elevation.rows & (1u << i)) != 0u {
         let word = in.images.x + select(EXTRUSION_ROW_WORDS + 2u * (i - 1u), 0u, i == 0u);
-        return mix(unpack4x8unorm(prop_at(word)), unpack4x8unorm(prop_at(word + 1u)), in.color.w);
+        value = mix(unpack4x8unorm(prop_at(word)), unpack4x8unorm(prop_at(word + 1u)), in.color.w);
     }
-    return unpack4x8unorm(color);
+    if (elevation_dynamic & 2u) != 0u && from_state(in.images.y, node.state, slot) {
+        value = state_color(in.images.y, node.state, slot, node.curves[0], value);
+    }
+    return value;
 }
 // GL JS's `interpolationFactor` of `x` between stops `lower` and `upper`,
 // computed so that a large exponent stays in range.

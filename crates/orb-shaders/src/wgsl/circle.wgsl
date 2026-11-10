@@ -31,13 +31,14 @@ struct CircleOut {
 
 
 fn circle_number(row: u32, state: u32, slot: u32, constant: f32, z: f32) -> f32 {
-    if from_state(state, node.state, slot) {
-        return state_number(state, node.state, slot, node.curves[slot]);
-    }
+    var value = constant;
     if (node.table_mask & (1u << slot)) != 0u {
-        return table_number(row, slot, node.curves[slot], z);
+        value = table_number(row, slot, node.curves[slot], z);
     }
-    return constant;
+    if from_state(state, node.state, slot) {
+        value = state_number(state, node.state, slot, node.curves[slot], value);
+    }
+    return value;
 }
 
 @vertex
@@ -63,8 +64,8 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     var stroke = node.stroke_color;
     if (node.table_mask & 1u) != 0u { color = table_color(row, 0u, node.curves[0], tile.zoom); }
     if (node.table_mask & 16u) != 0u { stroke = table_color(row, 4u, node.curves[4], tile.zoom); }
-    if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
-    if from_state(state, node.state, 4u) { stroke = state_color(state, node.state, 4u, node.curves[4]); }
+    if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0], color); }
+    if from_state(state, node.state, 4u) { stroke = state_color(state, node.state, 4u, node.curves[4], stroke); }
     let corner = point_corner(index, node_point_cells((node.flags & 4u) != 0u));
     let shift = translate_world(node.translate, node.flags & 1u, tile);
     // On terrain, the ground under the anchor (GL JS `get_elevation`).

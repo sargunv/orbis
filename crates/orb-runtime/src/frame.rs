@@ -641,6 +641,7 @@ impl Map {
         renderer: &mut Renderer,
         view: &View,
     ) -> Option<DrapePlan> {
+        let time = self.shader_time();
         let Some(style) = &mut self.style else {
             return None;
         };
@@ -683,7 +684,7 @@ impl Map {
         let sources = &style.sources;
         let draws = &style.draws;
         let paint = &style.paint;
-        let revision = (self.version, style.states.writes(), images_revision);
+        let revision = (self.version, style.states.writes(time), images_revision);
         // The farthest a draped fill or line is translated at a drape
         // zoom: a slot takes rows from the drawn tiles that far around it,
         // whose content moves into it.

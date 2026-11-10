@@ -79,20 +79,21 @@ pub(crate) fn at_camera(plan: &StylePlan, pitch: f64, bearing: f64) -> Option<St
 }
 
 /// Writes this frame's node paint: at `zoom`, `bearing` and `pitch`, with
-/// paint transitions eased in at `now`. Returns whether the pattern
-/// and dash cross-fade is still fading, and images the style lacks.
+/// paint transitions eased in at `now`, and feature state as of frame time
+/// `time` (the shaders'). Returns whether the pattern and dash cross-fade
+/// is still fading, and images the style lacks.
 pub(crate) fn frame(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     style: &mut LoadedStyle,
     transitions: &mut crate::transitions::Transitions,
     (zoom, bearing, pitch): (f64, f64, f64),
-    now: f64,
+    (now, time): (f64, f64),
     atlas: &mut ImageAtlas,
 ) -> (bool, Vec<String>) {
     let worker = Arc::clone(&style.worker);
     let plan = worker.plan();
-    if style.states.prepare(gpu, renderer, plan, zoom) {
+    if style.states.prepare(gpu, renderer, plan, (zoom, time)) {
         style.paint.invalidate();
     }
     // Paint that reads the camera is written again as it moves.

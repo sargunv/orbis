@@ -68,6 +68,9 @@ fn layer_changes(
     if differs(visibility(old_json).as_ref(), visibility(new_json).as_ref()) {
         out.push(Change::Visibility(key));
     }
+    if old.transitions != new.transitions {
+        out.push(Change::Transitions(key));
+    }
     if differs(old_json.get("filter"), new_json.get("filter")) {
         out.push(Change::Layout {
             layer: key,
