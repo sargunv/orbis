@@ -5,11 +5,9 @@
 //     [--format=mvt|mlt] [--style=<key>|URL]
 //     [--size=WxH] [--dpr=n] [--compare=reference-map.png] [--lose=<ms>]
 //     [--reopen[=offline]] [--still] [--pair=<left>,<right>] [--query=k=v&…]
-//     [--hover=x,y]
 //
 // `--query` adds the demo's own parameters, as a shared link carries them
-// (`light=map&terrain=1`). `--hover` rests the pointer at a point of the
-// page before the shot, where the demo highlights the feature under it.
+// (`light=map&terrain=1`).
 //
 // `--pair` shows the demo's comparison of two engines (`orbis`, `gljs`,
 // `native`) side by side and waits for both sides to load.
@@ -43,11 +41,6 @@ const style = args
 const lose = args.find((a) => a.startsWith("--lose="))?.slice("--lose=".length);
 const reopen = args.find((a) => a.startsWith("--reopen"));
 const pair = args.find((a) => a.startsWith("--pair="))?.slice("--pair=".length);
-const hover = args
-  .find((a) => a.startsWith("--hover="))
-  ?.slice("--hover=".length)
-  .split(",")
-  .map(Number);
 const extra = args
   .find((a) => a.startsWith("--query="))
   ?.slice("--query=".length);
@@ -134,11 +127,6 @@ try {
     console.log(
       `reopened${reopen === "--reopen=offline" ? " offline" : ""}: ${Date.now() - started} ms to idle`,
     );
-  }
-  if (hover) {
-    await page.mouse.move(hover[0], hover[1]);
-    await page.waitForTimeout(500);
-    await idle();
   }
   await page.waitForTimeout(250);
   const stats = await page.evaluate(() => {
