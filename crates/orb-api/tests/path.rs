@@ -652,6 +652,55 @@ fn a_draped_line_is_as_wide_as_a_flat_one() {
     }
 }
 
+/// A fill draped on terrain and translated far, in a pitched view where
+/// near terrain tiles are of zooms past the camera's, draws whole: a slot
+/// takes the rows of drawn tiles as far around it as the translation
+/// reaches at the camera's zoom, which the slot is drawn at. Reckoned at
+/// each terrain tile's own zoom, the reach fell short in near slots, and
+/// bands past a drawn tile's edge went blank. (A flat map clips what a
+/// tile translates to the tile, as GL JS's stencil does.)
+#[test]
+fn a_draped_translate_reaches_as_far_as_the_camera_s_pixels() {
+    let (lon, lat) = (139.76, 35.68);
+    let (flat, _dem) = dem("flat", (139.2, 35.2, 140.3, 36.2), 11, |_, _| 0.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let style = format!(
+        r##"{{"version": 8,
+        "sources": {{{flat}
+          "area": {{"type": "geojson", "data": {{"type": "Polygon",
+            "coordinates": [[[{w}, {s}], [{e}, {s}], [{e}, {n}], [{w}, {n}], [{w}, {s}]]]}}}}
+        }},
+        "terrain": {{"source": "flat", "exaggeration": 1}},
+        "layers": [
+          {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+          {{"id": "area", "type": "fill", "source": "area",
+            "paint": {{"fill-color": "#ff0000", "fill-translate": [160, 0]}}}}
+        ]}}"##,
+        w = lon - 0.5,
+        e = lon - 0.01,
+        s = lat - 0.3,
+        n = lat + 0.3,
+    );
+    let mut map = Map::new(&runtime, options());
+    map.set_style_json(&style).unwrap();
+    map.jump_to(&camera((Geodetic::new(lon, lat), 12.3, 0.0, 60.0)));
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    let red = |x: u32, y: u32| {
+        let p = &pixels[((y * WIDTH + x) * 4) as usize..][..4];
+        p[0] > 200 && p[1] < 80 && p[2] < 80
+    };
+    // Each row: red from the left edge to the fill's translated edge, and
+    // none past the first pixel that isn't (give or take its edge's).
+    for y in 0..HEIGHT {
+        let end = (0..WIDTH).find(|&x| !red(x, y)).unwrap_or(WIDTH);
+        assert!(end > WIDTH / 4, "row {y}: red to {end} only");
+        let past = (end + 2..WIDTH).filter(|&x| red(x, y)).count();
+        assert_eq!(past, 0, "row {y}: a gap at {end}, red again past it");
+    }
+}
+
 /// Terrain that comes on after the style's first frame, its DEM source
 /// behind a TileJSON: a fresh map that never moves drapes the buildings
 /// its near drape slots' zoom shows (they show from zoom 13; the view is

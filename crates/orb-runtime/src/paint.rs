@@ -511,9 +511,6 @@ fn write_paint(
     missing
 }
 
-/// Whether a layer drawn at `zoom` turns with the map's bearing: a
-/// viewport-anchored hillshade's light (one the terrain doesn't shade), or
-/// a viewport-anchored translate.
 /// Whether what a draped layer draws into a drape slot changes with the
 /// zoom, whatever its features: line sizes are in pixels, which the slot's
 /// texels per pixel scale, and so are fill translations and patterns; paint
@@ -536,6 +533,9 @@ pub(crate) fn drapes_by_zoom(l: &orb_style::Layer) -> bool {
         }
 }
 
+/// Whether a layer drawn at `zoom` turns with the map's bearing: a
+/// viewport-anchored hillshade's light (one the terrain doesn't shade), or
+/// a viewport-anchored translate.
 fn turns_with_bearing(l: &orb_style::Layer, zoom: f64) -> bool {
     let translates = |px: orb_style::Key<[f32; 2]>, anchor: orb_style::Key<TranslateAnchor>| {
         let px = l.get(px);

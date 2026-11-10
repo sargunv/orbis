@@ -744,7 +744,7 @@ impl Map {
                         .and_then(|image| image.warped.as_ref())
                         .map(|warped| warped.frame);
                     let drawn = crate::terrain::Drawn::of(&endpoint.tms, draw, frame, period);
-                    if !drawn.overlaps(&surface, t, reach_px) {
+                    if !drawn.overlaps(&surface, t, (zoom, reach_px)) {
                         continue;
                     }
                     // The renderer's tiles stand for their meshes.
@@ -758,7 +758,7 @@ impl Map {
                     let regions: Vec<TileIndex> = (draw.regions.iter())
                         .filter(|&&r| {
                             let part = drawn.region(&endpoint.tms, draw, r);
-                            part.overlaps(&surface, t, reach_px)
+                            part.overlaps(&surface, t, (zoom, reach_px))
                         })
                         .copied()
                         .collect();
@@ -943,7 +943,9 @@ impl DrapePlan {
             let stacks: Vec<u8> = (stacks.iter().copied())
                 .filter(|s| redrawn.contains(s))
                 .collect();
-            if !stacks.is_empty() && drawn.overlaps(&self.surface, terrain, self.reach_px) {
+            if !stacks.is_empty()
+                && drawn.overlaps(&self.surface, terrain, (self.zoom, self.reach_px))
+            {
                 let zoom = self.zoom;
                 let map = placements(tms, draw, Placement { zoom, ..at });
                 crate::terrain::drape_rows(

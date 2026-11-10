@@ -726,16 +726,17 @@ impl Drawn {
     }
 
     /// Whether it overlaps a terrain tile of the surface's matrix set, or
-    /// comes within `reach_px` of it, in the tile's logical pixels: what a
-    /// translation that far moves into the tile's slots.
+    /// comes within `reach_px` of it, in logical pixels at style zoom
+    /// `zoom`, which the tile's slots are drawn at: what a translation
+    /// that far moves into them.
     pub(crate) fn overlaps(
         &self,
         surface: &TileMatrixSet,
         terrain: CoveredTile,
-        reach_px: f64,
+        (zoom, reach_px): (f64, f64),
     ) -> bool {
         let b = terrain_bounds(surface, terrain);
-        let reach = DVec2::splat(reach_px * b.size().x / TERRAIN_TILE_PX);
+        let reach = DVec2::splat(reach_px * b.size().x / slot_span_px(surface, terrain, zoom));
         let b = WorldRect {
             min: b.min - reach,
             max: b.max + reach,
@@ -747,6 +748,12 @@ impl Drawn {
             && a.min.y < b.max.y - eps
             && b.min.y < a.max.y - eps
     }
+}
+
+/// Logical pixels a terrain tile's slots span at style zoom `zoom`: the
+/// 512 of the tile at its own zoom, scaled.
+fn slot_span_px(surface: &TileMatrixSet, terrain: CoveredTile, zoom: f64) -> f64 {
+    TERRAIN_TILE_PX * (zoom - surface.style_zoom(terrain.index)).exp2()
 }
 
 /// A terrain tile's bounds in its world copy.
@@ -786,12 +793,10 @@ pub(crate) fn drape_rows(
     let hi = lo + DVec2::splat(span / scale);
     let clamp = |v: f64| v.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
     let bound = ClipRect::new([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
-    let reach = DVec2::splat(reach_px * span / TERRAIN_TILE_PX / scale);
+    let slot_span_px = slot_span_px(surface, terrain, zoom);
+    let reach = DVec2::splat(reach_px * span / slot_span_px / scale);
     let (lo, hi) = (lo - reach, hi + reach);
     let (lo, hi) = ([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
-    // Logical pixels the slot spans at that zoom: the 512 of the terrain
-    // tile at its own zoom.
-    let slot_span_px = TERRAIN_TILE_PX * (zoom - surface.style_zoom(terrain.index)).exp2();
     for row in map_rows {
         let mut clips = [ClipRect::EMPTY; 4];
         let mut any = false;
@@ -1503,7 +1508,7 @@ mod tests {
             regions: vec![TileIndex::new(4, 5, 5)],
         };
         let drawn = Drawn::of(&tms, &draw, None, 0.0);
-        assert!(drawn.overlaps(&tms, terrain, 0.0));
+        assert!(drawn.overlaps(&tms, terrain, (3.0, 0.0)));
         let row = TileRow {
             origin: [0.0; 2],
             scale: 1.0,
@@ -1576,7 +1581,7 @@ mod tests {
             wrap: 0,
             regions: vec![TileIndex::new(4, 7, 5)],
         };
-        assert!(!Drawn::of(&tms, &away, None, 0.0).overlaps(&tms, terrain, 0.0));
+        assert!(!Drawn::of(&tms, &away, None, 0.0).overlaps(&tms, terrain, (3.0, 0.0)));
     }
 
     /// A drawn tile's regions reach a terrain tile's slots only where they
@@ -1597,9 +1602,17 @@ mod tests {
         };
         let north_west = drawn.region(&tms, &draw, draw.regions[0]);
         assert_eq!(north_west.bounds, tms.tile_bounds(draw.regions[0]));
-        assert!(north_west.overlaps(&tms, at(3, 2, 2), 0.0));
-        assert!(!north_west.overlaps(&tms, at(3, 3, 3), 0.0));
+        let zoom = tms.style_zoom(TileIndex::new(3, 0, 0));
+        assert!(north_west.overlaps(&tms, at(3, 2, 2), (zoom, 0.0)));
+        assert!(!north_west.overlaps(&tms, at(3, 3, 3), (zoom, 0.0)));
         // Within reach of a translation, it comes into the neighbour's.
-        assert!(north_west.overlaps(&tms, at(3, 3, 2), 1.0));
+        assert!(north_west.overlaps(&tms, at(3, 3, 2), (zoom, 1.0)));
+        // A translation's reach is in pixels at the zoom the slots are
+        // drawn at, the camera's: past the neighbour, 512 pixels away, 600
+        // reach at the tiles' zoom and 300 a zoom out; 600 a zoom in don't.
+        let beyond = at(3, 4, 2);
+        assert!(north_west.overlaps(&tms, beyond, (zoom, 600.0)));
+        assert!(north_west.overlaps(&tms, beyond, (zoom - 1.0, 300.0)));
+        assert!(!north_west.overlaps(&tms, beyond, (zoom + 1.0, 600.0)));
     }
 }
