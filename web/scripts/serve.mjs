@@ -193,8 +193,10 @@ export async function serveDemo({
 // the display rather than drawing offscreen; `unpaced` runs animation frames
 // as fast as they draw rather than at the display's rate. `ORB_CHROME` names
 // a Chrome to run instead of Playwright's (on Windows ARM64, a native one).
-// ANGLE is pinned to Metal on macOS only, and Vulkan asked for on macOS and
-// Linux, not on Windows, where Chrome's WebGPU runs on D3D12.
+// ANGLE is pinned to Metal on macOS and to Vulkan on Linux, and Vulkan asked
+// for on both, not on Windows, where Chrome's WebGPU runs on D3D12. Headless
+// Chromium on Linux left to choose puts ANGLE on SwiftShader, and WebGPU with
+// it: no adapter, or only the fallback adapter with `unsafe`.
 export function launchChromium({
   unsafe = true,
   headed = false,
@@ -219,7 +221,7 @@ export function chromiumPlatform() {
     executablePath: process.env.ORB_CHROME || undefined,
     args: {
       darwin: ["--enable-features=Vulkan,WebGPU", "--use-angle=metal"],
-      linux: ["--enable-features=Vulkan,WebGPU"],
+      linux: ["--enable-features=Vulkan,WebGPU", "--use-angle=vulkan"],
     }[process.platform] ?? ["--enable-features=WebGPU"],
   };
 }
