@@ -310,6 +310,129 @@ fn a_globe_gesture_draws_what_a_fresh_globe_does() {
     assert_same("globe", both_ways(&style, start, end, 30));
 }
 
+/// A label of a tile that left the draw list, drawn as last placed while
+/// it fades out, stays where it is in the world as the globe comes in
+/// below zoom 12. Zooming out of zoom 12 with zoom 11's tiles resident, a
+/// label only zoom 12's tile has (its filter wants zoom 12) is held from a
+/// tile last drawn on the plane: it draws where a fresh map at the end
+/// draws that label from zoom 11's tile, and nothing else does (rows placed
+/// on the plane once mixed toward the camera's target as the globe came
+/// in, and the label flew to the middle of the view). A label both tiles
+/// have is drawn once, by zoom 11's tile, at full.
+#[test]
+fn held_labels_stay_put_as_the_globe_comes_in() {
+    let data = data();
+    let (lon, lat) = (STATION.lon, STATION.lat);
+    let style = |filter: &str| {
+        format!(
+            r##"{{"version": 8, "projection": {{"type": "globe"}},
+                "glyphs": "file://{data}/glyphs/{{fontstack}}/{{range}}.pbf",
+                "sources": {{"points": {{"type": "geojson", "data":
+                    {{"type": "FeatureCollection", "features": [
+                    {{"type": "Feature", "properties": {{"name": "Held"}},
+                      "geometry": {{"type": "Point", "coordinates": [{}, {}]}}}},
+                    {{"type": "Feature", "properties": {{"name": "Shared"}},
+                      "geometry": {{"type": "Point", "coordinates": [{}, {}]}}}}]}}}}}},
+                "layers": [
+                    {{"id": "background", "type": "background",
+                      "paint": {{"background-color": "#ffffff"}}}},
+                    {{"id": "labels", "type": "symbol", "source": "points",
+                      "filter": {filter},
+                      "layout": {{"text-field": ["get", "name"], "text-size": 24,
+                                 "text-font": ["Noto Sans Regular"]}}}}]}}"##,
+            lon + 0.03,
+            lat + 0.012,
+            lon - 0.03,
+            lat + 0.006,
+            data = data.display(),
+        )
+    };
+    let at = |zoom| (STATION, zoom, 0.0, 62.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    // One clock for the frames drawn here and the ones settling draws.
+    let start = std::time::Instant::now();
+    let now = || start.elapsed().as_secs_f64() * 1000.0;
+    let map = |target: &mut Target, style: &str| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                fade_duration: 4000.0,
+                ..options()
+            },
+        );
+        map.set_style_json(style).unwrap();
+        map.jump_to(&camera(at(11.4)));
+        map.render(target, now()).unwrap();
+        settle(&mut map, target);
+        map
+    };
+    let only_12 = r#"["any", ["!=", ["get", "name"], "Held"], [">=", ["zoom"], 12]]"#;
+    let mut moved = map(&mut target, &style(only_12));
+    moved.jump_to(&camera(at(12.05)));
+    settle(&mut moved, &mut target);
+    for step in 1..=12 {
+        let zoom = 12.05 - 0.65 * f64::from(step) / 12.0;
+        moved.jump_to(&camera(at(zoom)));
+        moved.render(&mut target, now()).unwrap();
+        std::thread::sleep(Duration::from_millis(8));
+    }
+    // Drawn once zoom 11's tile is placed, the held label fading out.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut loaded = 0;
+    while loaded < 2 {
+        assert!(std::time::Instant::now() < deadline, "the map loads");
+        let report = moved.render(&mut target, now()).unwrap();
+        loaded = if report.is_some_and(|r| r.loaded) {
+            loaded + 1
+        } else {
+            0
+        };
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    let held = target.read_pixels().unwrap();
+    drop(moved);
+    drop(map(&mut target, &style("true")));
+    let fresh = target.read_pixels().unwrap();
+    // Each half's ink: its weight and its centre, weighted by darkness, so
+    // that the opacity doesn't move it (zooming out speeds fades, as GL
+    // JS's zoom adjustment does: the held label is partway out). "Shared"
+    // is on the left, "Held" on the right.
+    let ink = |rgba: &[u8], right: bool| {
+        let (mut weight, mut x, mut y) = (0.0, 0.0, 0.0);
+        for (i, p) in rgba.chunks(4).enumerate() {
+            let (px, py) = ((i % WIDTH as usize) as f64, (i / WIDTH as usize) as f64);
+            if (px >= f64::from(WIDTH) / 2.0) == right {
+                let w = f64::from(255 - p[0]);
+                (weight, x, y) = (weight + w, x + w * px, y + w * py);
+            }
+        }
+        (weight, x / weight, y / weight)
+    };
+    let mut problems = Vec::new();
+    for (right, name) in [(false, "Shared"), (true, "Held")] {
+        let (weight, x, y) = ink(&held, right);
+        let (want, wx, wy) = ink(&fresh, right);
+        if want < 20_000.0 || weight < 0.25 * want || (x - wx).hypot(y - wy) > 1.0 {
+            problems.push(format!(
+                "{name} inks {weight:.0} around ({x:.1}, {y:.1}), a fresh map {want:.0} \
+                 around ({wx:.1}, {wy:.1})"
+            ));
+        }
+        // Drawn once: no copy fading out over the one shown.
+        if !right && (weight / want - 1.0).abs() > 0.02 {
+            problems.push(format!("{name} inks {weight:.0}, a fresh map {want:.0}"));
+        }
+    }
+    if !problems.is_empty() {
+        let dir = std::env::temp_dir().join(format!("orb-path-held-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_png(&dir.join("held.png"), WIDTH, HEIGHT, &held);
+        write_png(&dir.join("fresh.png"), WIDTH, HEIGHT, &fresh);
+        panic!("{}; see {}", problems.join("; "), dir.display());
+    }
+}
+
 /// Satellites lifted by a data-driven `symbol-height-offset`, and towers as
 /// tall, over a globe looking past its horizon: the far ones' ground is out
 /// of view. A gesture that passed over one, and saw how high it stands,

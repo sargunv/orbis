@@ -803,10 +803,19 @@ impl Renderer {
 
     /// Keeps only a tile's labels drawing, where it was last placed: a
     /// tile that left the draw list, until a placement covers what
-    /// replaced it.
-    pub fn hold_symbols(&mut self, tile: GpuTile) {
+    /// replaced it. Each frame it holds them, `globe` and `ground` are
+    /// that frame's for the tile (its place on the low-zoom surface, the
+    /// DEM tile it stands on): a held label stays where it is in the world
+    /// as the camera moves and the globe hands over, and doesn't read
+    /// patches or a DEM layer that went since.
+    pub fn hold_symbols(
+        &mut self,
+        tile: GpuTile,
+        globe: Option<crate::RowGlobe>,
+        ground: (crate::DemRef, [f32; 2]),
+    ) {
         for &(_, part) in &self.tiles.entry(tile).parts {
-            self.scene.hold_symbols(part);
+            self.scene.hold_symbols(part, globe, ground);
         }
     }
 

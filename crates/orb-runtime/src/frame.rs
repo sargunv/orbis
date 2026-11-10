@@ -471,19 +471,8 @@ impl Map {
                 .map(|warped| warped.frame);
             let ground = terrain.map(|t| t.ground(tile));
             let series = resident.series.clone();
-            // A tile on another plane has a place on a globe surface's plane
-            // through its planar patches; without them (one at a pole, say)
-            // it draws on the globe alone. On a plane surface every tile has
-            // one: a warped image draws through its warp's mesh.
-            let on_plane = self.surface.globe().is_none() || !*warped || series.is_some();
-            // On a globe, a tile draws through its patches on the sphere.
-            let globe = match view.globe() {
-                Some(_) => self
-                    .globe_warps
-                    .warp(gpu, renderer, tms, tile)
-                    .map(|(warp, anchor)| Some((warp, anchor))),
-                None => on_plane.then_some(None),
-            };
+            let on_plane = on_plane(&self.surface, *warped, resident);
+            let globe = surface_place(&self.globe_warps, gpu, renderer, view, tms, tile, on_plane);
             // Nowhere to draw it this frame: no placements.
             let Some(globe) = globe else {
                 renderer.unplace(resident.gpu);
@@ -559,7 +548,6 @@ impl Map {
                 if resident.symbols.is_empty() || !holds {
                     renderer.unplace(resident.gpu);
                 } else {
-                    renderer.hold_symbols(resident.gpu);
                     for s in &resident.symbols {
                         self.labels.hold(s.bucket);
                     }
@@ -567,10 +555,29 @@ impl Map {
                 }
             }
         }
-        // Evicted sooner, held labels would vanish for the frames until
-        // that placement commits: arrivals that need room take other tiles.
         for &tile in held.iter() {
+            // Evicted sooner, held labels would vanish for the frames until
+            // that placement commits: arrivals that need room take other
+            // tiles.
             pyramid.keep(tile);
+            // Held labels stand where they are in the world on this frame's
+            // surface, as the drawn tiles do: rows placed before the globe
+            // came in (or went) would mix toward the camera's target as it
+            // hands over, and older patches or DEM layers may have gone.
+            let resident = pyramid.get(tile).expect("held tiles are resident");
+            let on_plane = on_plane(&self.surface, *warped, resident);
+            match surface_place(&self.globe_warps, gpu, renderer, view, tms, tile, on_plane) {
+                Some(globe) => renderer.hold_symbols(
+                    resident.gpu,
+                    globe.map(|(warp, anchor)| orb_render::RowGlobe {
+                        warp,
+                        origin: anchor.to_array(),
+                        on_plane,
+                    }),
+                    terrain.map_or((DemRef::NONE, [0.0; 2]), |t| t.ground(tile)),
+                ),
+                None => renderer.unplace(resident.gpu),
+            }
         }
         let mut ordered = Vec::new();
         for draw in &draws {
@@ -1029,6 +1036,32 @@ pub(crate) struct Placement<'a> {
     on_plane: bool,
     /// The style zoom the tile laid out at.
     tile_zoom: f64,
+}
+
+/// Whether a tile has a place on the plane: on a globe surface, a tile of
+/// another plane has one through its planar patches; without them (one at
+/// a pole, say) it draws on the globe alone. On a plane surface every tile
+/// has one: a warped image draws through its warp's mesh.
+fn on_plane(surface: &crate::surface::Surface, warped: bool, resident: &ResidentTile) -> bool {
+    surface.globe().is_none() || !warped || resident.series.is_some()
+}
+
+/// Where a tile draws on `view`'s surface: on a globe, through its patches
+/// on the sphere (`Some(Some(..))`); on the plane alone (`Some(None)`); or
+/// nowhere this frame (`None`).
+fn surface_place(
+    globe_warps: &crate::globe::GlobeWarps,
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    view: &View,
+    tms: &TileMatrixSet,
+    tile: TileIndex,
+    on_plane: bool,
+) -> Option<Option<(TileWarp, glam::DVec3)>> {
+    match view.globe() {
+        Some(_) => globe_warps.warp(gpu, renderer, tms, tile).map(Some),
+        None => on_plane.then_some(None),
+    }
 }
 
 /// Placement rows for drawing `draw.tile` in its world copy, clipped to

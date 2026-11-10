@@ -1174,6 +1174,27 @@ impl Labels {
                 }
             }
         }
+        // A held bucket's labels a drawn tile took over hide: that tile's
+        // copy carries on their fade (GL JS hides held tiles' duplicates).
+        for (bucket, wrap, instances) in std::mem::take(&mut committed.handed_over) {
+            let Some(meshes) = self.buckets.get_mut(&bucket) else {
+                continue;
+            };
+            if !self.held.contains_key(&bucket) {
+                continue;
+            }
+            let Some(states) = meshes.written.get_mut(&wrap) else {
+                continue;
+            };
+            for &i in &instances {
+                let Some(instance) = meshes.tables.instances.get(i as usize) else {
+                    continue;
+                };
+                hide(&mut states.text, &instance.text);
+                hide(&mut states.icon, &instance.icon);
+            }
+            meshes.write(gpu, renderer, wrap);
+        }
         // Held buckets a placement since covers fade out from where they
         // are, measured from this commit as every label's fade is.
         let change = self.committed.as_ref().map_or(1.0, |c| {
@@ -1525,6 +1546,15 @@ impl Labels {
 
 /// Rewrites state words to fade out from where they are `change` into
 /// their fade: each shown symbol's opacity now, no longer placed.
+/// Hides the placed symbols `placed` of a bucket's state words.
+fn hide(words: &mut [u32], placed: &[u32]) {
+    for &p in placed.iter().filter(|&&p| p != orb_symbol::NONE) {
+        if let Some(w) = words.get_mut(p as usize * orb_symbol::state::WORDS) {
+            *w |= orb_symbol::state::HIDDEN;
+        }
+    }
+}
+
 fn fade_out(words: &mut [u32], change: f32) {
     use orb_symbol::state;
     for w in words.chunks_mut(state::WORDS) {
@@ -1974,6 +2004,42 @@ mod tests {
     /// A bucket whose tile left the draw list keeps its labels as
     /// placed until a placement asked for since commits, then fades them
     /// out from there and is released once they have.
+    #[test]
+    fn held_labels_a_drawn_tile_took_over_hide_at_once() {
+        use orb_symbol::state;
+        let mut h = Harness::new(SceneCapacity::default());
+        let mut resident = h.tile();
+        h.upload(&mut resident).unwrap();
+        let bucket = resident.symbols[0].bucket;
+        h.placing(bucket, &[0]);
+        let commit = h.commit(bucket, &[0]);
+        h.labels.committed(&mut h.gpu, &mut h.renderer, commit);
+        // The tile leaves for its parent, which took over its first label.
+        h.labels.hold(bucket);
+        h.placing(bucket, &[]);
+        let covering = Committed {
+            commit_time: 1000.0,
+            fade_duration: 300.0,
+            handed_over: vec![(bucket, 0, vec![0])],
+            ..h.commit(bucket, &[])
+        };
+        h.labels.committed(&mut h.gpu, &mut h.renderer, covering);
+        let meshes = &h.labels.buckets[&bucket];
+        let words = &meshes.written[&0].text;
+        let word = |p: u32| words[p as usize * state::WORDS];
+        let text = |i: usize| {
+            let instance = &meshes.tables.instances[i];
+            instance.text.into_iter().filter(|&p| p != orb_symbol::NONE)
+        };
+        assert!(text(0).count() > 0);
+        assert!(text(0).all(|p| word(p) & state::HIDDEN != 0));
+        // The rest fade out from where they are.
+        let other = (1..meshes.tables.instances.len())
+            .find(|&i| text(i).count() > 0)
+            .expect("another label");
+        assert!(text(other).all(|p| word(p) & (state::HIDDEN | state::OPACITY) == 127));
+    }
+
     #[test]
     fn held_buckets_wait_for_a_covering_commit_then_fade_out() {
         use orb_symbol::state;

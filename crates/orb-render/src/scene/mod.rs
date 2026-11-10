@@ -1420,8 +1420,14 @@ impl Scene {
     }
 
     /// Keeps only a tile's labels drawing: its map placements become
-    /// [`PlacementTarget::Labels`] ones, and its drape placements go.
-    pub(crate) fn hold_symbols(&mut self, tile: TileId) {
+    /// [`PlacementTarget::Labels`] ones on this frame's surface (`globe`)
+    /// and ground, and its drape placements go.
+    pub(crate) fn hold_symbols(
+        &mut self,
+        tile: TileId,
+        globe: Option<RowGlobe>,
+        (dem, terrain_range): (DemRef, [f32; 2]),
+    ) {
         let rows: Vec<TileRow> = self.tiles[tile.0 as usize]
             .as_ref()
             .expect("unknown tile")
@@ -1430,6 +1436,9 @@ impl Scene {
             .filter(|p| matches!(p.row.target, PlacementTarget::Map | PlacementTarget::Labels))
             .map(|p| TileRow {
                 target: PlacementTarget::Labels,
+                globe,
+                dem,
+                terrain_range,
                 ..p.row
             })
             .collect();

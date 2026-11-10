@@ -341,6 +341,14 @@ pub struct Committed {
     /// [`fade_change`](Self::fade_change) does, which can be after the
     /// fade's last change plus its duration.
     pub partway: bool,
+    /// Per world copy (bucket, wrap) this placement no longer draws, which
+    /// its host may keep drawing as last placed while its labels fade out
+    /// (a tile that left the draw list): the instances whose labels a
+    /// drawn copy took over, matched across tiles and zooms. That copy
+    /// carries the label's fade on from where it was (GL JS's held tiles'
+    /// duplicates, hidden at once), so these hide now rather than fade out
+    /// beside it.
+    pub handed_over: Vec<(u64, i32, Vec<u32>)>,
 }
 
 impl Committed {
@@ -491,6 +499,28 @@ fn copy_key(t: &PlacedTile) -> (u64, i32) {
     (t.bucket, t.view.id.wrap)
 }
 
+/// Of the `dropped` copies' labels, those a copy among `kept` now has by
+/// cross-tile id: per dropped copy that has any, their instances.
+fn handed_over<'a>(
+    dropped: Vec<(u64, i32, Vec<u32>)>,
+    kept: impl Iterator<Item = &'a Bucket>,
+) -> Vec<(u64, i32, Vec<u32>)> {
+    if dropped.is_empty() {
+        return Vec::new();
+    }
+    let claimed: HashSet<u32> = kept.flat_map(|b| b.ids.iter().copied()).collect();
+    dropped
+        .into_iter()
+        .filter_map(|(bucket, wrap, ids)| {
+            let instances: Vec<u32> = (ids.iter().enumerate())
+                .filter(|(_, id)| claimed.contains(id))
+                .map(|(i, _)| i as u32)
+                .collect();
+            (!instances.is_empty()).then_some((bucket, wrap, instances))
+        })
+        .collect()
+}
+
 /// GL JS `calculateVariableLayoutShift`.
 fn layout_shift(anchor: Anchor, width: f64, height: f64, offset: [f64; 2], scale: f64) -> Point {
     let (h, v) = anchor.alignment();
@@ -623,8 +653,10 @@ impl Placer {
     }
 
     /// Keeps the copies `frame` draws, re-wrapped when the camera jumped a
-    /// world (GL JS `handleWrapJump`), and adds the new ones.
-    fn update_copies(&mut self, frame: &Frame) {
+    /// world (GL JS `handleWrapJump`), and adds the new ones. Returns the
+    /// copies it dropped, by the wrap they were drawn at, with their
+    /// labels' cross-tile ids.
+    fn update_copies(&mut self, frame: &Frame) -> Vec<(u64, i32, Vec<u32>)> {
         let delta = ((frame.lng - self.lng) / 360.0).round() as i32;
         self.lng = frame.lng;
         if delta != 0 {
@@ -640,7 +672,14 @@ impl Placer {
             .filter(|t| self.tables.contains_key(&t.bucket))
             .map(copy_key)
             .collect();
-        self.buckets.retain(|key, _| drawn.contains(key));
+        let mut dropped = Vec::new();
+        self.buckets.retain(|&(bucket, wrap), b| {
+            let keep = drawn.contains(&(bucket, wrap));
+            if !keep {
+                dropped.push((bucket, wrap - delta, std::mem::take(&mut b.ids)));
+            }
+            keep
+        });
         for key in drawn {
             self.buckets.entry(key).or_insert_with(|| {
                 self.next_copy += 1;
@@ -653,6 +692,7 @@ impl Placer {
                 }
             });
         }
+        dropped
     }
 
     /// The drawn tiles of each layer whose buckets were ingested, GL JS's
@@ -685,7 +725,7 @@ impl Placer {
             self.index = CrossTileIndex::default();
             self.prev = None;
         }
-        self.update_copies(frame);
+        let dropped = self.update_copies(frame);
         let camera = &frame.camera;
         let layers = self.drawn(&frame.layers);
         for (params, tiles) in &layers {
@@ -709,6 +749,7 @@ impl Placer {
         }
         self.index
             .retain_layers(&layers.iter().map(|(p, _)| p.layer).collect());
+        let handed_over = handed_over(dropped, self.buckets.values());
 
         let ground = frame.ground.as_ref().map(|g| &*g.0);
         let now = match &frame.scope {
@@ -749,6 +790,7 @@ impl Placer {
             zoom_adjustment,
             last_change_time: now.last_change_time,
             partway: now.partway,
+            handed_over,
         };
         self.prev = Some(now);
         committed
@@ -1735,6 +1777,46 @@ mod tests {
             view: view(wrap),
             text_size: ZoomSize { size: 16.0, t: 0.0 },
         }
+    }
+
+    /// A tile that leaves the draw list for its parent hands the parent the
+    /// labels they share: the parent's copy shows on at full, and the
+    /// commit names the child's copy for its host to hide rather than fade
+    /// out beside it. A label only the child has fades out as usual.
+    #[test]
+    fn a_dropped_tile_hands_its_shared_labels_over() {
+        let mut placer = Placer::default();
+        // The child (1/1/1) has labels 5 and 6; the parent has 5 too, at
+        // the same place (the child's origin is the parent's middle).
+        placer.ingest(1, labels(&[(5, [0, 0]), (6, [200, 200])]));
+        placer.ingest(2, labels(&[(5, [4096, 4096])]));
+        let child = PlacedTile {
+            view: TileView {
+                id: TileId {
+                    z: 1,
+                    x: 1,
+                    y: 1,
+                    wrap: 0,
+                },
+                ..view(0)
+            },
+            ..tile(1, 0)
+        };
+        let layer = |tiles| {
+            vec![LayerFrame {
+                params: params(8),
+                tiles,
+            }]
+        };
+        let c = placer.place(&frame(layer(vec![child]), 0.0, 300.0));
+        assert!(c.handed_over.is_empty());
+        let c = placer.place(&frame(layer(vec![tile(2, 0)]), 1000.0, 300.0));
+        assert_eq!(c.handed_over, vec![(1, 0, vec![0])]);
+        let parent = &c.changed.iter().find(|(b, _, _)| *b == 2).unwrap().2;
+        assert_eq!(
+            word(parent, 0) & (state::PLACED | state::OPACITY),
+            127 | state::PLACED
+        );
     }
 
     #[test]
