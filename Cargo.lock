@@ -5259,6 +5259,7 @@ dependencies = [
  "tar",
  "ureq",
  "wasmparser",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

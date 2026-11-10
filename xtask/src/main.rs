@@ -1,6 +1,6 @@
 //! Workspace tasks. `cargo xtask help` lists them.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod affected;
 mod android;

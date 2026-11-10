@@ -28,7 +28,8 @@
 //! `~/Library/Caches/orbis-h2h` (`%LOCALAPPDATA%\orbis-h2h` on Windows,
 //! `~/.cache/orbis-h2h` elsewhere), shared by worktrees; raw results go to
 //! `target/h2h/`. CPU, peak memory and instructions come from
-//! `/usr/bin/time`: without one (Windows) the tables leave them blank.
+//! `/usr/bin/time`; on Windows CPU and peak memory (the peak working set)
+//! come from the child's own counters, and instructions go unmeasured.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -373,7 +374,7 @@ impl H2h {
             Some(views) => views.clone(),
             None => mln_checkout(&manifest)?.join("tools/liberty-compare/views.txt"),
         };
-        if !Path::new(TIME).exists() {
+        if !cfg!(windows) && !Path::new(TIME).exists() {
             eprintln!("h2h: no {TIME} here, so runs' CPU, memory and instructions go unmeasured");
         }
         let out = root.join("target/h2h");
@@ -665,7 +666,9 @@ impl H2h {
         writeln!(
             out,
             "\nWall: exec to exit; CPU: user + system, and instructions retired, from `/usr/bin/time`{}; requests: what the engine asked the mirror for. Timed runs: {}. Raw rows: {}.",
-            if !Path::new(TIME).exists() {
+            if cfg!(windows) {
+                " (on Windows, CPU and the peak working set from the process's own counters; instructions not measured)"
+            } else if !Path::new(TIME).exists() {
                 " (none here, so not measured)"
             } else if cfg!(target_os = "linux") && perf_counts() {
                 "; instructions in user space, from `perf stat`"
@@ -1199,11 +1202,12 @@ const PERF: &str = "/usr/bin/perf";
 
 /// Runs a command under `/usr/bin/time` (`-l` on macOS, `-v` elsewhere,
 /// inside `perf stat` on Linux for instructions retired), failing if it
-/// fails. Without one (Windows) only the wall time and what the engine
-/// reports are measured.
+/// fails. On Windows the child's CPU and peak working set come from its
+/// process handle once it exits (`GetProcessTimes`,
+/// `GetProcessMemoryInfo`), and instructions retired go unmeasured.
 fn timed(command: &[String]) -> Result<Timed, String> {
     let time = Path::new(TIME);
-    let mut c = if time.exists() {
+    let mut c = if !cfg!(windows) && time.exists() {
         let mut c = if cfg!(target_os = "linux") && perf_counts() {
             let mut c = Command::new(PERF);
             c.args(["stat", "-x,", "-e", "instructions:u", "--", TIME]);
@@ -1224,7 +1228,7 @@ fn timed(command: &[String]) -> Result<Timed, String> {
         c
     };
     let started = Instant::now();
-    let output = c.output().map_err(|e| format!("{}: {e}", command[0]))?;
+    let (output, usage) = measured(&mut c).map_err(|e| format!("{}: {e}", command[0]))?;
     let wall = started.elapsed();
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -1241,7 +1245,7 @@ fn timed(command: &[String]) -> Result<Timed, String> {
     let mut t = Timed {
         wall,
         cpu_ms: None,
-        rss_mb: None,
+        rss_mb: usage.rss_mb,
         ginstr: None,
         internal_ms: None,
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -1278,8 +1282,95 @@ fn timed(command: &[String]) -> Result<Timed, String> {
                 .and_then(|v| v.parse().ok());
         }
     }
-    t.cpu_ms = user.zip(sys).map(|(u, s)| (u + s) * 1000.0);
+    t.cpu_ms = user
+        .zip(sys)
+        .map(|(u, s)| (u + s) * 1000.0)
+        .or(usage.cpu_ms);
     Ok(t)
+}
+
+/// What a child's own counters say it used, where `/usr/bin/time` can't.
+#[derive(Debug, Default)]
+struct Usage {
+    cpu_ms: Option<f64>,
+    rss_mb: Option<f64>,
+}
+
+#[cfg(not(windows))]
+fn measured(c: &mut Command) -> std::io::Result<(std::process::Output, Usage)> {
+    Ok((c.output()?, Usage::default()))
+}
+
+#[cfg(windows)]
+use windows::measured;
+
+/// A Windows child's CPU and peak memory, read from its handle after it
+/// exits and before it is closed.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows {
+    use std::io::Read;
+    use std::os::windows::io::AsRawHandle;
+    use std::process::{Command, Output, Stdio};
+
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+
+    use super::Usage;
+
+    /// `Command::output`, with the child's usage.
+    pub(super) fn measured(c: &mut Command) -> std::io::Result<(Output, Usage)> {
+        let mut child = c
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut err = child.stderr.take().expect("stderr is piped");
+        let stderr = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            err.read_to_end(&mut v).map(|_| v)
+        });
+        let mut stdout = Vec::new();
+        child
+            .stdout
+            .take()
+            .expect("stdout is piped")
+            .read_to_end(&mut stdout)?;
+        let status = child.wait()?;
+        let stderr = stderr.join().expect("the stderr reader")?;
+        // The handle stays open until `child` drops, so the exited
+        // process's counters can still be read.
+        let handle = child.as_raw_handle();
+        let mut times = [FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        }; 4];
+        let [creation, exit, kernel, user] = &mut times;
+        // SAFETY: `handle` is the child's open process handle, with the
+        // query access `CreateProcess` grants; it writes four `FILETIME`s.
+        let ok = unsafe { GetProcessTimes(handle, creation, exit, kernel, user) };
+        let ticks = |t: &FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+        // Kernel and user time, in 100 ns ticks.
+        let cpu_ms = (ok != 0).then(|| (ticks(&times[2]) + ticks(&times[3])) as f64 / 1e4);
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: as above; it writes at most `cb` bytes of `counters`.
+        let ok = unsafe { GetProcessMemoryInfo(handle, &mut counters, counters.cb) };
+        let rss_mb = (ok != 0).then(|| counters.PeakWorkingSetSize as f64 / 1e6);
+        Ok((
+            Output {
+                status,
+                stdout,
+                stderr,
+            },
+            Usage { cpu_ms, rss_mb },
+        ))
+    }
 }
 
 /// Whether `perf stat` can count this user's instructions (perf installed,

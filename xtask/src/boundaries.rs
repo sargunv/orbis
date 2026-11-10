@@ -54,6 +54,8 @@ const UNSAFE_ALLOWED: &[&str] = &[
     // maplibre-native-ffi's C API.
     "orb-ffi",
     "orb-web",
+    // A Windows child's CPU time and peak memory, for `h2h` (`h2h.rs`).
+    "xtask",
 ];
 
 /// Job-side crates are share-nothing and never depend on scene-side crates.
