@@ -8,6 +8,7 @@ impl<'a> Evaluator<'_, 'a> {
     pub(super) fn eval_call(&self, id: NodeId, call: &Call, args: &[NodeId]) -> Result<Value<'a>> {
         Ok(match call {
             Call::Let => self.eval(*args.last().expect("let result"))?,
+            Call::Var => self.eval(args[0])?,
             Call::Error => return Err(error(id, self.string(args[0])?.into_owned())),
             Call::FeatureState => {
                 let key = self.string(args[0])?;

@@ -279,6 +279,25 @@ fn classification_and_zoom_curves() {
     );
 }
 
+/// GL JS's `findZoomCurve` sees no child in a `var`: a zoom curve reached
+/// only through one, or a curve whose input is a variable bound to
+/// `["zoom"]`, is no top-level curve, as in GL JS and Native.
+#[test]
+fn zoom_curves_behind_variables_are_not_top_level() {
+    let number = spec(PropertyType::Number, true, true, true);
+    for text in [
+        r#"["let", "a", ["interpolate", ["linear"], ["zoom"], 0, 0, 10, 1], ["var", "a"]]"#,
+        r#"["let", "z", ["zoom"], ["interpolate", ["linear"], ["var", "z"], 0, 0, 10, 1]]"#,
+    ] {
+        let errors = PropertyExpression::parse(&parse(text), &number).unwrap_err();
+        assert_eq!(
+            errors[0].message,
+            "\"zoom\" expression may only be used as input to a top-level \"step\" or \"interpolate\" expression.",
+            "{text}"
+        );
+    }
+}
+
 #[test]
 fn constants_and_legacy_functions() {
     let color = spec(PropertyType::Color, true, true, true);

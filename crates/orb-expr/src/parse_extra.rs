@@ -32,9 +32,11 @@ impl Parser<'_> {
                     self.error(child_key(key,1),items[1].span,format!("Unknown variable \"{name}\". Make sure \"{name}\" has been bound in an enclosing \"let\" expression before using it."));
                     return None;
                 };
-                // The bound node itself: the IR is a DAG, so a variable
-                // needs no node of its own.
-                Some(*value)
+                // A node of its own, not the bound node: GL JS's
+                // `findZoomCurve` sees no child in a variable, so a zoom
+                // curve reached through one is not top-level.
+                let value = *value;
+                self.call(Call::Var, vec![value], self.ty(value).clone(), key)
             }
             "let" => {
                 if n < 3 {

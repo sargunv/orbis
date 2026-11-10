@@ -182,6 +182,7 @@ pub(crate) enum LegacyFilter {
 #[derive(Clone, Debug)]
 pub(crate) enum Call {
     Let,
+    Var,
     Error,
     FeatureState,
     GlobalState(KeyId),

@@ -601,6 +601,9 @@ impl<'l> Parser<'l> {
         ) {
             return false;
         }
+        if let Op::Call(Call::Var, args) = &node.op {
+            return self.is_constant(args[0]);
+        }
         if !node.deps.is_empty() {
             return false;
         }
