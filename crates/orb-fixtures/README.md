@@ -63,8 +63,12 @@ too. Load errors and timeouts are failures, not skips; so is anything
 the renderer silently leaves out.
 
 **Operations** apply after the map first goes idle, as GL JS applies them
-after `load`: `wait` and `idle` render until idle; `setZoom`, `setCenter`,
-`setBearing` and `setPitch` move the camera; every other call goes through
+after `load`: `wait` and `idle` render until idle; `["wait", ms]` renders
+until its last frame lands exactly `ms` after the frame before it, and a
+fading or transitioning test's last frames keep that time, since GL JS's
+harness moves time only with its waits (so a transition is read where they
+leave it however long frames take); `setZoom`, `setCenter`, `setBearing`
+and `setPitch` move the camera; every other call goes through
 `Map::edit` as a one-call transaction, the same command parser the web
 package's `edit` uses. Warnings an edit raises skip the test as the initial
 style's would.

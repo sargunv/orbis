@@ -17,6 +17,7 @@ mod platforms;
 mod query;
 mod scope;
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -537,25 +538,46 @@ fn render_native(
     // loaded, fades or not, and wait in wall time; the rest settle fully.
     let fades = metadata.fade_duration > 0.0;
     let loaded = if fades { Next::Loaded } else { Next::Idle };
-    let mut render = |map: &mut Map, diagnostics: &mut Vec<String>| match map
-        .render(&mut target, frame_time(render_started))
-    {
-        Ok(report) => report,
-        Err(e) => {
-            diagnostics.push(format!("render: {e}"));
-            None
+    // The last frame's time. Frames follow the wall clock, except that a
+    // wait's last frame lands exactly its length after the frame before it
+    // and the frames after the operations stay there: GL JS's harness moves
+    // time only with its waits, so a transition is read exactly where they
+    // leave it however long frames take.
+    let last_frame = Cell::new(0.0);
+    let mut render = |map: &mut Map, at: f64, diagnostics: &mut Vec<String>| {
+        last_frame.set(at);
+        match map.render(&mut target, at) {
+            Ok(report) => report,
+            Err(e) => {
+                diagnostics.push(format!("render: {e}"));
+                None
+            }
         }
     };
-    // Renders until `until`, or for a wait's wall time; `None` when the run
-    // stops (a skip reason, a failed frame or the timeout).
+    // Renders until `until`, or through a wait; `None` when the run stops
+    // (a skip reason, a failed frame or the timeout). `still` holds the
+    // last frame's time instead of following the wall clock.
     let mut settle = |map: &mut Map,
                       until: Next,
+                      still: bool,
                       reasons: &mut BTreeSet<String>,
                       diagnostics: &mut Vec<String>,
                       frames: &mut u32| {
-        let started = Instant::now();
+        let wait_end = match until {
+            Next::Wait(ms) => Some(last_frame.get() + ms),
+            _ => None,
+        };
         loop {
-            let report = render(map, diagnostics)?;
+            let mut at = if still {
+                last_frame.get()
+            } else {
+                frame_time(render_started).max(last_frame.get())
+            };
+            let waited = wait_end.is_some_and(|end| at >= end);
+            if waited {
+                at = wait_end.expect("a wait");
+            }
+            let report = render(map, at, diagnostics)?;
             *frames += 1;
             record_warnings(map, reasons, diagnostics);
             if !reasons.is_empty() {
@@ -565,7 +587,7 @@ fn render_native(
                 Next::Continue => true,
                 Next::Loaded => report.loaded,
                 Next::Idle => report.idle,
-                Next::Wait(ms) => started.elapsed() >= Duration::from_secs_f64(ms / 1000.0),
+                Next::Wait(_) => waited,
             };
             if done {
                 return Some(report);
@@ -577,7 +599,7 @@ fn render_native(
             std::thread::park_timeout(Duration::from_millis(1));
         }
     };
-    let mut settled = settle(map, loaded, reasons, diagnostics, &mut frames).is_some();
+    let mut settled = settle(map, loaded, false, reasons, diagnostics, &mut frames).is_some();
     for op in &metadata.operations {
         if !settled {
             break;
@@ -585,24 +607,23 @@ fn render_native(
         match operations::apply(map, op, assets) {
             Ok(Next::Continue) => {}
             Ok(Next::Loaded) => {
-                settled = settle(map, loaded, reasons, diagnostics, &mut frames).is_some();
+                settled = settle(map, loaded, false, reasons, diagnostics, &mut frames).is_some();
             }
-            Ok(next) => settled = settle(map, next, reasons, diagnostics, &mut frames).is_some(),
+            Ok(next) => {
+                settled = settle(map, next, false, reasons, diagnostics, &mut frames).is_some()
+            }
             Err(e) => diagnostics.push(format!("operation {op}: {e}")),
         }
     }
     // GL JS reads a fading test's pixels after its last operation, and a
     // transition's where its waits left it (its harness's time moves only
     // with them); the rest after one more settle.
-    let last = if fades || map.transitioning() {
-        Next::Continue
-    } else {
-        Next::Idle
-    };
+    let still = fades || map.transitioning();
+    let last = if still { Next::Continue } else { Next::Idle };
     if settled
-        && settle(map, last, reasons, diagnostics, &mut frames).is_some()
+        && settle(map, last, still, reasons, diagnostics, &mut frames).is_some()
         // Draw the state installed by the last frame's messages.
-        && let Some(report) = settle(map, Next::Continue, reasons, diagnostics, &mut frames)
+        && let Some(report) = settle(map, Next::Continue, still, reasons, diagnostics, &mut frames)
     {
         tiles_drawn = report.tiles_drawn;
     }
