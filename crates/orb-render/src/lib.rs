@@ -2294,6 +2294,9 @@ impl Renderer {
             drape_passes = micros(passing, clock());
         }
         let (draw_group, buffers) = (self.draw_group, *self.scene.buffers());
+        // A whole sphere: the first 3D pass draws its depth, which hides
+        // what stands behind it (`CLIP_STANDING`).
+        let sphere = frame.globe.is_some_and(|g| g.amount >= 1.0 && !g.plane);
         let start = passes.len();
         let mut terrain_above = terrain_above.into_iter().peekable();
         // The first pass on the shared depth clears it, the rest load it.
@@ -2352,7 +2355,7 @@ impl Renderer {
                 (draw_group, node.group),
                 &buffers,
                 (draw, node.elevation, ground),
-                first,
+                (first, sphere),
             );
             pass.commands.extend(decal.into_iter().flatten());
             passes.push(Pass::Render(pass));
