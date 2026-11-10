@@ -471,6 +471,9 @@ impl Renderer {
                 E::sampler(13, fs, true),
                 E::texture(14, vs, false, D2Array),
                 E::texture(15, vf, false, D2),
+                // The image pages again, for the nearest sampler
+                // (`symbol.wgsl`).
+                E::texture(16, fs, true, D2Array),
             ],
         });
         let node_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -2577,6 +2580,7 @@ fn scene_group(
         BindGroupEntry::sampler(13, nearest),
         BindGroupEntry::texture(14, dem, D2Array),
         BindGroupEntry::texture(15, terrain_depth, D2),
+        BindGroupEntry::texture(16, images.texture, D2Array),
     ]);
     gpu.create_bind_group(&BindGroupDesc {
         label: "scene",

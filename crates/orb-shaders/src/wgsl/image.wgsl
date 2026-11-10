@@ -14,7 +14,10 @@
 // (8, 12 and 12 bits).
 //
 // Group 1 is the node: its uniform at binding 0, its texture array at 1,
-// linear and nearest samplers at 2 and 3.
+// linear and nearest samplers at 2 and 3, and the array again at 5 for
+// the nearest sampler. Each texture binding takes one sampler, as a
+// texture unit does on WebGL 2, where wgpu gives a texture the last
+// sampler bound with it.
 
 // GL JS's `EXTENT`: image quads span this many units per tile side.
 const IMAGE_EXTENT: f32 = 8192.0;
@@ -22,6 +25,7 @@ const IMAGE_EXTENT: f32 = 8192.0;
 @group(1) @binding(1) var images: texture_2d_array<f32>;
 @group(1) @binding(2) var linear_sampler: sampler;
 @group(1) @binding(3) var nearest_sampler: sampler;
+@group(1) @binding(5) var images_nearest: texture_2d_array<f32>;
 
 struct ImageOut {
     @builtin(position) position: vec4<f32>,
@@ -119,7 +123,7 @@ fn image_clipped(in: ImageOut) -> bool {
 // samples raster tiles; nearest from the full-size level.
 fn sample_image_grad(in: ImageOut, uv: vec2<f32>, nearest: u32, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
     if nearest != 0u {
-        return textureSampleLevel(images, nearest_sampler, uv, in.layer, 0.0);
+        return textureSampleLevel(images_nearest, nearest_sampler, uv, in.layer, 0.0);
     }
     return textureSampleGrad(images, linear_sampler, uv, in.layer, ddx, ddy);
 }
@@ -128,7 +132,7 @@ fn sample_image_grad(in: ImageOut, uv: vec2<f32>, nearest: u32, ddx: vec2<f32>, 
 // or linearly.
 fn sample_image(in: ImageOut, uv: vec2<f32>, nearest: u32) -> vec4<f32> {
     if nearest != 0u {
-        return textureSampleLevel(images, nearest_sampler, uv, in.layer, 0.0);
+        return textureSampleLevel(images_nearest, nearest_sampler, uv, in.layer, 0.0);
     }
     return textureSampleLevel(images, linear_sampler, uv, in.layer, 0.0);
 }

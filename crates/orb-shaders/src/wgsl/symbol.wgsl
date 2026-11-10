@@ -49,6 +49,9 @@ struct SymbolNode {
 @group(0) @binding(9) var image_pages: texture_2d_array<f32>;
 @group(0) @binding(10) var atlas_sampler: sampler;
 @group(0) @binding(13) var nearest_sampler: sampler;
+// The image pages again, for the nearest sampler: each texture binding
+// takes one sampler, as a texture unit does on WebGL 2.
+@group(0) @binding(16) var image_pages_nearest: texture_2d_array<f32>;
 @group(0) @binding(12) var glyph_pages: texture_2d_array<f32>;
 
 // Flags of SymbolNode.
@@ -565,7 +568,7 @@ fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
         if (in.kind & 4u) != 0u {
             return color_in(textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0)) * total_opacity;
         }
-        return color_in(textureSampleLevel(image_pages, nearest_sampler, uv, in.layer, 0.0)) * total_opacity;
+        return color_in(textureSampleLevel(image_pages_nearest, nearest_sampler, uv, in.layer, 0.0)) * total_opacity;
     }
     var dist: f32;
     if image {

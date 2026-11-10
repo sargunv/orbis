@@ -74,14 +74,14 @@ buffer "terrain grid indices"#0: BufferUsages(COPY_DST | INDEX)
 texture "terrain layer"#0: Rgba8Unorm D2 samples 4 views [] TextureUsages(RENDER_ATTACHMENT | TRANSIENT_ATTACHMENT)
 texture "terrain layer"#1: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
 texture "3d depth"#0: Depth32Float D2 samples 4 views [] TextureUsages(RENDER_ATTACHMENT)
-layout "image node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 2 ShaderStages(FRAGMENT) Sampler { filtering: true }; 3 ShaderStages(FRAGMENT) Sampler { filtering: true }; 
+layout "image node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 2 ShaderStages(FRAGMENT) Sampler { filtering: true }; 3 ShaderStages(FRAGMENT) Sampler { filtering: true }; 5 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 
 module "terrain shade"#0: wgsl
 render "terrain shade"#0: layouts [layout "terrain"#0, layout "terrain layer"#0, layout "image node"#0]; module "terrain shade"#0 vs_terrain []; module "terrain shade"#0 fs_terrain_shaded []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 4
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
 texture "hillshade slopes"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT)
 sampler "linear"#0: Linear mips Linear anisotropy 16
 sampler "nearest"#0: Nearest mips Nearest anisotropy 1
-group "image node"#0: layout layout "image node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#0
+group "image node"#0: layout layout "image node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#0; 5 texture "hillshade slopes"#0 as D2Array
 texture "terrain layer"#2: Rgba8Unorm D2 samples 4 views [] TextureUsages(RENDER_ATTACHMENT | TRANSIENT_ATTACHMENT)
 texture "terrain layer"#3: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
 module "terrain"#1: wgsl
@@ -97,7 +97,7 @@ sampler "composite"#0: Linear mips Nearest anisotropy 1
 group "composite"#0: layout layout "composite"#0; 0 buffer "composite"#0 at 0 size None; 1 texture "terrain layer"#1 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
 buffer "composite"#1: BufferUsages(COPY_DST | UNIFORM)
 group "composite"#1: layout layout "composite"#0; 0 buffer "composite"#1 at 0 size None; 1 texture "terrain layer"#3 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
-layout "scene"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 2 ShaderStages(VERTEX) Storage { read_only: true }; 3 ShaderStages(VERTEX) Storage { read_only: true }; 4 ShaderStages(VERTEX) Storage { read_only: true }; 5 ShaderStages(VERTEX) Storage { read_only: true }; 6 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 7 ShaderStages(VERTEX) Storage { read_only: true }; 8 ShaderStages(FRAGMENT) Storage { read_only: true }; 9 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 10 ShaderStages(FRAGMENT) Sampler { filtering: true }; 11 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 12 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 13 ShaderStages(FRAGMENT) Sampler { filtering: true }; 14 ShaderStages(VERTEX) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2 }; 
+layout "scene"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 2 ShaderStages(VERTEX) Storage { read_only: true }; 3 ShaderStages(VERTEX) Storage { read_only: true }; 4 ShaderStages(VERTEX) Storage { read_only: true }; 5 ShaderStages(VERTEX) Storage { read_only: true }; 6 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 7 ShaderStages(VERTEX) Storage { read_only: true }; 8 ShaderStages(FRAGMENT) Storage { read_only: true }; 9 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 10 ShaderStages(FRAGMENT) Sampler { filtering: true }; 11 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 12 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 13 ShaderStages(FRAGMENT) Sampler { filtering: true }; 14 ShaderStages(VERTEX) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2 }; 16 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 
 layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 
 layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
 module "symbol line"#0: wgsl
@@ -109,7 +109,7 @@ sampler "images"#0: Linear mips Nearest anisotropy 1
 texture "line SDF atlas"#0: R8Unorm D2 samples 1 views [] TextureUsages(COPY_DST | TEXTURE_BINDING)
 texture "glyphs"#0: R8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
 sampler "nearest"#1: Nearest mips Nearest anisotropy 1
-group "scene"#0: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#1; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "terrain depth"#0 as D2
+group "scene"#0: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#1; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 41984 size Some(512)
 buffer "symbol passes"#0: BufferUsages(COPY_DST | UNIFORM)
 group "symbol pass"#0: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 256 size Some(16)

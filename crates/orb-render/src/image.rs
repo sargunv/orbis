@@ -219,6 +219,8 @@ impl Images {
             E::texture(1, fs, true, TextureViewDimension::D2Array),
             E::sampler(2, fs, true),
             E::sampler(3, fs, true),
+            // The texture again, for the nearest sampler (`image.wgsl`).
+            E::texture(5, fs, true, TextureViewDimension::D2Array),
         ];
         let image_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "image node",
@@ -741,6 +743,7 @@ impl Images {
             BindGroupEntry::texture(1, texture, TextureViewDimension::D2Array),
             BindGroupEntry::sampler(2, self.linear),
             BindGroupEntry::sampler(3, self.nearest),
+            BindGroupEntry::texture(5, texture, TextureViewDimension::D2Array),
         ];
         let layout = if family == Family::ColorRelief {
             let ramp = node.ramp.unwrap_or(self.placeholder_ramp);
