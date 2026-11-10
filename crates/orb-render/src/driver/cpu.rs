@@ -2,24 +2,28 @@
 //! (WebGL 2, #140): the GPU driver's cull (`cull.wgsl`) on the CPU, over
 //! copies of the tables it reads, and direct draws.
 //!
-//! Each frame whose camera or tables changed, it decides every candidate
-//! as the GPU's cull does: a bounds test of each run of one mesh's chunks
-//! in one placement, then [`candidate_visible`], `cull.wgsl`'s function
+//! Each frame whose camera or tables changed, it decides every candidate as
+//! the GPU's cull does: a bounds test of each run of one mesh's chunks in
+//! one placement, then [`candidate_visible`], `cull.wgsl`'s function
 //! written again in Rust. It writes what the GPU's cull writes, word for
-//! word: listed nodes' visible lists, indexed nodes' compacted slots
-//! (the chunk's indices tagged with its run when it enters the view,
-//! hidden ones when it leaves) and each node's draw arguments, which its
-//! direct draws take. Slots a layout moved hold what they held (the
-//! scene copies them on the GPU), and a bit per compacted word says which
-//! of the two, as the GPU's cull reads it from the slot itself. Bundles
-//! record those draws, so the renderer records them again when a node's
-//! arguments change. A test holds all of it to the GPU's cull over the
-//! same scene and frames (`Renderer::check_driver`).
+//! word: listed nodes' visible lists, indexed nodes' compacted slots (the
+//! chunk's indices tagged with its run when it enters the view, hidden ones
+//! when it leaves) and each node's draw arguments, which its direct draws
+//! take. Slots a layout moved hold what they held (this driver moves them
+//! in its own copy of the compacted words), and a bit per compacted word
+//! says which of the two, as the GPU's cull reads it from the slot itself.
+//! The draws read one of [`COPIES`] index buffers in turn, each written in
+//! place before the frames that draw it. Bundles record those draws, so the
+//! renderer records them again when a node's arguments or the copy they
+//! read change. A test holds all of it to the GPU's cull over the same
+//! scene and frames (`Renderer::check_driver`).
 //!
 //! A commit that changes this file says why in its body: it is the one
 //! piece of logic the two drivers have twice.
 
-use orb_hal::{BufferUsages, Gpu, Pass, PipelineId, RenderCommand};
+use std::ops::Range;
+
+use orb_hal::{BufferDesc, BufferId, BufferUsages, Gpu, Pass, PipelineId, RenderCommand};
 use orb_shaders::layout;
 
 use crate::scene::{
@@ -35,10 +39,39 @@ pub(crate) const INDEX_BITS: u32 = 31;
 /// The draw arguments: written for diagnostics and tests to read back.
 pub(crate) const ARGS_USAGE: BufferUsages = BufferUsages::COPY_DST.union(BufferUsages::COPY_SRC);
 
-/// The compacted indices: the CPU writes them, indexed draws read them.
+/// The scene's compacted indices, which hold nothing on this driver
+/// (`Kind::scene_compacted_words`): its copies are its own.
 pub(crate) const COMPACTED_USAGE: BufferUsages = BufferUsages::INDEX
     .union(BufferUsages::COPY_DST)
     .union(BufferUsages::COPY_SRC);
+
+/// Copies of the compacted indices that draws read in turn.
+///
+/// WebGL 2 always restarts primitives at the fixed index, and Metal's
+/// triangle lists don't, so ANGLE's Metal back end splits each indexed
+/// draw at the restart indices of its index buffer. After any change to
+/// the buffer, the next indexed draw reads the whole buffer on the CPU to
+/// find them, and if the GPU wrote the buffer (a copy into it), it first
+/// waits for that copy and everything queued before it: 100-200 ms where
+/// a frame's tiles arrive with many uploads (#140). So nothing writes a
+/// copy on the GPU: a frame that changes slots writes the words every
+/// copy lacks into the one drawn longest ago, in place (`bufferSubData`,
+/// [`BufferUsages::IDLE_WRITES`]), when the GPU is done with it, and draws
+/// from it: a frame lies between a copy's last draw and its next write.
+/// A third copy measured no better on the Globe entry at 2x in Chromium
+/// (#140), and a copy is the scene's compacted capacity long.
+pub(crate) const COPIES: usize = 2;
+
+/// A copy's usage: written in place, read back by tests.
+const COPY_USAGE: BufferUsages = BufferUsages::INDEX
+    .union(BufferUsages::COPY_DST)
+    .union(BufferUsages::COPY_SRC)
+    .union(BufferUsages::IDLE_WRITES);
+
+/// Unchanged words between two changed runs that are written with them
+/// rather than starting another write: each write is a call into the
+/// browser.
+const WRITE_GAP: u32 = 512;
 
 /// The tables its cull reads.
 pub(crate) const MIRRORED: &[Table] = &[
@@ -89,6 +122,23 @@ pub(crate) struct CpuDriver {
     drawn: Vec<u64>,
     /// The GPU's cull beside this one, for a test to compare.
     twin: Option<Twin>,
+    /// The compacted indices as this driver wrote them, which each copy
+    /// takes on before it draws.
+    shadow: Vec<u32>,
+    /// The scene's compacted buffer the shadow and copies were made for:
+    /// a new one (a resize) starts empty, every slot written again.
+    made_for: Option<BufferId>,
+    copies: Vec<Copy>,
+    /// The copy draws read.
+    current: usize,
+}
+
+/// One of the [`COPIES`].
+#[derive(Debug)]
+struct Copy {
+    buffer: BufferId,
+    /// Words changed since it was last written.
+    stale: Vec<Range<u32>>,
 }
 
 /// Consecutive candidates of one mesh in one placement.
@@ -151,20 +201,31 @@ impl CpuDriver {
         let frame = Frame::new(scene.frame());
         let seen = (frame.inputs(scene.frame()), scene.tables().revision());
         let mut args = vec![0u32; nodes * ARGS_WORDS];
+        let words = scene.capacity().compacted_words as usize;
+        let remade = self.made_for != Some(scene.buffers().compacted);
+        if remade {
+            self.remake(gpu, words);
+            self.made_for = Some(scene.buffers().compacted);
+        }
+        // Words of the shadow this frame changed.
+        let mut changed: Vec<Range<u32>> = Vec::new();
         if rebuilt {
             self.listed.clear();
             self.runs.clear();
-            // Slots move before this frame's writes to the slots they move
-            // from, in a submission of their own.
-            let compacted = scene.buffers().compacted;
-            let mut moves = scene.move_passes(gpu, compacted);
-            let words = scene.capacity().compacted_words as usize;
             self.drawn.resize(words.div_ceil(64), 0);
             move_bits(&mut self.drawn, scene.moves());
-            // The slots that moved, and the slots of runs that went, as
-            // the scene moved and hid them in its own compacted buffer.
+            // The slots of runs that went hide, then slots move, as the
+            // GPU driver's do: before this frame's writes to the slots
+            // they move from.
+            for range in scene.hidden() {
+                self.shadow[range.start as usize..range.end as usize].fill(RESTART_INDEX);
+                changed.push(range.clone());
+            }
+            move_words(&mut self.shadow, scene.moves());
+            changed.extend((scene.moves().iter()).map(|m| m.to..m.to + m.words));
+            // The twin's, on the GPU, in a submission of their own.
             if let Some(twin) = &self.twin {
-                moves.extend(scene.move_passes(gpu, twin.compacted));
+                let moves = scene.move_passes(gpu, twin.compacted);
                 let longest = scene.hidden().iter().map(|r| r.end - r.start).max();
                 let words = vec![HIDDEN_INDEX; longest.unwrap_or(0) as usize];
                 for range in scene.hidden() {
@@ -174,9 +235,9 @@ impl CpuDriver {
                         bytemuck::cast_slice(&words[..(range.end - range.start) as usize]),
                     );
                 }
-            }
-            if !moves.is_empty() {
-                gpu.submit(&moves);
+                if !moves.is_empty() {
+                    gpu.submit(&moves);
+                }
             }
         }
         self.listed.resize_with(nodes, Vec::new);
@@ -187,7 +248,7 @@ impl CpuDriver {
                 node[6] = 0;
             }
         } else {
-            self.cull_nodes(gpu, scene, &frame, &mut args);
+            self.cull_nodes(gpu, scene, &frame, &mut args, &mut changed);
         }
         self.seen = Some(seen);
         let draws = |args: &[u32]| -> Vec<[u32; 5]> {
@@ -195,12 +256,74 @@ impl CpuDriver {
                 .map(|a| [a[0], a[1], a[2], a[3], a[4]])
                 .collect()
         };
-        let changed = draws(&args) != draws(&self.args);
+        let mut draws_changed = remade || draws(&args) != draws(&self.args);
         if rebuilt || args != self.args {
             gpu.write_buffer(scene.buffers().args, 0, bytemuck::cast_slice(&args));
         }
         self.args = args;
-        changed
+        if !changed.is_empty() {
+            self.turn(gpu, &changed);
+            draws_changed = true;
+        }
+        draws_changed
+    }
+
+    /// The copy draws read, once the first frame made them.
+    pub(crate) fn compacted(&self) -> Option<BufferId> {
+        self.copies.get(self.current).map(|c| c.buffer)
+    }
+
+    /// Makes the shadow and copies again, `words` long and empty, for a
+    /// new compacted buffer: the next cull writes every slot laid out.
+    fn remake(&mut self, gpu: &mut dyn Gpu, words: usize) {
+        for copy in self.copies.drain(..) {
+            gpu.destroy_buffer(copy.buffer);
+        }
+        self.shadow = vec![0; words];
+        self.copies = (0..COPIES)
+            .map(|_| Copy {
+                buffer: gpu.create_buffer(&BufferDesc {
+                    label: "compacted indices",
+                    size: (words as u64 * 4).max(16),
+                    usage: COPY_USAGE,
+                }),
+                stale: Vec::new(),
+            })
+            .collect();
+        self.current = 0;
+    }
+
+    /// Moves the draws to the next copy, writing into it the words it
+    /// lacks: those `changed` this frame and in the frames since it was
+    /// last written.
+    fn turn(&mut self, gpu: &mut dyn Gpu, changed: &[Range<u32>]) {
+        for copy in &mut self.copies {
+            copy.stale.extend_from_slice(changed);
+        }
+        self.current = (self.current + 1) % self.copies.len();
+        let copy = &mut self.copies[self.current];
+        let mut stale = std::mem::take(&mut copy.stale);
+        stale.sort_unstable_by_key(|r| r.start);
+        let mut at = 0;
+        while at < stale.len() {
+            let start = stale[at].start;
+            let mut end = stale[at].end;
+            at += 1;
+            while at < stale.len() && stale[at].start <= end.saturating_add(WRITE_GAP) {
+                end = end.max(stale[at].end);
+                at += 1;
+            }
+            let end = end.min(self.shadow.len() as u32);
+            if start < end {
+                gpu.write_buffer(
+                    copy.buffer,
+                    u64::from(start) * 4,
+                    bytemuck::cast_slice(&self.shadow[start as usize..end as usize]),
+                );
+            }
+        }
+        stale.clear();
+        copy.stale = stale;
     }
 
     /// The cull of every node, into `args`.
@@ -210,9 +333,8 @@ impl CpuDriver {
         scene: &mut Scene,
         frame: &Frame,
         args: &mut [u32],
+        changed: &mut Vec<Range<u32>>,
     ) {
-        let compacted = scene.buffers().compacted;
-        let compacted_words = scene.capacity().compacted_words;
         let tables = scene.tables_mut();
         let mut candidates = std::mem::take(tables.mirror_mut(Table::Candidates).expect("copied"));
         let read = |table| tables.mirror(table).expect("copied");
@@ -355,22 +477,14 @@ impl CpuDriver {
             }
         }
         *tables.mirror_mut(Table::Candidates).expect("copied") = candidates;
-        // Each rewritten slot's words, runs of adjacent slots in one write.
-        let mut at = 0;
-        while at < slots.len() {
-            let start = slots[at].0;
-            let mut words = std::mem::take(&mut slots[at].1);
-            at += 1;
-            while at < slots.len() && slots[at].0 == start + words.len() as u32 {
-                words.append(&mut slots[at].1);
-                at += 1;
+        // Each rewritten slot's words, into the shadow.
+        for (start, words) in slots {
+            let end = start as usize + words.len();
+            debug_assert!(end <= self.shadow.len());
+            if let Some(shadow) = self.shadow.get_mut(start as usize..end) {
+                shadow.copy_from_slice(&words);
+                changed.push(start..end as u32);
             }
-            debug_assert!(start as usize + words.len() <= compacted_words as usize);
-            gpu.write_buffer(
-                compacted,
-                u64::from(start) * 4,
-                bytemuck::cast_slice(&words),
-            );
         }
         for (at, rows) in visible {
             tables.write_words(gpu, Table::Visible, at, &rows);
@@ -472,6 +586,9 @@ impl CpuDriver {
         if let Some(twin) = self.twin {
             twin.destroy(gpu);
         }
+        for copy in self.copies {
+            gpu.destroy_buffer(copy.buffer);
+        }
     }
 }
 
@@ -527,6 +644,22 @@ fn move_bits(bits: &mut [u64], moves: &[Move]) {
     for (m, read) in moves.iter().zip(read) {
         for (k, value) in (0u32..).zip(read) {
             put_bits(bits, m.to + 64 * k, value, (m.words - 64 * k).min(64));
+        }
+    }
+}
+
+/// Makes `moves` in `words`: every one read before any is written, as
+/// the GPU's copies through a scratch buffer make them.
+fn move_words(words: &mut [u32], moves: &[Move]) {
+    let read: Vec<Vec<u32>> = (moves.iter())
+        .map(|m| {
+            let from = m.from as usize..(m.from + m.words) as usize;
+            words.get(from).unwrap_or(&[]).to_vec()
+        })
+        .collect();
+    for (m, read) in moves.iter().zip(read) {
+        if let Some(to) = words.get_mut(m.to as usize..m.to as usize + read.len()) {
+            to.copy_from_slice(&read);
         }
     }
 }
@@ -873,7 +1006,7 @@ impl DriverCheck {
         Some(Self {
             slots,
             args: [scene.buffers().args, twin.args],
-            compacted: [scene.buffers().compacted, twin.compacted],
+            compacted: [driver.compacted()?, twin.compacted],
             visible: [tables.buffer(Table::Visible), twin.visible],
             candidates: tables.buffer(Table::Candidates),
             cpu_candidates: tables.mirror(Table::Candidates)?.to_vec(),

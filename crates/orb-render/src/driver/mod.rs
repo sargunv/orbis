@@ -88,6 +88,17 @@ impl Kind {
         }
     }
 
+    /// Words of the scene's compacted index buffer for `words` of slots:
+    /// none where the driver keeps the compacted indices in buffers of its
+    /// own (the scene's then holds nothing, and nothing writes it).
+    pub(crate) fn scene_compacted_words(self, words: u32) -> u64 {
+        match self {
+            Self::Gpu => u64::from(words),
+            #[cfg(cpu_driven)]
+            Self::Cpu => 0,
+        }
+    }
+
     /// The compacted index that hides a slot, as the driver writes it.
     pub(crate) fn hidden_index(self) -> u32 {
         match self {
@@ -121,7 +132,7 @@ impl Kind {
 pub(crate) enum Driver {
     Gpu(gpu::GpuDriver),
     #[cfg(cpu_driven)]
-    Cpu(cpu::CpuDriver),
+    Cpu(Box<cpu::CpuDriver>),
 }
 
 impl Driver {
@@ -133,7 +144,30 @@ impl Driver {
                 gpu::CullBuffers::of(scene.tables(), scene.buffers()),
             )),
             #[cfg(cpu_driven)]
-            Kind::Cpu => Self::Cpu(cpu::CpuDriver::default()),
+            Kind::Cpu => Self::Cpu(Box::default()),
+        }
+    }
+
+    /// The scene's buffers as draws bind them: on the CPU, the compacted
+    /// indices are its copy of them that this frame's draws read.
+    pub(crate) fn buffers(&self, scene: &SceneBuffers) -> SceneBuffers {
+        match self {
+            Self::Gpu(_) => *scene,
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => SceneBuffers {
+                compacted: d.compacted().unwrap_or(scene.compacted),
+                ..*scene
+            },
+        }
+    }
+
+    /// Copies of the compacted indices it keeps, each the scene's
+    /// capacity long.
+    pub(crate) fn compacted_copies(&self) -> u64 {
+        match self {
+            Self::Gpu(_) => 1,
+            #[cfg(cpu_driven)]
+            Self::Cpu(_) => cpu::COPIES as u64,
         }
     }
 

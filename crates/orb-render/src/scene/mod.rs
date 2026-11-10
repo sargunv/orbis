@@ -1136,7 +1136,7 @@ impl Scene {
             args: buffer("draw args", words(c.nodes, ARGS_WORDS), driver.args_usage()),
             compacted: buffer(
                 "compacted indices",
-                u64::from(c.compacted_words),
+                driver.scene_compacted_words(c.compacted_words),
                 driver.compacted_usage(),
             ),
         };
@@ -2208,7 +2208,7 @@ impl Scene {
     fn resize_compacted(&mut self, gpu: &mut dyn Gpu, new: u32) {
         let desc = BufferDesc {
             label: "compacted indices",
-            size: u64::from(new) * 4,
+            size: (self.driver.scene_compacted_words(new) * 4).max(16),
             usage: self.driver.compacted_usage(),
         };
         move_buffer(gpu, &mut self.buffers.compacted, &desc, 0);

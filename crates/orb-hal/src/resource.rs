@@ -36,6 +36,12 @@ bitflags::bitflags! {
         const UNIFORM = 1 << 3;
         const STORAGE = 1 << 4;
         const INDIRECT = 1 << 5;
+        /// Written only while the GPU no longer reads it (its writer takes
+        /// copies in turn), so a write may land in place at once instead
+        /// of being staged and copied on the GPU: on WebGL 2, one
+        /// `bufferSubData`, which ANGLE's Metal back end makes without
+        /// waiting when the GPU is done with the buffer.
+        const IDLE_WRITES = 1 << 6;
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

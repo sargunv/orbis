@@ -96,6 +96,9 @@ pub struct WgpuGpu {
     /// Chromium 143) reject it, so that hint is dropped there.
     texture_usages: wgpu::TextureUsages,
     buffers: Slots<wgpu::Buffer>,
+    /// Buffers made with [`BufferUsages::IDLE_WRITES`], which writes go to
+    /// in place.
+    idle_writes: std::collections::HashSet<u32>,
     textures: Slots<Texture>,
     shader_modules: Slots<compile::Shared<compile::Module>>,
     bind_group_layouts: Slots<BindGroupLayout>,
@@ -194,7 +197,7 @@ fn write_core(
     writes: &mut writes::Writes,
     queue: &wgpu::Queue,
     buffers: &Slots<wgpu::Buffer>,
-    id: BufferId,
+    (id, idle): (BufferId, bool),
     offset: u64,
     data: &[u8],
 ) {
@@ -203,10 +206,13 @@ fn write_core(
     // back end copy the whole buffer into a new one, and a frame's writes
     // into the scene's arenas then cost hundreds of milliseconds (#140).
     // Gathered, they land in a staging buffer the GPU is done with and are
-    // copied into place on the GPU.
-    if cfg!(webgl)
-        || data.len() <= writes::GATHERED
-        || writes.overlaps(id, offset, data.len() as u64)
+    // copied into place on the GPU. A buffer the GPU no longer reads is
+    // written in place: a copy on the GPU into an index buffer makes ANGLE
+    // wait for it before it next reads the buffer for restart indices.
+    if !idle
+        && (cfg!(webgl)
+            || data.len() <= writes::GATHERED
+            || writes.overlaps(id, offset, data.len() as u64))
     {
         writes.gather(id, offset, data);
     } else {
@@ -365,6 +371,7 @@ impl WgpuGpu {
             gl,
             texture_usages: platform_texture_usages(),
             buffers: Slots::default(),
+            idle_writes: Default::default(),
             textures: Slots::default(),
             shader_modules: Slots::default(),
             bind_group_layouts: Slots::default(),
@@ -1073,11 +1080,16 @@ impl Gpu for WgpuGpu {
             usage: convert::buffer_usages(desc.usage),
             mapped_at_creation: false,
         });
-        BufferId(self.buffers.insert(buffer))
+        let id = self.buffers.insert(buffer);
+        if desc.usage.contains(BufferUsages::IDLE_WRITES) {
+            self.idle_writes.insert(id);
+        }
+        BufferId(id)
     }
 
     fn destroy_buffer(&mut self, id: BufferId) {
         self.writes.forget(id);
+        self.idle_writes.remove(&id.0);
         self.buffers.remove(id.0).destroy();
     }
 
@@ -1087,7 +1099,7 @@ impl Gpu for WgpuGpu {
             &mut self.writes,
             &self.queue,
             &self.buffers,
-            id,
+            (id, self.idle_writes.contains(&id.0)),
             offset,
             data,
         );
@@ -1109,7 +1121,7 @@ impl Gpu for WgpuGpu {
                     &mut self.writes,
                     &self.queue,
                     &self.buffers,
-                    id,
+                    (id, self.idle_writes.contains(&id.0)),
                     offset,
                     &data[range],
                 );
@@ -1127,7 +1139,7 @@ impl Gpu for WgpuGpu {
                     &mut self.writes,
                     &self.queue,
                     &self.buffers,
-                    id,
+                    (id, self.idle_writes.contains(&id.0)),
                     offset,
                     &data,
                 );

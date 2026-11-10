@@ -757,7 +757,11 @@ impl Renderer {
 
     /// The scene's GPU memory.
     pub fn memory(&self) -> crate::scene::SceneMemory {
-        self.scene.memory()
+        let mut memory = self.scene.memory();
+        let copies = self.driver.compacted_copies();
+        memory.compacted.allocated *= copies;
+        memory.compacted.ceiling *= copies;
+        memory
     }
 
     /// The terrain's drape atlas, mips included.
@@ -2293,7 +2297,7 @@ impl Renderer {
             Pass::group(&mut passes, start, "terrain");
             drape_passes = micros(passing, clock());
         }
-        let (draw_group, buffers) = (self.draw_group, *self.scene.buffers());
+        let (draw_group, buffers) = (self.draw_group, self.driver.buffers(self.scene.buffers()));
         // A whole sphere: the first 3D pass draws its depth, which hides
         // what stands behind it (`CLIP_STANDING`).
         let sphere = frame.globe.is_some_and(|g| g.amount >= 1.0 && !g.plane);
@@ -2652,7 +2656,7 @@ impl Renderer {
         ]);
         if node.cull.draw == NodeDraw::Indexed {
             commands.push(RenderCommand::SetIndexBuffer {
-                buffer: self.scene.buffers().compacted,
+                buffer: self.driver.buffers(self.scene.buffers()).compacted,
                 offset: 0,
             });
         }

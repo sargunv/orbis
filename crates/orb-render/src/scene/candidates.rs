@@ -497,12 +497,15 @@ impl Scene {
         writes.hidden = joined(writes.hidden);
         let longest = writes.hidden.iter().map(|r| r.end - r.start).max();
         let words = vec![self.driver.hidden_index(); longest.unwrap_or(0) as usize];
-        for range in &writes.hidden {
-            gpu.write_buffer(
-                self.buffers.compacted,
-                u64::from(range.start) * 4,
-                bytemuck::cast_slice(&words[..(range.end - range.start) as usize]),
-            );
+        // A driver with compacted indices of its own hides them there.
+        if self.driver.scene_compacted_words(1) > 0 {
+            for range in &writes.hidden {
+                gpu.write_buffer(
+                    self.buffers.compacted,
+                    u64::from(range.start) * 4,
+                    bytemuck::cast_slice(&words[..(range.end - range.start) as usize]),
+                );
+            }
         }
         for (at, words) in &writes.rows {
             self.tables.write_words(gpu, Table::Candidates, *at, words);
