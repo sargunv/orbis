@@ -46,6 +46,14 @@ impl Default for EvaluationContext<'_> {
     }
 }
 
+impl FeatureGeometry {
+    /// A GeoJSON geometry in longitude and latitude, placed in `tile`, as
+    /// `within` and `distance` read a feature's.
+    pub fn from_geojson(geometry: &crate::json::Json, tile: CanonicalTile) -> Option<Self> {
+        crate::geometry::fixture_geometry(geometry, tile)
+    }
+}
+
 impl EvaluationContext<'_> {
     /// `["dev.sargunv.orbis:meters-per-pixel"]`: the context's, else Web Mercator's on the
     /// equator at its zoom, 512 pixels a tile.

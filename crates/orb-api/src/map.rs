@@ -671,6 +671,14 @@ impl Map {
         done.0
     }
 
+    /// [`query_rendered`](Self::query_rendered) in `layers` alone (GL JS's
+    /// `layers` option), or in every layer.
+    pub fn query_rendered_in(&mut self, min: DVec2, max: DVec2, layers: Option<&[String]>) -> u64 {
+        let done = self.query_done();
+        self.map.query_rendered(min, max, layers, done.1);
+        done.0
+    }
+
     /// GL JS `querySourceFeatures`: the features of `source` in the tiles
     /// the last frame drew, of `source_layer` (vector sources) or every
     /// layer, that a v8 `filter` as JSON selects (`["within", polygon]`

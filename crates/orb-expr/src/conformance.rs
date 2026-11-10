@@ -4,9 +4,7 @@
 //! With the `conformance` feature, [`check`] runs one fixture for
 //! `orb-fixtures`, which runs MapLibre Native's copy of the suite.
 
-use crate::eval::{Evaluator, Feature};
-use crate::ir::KeyId;
-use crate::json::{self, Json, JsonValue, Member};
+use crate::json::{self, Json, JsonValue};
 use crate::legacy::lower_function;
 use crate::parse::{Annotation, Parser};
 use crate::property::{PropertyExpression, PropertySpec, PropertyType};
@@ -16,41 +14,6 @@ use crate::{Expression, Kind};
 #[cfg(test)]
 pub(crate) const FIXTURES: &str = include_str!("../tests/data/expression-fixtures.json");
 const ROOT_KEY: &str = "layers[0].paint.some-property";
-
-pub(crate) struct JsonFeature<'a> {
-    properties: &'a [Member],
-    id: Option<&'a Json>,
-    geometry_type: Option<&'a str>,
-}
-
-impl<'a> Feature<'a> for JsonFeature<'a> {
-    fn get(&self, _: KeyId, name: &str) -> Option<Value<'a>> {
-        self.get_by_name(name)
-    }
-
-    fn get_by_name(&self, name: &str) -> Option<Value<'a>> {
-        self.properties
-            .iter()
-            .rev()
-            .find(|m| m.key == name)
-            .map(|m| Value::from_json(&m.value))
-    }
-
-    fn properties(&self) -> Vec<(String, Value<'static>)> {
-        self.properties
-            .iter()
-            .map(|m| (m.key.clone(), Value::from_json(&m.value)))
-            .collect()
-    }
-
-    fn id(&self) -> Value<'a> {
-        self.id.map_or(Value::Null, Value::from_json)
-    }
-
-    fn geometry_type(&self) -> Option<&'a str> {
-        self.geometry_type
-    }
-}
 
 /// GL JS's `getCompletePropertySpec`, then the property's parsing spec.
 pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
@@ -301,13 +264,10 @@ pub(crate) fn evaluate(
         geometry: geometry.as_ref(),
         ..crate::EvaluationContext::default()
     };
-    Evaluator {
-        context: &context,
-        ir: &parsed.expression().ir,
-        feature: Some(&json_feature(feature)),
-    }
-    .eval_root()
-    .map(Value::into_owned)
+    parsed
+        .expression()
+        .evaluate_geojson(&context, feature)
+        .map(Value::into_owned)
 }
 
 /// A fixture input's zoom, NaN if it has none.
@@ -329,20 +289,6 @@ pub(crate) fn state(j: Option<&Json>) -> Vec<(String, Value<'static>)> {
             }
         })
         .unwrap_or_default()
-}
-
-pub(crate) fn json_feature(feature: &Json) -> JsonFeature<'_> {
-    JsonFeature {
-        properties: feature
-            .get("properties")
-            .and_then(Json::as_object)
-            .unwrap_or_default(),
-        id: feature.get("id"),
-        geometry_type: feature
-            .get("geometry")
-            .and_then(|g| g.get("type"))
-            .and_then(Json::as_str),
-    }
 }
 
 #[cfg(test)]

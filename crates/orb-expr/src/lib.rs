@@ -91,6 +91,69 @@ impl fmt::Display for Diagnostic {
     }
 }
 
+/// What an expression reads beyond its literals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reads {
+    pub zoom: bool,
+    /// The feature's own data: its properties, id or geometry type.
+    pub properties: bool,
+    pub feature_state: bool,
+    /// `heatmap-density`, `line-progress` or `elevation`.
+    pub ramp: bool,
+    /// The feature's geometry (`within`, `distance`).
+    pub geometry: bool,
+}
+
+/// A GeoJSON feature as an expression reads it.
+struct GeoJsonFeature<'a> {
+    properties: &'a [json::Member],
+    id: Option<&'a Json>,
+    geometry_type: Option<&'a str>,
+}
+
+fn geojson_feature(feature: &Json) -> GeoJsonFeature<'_> {
+    GeoJsonFeature {
+        properties: feature
+            .get("properties")
+            .and_then(Json::as_object)
+            .unwrap_or_default(),
+        id: feature.get("id"),
+        geometry_type: feature
+            .get("geometry")
+            .and_then(|g| g.get("type"))
+            .and_then(Json::as_str),
+    }
+}
+
+impl<'a> eval::Feature<'a> for GeoJsonFeature<'a> {
+    fn get(&self, _: ir::KeyId, name: &str) -> Option<Value<'a>> {
+        self.get_by_name(name)
+    }
+
+    fn get_by_name(&self, name: &str) -> Option<Value<'a>> {
+        self.properties
+            .iter()
+            .rev()
+            .find(|m| m.key == name)
+            .map(|m| Value::from_json(&m.value))
+    }
+
+    fn properties(&self) -> Vec<(String, Value<'static>)> {
+        self.properties
+            .iter()
+            .map(|m| (m.key.clone(), Value::from_json(&m.value)))
+            .collect()
+    }
+
+    fn id(&self) -> Value<'a> {
+        self.id.map_or(Value::Null, Value::from_json)
+    }
+
+    fn geometry_type(&self) -> Option<&'a str> {
+        self.geometry_type
+    }
+}
+
 /// A parsed, type-checked expression.
 #[derive(Clone, Debug)]
 pub struct Expression {
@@ -109,6 +172,50 @@ impl Expression {
             }),
             None => Err(parser.errors),
         }
+    }
+
+    /// Parses an expression as a property value of type `expected`, as GL
+    /// JS's `createExpression` does: a string result is coerced, any other
+    /// asserted, and a string literal of a colour type parsed.
+    pub fn parse_value(json: &Json, expected: Option<&Type>) -> Result<Self, Vec<Diagnostic>> {
+        let annotation = (expected == Some(&Type::String)).then_some(parse::Annotation::Coerce);
+        let mut parser = Parser::default();
+        match parser.parse(json, "", expected, annotation) {
+            Some(root) => Ok(Self {
+                ir: parser.ir.compact(root),
+            }),
+            None => Err(parser.errors),
+        }
+    }
+
+    /// The inputs the expression reads, which evaluation needs given.
+    pub fn reads(&self) -> Reads {
+        let deps = self.deps();
+        Reads {
+            zoom: deps.contains(Deps::ZOOM),
+            properties: deps.contains(Deps::PROPERTIES),
+            feature_state: deps.contains(Deps::FEATURE_STATE),
+            ramp: deps.contains(Deps::HEATMAP)
+                || deps.contains(Deps::LINE_PROGRESS)
+                || deps.contains(Deps::ELEVATION),
+            geometry: deps.contains(Deps::GEOMETRY),
+        }
+    }
+
+    /// Evaluates against `feature`, a GeoJSON feature (its properties, id
+    /// and geometry type), with explicit inputs.
+    pub fn evaluate_geojson<'a>(
+        &'a self,
+        context: &EvaluationContext<'a>,
+        feature: &'a Json,
+    ) -> Result<Value<'a>, EvalError> {
+        let feature = geojson_feature(feature);
+        Evaluator {
+            ir: &self.ir,
+            context,
+            feature: Some(&feature),
+        }
+        .eval_root()
     }
 
     /// The static type of the result.
