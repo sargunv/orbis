@@ -502,8 +502,8 @@ impl Interaction {
     }
 
     /// Sets what gestures may move. A change cancels the gesture under
-    /// way, with no click and no momentum; pointers still down do nothing
-    /// until they lift.
+    /// way, with no click and no momentum; pointers still down, or a
+    /// platform pinch under way, do nothing until they end.
     pub fn set_options(&mut self, camera: &mut Camera, options: GestureOptions) {
         if options == self.options {
             return;
@@ -511,7 +511,7 @@ impl Interaction {
         self.options = options;
         self.last_tap = None;
         if self.is_active() {
-            self.mode = if self.pointers.is_empty() {
+            self.mode = if self.pointers.is_empty() && !matches!(self.mode, Mode::Platform) {
                 Mode::Idle
             } else {
                 Mode::Ignored
@@ -1238,6 +1238,10 @@ impl Interaction {
         match phase {
             GesturePhase::End | GesturePhase::Cancel => {
                 if !pinching {
+                    // The end of one the options cancelled.
+                    if matches!(self.mode, Mode::Ignored) && self.pointers.is_empty() {
+                        self.mode = Mode::Idle;
+                    }
                     return false;
                 }
                 let end = if phase == GesturePhase::End {

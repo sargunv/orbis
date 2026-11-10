@@ -804,6 +804,36 @@ fn platform_pinches_zoom_turn_and_glide() {
 }
 
 #[test]
+fn changing_the_options_cancels_a_platform_pinch_until_it_ends() {
+    let mut rig = Rig::new();
+    rig.pinch(1.0, 0.0, GesturePhase::Begin);
+    rig.now += 16.0;
+    rig.pinch(2.0, 0.0, GesturePhase::Update);
+    let options = GestureOptions {
+        rotate: Movement {
+            enabled: false,
+            ..GestureOptions::default().rotate
+        },
+        ..GestureOptions::default()
+    };
+    rig.input.set_options(&mut rig.camera, options);
+    let (state, zoom) = (*rig.camera.state(), rig.camera.zoom());
+    // The rest of the pinch moves nothing and glides nowhere.
+    for _ in 0..5 {
+        rig.now += 16.0;
+        rig.pinch(2.0, 0.0, GesturePhase::Update);
+    }
+    rig.pinch(1.0, 0.0, GesturePhase::End);
+    assert_eq!(rig.settle(), 0);
+    assert_eq!(*rig.camera.state(), state);
+    assert!(!rig.input.is_active());
+    // The next one zooms.
+    rig.pinch(1.0, 0.0, GesturePhase::Begin);
+    rig.pinch(2.0, 0.0, GesturePhase::Update);
+    assert!((rig.camera.zoom() - zoom - 1.0).abs() < 1e-9);
+}
+
+#[test]
 fn a_known_trackpad_zooms_at_once_from_its_first_event() {
     let mut rig = Rig::new();
     let zoom = rig.camera.zoom();
