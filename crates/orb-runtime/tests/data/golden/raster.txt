@@ -1,0 +1,423 @@
+submit 0
+  push "cull"
+  clear buffer "draw args"#0 at 0 size Some(4064)
+  compute pass "cull"
+    pipeline compute "cull"#0
+    group 0 group "cull"#0
+    dispatch 127 1 1
+  pop
+  push "main"
+  render pass "main"
+    colour texture "target"#0 resolve None Clear([1.0, 1.0, 1.0, 1.0]) Store
+    bundles [bundle "layers"#0]
+  pop
+
+buffer "draw args"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE | INDIRECT)
+layout "cull"#0: 0 ShaderStages(COMPUTE) Uniform; 1 ShaderStages(COMPUTE) Storage { read_only: true }; 2 ShaderStages(COMPUTE) Storage { read_only: true }; 3 ShaderStages(COMPUTE) Storage { read_only: false }; 4 ShaderStages(COMPUTE) Storage { read_only: true }; 5 ShaderStages(COMPUTE) Storage { read_only: false }; 6 ShaderStages(COMPUTE) Storage { read_only: false }; 7 ShaderStages(COMPUTE) Storage { read_only: true }; 8 ShaderStages(COMPUTE) Storage { read_only: false }; 
+module "cull"#0: wgsl
+compute "cull"#0: layouts [layout "cull"#0]; module "cull"#0 cull []; 
+buffer "frame"#0: BufferUsages(COPY_DST | UNIFORM)
+buffer "tiles"#0: BufferUsages(COPY_DST | STORAGE)
+buffer "chunks"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
+buffer "candidates"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
+buffer "node cull"#0: BufferUsages(COPY_DST | STORAGE)
+buffer "visible"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
+buffer "indices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
+buffer "compacted indices"#0: BufferUsages(COPY_DST | INDEX | STORAGE)
+group "cull"#0: layout layout "cull"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "candidates"#0 at 0 size None; 4 buffer "node cull"#0 at 0 size None; 5 buffer "visible"#0 at 0 size None; 6 buffer "draw args"#0 at 0 size None; 7 buffer "indices"#0 at 0 size None; 8 buffer "compacted indices"#0 at 0 size None
+texture "target"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
+layout "scene"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 2 ShaderStages(VERTEX) Storage { read_only: true }; 3 ShaderStages(VERTEX) Storage { read_only: true }; 4 ShaderStages(VERTEX) Storage { read_only: true }; 5 ShaderStages(VERTEX) Storage { read_only: true }; 6 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 7 ShaderStages(VERTEX) Storage { read_only: true }; 8 ShaderStages(FRAGMENT) Storage { read_only: true }; 9 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 10 ShaderStages(FRAGMENT) Sampler { filtering: true }; 11 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 12 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 13 ShaderStages(FRAGMENT) Sampler { filtering: true }; 14 ShaderStages(VERTEX) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2 }; 
+layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 
+module "fill"#0: wgsl
+render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill []; module "fill"#0 fs_fill []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+buffer "vertices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
+buffer "props"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
+buffer "image rects"#0: BufferUsages(COPY_DST | STORAGE)
+texture "images"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
+sampler "images"#0: Linear mips Nearest anisotropy 1
+texture "line SDF atlas"#0: R8Unorm D2 samples 1 views [] TextureUsages(COPY_DST | TEXTURE_BINDING)
+texture "glyphs"#0: R8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
+sampler "nearest"#0: Nearest mips Nearest anisotropy 1
+texture "no dem"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(TEXTURE_BINDING)
+texture "no terrain depth"#0: R32Float D2 samples 1 views [] TextureUsages(TEXTURE_BINDING)
+group "scene"#0: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "no dem"#0 as D2Array; 15 texture "no terrain depth"#0 as D2
+buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
+group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 0 size Some(512)
+layout "image node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 2 ShaderStages(FRAGMENT) Sampler { filtering: true }; 3 ShaderStages(FRAGMENT) Sampler { filtering: true }; 
+module "raster"#0: wgsl
+render "raster"#0: layouts [layout "scene"#0, layout "image node"#0]; module "raster"#0 vs_raster []; module "raster"#0 fs_raster []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+texture "raster tiles"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | STORAGE_BINDING | RENDER_ATTACHMENT)
+sampler "linear"#0: Linear mips Linear anisotropy 16
+sampler "nearest"#1: Nearest mips Nearest anisotropy 1
+group "image node"#0: layout layout "image node"#0; 0 buffer "node uniforms"#0 at 512 size Some(512); 1 texture "raster tiles"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#1
+group "node"#1: layout layout "node"#0; 0 buffer "node uniforms"#0 at 3072 size Some(512)
+group "node"#2: layout layout "node"#0; 0 buffer "node uniforms"#0 at 3584 size Some(512)
+group "node"#3: layout layout "node"#0; 0 buffer "node uniforms"#0 at 4608 size Some(512)
+module "fill outline"#0: wgsl
+render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline []; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
+group "node"#4: layout layout "node"#0; 0 buffer "node uniforms"#0 at 5120 size Some(512)
+group "node"#5: layout layout "node"#0; 0 buffer "node uniforms"#0 at 6656 size Some(512)
+group "node"#6: layout layout "node"#0; 0 buffer "node uniforms"#0 at 7168 size Some(512)
+group "node"#7: layout layout "node"#0; 0 buffer "node uniforms"#0 at 7680 size Some(512)
+group "node"#8: layout layout "node"#0; 0 buffer "node uniforms"#0 at 8192 size Some(512)
+group "node"#9: layout layout "node"#0; 0 buffer "node uniforms"#0 at 8704 size Some(512)
+group "node"#10: layout layout "node"#0; 0 buffer "node uniforms"#0 at 9216 size Some(512)
+module "line"#0: wgsl
+render "line"#0: layouts [layout "scene"#0, layout "node"#0]; module "line"#0 vs_line []; module "line"#0 fs_line []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+group "node"#11: layout layout "node"#0; 0 buffer "node uniforms"#0 at 9728 size Some(512)
+group "node"#12: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10240 size Some(512)
+group "node"#13: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10752 size Some(512)
+group "node"#14: layout layout "node"#0; 0 buffer "node uniforms"#0 at 11264 size Some(512)
+group "node"#15: layout layout "node"#0; 0 buffer "node uniforms"#0 at 11776 size Some(512)
+group "node"#16: layout layout "node"#0; 0 buffer "node uniforms"#0 at 12288 size Some(512)
+group "node"#17: layout layout "node"#0; 0 buffer "node uniforms"#0 at 12800 size Some(512)
+group "node"#18: layout layout "node"#0; 0 buffer "node uniforms"#0 at 13312 size Some(512)
+group "node"#19: layout layout "node"#0; 0 buffer "node uniforms"#0 at 14848 size Some(512)
+group "node"#20: layout layout "node"#0; 0 buffer "node uniforms"#0 at 15872 size Some(512)
+group "node"#21: layout layout "node"#0; 0 buffer "node uniforms"#0 at 16384 size Some(512)
+group "node"#22: layout layout "node"#0; 0 buffer "node uniforms"#0 at 16896 size Some(512)
+group "node"#23: layout layout "node"#0; 0 buffer "node uniforms"#0 at 17408 size Some(512)
+group "node"#24: layout layout "node"#0; 0 buffer "node uniforms"#0 at 17920 size Some(512)
+group "node"#25: layout layout "node"#0; 0 buffer "node uniforms"#0 at 18944 size Some(512)
+group "node"#26: layout layout "node"#0; 0 buffer "node uniforms"#0 at 19456 size Some(512)
+group "node"#27: layout layout "node"#0; 0 buffer "node uniforms"#0 at 19968 size Some(512)
+group "node"#28: layout layout "node"#0; 0 buffer "node uniforms"#0 at 20480 size Some(512)
+group "node"#29: layout layout "node"#0; 0 buffer "node uniforms"#0 at 20992 size Some(512)
+group "node"#30: layout layout "node"#0; 0 buffer "node uniforms"#0 at 21504 size Some(512)
+group "node"#31: layout layout "node"#0; 0 buffer "node uniforms"#0 at 22016 size Some(512)
+group "node"#32: layout layout "node"#0; 0 buffer "node uniforms"#0 at 22528 size Some(512)
+group "node"#33: layout layout "node"#0; 0 buffer "node uniforms"#0 at 23040 size Some(512)
+group "node"#34: layout layout "node"#0; 0 buffer "node uniforms"#0 at 23552 size Some(512)
+group "node"#35: layout layout "node"#0; 0 buffer "node uniforms"#0 at 24064 size Some(512)
+group "node"#36: layout layout "node"#0; 0 buffer "node uniforms"#0 at 24576 size Some(512)
+group "node"#37: layout layout "node"#0; 0 buffer "node uniforms"#0 at 25088 size Some(512)
+group "node"#38: layout layout "node"#0; 0 buffer "node uniforms"#0 at 25600 size Some(512)
+group "node"#39: layout layout "node"#0; 0 buffer "node uniforms"#0 at 26112 size Some(512)
+group "node"#40: layout layout "node"#0; 0 buffer "node uniforms"#0 at 26624 size Some(512)
+group "node"#41: layout layout "node"#0; 0 buffer "node uniforms"#0 at 27136 size Some(512)
+group "node"#42: layout layout "node"#0; 0 buffer "node uniforms"#0 at 27648 size Some(512)
+group "node"#43: layout layout "node"#0; 0 buffer "node uniforms"#0 at 28160 size Some(512)
+group "node"#44: layout layout "node"#0; 0 buffer "node uniforms"#0 at 28672 size Some(512)
+group "node"#45: layout layout "node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512)
+group "node"#46: layout layout "node"#0; 0 buffer "node uniforms"#0 at 31744 size Some(512)
+group "node"#47: layout layout "node"#0; 0 buffer "node uniforms"#0 at 32256 size Some(512)
+group "node"#48: layout layout "node"#0; 0 buffer "node uniforms"#0 at 33792 size Some(512)
+group "node"#49: layout layout "node"#0; 0 buffer "node uniforms"#0 at 34304 size Some(512)
+group "node"#50: layout layout "node"#0; 0 buffer "node uniforms"#0 at 34816 size Some(512)
+group "node"#51: layout layout "node"#0; 0 buffer "node uniforms"#0 at 35328 size Some(512)
+group "node"#52: layout layout "node"#0; 0 buffer "node uniforms"#0 at 35840 size Some(512)
+group "node"#53: layout layout "node"#0; 0 buffer "node uniforms"#0 at 36864 size Some(512)
+group "node"#54: layout layout "node"#0; 0 buffer "node uniforms"#0 at 37376 size Some(512)
+group "node"#55: layout layout "node"#0; 0 buffer "node uniforms"#0 at 37888 size Some(512)
+group "node"#56: layout layout "node"#0; 0 buffer "node uniforms"#0 at 38400 size Some(512)
+group "node"#57: layout layout "node"#0; 0 buffer "node uniforms"#0 at 38912 size Some(512)
+group "node"#58: layout layout "node"#0; 0 buffer "node uniforms"#0 at 39424 size Some(512)
+layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
+module "symbol line"#0: wgsl
+render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol []; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+group "node"#59: layout layout "node"#0; 0 buffer "node uniforms"#0 at 41984 size Some(512)
+buffer "symbol passes"#0: BufferUsages(COPY_DST | UNIFORM)
+group "symbol pass"#0: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 256 size Some(16)
+group "symbol pass"#1: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 512 size Some(16)
+module "symbol"#0: wgsl
+render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol []; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+group "node"#60: layout layout "node"#0; 0 buffer "node uniforms"#0 at 43008 size Some(512)
+group "node"#61: layout layout "node"#0; 0 buffer "node uniforms"#0 at 47616 size Some(512)
+group "symbol pass"#2: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 0 size Some(16)
+group "node"#62: layout layout "node"#0; 0 buffer "node uniforms"#0 at 48128 size Some(512)
+group "node"#63: layout layout "node"#0; 0 buffer "node uniforms"#0 at 51200 size Some(512)
+group "node"#64: layout layout "node"#0; 0 buffer "node uniforms"#0 at 51712 size Some(512)
+group "node"#65: layout layout "node"#0; 0 buffer "node uniforms"#0 at 52224 size Some(512)
+group "node"#66: layout layout "node"#0; 0 buffer "node uniforms"#0 at 56320 size Some(512)
+group "node"#67: layout layout "node"#0; 0 buffer "node uniforms"#0 at 61440 size Some(512)
+bundle "layers"#0: [Rgba8Unorm] depth None samples 1
+    index buffer "compacted indices"#0 at 0
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#0
+    draw indexed indirect buffer "draw args"#0 at 0
+    pipeline render "raster"#0
+    group 0 group "scene"#0
+    group 1 group "image node"#0
+    draw indirect buffer "draw args"#0 at 32
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#1
+    draw indexed indirect buffer "draw args"#0 at 192
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#2
+    draw indexed indirect buffer "draw args"#0 at 224
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#3
+    draw indexed indirect buffer "draw args"#0 at 288
+    pipeline render "fill outline"#0
+    group 0 group "scene"#0
+    group 1 group "node"#4
+    draw indexed indirect buffer "draw args"#0 at 320
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#5
+    draw indexed indirect buffer "draw args"#0 at 416
+    pipeline render "fill outline"#0
+    group 0 group "scene"#0
+    group 1 group "node"#6
+    draw indexed indirect buffer "draw args"#0 at 448
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#7
+    draw indexed indirect buffer "draw args"#0 at 480
+    pipeline render "fill outline"#0
+    group 0 group "scene"#0
+    group 1 group "node"#8
+    draw indexed indirect buffer "draw args"#0 at 512
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#9
+    draw indexed indirect buffer "draw args"#0 at 544
+    pipeline render "fill outline"#0
+    group 0 group "scene"#0
+    group 1 group "node"#10
+    draw indexed indirect buffer "draw args"#0 at 576
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#11
+    draw indexed indirect buffer "draw args"#0 at 608
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#12
+    draw indexed indirect buffer "draw args"#0 at 640
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#13
+    draw indexed indirect buffer "draw args"#0 at 672
+    pipeline render "fill outline"#0
+    group 0 group "scene"#0
+    group 1 group "node"#14
+    draw indexed indirect buffer "draw args"#0 at 704
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#15
+    draw indexed indirect buffer "draw args"#0 at 736
+    pipeline render "fill outline"#0
+    group 0 group "scene"#0
+    group 1 group "node"#16
+    draw indexed indirect buffer "draw args"#0 at 768
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#17
+    draw indexed indirect buffer "draw args"#0 at 800
+    pipeline render "fill outline"#0
+    group 0 group "scene"#0
+    group 1 group "node"#18
+    draw indexed indirect buffer "draw args"#0 at 832
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#19
+    draw indexed indirect buffer "draw args"#0 at 928
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#20
+    draw indexed indirect buffer "draw args"#0 at 992
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#21
+    draw indexed indirect buffer "draw args"#0 at 1024
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#22
+    draw indexed indirect buffer "draw args"#0 at 1056
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#23
+    draw indexed indirect buffer "draw args"#0 at 1088
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#24
+    draw indexed indirect buffer "draw args"#0 at 1120
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#25
+    draw indexed indirect buffer "draw args"#0 at 1184
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#26
+    draw indexed indirect buffer "draw args"#0 at 1216
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#27
+    draw indexed indirect buffer "draw args"#0 at 1248
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#28
+    draw indexed indirect buffer "draw args"#0 at 1280
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#29
+    draw indexed indirect buffer "draw args"#0 at 1312
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#30
+    draw indexed indirect buffer "draw args"#0 at 1344
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#31
+    draw indexed indirect buffer "draw args"#0 at 1376
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#32
+    draw indexed indirect buffer "draw args"#0 at 1408
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#33
+    draw indexed indirect buffer "draw args"#0 at 1440
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#34
+    draw indexed indirect buffer "draw args"#0 at 1472
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#35
+    draw indexed indirect buffer "draw args"#0 at 1504
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#36
+    draw indexed indirect buffer "draw args"#0 at 1536
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#37
+    draw indexed indirect buffer "draw args"#0 at 1568
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#38
+    draw indexed indirect buffer "draw args"#0 at 1600
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#39
+    draw indexed indirect buffer "draw args"#0 at 1632
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#40
+    draw indexed indirect buffer "draw args"#0 at 1664
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#41
+    draw indexed indirect buffer "draw args"#0 at 1696
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#42
+    draw indexed indirect buffer "draw args"#0 at 1728
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#43
+    draw indexed indirect buffer "draw args"#0 at 1760
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#44
+    draw indexed indirect buffer "draw args"#0 at 1792
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#45
+    draw indexed indirect buffer "draw args"#0 at 1824
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#46
+    draw indexed indirect buffer "draw args"#0 at 1984
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#47
+    draw indexed indirect buffer "draw args"#0 at 2016
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#48
+    draw indexed indirect buffer "draw args"#0 at 2112
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#49
+    draw indexed indirect buffer "draw args"#0 at 2144
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#50
+    draw indexed indirect buffer "draw args"#0 at 2176
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#51
+    draw indexed indirect buffer "draw args"#0 at 2208
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#52
+    draw indexed indirect buffer "draw args"#0 at 2240
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#53
+    draw indexed indirect buffer "draw args"#0 at 2304
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#54
+    draw indexed indirect buffer "draw args"#0 at 2336
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#55
+    draw indexed indirect buffer "draw args"#0 at 2368
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#56
+    draw indexed indirect buffer "draw args"#0 at 2400
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#57
+    draw indexed indirect buffer "draw args"#0 at 2432
+    pipeline render "line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#58
+    draw indexed indirect buffer "draw args"#0 at 2464
+    pipeline render "symbol line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#59
+    group 2 group "symbol pass"#0
+    draw indirect buffer "draw args"#0 at 2624
+    group 2 group "symbol pass"#1
+    draw indirect buffer "draw args"#0 at 2624
+    pipeline render "symbol"#0
+    group 0 group "scene"#0
+    group 1 group "node"#60
+    group 2 group "symbol pass"#0
+    draw indirect buffer "draw args"#0 at 2688
+    group 2 group "symbol pass"#1
+    draw indirect buffer "draw args"#0 at 2688
+    pipeline render "symbol"#0
+    group 0 group "scene"#0
+    group 1 group "node"#61
+    group 2 group "symbol pass"#2
+    draw indirect buffer "draw args"#0 at 2976
+    pipeline render "symbol"#0
+    group 0 group "scene"#0
+    group 1 group "node"#62
+    group 2 group "symbol pass"#2
+    draw indirect buffer "draw args"#0 at 3008
+    pipeline render "symbol line"#0
+    group 0 group "scene"#0
+    group 1 group "node"#63
+    group 2 group "symbol pass"#2
+    draw indirect buffer "draw args"#0 at 3200
+    pipeline render "symbol"#0
+    group 0 group "scene"#0
+    group 1 group "node"#64
+    group 2 group "symbol pass"#2
+    draw indirect buffer "draw args"#0 at 3232
+    pipeline render "symbol"#0
+    group 0 group "scene"#0
+    group 1 group "node"#65
+    group 2 group "symbol pass"#2
+    draw indirect buffer "draw args"#0 at 3264
+    pipeline render "symbol"#0
+    group 0 group "scene"#0
+    group 1 group "node"#66
+    group 2 group "symbol pass"#2
+    draw indirect buffer "draw args"#0 at 3520
+    pipeline render "symbol"#0
+    group 0 group "scene"#0
+    group 1 group "node"#67
+    group 2 group "symbol pass"#2
+    draw indirect buffer "draw args"#0 at 3840

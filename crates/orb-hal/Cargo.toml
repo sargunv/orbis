@@ -6,6 +6,10 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# `Recording`, a device that writes down what it submits, for golden tests.
+recording = []
+
 [dependencies]
 bitflags.workspace = true
 

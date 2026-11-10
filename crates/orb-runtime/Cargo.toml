@@ -31,6 +31,8 @@ orb-tile.workspace = true
 orb-text = { workspace = true, features = ["sea-dictionaries"] }
 
 [dev-dependencies]
+# The golden pass streams record through `orb_hal::Recording`.
+orb-hal = { workspace = true, features = ["recording"] }
 orb-host-native.workspace = true
 orb-hal-wgpu.workspace = true
 png.workspace = true

@@ -19,7 +19,8 @@ naga = { workspace = true, features = ["serialize"] }
 postcard.workspace = true
 
 [dev-dependencies]
-naga = { workspace = true, features = ["serialize", "deserialize"] }
+# The stage hashes write Metal.
+naga = { workspace = true, features = ["serialize", "deserialize", "msl-out"] }
 postcard.workspace = true
 
 [lints]
