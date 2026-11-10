@@ -50,9 +50,9 @@ keeps the original messages next to stable, deduplicated skip reasons.
 GeoJSON property-conversion warnings are informational, and a warning that
 a GeoJSON source's data is missing or invalid (so the source draws nothing)
 is one GL JS raises too, so it neither skips nor fails a test. Operations this
-runner cannot apply (`addImage`, waits for events or milliseconds) and
-metadata it cannot honour (report cropping, non-default camera limits, debug
-views, unknown options) skip the test. Timeouts and custom thresholds are
+runner cannot apply (waits for named events, `addImage` without an asset
+path) and metadata it cannot honour (report cropping, non-default camera
+limits, debug views, unknown options) skip the test. Timeouts and custom thresholds are
 honoured. A lint (`src/dem.rs`) decodes the DEM tiles near each test's
 camera with the encoding its style declares; a tile outside Earth's
 elevations (−12 000 to 9 000 m) skips the test as
@@ -62,16 +62,18 @@ Canyon tiles as `mapbox`, mountains 800 km high in GL JS's expected images
 too. Load errors and timeouts are failures, not skips; so is anything
 the renderer silently leaves out.
 
-**Operations** apply after the map first goes idle, as GL JS applies them
-after `load`: `wait` and `idle` render until idle; `["wait", ms]` renders
-until its last frame lands exactly `ms` after the frame before it, and a
-fading or transitioning test's last frames keep that time, since GL JS's
-harness moves time only with its waits (so a transition is read where they
-leave it however long frames take); `setZoom`, `setCenter`, `setBearing`
-and `setPitch` move the camera; every other call goes through
-`Map::edit` as a one-call transaction, the same command parser the web
-package's `edit` uses. Warnings an edit raises skip the test as the initial
-style's would.
+**Operations** apply once the map has settled (idle, or loaded in a test
+with fades), as GL JS applies them after `load`: `["wait"]` and `idle`
+settle again; `["wait", ms]` renders until a frame lands exactly `ms` after
+the one before it; `setZoom`, `setCenter`, `setBearing` and `setPitch` move
+the camera; every other call goes through `Map::edit` as a one-call
+transaction, the same command parser the web package's `edit` uses.
+Warnings an edit raises skip the test as the initial style's would. GL JS's
+harness draws once when a wait's timer fires and reads that frame, so a
+fading or transitioning test's closing frames keep the last frame's time: a
+transition is read where its waits leave it however long frames take. The
+Chrome runner waits on the wall clock, as GL JS's harness does, so a slow
+frame there can still move a transition along.
 
 **Assets.** A fetch wrapper maps `local://` and GL JS's test-server origin
 `http://localhost:2900/` to the mirror's `assets/`, including URLs that

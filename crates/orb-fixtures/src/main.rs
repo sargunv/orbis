@@ -535,14 +535,14 @@ fn render_native(
     let mut failure = None;
     let render_started = Instant::now();
     // Tests with fades follow GL JS's harness: they start once the map has
-    // loaded, fades or not, and wait in wall time; the rest settle fully.
+    // loaded, fades or not; the rest settle fully.
     let fades = metadata.fade_duration > 0.0;
     let loaded = if fades { Next::Loaded } else { Next::Idle };
     // The last frame's time. Frames follow the wall clock, except that a
     // wait's last frame lands exactly its length after the frame before it
-    // and the frames after the operations stay there: GL JS's harness moves
-    // time only with its waits, so a transition is read exactly where they
-    // leave it however long frames take.
+    // and the frames after the operations stay there: GL JS's harness draws
+    // once when a wait's timer fires and reads that frame, so a transition is
+    // read exactly where the waits leave it however long frames take.
     let last_frame = Cell::new(0.0);
     let mut render = |map: &mut Map, at: f64, diagnostics: &mut Vec<String>| {
         last_frame.set(at);
@@ -616,8 +616,7 @@ fn render_native(
         }
     }
     // GL JS reads a fading test's pixels after its last operation, and a
-    // transition's where its waits left it (its harness's time moves only
-    // with them); the rest after one more settle.
+    // transition's where its waits left it; the rest after one more settle.
     let still = fades || map.transitioning();
     let last = if still { Next::Continue } else { Next::Idle };
     if settled

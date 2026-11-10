@@ -19,7 +19,8 @@ pub(crate) enum Next {
     Loaded,
     /// `["idle"]`: render until it is idle, fades done.
     Idle,
-    /// `["wait", ms]`: keep rendering for `ms` of wall time, then render.
+    /// `["wait", ms]`: render until a frame lands `ms` after the one before
+    /// it.
     Wait(f64),
 }
 
