@@ -118,6 +118,10 @@ struct Frame {
     // 1 when colours mix in linear light (`dev.sargunv.orbis:color-space`):
     // the target is sRGB, and shaders decode the style's colours (`color_in`).
     linear: u32,
+    // The cells per side of a surface node's point quads (`point_cells`):
+    // orb-render's `surface_cells` of the view, so the cull, the point
+    // shaders and a driver that draws without the cull count them alike.
+    surface_cells: u32,
 };
 
 // One placement of a tile's data: data units → world is
@@ -240,20 +244,9 @@ const SURFACE: u32 = 1024u;
 // A node's draw word flag: its meshes draw past their placements' clip
 // rectangles (whole extrusions), so the cull keeps chunks by their bounds.
 const UNCLIPPED: u32 = 2048u;
-// A surface quad's cells per side on a globe. A single quad is a chord: its
-// middle sinks below the sphere, and seen from the eye a wide kernel's peak
-// slides toward the view's centre (a 60 px heatmap kernel at zoom 1, 30°
-// from the target, peaks 18 px short of its point). An even count puts a
-// vertex on the point itself; four cells keep the rest of the footprint
-// within a pixel or so of the sphere. GL JS tessellates these as 3 × 3
-// uneven cells (`CircleBucket`, granularity 3), which leaves that kernel's
-// peak 4 px short.
-const SURFACE_CELLS: u32 = 4u;
-
-// A point quad's cells per side: one, or SURFACE_CELLS for a surface
-// node's quads on a globe (`frame.globe_amount`, `frame.globe_plane`).
-fn point_cells(surface: bool, globe_amount: f32, globe_plane: u32) -> u32 {
-    return select(1u, SURFACE_CELLS, surface && globe_amount > 0.0 && globe_plane == 0u);
+// A point quad's cells per side: one, or the frame's for a surface node's.
+fn point_cells(surface: bool) -> u32 {
+    return select(1u, frame.surface_cells, surface);
 }
 
 // A render node's slice of the candidate and visible lists.

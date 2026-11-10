@@ -73,7 +73,7 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     if (node.table_mask & CIRCLE_PITCH_ROW_MASK) != 0u {
         flags = (flags & 1u) | (prop_at(row + CIRCLE_ROW_PITCH) & 6u);
     }
-    let corner = point_corner(index, node_point_cells((node.flags & 4u) != 0u));
+    let corner = point_corner(index, point_cells((node.flags & 4u) != 0u));
     let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
     let shift = translate_world(px, flags & 1u, tile);
     // On terrain, the ground under the anchor (GL JS `get_elevation`).

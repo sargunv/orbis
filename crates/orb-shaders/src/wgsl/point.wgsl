@@ -25,10 +25,6 @@ fn point_corner(index: u32, cells: u32) -> vec2<f32> {
     return at * (2.0 / f32(cells)) - 1.0;
 }
 
-// The cells per side of a node's point quads (`point_cells`).
-fn node_point_cells(surface: bool) -> u32 {
-    return point_cells(surface, frame.globe_amount, frame.globe_plane);
-}
 
 // Clip the anchor, never the footprint. Half-open rectangles give an
 // anchor on a boundary exactly one owner, including fallback partitions.

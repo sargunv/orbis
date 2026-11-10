@@ -254,7 +254,30 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
         b.u(f::GLOBE_PLANE, &[u32::from(plane)]);
     }
     b.u(f::LINEAR, &[u32::from(linear)]);
+    b.u(f::SURFACE_CELLS, &[surface_cells(frame.globe)]);
     gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&b.0));
+}
+
+/// A surface quad's cells per side on a globe. A single quad is a chord:
+/// its middle sinks below the sphere, and seen from the eye a wide
+/// kernel's peak slides toward the view's centre (a 60 px heatmap kernel
+/// at zoom 1, 30° from the target, peaks 18 px short of its point). An
+/// even count puts a vertex on the point itself; four cells keep the rest
+/// of the footprint within a pixel or so of the sphere. GL JS tessellates
+/// these as 3 × 3 uneven cells (`CircleBucket`, granularity 3), which
+/// leaves that kernel's peak 4 px short.
+const SURFACE_CELLS: u32 = 4;
+
+/// The cells per side of a surface node's point quads in a view
+/// (`types.wgsl`'s `point_cells`): [`SURFACE_CELLS`] on the sphere, one
+/// on a plane. The frame block carries it, so the cull and the point
+/// shaders read this one rule.
+pub(crate) fn surface_cells(globe: Option<FrameGlobe>) -> u32 {
+    if globe.is_some_and(|g| g.amount > 0.0 && !g.plane) {
+        SURFACE_CELLS
+    } else {
+        1
+    }
 }
 
 /// One placement of a tile's data: its transform into the world,
