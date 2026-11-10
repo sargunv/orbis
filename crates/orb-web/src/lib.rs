@@ -673,10 +673,17 @@ impl OrbisMap {
                     "video"
                 }
                 MapEvent::Restored => "restored",
-                MapEvent::Degraded { gap, layers } => {
-                    set(&object, "gap", name(gap.name()));
-                    let layers: js_sys::Array = layers.iter().map(JsValue::from).collect();
-                    set(&object, "layers", layers.into());
+                MapEvent::Degraded { gaps } => {
+                    let gaps: js_sys::Array = (gaps.iter())
+                        .map(|(gap, layers)| {
+                            let entry = js_sys::Object::new();
+                            set(&entry, "gap", name(gap.name()));
+                            let layers: js_sys::Array = layers.iter().map(JsValue::from).collect();
+                            set(&entry, "layers", layers.into());
+                            JsValue::from(entry)
+                        })
+                        .collect();
+                    set(&object, "gaps", gaps.into());
                     "degraded"
                 }
                 MapEvent::Camera(orb_runtime::CameraEvent::Changed {

@@ -39,6 +39,30 @@ const toast = document.getElementById("toast");
 const params = () => new URLSearchParams(location.search);
 
 let map;
+
+/** What each gap does to the map, said briefly. */
+const GAP_NAMES = {
+  terrain: "flat terrain",
+  "depth-precision": "coarser 3D depth",
+  "heatmap-precision": "8-bit heatmaps",
+};
+
+/** Notes what the map's GPU draws otherwise than WebGPU, under the scene
+ * button; nothing when it draws everything. */
+function showGaps(gaps) {
+  const badge = document.getElementById("degraded");
+  badge.hidden = gaps.length === 0;
+  const backend = map?.backend === "webgl2" ? "WebGL 2" : "This GPU";
+  badge.textContent = `${backend}: ${gaps.map((g) => GAP_NAMES[g.gap] ?? g.gap).join(", ")}`;
+  badge.title = gaps
+    .map(({ gap, layers }) =>
+      layers.length
+        ? `${GAP_NAMES[gap] ?? gap}: ${layers.join(", ")}`
+        : `${GAP_NAMES[gap] ?? gap}: the whole map`,
+    )
+    .join("\n");
+}
+
 let current;
 /** Bumped on every switch: a flight or camera move for an older entry stops. */
 let switches = 0;
@@ -431,6 +455,8 @@ async function load(next, { camera }) {
   }
   map = created;
   options.drawing(map.backend);
+  showGaps([]);
+  map.on("gaps", ({ gaps }) => showGaps(gaps));
   expose(map);
   map.on("error", ({ message }) => {
     console.error(message);

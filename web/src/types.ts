@@ -18,6 +18,12 @@ type Fields<T> = {
  * bits, which bands; `depth-precision`, far 3D buildings may fight at high
  * pitch. */
 export type Gap = "terrain" | "heatmap-precision" | "depth-precision";
+/** A gap the style uses, and the layers it affects (none for `terrain`,
+ * which flattens the whole map). */
+export interface Degradation {
+  gap: Gap;
+  layers: string[];
+}
 
 export type LngLat = [number, number];
 export type Point = [number, number];
@@ -437,6 +443,10 @@ export interface MapEvents {
    * otherwise than on WebGPU (`gap`; `terrain` names none: the map is flat).
    * Once per gap whenever the style or the GPU changes what's degraded. */
   degraded: { gap: Gap; layers: string[] };
+  /** Everything the map's GPU draws otherwise than on WebGPU now, whenever
+   * that changes: empty once nothing is (a badge's state, where `degraded`
+   * suits a warning). */
+  gaps: { gaps: Degradation[] };
   /** A frame was drawn. */
   render: FrameStats;
 }

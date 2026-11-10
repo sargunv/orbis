@@ -958,6 +958,22 @@ button.option-row:hover:enabled {
   color: var(--ink);
 }
 
+/* What the map's GPU draws otherwise than WebGPU (`gaps`): a quiet note
+   under the scene button, its layers in the title. */
+.degraded {
+  margin: 0;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-veil);
+  box-shadow: var(--lift);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  cursor: help;
+}
+.degraded[hidden] {
+  display: none;
+}
+
 /* Status toast: loading and failures. */
 .toast {
   position: absolute;

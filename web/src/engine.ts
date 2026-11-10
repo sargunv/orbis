@@ -12,6 +12,7 @@ import type {
   Camera,
   CameraOptions,
   Constraints,
+  Degradation,
   EaseOptions,
   FitOptions,
   FlyOptions,
@@ -77,7 +78,7 @@ type CoreEvent =
   | { type: "error" | "warning"; message: string }
   | { type: "styleimagemissing"; id: string }
   | { type: "restored" }
-  | { type: "degraded"; gap: Gap; layers: string[] }
+  | { type: "degraded"; gaps: Degradation[] }
   | {
       type: "camera";
       change: "move" | "zoom" | "rotate" | "pitch";
@@ -173,6 +174,8 @@ export class Engine {
   #recovering: number | undefined;
   /** The gaps warned of on the console: each once per map. */
   #warnedGaps = new Set<Gap>();
+  /** What the map draws otherwise than on WebGPU now. */
+  #gaps: Degradation[] = [];
   /** When the device was made, and the losses in the current run. */
   #deviceAt = performance.now();
   #losses = 0;
@@ -813,21 +816,26 @@ export class Engine {
         case "styleimagemissing":
           out.push({ type: "styleimagemissing", data: { id: event.id } });
           break;
-        case "degraded":
-          if (!this.#warnedGaps.has(event.gap)) {
-            this.#warnedGaps.add(event.gap);
-            const layers = event.layers.length
-              ? ` (${event.layers.join(", ")})`
-              : "";
-            console.warn(
-              `orbis: on ${this.backend === "webgl2" ? "WebGL 2" : "this GPU"} the map draws ${event.gap} otherwise than on WebGPU${layers}`,
+        case "degraded": {
+          // Each gap that arrived, or reaches other layers, then the set.
+          const was = (d: Degradation) =>
+            this.#gaps.some(
+              (g) => g.gap === d.gap && g.layers.join() === d.layers.join(),
             );
+          for (const { gap, layers } of event.gaps.filter((d) => !was(d))) {
+            if (!this.#warnedGaps.has(gap)) {
+              this.#warnedGaps.add(gap);
+              const named = layers.length ? ` (${layers.join(", ")})` : "";
+              console.warn(
+                `orbis: on ${this.backend === "webgl2" ? "WebGL 2" : "this GPU"} the map draws ${gap} otherwise than on WebGPU${named}`,
+              );
+            }
+            out.push({ type: "degraded", data: { gap, layers } });
           }
-          out.push({
-            type: "degraded",
-            data: { gap: event.gap, layers: event.layers },
-          });
+          this.#gaps = event.gaps;
+          out.push({ type: "gaps", data: { gaps: event.gaps } });
           break;
+        }
         case "restored": {
           if (this.#recovering === undefined) break;
           const recoveredMs = performance.now() - this.#recovering;

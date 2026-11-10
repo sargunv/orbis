@@ -2450,14 +2450,9 @@ impl Map {
             }
         }
         if found != self.degraded.1 {
-            for (gap, layers) in &found {
-                if !self.degraded.1.iter().any(|(g, l)| g == gap && l == layers) {
-                    self.events.push(MapEvent::Degraded {
-                        gap: *gap,
-                        layers: layers.clone(),
-                    });
-                }
-            }
+            self.events.push(MapEvent::Degraded {
+                gaps: found.clone(),
+            });
             self.degraded.1 = found;
         }
     }

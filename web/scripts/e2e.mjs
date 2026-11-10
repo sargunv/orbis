@@ -3146,6 +3146,37 @@ async function boot(webgpuBrowser, server) {
     picked: "webgl2",
     active: "webgl2",
   });
+  // What WebGL 2 draws otherwise shows under the scene button while the
+  // style uses it, its layers in the title.
+  const badge = () =>
+    page.evaluate(() => {
+      const b = document.getElementById("degraded");
+      return b.hidden ? null : { text: b.textContent, title: b.title };
+    });
+  assert.equal(await badge(), null);
+  const extrude = (on) =>
+    page.evaluate(
+      (on) =>
+        app.map.edit((tx) =>
+          on
+            ? tx.addLayer({
+                id: "blocks-3d",
+                type: "fill-extrusion",
+                source: "district",
+                paint: { "fill-extrusion-height": 20 },
+              })
+            : tx.removeLayer("blocks-3d"),
+        ),
+      on,
+    );
+  await extrude(true);
+  await page.waitForFunction(() => !document.getElementById("degraded").hidden);
+  assert.deepEqual(await badge(), {
+    text: "WebGL 2: coarser 3D depth",
+    title: "coarser 3D depth: blocks-3d",
+  });
+  await extrude(false);
+  await page.waitForFunction(() => document.getElementById("degraded").hidden);
   await openOptions(page);
   await Promise.all([
     page.waitForEvent("load"),
