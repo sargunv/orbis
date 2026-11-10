@@ -40,6 +40,15 @@ struct Atmosphere {
     // from the globe's centre with the radius in w; toward the sun, unit.
     globe_eye: vec4<f32>,
     globe_sun: vec4<f32>,
+    // Ground lighting (`dev.sargunv.orbis:ground-lighting`), in linear
+    // light whatever the colour space: the sun's light and how much the
+    // light shades the ground (0 off), the ambient light and half the
+    // twilight in degrees, toward the sun and the target's up (unit,
+    // camera-relative globe axes, on flat surfaces too).
+    ground_day: vec4<f32>,
+    ground_night: vec4<f32>,
+    ground_sun: vec4<f32>,
+    ground_up: vec4<f32>,
     globe_amount: f32,
     // GL JS's camera-to-centre distance, logical pixels.
     globe_eye_distance_px: f32,

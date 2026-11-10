@@ -34,7 +34,7 @@ mod release;
 mod scene;
 mod terrain;
 mod tiles;
-pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
+pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky, GroundLight};
 pub use layer_composite::Blend;
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
@@ -281,6 +281,9 @@ pub struct Renderer {
     pipelines_stale: bool,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
+    /// The main bundles light the ground beneath the labels
+    /// (`dev.sargunv.orbis:ground-lighting`).
+    ground_lit: bool,
     /// Nodes the main bundle left out, waiting for a pipeline.
     waiting: u32,
     /// Whether a drape bundle has left out a draped node waiting for a
@@ -581,6 +584,7 @@ impl Renderer {
             symbol_pass_layout,
             pipelines_stale: false,
             made_seen: 0,
+            ground_lit: false,
             waiting: 0,
             drape_waiting: false,
             recorded: 0,
@@ -1606,9 +1610,7 @@ impl Renderer {
                 self.node_pipelines(i, &mut wanted);
             }
         }
-        if self.atmosphere.enabled {
-            wanted.extend(self.atmosphere.pipelines());
-        }
+        wanted.extend(self.atmosphere.pipelines());
         // Each moves to the front: the last asked for compiles first.
         let mut seen = std::collections::HashSet::new();
         wanted.retain(|&id| seen.insert(id) && !gpu.pipeline_ready(id));
@@ -1773,6 +1775,10 @@ impl Renderer {
         if compiling.pending > 0 {
             self.prioritize(gpu);
         }
+        // The ground's light records into the bundles beneath the labels.
+        if self.atmosphere.lights_ground(gpu) != self.ground_lit {
+            self.invalidate_bundle(gpu);
+        }
         let terrain_on = self.terrain.as_ref().is_some_and(terrain::Terrain::active);
         let terrain_layers = if terrain_on {
             self.terrain_layers.len()
@@ -1903,7 +1909,22 @@ impl Renderer {
                 depth_format: None,
                 sample_count: self.target.sample_count,
             };
-            for i in 0..self.nodes.len() {
+            // The ground's light falls beneath the first symbol layer, or
+            // over everything without one: labels keep their colours.
+            self.ground_lit = self.atmosphere.lights_ground(gpu);
+            let lit_before = (self.nodes.iter())
+                .position(|n| n.family.is_symbol())
+                .unwrap_or(self.nodes.len());
+            for i in 0..=self.nodes.len() {
+                if i == lit_before && self.ground_lit {
+                    commands.extend(self.atmosphere.commands_ground(gpu));
+                    if indexed {
+                        commands.push(index_buffer.clone());
+                    }
+                }
+                if i == self.nodes.len() {
+                    break;
+                }
                 let (start, member) = self.layers.at(i);
                 match start {
                     // The main pass splits here: its blend draw opens the

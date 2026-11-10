@@ -1740,7 +1740,61 @@ fn sky_view() -> orb_render::AtmosphereView {
             [0.0, 0.0, 1.0, 1.0],
         ],
         globe: None,
+        ground: None,
     }
+}
+
+/// `dev.sargunv.orbis:ground-lighting` multiplies the ground below the
+/// horizon by the sun's light or the ambient light, by the sun's
+/// elevation, and leaves the sky above it alone.
+#[test]
+fn ground_lighting_shades_the_ground_by_the_suns_elevation() {
+    let mut h = Harness::new();
+    let frame = Harness::frame(1.0);
+    let clear = [0.0, 0.0, 1.0, 1.0];
+    let mut draw = |sun: [f32; 3], amount: f32| {
+        let ground = orb_render::GroundLight {
+            amount,
+            day: [1.0; 4],
+            // A style colour: 0.25 in linear light.
+            night: [0.5371, 0.5371, 0.5371, 1.0],
+            twilight: 10.0,
+            sun,
+            up: [0.0, 0.0, 1.0],
+        };
+        let view = orb_render::AtmosphereView {
+            ground: Some(ground),
+            ..sky_view()
+        };
+        h.renderer.set_atmosphere(&mut h.gpu, None, view);
+        // The first frame records the bundles; by the next the light has
+        // compiled and they record it.
+        for _ in 0..2 {
+            h.renderer
+                .render(&mut h.gpu, &frame, h.target, clear, &|| 0.0);
+        }
+        let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+        (pixel(&pixels, 32, 10), pixel(&pixels, 32, 50))
+    };
+    let blue = |p: [u8; 4]| f32::from(p[2]);
+    // The sun overhead: the map's own colours.
+    let (sky, day) = draw([0.0, 0.0, 1.0], 1.0);
+    assert_eq!(day, [0, 0, 255, 255]);
+    assert_eq!(sky, [0, 0, 255, 255]);
+    // Below the horizon past the twilight: the ambient light, which in
+    // sRGB multiplies by its encoding.
+    let (sky, night) = draw([0.0, 0.6, -0.8], 1.0);
+    assert_eq!(sky, [0, 0, 255, 255], "the sky stays unlit");
+    let expected = 255.0 * 0.25f32.powf(1.0 / 2.2);
+    assert!((blue(night) - expected).abs() <= 1.5, "{night:?}");
+    // On the horizon: halfway through the twilight.
+    let (_, twilight) = draw([0.0, 1.0, 0.0], 1.0);
+    let expected = 255.0 * 0.625f32.powf(1.0 / 2.2);
+    assert!((blue(twilight) - expected).abs() <= 1.5, "{twilight:?}");
+    // Half the amount, half the way to no change.
+    let (_, half) = draw([0.0, 0.6, -0.8], 0.5);
+    let expected = 255.0 * 0.625f32.powf(1.0 / 2.2);
+    assert!((blue(half) - expected).abs() <= 1.5, "{half:?}");
 }
 
 /// Real basemaps have hundreds of render nodes (Americana about 400).

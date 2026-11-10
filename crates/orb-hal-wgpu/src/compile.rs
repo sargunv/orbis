@@ -805,6 +805,13 @@ mod web {
                             ("alpha", blend("one", "one", "max")),
                         ]),
                     )),
+                    Some(BlendState::Multiply) => fields.push((
+                        "blend",
+                        dict(&[
+                            ("color", component("zero", "src")),
+                            ("alpha", component("zero", "one")),
+                        ]),
+                    )),
                     None => {}
                 }
                 dict(&fields)

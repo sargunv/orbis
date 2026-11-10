@@ -209,6 +209,13 @@ pub const SCATTER_SHADER: Shader = Shader {
     ..SKY_SHADER
 };
 
+/// Ground lighting over the map beneath its labels.
+pub const GROUND_LIGHT_SHADER: Shader = Shader {
+    label: "ground lighting",
+    fragment: "fs_ground",
+    ..SKY_SHADER
+};
+
 pub const FILL_SHADER: Shader = Shader {
     label: "fill",
     parts: &[TYPES, DRAW, PATTERN, FILL],
@@ -442,6 +449,7 @@ pub const EXTRUSION_GROUND_SHADER: Shader = Shader {
 pub const SHADERS: &[Shader] = &[
     SKY_SHADER,
     SCATTER_SHADER,
+    GROUND_LIGHT_SHADER,
     COMPOSITE_OVER_SHADER,
     COMPOSITE_REPLACE_SHADER,
     COMPOSITE_ENCODE_SHADER,

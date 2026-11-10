@@ -55,18 +55,62 @@ pub(crate) fn atmosphere_view(
         // The sky over a sphere; a low-zoom plane's is a plane's.
         globe: (view.globe().filter(|g| g.plane.is_none()))
             .map(|g| globe_sky(g, view, camera, light)),
+        ground: ground_light(light, camera),
     }
 }
 
-/// A globe view's sphere for its sky and scattering, with the sun where
-/// v8's `light` is: GL JS's `getSunPos` (in the view for a viewport
-/// anchor, fixed to the globe for a map one).
+/// How the light shades the ground (`dev.sargunv.orbis:ground-lighting`),
+/// when it does.
+fn ground_light(
+    light: &LightValues,
+    camera: &orb_camera::CameraState,
+) -> Option<orb_render::GroundLight> {
+    if light.ground_lighting <= 0.0 {
+        return None;
+    }
+    let [r, g, b, a] = light.ambient_color;
+    let i = light.ambient_intensity;
+    let up = orb_crs::sphere::up(camera.target);
+    Some(orb_render::GroundLight {
+        amount: light.ground_lighting.min(1.0),
+        day: light.color,
+        night: [r * i, g * i, b * i, a],
+        twilight: light.twilight,
+        sun: toward_light(camera, light).as_vec3().to_array(),
+        up: up.as_vec3().to_array(),
+    })
+}
+
+/// A globe view's sphere for its sky and scattering. Its sun is GL JS's,
+/// unless the light shades the ground: then it's the ground's, so that
+/// the haze glows over the day side and the limb beside it.
 fn globe_sky(
     globe: &orb_camera::GlobeView,
     view: &orb_camera::View,
     camera: &orb_camera::CameraState,
     light: &LightValues,
 ) -> orb_render::GlobeSky {
+    let eye = globe.target + globe.eye;
+    let sun = if light.ground_lighting > 0.0 {
+        toward_light(camera, light)
+    } else {
+        gl_sun(camera, light)
+    };
+    orb_render::GlobeSky {
+        eye: eye.as_vec3().to_array(),
+        radius: orb_crs::sphere::RADIUS as f32,
+        amount: globe.amount as f32,
+        eye_distance_px: view.eye_distance_px() as f32,
+        sun: sun.as_vec3().to_array(),
+    }
+}
+
+/// GL JS's `getSunPos` for its atmosphere, on Earth-fixed axes: the
+/// light's position negated, in the view for a viewport anchor (turned by
+/// the view's pitch and bearing), fixed to the globe for a map one. At the
+/// spec's default position it puts the sun behind the globe, so the haze
+/// rims its far side.
+fn gl_sun(camera: &orb_camera::CameraState, light: &LightValues) -> glam::DVec3 {
     use glam::{DMat3, DVec3};
     let target = camera.target;
     let frame = orb_crs::sphere::frame(target);
@@ -89,14 +133,25 @@ fn globe_sky(
                 * v
         }
     };
-    let eye = globe.target + globe.eye;
-    orb_render::GlobeSky {
-        eye: eye.as_vec3().to_array(),
-        radius: orb_crs::sphere::RADIUS as f32,
-        amount: globe.amount as f32,
-        eye_distance_px: view.eye_distance_px() as f32,
-        sun: sun.normalize().as_vec3().to_array(),
-    }
+    sun.normalize()
+}
+
+/// Toward the light, unit, on Earth-fixed axes, as v8 places it: the
+/// polar angle from the zenith and the azimuth clockwise from the top of
+/// the viewport (a viewport anchor) or from north (a map one). A
+/// viewport's light stands over the camera's target, turning with the
+/// bearing as the extrusions' does (tilting the view doesn't move it); a
+/// map's is fixed to the globe, standing so over null island (0°, 0°), so
+/// the night side turns with the Earth.
+fn toward_light(camera: &orb_camera::CameraState, light: &LightValues) -> glam::DVec3 {
+    let [_, azimuth, polar] = light.position.map(f64::from);
+    let (at, azimuth) = match light.anchor {
+        TranslateAnchor::Viewport => (camera.target, azimuth + camera.bearing),
+        TranslateAnchor::Map => (Geodetic::new(0.0, 0.0), azimuth),
+    };
+    let (a, p) = (azimuth.to_radians(), polar.to_radians());
+    let local = glam::DVec3::new(p.sin() * a.sin(), p.sin() * a.cos(), p.cos());
+    (orb_crs::sphere::frame(at) * local).normalize()
 }
 
 /// The view ray's matrix for the atmosphere: clip → camera-relative space

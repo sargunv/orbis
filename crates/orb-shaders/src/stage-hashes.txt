@@ -1,10 +1,16 @@
 # Each pipeline stage's Metal, hashed (`stages_keep_their_hashes`).
 sky vs_sky 9920e9058c3beff4
-sky fs_sky c4bcc67c71d9a483
-sky fs_scatter 11e8214d545da44f
+sky fs_sky 981c2381e46ef47c
+sky fs_scatter 17bd1f074031f950
+sky fs_ground 8b2a987542c919c3
 atmosphere scattering vs_sky 9920e9058c3beff4
-atmosphere scattering fs_sky c4bcc67c71d9a483
-atmosphere scattering fs_scatter 11e8214d545da44f
+atmosphere scattering fs_sky 981c2381e46ef47c
+atmosphere scattering fs_scatter 17bd1f074031f950
+atmosphere scattering fs_ground 8b2a987542c919c3
+ground lighting vs_sky 9920e9058c3beff4
+ground lighting fs_sky 981c2381e46ef47c
+ground lighting fs_scatter 17bd1f074031f950
+ground lighting fs_ground 8b2a987542c919c3
 composite over vs_composite fe2b34eabe869054
 composite over fs_over a9613473514cf06a
 composite over fs_replace 13713a2c5f64dfcf
@@ -17,16 +23,16 @@ composite encode vs_composite fe2b34eabe869054
 composite encode fs_over a9613473514cf06a
 composite encode fs_replace 13713a2c5f64dfcf
 composite encode fs_encode a1a27fca1a9510e5
-terrain vs_terrain ec4fc3d281371341
+terrain vs_terrain 3dc3a3d7624a73d8
 terrain fs_terrain_depth 3d282837982d1c8a
-terrain fs_terrain 57f252a7207f7497
-terrain shade vs_terrain ca3c44b1f25056d7
+terrain fs_terrain 4920aafeda70bc12
+terrain shade vs_terrain 7b7cc94ac8621818
 terrain shade fs_terrain_depth b350496dcff57af6
-terrain shade fs_terrain 431ecb32be8fb37f
-terrain shade fs_terrain_shaded c3b2e62c81a8b84c
-terrain decal vs_terrain ec4fc3d281371341
+terrain shade fs_terrain 6240831ba3bf4090
+terrain shade fs_terrain_shaded 1b00942f780d9aff
+terrain decal vs_terrain 3dc3a3d7624a73d8
 terrain decal fs_terrain_depth 3d282837982d1c8a
-terrain decal fs_terrain 57f252a7207f7497
+terrain decal fs_terrain 4920aafeda70bc12
 terrain decal fs_terrain_decal efdc47c590e2100b
 drape vs_slot e22d84da18d45c8e
 drape fs_clear 87c933f264755498

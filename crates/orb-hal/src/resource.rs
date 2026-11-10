@@ -393,6 +393,9 @@ pub enum BlendState {
     /// The greater of source and destination, per channel: overlapping
     /// shadows darken once.
     Max,
+    /// The destination's colour times the source's, its alpha kept: a
+    /// light over what's drawn.
+    Multiply,
 }
 
 /// A depth test in reversed Z: a fragment passes at or nearer than the

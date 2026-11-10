@@ -39,11 +39,23 @@ pub enum Preview {
     /// style-spec#1047: `fill-rounded-corner-distance`, fills' corners
     /// rounded as extrusions' are.
     RoundedFills,
+    /// `light["dev.sargunv.orbis:ground-lighting"]`: how much `light`
+    /// shades the ground, from its day side to its night side.
+    GroundLighting,
+    /// `light["dev.sargunv.orbis:ambient-color"]`: the colour of the light
+    /// the ground keeps where the sun is down.
+    AmbientColor,
+    /// `light["dev.sargunv.orbis:ambient-intensity"]`: how bright that
+    /// light is.
+    AmbientIntensity,
+    /// `light["dev.sargunv.orbis:twilight"]`: the band of sun elevations
+    /// the ground passes from night to day through, in degrees.
+    Twilight,
 }
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 14] = [
         Self::Equirectangular,
         Self::EqualEarth,
         Self::ProjectionTransition,
@@ -54,6 +66,10 @@ impl Preview {
         Self::RoundedFills,
         Self::Crs,
         Self::ColorSpace,
+        Self::GroundLighting,
+        Self::AmbientColor,
+        Self::AmbientIntensity,
+        Self::Twilight,
     ];
 
     /// The name a map enables it by: the proposal's `style-spec#n`, or
@@ -70,6 +86,10 @@ impl Preview {
             Self::RoundedFills => "style-spec#1047",
             Self::Crs => "orbis:crs",
             Self::ColorSpace => "dev.sargunv.orbis:color-space",
+            Self::GroundLighting => "dev.sargunv.orbis:ground-lighting",
+            Self::AmbientColor => "dev.sargunv.orbis:ambient-color",
+            Self::AmbientIntensity => "dev.sargunv.orbis:ambient-intensity",
+            Self::Twilight => "dev.sargunv.orbis:twilight",
         }
     }
 
@@ -109,6 +129,18 @@ impl Preview {
             }
             Self::ColorSpace => {
                 "`metadata[\"dev.sargunv.orbis:color-space\"]`, the space colours mix in wherever they meet: `\"srgb\"` (the default) mixes gamma-encoded values, as GL JS and MapLibre Native do; `\"linear\"` mixes linear light: translucent layers, antialiased edges, the terrain's drape, hillshade, fog, the sky's gradients and the globe's scattering, which then adds to what's beneath exactly. Colours in the style keep their meaning: one interpolates as the spec says, then mixes in linear light. In `metadata`, so GL JS, Native and validators ignore it. Our own design; no proposal yet."
+            }
+            Self::GroundLighting => {
+                "`light[\"dev.sargunv.orbis:ground-lighting\"]` (0 to 1, default 0, off): how much `light` shades the ground, so that a globe has a day side and a night side. The ground (every layer beneath the first symbol layer, on the globe, on terrain and on flat maps; labels keep their colours) is multiplied, in linear light, by the sun's `light.color` where the sun is up and by the ambient light (`dev.sargunv.orbis:ambient-color` times `dev.sargunv.orbis:ambient-intensity`) where it's down, passing from one to the other over `dev.sargunv.orbis:twilight`; this value mixes that toward no change. The sun is where `light.position` says, its polar angle from the zenith: with a viewport anchor over the camera's target, its azimuth from the top of the view (turning with the bearing, not the pitch); with a map anchor fixed to the globe, as if over 0°, 0°, so the night side turns with the Earth. Each point takes the globe's normal there, and a flat map its target's. While it shades the ground the globe's scattering takes the same sun, so the haze glows over the day side; otherwise the scattering keeps GL JS's (the light's position negated, behind the globe). Under a white sun the day side keeps the map's own colours: ground lighting only darkens, and brightening stays `sky.atmosphere-blend`'s, which keeps its spec meaning. `light.intensity` stays the extrusions', and slopes stay the hillshade's. It transitions and takes zoom expressions like the rest of `light`. As a style-spec proposal: `light.ground-lighting` with `light.ambient-color`, `light.ambient-intensity` and `light.twilight`, defined as here, the ambient pair shared with maplibre/maplibre#555's ambient light for extrusions; prior art is Mapbox GL v3's ambient and directional `lights`. Our own design; no proposal yet."
+            }
+            Self::AmbientColor => {
+                "`light[\"dev.sargunv.orbis:ambient-color\"]` (colour, default `white`): the colour of the light the ground keeps where the sun is down, under `dev.sargunv.orbis:ground-lighting`. It mirrors maplibre/maplibre#555's proposed `light.ambient-color` and takes that name if the spec approves it; the extrusions don't read it yet."
+            }
+            Self::AmbientIntensity => {
+                "`light[\"dev.sargunv.orbis:ambient-intensity\"]` (0 to 1, default 0.5): how bright the ambient light is, so that the night side is `dev.sargunv.orbis:ambient-color` times this. It mirrors maplibre/maplibre#555's proposed `light.ambient-intensity` and takes that name if the spec approves it; the extrusions don't read it yet."
+            }
+            Self::Twilight => {
+                "`light[\"dev.sargunv.orbis:twilight\"]` (degrees, 0 to 90, default 12): the band of sun elevations, centred on the horizon, over which ground lit by `dev.sargunv.orbis:ground-lighting` passes smoothly from the ambient light to the sun's; 0 is a sharp terminator. Our own design."
             }
         }
     }

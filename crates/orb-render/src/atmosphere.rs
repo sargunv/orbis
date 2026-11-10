@@ -8,7 +8,7 @@
 use crate::TargetFormat;
 use crate::pipeline::Draw;
 use orb_hal::*;
-use orb_shaders::{SCATTER_SHADER, SKY_SHADER, Shader};
+use orb_shaders::{GROUND_LIGHT_SHADER, SCATTER_SHADER, SKY_SHADER, Shader};
 
 /// The style's `sky`, evaluated.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,18 +64,44 @@ pub struct AtmosphereView {
     pub ray_inverse: [[f32; 4]; 4],
     /// The globe, when the view is one.
     pub globe: Option<GlobeSky>,
+    /// `light`'s shading of the ground, when it shades it.
+    pub ground: Option<GroundLight>,
+}
+
+/// Ground lighting (`dev.sargunv.orbis:ground-lighting`) for a frame: what
+/// multiplies the ground beneath the labels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundLight {
+    /// How much it shades, in (0, 1].
+    pub amount: f32,
+    /// The sun's light and the ambient light, premultiplied style colours.
+    pub day: [f32; 4],
+    pub night: [f32; 4],
+    /// The sun elevations, degrees, it passes from night to day over.
+    pub twilight: f32,
+    /// Toward the sun and the camera's target's up, unit, camera-relative
+    /// globe axes.
+    pub sun: [f32; 3],
+    pub up: [f32; 3],
 }
 
 #[derive(Debug)]
 pub(crate) struct Atmosphere {
     pub(crate) uniform: BufferId,
-    /// The sky's layout, group and pipeline, made for the first sky.
-    sky: Option<(BindGroupLayoutId, BindGroupId, RenderPipelineId)>,
+    /// The layout and group the sky, the scattering and the ground's light
+    /// share, made for the first of them.
+    group: Option<(BindGroupLayoutId, BindGroupId)>,
+    /// The sky's pipeline, made for the first sky.
+    sky: Option<RenderPipelineId>,
     /// The globe's scattering pipeline, made for the first globe sky.
     scatter: Option<RenderPipelineId>,
     scatter_blend: f32,
+    /// The ground's light, made for the first that shades it.
+    ground: Option<RenderPipelineId>,
     written: Option<(Option<AtmospherePaint>, AtmosphereView)>,
     pub(crate) enabled: bool,
+    /// The light shades the ground this frame.
+    lit: bool,
 }
 
 impl Atmosphere {
@@ -87,21 +113,45 @@ impl Atmosphere {
         });
         Self {
             uniform,
+            group: None,
             sky: None,
             scatter: None,
             scatter_blend: 0.0,
+            ground: None,
             written: None,
             enabled: false,
+            lit: false,
         }
     }
 
-    /// The sky's pipelines, once made.
+    /// The pipelines the frame draws with, once made.
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        self.sky
-            .map(|(.., p)| p.into())
+        let sky = [self.sky, self.scatter]
             .into_iter()
-            .chain(self.scatter.map(PipelineId::from))
+            .filter(|_| self.enabled);
+        let ground = self.ground.filter(|_| self.lit);
+        sky.chain([ground])
+            .flatten()
+            .map(PipelineId::from)
             .collect()
+    }
+
+    /// Whether the frame lights the ground: its light shades it and the
+    /// pipeline compiled.
+    pub(crate) fn lights_ground(&self, gpu: &mut dyn Gpu) -> bool {
+        self.lit && self.ground.is_some_and(|p| gpu.pipeline_ready(p.into()))
+    }
+
+    /// The ground's light over the map drawn so far, when it
+    /// [`lights_ground`](Self::lights_ground): what a bundle records
+    /// beneath the labels.
+    pub(crate) fn commands_ground(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
+        match (self.group, self.ground) {
+            (Some((_, group)), Some(pipeline)) if self.lights_ground(gpu) => {
+                Self::fullscreen(pipeline, group)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Writes the frame's atmosphere: without a paint there is no sky and
@@ -115,31 +165,44 @@ impl Atmosphere {
         view: AtmosphereView,
     ) {
         self.enabled = paint.is_some();
-        if paint.is_some() && self.sky.is_none() {
-            let (layout, group) = sky_group(gpu, frame, self.uniform);
-            self.sky = Some((layout, group, pipeline(gpu, &SKY_SHADER, target, layout)));
+        self.lit = view.ground.is_some();
+        if (self.enabled || self.lit) && self.group.is_none() {
+            self.group = Some(sky_group(gpu, frame, self.uniform));
         }
-        if let Some((layout, ..)) = self.sky
-            && view.globe.is_some()
-            && self.scatter.is_none()
-        {
-            self.scatter = Some(pipeline(gpu, &SCATTER_SHADER, target, layout));
+        if let Some((layout, _)) = self.group {
+            let blend = Some(BlendState::PremultipliedAlpha);
+            if self.enabled && self.sky.is_none() {
+                self.sky = Some(pipeline(gpu, &SKY_SHADER, target, layout, blend));
+            }
+            if self.enabled && view.globe.is_some() && self.scatter.is_none() {
+                self.scatter = Some(pipeline(gpu, &SCATTER_SHADER, target, layout, blend));
+            }
+            if self.lit && self.ground.is_none() {
+                let multiply = Some(BlendState::Multiply);
+                self.ground = Some(pipeline(
+                    gpu,
+                    &GROUND_LIGHT_SHADER,
+                    target,
+                    layout,
+                    multiply,
+                ));
+            }
         }
         if self.written == Some((paint, view)) {
             return;
         }
         use orb_shaders::layout::atmosphere as n;
         let mut b = orb_shaders::Block::new(n::WORDS);
+        // In linear light the colours mix decoded.
+        let linear = target.color.is_srgb();
+        b.f(n::LINEAR, &[f32::from(u8::from(linear))]);
         if let Some(p) = paint {
-            // In linear light the colours mix decoded.
-            let linear = target.color.is_srgb();
             let color = |c| crate::color_in(c, linear);
             b.f(n::SKY_COLOR, &color(p.sky_color))
                 .f(n::HORIZON_COLOR, &color(p.horizon_color));
             b.f(n::FOG_COLOR, &color(p.fog_color))
                 .f(n::BACKDROP_COLOR, &color(p.backdrop_color))
-                .f(n::STAR_OPACITY, &[p.star_opacity])
-                .f(n::LINEAR, &[f32::from(u8::from(linear))]);
+                .f(n::STAR_OPACITY, &[p.star_opacity]);
             b.f(
                 n::SKY_HORIZON_BLEND,
                 &[p.sky_horizon_blend * view.height / 2.0],
@@ -170,26 +233,36 @@ impl Atmosphere {
                 .f(n::SCATTER_BLEND, &[blend * g.amount]);
             self.scatter_blend = blend * g.amount;
         }
+        if let Some(g) = view.ground {
+            // In linear light whatever the space: it multiplies light.
+            let [dr, dg, db, _] = crate::color_in(g.day, true);
+            let [nr, ng, nb, _] = crate::color_in(g.night, true);
+            b.f(n::GROUND_DAY, &[dr, dg, db, g.amount])
+                .f(n::GROUND_NIGHT, &[nr, ng, nb, g.twilight / 2.0])
+                .f(n::GROUND_SUN, &g.sun)
+                .f(n::GROUND_UP, &g.up);
+        }
         gpu.write_buffer(self.uniform, 0, bytemuck::cast_slice(&b.0));
         self.written = Some((paint, view));
     }
 
     /// The sky's draw, once its pipeline compiled.
     pub(crate) fn commands(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
-        let Some((_, group, pipeline)) = self
-            .sky
-            .filter(|&(_, _, p)| self.enabled && gpu.pipeline_ready(p.into()))
-        else {
-            return Vec::new();
-        };
-        Self::fullscreen(pipeline, group)
+        match (self.group, self.sky) {
+            (Some((_, group)), Some(pipeline))
+                if self.enabled && gpu.pipeline_ready(pipeline.into()) =>
+            {
+                Self::fullscreen(pipeline, group)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The globe's scattering over the map, after its layers, once its
     /// pipeline compiled.
     pub(crate) fn commands_after(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
-        match (self.sky, self.scatter) {
-            (Some((_, group, _)), Some(pipeline))
+        match (self.group, self.scatter) {
+            (Some((_, group)), Some(pipeline))
                 if self.enabled
                     && self.scatter_blend > 0.0
                     && gpu.pipeline_ready(pipeline.into()) =>
@@ -240,13 +313,20 @@ fn pipeline(
     shader: &Shader,
     target: TargetFormat,
     layout: BindGroupLayoutId,
+    blend: Option<BlendState>,
 ) -> RenderPipelineId {
-    let blend = Some(BlendState::PremultipliedAlpha);
     Draw::new(shader, &[layout], target, blend).make(gpu)
 }
 
 impl crate::release::Release for Atmosphere {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.uniform, self.sky, self.scatter).release(gpu);
+        (
+            self.uniform,
+            self.group,
+            self.sky,
+            self.scatter,
+            self.ground,
+        )
+            .release(gpu);
     }
 }

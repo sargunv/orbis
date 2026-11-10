@@ -19,6 +19,17 @@ pub struct Light {
     /// style-spec#1797: how much extrusions' shadows darken the ground,
     /// 0 to 1 (0 without the preview).
     pub shadow_intensity: Property<f32>,
+    /// `dev.sargunv.orbis:ground-lighting`: how much the light shades the
+    /// ground beneath the labels, 0 (off) to 1: by `color` where the sun
+    /// is up and by the ambient light where it's down.
+    pub ground_lighting: Property<f32>,
+    /// `dev.sargunv.orbis:ambient-color` and `-intensity`: the light the
+    /// ground keeps where the sun is down.
+    pub ambient_color: Property<Color>,
+    pub ambient_intensity: Property<f32>,
+    /// `dev.sargunv.orbis:twilight`: the sun elevations, degrees, centred
+    /// on the horizon, over which the ground passes from ambient to sunlit.
+    pub twilight: Property<f32>,
     /// Each property's own `*-transition`, by property name.
     pub transitions: Vec<(String, crate::TransitionOverride)>,
 }

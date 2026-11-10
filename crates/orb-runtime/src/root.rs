@@ -29,7 +29,16 @@ pub(crate) struct LightValues {
     pub(crate) intensity: f32,
     /// style-spec#1797's extrusion shadows, 0 for none.
     pub(crate) shadow_intensity: f32,
+    /// `dev.sargunv.orbis:ground-lighting`, 0 for none; the ambient light
+    /// (premultiplied) and its intensity; the twilight, degrees.
+    pub(crate) ground_lighting: f32,
+    pub(crate) ambient_color: [f32; 4],
+    pub(crate) ambient_intensity: f32,
+    pub(crate) twilight: f32,
 }
+
+/// Slots a light eases in.
+const LIGHT_SLOTS: usize = 16;
 
 impl LightValues {
     pub(crate) fn of(light: &Light, zoom: f64) -> Self {
@@ -39,12 +48,17 @@ impl LightValues {
             position: light.position.evaluate(zoom),
             intensity: light.intensity.evaluate(zoom),
             shadow_intensity: light.shadow_intensity.evaluate(zoom),
+            ground_lighting: light.ground_lighting.evaluate(zoom),
+            ambient_color: light.ambient_color.evaluate(zoom).premultiplied(),
+            ambient_intensity: light.ambient_intensity.evaluate(zoom),
+            twilight: light.twilight.evaluate(zoom),
         }
     }
 
-    fn slots(&self) -> [f32; 9] {
+    fn slots(&self) -> [f32; LIGHT_SLOTS] {
         let [r, g, b, a] = self.color;
         let [radius, azimuth, polar] = self.position;
+        let [ar, ag, ab, aa] = self.ambient_color;
         [
             r,
             g,
@@ -55,15 +69,26 @@ impl LightValues {
             polar,
             self.intensity,
             self.shadow_intensity,
+            self.ground_lighting,
+            ar,
+            ag,
+            ab,
+            aa,
+            self.ambient_intensity,
+            self.twilight,
         ]
     }
 
-    fn with(self, s: [f32; 9]) -> Self {
+    fn with(self, s: [f32; LIGHT_SLOTS]) -> Self {
         Self {
             color: [s[0], s[1], s[2], s[3]],
             position: [s[4], s[5], s[6]],
             intensity: s[7],
             shadow_intensity: s[8],
+            ground_lighting: s[9],
+            ambient_color: [s[10], s[11], s[12], s[13]],
+            ambient_intensity: s[14],
+            twilight: s[15],
             ..self
         }
     }
@@ -75,6 +100,10 @@ const LIGHT: &[(&str, usize)] = &[
     ("position", 3),
     ("intensity", 1),
     ("shadow-intensity", 1),
+    ("dev.sargunv.orbis:ground-lighting", 1),
+    ("dev.sargunv.orbis:ambient-color", 4),
+    ("dev.sargunv.orbis:ambient-intensity", 1),
+    ("dev.sargunv.orbis:twilight", 1),
 ];
 
 /// The sky's fields in slot order, with each one's slot count.
@@ -159,7 +188,7 @@ pub(crate) struct RootFrame {
 /// The eased root values of a map.
 #[derive(Debug, Default)]
 pub(crate) struct Root {
-    light: Eases<9>,
+    light: Eases<LIGHT_SLOTS>,
     sky: Eases<21>,
     terrain: Eases<2>,
 }

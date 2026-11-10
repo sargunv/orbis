@@ -57,3 +57,41 @@ fn fs_scatter(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> 
     let encoded = pow(light, vec3<f32>(1.0 / ATMOSPHERE_GAMMA));
     return vec4<f32>(encoded, 1.0 - through) * atmosphere.scatter_blend;
 }
+
+// Ground lighting over the map beneath its labels, multiplying what's
+// drawn (`dev.sargunv.orbis:ground-lighting`): the sun's light where it is
+// up, the ambient light where it is down, smoothly over the twilight, by
+// the sun's elevation over the ground's normal: the globe's where the ray
+// meets it, mixed toward the target's up as the globe hands over to a
+// flat surface, which takes the target's. Above the horizon is sky,
+// unlit. The light is in linear light; in sRGB it multiplies encoded
+// colours by its encoding, which is the same under GL JS's 2.2 gamma.
+@fragment
+fn fs_ground(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let a = atmosphere;
+    let px = position.xy / frame.pixel_ratio;
+    let ray = atmosphere_ray(a, px, frame.viewport);
+    if atmosphere_horizon(a, px, ray).x > 0.0 {
+        discard;
+    }
+    var normal = a.ground_up.xyz;
+    if a.globe_amount > 0.0 {
+        let origin = a.globe_eye.xyz / a.globe_eye.w;
+        let hit = atmosphere_sphere(origin, ray, 1.0);
+        if hit.x <= hit.y {
+            let sphere = normalize(origin + ray * max(hit.x, 0.0));
+            normal = normalize(mix(normal, sphere, a.globe_amount));
+        }
+    }
+    let elevation = degrees(asin(clamp(dot(normal, a.ground_sun.xyz), -1.0, 1.0)));
+    let half = a.ground_night.w;
+    var day = select(0.0, 1.0, elevation >= 0.0);
+    if half > 0.0 {
+        day = smoothstep(-half, half, elevation);
+    }
+    let light = mix(vec3<f32>(1.0), mix(a.ground_night.rgb, a.ground_day.rgb, day), a.ground_day.w);
+    if a.linear != 0.0 {
+        return vec4<f32>(light, 1.0);
+    }
+    return vec4<f32>(pow(light, vec3<f32>(1.0 / ATMOSPHERE_GAMMA)), 1.0);
+}
