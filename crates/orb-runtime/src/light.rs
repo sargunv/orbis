@@ -38,8 +38,13 @@ pub(crate) fn atmosphere_view(
     let (fog_near, fog_far) = view.fog_range_px();
     let (horizon, horizon_normal) = view.sky_horizon_line();
     // GL JS's `calculateFogBlendOpacity`: terrain fog fades in from 60° to
-    // 70° of pitch.
-    let fog_opacity = (((camera.pitch - 60.0) / 10.0).clamp(0.0, 1.0) * terrain_presence) as f32;
+    // 70° of pitch. It fades in with zoom too as a globe hands over: none
+    // on the whole low-zoom surface, all of it on the plane. (GL JS turns
+    // it off while its globe shows at all, so it snaps on where the
+    // handover ends.)
+    let pitched = ((camera.pitch - 60.0) / 10.0).clamp(0.0, 1.0);
+    let handed_over = 1.0 - view.globe().map_or(0.0, |g| g.amount);
+    let fog_opacity = (pitched * handed_over * terrain_presence) as f32;
     orb_render::AtmosphereView {
         horizon: horizon.as_vec2().to_array(),
         horizon_normal: horizon_normal.as_vec2().to_array(),
@@ -123,5 +128,33 @@ mod tests {
             (still.position[0] - turned.position[1]).abs() < 1e-5,
             "{still:?} {turned:?}"
         );
+    }
+
+    /// Terrain fog fades in with zoom through the globe's handover to Web
+    /// Mercator rather than snapping on where it ends (#154).
+    #[test]
+    fn fog_fades_in_through_the_globe_handover() {
+        let light = LightValues::of(&orb_style::v8::default_light(), 0.0);
+        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let mercator = *tms.projection();
+        let surface = orb_crs::Surface {
+            projection: mercator,
+            globe: Some(orb_crs::Globe::V8),
+        };
+        let viewport = orb_camera::Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        let fog = |zoom: f64| {
+            let target = Geodetic::new(7.75, 46.02);
+            let mut camera = orb_camera::CameraState::new(target, zoom, &mercator);
+            camera.pitch = 75.0;
+            let view = orb_camera::View::new(&camera, viewport, &surface);
+            atmosphere_view(&light, 1.0, &view, &camera).fog_opacity
+        };
+        let band = [10.5, 11.0, 11.25, 11.5, 11.75, 12.0, 12.5].map(fog);
+        assert_eq!((band[0], band[1]), (0.0, 0.0));
+        assert_eq!(band[2..5], [0.25, 0.5, 0.75], "{band:?}");
+        assert_eq!((band[5], band[6]), (1.0, 1.0));
     }
 }

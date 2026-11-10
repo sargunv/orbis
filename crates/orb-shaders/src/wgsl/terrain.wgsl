@@ -154,8 +154,9 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     out.uv = uv;
     out.tile = vec2<u32>(instance, tile.slot);
     out.stretch = 1.0 / cos(radians(mix(tile.latitudes.x, tile.latitudes.y, uv.y)));
-    // The view depth is the clip w. Fog stays off on a globe, as in GL JS.
-    out.fog_depth = select(atmosphere_fog_depth(atmosphere, clip.w), 0.0, globe);
+    // The view depth is the clip w, mixed as the globe hands over: fog
+    // fades in as it does (`fog_opacity`).
+    out.fog_depth = atmosphere_fog_depth(atmosphere, clip.w);
     return out;
 }
 

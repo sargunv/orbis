@@ -54,7 +54,8 @@ pub struct AtmosphereView {
     pub height: f32,
     /// The fog's depth range along the view, in pixels.
     pub fog_range: [f32; 2],
-    /// GL JS's fog fade with pitch, 0 to 1.
+    /// GL JS's fog fade with pitch, and its fade in as a globe hands
+    /// over, 0 to 1.
     pub fog_opacity: f32,
     /// Clip → camera-relative space with Earth-fixed (ECEF) axes,
     /// column-major, for the view ray through a pixel: on a globe its
