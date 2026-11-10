@@ -397,12 +397,18 @@ pub fn resolve_style_urls(doc: &mut Json, base: &str) {
             resolve(source.value.get_mut(key), base);
         }
     }
+    // A font face is its URL or an object with one; a name declares one or
+    // an array of them.
+    fn face(face: &mut Json, base: &str) {
+        match face.value {
+            JsonValue::String(_) => join(&mut face.value, base),
+            _ => resolve(face.get_mut("url"), base),
+        }
+    }
     for faces in members(doc.get_mut("font-faces")) {
         match &mut faces.value.value {
-            JsonValue::Array(faces) => faces
-                .iter_mut()
-                .for_each(|f| resolve(f.get_mut("url"), base)),
-            _ => resolve(faces.value.get_mut("url"), base),
+            JsonValue::Array(faces) => faces.iter_mut().for_each(|f| face(f, base)),
+            _ => face(&mut faces.value, base),
         }
     }
 }
@@ -438,6 +444,8 @@ mod tests {
                 "g": {"type": "geojson", "data": "../g.json"},
                 "r": {"type": "raster", "tiles": ["https://x.org/{z}.png", "r/{z}.png"]},
                 "i": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
+            "font-faces": {"A": "fonts/a.ttf", "B": ["fonts/b.ttf", {"url": "fonts/c.ttf"}],
+                "C": {"url": "fonts/d.ttf"}},
             "layers": []}"#;
         let mut doc = json::parse(style).unwrap();
         resolve_style_urls(&mut doc, "file:///d/styles/s.json");
@@ -480,6 +488,18 @@ mod tests {
         assert_eq!(
             tiles,
             ["https://x.org/{z}.png", "file:///d/styles/r/{z}.png"]
+        );
+        let faces = doc.get("font-faces").unwrap();
+        assert_eq!(at(&["font-faces", "A"]), "file:///d/styles/fonts/a.ttf");
+        let b = faces.get("B").unwrap().as_array().unwrap();
+        assert_eq!(b[0].as_str(), Some("file:///d/styles/fonts/b.ttf"));
+        assert_eq!(
+            b[1].get("url").unwrap().as_str(),
+            Some("file:///d/styles/fonts/c.ttf")
+        );
+        assert_eq!(
+            at(&["font-faces", "C", "url"]),
+            "file:///d/styles/fonts/d.ttf"
         );
     }
 
