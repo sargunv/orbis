@@ -90,7 +90,6 @@ impl ImageAtlas {
         let sampler = gpu.create_sampler(&SamplerDesc {
             label: "images",
             filter: FilterMode::Linear,
-            address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
         });

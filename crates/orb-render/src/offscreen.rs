@@ -10,7 +10,8 @@ use crate::release::Release;
 use orb_hal::*;
 use orb_shaders::{COMPOSITE_ENCODE_SHADER, COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER};
 
-use crate::{Blend, TargetFormat, draw_pipeline_blending};
+use crate::pipeline::Draw;
+use crate::{Blend, TargetFormat};
 
 /// Colour attachments to draw into and sample.
 #[derive(Debug)]
@@ -221,36 +222,20 @@ pub(crate) struct Composite {
 
 impl Composites {
     pub(crate) fn new(gpu: &mut dyn Gpu, target: TargetFormat) -> Self {
-        let fragment = ShaderStages::FRAGMENT;
-        let texture = |binding| BindGroupLayoutEntry {
-            binding,
-            visibility: fragment,
-            ty: BindingType::Texture {
-                sample: TextureSampleType::Float { filterable: true },
-                dimension: TextureViewDimension::D2,
-            },
-        };
+        use BindGroupLayoutEntry as E;
+        let fs = ShaderStages::FRAGMENT;
         let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "composite",
             entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: fragment,
-                    ty: BindingType::Uniform,
-                },
-                texture(1),
-                texture(2),
-                BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: fragment,
-                    ty: BindingType::Sampler { filtering: true },
-                },
+                E::uniform(0, fs),
+                E::texture(1, fs, true, TextureViewDimension::D2),
+                E::texture(2, fs, true, TextureViewDimension::D2),
+                E::sampler(3, fs, true),
             ],
         });
         let linear = gpu.create_sampler(&SamplerDesc {
             label: "composite",
             filter: FilterMode::Linear,
-            address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
         });
@@ -297,14 +282,7 @@ impl Composites {
             )
         };
         if slot.is_none() {
-            *slot = Some(draw_pipeline_blending(
-                gpu,
-                shader,
-                PrimitiveTopology::TriangleList,
-                target,
-                &[self.layout],
-                blend,
-            ));
+            *slot = Some(Draw::new(shader, &[self.layout], target, blend).make(gpu));
         }
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "composite",
@@ -316,30 +294,15 @@ impl Composites {
             0,
             bytemuck::cast_slice(&[opacity, mode.number(), 0.0, 0.0]),
         );
-        let texture = |texture| BindingResource::Texture {
-            texture,
-            dimension: TextureViewDimension::D2,
-        };
+        use TextureViewDimension::D2;
         let group = gpu.create_bind_group(&BindGroupDesc {
             label: "composite",
             layout: self.layout,
             entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::buffer(uniform),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: texture(source),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: texture(aux.unwrap_or(self.blank)),
-                },
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::Sampler(self.linear),
-                },
+                BindGroupEntry::buffer(0, uniform),
+                BindGroupEntry::texture(1, source, D2),
+                BindGroupEntry::texture(2, aux.unwrap_or(self.blank), D2),
+                BindGroupEntry::sampler(3, self.linear),
             ],
         });
         Composite {
@@ -456,14 +419,8 @@ pub(crate) struct LinearScene {
 impl LinearScene {
     /// The encode into targets of `host`, over `composites`' layout.
     pub(crate) fn new(gpu: &mut dyn Gpu, composites: &Composites, host: TargetFormat) -> Self {
-        let pipeline = draw_pipeline_blending(
-            gpu,
-            &COMPOSITE_ENCODE_SHADER,
-            PrimitiveTopology::TriangleList,
-            host,
-            &[composites.layout],
-            None,
-        );
+        let pipeline =
+            Draw::new(&COMPOSITE_ENCODE_SHADER, &[composites.layout], host, None).make(gpu);
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "linear scene",
             size: 16,
@@ -505,30 +462,15 @@ impl LinearScene {
             mip_levels: 1,
             view_formats: &[],
         });
-        let view = |texture| BindingResource::Texture {
-            texture,
-            dimension: TextureViewDimension::D2,
-        };
+        use TextureViewDimension::D2;
         let group = gpu.create_bind_group(&BindGroupDesc {
             label: "linear scene",
             layout: composites.layout,
             entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::buffer(self.uniform),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: view(texture),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: view(composites.blank),
-                },
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::Sampler(composites.linear),
-                },
+                BindGroupEntry::buffer(0, self.uniform),
+                BindGroupEntry::texture(1, texture, D2),
+                BindGroupEntry::texture(2, composites.blank, D2),
+                BindGroupEntry::sampler(3, composites.linear),
             ],
         });
         self.target = Some((texture, size, group));

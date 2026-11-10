@@ -2,7 +2,9 @@
 //! the main pass; its fullscreen composite occupies the layer's bundle slot.
 //! Targets persist until viewport resize or node replacement.
 
+use crate::TargetFormat;
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
+use crate::pipeline::Draw;
 use orb_hal::*;
 use orb_shaders::HEATMAP_SHADER;
 
@@ -37,31 +39,13 @@ impl Heatmaps {
         if self.pipeline.is_some() {
             return;
         }
-        let shader = HEATMAP_SHADER;
-        let module = crate::shader_module(gpu, &shader);
-        self.pipeline = Some(gpu.create_render_pipeline(&RenderPipelineDesc {
-            cull_mode: None,
-            label: shader.label,
-            bind_group_layouts: &self.layouts,
-            vertex: ShaderStage {
-                module,
-                entry_point: shader.vertex,
-                constants: &[],
-            },
-            fragment: ShaderStage {
-                module,
-                entry_point: shader.fragment,
-                constants: &[],
-            },
-            targets: &[ColorTargetState {
-                format: TextureFormat::Rgba16Float,
-                blend: Some(BlendState::Additive),
-            }],
-            depth: None,
-            topology: PrimitiveTopology::TriangleList,
+        let target = TargetFormat {
+            color: TextureFormat::Rgba16Float,
             sample_count: 1,
-        }));
-        gpu.destroy_shader_module(module);
+        };
+        let blend = Some(BlendState::Additive);
+        let draw = Draw::new(&HEATMAP_SHADER, &self.layouts, target, blend);
+        self.pipeline = Some(draw.make(gpu));
     }
 
     /// Whether the density pipeline and the composites' compiled.

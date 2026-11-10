@@ -18,7 +18,9 @@
 //! with the depth extrusions share, composited in the map at its place.
 
 use crate::TargetFormat;
+use crate::pipeline::{DEPTH, Draw};
 use crate::release::Release;
+use TextureViewDimension::D2Array;
 use orb_hal::*;
 use orb_shaders::{DRAPE_SHADER, Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
 
@@ -327,14 +329,8 @@ impl Atlas {
             label: "drape clear",
             layout: clear_layout,
             entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::buffer(size_uniform),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::buffer(regions),
-                },
+                BindGroupEntry::buffer(0, size_uniform),
+                BindGroupEntry::buffer(1, regions),
             ],
         });
         downsampler.make(gpu);
@@ -436,14 +432,6 @@ pub(crate) struct Terrain {
     atmosphere: BufferId,
 }
 
-fn uniform(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {
-    BindGroupLayoutEntry {
-        binding,
-        visibility,
-        ty: BindingType::Uniform,
-    }
-}
-
 impl Terrain {
     /// Terrain drawn into `target`, fogged by `atmosphere`, shading
     /// hillshades through image node groups of `shade_layout`.
@@ -453,93 +441,46 @@ impl Terrain {
         atmosphere: BufferId,
         shade_layout: BindGroupLayoutId,
     ) -> Self {
+        use BindGroupLayoutEntry as E;
         let vs = ShaderStages::VERTEX;
         let fs = ShaderStages::FRAGMENT;
         let vf = vs | fs;
-        let storage = |binding| BindGroupLayoutEntry {
-            binding,
-            visibility: vs,
-            ty: BindingType::Storage { read_only: true },
-        };
         let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "terrain",
             entries: &[
-                uniform(0, vf),
+                E::uniform(0, vf),
                 // Terrain tiles: a shaded hillshade reads their latitudes.
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: vf,
-                    ty: BindingType::Storage { read_only: true },
-                },
-                storage(2),
-                BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: vs,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: false },
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: fs,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: true },
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: fs,
-                    ty: BindingType::Sampler { filtering: true },
-                },
-                uniform(6, vf),
-                uniform(7, vf),
+                E::storage(1, vf),
+                E::storage(2, vs),
+                E::texture(3, vs, false, D2Array),
+                E::texture(4, fs, true, D2Array),
+                E::sampler(5, fs, true),
+                E::uniform(6, vf),
+                E::uniform(7, vf),
                 // The scene's property arena: globe patches.
-                storage(8),
+                E::storage(8, vs),
                 // The slope page (the colour page while there is none).
-                BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: fs,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: true },
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
+                E::texture(9, fs, true, D2Array),
             ],
         });
         let stack_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "terrain layer",
-            entries: &[uniform(0, fs)],
+            entries: &[E::uniform(0, fs)],
         });
         let clear_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "drape clear",
-            entries: &[uniform(0, vs), storage(1)],
+            entries: &[E::uniform(0, vs), E::storage(1, vs)],
         });
-        let drape_module = crate::shader_module(gpu, &DRAPE_SHADER);
-        let mut clear_pipeline = |format| {
-            gpu.create_render_pipeline(&RenderPipelineDesc {
-                label: DRAPE_SHADER.label,
-                bind_group_layouts: &[clear_layout],
-                vertex: ShaderStage {
-                    module: drape_module,
-                    entry_point: DRAPE_SHADER.vertex,
-                    constants: &[],
-                },
-                fragment: ShaderStage {
-                    module: drape_module,
-                    entry_point: DRAPE_SHADER.fragment,
-                    constants: &[],
-                },
-                targets: &[ColorTargetState {
-                    format,
-                    blend: None,
-                }],
-                depth: None,
-                topology: PrimitiveTopology::TriangleStrip,
-                cull_mode: None,
+        let mut clear_pipeline = |color| {
+            let target = TargetFormat {
+                color,
                 sample_count: 1,
-            })
+            };
+            Draw {
+                topology: PrimitiveTopology::TriangleStrip,
+                ..Draw::new(&DRAPE_SHADER, &[clear_layout], target, None)
+            }
+            .make(gpu)
         };
         let slope_clear = clear_pipeline(DRAPE_FORMAT);
         let clear = if target.color.is_srgb() {
@@ -547,7 +488,6 @@ impl Terrain {
         } else {
             [slope_clear; 2]
         };
-        gpu.destroy_shader_module(drape_module);
 
         let (grid, indices, grid_ranges) = grid();
         let grid_buffer = gpu.create_buffer(&BufferDesc {
@@ -572,7 +512,6 @@ impl Terrain {
         let linear = gpu.create_sampler(&SamplerDesc {
             label: "drape",
             filter: FilterMode::Linear,
-            address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Linear,
             anisotropy: 16,
         });
@@ -652,14 +591,12 @@ impl Terrain {
                     gpu.create_bind_group(&BindGroupDesc {
                         label: "terrain layer",
                         layout: self.stack_layout,
-                        entries: &[BindGroupEntry {
-                            binding: 0,
-                            resource: BindingResource::Buffer {
-                                buffer,
-                                offset: UNIFORM_STRIDE * u64::from(layer),
-                                size: Some(16),
-                            },
-                        }],
+                        entries: &[BindGroupEntry::slice(
+                            0,
+                            buffer,
+                            UNIFORM_STRIDE * u64::from(layer),
+                            16,
+                        )],
                     })
                 })
                 .collect();
@@ -1049,34 +986,15 @@ impl Terrain {
         } else {
             (&TERRAIN_SHADER, &[self.layout, self.stack_layout])
         };
-        let module = crate::shader_module(gpu, shader);
-        let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-            label: shader.label,
-            bind_group_layouts: layouts,
-            vertex: ShaderStage {
-                module,
-                entry_point: shader.vertex,
-                constants: &[],
-            },
-            fragment: ShaderStage {
-                module,
-                entry_point: shader.fragment,
-                constants: &[],
-            },
-            targets: &[ColorTargetState {
-                format: self.target.color,
-                blend: None,
-            }],
-            depth: Some(DepthState {
-                format: TextureFormat::Depth32Float,
-                write: true,
-                compare: CompareFunction::GreaterEqual,
-            }),
-            topology: PrimitiveTopology::TriangleList,
-            cull_mode: None,
+        let target = TargetFormat {
             sample_count: samples,
-        });
-        gpu.destroy_shader_module(module);
+            ..self.target
+        };
+        let pipeline = Draw {
+            depth: DEPTH,
+            ..Draw::new(shader, layouts, target, None)
+        }
+        .make(gpu);
         self.pipelines[usize::from(shaded)][usize::from(samples > 1)] = Some(pipeline);
         pipeline
     }
@@ -1188,55 +1106,16 @@ impl Terrain {
                     label: "terrain",
                     layout: self.layout,
                     entries: &[
-                        BindGroupEntry {
-                            binding: 0,
-                            resource: BindingResource::buffer(frame),
-                        },
-                        BindGroupEntry {
-                            binding: 1,
-                            resource: BindingResource::buffer(self.tiles),
-                        },
-                        BindGroupEntry {
-                            binding: 2,
-                            resource: BindingResource::buffer(self.grid),
-                        },
-                        BindGroupEntry {
-                            binding: 3,
-                            resource: BindingResource::Texture {
-                                texture: dem.0,
-                                dimension: TextureViewDimension::D2Array,
-                            },
-                        },
-                        BindGroupEntry {
-                            binding: 4,
-                            resource: BindingResource::Texture {
-                                texture: atlas_texture,
-                                dimension: TextureViewDimension::D2Array,
-                            },
-                        },
-                        BindGroupEntry {
-                            binding: 5,
-                            resource: BindingResource::Sampler(self.linear),
-                        },
-                        BindGroupEntry {
-                            binding: 6,
-                            resource: BindingResource::buffer(self.params),
-                        },
-                        BindGroupEntry {
-                            binding: 7,
-                            resource: BindingResource::buffer(self.atmosphere),
-                        },
-                        BindGroupEntry {
-                            binding: 8,
-                            resource: BindingResource::buffer(props),
-                        },
-                        BindGroupEntry {
-                            binding: 9,
-                            resource: BindingResource::Texture {
-                                texture: slope_texture,
-                                dimension: TextureViewDimension::D2Array,
-                            },
-                        },
+                        BindGroupEntry::buffer(0, frame),
+                        BindGroupEntry::buffer(1, self.tiles),
+                        BindGroupEntry::buffer(2, self.grid),
+                        BindGroupEntry::texture(3, dem.0, D2Array),
+                        BindGroupEntry::texture(4, atlas_texture, D2Array),
+                        BindGroupEntry::sampler(5, self.linear),
+                        BindGroupEntry::buffer(6, self.params),
+                        BindGroupEntry::buffer(7, self.atmosphere),
+                        BindGroupEntry::buffer(8, props),
+                        BindGroupEntry::texture(9, slope_texture, D2Array),
                     ],
                 });
                 self.group = Some((group, [frame, props]));
@@ -1264,7 +1143,6 @@ impl Terrain {
             commands.extend([
                 RenderCommand::SetIndexBuffer {
                     buffer: self.grid_indices,
-                    format: IndexFormat::Uint32,
                     offset: 0,
                 },
                 RenderCommand::DrawIndexed {
@@ -1398,34 +1276,22 @@ impl Terrain {
         if let Some(pipeline) = self.occlusion_pipeline {
             return pipeline;
         }
-        let module = crate::shader_module(gpu, &TERRAIN_SHADER);
-        let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-            label: "terrain depth",
-            bind_group_layouts: &[self.layout, self.stack_layout],
-            vertex: ShaderStage {
-                module,
-                entry_point: TERRAIN_SHADER.vertex,
-                constants: &[],
-            },
-            fragment: ShaderStage {
-                module,
-                entry_point: "fs_terrain_depth",
-                constants: &[],
-            },
-            targets: &[ColorTargetState {
-                format: TextureFormat::R32Float,
-                blend: None,
-            }],
-            depth: Some(DepthState {
-                format: TextureFormat::Depth32Float,
-                write: true,
-                compare: CompareFunction::GreaterEqual,
-            }),
-            topology: PrimitiveTopology::TriangleList,
-            cull_mode: None,
+        let target = TargetFormat {
+            color: TextureFormat::R32Float,
             sample_count: 1,
-        });
-        gpu.destroy_shader_module(module);
+        };
+        let pipeline = Draw {
+            label: "terrain depth",
+            fragment: (&TERRAIN_SHADER, "fs_terrain_depth"),
+            depth: DEPTH,
+            ..Draw::new(
+                &TERRAIN_SHADER,
+                &[self.layout, self.stack_layout],
+                target,
+                None,
+            )
+        }
+        .make(gpu);
         self.occlusion_pipeline = Some(pipeline);
         pipeline
     }

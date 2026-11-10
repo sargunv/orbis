@@ -1,4 +1,4 @@
-//! The backends' resource tables.
+//! The resource tables behind the ids.
 
 use std::collections::HashMap;
 
@@ -6,7 +6,7 @@ use std::collections::HashMap;
 /// nothing instead of another resource; removed entries are dropped, so the
 /// table holds only live resources.
 #[derive(Debug)]
-pub struct Slots<T> {
+pub(crate) struct Slots<T> {
     items: HashMap<u32, T>,
     next: u32,
 }
@@ -21,7 +21,7 @@ impl<T> Default for Slots<T> {
 }
 
 impl<T> Slots<T> {
-    pub fn insert(&mut self, item: T) -> u32 {
+    pub(crate) fn insert(&mut self, item: T) -> u32 {
         let id = self.next;
         self.next = id.checked_add(1).expect("resource ids exhausted");
         self.items.insert(id, item);
@@ -29,45 +29,20 @@ impl<T> Slots<T> {
     }
 
     /// Replaces a live entry.
-    pub fn set(&mut self, id: u32, item: T) {
+    pub(crate) fn set(&mut self, id: u32, item: T) {
         self[id] = item;
     }
 
-    /// An id for an entry that [`fill`](Self::fill) adds later.
-    pub fn reserve(&mut self) -> u32 {
-        let id = self.next;
-        self.next = id.checked_add(1).expect("resource ids exhausted");
-        id
-    }
-
-    /// Adds the entry of a reserved id.
-    pub fn fill(&mut self, id: u32, item: T) {
-        assert!(id < self.next, "resource {id} was never reserved");
-        assert!(
-            self.items.insert(id, item).is_none(),
-            "resource {id} filled twice"
-        );
-    }
-
-    pub fn contains(&self, id: u32) -> bool {
+    pub(crate) fn contains(&self, id: u32) -> bool {
         self.items.contains_key(&id)
     }
 
     /// Live resources.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.items.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    /// Takes every live resource.
-    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
-        self.items.drain().map(|(_, item)| item)
-    }
-
-    pub fn remove(&mut self, id: u32) -> T {
+    pub(crate) fn remove(&mut self, id: u32) -> T {
         self.items
             .remove(&id)
             .unwrap_or_else(|| panic!("resource {id} was destroyed or never created"))

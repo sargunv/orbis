@@ -10,7 +10,6 @@
 
 mod command;
 mod resource;
-pub mod slots;
 
 pub use command::{
     ColorAttachment, ComputeCommand, ComputePass, DepthAttachment, LoadOp, Pass, RenderCommand,

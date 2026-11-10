@@ -33,11 +33,9 @@ bitflags::bitflags! {
         const COPY_SRC = 1 << 0;
         const COPY_DST = 1 << 1;
         const INDEX = 1 << 2;
-        const VERTEX = 1 << 3;
-        const UNIFORM = 1 << 4;
-        const STORAGE = 1 << 5;
-        const INDIRECT = 1 << 6;
-        const QUERY_RESOLVE = 1 << 7;
+        const UNIFORM = 1 << 3;
+        const STORAGE = 1 << 4;
+        const INDIRECT = 1 << 5;
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -65,12 +63,6 @@ pub struct BufferDesc<'a> {
     pub label: &'a str,
     pub size: u64,
     pub usage: BufferUsages,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum IndexFormat {
-    Uint16,
-    Uint32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -157,19 +149,12 @@ pub enum FilterMode {
     Linear,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AddressMode {
-    ClampToEdge,
-    Repeat,
-}
-
-/// One filter for magnification and minification, one address mode for
-/// both axes, and how mip levels blend.
+/// One filter for magnification and minification, and how mip levels
+/// blend; coordinates clamp to the edge.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SamplerDesc<'a> {
     pub label: &'a str,
     pub filter: FilterMode,
-    pub address: AddressMode,
     /// Between mip levels: `Nearest` samples one level (all a texture
     /// without mipmaps has), `Linear` blends the two nearest.
     pub mipmap_filter: FilterMode,
@@ -203,15 +188,67 @@ pub struct BindGroupLayoutEntry {
     pub ty: BindingType,
 }
 
+impl BindGroupLayoutEntry {
+    pub const fn uniform(binding: u32, visibility: ShaderStages) -> Self {
+        Self {
+            binding,
+            visibility,
+            ty: BindingType::Uniform,
+        }
+    }
+
+    /// A storage buffer shaders only read.
+    pub const fn storage(binding: u32, visibility: ShaderStages) -> Self {
+        Self {
+            binding,
+            visibility,
+            ty: BindingType::Storage { read_only: true },
+        }
+    }
+
+    /// A storage buffer shaders write.
+    pub const fn storage_rw(binding: u32, visibility: ShaderStages) -> Self {
+        Self {
+            binding,
+            visibility,
+            ty: BindingType::Storage { read_only: false },
+        }
+    }
+
+    pub const fn texture(
+        binding: u32,
+        visibility: ShaderStages,
+        filterable: bool,
+        dimension: TextureViewDimension,
+    ) -> Self {
+        Self {
+            binding,
+            visibility,
+            ty: BindingType::Texture {
+                filterable,
+                dimension,
+            },
+        }
+    }
+
+    pub const fn sampler(binding: u32, visibility: ShaderStages, filtering: bool) -> Self {
+        Self {
+            binding,
+            visibility,
+            ty: BindingType::Sampler { filtering },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindingType {
     Uniform,
     Storage {
         read_only: bool,
     },
-    /// A sampled texture.
+    /// A sampled float texture.
     Texture {
-        sample: TextureSampleType,
+        filterable: bool,
         dimension: TextureViewDimension,
     },
     Sampler {
@@ -222,12 +259,6 @@ pub enum BindingType {
         format: TextureFormat,
         dimension: TextureViewDimension,
     },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TextureSampleType {
-    Float { filterable: bool },
-    Uint,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,6 +280,46 @@ pub struct BindGroupEntry {
     pub resource: BindingResource,
 }
 
+impl BindGroupEntry {
+    /// The whole of `buffer`.
+    pub const fn buffer(binding: u32, buffer: BufferId) -> Self {
+        Self {
+            binding,
+            resource: BindingResource::buffer(buffer),
+        }
+    }
+
+    /// `size` bytes of `buffer` from `offset`.
+    pub const fn slice(binding: u32, buffer: BufferId, offset: u64, size: u64) -> Self {
+        Self {
+            binding,
+            resource: BindingResource::Buffer {
+                buffer,
+                offset,
+                size: Some(size),
+            },
+        }
+    }
+
+    pub const fn texture(
+        binding: u32,
+        texture: TextureId,
+        dimension: TextureViewDimension,
+    ) -> Self {
+        Self {
+            binding,
+            resource: BindingResource::Texture { texture, dimension },
+        }
+    }
+
+    pub const fn sampler(binding: u32, sampler: SamplerId) -> Self {
+        Self {
+            binding,
+            resource: BindingResource::Sampler(sampler),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindingResource {
     /// A buffer range; `size: None` binds to the end.
@@ -267,7 +338,7 @@ pub enum BindingResource {
 
 impl BindingResource {
     /// The whole buffer.
-    pub fn buffer(buffer: BufferId) -> Self {
+    pub const fn buffer(buffer: BufferId) -> Self {
         Self::Buffer {
             buffer,
             offset: 0,
@@ -295,15 +366,9 @@ pub struct RenderPipelineDesc<'a> {
     pub targets: &'a [ColorTargetState],
     pub depth: Option<DepthState>,
     pub topology: PrimitiveTopology,
-    /// Front faces use counterclockwise winding.
-    pub cull_mode: Option<Face>,
+    /// Whether back faces are culled; front faces wind counterclockwise.
+    pub cull_back: bool,
     pub sample_count: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Face {
-    Front,
-    Back,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -325,24 +390,14 @@ pub enum BlendState {
     PremultipliedAlpha,
     /// ONE + ONE, for Gaussian density accumulation.
     Additive,
-    /// Destination colour times source colour, alpha kept: darkening.
-    Multiply,
 }
 
+/// A depth test in reversed Z: a fragment passes at or nearer than the
+/// depth held (`greater-equal`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepthState {
     pub format: TextureFormat,
     pub write: bool,
-    pub compare: CompareFunction,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompareFunction {
-    Always,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
 }
 
 #[derive(Clone, Debug, PartialEq)]

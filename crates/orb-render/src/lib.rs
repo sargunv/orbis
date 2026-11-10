@@ -28,6 +28,7 @@ mod image;
 mod layer_composite;
 mod offscreen;
 mod paint;
+mod pipeline;
 mod release;
 mod scene;
 mod terrain;
@@ -64,13 +65,14 @@ pub use tiles::{
     changed_borders, dem_neighbours, tile_latitudes,
 };
 
+use crate::pipeline::Draw;
 use crate::release::Release;
 use std::collections::BTreeMap;
 
 use orb_hal::*;
 use orb_shaders::{
     CIRCLE_SHADER, CULL_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, LINE_STYLED_SHADER,
-    SYMBOL_SHADERS, Shader,
+    SYMBOL_SHADERS,
 };
 use scene::Scene;
 
@@ -428,106 +430,52 @@ impl Renderer {
         };
         let scene = Scene::new(gpu, capacity);
         let b = *scene.buffers();
-        let storage = |binding, visibility, read_only| BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: BindingType::Storage { read_only },
-        };
-        let uniform = |binding, visibility| BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: BindingType::Uniform,
-        };
-
-        let vf = ShaderStages::VERTEX | ShaderStages::FRAGMENT;
-        let vs = ShaderStages::VERTEX;
-        let vf_storage = |binding| BindGroupLayoutEntry {
-            binding,
-            visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-            ty: BindingType::Storage { read_only: true },
-        };
+        let (vs, fs, cs) = (
+            ShaderStages::VERTEX,
+            ShaderStages::FRAGMENT,
+            ShaderStages::COMPUTE,
+        );
+        let vf = vs | fs;
+        use BindGroupLayoutEntry as E;
+        use TextureViewDimension::{D2, D2Array};
         let draw_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "scene",
             entries: &[
-                uniform(0, vf),
-                vf_storage(1),
-                storage(2, vs, true),
-                storage(3, vs, true),
-                storage(4, vs, true),
-                storage(5, vs, true),
+                E::uniform(0, vf),
+                E::storage(1, vf),
+                E::storage(2, vs),
+                E::storage(3, vs),
+                E::storage(4, vs),
+                E::storage(5, vs),
                 // Extrusions' fragments read colours over the elevation.
-                storage(6, vf, true),
-                storage(7, vs, true),
-                storage(8, ShaderStages::FRAGMENT, true),
-                BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: true },
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 10,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Sampler { filtering: true },
-                },
-                BindGroupLayoutEntry {
-                    binding: 11,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: true },
-                        dimension: TextureViewDimension::D2,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 12,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: true },
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 13,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Sampler { filtering: true },
-                },
-                BindGroupLayoutEntry {
-                    binding: 14,
-                    visibility: ShaderStages::VERTEX,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: false },
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 15,
-                    visibility: vf,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: false },
-                        dimension: TextureViewDimension::D2,
-                    },
-                },
+                E::storage(6, vf),
+                E::storage(7, vs),
+                E::storage(8, fs),
+                E::texture(9, fs, true, D2Array),
+                E::sampler(10, fs, true),
+                E::texture(11, fs, true, D2),
+                E::texture(12, fs, true, D2Array),
+                E::sampler(13, fs, true),
+                E::texture(14, vs, false, D2Array),
+                E::texture(15, vf, false, D2),
             ],
         });
         let node_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "node",
-            entries: &[uniform(0, vf)],
+            entries: &[E::uniform(0, vf)],
         });
-        let cs = ShaderStages::COMPUTE;
         let cull_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "cull",
             entries: &[
-                uniform(0, cs),
-                storage(1, cs, true),
-                storage(2, cs, true),
-                storage(3, cs, false),
-                storage(4, cs, true),
-                storage(5, cs, false),
-                storage(6, cs, false),
-                storage(7, cs, true),
-                storage(8, cs, false),
+                E::uniform(0, cs),
+                E::storage(1, cs),
+                E::storage(2, cs),
+                E::storage_rw(3, cs),
+                E::storage(4, cs),
+                E::storage_rw(5, cs),
+                E::storage_rw(6, cs),
+                E::storage(7, cs),
+                E::storage_rw(8, cs),
             ],
         });
 
@@ -535,7 +483,6 @@ impl Renderer {
         let nearest = gpu.create_sampler(&SamplerDesc {
             label: "nearest",
             filter: FilterMode::Nearest,
-            address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
         });
@@ -577,7 +524,7 @@ impl Renderer {
 
         let symbol_pass_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "symbol pass",
-            entries: &[uniform(0, ShaderStages::FRAGMENT)],
+            entries: &[E::uniform(0, fs)],
         });
         let pass_stride = u64::from(gpu.caps().limits.min_uniform_buffer_offset_alignment).max(16);
         let pass_buffer = gpu.create_buffer(&BufferDesc {
@@ -594,31 +541,19 @@ impl Renderer {
             gpu.create_bind_group(&BindGroupDesc {
                 label: "symbol pass",
                 layout: symbol_pass_layout,
-                entries: &[BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::Buffer {
-                        buffer: pass_buffer,
-                        offset: u64::from(pass) * pass_stride,
-                        size: Some(16),
-                    },
-                }],
+                entries: &[BindGroupEntry::slice(
+                    0,
+                    pass_buffer,
+                    u64::from(pass) * pass_stride,
+                    16,
+                )],
             })
         });
         // The cull pipeline first: nothing draws without it.
-        let cull = {
-            let module = shader_module(gpu, &CULL_SHADER);
-            let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
-                label: CULL_SHADER.label,
-                bind_group_layouts: &[cull_layout],
-                compute: ShaderStage {
-                    module,
-                    entry_point: CULL_SHADER.compute,
-                    constants: &[],
-                },
-            });
-            gpu.destroy_shader_module(module);
-            (pipeline, cull_group)
-        };
+        let cull = (
+            pipeline::compute(gpu, &CULL_SHADER, &[cull_layout]),
+            cull_group,
+        );
 
         let image_bindings = images;
         let images = image::Images::new(gpu, target, draw_layout);
@@ -1545,12 +1480,9 @@ impl Renderer {
                 let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
                 let line = usize::from(self.nodes[i].along_line);
                 if self.symbol_pipelines[line].is_none() {
-                    self.symbol_pipelines[line] = Some(symbol_pipeline(
-                        gpu,
-                        self.target,
-                        &layouts,
-                        &SYMBOL_SHADERS[line],
-                    ));
+                    let blend = Some(BlendState::PremultipliedAlpha);
+                    let draw = Draw::new(&SYMBOL_SHADERS[line], &layouts, self.target, blend);
+                    self.symbol_pipelines[line] = Some(draw.make(gpu));
                 }
             }
             Family::Raster | Family::Hillshade | Family::ColorRelief => {
@@ -1835,7 +1767,6 @@ impl Renderer {
             let indexed = self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed);
             let index_buffer = RenderCommand::SetIndexBuffer {
                 buffer: self.scene.buffers().compacted,
-                format: IndexFormat::Uint32,
                 offset: 0,
             };
             let mut ready = self.ready(gpu, terrain_on);
@@ -1886,7 +1817,6 @@ impl Renderer {
                 }
                 let mut group = vec![RenderCommand::SetIndexBuffer {
                     buffer: self.scene.buffers().compacted,
-                    format: IndexFormat::Uint32,
                     offset: 0,
                 }];
                 for i in self.layers.groups[g].nodes.clone() {
@@ -2161,7 +2091,6 @@ impl Renderer {
         let (scene, uniforms) = (level.scene[page].expect("made above"), level.uniforms);
         let mut commands = vec![RenderCommand::SetIndexBuffer {
             buffer: self.scene.buffers().compacted,
-            format: IndexFormat::Uint32,
             offset: 0,
         }];
         let (mut groups, mut waiting) = (Vec::new(), 0);
@@ -2436,15 +2365,6 @@ impl DrapeZoom {
     }
 }
 
-/// A module of `shader`'s WGSL.
-fn shader_module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
-    gpu.create_shader_module(&ShaderModuleDesc {
-        label: shader.label,
-        source: shader.source().into(),
-        ir: shader.ir(),
-    })
-}
-
 /// The vector families' pipelines (fill, fill outline, line, circle), each
 /// made for the family's first node.
 #[derive(Clone, Copy, Debug, Default)]
@@ -2486,64 +2406,19 @@ impl PaintPipelines {
             4 => (&LINE_STYLED_SHADER, PrimitiveTopology::TriangleList),
             _ => (&CIRCLE_SHADER, PrimitiveTopology::TriangleList),
         };
-        self.pipelines[index]
-            .get_or_insert_with(|| draw_pipeline(gpu, shader, topology, target, layouts));
+        self.pipelines[index].get_or_insert_with(|| {
+            Draw {
+                topology,
+                ..Draw::new(
+                    shader,
+                    layouts,
+                    target,
+                    Some(BlendState::PremultipliedAlpha),
+                )
+            }
+            .make(gpu)
+        });
     }
-}
-
-/// A draw pipeline over the scene's bindings: `layouts` starts with the
-/// scene and node groups.
-fn draw_pipeline(
-    gpu: &mut dyn Gpu,
-    shader: &Shader,
-    topology: PrimitiveTopology,
-    target: TargetFormat,
-    layouts: &[BindGroupLayoutId],
-) -> RenderPipelineId {
-    draw_pipeline_blending(
-        gpu,
-        shader,
-        topology,
-        target,
-        layouts,
-        Some(BlendState::PremultipliedAlpha),
-    )
-}
-
-/// [`draw_pipeline`] with `blend` in place of premultiplied blending.
-fn draw_pipeline_blending(
-    gpu: &mut dyn Gpu,
-    shader: &Shader,
-    topology: PrimitiveTopology,
-    target: TargetFormat,
-    layouts: &[BindGroupLayoutId],
-    blend: Option<BlendState>,
-) -> RenderPipelineId {
-    let module = shader_module(gpu, shader);
-    let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-        cull_mode: None,
-        label: shader.label,
-        bind_group_layouts: layouts,
-        vertex: ShaderStage {
-            module,
-            entry_point: shader.vertex,
-            constants: &[],
-        },
-        fragment: ShaderStage {
-            module,
-            entry_point: shader.fragment,
-            constants: &[],
-        },
-        targets: &[ColorTargetState {
-            format: target.color,
-            blend,
-        }],
-        depth: None,
-        topology,
-        sample_count: target.sample_count,
-    });
-    gpu.destroy_shader_module(module);
-    pipeline
 }
 
 /// The cull pass's group: the scene's tables and index buffers.
@@ -2565,10 +2440,7 @@ fn cull_group(
     ]
     .iter()
     .enumerate()
-    .map(|(i, &buffer)| BindGroupEntry {
-        binding: i as u32,
-        resource: BindingResource::buffer(buffer),
-    })
+    .map(|(i, &buffer)| BindGroupEntry::buffer(i as u32, buffer))
     .collect();
     gpu.create_bind_group(&BindGroupDesc {
         label: "cull",
@@ -2586,7 +2458,7 @@ fn scene_group(
     images: &ImageBindings,
     (glyphs, nearest, dem, terrain_depth): (TextureId, SamplerId, TextureId, TextureId),
 ) -> BindGroupId {
-    let whole = BindingResource::buffer;
+    use TextureViewDimension::{D2, D2Array};
     let mut entries: Vec<BindGroupEntry> = [
         frame,
         b.tiles,
@@ -2600,67 +2472,20 @@ fn scene_group(
     ]
     .iter()
     .enumerate()
-    .map(|(i, &buffer)| BindGroupEntry {
-        binding: i as u32,
-        resource: whole(buffer),
-    })
+    .map(|(i, &buffer)| BindGroupEntry::buffer(i as u32, buffer))
     .collect();
-    let texture = |binding, texture, dimension| BindGroupEntry {
-        binding,
-        resource: BindingResource::Texture { texture, dimension },
-    };
     entries.extend([
-        texture(9, images.texture, TextureViewDimension::D2Array),
-        BindGroupEntry {
-            binding: 10,
-            resource: BindingResource::Sampler(images.sampler),
-        },
-        texture(11, images.dashes, TextureViewDimension::D2),
-        texture(12, glyphs, TextureViewDimension::D2Array),
-        BindGroupEntry {
-            binding: 13,
-            resource: BindingResource::Sampler(nearest),
-        },
-        texture(14, dem, TextureViewDimension::D2Array),
-        texture(15, terrain_depth, TextureViewDimension::D2),
+        BindGroupEntry::texture(9, images.texture, D2Array),
+        BindGroupEntry::sampler(10, images.sampler),
+        BindGroupEntry::texture(11, images.dashes, D2),
+        BindGroupEntry::texture(12, glyphs, D2Array),
+        BindGroupEntry::sampler(13, nearest),
+        BindGroupEntry::texture(14, dem, D2Array),
+        BindGroupEntry::texture(15, terrain_depth, D2),
     ]);
     gpu.create_bind_group(&BindGroupDesc {
         label: "scene",
         layout,
         entries: &entries,
     })
-}
-
-/// A symbol pipeline: over the scene, node and pass groups.
-fn symbol_pipeline(
-    gpu: &mut dyn Gpu,
-    target: TargetFormat,
-    layouts: &[BindGroupLayoutId],
-    shader: &Shader,
-) -> RenderPipelineId {
-    let module = shader_module(gpu, shader);
-    let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-        cull_mode: None,
-        label: shader.label,
-        bind_group_layouts: layouts,
-        vertex: ShaderStage {
-            module,
-            entry_point: shader.vertex,
-            constants: &[],
-        },
-        fragment: ShaderStage {
-            module,
-            entry_point: shader.fragment,
-            constants: &[],
-        },
-        targets: &[ColorTargetState {
-            format: target.color,
-            blend: Some(BlendState::PremultipliedAlpha),
-        }],
-        depth: None,
-        topology: PrimitiveTopology::TriangleList,
-        sample_count: target.sample_count,
-    });
-    gpu.destroy_shader_module(module);
-    pipeline
 }

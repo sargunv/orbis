@@ -8,14 +8,9 @@ pub(crate) fn buffer_usages(usage: BufferUsages) -> wgpu::BufferUsages {
         (BufferUsages::COPY_SRC, wgpu::BufferUsages::COPY_SRC),
         (BufferUsages::COPY_DST, wgpu::BufferUsages::COPY_DST),
         (BufferUsages::INDEX, wgpu::BufferUsages::INDEX),
-        (BufferUsages::VERTEX, wgpu::BufferUsages::VERTEX),
         (BufferUsages::UNIFORM, wgpu::BufferUsages::UNIFORM),
         (BufferUsages::STORAGE, wgpu::BufferUsages::STORAGE),
         (BufferUsages::INDIRECT, wgpu::BufferUsages::INDIRECT),
-        (
-            BufferUsages::QUERY_RESOLVE,
-            wgpu::BufferUsages::QUERY_RESOLVE,
-        ),
     ] {
         if usage.contains(from) {
             out |= to;
@@ -95,16 +90,6 @@ pub fn from_texture_format(format: wgpu::TextureFormat) -> Option<TextureFormat>
     })
 }
 
-pub(crate) fn compare(compare: CompareFunction) -> wgpu::CompareFunction {
-    match compare {
-        CompareFunction::Always => wgpu::CompareFunction::Always,
-        CompareFunction::Less => wgpu::CompareFunction::Less,
-        CompareFunction::LessEqual => wgpu::CompareFunction::LessEqual,
-        CompareFunction::Greater => wgpu::CompareFunction::Greater,
-        CompareFunction::GreaterEqual => wgpu::CompareFunction::GreaterEqual,
-    }
-}
-
 pub(crate) fn bind_group_layout_entry(entry: &BindGroupLayoutEntry) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: entry.binding,
@@ -120,13 +105,11 @@ pub(crate) fn bind_group_layout_entry(entry: &BindGroupLayoutEntry) -> wgpu::Bin
                 has_dynamic_offset: false,
                 min_binding_size: None,
             },
-            BindingType::Texture { sample, dimension } => wgpu::BindingType::Texture {
-                sample_type: match sample {
-                    TextureSampleType::Float { filterable } => {
-                        wgpu::TextureSampleType::Float { filterable }
-                    }
-                    TextureSampleType::Uint => wgpu::TextureSampleType::Uint,
-                },
+            BindingType::Texture {
+                filterable,
+                dimension,
+            } => wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable },
                 view_dimension: view_dimension(dimension),
                 multisampled: false,
             },
@@ -164,18 +147,6 @@ pub(crate) fn color_target(target: &ColorTargetState) -> wgpu::ColorTargetState 
                 },
             },
             BlendState::PremultipliedAlpha => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            BlendState::Multiply => wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::Zero,
-                    dst_factor: wgpu::BlendFactor::Src,
-                    operation: wgpu::BlendOperation::Add,
-                },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::Zero,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-            },
         }),
         write_mask: wgpu::ColorWrites::ALL,
     }
@@ -193,14 +164,8 @@ pub(crate) fn sampler(desc: &SamplerDesc<'_>) -> wgpu::SamplerDescriptor<'static
         FilterMode::Nearest => wgpu::FilterMode::Nearest,
         FilterMode::Linear => wgpu::FilterMode::Linear,
     };
-    let address = match desc.address {
-        AddressMode::ClampToEdge => wgpu::AddressMode::ClampToEdge,
-        AddressMode::Repeat => wgpu::AddressMode::Repeat,
-    };
     wgpu::SamplerDescriptor {
         anisotropy_clamp: desc.anisotropy.max(1),
-        address_mode_u: address,
-        address_mode_v: address,
         mag_filter: filter,
         min_filter: filter,
         mipmap_filter: match desc.mipmap_filter {

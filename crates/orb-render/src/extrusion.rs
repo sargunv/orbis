@@ -1,8 +1,10 @@
 //! Extrusion layers draw into a target of their own, resolve it, then
 //! composite it at their layer opacity once. The shared depth attachment
 //! keeps occlusion between 3D layers and the terrain.
+use crate::TargetFormat;
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use crate::paint::ElevationShape;
+use crate::pipeline::{DEPTH, Draw};
 use crate::release::Release;
 use crate::scene::SceneBuffers;
 use orb_hal::*;
@@ -70,21 +72,21 @@ impl Extrusions {
         // the rest with the whole pipeline's fragment stage.
         let planes = gpu.caps().clip_distances;
         let stages = [
-            Some(((whole, whole.vertex), (whole, whole.fragment))),
+            Some(((&whole, whole.vertex), (&whole, whole.fragment))),
             Some((
                 (
-                    cut,
+                    &cut,
                     if planes {
                         "vs_extrusion_cut_split"
                     } else {
                         cut.vertex
                     },
                 ),
-                (cut, cut.fragment),
+                (&cut, cut.fragment),
             )),
             planes.then_some((
-                (EXTRUSION_PLANES_SHADER, EXTRUSION_PLANES_SHADER.vertex),
-                (whole, whole.fragment),
+                (&EXTRUSION_PLANES_SHADER, EXTRUSION_PLANES_SHADER.vertex),
+                (&whole, whole.fragment),
             )),
         ];
         for (kind, stages) in stages.into_iter().enumerate() {
@@ -102,49 +104,24 @@ impl Extrusions {
     fn pipeline(
         &self,
         gpu: &mut dyn Gpu,
-        (vertex, vertex_entry): (Shader, &str),
-        (fragment, fragment_entry): (Shader, &str),
+        vertex: (&Shader, &str),
+        fragment: (&Shader, &str),
         shape: ElevationShape,
     ) -> RenderPipelineId {
         let [vertex_constants, fragment_constants] = shape.constants();
-        let vertex_module = crate::shader_module(gpu, &vertex);
-        let apart = vertex.label != fragment.label;
-        let fragment_module = if apart {
-            crate::shader_module(gpu, &fragment)
-        } else {
-            vertex_module
-        };
-        let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-            cull_mode: Some(Face::Back),
-            label: vertex.label,
-            bind_group_layouts: &self.layouts,
-            vertex: ShaderStage {
-                module: vertex_module,
-                entry_point: vertex_entry,
-                constants: &vertex_constants,
-            },
-            fragment: ShaderStage {
-                module: fragment_module,
-                entry_point: fragment_entry,
-                constants: &fragment_constants,
-            },
-            targets: &[ColorTargetState {
-                format: self.format,
-                blend: None,
-            }],
-            depth: Some(DepthState {
-                format: TextureFormat::Depth32Float,
-                write: true,
-                compare: CompareFunction::GreaterEqual,
-            }),
-            topology: PrimitiveTopology::TriangleList,
+        let target = TargetFormat {
+            color: self.format,
             sample_count: self.samples,
-        });
-        gpu.destroy_shader_module(vertex_module);
-        if apart {
-            gpu.destroy_shader_module(fragment_module);
+        };
+        Draw {
+            vertex,
+            fragment,
+            constants: [&vertex_constants, &fragment_constants],
+            depth: DEPTH,
+            cull_back: true,
+            ..Draw::new(vertex.0, &self.layouts, target, None)
         }
-        pipeline
+        .make(gpu)
     }
 
     /// Whether every shape's pipelines made at the current sample count,
@@ -263,7 +240,6 @@ impl Extrusions {
                 RenderCommand::SetBindGroup { index: 1, group },
                 RenderCommand::SetIndexBuffer {
                     buffer: buffers.compacted,
-                    format: IndexFormat::Uint32,
                     offset: 0,
                 },
             ];

@@ -13,14 +13,15 @@ mod cache;
 mod compile;
 mod convert;
 mod offscreen;
+mod slots;
 #[cfg(not(target_arch = "wasm32"))]
 mod surface;
 mod timing;
 mod writes;
 
 pub use convert::from_texture_format;
-use orb_hal::slots::Slots;
 use orb_hal::*;
+use slots::Slots;
 #[cfg(not(target_arch = "wasm32"))]
 pub use surface::{RawSurface, Surface, SurfaceError};
 pub use timing::SubmitTimes;
@@ -565,7 +566,12 @@ impl WgpuGpu {
             })
     }
 
-    fn encode_render<'p>(&'p self, pass: &mut impl RenderEncoder<'p>, command: &'p RenderCommand) {
+    /// Encodes a command bundles may hold.
+    fn encode_render<'p>(
+        &'p self,
+        pass: &mut impl wgpu::util::RenderEncoder<'p>,
+        command: &'p RenderCommand,
+    ) {
         match command {
             RenderCommand::SetPipeline(id) => pass.set_pipeline(
                 self.render_pipelines[id.0]
@@ -573,22 +579,15 @@ impl WgpuGpu {
                     .expect("a pipeline used before it compiled"),
             ),
             RenderCommand::SetBindGroup { index, group } => {
-                pass.set_bind_group(*index, &self.bind_groups[group.0])
+                pass.set_bind_group(*index, Some(&self.bind_groups[group.0]), &[])
             }
             RenderCommand::Draw {
                 vertices,
                 instances,
             } => pass.draw(vertices.clone(), instances.clone()),
-            RenderCommand::SetIndexBuffer {
-                buffer,
-                format,
-                offset,
-            } => pass.set_index_buffer(
+            RenderCommand::SetIndexBuffer { buffer, offset } => pass.set_index_buffer(
                 self.buffers[buffer.0].slice(*offset..),
-                match format {
-                    IndexFormat::Uint16 => wgpu::IndexFormat::Uint16,
-                    IndexFormat::Uint32 => wgpu::IndexFormat::Uint32,
-                },
+                wgpu::IndexFormat::Uint32,
             ),
             RenderCommand::DrawIndexed {
                 indices,
@@ -601,101 +600,9 @@ impl WgpuGpu {
             RenderCommand::DrawIndexedIndirect { buffer, offset } => {
                 pass.draw_indexed_indirect(&self.buffers[buffer.0], *offset)
             }
-            RenderCommand::ExecuteBundles(ids) => {
-                pass.execute_bundles(ids.iter().map(|id| &self.render_bundles[id.0]))
-            }
-            &RenderCommand::SetScissor([x, y, width, height]) => {
-                pass.set_scissor(x, y, width, height)
-            }
+            RenderCommand::ExecuteBundles(_) => panic!("render bundles cannot execute bundles"),
+            RenderCommand::SetScissor(_) => panic!("render bundles cannot set a scissor"),
         }
-    }
-}
-
-/// The commands render passes and render bundle encoders share.
-trait RenderEncoder<'p> {
-    fn set_pipeline(&mut self, pipeline: &'p wgpu::RenderPipeline);
-    fn set_bind_group(&mut self, index: u32, group: &'p wgpu::BindGroup);
-    fn draw(&mut self, vertices: std::ops::Range<u32>, instances: std::ops::Range<u32>);
-    fn set_index_buffer(&mut self, slice: wgpu::BufferSlice<'p>, format: wgpu::IndexFormat);
-    fn draw_indexed(
-        &mut self,
-        indices: std::ops::Range<u32>,
-        base_vertex: i32,
-        instances: std::ops::Range<u32>,
-    );
-    fn draw_indirect(&mut self, buffer: &'p wgpu::Buffer, offset: u64);
-    fn draw_indexed_indirect(&mut self, buffer: &'p wgpu::Buffer, offset: u64);
-    fn execute_bundles(&mut self, bundles: impl Iterator<Item = &'p wgpu::RenderBundle>);
-    fn set_scissor(&mut self, x: u32, y: u32, width: u32, height: u32);
-}
-
-impl<'p> RenderEncoder<'p> for wgpu::RenderPass<'_> {
-    fn set_pipeline(&mut self, pipeline: &'p wgpu::RenderPipeline) {
-        wgpu::RenderPass::set_pipeline(self, pipeline);
-    }
-    fn set_bind_group(&mut self, index: u32, group: &'p wgpu::BindGroup) {
-        wgpu::RenderPass::set_bind_group(self, index, group, &[]);
-    }
-    fn draw(&mut self, vertices: std::ops::Range<u32>, instances: std::ops::Range<u32>) {
-        wgpu::RenderPass::draw(self, vertices, instances);
-    }
-    fn set_index_buffer(&mut self, slice: wgpu::BufferSlice<'p>, format: wgpu::IndexFormat) {
-        wgpu::RenderPass::set_index_buffer(self, slice, format);
-    }
-    fn draw_indexed(
-        &mut self,
-        indices: std::ops::Range<u32>,
-        base_vertex: i32,
-        instances: std::ops::Range<u32>,
-    ) {
-        wgpu::RenderPass::draw_indexed(self, indices, base_vertex, instances);
-    }
-    fn draw_indirect(&mut self, buffer: &'p wgpu::Buffer, offset: u64) {
-        wgpu::RenderPass::draw_indirect(self, buffer, offset);
-    }
-    fn draw_indexed_indirect(&mut self, buffer: &'p wgpu::Buffer, offset: u64) {
-        wgpu::RenderPass::draw_indexed_indirect(self, buffer, offset);
-    }
-    fn execute_bundles(&mut self, bundles: impl Iterator<Item = &'p wgpu::RenderBundle>) {
-        wgpu::RenderPass::execute_bundles(self, bundles);
-    }
-    fn set_scissor(&mut self, x: u32, y: u32, width: u32, height: u32) {
-        wgpu::RenderPass::set_scissor_rect(self, x, y, width, height);
-    }
-}
-
-impl<'p> RenderEncoder<'p> for wgpu::RenderBundleEncoder<'p> {
-    fn set_pipeline(&mut self, pipeline: &'p wgpu::RenderPipeline) {
-        wgpu::RenderBundleEncoder::set_pipeline(self, pipeline);
-    }
-    fn set_bind_group(&mut self, index: u32, group: &'p wgpu::BindGroup) {
-        wgpu::RenderBundleEncoder::set_bind_group(self, index, group, &[]);
-    }
-    fn draw(&mut self, vertices: std::ops::Range<u32>, instances: std::ops::Range<u32>) {
-        wgpu::RenderBundleEncoder::draw(self, vertices, instances);
-    }
-    fn set_index_buffer(&mut self, slice: wgpu::BufferSlice<'p>, format: wgpu::IndexFormat) {
-        wgpu::RenderBundleEncoder::set_index_buffer(self, slice, format);
-    }
-    fn draw_indexed(
-        &mut self,
-        indices: std::ops::Range<u32>,
-        base_vertex: i32,
-        instances: std::ops::Range<u32>,
-    ) {
-        wgpu::RenderBundleEncoder::draw_indexed(self, indices, base_vertex, instances);
-    }
-    fn draw_indirect(&mut self, buffer: &'p wgpu::Buffer, offset: u64) {
-        wgpu::RenderBundleEncoder::draw_indirect(self, buffer, offset);
-    }
-    fn draw_indexed_indirect(&mut self, buffer: &'p wgpu::Buffer, offset: u64) {
-        wgpu::RenderBundleEncoder::draw_indexed_indirect(self, buffer, offset);
-    }
-    fn execute_bundles(&mut self, _: impl Iterator<Item = &'p wgpu::RenderBundle>) {
-        panic!("render bundles cannot execute bundles");
-    }
-    fn set_scissor(&mut self, _: u32, _: u32, _: u32, _: u32) {
-        panic!("render bundles cannot set a scissor");
     }
 }
 
@@ -1101,7 +1008,7 @@ impl Gpu for WgpuGpu {
             targets: desc.targets.to_vec(),
             depth: desc.depth,
             topology: desc.topology,
-            cull_mode: desc.cull_mode,
+            cull_back: desc.cull_back,
             sample_count: desc.sample_count,
             cache: self.cache(),
         };
@@ -1342,7 +1249,14 @@ impl Gpu for WgpuGpu {
                         multiview_mask: None,
                     });
                     for command in &render.commands {
-                        self.encode_render(&mut pass, command);
+                        match command {
+                            RenderCommand::ExecuteBundles(ids) => pass
+                                .execute_bundles(ids.iter().map(|id| &self.render_bundles[id.0])),
+                            &RenderCommand::SetScissor([x, y, width, height]) => {
+                                pass.set_scissor_rect(x, y, width, height)
+                            }
+                            command => self.encode_render(&mut pass, command),
+                        }
                     }
                 }
             }

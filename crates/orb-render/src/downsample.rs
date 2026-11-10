@@ -7,6 +7,7 @@
 use orb_hal::*;
 use orb_shaders::{DOWNSAMPLE_SHADER, EXTEND_SHADER};
 
+use crate::pipeline::compute;
 use crate::release::Release;
 
 /// The most mip levels a texture has here.
@@ -28,30 +29,20 @@ pub(crate) struct Downsampler {
 impl Downsampler {
     pub(crate) fn new(gpu: &mut dyn Gpu) -> Self {
         let cs = ShaderStages::COMPUTE;
-        let entry = |binding, ty| BindGroupLayoutEntry {
-            binding,
-            visibility: cs,
-            ty,
-        };
         let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "downsample",
             entries: &[
-                entry(
-                    0,
-                    BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: false },
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                ),
-                entry(
-                    1,
-                    BindingType::StorageTexture {
+                BindGroupLayoutEntry::texture(0, cs, false, TextureViewDimension::D2Array),
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: cs,
+                    ty: BindingType::StorageTexture {
                         format: TextureFormat::Rgba8Unorm,
                         dimension: TextureViewDimension::D2Array,
                     },
-                ),
-                entry(2, BindingType::Storage { read_only: true }),
-                entry(3, BindingType::Uniform),
+                },
+                BindGroupLayoutEntry::storage(2, cs),
+                BindGroupLayoutEntry::uniform(3, cs),
             ],
         });
         let levels = gpu.create_buffer(&BufferDesc {
@@ -81,23 +72,9 @@ impl Downsampler {
         if self.pipeline.is_some() {
             return;
         }
-        let layout = self.layout;
-        let mut make = |shader: &orb_shaders::Shader| {
-            let module = crate::shader_module(gpu, shader);
-            let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
-                label: shader.label,
-                bind_group_layouts: &[layout],
-                compute: ShaderStage {
-                    module,
-                    entry_point: shader.compute,
-                    constants: &[],
-                },
-            });
-            gpu.destroy_shader_module(module);
-            pipeline
-        };
-        self.pipeline = Some(make(&DOWNSAMPLE_SHADER));
-        self.extend = Some(make(&EXTEND_SHADER));
+        let layouts = [self.layout];
+        self.pipeline = Some(compute(gpu, &DOWNSAMPLE_SHADER, &layouts));
+        self.extend = Some(compute(gpu, &EXTEND_SHADER, &layouts));
     }
 
     /// Whether its pipelines compiled, or none is needed yet.
@@ -123,12 +100,8 @@ impl Downsampler {
         linear: bool,
     ) -> Vec<BindGroupId> {
         let first = if linear { LEVELS } else { 0 };
-        let view = |binding, texture| BindGroupEntry {
-            binding,
-            resource: BindingResource::Texture {
-                texture,
-                dimension: TextureViewDimension::D2Array,
-            },
+        let view = |binding, texture| {
+            BindGroupEntry::texture(binding, texture, TextureViewDimension::D2Array)
         };
         (1..views.len())
             .map(|level| {
@@ -138,18 +111,8 @@ impl Downsampler {
                     entries: &[
                         view(0, views[level - 1]),
                         view(1, views[level]),
-                        BindGroupEntry {
-                            binding: 2,
-                            resource: BindingResource::buffer(regions),
-                        },
-                        BindGroupEntry {
-                            binding: 3,
-                            resource: BindingResource::Buffer {
-                                buffer: self.levels,
-                                offset: (first + level as u64) * STRIDE,
-                                size: Some(16),
-                            },
-                        },
+                        BindGroupEntry::buffer(2, regions),
+                        BindGroupEntry::slice(3, self.levels, (first + level as u64) * STRIDE, 16),
                     ],
                 })
             })
@@ -194,12 +157,8 @@ impl Downsampler {
         scratch: TextureId,
         regions: BufferId,
     ) -> BindGroupId {
-        let view = |binding, texture| BindGroupEntry {
-            binding,
-            resource: BindingResource::Texture {
-                texture,
-                dimension: TextureViewDimension::D2Array,
-            },
+        let view = |binding, texture| {
+            BindGroupEntry::texture(binding, texture, TextureViewDimension::D2Array)
         };
         gpu.create_bind_group(&BindGroupDesc {
             label: "extend",
@@ -207,18 +166,8 @@ impl Downsampler {
             entries: &[
                 view(0, level0),
                 view(1, scratch),
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::buffer(regions),
-                },
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::Buffer {
-                        buffer: self.levels,
-                        offset: 0,
-                        size: Some(16),
-                    },
-                },
+                BindGroupEntry::buffer(2, regions),
+                BindGroupEntry::slice(3, self.levels, 0, 16),
             ],
         })
     }

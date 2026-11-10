@@ -1,6 +1,5 @@
 use crate::{
-    BindGroupId, BufferId, ComputePipelineId, IndexFormat, RenderBundleId, RenderPipelineId,
-    TextureId,
+    BindGroupId, BufferId, ComputePipelineId, RenderBundleId, RenderPipelineId, TextureId,
 };
 
 /// One pass of a submission.
@@ -107,10 +106,10 @@ pub enum RenderCommand {
         vertices: std::ops::Range<u32>,
         instances: std::ops::Range<u32>,
     },
-    /// Binds `buffer` from `offset` to the end as the index buffer.
+    /// Binds `buffer` from `offset` to the end as the index buffer, of
+    /// u32 indices.
     SetIndexBuffer {
         buffer: BufferId,
-        format: IndexFormat,
         offset: u64,
     },
     DrawIndexed {

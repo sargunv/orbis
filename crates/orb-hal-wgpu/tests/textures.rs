@@ -1,6 +1,7 @@
 //! Textures through orb-hal on the default adapter: writes, array views,
 //! samplers in bind groups.
 
+use orb_hal::TextureViewDimension::D2Array;
 use orb_hal::*;
 use orb_hal_wgpu::WgpuGpu;
 
@@ -56,43 +57,22 @@ fn samples_written_layers_of_a_texture_array() {
     let sampler = gpu.create_sampler(&SamplerDesc {
         label: "nearest",
         filter: FilterMode::Nearest,
-        address: AddressMode::ClampToEdge,
         mipmap_filter: FilterMode::Nearest,
         anisotropy: 1,
     });
     let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
         label: "pages",
         entries: &[
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Texture {
-                    sample: TextureSampleType::Float { filterable: true },
-                    dimension: orb_hal::TextureViewDimension::D2Array,
-                },
-            },
-            BindGroupLayoutEntry {
-                binding: 1,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Sampler { filtering: true },
-            },
+            BindGroupLayoutEntry::texture(0, ShaderStages::FRAGMENT, true, D2Array),
+            BindGroupLayoutEntry::sampler(1, ShaderStages::FRAGMENT, true),
         ],
     });
     let group = gpu.create_bind_group(&BindGroupDesc {
         label: "pages",
         layout,
         entries: &[
-            BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Texture {
-                    texture: pages,
-                    dimension: orb_hal::TextureViewDimension::D2Array,
-                },
-            },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::Sampler(sampler),
-            },
+            BindGroupEntry::texture(0, pages, D2Array),
+            BindGroupEntry::sampler(1, sampler),
         ],
     });
     let module = gpu.create_shader_module(&ShaderModuleDesc {
@@ -106,7 +86,7 @@ fn samples_written_layers_of_a_texture_array() {
         constants: &[],
     };
     let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-        cull_mode: None,
+        cull_back: false,
         label: "sample",
         bind_group_layouts: &[layout],
         vertex: stage("vs"),

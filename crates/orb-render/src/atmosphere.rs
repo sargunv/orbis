@@ -5,7 +5,8 @@
 //! horizon: a line on flat surfaces, a sphere on the globe. Style values
 //! are written only when they or the view change.
 
-use crate::{TargetFormat, draw_pipeline};
+use crate::TargetFormat;
+use crate::pipeline::Draw;
 use orb_hal::*;
 use orb_shaders::{SCATTER_SHADER, SKY_SHADER, Shader};
 
@@ -219,24 +220,15 @@ fn sky_group(
 ) -> (BindGroupLayoutId, BindGroupId) {
     let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
         label: "sky",
-        entries: &[0, 1].map(|binding| BindGroupLayoutEntry {
-            binding,
-            visibility: ShaderStages::FRAGMENT,
-            ty: BindingType::Uniform,
-        }),
+        entries: &[0, 1]
+            .map(|binding| BindGroupLayoutEntry::uniform(binding, ShaderStages::FRAGMENT)),
     });
     let group = gpu.create_bind_group(&BindGroupDesc {
         label: "sky",
         layout,
         entries: &[
-            BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::buffer(frame),
-            },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::buffer(uniform),
-            },
+            BindGroupEntry::buffer(0, frame),
+            BindGroupEntry::buffer(1, uniform),
         ],
     });
     (layout, group)
@@ -248,13 +240,8 @@ fn pipeline(
     target: TargetFormat,
     layout: BindGroupLayoutId,
 ) -> RenderPipelineId {
-    draw_pipeline(
-        gpu,
-        shader,
-        PrimitiveTopology::TriangleList,
-        target,
-        &[layout],
-    )
+    let blend = Some(BlendState::PremultipliedAlpha);
+    Draw::new(shader, &[layout], target, blend).make(gpu)
 }
 
 impl crate::release::Release for Atmosphere {

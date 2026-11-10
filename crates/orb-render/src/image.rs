@@ -18,6 +18,7 @@ use crate::scene::{PageTexture, Pixels, TilePage};
 use orb_hal::*;
 use orb_shaders::{COLOR_RELIEF_SHADER, HILLSHADE_SHADER, HILLSHADE_SLOPES_SHADER, RASTER_SHADER};
 
+use crate::pipeline::Draw;
 use crate::{Family, OutOfSpace, TargetFormat};
 
 /// Words per image tile property row: texture layer; the latitudes of the
@@ -211,40 +212,20 @@ impl Images {
         target: TargetFormat,
         draw_layout: BindGroupLayoutId,
     ) -> Self {
-        let vf = ShaderStages::VERTEX | ShaderStages::FRAGMENT;
+        use BindGroupLayoutEntry as E;
         let fs = ShaderStages::FRAGMENT;
-        let array = |binding| BindGroupLayoutEntry {
-            binding,
-            visibility: fs,
-            ty: BindingType::Texture {
-                sample: TextureSampleType::Float { filterable: true },
-                dimension: TextureViewDimension::D2Array,
-            },
-        };
-        let sampler = |binding| BindGroupLayoutEntry {
-            binding,
-            visibility: fs,
-            ty: BindingType::Sampler { filtering: true },
-        };
-        let uniform = BindGroupLayoutEntry {
-            binding: 0,
-            visibility: vf,
-            ty: BindingType::Uniform,
-        };
-        let image_entries = [uniform, array(1), sampler(2), sampler(3)];
+        let image_entries = [
+            E::uniform(0, ShaderStages::VERTEX | fs),
+            E::texture(1, fs, true, TextureViewDimension::D2Array),
+            E::sampler(2, fs, true),
+            E::sampler(3, fs, true),
+        ];
         let image_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "image node",
             entries: &image_entries,
         });
         let mut relief_entries = image_entries.to_vec();
-        relief_entries.push(BindGroupLayoutEntry {
-            binding: 4,
-            visibility: fs,
-            ty: BindingType::Texture {
-                sample: TextureSampleType::Float { filterable: true },
-                dimension: TextureViewDimension::D2,
-            },
-        });
+        relief_entries.push(E::texture(4, fs, true, TextureViewDimension::D2));
         let relief_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "color relief node",
             entries: &relief_entries,
@@ -256,7 +237,6 @@ impl Images {
             gpu.create_sampler(&SamplerDesc {
                 label,
                 filter,
-                address: AddressMode::ClampToEdge,
                 mipmap_filter: filter,
                 anisotropy,
             })
@@ -322,13 +302,8 @@ impl Images {
                 Family::Hillshade => (&HILLSHADE_SHADER, self.image_layout),
                 _ => (&COLOR_RELIEF_SHADER, self.relief_layout),
             };
-            crate::draw_pipeline(
-                gpu,
-                shader,
-                PrimitiveTopology::TriangleList,
-                target,
-                &[draw_layout, layout],
-            )
+            let blend = Some(BlendState::PremultipliedAlpha);
+            Draw::new(shader, &[draw_layout, layout], target, blend).make(gpu)
         })
     }
 
@@ -341,13 +316,8 @@ impl Images {
         };
         let layouts = [self.draw_layout, self.image_layout];
         *self.slopes.get_or_insert_with(|| {
-            crate::draw_pipeline(
-                gpu,
-                &HILLSHADE_SLOPES_SHADER,
-                PrimitiveTopology::TriangleList,
-                target,
-                &layouts,
-            )
+            let blend = Some(BlendState::PremultipliedAlpha);
+            Draw::new(&HILLSHADE_SLOPES_SHADER, &layouts, target, blend).make(gpu)
         })
     }
 
@@ -768,30 +738,13 @@ impl Images {
                 binding: 0,
                 resource: uniform,
             },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::Texture {
-                    texture,
-                    dimension: TextureViewDimension::D2Array,
-                },
-            },
-            BindGroupEntry {
-                binding: 2,
-                resource: BindingResource::Sampler(self.linear),
-            },
-            BindGroupEntry {
-                binding: 3,
-                resource: BindingResource::Sampler(self.nearest),
-            },
+            BindGroupEntry::texture(1, texture, TextureViewDimension::D2Array),
+            BindGroupEntry::sampler(2, self.linear),
+            BindGroupEntry::sampler(3, self.nearest),
         ];
         let layout = if family == Family::ColorRelief {
-            entries.push(BindGroupEntry {
-                binding: 4,
-                resource: BindingResource::Texture {
-                    texture: node.ramp.unwrap_or(self.placeholder_ramp),
-                    dimension: TextureViewDimension::D2,
-                },
-            });
+            let ramp = node.ramp.unwrap_or(self.placeholder_ramp);
+            entries.push(BindGroupEntry::texture(4, ramp, TextureViewDimension::D2));
             self.relief_layout
         } else {
             self.image_layout
@@ -809,9 +762,11 @@ impl Images {
 /// read from a uniform slot of its own.
 mod prepare {
     use orb_hal::*;
-    use orb_shaders::{PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER, Shader};
+    use orb_shaders::{PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER};
 
     use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, Page, prepare_job};
+    use crate::TargetFormat;
+    use crate::pipeline::Draw;
     use crate::release::Release;
 
     /// A job slot's bytes; jobs are 64 bytes.
@@ -889,51 +844,19 @@ mod prepare {
 
     impl Draws {
         pub(super) fn new(gpu: &mut dyn Gpu) -> Self {
+            let fs = ShaderStages::FRAGMENT;
             let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
                 label: "prepare draw",
                 entries: &[
-                    BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: ShaderStages::FRAGMENT,
-                        ty: BindingType::Texture {
-                            sample: TextureSampleType::Float { filterable: false },
-                            dimension: TextureViewDimension::D2Array,
-                        },
-                    },
-                    BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: ShaderStages::FRAGMENT,
-                        ty: BindingType::Uniform,
-                    },
+                    BindGroupLayoutEntry::texture(0, fs, false, TextureViewDimension::D2Array),
+                    BindGroupLayoutEntry::uniform(2, fs),
                 ],
             });
-            let mut pipeline = |shader: &Shader| {
-                let module = crate::shader_module(gpu, shader);
-                let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-                    label: shader.label,
-                    bind_group_layouts: &[layout],
-                    vertex: ShaderStage {
-                        module,
-                        entry_point: shader.vertex,
-                        constants: &[],
-                    },
-                    fragment: ShaderStage {
-                        module,
-                        entry_point: shader.fragment,
-                        constants: &[],
-                    },
-                    targets: &[ColorTargetState {
-                        format: TextureFormat::Rgba8Unorm,
-                        blend: None,
-                    }],
-                    depth: None,
-                    topology: PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    sample_count: 1,
-                });
-                gpu.destroy_shader_module(module);
-                pipeline
+            let target = TargetFormat {
+                color: TextureFormat::Rgba8Unorm,
+                sample_count: 1,
             };
+            let mut pipeline = |shader| Draw::new(shader, &[layout], target, None).make(gpu);
             Self {
                 pad: pipeline(&PREPARE_PAD_SHADER),
                 slope: pipeline(&PREPARE_SLOPE_SHADER),
@@ -995,21 +918,13 @@ mod prepare {
                             label,
                             layout: self.layout,
                             entries: &[
-                                BindGroupEntry {
-                                    binding: 0,
-                                    resource: BindingResource::Texture {
-                                        texture,
-                                        dimension: TextureViewDimension::D2Array,
-                                    },
-                                },
-                                BindGroupEntry {
-                                    binding: 2,
-                                    resource: BindingResource::Buffer {
-                                        buffer: targets.jobs,
-                                        offset: at,
-                                        size: Some(prepare_job::WORDS as u64 * 4),
-                                    },
-                                },
+                                BindGroupEntry::texture(0, texture, TextureViewDimension::D2Array),
+                                BindGroupEntry::slice(
+                                    2,
+                                    targets.jobs,
+                                    at,
+                                    prepare_job::WORDS as u64 * 4,
+                                ),
                             ],
                         })
                     };

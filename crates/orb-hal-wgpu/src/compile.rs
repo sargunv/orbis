@@ -147,7 +147,7 @@ pub(crate) struct RenderJob {
     pub(crate) targets: Vec<ColorTargetState>,
     pub(crate) depth: Option<DepthState>,
     pub(crate) topology: PrimitiveTopology,
-    pub(crate) cull_mode: Option<Face>,
+    pub(crate) cull_back: bool,
     pub(crate) sample_count: u32,
     pub(crate) cache: Option<wgpu::PipelineCache>,
 }
@@ -271,10 +271,7 @@ impl RenderJob {
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState {
-                cull_mode: self.cull_mode.map(|face| match face {
-                    Face::Front => wgpu::Face::Front,
-                    Face::Back => wgpu::Face::Back,
-                }),
+                cull_mode: self.cull_back.then_some(wgpu::Face::Back),
                 topology: match self.topology {
                     PrimitiveTopology::LineList => wgpu::PrimitiveTopology::LineList,
                     PrimitiveTopology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
@@ -285,7 +282,7 @@ impl RenderJob {
             depth_stencil: self.depth.map(|d| wgpu::DepthStencilState {
                 format: convert::texture_format(d.format),
                 depth_write_enabled: Some(d.write),
-                depth_compare: Some(convert::compare(d.compare)),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -800,13 +797,6 @@ mod web {
                             ("alpha", component("one", "one-minus-src-alpha")),
                         ]),
                     )),
-                    Some(BlendState::Multiply) => fields.push((
-                        "blend",
-                        dict(&[
-                            ("color", component("zero", "src")),
-                            ("alpha", component("zero", "one")),
-                        ]),
-                    )),
                     None => {}
                 }
                 dict(&fields)
@@ -821,15 +811,8 @@ mod web {
             }
             .into(),
         )];
-        if let Some(face) = job.cull_mode {
-            primitive.push((
-                "cullMode",
-                match face {
-                    Face::Front => "front",
-                    Face::Back => "back",
-                }
-                .into(),
-            ));
+        if job.cull_back {
+            primitive.push(("cullMode", "back".into()));
         }
         let mut fields = vec![
             ("label", job.label.as_str().into()),
@@ -848,17 +831,7 @@ mod web {
                 dict(&[
                     ("format", format(depth.format).into()),
                     ("depthWriteEnabled", depth.write.into()),
-                    (
-                        "depthCompare",
-                        match depth.compare {
-                            CompareFunction::Always => "always",
-                            CompareFunction::Less => "less",
-                            CompareFunction::LessEqual => "less-equal",
-                            CompareFunction::Greater => "greater",
-                            CompareFunction::GreaterEqual => "greater-equal",
-                        }
-                        .into(),
-                    ),
+                    ("depthCompare", "greater-equal".into()),
                 ]),
             ));
         }
@@ -903,19 +876,17 @@ mod web {
                         )]),
                     ),
                     BindingType::Texture {
-                        sample,
+                        filterable,
                         dimension: d,
                     } => (
                         "texture",
                         dict(&[
                             (
                                 "sampleType",
-                                match sample {
-                                    TextureSampleType::Float { filterable: true } => "float",
-                                    TextureSampleType::Float { filterable: false } => {
-                                        "unfilterable-float"
-                                    }
-                                    TextureSampleType::Uint => "uint",
+                                if filterable {
+                                    "float"
+                                } else {
+                                    "unfilterable-float"
                                 }
                                 .into(),
                             ),
