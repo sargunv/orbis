@@ -16,9 +16,10 @@ mod pixelmatch_cpp;
 mod platforms;
 mod query;
 mod scope;
+mod tally;
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ use serde_json::{Value, json};
 
 use images::Image;
 use metadata::Metadata;
+use tally::Tally;
 
 fn main() -> ExitCode {
     match run() {
@@ -165,82 +167,47 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
             fixtures.display()
         ));
     }
-    let output = root.join("docs/scratch/rt").join(name);
-    if output.exists() {
-        for entry in std::fs::read_dir(&output).map_err(|e| e.to_string())? {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            if path.is_dir() {
-                std::fs::remove_dir_all(path)
-            } else {
-                std::fs::remove_file(path)
-            }
-            .map_err(|e| e.to_string())?;
-        }
-    }
+    let mut tally = Tally::start(root.join("docs/scratch/rt").join(name))?;
+    let output = tally.output.clone();
     std::fs::create_dir_all(output.join("failures")).map_err(|e| e.to_string())?;
-    let started = Instant::now();
-    let mut backend = match name {
-        "chrome" | "chrome-webgl2" => Backend::Chrome(chrome::Chrome::new(
-            root,
-            &assets(root),
-            fetch::Assets::GlJs,
-            name == "chrome-webgl2",
-        )?),
-        _ => runtime(&assets(root), fetch::Assets::GlJs)?,
-    };
+    let mut backend = tally::backend(root, name, &assets(root), fetch::Assets::GlJs)?;
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
     paths.retain(|path| matches(&test_id(path, &fixtures), filter));
     let assets = assets(root);
-    let mut results = Vec::new();
-    let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
-    let mut skip_counts: BTreeMap<String, usize> = BTreeMap::new();
     for path in paths {
         let id = test_id(&path, &fixtures);
         let result = run_test(&path, &id, &output, &assets, &mut backend)?;
-        let status = result["status"].as_str().expect("our status");
-        prefixes.entry(prefix(&id).into()).or_default().add(status);
-        if let Some(reasons) = result["skip_reasons"].as_array() {
-            for reason in reasons {
-                *skip_counts
-                    .entry(reason.as_str().expect("our reason").into())
-                    .or_default() += 1;
-            }
-        }
-        if status == "fail" {
-            eprintln!(
-                "FAIL {name} {id}: {} ({:.2}% pixels)",
-                result["failure_reason"],
-                result["difference"].as_f64().unwrap_or(0.0) * 100.0
-            );
-        }
-        results.push(result);
+        print_failure(name, &id, &result);
+        tally.add(prefix(&id), result);
     }
-    let total = prefixes.values().fold(Counts::default(), |mut total, c| {
-        total.pass += c.pass;
-        total.fail += c.fail;
-        total.skip += c.skip;
-        total
-    });
-    let mut skip_counts: Vec<_> = skip_counts.into_iter().collect();
-    skip_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let browser = match &backend {
-        Backend::Chrome(c) => c.version.clone(),
-        _ => Value::Null,
-    };
-    let summary = json!({
+    tally.finish(json!({
         "filter": filter,
-        "platform": {"name":name,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"browser":browser},
+        "platform": platform(name, &backend),
         "comparison": {"metric":"pixelmatch-8.0.0-oklab-hyab", "includeAA":false, "checkerboard":true, "default_threshold":0.1285, "default_allowed":0.00025},
-        "total_seconds": started.elapsed().as_secs_f64(),
-        "totals": total.json(),
-        "prefixes": prefixes.iter().map(|(p,c)| (p.clone(), c.json())).collect::<BTreeMap<_,_>>(),
-        "skip_reasons": skip_counts.iter().map(|(reason,count)| json!({"reason":reason,"count":count})).collect::<Vec<_>>(),
-        "tests": results,
-    });
-    write_json(&output.join("summary.json"), &summary)?;
-    Ok(summary)
+    }))
+}
+
+/// Says on stderr why a render test failed, as it runs.
+pub(crate) fn print_failure(suite: &str, id: &str, result: &Value) {
+    if result["status"] == "fail" {
+        eprintln!(
+            "FAIL {suite} {id}: {} ({:.2}% pixels)",
+            result["failure_reason"],
+            result["difference"].as_f64().unwrap_or(0.0) * 100.0
+        );
+    }
+}
+
+/// A render suite summary's `platform`: `name`, where it ran, and Chrome's
+/// version for a backend in Chrome.
+pub(crate) fn platform(name: &str, backend: &Backend) -> Value {
+    let browser = match backend {
+        Backend::Chrome(c) => c.version.clone(),
+        Backend::Native(_) => Value::Null,
+    };
+    json!({"name":name,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"browser":browser})
 }
 
 fn write_json(path: &Path, value: &Value) -> Result<(), String> {
@@ -708,38 +675,4 @@ fn finish_skip(result: &mut Value, reasons: &BTreeSet<String>, started: Instant)
     result["status"] = json!("skip");
     result["skip_reasons"] = json!(reasons);
     result["seconds"] = json!(started.elapsed().as_secs_f64());
-}
-
-#[derive(Default)]
-struct Counts {
-    pass: usize,
-    fail: usize,
-    skip: usize,
-}
-
-impl Counts {
-    fn add(&mut self, status: &str) {
-        match status {
-            "pass" => self.pass += 1,
-            "fail" => self.fail += 1,
-            "skip" => self.skip += 1,
-            _ => unreachable!(),
-        }
-    }
-    fn rate(&self) -> Option<f64> {
-        let scope = self.pass + self.fail;
-        (scope != 0).then(|| self.pass as f64 / scope as f64)
-    }
-    fn json(&self) -> Value {
-        json!({"pass":self.pass,"fail":self.fail,"skip":self.skip,"pass_rate":self.rate()})
-    }
-    fn print(&self, name: &str) {
-        let rate = self
-            .rate()
-            .map_or_else(|| "n/a".into(), |r| format!("{:.2}%", r * 100.0));
-        println!(
-            "{name:<15} {:4}  {:4}  {:4}  {rate:>8}",
-            self.pass, self.fail, self.skip
-        );
-    }
 }

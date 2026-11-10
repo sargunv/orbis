@@ -7,7 +7,6 @@
 //! differ only in geometry: which tile's copy of a feature answered, or
 //! how that tile clipped it.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -15,9 +14,10 @@ use orb_api::{Event, Map};
 use serde_json::{Value, json};
 
 use crate::metadata::Metadata;
+use crate::tally::{self, Tally};
 use crate::{
-    Backend, Counts, assets, chrome, discover, finish_skip, record_warnings, render_native,
-    runtime, scope, test_id, write_json,
+    Backend, assets, discover, finish_skip, record_warnings, render_native, scope, test_id,
+    write_json,
 };
 
 /// Metadata keys only the query harness reads.
@@ -46,65 +46,40 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
             fixtures.display()
         ));
     }
-    let output = root.join("docs/scratch/rt/query").join(name);
-    std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
-    let started = Instant::now();
-    let mut backend = if name == "chrome" {
-        Backend::Chrome(chrome::Chrome::new(
-            root,
-            &assets(root),
-            crate::fetch::Assets::GlJs,
-            false,
-        )?)
-    } else {
-        runtime(&assets(root), crate::fetch::Assets::GlJs)?
-    };
+    let mut tally = Tally::start(root.join("docs/scratch/rt/query").join(name))?;
+    let output = tally.output.clone();
+    let mut backend = tally::backend(root, name, &assets(root), crate::fetch::Assets::GlJs)?;
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
     paths.retain(|path| crate::matches(&test_id(path, &fixtures), filter));
     let assets = assets(root);
-    let mut totals = Counts::default();
     let (mut ordered, mut shapes) = (0, 0);
-    let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
-    let mut results = Vec::new();
     for path in paths {
         let id = test_id(&path, &fixtures);
         let result = run_test(&path, &id, &output, name, &assets, &mut backend)?;
-        let status = result["status"].as_str().expect("our status");
-        if status == "pass" && result["in_order"] == true {
+        if result["status"] == "pass" && result["in_order"] == true {
             ordered += 1;
         }
         if result["geometry_only"] == true {
             shapes += 1;
         }
-        prefixes.entry(prefix(&id)).or_default().add(status);
-        totals.add(status);
-        results.push(result);
+        tally.add(&prefix(&id), result);
     }
-    let summary = json!({
-        "platform": name,
-        "total_seconds": started.elapsed().as_secs_f64(),
-        "totals": totals.json(),
-        "in_order": ordered,
-        "geometry_only": shapes,
-        "prefixes": prefixes.iter().map(|(p, c)| (p.clone(), c.json())).collect::<BTreeMap<_, _>>(),
-        "tests": results,
-    });
-    write_json(&output.join("summary.json"), &summary)?;
-    println!("\nquery {name}  prefix          pass  fail  skip  in-scope pass rate");
-    for (prefix, counts) in &prefixes {
-        print!("{:<12} ", "");
-        counts.print(prefix);
-    }
-    print!("{:<12} ", "");
-    totals.print("TOTAL");
-    println!("  {ordered} of {} passes in GL JS's order", totals.pass);
+    tally.print(&format!("query {name}"));
+    println!(
+        "  {ordered} of {} passes in GL JS's order",
+        tally.totals.pass
+    );
     println!(
         "  {shapes} of {} failures differ only in geometry",
-        totals.fail
+        tally.totals.fail
     );
-    Ok(summary)
+    tally.finish(json!({
+        "platform": name,
+        "in_order": ordered,
+        "geometry_only": shapes,
+    }))
 }
 
 /// One query test: skipped, or its features compared with `expected.json`.

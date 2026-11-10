@@ -7,7 +7,8 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use crate::{Counts, Suite, images::Image, native, pixelmatch, pixelmatch_cpp, write_json};
+use crate::tally::Counts;
+use crate::{Suite, images::Image, native, pixelmatch, pixelmatch_cpp, write_json};
 
 pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Result<(), String> {
     let output = match suite {
@@ -66,10 +67,10 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
     for (platform, report) in &reports {
         for (prefix, counts) in report["prefixes"].as_object().expect("prefixes") {
             print!("{platform:<9} ");
-            counts_from(counts).print(prefix);
+            Counts::from_json(counts).print(prefix);
         }
         print!("{platform:<9} ");
-        counts_from(&report["totals"]).print("TOTAL");
+        Counts::from_json(&report["totals"]).print("TOTAL");
         if let Some(ignored) = report.get("native_ignored") {
             println!(
                 "  Native ignores {} of them: {} pass, {} fail, {} skip",
@@ -160,14 +161,6 @@ fn webgl2_report(webgpu: &Value, gl: &Value) -> Value {
         }
     }
     json!({"lost": lost, "causes": causes})
-}
-
-fn counts_from(v: &Value) -> Counts {
-    Counts {
-        pass: v["pass"].as_u64().unwrap() as usize,
-        fail: v["fail"].as_u64().unwrap() as usize,
-        skip: v["skip"].as_u64().unwrap() as usize,
-    }
 }
 
 /// Runs the suite in the software-rendering container: Mesa's lavapipe
@@ -466,7 +459,7 @@ fn run_beside_native(
     let other: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     println!("\nplatform        pass  fail  skip");
     for (name, report) in [("native", &native), (platform, &other)] {
-        let c = counts_from(&report["totals"]);
+        let c = Counts::from_json(&report["totals"]);
         println!("{name:<15} {:>4}  {:>4}  {:>4}", c.pass, c.fail, c.skip);
     }
     let identity = byte_identity(&output, &native, &other, platform)?;

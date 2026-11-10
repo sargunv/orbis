@@ -7,15 +7,13 @@
 //! serialize expressions, so those checks are left out, as they are for
 //! the style-spec suite.
 
-use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::Instant;
 
 use orb_expr::conformance::{Reference, check};
 use serde_json::json;
 
 use crate::native::{Manifest, mirror};
-use crate::{Counts, write_json};
+use crate::tally::Tally;
 
 pub(crate) fn run(root: &Path, filter: &str) -> Result<(), String> {
     let manifest = Manifest::read(root)?;
@@ -27,14 +25,10 @@ pub(crate) fn run(root: &Path, filter: &str) -> Result<(), String> {
             dir.display()
         ));
     }
-    let started = Instant::now();
+    let mut tally = Tally::start(root.join("docs/scratch/rt/native-expression"))?;
     let mut paths = Vec::new();
     find(&dir, &mut paths)?;
     paths.sort();
-    let mut totals = Counts::default();
-    let mut ignored = Counts::default();
-    let mut groups: BTreeMap<String, Counts> = BTreeMap::new();
-    let mut results = Vec::new();
     for path in paths {
         let id = path
             .parent()
@@ -64,55 +58,20 @@ pub(crate) fn run(root: &Path, filter: &str) -> Result<(), String> {
             match outcome {
                 Ok(()) => "pass",
                 Err(message) => {
+                    println!("FAIL {message}");
                     result["failure"] = json!(message);
                     "fail"
                 }
             }
         };
         result["status"] = json!(status);
-        totals.add(status);
-        if reason.is_some() {
-            ignored.add(status);
-        }
         let rel = id.strip_prefix("expression-tests/").unwrap_or(&id);
-        groups
-            .entry(rel.split('/').next().unwrap_or(rel).to_string())
-            .or_default()
-            .add(status);
-        results.push(result);
+        tally.add(rel.split('/').next().unwrap_or(rel), result);
     }
-    let output = root.join("docs/scratch/rt/native-expression");
-    std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
-    let summary = json!({
-        "suite": "native-expression",
-        "filter": filter,
-        "total_seconds": started.elapsed().as_secs_f64(),
-        "totals": totals.json(),
-        "native_ignored": ignored.json(),
-        "groups": groups.iter().map(|(g, c)| (g.clone(), c.json())).collect::<BTreeMap<_, _>>(),
-        "tests": results,
-    });
-    write_json(&output.join("summary.json"), &summary)?;
-    for test in summary["tests"].as_array().expect("tests") {
-        if test["status"] == "fail" {
-            println!("FAIL {}", test["failure"].as_str().unwrap_or_default());
-        }
-    }
-    println!("\nnative-expression  group           pass  fail  skip  in-scope pass rate");
-    for (group, counts) in &groups {
-        print!("{:<18} ", "");
-        counts.print(group);
-    }
-    print!("{:<18} ", "");
-    totals.print("TOTAL");
-    println!(
-        "  Native ignores {} of them: {} pass, {} fail, {} skip",
-        ignored.pass + ignored.fail + ignored.skip,
-        ignored.pass,
-        ignored.fail,
-        ignored.skip
-    );
-    println!("\nReport: {}", output.join("summary.json").display());
+    tally.print("native-expression");
+    let report = tally.summary_path();
+    tally.finish(json!({"suite": "native-expression", "filter": filter}))?;
+    println!("\nReport: {}", report.display());
     Ok(())
 }
 

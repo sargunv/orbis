@@ -15,9 +15,10 @@ use serde_json::{Value, json};
 
 use crate::fetch::Assets;
 use crate::images::Image;
+use crate::tally::{self, Tally};
 use crate::{
-    Backend, Counts, chrome, dem, finish_skip, note_warning, operations, pixelmatch_cpp,
-    record_warnings, scope, write_json,
+    Backend, dem, finish_skip, note_warning, operations, pixelmatch_cpp, record_warnings, scope,
+    write_json,
 };
 
 /// Native's runner hard-codes this pixelmatch threshold ("Defined in GL JS").
@@ -755,27 +756,12 @@ fn compare(actual: &Image, expected: &[PathBuf], allowed: f64) -> Result<Compare
 pub(crate) fn run_render_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     let manifest = Manifest::read(root)?;
     let tests = discover(root, "render-tests", filter)?;
-    let output = root.join("docs/scratch/rt/native-render").join(name);
-    if output.exists() {
-        std::fs::remove_dir_all(&output).map_err(|e| e.to_string())?;
-    }
+    let mut tally = Tally::start(root.join("docs/scratch/rt/native-render").join(name))?;
+    let output = tally.output.clone();
     std::fs::create_dir_all(output.join("failures")).map_err(|e| e.to_string())?;
-    let started = Instant::now();
     let assets = assets(root);
-    let mut backend = match name {
-        "chrome" | "chrome-webgl2" => Backend::Chrome(chrome::Chrome::new(
-            root,
-            &assets,
-            Assets::Native,
-            name == "chrome-webgl2",
-        )?),
-        _ => crate::runtime(&assets, Assets::Native)?,
-    };
+    let mut backend = tally::backend(root, name, &assets, Assets::Native)?;
     let gl_js = root.join("fixtures/gl-js/render");
-    let mut results = Vec::new();
-    let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
-    let mut skip_counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut ignored_counts = Counts::default();
     let mut opinion = SecondOpinion::default();
     for (id, path) in tests {
         let result = run_render_test(
@@ -788,56 +774,18 @@ pub(crate) fn run_render_suite(root: &Path, filter: &str, name: &str) -> Result<
             &mut backend,
         )?;
         let status = result["status"].as_str().expect("our status");
-        let rel = id.strip_prefix("render-tests/").unwrap_or(&id);
-        prefixes
-            .entry(crate::prefix(rel).into())
-            .or_default()
-            .add(status);
-        if result["native_ignored"].is_string() {
-            ignored_counts.add(status);
-        }
         opinion.add(&result["gl_js"], status);
-        for reason in result["skip_reasons"].as_array().into_iter().flatten() {
-            *skip_counts
-                .entry(reason.as_str().expect("our reason").into())
-                .or_default() += 1;
-        }
-        if status == "fail" {
-            eprintln!(
-                "FAIL native-render {name} {id}: {} ({:.2}% pixels)",
-                result["failure_reason"],
-                result["difference"].as_f64().unwrap_or(0.0) * 100.0
-            );
-        }
-        results.push(result);
+        crate::print_failure(&format!("native-render {name}"), &id, &result);
+        let rel = id.strip_prefix("render-tests/").unwrap_or(&id);
+        tally.add(crate::prefix(rel), result);
     }
-    let total = prefixes.values().fold(Counts::default(), |mut t, c| {
-        t.pass += c.pass;
-        t.fail += c.fail;
-        t.skip += c.skip;
-        t
-    });
-    let mut skip_counts: Vec<_> = skip_counts.into_iter().collect();
-    skip_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let browser = match &backend {
-        Backend::Chrome(c) => c.version.clone(),
-        Backend::Native(_) => Value::Null,
-    };
-    let summary = json!({
+    tally.finish(json!({
         "suite": "native-render",
         "filter": filter,
-        "platform": {"name":name,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"browser":browser},
+        "platform": crate::platform(name, &backend),
         "comparison": {"metric":"pixelmatch-cpp-61f433cb-yiq-premultiplied", "threshold":THRESHOLD, "default_allowed":ALLOWED},
-        "total_seconds": started.elapsed().as_secs_f64(),
-        "totals": total.json(),
-        "native_ignored": ignored_counts.json(),
         "gl_js": opinion.json(),
-        "prefixes": prefixes.iter().map(|(p,c)| (p.clone(), c.json())).collect::<BTreeMap<_,_>>(),
-        "skip_reasons": skip_counts.iter().map(|(reason,count)| json!({"reason":reason,"count":count})).collect::<Vec<_>>(),
-        "tests": results,
-    });
-    write_json(&output.join("summary.json"), &summary)?;
-    Ok(summary)
+    }))
 }
 
 /// One render test: skipped, or rendered (with any source-replace reruns)
@@ -1131,79 +1079,26 @@ impl SecondOpinion {
 pub(crate) fn run_query_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     let manifest = Manifest::read(root)?;
     let tests = discover(root, "query-tests", filter)?;
-    let output = root.join("docs/scratch/rt/native-query").join(name);
-    if output.exists() {
-        std::fs::remove_dir_all(&output).map_err(|e| e.to_string())?;
-    }
-    std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
-    let started = Instant::now();
+    let mut tally = Tally::start(root.join("docs/scratch/rt/native-query").join(name))?;
+    let output = tally.output.clone();
     let assets = assets(root);
-    let mut backend = match name {
-        "chrome" | "chrome-webgl2" => Backend::Chrome(chrome::Chrome::new(
-            root,
-            &assets,
-            Assets::Native,
-            name == "chrome-webgl2",
-        )?),
-        _ => crate::runtime(&assets, Assets::Native)?,
-    };
-    let mut totals = Counts::default();
-    let mut ignored_counts = Counts::default();
+    let mut backend = tally::backend(root, name, &assets, Assets::Native)?;
     let mut unordered = 0;
-    let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
-    let mut skip_counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut results = Vec::new();
     for (id, path) in tests {
         let result = run_query_test(&manifest, &id, &path, &output, &assets, &mut backend)?;
-        let status = result["status"].as_str().expect("our status");
-        if result["same_features"] == true && status == "fail" {
+        if result["same_features"] == true && result["status"] == "fail" {
             unordered += 1;
         }
-        if result["native_ignored"].is_string() {
-            ignored_counts.add(status);
-        }
-        for reason in result["skip_reasons"].as_array().into_iter().flatten() {
-            *skip_counts
-                .entry(reason.as_str().expect("our reason").into())
-                .or_default() += 1;
-        }
         let rel = id.strip_prefix("query-tests/").unwrap_or(&id);
-        prefixes
-            .entry(rel.split('/').next().unwrap_or(rel).to_string())
-            .or_default()
-            .add(status);
-        totals.add(status);
-        results.push(result);
+        tally.add(rel.split('/').next().unwrap_or(rel), result);
     }
-    let mut skip_counts: Vec<_> = skip_counts.into_iter().collect();
-    skip_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let summary = json!({
+    tally.print(&format!("native-query {name}"));
+    println!("  {unordered} failures have Native's features in another order");
+    tally.finish(json!({
         "suite": "native-query",
         "platform": name,
-        "total_seconds": started.elapsed().as_secs_f64(),
-        "totals": totals.json(),
-        "native_ignored": ignored_counts.json(),
         "out_of_order": unordered,
-        "prefixes": prefixes.iter().map(|(p, c)| (p.clone(), c.json())).collect::<BTreeMap<_, _>>(),
-        "skip_reasons": skip_counts.iter().map(|(reason,count)| json!({"reason":reason,"count":count})).collect::<Vec<_>>(),
-        "tests": results,
-    });
-    write_json(&output.join("summary.json"), &summary)?;
-    println!("\nnative-query {name}  prefix          pass  fail  skip  in-scope pass rate");
-    for (prefix, counts) in &prefixes {
-        print!("{:<19} ", "");
-        counts.print(prefix);
-    }
-    print!("{:<19} ", "");
-    totals.print("TOTAL");
-    println!(
-        "  Native ignores {} of them: {} pass, {} fail",
-        ignored_counts.pass + ignored_counts.fail + ignored_counts.skip,
-        ignored_counts.pass,
-        ignored_counts.fail
-    );
-    println!("  {unordered} failures have Native's features in another order");
-    Ok(summary)
+    }))
 }
 
 fn run_query_test(
