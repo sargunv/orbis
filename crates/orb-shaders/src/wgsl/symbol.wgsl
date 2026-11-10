@@ -9,11 +9,12 @@
 // the vertex arena; its state words, paint rows and the glyph row table in
 // the property arena.
 //
-// Qualcomm's Vulkan driver on the Adreno X1 lost the device making these
-// stages' pipelines (#141) when they were the only stages using some
-// instructions, so they keep to instructions other stages use: no
-// `degrees`, no `&` on `i32`, no `select` between bools and no `vec4`
-// comparison.
+// Qualcomm's Vulkan driver on the Adreno X1 loses the device making these
+// stages' pipelines (#141), and they were then the only stages to use some
+// instructions. Until a run on that driver shows whether those were the
+// cause, the stages keep to instructions other stages use: no `degrees`,
+// no `&` on `i32`, no `select` between bools, no `vec4` comparison and no
+// matrix in a `var`.
 
 // Paint slots: opacity, colour, halo colour, halo width, halo blur, and
 // with `["dev.sargunv.orbis:daylight"]` the colour's and halo colour's
@@ -339,26 +340,28 @@ fn tile_units_per_px(tile: Tile) -> f32 {
 
 // The pitched label plane (GL JS `getPitchedLabelPlaneMatrix`): tile units
 // → plane pixels, and back (`getGlCoordMatrix`).
+// Both keep their matrices in `let`s: no stage holds a matrix in a `var`.
 fn to_pitched_plane(tile: Tile, p: vec2<f32>) -> vec2<f32> {
-    var m = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
-    if (node.flags & ROTATE_WITH_MAP) == 0u {
-        let s = skew_vectors();
-        let det = determinant(s);
-        if det != 0.0 {
-            m = mat2x2<f32>(vec2<f32>(s[1].y, -s[0].y), vec2<f32>(-s[1].x, s[0].x)) * (1.0 / det);
-        } else {
-            m = mat2x2<f32>(vec2<f32>(0.0), vec2<f32>(0.0));
-        }
+    if (node.flags & ROTATE_WITH_MAP) != 0u {
+        let m = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
+        return m * p / tile_units_per_px(tile);
     }
+    let s = skew_vectors();
+    let det = determinant(s);
+    if det == 0.0 {
+        let m = mat2x2<f32>(vec2<f32>(0.0), vec2<f32>(0.0));
+        return m * p / tile_units_per_px(tile);
+    }
+    let m = mat2x2<f32>(vec2<f32>(s[1].y, -s[0].y), vec2<f32>(-s[1].x, s[0].x)) * (1.0 / det);
     return m * p / tile_units_per_px(tile);
 }
 
 fn from_pitched_plane(tile: Tile, p: vec2<f32>) -> vec2<f32> {
-    var m = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
-    if (node.flags & ROTATE_WITH_MAP) == 0u {
-        m = skew_vectors();
+    if (node.flags & ROTATE_WITH_MAP) != 0u {
+        let m = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
+        return m * p * tile_units_per_px(tile);
     }
-    return m * p * tile_units_per_px(tile);
+    return skew_vectors() * p * tile_units_per_px(tile);
 }
 
 // A line label's glyph in the label plane, unless it falls off its line.
