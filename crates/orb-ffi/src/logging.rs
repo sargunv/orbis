@@ -40,10 +40,12 @@ fn release(old: Option<Handler>) {
     }
 }
 
-pub(crate) fn warn(message: &str) {
+pub(crate) fn log(severity: mln_log_severity, message: &str) {
     let handler = HANDLER.lock().unwrap();
     let Some(h) = handler.as_ref() else {
-        eprintln!("orbis: {message}");
+        if severity >= MLN_LOG_SEVERITY_WARNING {
+            eprintln!("orbis: {message}");
+        }
         return;
     };
     let (callback, user_data) = (h.callback, h.user_data);
@@ -55,7 +57,7 @@ pub(crate) fn warn(message: &str) {
             unsafe {
                 callback(
                     user_data.get(),
-                    MLN_LOG_SEVERITY_WARNING,
+                    severity,
                     MLN_LOG_EVENT_GENERAL,
                     0,
                     crate::base::lend(&mut message),
@@ -77,6 +79,7 @@ pub unsafe extern "C" fn mln_log_set_callback(
             let callback = h
                 .callback
                 .ok_or_else(|| crate::base::Failure::argument("handler.callback is null"))?;
+            crate::delivery::check_queue(h.queue.0, "handler.queue")?;
             let new = Handler {
                 callback,
                 user_data: UserData(h.user_data),
@@ -102,11 +105,20 @@ pub unsafe extern "C" fn mln_log_clear_callback(out_diagnostic: *mut mln_diagnos
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_log_set_async_severity_mask(
-    _mask: mln_log_severity_flags,
+    mask: mln_log_severity_flags,
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
-    // Every message is delivered as it's raised; there is no synchronous path
-    // to choose against.
+    // Every message is delivered from the thread that raises it; there is
+    // no synchronous path to choose against.
     // SAFETY: the caller's pointer.
-    unsafe { boundary(out_diagnostic, || Ok(())) }
+    unsafe {
+        boundary(out_diagnostic, || {
+            if mask & !MLN_LOG_SEVERITY_FLAG_ALL != 0 {
+                return Err(crate::base::Failure::argument(format!(
+                    "the severity mask {mask:#x} has bits that name no severity"
+                )));
+            }
+            Ok(())
+        })
+    }
 }

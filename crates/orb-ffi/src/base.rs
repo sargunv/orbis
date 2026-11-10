@@ -208,6 +208,24 @@ pub(crate) unsafe fn put<T>(out: *mut T, value: T, what: &str) -> Result {
     Ok(())
 }
 
+/// Checks an out handle before a create writes it: present, and holding
+/// `MLN_HANDLE_NULL`, so a create never overwrites a live handle.
+///
+/// # Safety
+/// `out` is null or points at a readable 64-bit handle.
+pub(crate) unsafe fn fresh_out<T>(out: *mut T, what: &str) -> Result {
+    if out.is_null() {
+        return Err(Failure::argument(format!("{what} is null")));
+    }
+    // SAFETY: the caller's contract; handles are 64-bit.
+    if unsafe { *out.cast::<u64>() } != 0 {
+        return Err(Failure::argument(format!(
+            "{what} must hold MLN_HANDLE_NULL: it would overwrite a handle"
+        )));
+    }
+    Ok(())
+}
+
 /// A caller's pointer that crosses threads with the callback it goes with.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UserData(pub(crate) *mut c_void);

@@ -1,10 +1,8 @@
-// The handles the C API hands out: a 64-bit id with the kind in its top byte
-// and a counter below that never repeats, so a stale or foreign handle is an
-// error, never a dangling pointer.
+// The handles the C API hands out: a 64-bit id with the kind in its top
+// byte, a slot index and the slot's generation, so a stale, foreign or
+// made-up handle is an error, never a dangling pointer, and says which.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 
 use crate::base::{Failure, Result};
 use crate::delivery::DeliveryQueue;
@@ -67,34 +65,122 @@ impl Object {
     }
 }
 
-static TABLE: LazyLock<Mutex<HashMap<u64, Object>>> = LazyLock::new(Default::default);
-static NEXT: AtomicU64 = AtomicU64::new(1);
+/// Every handle's slot: the generation it last issued, and its object
+/// while it lives.
+struct Table {
+    slots: Vec<(u32, Option<Object>)>,
+    free: Vec<u32>,
+}
 
+static TABLE: Mutex<Table> = Mutex::new(Table {
+    slots: Vec::new(),
+    free: Vec::new(),
+});
+
+fn table() -> std::sync::MutexGuard<'static, Table> {
+    TABLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A handle's parts: kind byte, slot index, generation.
+fn split(handle: u64) -> (u8, u32, u32) {
+    (
+        (handle >> 56) as u8,
+        ((handle >> 32) & 0xFF_FFFF) as u32,
+        handle as u32,
+    )
+}
+
+/// Issues a handle for `object`: a freed slot again with its next
+/// generation, or a new one.
 pub(crate) fn insert(object: Object) -> u64 {
-    let id = ((object.kind() as u64) << 56) | NEXT.fetch_add(1, Ordering::Relaxed);
-    TABLE.lock().unwrap().insert(id, object);
-    id
+    let kind = object.kind() as u64;
+    let mut table = table();
+    let index = match table.free.pop() {
+        Some(index) => index,
+        None => {
+            table.slots.push((0, None));
+            (table.slots.len() - 1) as u32
+        }
+    };
+    let slot = &mut table.slots[index as usize];
+    slot.0 += 1;
+    slot.1 = Some(object);
+    (kind << 56) | (u64::from(index) << 32) | u64::from(slot.0)
 }
 
+/// The object a handle names, if it lives.
 pub(crate) fn get(handle: u64) -> Option<Object> {
-    TABLE.lock().unwrap().get(&handle).cloned()
+    let (kind, index, generation) = split(handle);
+    let table = table();
+    match table.slots.get(index as usize) {
+        Some((issued, Some(object))) if *issued == generation && object.kind() as u8 == kind => {
+            Some(object.clone())
+        }
+        _ => None,
+    }
 }
 
+/// Retires a handle, freeing its slot for the next one.
 pub(crate) fn remove(handle: u64) -> Option<Object> {
-    TABLE.lock().unwrap().remove(&handle)
+    let (kind, index, generation) = split(handle);
+    let mut table = table();
+    let slot = table.slots.get_mut(index as usize)?;
+    if slot.0 != generation || slot.1.as_ref().is_none_or(|o| o.kind() as u8 != kind) {
+        return None;
+    }
+    let object = slot.1.take();
+    table.free.push(index);
+    object
+}
+
+/// The kind a handle's top byte names.
+fn kind_of(byte: u8) -> Option<Kind> {
+    [
+        Kind::Runtime,
+        Kind::Map,
+        Kind::Session,
+        Kind::Batch,
+        Kind::Queue,
+        Kind::OffscreenDevice,
+        Kind::Pacer,
+    ]
+    .into_iter()
+    .find(|k| *k as u8 == byte)
 }
 
 fn lookup(handle: u64, kind: Kind) -> Result<Object> {
+    let name = kind.name();
     if handle == 0 {
-        return Err(Failure::argument(format!("the {} is null", kind.name())));
+        return Err(Failure::argument(format!("the {name} handle is null")));
     }
-    match get(handle) {
-        Some(object) if object.kind() == kind => Ok(object),
-        Some(_) => Err(Failure::argument(format!(
-            "the handle isn't an {}",
-            kind.name()
+    let (byte, index, generation) = split(handle);
+    let Some(actual) = kind_of(byte) else {
+        return Err(Failure::argument(format!(
+            "the {name} handle is malformed: no handle kind has its top byte"
+        )));
+    };
+    if actual != kind {
+        return Err(Failure::argument(format!(
+            "an {} handle was passed where an {name} handle is expected",
+            actual.name()
+        )));
+    }
+    let table = table();
+    match table.slots.get(index as usize) {
+        None => Err(Failure::argument(format!(
+            "the {name} handle was never created"
         ))),
-        None => Err(Failure::state(format!("the {} was released", kind.name()))),
+        Some((issued, _)) if generation > *issued || generation == 0 => Err(Failure::argument(
+            format!("the {name} handle was never created"),
+        )),
+        Some((issued, Some(object))) if *issued == generation && object.kind() == kind => {
+            Ok(object.clone())
+        }
+        Some(_) => Err(Failure::state(format!(
+            "the {name} handle is stale: its object was released"
+        ))),
     }
 }
 

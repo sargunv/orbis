@@ -67,9 +67,12 @@ impl SessionHandle {
             } else {
                 Err(Failure::state("the session was released"))
             };
-            if let Some(c) = completion {
-                c.complete(result, 0);
+            if result.is_ok()
+                && let Some(entry) = state.sessions.get_mut(&id)
+            {
+                entry.generation += 1;
             }
+            state.complete(completion, result, 0);
         })
     }
 }
@@ -86,6 +89,8 @@ pub(crate) struct SessionEntry {
     redraw_signaled: bool,
     pacer: Option<Arc<FramePacer>>,
     frame_generation: u64,
+    /// Grows with each change to the session's state.
+    generation: u64,
     /// The last still image, which a readback returns.
     still: Option<orb_api::Image>,
 }
@@ -102,8 +107,13 @@ impl Drop for SessionEntry {
 }
 
 impl SessionEntry {
+    pub(crate) fn publish(&self) {
+        self.sync_state();
+    }
+
     fn sync_state(&self) {
         let mut s = self.handle.state.lock().unwrap();
+        s.generation = self.generation;
         s.extent = mln_logical_extent {
             width: self.logical.width,
             height: self.logical.height,
@@ -213,16 +223,27 @@ unsafe fn attach(
             "Orbis sessions have no GPU sync objects to share",
         ));
     }
-    if out_session.is_null() {
-        return Err(Failure::argument("out_session is null"));
-    }
     // SAFETY: as above.
-    let completion = unsafe { Completion::from_c(completion)? };
+    unsafe { crate::base::fresh_out(out_session, "out_session")? };
+    let frame_wake = Wake::from_c(&options.frame_wake, "options.frame_wake")?;
+    let redraw_wake = Wake::from_c(&options.redraw_wake, "options.redraw_wake")?;
+    Wake::from_c(&options.driver_work_wake, "options.driver_work_wake")?;
+    // SAFETY: as above.
+    let completion = unsafe { Completion::required(completion)? };
+    if map_handle.snapshot().is_none() {
+        return Err(Failure::state("the map isn't made yet"));
+    }
+    if map_handle
+        .has_session
+        .swap(true, std::sync::atomic::Ordering::AcqRel)
+    {
+        return Err(Failure::state("the map already has a render session"));
+    }
     let readback = matches!(spec, TargetSpec::Offscreen);
     let handle = Arc::new(SessionHandle {
         runtime: map_handle.runtime.clone(),
         id: OnceLock::new(),
-        frame_wake: Wake::from_c(&options.frame_wake),
+        frame_wake,
         results: Mutex::default(),
         notified: AtomicBool::new(false),
         tick: AtomicBool::new(false),
@@ -237,17 +258,15 @@ unsafe fn attach(
     });
     let id = handles::insert(Object::Session(handle.clone()));
     let _ = handle.id.set(id);
-    let redraw_wake = Wake::from_c(&options.redraw_wake);
     let map_id = map.0;
+    let map_flag = map_handle.clone();
+    let map_flag = MapFlag(map_flag);
     map_handle.runtime.post(move |state| {
         let result = (|| {
             let entry = state
                 .maps
                 .get(&map_id)
                 .ok_or_else(|| Failure::state("the map was released"))?;
-            if entry.session.is_some() {
-                return Err(Failure::state("the map already has a render session"));
-            }
             let scale = entry.extent.scale_factor;
             let target = match spec {
                 TargetSpec::Offscreen => {
@@ -278,20 +297,18 @@ unsafe fn attach(
                     redraw_signaled: false,
                     pacer: None,
                     frame_generation: 0,
+                    generation: 1,
                     still: None,
                 };
                 handle.state.lock().unwrap().state = MLN_RENDER_SESSION_STATE_ATTACHED;
                 entry.sync_state();
                 state.sessions.insert(id, entry);
-                if let Some(c) = completion {
-                    c.complete(Ok(Value::None), 0);
-                }
+                state.complete(Some(completion), Ok(Value::None), 0);
             }
             Err(failure) => {
                 handles::remove(id);
-                if let Some(c) = completion {
-                    c.complete(Err(failure), 0);
-                }
+                map_flag.store(false, std::sync::atomic::Ordering::Release);
+                state.complete(Some(completion), Err(failure), 0);
             }
         }
     })?;
@@ -620,7 +637,8 @@ pub(crate) fn pump(state: &mut State) {
                 view,
             ));
             if disposition == MLN_RENDER_RESULT_RENDERED {
-                rendered.push((entry.map, map.event_mask, needs_repaint));
+                map.render_update_generation += 1;
+                rendered.push((entry.map, needs_repaint));
             }
         }
         entry.sync_state();
@@ -635,18 +653,13 @@ pub(crate) fn pump(state: &mut State) {
             wake.signal();
         }
     }
-    for (map, mask, needs_repaint) in rendered {
+    for (map, needs_repaint) in rendered {
         state.event(
             map,
-            mask,
             MLN_RUNTIME_EVENT_MAP_RENDER_FRAME_FINISHED,
             Payload::RenderFrame { needs_repaint },
             String::new(),
         );
-    }
-    let ids: Vec<u64> = state.maps.keys().copied().collect();
-    for id in ids {
-        crate::map::take_events(state, id);
     }
 }
 
@@ -774,6 +787,9 @@ pub unsafe extern "C" fn mln_render_session_get_failure(
 /// The pixels a readback returns: the last still image, or the texture.
 fn readback(state: &mut State, id: u64) -> Result<Value> {
     let entry = state.sessions.get_mut(&id).expect("session");
+    if entry.still.is_none() && entry.frame_generation == 0 {
+        return Err(Failure::state("the session has no rendered frame to read"));
+    }
     let (width, height, pixels) = match &entry.still {
         Some(image) => (image.width, image.height, image.pixels.clone()),
         None => {
@@ -847,14 +863,12 @@ pub unsafe extern "C" fn mln_map_request_still_image(
     unsafe {
         boundary(out_diagnostic, || {
             let handle = handles::map(map.0)?;
-            let completion = Completion::from_c(completion)?;
+            let completion = Completion::required(completion)?;
             let id = map.0;
             handle.runtime.post(move |state| {
                 let result = still_image(state, id);
-                let generation = state.maps.get(&id).map_or(0, |m| m.map.generation());
-                if let Some(c) = completion {
-                    c.complete(result.map(|()| Value::None), generation);
-                }
+                let generation = state.maps.get(&id).map_or(0, |m| m.generation);
+                state.complete(Some(completion), result.map(|()| Value::None), generation);
             })
         })
     }
@@ -889,7 +903,8 @@ fn still_image(state: &mut State, id: u64) -> Result {
     };
     entry.still = Some(image);
     entry.frame_generation += 1;
-    let generation = map.map.generation();
+    map.render_update_generation += 1;
+    let generation = map.generation;
     entry.handle.push(result(
         MLN_FRAME_DEMAND_TOKEN_STILL_IMAGE,
         MLN_RENDER_RESULT_RENDERED,
@@ -905,20 +920,20 @@ fn end(
     completion: Option<Completion>,
     wait: bool,
     state_after: mln_render_session_state,
+    retire: bool,
 ) -> Result {
     let handle = handles::session(session.0)?;
-    handles::remove(session.0);
+    // A detach ends the session's rendering and keeps its handle for the
+    // release, which retires it.
+    if retire {
+        handles::remove(session.0);
+    }
     let id = handle.id();
     let job = move |state: &mut State| {
-        if let Some(entry) = state.sessions.remove(&id) {
-            if let Some(map) = state.maps.get_mut(&entry.map) {
-                map.session = None;
-            }
+        if let Some(entry) = state.sessions.get(&id) {
             entry.handle.state.lock().unwrap().state = state_after;
-            if let Some(wake) = entry.handle.frame_wake {
-                wake.release();
-            }
         }
+        drop_session(state, id);
         Ok(())
     };
     if wait {
@@ -926,9 +941,7 @@ fn end(
     } else {
         handle.runtime.post(move |state| {
             let _ = job(state);
-            if let Some(c) = completion {
-                c.complete(Ok(Value::None), 0);
-            }
+            state.complete(completion, Ok(Value::None), 0);
         })
     }
 }
@@ -942,11 +955,13 @@ pub unsafe extern "C" fn mln_render_session_release(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
+            let completion = Some(Completion::required(completion)?);
             end(
                 session,
-                Completion::from_c(completion)?,
+                completion,
                 false,
                 MLN_RENDER_SESSION_STATE_DETACHED,
+                true,
             )
         })
     }
@@ -961,11 +976,13 @@ pub unsafe extern "C" fn mln_render_session_detach(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
+            let completion = Some(Completion::required(completion)?);
             end(
                 session,
-                Completion::from_c(completion)?,
+                completion,
                 false,
                 MLN_RENDER_SESSION_STATE_DETACHED,
+                false,
             )
         })
     }
@@ -979,7 +996,7 @@ pub unsafe extern "C" fn mln_render_session_dispose(
     // SAFETY: the caller's pointer.
     unsafe {
         boundary(out_diagnostic, || {
-            end(session, None, true, MLN_RENDER_SESSION_STATE_DETACHED)
+            end(session, None, true, MLN_RENDER_SESSION_STATE_DETACHED, true)
         })
     }
 }
@@ -1191,5 +1208,28 @@ pub unsafe extern "C" fn mln_render_session_set_frame_pacer(
                 entry.pacer = pacer;
             })
         })
+    }
+}
+
+/// Ends a session on the runtime thread: its map can attach another.
+pub(crate) fn drop_session(state: &mut State, id: u64) {
+    if let Some(entry) = state.sessions.remove(&id) {
+        if let Some(map) = state.maps.get_mut(&entry.map) {
+            map.session = None;
+            map.handle_flag(false);
+        }
+        entry.publish();
+        if let Some(wake) = entry.handle.frame_wake {
+            wake.release();
+        }
+    }
+}
+
+/// The map handle, for its session flag, carried into the attach job.
+struct MapFlag(Arc<crate::map::MapHandle>);
+
+impl MapFlag {
+    fn store(&self, value: bool, order: std::sync::atomic::Ordering) {
+        self.0.has_session.store(value, order);
     }
 }

@@ -830,6 +830,20 @@ impl Map {
         })
     }
 
+    /// Applies what has arrived, the style among it, without drawing: a
+    /// host with nothing to draw into yet (a map before its first target)
+    /// still gets its style in and its events ([`MapEvent::StyleLoad`]),
+    /// and the requests the style starts go out. Hosts that draw frames
+    /// needn't call it. Frames into targets of another format than still
+    /// output's (an RGBA8 texture) fail after it, as after
+    /// [`snapshot`](Self::snapshot).
+    pub fn apply_arrivals(&mut self) -> Result<(), Error> {
+        let mut target = self.offscreen(1, 1, 1.0);
+        let applied = self.arrive(&mut target);
+        self.offscreen = Some(target);
+        applied
+    }
+
     /// The texture still output draws into, of this size.
     fn offscreen(&mut self, width: u32, height: u32, scale: f64) -> Target {
         match self.offscreen.take() {

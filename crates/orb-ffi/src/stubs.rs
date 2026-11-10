@@ -515,16 +515,6 @@ pub unsafe extern "C" fn mln_map_attach_win32_window(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_win32_window") }
 }
 
-/// `mln_map_begin_command_group`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_begin_command_group(
-    map: mln_map,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_begin_command_group") }
-}
-
 /// `mln_map_camera_for_geometry`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_camera_for_geometry(
@@ -537,50 +527,6 @@ pub unsafe extern "C" fn mln_map_camera_for_geometry(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_camera_for_geometry") }
 }
 
-/// `mln_map_camera_for_lat_lngs`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_camera_for_lat_lngs(
-    map: mln_map,
-    coordinates: *const mln_lat_lng,
-    coordinate_count: usize,
-    fit_options: *const mln_camera_fit_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_camera_for_lat_lngs") }
-}
-
-/// `mln_map_cancel_camera_transitions_with_id`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_cancel_camera_transitions_with_id(
-    map: mln_map,
-    transition_id: u64,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_cancel_camera_transitions_with_id") }
-}
-
-/// `mln_map_dump_debug_logs`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_dump_debug_logs(
-    map: mln_map,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_dump_debug_logs") }
-}
-
-/// `mln_map_end_command_group`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_end_command_group(
-    map: mln_map,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_end_command_group") }
-}
-
 /// `mln_map_fit_camera_to_geometry`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_fit_camera_to_geometry(
@@ -591,31 +537,6 @@ pub unsafe extern "C" fn mln_map_fit_camera_to_geometry(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_fit_camera_to_geometry") }
-}
-
-/// `mln_map_fit_camera_to_lat_lng_bounds`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_fit_camera_to_lat_lng_bounds(
-    map: mln_map,
-    bounds: mln_lat_lng_bounds,
-    update: *const mln_camera_fit_update,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_fit_camera_to_lat_lng_bounds") }
-}
-
-/// `mln_map_fit_camera_to_lat_lngs`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_fit_camera_to_lat_lngs(
-    map: mln_map,
-    coordinates: *const mln_lat_lng,
-    coordinate_count: usize,
-    update: *const mln_camera_fit_update,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_fit_camera_to_lat_lngs") }
 }
 
 /// `mln_map_get_feature_state`: not implemented.
@@ -648,16 +569,6 @@ pub unsafe extern "C" fn mln_map_get_image_source_coordinates(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_get_image_source_coordinates") }
-}
-
-/// `mln_map_get_loaded_style_json`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_get_loaded_style_json(
-    map: mln_map,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_get_loaded_style_json") }
 }
 
 /// `mln_map_get_style_image`: not implemented.
@@ -803,17 +714,6 @@ pub unsafe extern "C" fn mln_map_invalidate_custom_vector_source_tile(
             "mln_map_invalidate_custom_vector_source_tile",
         )
     }
-}
-
-/// `mln_map_lat_lng_bounds_for_camera`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_lat_lng_bounds_for_camera(
-    map: mln_map,
-    camera: *const mln_camera_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_lat_lng_bounds_for_camera") }
 }
 
 /// `mln_map_list_style_layers`: not implemented.
@@ -1021,28 +921,6 @@ pub unsafe extern "C" fn mln_map_remove_style_source(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_remove_style_source") }
 }
 
-/// `mln_map_resize`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_resize(
-    map: mln_map,
-    logical_size: mln_logical_size,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_resize") }
-}
-
-/// `mln_map_set_bounds`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_bounds(
-    map: mln_map,
-    options: *const mln_bound_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_bounds") }
-}
-
 /// `mln_map_set_custom_geometry_source_tile_data`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_set_custom_geometry_source_tile_data(
@@ -1111,17 +989,6 @@ pub unsafe extern "C" fn mln_map_set_custom_vector_source_tile_error(
             "mln_map_set_custom_vector_source_tile_error",
         )
     }
-}
-
-/// `mln_map_set_debug_flags`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_debug_flags(
-    map: mln_map,
-    flags: mln_map_debug_flags,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_debug_flags") }
 }
 
 /// `mln_map_set_feature_state`: not implemented.
@@ -1248,17 +1115,6 @@ pub unsafe extern "C" fn mln_map_set_projection_mode(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_projection_mode") }
 }
 
-/// `mln_map_set_rendering_stats_view_enabled`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_rendering_stats_view_enabled(
-    map: mln_map,
-    enabled: bool,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_rendering_stats_view_enabled") }
-}
-
 /// `mln_map_set_style_image`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_set_style_image(
@@ -1329,46 +1185,6 @@ pub unsafe extern "C" fn mln_map_set_style_transition_options(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_style_transition_options") }
-}
-
-/// `mln_map_set_tile_options`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_tile_options(
-    map: mln_map,
-    options: *const mln_map_tile_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_tile_options") }
-}
-
-/// `mln_map_set_viewport_options`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_viewport_options(
-    map: mln_map,
-    options: *const mln_map_viewport_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_viewport_options") }
-}
-
-/// `mln_network_get_status`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_network_get_status(
-    out_status: *mut mln_network_status,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_network_get_status") }
-}
-
-/// `mln_network_set_status`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_network_set_status(
-    status: mln_network_status,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_network_set_status") }
 }
 
 /// `mln_ohos_frame_pacer_create`: not implemented.
@@ -2105,17 +1921,49 @@ const _: () = {
         crate::session::mln_map_attach_offscreen,
     ];
     let _ = [
+        crate::sys::mln_map_begin_command_group,
+        crate::map::mln_map_begin_command_group,
+    ];
+    let _ = [
         crate::sys::mln_map_camera_for_lat_lng_bounds,
         crate::map::mln_map_camera_for_lat_lng_bounds,
+    ];
+    let _ = [
+        crate::sys::mln_map_camera_for_lat_lngs,
+        crate::map::mln_map_camera_for_lat_lngs,
     ];
     let _ = [
         crate::sys::mln_map_cancel_camera_transitions,
         crate::map::mln_map_cancel_camera_transitions,
     ];
+    let _ = [
+        crate::sys::mln_map_cancel_camera_transitions_with_id,
+        crate::map::mln_map_cancel_camera_transitions_with_id,
+    ];
     let _ = [crate::sys::mln_map_dispose, crate::map::mln_map_dispose];
+    let _ = [
+        crate::sys::mln_map_dump_debug_logs,
+        crate::map::mln_map_dump_debug_logs,
+    ];
+    let _ = [
+        crate::sys::mln_map_end_command_group,
+        crate::map::mln_map_end_command_group,
+    ];
+    let _ = [
+        crate::sys::mln_map_fit_camera_to_lat_lng_bounds,
+        crate::map::mln_map_fit_camera_to_lat_lng_bounds,
+    ];
+    let _ = [
+        crate::sys::mln_map_fit_camera_to_lat_lngs,
+        crate::map::mln_map_fit_camera_to_lat_lngs,
+    ];
     let _ = [
         crate::sys::mln_map_get_camera,
         crate::map::mln_map_get_camera,
+    ];
+    let _ = [
+        crate::sys::mln_map_get_loaded_style_json,
+        crate::map::mln_map_get_loaded_style_json,
     ];
     let _ = [
         crate::sys::mln_map_get_snapshot,
@@ -2124,6 +1972,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_map_get_style_url,
         crate::map::mln_map_get_style_url,
+    ];
+    let _ = [
+        crate::sys::mln_map_lat_lng_bounds_for_camera,
+        crate::map::mln_map_lat_lng_bounds_for_camera,
     ];
     let _ = [crate::sys::mln_map_release, crate::map::mln_map_release];
     let _ = [
@@ -2134,9 +1986,22 @@ const _: () = {
         crate::sys::mln_map_request_still_image,
         crate::session::mln_map_request_still_image,
     ];
+    let _ = [crate::sys::mln_map_resize, crate::map::mln_map_resize];
+    let _ = [
+        crate::sys::mln_map_set_bounds,
+        crate::map::mln_map_set_bounds,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_debug_flags,
+        crate::map::mln_map_set_debug_flags,
+    ];
     let _ = [
         crate::sys::mln_map_set_event_mask,
         crate::map::mln_map_set_event_mask,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_rendering_stats_view_enabled,
+        crate::map::mln_map_set_rendering_stats_view_enabled,
     ];
     let _ = [
         crate::sys::mln_map_set_style_json,
@@ -2147,8 +2012,24 @@ const _: () = {
         crate::map::mln_map_set_style_url,
     ];
     let _ = [
+        crate::sys::mln_map_set_tile_options,
+        crate::map::mln_map_set_tile_options,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_viewport_options,
+        crate::map::mln_map_set_viewport_options,
+    ];
+    let _ = [
         crate::sys::mln_map_update_camera,
         crate::map::mln_map_update_camera,
+    ];
+    let _ = [
+        crate::sys::mln_network_get_status,
+        crate::network::mln_network_get_status,
+    ];
+    let _ = [
+        crate::sys::mln_network_set_status,
+        crate::network::mln_network_set_status,
     ];
     let _ = [
         crate::sys::mln_offscreen_device_create,

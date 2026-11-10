@@ -380,8 +380,18 @@ fn implemented() -> Result<BTreeMap<String, String>, String> {
             }
             let module = module.join("::");
             let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            for (i, _) in text.match_indices("extern \"C\" fn mln_") {
-                let rest = &text[i + "extern \"C\" fn ".len()..];
+            // An export is an `extern "C" fn`, or a `command!` that
+            // expands to one.
+            let exports = text
+                .match_indices("extern \"C\" fn mln_")
+                .map(|(i, _)| i + "extern \"C\" fn ".len())
+                .chain(text.match_indices("command!(").map(|(i, _)| {
+                    let start = i + "command!(".len();
+                    start + text[start..].len() - text[start..].trim_start().len()
+                }))
+                .filter(|&i| text[i..].starts_with("mln_"));
+            for i in exports {
+                let rest = &text[i..];
                 let name: String = rest
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
