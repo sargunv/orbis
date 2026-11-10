@@ -474,7 +474,6 @@ fn shape_lines(
             .then(|| determine_line_verticals(line, glyphs));
 
         for i in 0..line.len() {
-            let grapheme = line.grapheme(i).to_string();
             let first = line.first_char(i);
             let vertical = verticals.as_ref().map_or_else(
                 || {
@@ -487,26 +486,29 @@ fn shape_lines(
                 |v| v[i],
             );
             let section_index = line.section_index[i];
-            let section = &line.sections[section_index];
-            let keys: Vec<String> = match &section.kind {
+            let grapheme = &line.text[line.grapheme_range(i)];
+            // A cluster without a glyph of its own draws code point by
+            // code point.
+            let split = matches!(
+                &line.sections[section_index].kind,
                 SectionKind::Text(stack)
-                    if is_cluster(&grapheme) && !glyphs.has(stack, Variant::Default, &grapheme) =>
-                {
-                    grapheme.chars().map(String::from).collect()
-                }
-                _ => vec![grapheme],
-            };
+                    if is_cluster(grapheme) && !glyphs.has(stack, Variant::Default, grapheme)
+            );
+            let whole = std::iter::once(grapheme).filter(|_| !split);
+            let each = (grapheme.char_indices())
+                .filter(|_| split)
+                .map(|(at, c)| &grapheme[at..at + c.len_utf8()]);
 
-            for key in keys {
+            for key in whole.chain(each) {
                 let section = &mut line.sections[section_index];
                 let (source, attributes) = match &section.kind {
                     SectionKind::Text(stack) => {
-                        let variant = if vertical && glyphs.has(stack, Variant::Vertical, &key) {
+                        let variant = if vertical && glyphs.has(stack, Variant::Vertical, key) {
                             Variant::Vertical
                         } else {
                             Variant::Default
                         };
-                        let Some((id, glyph)) = glyphs.get(stack, variant, &key) else {
+                        let Some((id, glyph)) = glyphs.get(stack, variant, key) else {
                             continue;
                         };
                         let baseline_offset = if vertical {

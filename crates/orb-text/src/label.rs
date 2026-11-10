@@ -408,18 +408,6 @@ impl Tagged {
         }
     }
 
-    pub(crate) fn total_width(
-        &self,
-        glyphs: &GlyphMap,
-        images: Images<'_>,
-        spacing: f64,
-        layout_text_size: f64,
-    ) -> f64 {
-        (0..self.len()).fold(0.0, |total, i| {
-            total + self.advance(i, glyphs, images, spacing, layout_text_size)
-        })
-    }
-
     /// The cluster indices to break at for lines of about `max_width`
     /// (GL JS `determineLineBreaks`).
     pub(crate) fn line_breaks(
@@ -431,7 +419,20 @@ impl Tagged {
         layout_text_size: f64,
         words: Option<&WordBreaker>,
     ) -> Vec<usize> {
-        let total_width = self.total_width(glyphs, images, spacing, layout_text_size);
+        // Each cluster's advance, looked up once: on the stack for most
+        // labels.
+        let (mut short, mut long) = ([0.0; 64], Vec::new());
+        let advances = if self.len() <= short.len() {
+            &mut short[..self.len()]
+        } else {
+            long.resize(self.len(), 0.0);
+            &mut long[..]
+        };
+        for (i, advance) in advances.iter_mut().enumerate() {
+            *advance = self.advance(i, glyphs, images, spacing, layout_text_size);
+        }
+        let advances = &*advances;
+        let total_width = advances.iter().fold(0.0, |total, a| total + a);
         if spacing >= 0.0
             && total_width > 0.0
             && total_width <= max_width
@@ -446,7 +447,7 @@ impl Tagged {
         let mut word_starts: Option<Vec<usize>> = None;
         let mut x = 0.0;
 
-        for i in 0..self.len() {
+        for (i, &advance) in advances.iter().enumerate() {
             let c = self.first_char(i);
             if i > 0 {
                 let previous = self.first_char(i - 1);
@@ -471,7 +472,7 @@ impl Tagged {
                 }
             }
             if !unicode::is_whitespace(c) {
-                x += self.advance(i, glyphs, images, spacing, layout_text_size);
+                x += advance;
             }
         }
 

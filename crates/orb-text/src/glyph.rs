@@ -110,7 +110,8 @@ pub struct GlyphRequest {
 #[derive(Debug, Default)]
 pub struct GlyphRequests {
     requests: Vec<GlyphRequest>,
-    seen: HashSet<GlyphRequest>,
+    /// The texts requested, by stack and variant.
+    seen: HashMap<FontStack, [HashSet<Box<str>>; 2]>,
 }
 
 impl GlyphRequests {
@@ -158,14 +159,20 @@ impl GlyphRequests {
     }
 
     fn add(&mut self, stack: &FontStack, variant: Variant, text: &str) {
-        let request = GlyphRequest {
+        let seen = match self.seen.get_mut(stack) {
+            Some(seen) => seen,
+            None => self.seen.entry(stack.clone()).or_default(),
+        };
+        let seen = &mut seen[variant as usize];
+        if seen.contains(text) {
+            return;
+        }
+        seen.insert(text.into());
+        self.requests.push(GlyphRequest {
             stack: stack.clone(),
             variant,
             text: text.into(),
-        };
-        if self.seen.insert(request.clone()) {
-            self.requests.push(request);
-        }
+        });
     }
 
     pub fn len(&self) -> usize {
