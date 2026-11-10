@@ -1,7 +1,8 @@
-//! Native pipeline caches: warm starts use native pipeline caches. Where
-//! the driver supports them (Vulkan), pipelines are made
-//! through one cache, whose data the host keeps between runs; browsers,
-//! Metal and D3D12 drivers keep their own.
+//! Native pipeline caches: warm starts use native pipeline caches. On
+//! Vulkan (the driver's pipelines) and D3D12 (the shader compiler's
+//! output, through Orbis's wgpu fork: DXC is the slow part there, and no
+//! driver keeps it) pipelines are made through one cache, whose data the
+//! host keeps between runs; browsers and Metal keep their own.
 //!
 //! The data is sealed with a SHA-256 of wgpu's whole blob: wgpu checks its
 //! header (driver, version, length) but not the payload, which goes to the
@@ -22,6 +23,13 @@ fn seal(data: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&Sha256::digest(data));
     out.extend_from_slice(data);
     out
+}
+
+/// The SHA-256 of sealed data's payload, from its seal.
+fn digest(sealed: &[u8]) -> [u8; 32] {
+    sealed[MAGIC.len()..SEAL]
+        .try_into()
+        .expect("sealed data has its checksum")
 }
 
 /// wgpu's cache data, if `sealed` is intact.
@@ -57,7 +65,12 @@ impl WgpuGpu {
         if self.pipeline_cache_key().is_none() || self.pipeline_cache.is_some() {
             return;
         }
-        let data = data.and_then(open);
+        let opened = data.and_then(|sealed| {
+            let data = open(sealed)?;
+            Some((digest(sealed), data))
+        });
+        self.pipeline_cache_kept = opened.map(|(kept, _)| kept);
+        let data = opened.map(|(_, data)| data);
         // SAFETY: wgpu requires the data to come from `get_data` on a
         // compatible device. It's intact `get_data` output (`open` checked
         // its SHA-256), and wgpu-core checks the header against this device
@@ -74,9 +87,19 @@ impl WgpuGpu {
         self.pipeline_cache = Some(cache);
     }
 
-    /// The cache's data to keep for the next run, sealed.
+    /// The cache's data to keep for the next run, sealed, or `None` when
+    /// it is what the host keeps already (what the cache started from, or
+    /// last [saved](Self::pipeline_cache_saved)): a warm run that made
+    /// nothing new writes nothing.
     pub fn pipeline_cache_data(&self) -> Option<Vec<u8>> {
-        Some(seal(&self.pipeline_cache.as_ref()?.get_data()?))
+        let sealed = seal(&self.pipeline_cache.as_ref()?.get_data()?);
+        (self.pipeline_cache_kept != Some(digest(&sealed))).then_some(sealed)
+    }
+
+    /// Notes that the host now keeps `sealed`, which
+    /// [`pipeline_cache_data`](Self::pipeline_cache_data) returned.
+    pub fn pipeline_cache_saved(&mut self, sealed: &[u8]) {
+        self.pipeline_cache_kept = Some(digest(sealed));
     }
 }
 

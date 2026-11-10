@@ -92,7 +92,7 @@ impl std::error::Error for Error {}
 pub struct RuntimeOptions {
     /// Tile job threads; the platform default when `None`.
     pub job_threads: Option<usize>,
-    /// Where the runtime keeps state between runs: the driver's compiled
+    /// Where the runtime keeps state between runs: compiled
     /// pipelines (`pipelines/`), the HTTP cache (`http/`,
     /// [`HTTP_CACHE_BYTES`]) and offline regions. Without one, pipelines
     /// compile on every start and nothing fetched is kept.
@@ -472,10 +472,10 @@ impl Runtime {
         Ok(())
     }
 
-    /// Keeps the driver's compiled pipelines in the state directory's
-    /// `pipelines/` between runs, so warm starts skip compiling them
-    /// (Vulkan's pipeline cache; elsewhere the platform caches and this
-    /// does nothing). Maps save the cache when
+    /// Keeps compiled pipelines in the state directory's `pipelines/`
+    /// between runs, so warm starts skip compiling them (Vulkan's pipeline
+    /// cache, and D3D12's of the shader compiler's output; elsewhere the
+    /// platform caches and this does nothing). Maps save the cache when
     /// they go idle with new pipelines.
     fn start_pipeline_cache(&self) -> Result<(), Error> {
         let Some(dir) = self
@@ -505,22 +505,23 @@ impl Runtime {
     }
 
     /// Writes the pipeline cache if pipelines were made since it was last
-    /// written.
+    /// written and they changed its data.
     fn save_pipeline_cache(&self) -> Result<(), Error> {
         let mut cache = lock(&self.shared.cache);
         let Some((file, saved)) = cache.as_mut() else {
             return Ok(());
         };
-        let device = self.shared.gpu();
+        let mut device = self.shared.gpu();
         let made = device.pipelines_created();
         if made == *saved {
             return Ok(());
         }
-        let Some(data) = device.pipeline_cache_data() else {
-            return Ok(());
-        };
-        orb_host_native::write_atomically(file, &data)
-            .map_err(|e| Error::Native(format!("{}: {e}", file.display())))?;
+        // `None`: the file holds this data already.
+        if let Some(data) = device.pipeline_cache_data() {
+            orb_host_native::write_atomically(file, &data)
+                .map_err(|e| Error::Native(format!("{}: {e}", file.display())))?;
+            device.pipeline_cache_saved(&data);
+        }
         *saved = made;
         Ok(())
     }

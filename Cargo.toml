@@ -121,8 +121,10 @@ orb-web = { path = "crates/orb-web" }
 # tiles on WebGL 2 or (Firefox) dropped them (gfx-rs/wgpu#8668). And GLES
 # and GL 4.3 restarting strips at the fixed index, as WebGPU and WebGL 2 do
 # (`PRIMITIVE_RESTART_FIXED_INDEX`, never enabled): without it ANGLE dropped
-# draws holding hidden slots. Every
-# crate of wgpu's workspace comes from the fork, since its path
+# draws holding hidden slots. And a D3D12 pipeline cache: DXC's (or FXC's)
+# output by a SHA-256 of the compiler, its arguments and the HLSL, which
+# the runtime keeps in its state directory as it keeps Vulkan's (#141).
+# Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
 naga-types = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }

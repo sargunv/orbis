@@ -80,9 +80,14 @@ pub struct WgpuGpu {
     /// for surfaces.
     #[cfg(not(target_arch = "wasm32"))]
     native: Option<(wgpu::Instance, wgpu::Adapter)>,
-    /// Pipelines are made through it once started (natively, Vulkan).
+    /// Pipelines are made through it once started (natively, Vulkan and
+    /// D3D12).
     #[cfg(not(target_arch = "wasm32"))]
     pipeline_cache: Option<wgpu::PipelineCache>,
+    /// The SHA-256 of the cache data the host keeps, as far as this device
+    /// knows: what it started from, or last saw saved.
+    #[cfg(not(target_arch = "wasm32"))]
+    pipeline_cache_kept: Option<[u8; 32]>,
     caps: Caps,
     /// The device is wgpu's GL back end (WebGL 2, GLES).
     gl: bool,
@@ -354,6 +359,8 @@ impl WgpuGpu {
             native: None,
             #[cfg(not(target_arch = "wasm32"))]
             pipeline_cache: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pipeline_cache_kept: None,
             caps,
             gl,
             texture_usages: platform_texture_usages(),
