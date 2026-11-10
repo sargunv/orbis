@@ -13,6 +13,7 @@
     "measure": "node scripts/measure.mjs",
     "bench": "node scripts/bench.mjs",
     "flight": "node scripts/flight.mjs",
+    "drag": "node scripts/drag.mjs",
     "load": "node scripts/load.mjs",
     "memory": "node scripts/memory.mjs",
     "coverage": "node scripts/coverage.mjs"
