@@ -50,12 +50,12 @@ layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform;
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512)
 module "extrusion"#0: wgsl
-render "extrusion"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion"#0 vs_extrusion []; module "extrusion"#0 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 4
+render "extrusion"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion"#0 vs_extrusion [("plane", 1.0)]; module "extrusion"#0 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 4
 module "extrusion cut"#0: wgsl
-render "extrusion cut"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion cut"#0 vs_extrusion_cut_split []; module "extrusion cut"#0 fs_extrusion_cut []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 4
+render "extrusion cut"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion cut"#0 vs_extrusion_cut_split [("plane", 1.0)]; module "extrusion cut"#0 fs_extrusion_cut []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 4
 module "extrusion planes"#0: wgsl
 module "extrusion"#1: wgsl
-render "extrusion planes"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion planes"#0 vs_extrusion_cut_planes []; module "extrusion"#1 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 4
+render "extrusion planes"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion planes"#0 vs_extrusion_cut_planes [("plane", 1.0)]; module "extrusion"#1 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 4
 module "extrusion ground"#0: wgsl
 render "extrusion ground"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion ground"#0 vs_extrusion_shadow []; module "extrusion ground"#0 fs_extrusion_ground []; [ColorTargetState { format: Rgba8Unorm, blend: Some(Max) }] Some(DepthState { format: Depth32Float, write: false }) TriangleList cull back false samples 4
 module "extrusion ground"#1: wgsl
@@ -76,13 +76,13 @@ bundle "3d layer"#0: [Rgba8Unorm] depth Some(Depth32Float) samples 4
     draw indexed indirect buffer "draw args"#0 at 1824
 texture "target"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
 module "fill"#0: wgsl
-render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill [("plane", 1.0)]; module "fill"#0 fs_fill [("plane", 1.0)]; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill [("plane", 1.0), ("feature_rows", 0.0)]; module "fill"#0 fs_fill [("plane", 1.0)]; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#1: layout layout "node"#0; 0 buffer "node uniforms"#0 at 0 size Some(512)
 group "node"#2: layout layout "node"#0; 0 buffer "node uniforms"#0 at 2560 size Some(512)
 group "node"#3: layout layout "node"#0; 0 buffer "node uniforms"#0 at 3072 size Some(512)
 group "node"#4: layout layout "node"#0; 0 buffer "node uniforms"#0 at 4096 size Some(512)
 module "fill outline"#0: wgsl
-render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline [("plane", 1.0)]; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
+render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline [("plane", 1.0), ("feature_rows", 0.0)]; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
 group "node"#5: layout layout "node"#0; 0 buffer "node uniforms"#0 at 4608 size Some(512)
 group "node"#6: layout layout "node"#0; 0 buffer "node uniforms"#0 at 6144 size Some(512)
 group "node"#7: layout layout "node"#0; 0 buffer "node uniforms"#0 at 6656 size Some(512)
@@ -91,7 +91,7 @@ group "node"#9: layout layout "node"#0; 0 buffer "node uniforms"#0 at 7680 size 
 group "node"#10: layout layout "node"#0; 0 buffer "node uniforms"#0 at 8192 size Some(512)
 group "node"#11: layout layout "node"#0; 0 buffer "node uniforms"#0 at 8704 size Some(512)
 module "line"#0: wgsl
-render "line"#0: layouts [layout "scene"#0, layout "node"#0]; module "line"#0 vs_line [("plane", 1.0)]; module "line"#0 fs_line []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "line"#0: layouts [layout "scene"#0, layout "node"#0]; module "line"#0 vs_line [("plane", 1.0), ("feature_rows", 0.0)]; module "line"#0 fs_line []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#12: layout layout "node"#0; 0 buffer "node uniforms"#0 at 9728 size Some(512)
 group "node"#13: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10240 size Some(512)
 group "node"#14: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10752 size Some(512)
@@ -126,7 +126,7 @@ sampler "composite"#0: Linear mips Nearest anisotropy 1
 group "composite"#0: layout layout "composite"#0; 0 buffer "composite"#0 at 0 size None; 1 texture "extrusion"#1 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
 layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
 module "symbol line"#0: wgsl
-render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol [("plane", 1.0)]; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol [("plane", 1.0), ("feature_rows", 0.0)]; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#37: layout layout "node"#0; 0 buffer "node uniforms"#0 at 29696 size Some(512)
 buffer "symbol passes"#0: BufferUsages(COPY_DST | UNIFORM)
 group "symbol pass"#0: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 0 size Some(16)
@@ -143,7 +143,7 @@ group "node"#47: layout layout "node"#0; 0 buffer "node uniforms"#0 at 38400 siz
 group "node"#48: layout layout "node"#0; 0 buffer "node uniforms"#0 at 38912 size Some(512)
 group "node"#49: layout layout "node"#0; 0 buffer "node uniforms"#0 at 39424 size Some(512)
 module "symbol"#0: wgsl
-render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol [("plane", 1.0)]; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol [("plane", 1.0), ("feature_rows", 0.0)]; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#50: layout layout "node"#0; 0 buffer "node uniforms"#0 at 43008 size Some(512)
 group "symbol pass"#1: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 256 size Some(16)
 group "symbol pass"#2: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 512 size Some(16)

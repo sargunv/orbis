@@ -97,28 +97,28 @@ fn fill_vertex(v: Pulled) -> FillOut {
     let state = state_block(v, feature, node.state);
 
     var color = node.color;
-    if (node.table_mask & 1u) != 0u {
+    if (row_mask(node.table_mask) & 1u) != 0u {
         color = table_color(row, 0u, node.curves[0], tile.zoom);
     }
     if from_state(state, node.state, 0u) {
         color = state_color(state, node.state, 0u, node.curves[0], color);
     }
     var opacity = node.opacity;
-    if (node.table_mask & 2u) != 0u {
+    if (row_mask(node.table_mask) & 2u) != 0u {
         opacity = table_number(row, 1u, node.curves[1], tile.zoom);
     }
     if from_state(state, node.state, 1u) {
         opacity = state_number(state, node.state, 1u, node.curves[1], opacity);
     }
 
-    let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
+    let px = node_translate(node.translate, row_mask(node.table_mask), row, v.row_words, node.translate_curve, tile.zoom);
     let shift = translate_world(px, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip(ground, vec2<f32>(0.0), 0.0);
     out.color = color_in(color) * opacity;
     out.opacity = opacity;
     out.pattern_pos = pos;
-    out.images = pattern_ids(row, FILL_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
+    out.images = pattern_ids(row, FILL_ROW_PATTERN, node.image_from, node.image_to, row_mask(node.table_mask), node.pattern);
     // Translated geometry is clipped where it lands, as GL JS's stencil
     // does on a plane; on a globe, where GL JS clips no tile, where it was,
     // so a fill crossing tiles moves whole, as it does into a drape slot,
@@ -140,7 +140,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
 // placement draws; there it belongs to the edge.
 fn fill_drawn(in: FillOut) -> bool {
     if any(in.clip != CLIP_FETCHED) {
-        return clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos);
+        return in_clip(in.clip, in.tile_pos);
     }
     let tile = tile_at(in.tile);
     var owner = in.owner_pos;

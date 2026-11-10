@@ -205,7 +205,7 @@ fn feature_size(s: SymbolSize, packed: vec2<f32>, layout_size: f32, lo: f32, hi:
 // `state` is the feature's state block (see `state_block`).
 fn paint_number(row: u32, state: u32, slot: u32, constant: f32, z: f32) -> f32 {
     var value = constant;
-    if (node.table_mask & (1u << slot)) != 0u {
+    if (row_mask(node.table_mask) & (1u << slot)) != 0u {
         value = table_number(row, slot, node.curves[slot], z);
     }
     if from_state(state, node.state, slot) {
@@ -218,7 +218,7 @@ fn paint_color(row: u32, state: u32, slot: u32, constant: vec4<f32>, z: f32) -> 
     var value = constant;
     // A night stop (slots 5 and 6) shares its day stop's curve.
     let curve = node.curves[select(slot, slot - 4u, slot > 4u)];
-    if (node.table_mask & (1u << slot)) != 0u {
+    if (row_mask(node.table_mask) & (1u << slot)) != 0u {
         value = table_color(row, slot, curve, z);
     }
     if from_state(state, node.state, slot) {

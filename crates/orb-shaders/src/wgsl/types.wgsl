@@ -202,6 +202,9 @@ struct Tile {
     // The tiles around it at its zoom that draw whole the polygons they
     // own, bit 3 (dy + 1) + dx + 1 (`TileRow::neighbours`).
     neighbours: u32,
+    // Its clip as fragments test it where its content lands where it was
+    // (`fragment_clip`), which the CPU works out once.
+    clip: vec2<u32>,
 };
 
 
@@ -391,37 +394,21 @@ fn warped(tile: Tile) -> bool {
 // tile; otherwise CLIP_FETCHED, and fragments test the tile's rectangles
 // and bound. On a pitched city view, reading the tile in every line and
 // fill fragment cost a fifth of the frame; redrawing drape slots over the
-// Alps, a quarter of the drape pass, image fragments included.
+// Alps, a quarter of the drape pass, image fragments included. The row
+// holds it for content that lands where it was (orb-render's
+// `TileRow::fragment_clip`): working it out in every vertex cost lines a
+// sixth of their vertex time on the moto g (#180).
 const CLIP_FETCHED: vec2<u32> = vec2<u32>(0x80008000u, 0x80008000u);
 fn fragment_clip(tile: Tile, moved: bool) -> vec2<u32> {
-    let draped = draped_placement(tile);
-    if (draped && moved) || warped(tile) {
+    if moved && draped_placement(tile) {
         return CLIP_FETCHED;
     }
-    // None owned: an empty rectangle, never CLIP_FETCHED's.
-    var clip = vec2<u32>(0x7fff7fffu, 0u);
-    var owned = 0u;
-    for (var i = 0u; i < 4u; i++) {
-        if all(unpack_i16x2(tile.clips[i].x) < unpack_i16x2(tile.clips[i].y)) {
-            clip = tile.clips[i];
-            owned++;
-        }
-    }
-    if owned > 1u {
-        return CLIP_FETCHED;
-    }
-    if draped && owned == 1u {
-        let lo = max(unpack_i16x2(clip.x), unpack_i16x2(tile.bound.x));
-        let hi = min(unpack_i16x2(clip.y), unpack_i16x2(tile.bound.y));
-        clip = vec2<u32>(pack_i16x2(lo), pack_i16x2(max(lo, hi)));
-    }
-    return clip;
+    return tile.clip;
 }
 
-// `v`'s whole components as i16 pairs, x low.
-fn pack_i16x2(v: vec2<f32>) -> u32 {
-    let i = vec2<i32>(v);
-    return (bitcast<u32>(i.x) & 0xffffu) | (bitcast<u32>(i.y) << 16u);
+// Whether `p` lies in a `fragment_clip` rectangle.
+fn in_clip(clip: vec2<u32>, p: vec2<f32>) -> bool {
+    return all(p >= unpack_i16x2(clip.x)) && all(p < unpack_i16x2(clip.y));
 }
 
 // Whether `p` lies where the placement's content may land (`bound`).
@@ -429,9 +416,10 @@ fn landed(tile: Tile, p: vec2<f32>) -> bool {
     return all(p >= unpack_i16x2(tile.bound.x)) && all(p < unpack_i16x2(tile.bound.y));
 }
 
-// Whether the placement draws into a drape slot, bounded by it.
+// Whether the placement draws into a drape slot, bounded by it: never in
+// a plane variant, which draws no terrain.
 fn draped_placement(tile: Tile) -> bool {
-    return tile.bound.x != BOUND_EVERYWHERE_MIN;
+    return !plane && tile.bound.x != BOUND_EVERYWHERE_MIN;
 }
 // `ClipRect::EVERYWHERE`'s packed minimum.
 const BOUND_EVERYWHERE_MIN: u32 = 0x80008000u;

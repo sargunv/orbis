@@ -101,7 +101,7 @@ layout "scene"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERT
 layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 
 layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
 module "symbol line"#0: wgsl
-render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol []; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol [("feature_rows", 0.0)]; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 buffer "vertices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "image rects"#0: BufferUsages(COPY_DST | STORAGE)
 texture "images"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
@@ -117,7 +117,7 @@ group "symbol pass"#1: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0
 group "node"#1: layout layout "node"#0; 0 buffer "node uniforms"#0 at 51200 size Some(512)
 group "symbol pass"#2: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 0 size Some(16)
 module "symbol"#0: wgsl
-render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol []; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol [("feature_rows", 0.0)]; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#2: layout layout "node"#0; 0 buffer "node uniforms"#0 at 51712 size Some(512)
 group "node"#3: layout layout "node"#0; 0 buffer "node uniforms"#0 at 52224 size Some(512)
 group "node"#4: layout layout "node"#0; 0 buffer "node uniforms"#0 at 60416 size Some(512)

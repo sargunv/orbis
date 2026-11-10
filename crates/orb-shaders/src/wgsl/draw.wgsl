@@ -146,7 +146,20 @@ fn clip_drawn(clip: vec2<u32>, tile: u32, owner: vec2<f32>, p: vec2<f32>) -> boo
         let t = tile_at(tile);
         return owned(t, owner) && landed(t, p);
     }
-    return all(p >= unpack_i16x2(clip.x)) && all(p < unpack_i16x2(clip.y));
+    return in_clip(clip, p);
+}
+
+// A paint pipeline's variant without property rows (orb-render's
+// `PaintPipelines`): its nodes take every property from their uniform,
+// none from a feature's row or state. Adreno's compilers pay for the row
+// and state reads in every vertex whether a node takes them or not: on the
+// moto g they cost lines with constant paint half their vertex time
+// (#180). On by default: the variant with rows draws every node.
+override feature_rows: bool = true;
+
+// A node's `table_mask`, none of it in a variant without rows.
+fn row_mask(mask: u32) -> u32 {
+    return select(0u, mask, feature_rows);
 }
 
 fn prop_row(v: Pulled, slot: u32, stride: u32) -> u32 {
@@ -178,7 +191,7 @@ const STATE_SLOT_WORDS: u32 = 2u * STATE_ZOOMS + 2u;
 // A feature's state block for a node, or NO_STATE when the feature has
 // the default state and nothing fades.
 fn state_block(v: Pulled, feature: u32, lookup: StateLookup) -> u32 {
-    if lookup.stride == 0u || v.state_base == NO_STATE {
+    if !feature_rows || lookup.stride == 0u || v.state_base == NO_STATE {
         return NO_STATE;
     }
     let index = prop_at(v.state_base + feature);

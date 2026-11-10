@@ -27,6 +27,10 @@ pub(crate) struct Draw<'a> {
     /// Its plane variant ([`orb_shaders::PLANE`], set in the stages that
     /// read it): for views without the globe, terrain or warped tiles.
     pub(crate) plane: bool,
+    /// False for its variant without property rows
+    /// ([`orb_shaders::FEATURE_ROWS`], set in the stages that read it): for
+    /// nodes whose paint reads no feature's row or state.
+    pub(crate) rows: bool,
     pub(crate) layouts: &'a [BindGroupLayoutId],
     pub(crate) target: ColorTargetState,
     pub(crate) sample_count: u32,
@@ -48,6 +52,7 @@ impl<'a> Draw<'a> {
             fragment: (shader, shader.fragment),
             constants: [&[], &[]],
             plane: false,
+            rows: true,
             layouts,
             target: ColorTargetState {
                 format: target.color,
@@ -78,11 +83,19 @@ impl<'a> Draw<'a> {
             if self.plane && shader.takes(entry, orb_shaders::PLANE) {
                 constants.push((orb_shaders::PLANE, 1.0));
             }
+            if !self.rows && shader.takes(entry, orb_shaders::FEATURE_ROWS) {
+                constants.push((orb_shaders::FEATURE_ROWS, 0.0));
+            }
             constants
         });
         debug_assert!(
             !self.plane || vertex.takes(vertex_entry, orb_shaders::PLANE),
             "{}: no plane variant",
+            self.label
+        );
+        debug_assert!(
+            self.rows || vertex.takes(vertex_entry, orb_shaders::FEATURE_ROWS),
+            "{}: no variant without rows",
             self.label
         );
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {

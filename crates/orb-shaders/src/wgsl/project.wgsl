@@ -249,6 +249,15 @@ fn tile_ground(tile: Tile, p: vec2<f32>) -> Ground {
 
 fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     var g: Ground;
+    if plane {
+        // What the rest comes to for an affine placement on the plane, as
+        // a plane variant's all are: without it, the moto g's compiler
+        // kept the loop and the drape's branch, a quarter of a zoom-12
+        // view's vertex time (#180).
+        g.on_plane = true;
+        g.flat = tile_affine(tile, p);
+        return g;
+    }
     g.on_plane = (tile.globe_flags & 1u) == 0u;
     let globe = on_globe() && tile.globe_cells > 0u;
     // A point past the tile (a translated label or fill, a stroke's edge)

@@ -70,6 +70,11 @@ pub type EntryModules = &'static [(&'static str, &'static [u8])];
 /// without the globe or terrain.
 pub const PLANE: &str = "plane";
 
+/// The override constant that, set false, makes a paint pipeline its
+/// variant without property rows (`draw.wgsl`'s `feature_rows`): for nodes
+/// that take no property from a feature's row or state.
+pub const FEATURE_ROWS: &str = "feature_rows";
+
 /// Each shader's override constants by entry point, as the build script
 /// found them in each entry point's module.
 type Overrides = &'static [(
@@ -579,13 +584,15 @@ mod tests {
         assert!(written > 90, "only {written} stages written");
     }
 
-    /// The draw pipelines that compile a plane variant first (orb-render's
-    /// paint and symbol pipelines) take [`PLANE`] in their vertex stage,
-    /// and every stage that takes it validates and writes as Metal with it
-    /// set.
+    /// The draw pipelines that compile a plane variant (orb-render's
+    /// paint, symbol and extrusion pipelines) take [`PLANE`] in their
+    /// vertex stage, the paint and symbol ones [`FEATURE_ROWS`] too (the
+    /// extrusions' variant keeps rows), and every stage that takes either
+    /// validates and writes as Metal with each set as its variants set it,
+    /// alone and together.
     #[test]
-    fn plane_variants_compile() {
-        for shader in [
+    fn variants_compile() {
+        let rows = [
             &FILL_SHADER,
             &FILL_OUTLINE_SHADER,
             &LINE_SHADER,
@@ -593,30 +600,52 @@ mod tests {
             &CIRCLE_SHADER,
             &SYMBOL_SHADERS[0],
             &SYMBOL_SHADERS[1],
-        ] {
+        ];
+        let planes = [
+            &EXTRUSION_SHADER,
+            &EXTRUSION_CUT_SHADER,
+            &EXTRUSION_PLANES_SHADER,
+        ];
+        for (shader, has_rows) in
+            (rows.map(|s| (s, true)).into_iter()).chain(planes.map(|s| (s, false)))
+        {
             assert!(shader.takes(shader.vertex, PLANE), "{}", shader.label);
+            assert!(
+                !has_rows || shader.takes(shader.vertex, FEATURE_ROWS),
+                "{}",
+                shader.label
+            );
+            let rows = if has_rows { 0.0 } else { 1.0 };
             for (entry, one) in split::entry_modules(&validate(shader)) {
-                if !shader.takes(&entry, PLANE) {
-                    continue;
-                }
                 let info = naga::valid::Validator::new(
                     naga::valid::ValidationFlags::all(),
                     naga::valid::Capabilities::CLIP_DISTANCES,
                 )
                 .validate(&one)
                 .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                let constants = [(PLANE.to_string(), 1.0)].into_iter().collect();
-                let (made, info) = naga::back::pipeline_constants::process_overrides(
-                    &one, &info, None, &constants,
-                )
-                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                let options = naga::back::msl::Options {
-                    lang_version: (2, 4),
-                    ..Default::default()
-                };
-                let pipeline = naga::back::msl::PipelineOptions::default();
-                naga::back::msl::write_string(&made, &info, &options, &pipeline)
-                    .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+                for set in [[true, false], [false, true], [true, true]] {
+                    let constants: naga::back::PipelineConstants =
+                        [(PLANE, 1.0), (FEATURE_ROWS, rows)]
+                            .into_iter()
+                            .zip(set)
+                            .filter(|&((name, _), on)| on && shader.takes(&entry, name))
+                            .map(|((name, value), _)| (name.to_string(), value))
+                            .collect();
+                    if constants.is_empty() {
+                        continue;
+                    }
+                    let (made, info) = naga::back::pipeline_constants::process_overrides(
+                        &one, &info, None, &constants,
+                    )
+                    .unwrap_or_else(|e| panic!("{} {entry} {set:?}: {e}", shader.label));
+                    let options = naga::back::msl::Options {
+                        lang_version: (2, 4),
+                        ..Default::default()
+                    };
+                    let pipeline = naga::back::msl::PipelineOptions::default();
+                    naga::back::msl::write_string(&made, &info, &options, &pipeline)
+                        .unwrap_or_else(|e| panic!("{} {entry} {set:?}: {e}", shader.label));
+                }
             }
         }
     }

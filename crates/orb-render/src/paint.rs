@@ -448,6 +448,25 @@ impl NodePaint {
         }
     }
 
+    /// Whether a vector or symbol family's paint reads a feature's property
+    /// row or state: its pipeline's variant without rows can't draw it
+    /// ([`orb_shaders::FEATURE_ROWS`]). True for the other families.
+    pub(crate) fn reads_rows(&self) -> bool {
+        match self {
+            Self::Fill(p) | Self::Background(p) | Self::FillPattern(p, _) => {
+                p.table_mask | p.translate.mask() != 0 || p.state.mask != 0
+            }
+            Self::Line(p) | Self::LinePattern(p, _) => {
+                p.table_mask | p.translate.mask() != 0 || p.state.mask != 0 || p.gradient
+            }
+            Self::Circle(p) => {
+                p.table_mask | p.translate.mask() != 0 || p.pitch_rows || p.state.mask != 0
+            }
+            Self::Symbol(p) => p.table_mask != 0 || p.state.mask != 0,
+            _ => true,
+        }
+    }
+
     /// Whether this paint fits a node of `family`.
     pub(crate) fn fits(&self, family: Family) -> bool {
         matches!(

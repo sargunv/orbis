@@ -90,7 +90,7 @@ struct LineOut {
 
 fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {
     var value = constant;
-    if (node.table_mask & (1u << bit)) != 0u {
+    if (row_mask(node.table_mask) & (1u << bit)) != 0u {
         value = table_number(row, bit, node.curves[bit], tile_zoom);
     }
     if from_state(state, node.state, bit) {
@@ -186,7 +186,7 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     let state = state_block(v, feature, node.state);
 
     var color = node.color;
-    if (node.table_mask & 1u) != 0u {
+    if (row_mask(node.table_mask) & 1u) != 0u {
         color = table_color(row, 0u, node.curves[0], tile.zoom);
     }
     if from_state(state, node.state, 0u) {
@@ -233,7 +233,7 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     let dist = outset * extrude * EXTRUDE_SCALE;
     let offset2 = offset * offset_normal * EXTRUDE_SCALE * normal.y;
 
-    let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
+    let px = node_translate(node.translate, row_mask(node.table_mask), row, v.row_words, node.translate_curve, tile.zoom);
     let shift = translate_world(px, node.translate_anchor, tile);
     let center = pos + px_to_data * offset2 + vec2<f32>(shift.x, -shift.y) / tile.scale;
     let projected_no_extrude = ground_clip(tile_ground(tile, center), vec2<f32>(0.0), 0.0);
@@ -252,19 +252,19 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     out.opacity = opacity;
     out.linesofar = f32(vertex_at(v.vertex + 2u) >> 2u) * 2.0 * tile.extent / 8192.0;
     out.floorwidth = node.pattern.floor_width;
-    if (node.table_mask & 4u) != 0u {
+    if (row_mask(node.table_mask) & 4u) != 0u {
         out.floorwidth = bitcast<f32>(prop_at(row + 4u + select(0u, 1u, floor(frame.zoom) > tile.zoom)));
     }
-    out.images = pattern_ids(row, LINE_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
+    out.images = pattern_ids(row, LINE_ROW_PATTERN, node.image_from, node.image_to, row_mask(node.table_mask), node.pattern);
     if node.metrics != 0u { out.progress = bitcast<f32>(vertex_at(v.vertex + 4u)); }
-    if node.gradient != 0u { out.ramp = prop_at(row + LINE_ROW_GRADIENT); }
+    if feature_rows && node.gradient != 0u { out.ramp = prop_at(row + LINE_ROW_GRADIENT); }
     if node.dashed != 0u {
         out.images = vec2<u32>(node.dash_from, node.dash_to);
-        if (node.table_mask & 128u) != 0u {
+        if (row_mask(node.table_mask) & 128u) != 0u {
             out.images = vec2<u32>(prop_at(row + LINE_ROW_DASH + select(2u, 0u, node.dash_from_scale > 1.0)), prop_at(row + LINE_ROW_DASH + 1u));
         }
         out.floorwidth = node.dash_floor_width;
-        if (node.table_mask & 4u) != 0u {
+        if (row_mask(node.table_mask) & 4u) != 0u {
             out.floorwidth = bitcast<f32>(prop_at(row + LINE_ROW_FLOOR_WIDTH));
         }
     }

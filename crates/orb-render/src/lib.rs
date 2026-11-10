@@ -231,6 +231,9 @@ struct Node {
     /// A line node has dashes, a pattern or a gradient: it draws with the
     /// styled line pipeline.
     styled: bool,
+    /// A paint or symbol node's paint reads a feature's property row or
+    /// state: it draws with its pipeline's variant with rows.
+    rows: bool,
     /// What an extrusion node's pipelines are specialised for.
     elevation: paint::ElevationShape,
     /// What an extrusion node darkens on the ground: the frame's shadows,
@@ -270,9 +273,19 @@ impl Node {
         self.shaded && self.stack.is_some()
     }
 
-    /// Its paint pipeline's family, and whether it's the styled line's.
-    fn paint_kind(&self) -> (Family, bool) {
-        (self.family, self.styled)
+    /// Its paint pipeline.
+    fn paint_kind(&self) -> PaintKind {
+        PaintKind {
+            family: self.family,
+            styled: self.styled,
+            rows: self.rows,
+        }
+    }
+
+    /// A symbol node's slot of the symbol pipelines: along lines or not,
+    /// with property rows or without.
+    fn symbol_kind(&self) -> usize {
+        2 * usize::from(self.along_line) + usize::from(self.rows)
     }
 
     /// What the cull sees of it.
@@ -306,7 +319,8 @@ pub struct Renderer {
     paint: PaintPipelines,
     /// Point and line labels' symbol pipelines, each made for the first
     /// node that draws with it.
-    symbol_pipelines: [Variants; 2],
+    /// By [`Node::symbol_kind`].
+    symbol_pipelines: [Variants; 4],
     /// Whether the map's views may need the full projection
     /// ([`set_full_projection`](Self::set_full_projection)).
     full_projection: bool,
@@ -949,6 +963,7 @@ impl Renderer {
                 separate_halo: false,
                 along_line: false,
                 styled: false,
+                rows: true,
                 elevation: paint::ElevationShape::default(),
                 ground: extrusion::Ground::default(),
                 occlusion: false,
@@ -1498,8 +1513,10 @@ impl Renderer {
             NodePaint::LinePattern(..) => true,
             _ => false,
         };
-        if entry.styled != styled {
+        let rows = paint.reads_rows();
+        if (entry.styled, entry.rows) != (styled, rows) {
             entry.styled = styled;
+            entry.rows = rows;
             if entry.drawn {
                 self.pipelines_stale = true;
                 self.invalidate_bundle(gpu);
@@ -1690,10 +1707,14 @@ impl Renderer {
             }
             Family::SymbolIcon | Family::SymbolText => {
                 let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
-                let line = usize::from(self.nodes[i].along_line);
+                let node = &self.nodes[i];
                 let blend = Some(BlendState::PremultipliedAlpha);
-                let draw = Draw::new(&SYMBOL_SHADERS[line], &layouts, self.target, blend);
-                self.symbol_pipelines[line].make(gpu, variants, draw);
+                let shader = &SYMBOL_SHADERS[usize::from(node.along_line)];
+                let draw = Draw {
+                    rows: node.rows,
+                    ..Draw::new(shader, &layouts, self.target, blend)
+                };
+                self.symbol_pipelines[node.symbol_kind()].make(gpu, variants, draw);
             }
             Family::Raster | Family::Hillshade | Family::ColorRelief => {
                 self.images.make(gpu, family);
@@ -1761,7 +1782,7 @@ impl Renderer {
             }
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(
-                    (self.symbol_pipelines[usize::from(node.along_line)].wanted(self.full))
+                    (self.symbol_pipelines[node.symbol_kind()].wanted(self.full))
                         .map(PipelineId::from),
                 );
             }
@@ -1942,6 +1963,17 @@ impl Renderer {
             self.full = full;
             self.pipelines_stale = true;
             self.invalidate_bundle(gpu);
+        }
+        // Extrusions draw with the plane variants where the paint
+        // pipelines do: they have no fallback to the full ones while
+        // those compile.
+        if self.extrusions.set_full(!self.variants()[0]) {
+            self.pipelines_stale = true;
+            for node in &mut self.nodes {
+                if let Some(extrusion) = &mut node.extrusion {
+                    extrusion.forget_bundle(gpu);
+                }
+            }
         }
         let compiling = self.pipelines(gpu);
         let made = compiling.made;
@@ -2558,8 +2590,7 @@ impl Renderer {
             return true;
         }
         if node.family.is_symbol() {
-            let Some(pipeline) =
-                self.symbol_pipelines[usize::from(node.along_line)].drawn(gpu, self.full)
+            let Some(pipeline) = self.symbol_pipelines[node.symbol_kind()].drawn(gpu, self.full)
             else {
                 return false;
             };
@@ -2692,39 +2723,45 @@ impl Drape {
     }
 }
 
+/// A paint node's pipeline ([`Node::paint_kind`]).
+#[derive(Clone, Copy, Debug)]
+struct PaintKind {
+    family: Family,
+    /// The styled line's.
+    styled: bool,
+    /// Its variant with property rows ([`orb_shaders::FEATURE_ROWS`]).
+    rows: bool,
+}
+
 /// The vector families' pipelines (fill, fill outline, line, circle), each
-/// made for the family's first node.
+/// made for the family's first node, with property rows and without.
 #[derive(Clone, Copy, Debug, Default)]
 struct PaintPipelines {
-    pipelines: [Variants; 5],
+    pipelines: [Variants; 10],
 }
 
 impl PaintPipelines {
     /// The slot of a node's [`Node::paint_kind`].
-    fn index((family, styled): (Family, bool)) -> Option<usize> {
-        Some(match family {
+    fn index(kind: PaintKind) -> Option<usize> {
+        let shader = match kind.family {
             Family::Fill => 0,
             Family::FillOutline => 1,
-            Family::Line if styled => 4,
+            Family::Line if kind.styled => 4,
             Family::Line => 2,
             Family::Circle => 3,
             _ => return None,
-        })
+        };
+        Some(2 * shader + usize::from(kind.rows))
     }
 
     /// What a frame draws a node of `kind` with ([`Variants::drawn`]).
-    fn drawn(
-        &self,
-        gpu: &mut dyn Gpu,
-        kind: (Family, bool),
-        full: bool,
-    ) -> Option<RenderPipelineId> {
+    fn drawn(&self, gpu: &mut dyn Gpu, kind: PaintKind, full: bool) -> Option<RenderPipelineId> {
         self.pipelines[Self::index(kind)?].drawn(gpu, full)
     }
 
     /// What a frame waits for to draw a node of `kind`
     /// ([`Variants::wanted`]).
-    fn wanted(&self, kind: (Family, bool), full: bool) -> Option<RenderPipelineId> {
+    fn wanted(&self, kind: PaintKind, full: bool) -> Option<RenderPipelineId> {
         self.pipelines[Self::index(kind)?].wanted(full)
     }
 
@@ -2735,13 +2772,13 @@ impl PaintPipelines {
         gpu: &mut dyn Gpu,
         target: TargetFormat,
         layouts: &[BindGroupLayoutId],
-        kind: (Family, bool),
+        kind: PaintKind,
         variants: [bool; 2],
     ) {
         let Some(index) = Self::index(kind) else {
             return;
         };
-        let (shader, topology) = match index {
+        let (shader, topology) = match index / 2 {
             0 => (&FILL_SHADER, PrimitiveTopology::TriangleList),
             1 => (&FILL_OUTLINE_SHADER, PrimitiveTopology::LineList),
             2 => (&LINE_SHADER, PrimitiveTopology::TriangleList),
@@ -2750,6 +2787,7 @@ impl PaintPipelines {
         };
         let draw = Draw {
             topology,
+            rows: kind.rows,
             ..Draw::new(
                 shader,
                 layouts,

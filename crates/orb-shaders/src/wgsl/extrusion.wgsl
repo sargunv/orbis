@@ -157,12 +157,20 @@ fn clips_split(tile: Tile) -> bool {
 fn extrusion_drawn(v: Pulled) -> u32 {
     let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
     let tile = tile_at(v.tile);
-    let cut = select(EXTRUSION_CUT, EXTRUSION_CUT_SPLIT, clips_split(tile));
+    // Most placements clip to one rectangle, which the row holds
+    // (`fragment_clip`): testing the four in every vertex of every
+    // pipeline cost a pitched 3D frame's buildings an eighth of their time
+    // on the moto g (#180).
+    let one = any(tile.clip != CLIP_FETCHED);
+    var cut = EXTRUSION_CUT;
+    if !one && clips_split(tile) {
+        cut = EXTRUSION_CUT_SPLIT;
+    }
     if (prop_at(row + EXTRUSION_ROW_WHOLE) & 1u) == 0u {
         return cut;
     }
     let centroid = unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID));
-    if inside_clips(tile, centroid) {
+    if (one && in_clip(tile.clip, centroid)) || (!one && inside_clips(tile, centroid)) {
         return EXTRUSION_WHOLE;
     }
     let cell = floor(centroid / tile.extent) + 1.0;

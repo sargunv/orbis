@@ -389,6 +389,28 @@ pub struct TileRow {
 }
 
 impl TileRow {
+    /// Its clip as fragments test it where its content lands where it was
+    /// (`types.wgsl`'s `fragment_clip`): the one rectangle it owns, within
+    /// its bound, where it is affine (empty where it owns none); otherwise
+    /// `None`, and fragments test its rectangles and bound.
+    fn fragment_clip(&self) -> Option<ClipRect> {
+        if self.warp.cells != 0 {
+            return None;
+        }
+        let mut owned = (self.clips.iter()).filter(|c| c.min[0] < c.max[0] && c.min[1] < c.max[1]);
+        let clip = match (owned.next(), owned.next()) {
+            (None, _) => return Some(ClipRect::EMPTY),
+            (Some(clip), None) => clip,
+            (Some(_), Some(_)) => return None,
+        };
+        if self.bound.min == ClipRect::EVERYWHERE.min {
+            return Some(*clip);
+        }
+        let lo = [0, 1].map(|i| clip.min[i].max(self.bound.min[i]));
+        let hi = [0, 1].map(|i| clip.max[i].min(self.bound.max[i]).max(lo[i]));
+        Some(ClipRect::new(lo, hi))
+    }
+
     /// The row as `types.wgsl`'s `Tile`, its origins split at `quantum`
     /// on the plane.
     fn words(&self, quantum: f64) -> [u32; TILE_WORDS] {
@@ -405,6 +427,8 @@ impl TileRow {
             put(t::CLIPS + 2 * i, &[pack(clip.min), pack(clip.max)]);
         }
         put(t::BOUND, &[pack(self.bound.min), pack(self.bound.max)]);
+        let clip = self.fragment_clip().unwrap_or(CLIP_FETCHED);
+        put(t::CLIP, &[pack(clip.min), pack(clip.max)]);
         put(t::PATTERN_ORIGIN, &self.pattern_origin);
         put(t::EXTENT, &[self.extent.to_bits(), self.wrap as u32]);
         put(t::PX_SCALE, &[self.px_scale.to_bits()]);
@@ -530,6 +554,10 @@ impl ClipRect {
         Self { min, max }
     }
 }
+
+/// `types.wgsl`'s `CLIP_FETCHED`: a tile row's clip that fragments test
+/// against its rectangles and bound.
+const CLIP_FETCHED: ClipRect = ClipRect::new([i16::MIN; 2], [i16::MIN; 2]);
 
 /// Words of a tile row (`types.wgsl`'s `Tile`, `TILE_WORDS` there).
 const TILE_WORDS: usize = layout::tile::WORDS;

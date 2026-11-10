@@ -140,7 +140,7 @@ group "drape clear"#0: layout layout "drape clear"#0; 0 buffer "drape atlas size
 layout "scene"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 2 ShaderStages(VERTEX) Storage { read_only: true }; 3 ShaderStages(VERTEX) Storage { read_only: true }; 4 ShaderStages(VERTEX) Storage { read_only: true }; 5 ShaderStages(VERTEX) Storage { read_only: true }; 6 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 7 ShaderStages(VERTEX) Storage { read_only: true }; 8 ShaderStages(FRAGMENT) Storage { read_only: true }; 9 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 10 ShaderStages(FRAGMENT) Sampler { filtering: true }; 11 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 12 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 13 ShaderStages(FRAGMENT) Sampler { filtering: true }; 14 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2 }; 16 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 
 layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 
 module "fill"#0: wgsl
-render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill []; module "fill"#0 fs_fill []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill [("feature_rows", 0.0)]; module "fill"#0 fs_fill []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 buffer "drape frame"#0: BufferUsages(COPY_DST | UNIFORM)
 buffer "vertices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "props"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
@@ -159,7 +159,7 @@ group "drape node"#1: layout layout "node"#0; 0 buffer "drape node uniforms"#0 a
 group "drape node"#2: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 3072 size Some(512)
 group "drape node"#3: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 4096 size Some(512)
 module "fill outline"#0: wgsl
-render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline []; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
+render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline [("feature_rows", 0.0)]; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
 group "drape node"#4: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 4608 size Some(512)
 group "drape node"#5: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 5120 size Some(512)
 group "drape node"#6: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 5632 size Some(512)
@@ -170,7 +170,7 @@ group "drape node"#10: layout layout "node"#0; 0 buffer "drape node uniforms"#0 
 group "drape node"#11: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 8192 size Some(512)
 group "drape node"#12: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 8704 size Some(512)
 module "line"#0: wgsl
-render "line"#0: layouts [layout "scene"#0, layout "node"#0]; module "line"#0 vs_line []; module "line"#0 fs_line []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "line"#0: layouts [layout "scene"#0, layout "node"#0]; module "line"#0 vs_line [("feature_rows", 0.0)]; module "line"#0 fs_line []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "drape node"#13: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 9216 size Some(512)
 group "drape node"#14: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 9728 size Some(512)
 group "drape node"#15: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 10240 size Some(512)
@@ -565,7 +565,7 @@ buffer "composite"#1: BufferUsages(COPY_DST | UNIFORM)
 group "composite"#1: layout layout "composite"#0; 0 buffer "composite"#1 at 0 size None; 1 texture "terrain layer"#3 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
 layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
 module "symbol line"#0: wgsl
-render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol []; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol [("feature_rows", 0.0)]; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "scene"#2: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 41984 size Some(512)
 buffer "symbol passes"#0: BufferUsages(COPY_DST | UNIFORM)
@@ -574,7 +574,7 @@ group "symbol pass"#1: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0
 group "node"#1: layout layout "node"#0; 0 buffer "node uniforms"#0 at 51200 size Some(512)
 group "symbol pass"#2: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 0 size Some(16)
 module "symbol"#0: wgsl
-render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol []; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol [("feature_rows", 0.0)]; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#2: layout layout "node"#0; 0 buffer "node uniforms"#0 at 51712 size Some(512)
 group "node"#3: layout layout "node"#0; 0 buffer "node uniforms"#0 at 52224 size Some(512)
 group "node"#4: layout layout "node"#0; 0 buffer "node uniforms"#0 at 60416 size Some(512)
