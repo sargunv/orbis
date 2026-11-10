@@ -241,6 +241,22 @@ fn view_usage(
     })
 }
 
+/// The layers wgpu's GL back end makes an array texture of `desc` with,
+/// which picks the GL target from the layer count alone: one layer is a
+/// 2D texture, and a square one of 6n layers a cube map (an array of them
+/// past 6, an enum WebGL 2 lacks), both incomplete to an array's sampler,
+/// which reads black (pages, atlases). Such an array gets a layer more
+/// that it never uses.
+fn gl_array_layers(desc: &TextureDesc<'_>) -> u32 {
+    let layers = desc.array_layers;
+    let cube = desc.width == desc.height && desc.sample_count == 1 && layers.is_multiple_of(6);
+    if layers == 1 || cube {
+        layers + 1
+    } else {
+        layers
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn platform_texture_usages() -> wgpu::TextureUsages {
     wgpu::TextureUsages::all()
@@ -1097,13 +1113,8 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc<'_>) -> TextureId {
-        // wgpu's GL back end makes a texture of one layer a 2D texture,
-        // which an array's sampler finds incomplete (black): an array of
-        // one gets a second layer it never uses.
-        let one_layer_array =
-            desc.dimension == TextureViewDimension::D2Array && desc.array_layers == 1;
-        let layers = if one_layer_array && self.gl {
-            2
+        let layers = if self.gl && desc.dimension == TextureViewDimension::D2Array {
+            gl_array_layers(desc)
         } else {
             desc.array_layers
         };
@@ -1694,6 +1705,42 @@ impl Gpu for WgpuGpu {
         }
         if let Some(timing) = &mut self.timing {
             timing.end(timing::now() - started);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gl_arrays_take_neither_a_2d_nor_a_cube_target() {
+        let layers = |width, height, array_layers| {
+            gl_array_layers(&TextureDesc {
+                label: "array",
+                width,
+                height,
+                array_layers,
+                dimension: TextureViewDimension::D2Array,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING,
+                sample_count: 1,
+                mip_levels: 1,
+                view_formats: &[],
+            })
+        };
+        assert_eq!(layers(258, 258, 1), 2);
+        assert_eq!(layers(258, 258, 5), 5);
+        assert_eq!(layers(258, 258, 6), 7);
+        assert_eq!(layers(258, 258, 12), 13);
+        assert_eq!(layers(256, 512, 6), 6);
+        // Within WebGL 2's 256 layers wherever the asked count is.
+        for n in 1..=256 {
+            let made = layers(258, 258, n);
+            assert!(
+                made > 1 && !made.is_multiple_of(6) && made <= 256,
+                "{n} layers made {made}"
+            );
         }
     }
 }

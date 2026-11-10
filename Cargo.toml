@@ -115,8 +115,11 @@ orb-web = { path = "crates/orb-web" }
 # pass first needs them in (the drape's mips, VUID-vkCmdDraw-None-09600,
 # #170), and MoltenVK fixes: naga's workgroup zeroing, and twin types named
 # apart. orb-runtime's `validation` test checks the scenes under Vulkan's
-# validation layer. Every crate of wgpu's workspace comes from the fork,
-# since its path dependencies resolve there. #35 tracks sending it upstream.
+# validation layer. And GLES uploading an `ImageBitmap` with the default
+# unpack layout, not the last buffer copy's, which sheared raster and DEM
+# tiles on WebGL 2 or (Firefox) dropped them (gfx-rs/wgpu#8668). Every
+# crate of wgpu's workspace comes from the fork, since its path
+# dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
 naga-types = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
 wgpu = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
