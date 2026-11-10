@@ -2396,6 +2396,9 @@ impl Renderer {
             passes.push(linear.pass(gpu, target, clear));
         }
         Pass::group(&mut passes, start, "main");
+        // What the frame wrote into data textures lands before it draws.
+        #[cfg(cpu_driven)]
+        self.scene.tables_mut().flush(gpu);
         let submitting = clock();
         gpu.submit(&passes);
         times.submit = micros(submitting, clock());

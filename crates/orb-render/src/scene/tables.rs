@@ -9,6 +9,11 @@
 //! can't (WebGL 2, #140; `fetch_texture.wgsl`): the row tables packed into
 //! one, at bases a small uniform gives, and each arena in its own. The
 //! CPU driver also keeps copies of what its cull reads.
+//!
+//! Writes into the data textures wait for [`Tables::flush`], which issues
+//! them as one write per run of adjacent words: each is a
+//! `texSubImage2D` on WebGL 2, and a tile's chunks write their rows one by
+//! one.
 
 use orb_hal::*;
 
@@ -151,22 +156,107 @@ enum Place {
 }
 
 impl Place {
-    fn write(self, gpu: &mut dyn Gpu, at: u32, words: Words<'_>) {
+    /// Queues `words` from word `at`: into a texture, in `staged` if
+    /// given, else at once.
+    fn write(
+        self,
+        gpu: &mut dyn Gpu,
+        at: u32,
+        words: Words<'_>,
+        #[cfg(cpu_driven)] staged: Option<&mut Staged>,
+    ) {
         match self {
             Self::Buffer(buffer) => words.write_buffer(gpu, buffer, at),
             #[cfg(cpu_driven)]
-            Self::Texture { texture, base } => match words {
-                Words::Core(words) => write_texels(gpu, texture, base + at, words),
-                Words::Host { bytes, offset, len } => {
-                    let bytes = gpu.read_host_bytes(bytes, offset..offset + u64::from(len) * 4);
-                    // Host bytes come unaligned (copied from a JS buffer).
-                    let words: Vec<u32> = bytemuck::pod_collect_to_vec(&bytes);
-                    write_texels(gpu, texture, base + at, &words);
+            Self::Texture { texture, base } => {
+                let host;
+                let words = match words {
+                    Words::Core(words) => words,
+                    Words::Host { bytes, offset, len } => {
+                        let bytes = gpu.read_host_bytes(bytes, offset..offset + u64::from(len) * 4);
+                        // Host bytes come unaligned (copied from a JS buffer).
+                        host = bytemuck::pod_collect_to_vec::<u8, u32>(&bytes);
+                        &host
+                    }
+                };
+                match staged {
+                    Some(staged) => staged.push(texture, base + at, words),
+                    None => write_texels(gpu, texture, base + at, words),
                 }
-            },
+            }
             #[cfg(cpu_driven)]
             Self::Cpu => {}
         }
+    }
+}
+
+/// Writes into data textures, held to be issued together.
+#[cfg(cpu_driven)]
+#[derive(Debug, Default)]
+struct Staged {
+    /// In the order made: the texture, the first word, and where its words
+    /// are in `words`.
+    writes: Vec<(TextureId, u32, std::ops::Range<usize>)>,
+    words: Vec<u32>,
+}
+
+/// Words of held writes whose allocation outlives a flush.
+#[cfg(cpu_driven)]
+const KEPT_WORDS: usize = 1 << 18;
+
+#[cfg(cpu_driven)]
+impl Staged {
+    fn push(&mut self, texture: TextureId, at: u32, words: &[u32]) {
+        if words.is_empty() {
+            return;
+        }
+        let start = self.words.len();
+        self.words.extend_from_slice(words);
+        self.writes.push((texture, at, start..self.words.len()));
+    }
+
+    /// Issues the held writes: one per run of a texture's words that they
+    /// cover without a gap, the later of two writes winning where they
+    /// overlap.
+    fn flush(&mut self, gpu: &mut dyn Gpu) {
+        let Self { writes, words } = self;
+        let mut order: Vec<usize> = (0..writes.len()).collect();
+        order.sort_unstable_by_key(|&i| (writes[i].0, writes[i].1, i));
+        let end = |i: usize| writes[i].1 + writes[i].2.len() as u32;
+        let mut run = Vec::new();
+        let mut at = 0;
+        while at < order.len() {
+            let (texture, start, _) = writes[order[at]];
+            let mut stop = end(order[at]);
+            let mut next = at + 1;
+            while next < order.len() && writes[order[next]].0 == texture {
+                let (_, from, _) = writes[order[next]];
+                if from > stop {
+                    break;
+                }
+                stop = stop.max(end(order[next]));
+                next += 1;
+            }
+            let members = &mut order[at..next];
+            if let [only] = members {
+                write_texels(gpu, texture, start, &words[writes[*only].2.clone()]);
+            } else {
+                // In the order they were made, so later words win.
+                members.sort_unstable();
+                run.clear();
+                run.resize((stop - start) as usize, 0);
+                for &i in members.iter() {
+                    let (_, from, ref range) = writes[i];
+                    let from = (from - start) as usize;
+                    run[from..from + range.len()].copy_from_slice(&words[range.clone()]);
+                }
+                write_texels(gpu, texture, start, &run);
+            }
+            at = next;
+        }
+        writes.clear();
+        words.clear();
+        words.shrink_to(KEPT_WORDS);
     }
 }
 
@@ -316,7 +406,13 @@ pub(crate) struct TableWriter {
 impl TableWriter {
     /// Queues `words` into the table from word `at`.
     pub(crate) fn write(&self, gpu: &mut dyn Gpu, at: u32, words: Words<'_>) {
-        self.place.write(gpu, at, words);
+        self.place.write(
+            gpu,
+            at,
+            words,
+            #[cfg(cpu_driven)]
+            None,
+        );
     }
 
     /// Queues core `words` into the table from word `at`.
@@ -439,6 +535,9 @@ pub(crate) struct Tables {
     rows: Option<RowTexture>,
     #[cfg(cpu_driven)]
     mirrors: Mirrors,
+    /// Writes into the data textures since the last flush.
+    #[cfg(cpu_driven)]
+    staged: Staged,
 }
 
 /// Copies of the tables the CPU driver reads, each as long as what was
@@ -526,6 +625,8 @@ impl Tables {
             rows,
             #[cfg(cpu_driven)]
             mirrors,
+            #[cfg(cpu_driven)]
+            staged: Staged::default(),
         }
     }
 
@@ -546,7 +647,20 @@ impl Tables {
     pub(crate) fn write(&mut self, gpu: &mut dyn Gpu, table: Table, at: u32, words: Words<'_>) {
         #[cfg(cpu_driven)]
         self.mirrors.write(gpu, table, at, words);
-        self.places[table.index()].write(gpu, at, words);
+        self.places[table.index()].write(
+            gpu,
+            at,
+            words,
+            #[cfg(cpu_driven)]
+            Some(&mut self.staged),
+        );
+    }
+
+    /// Issues the writes into data textures held since the last flush:
+    /// before a submission that reads the tables, or moves one.
+    #[cfg(cpu_driven)]
+    pub(crate) fn flush(&mut self, gpu: &mut dyn Gpu) {
+        self.staged.flush(gpu);
     }
 
     /// Queues core `words` into `table` from word `at`.
@@ -586,6 +700,8 @@ impl Tables {
     /// copied over on the GPU at the same offsets. Writers taken before
     /// write the old one.
     pub(super) fn resize(&mut self, gpu: &mut dyn Gpu, table: Table, words: u64, keep: u64) {
+        #[cfg(cpu_driven)]
+        self.flush(gpu);
         #[cfg(cpu_driven)]
         self.mirrors.truncate(table, keep);
         let place = &mut self.places[table.index()];
