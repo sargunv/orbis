@@ -704,7 +704,8 @@ impl View {
         }
         if let Some(globe) = &self.globe {
             let metres = height * globe.metres_per_px / self.world_per_px;
-            return self.cover_globe(globe, tms, (tile_px, max_zoom), metres, detail);
+            let at = (tile_px, max_zoom);
+            return self.cover_globe(globe, tms, at, (metres, terrain), detail);
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
         self.cover_tiles(
@@ -735,7 +736,7 @@ impl View {
         // Any set's tiles wrap the globe directly.
         if let Some(globe) = &self.globe {
             let detail = Detail::Lod(self.lod);
-            return self.cover_globe(globe, tms, (tile_px, max_zoom), 0.0, detail);
+            return self.cover_globe(globe, tms, (tile_px, max_zoom), (0.0, None), detail);
         }
         let scale = self.world_per_px * tile_px;
         let detail = Detail::Lod(self.lod);
@@ -896,25 +897,28 @@ impl View {
     /// the target, or from the eye with each tile's angle from straight
     /// down.
     ///
-    /// Content standing up to `height` metres over a tile (extrusions,
-    /// lifted labels) keeps it covered while that content can show: past
-    /// the ground's horizon by the angle it peeks over it, and above the
-    /// view's bottom edge, as GL JS's `expandCullingToContentElevation`.
+    /// Each tile stands on the ground between the lowest and highest
+    /// elevations under it on `terrain`, where known (else between sea
+    /// level and the target's elevation, as on the plane), as GL JS's globe
+    /// bounds its tiles: near terrain the view looks down on, whose sea
+    /// level lies below the view's bottom edge, stays covered. Content
+    /// standing up to `height` metres over that ground (extrusions, lifted
+    /// labels) keeps a tile covered while that content can show: past the
+    /// ground's horizon by the angle it peeks over it, and above the view's
+    /// bottom edge, as GL JS's `expandCullingToContentElevation`.
     fn cover_globe(
         &self,
         globe: &GlobeView,
         tms: &TileMatrixSet,
         (tile_px, max_zoom): (f64, u8),
-        height: f64,
+        (height, terrain): (f64, Option<&dyn Elevation>),
         detail: Detail,
     ) -> Vec<CoveredTile> {
         let eye = globe.target + globe.eye;
         let eye_dir = eye.normalize();
         let height = height.max(0.0);
-        let horizon = globe.horizon_angle() + (sphere::RADIUS / (sphere::RADIUS + height)).acos();
-        // Points that can face the eye, or hold content that can, lie in
-        // front of the horizon's plane.
-        let horizon_plane = sphere::RADIUS * horizon.cos();
+        let elevation = globe.target.length() - sphere::RADIUS;
+        let unknown = (elevation.min(0.0), elevation.max(0.0));
         let center_distance = globe.eye.length();
         let projection = tms.projection();
         // The zoom whose tiles span `tile_px` pixels where the set's scale
@@ -937,9 +941,17 @@ impl View {
         let target_dir = globe.target.normalize();
         let target = projection.forward(sphere::geodetic(target_dir));
         let period = projection.wrap_period();
-        let frustum = GlobeFrustum::new(globe, height);
+        let frustum = GlobeFrustum::new(globe);
         tms.cover_with(0..=0, None, max_zoom, |index, _| {
             let b = tms.tile_area(index);
+            // The heights its ground and the content on it span, in metres.
+            let (base, top) = terrain.and_then(|t| t.range(b, index.z)).unwrap_or(unknown);
+            let top = top.max(base) + height;
+            let horizon =
+                globe.horizon_angle() + (sphere::RADIUS / (sphere::RADIUS + top.max(0.0))).acos();
+            // Points that can face the eye, or hold content that can, lie
+            // in front of the horizon's plane.
+            let horizon_plane = sphere::RADIUS * horizon.cos();
             // A grid of the tile's points on the sphere, row by row: 5×5
             // for the widest tiles, 3×3 below.
             let steps = if index.z < 3 { 4 } else { 2 };
@@ -969,6 +981,9 @@ impl View {
             let grid = &points[..n * n];
             let points = &points[..count];
             let finite = || points.iter().copied().filter(|p| p.is_finite());
+            // Those points at the bottom and top of what stands on them.
+            let (low, high) = (1.0 + base / sphere::RADIUS, 1.0 + top / sphere::RADIUS);
+            let shell = || finite().flat_map(|p| [p * low, p * high]);
             // The widest gap between neighbouring points: the sphere bulges
             // past them by at most its sagitta.
             let pair = |a: usize, b: usize| {
@@ -996,18 +1011,18 @@ impl View {
             // Its box in the east, north and up frame at its centre, padded
             // by the sagitta: far tighter than a box on the sphere's axes,
             // which a tile tilted to them fills only diagonally.
-            let bulge = sphere::RADIUS * (1.0 - (gap / 2.0).min(FRAC_PI_2).cos());
+            let bulge = sphere::RADIUS * high.max(1.0) * (1.0 - (gap / 2.0).min(FRAC_PI_2).cos());
             let up = center / sphere::RADIUS;
             let east = DVec3::Z.cross(up).try_normalize().unwrap_or(DVec3::Y);
             let frame = DMat3::from_cols(east, up.cross(east), up);
             let to_local = frame.transpose();
             let (mut lo, mut hi) = (DVec3::INFINITY, DVec3::NEG_INFINITY);
-            for p in finite() {
+            for p in shell() {
                 let local = to_local * (p - center);
                 lo = lo.min(local);
                 hi = hi.max(local);
             }
-            let (lo, hi) = (lo - bulge, hi + bulge + DVec3::Z * height);
+            let (lo, hi) = (lo - bulge, hi + bulge);
             let corners = box_corners(lo, hi).map(|c| center + frame * c);
             // Outside if the box is wholly behind the horizon's plane or
             // outside a plane of the frustum, or if the frustum, cut off
@@ -1023,6 +1038,7 @@ impl View {
             {
                 return CoverDecision::Skip;
             }
+            let frustum = frustum.reaching(top.max(0.0));
             let faces = (0..3).any(|axis| {
                 let a = frame.col(axis);
                 let at = a.dot(center);
@@ -1048,9 +1064,7 @@ impl View {
                 }
                 let normal = cross.normalize();
                 let normal = normal * normal.dot(center).signum();
-                let offset = finite()
-                    .map(|p| normal.dot(p))
-                    .fold(f64::INFINITY, f64::min);
+                let offset = shell().map(|p| normal.dot(p)).fold(f64::INFINITY, f64::min);
                 frustum.beyond(normal, offset - bulge)
             });
             if faces || sides {
@@ -1095,10 +1109,12 @@ impl View {
                 };
             }
             // Its nearest point to the eye: the point under the eye in it,
-            // or else one of its grid or a pole past its edge.
+            // or else one of its grid or a pole past its edge, at the
+            // target's elevation (the plane's terrain detail takes the
+            // eye's height over the target too).
             let inside = nearest_to(under);
-            let nearest = finite()
-                .chain([sphere::ecef(inside, 0.0)])
+            let nearest = (finite().chain([sphere::ecef(inside, 0.0)]))
+                .map(|p| p * (1.0 + elevation / sphere::RADIUS))
                 .min_by(|a, b| a.distance_squared(eye).total_cmp(&b.distance_squared(eye)))
                 .unwrap_or(center);
             let distance = nearest.distance(eye).max(center_distance * 1e-3);
@@ -1132,25 +1148,37 @@ const GLOBE_FIXED_ZOOM: f64 = 4.0;
 
 /// A globe view's frustum cut off where it passes the horizon, as GL JS
 /// fits its globe frustum's far plane to the horizon: its eight corners
-/// in sphere space.
+/// in sphere space, and the depth along the view where the sphere's
+/// ground ends (`None` on a low-zoom plane, uncut).
 struct GlobeFrustum {
+    corners: [DVec3; 8],
+    eye: DVec3,
+    forward: DVec3,
+    ground: Option<f64>,
+}
+
+/// A [`GlobeFrustum`] cut off for content of one height.
+struct GlobeFrustumCut {
     corners: [DVec3; 8],
 }
 
 impl GlobeFrustum {
-    /// The view's frustum, its far end pushed out for content standing up
-    /// to `height` metres, which shows past the ground's horizon.
-    fn new(globe: &GlobeView, height: f64) -> Self {
+    fn new(globe: &GlobeView) -> Self {
         let inverse = globe.view_proj.inverse();
         let ndc = box_corners(DVec3::new(-1.0, -1.0, 0.0), DVec3::ONE);
-        let mut corners = ndc.map(|c| inverse.project_point3(c) + globe.target);
-        if globe.plane.is_some() {
-            return Self { corners };
-        }
+        let corners = ndc.map(|c| inverse.project_point3(c) + globe.target);
         let eye = globe.target + globe.eye;
+        let forward = -globe.eye.normalize();
+        if globe.plane.is_some() {
+            return Self {
+                corners,
+                eye,
+                forward,
+                ground: None,
+            };
+        }
         let up = eye.normalize();
         let plane = sphere::RADIUS * sphere::RADIUS / eye.length();
-        let forward = -globe.eye.normalize();
         let depth = |p: DVec3| (p - eye).dot(forward);
         // The farthest depth at which the edges meet the horizon's plane
         // (or their full length where they don't)...
@@ -1179,19 +1207,37 @@ impl GlobeFrustum {
         } else {
             ring
         };
+        Self {
+            corners,
+            eye,
+            forward,
+            ground: Some(rays.min(visible)),
+        }
+    }
+
+    /// The frustum with its far end pushed out for content standing up to
+    /// `height` metres, which shows past the ground's horizon.
+    fn reaching(&self, height: f64) -> GlobeFrustumCut {
+        let mut corners = self.corners;
+        let Some(ground) = self.ground else {
+            return GlobeFrustumCut { corners };
+        };
         // Content standing on the sphere shows farther along a ray that
         // grazes it, by up to the tangent's length from it to the
         // content's top.
         let shell = sphere::RADIUS + height;
-        let far = rays.min(visible) + (shell * shell - sphere::RADIUS * sphere::RADIUS).sqrt();
+        let far = ground + (shell * shell - sphere::RADIUS * sphere::RADIUS).sqrt();
+        let depth = |p: DVec3| (p - self.eye).dot(self.forward);
         for i in 0..4 {
             let (near, along) = (corners[i], corners[i + 4] - corners[i]);
-            let s = ((far - depth(near)) / along.dot(forward)).clamp(0.0, 1.0);
+            let s = ((far - depth(near)) / along.dot(self.forward)).clamp(0.0, 1.0);
             corners[i + 4] = near + along * s;
         }
-        Self { corners }
+        GlobeFrustumCut { corners }
     }
+}
 
+impl GlobeFrustumCut {
     /// Whether all of it is on the outer side of a plane: every corner
     /// `p` has `normal · p < offset`.
     fn beyond(&self, normal: DVec3, offset: f64) -> bool {
@@ -1897,6 +1943,74 @@ mod tests {
         assert!(!past.is_empty());
         // Some of the added tiles lie past the ground's horizon.
         assert!(past.iter().any(|&a| a > globe.horizon_angle()), "{past:?}");
+    }
+
+    /// A plateau 4,000 m up, everywhere.
+    #[derive(Debug)]
+    struct Plateau;
+
+    impl Elevation for Plateau {
+        fn at(&self, _: DVec2) -> Option<f64> {
+            Some(4000.0)
+        }
+
+        fn range(&self, _: WorldRect, _: u8) -> Option<(f64, f64)> {
+            Some((4000.0, 4000.0))
+        }
+    }
+
+    /// On a globe, the terrain's cover holds the ground the view sees on
+    /// raised terrain, near ground included: its sea level lies below the
+    /// view's bottom edge, where a cover of the sphere alone left holes
+    /// that the farther tiles' skirts showed through as walls (#149).
+    #[test]
+    fn globe_terrain_cover_holds_raised_ground() {
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        for (zoom, pitch) in [(11.6, 72.0), (11.2, 60.0), (11.9, 85.0), (14.0, 70.0)] {
+            let mut camera = CameraState::new(Geodetic::new(7.7491, 46.0207), zoom, &mercator());
+            (camera.pitch, camera.bearing, camera.elevation) = (pitch, -32.0, 4000.0);
+            let viewport = Viewport {
+                width: 1000.0,
+                height: 700.0,
+            };
+            let surface = Surface {
+                projection: mercator(),
+                globe: Some(Globe::SPHERE),
+            };
+            let view = View::new(&camera, viewport, &surface);
+            let globe = view.globe().unwrap();
+            let cover = view.cover_terrain(&tms, 512.0, 22, &Plateau);
+            let inverse = globe.view_proj.inverse();
+            let shell = sphere::RADIUS + 4000.0;
+            let mut seen = 0;
+            for i in 0..=20 {
+                for j in 0..=20 {
+                    let ndc = DVec2::new(f64::from(i) / 10.0 - 1.0, f64::from(j) / 10.0 - 1.0);
+                    let from = inverse.project_point3(ndc.extend(0.0)) + globe.target;
+                    let to = inverse.project_point3(ndc.extend(1.0)) + globe.target;
+                    let ray = (to - from).normalize();
+                    let b = from.dot(ray);
+                    let disc = b * b - (from.length_squared() - shell * shell);
+                    if disc < 0.0 {
+                        continue;
+                    }
+                    let t = -b - disc.sqrt();
+                    if t <= 0.0 || t > from.distance(to) {
+                        continue;
+                    }
+                    seen += 1;
+                    let world = tms.projection().forward(sphere::geodetic(from + ray * t));
+                    assert!(
+                        cover.iter().any(|t| {
+                            let b = tms.tile_bounds(t.index);
+                            b.min.cmple(world).all() && world.cmple(b.max).all()
+                        }),
+                        "z{zoom} pitch {pitch} at {ndc}: no tile"
+                    );
+                }
+            }
+            assert!(seen > 200, "{seen} points on the ground");
+        }
     }
 
     #[test]
