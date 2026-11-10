@@ -507,6 +507,10 @@ fn node_layer<'f, 'p>(
     }
     let name = match &plan.source_def(node.source).kind {
         SourceKind::GeoJson(_) => Some(orb_tile::geojson::LAYER_NAME),
+        // An app's tiles hold GeoJSON for a layer naming no source layer.
+        SourceKind::Vector(v) if v.tileset.host() => plan
+            .source_layer(node)
+            .or(Some(orb_tile::geojson::LAYER_NAME)),
         _ => plan.source_layer(node),
     }?;
     Some((frame.layer(name)?, name))

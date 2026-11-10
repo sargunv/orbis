@@ -6,7 +6,7 @@
 //! layers as GeoJSON (a custom geometry source), or empty. The answer goes
 //! to the jobs with each request, and is kept for relayouts.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use orb_crs::TileIndex;
 use orb_source::endpoint::HostTile;
@@ -27,6 +27,9 @@ pub(crate) struct HostTiles {
     order: VecDeque<Key>,
     /// Jobs held for an answer, and their edits.
     waiting: HashMap<Key, Vec<(TileRequest, Option<u64>)>>,
+    /// Loads under way with an answer a reload forgot, by source and
+    /// tile: each lands nowhere, and its tile is asked for again.
+    stale: HashSet<Key>,
 }
 
 impl HostTiles {
@@ -66,9 +69,37 @@ impl HostTiles {
         self.waiting.remove(&key).unwrap_or_default()
     }
 
-    /// Forgets a source's answers: its tiles are asked for again.
-    pub(crate) fn forget(&mut self, source: u32) {
-        self.answers.retain(|(s, _), _| *s != source);
-        self.order.retain(|(s, _)| *s != source);
+    /// Forgets the answers of `source`'s data tiles that `which` picks.
+    /// Returns the data tiles `which` picks whose jobs still wait, which
+    /// the app is asked for again, and the tiles of those jobs.
+    pub(crate) fn forget(
+        &mut self,
+        source: u32,
+        which: &dyn Fn(TileIndex) -> bool,
+    ) -> (Vec<TileIndex>, HashSet<TileIndex>) {
+        let picked = |(s, t): &Key| *s == source && which(*t);
+        self.answers.retain(|k, _| !picked(k));
+        self.order.retain(|k| !picked(k));
+        let mut asked = Vec::new();
+        let mut held = HashSet::new();
+        for (key, jobs) in &self.waiting {
+            if key.0 == source {
+                held.extend(jobs.iter().map(|(request, _)| request.tile));
+                if which(key.1) {
+                    asked.push(key.1);
+                }
+            }
+        }
+        (asked, held)
+    }
+
+    /// Marks a load under way as stale: it lands nowhere.
+    pub(crate) fn stale(&mut self, source: u32, tile: TileIndex) {
+        self.stale.insert((source, tile));
+    }
+
+    /// Whether a load that landed was stale, which it no longer is.
+    pub(crate) fn landed_stale(&mut self, source: u32, tile: TileIndex) -> bool {
+        self.stale.remove(&(source, tile))
     }
 }

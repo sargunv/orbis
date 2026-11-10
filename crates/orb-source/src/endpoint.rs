@@ -11,9 +11,7 @@ use orb_style::{
 /// JS's default `tileSize`.
 const VECTOR_TILE_PX: f64 = 512.0;
 
-/// The tile URL template of a vector source the app feeds: the map asks
-/// the app for each tile instead of fetching it.
-pub const HOST_TILES: &str = "orbis-host:";
+pub use orb_style::HOST_TILES;
 
 /// Where a tile's bytes are.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

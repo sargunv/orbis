@@ -307,9 +307,9 @@ fn selection(
                 format!("source \"{source}\" not found"),
             ),
             Some(Source {
-                kind: SourceKind::Vector(_),
+                kind: SourceKind::Vector(v),
                 ..
-            }) if source_layer.is_none() => cx.error(
+            }) if source_layer.is_none() && !v.tileset.host() => cx.error(
                 path,
                 json.span,
                 format!("layer \"{id}\" must specify a \"source-layer\""),

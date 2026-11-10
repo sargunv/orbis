@@ -2057,6 +2057,18 @@ impl Map {
     /// Asks the app for every tile of source `id` again: its data changed.
     /// The drawn tiles stay until the new answers replace them.
     pub fn reload_host_tiles(&mut self, id: &str) -> Result<(), String> {
+        self.reload_host_tiles_where(id, &|_| true)
+    }
+
+    /// [`reload_host_tiles`](Self::reload_host_tiles) for the tiles `which`
+    /// picks alone: a resident tile goes again when `which` picks it or
+    /// the data tile it draws, and an answer is asked for again when
+    /// `which` picks its data tile.
+    pub fn reload_host_tiles_where(
+        &mut self,
+        id: &str,
+        which: &dyn Fn(TileIndex) -> bool,
+    ) -> Result<(), String> {
         let style = self.style.as_ref().ok_or("no style is loaded")?;
         let plan = style.worker.plan();
         let index = plan
@@ -2072,12 +2084,38 @@ impl Map {
             return Err(format!("{id} isn't a source the app feeds"));
         }
         let key = plan.sources[index].key;
-        self.host_tiles.forget(key);
+        let picks = |tile: TileIndex| {
+            which(tile) || (0..tile.z).any(|z| tile.ancestor(z).is_some_and(which))
+        };
+        let (asked, held) = self.host_tiles.forget(key, which);
+        // A tile still waiting for the app is asked for again; a load
+        // under way with the old answer lands nowhere, and one that held
+        // nothing is forgotten: the next frame that needs either asks.
+        for tile in asked {
+            self.events.push(crate::MapEvent::TileRequest {
+                source: id.to_string(),
+                tile,
+            });
+        }
+        if let Some(SourceState::Ready { pyramid, .. }) =
+            self.style.as_mut().map(|style| &mut style.sources[index])
+        {
+            pyramid.forget_settled(&picks);
+            let stale: Vec<TileIndex> = pyramid
+                .loading_tiles()
+                .filter(|t| picks(*t) && !held.contains(t))
+                .collect();
+            for tile in stale {
+                self.host_tiles.stale(key, tile);
+            }
+        }
         // Relayouts of the resident tiles, as an edit's: each replaces its
         // tile's layers when it arrives.
         let version = self.version;
         for tile in self.resident_tiles(index, None) {
-            self.send_job(index, tile, None, false, Some(version));
+            if picks(tile) {
+                self.send_job(index, tile, None, false, Some(version));
+            }
         }
         self.events.wake();
         Ok(())

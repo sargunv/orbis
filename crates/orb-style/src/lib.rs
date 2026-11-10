@@ -31,8 +31,8 @@ pub use preview::{NAMESPACE, Preview, Previews};
 pub use property::*;
 pub use resources::{FontFace, FontFaces, Sprite, Terrain};
 pub use source::{
-    Cluster, ClusterProperty, GeoJsonData, GeoJsonSource, ImageContent, ImageSource, PromoteId,
-    RasterDemSource, RasterSource, Source, SourceKind, TileSet, VectorSource,
+    Cluster, ClusterProperty, GeoJsonData, GeoJsonSource, HOST_TILES, ImageContent, ImageSource,
+    PromoteId, RasterDemSource, RasterSource, Source, SourceKind, TileSet, VectorSource,
 };
 pub use spec::*;
 pub use style::{ColorSpace, Style};

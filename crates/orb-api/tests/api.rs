@@ -1557,6 +1557,61 @@ fn app_sources_draw_the_tiles_the_app_hands_in() {
     );
 }
 
+/// The answer of `query` once it arrives.
+fn query_answer(map: &mut Map, target: &mut Target, query: u64) -> String {
+    let started = std::time::Instant::now();
+    loop {
+        map.render(target, now()).unwrap();
+        while let Some(event) = map.poll_event() {
+            if let Event::Query { id, result } = event
+                && id == query
+            {
+                return result.expect("a query answer");
+            }
+        }
+        assert!(started.elapsed().as_secs() < 10, "no query answer");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn an_app_sources_geojson_reaches_layers_without_a_source_layer() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(
+        r##"{"version": 8, "center": [0, 0], "zoom": 0,
+            "sources": {"app": {"type": "vector", "tiles": ["orbis-host:"], "maxzoom": 0}},
+            "layers": [
+                {"id": "background", "type": "background", "paint": {"background-color": "#ff0000"}},
+                {"id": "shapes", "type": "fill", "source": "app", "paint": {"fill-color": "#0000ff"}}]}"##,
+    )
+    .expect("a layer without a source-layer on an app's source");
+    let (_, tile) = tile_request(&mut map, &mut target);
+    // A failed tile draws nothing, and a reload asks for it again.
+    map.host_tile("app", tile, orb_api::HostTile::Empty)
+        .expect("an answer");
+    map.reload_host_tiles("app").expect("a reload");
+    let (_, again) = tile_request(&mut map, &mut target);
+    assert_eq!(again, tile, "the empty tile asked for again");
+    let shapes = r#"{"_geojsonTileLayer": {"type": "Feature", "properties": {"n": 1},
+        "geometry": {"type": "Polygon",
+        "coordinates": [[[-20, -20], [20, -20], [20, 20], [-20, 20], [-20, -20]]]}}}"#;
+    map.host_tile("app", tile, orb_api::HostTile::GeoJson(shapes.into()))
+        .expect("an answer");
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(
+        pixel(&pixels, SIZE / 2, SIZE / 2),
+        [0, 0, 255, 255],
+        "the app's GeoJSON"
+    );
+    // A query reads the answer the map keeps.
+    let query = map.query_source("app", None, None);
+    let found = query_answer(&mut map, &mut target, query);
+    assert!(found.contains(r#""n":1"#), "{found}");
+}
+
 #[test]
 fn a_map_draws_on_the_thread_that_made_its_runtime() {
     // Not the main thread: a runtime and everything made with it belong to

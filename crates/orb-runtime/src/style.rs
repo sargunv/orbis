@@ -259,8 +259,13 @@ impl StylePlan {
             };
             let source = layer.source.as_deref().expect("drawn layers have sources");
             match style.source(source).map(|s| &s.kind) {
-                Some(SourceKind::Vector(_)) => {
-                    if layer.ty.draws_features() && layer.source_layer.is_none() {
+                // An app's tiles hold GeoJSON for a layer naming no source
+                // layer (`orb_style::TileSet::host`).
+                Some(SourceKind::Vector(v)) => {
+                    if layer.ty.draws_features()
+                        && layer.source_layer.is_none()
+                        && !v.tileset.host()
+                    {
                         warn(index, "vector layers need a source-layer");
                         continue;
                     }

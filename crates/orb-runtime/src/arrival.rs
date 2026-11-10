@@ -394,6 +394,12 @@ impl Map {
         if arrived {
             *loading = loading.saturating_sub(1);
             self.events.sources.insert(key);
+            // An app's answer a reload forgot: asked for again instead.
+            if self.host_tiles.landed_stale(key, tile) {
+                pyramid.forget_loading(tile);
+                self.events.wake();
+                return None;
+            }
         }
         let mut build = match result {
             Ok(build) => build,

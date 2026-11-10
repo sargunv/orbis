@@ -90,10 +90,25 @@ pub struct TileSet {
     pub bounds: Option<[f64; 4]>,
     pub attribution: Option<String>,
 }
+/// The tile URL template of a vector source the app feeds: the map asks
+/// the app for each tile instead of fetching it.
+pub const HOST_TILES: &str = "orbis-host:";
+
 impl TileSet {
     pub const DEFAULT_MINZOOM: f64 = 0.0;
     pub const DEFAULT_MAXZOOM: f64 = 22.0;
     pub const DEFAULT_SCHEME: Scheme = Scheme::Xyz;
+
+    /// Whether the app feeds the tiles ([`HOST_TILES`]). Its tiles may hold
+    /// GeoJSON, which a layer naming no source layer reads, as it reads a
+    /// GeoJSON source's.
+    pub fn host(&self) -> bool {
+        self.url.is_none()
+            && self
+                .tiles
+                .as_ref()
+                .is_some_and(|t| t.iter().any(|t| t.starts_with(HOST_TILES)))
+    }
 }
 /// A `vector` source.
 #[derive(Clone, Debug, PartialEq)]

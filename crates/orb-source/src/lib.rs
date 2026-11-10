@@ -378,6 +378,26 @@ impl<T> TilePyramid<T> {
         waiting
     }
 
+    /// Forgets the settled tiles `which` picks that hold nothing (empty,
+    /// missing or failed), as if they had never been requested: the next
+    /// plan that needs one requests it again.
+    pub fn forget_settled(&mut self, which: &dyn Fn(TileIndex) -> bool) {
+        self.tiles.retain(|&tile, entry| {
+            !matches!(
+                entry.state,
+                State::Empty | State::Missing | State::Failed { .. }
+            ) || !which(tile)
+        });
+    }
+
+    /// The tiles whose loads are under way.
+    pub fn loading_tiles(&self) -> impl Iterator<Item = TileIndex> + '_ {
+        self.tiles
+            .iter()
+            .filter(|(_, entry)| matches!(entry.state, State::Loading))
+            .map(|(&tile, _)| tile)
+    }
+
     /// Forgets a loading tile whose load completed unused, as if it had
     /// never been requested: a later plan that needs it requests it again.
     pub fn forget_loading(&mut self, tile: TileIndex) {

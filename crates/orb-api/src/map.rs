@@ -459,6 +459,20 @@ impl Map {
             .map_err(Error::InvalidArgument)
     }
 
+    /// [`reload_host_tiles`](Self::reload_host_tiles) for the tiles `which`
+    /// picks: a drawn tile, or the data tile it draws (an ancestor), and
+    /// the kept answer of a data tile.
+    pub fn reload_host_tiles_where(
+        &mut self,
+        id: &str,
+        which: &dyn Fn(TileIndex) -> bool,
+    ) -> Result<(), Error> {
+        self.dirty = true;
+        self.map
+            .reload_host_tiles_where(id, which)
+            .map_err(Error::InvalidArgument)
+    }
+
     /// The video of source `id` can't play on this host: it draws nothing.
     pub fn video_failed(&mut self, id: &str, message: &str) -> Result<(), Error> {
         self.dirty = true;

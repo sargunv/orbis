@@ -227,9 +227,17 @@ impl crate::Map {
         else {
             return None;
         };
+        let key = style.worker.plan().sources[index].key;
+        let data_tile = endpoint.data_tile(tile);
+        // An app's tile is read from the answer the map keeps of it: its
+        // location names no data to fetch.
+        let location = match self.host_tiles.answer(key, data_tile) {
+            Some(answer) if endpoint.host() => crate::TileLocation::Host(answer.clone()),
+            _ => endpoint.location(data_tile),
+        };
         Some(TileRequest {
             style: style.id,
-            source: style.worker.plan().sources[index].key,
+            source: key,
             tile,
             // The zoom it laid out at.
             zoom: pyramid
@@ -239,7 +247,7 @@ impl crate::Map {
             bend: None,
             warp: false,
             data_zoom: tile.z.min(endpoint.maxzoom),
-            location: endpoint.location(endpoint.data_tile(tile)),
+            location,
             encoding: endpoint.encoding,
             nodes: None,
             rows_only: false,
