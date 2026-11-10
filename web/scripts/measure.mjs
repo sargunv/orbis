@@ -46,7 +46,12 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 
 import { decodePng } from "./png.mjs";
-import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
+import {
+  chromiumPlatform,
+  launchChromium,
+  openAndroid,
+  serveDemo,
+} from "./serve.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) =>
@@ -457,7 +462,7 @@ function pipelinesUrl(server, nonce) {
 /** One load in a profile, the browser started for it and closed after. */
 async function load(server, profile, nonce) {
   const context = await chromium.launchPersistentContext(profile, {
-    args: ["--enable-features=Vulkan,WebGPU", "--use-angle=metal"],
+    ...chromiumPlatform(),
     viewport: { width: 1024, height: 768 },
   });
   try {

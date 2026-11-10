@@ -7,14 +7,20 @@
 //! (#141): the watchdog then loses the device. So Orbis finds DXC itself,
 //! in this order, and says which it took:
 //!
-//! 1. `WGPU_DX12_COMPILER`, as wgpu reads it (`dxc`, `fxc`, `static-dxc`).
-//! 2. `dxcompiler.dll` beside the executable, where a Windows build ships
-//!    it with its `dxil.dll` (DXC's release, `bin/<arch>/`).
+//! 1. `WGPU_DX12_COMPILER`, as wgpu reads it: `dxc` (wgpu loads
+//!    `dxcompiler.dll` by name) or `fxc`. Other values (`auto`, and
+//!    `staticdxc`, which this build doesn't link) fall through to the rest.
+//! 2. `dxcompiler.dll` beside the executable, with its `dxil.dll`, from
+//!    DXC's release (`bin/<arch>/`): `cargo xtask dxc` puts the pinned
+//!    release's beside the binaries in `target/`.
 //! 3. The newest Windows SDK's (`Windows Kits\10\bin\<version>\<arch>`),
 //!    on a machine that builds Orbis.
 //! 4. A `dxcompiler.dll` on `PATH`.
 //!
-//! Only without any of them does it compile with FXC, with a warning.
+//! A candidate counts only if it loads: one of another architecture (the
+//! x64 DXC the Vulkan SDK puts on `PATH`, in an ARM64 process) would fail
+//! wgpu's D3D12 instance and leave no adapter at all. Only without any
+//! that loads does it compile with FXC, with a warning.
 //!
 //! Compiling DXIL ahead of time, as Orbis ships naga modules, would leave
 //! no compiler to ship: DXIL doesn't depend on the GPU. wgpu 30 takes DXIL
@@ -35,17 +41,49 @@ use std::path::{Path, PathBuf};
 const DXC: &str = "dxcompiler.dll";
 const DXIL: &str = "dxil.dll";
 
-/// The compiler `descriptor` uses, set unless the environment chose one;
-/// what it is, for the adapter's description.
-pub(crate) fn choose(descriptor: &mut wgpu::InstanceDescriptor) -> String {
-    if let Some(choice) = std::env::var_os("WGPU_DX12_COMPILER") {
-        return format!("{} (WGPU_DX12_COMPILER)", choice.to_string_lossy());
+/// Why FXC is worth a warning.
+const SLOW: &str = "FXC is slow enough on some drivers (Adreno X1) that pipelines miss the \
+                    compile watchdog and the map stops.";
+
+/// The compiler [`choose`] set.
+pub(crate) struct Choice {
+    /// Which it is and where it came from, for the adapter's description.
+    pub(crate) described: String,
+    /// What to say when it is FXC, once the adapter is known to be D3D12's.
+    pub(crate) warning: Option<String>,
+}
+
+/// Sets the compiler `descriptor` uses, unless the environment chose one.
+pub(crate) fn choose(descriptor: &mut wgpu::InstanceDescriptor) -> Choice {
+    let compiler = &mut descriptor.backend_options.dx12.shader_compiler;
+    match wgpu::Dx12Compiler::from_env() {
+        Some(wgpu::Dx12Compiler::Fxc) => {
+            *compiler = wgpu::Dx12Compiler::Fxc;
+            return Choice {
+                described: "FXC (WGPU_DX12_COMPILER)".into(),
+                warning: Some(format!(
+                    "orbis: WARNING: D3D12 is compiling shaders with FXC (d3dcompiler_47.dll), \
+                     as WGPU_DX12_COMPILER asks. {SLOW}"
+                )),
+            };
+        }
+        Some(choice @ wgpu::Dx12Compiler::DynamicDxc { .. }) => {
+            *compiler = choice;
+            return Choice {
+                described: format!("DXC (WGPU_DX12_COMPILER), {DXC} by name"),
+                warning: None,
+            };
+        }
+        Some(wgpu::Dx12Compiler::StaticDxc) => eprintln!(
+            "orbis: WGPU_DX12_COMPILER asks for static DXC, which this build doesn't link; \
+             looking for {DXC} instead"
+        ),
+        Some(wgpu::Dx12Compiler::Auto) | None => {}
     }
     let found = beside_executable()
         .map(|dir| (dir, "beside the executable"))
         .or_else(|| sdk().map(|dir| (dir, "from the Windows SDK")))
         .or_else(|| on_path().map(|dir| (dir, "on PATH")));
-    let compiler = &mut descriptor.backend_options.dx12.shader_compiler;
     match found {
         Some((dir, whence)) => {
             preload_validator(&dir);
@@ -54,30 +92,37 @@ pub(crate) fn choose(descriptor: &mut wgpu::InstanceDescriptor) -> String {
             *compiler = wgpu::Dx12Compiler::DynamicDxc {
                 dxc_path: dll.to_string_lossy().into_owned(),
             };
-            described
+            Choice {
+                described,
+                warning: None,
+            }
         }
         None => {
             *compiler = wgpu::Dx12Compiler::Fxc;
-            "FXC".into()
+            Choice {
+                described: "FXC".into(),
+                warning: Some(format!(
+                    "orbis: WARNING: D3D12 is compiling shaders with FXC (d3dcompiler_47.dll): \
+                     no {DXC} for this architecture loads from beside the executable, a \
+                     Windows SDK or PATH. {SLOW} Put {DXC} and {DXIL} from DXC's release \
+                     beside the executable (`cargo xtask dxc` does, in target/)."
+                )),
+            }
         }
     }
 }
 
-/// Says loudly that D3D12 compiles with FXC, once the adapter is known to
-/// be D3D12's.
-pub(crate) fn warn_if_fxc(compiler: &str) {
-    if compiler.starts_with("FXC") || compiler.starts_with("fxc") {
-        eprintln!(
-            "orbis: WARNING: D3D12 is compiling shaders with FXC (d3dcompiler_47.dll): no \
-             {DXC} beside the executable, in a Windows SDK or on PATH. FXC is slow enough \
-             on some drivers (Adreno X1) that pipelines miss the compile watchdog and the \
-             map stops. Ship {DXC} and {DXIL} from DXC's release beside the executable."
-        );
-    }
-}
-
+/// Whether `dir` has a DXC this process loads. One that loads stays
+/// loaded, and wgpu's load of the same file finds it.
+#[allow(unsafe_code)]
 fn has_dxc(dir: &Path) -> bool {
-    dir.join(DXC).is_file()
+    let dll = dir.join(DXC);
+    // SAFETY: dxcompiler.dll is DXC, whose initialisation runs no code
+    // that could conflict with this process's; it stays loaded.
+    dll.is_file()
+        && unsafe { libloading::Library::new(&dll) }
+            .map(std::mem::forget)
+            .is_ok()
 }
 
 fn beside_executable() -> Option<PathBuf> {
@@ -120,12 +165,16 @@ fn sdk() -> Option<PathBuf> {
                 .map(str::parse)
                 .collect::<Result<Vec<u32>, _>>()
                 .ok()?;
-            let dir = path.join(arch);
-            has_dxc(&dir).then_some((version, dir))
+            Some((version, path.join(arch)))
         })
         .collect();
+    // Newest first, loading only the one taken.
     versions.sort();
-    versions.pop().map(|(_, dir)| dir)
+    versions
+        .into_iter()
+        .rev()
+        .map(|(_, dir)| dir)
+        .find(|d| has_dxc(d))
 }
 
 fn on_path() -> Option<PathBuf> {

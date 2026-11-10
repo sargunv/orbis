@@ -200,19 +200,28 @@ export function launchChromium({
   headed = false,
   unpaced = false,
 } = {}) {
-  const platform = {
-    darwin: ["--enable-features=Vulkan,WebGPU", "--use-angle=metal"],
-    linux: ["--enable-features=Vulkan,WebGPU"],
-  }[process.platform] ?? ["--enable-features=WebGPU"];
+  const { executablePath, args } = chromiumPlatform();
   return chromium.launch({
     headless: !headed,
-    executablePath: process.env.ORB_CHROME || undefined,
+    executablePath,
     args: [
       ...(unsafe ? ["--enable-unsafe-webgpu"] : []),
-      ...platform,
+      ...args,
       ...(unpaced ? ["--disable-gpu-vsync", "--disable-frame-rate-limit"] : []),
     ],
   });
+}
+
+// The Chrome to run and this platform's GPU flags, for launches of any kind
+// (`launchPersistentContext` too).
+export function chromiumPlatform() {
+  return {
+    executablePath: process.env.ORB_CHROME || undefined,
+    args: {
+      darwin: ["--enable-features=Vulkan,WebGPU", "--use-angle=metal"],
+      linux: ["--enable-features=Vulkan,WebGPU"],
+    }[process.platform] ?? ["--enable-features=WebGPU"],
+  };
 }
 
 // Opens a tab in Chrome on the Android device this worktree tests on: its

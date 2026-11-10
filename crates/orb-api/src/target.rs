@@ -133,6 +133,10 @@ impl Target {
             Kind::Texture(_) if self.generation != self.shared.generation.get() => Err(
                 Error::InvalidState("the GPU was replaced since the last frame".into()),
             ),
+            // wgpu panics when a lost device's wait fails.
+            Kind::Texture(_) if self.shared.gpu.borrow().lost() => Err(Error::InvalidState(
+                "the GPU was lost: draw a frame on its replacement first".into(),
+            )),
             Kind::Texture(id) => {
                 self.read_back.set(true);
                 Ok(pollster::block_on(

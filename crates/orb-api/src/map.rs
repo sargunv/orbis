@@ -1052,7 +1052,11 @@ impl Map {
             match recovered {
                 Ok(true) => {}
                 Ok(false) => {
+                    // Nothing draws until the backoff's timer wakes the
+                    // map: a host asking `needs_frame` doesn't spin.
                     self.dirty = false;
+                    self.busy = false;
+                    self.woken.store(false, Ordering::Release);
                     return Ok(false);
                 }
                 Err(e) => {

@@ -6,6 +6,7 @@ mod affected;
 mod android;
 mod boundaries;
 mod compare;
+mod dxc;
 mod expression_fixtures;
 mod fixtures;
 mod h2h;
@@ -62,6 +63,9 @@ cargo xtask <task>
                (pinned, built into the shared h2h cache) over a local
                caching mirror of OpenFreeMap: per-process stills, tile
                blocks, nudged frames, binary sizes; `h2h help` lists options
+  dxc [--arch arm64|x64]  DXC's dxcompiler.dll and dxil.dll (pinned
+               release) into target/debug and target/release, where D3D12
+               builds look for their shader compiler first
   sweep [--dry-run] [--target-dir <path>] [--keep-hours <n>]  prune stale build
                artifacts: keep every build compiled in the last <n> hours
                (default 6) and the 2 newest builds of each crate
@@ -92,6 +96,7 @@ fn main() -> ExitCode {
         }
         Some("h2h") => h2h::run(&args[1..]),
         Some("sweep") => sweep::run(&args[1..]),
+        Some("dxc") => dxc::run(&args[1..]),
         Some("support") => support::run(),
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()

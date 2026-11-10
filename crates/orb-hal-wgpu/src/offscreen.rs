@@ -50,17 +50,21 @@ async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter, Option<String>), St
     #[cfg(windows)]
     let compiler = Some(crate::dx12::choose(&mut descriptor));
     #[cfg(not(windows))]
-    let compiler = None;
+    let compiler: Option<String> = None;
     let instance = wgpu::Instance::new(descriptor);
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions::default())
         .await
         .map_err(|e| format!("no adapter: {e}"))?;
-    let compiler = compiler.filter(|_| adapter.get_info().backend == wgpu::Backend::Dx12);
     #[cfg(windows)]
-    if let Some(compiler) = &compiler {
-        crate::dx12::warn_if_fxc(compiler);
-    }
+    let compiler = compiler
+        .filter(|_| adapter.get_info().backend == wgpu::Backend::Dx12)
+        .map(|choice| {
+            if let Some(warning) = &choice.warning {
+                eprintln!("{warning}");
+            }
+            choice.described
+        });
     Ok((instance, adapter, compiler))
 }
 
