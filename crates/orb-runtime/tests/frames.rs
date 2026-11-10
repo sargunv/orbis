@@ -852,6 +852,8 @@ mod tests {
     /// what it shows, so the first frame draws it all, labels placed.
     #[test]
     fn prepare_before_the_first_frame_asks_for_the_view() {
+        // The map's clock starts after this, so its readings trail ours.
+        let origin = std::time::Instant::now();
         let mut offscreen = null_island(
             r#"{"version":8,
             "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
@@ -871,6 +873,11 @@ mod tests {
             map.prepare(gpu, renderer, offscreen.viewport, 1.0);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        // The first frame comes after prepare's on prepare's clock, as a
+        // host's does: from the offscreen's own time, which starts at 0,
+        // it would come before them whenever setting up the GPU took a
+        // frame's time (the frame then wasn't idle).
+        offscreen.time = origin.elapsed().as_secs_f64() * 1000.0;
         let report = offscreen.frame();
         let shown = offscreen.map.shown_labels().get("Null Island").copied();
         assert_eq!((report.idle, shown), (true, Some(1.0)));
