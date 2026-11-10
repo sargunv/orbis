@@ -51,6 +51,8 @@ const ARGS_WORDS: u32 = 8u;
 override keep_all: bool = false;
 // Candidates per workgroup of an indexed node (orb-render's INDEXED_BATCH).
 const INDEXED_BATCH: u32 = 64u;
+// Indices per chunk at most (orb-layout's CHUNK_INDICES).
+const CHUNK_INDICES: u32 = 768u;
 // The view-volume planes a clip-space corner lies outside, a bit each:
 // right, left, top, bottom (widened by `margin`, in NDC per unit w), far
 // and near.
@@ -157,7 +159,10 @@ var<workgroup> drawn_indices: atomic<u32>;
 fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
     let node = node_cull[group.x];
     if lane == 0u {
-        node_count = node.candidate_count;
+        // No further than the list goes: a count gone stale can't loop the
+        // workgroup past it.
+        let listed = arrayLength(&candidates);
+        node_count = min(node.candidate_count, listed - min(node.visible_base, listed));
         node_draw = node.draw;
     }
     let word = workgroupUniformLoad(&node_draw);
@@ -247,7 +252,9 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
         if candidate.drawn != keep {
             let at = atomicAdd(&rewrites, 1u);
             rewrite_src[at] = select(HIDDEN_INDEX, chunk.first_index, keep == 1u);
-            rewrite_count[at] = chunk.index_count;
+            // A chunk's indices are at most CHUNK_INDICES: a row gone
+            // stale can't loop the copy below for long.
+            rewrite_count[at] = min(chunk.index_count, CHUNK_INDICES);
             rewrite_dst[at] = candidate.slot;
             // A compacted index counts from the mesh's first vertex, and
             // the mesh's vertices fit below the run's bits.

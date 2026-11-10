@@ -2286,7 +2286,23 @@ fn move_buffer(gpu: &mut dyn Gpu, buffer: &mut BufferId, desc: &BufferDesc<'_>, 
 
 #[cfg(test)]
 mod tests {
-    use super::grown;
+    use super::{INDEXED_BATCH, grown};
+
+    /// The cull shader's constants are the scene's: its batches, and the
+    /// most indices a chunk has, which bounds its copy loop.
+    #[test]
+    fn the_cull_shares_its_constants() {
+        let source = orb_shaders::CULL_SHADER.source();
+        for (name, value) in [
+            ("INDEXED_BATCH", INDEXED_BATCH),
+            ("CHUNK_INDICES", orb_layout::CHUNK_INDICES),
+        ] {
+            assert!(
+                source.contains(&format!("const {name}: u32 = {value}u;")),
+                "cull.wgsl's {name} isn't {value}"
+            );
+        }
+    }
 
     #[test]
     fn capacities_double_to_their_need_and_ceiling() {
