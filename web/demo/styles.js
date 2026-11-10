@@ -102,8 +102,10 @@ const PROTOMAPS_SKY = { "sky-color": "#9fd3e0", "horizon-color": "#eef1ef", "fog
  * Protomaps Light (v5) with what it lacks for a 3D map: Mapterhorn's DEM
  * for PROTOMAPS_TERRAIN, a hillshade from a DEM source of its own over the
  * land and water fills and under the roads and labels, a viewport-anchored
- * light (the spec's default, which reads best on the globe in both engines), the buildings extruded under the labels, and
- * colours mixed in linear light (`dev.sargunv.orbis:color-space`). Each
+ * light (the spec's default, which reads best on the globe in both engines),
+ * the buildings extruded under the labels with their shadows and ambient
+ * occlusion and their footprints rounded, and colours mixed in linear
+ * light (`dev.sargunv.orbis:color-space`). Each
  * addition is placed by the layers it finds, so a style with other ids
  * still draws.
  */
@@ -125,8 +127,12 @@ function protomaps3d(style) {
       "hillshade-accent-color": "#8d877e",
     },
   });
-  const buildings = layers.find((l) => l["source-layer"] === "buildings" && l.type === "fill");
+  const at = layers.findIndex((l) => l["source-layer"] === "buildings" && l.type === "fill");
+  const buildings = layers[at];
   if (buildings) {
+    // The flat footprints round off as the extruded ones do
+    // (style-spec#1047's preview), so they match as the buildings rise.
+    layers[at] = { ...buildings, layout: { ...buildings.layout, "fill-rounded-corner-distance": 2 } };
     // Protomaps carries `height` on only some footprints (about half in
     // Tokyo and Manhattan, a tenth in central Paris) and no level counts:
     // the rest stand at OpenMapTiles' default `render_height`, 5 m, as
@@ -145,6 +151,10 @@ function protomaps3d(style) {
         "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 14, 0, 15,
           ["min", ["coalesce", ["get", "min_height"], 0], height]],
         "fill-extrusion-opacity": 0.9,
+        // Grounded by ambient occlusion (style-spec#1796's preview): walls
+        // darken toward their feet and the ground along them.
+        "fill-extrusion-ambient-occlusion-wall-intensity": 0.6,
+        "fill-extrusion-ambient-occlusion-ground-intensity": 0.5,
       },
     });
   }
@@ -152,7 +162,10 @@ function protomaps3d(style) {
     ...style,
     sources: { ...style.sources, terrain: { ...MAPTERHORN, attribution: "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>" },
       hillshade: MAPTERHORN },
-    light: { anchor: "viewport", position: [1.15, 210, 30], intensity: 0.35 },
+    // The buildings cast shadows on the ground from it (style-spec#1797's
+    // preview), turning with the view or fixed to the ground as the
+    // entry's light switch anchors it.
+    light: { anchor: "viewport", position: [1.15, 210, 30], intensity: 0.35, "shadow-intensity": 0.5 },
     // Colours mix in linear light: the scattering tints the sunlit face
     // rather than washing it out, fog and the hillshade blend as light
     // does, and lines and labels antialias evenly. GL JS and Native ignore

@@ -5,9 +5,9 @@
 // it, clipped to that side. The map that last took input leads and the
 // others jump to its camera, so they don't echo each other's moves. The
 // other maps take Orbis's style as it stands (the entry's projection and
-// sky applied, less the sky's previews, for which GL JS's validation
-// refuses the whole style) and follow its edits: the style editor's, the
-// light and terrain switches'.
+// sky applied, less Orbis's preview properties, for which GL JS's
+// validation refuses the whole style) and follow its edits: the style
+// editor's, the light and terrain switches'.
 //
 // An engine loads only when a side picks it. Each is a module with a
 // `label` and `open(container, { style, camera, constraints })`, which
@@ -27,8 +27,21 @@ const ENGINES = {
   native: { name: "MapLibre Native", load: () => import("./native.js"), unsupported: (scene) => scene.unsupported?.native,
     once: "MapLibre Native draws one side at a time", isolated: true },
 };
-/** Sky properties of Orbis's previews (style-spec#1889) that the other engines don't know. */
-const SKY_PREVIEWS = ["backdrop-color", "star-opacity"];
+/**
+ * Properties of Orbis's previews that the other engines don't know, by
+ * where they sit: style-spec#1889's stars, #1797's shadows, #1796's ambient
+ * occlusion and #1047's rounded fills.
+ */
+const PREVIEWS = {
+  sky: ["backdrop-color", "star-opacity"],
+  light: ["shadow-intensity"],
+  paint: ["wall-intensity", "wall-radius", "ground-intensity", "ground-radius"]
+    .map((p) => `fill-extrusion-ambient-occlusion-${p}`),
+  layout: ["fill-rounded-corner-distance"],
+};
+/** `object` less the properties `names` and their transitions; absent stays absent. */
+const without = (object, names) => object && Object.fromEntries(Object.entries(object)
+  .filter(([k]) => !names.some((p) => k === p || k === `${p}-transition`)));
 /** What `?compare` alone compares. */
 const DEFAULT = ["orbis", "gljs"];
 const SIDES = ["left", "right"];
@@ -112,9 +125,14 @@ function show(map, scene, pair, { isolating, onPick }) {
   const stage = map.container.parentElement;
   const style = async () => {
     const now = await map.getStyle();
-    const sky = now.sky && Object.fromEntries(Object.entries(now.sky)
-      .filter(([k]) => !SKY_PREVIEWS.some((p) => k === p || k === `${p}-transition`)));
-    return { ...now, ...(sky && { sky }), layers: now.layers.filter((l) => !l.id.startsWith(HIGHLIGHT_PREFIX)) };
+    const sky = without(now.sky, PREVIEWS.sky);
+    const light = without(now.light, PREVIEWS.light);
+    const layers = now.layers.filter((l) => !l.id.startsWith(HIGHLIGHT_PREFIX)).map((l) => ({
+      ...l,
+      ...(l.paint && { paint: without(l.paint, PREVIEWS.paint) }),
+      ...(l.layout && { layout: without(l.layout, PREVIEWS.layout) }),
+    }));
+    return { ...now, ...(sky && { sky }), ...(light && { light }), layers };
   };
   // The app's map, as a map the others follow and lead.
   const own = {
