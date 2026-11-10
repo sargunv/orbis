@@ -93,7 +93,7 @@ submit 0
     index buffer "terrain grid indices"#0 at 0
     draw indexed 0..101376 0 0..8
   render pass "terrain"
-    colour texture "terrain layer"#0 resolve Some("texture \"terrain layer\"#1") Clear([0.0, 0.0, 0.0, 0.0]) Discard
+    colour texture "terrain layer"#0 resolve None Clear([0.0, 0.0, 0.0, 0.0]) Store
     depth texture "3d depth"#0 Clear(0.0) Store
     pipeline render "terrain shade"#0
     group 0 group "terrain"#0
@@ -102,7 +102,7 @@ submit 0
     index buffer "terrain grid indices"#0 at 0
     draw indexed 0..101376 0 0..8
   render pass "terrain"
-    colour texture "terrain layer"#2 resolve Some("texture \"terrain layer\"#3") Clear([0.0, 0.0, 0.0, 0.0]) Discard
+    colour texture "terrain layer"#1 resolve None Clear([0.0, 0.0, 0.0, 0.0]) Store
     depth texture "3d depth"#0 Load Store
     pipeline render "terrain"#0
     group 0 group "terrain"#0
@@ -541,17 +541,15 @@ group "terrain"#0: layout layout "terrain"#0; 0 buffer "frame"#0 at 0 size None;
 buffer "terrain layers"#0: BufferUsages(COPY_DST | UNIFORM)
 group "terrain layer"#0: layout layout "terrain layer"#0; 0 buffer "terrain layers"#0 at 0 size Some(16)
 buffer "terrain grid indices"#0: BufferUsages(COPY_DST | INDEX)
-texture "terrain layer"#0: Rgba8Unorm D2 samples 4 views [] TextureUsages(RENDER_ATTACHMENT | TRANSIENT_ATTACHMENT)
-texture "terrain layer"#1: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
-texture "3d depth"#0: Depth32Float D2 samples 4 views [] TextureUsages(RENDER_ATTACHMENT)
+texture "terrain layer"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
+texture "3d depth"#0: Depth32Float D2 samples 1 views [] TextureUsages(RENDER_ATTACHMENT)
 module "terrain shade"#0: wgsl
-render "terrain shade"#0: layouts [layout "terrain"#0, layout "terrain layer"#0, layout "image node"#0]; module "terrain shade"#0 vs_terrain []; module "terrain shade"#0 fs_terrain_shaded []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 4
+render "terrain shade"#0: layouts [layout "terrain"#0, layout "terrain layer"#0, layout "image node"#0]; module "terrain shade"#0 vs_terrain []; module "terrain shade"#0 fs_terrain_shaded []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 1
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
 group "image node"#1: layout layout "image node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#1; 5 texture "hillshade slopes"#0 as D2Array
-texture "terrain layer"#2: Rgba8Unorm D2 samples 4 views [] TextureUsages(RENDER_ATTACHMENT | TRANSIENT_ATTACHMENT)
-texture "terrain layer"#3: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
+texture "terrain layer"#1: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
 module "terrain"#1: wgsl
-render "terrain"#0: layouts [layout "terrain"#0, layout "terrain layer"#0]; module "terrain"#1 vs_terrain []; module "terrain"#1 fs_terrain []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 4
+render "terrain"#0: layouts [layout "terrain"#0, layout "terrain layer"#0]; module "terrain"#1 vs_terrain []; module "terrain"#1 fs_terrain []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 1
 group "terrain layer"#1: layout layout "terrain layer"#0; 0 buffer "terrain layers"#0 at 256 size Some(16)
 texture "target"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
 layout "composite"#0: 0 ShaderStages(FRAGMENT) Uniform; 1 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 2 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 3 ShaderStages(FRAGMENT) Sampler { filtering: true }; 
@@ -560,9 +558,9 @@ render "composite over"#0: layouts [layout "composite"#0]; module "composite ove
 buffer "composite"#0: BufferUsages(COPY_DST | UNIFORM)
 texture "composite blank"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING)
 sampler "composite"#0: Linear mips Nearest anisotropy 1
-group "composite"#0: layout layout "composite"#0; 0 buffer "composite"#0 at 0 size None; 1 texture "terrain layer"#1 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
+group "composite"#0: layout layout "composite"#0; 0 buffer "composite"#0 at 0 size None; 1 texture "terrain layer"#0 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
 buffer "composite"#1: BufferUsages(COPY_DST | UNIFORM)
-group "composite"#1: layout layout "composite"#0; 0 buffer "composite"#1 at 0 size None; 1 texture "terrain layer"#3 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
+group "composite"#1: layout layout "composite"#0; 0 buffer "composite"#1 at 0 size None; 1 texture "terrain layer"#1 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
 layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
 module "symbol line"#0: wgsl
 render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol [("feature_rows", 0.0)]; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1

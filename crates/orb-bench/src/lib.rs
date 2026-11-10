@@ -202,8 +202,9 @@ pub struct Settings {
     pub filter: Option<String>,
     /// Frames alternate the zoom by [`NUDGE`] and are read back.
     pub nudge: bool,
-    /// Whether 3D layers draw multisampled, as maps do by default
-    /// ([`MapOptions::antialias`]); `--antialias off` measures them without.
+    /// Whether 3D layers draw multisampled ([`MapOptions::antialias`]):
+    /// off by default, as maps draw them; `--antialias on` measures them
+    /// with.
     pub antialias: bool,
     /// Only a flight's first legs (`stutter`).
     pub legs: Option<usize>,
@@ -225,7 +226,7 @@ impl Default for Settings {
             views: Vec::new(),
             filter: None,
             nudge: false,
-            antialias: true,
+            antialias: MapOptions::default().antialias,
             legs: None,
         }
     }

@@ -826,8 +826,8 @@ impl Map {
         self.tile_lod
     }
 
-    /// Enables 4× MSAA for 3D surfaces (the default). Disabling it uses
-    /// single-sample rasterization, matching a GL JS map with antialias off.
+    /// Turns 4× MSAA for 3D surfaces on or off (off by default, as in GL
+    /// JS and MapLibre Native; [`MapOptions::antialias`]).
     pub fn set_antialias_3d(&mut self, enabled: bool) {
         self.antialias_3d = enabled;
     }

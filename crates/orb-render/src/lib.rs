@@ -758,8 +758,8 @@ impl Renderer {
         &mut self.glyphs
     }
 
-    /// Uses four samples for 3D surfaces by default, or one when the host
-    /// explicitly disables antialiasing (e.g. reference image comparisons).
+    /// Draws 3D surfaces at four samples when `enabled`, or at one (the
+    /// default).
     pub fn set_antialias_3d(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
         if self.extrusions.set_antialias(enabled) {
             self.pipelines_stale = true;

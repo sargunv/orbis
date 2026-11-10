@@ -79,7 +79,7 @@ fn raster() {
     check_scenes(&["raster"]);
 }
 
-/// Liberty's 3D buildings, multisampled, and with shadows and ambient
+/// Liberty's 3D buildings, and multisampled with shadows and ambient
 /// occlusion (previews).
 #[test]
 fn extrusions() {

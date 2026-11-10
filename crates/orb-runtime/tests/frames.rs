@@ -619,7 +619,7 @@ mod tests {
         }
         // Switching 1×/4× rebuilds dependent targets and bundles once; the
         // next camera-only frame still replays them without paint writes.
-        for enabled in [false, true] {
+        for enabled in [true, false] {
             offscreen.map.set_antialias_3d(enabled);
             let changed = offscreen.frame();
             assert!(changed.frame.bundle_recorded);

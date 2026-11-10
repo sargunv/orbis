@@ -26,8 +26,12 @@ pub struct MapOptions {
     /// with instead of the style's glyphs (GL JS
     /// `localIdeographFontFamily`); `None` draws the glyphs.
     pub local_ideograph_font_family: Option<String>,
-    /// Multisampling for 3D surfaces (GL JS `antialias`, which is off by
-    /// default there).
+    /// 4× multisampling for 3D surfaces: extrusion layers and the
+    /// terrain (GL JS `antialias`). Off by default, as in GL JS (MapLibre
+    /// Native never multisamples): off, their edges step visibly at a
+    /// pixel ratio of 1 and barely at 2, and on some tiling GPUs it costs
+    /// more than the rest of the frame (under D3D12 on the Adreno X1, a
+    /// pitched city's frame takes 2.4× as long with it).
     pub antialias: bool,
     /// Whether terrain tiles hang skirts that hide the cracks between
     /// tiles of different detail; translucent terrain shows them (GL JS
@@ -64,7 +68,7 @@ impl Default for MapOptions {
             fade_duration: 300.0,
             cross_source_collisions: true,
             local_ideograph_font_family: Some("sans-serif".into()),
-            antialias: true,
+            antialias: false,
             terrain_skirts: true,
             previews: Previews::NONE,
             stable_labels: true,

@@ -119,7 +119,7 @@ impl Extrusions {
             sphere: [None; 2],
             mask_target: None,
             layouts: [scene, node],
-            samples: 4,
+            samples: 1,
             format,
             depth: None,
             size: [0; 2],

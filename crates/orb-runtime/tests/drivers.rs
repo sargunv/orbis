@@ -63,6 +63,7 @@ impl Checked {
         if scene.previews {
             map.set_previews(orb_runtime::Previews::ALL);
         }
+        map.set_antialias_3d(scene.antialias);
         map.load_style_url(&scene.url);
         let mut renderer = map.create_renderer(&mut gpu, format);
         assert!(

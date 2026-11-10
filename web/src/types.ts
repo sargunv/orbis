@@ -233,7 +233,8 @@ export interface MapOptions {
    * font stack draw with instead of the style's glyphs; `sans-serif` by
    * default, `false` for the glyphs. */
   localIdeographFontFamily?: string | false;
-  /** Multisampling for 3D surfaces; true by default. */
+  /** 4× multisampling for 3D surfaces (extrusions and terrain), as GL JS's
+   * `antialias`; false by default, as there. */
   antialias?: boolean;
   /** Whether terrain tiles hang skirts hiding the cracks between tiles of
    * different detail; translucent terrain shows them. True by default. */

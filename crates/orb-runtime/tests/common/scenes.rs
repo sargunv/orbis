@@ -8,13 +8,16 @@ use serde_json::{Value, json};
 use super::DEMO_DATA;
 
 /// A scene: its style, camera (zoom, bearing, pitch over Tokyo), whether
-/// it takes every preview, and an edit a frame of the settled map makes.
+/// it takes every preview, an edit a frame of the settled map makes, and
+/// whether its 3D layers multisample (off by default; on in the lit
+/// buildings, so that path keeps a scene).
 pub(crate) struct Scene {
     pub name: &'static str,
     pub url: String,
     pub at: (f64, f64, f64),
     pub previews: bool,
     pub edit: Option<&'static str>,
+    pub antialias: bool,
 }
 
 /// The Tokyo extract's style with its URLs absolute, changed by `edit`,
@@ -96,6 +99,7 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
                 at,
                 previews,
                 edit,
+                antialias: name == "extrusions-lit",
             });
         }
     };
@@ -270,6 +274,7 @@ pub(crate) fn settle<G: orb_hal::Gpu>(
     if scene.previews {
         map.set_previews(orb_runtime::Previews::ALL);
     }
+    map.set_antialias_3d(scene.antialias);
     map.load_style_url(url);
     let viewport = Viewport {
         width: f64::from(SIZE.0),
