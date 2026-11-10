@@ -272,6 +272,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let px = node_translate(node.translate, node.table_mask, row, v.row_words, node.translate_curve, tile.zoom);
     let shift = translate_world(px, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
+    let lit_normal = light_normal(normal, ground);
     out.position = ground_clip_reversed(ground, vec2<f32>(0.0), elevation * frame.extrusion_scale);
     out.position.z *= extrusion_depth_scale(gradient_height, feature);
     out.tile_pos = pos;
@@ -300,7 +301,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     }
     out.ambient = 1.0;
     if normal.z == 0.0 && node.occlusion.x > 0.0 {
-        out.ambient = light_ambient_share(light_facing(normal), luminance);
+        out.ambient = light_ambient_share(light_facing(lit_normal), luminance);
     }
     if node.pattern.enabled != 0u {
         out.images = pattern_ids(row, EXTRUSION_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
@@ -314,16 +315,16 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         out.pattern_pos = pattern_pos;
         // The pattern's texels multiply the light, as GL JS shades them at
         // mid luminance.
-        out.color = vec4<f32>(clamp(light_factor(normal, 0.5, gradient), light_floor(), vec3<f32>(1.0)), 1.0) * opacity;
+        out.color = vec4<f32>(clamp(light_factor(lit_normal, 0.5, gradient), light_floor(), vec3<f32>(1.0)), 1.0) * opacity;
         return out;
     }
     if elevation_stops > 0u {
-        out.color = vec4<f32>(light_facing(normal), gradient, opacity, curve_t(node.curves[0], tile.zoom));
+        out.color = vec4<f32>(light_facing(lit_normal), gradient, opacity, curve_t(node.curves[0], tile.zoom));
         out.pattern_pos = vec2<f32>(mix(gradient_base - basement, gradient_height, top), 0.0);
         out.images = vec2<u32>(row, state);
         return out;
     }
-    out.color = color_in(vec4<f32>(light_surface(color.rgb, normal, gradient), 1.0) * opacity);
+    out.color = color_in(vec4<f32>(light_surface(color.rgb, lit_normal, gradient), 1.0) * opacity);
     return out;
 }
 // The elevation `v` through input operator `i`. The curve's uniforms are

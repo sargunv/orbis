@@ -15,6 +15,35 @@ fn light_factor(normal: vec3<f32>, luminance: f32, gradient: f32) -> vec3<f32> {
     return light_factor_facing(light_facing(normal), luminance, gradient);
 }
 
+// On a globe, `normal` at ground point `g` turned onto the axes at the
+// camera target, where the light's position (`frame.light_position`)
+// stands: one light over the whole sphere, as a viewport's light lights
+// a 3D scene, so a wall facing it at the limb is lit as one facing it at
+// the target, and a roof far from the target turns with the ground. On
+// the plane, and at the target, the normal is as it was. (GL JS turns
+// both onto the sphere, but by axes whose horizontal parts the extrusion
+// axes negate, so away from the target it lights the faces turned from
+// the light.)
+fn light_normal(normal: vec3<f32>, g: Ground) -> vec3<f32> {
+    if !on_globe() || frame.globe_plane != 0u {
+        return normal;
+    }
+    let at = globe_axes(g.globe + frame.globe_target);
+    // The extrusion axes' x points west and y north.
+    let n = at[0] * -normal.x + at[1] * normal.y + at[2] * normal.z;
+    let light_at = globe_axes(frame.globe_target);
+    let turned = vec3<f32>(-dot(n, light_at[0]), dot(n, light_at[1]), dot(n, light_at[2]));
+    return normalize(mix(normal, turned, frame.globe_amount));
+}
+
+// East, north and up at an ECEF position, unit; east along y at a pole.
+fn globe_axes(p: vec3<f32>) -> mat3x3<f32> {
+    let up = normalize(p);
+    let level = vec3<f32>(-up.y, up.x, 0.0);
+    let east = select(vec3<f32>(0.0, 1.0, 0.0), normalize(level), length(level) > 1e-6);
+    return mat3x3<f32>(east, cross(up, east), up);
+}
+
 // How far a surface facing `normal` turns to the light, 0 to 1.
 fn light_facing(normal: vec3<f32>) -> f32 {
     return clamp(dot(normal, frame.light_position), 0.0, 1.0);

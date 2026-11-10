@@ -303,7 +303,17 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          `dev.sargunv.orbis:ground-lighting`, and the globe's atmosphere,\n\
          whose scattering glows over the day side, whether or not the light\n\
          shades the ground. A viewport light stands over the camera's target;\n\
-         on a globe a map light stands as if over 0°, 0°.\n\n\
+         on a globe a map light stands as if over 0°, 0° for the ground and\n\
+         the atmosphere, while extrusions take either anchor's light over the\n\
+         target, as on a flat map. On a globe that light is one direction\n\
+         across the sphere: a face far from the target is lit by how far it\n\
+         turns to it there, as a wall at the limb facing it is lit.\n\n\
+         GL JS's globe extrusions turn their normals and the light onto the\n\
+         sphere by axes that keep the horizontal parts the extrusion axes\n\
+         negate. That cancels at the target, but a face an arc away from it\n\
+         is lit as if the light had swung twice that arc: roofs on the\n\
+         light's side of the globe dim, and walls facing the light near the\n\
+         limb go dark.\n\n\
          GL JS's globe atmosphere (`getSunPos` in `draw_sky.ts`) negates the\n\
          same vector but reads it on the view's or the globe's axes, which\n\
          turns its sun half a turn about the east axis: the north–south and\n\

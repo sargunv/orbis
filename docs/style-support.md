@@ -58,7 +58,18 @@ everything by it: the extrusions, the ground under
 `dev.sargunv.orbis:ground-lighting`, and the globe's atmosphere,
 whose scattering glows over the day side, whether or not the light
 shades the ground. A viewport light stands over the camera's target;
-on a globe a map light stands as if over 0°, 0°.
+on a globe a map light stands as if over 0°, 0° for the ground and
+the atmosphere, while extrusions take either anchor's light over the
+target, as on a flat map. On a globe that light is one direction
+across the sphere: a face far from the target is lit by how far it
+turns to it there, as a wall at the limb facing it is lit.
+
+GL JS's globe extrusions turn their normals and the light onto the
+sphere by axes that keep the horizontal parts the extrusion axes
+negate. That cancels at the target, but a face an arc away from it
+is lit as if the light had swung twice that arc: roofs on the
+light's side of the globe dim, and walls facing the light near the
+limb go dark.
 
 GL JS's globe atmosphere (`getSunPos` in `draw_sky.ts`) negates the
 same vector but reads it on the view's or the globe's axes, which
