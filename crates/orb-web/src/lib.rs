@@ -793,7 +793,10 @@ impl OrbisMap {
         geojson: Option<String>,
     ) -> Result<(), JsError> {
         let answer = match (bytes, geojson) {
-            (Some(bytes), _) => orb_runtime::HostTile::Encoded(bytes),
+            (Some(bytes), _) => orb_runtime::HostTile::Encoded {
+                bytes,
+                encoding: None,
+            },
             (None, Some(text)) => orb_runtime::HostTile::GeoJson(text),
             (None, None) => orb_runtime::HostTile::Empty,
         };

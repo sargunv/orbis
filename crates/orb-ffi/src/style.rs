@@ -2363,12 +2363,20 @@ command!(
             return Err(Failure::argument("data is null"));
         }
         let bytes = crate::base::bytes(data).to_vec();
+        let encoding = if encoding == MLN_STYLE_VECTOR_TILE_ENCODING_MLT {
+            orb_style::Encoding::Mlt
+        } else {
+            orb_style::Encoding::Mvt
+        };
         Ok(job(move |entry| {
             let tile = tile?;
             let answer = if bytes.is_empty() {
                 orb_api::HostTile::Empty
             } else {
-                orb_api::HostTile::Encoded(bytes)
+                orb_api::HostTile::Encoded {
+                    bytes,
+                    encoding: Some(encoding),
+                }
             };
             answer_tile(entry, &source_id, false, tile, answer)
         }))

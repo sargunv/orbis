@@ -155,7 +155,10 @@ impl TileLoader {
     ) {
         match location {
             // The app answered: its tile, or none.
-            TileLocation::Host(HostTile::Encoded(bytes)) => done(Ok((bytes, encoding))),
+            TileLocation::Host(HostTile::Encoded {
+                bytes,
+                encoding: own,
+            }) => done(Ok((bytes, own.unwrap_or(encoding)))),
             TileLocation::Host(HostTile::GeoJson(_) | HostTile::Empty) => {
                 done(Ok((Vec::new(), encoding)))
             }

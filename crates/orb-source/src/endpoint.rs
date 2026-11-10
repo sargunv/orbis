@@ -26,8 +26,12 @@ pub enum TileLocation {
 /// What the app hands in for a tile of a source it feeds.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HostTile {
-    /// The tile in the source's encoding (MVT or MLT).
-    Encoded(Vec<u8>),
+    /// The tile encoded as `encoding` says (MVT or MLT), or as the
+    /// source's tiles are.
+    Encoded {
+        bytes: Vec<u8>,
+        encoding: Option<Encoding>,
+    },
     /// Its source layers as GeoJSON: a JSON object of layer names and
     /// GeoJSON documents in longitude and latitude, which the map tiles.
     GeoJson(String),
