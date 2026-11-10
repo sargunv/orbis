@@ -351,8 +351,12 @@ impl StylePlan {
                     daylight: daylight(orb_style::TEXT_PART),
                 });
             }
-            // GL JS antialiases fills by drawing their outlines after them.
-            if layer.ty == LayerType::Fill && layer.get(orb_style::FILL_ANTIALIAS).evaluate(0.0) {
+            // GL JS antialiases fills by drawing their outlines after them:
+            // here unless no zoom, camera or feature ever wants one, the
+            // outline skipping zooms and features that don't.
+            if layer.ty == LayerType::Fill
+                && layer.get(orb_style::FILL_ANTIALIAS).constant() != Some(false)
+            {
                 nodes.push(NodePlan {
                     layer: index,
                     family: Family::FillOutline,
@@ -410,11 +414,12 @@ impl StylePlan {
     }
 
     /// Words per feature of the node's property rows: the family's, then a
-    /// circle's pitch flags and the feature's translate where they are per
-    /// feature.
+    /// circle's pitch flags or an outline's antialiasing, and the
+    /// feature's translate, where they are per feature.
     pub(crate) fn row_words(&self, node: &NodePlan) -> usize {
         let family = self.family_row_words(node);
-        let pitch = usize::from(self.circle_pitch_rows(node));
+        let flags = self.circle_pitch_rows(node) || self.antialias_rows(node);
+        let pitch = usize::from(flags);
         let translate = if self.translate_rows(node) {
             layout::TRANSLATE_ROW_WORDS
         } else {
@@ -455,6 +460,17 @@ impl StylePlan {
             ]
             .into_iter()
             .any(|key| matches!(l.get(key).kind(), Kind::Source | Kind::Composite))
+    }
+
+    /// Whether a fill outline node's rows carry each feature's
+    /// `fill-antialias`, read per feature beyond the spec.
+    pub(crate) fn antialias_rows(&self, node: &NodePlan) -> bool {
+        let l = &self.style.layers[node.layer];
+        node.family == Family::FillOutline
+            && matches!(
+                l.get(orb_style::FILL_ANTIALIAS).kind(),
+                Kind::Source | Kind::Composite
+            )
     }
 
     fn family_row_words(&self, node: &NodePlan) -> usize {

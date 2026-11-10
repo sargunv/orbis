@@ -72,6 +72,14 @@ fn discarded_fill() -> FillOut {
 }
 
 fn fill_outline_vertex(v: Pulled) -> FillOut {
+    // A feature whose `fill-antialias` is false (per feature, beyond the
+    // spec) has no outline.
+    if (node.table_mask & FILL_ANTIALIAS_ROW_MASK) != 0u {
+        let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
+        if prop_at(row + FILL_ROW_ANTIALIAS) == 0u {
+            return discarded_fill();
+        }
+    }
     var out = fill_vertex(v);
     let ndc = out.position.xy / out.position.w;
     let size = frame.viewport * frame.pixel_ratio;

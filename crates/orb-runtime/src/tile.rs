@@ -839,11 +839,13 @@ pub(crate) fn build(
             // ownership.
             let translate_rows = plan.translate_rows(node);
             let pitch_rows = plan.circle_pitch_rows(node);
+            let antialias_rows = plan.antialias_rows(node);
             let per_feature = line_effects
                 || node.family == Family::FillExtrusion
                 || pattern.is_some()
                 || translate_rows
                 || pitch_rows
+                || antialias_rows
                 || properties.iter().any(PaintProperty::per_feature);
             let props = if per_feature {
                 let mut rows = vec![0u32; features.len() * row_words];
@@ -934,6 +936,15 @@ pub(crate) fn build(
                         let f = feature as usize;
                         rows[i * row_words + layout::CIRCLE_ROW_PITCH] =
                             scale(f) << 1 | alignment(f) << 2;
+                    }
+                }
+                if antialias_rows {
+                    // Beyond the spec: each feature's `fill-antialias` at
+                    // the tile's zoom, as the vertical gradient is.
+                    let bound = style_layer.get(orb_style::FILL_ANTIALIAS).bind(layer);
+                    for (i, &feature) in features.iter().enumerate() {
+                        rows[i * row_words + layout::FILL_ROW_ANTIALIAS] =
+                            u32::from(bound.evaluate(zoom, feature as usize));
                     }
                 }
                 if translate_rows {

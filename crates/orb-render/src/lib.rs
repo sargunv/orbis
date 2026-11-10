@@ -45,9 +45,9 @@ pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, Pa
 pub use orb_layout::{Family, pack_color};
 pub use paint::{
     CirclePaint, ColorReliefPaint, Curve, EXTRUSION_GRADIENT_ROWS, EXTRUSION_OPACITY_ROWS,
-    ElevationPaint, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod, HillshadePaint,
-    LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup, SymbolPaint,
-    SymbolSize, Translate,
+    ElevationPaint, ExtrusionPaint, FILL_ANTIALIAS_ROWS, FillPaint, HeatmapPaint, HillshadeMethod,
+    HillshadePaint, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup,
+    SymbolPaint, SymbolSize, Translate,
 };
 pub use scene::Pixels;
 pub use scene::{

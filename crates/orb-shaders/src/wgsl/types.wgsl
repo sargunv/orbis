@@ -7,6 +7,10 @@
 // dash ids are three, for layout zoom -1, 0 and +1.
 const FILL_ROW_PATTERN: u32 = 4u;
 const FILL_ROW_WORDS: u32 = 7u;
+// Then, in an outline node's rows where `fill-antialias` is per feature
+// (`FILL_ANTIALIAS_ROW_MASK`), a word: 1 where the feature has an outline.
+const FILL_ROW_ANTIALIAS: u32 = 7u;
+const FILL_ANTIALIAS_ROW_MASK: u32 = 128u;
 const LINE_ROW_PATTERN: u32 = 12u;
 const LINE_ROW_DASH: u32 = 15u;
 const LINE_ROW_FLOOR_WIDTH: u32 = 18u;

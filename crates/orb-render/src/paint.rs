@@ -103,7 +103,8 @@ pub struct FillPaint {
     pub color: [f32; 4],
     pub opacity: f32,
     pub translate: Translate,
-    /// Bit 0: color, bit 1: opacity from the property row.
+    /// Bit 0: color, bit 1: opacity from the property row; an outline's
+    /// [`FILL_ANTIALIAS_ROWS`].
     pub table_mask: u32,
     pub curves: [Curve; 2],
     pub state: StateLookup,
@@ -297,6 +298,10 @@ impl ExtrusionPaint {
         }
     }
 }
+
+/// [`FillPaint::table_mask`]'s bit, on an outline node, for
+/// `fill-antialias` per feature (`types.wgsl`'s `FILL_ROW_ANTIALIAS`).
+pub const FILL_ANTIALIAS_ROWS: u32 = orb_shaders::layout::FILL_ANTIALIAS_ROW_MASK as u32;
 
 /// [`ExtrusionPaint::table_mask`]'s bit for opacity per feature.
 pub const EXTRUSION_OPACITY_ROWS: u32 = 1 << 3;

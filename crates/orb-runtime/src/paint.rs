@@ -218,7 +218,7 @@ pub(crate) fn drape(
             bearing: if shaded { 0.0 } else { at.bearing },
             ..at
         };
-        let paint = (layer.is_visible_at(at.zoom))
+        let paint = drawn_at(layer, node, at.zoom)
             .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas))
             .flatten();
         let changed = renderer.set_drape_paint(gpu, index as u32, paint.as_ref());
@@ -367,6 +367,21 @@ fn camera_free(plan: &StylePlan, node: &crate::style::NodePlan) -> bool {
         && !crate::line::has_textures(layer)
 }
 
+/// Whether `node` of `layer` draws at `zoom`. A layer-wide extrusion
+/// opacity of zero hides the layer; a per-feature one hides only its own
+/// buildings, in the shader. So does a fill's `fill-antialias` its outline.
+fn drawn_at(layer: &orb_style::Layer, node: &crate::style::NodePlan, zoom: f64) -> bool {
+    layer.is_visible_at(zoom)
+        && (layer.ty != LayerType::FillExtrusion || {
+            let opacity = layer.get(orb_style::EXTRUSION_OPACITY);
+            is_per_feature(opacity.kind()) || opacity.evaluate(zoom) > 0.0
+        })
+        && (node.family != Family::FillOutline || {
+            let antialias = layer.get(orb_style::FILL_ANTIALIAS);
+            is_per_feature(antialias.kind()) || antialias.evaluate(zoom)
+        })
+}
+
 /// Writes every node's paint and visibility for `zoom`, if it changed.
 fn write_paint(
     gpu: &mut dyn Gpu,
@@ -420,13 +435,7 @@ fn write_paint(
             }
             continue;
         }
-        // A layer-wide extrusion opacity of zero hides the layer; a
-        // per-feature one hides only its own buildings, in the shader.
-        let visible = layer.is_visible_at(zoom)
-            && (layer.ty != LayerType::FillExtrusion || {
-                let opacity = layer.get(orb_style::EXTRUSION_OPACITY);
-                is_per_feature(opacity.kind()) || opacity.evaluate(zoom) > 0.0
-            });
+        let visible = drawn_at(layer, node, zoom);
         let draped = draping && node.family.is_draped();
         renderer.set_visible(
             index,
@@ -627,7 +636,12 @@ fn node_paint(
             color,
             opacity: numbers[1],
             translate,
-            table_mask,
+            table_mask: table_mask
+                | if plan.antialias_rows(node) {
+                    orb_render::FILL_ANTIALIAS_ROWS
+                } else {
+                    0
+                },
             curves: [curves[0], curves[1]],
             state: lookup,
         }),

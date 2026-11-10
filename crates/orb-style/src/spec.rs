@@ -593,7 +593,9 @@ properties! {
         /// style-spec#1047: `fill-extrusion-rounded-corner-distance` for
         /// fills, a provisional name.
         layout FILL_ROUNDED_CORNER: f32 = prop("dev.sargunv.orbis:fill-rounded-corner-distance", NUMBER, Some("0")).range(0.0, None).zoom_independent().preview(crate::Preview::FillRoundedCornerDistance);
-        paint FILL_ANTIALIAS: bool = prop("fill-antialias", PropertyType::Boolean, Some("true"));
+        /// Per feature (beyond the spec) at the tile's zoom, as a flag in
+        /// the outline's rows.
+        paint FILL_ANTIALIAS: bool = prop("fill-antialias", PropertyType::Boolean, Some("true")).extends(Inputs::DATA).extends(Inputs::CAMERA);
         paint FILL_OPACITY: f32 = prop("fill-opacity", NUMBER, Some("1")).data_driven().interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
         /// The layer composited once at this opacity (style-spec 26).
         paint FILL_LAYER_OPACITY: f32 = prop("fill-layer-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).in_phase(Phase::Layer).extends(Inputs::CAMERA);

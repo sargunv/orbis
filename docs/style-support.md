@@ -102,7 +102,7 @@ pass.
 |---|---|---|---|---|---|---|---|---|---|---|
 | `fill-sort-key` | layout | tile | zoom, data | 1.2.0; data 1.2.0 | 9.1.0; data 9.1.0 | zoom, data | — | 1/1 | — | 1/1 |
 | `dev.sargunv.orbis:fill-rounded-corner-distance` | layout | tile | — | — | — | constant; behind its preview ([style-spec#1047](https://github.com/maplibre/maplibre-style-spec/issues/1047)) | — | — | — | — |
-| `fill-antialias` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 1/1 | — | 1/1 |
+| `fill-antialias` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | 1/1 | — | 1/1 |
 | `fill-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.21.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 9/9 | — | 9/9 |
 | `fill-layer-opacity` | paint | layer | zoom | 6.0.0 | [no](https://github.com/maplibre/maplibre-native/issues/4298) | zoom; camera accepted (not portable) | — | 16/16 | — | — |
 | `fill-layer-blend` | paint | layer | constant | [no](https://github.com/maplibre/maplibre-gl-js/issues/48) | [no](https://github.com/maplibre/maplibre-native/issues/2963) | constant | — | — | — | — |

@@ -677,6 +677,50 @@ fn ground_lighting_darkens_the_night_side_to_its_limb() {
     );
 }
 
+/// `fill-antialias` per feature (beyond the spec) outlines only the
+/// features that want one, and by zoom only at the zooms that do.
+#[test]
+fn fill_antialias_follows_each_feature_and_the_zoom() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let draw = |antialias: &str, zoom: f64| {
+        let style = format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": {zoom},
+              "sources": {{"b": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": [
+                {{"type": "Feature", "properties": {{"aa": true}}, "geometry": {{"type": "Polygon",
+                  "coordinates": [[[-10, -5], [-2, -5], [-2, 5], [-10, 5], [-10, -5]]]}}}},
+                {{"type": "Feature", "properties": {{"aa": false}}, "geometry": {{"type": "Polygon",
+                  "coordinates": [[[2, -5], [10, -5], [10, 5], [2, 5], [2, -5]]]}}}}]}}}}}},
+              "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+                {{"id": "fill", "type": "fill", "source": "b",
+                  "paint": {{"fill-color": "#ffffff", "fill-outline-color": "#ff0000",
+                    "fill-antialias": {antialias}}}}}]}}"##
+        );
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&style).expect("style");
+        let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+        // Red outline pixels left and right of the middle.
+        let red = |xs: std::ops::Range<u32>| {
+            (xs.flat_map(|x| (0..SIZE).map(move |y| (x, y))))
+                .filter(|&(x, y)| {
+                    let [r, g, ..] = pixel(&image.pixels, x, y);
+                    r > 128 && g < 100
+                })
+                .count()
+        };
+        [red(0..SIZE / 2), red(SIZE / 2..SIZE)]
+    };
+    let [left, right] = draw("true", 2.0);
+    assert!(left > 0 && right > 0, "both outlined: {left} {right}");
+    assert_eq!(draw("false", 2.0), [0, 0]);
+    let [left, right] = draw(r#"["get", "aa"]"#, 2.0);
+    assert!(left > 0 && right == 0, "the first alone: {left} {right}");
+    let step = r#"["step", ["zoom"], false, 2.5, true]"#;
+    assert_eq!(draw(step, 2.0), [0, 0]);
+    let [left, right] = draw(step, 3.0);
+    assert!(left > 0 && right > 0, "outlined from 2.5: {left} {right}");
+}
+
 /// `dev.sargunv.orbis:datetime` puts the night side where it is at that
 /// moment: at midnight UTC null island is dark and the antimeridian lit,
 /// at noon the other way round, wherever `position` says the sun is; a
