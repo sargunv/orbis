@@ -20,6 +20,7 @@ mod offscreen;
 mod slots;
 #[cfg(not(target_arch = "wasm32"))]
 mod surface;
+mod texture_writes;
 mod timing;
 mod writes;
 
@@ -103,9 +104,15 @@ pub struct WgpuGpu {
     /// memory and register none.
     #[cfg(target_arch = "wasm32")]
     host_images: Slots<wgpu::ExternalImageSource>,
+    /// Host images released while a held texture write still reads them,
+    /// closed at the next submission.
+    #[cfg(target_arch = "wasm32")]
+    released_images: Vec<HostImageId>,
     uploaded: Uploaded,
     /// Small buffer writes, copied in at the next submission.
     writes: writes::Writes,
+    /// Texture writes, issued in waves at the next submission.
+    texture_writes: std::sync::Mutex<texture_writes::TextureWrites>,
     /// Readback buffers back from their last readback, for the next of
     /// their size: a new one maps fresh pages each time.
     readbacks: offscreen::Readbacks,
@@ -318,8 +325,11 @@ impl WgpuGpu {
             host_bytes: Slots::default(),
             #[cfg(target_arch = "wasm32")]
             host_images: Slots::default(),
+            #[cfg(target_arch = "wasm32")]
+            released_images: Vec::new(),
             uploaded: Uploaded::default(),
             writes: writes::Writes::default(),
+            texture_writes: Default::default(),
             readbacks: Default::default(),
             copy_next: None,
             copied: Default::default(),
@@ -338,14 +348,77 @@ impl WgpuGpu {
     }
 
     /// Copies the gathered writes into place ahead of what `encoder`
-    /// records next.
+    /// records next, after issuing the held texture writes.
     fn encode_writes(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.issue_texture_writes();
         self.writes.encode(
             &self.device,
             &self.queue,
             |id| self.buffers[id.0].clone(),
             encoder,
         );
+    }
+
+    /// Issues the held texture writes to the queue, wave by wave, each wave
+    /// before the last its own submission (see `texture_writes`).
+    fn issue_texture_writes(&self) {
+        let mut held = self.texture_writes.lock().expect("texture writes poisoned");
+        held.issue(
+            |write, texels| self.issue_texture_write(write, texels),
+            || {
+                self.queue.submit([]);
+            },
+        );
+    }
+
+    fn issue_texture_write(&self, write: &texture_writes::TextureWrite, texels: &[u8]) {
+        let region = &write.region;
+        let origin = wgpu::Origin3d {
+            x: region.x,
+            y: region.y,
+            z: region.layer,
+        };
+        let size = wgpu::Extent3d {
+            width: region.width,
+            height: region.height,
+            depth_or_array_layers: 1,
+        };
+        match write.source {
+            texture_writes::Source::Core { bytes_per_row, .. } => self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: self.texture(region.texture),
+                    mip_level: region.level,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                texels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+                size,
+            ),
+            #[cfg(target_arch = "wasm32")]
+            texture_writes::Source::Host { image, premultiply } => {
+                self.queue.copy_external_image_to_texture(
+                    &wgpu::CopyExternalImageSourceInfo {
+                        source: self.host_images[image.0].clone(),
+                        origin: wgpu::Origin2d::ZERO,
+                        flip_y: false,
+                    },
+                    wgpu::CopyExternalImageDestInfo {
+                        texture: self.texture(region.texture),
+                        mip_level: region.level,
+                        origin,
+                        aspect: wgpu::TextureAspect::All,
+                        color_space: wgpu::PredefinedColorSpace::Srgb,
+                        premultiplied_alpha: premultiply,
+                    },
+                    size,
+                )
+            }
+        }
     }
 
     /// Asks the graphics debugger the process runs under (Xcode's Metal
@@ -970,6 +1043,10 @@ impl Gpu for WgpuGpu {
     }
 
     fn destroy_texture(&mut self, id: TextureId) {
+        self.texture_writes
+            .get_mut()
+            .expect("texture writes poisoned")
+            .forget(id);
         let entry = self.textures.remove(id.0);
         if let (Some(texture), None) = (entry.texture, entry.levels) {
             texture.destroy();
@@ -985,29 +1062,10 @@ impl Gpu for WgpuGpu {
             (bytes_per_row * region.height) as usize,
             "texture write size mismatch"
         );
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: region.level,
-                origin: wgpu::Origin3d {
-                    x: region.x,
-                    y: region.y,
-                    z: region.layer,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: region.width,
-                height: region.height,
-                depth_or_array_layers: 1,
-            },
-        );
+        self.texture_writes
+            .get_mut()
+            .expect("texture writes poisoned")
+            .core(region, data, bytes_per_row);
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1018,38 +1076,26 @@ impl Gpu for WgpuGpu {
         premultiply: bool,
     ) {
         self.uploaded.texels_from_js += u64::from(region.width * region.height * 4);
-        self.queue.copy_external_image_to_texture(
-            &wgpu::CopyExternalImageSourceInfo {
-                source: self.host_images[image.0].clone(),
-                origin: wgpu::Origin2d::ZERO,
-                flip_y: false,
-            },
-            wgpu::CopyExternalImageDestInfo {
-                texture: self.texture(region.texture),
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: region.x,
-                    y: region.y,
-                    z: region.layer,
-                },
-                aspect: wgpu::TextureAspect::All,
-                color_space: wgpu::PredefinedColorSpace::Srgb,
-                premultiplied_alpha: premultiply,
-            },
-            wgpu::Extent3d {
-                width: region.width,
-                height: region.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        // WebGL 2 copies at the next submission, which must come before
-        // the image is released (an `ImageBitmap` closed).
-        #[cfg(webgl)]
-        self.queue.submit([]);
+        // Issued at the next submission; the image is closed after it,
+        // which WebGL 2, copying only at a submission, needs too.
+        self.texture_writes
+            .get_mut()
+            .expect("texture writes poisoned")
+            .host(region, image, premultiply);
     }
 
     #[cfg(target_arch = "wasm32")]
     fn release_host_image(&mut self, image: HostImageId) {
+        // A held write still reads it: closed once that is issued.
+        if self
+            .texture_writes
+            .get_mut()
+            .expect("texture writes poisoned")
+            .reads(image)
+        {
+            self.released_images.push(image);
+            return;
+        }
         if let wgpu::ExternalImageSource::ImageBitmap(bitmap) = self.host_images.remove(image.0) {
             bitmap.close();
         }
@@ -1492,6 +1538,11 @@ impl Gpu for WgpuGpu {
             encoder.pop_debug_group();
         }
         self.last = Some(self.queue.submit([encoder.finish()]));
+        // The writes reading them are issued.
+        #[cfg(target_arch = "wasm32")]
+        for image in std::mem::take(&mut self.released_images) {
+            self.release_host_image(image);
+        }
         if let Some(timing) = &mut self.timing {
             timing.end(timing::now() - started);
         }

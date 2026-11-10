@@ -136,3 +136,109 @@ fn samples_written_layers_of_a_texture_array() {
     assert_eq!(&pixels[..4], [255, 0, 0, 255], "layer 0");
     assert_eq!(&pixels[12..], [0, 0, 255, 255], "layer 1");
 }
+
+/// Bitmaps packed side by side in an R8 array, as the glyph atlas packs
+/// them, written in one submission: every texel lands. On Apple GPUs
+/// writes in one submission that share a block of a texture raced, and
+/// under load one now and then lost a block's worth of another's texels
+/// (#156).
+#[test]
+fn packed_writes_in_one_submission_all_land() {
+    const SIZE: u32 = 512;
+    const LAYERS: u32 = 2;
+    let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+    let mut seed: u64 = 7;
+    let mut rnd = |n: u32| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 33) % u64::from(n)) as u32
+    };
+    // Glyph-sized bitmaps, then small ones, many to a block.
+    for (min, spread) in [(40, 30), (4, 20)] {
+        let page = gpu.create_texture(&TextureDesc {
+            label: "page",
+            width: SIZE,
+            height: SIZE,
+            array_layers: LAYERS,
+            dimension: D2Array,
+            format: TextureFormat::R8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::COPY_SRC,
+            sample_count: 1,
+            mip_levels: 1,
+            view_formats: &[],
+        });
+        let mut expected = vec![0u8; (SIZE * SIZE * LAYERS) as usize];
+        for layer in 0..LAYERS {
+            let (mut x, mut y, mut shelf) = (0, 0, 0);
+            loop {
+                let (w, h) = (min + rnd(spread), min + rnd(spread));
+                if x + w > SIZE {
+                    (x, y, shelf) = (0, y + shelf, 0);
+                }
+                if y + h > SIZE {
+                    break;
+                }
+                let value = 1 + rnd(255) as u8;
+                let texels = vec![value; (w * h) as usize];
+                let region = TextureRegion {
+                    texture: page,
+                    x,
+                    y,
+                    layer,
+                    width: w,
+                    height: h,
+                    level: 0,
+                };
+                gpu.write_texture(&region, &texels);
+                for row in y..y + h {
+                    let at = ((layer * SIZE + row) * SIZE + x) as usize;
+                    expected[at..at + w as usize].fill(value);
+                }
+                x += w;
+                shelf = shelf.max(h);
+            }
+        }
+        gpu.submit(&[]);
+        let read = read_layers(&gpu, page);
+        let wrong = read.iter().zip(&expected).filter(|(a, b)| a != b).count();
+        assert_eq!(wrong, 0, "texels wrong of bitmaps {min}+{spread} wide");
+        gpu.destroy_texture(page);
+    }
+}
+
+/// Every layer of an R8 array texture, read back.
+fn read_layers(gpu: &WgpuGpu, id: TextureId) -> Vec<u8> {
+    let texture = gpu.texture(id).clone();
+    let device = gpu.device().clone();
+    let size = texture.size();
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("layers"),
+        size: u64::from(size.width * size.height * size.depth_or_array_layers),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.width),
+                rows_per_image: Some(size.height),
+            },
+        },
+        size,
+    );
+    gpu.queue().submit([encoder.finish()]);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |r| sender.send(r).unwrap());
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    receiver.recv().unwrap().unwrap();
+    buffer.slice(..).get_mapped_range().unwrap().to_vec()
+}
