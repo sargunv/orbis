@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use mln_rs::mln_actor::RunLoop;
+use mln_rs::mln_headless::HeadlessFrontend;
 use mln_rs::mln_map::{Map, MapMode, MapOptions, NullMapObserver};
-use mln_rs::mln_platform_default::HeadlessFrontend;
 use mln_rs::mln_util::size::Size;
 
 fn main() {
@@ -51,7 +51,8 @@ fn main() {
             .with_map_mode(mode)
             .with_size(size)
             .with_pixel_ratio(1.0),
-    );
+    )
+    .expect("a map");
     map.get_style_mut().load_url(style);
     let started = Instant::now();
     for (name, z, x, y) in &tiles {

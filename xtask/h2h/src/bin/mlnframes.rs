@@ -10,8 +10,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use mln_rs::mln_actor::RunLoop;
+use mln_rs::mln_headless::HeadlessFrontend;
 use mln_rs::mln_map::{CameraOptions, Map, MapMode, MapOptions, NullMapObserver};
-use mln_rs::mln_platform_default::HeadlessFrontend;
 use mln_rs::mln_util::geo::LatLng;
 use mln_rs::mln_util::size::Size;
 
@@ -57,7 +57,8 @@ fn main() {
                 .with_map_mode(MapMode::Static)
                 .with_size(size)
                 .with_pixel_ratio(ratio as f32),
-        );
+        )
+        .expect("a map");
         map.get_style_mut().load_url(style);
         let camera = |nudge: f64| {
             CameraOptions::default()

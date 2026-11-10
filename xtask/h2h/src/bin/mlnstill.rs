@@ -7,8 +7,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use mln_rs::mln_actor::RunLoop;
+use mln_rs::mln_headless::HeadlessFrontend;
 use mln_rs::mln_map::{CameraOptions, Map, MapMode, MapOptions, NullMapObserver};
-use mln_rs::mln_platform_default::HeadlessFrontend;
 use mln_rs::mln_storage::{ClientOptions, ResourceOptions};
 use mln_rs::mln_util::geo::LatLng;
 use mln_rs::mln_util::size::Size;
@@ -41,7 +41,8 @@ fn main() {
             .with_pixel_ratio(ratio),
         &ResourceOptions::default().with_cache_path(":memory:"),
         &ClientOptions::default(),
-    );
+    )
+    .expect("a map");
     map.get_style_mut().load_url(style);
     map.jump_to(
         &CameraOptions::default()
@@ -52,7 +53,6 @@ fn main() {
     );
     let image = mln_h2h::render(&mut frontend, &mut map);
     let took = started.elapsed();
-    std::fs::write(&out, mln_rs::mln_platform_default_image::encode_png(&image))
-        .expect("writing the PNG");
+    std::fs::write(&out, mln_rs::mln_image::encode_png(&image)).expect("writing the PNG");
     eprintln!("mlnstill: {out} in {:.0} ms", mln_h2h::ms(took));
 }

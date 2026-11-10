@@ -10,7 +10,7 @@ license = "BSD-3-Clause"
 publish = false
 
 [dependencies]
-mln-rs = { git = "https://github.com/louwers/mln-rs", rev = "38cc1a177559e61e168bef9e6ea6a42ed0aae378" }
+mln-rs = { git = "https://github.com/louwers/mln-rs", rev = "26d7630c743156d8b64acd70e5cdd729bca6ee3d" }
 
 # Process CPU time: `clock_gettime` on Unix, `GetProcessTimes` on Windows.
 [target.'cfg(unix)'.dependencies]

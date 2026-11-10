@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use mln_rs::mln_actor::RunLoop;
+use mln_rs::mln_headless::HeadlessFrontend;
 use mln_rs::mln_map::{CameraOptions, Map};
-use mln_rs::mln_platform_default::HeadlessFrontend;
 use mln_rs::mln_util::geo::LatLng;
 use mln_rs::mln_util::image::PremultipliedImage;
 
