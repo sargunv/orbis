@@ -98,6 +98,22 @@ orb-tile = { path = "crates/orb-tile" }
 orb-web = { path = "crates/orb-web" }
 
 [patch.crates-io]
+# wgpu 30.0.1 with D3D12 render passes (BeginRenderPass): a tiling GPU
+# (Adreno on Snapdragon X) can then keep a multisampled pass on chip and
+# resolve it there instead of storing, reloading and resolving it (#164).
+# Every crate of wgpu's workspace comes from the fork, since its path
+# dependencies resolve there. #35 tracks sending it upstream.
+naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+naga-types = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu-core = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu-core-deps-apple = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu-core-deps-emscripten = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu-core-deps-wasm = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu-core-deps-windows-linux-android = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu-hal = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu-naga-bridge = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
+wgpu-types = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
 # One copy of the scalar unpack kernels instead of three: 7 KiB brotli off
 # core.wasm, no measurable tile decode cost (#35 tracks sending it upstream).
 fastpfor = { git = "https://github.com/sargunv/FastPFOR-rs", branch = "scalar-unpack-not-inline" }
