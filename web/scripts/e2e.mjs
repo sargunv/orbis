@@ -11,23 +11,24 @@
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
 //   the cost of a feature-state write (≤0.05 ms target) over
 //   `--writes` writes.
-// - `editor`: the map app's style editor, queries and hover state on
-//   web/demo/data/playground.json, and frames per edit.
+// - `playground`: the map app's map of web/demo/data/playground.json
+//   through its API: the topmost feature by hit test and query, the
+//   style's hover state through feature state, paint and layout edits, a
+//   bad edit applying none of its calls, frames per edit, and a style
+//   replaced whole.
 // - `switching`: entries switch on one map: another style on the same
 //   source eases its paint by the style's transition and requests no
-//   tiles, and back goes back without a reload; a click opens a feature
-//   popup only while the style editor is open; picking any entry keeps
+//   tiles, and back goes back without a reload; picking any entry keeps
 //   the camera, its style's own camera never applying.
 // - `light`: the Alps terrain style's light choice in the map options,
 //   offline: `&light=viewport` anchors its hillshade and light to the
 //   viewport as the style loads, the choice edits them in place and keeps
-//   the URL and the editor in step, and another entry hides it and drops
-//   `&light`.
+//   the URL in step, and another entry hides it and drops `&light`.
 // - `terrain`: the Alps terrain style's terrain switch in the map options,
 //   offline: on by default with no `&terrain`, a click or the keyboard
 //   edits the style's terrain away and back without a reload, keeping the
-//   URL and the editor in step, `&terrain=0` applies as the style loads,
-//   and another entry hides it and drops `&terrain`.
+//   URL in step, `&terrain=0` applies as the style loads, and another
+//   entry hides it and drops `&terrain`.
 // - `options`: the Globe's map options, offline (the Tokyo extract's style
 //   standing in for Protomaps Light): the URL's choices apply as it loads,
 //   every option is listed in its group, clicks and keys edit the live
@@ -64,7 +65,7 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,switching,light,terrain,options,resize,compare,gestures,readback,offline]
+//   pnpm e2e [--only=scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -75,7 +76,7 @@ import { decodePng, encodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,switching,light,terrain,options,resize,compare,gestures,readback").split(",");
+const only = arg("only", "scenario,edits,playground,switching,light,terrain,options,resize,compare,gestures,readback").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -483,102 +484,95 @@ async function edits(browser, server) {
   await page.close();
 }
 
-async function editor(browser, server) {
+async function playground(browser, server) {
   const { page, errors } = await open(browser, { width: 1280, height: 800 });
   const style = encodeURIComponent(`${server.url}e2e/data/playground.json`);
-  await page.goto(`${server.url}?style=${style}&edit#15/35.6835/139.7655`);
-  await page.waitForFunction(() => window.app?.editor.style && document.querySelector("#app").dataset.map === "idle",
-    null,{timeout:60000});
-  const map = page.locator("#map");
-  const hit = await page.evaluate(async () => {
-    const canvas = document.querySelector("#map canvas");
-    return orbis.hitTest(canvas.clientWidth / 2, canvas.clientHeight / 2);
+  await page.goto(`${server.url}?style=${style}#15/35.6835/139.7655`);
+  const idle = () => page.waitForFunction(() => document.querySelector("#app").dataset.map === "idle", null,
+    { timeout: 60_000 });
+  await idle();
+  // The topmost feature at the centre: station 31, by hit test and by query.
+  const centre = await page.evaluate(async () => {
+    const { map } = app;
+    const point = [map.canvas.clientWidth / 2, map.canvas.clientHeight / 2];
+    const { layer, id, source, sourceLayer } = await map.hitTest(point);
+    const [feature] = await map.queryRenderedFeatures(point);
+    return { hit: { layer, id, source, sourceLayer },
+      feature: feature && { layer: feature.layer?.id, id: String(feature.id), kind: feature.properties.kind } };
   });
-  assert.equal(hit.layer,"stations");
-  assert.equal(hit.id,"31");
-  assert.equal(hit.source,"district");
-  assert.equal(hit.sourceLayer,null);
-  const bounds = await map.boundingBox();
-  const center = [bounds.x+bounds.width/2,bounds.y+bounds.height/2];
-  const inspected = () => page.locator(".inspect").evaluate(e => e.hidden ? "" : e.textContent);
-  await page.mouse.move(...center);
-  await page.waitForFunction(() => document.querySelector(".inspect").textContent === "stations #31");
-  await page.waitForFunction(() => document.querySelector("#app").dataset.map === "idle");
-  const before = await map.screenshot();
-  await page.mouse.move(bounds.x+10,bounds.y+bounds.height-10);
-  await page.waitForFunction(() => document.querySelector(".inspect").hidden);
-  await page.waitForFunction(() => document.querySelector("#app").dataset.map === "idle");
-  assert.notDeepEqual(await map.screenshot(),before,"hover changes pixels");
-  assert.equal(await inspected(),"");
+  assert.deepEqual(centre.hit, { layer: "stations", id: "31", source: "district", sourceLayer: null });
+  assert.deepEqual(centre.feature, { layer: "stations", id: "31", kind: "station" });
 
-  // A paint control: the background's colour, one transaction.
-  const applied = () => page.locator(".applied").evaluate(e => Number(e.dataset.generation ?? 0));
-  let generation = await applied();
-  await page.locator(".layer-name", {hasText:"paper"}).click();
-  await page.locator(".layer.open .prop-control input.field").first().fill("#ccddee");
-  await page.locator(".layer.open .prop-control input.field").first().press("Enter");
-  await page.waitForFunction(g => Number(document.querySelector(".applied").dataset.generation ?? 0) > g, generation);
-  assert.equal((await page.evaluate(() => app.editor.style.layers[0].paint["background-color"])),"#ccddee");
-  // Visibility.
-  generation = await applied();
-  await page.locator('.layer[data-layer="route"] .eye').click();
-  await page.waitForFunction(g => Number(document.querySelector(".applied").dataset.generation ?? 0) > g, generation);
-  assert.equal((await page.evaluate(() => app.editor.style.layers.find(l => l.id === "route").layout.visibility)),"none");
+  // The style's own hover state, through feature state: the station's
+  // pixels turn the style's hover colour, and back when the state goes.
+  // A state write keeps the style's generation: the frame that shows it
+  // is polled for.
+  const station = () => page.evaluate(async () => {
+    const image = await app.map.readPixels();
+    const i = (Math.floor(image.height / 2) * image.width + Math.floor(image.width / 2)) * 4;
+    return [...image.data.slice(i, i + 3)];
+  });
+  assert.deepEqual(await station(), [255, 255, 255], "the station draws white");
+  await page.evaluate(() => app.map.setFeatureState({ source: "district", id: 31 }, { hover: true }));
+  await settles(page, station, [0xe7, 0x5f, 0x35], "hover state turns the station orange");
+  await page.evaluate(() => app.map.removeFeatureState({ source: "district", id: 31 }, "hover"));
+  await settles(page, station, [255, 255, 255], "removing the state draws the station as before");
 
-  // The JSON tab: invalid JSON keeps the map; a valid edit applies.
-  await page.locator("#tab-json").click();
-  const json = page.locator("#editor-json textarea");
-  const original = await json.inputValue();
-  await json.fill("{broken");
-  await page.waitForFunction(() => document.querySelector("#json-error").textContent.length > 0);
-  const edited = JSON.parse(original);
-  edited.layers[0].paint["background-color"] = "#aabbcc";
-  generation = await applied();
-  await json.fill(JSON.stringify(edited,null,2));
-  await page.waitForFunction(g => Number(document.querySelector(".applied").dataset.generation ?? 0) > g, generation);
-  assert.equal(await page.locator("#json-error").textContent(),"");
-  console.log(`editor: ${await page.locator(".applied").textContent()}; topmost station 31, hover pixel change, controls and validation recovery passed`);
+  // Paint and layout edits show in the style; a bad edit rejects and applies none.
+  await page.evaluate(() => app.map.edit((tx) => {
+    tx.setPaintProperty("paper", "background-color", "#ccddee");
+    tx.setLayoutProperty("route", "visibility", "none");
+  }));
+  const read = () => page.evaluate(async () => {
+    const style = await app.map.getStyle();
+    const layer = (id) => style.layers.find((l) => l.id === id);
+    return { paper: layer("paper").paint["background-color"], route: layer("route").layout?.visibility };
+  });
+  assert.deepEqual(await read(), { paper: "#ccddee", route: "none" });
+  const rejected = await page.evaluate(() => app.map.edit((tx) => {
+    tx.setPaintProperty("paper", "background-color", "#aabbcc");
+    tx.setPaintProperty("nope", "fill-color", "#000");
+  }).then(() => false, () => true));
+  assert.ok(rejected, "an edit naming a missing layer rejects");
+  assert.deepEqual(await read(), { paper: "#ccddee", route: "none" }, "a rejected edit applies none of its calls");
 
   // Measure frame acknowledgements, rather than elapsed wall time.
   const measurements = await page.evaluate(async () => {
-    const apply = async (name,commands) => {
+    const apply = async (name, commands) => {
       const frames = [];
       const before = app.map.stats;
-      const listener = e => frames.push(e.detail);
-      window.addEventListener("orbis-frame",listener);
-      const generation = await orbis.edit(tx => { for (const [method,...args] of commands) tx[method](...args); });
-      await new Promise(resolve => {
-        if (frames.some(f => f.generation >= generation)) return resolve();
-        const done = e => { if (e.detail.generation >= generation) { window.removeEventListener("orbis-frame",done); resolve(); } };
-        window.addEventListener("orbis-frame",done);
+      const listener = (e) => frames.push(e.detail);
+      window.addEventListener("orbis-frame", listener);
+      const generation = await app.map.edit((tx) => { for (const [method, ...args] of commands) tx[method](...args); });
+      await new Promise((resolve) => {
+        if (frames.some((f) => f.generation >= generation)) return resolve();
+        const done = (e) => { if (e.detail.generation >= generation) { window.removeEventListener("orbis-frame", done); resolve(); } };
+        window.addEventListener("orbis-frame", done);
       });
-      window.removeEventListener("orbis-frame",listener);
-      const visible = frames.find(f => f.generation >= generation);
-      return {name,frames:frames.findIndex(f => f.generation >= generation)+1,generation,
-        meshUploads:visible.meshesUploaded-before.meshesUploaded,
-        rowUploads:visible.rowsUploaded-before.rowsUploaded};
+      window.removeEventListener("orbis-frame", listener);
+      const visible = frames.find((f) => f.generation >= generation);
+      return { name, frames: frames.findIndex((f) => f.generation >= generation) + 1, generation,
+        meshUploads: visible.meshesUploaded - before.meshesUploaded,
+        rowUploads: visible.rowsUploaded - before.rowsUploaded };
     };
     return [
-      await apply("paint",[["setPaintProperty","route","line-color","#345678"]]),
-      await apply("binding flip",[["setPaintProperty","route","line-color",["match",["get","kind"],"route","#aabbcc","#ffffff"]]]),
-      await apply("layout",[["setLayoutProperty","route","line-cap","round"]]),
+      await apply("paint", [["setPaintProperty", "stations", "circle-color", "#345678"]]),
+      await apply("binding flip", [["setPaintProperty", "stations", "circle-color", ["match", ["get", "kind"], "station", "#aabbcc", "#ffffff"]]]),
+      await apply("layout", [["setLayoutProperty", "route", "line-cap", "round"]]),
     ];
   });
-  console.log(`editor: ${JSON.stringify(measurements)}`);
-  assert.equal(measurements[0].frames,1);
-  assert.equal(measurements[1].meshUploads,0);
+  console.log(`playground: ${JSON.stringify(measurements)}`);
+  assert.equal(measurements[0].frames, 1);
+  assert.equal(measurements[1].meshUploads, 0);
 
-  // Replacing the style drops the hovered feature.
-  await page.mouse.move(...center);
-  await page.waitForFunction(() => document.querySelector(".inspect").textContent === "stations #31");
-  generation = await applied();
-  await json.fill(JSON.stringify({version:8,sources:{},layers:[edited.layers[0]]}));
-  await page.waitForFunction(g => Number(document.querySelector(".applied").dataset.generation ?? 0) > g, generation);
-  await page.waitForFunction(() => app.map.stats.draws < 5 && app.map.stats.idle);
-  await page.mouse.move(center[0]+1,center[1]);
-  await page.waitForFunction(() => document.querySelector(".inspect").hidden);
-  assert.deepEqual(errors,[]);
+  // A style replaced whole drops its features: nothing to hit at the centre.
+  await page.evaluate(() => app.map.edit((tx) => tx.setStyle({ version: 8, sources: {},
+    layers: [{ id: "paper", type: "background", paint: { "background-color": "#aabbcc" } }] })));
+  await settles(page, () => page.evaluate(() => app.map.hitTest([app.map.canvas.clientWidth / 2, app.map.canvas.clientHeight / 2])),
+    null, "nothing to hit once the style is replaced");
+  assert.deepEqual(errors, []);
   await page.close();
+  console.log("playground: station 31 on top, hover state, edits, a rejected edit and a replaced style passed");
 }
 
 /** The Tokyo extract's style with its URLs absolute under the e2e mount, so a copy elsewhere draws alike. */
@@ -663,28 +657,6 @@ async function switching(browser, server) {
   assert.ok(page.url().includes(encodeURIComponent(first)), page.url());
   console.log(`switching: one map; the water eases over ${there.colours.length} frames read, ` +
     `back over ${back.colours.length}, requesting no tiles`);
-
-  // A click is only a gesture outside the editor; inside it, it opens a popup.
-  const [x, y] = water;
-  const box = await page.locator("#map").boundingBox();
-  await page.mouse.click(box.x + x, box.y + y);
-  await page.waitForTimeout(300);
-  assert.equal(await page.locator(".popup").count(), 0, "no popup outside the editor");
-  assert.equal(await page.evaluate(() => window.app.editor.open), false);
-  await page.click("#menu-button");
-  await page.click("#edit-toggle");
-  await page.waitForFunction(() => window.app.editor.open);
-  await idle();
-  // The editor takes room from the map: a feature where it still shows.
-  const box2 = await page.locator("#map canvas").boundingBox();
-  const feature = await onMap("any");
-  assert.ok(feature, "a feature shows beside the editor");
-  await page.mouse.click(box2.x + feature[0], box2.y + feature[1]);
-  await page.waitForSelector(".popup", { timeout: 5_000 });
-  await page.click("#menu-button");
-  await page.click("#edit-toggle");
-  assert.equal(await page.locator(".popup").count(), 0, "closing the editor closes the popup");
-  console.log("switching: a click opens a popup only in the editor");
   assert.deepEqual(errors, []);
   await page.close();
 
@@ -748,24 +720,24 @@ async function settles(page, read, expected, message) {
 }
 
 async function light(browser, server) {
-  // Wide enough that the editor is a side panel.
+  // Wide enough that the panel opens beside its button.
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
   // The style is the demo's; its tiles would come from the network, which
   // fails here: the switch only edits the style.
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
-  await page.goto(`${server.url}?style=alps&light=viewport&edit`);
-  await page.waitForFunction(() => app.options.values && app.editor.style, null, { timeout: 60_000 });
-  // Every illumination anchor in the map's style, and the editor's.
+  await page.goto(`${server.url}?style=alps&light=viewport`);
+  await page.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
+  // Every illumination anchor in the map's style.
   const anchors = () => page.evaluate(async () => {
     const of = (style) => style && [...style.layers.filter((l) => l.type === "hillshade")
       .map((l) => l.paint["hillshade-illumination-anchor"]), style.light.anchor];
-    return { map: of(await app.map.getStyle()), editor: of(app.editor.style),
+    return { map: of(await app.map.getStyle()),
       checked: document.querySelector('#options [data-option="light"] [aria-checked="true"]')?.dataset.value,
       light: new URLSearchParams(location.search).get("light") };
   });
-  const all = (anchor) => ({ map: [anchor, anchor], editor: [anchor, anchor], checked: anchor,
+  const all = (anchor) => ({ map: [anchor, anchor], checked: anchor,
     light: anchor === "map" ? null : anchor });
   await settles(page, anchors, all("viewport"), "&light=viewport applies as the style loads");
   await openOptions(page);
@@ -775,17 +747,15 @@ async function light(browser, server) {
   await page.keyboard.press("ArrowRight");
   await settles(page, anchors, all("viewport"), "the arrow keys choose the viewport");
   assert.equal(await page.evaluate(() => document.activeElement?.dataset.value), "viewport", "focus follows the choice");
-  // The editor's Reset returns to the style as loaded (with &light), and the switch follows it.
+  // And back.
   await page.keyboard.press("ArrowLeft");
   await settles(page, anchors, all("map"), "the arrow keys choose the map");
-  await page.locator(".editor-head .text-button").click();
-  await settles(page, anchors, all("viewport"), "Reset returns to the style as loaded");
   await page.evaluate(() => app.show("tokyo"));
   await page.waitForFunction(() => app.scene === "tokyo" && !document.querySelector('#options [data-option="light"]'));
   assert.equal(new URL(page.url()).searchParams.has("light"), false, "another entry drops &light");
   assert.deepEqual(errors, []);
   await page.close();
-  console.log("light: &light, the switch, the editor and another entry agree on the anchor");
+  console.log("light: &light, the switch and another entry agree on the anchor");
 }
 
 async function terrain(browser, server) {
@@ -794,16 +764,16 @@ async function terrain(browser, server) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
-  await page.goto(`${server.url}?style=alps&edit`);
+  await page.goto(`${server.url}?style=alps`);
   const toggle = option(page, "terrain");
-  await page.waitForFunction(() => app.options.values && app.editor.style, null, { timeout: 60_000 });
-  // Whether the map's style and the editor's have terrain, the switch, and the URL.
+  await page.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
+  // Whether the map's style has terrain, the switch, and the URL.
   const state = () => page.evaluate(async () => ({
-    map: Boolean((await app.map.getStyle()).terrain), editor: Boolean(app.editor.style?.terrain),
+    map: Boolean((await app.map.getStyle()).terrain),
     checked: document.querySelector('#options [data-option="terrain"]').getAttribute("aria-checked"),
     terrain: new URLSearchParams(location.search).get("terrain") }));
-  const on = { map: true, editor: true, checked: "true", terrain: null };
-  const off = { map: false, editor: false, checked: "false", terrain: "0" };
+  const on = { map: true, checked: "true", terrain: null };
+  const off = { map: false, checked: "false", terrain: "0" };
   await settles(page, state, on, "the Alps draw their terrain by default, with no &terrain");
   // A page that reloads loses this.
   await page.evaluate(() => { window.stayed = true; });
@@ -815,7 +785,7 @@ async function terrain(browser, server) {
   await settles(page, state, on, "the keyboard puts the style's terrain back, and the URL drops &terrain");
   assert.ok(await page.evaluate(() => window.stayed === true), "the switch edits the style without a reload");
   // &terrain=0 applies as the style loads.
-  await page.goto(`${server.url}?style=alps&terrain=0&edit`);
+  await page.goto(`${server.url}?style=alps&terrain=0`);
   await page.waitForFunction(() => app.options.values, null, { timeout: 60_000 });
   await settles(page, state, off, "&terrain=0 applies as the style loads");
   await openOptions(page);
@@ -826,7 +796,7 @@ async function terrain(browser, server) {
   assert.equal(new URL(page.url()).searchParams.has("terrain"), false, "another entry drops &terrain");
   assert.deepEqual(errors, []);
   await page.close();
-  console.log("terrain: the switch, &terrain, the editor and another entry agree, with no reload");
+  console.log("terrain: the switch, &terrain and another entry agree, with no reload");
 }
 
 /** The Globe entry offline: Protomaps Light stood in for by the Tokyo extract's style, with a buildings layer to extrude. */
@@ -1526,7 +1496,7 @@ async function readback(browser, server) {
 const CHECKS = {
   scenario,
   edits,
-  editor,
+  playground,
   switching,
   light,
   terrain,

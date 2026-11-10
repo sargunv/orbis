@@ -52,7 +52,7 @@ sprites once served.
   attributed, fetched only as the map shows them, with the browser's
   referrer. Written for this repository.
 - `playground.json`: a made-up Tokyo district drawn with hover state, the
-  style editor's end-to-end check (`pnpm -C web e2e --only=editor`) and
+  map app's `playground` end-to-end check (`pnpm -C web e2e --only=playground`) and
   `orb-runtime`'s edit tests draw; written for this repository. No picker
   entry shows it.
 - Labels: `sprites/` is OpenFreeMap's Liberty sprite (`ofm_f384/ofm`, 1× and

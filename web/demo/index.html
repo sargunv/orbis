@@ -11,7 +11,6 @@
 </head>
 <body>
 <div class="app" id="app" data-map="loading">
-  <aside class="editor" id="editor" aria-label="Style editor" hidden></aside>
   <main class="stage" id="stage">
     <div class="map" id="map"></div>
     <div class="corner top-left">
@@ -53,9 +52,6 @@
   <button type="button" class="menu-item" id="compare-toggle" role="switch" aria-checked="false" disabled>
     <span class="menu-text"><span>Compare engines</span><span class="menu-note">Orbis, GL JS or MapLibre Native on each side</span></span><span class="switch" aria-hidden="true"></span>
   </button>
-  <button type="button" class="menu-item" id="edit-toggle" role="switch" aria-checked="false" aria-controls="editor">
-    <span class="menu-text"><span>Style editor</span><span class="menu-note">Layers, paint and JSON; click a feature to inspect it</span></span><span class="switch" aria-hidden="true"></span>
-  </button>
   <button type="button" class="menu-item" id="picture-button"><span>Save as image</span></button>
   <button type="button" class="menu-item" id="offline-button"><span>Offline areas</span></button>
   <button type="button" class="menu-item" id="about-button"><span>About Orbis</span></button>
@@ -71,7 +67,6 @@
     <li><span>Pan</span><span>Drag, or the arrow keys</span></li>
     <li><span>Zoom</span><span>Scroll, pinch, double-click, or + and −</span></li>
     <li><span>Rotate and tilt</span><span>Right-drag, Ctrl-drag, or two fingers</span></li>
-    <li><span>Inspect</span><span>In the style editor (in the ⋯ menu), click or tap a feature</span></li>
   </ul>
   <p class="about-links"><a href="https://github.com/sargunv/orbis">Source code on GitHub</a></p>
   <p class="build" id="build"></p>

@@ -1,14 +1,13 @@
 // The map app: Orbis drawing a picked style full-bleed through the
 // `orbis` package, with the map options panel (the style's switches,
-// app/options.js), a style editor in the ⋯ menu (and, while it's open,
-// feature popups and highlights through feature state), and a debug
-// overlay. One map shows every entry: picking one sets its style on the
-// map, which diffs from the one before, so shared sources keep their tiles
-// and paint eases by the style's transition.
+// app/options.js) and a debug overlay. One map shows every entry: picking
+// one sets its style on the map, which diffs from the one before, so
+// shared sources keep their tiles and paint eases by the style's
+// transition.
 //
 // URL: `?style=<key|url>` (styles.js), `&flight` (fly an entry's looping
 // flight; without it the map stays put and settles),
-// `&debug`, `&edit`, `&compare[=<left>,<right>]` (two engines' maps of
+// `&debug`, `&compare[=<left>,<right>]` (two engines' maps of
 // the style side by side, Orbis and GL JS by default, app/compare.js),
 // the map options that differ from the entry's own (`&terrain=1`,
 // `&light=map`, `&shadows=0`, `&projection=mercator`, …, app/options.js),
@@ -20,13 +19,10 @@ import { DEFAULT_SCENE, GROUPS, LIVE_CAMERA, sceneFor, sceneStyle, sceneUrl } fr
 import { expose, hashCamera } from "./expose.js";
 import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
-import { editor as createEditor } from "./app/editor.js";
-import { Highlighter, targetOf } from "./app/highlight.js";
 import { hud as createHud } from "./app/hud.js";
 import { mapOptions, OPTION_PARAMS } from "./app/options.js";
 import { picker as createPicker } from "./app/picker.js";
 import { offline as createOffline } from "./app/offline.js";
-import { featurePopup } from "./app/popup.js";
 
 const app = document.getElementById("app");
 const container = document.getElementById("map");
@@ -35,8 +31,6 @@ const params = () => new URLSearchParams(location.search);
 
 let map;
 let current;
-let popup;
-let highlighter;
 /** Bumped on every switch: a flight or camera move for an older entry stops. */
 let switches = 0;
 /** A switched-to style is on its way: the map reads as loading, not idle, until it arrives. */
@@ -98,7 +92,6 @@ function setParam(name, value) {
   else query.delete(name);
   history.replaceState(history.state, "", `${location.pathname}${searchOf(query)}${location.hash}`);
 }
-const setFlag = (name, on) => setParam(name, on);
 
 // The chrome.
 const attributionControl = attribution();
@@ -111,40 +104,18 @@ const compare = comparison({
   },
   beforeReload: () => writeHash(),
 });
-const options = mapOptions({ params, setParam, onEdited: () => void editor.refresh() });
-const editor = createEditor({
-  onClose: () => setEditing(false),
-  onReplaced: () => { highlighter?.reset(); clearPopup(); options.refreshSoon(); },
-  onEdited: () => options.refreshSoon(),
-});
+const options = mapOptions({ params, setParam });
 /** Whether `&terrain` asks for terrain: true, false, or null for the entry's default. */
 function wantedTerrain() {
   const value = params().get("terrain");
   return value === "1" ? true : value === "0" ? false : null;
 }
 
-/** Opens or closes the style editor; feature popups and highlights live only while it's open. */
-const editToggle = document.getElementById("edit-toggle");
-function setEditing(on) {
-  app.classList.toggle("editing", on);
-  editor.show(on);
-  editToggle.setAttribute("aria-checked", String(on));
-  setFlag("edit", on);
-  if (!on) {
-    clearPopup();
-    void highlighter?.set("hover", null);
-    editor.inspect(null);
-    if (map) map.canvas.style.cursor = "";
-    document.getElementById("menu-button").focus({ preventScroll: true });
-  }
-}
-editToggle.addEventListener("click", () => { menu.hidePopover(); setEditing(!editor.open); });
-
 const debugToggle = document.getElementById("debug-toggle");
 function setDebug(on) {
   hudControl.visible = on;
   debugToggle.setAttribute("aria-checked", String(on));
-  setFlag("debug", on);
+  setParam("debug", on);
 }
 debugToggle.addEventListener("click", () => setDebug(debugToggle.getAttribute("aria-checked") !== "true"));
 
@@ -221,12 +192,6 @@ function showCompass() {
   compass.style.setProperty("--pitch", `${pitch * 0.7}deg`);
 }
 
-function clearPopup() {
-  popup?.remove();
-  popup = undefined;
-  void highlighter?.set("selected", null);
-}
-
 const projectionOf = (scene) => scene.projection ?? { type: "mercator" };
 
 /**
@@ -277,7 +242,6 @@ function go(next, { camera, history: mode = "push" } = {}) {
     return;
   }
   compare.attach(undefined, next.scene);
-  clearPopup();
   say(`Loading ${next.scene.name}…`);
   styleLoading = true;
   options.loading();
@@ -339,18 +303,16 @@ async function load(next, { camera }) {
   }
   map = created;
   expose(map);
-  highlighter = new Highlighter(map, () => editor.style);
   map.on("error", ({ message }) => {
     console.error(message);
     if (app.dataset.map === "loading" || toast.textContent.startsWith("Loading")) say(message, { error: true });
   });
   // Each style, the first and those switched to: the entry's projection and
-  // sky (unless it restyles, which put them in the style), then the editor,
+  // sky (unless it restyles, which put them in the style), then the options,
   // attribution and comparison read it.
   map.on("styleload", async () => {
     const { scene } = current;
     styleLoading = false;
-    highlighter.reset();
     const loaded = await map.getStyle();
     styleSky = loaded.sky ?? null;
     if (!scene.restyle && (scene.projection || scene.sky)) {
@@ -368,8 +330,7 @@ async function load(next, { camera }) {
       terrain: scene.terrain === true ? loaded.terrain ?? null : scene.terrain ?? null,
     };
     await options.attach(map, { ...designed, scene });
-    await editor.attach(map);
-    attributionControl.update(editor.style);
+    attributionControl.update(loaded);
     compare.attach(map, scene);
   });
   map.on("load", () => { if (!toast.classList.contains("error")) say(""); });
@@ -377,7 +338,6 @@ async function load(next, { camera }) {
   map.on("render", (ack) => {
     app.dataset.map = styleLoading ? "loading" : ack.idle ? "idle" : "drawing";
     hudControl.frame(ack);
-    editor.frame(ack);
     showCompass();
   });
   map.on("moveend", writeHash);
@@ -402,31 +362,14 @@ async function load(next, { camera }) {
         Number(query.get("lose")) || 0);
     });
   }
-  wireFeatures(map);
+  hoverNames(map);
   // From the style's own camera, which it adopts as it loads.
   const switched = switches;
   const loaded = map.on("styleload", () => { loaded(); startFlight(switched); });
 }
 
-/**
- * While the style editor is open: popups and a highlight on click, hover
- * state, a pointer cursor over features. Otherwise a click or tap is only a
- * gesture; the debug overlay still names the feature under the pointer.
- */
-function wireFeatures(target) {
-  target.on("click", async ({ point, lngLat }) => {
-    clearPopup();
-    if (!editor.open) return;
-    const [feature] = await target.queryRenderedFeatures(point);
-    if (!feature || !lngLat) return;
-    const element = featurePopup(feature, {
-      onClose: clearPopup,
-      onEdit: (layer) => { setEditing(true); editor.reveal(layer); },
-    });
-    popup = target.annotations.add({ element, lngLat, anchor: "bottom", offset: [0, -14] });
-    const selected = feature.id !== undefined && targetOf({ ...feature, sourceLayer: feature.sourceLayer ?? null }, editor.style);
-    await highlighter?.set("selected", selected || null);
-  });
+/** While the debug overlay shows, it names the feature under the pointer. */
+function hoverNames(target) {
   let pointer;
   let busy = false;
   const hover = async () => {
@@ -436,13 +379,9 @@ function wireFeatures(target) {
       while (pointer !== undefined) {
         const point = pointer;
         pointer = undefined;
-        if (!editor.open && !hudControl.visible) continue;
+        if (!hudControl.visible) continue;
         const hit = point && await target.hitTest(point);
         hudControl.hover(hit ? `${hit.layer}${hit.id !== null ? ` #${hit.id}` : ""}` : "");
-        if (!editor.open) continue;
-        target.canvas.style.cursor = hit ? "pointer" : "";
-        editor.inspect(hit);
-        await highlighter.set("hover", targetOf(hit, editor.style));
       }
     } finally { busy = false; }
   };
@@ -455,8 +394,7 @@ function wireFeatures(target) {
 }
 
 // Hooks for the headless checks and the console.
-window.app = { get map() { return map; }, editor, compare, options, get scene() { return current?.scene.key; },
-  get popup() { return popup; },
+window.app = { get map() { return map; }, compare, options, get scene() { return current?.scene.key; },
   /** Switches to `style`, a catalogue key or a style URL, as picking an entry does. */
   show(style) { go(sceneFor(new URLSearchParams({ style }))); } };
 
@@ -464,7 +402,6 @@ window.app = { get map() { return map; }, editor, compare, options, get scene() 
 const start = params();
 setDebug(start.has("debug"));
 compare.want(parsePair(start.get("compare")));
-if (start.has("edit")) setEditing(true);
 {
   const camera = hashCamera();
   let first;

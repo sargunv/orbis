@@ -17,30 +17,6 @@ function commit() {
   return { sha, short: git("rev-parse", "--short", sha), dirty: git("status", "--porcelain") !== "" };
 }
 
-// `virtual:paint-spec`: each layer type's paint properties from the v8
-// spec (the style editor's controls), as [name, type, default, minimum,
-// maximum, units, enum values].
-function paintSpec() {
-  const id = "virtual:paint-spec";
-  return {
-    name: "paint-spec",
-    resolveId: (source) => (source === id ? `\0${id}` : undefined),
-    async load(source) {
-      if (source !== `\0${id}`) return;
-      const require = createRequire(import.meta.url);
-      const spec = require("@maplibre/maplibre-gl-style-spec/dist/latest.json");
-      const types = {};
-      for (const [key, props] of Object.entries(spec)) {
-        if (!key.startsWith("paint_")) continue;
-        types[key.slice("paint_".length)] = Object.entries(props).map(([name, p]) =>
-          [name, p.type, p.default ?? null, p.minimum ?? null, p.maximum ?? null, p.units ?? null,
-            p.type === "enum" ? Object.keys(p.values) : null]);
-      }
-      return `export default ${JSON.stringify(types)};`;
-    },
-  };
-}
-
 // Vite handles JS, workers and wasm. JSON's pmtiles:// strings aren't JS
 // imports: emit the archives first and include their hashed URLs in each
 // emitted style, so a change to either also changes the style's hash.
@@ -141,7 +117,7 @@ export default defineConfig({
   resolve: { alias: { orbis: fileURLToPath(new URL("./src/index.ts", import.meta.url)) } },
   server: { fs: { allow: [web] } },
   define: { __ORBIS_COMMIT__: JSON.stringify(commit()) },
-  plugins: [extractStyles(), paintSpec(), fixedFiles()],
+  plugins: [extractStyles(), fixedFiles()],
   // The comparison imports GL JS and MapLibre Native on demand; bundling
   // them up front saves the dev server a reload when one first opens.
   optimizeDeps: { include: ["maplibre-gl", "pmtiles", "@maplibre/native-ffi"] },

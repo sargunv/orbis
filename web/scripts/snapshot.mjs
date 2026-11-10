@@ -89,7 +89,7 @@ try {
   });
   console.log(`${stats} (${Date.now() - started} ms)`);
   await page.screenshot({ path: out });
-  await page.locator(".corner, .attribution, .toast, .demo-annotation").evaluateAll((elements) => {
+  await page.locator(".corner, .attribution, .toast").evaluateAll((elements) => {
     for (const element of elements) element.style.visibility = "hidden";
   });
   const pixels = await page.locator("#map").screenshot({ path: out.replace(/\.png$/, "-map.png") });

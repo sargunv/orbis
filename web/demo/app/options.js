@@ -9,14 +9,12 @@
 // designs it, before the URL's choices, is what each option's default and
 // its "on" read from.
 import { h } from "./dom.js";
-import { HIGHLIGHT_PREFIX } from "./highlight.js";
 
 const COLOR_SPACE = "dev.sargunv.orbis:color-space";
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
 const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map((p) => `fill-extrusion-ambient-occlusion-${p}`);
 
-const own = (style) => style.layers.filter((l) => !l.id.startsWith(HIGHLIGHT_PREFIX));
-const ofType = (style, type) => own(style).filter((l) => l.type === type);
+const ofType = (style, type) => style.layers.filter((l) => l.type === type);
 const visible = (layer) => layer.layout?.visibility !== "none";
 /** Whether a number property as written (a number or an expression) is on: not zero, `fallback` for unset. */
 const nonzero = (value, fallback) => (value ?? fallback) !== 0;
@@ -98,7 +96,7 @@ export const OPTIONS = [
     supported: ({ designed }) => occluded(designed).length > 0,
     read: (style) => occluded(style).length > 0,
     apply(tx, on, { style, designed }) {
-      const present = new Set(own(style).map((l) => l.id));
+      const present = new Set(style.layers.map((l) => l.id));
       for (const layer of occluded(designed).filter((l) => present.has(l.id))) {
         for (const name of AMBIENT_OCCLUSION) {
           if (layer.paint[name] !== undefined) tx.setPaintProperty(layer.id, name, on ? layer.paint[name] : 0);
@@ -141,10 +139,9 @@ function decode(option, text) {
 
 /**
  * The panel and its button. `params()` reads the URL's query and
- * `setParam(name, value)` writes one (null removes it); `onEdited()` runs
- * after each edit the panel makes.
+ * `setParam(name, value)` writes one (null removes it).
  */
-export function mapOptions({ params, setParam, onEdited }) {
+export function mapOptions({ params, setParam }) {
   const panel = document.getElementById("options");
   const body = document.getElementById("options-body");
   let map;
@@ -156,7 +153,6 @@ export function mapOptions({ params, setParam, onEdited }) {
   let ready = false;
   /** Edits in flight: a re-read waits for them, so it doesn't show a choice undone. */
   let editing = 0;
-  let reread = 0;
   /**
    * The panel's edits, one at a time: each reads the style as the one
    * before left it, as some write a whole root property (the light) or
@@ -268,7 +264,6 @@ export function mapOptions({ params, setParam, onEdited }) {
       if (picked === generation) await set(option, value, await map.getStyle());
     });
     await refresh();
-    onEdited();
   }
 
   /** Reads every option's value from the map's style into the panel and the URL. */
@@ -314,10 +309,6 @@ export function mapOptions({ params, setParam, onEdited }) {
       if (attached !== generation) return;
       ready = true;
       await refresh();
-    },
-    /** Re-reads the style after an edit made elsewhere (the style editor's), at most once a frame. */
-    refreshSoon() {
-      reread ||= requestAnimationFrame(() => { reread = 0; void refresh(); });
     },
     /** Each available option's value, for the headless checks. */
     get values() { return ready ? { ...values } : null; },

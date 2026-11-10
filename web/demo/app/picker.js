@@ -28,8 +28,7 @@ export function picker(groups, { onPick }) {
     h("h3", {}, group.name),
     h("ul", { class: "scene-list" }, group.scenes.map(option)))));
 
-  // On wide screens the sheet opens under the button, wherever the editor
-  // has moved it.
+  // On wide screens the sheet opens under the button.
   popover.addEventListener("beforetoggle", (e) => {
     if (e.newState !== "open") return;
     const rect = button.getBoundingClientRect();

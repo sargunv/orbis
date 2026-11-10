@@ -6,8 +6,8 @@
 // others jump to its camera, so they don't echo each other's moves. The
 // other maps take Orbis's style as it stands (the entry's projection and
 // sky applied, less Orbis's preview properties, for which GL JS's
-// validation refuses the whole style) and follow its edits: the style
-// editor's and the map options'.
+// validation refuses the whole style) and follow its edits, the map
+// options'.
 //
 // An engine loads only when a side picks it. Each is a module with a
 // `label` and `open(container, { style, camera, constraints })`, which
@@ -16,7 +16,6 @@
 // can't show an entry, `once` why it can't draw both sides, and `isolated`
 // that it needs a cross-origin isolated page (isolation.js).
 import { h } from "./dom.js";
-import { HIGHLIGHT_PREFIX } from "./highlight.js";
 import { isolate, isolated } from "./isolation.js";
 
 const ENGINES = {
@@ -129,7 +128,7 @@ function show(map, scene, pair, { isolating, onPick }) {
     const now = await map.getStyle();
     const sky = without(now.sky, PREVIEWS.sky);
     const light = without(now.light, PREVIEWS.light);
-    const layers = now.layers.filter((l) => !l.id.startsWith(HIGHLIGHT_PREFIX)).map((l) => ({
+    const layers = now.layers.map((l) => ({
       ...l,
       ...(l.paint && { paint: without(l.paint, PREVIEWS.paint) }),
       ...(l.layout && { layout: without(l.layout, PREVIEWS.layout) }),
