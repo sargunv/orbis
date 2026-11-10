@@ -124,6 +124,8 @@ orb-web = { path = "crates/orb-web" }
 # draws holding hidden slots. And a D3D12 pipeline cache: DXC's (or FXC's)
 # output by a SHA-256 of the compiler, its arguments and the HLSL, which
 # the runtime keeps in its state directory as it keeps Vulkan's (#141).
+# And Vulkan destroying a failed pipeline's temporary shader modules
+# (VUID-vkDestroyDevice-device-05137, #141); orb-hal-wgpu's `leaks` test.
 # Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
