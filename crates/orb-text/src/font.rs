@@ -70,12 +70,6 @@ impl Face {
     }
 }
 
-/// Whether the face at `index` of `bytes` maps `c` to a glyph, without
-/// loading it.
-pub fn covers(bytes: &[u8], index: u32, c: char) -> bool {
-    FontRef::from_index(bytes, index).is_ok_and(|f| f.charmap().map(c).is_some())
-}
-
 /// FNV-1a over the bytes and face index.
 fn hash(bytes: &[u8], index: u32) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
