@@ -795,9 +795,6 @@ impl OrbisMap {
         height: u32,
         pixels: Vec<u8>,
     ) -> Result<(), JsError> {
-        if pixels.len() != width as usize * height as usize * 4 {
-            return Err(JsError::new("pixels aren't width × height RGBA8"));
-        }
         let frame = orb_runtime::TileImage {
             width,
             height,

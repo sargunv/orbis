@@ -352,11 +352,6 @@ impl Map {
         height: u32,
         pixels: Vec<u8>,
     ) -> Result<(), Error> {
-        if pixels.len() != width as usize * height as usize * 4 {
-            return Err(Error::InvalidArgument(
-                "pixels aren't width × height RGBA8".into(),
-            ));
-        }
         self.dirty = true;
         let frame = orb_runtime::TileImage {
             width,

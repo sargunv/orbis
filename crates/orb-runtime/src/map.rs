@@ -2621,8 +2621,14 @@ impl Map {
 
     /// The picture video or canvas source `id` shows now, straight-alpha
     /// RGBA rows, top first, or an image the host registered with the GPU;
-    /// it replaces any frame not yet drawn.
+    /// it replaces any frame not yet drawn. An error for core pixels that
+    /// aren't `width × height` RGBA8.
     pub fn source_frame(&mut self, id: &str, frame: crate::TileImage) -> Result<(), String> {
+        if let crate::ImagePixels::Core(pixels) = &frame.pixels
+            && pixels.len() != frame.width as usize * frame.height as usize * 4
+        {
+            return Err("pixels aren't width × height RGBA8".into());
+        }
         let plan = self.style.as_ref().map(|s| s.worker.plan());
         self.videos.sync(plan, &mut self.events.queue);
         self.videos.frame(id, frame)?;
@@ -3107,6 +3113,14 @@ mod gpu_tests {
         map.control_video("v", VideoRequest::Pause).unwrap();
         assert!(map.control_video("w", VideoRequest::Play).is_err());
         assert!(map.source_frame("w", frame([0; 4])).is_err());
+        let short = TileImage {
+            pixels: ImagePixels::Core(vec![0; 4]),
+            ..frame([0; 4])
+        };
+        assert!(
+            map.source_frame("v", short).is_err(),
+            "a frame of too few pixels"
+        );
         assert_eq!(requests(&mut map), [("v".into(), VideoRequest::Pause)]);
         // Removing the source closes it.
         let remove = r#"[["removeLayer", "v"], ["removeSource", "v"]]"#;
