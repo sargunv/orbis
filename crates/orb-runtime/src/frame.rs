@@ -678,7 +678,10 @@ impl Map {
             layout.generation,
             crate::paint::camera_inputs(self.camera.state()),
         );
-        crate::paint::drape(gpu, renderer, (style, plan), &zooms, at, atlas);
+        // Draped paint eases as the rest does.
+        let overlay = style.paint.overlay.clone();
+        let eased = overlay.as_deref().unwrap_or(plan);
+        crate::paint::drape(gpu, renderer, (style, eased), &zooms, at, atlas);
         let images_revision = atlas.revision();
         drop(images);
         let draped: Vec<usize> = (0..style.sources.len())

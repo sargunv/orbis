@@ -36,6 +36,9 @@ pub(crate) struct PaintState {
     drape: DrapePaint,
     /// The camera inputs paint that reads the camera was written at.
     camera: Option<CameraInputs>,
+    /// This frame's plan with its transitions eased in, which the drape
+    /// paints from too; `None` with nothing easing.
+    pub(crate) overlay: Option<Arc<StylePlan>>,
 }
 
 impl PaintState {
@@ -121,11 +124,14 @@ pub(crate) fn frame(
         });
     // Paint transitions write from the style overlaid with their eased
     // values, and once more when they end.
-    let overlay = transitions.overlay(plan, zoom, now);
+    let overlay = transitions.overlay(plan, zoom, now).map(Arc::new);
     if overlay.is_some() || std::mem::take(&mut transitions.ran) {
         style.paint.invalidate();
+        // Draped paint eases alike: its zooms are draped again.
+        style.paint.drape.painted.clear();
     }
-    let plan = overlay.as_ref().unwrap_or(plan);
+    style.paint.overlay = overlay.clone();
+    let plan = overlay.as_deref().unwrap_or(plan);
     let missing = write_paint(
         gpu,
         renderer,
