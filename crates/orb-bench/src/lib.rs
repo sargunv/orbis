@@ -44,17 +44,41 @@ pub const TOKYO: (f64, f64) = (139.74, 35.685);
 /// The Alps terrain style's view over the Valais Alps: Zermatt and the
 /// Matterhorn, as `web/demo/data/alps-flight.json` ends.
 pub const ALPS: (f64, f64) = (7.7491, 46.0207);
-/// Name, zoom, pitch, and whether the style gains [`BUILDINGS_3D`].
-const VIEWS: &[(&str, f64, f64, bool)] = &[
-    ("z12", 12.0, 0.0, false),
-    ("z15", 15.0, 0.0, false),
-    ("z15 pitch 60", 15.0, 60.0, false),
-    ("z17", 17.0, 0.0, false),
-    ("z16 pitch 60, 3D buildings", 16.0, 60.0, true),
+/// Name, zoom, pitch, and the buildings the style gains.
+const VIEWS: &[(&str, f64, f64, Buildings)] = &[
+    ("z12", 12.0, 0.0, Buildings::None),
+    ("z15", 15.0, 0.0, Buildings::None),
+    ("z15 pitch 60", 15.0, 60.0, Buildings::None),
+    ("z17", 17.0, 0.0, Buildings::None),
+    ("z16 pitch 60, 3D buildings", 16.0, 60.0, Buildings::Plain),
+    (
+        "z16 pitch 60, 3D buildings, shadows and AO",
+        16.0,
+        60.0,
+        Buildings::Lit,
+    ),
 ];
+/// The 3D buildings a view adds to the style.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Buildings {
+    None,
+    /// Liberty's extrusions, [`BUILDINGS_3D`].
+    Plain,
+    /// Those with style-spec#1797's shadows and #1796's ambient occlusion
+    /// ([`SHADOWS_AND_OCCLUSION`]).
+    Lit,
+}
 /// OpenFreeMap Liberty's extrusion layer, which the reduced style leaves
 /// out, added before the labels.
 const BUILDINGS_3D: &str = r#"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles", "source-layer": "building", "minzoom": 14, "filter": ["!", ["has", "hide_3d"]], "paint": {"fill-extrusion-base": ["get", "render_min_height"], "fill-extrusion-color": "hsl(35,8%,85%)", "fill-extrusion-height": ["get", "render_height"], "fill-extrusion-opacity": 0.8}}"#;
+/// The edit lighting Liberty's extrusions (`building-3d`) as the demo's
+/// Globe entry does: shadows from v8's default light, and occlusion along
+/// the walls' feet and on the ground.
+pub const SHADOWS_AND_OCCLUSION: &str = r#"[
+    ["setLight", {"anchor": "viewport", "position": [1.15, 210, 30], "intensity": 0.5, "shadow-intensity": 0.35}],
+    ["setPaintProperty", "building-3d", "fill-extrusion-ambient-occlusion-wall-intensity", 0.5],
+    ["setPaintProperty", "building-3d", "fill-extrusion-ambient-occlusion-ground-intensity", 0.4]
+]"#;
 /// How long a view may take to load.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// The zoom step a nudged frame takes, as mln-rs's still bench.
@@ -125,7 +149,7 @@ pub struct View {
     pub pitch: f64,
     pub bearing: f64,
     /// Whether the style gains Liberty's extrusions first.
-    pub buildings: bool,
+    pub buildings: Buildings,
     /// The settings' viewport when `None`.
     pub size: Option<ViewSize>,
 }
@@ -240,7 +264,7 @@ impl Settings {
                     zoom,
                     pitch,
                     bearing,
-                    buildings: false,
+                    buildings: Buildings::None,
                     size: None,
                 });
             }
@@ -369,7 +393,7 @@ fn parse_views(text: &str, path: &str, style: &str) -> Result<Vec<View>, String>
             zoom,
             pitch,
             bearing,
-            buildings: false,
+            buildings: Buildings::None,
             size: Some(ViewSize {
                 width: width as u32,
                 height: height as u32,
@@ -487,8 +511,17 @@ pub fn run(
             None => map.insert(new_map(runtime, style, camera)),
         };
         settle(map, target, &mut warnings)?;
-        if view.buildings {
-            let tx = orb_api::Transaction::from_commands(&add_buildings(map)?)?;
+        // The map carries on from the view before, which may have added
+        // the buildings already.
+        if view.buildings != Buildings::None
+            && let Some(edit) = add_buildings(map)?
+        {
+            let tx = orb_api::Transaction::from_commands(&edit)?;
+            map.edit(&tx).map_err(|e| e.to_string())?;
+            settle(map, target, &mut warnings)?;
+        }
+        if view.buildings == Buildings::Lit {
+            let tx = orb_api::Transaction::from_commands(SHADOWS_AND_OCCLUSION)?;
             map.edit(&tx).map_err(|e| e.to_string())?;
             settle(map, target, &mut warnings)?;
         }
@@ -562,20 +595,22 @@ pub fn run(
     }))
 }
 
-/// The edit adding Liberty's extrusions beneath its labels.
-fn add_buildings(map: &Map) -> Result<String, String> {
+/// The edit adding Liberty's extrusions beneath its labels, unless the
+/// style has them.
+fn add_buildings(map: &Map) -> Result<Option<String>, String> {
     let style: serde_json::Value =
         serde_json::from_str(&map.style_json().ok_or("no style")?).map_err(|e| e.to_string())?;
-    let before = style["layers"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let layers = || style["layers"].as_array().into_iter().flatten();
+    if layers().any(|l| l["id"] == "building-3d") {
+        return Ok(None);
+    }
+    let before = layers()
         .find(|l| l["type"] == "symbol")
         .map(|l| l["id"].clone());
-    Ok(match before {
+    Ok(Some(match before {
         Some(before) => format!("[[\"addLayer\", {BUILDINGS_3D}, {before}]]"),
         None => format!("[[\"addLayer\", {BUILDINGS_3D}]]"),
-    })
+    }))
 }
 
 fn view_result(name: &str, size: (u32, u32), mut s: Samples) -> ViewResult {

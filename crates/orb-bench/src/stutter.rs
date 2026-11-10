@@ -5,7 +5,8 @@
 //! each stage's per-frame times.
 //!
 //! The scenarios: Liberty's 3D buildings over Manhattan, zooming z12 → z16
-//! at pitch 60 and panning on across new ground; the Alps terrain style's fast
+//! at pitch 60 and panning on across new ground, plain and then with
+//! style-spec#1797's shadows and #1796's ambient occlusion; the Alps terrain style's fast
 //! turns and its flight (`web/demo/data/alps.json`); and Liberty on the
 //! globe, zooming from the whole world onto Tokyo. Each starts cold from
 //! its first camera at rest and runs at a 60 Hz pace, as the gestures bench
@@ -55,13 +56,26 @@ enum Style {
 struct Scenario {
     name: &'static str,
     style: Style,
-    /// Liberty on the globe projection.
-    globe: bool,
+    /// An edit to the style once it loaded: the globe projection, or the
+    /// buildings' shadows and ambient occlusion.
+    edit: Option<&'static str>,
     /// Frames the path takes; a flight takes its legs instead.
     frames: usize,
     /// The camera at `f` in `0..=1`; a flight's first camera.
     camera: fn(f64) -> CameraState,
     flight: bool,
+}
+
+/// 5 s zooming in over Midtown at pitch 60, 5 s panning down the avenues.
+fn manhattan(f: f64) -> CameraState {
+    let (lon, lat) = MANHATTAN;
+    let zoom = lerp(12.0, 16.0, ease((2.0 * f).min(1.0)));
+    let pan = (2.0 * f - 1.0).clamp(0.0, 1.0);
+    let (lon, lat) = (
+        lerp(lon, MANHATTAN_SOUTH.0, pan),
+        lerp(lat, MANHATTAN_SOUTH.1, pan),
+    );
+    camera(lon, lat, zoom, 29.0, 60.0)
 }
 
 fn camera(lon: f64, lat: f64, zoom: f64, bearing: f64, pitch: f64) -> CameraState {
@@ -85,25 +99,23 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "buildings: zoom z12 → z16 at pitch 60, then pan, Manhattan",
         style: Style::Liberty,
-        globe: false,
+        edit: None,
         frames: 600,
-        // 5 s zooming in over Midtown, 5 s panning down the avenues.
-        camera: |f| {
-            let (lon, lat) = MANHATTAN;
-            let zoom = lerp(12.0, 16.0, ease((2.0 * f).min(1.0)));
-            let pan = (2.0 * f - 1.0).clamp(0.0, 1.0);
-            let (lon, lat) = (
-                lerp(lon, MANHATTAN_SOUTH.0, pan),
-                lerp(lat, MANHATTAN_SOUTH.1, pan),
-            );
-            camera(lon, lat, zoom, 29.0, 60.0)
-        },
+        camera: manhattan,
+        flight: false,
+    },
+    Scenario {
+        name: "buildings, shadows and AO: zoom z12 → z16 at pitch 60, then pan, Manhattan",
+        style: Style::Liberty,
+        edit: Some(crate::SHADOWS_AND_OCCLUSION),
+        frames: 600,
+        camera: manhattan,
         flight: false,
     },
     Scenario {
         name: "terrain: fast turns at z11.6, pitch 80, Alps",
         style: Style::Alps,
-        globe: false,
+        edit: None,
         frames: 360,
         camera: |f| {
             camera(
@@ -119,7 +131,7 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "terrain: the Alps flight",
         style: Style::Alps,
-        globe: false,
+        edit: None,
         frames: 0,
         camera: |_| camera(crate::ALPS.0, crate::ALPS.1, 11.6, -32.0, 72.0),
         flight: true,
@@ -127,7 +139,7 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "globe: zoom z1.5 → z13 onto Tokyo",
         style: Style::Liberty,
-        globe: true,
+        edit: Some(r#"[["setProjection", {"type": "globe"}]]"#),
         frames: 480,
         camera: |f| {
             let e = ease(f);
@@ -257,9 +269,8 @@ pub(crate) fn run(
         let epoch = clock::now();
         frame(&mut map, &mut target, 0.0)?;
         settle(&mut map, &mut target, &mut warnings)?;
-        if scenario.globe {
-            let tx =
-                orb_api::Transaction::from_commands(r#"[["setProjection", {"type": "globe"}]]"#)?;
+        if let Some(edit) = scenario.edit {
+            let tx = orb_api::Transaction::from_commands(edit)?;
             map.edit(&tx).map_err(|e| e.to_string())?;
             settle(&mut map, &mut target, &mut warnings)?;
         }

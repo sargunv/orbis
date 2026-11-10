@@ -74,7 +74,7 @@ pub(crate) fn run(
             drop(fresh);
             warm.push(load(runtime, style, camera, size, &mut warnings)?);
         }
-        let name = if view.buildings {
+        let name = if view.buildings != crate::Buildings::None {
             format!("{} (without them)", view.name)
         } else {
             view.name
