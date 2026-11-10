@@ -2,8 +2,10 @@
 // Shared with the build script, which reflects the shaders' uniforms.
 pub(crate) const TYPES: &str = wgsl!("types");
 const PROJECT: &str = wgsl!("project");
-/// Draw pipelines' helpers, and `fetch`: their reads of the scene's tables.
+/// Draw pipelines' helpers, `builtins` and `fetch`: their reads of the
+/// scene's tables.
 const DRAW: &str = concat!(
+    wgsl!("builtins"),
     wgsl!("color"),
     wgsl!("bezier"),
     wgsl!("draw"),

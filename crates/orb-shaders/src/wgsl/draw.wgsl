@@ -184,7 +184,7 @@ fn from_state(block: u32, lookup: StateLookup, slot: u32) -> bool {
 
 // The first word of property `slot`'s values in the block.
 fn state_slot(block: u32, lookup: StateLookup, slot: u32) -> u32 {
-    return block + 2u + countOneBits(lookup.mask & ((1u << slot) - 1u)) * STATE_SLOT_WORDS;
+    return block + 2u + count_one_bits(lookup.mask & ((1u << slot) - 1u)) * STATE_SLOT_WORDS;
 }
 
 // Where the values from word `at` on are at the frame's zoom: the word of
