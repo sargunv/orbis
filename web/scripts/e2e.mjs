@@ -3200,6 +3200,10 @@ async function boot(webgpuBrowser, server) {
     picked: "webgl2",
     active: "webgl2",
   });
+  // The map draws before its style loads, and edits need the style.
+  await page.waitForFunction(() => app.map.stats?.loaded, null, {
+    timeout: 60_000,
+  });
   // What WebGL 2 draws otherwise shows under the scene button while the
   // style uses it, its layers in the title.
   const badge = () =>
