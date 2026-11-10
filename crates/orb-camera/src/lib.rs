@@ -294,6 +294,10 @@ impl View {
         // The deepest ground drawn.
         let mut deepest = lowest_plane_px / (1.0 - HORIZON_SHARE);
         let altitude_px = altitude * px_per_m;
+        let (pitch_sin, pitch_cos) = (pitch.sin(), pitch.cos());
+        // How far along the ground, ahead of the point beneath the eye,
+        // the ground ends, when the sphere's horizon ends it.
+        let mut limb_reach = None;
         // A surface that is a sphere at low zoom ends its plane's ground
         // at the sphere's horizon, as far along the ground as the eye sees
         // over the sphere, so the two meet through the handover and the
@@ -302,14 +306,25 @@ impl View {
             let altitude = altitude.max(1.0);
             let r = sphere::RADIUS;
             let ahead = ((r + altitude).powi(2) - r * r).sqrt() * px_per_m;
-            let limb = ahead * pitch.sin() + altitude * px_per_m * pitch.cos();
+            let limb = ahead * pitch_sin + altitude * px_per_m * pitch_cos;
+            if limb >= lowest_plane_px && limb < deepest {
+                limb_reach = Some(ahead);
+            }
             deepest = deepest.min(limb.max(lowest_plane_px));
         }
+        // Otherwise where the ground is that deep.
+        let reach = limb_reach.unwrap_or_else(|| {
+            (deepest - altitude_px * pitch_cos) / pitch_sin.max(lowest_pitch_sin())
+        });
         let far_px = (lowest_plane_px / (1.0 - top)).min(deepest) * 1.01;
         // Where the ground ends on screen and the sky starts, above the
-        // target's place: the ground point that deep below the eye.
-        let horizon_px = eye_distance_px * (pitch.cos() - altitude_px / deepest)
-            / pitch.sin().max(lowest_pitch_sin());
+        // target's place: the angle up from the view's axis to the ground
+        // point `reach` ahead. From the reach rather than the depth, which
+        // looking straight down at the sphere's horizon is the eye's
+        // altitude, the depth of everything in view, and would put the
+        // horizon at the target.
+        let horizon_px = eye_distance_px * (reach * pitch_cos - altitude_px * pitch_sin)
+            / (reach * pitch_sin + altitude_px * pitch_cos);
         let near_px = viewport.height / 50.0;
 
         let to_px = DMat4::from_scale(DVec3::splat(1.0 / world_per_px));
@@ -1568,6 +1583,38 @@ mod tests {
             let ahead = under_eye - under_eye.normalize() * reach;
             let end = view.project_3d(ahead + view.camera_world, 0.0).unwrap();
             assert!((end.y - view.sky_horizon()).abs() < 0.5, "{zoom}: {end}");
+        }
+    }
+
+    /// Looking straight down on the globe, past its handover and
+    /// through it, the sky's horizon is far above the view rather than at
+    /// the target, where the plane's far bound, the sphere's horizon at the
+    /// eye's depth, put it at a pitch of 0.
+    #[test]
+    fn a_globe_seen_from_overhead_has_its_horizon_out_of_view() {
+        let viewport = Viewport {
+            width: 1200.0,
+            height: 700.0,
+        };
+        let globe = Surface {
+            projection: mercator(),
+            globe: Some(Globe::V8),
+        };
+        for zoom in [8.0, 11.0, 11.5, 12.0, 12.62, 15.0] {
+            let mut last = f64::INFINITY;
+            for pitch in [0.0, 0.1, 0.5, 1.0, 5.0, 20.0] {
+                let mut camera = CameraState::new(Geodetic::new(77.26, 28.6), zoom, &mercator());
+                camera.pitch = pitch;
+                let view = View::new(&camera, viewport, &globe);
+                assert!(
+                    view.sky_horizon() < -viewport.height,
+                    "{zoom} {pitch}: {}",
+                    view.sky_horizon()
+                );
+                // Tilting brings it down toward the view, never jumping.
+                assert!(view.horizon_px <= last, "{zoom} {pitch}");
+                last = view.horizon_px;
+            }
         }
     }
 
