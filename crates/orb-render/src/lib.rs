@@ -2155,6 +2155,7 @@ impl Renderer {
         let mut drape_passes = 0;
 
         let mut passes = Vec::with_capacity(3);
+        self.driver.moves(gpu, &mut self.scene, &mut passes);
         let mut stats = FrameStats {
             draws: self.recorded,
             bundle_recorded,
@@ -2186,7 +2187,11 @@ impl Renderer {
             indexed: self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed),
             grid: self.scene.cull_grid(),
         };
-        stats.dispatches += self.driver.cull(gpu, cull, &mut passes);
+        let dispatches = self.driver.cull(gpu, cull, &mut passes);
+        if self.driver.culled(dispatches) {
+            self.scene.culled();
+        }
+        stats.dispatches += dispatches;
         let start = passes.len();
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap

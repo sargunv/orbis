@@ -30,9 +30,11 @@ pub(crate) const ARGS_USAGE: BufferUsages = BufferUsages::STORAGE
     .union(BufferUsages::COPY_DST)
     .union(BufferUsages::COPY_SRC);
 
-/// The compacted indices: the cull dispatch writes them, draws read them.
+/// The compacted indices: the cull dispatch writes them, draws read them,
+/// and a layout moves slots within them.
 pub(crate) const COMPACTED_USAGE: BufferUsages = BufferUsages::INDEX
     .union(BufferUsages::COPY_DST)
+    .union(BufferUsages::COPY_SRC)
     .union(BufferUsages::STORAGE);
 
 /// Where node `index`'s draw arguments start in the scene's args buffer.

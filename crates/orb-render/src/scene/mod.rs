@@ -14,8 +14,9 @@ mod pages;
 mod shelf;
 mod symbol;
 mod tables;
+pub(crate) use candidates::Move;
 #[cfg(cpu_driven)]
-pub(crate) use candidates::NO_CHUNK;
+pub(crate) use candidates::{MOVED, NO_CHUNK};
 pub use glyph::{GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
 pub use image::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
 #[cfg(cpu_driven)]
@@ -977,6 +978,12 @@ pub(crate) struct Scene {
     laid: Vec<candidates::LaidNode>,
     /// Compacted words the last rebuild hid, the slots of runs that went.
     hidden: Vec<Range<u32>>,
+    /// Compacted words the last rebuild moved, from slots it left to its
+    /// own (`candidates`).
+    moves: Vec<Move>,
+    /// What moves go through, and its bytes: a buffer can't copy into
+    /// itself.
+    scratch: Option<(BufferId, u64)>,
     /// Each mesh's serial, by mesh slot: no two meshes take the same.
     mesh_serials: Vec<u64>,
     next_serial: u64,
@@ -1017,6 +1024,9 @@ impl Scene {
         let b = self.buffers;
         for buffer in [b.frame, b.args, b.compacted] {
             gpu.destroy_buffer(buffer);
+        }
+        if let Some((scratch, _)) = self.scratch {
+            gpu.destroy_buffer(scratch);
         }
         self.tables.destroy(gpu);
     }
@@ -1118,6 +1128,8 @@ impl Scene {
             compacted_words: 0,
             laid: Vec::new(),
             hidden: Vec::new(),
+            moves: Vec::new(),
+            scratch: None,
             mesh_serials: Vec::new(),
             next_serial: 0,
             cull_batches: 1,
@@ -1485,6 +1497,36 @@ impl Scene {
         &self.hidden
     }
 
+    /// Compacted words the last rebuild moved, which a driver writing
+    /// compacted indices of its own moves too.
+    #[cfg(cpu_driven)]
+    pub(crate) fn moves(&self) -> &[Move] {
+        &self.moves
+    }
+
+    /// The buffer moves go through, at least `bytes` long: it grows to a
+    /// power of two, and stays.
+    pub(crate) fn scratch(&mut self, gpu: &mut dyn Gpu, bytes: u64) -> BufferId {
+        match self.scratch {
+            Some((buffer, size)) if size >= bytes => buffer,
+            old => {
+                if let Some((buffer, _)) = old {
+                    gpu.destroy_buffer(buffer);
+                }
+                let size = bytes.next_power_of_two().max(1 << 16);
+                let buffer = gpu.create_buffer(&BufferDesc {
+                    label: "moved slots",
+                    size,
+                    // An index buffer, as the compacted indices are: WebGL
+                    // copies between buffers of one kind only.
+                    usage: BufferUsages::INDEX | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+                });
+                self.scratch = Some((buffer, size));
+                buffer
+            }
+        }
+    }
+
     /// Keeps only a tile's labels drawing: its map placements become
     /// [`PlacementTarget::Labels`] ones on this frame's surface (`globe`)
     /// and ground, and its drape placements go.
@@ -1838,6 +1880,7 @@ impl Scene {
         linear: bool,
     ) -> (u32, bool) {
         self.write_rows(gpu, quantum(frame.world_span));
+        self.moves.clear();
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;
@@ -2101,6 +2144,8 @@ impl Scene {
 
     /// Moves the compacted indices into a buffer of `new` words, nothing
     /// copied: the next cull writes every slot of laid-out candidates.
+    /// What moves slots goes too, to be made again to the new size's
+    /// moves.
     fn resize_compacted(&mut self, gpu: &mut dyn Gpu, new: u32) {
         let desc = BufferDesc {
             label: "compacted indices",
@@ -2108,6 +2153,9 @@ impl Scene {
             usage: self.driver.compacted_usage(),
         };
         move_buffer(gpu, &mut self.buffers.compacted, &desc, 0);
+        if let Some((scratch, _)) = self.scratch.take() {
+            gpu.destroy_buffer(scratch);
+        }
         self.capacity.compacted_words = new;
         self.laid.clear();
         self.buffers_revision += 1;
@@ -2178,7 +2226,8 @@ impl Scene {
                 + u64::from(c.chunks) * CHUNK_WORDS as u64
                 + u64::from(c.candidates) * (CANDIDATE_WORDS + VISIBLE_WORDS) as u64
                 + u64::from(c.nodes) * (NODE_CULL_WORDS + ARGS_WORDS) as u64)
-                * 4,
+                * 4
+                + self.scratch.map_or(0, |(_, bytes)| bytes),
         }
     }
 }

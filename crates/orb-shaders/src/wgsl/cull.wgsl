@@ -11,9 +11,10 @@
 // buffer, so their batches are independent. A slot stays put while its
 // candidate lives, through layouts of the candidates after tiles come or
 // go; the rows a candidate left are holes (`NO_CHUNK`) the cull skips. A
-// candidate whose visibility changed since the last cull rewrites its
-// slot, the batch's lanes copying together: the chunk's indices tagged
-// with its run when it enters the view, hidden indices when it leaves.
+// layout that moves a run's slots copies them (`MOVED`). A candidate
+// whose visibility changed since the last cull rewrites its slot, the
+// batch's lanes copying together: the chunk's indices tagged with its run
+// when it enters the view, hidden indices when it leaves.
 // The node draws its slots up to the last visible one with
 // `drawIndexedIndirect`, so frames where nothing enters or leaves write no
 // indices. Batches combine their arguments and counters atomically into
@@ -27,8 +28,9 @@ struct Candidate {
     chunk: u32,
     tile: u32,
     // Indexed nodes: the first index of the candidate's slot, its run, and
-    // whether the slot holds the chunk (1), hidden indices (0) or nothing
-    // yet (any other value).
+    // whether the slot holds the chunk (1), hidden indices (0), one of the
+    // two as the slot it was copied from did (MOVED), or nothing yet (any
+    // other value).
     slot: u32,
     run: u32,
     drawn: u32,
@@ -52,6 +54,9 @@ const ARGS_WORDS: u32 = 8u;
 // An indexed node's candidate row that holds none (orb-render's
 // `NO_CHUNK`): its slot is hidden and taken by no candidate.
 const NO_CHUNK: u32 = 0xffffffffu;
+// A candidate's `drawn` once a layout moved its slot (orb-render's
+// `MOVED`): the slot's first index says which it holds.
+const MOVED: u32 = 2u;
 // Keeps every candidate, culling nothing: what a driver without the cull
 // draws, for tests that hold the two to the same buffers and pixels. A
 // pipeline constant, false in shipping builds, where it folds away.
@@ -256,7 +261,14 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
             atomicAdd(&kept, 1u);
             atomicAdd(&drawn_indices, chunk.index_count);
         }
-        if candidate.drawn != keep {
+        var drawn = candidate.drawn;
+        if drawn == MOVED {
+            // Hidden either way: this index, or the CPU driver's restart.
+            let hidden = chunk.index_count == 0u || compacted[candidate.slot] >= HIDDEN_INDEX;
+            drawn = select(1u, 0u, hidden);
+            candidates[node.visible_base + i].drawn = drawn;
+        }
+        if drawn != keep {
             let at = atomicAdd(&rewrites, 1u);
             rewrite_src[at] = select(HIDDEN_INDEX, chunk.first_index, keep == 1u);
             // A chunk's indices are at most CHUNK_INDICES: a row gone

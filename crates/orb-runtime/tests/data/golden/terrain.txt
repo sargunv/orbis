@@ -50,7 +50,7 @@ buffer "candidates"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "node cull"#0: BufferUsages(COPY_DST | STORAGE)
 buffer "visible"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "indices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
-buffer "compacted indices"#0: BufferUsages(COPY_DST | INDEX | STORAGE)
+buffer "compacted indices"#0: BufferUsages(COPY_SRC | COPY_DST | INDEX | STORAGE)
 group "cull"#0: layout layout "cull"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "candidates"#0 at 0 size None; 4 buffer "node cull"#0 at 0 size None; 5 buffer "visible"#0 at 0 size None; 6 buffer "draw args"#0 at 0 size None; 7 buffer "indices"#0 at 0 size None; 8 buffer "compacted indices"#0 at 0 size None
 texture "terrain depth"#0: R32Float D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
 texture "terrain depth pass"#0: Depth32Float D2 samples 1 views [] TextureUsages(RENDER_ATTACHMENT | TRANSIENT_ATTACHMENT)

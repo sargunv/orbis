@@ -186,6 +186,21 @@ impl Driver {
         }
     }
 
+    /// The frame's first passes: on the GPU, those that move the slots
+    /// the layout moved, which nothing this frame wrote yet (the CPU
+    /// driver moves them in [`prepare`](Self::prepare), before its own
+    /// writes).
+    pub(crate) fn moves(&self, gpu: &mut dyn Gpu, scene: &mut Scene, passes: &mut Vec<Pass>) {
+        match self {
+            Self::Gpu(_) => {
+                let compacted = scene.buffers().compacted;
+                passes.extend(scene.move_passes(gpu, compacted));
+            }
+            #[cfg(cpu_driven)]
+            Self::Cpu(_) => {}
+        }
+    }
+
     /// The frame's passes before its draws: on the GPU, the cull. Returns
     /// the dispatches it adds.
     pub(crate) fn cull(&self, gpu: &mut dyn Gpu, frame: Cull<'_>, passes: &mut Vec<Pass>) -> u32 {
@@ -193,6 +208,19 @@ impl Driver {
             Self::Gpu(d) => d.cull(gpu, frame, passes),
             #[cfg(cpu_driven)]
             Self::Cpu(d) => d.cull(gpu, frame, passes),
+        }
+    }
+
+    /// Whether this frame's cull, which added `dispatches`, writes every
+    /// slot it decides: every slot a layout gave the culled nodes is
+    /// written once it runs.
+    pub(crate) fn culled(&self, dispatches: u32) -> bool {
+        match self {
+            Self::Gpu(_) => dispatches > 0,
+            // The CPU culls every frame after a layout; its twin, when
+            // its pipeline is ready.
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => !d.has_twin() || dispatches > 0,
         }
     }
 

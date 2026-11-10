@@ -9,7 +9,9 @@
 //! word: listed nodes' visible lists, indexed nodes' compacted slots
 //! (the chunk's indices tagged with its run when it enters the view,
 //! hidden ones when it leaves) and each node's draw arguments, which its
-//! direct draws take. Bundles record those draws, so the renderer records
+//! direct draws take. Slots a layout moved hold what they held (the
+//! scene copies them on the GPU), and a bit per compacted word says which
+//! of the two, as the GPU's cull reads it from the slot itself. Bundles record those draws, so the renderer records
 //! them again when a node's arguments change. A test holds all of it to
 //! the GPU's cull over the same scene and frames (`Renderer::check_driver`).
 //!
@@ -20,7 +22,7 @@ use orb_hal::{BufferUsages, Gpu, Pass, PipelineId, RenderCommand};
 use orb_shaders::layout;
 
 use crate::scene::{
-    ARGS_WORDS, DRAPED, HIDDEN, NO_CHUNK, NodeDraw, SURFACE, Scene, Table, UNCLIPPED,
+    ARGS_WORDS, DRAPED, HIDDEN, MOVED, Move, NO_CHUNK, NodeDraw, SURFACE, Scene, Table, UNCLIPPED,
 };
 
 use super::Cull;
@@ -80,6 +82,10 @@ pub(crate) struct CpuDriver {
     /// Per node, its candidates in runs of one mesh's chunks in one
     /// placement, each with the bounds of its chunks, as last laid out.
     runs: Vec<Vec<Run>>,
+    /// A bit per compacted word, set where this driver wrote a chunk's
+    /// first index and clear where it hid one: what a moved slot holds,
+    /// which the GPU's cull reads from the slot itself.
+    drawn: Vec<u64>,
     /// The GPU's cull beside this one, for a test to compare.
     twin: Option<Twin>,
 }
@@ -94,6 +100,10 @@ struct Run {
 }
 
 impl CpuDriver {
+    pub(crate) fn has_twin(&self) -> bool {
+        self.twin.is_some()
+    }
+
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
         self.twin
             .as_ref()
@@ -143,9 +153,17 @@ impl CpuDriver {
         if rebuilt {
             self.listed.clear();
             self.runs.clear();
-            // The slots of runs that went, which the scene hid in its own
-            // compacted buffer.
+            // Slots move before this frame's writes to the slots they move
+            // from, in a submission of their own.
+            let compacted = scene.buffers().compacted;
+            let mut moves = scene.move_passes(gpu, compacted);
+            let words = scene.capacity().compacted_words as usize;
+            self.drawn.resize(words.div_ceil(64), 0);
+            move_bits(&mut self.drawn, scene.moves());
+            // The slots that moved, and the slots of runs that went, as
+            // the scene moved and hid them in its own compacted buffer.
             if let Some(twin) = &self.twin {
+                moves.extend(scene.move_passes(gpu, twin.compacted));
                 let longest = scene.hidden().iter().map(|r| r.end - r.start).max();
                 let words = vec![HIDDEN_INDEX; longest.unwrap_or(0) as usize];
                 for range in scene.hidden() {
@@ -155,6 +173,9 @@ impl CpuDriver {
                         bytemuck::cast_slice(&words[..(range.end - range.start) as usize]),
                     );
                 }
+            }
+            if !moves.is_empty() {
+                gpu.submit(&moves);
             }
         }
         self.listed.resize_with(nodes, Vec::new);
@@ -257,8 +278,14 @@ impl CpuDriver {
                         kept += 1;
                         drawn = drawn.wrapping_add(index_count);
                     }
+                    let slot = candidate[c::SLOT];
+                    if candidate[c::DRAWN] == MOVED {
+                        let drawn = index_count > 0 && bit(&self.drawn, slot);
+                        candidate[c::DRAWN] = u32::from(drawn);
+                    }
                     if candidate[c::DRAWN] != u32::from(keep) {
                         let n = index_count.min(orb_layout::CHUNK_INDICES);
+                        set_bit(&mut self.drawn, slot, keep);
                         let words = if keep {
                             let tag = (candidate[c::RUN] << node[nc::RUN_SHIFT])
                                 .wrapping_add(chunk[ch::FIRST_VERTEX]);
@@ -431,6 +458,62 @@ impl CpuDriver {
     }
 }
 
+/// Whether bit `i` is set (none past the end).
+fn bit(bits: &[u64], i: u32) -> bool {
+    bits.get(i as usize / 64)
+        .is_some_and(|w| w >> (i % 64) & 1 != 0)
+}
+
+fn set_bit(bits: &mut [u64], i: u32, on: bool) {
+    if let Some(w) = bits.get_mut(i as usize / 64) {
+        let mask = 1 << (i % 64);
+        *w = if on { *w | mask } else { *w & !mask };
+    }
+}
+
+/// The 64 bits from bit `at` (none past the end).
+fn bits_at(bits: &[u64], at: u32) -> u64 {
+    let (w, o) = ((at / 64) as usize, at % 64);
+    let word = |w: usize| bits.get(w).copied().unwrap_or(0);
+    match o {
+        0 => word(w),
+        _ => word(w) >> o | word(w + 1) << (64 - o),
+    }
+}
+
+/// Sets the `n` (1 to 64) bits from bit `at` to `value`'s lowest.
+fn put_bits(bits: &mut [u64], at: u32, value: u64, n: u32) {
+    let mask = u64::MAX >> (64 - n);
+    let value = value & mask;
+    let (w, o) = ((at / 64) as usize, at % 64);
+    if let Some(x) = bits.get_mut(w) {
+        *x = (*x & !(mask << o)) | value << o;
+    }
+    if o + n > 64
+        && let Some(x) = bits.get_mut(w + 1)
+    {
+        let shift = 64 - o;
+        *x = (*x & !(mask >> shift)) | value >> shift;
+    }
+}
+
+/// Moves bits as `moves` moved their words: every one read before any
+/// is written, as the moves copied them.
+fn move_bits(bits: &mut [u64], moves: &[Move]) {
+    let read: Vec<Vec<u64>> = (moves.iter())
+        .map(|m| {
+            (0..m.words.div_ceil(64))
+                .map(|k| bits_at(bits, m.from + 64 * k))
+                .collect()
+        })
+        .collect();
+    for (m, read) in moves.iter().zip(read) {
+        for (k, value) in (0u32..).zip(read) {
+            put_bits(bits, m.to + 64 * k, value, (m.words - 64 * k).min(64));
+        }
+    }
+}
+
 /// `rows`' row `i`, `words` long, zeros where it isn't written.
 fn rows_at(rows: &[u32], i: usize, words: usize) -> &[u32] {
     static ZERO: [u32; 64] = [0; 64];
@@ -476,6 +559,48 @@ fn runs(count: u32, candidate: impl Fn(u32) -> [u32; CANDIDATE_WORDS], chunks: &
         key = Some(this);
     }
     runs
+}
+
+/// Every word of the slots the last cull decided, as a cull writing them
+/// all would write it (hidden ones [`HIDDEN_INDEX`]): (word, index).
+fn decided_slots(
+    nodes: &[u32],
+    candidates: &[u32],
+    chunks: &[u32],
+    indices: &[u32],
+) -> Vec<(u32, u32)> {
+    use layout::candidate as c;
+    use layout::chunk as ch;
+    use layout::node_cull as nc;
+    let mut slots = Vec::new();
+    for node in nodes.as_chunks::<NODE_WORDS>().0 {
+        let draw = node[nc::DRAW];
+        if draw & HIDDEN != 0 || draw & 255 != DRAW_INDEXED {
+            continue;
+        }
+        let base = node[nc::VISIBLE_BASE] as usize;
+        for i in base..base + node[nc::CANDIDATE_COUNT] as usize {
+            let row = rows_at(candidates, i, CANDIDATE_WORDS);
+            if row[c::CHUNK] == NO_CHUNK {
+                continue;
+            }
+            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
+            let n = chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES);
+            let tag = (row[c::RUN] << node[nc::RUN_SHIFT]).wrapping_add(chunk[ch::FIRST_VERTEX]);
+            for k in 0..n {
+                let word = match row[c::DRAWN] {
+                    1 => {
+                        let i = chunk[ch::FIRST_INDEX] + k;
+                        let pair = indices.get((i >> 1) as usize).copied().unwrap_or(0);
+                        tag.wrapping_add((pair >> ((i & 1) << 4)) & 0xffff)
+                    }
+                    _ => HIDDEN_INDEX,
+                };
+                slots.push((row[c::SLOT] + k, word));
+            }
+        }
+    }
+    slots
 }
 
 /// `types.wgsl`'s `unpack_i16x2`.
@@ -698,6 +823,9 @@ pub struct DriverCheck {
     node_rows: Vec<u32>,
     nodes: usize,
     compacted_words: usize,
+    /// What every slot the CPU's cull decided holds, whatever moved it
+    /// there: (word, index).
+    slots: Vec<(u32, u32)>,
 }
 
 /// What [`DriverCheck::compare`] compared.
@@ -718,7 +846,15 @@ impl DriverCheck {
     pub(crate) fn new(driver: &CpuDriver, scene: &Scene) -> Option<Self> {
         let twin = driver.twin.as_ref()?;
         let tables = scene.tables();
+        let node_rows = tables.mirror(Table::NodeCull)?;
+        let slots = decided_slots(
+            node_rows,
+            tables.mirror(Table::Candidates)?,
+            tables.mirror(Table::Chunks)?,
+            tables.mirror(Table::Indices)?,
+        );
         Some(Self {
+            slots,
             args: [scene.buffers().args, twin.args],
             compacted: [scene.buffers().compacted, twin.compacted],
             visible: [tables.buffer(Table::Visible), twin.visible],
@@ -770,6 +906,16 @@ impl DriverCheck {
                 "compacted word {at} of {n}: CPU {:?}, GPU {:?}",
                 cpu_compacted.get(at),
                 gpu_compacted.get(at)
+            ));
+        }
+        // Equal, and right: slots that moved hold what they would have
+        // held written again.
+        if let Some((at, word)) =
+            (self.slots.iter()).find(|&&(at, word)| cpu_compacted.get(at as usize) != Some(&word))
+        {
+            return Err(format!(
+                "compacted word {at}: {:?}, where its candidate wants {word}",
+                cpu_compacted.get(*at as usize)
             ));
         }
         let [cpu_visible, gpu_visible] = self.visible.map(&mut *read);
