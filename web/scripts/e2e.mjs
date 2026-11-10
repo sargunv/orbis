@@ -68,21 +68,24 @@
 //   blocklisted headless, and in Chromium without a GPU or without WebGPU;
 //   `backend: "webgl2"` loads only core-gl.wasm in Chromium with WebGPU,
 //   and `backend: "webgpu"` without it fails saying why. The empty style
-//   draws transparent on WebGPU and the flat colour of WebGL 2's boot on
-//   WebGL 2 (#140), with no errors or other warnings. Then the map app's
+//   draws transparent on either, with no errors or other warnings. Then the map app's
 //   `?backend=webgl2` draws WebGL 2, its renderer row saying so, and Auto
 //   starts it again on WebGPU at the same camera.
 // - `split`: the Tokyo extract and the Globe, offline, reach their first
 //   idle without calling into core-deferred.wasm (a call would fetch it
 //   synchronously: web/deferred.txt defers something first frames run,
 //   and `pnpm coverage --tour --write` refreshes it), then fetch it.
+// - `webgl2`: in a Chromium without WebGPU (#140), the scenario in the
+//   worker and on the page; the Tokyo extract at two views, within 1% of
+//   pixels of WebGPU's; a style given terrain draws flat and reports it
+//   once (`degraded`); and a lost GPU recovers on WebGL 2.
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split,offline]
+//   pnpm e2e [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -102,7 +105,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split",
+  "scenario,webgl2,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split",
 ).split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
@@ -211,14 +214,18 @@ async function scenario(browser, server) {
   await scenarioOn(browser, server, "page");
 }
 
-async function scenarioOn(browser, server, thread) {
+async function scenarioOn(browser, server, thread, backend = "webgpu") {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
-  await page.goto(
-    `${server.url}scenario.html${thread === "page" ? "?worker=0" : ""}`,
-  );
-  assert.equal(
-    await page.evaluate(() => window.scenario.then((s) => s.map.inWorker)),
-    thread === "worker",
+  const query = new URLSearchParams({
+    ...(thread === "page" && { worker: "0" }),
+    ...(backend === "webgl2" && { backend }),
+  });
+  await page.goto(`${server.url}scenario.html?${query}`);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.scenario.then((s) => [s.map.inWorker, s.map.backend]),
+    ),
+    [thread === "worker", backend],
     thread,
   );
   const scenario = (fn, arg) =>
@@ -2874,8 +2881,104 @@ async function readback(browser, server) {
   );
 }
 
+/** The scenario, the Tokyo extract and a style's gaps on WebGL 2 (#140), in
+ * a Chromium without WebGPU. */
+async function webgl2(webgpuBrowser, server) {
+  const browser = await launchChromium({ webgpu: false });
+  try {
+    await scenarioOn(browser, server, "worker", "webgl2");
+    await scenarioOn(browser, server, "page", "webgl2");
+    console.log("webgl2: the scenario, in the worker and on the page");
+
+    // The extract's views draw as on WebGPU, give or take antialiasing.
+    const size = { width: 600, height: 400 };
+    const shot = async (browser, backend, view) => {
+      const { page, errors } = await open(browser, size);
+      await page.goto(
+        `${server.url}?style=tokyo-mvt&backend=${backend}${view}`,
+      );
+      await page.waitForFunction(
+        () => document.getElementById("app")?.dataset.map === "idle",
+        null,
+        { timeout: 60_000 },
+      );
+      assert.equal(await page.evaluate(() => app.map.backend), backend);
+      const image = decodePng(await page.locator("#map").screenshot());
+      await page.close();
+      assert.deepEqual(errors, [], `${backend} ${view}`);
+      return image;
+    };
+    for (const view of ["#13/35.6830/139.7520", "#16/35.676/139.745/30/60"]) {
+      const [gpu, gl] = [
+        await shot(webgpuBrowser, "webgpu", view),
+        await shot(browser, "webgl2", view),
+      ];
+      let differ = 0;
+      for (let i = 0; i < gpu.pixels.length; i += gpu.channels) {
+        const d = [0, 1, 2].map((c) =>
+          Math.abs(gpu.pixels[i + c] - gl.pixels[i + c]),
+        );
+        if (Math.max(...d) > 24) differ++;
+      }
+      const share = differ / (gpu.width * gpu.height);
+      assert.ok(share < 0.01, `${view}: ${(share * 100).toFixed(2)}% differ`);
+      console.log(
+        `webgl2: the extract at ${view} as on WebGPU (${(share * 100).toFixed(2)}% of pixels differ)`,
+      );
+    }
+
+    // A style with terrain draws flat, and says so once; a GPU lost
+    // recovers on WebGL 2 and draws again.
+    const { page, errors } = await open(browser, { width: 300, height: 200 });
+    await page.goto(`${server.url}scenario.html?backend=webgl2`);
+    const lost = await page.evaluate(() =>
+      window.scenario.then(async ({ map }) => {
+        const degraded = [];
+        map.on("degraded", (d) => degraded.push(d));
+        map.edit((tx) =>
+          tx
+            .addSource("dem", {
+              type: "raster-dem",
+              tiles: ["http://127.0.0.1:9/{z}/{x}/{y}.png"],
+            })
+            .setTerrain({ source: "dem" }),
+        );
+        await map.once("idle");
+        const restored = map.once("restored");
+        map.loseDevice();
+        await restored;
+        await map.once("idle");
+        return { degraded, backend: map.backend };
+      }),
+    );
+    assert.deepEqual(lost, {
+      degraded: [{ gap: "terrain", layers: [] }],
+      backend: "webgl2",
+    });
+    const image = decodePng(await page.locator("#map").screenshot());
+    const at =
+      ((image.height >> 1) * image.width + (image.width >> 1)) * image.channels;
+    assert.deepEqual([...image.pixels.subarray(at, at + 3)], [0, 0, 255]);
+    // The gap's console warning, and the DEM tiles nothing serves.
+    const unexpected = errors.filter(
+      (e) =>
+        !/draws terrain otherwise than on WebGPU|127\.0\.0\.1:9|ERR_CONNECTION_REFUSED|Failed to load resource/.test(
+          e,
+        ),
+    );
+    assert.deepEqual(unexpected, []);
+    await page.close();
+    console.log(
+      "webgl2: terrain degrades flat and says so; a lost GPU recovers",
+    );
+  } finally {
+    await browser.close();
+  }
+}
+
 const CHECKS = {
   scenario,
+  webgl2,
   edits,
   playground,
   switching,
@@ -2891,9 +2994,8 @@ const CHECKS = {
   split,
   offline,
 };
-/** What WebGL 2 draws until it draws styles (orb-hal-wgpu's `BOOT_COLOR`),
- * and what an empty style shows on WebGPU: the page. */
-const BOOTED = { webgl2: [64, 128, 191], webgpu: [255, 255, 255] };
+/** What an empty style shows, on either backend: the page. */
+const BOOTED = [255, 255, 255];
 
 async function boot(webgpuBrowser, server) {
   const noWebgpu = () =>
@@ -2963,16 +3065,17 @@ async function boot(webgpuBrowser, server) {
         const at = (100 * image.width + 100) * image.channels;
         const pixel = [...image.pixels.subarray(at, at + 3)];
         assert.ok(
-          pixel.every((v, i) => Math.abs(v - BOOTED[backend][i]) <= 1),
+          pixel.every((v, i) => Math.abs(v - BOOTED[i]) <= 1),
           `${where}: ${pixel}`,
         );
         // Browsers warn that WebGPU has no adapter (Firefox's is
         // blocklisted), Firefox of a deprecated extension wgpu reads, and
         // Chromium without a GPU that its software compositor reads the
-        // canvas back; WebGL 2 says what it can't draw yet.
+        // canvas back; Firefox's WebGL that partial uploads into the data
+        // tables are slower than whole ones.
         const unexpected = errors.filter(
           (e) =>
-            !/WebGPU is disabled by blocklist|^No available adapters\.$|^Failed to create WebGPU Context Provider$|WEBGL_debug_renderer_info|GPU stall due to ReadPixels|draws only a flat colour/.test(
+            !/WebGPU is disabled by blocklist|^No available adapters\.$|^Failed to create WebGPU Context Provider$|WEBGL_debug_renderer_info|GPU stall due to ReadPixels|WebGL warning: texSubImage: |After reporting 32, no further warnings/.test(
               e,
             ),
         );

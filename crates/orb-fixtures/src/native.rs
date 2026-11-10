@@ -763,7 +763,12 @@ pub(crate) fn run_render_suite(root: &Path, filter: &str, name: &str) -> Result<
     let started = Instant::now();
     let assets = assets(root);
     let mut backend = match name {
-        "chrome" => Backend::Chrome(chrome::Chrome::new(root, &assets, Assets::Native)?),
+        "chrome" | "chrome-webgl2" => Backend::Chrome(chrome::Chrome::new(
+            root,
+            &assets,
+            Assets::Native,
+            name == "chrome-webgl2",
+        )?),
         _ => crate::runtime(&assets, Assets::Native)?,
     };
     let gl_js = root.join("fixtures/gl-js/render");
@@ -1134,7 +1139,12 @@ pub(crate) fn run_query_suite(root: &Path, filter: &str, name: &str) -> Result<V
     let started = Instant::now();
     let assets = assets(root);
     let mut backend = match name {
-        "chrome" => Backend::Chrome(chrome::Chrome::new(root, &assets, Assets::Native)?),
+        "chrome" | "chrome-webgl2" => Backend::Chrome(chrome::Chrome::new(
+            root,
+            &assets,
+            Assets::Native,
+            name == "chrome-webgl2",
+        )?),
         _ => crate::runtime(&assets, Assets::Native)?,
     };
     let mut totals = Counts::default();

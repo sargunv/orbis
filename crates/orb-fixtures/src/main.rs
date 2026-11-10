@@ -46,20 +46,20 @@ fn run() -> Result<(), String> {
     let mut filter = String::new();
     let mut platform = "native".to_string();
     let mut suite = "render".to_string();
-    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>] [--platform native|chrome|lavapipe|all|native-cpu|native-cpu-tex]";
+    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>] [--platform native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2]";
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--suite" => suite = args.next().ok_or(USAGE)?,
             "--filter" => filter = args.next().ok_or("--filter needs a substring")?,
             "--platform" => {
                 platform = args.next().ok_or(
-                    "--platform needs native|chrome|lavapipe|all|native-cpu|native-cpu-tex",
+                    "--platform needs native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2",
                 )?
             }
             _ => return Err(format!("unknown argument {arg}; {USAGE}")),
         }
     }
-    if !["native", "chrome", "lavapipe", "all"].contains(&platform.as_str())
+    if !["native", "chrome", "chrome-webgl2", "lavapipe", "all"].contains(&platform.as_str())
         && platforms::cpu_driver(&platform).is_none()
     {
         return Err(format!("unknown platform {platform}"));
@@ -174,10 +174,11 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     std::fs::create_dir_all(output.join("failures")).map_err(|e| e.to_string())?;
     let started = Instant::now();
     let mut backend = match name {
-        "chrome" => Backend::Chrome(chrome::Chrome::new(
+        "chrome" | "chrome-webgl2" => Backend::Chrome(chrome::Chrome::new(
             root,
             &assets(root),
             fetch::Assets::GlJs,
+            name == "chrome-webgl2",
         )?),
         _ => runtime(&assets(root), fetch::Assets::GlJs)?,
     };
@@ -506,7 +507,19 @@ fn run_test(
         failure.get_or_insert("pixels");
     }
     result["status"] = json!(if failure.is_some() { "fail" } else { "pass" });
+    // The gaps the map reported (`MapEvent::Degraded`): a failure drawn
+    // with one is filed under it, a known difference of the GPU.
+    let gaps: Vec<&str> = (rendered["degraded"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .collect();
+    if !gaps.is_empty() {
+        result["degraded"] = json!(gaps);
+    }
     if let Some(failure) = failure {
+        let failure = match gaps.is_empty() {
+            true => failure.to_string(),
+            false => format!("degraded:{}", gaps.join(",")),
+        };
         result["failure_reason"] = json!(failure);
         let dir = output.join("failures").join(id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

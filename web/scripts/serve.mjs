@@ -196,22 +196,38 @@ export async function serveDemo({
 // ANGLE is pinned to Metal on macOS and to Vulkan on Linux, and Vulkan asked
 // for on both, not on Windows, where Chrome's WebGPU runs on D3D12. Headless
 // Chromium on Linux left to choose puts ANGLE on SwiftShader, and WebGPU with
-// it: no adapter, or only the fallback adapter with `unsafe`.
+// it: no adapter, or only the fallback adapter with `unsafe`. `webgpu: false`
+// is a Chrome without WebGPU, whose maps draw with WebGL 2 on the same ANGLE.
 export function launchChromium({
   unsafe = true,
   headed = false,
   unpaced = false,
+  webgpu = true,
 } = {}) {
-  const { executablePath, args } = chromiumPlatform();
+  const { executablePath, args } = webgpu
+    ? chromiumPlatform()
+    : chromiumWithoutWebgpu();
   return chromium.launch({
     headless: !headed,
     executablePath,
     args: [
-      ...(unsafe ? ["--enable-unsafe-webgpu"] : []),
+      ...(unsafe && webgpu ? ["--enable-unsafe-webgpu"] : []),
       ...args,
       ...(unpaced ? ["--disable-gpu-vsync", "--disable-frame-rate-limit"] : []),
     ],
   });
+}
+
+// `chromiumPlatform` with WebGPU off: ANGLE as pinned there.
+export function chromiumWithoutWebgpu() {
+  const { executablePath, args } = chromiumPlatform();
+  return {
+    executablePath,
+    args: [
+      "--disable-features=WebGPU,Vulkan,WebGPUService",
+      ...args.filter((a) => a.startsWith("--use-angle")),
+    ],
+  };
 }
 
 // The Chrome to run and this platform's GPU flags, for launches of any kind

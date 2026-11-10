@@ -42,6 +42,11 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
     if ["chrome", "all"].contains(&platform) {
         reports.insert("chrome", suite.run(root, filter, "chrome")?);
     }
+    // WebGL 2 beside WebGPU in the same Chrome: what GL alone fails.
+    if platform == "chrome-webgl2" {
+        reports.insert("chrome", suite.run(root, filter, "chrome")?);
+        reports.insert("chrome-webgl2", suite.run(root, filter, "chrome-webgl2")?);
+    }
     if ["lavapipe", "all"].contains(&platform) {
         let start = Instant::now();
         container(root, filter, suite, &output)?;
@@ -111,10 +116,50 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
             }
         }
     }
-    let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity});
+    let webgl2 = match (reports.get("chrome"), reports.get("chrome-webgl2")) {
+        (Some(webgpu), Some(gl)) => webgl2_report(webgpu, gl),
+        _ => Value::Null,
+    };
+    let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity,"webgl2":webgl2});
     write_json(&combined, &summary)?;
     println!("\nReport: {}", combined.display());
     Ok(())
+}
+
+/// The tests WebGPU passes and WebGL 2 doesn't, by cause: a gap the map
+/// reported (`degraded:<gap>`), or one the renderer didn't, which is a bug
+/// of the GL path (#140). Printed, and the summary's `webgl2`.
+fn webgl2_report(webgpu: &Value, gl: &Value) -> Value {
+    let status = |report: &Value| -> BTreeMap<String, Value> {
+        (report["tests"].as_array().into_iter().flatten())
+            .map(|t| (t["id"].as_str().unwrap_or_default().to_string(), t.clone()))
+            .collect()
+    };
+    let (webgpu, gl) = (status(webgpu), status(gl));
+    let mut causes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (id, test) in &webgpu {
+        let Some(theirs) = gl.get(id) else { continue };
+        if test["status"] != "pass" || theirs["status"] == "pass" {
+            continue;
+        }
+        let cause = match (theirs["status"].as_str(), theirs["failure_reason"].as_str()) {
+            (Some("fail"), Some(reason)) => reason.to_string(),
+            (Some(status), _) => status.to_string(),
+            _ => "missing".to_string(),
+        };
+        causes.entry(cause).or_default().push(id.clone());
+    }
+    let lost: usize = causes.values().map(Vec::len).sum();
+    println!("\nWebGL 2: {lost} tests WebGPU passes fail on GL, by cause:");
+    for (cause, ids) in &causes {
+        println!("  {cause}: {}", ids.len());
+        if !cause.starts_with("degraded:") {
+            for id in ids {
+                println!("    {id}");
+            }
+        }
+    }
+    json!({"lost": lost, "causes": causes})
 }
 
 fn counts_from(v: &Value) -> Counts {
@@ -322,11 +367,13 @@ const CHILD: &str = "ORB_FIXTURES_CPU_DRIVER";
 
 /// The `ORB_DRIVER` of a platform that runs the native suite on WebGL
 /// 2's frame driver (#140): `native-cpu` with the tables in storage
-/// buffers, `native-cpu-tex` in data textures.
+/// buffers, `native-cpu-tex` in data textures, `native-webgl2` with
+/// everything else WebGL 2 lacks too (compute: drawn mips; its gaps).
 pub(crate) fn cpu_driver(platform: &str) -> Option<&'static str> {
     match platform {
         "native-cpu" => Some("cpu"),
         "native-cpu-tex" => Some("cpu-tex"),
+        "native-webgl2" => Some("webgl2"),
         _ => None,
     }
 }

@@ -54,6 +54,7 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
             root,
             &assets(root),
             crate::fetch::Assets::GlJs,
+            false,
         )?)
     } else {
         runtime(&assets(root), crate::fetch::Assets::GlJs)?

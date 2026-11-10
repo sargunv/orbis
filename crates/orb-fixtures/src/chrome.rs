@@ -19,13 +19,20 @@ pub(crate) struct Chrome {
 }
 
 impl Chrome {
-    /// The driver, drawing on WebGPU, serving `assets` to the page as
-    /// `kind`'s suite serves them.
-    pub(crate) fn new(root: &Path, assets: &Path, kind: Assets) -> Result<Self, String> {
+    /// The driver, drawing on WebGPU or with `webgl2` on WebGL 2 in a
+    /// Chrome without WebGPU, serving `assets` to the page as `kind`'s
+    /// suite serves them.
+    pub(crate) fn new(
+        root: &Path,
+        assets: &Path,
+        kind: Assets,
+        webgl2: bool,
+    ) -> Result<Self, String> {
         let mut child = Command::new("node")
             .arg(root.join("web/scripts/render-fixtures.mjs"))
             .arg(assets)
             .args((kind == Assets::Native).then_some("--offline"))
+            .args(webgl2.then_some("--webgl2"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

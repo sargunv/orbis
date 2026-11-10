@@ -12,6 +12,18 @@
   import { createMap } from "orbis";
 
   const assets = new URL("fixtures/", location.href).href;
+  // `?backend=webgl2`: `cargo xtask rt --platform chrome-webgl2`'s maps.
+  const backend =
+    new URLSearchParams(location.search).get("backend") ?? undefined;
+  // The gaps a map reported (`degraded`): what it drew otherwise than on
+  // WebGPU, which orb-fixtures classifies a failure by.
+  const watch = (map, warnings) => {
+    const degraded = [];
+    map.on("warning", ({ message }) => warnings.push(message));
+    map.on("error", ({ message }) => warnings.push(message));
+    map.on("degraded", ({ gap }) => degraded.push(gap));
+    return degraded;
+  };
   // GL JS's harness reads a video's first frame: videos here stay on it.
   HTMLMediaElement.prototype.play = () => Promise.resolve();
   const local = (text) =>
@@ -108,9 +120,9 @@
       antialias: false,
       crossSourceCollisions: r.cross_source_collisions,
       localIdeographFontFamily: false,
+      backend,
     });
-    map.on("warning", ({ message }) => warnings.push(message));
-    map.on("error", ({ message }) => warnings.push(message));
+    const degraded = watch(map, warnings);
     const still = () => map.snapshot(r.width, r.height, r.ratio);
     try {
       // Native loads a style document before the runner goes on; here it
@@ -177,6 +189,7 @@
       return {
         rgba: base64(image.data),
         warnings,
+        degraded,
         width: image.width,
         height: image.height,
       };
@@ -210,9 +223,9 @@
       stableLabels: false,
       // Both engines draw nothing where a vector tile 404s.
       missingTiles: "empty",
+      backend,
     });
-    map.on("warning", ({ message }) => warnings.push(message));
-    map.on("error", ({ message }) => warnings.push(message));
+    const degraded = watch(map, warnings);
     const started = performance.now();
     let frames = 0,
       stats,
@@ -267,6 +280,7 @@
       return {
         rgba: base64(data),
         warnings,
+        degraded,
         frames,
         tiles_drawn: stats.tilesDrawn,
         timed_out: timedOut,
