@@ -2,7 +2,7 @@
   "$comment": [
     "The Globe entry's restyle of Protomaps Light, which web/demo/styles.js and orb-demo's scenes.rs both apply (styles.js says how).",
     "The palette is the Globe's own: warm, calm limestone land; vegetation in muted sage that tints the globe by biome from orbit and gives way to parks close in; a sea that deepens from a pale lagoon over the shelves to slate blue over the abyss, with a faint seafloor relief; white roads with honey motorways on Protomaps' quiet hierarchy; slate-plum labels on soft halos, each text colour at least 4.5:1 against its halo (3:1 for the large ocean, country and region names).",
-    "`paint` is set over each Protomaps layer's own by id; `sea` goes over the background (the ocean, its shore colour) and under `earth`, the land, so neither shows on land however low it lies; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source."
+    "`paint` is set over each Protomaps layer's own by id; `sea` goes over the background (the ocean, its shore colour) and under `earth`, the land, so neither shows on land however low it lies; its last layer, `caspian`, fills the Caspian Sea as the lake it is: OpenStreetMap maps its shore as coastline, so it is among Protomaps' ocean polygons, and the DEM there shows its surface, 28 m below sea level, in blocks; a box around it, under the land, takes the shore's shape; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source."
   ],
   "paint": {
     "background": {
@@ -517,6 +517,14 @@
         "hillshade-highlight-color": "rgba(236, 248, 252, 0.35)",
         "hillshade-accent-color": "rgba(28, 58, 102, 0.2)"
       }
+    },
+    {
+      "id": "caspian",
+      "type": "fill",
+      "source": "caspian",
+      "paint": {
+        "fill-color": "#b0dbe7"
+      }
     }
   ],
   "hillshade": {
@@ -645,6 +653,36 @@
       "tileSize": 256,
       "maxzoom": 12,
       "attribution": "<a href=\"https://github.com/tilezen/joerd/blob/master/docs/attribution.md\">Terrain Tiles: ETOPO1, GEBCO, NOAA, USGS and others</a>"
+    },
+    "caspian": {
+      "type": "geojson",
+      "data": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              45,
+              35.5
+            ],
+            [
+              56,
+              35.5
+            ],
+            [
+              56,
+              48
+            ],
+            [
+              45,
+              48
+            ],
+            [
+              45,
+              35.5
+            ]
+          ]
+        ]
+      }
     }
   },
   "light": {
