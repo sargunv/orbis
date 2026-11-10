@@ -173,6 +173,26 @@ impl Map {
         }
         let old_plan = old.plan();
         for change in &patch.changes {
+            // A layer shown or hidden fades in or out.
+            if let Change::Visibility(layer) = change {
+                let index = |plan: &crate::style::StylePlan| {
+                    plan.layer_keys.iter().position(|k| *k == layer.0)
+                };
+                if let (Some(before), Some(after)) = (index(old_plan), index(plan)) {
+                    let (old, new) = (&old_plan.style.layers[before], &plan.style.layers[after]);
+                    let shown = new.visibility == orb_style::Visibility::Visible;
+                    if (old.visibility == orb_style::Visibility::Visible) != shown {
+                        self.transitions.fade(
+                            (&new.id, new.ty),
+                            |id| new.slot(id).clone(),
+                            shown,
+                            plan.style.transition,
+                            now,
+                        );
+                    }
+                }
+                continue;
+            }
             let Change::Paint { layer, id, .. } = change else {
                 continue;
             };

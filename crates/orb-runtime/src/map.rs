@@ -913,9 +913,11 @@ impl Map {
         self.frame_time - self.born.unwrap_or(self.frame_time)
     }
 
-    /// Whether a transition is running: paint, light, sky or terrain.
+    /// Whether a transition is running: paint, light, sky or terrain. Fades
+    /// beyond GL JS's (feature state, visibility) keep the map from idling
+    /// but aren't counted, so a GL JS fixture reads them settled.
     pub fn transitioning(&self) -> bool {
-        self.transitions.running() || self.root.running()
+        self.transitions.easing_paint() || self.root.running()
     }
 
     /// What the map did since the last call, in order: style and source

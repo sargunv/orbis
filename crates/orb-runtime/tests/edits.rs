@@ -391,6 +391,60 @@ fn feature_state_changes_fade() {
     assert_eq!(map.pixels(), plain);
 }
 
+/// Frames until the map idles after an edit, each frame's pixels.
+fn frames_until_idle(map: &mut Offscreen) -> Vec<Vec<u8>> {
+    let started = Instant::now();
+    let mut frames = Vec::new();
+    loop {
+        let report = map.frame();
+        frames.push(map.pixels());
+        if report.idle {
+            return frames;
+        }
+        assert!(started.elapsed().as_secs() < 10, "the edit never settled");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Whether, at the pixel that differs most between `a` and `b`, some
+/// frame draws neither.
+fn some_frame_between(a: &[u8], b: &[u8], frames: &[Vec<u8>]) -> bool {
+    let at = (0..a.len()).max_by_key(|&i| a[i].abs_diff(b[i])).unwrap();
+    let (lo, hi) = (a[at].min(b[at]), a[at].max(b[at]));
+    assert!(hi - lo > 60, "{lo}..{hi}");
+    frames
+        .iter()
+        .any(|f| f[at] > lo.saturating_add(10) && f[at] < hi.saturating_sub(10))
+}
+
+/// A layer hidden or shown fades out or in, then draws as a fresh map.
+#[test]
+fn visibility_edits_fade() {
+    for layer in ["water", "road_minor", "poi_r1"] {
+        let mut map = tokyo();
+        let shown = map.pixels();
+        let hide = format!(r#"[["setLayoutProperty", "{layer}", "visibility", "none"]]"#);
+        edit(&mut map, &hide);
+        let frames = frames_until_idle(&mut map);
+        settle(&mut map);
+        let hidden = map.pixels();
+        assert!(
+            some_frame_between(&shown, &hidden, &frames),
+            "{layer} faded out"
+        );
+        assert_matches_fresh(&mut map);
+        let show = format!(r#"[["setLayoutProperty", "{layer}", "visibility", "visible"]]"#);
+        edit(&mut map, &show);
+        let frames = frames_until_idle(&mut map);
+        assert!(
+            some_frame_between(&shown, &hidden, &frames),
+            "{layer} faded in"
+        );
+        settle(&mut map);
+        assert_eq!(map.pixels(), shown);
+    }
+}
+
 /// The CPU cost of a feature-state write on the scene thread: the edit
 /// call, and the next frame's extra time over a frame without one.
 /// `cargo test --release -p orb-demo feature_state_write_cost -- --ignored --nocapture`

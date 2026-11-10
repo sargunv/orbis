@@ -6,17 +6,25 @@
 //! Values interpolate as GL JS's do: numbers, colours (straight components) and
 //! pairs, eased cubic in-out. Per-feature values (data or feature state)
 //! change at once, which is also what GL JS does with feature state.
+//!
+//! Beyond GL JS and Native, which snap, a layer shown or hidden fades in
+//! or out by the style's `transition`: the overlay keeps a hidden layer
+//! drawing while it fades, and scales its opacity, the layer opacity of a
+//! fill or line (which composites the layer once) and the per-feature
+//! opacities of the rest, where those are the same for every feature. A
+//! layer whose opacity varies by feature shows or hides at once.
 
 use std::sync::Arc;
 
 use orb_expr::Kind;
-use orb_style::{PropertyId, Slot, Transition, Value};
+use orb_style::{LayerType, PropertyId, Slot, Transition, Value, Visibility};
 
 use crate::style::StylePlan;
 
 #[derive(Debug, Default)]
 pub(crate) struct Transitions {
     running: Vec<Running>,
+    fades: Vec<Fade>,
     /// A transition ran in the last frame: the next writes final values.
     pub(crate) ran: bool,
 }
@@ -37,6 +45,51 @@ impl Running {
     fn at(&self, now: f64) -> f64 {
         self.span
             .map_or(0.0, |(begin, end)| ease((now - begin) / (end - begin)))
+    }
+}
+
+/// A layer fading in or out.
+#[derive(Debug)]
+struct Fade {
+    layer: String,
+    ty: LayerType,
+    /// How much of it shows at the start and end, 0 to 1.
+    from: f64,
+    to: f64,
+    span: Option<(f64, f64)>,
+    transition: Transition,
+}
+
+impl Fade {
+    fn at(&self, now: f64) -> f64 {
+        let t = self
+            .span
+            .map_or(0.0, |(begin, end)| ease((now - begin) / (end - begin)));
+        self.from + (self.to - self.from) * t
+    }
+}
+
+/// The properties a fade scales: what makes a layer of `ty` show.
+fn fade_properties(ty: LayerType) -> &'static [PropertyId] {
+    use orb_style as s;
+    macro_rules! ids {
+        ($($key:ident),*) => {{
+            const IDS: &[PropertyId] = &[$(s::$key.id()),*];
+            IDS
+        }};
+    }
+    match ty {
+        LayerType::Fill => ids!(FILL_LAYER_OPACITY),
+        LayerType::Line => ids!(LINE_LAYER_OPACITY),
+        LayerType::Circle => ids!(CIRCLE_OPACITY, CIRCLE_STROKE_OPACITY),
+        LayerType::Symbol => ids!(TEXT_OPACITY, ICON_OPACITY),
+        LayerType::FillExtrusion => ids!(EXTRUSION_OPACITY),
+        LayerType::Raster => ids!(RASTER_OPACITY),
+        LayerType::Heatmap => ids!(HEATMAP_OPACITY),
+        LayerType::Background => ids!(BACKGROUND_OPACITY),
+        LayerType::ColorRelief => ids!(COLOR_RELIEF_OPACITY),
+        // A hillshade without exaggeration shades nothing.
+        LayerType::Hillshade => ids!(HILLSHADE_EXAGGERATION),
     }
 }
 
@@ -104,7 +157,54 @@ impl Transitions {
         });
     }
 
+    /// Layer `layer` (of `ty`, whose slots are `slot`) was shown or hidden
+    /// after the frame at `shown`: it fades by `transition` from the next
+    /// frame, unless its opacity varies by feature.
+    pub(crate) fn fade(
+        &mut self,
+        (layer, ty): (&str, LayerType),
+        slot: impl Fn(PropertyId) -> Slot,
+        shown: bool,
+        transition: Transition,
+        now: f64,
+    ) {
+        let to = f64::from(u8::from(shown));
+        let from = match self
+            .fades
+            .iter()
+            .position(|f| f.layer == layer && f.ty == ty)
+        {
+            Some(i) => self.fades.remove(i).at(now),
+            None => 1.0 - to,
+        };
+        let uniform = fade_properties(ty)
+            .iter()
+            .all(|&id| !per_feature(slot(id).kind()));
+        if transition.duration + transition.delay <= 0.0 || !uniform || from == to {
+            return;
+        }
+        self.fades.push(Fade {
+            layer: layer.to_string(),
+            ty,
+            from,
+            to,
+            span: None,
+            transition,
+        });
+    }
+
+    /// Whether layer `layer` still shows, fading out, though hidden.
+    pub(crate) fn fading_out(&self, layer: &str) -> bool {
+        self.fades.iter().any(|f| f.layer == layer && f.to == 0.0)
+    }
+
+    /// Whether a paint transition or a fade runs.
     pub(crate) fn running(&self) -> bool {
+        !self.running.is_empty() || !self.fades.is_empty()
+    }
+
+    /// Whether a paint transition runs, as GL JS would run it.
+    pub(crate) fn easing_paint(&self) -> bool {
         !self.running.is_empty()
     }
 
@@ -118,8 +218,15 @@ impl Transitions {
         }
         self.running
             .retain(|r| r.span.is_some_and(|(_, end)| end > now));
-        self.ran |= !self.running.is_empty();
-        if self.running.is_empty() {
+        for f in &mut self.fades {
+            let t = f.transition;
+            f.span
+                .get_or_insert((now + t.delay, now + t.delay + t.duration));
+        }
+        self.fades
+            .retain(|f| f.span.is_some_and(|(_, end)| end > now));
+        self.ran |= self.running();
+        if !self.running() {
             return None;
         }
         let mut style = (*plan.style).clone();
@@ -134,6 +241,24 @@ impl Transitions {
             };
             let t = r.at(now);
             mix(r.id, Arc::make_mut(layer).slot_mut(r.id), &r.prior, zoom, t);
+        }
+        for f in &self.fades {
+            let Some(layer) = style
+                .layers
+                .iter_mut()
+                .find(|l| l.id == f.layer && l.ty == f.ty)
+            else {
+                continue;
+            };
+            let layer = Arc::make_mut(layer);
+            layer.visibility = Visibility::Visible;
+            let shown = f.at(now);
+            for &id in fade_properties(f.ty) {
+                let slot = layer.slot_mut(id);
+                if let Value::Number(n) = id.value(slot, zoom) {
+                    slot.set_constant(Value::Number(n * shown));
+                }
+            }
         }
         Some(StylePlan {
             style: Arc::new(style),

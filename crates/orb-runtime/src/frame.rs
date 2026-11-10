@@ -117,6 +117,7 @@ impl Map {
             let layer = &plan.style.layers[n.layer];
             n.source == index
                 && (layer.is_visible_at(zoom)
+                    || self.transitions.fading_out(&layer.id)
                     || (draping
                         && n.family.is_draped()
                         && layer.visibility == orb_style::Visibility::Visible))
