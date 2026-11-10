@@ -116,6 +116,26 @@ pub struct TextureDesc<'a> {
     pub sample_count: u32,
     /// Mip levels, at least 1. Level 0 is the full size.
     pub mip_levels: u32,
+    /// Formats its views may take besides `format`: its sRGB twin, to
+    /// draw and sample in linear light while storage writes the encoding
+    /// ([`Gpu::create_texture_view_as`](crate::Gpu::create_texture_view_as)).
+    pub view_formats: &'a [TextureFormat],
+}
+
+impl TextureFormat {
+    /// The format with sRGB encoding on writes and decoding on reads, for
+    /// 8-bit colour; others are their own.
+    pub fn srgb(self) -> Self {
+        match self {
+            Self::Rgba8Unorm => Self::Rgba8UnormSrgb,
+            Self::Bgra8Unorm => Self::Bgra8UnormSrgb,
+            other => other,
+        }
+    }
+
+    pub fn is_srgb(self) -> bool {
+        matches!(self, Self::Rgba8UnormSrgb | Self::Bgra8UnormSrgb)
+    }
 }
 
 /// A rectangle of one layer of a texture's mip level, for writes; its

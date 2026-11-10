@@ -27,8 +27,9 @@ pub enum Preview {
     /// style-spec#1881: `["meters-per-pixel"]`, the ground resolution at
     /// the camera's target, wherever paint reads the camera.
     GroundResolution,
-    /// The globe's scattering composited in linear light.
-    Atmosphere,
+    /// `metadata["dev.sargunv.orbis:color-space"]`: `"srgb"` or `"linear"`,
+    /// the space colours mix in.
+    ColorSpace,
 }
 
 impl Preview {
@@ -40,7 +41,7 @@ impl Preview {
         Self::Stars,
         Self::GroundResolution,
         Self::Crs,
-        Self::Atmosphere,
+        Self::ColorSpace,
     ];
 
     /// The name a map enables it by: the proposal's `style-spec#n`, or
@@ -53,7 +54,7 @@ impl Preview {
             Self::Stars => "style-spec#1889",
             Self::GroundResolution => "style-spec#1881",
             Self::Crs => "orbis:crs",
-            Self::Atmosphere => "orbis:atmosphere",
+            Self::ColorSpace => "dev.sargunv.orbis:color-space",
         }
     }
 
@@ -82,8 +83,8 @@ impl Preview {
             Self::Crs => {
                 "Coordinate reference systems as the projection type (`EPSG:3413`, or a parametric kind such as `polar-stereographic` with PROJ-named numeric parameters beside the `type`) and OGC 2D tile matrix sets on sources (`tileMatrixSet`: a registered identifier or an inline document). Our own design; no proposal yet."
             }
-            Self::Atmosphere => {
-                "The globe's scattering (`sky.atmosphere-blend`) composited in linear light rather than added gamma-encoded as GL JS does: a map's sunlit face keeps its colours, tinted, rather than lifted toward white, the haze gathers toward the limb, and over the sky and the backdrop it adds to what they show. No style input; a rendering change of our own."
+            Self::ColorSpace => {
+                "`metadata[\"dev.sargunv.orbis:color-space\"]`, the space colours mix in wherever they meet: `\"srgb\"` (the default) mixes gamma-encoded values, as GL JS and MapLibre Native do; `\"linear\"` mixes linear light: translucent layers, antialiased edges, the terrain's drape, hillshade, fog, the sky's gradients and the globe's scattering, which then adds to what's beneath exactly. Colours in the style keep their meaning: one interpolates as the spec says, then mixes in linear light. In `metadata`, so GL JS, Native and validators ignore it. Our own design; no proposal yet."
             }
         }
     }

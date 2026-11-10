@@ -20,7 +20,8 @@ pub(crate) struct Downsampler {
     /// Made for the first texture that needs it, with `extend`'s.
     pipeline: Option<ComputePipelineId>,
     extend: Option<ComputePipelineId>,
-    /// Per level, at `STRIDE` apart: its number.
+    /// Per level, at `STRIDE` apart: its number; then again with a flag
+    /// that the texels are linear light, sRGB-encoded.
     levels: BufferId,
 }
 
@@ -55,11 +56,17 @@ impl Downsampler {
         });
         let levels = gpu.create_buffer(&BufferDesc {
             label: "downsample levels",
-            size: LEVELS * STRIDE,
+            size: 2 * LEVELS * STRIDE,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        for level in 0..LEVELS {
-            gpu.write_buffer(levels, level * STRIDE, bytemuck::bytes_of(&(level as u32)));
+        for linear in 0..2 {
+            for level in 0..LEVELS {
+                gpu.write_buffer(
+                    levels,
+                    (linear * LEVELS + level) * STRIDE,
+                    bytemuck::cast_slice(&[level as u32, linear as u32]),
+                );
+            }
         }
         Self {
             layout,
@@ -106,13 +113,16 @@ impl Downsampler {
     }
 
     /// Per level after the first, its group: reading `views[level - 1]`,
-    /// writing `views[level]`, over `regions`.
+    /// writing `views[level]`, over `regions`; `linear` when the texels
+    /// encode linear light, which averages decoded.
     pub(crate) fn groups(
         &self,
         gpu: &mut dyn Gpu,
         views: &[TextureId],
         regions: BufferId,
+        linear: bool,
     ) -> Vec<BindGroupId> {
+        let first = if linear { LEVELS } else { 0 };
         let view = |binding, texture| BindGroupEntry {
             binding,
             resource: BindingResource::Texture {
@@ -136,7 +146,7 @@ impl Downsampler {
                             binding: 3,
                             resource: BindingResource::Buffer {
                                 buffer: self.levels,
-                                offset: level as u64 * STRIDE,
+                                offset: (first + level as u64) * STRIDE,
                                 size: Some(16),
                             },
                         },

@@ -423,7 +423,11 @@ impl NodePaint {
     }
 
     /// The node's uniform, its struct in the family's shader.
-    pub(crate) fn uniform_words(&self, node: u32) -> Vec<u32> {
+    /// `linear` when colours mix in linear light: hillshade's, which only
+    /// its uniform holds, are decoded here; other families decode theirs
+    /// in their shaders (`color_in`), once chosen from the uniform, rows
+    /// or state.
+    pub(crate) fn uniform_words(&self, node: u32, linear: bool) -> Vec<u32> {
         use orb_shaders::layout::*;
         let pattern = match self {
             Self::FillPattern(_, p) | Self::LinePattern(_, p) | Self::ExtrusionPattern(_, p) => {
@@ -573,9 +577,10 @@ impl NodePaint {
             Self::Hillshade(p) => {
                 use hillshade_node as n;
                 b = Block::new(n::WORDS);
-                b.f(n::ACCENT, &p.accent)
-                    .f(n::SHADOWS, p.shadows.as_flattened());
-                b.f(n::HIGHLIGHTS, p.highlights.as_flattened());
+                let color = |c| crate::color_in(c, linear);
+                b.f(n::ACCENT, &color(p.accent))
+                    .f(n::SHADOWS, p.shadows.map(color).as_flattened());
+                b.f(n::HIGHLIGHTS, p.highlights.map(color).as_flattened());
                 b.f(n::ALTITUDES, &p.altitudes).f(n::AZIMUTHS, &p.azimuths);
                 b.f(n::EXAGGERATION, &[p.exaggeration])
                     .u(n::METHOD, &[p.method as u32]);
@@ -765,7 +770,7 @@ mod tests {
             mipmapped: true,
             fade_duration: 300.0,
         });
-        let words = raster.uniform_words(0);
+        let words = raster.uniform_words(0, false);
         let at = orb_shaders::layout::raster_node::SPIN_WEIGHTS;
         let spin: Vec<f32> = words[at..at + 3]
             .iter()

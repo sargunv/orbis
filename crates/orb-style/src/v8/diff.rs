@@ -121,6 +121,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         layers: Vec::new(),
         warnings: Vec::new(),
         previews,
+        color_space: old.color_space,
     };
     if draft.new_root {
         // Terrain names a source: it is parsed with the sources below.

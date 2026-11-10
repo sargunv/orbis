@@ -972,3 +972,46 @@ fn meters_per_pixel_follows_its_preview() {
     let layout = r#""line-miter-limit": ["meters-per-pixel"]"#;
     assert!(parse_with(&layer("", layout), Previews::ALL, &[]).is_err());
 }
+
+/// `metadata["dev.sargunv.orbis:color-space"]` behind its preview: off, the
+/// key warns and colours mix as sRGB; an unknown value warns too. Other
+/// metadata is anyone's.
+#[test]
+fn color_space_reads_metadata_with_its_preview() {
+    let style = |metadata: &str| {
+        format!(r#"{{"version": 8, "metadata": {metadata}, "sources": {{}}, "layers": []}}"#)
+    };
+    let on = Previews::NONE.with(Preview::ColorSpace);
+    let linear = style(r#"{"dev.sargunv.orbis:color-space": "linear", "other": 1}"#);
+    let parsed = parse_with(&linear, on, &[]).unwrap();
+    assert_eq!(parsed.color_space, ColorSpace::Linear);
+    assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    let off = parse(&linear).unwrap();
+    assert_eq!(off.color_space, ColorSpace::Srgb);
+    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
+    assert!(off.warnings[0].message.contains("preview"));
+    let unknown = parse_with(
+        &style(r#"{"dev.sargunv.orbis:color-space": "p3"}"#),
+        on,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(unknown.color_space, ColorSpace::Srgb);
+    assert_eq!(
+        unknown.warnings[0].path,
+        "metadata.dev.sargunv.orbis:color-space"
+    );
+    for metadata in [
+        r#"{"dev.sargunv.orbis:color-space": "srgb"}"#,
+        r#"{"other": true}"#,
+        "7",
+    ] {
+        let parsed = parse_with(&style(metadata), on, &[]).unwrap();
+        assert_eq!(parsed.color_space, ColorSpace::Srgb, "{metadata}");
+        assert!(
+            parsed.warnings.is_empty(),
+            "{metadata}: {:?}",
+            parsed.warnings
+        );
+    }
+}

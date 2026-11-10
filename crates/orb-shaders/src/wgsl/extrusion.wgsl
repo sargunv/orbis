@@ -253,7 +253,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         out.images = vec2<u32>(row, state);
         return out;
     }
-    out.color = vec4<f32>(light_surface(color.rgb, normal, gradient), 1.0) * opacity;
+    out.color = color_in(vec4<f32>(light_surface(color.rgb, normal, gradient), 1.0) * opacity);
     return out;
 }
 // The elevation `v` through input operator `i`. The curve's uniforms are
@@ -361,7 +361,7 @@ fn elevation_shade(in: ExtrusionOut) -> vec4<f32> {
         let t = elevation_factor(x, span.lower, span.upper);
         color = mix(color, elevation_stop(lower + 1u, span.upper_color, in), t);
     }
-    return vec4<f32>(light_lit(color.rgb, in.color.x, in.color.y), 1.0) * in.color.z;
+    return color_in(vec4<f32>(light_lit(color.rgb, in.color.x, in.color.y), 1.0) * in.color.z);
 }
 fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {
     if node.pattern.enabled == 0u {
@@ -376,5 +376,5 @@ fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {
     let pos_b = pattern_position(tile, in.pattern_pos, image_b, node.pattern.to_scale);
     let a = pattern_sample(image_a, fract(pos_a), 0.0);
     let b = pattern_sample(image_b, fract(pos_b), 0.0);
-    return mix(a, b, node.pattern.fade) * in.color;
+    return color_in(mix(a, b, node.pattern.fade) * in.color);
 }

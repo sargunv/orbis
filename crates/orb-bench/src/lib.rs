@@ -401,12 +401,14 @@ struct Samples {
     report: FrameReport,
 }
 
-/// A map on `runtime` loading `style` at `camera`.
+/// A map on `runtime` loading `style` at `camera`, with every preview on,
+/// as the demo has them.
 pub(crate) fn new_map(runtime: &Runtime, style: &str, camera: CameraState) -> Map {
     let mut map = Map::new(
         runtime,
         MapOptions {
             camera: Some(camera),
+            previews: orb_api::Previews::ALL,
             ..MapOptions::default()
         },
     );

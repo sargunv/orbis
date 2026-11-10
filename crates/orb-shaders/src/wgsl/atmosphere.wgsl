@@ -10,7 +10,7 @@
 // scattering pass over the map tints the limb (`atmosphere.fragment.glsl`).
 
 struct Atmosphere {
-    // Premultiplied style colours.
+    // Premultiplied style colours, in linear light when `linear` is 1.
     sky_color: vec4<f32>,
     horizon_color: vec4<f32>,
     fog_color: vec4<f32>,
@@ -30,8 +30,10 @@ struct Atmosphere {
     fog_far: f32,
     // style-spec#1889's stars, 0 to 1.
     star_opacity: f32,
-    // 1 to composite the scattering in linear light (`orbis:atmosphere`).
-    scatter_linear: f32,
+    // 1 when colours mix in linear light (`dev.sargunv.orbis:color-space`):
+    // the colours above are decoded, fog mixes them as they are, and the
+    // scattering adds to what's beneath exactly.
+    linear: f32,
     // Clip → camera-relative space on Earth-fixed axes, for view rays.
     ray_inverse: mat4x4<f32>,
     // The globe, mixed in by `globe_amount` (0 on a flat surface): the eye
@@ -257,14 +259,18 @@ fn atmosphere_fog_depth(a: Atmosphere, w: f32) -> f32 {
 }
 
 // GL JS's terrain fog over a surface colour at a fog depth, blended in
-// linear space toward the horizon colour far off.
+// linear space toward the horizon colour far off: through GL JS's 2.2
+// gamma for encoded colours, as they are in linear light.
 fn atmosphere_fog(a: Atmosphere, surface: vec4<f32>, depth: f32) -> vec4<f32> {
     if a.fog_opacity <= 0.0 || depth <= a.fog_ground_blend {
         return surface;
     }
-    let gamma = vec4<f32>(ATMOSPHERE_GAMMA);
     let blend = smoothstep(0.0, 1.0, max((depth - a.horizon_fog_blend) / (1.0 - a.horizon_fog_blend), 0.0));
+    let factor = pow(max(depth - a.fog_ground_blend, 0.0) / (1.0 - a.fog_ground_blend), 2.0) * a.fog_opacity;
+    if a.linear != 0.0 {
+        return mix(surface, mix(a.fog_color, a.horizon_color, blend), factor);
+    }
+    let gamma = vec4<f32>(ATMOSPHERE_GAMMA);
     let fog = mix(pow(a.fog_color, gamma), pow(a.horizon_color, gamma), blend);
-    let factor = max(depth - a.fog_ground_blend, 0.0) / (1.0 - a.fog_ground_blend);
-    return pow(mix(pow(surface, gamma), fog, pow(factor, 2.0) * a.fog_opacity), 1.0 / gamma);
+    return pow(mix(pow(surface, gamma), fog, factor), 1.0 / gamma);
 }

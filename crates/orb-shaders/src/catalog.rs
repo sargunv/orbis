@@ -2,7 +2,12 @@
 // Shared with the build script, which reflects the shaders' uniforms.
 pub(crate) const TYPES: &str = wgsl!("types");
 const PROJECT: &str = wgsl!("project");
-const DRAW: &str = concat!(wgsl!("bezier"), wgsl!("draw"), wgsl!("project"));
+const DRAW: &str = concat!(
+    wgsl!("color"),
+    wgsl!("bezier"),
+    wgsl!("draw"),
+    wgsl!("project")
+);
 const FETCH: &str = wgsl!("fetch");
 const PATTERN: &str = wgsl!("pattern");
 const EXTRUSION: &str = wgsl!("extrusion");
@@ -16,12 +21,12 @@ const SYMBOL: &str = wgsl!("symbol");
 const SYMBOL_POINT: &str = wgsl!("symbol_point");
 const SYMBOL_LINE: &str = wgsl!("symbol_line");
 const HEATMAP: &str = wgsl!("heatmap");
-const COMPOSITE: &str = wgsl!("composite");
+const COMPOSITE: &str = concat!(wgsl!("color"), wgsl!("composite"));
 pub(crate) const CULL: &str = wgsl!("cull");
 const IMAGE: &str = wgsl!("image");
 const DEM: &str = wgsl!("dem");
 /// The atmosphere's sky and fog.
-const ATMOSPHERE: &str = wgsl!("atmosphere");
+const ATMOSPHERE: &str = concat!(wgsl!("color"), wgsl!("atmosphere"));
 /// v8's `light` on extrusions.
 const LIGHTING: &str = wgsl!("lighting");
 const RASTER: &str = wgsl!("raster");
@@ -118,6 +123,15 @@ pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
     parts: &[COMPOSITE],
     vertex: "vs_composite",
     fragment: "fs_replace",
+    compute: "",
+};
+
+/// A linear-light map, drawn into an sRGB target, encoded into the host's.
+pub const COMPOSITE_ENCODE_SHADER: Shader = Shader {
+    label: "composite encode",
+    parts: &[COMPOSITE],
+    vertex: "vs_composite",
+    fragment: "fs_encode",
     compute: "",
 };
 
@@ -233,7 +247,7 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
 /// Mip levels over regions of array layers: drape slots, raster pages.
 pub const DOWNSAMPLE_SHADER: Shader = Shader {
     label: "downsample",
-    parts: &[wgsl!("downsample")],
+    parts: &[wgsl!("color"), wgsl!("downsample")],
     vertex: "",
     fragment: "",
     compute: "downsample",
@@ -243,7 +257,7 @@ pub const DOWNSAMPLE_SHADER: Shader = Shader {
 /// their mip levels, in the downsampler's bindings.
 pub const EXTEND_SHADER: Shader = Shader {
     label: "extend",
-    parts: &[wgsl!("downsample")],
+    parts: &[wgsl!("color"), wgsl!("downsample")],
     vertex: "",
     fragment: "",
     compute: "extend",
@@ -320,6 +334,7 @@ pub const SHADERS: &[Shader] = &[
     SCATTER_SHADER,
     COMPOSITE_OVER_SHADER,
     COMPOSITE_REPLACE_SHADER,
+    COMPOSITE_ENCODE_SHADER,
     TERRAIN_SHADER,
     TERRAIN_SHADE_SHADER,
     DRAPE_SHADER,

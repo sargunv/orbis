@@ -369,6 +369,7 @@ impl TileWorker {
             projection: None,
             state: Vec::new(),
             previews: update.previews,
+            color_space: Default::default(),
             sources,
             layers,
             warnings: Vec::new(),

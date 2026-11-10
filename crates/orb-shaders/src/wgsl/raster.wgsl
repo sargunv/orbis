@@ -71,5 +71,5 @@ fn fs_raster(in: ImageOut) -> @location(0) vec4<f32> {
     // brightness
     let high = vec3<f32>(node.brightness_low);
     let low = vec3<f32>(node.brightness_high);
-    return vec4<f32>(mix(high, low, rgb) * color.a, color.a);
+    return color_in(vec4<f32>(mix(high, low, rgb) * color.a, color.a));
 }

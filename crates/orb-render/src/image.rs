@@ -274,6 +274,7 @@ impl Images {
                 usage: TextureUsages::TEXTURE_BINDING,
                 sample_count: 1,
                 mip_levels: 1,
+                view_formats: &[],
             })
         };
         let placeholder_array = placeholder("no tiles", 1, 1, TextureViewDimension::D2Array);
@@ -581,7 +582,7 @@ impl Images {
                 let views: Vec<TextureId> = (0..levels)
                     .map(|level| gpu.create_texture_view(texture, level..level + 1))
                     .collect();
-                let groups = downsampler.groups(gpu, &views, regions);
+                let groups = downsampler.groups(gpu, &views, regions, false);
                 Mips {
                     revision,
                     regions,
@@ -603,6 +604,7 @@ impl Images {
                     usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
                     sample_count: 1,
                     mip_levels: 1,
+                    view_formats: &[],
                 });
                 let regions = gpu.create_buffer(&BufferDesc {
                     label: "extended tile areas",
@@ -699,6 +701,7 @@ impl Images {
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,
             mip_levels: 1,
+            view_formats: &[],
         });
         let texels: Vec<u32> = colors.iter().chain(elevations).copied().collect();
         gpu.write_texture(

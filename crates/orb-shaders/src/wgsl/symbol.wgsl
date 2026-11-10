@@ -532,11 +532,11 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     }
     out.data = vec3<f32>(final_pos.w, size, visible_opacity);
     if (flags & Q_COLOR) != 0u {
-        out.fill = unpack4x8unorm(vertex_at(base + vertex_at(base + H_COLORS) + quad_index));
+        out.fill = color_in(unpack4x8unorm(vertex_at(base + vertex_at(base + H_COLORS) + quad_index)));
     } else {
-        out.fill = paint_color(row, state_at_slot, 1u, node.fill_color, tile.zoom);
+        out.fill = color_in(paint_color(row, state_at_slot, 1u, node.fill_color, tile.zoom));
     }
-    out.halo = paint_color(row, state_at_slot, 2u, node.halo_color, tile.zoom);
+    out.halo = color_in(paint_color(row, state_at_slot, 2u, node.halo_color, tile.zoom));
     out.halo_params = vec2<f32>(paint_number(row, state_at_slot, 3u, node.halo_width, tile.zoom), paint_number(row, state_at_slot, 4u, node.halo_blur, tile.zoom));
     let linear = (node.flags & LINEAR_ICONS) != 0u || (vertex_at(base + H_FLAGS) & 1u) != 0u
         || abs(frame.pitch) > 0.0;
@@ -563,9 +563,9 @@ fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
     let uv = atlas_uv(in, select(node.glyph_page, node.image_page, image));
     if image && !sdf {
         if (in.kind & 4u) != 0u {
-            return textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0) * total_opacity;
+            return color_in(textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0)) * total_opacity;
         }
-        return textureSampleLevel(image_pages, nearest_sampler, uv, in.layer, 0.0) * total_opacity;
+        return color_in(textureSampleLevel(image_pages, nearest_sampler, uv, in.layer, 0.0)) * total_opacity;
     }
     var dist: f32;
     if image {

@@ -82,6 +82,8 @@ fn allocated(stacks: [u32; 2]) -> [u32; 2] {
 }
 /// The drape atlas's format: draped layers draw into it with pipelines of
 /// their own when the target's differs; mip levels are written as storage.
+/// In linear light the colour page is drawn and sampled through its sRGB
+/// twin, and its mip levels decode and encode as they average.
 pub const DRAPE_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 /// Grid vertices per terrain tile side less one (`terrain.wgsl`'s `GRID`):
 /// one per DEM pixel at the DEM zoom the runtime picks. The mesh drawn
@@ -248,8 +250,13 @@ struct Atlas {
     size: [u32; 2],
     /// Texels per slot side.
     slot_px: u32,
-    /// Per mip level, a view: level 0's is drawn into.
+    /// Per mip level, a view, which the mip levels are written through.
     levels: Vec<TextureId>,
+    /// What draws into level 0 and what samples every level: the sRGB
+    /// twin's views of a linear-light colour page, else level 0's view and
+    /// the texture.
+    draw: TextureId,
+    sampled: TextureId,
     /// The redrawn slots as the downsampler's regions, which the clear
     /// reads too.
     regions: BufferId,
@@ -268,6 +275,7 @@ impl Atlas {
         slot_px: u32,
         clear_layout: BindGroupLayoutId,
         downsampler: &mut crate::downsample::Downsampler,
+        linear: bool,
     ) -> Self {
         let size = [columns, rows].map(|n| n * slot_px);
         let levels = slot_px.ilog2() + 1;
@@ -285,10 +293,24 @@ impl Atlas {
                 | TextureUsages::COPY_DST,
             sample_count: 1,
             mip_levels: levels,
+            view_formats: if linear {
+                &[TextureFormat::Rgba8UnormSrgb]
+            } else {
+                &[]
+            },
         });
         let views: Vec<TextureId> = (0..levels)
             .map(|l| gpu.create_texture_view(texture, l..l + 1))
             .collect();
+        let (draw, sampled) = if linear {
+            let srgb = DRAPE_FORMAT.srgb();
+            (
+                gpu.create_texture_view_as(texture, 0..1, srgb),
+                gpu.create_texture_view_as(texture, 0..levels, srgb),
+            )
+        } else {
+            (views[0], texture)
+        };
         let regions = gpu.create_buffer(&BufferDesc {
             label: "drape slots",
             size: u64::from(columns * rows) * 16,
@@ -316,12 +338,14 @@ impl Atlas {
             ],
         });
         downsampler.make(gpu);
-        let mips = downsampler.groups(gpu, &views, regions);
+        let mips = downsampler.groups(gpu, &views, regions, linear);
         Self {
             texture,
             size,
             slot_px,
             levels: views,
+            draw,
+            sampled,
             regions,
             size_uniform,
             clear,
@@ -344,7 +368,17 @@ impl Atlas {
 impl crate::release::Release for Atlas {
     fn release(self, gpu: &mut dyn Gpu) {
         let buffers = (self.regions, self.size_uniform);
-        (self.clear, self.mips, self.levels, self.texture, buffers).release(gpu);
+        // A linear page's own views; else they're level 0's and the texture.
+        let views = (self.draw != self.levels[0]).then_some([self.draw, self.sampled]);
+        (
+            self.clear,
+            self.mips,
+            self.levels,
+            views,
+            self.texture,
+            buffers,
+        )
+            .release(gpu);
     }
 }
 
@@ -358,7 +392,9 @@ pub(crate) struct Terrain {
     clear_layout: BindGroupLayoutId,
     /// Draping and shading, each at one sample and at four.
     pipelines: [[Option<RenderPipelineId>; 2]; 2],
-    clear: RenderPipelineId,
+    /// Clearing the colour page's slots and the slope page's, which differ
+    /// in linear light.
+    clear: [RenderPipelineId; 2],
     grid: BufferId,
     grid_indices: BufferId,
     /// The index range of each grid step's mesh, and the step drawn.
@@ -481,28 +517,36 @@ impl Terrain {
             entries: &[uniform(0, vs), storage(1)],
         });
         let drape_module = crate::shader_module(gpu, &DRAPE_SHADER);
-        let clear = gpu.create_render_pipeline(&RenderPipelineDesc {
-            label: DRAPE_SHADER.label,
-            bind_group_layouts: &[clear_layout],
-            vertex: ShaderStage {
-                module: drape_module,
-                entry_point: DRAPE_SHADER.vertex,
-                constants: &[],
-            },
-            fragment: ShaderStage {
-                module: drape_module,
-                entry_point: DRAPE_SHADER.fragment,
-                constants: &[],
-            },
-            targets: &[ColorTargetState {
-                format: DRAPE_FORMAT,
-                blend: None,
-            }],
-            depth: None,
-            topology: PrimitiveTopology::TriangleStrip,
-            cull_mode: None,
-            sample_count: 1,
-        });
+        let mut clear_pipeline = |format| {
+            gpu.create_render_pipeline(&RenderPipelineDesc {
+                label: DRAPE_SHADER.label,
+                bind_group_layouts: &[clear_layout],
+                vertex: ShaderStage {
+                    module: drape_module,
+                    entry_point: DRAPE_SHADER.vertex,
+                    constants: &[],
+                },
+                fragment: ShaderStage {
+                    module: drape_module,
+                    entry_point: DRAPE_SHADER.fragment,
+                    constants: &[],
+                },
+                targets: &[ColorTargetState {
+                    format,
+                    blend: None,
+                }],
+                depth: None,
+                topology: PrimitiveTopology::TriangleStrip,
+                cull_mode: None,
+                sample_count: 1,
+            })
+        };
+        let slope_clear = clear_pipeline(DRAPE_FORMAT);
+        let clear = if target.color.is_srgb() {
+            [clear_pipeline(DRAPE_FORMAT.srgb()), slope_clear]
+        } else {
+            [slope_clear; 2]
+        };
         gpu.destroy_shader_module(drape_module);
 
         let (grid, indices, grid_ranges) = grid();
@@ -706,7 +750,15 @@ impl Terrain {
                     None
                 }
             };
-            let atlas = Atlas::new(gpu, grid, PAGE_PX[page], self.clear_layout, downsampler);
+            let linear = page == 0 && self.target.color.is_srgb();
+            let atlas = Atlas::new(
+                gpu,
+                grid,
+                PAGE_PX[page],
+                self.clear_layout,
+                downsampler,
+                linear,
+            );
             if let Some(old) = old {
                 let px = PAGE_PX[page];
                 let first = if page == 0 { 0 } else { stacks[0] };
@@ -896,6 +948,7 @@ impl Terrain {
                 usage,
                 sample_count: 1,
                 mip_levels: 1,
+                view_formats: &[],
             })
         };
         self.occlusion = Some([
@@ -951,7 +1004,7 @@ impl Terrain {
         let shaded = (self.layers.iter().any(|l| l.shade.is_some()))
             .then(|| self.pipeline(gpu, samples, true));
         let occlusion = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
-        [pipeline.into(), self.clear.into()]
+        [pipeline.into(), self.clear[0].into(), self.clear[1].into()]
             .into_iter()
             .chain(shaded.map(PipelineId::from))
             .chain(occlusion.map(PipelineId::from))
@@ -959,7 +1012,10 @@ impl Terrain {
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        let mut out: Vec<PipelineId> = vec![self.clear.into()];
+        let mut out: Vec<PipelineId> = vec![self.clear[0].into()];
+        if self.clear[1] != self.clear[0] {
+            out.push(self.clear[1].into());
+        }
         out.extend(
             self.pipelines
                 .iter()
@@ -1072,7 +1128,7 @@ impl Terrain {
                 gpu.write_buffer(atlas.regions, 0, bytemuck::cast_slice(&regions));
                 let count = slots.len() as u32;
                 let mut commands = vec![
-                    RenderCommand::SetPipeline(self.clear),
+                    RenderCommand::SetPipeline(self.clear[page]),
                     RenderCommand::SetBindGroup {
                         index: 0,
                         group: atlas.clear,
@@ -1100,7 +1156,7 @@ impl Terrain {
                 passes.push(Pass::Render(RenderPass {
                     label: "drape".into(),
                     colors: vec![ColorAttachment {
-                        target: atlas.levels[0],
+                        target: atlas.draw,
                         resolve: None,
                         store: StoreOp::Store,
                         load: LoadOp::Load,
@@ -1119,8 +1175,8 @@ impl Terrain {
             self.pending.clear();
             self.pending_draws.clear();
         }
-        let atlas_texture = colour.texture;
-        let slope_texture = self.atlas[1].as_ref().map_or(atlas_texture, |a| a.texture);
+        let atlas_texture = colour.sampled;
+        let slope_texture = self.atlas[1].as_ref().map_or(atlas_texture, |a| a.sampled);
         if self.group.is_some_and(|(_, bound)| bound != [frame, props]) {
             // The scene's buffers grew.
             self.forget_group(gpu);
@@ -1436,7 +1492,12 @@ impl crate::release::Release for Terrain {
         self.release_occlusion(gpu);
         self.forget_group(gpu);
         let layouts = (self.layout, self.stack_layout, self.clear_layout);
-        let pipelines = (self.pipelines, self.clear, self.occlusion_pipeline);
+        let [colour_clear, slope_clear] = self.clear;
+        let clear = (
+            colour_clear,
+            (slope_clear != colour_clear).then_some(slope_clear),
+        );
+        let pipelines = (self.pipelines, clear, self.occlusion_pipeline);
         let buffers = (self.grid, self.grid_indices, self.tiles, self.params);
         (layouts, pipelines, buffers, self.stack_uniforms).release(gpu);
         (self.stack_groups, self.linear, self.targets).release(gpu);

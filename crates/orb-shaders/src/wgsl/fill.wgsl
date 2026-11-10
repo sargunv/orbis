@@ -102,7 +102,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
     let shift = translate_world(px, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip(ground, vec2<f32>(0.0), 0.0);
-    out.color = color * opacity;
+    out.color = color_in(color) * opacity;
     out.opacity = opacity;
     out.pattern_pos = pos;
     out.images = pattern_ids(row, FILL_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);

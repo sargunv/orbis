@@ -35,5 +35,5 @@ pub use source::{
     RasterDemSource, RasterSource, Source, SourceKind, TileSet, VectorSource,
 };
 pub use spec::*;
-pub use style::Style;
+pub use style::{ColorSpace, Style};
 pub use transition::{Transition, TransitionOverride};

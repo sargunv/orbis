@@ -42,6 +42,7 @@ impl OrbisMap {
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             sample_count: 1,
             mip_levels: 1,
+            view_formats: &[],
         });
         self.map.set_mode(RenderMode::Still);
         self.snapshot = Some(Snapshot {

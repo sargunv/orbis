@@ -93,6 +93,26 @@ fn args_offset(index: u32) -> u64 {
     u64::from(index) * crate::scene::ARGS_WORDS as u64 * 4
 }
 
+/// A premultiplied sRGB-encoded colour as it mixes: itself, or when
+/// `linear` its unpremultiplied colour decoded to linear light,
+/// premultiplied (`color.wgsl`'s `premultiplied_to_linear`).
+pub(crate) fn color_in(c: [f32; 4], linear: bool) -> [f32; 4] {
+    let a = c[3];
+    if !linear || a <= 0.0 {
+        return if linear { [0.0; 4] } else { c };
+    }
+    let decode = |v: f32| {
+        let v = (v / a).clamp(0.0, 1.0);
+        let lin = if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        };
+        lin * a
+    };
+    [decode(c[0]), decode(c[1]), decode(c[2]), a]
+}
+
 /// The attachment a renderer draws into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TargetFormat {
@@ -225,7 +245,14 @@ impl Node {
 #[derive(Debug)]
 pub struct Renderer {
     id: u64,
+    /// What it draws into: the host's target, or in linear light an sRGB
+    /// texture of its own ([`offscreen::LinearScene`]), encoded into the
+    /// host's at the end of each frame.
     target: TargetFormat,
+    /// The host's target.
+    host: TargetFormat,
+    /// Colours mix in linear light.
+    linear: Option<offscreen::LinearScene>,
     atmosphere: atmosphere::Atmosphere,
     scene: Scene,
     draw_group: BindGroupId,
@@ -351,7 +378,7 @@ impl Renderer {
             self.extrusions,
         )
             .release(gpu);
-        (self.layers, self.composites).release(gpu);
+        (self.layers, self.composites, self.linear).release(gpu);
         let drape = self
             .drape_pipelines
             .map(|d| (d.paint.pipelines, d.images.0));
@@ -378,6 +405,27 @@ impl Renderer {
         capacity: SceneCapacity,
         images: ImageBindings,
     ) -> Self {
+        Self::with_color_space(gpu, target, capacity, images, false)
+    }
+
+    /// [`with_images`](Self::with_images), mixing colours in linear light
+    /// when `linear` (`dev.sargunv.orbis:color-space`) rather than as
+    /// gamma-encoded values, as GL JS and MapLibre Native do.
+    pub fn with_color_space(
+        gpu: &mut dyn Gpu,
+        host: TargetFormat,
+        capacity: SceneCapacity,
+        images: ImageBindings,
+        linear: bool,
+    ) -> Self {
+        let target = TargetFormat {
+            color: if linear {
+                TextureFormat::Rgba8UnormSrgb
+            } else {
+                host.color
+            },
+            ..host
+        };
         let scene = Scene::new(gpu, capacity);
         let b = *scene.buffers();
         let storage = |binding, visibility, read_only| BindGroupLayoutEntry {
@@ -501,6 +549,7 @@ impl Renderer {
             usage: TextureUsages::TEXTURE_BINDING,
             sample_count: 1,
             mip_levels: 1,
+            view_formats: &[],
         });
         // Nothing hides symbols and circles without terrain: its depth is
         // the far plane, 0 in reversed-Z.
@@ -514,6 +563,7 @@ impl Renderer {
             usage: TextureUsages::TEXTURE_BINDING,
             sample_count: 1,
             mip_levels: 1,
+            view_formats: &[],
         });
         let draw_group = scene_group(
             gpu,
@@ -575,7 +625,14 @@ impl Renderer {
         let downsampler = downsample::Downsampler::new(gpu);
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
-        let extrusions = extrusion::Extrusions::new(draw_layout, node_layout);
+        let linear = linear.then(|| offscreen::LinearScene::new(gpu, &composites, host));
+        // 3D layers draw into RGBA8, in linear light its sRGB twin.
+        let extrusion_format = if linear.is_some() {
+            TextureFormat::Rgba8Unorm.srgb()
+        } else {
+            TextureFormat::Rgba8Unorm
+        };
+        let extrusions = extrusion::Extrusions::new(draw_layout, node_layout, extrusion_format);
         let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
             gpu.caps().limits.min_uniform_buffer_offset_alignment,
         ));
@@ -590,6 +647,8 @@ impl Renderer {
         Self {
             id: RENDERERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             target,
+            host,
+            linear,
             atmosphere,
             scene,
             draw_group,
@@ -647,7 +706,21 @@ impl Renderer {
 
     /// The format of the targets it draws into.
     pub fn format(&self) -> TargetFormat {
-        self.target
+        self.host
+    }
+
+    /// Whether colours mix in linear light.
+    pub fn linear(&self) -> bool {
+        self.linear.is_some()
+    }
+
+    /// The drape atlas's colour page's format, as layers draw into it.
+    fn drape_format(&self) -> TextureFormat {
+        if self.linear() {
+            DRAPE_FORMAT.srgb()
+        } else {
+            DRAPE_FORMAT
+        }
     }
 
     /// Identifies the renderer among those of the process: a map holds
@@ -815,7 +888,8 @@ impl Renderer {
                 group,
                 extrusion: (family == Family::FillExtrusion)
                     .then(extrusion::NodeExtrusion::default),
-                heatmap: (family == Family::Heatmap).then(|| heatmap::Heatmaps::node(gpu)),
+                heatmap: (family == Family::Heatmap)
+                    .then(|| heatmap::Heatmaps::node(gpu, self.linear.is_some())),
                 cull,
                 written: Vec::new(),
                 image,
@@ -1059,7 +1133,7 @@ impl Renderer {
                 p.fits(self.nodes[node as usize].family),
                 "paint family mismatch for node {node}"
             );
-            p.uniform_words(node)
+            p.uniform_words(node, self.linear.is_some())
         });
         let nodes = self.nodes.len() as u64;
         let stride = self.node_stride;
@@ -1271,7 +1345,7 @@ impl Renderer {
             paint.fits(entry.family),
             "paint family mismatch for node {node}"
         );
-        let mut words = paint.uniform_words(node);
+        let mut words = paint.uniform_words(node, self.linear.is_some());
         if let NodePaint::Symbol(p) = paint {
             use orb_shaders::layout::symbol_node as n;
             words[n::GLYPH_PAGE] = (GLYPH_PAGE as f32).to_bits();
@@ -1398,10 +1472,10 @@ impl Renderer {
     fn make_pipelines(&mut self, gpu: &mut dyn Gpu) {
         let layouts = [self.draw_layout, self.node_layout];
         let drape_target = TargetFormat {
-            color: DRAPE_FORMAT,
+            color: self.drape_format(),
             sample_count: 1,
         };
-        let own_drape = self.target.color != DRAPE_FORMAT;
+        let own_drape = self.target.color != drape_target.color;
         let (mut started, mut draped) = (false, false);
         for i in 0..self.nodes.len() {
             // A node that drew keeps its pipelines made for what it draws
@@ -1546,6 +1620,7 @@ impl Renderer {
     fn prioritize(&self, gpu: &mut dyn Gpu) {
         let mut wanted = Vec::new();
         wanted.push(self.cull.0.into());
+        wanted.extend(self.linear.as_ref().map(offscreen::LinearScene::pipeline));
         for i in 0..self.nodes.len() {
             if self.scene.node_has_meshes(i as u32) {
                 self.node_pipelines(i, &mut wanted);
@@ -1662,7 +1737,8 @@ impl Renderer {
     ) -> FrameStats {
         let mut times = RenderTimes::default();
         let started = clock();
-        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
+        let (candidates, candidates_rebuilt) =
+            self.scene.prepare(gpu, frame, self.linear.is_some());
         times.cull = micros(started, clock());
         // A node the bundles left out for want of candidates draws once
         // it has some.
@@ -1988,6 +2064,15 @@ impl Renderer {
             stats.draws += 1;
         }
         passes.extend(self.layers.passes());
+        // In linear light the map draws into its own texture, cleared to the
+        // colour decoded, then encodes into the host's target.
+        let (into, into_clear) = match &mut self.linear {
+            Some(linear) => (
+                linear.texture(gpu, &self.composites, size),
+                color_in(clear.map(|c| c as f32), true).map(f64::from),
+            ),
+            None => (target, clear),
+        };
         passes.extend(self.layers.main_passes(
             &self.composites,
             (
@@ -1995,9 +2080,12 @@ impl Renderer {
                 &self.bundles,
                 self.atmosphere.commands_after(gpu),
             ),
-            target,
-            clear,
+            into,
+            into_clear,
         ));
+        if let Some(linear) = &self.linear {
+            passes.push(linear.pass(gpu, target, clear));
+        }
         let submitting = clock();
         gpu.submit(&passes);
         times.submit = micros(submitting, clock());
@@ -2043,7 +2131,7 @@ impl Renderer {
         let drape_frame = terrain.drape_frame(frame, (zoom, page));
         let colour = self.drape_stacks[0];
         let level = self.drape_zooms.get_mut(&zoom)?;
-        crate::scene::write_frame(gpu, level.frame[page], &drape_frame);
+        crate::scene::write_frame(gpu, level.frame[page], &drape_frame, self.linear.is_some());
         if level.scene[page].is_none() {
             let b = *self.scene.buffers();
             level.scene[page] = Some(scene_group(
@@ -2103,10 +2191,16 @@ impl Renderer {
                 waiting += 1;
             }
         }
+        // The slope page stays as it is in linear light.
+        let format = if page == 0 {
+            self.drape_format()
+        } else {
+            DRAPE_FORMAT
+        };
         let bundle = gpu.create_render_bundle(
             &RenderBundleDesc {
                 label: "drape",
-                color_formats: &[DRAPE_FORMAT],
+                color_formats: &[format],
                 depth_format: None,
                 sample_count: 1,
             },
@@ -2225,7 +2319,7 @@ impl Renderer {
         let drape = self
             .drape_pipelines
             .as_ref()
-            .filter(|_| scene != self.draw_group && self.target.color != DRAPE_FORMAT);
+            .filter(|_| scene != self.draw_group && self.target.color != self.drape_format());
         let pipeline = match (drape, node.family.is_image()) {
             _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),

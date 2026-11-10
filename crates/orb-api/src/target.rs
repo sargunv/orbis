@@ -231,6 +231,7 @@ fn texture_desc(width: u32, height: u32) -> TextureDesc<'static> {
             | TextureUsages::TEXTURE_BINDING,
         sample_count: 1,
         mip_levels: 1,
+        view_formats: &[],
     }
 }
 

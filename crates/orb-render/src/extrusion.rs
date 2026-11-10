@@ -16,6 +16,8 @@ pub(crate) struct Extrusions {
     pipelines: Vec<(ElevationShape, Pipelines)>,
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
+    /// The targets' format: the map's.
+    format: TextureFormat,
     depth: Option<TextureId>,
     size: [u32; 2],
     single_layer: bool,
@@ -26,11 +28,16 @@ pub(crate) type NodeExtrusion = Apart;
 type Pipelines = [[Option<RenderPipelineId>; 2]; 3];
 
 impl Extrusions {
-    pub(crate) fn new(scene: BindGroupLayoutId, node: BindGroupLayoutId) -> Self {
+    pub(crate) fn new(
+        scene: BindGroupLayoutId,
+        node: BindGroupLayoutId,
+        format: TextureFormat,
+    ) -> Self {
         Self {
             pipelines: Vec::new(),
             layouts: [scene, node],
             samples: 4,
+            format,
             depth: None,
             size: [0; 2],
             single_layer: false,
@@ -122,7 +129,7 @@ impl Extrusions {
                 constants: &fragment_constants,
             },
             targets: &[ColorTargetState {
-                format: TextureFormat::Rgba8Unorm,
+                format: self.format,
                 blend: None,
             }],
             depth: Some(DepthState {
@@ -201,6 +208,7 @@ impl Extrusions {
                 },
             sample_count: self.samples,
             mip_levels: 1,
+            view_formats: &[],
         }));
         self.size = size;
         self.single_layer = count == 1;
@@ -219,7 +227,7 @@ impl Extrusions {
             &mut node.offscreen,
             gpu,
             composites,
-            ("extrusion", &[TextureFormat::Rgba8Unorm]),
+            ("extrusion", &[self.format]),
             (size, self.samples),
             (Mode::Over, None),
             node.opacity,
@@ -265,7 +273,7 @@ impl Extrusions {
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "3d layer",
-                    color_formats: &[TextureFormat::Rgba8Unorm],
+                    color_formats: &[self.format],
                     depth_format: Some(TextureFormat::Depth32Float),
                     sample_count: self.samples,
                 },

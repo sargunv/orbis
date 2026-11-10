@@ -74,6 +74,7 @@ impl Harness {
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             sample_count: 1,
             mip_levels: 1,
+            view_formats: &[],
         });
         let images = orb_render::ImageAtlas::new(&mut gpu, size, pages, entries);
         let renderer = Renderer::with_images(
@@ -1602,7 +1603,6 @@ fn sky_gradient_composites_over_the_host_backing() {
         atmosphere_blend: 0.8,
         backdrop_color: [0.0; 4],
         star_opacity: 0.0,
-        linear_scatter: false,
     };
     let view = sky_view();
     h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
@@ -1648,7 +1648,6 @@ fn stars_show_on_the_backdrop_above_the_horizon_where_the_sky_is_clear() {
         atmosphere_blend: 0.0,
         backdrop_color: backdrop,
         star_opacity: 1.0,
-        linear_scatter: false,
     };
     let view = sky_view();
     let frame = Harness::frame(1.0);

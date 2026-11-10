@@ -56,7 +56,8 @@ fn fill_pattern_color(ids: vec2<u32>, tile: Tile, pos: vec2<f32>, pattern: Patte
     let gb = max(fwidth(cb.a) * 0.5, 1.0 / 255.0 / 16.0);
     let sa = smoothstep(0.75 - ga, 0.75 + ga, ca.a);
     let sb = smoothstep(0.75 - gb, 0.75 + gb, cb.a);
-    let color_a = select(ca * opacity, color * sa, a.sdf != 0u);
-    let color_b = select(cb * opacity, color * sb, b.sdf != 0u);
+    // `color` is the fill's, already in the frame's colour space.
+    let color_a = select(color_in(ca) * opacity, color * sa, a.sdf != 0u);
+    let color_b = select(color_in(cb) * opacity, color * sb, b.sdf != 0u);
     return mix(color_a, color_b, pattern.fade);
 }

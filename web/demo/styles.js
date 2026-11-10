@@ -86,10 +86,11 @@ const PROTOMAPS_TERRAIN = { source: "terrain", exaggeration: 1.3 };
  * The Globe entry's sky, from Protomaps Light's palette: a pale cyan after
  * its water (#80deea) fading to a horizon and fog of its land (#e2dfda),
  * so far terrain dissolves into the map's own ground, and a full
- * atmosphere at low zoom that thins out as it hands over to Mercator: with
- * `orbis:atmosphere` it tints the sunlit face and glows at the limb (GL
- * JS's model washes the face out at this blend). Behind it, style-spec#1889's night: a deep blue-black backdrop with
- * stars that fade out by zoom 6, by when the sky covers them anyway.
+ * atmosphere at low zoom that thins out as it hands over to Mercator: in
+ * the entry's linear light it tints the sunlit face and glows at the limb
+ * (GL JS's model washes the face out at this blend). Behind it,
+ * style-spec#1889's night: a deep blue-black backdrop with stars that fade
+ * out by zoom 6, by when the sky covers them anyway.
  */
 const PROTOMAPS_SKY = { "sky-color": "#9fd3e0", "horizon-color": "#eef1ef", "fog-color": "#e6e4df",
   "sky-horizon-blend": 0.6, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.6,
@@ -101,8 +102,10 @@ const PROTOMAPS_SKY = { "sky-color": "#9fd3e0", "horizon-color": "#eef1ef", "fog
  * Protomaps Light (v5) with what it lacks for a 3D map: Mapterhorn's DEM
  * for PROTOMAPS_TERRAIN, a hillshade from a DEM source of its own over the
  * land and water fills and under the roads and labels, a viewport-anchored
- * light (the spec's default, which reads best on the globe in both engines), and the buildings extruded under the labels. Each addition is
- * placed by the layers it finds, so a style with other ids still draws.
+ * light (the spec's default, which reads best on the globe in both engines), the buildings extruded under the labels, and
+ * colours mixed in linear light (`dev.sargunv.orbis:color-space`). Each
+ * addition is placed by the layers it finds, so a style with other ids
+ * still draws.
  */
 function protomaps3d(style) {
   const layers = [...style.layers];
@@ -150,6 +153,11 @@ function protomaps3d(style) {
     sources: { ...style.sources, terrain: { ...MAPTERHORN, attribution: "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>" },
       hillshade: MAPTERHORN },
     light: { anchor: "viewport", position: [1.15, 210, 30], intensity: 0.35 },
+    // Colours mix in linear light: the scattering tints the sunlit face
+    // rather than washing it out, fog and the hillshade blend as light
+    // does, and lines and labels antialias evenly. GL JS and Native ignore
+    // metadata.
+    metadata: { ...style.metadata, "dev.sargunv.orbis:color-space": "linear" },
     layers,
   };
 }

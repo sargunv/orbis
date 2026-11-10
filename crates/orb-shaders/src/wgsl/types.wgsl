@@ -106,6 +106,9 @@ struct Frame {
     quantum: f32,
     globe_target_rest: vec3<f32>,
     globe_quantum: f32,
+    // 1 when colours mix in linear light (`dev.sargunv.orbis:color-space`):
+    // the target is sRGB, and shaders decode the style's colours (`color_in`).
+    linear: u32,
 };
 
 // One placement of a tile's data: data units → world is

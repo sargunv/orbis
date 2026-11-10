@@ -8,8 +8,17 @@
 @group(0) @binding(1) var destination: texture_storage_2d_array<rgba8unorm, write>;
 // Per region at level 0: its layer, corner and side, in texels.
 @group(0) @binding(2) var<storage, read> regions: array<vec4<u32>>;
-// The level being written.
+// The level being written, and 1 in y when texels are linear light
+// sRGB-encoded (a linear-light drape), which average decoded.
 @group(0) @binding(3) var<uniform> level: vec4<u32>;
+
+fn downsample_load(p: vec2<i32>, layer: u32) -> vec4<f32> {
+    let texel = textureLoad(source, p, layer, 0);
+    if level.y == 0u {
+        return texel;
+    }
+    return vec4<f32>(srgb_to_linear(texel.rgb), texel.a);
+}
 
 // One invocation per texel; `z` picks the region.
 @compute @workgroup_size(8, 8)
@@ -22,11 +31,15 @@ fn downsample(@builtin(global_invocation_id) id: vec3<u32>) {
     let last = vec2<i32>(textureDimensions(source)) - 1;
     let s = vec2<i32>(p) * 2;
     let layer = region.x;
-    textureStore(destination, p, layer, 0.25 * (
-        textureLoad(source, min(s, last), layer, 0)
-        + textureLoad(source, min(s + vec2<i32>(1, 0), last), layer, 0)
-        + textureLoad(source, min(s + vec2<i32>(0, 1), last), layer, 0)
-        + textureLoad(source, min(s + vec2<i32>(1, 1), last), layer, 0)));
+    var mean = 0.25 * (
+        downsample_load(min(s, last), layer)
+        + downsample_load(min(s + vec2<i32>(1, 0), last), layer)
+        + downsample_load(min(s + vec2<i32>(0, 1), last), layer)
+        + downsample_load(min(s + vec2<i32>(1, 1), last), layer));
+    if level.y != 0u {
+        mean = vec4<f32>(linear_to_srgb(mean.rgb), mean.a);
+    }
+    textureStore(destination, p, layer, mean);
 }
 
 // Edges: for each region (`regions`: its layer, then the corners of the

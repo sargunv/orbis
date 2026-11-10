@@ -106,3 +106,10 @@ fn fs_replace(in: CompositeOut) -> @location(0) vec4<f32> {
     let rgb = s.rgb * (1.0 - b.a) + b.rgb * (1.0 - s.a) + s.a * b.a * mixed;
     return vec4<f32>(rgb, s.a + b.a * (1.0 - s.a));
 }
+
+// The linear-light map, drawn into an sRGB target of the renderer's own,
+// into the host's target: encoded, premultiplied.
+@fragment
+fn fs_encode(in: CompositeOut) -> @location(0) vec4<f32> {
+    return premultiplied_to_srgb(textureLoad(source, vec2<i32>(in.position.xy), 0));
+}

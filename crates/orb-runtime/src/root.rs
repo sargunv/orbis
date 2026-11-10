@@ -107,7 +107,7 @@ fn sky_slots(sky: Option<&Atmosphere>, zoom: f64) -> [f32; 21] {
     s
 }
 
-fn sky_paint(s: [f32; 21], linear_scatter: bool) -> AtmospherePaint {
+fn sky_paint(s: [f32; 21]) -> AtmospherePaint {
     let color = |i: usize| [s[4 * i], s[4 * i + 1], s[4 * i + 2], s[4 * i + 3]];
     AtmospherePaint {
         sky_color: color(0),
@@ -119,7 +119,6 @@ fn sky_paint(s: [f32; 21], linear_scatter: bool) -> AtmospherePaint {
         sky_horizon_blend: s[18],
         atmosphere_blend: s[19],
         star_opacity: s[20],
-        linear_scatter,
     }
 }
 
@@ -195,8 +194,7 @@ impl Root {
         let light = light.with(self.light.frame(light.slots(), now));
         let atmosphere = style.and_then(|s| s.atmosphere.as_ref());
         let sky = self.sky.frame(sky_slots(atmosphere, zoom), now);
-        let linear = style.is_some_and(|s| s.previews.contains(orb_style::Preview::Atmosphere));
-        let sky = (atmosphere.is_some() || self.sky.running()).then(|| sky_paint(sky, linear));
+        let sky = (atmosphere.is_some() || self.sky.running()).then(|| sky_paint(sky));
         let terrain = match style {
             Some(style) => self.terrain_target(style),
             None => [0.0; 2],
@@ -328,7 +326,7 @@ mod tests {
         assert_eq!(sky.sky_color[0], 1.0);
         assert!(root.running());
         let end = root.frame(Some(&b), 0.0, 2000.0).sky.unwrap();
-        assert_eq!(end, sky_paint(sky_slots(b.atmosphere.as_ref(), 0.0), false));
+        assert_eq!(end, sky_paint(sky_slots(b.atmosphere.as_ref(), 0.0)));
         assert!(!root.running());
     }
 

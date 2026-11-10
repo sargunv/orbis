@@ -1015,13 +1015,48 @@ impl Map {
     }
 
     /// A renderer for this map's frames into targets of `format`, on the
-    /// images its runtime shares.
+    /// images its runtime shares, mixing colours in the style's colour
+    /// space. A style in another one replaces it at the next frame.
     pub fn create_renderer(&self, gpu: &mut dyn Gpu, format: TargetFormat) -> Renderer {
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let images = images
             .atlas
             .get_or_insert_with(|| ImageAtlas::new(gpu, 1024, 8, 8192));
-        Renderer::with_images(gpu, format, self.capacity, images.bindings())
+        Renderer::with_color_space(
+            gpu,
+            format,
+            self.capacity,
+            images.bindings(),
+            self.linear_light(),
+        )
+    }
+
+    /// Whether the style mixes colours in linear light
+    /// (`dev.sargunv.orbis:color-space`).
+    fn linear_light(&self) -> bool {
+        self.style
+            .as_ref()
+            .is_some_and(|s| s.doc.style().color_space == orb_style::ColorSpace::Linear)
+    }
+
+    /// Replaces `renderer` with one in the style's colour space if it
+    /// mixes colours in another, which lays the map's tiles out again for
+    /// it, as another device's would; whether it did.
+    fn fit_color_space(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) -> bool {
+        if renderer.linear() == self.linear_light() {
+            return false;
+        }
+        let known = self.renderer == Some(renderer.id());
+        let fresh = self.create_renderer(gpu, renderer.format());
+        std::mem::replace(renderer, fresh).destroy(gpu);
+        // What the map's renderer held went with it, though no device was
+        // lost; another renderer the next arrivals take in as a new device's.
+        if known {
+            self.forget_gpu();
+            self.renderer = Some(renderer.id());
+            self.nodes_stale = true;
+        }
+        true
     }
 
     /// Forgets the GPU state of another renderer: after a device loss, or
@@ -1351,9 +1386,15 @@ impl Map {
         let frame_time = self.frame_time;
         let clock = Arc::clone(&self.services.clock);
         let started = clock.now();
-        renderer.set_antialias_3d(gpu, self.antialias_3d);
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
+        self.fit_color_space(gpu, renderer);
+        renderer.set_antialias_3d(gpu, self.antialias_3d);
         self.apply_arrivals(gpu, renderer, pixel_ratio);
+        // A style that arrived may mix colours in another space.
+        if self.fit_color_space(gpu, renderer) {
+            renderer.set_antialias_3d(gpu, self.antialias_3d);
+            self.apply_arrivals(gpu, renderer, pixel_ratio);
+        }
         let mut times = FrameTimes {
             // Uploads and label commits are stages of their own.
             arrivals: micros(started + self.upload_ms + self.placement_ms, clock.now()),
@@ -2768,6 +2809,7 @@ mod video_tests {
             usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
             sample_count: 1,
             mip_levels: 1,
+            view_formats: &[],
         });
         let viewport = Viewport {
             width: 64.0,

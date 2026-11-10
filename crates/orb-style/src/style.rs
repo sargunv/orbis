@@ -47,6 +47,20 @@ pub struct Style {
     /// The previews it was parsed with: inputs beyond the approved spec
     /// that it may use.
     pub previews: crate::Previews,
+    /// How colours mix: `metadata["dev.sargunv.orbis:color-space"]`.
+    pub color_space: ColorSpace,
+}
+
+/// The space colours are mixed in wherever they meet: translucent layers
+/// over the map, antialiased edges, hillshade, fog and the atmosphere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ColorSpace {
+    /// Gamma-encoded sRGB values, as GL JS and MapLibre Native blend.
+    #[default]
+    Srgb,
+    /// Linear light: what a translucent colour over another looks like in
+    /// the world.
+    Linear,
 }
 impl Style {
     pub fn source(&self, id: &str) -> Option<&Source> {

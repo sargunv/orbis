@@ -35,6 +35,7 @@ fn samples_written_layers_of_a_texture_array() {
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         sample_count: 1,
         mip_levels: 1,
+        view_formats: &[],
     });
     let red = [255, 0, 0, 255].repeat(4);
     let blue = [0, 0, 255, 255].repeat(4);
@@ -128,6 +129,7 @@ fn samples_written_layers_of_a_texture_array() {
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         sample_count: 1,
         mip_levels: 1,
+        view_formats: &[],
     });
     // Pipelines compile off this thread; commands use them once compiled.
     gpu.finish_pipelines();

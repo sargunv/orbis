@@ -174,7 +174,8 @@ fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
 
 /// Writes a frame block into a uniform buffer of [`FRAME_BYTES`]: the
 /// scene's own, or another view's of the same scene (the terrain drape's).
-pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
+/// `linear` when colours mix in linear light.
+pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock, linear: bool) {
     use layout::frame as f;
     let mut b = orb_shaders::Block::new(f::WORDS);
     b.f(f::VIEW_PROJ, frame.view_proj.as_flattened());
@@ -217,6 +218,7 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
             .u(f::GLOBE_TARGET_REST, &rest);
         b.u(f::GLOBE_PLANE, &[u32::from(plane)]);
     }
+    b.u(f::LINEAR, &[u32::from(linear)]);
     gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&b.0));
 }
 
@@ -1690,7 +1692,12 @@ impl Scene {
     /// Writes the frame block, and the candidate lists if meshes or
     /// placements changed. Returns the number of candidates, and whether
     /// they were laid out again.
-    pub(crate) fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
+    pub(crate) fn prepare(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        frame: &FrameBlock,
+        linear: bool,
+    ) -> (u32, bool) {
         self.write_rows(gpu, quantum(frame.world_span));
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
@@ -1708,7 +1715,7 @@ impl Scene {
             write_words(gpu, self.buffers.node_cull, 0, &self.node_rows);
         }
 
-        write_frame(gpu, self.buffers.frame, frame);
+        write_frame(gpu, self.buffers.frame, frame, linear);
         (self.candidate_count, rebuilt)
     }
 

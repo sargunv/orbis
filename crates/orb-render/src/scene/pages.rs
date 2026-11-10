@@ -219,5 +219,6 @@ fn create(gpu: &mut dyn Gpu, desc: &PageTexture, layers: u32) -> TextureId {
         usage: desc.usage | TextureUsages::COPY_SRC | TextureUsages::COPY_DST,
         sample_count: 1,
         mip_levels: desc.mip_levels,
+        view_formats: &[],
     })
 }

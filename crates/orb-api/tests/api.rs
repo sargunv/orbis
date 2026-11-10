@@ -581,25 +581,30 @@ fn stars_and_backdrop_draw_behind_the_globe_with_their_preview() {
     assert!(corners(&off).iter().all(|p| p[3] == 0));
 }
 
-/// With `orbis:atmosphere`, the globe's scattering tints a sunlit surface
-/// rather than lifting it toward white as GL JS's gamma-encoded addition
-/// does.
+/// In linear light the globe's scattering adds to the sunlit surface
+/// exactly, tinting it, rather than lifting it toward white as GL JS's
+/// gamma-encoded addition does.
 #[test]
-fn the_atmosphere_preview_composites_scattering_in_linear_light() {
+fn linear_light_adds_the_scattering_to_the_surface() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
-    let style = r##"{"version": 8, "projection": {"type": "globe"}, "center": [0, 0], "zoom": 0,
-      "sky": {"atmosphere-blend": 1}, "light": {"anchor": "map", "position": [1.15, 270, 60]},
-      "sources": {}, "layers": [{"id": "background", "type": "background",
-        "paint": {"background-color": "#808080"}}]}"##;
-    let draw = |previews: orb_api::Previews| {
+    let style = |space: &str| {
+        format!(
+            r##"{{"version": 8, "projection": {{"type": "globe"}}, "center": [0, 0], "zoom": 0,
+              "metadata": {{"dev.sargunv.orbis:color-space": "{space}"}},
+              "sky": {{"atmosphere-blend": 1}}, "light": {{"anchor": "map", "position": [1.15, 270, 60]}},
+              "sources": {{}}, "layers": [{{"id": "background", "type": "background",
+                "paint": {{"background-color": "#808080"}}}}]}}"##
+        )
+    };
+    let draw = |space: &str| {
         let mut map = Map::new(
             &runtime,
             MapOptions {
-                previews,
+                previews: orb_api::Previews::ALL,
                 ..MapOptions::default()
             },
         );
-        map.set_style_json(style).expect("style");
+        map.set_style_json(&style(space)).expect("style");
         map.snapshot(WIDE, WIDE, 1.0).expect("snapshot").pixels
     };
     const WIDE: u32 = 512;
@@ -608,8 +613,8 @@ fn the_atmosphere_preview_composites_scattering_in_linear_light() {
         let i = ((WIDE / 2 * WIDE + x) * 4) as usize;
         pixels[i + 2].saturating_sub(128)
     };
-    let linear = draw(orb_api::Previews::ALL);
-    let gl = draw(orb_api::Previews::NONE);
+    let linear = draw("linear");
+    let gl = draw("srgb");
     // Somewhere across the middle row the sun is up: GL JS's model lifts it
     // most there.
     let x = (WIDE * 3 / 8..WIDE * 5 / 8)
@@ -621,6 +626,91 @@ fn the_atmosphere_preview_composites_scattering_in_linear_light() {
         linear > 0 && linear * 2 < gl,
         "{linear} against GL JS's {gl}"
     );
+}
+
+/// `dev.sargunv.orbis:color-space`: a translucent fill mixes with what's
+/// beneath in linear light, opaque colours draw as they are, and without
+/// the preview the key warns and the map blends as GL JS does. A map
+/// switched between the spaces draws as a fresh one in each.
+#[test]
+fn linear_light_mixes_translucent_layers() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = |space: &str| {
+        format!(
+            r##"{{"version": 8, "center": [-6, 0], "zoom": 2,
+              "metadata": {{"dev.sargunv.orbis:color-space": "{space}"}},
+              "sources": {{"b": {{"type": "geojson", "data": {{"type": "Feature", "properties": {{}},
+                "geometry": {{"type": "Polygon",
+                  "coordinates": [[[-12, -6], [-6, -6], [-6, 6], [-12, 6], [-12, -6]]]}}}}}}}},
+              "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+                {{"id": "dark", "type": "fill", "source": "b", "paint": {{"fill-color": "#203040"}}}},
+                {{"id": "half", "type": "fill", "source": "b",
+                  "paint": {{"fill-color": "#ff0000", "fill-opacity": 0.5, "fill-translate": [16, 0]}}}}]}}"##
+        )
+    };
+    let map = |previews| {
+        Map::new(
+            &runtime,
+            MapOptions {
+                previews,
+                ..MapOptions::default()
+            },
+        )
+    };
+    let draw = |map: &mut Map| {
+        let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+        // The dark fill alone; the red over it; the red over white.
+        let at = |x| pixel(&image.pixels, x, SIZE / 2);
+        [at(6), at(24), at(40)]
+    };
+    let close =
+        |got: [u8; 4], expected: [u8; 4]| got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2);
+    // Half red over white: linear light (1, 0.5, 0.5) encodes to 188.
+    let linear = [
+        [0x20, 0x30, 0x40, 255],
+        [189, 32, 44, 255],
+        [255, 188, 188, 255],
+    ];
+    let srgb = [
+        [0x20, 0x30, 0x40, 255],
+        [144, 24, 32, 255],
+        [255, 128, 128, 255],
+    ];
+    let mut fresh = map(orb_api::Previews::ALL);
+    fresh.set_style_json(&style("linear")).expect("style");
+    let got = draw(&mut fresh);
+    for (got, expected) in got.into_iter().zip(linear) {
+        assert!(close(got, expected), "linear: {got:?}, not {expected:?}");
+    }
+    let mut off = map(orb_api::Previews::NONE);
+    off.set_style_json(&style("linear")).expect("style");
+    let got = draw(&mut off);
+    for (got, expected) in got.into_iter().zip(srgb) {
+        assert!(
+            close(got, expected),
+            "without the preview: {got:?}, not {expected:?}"
+        );
+    }
+    // Switched each way, a map draws as a fresh one.
+    let mut switched = map(orb_api::Previews::ALL);
+    for (space, expected) in [("srgb", srgb), ("linear", linear), ("srgb", srgb)] {
+        switched.set_style_json(&style(space)).expect("style");
+        let got = draw(&mut switched);
+        for (got, expected) in got.into_iter().zip(expected) {
+            assert!(
+                close(got, expected),
+                "switched to {space}: {got:?}, not {expected:?}"
+            );
+        }
+    }
+    // No device was lost.
+    while let Some(event) = switched.poll_event() {
+        assert!(
+            !matches!(event, Event::Map(MapEvent::Restored)),
+            "a switch isn't a restore"
+        );
+    }
 }
 
 /// Each building takes its own opacity from its data, beyond the spec:
