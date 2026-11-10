@@ -412,6 +412,8 @@ mod native {
         limit: Mutex<Duration>,
         /// The device's loss, once watched.
         loss: std::sync::OnceLock<Loss>,
+        /// How many pipelines may compile at once ([`COMPILES`]).
+        at_once: usize,
     }
 
     #[derive(Default)]
@@ -419,13 +421,26 @@ mod native {
         jobs: VecDeque<Job>,
         next_task: u64,
         closed: bool,
+        /// Tasks compiling, each taking jobs from the front until none
+        /// are left.
+        compiling: usize,
     }
+
+    /// Caps how many pipelines compile at once (by default as many as the
+    /// host's job threads run): `1` makes them one at a time, for drivers
+    /// suspected of failing compiles that overlap (Qualcomm's, #141).
+    const COMPILES: &str = "ORB_COMPILES_AT_ONCE";
 
     impl Compiler {
         pub(crate) fn new() -> Self {
             let (done_tx, done) = mpsc::channel();
+            let at_once = (std::env::var(COMPILES).ok())
+                .and_then(|n| n.parse::<usize>().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or(usize::MAX);
             let shared = Shared {
                 limit: Mutex::new(WATCHDOG),
+                at_once,
                 ..Default::default()
             };
             Self {
@@ -590,17 +605,31 @@ mod native {
         }
     }
 
-    /// One request's task: compiles the job at the front of the queue.
+    /// One request's task: compiles the job at the front of the queue, and
+    /// the next while any are left, unless as many tasks as may compile at
+    /// once already do, which then take its job. A task finds the queue
+    /// empty and stops under the queue's lock, so no job waits without one.
     fn compile_front(shared: &Shared, device: &wgpu::Device, task: u64, done: &mpsc::Sender<Done>) {
-        let Some(job) = shared
-            .queue
-            .lock()
-            .expect("compile queue poisoned")
-            .jobs
-            .pop_front()
-        else {
+        let mut queue = shared.queue.lock().expect("compile queue poisoned");
+        if queue.compiling >= shared.at_once {
             return;
-        };
+        }
+        queue.compiling += 1;
+        while let Some(job) = queue.jobs.pop_front() {
+            drop(queue);
+            compile(shared, device, task, done, job);
+            queue = shared.queue.lock().expect("compile queue poisoned");
+        }
+        queue.compiling -= 1;
+    }
+
+    fn compile(
+        shared: &Shared,
+        device: &wgpu::Device,
+        task: u64,
+        done: &mpsc::Sender<Done>,
+        job: Job,
+    ) {
         let started = Instant::now();
         let mut busy = shared.busy.lock().expect("compile watch poisoned");
         busy.push((task, job.label().to_owned(), started));
