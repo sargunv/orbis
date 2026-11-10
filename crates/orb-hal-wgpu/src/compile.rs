@@ -222,13 +222,29 @@ impl Job {
         }
     }
 
-    /// Makes the pipeline, catching validation errors and panics.
+    /// Makes the pipeline, catching validation errors and panics, and a
+    /// device lost in the making: a driver that fails to compile a
+    /// pipeline (Vulkan's `VK_ERROR_INITIALIZATION_FAILED`, which wgpu
+    /// takes as "driver implementation is at fault") loses the device
+    /// without an error to catch, and would on any other device too.
     #[cfg(not(target_arch = "wasm32"))]
-    fn compile(&self, device: &wgpu::Device) -> Result<Built, String> {
+    fn compile(&self, device: &wgpu::Device, loss: Option<&Loss>) -> Result<Built, String> {
+        // wgpu loses the device in the call that failed, so a loss this
+        // thread saw while it built is this pipeline's; one from elsewhere
+        // (another compile, `WgpuGpu::lose`) isn't.
+        let lost_here =
+            || loss.and_then(|l| *l.thread.lock().ok()?) == Some(std::thread::current().id());
+        let lost_before = lost_here();
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.build(device)));
         let error = pollster::block_on(scope.pop());
         match (built, error) {
+            (Ok(_), None) if !lost_before && lost_here() => {
+                let reason = (loss.and_then(|l| l.reason.lock().ok()?.clone()))
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default();
+                Err(format!("the device was lost making it{reason}"))
+            }
             (Ok(built), None) => Ok(built),
             (_, Some(error)) => Err(error.to_string()),
             (Err(panic), None) => Err(panic
@@ -307,6 +323,16 @@ impl RenderJob {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::Compiler;
+
+/// Where `WgpuGpu` records its device's loss, which compiles watch.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Loss {
+    /// The thread wgpu told of the loss.
+    pub(crate) thread: std::sync::Arc<std::sync::Mutex<Option<std::thread::ThreadId>>>,
+    /// What the driver said.
+    pub(crate) reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
 #[cfg(webgpu)]
 pub(crate) use webgpu::Compiler;
 
@@ -319,7 +345,7 @@ mod native {
     use orb_hal::PipelineId;
     use orb_host::jobs::Executor;
 
-    use super::{Done, Job};
+    use super::{Done, Job, Loss};
 
     /// How long one pipeline may compile before its driver is taken to
     /// have hung in its compiler: the device is then lost, and the runtime
@@ -366,6 +392,8 @@ mod native {
         /// How long a compile may run before its driver is taken to have
         /// hung.
         limit: Mutex<Duration>,
+        /// The device's loss, once watched.
+        loss: std::sync::OnceLock<Loss>,
     }
 
     #[derive(Default)]
@@ -398,10 +426,16 @@ mod native {
             self.executor = executor;
         }
 
+        /// Takes a device lost during a compile as that pipeline's
+        /// failure.
+        pub(crate) fn watch_loss(&self, loss: Loss) {
+            let _ = self.shared.loss.set(loss);
+        }
+
         pub(crate) fn submit(&mut self, device: &wgpu::Device, job: Job) {
             let Some(executor) = &self.executor else {
                 let started = Instant::now();
-                let built = job.compile(device);
+                let built = job.compile(device, self.shared.loss.get());
                 self.finished.push_back(Done {
                     built,
                     label: job.label().to_owned(),
@@ -484,6 +518,22 @@ mod native {
             }
         }
 
+        /// Waits up to `limit` for the compiles running now to finish:
+        /// after a loss, so one that lost the device reports as failed.
+        pub(crate) fn settle(&self, limit: Duration) {
+            let deadline = Instant::now() + limit;
+            let mut busy = self.shared.busy.lock().expect("compile watch poisoned");
+            while !busy.is_empty() {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return;
+                }
+                busy = (self.shared.changed.wait_timeout(busy, left))
+                    .expect("compile watch poisoned")
+                    .0;
+            }
+        }
+
         /// A compile that has run past the watchdog's limit: its label.
         pub(crate) fn hung(&self) -> Option<String> {
             let limit = *self.shared.limit.lock().expect("compile watch poisoned");
@@ -545,18 +595,19 @@ mod native {
         if let Some((_, by)) = slow.filter(|(label, _)| job.label() == label) {
             std::thread::sleep(by);
         }
-        let built = job.compile(device);
-        shared
-            .busy
-            .lock()
-            .expect("compile watch poisoned")
-            .retain(|(t, ..)| *t != task);
+        let built = job.compile(device, shared.loss.get());
         let finished = Done {
             built,
             label: job.label().to_owned(),
             took: started.elapsed(),
         };
-        if done.send(finished).is_ok() {
+        // Sent before it leaves `busy`, so `settle` finds it.
+        let sent = done.send(finished).is_ok();
+        let mut busy = shared.busy.lock().expect("compile watch poisoned");
+        busy.retain(|(t, ..)| *t != task);
+        shared.changed.notify_all();
+        drop(busy);
+        if sent {
             shared.wake();
         }
     }

@@ -352,14 +352,26 @@ impl WgpuGpu {
 
     /// Copies the gathered writes into place ahead of what `encoder`
     /// records next, after issuing the held texture writes.
+    /// On a device known to be lost the writes are dropped; one whose
+    /// staging buffer comes back invalid is taken as lost.
     fn encode_writes(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.known_lost() {
+            self.writes.discard();
+            return;
+        }
         self.issue_texture_writes();
-        self.writes.encode(
+        let uploaded = self.writes.encode(
             &self.device,
             &self.queue,
             |id| self.buffers[id.0].clone(),
             encoder,
         );
+        #[cfg(not(target_arch = "wasm32"))]
+        if !uploaded {
+            self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = uploaded;
     }
 
     /// Issues the held texture writes to the queue, wave by wave, each wave
@@ -573,10 +585,21 @@ impl WgpuGpu {
     }
 
     /// The compile that ran past the watchdog's limit, or failed, if one
-    /// did: the
-    /// driver is taken to have hung, and the device is lost.
+    /// did: the driver is taken to have hung, and the device is lost.
     pub fn hung(&self) -> Option<&str> {
         self.hung.as_deref()
+    }
+
+    /// On a lost device, lets the compiles running finish (up to a
+    /// second) and takes them, so a pipeline whose compile lost the
+    /// device is [`hung`](Self::hung): a loss is checked for before
+    /// frames take their compiles.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn settle_loss(&mut self) {
+        if self.hung.is_none() && self.lost() {
+            self.compiler.settle(std::time::Duration::from_secs(1));
+            self.take_compiled(false);
+        }
     }
 
     /// Takes the compiles that finished; on WebGL 2, `compile` compiles
@@ -700,12 +723,21 @@ impl WgpuGpu {
     /// other uncaptured error still panics, as it would without this.
     #[cfg(not(target_arch = "wasm32"))]
     fn watch_loss(&self) {
-        let (lost, reason) = (self.lost.clone(), self.lost_reason.clone());
+        let loss = compile::Loss {
+            thread: Default::default(),
+            reason: self.lost_reason.clone(),
+        };
+        self.compiler.watch_loss(loss.clone());
+        let lost = self.lost.clone();
         self.device.set_device_lost_callback(move |why, message| {
-            reason
+            loss.reason
                 .lock()
                 .expect("loss poisoned")
                 .get_or_insert_with(|| format!("{why:?}: {message}"));
+            loss.thread
+                .lock()
+                .expect("loss poisoned")
+                .get_or_insert_with(|| std::thread::current().id());
             lost.store(true, std::sync::atomic::Ordering::Relaxed);
         });
         let lost = self.lost.clone();

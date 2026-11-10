@@ -177,8 +177,20 @@ impl Writes {
         pending.writes.retain(|w| w.buffer != id);
     }
 
+    /// Drops the gathered writes: their device is gone.
+    pub(crate) fn discard(&self) {
+        let mut pending = self.0.lock().expect("writes poisoned");
+        pending.clear();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            pending.belt = None;
+        }
+    }
+
     /// Uploads the gathered writes and copies them into place in
-    /// `encoder`, ahead of anything else it records.
+    /// `encoder`, ahead of anything else it records. `false` when the
+    /// staging belt's buffer is invalid, which only a lost device (or one
+    /// out of memory) explains: the writes and the belt are dropped.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn encode(
         &self,
@@ -186,11 +198,11 @@ impl Writes {
         _queue: &wgpu::Queue,
         buffer: impl Fn(BufferId) -> wgpu::Buffer,
         encoder: &mut wgpu::CommandEncoder,
-    ) {
+    ) -> bool {
         let mut pending = self.0.lock().expect("writes poisoned");
         if pending.writes.is_empty() {
             pending.clear();
-            return;
+            return true;
         }
         let size = wgpu::BufferSize::new(pending.plan()).expect("writes gathered");
         let mut belt = pending
@@ -199,9 +211,10 @@ impl Writes {
             .unwrap_or_else(|| wgpu::util::StagingBelt::new(device.clone(), GATHERED as u64));
         let align = wgpu::BufferSize::new(wgpu::COPY_BUFFER_ALIGNMENT).expect("nonzero");
         let slice = belt.allocate(size, align);
-        let mut view = slice
-            .get_mapped_range_mut()
-            .expect("the belt's slice is mapped");
+        let Ok(mut view) = slice.get_mapped_range_mut() else {
+            pending.clear();
+            return false;
+        };
         pending.fill(|to, bytes| view.slice(to..to + bytes.len()).copy_from_slice(bytes));
         drop(view);
         let (staging, start) = (slice.buffer(), slice.offset());
@@ -217,6 +230,7 @@ impl Writes {
         belt.finish_and_recall_on_submit(encoder);
         pending.belt = Some(belt);
         pending.clear();
+        true
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -226,11 +240,11 @@ impl Writes {
         queue: &wgpu::Queue,
         buffer: impl Fn(BufferId) -> wgpu::Buffer,
         encoder: &mut wgpu::CommandEncoder,
-    ) {
+    ) -> bool {
         let mut pending = self.0.lock().expect("writes poisoned");
         if pending.writes.is_empty() {
             pending.clear();
-            return;
+            return true;
         }
         let size = pending.plan();
         let mut upload = std::mem::take(&mut pending.upload);
@@ -258,6 +272,7 @@ impl Writes {
         }
         pending.upload = upload;
         pending.clear();
+        true
     }
 }
 

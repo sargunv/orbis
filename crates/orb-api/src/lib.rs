@@ -373,7 +373,13 @@ impl Runtime {
         if let Some(failed) = &recovery.failed {
             return Err(Error::Native(failed.clone()));
         }
-        if let Some(hung) = self.shared.gpu().hung() {
+        // A compile that lost the device names its pipeline.
+        let hung = {
+            let mut gpu = self.shared.gpu();
+            gpu.settle_loss();
+            gpu.hung().map(str::to_owned)
+        };
+        if let Some(hung) = hung {
             return Err(recovery.fail(format!("the GPU driver hung or failed making {hung}")));
         }
         let now = std::time::Instant::now();
