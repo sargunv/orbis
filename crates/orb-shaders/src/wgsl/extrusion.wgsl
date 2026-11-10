@@ -175,16 +175,17 @@ fn extrusion_inside(tile: Tile, tile_pos: vec2<f32>) -> bool {
 // Overlapping parts of one building in OSM (a podium and the tower on it,
 // both from the ground) have coplanar walls, which would z-fight: which
 // face shows would flicker with the camera. Each feature's depth instead
-// sits a fixed step farther than the one before it in its tile (by row,
-// over EXTRUSION_DEPTH_LEVELS levels), so the same face always wins. A step
-// is a relative depth of 2^-18: at 2^-19 two triangulations of one wall
-// still crossed in Seattle's towers. The farthest level moves a surface
-// back by 0.05% of its distance, about a pixel's footprint, and never past
-// the near plane.
-const EXTRUSION_DEPTH_LEVELS: u32 = 128u;
+// sits whole steps farther than taller ones', so the same face always
+// wins, the tallest part's, whose wall runs on unbroken: 32 levels of
+// height on a log scale, and within one, 4 by the feature's row. A step is
+// a relative depth of 2^-18: at 2^-19 two triangulations of one wall still
+// crossed in Seattle's towers. The farthest level moves a surface back by
+// 0.05% of its distance, about a pixel's footprint, and never past the
+// near plane.
 const EXTRUSION_DEPTH_STEP: f32 = 3.814697265625e-6;
-fn extrusion_depth_scale(feature: u32) -> f32 {
-    return 1.0 - f32(feature % EXTRUSION_DEPTH_LEVELS) * EXTRUSION_DEPTH_STEP;
+fn extrusion_depth_scale(height: f32, feature: u32) -> f32 {
+    let tall = min(u32(log2(max(height, 0.0) + 1.0) * 3.1), 31u);
+    return 1.0 - f32((31u - tall) * 4u + feature % 4u) * EXTRUSION_DEPTH_STEP;
 }
 fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     var out: ExtrusionOut;
@@ -238,7 +239,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let shift = translate_world(px, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip_reversed(ground, vec2<f32>(0.0), elevation * frame.extrusion_scale);
-    out.position.z *= extrusion_depth_scale(feature);
+    out.position.z *= extrusion_depth_scale(gradient_height, feature);
     out.tile_pos = pos;
     out.tile = v.tile;
     var gradient = 1.0;
