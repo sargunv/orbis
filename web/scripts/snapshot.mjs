@@ -4,7 +4,10 @@
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]]
 //     [--format=mvt|mlt] [--style=<key>|URL]
 //     [--size=WxH] [--compare=reference-map.png] [--lose=<ms>]
-//     [--reopen[=offline]] [--still]
+//     [--reopen[=offline]] [--still] [--pair=<left>,<right>]
+//
+// `--pair` shows the demo's comparison of two engines (`orbis`, `gljs`,
+// `native`) side by side and waits for both sides to load.
 //
 // `--reopen` loads the page again once it is idle, in the same browser
 // profile, and times the reopen from the browser's cache;
@@ -27,13 +30,16 @@ const compare = args.find((a) => a.startsWith("--compare="))?.slice("--compare="
 const style = args.find((a) => a.startsWith("--style="))?.slice("--style=".length);
 const lose = args.find((a) => a.startsWith("--lose="))?.slice("--lose=".length);
 const reopen = args.find((a) => a.startsWith("--reopen"));
+const pair = args.find((a) => a.startsWith("--pair="))?.slice("--pair=".length);
 let offline = false;
 const [width, height] = (args.find((a) => a.startsWith("--size="))?.slice(7) ?? "1024x768").split("x").map(Number);
 const [out = "snapshot.png", hash = ""] = args.filter((a) => !a.startsWith("--"));
 
-const server = await serveDemo();
+// MapLibre Native needs a cross-origin isolated page; serving it so spares the reload.
+const server = await serveDemo({ isolated: Boolean(pair?.includes("native")) });
 const params = new URLSearchParams();
 if (lose) params.set("lose", lose);
+if (pair) params.set("compare", pair);
 // Snapshots draw the committed extract unless told otherwise.
 if (style) params.set("style", style);
 else params.set("style", `tokyo-${format ?? "mvt"}`);
@@ -58,6 +64,12 @@ try {
   let started = Date.now();
   await page.goto(url);
   await idle();
+  if (pair) {
+    await page.waitForFunction(() => {
+      const sides = globalThis.app.compare.sides;
+      return sides?.length === 2 && sides.every((side) => side.loaded);
+    }, null, { timeout: 120_000 });
+  }
   console.log(`opened: ${Date.now() - started} ms to idle`);
   if (reopen) {
     if (reopen === "--reopen=offline") {
