@@ -933,7 +933,8 @@ pub enum NodeDraw {
     Images,
     /// Point families: 256 instances per visible chunk, each a quad of six
     /// vertices (or a grid of such cells for a [`NodeCull::surface`] node on
-    /// a globe). Anchors are clipped, then the full footprints expanded.
+    /// a globe; symbols draw the six as indices over four corners). Anchors
+    /// are clipped, then the full footprints expanded.
     Points,
     /// Compacted indices: each candidate has a slot in the compacted index
     /// buffer, which the cull pass fills with the chunk's indices when it

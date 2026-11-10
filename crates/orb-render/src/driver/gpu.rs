@@ -157,6 +157,18 @@ pub(crate) fn draw(buffers: &SceneBuffers, node: u32, draw: NodeDraw) -> RenderC
     }
 }
 
+/// Node `node`'s point quads, each drawn from 4 vertices through
+/// [`QUAD_INDICES`](crate::QUAD_INDICES): its arguments read as indexed
+/// ones, which they are word for word. The vertex count is the index
+/// count, the first vertex and the cull's fifth word (always 0 for
+/// points) the base vertex and first instance.
+pub(crate) fn quads(buffers: &SceneBuffers, node: u32) -> RenderCommand {
+    RenderCommand::DrawIndexedIndirect {
+        buffer: buffers.args,
+        offset: args_offset(node),
+    }
+}
+
 /// What the cull binds: the scene's tables it reads and writes, and the
 /// draw arguments and compacted indices it writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

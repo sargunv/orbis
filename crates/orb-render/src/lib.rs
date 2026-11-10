@@ -333,6 +333,8 @@ pub struct Renderer {
     symbol_passes: [BindGroupId; 3],
     symbol_pass_buffer: BufferId,
     symbol_pass_layout: BindGroupLayoutId,
+    /// [`QUAD_INDICES`], the index buffer symbol quads draw with.
+    quad_indices: BufferId,
     /// Nodes changed since pipelines were last made for them, or one
     /// was shown.
     pipelines_stale: bool,
@@ -410,6 +412,13 @@ pub struct Renderer {
 /// Bytes reserved per node uniform; every node struct fits.
 const NODE_UNIFORM_SIZE: u64 = 512;
 
+/// A symbol quad's two triangles over its corners (tl, tr, bl, br;
+/// `symbol.wgsl`'s `vs_symbol`). Drawn indexed, each corner runs the
+/// vertex stage once rather than once per triangle: a label's whole
+/// placement runs in every vertex, and 6 runs a quad cost the moto g's
+/// labels a third of their vertex time (#180).
+const QUAD_INDICES: [u32; 6] = [0, 1, 2, 1, 2, 3];
+
 impl Renderer {
     /// Frees everything the renderer holds on `gpu`, the device it was
     /// made on, so what a map's frames made goes with it. The images it
@@ -420,7 +429,11 @@ impl Renderer {
         self.glyphs.destroy(gpu);
         let layouts = (self.draw_layout, self.node_layout, self.symbol_pass_layout);
         self.driver.destroy(gpu);
-        let groups = (self.draw_group, self.symbol_passes, self.symbol_pass_buffer);
+        let groups = (
+            self.draw_group,
+            self.symbol_passes,
+            (self.symbol_pass_buffer, self.quad_indices),
+        );
         let pipelines = (self.paint.pipelines, self.symbol_pipelines);
         (
             layouts,
@@ -617,6 +630,12 @@ impl Renderer {
                 )],
             })
         });
+        let quad_indices = gpu.create_buffer(&BufferDesc {
+            label: "quad indices",
+            size: std::mem::size_of_val(&QUAD_INDICES) as u64,
+            usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
+        });
+        gpu.write_buffer(quad_indices, 0, bytemuck::cast_slice(&QUAD_INDICES));
         let image_bindings = images;
         let images = image::Images::new(gpu, target, draw_layout);
         let downsampler = downsample::Downsampler::new(gpu);
@@ -660,6 +679,7 @@ impl Renderer {
             symbol_passes,
             symbol_pass_buffer: pass_buffer,
             symbol_pass_layout,
+            quad_indices,
             pipelines_stale: false,
             made_seen: 0,
             ground_lit: false,
@@ -2049,16 +2069,8 @@ impl Renderer {
         let bundle_recorded = self.bundles.is_empty();
         let recording = clock();
         if bundle_recorded {
-            let indexed = self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed);
-            let index_buffer = RenderCommand::SetIndexBuffer {
-                buffer: self.scene.buffers().compacted,
-                offset: 0,
-            };
             let mut ready = self.ready(gpu, terrain_on);
-            let mut commands = Vec::with_capacity(self.nodes.len() * 4 + 1);
-            if indexed {
-                commands.push(index_buffer.clone());
-            }
+            let mut commands = Vec::with_capacity(self.nodes.len() * 5);
             // Runs of one layer's nodes below layer opacity 1 or blending
             // other than normally draw into a texture of their own; draped
             // nodes take the terrain's way.
@@ -2100,10 +2112,7 @@ impl Renderer {
                 if self.layers.groups[g].drawn_elsewhere() {
                     continue;
                 }
-                let mut group = vec![RenderCommand::SetIndexBuffer {
-                    buffer: self.scene.buffers().compacted,
-                    offset: 0,
-                }];
+                let mut group = Vec::new();
                 for i in self.layers.groups[g].nodes.clone() {
                     let groups = (self.draw_group, self.nodes[i].group);
                     let before = group.len();
@@ -2119,7 +2128,7 @@ impl Renderer {
                         depth_format: None,
                         sample_count: self.target.sample_count,
                     },
-                    &group,
+                    &bound_once(group),
                 ));
             }
             let layers = RenderBundleDesc {
@@ -2137,9 +2146,6 @@ impl Renderer {
             for i in 0..=self.nodes.len() {
                 if i == lit_before && self.ground_lit {
                     commands.extend(self.atmosphere.commands_ground(gpu));
-                    if indexed {
-                        commands.push(index_buffer.clone());
-                    }
                 }
                 if i == self.nodes.len() {
                     break;
@@ -2149,19 +2155,12 @@ impl Renderer {
                     // The main pass splits here: its blend draw opens the
                     // next pass, before the next bundle.
                     Some(group) if group.blend != Blend::Normal => {
-                        let segment = std::mem::take(&mut commands);
+                        let segment = bound_once(std::mem::take(&mut commands));
                         self.bundles
                             .push(gpu.create_render_bundle(&layers, &segment));
-                        if indexed {
-                            commands.push(index_buffer.clone());
-                        }
                     }
                     Some(group) => {
                         commands.extend(self.layers.composite_commands(&self.composites, group));
-                        // The composite changed the pipeline and bindings.
-                        if indexed {
-                            commands.push(index_buffer.clone());
-                        }
                     }
                     None => {}
                 }
@@ -2173,7 +2172,7 @@ impl Renderer {
                 self.recorded += u32::from(commands.len() > before);
             }
             self.bundles
-                .push(gpu.create_render_bundle(&layers, &commands));
+                .push(gpu.create_render_bundle(&layers, &bound_once(commands)));
         }
         let draping = clock();
         times.bundles = micros(recording, draping);
@@ -2471,10 +2470,7 @@ impl Renderer {
         let ready = self.ready(gpu, true);
         let level = self.drape.as_ref().expect("found above");
         let (scene, uniforms) = (level.scene[page].expect("made above"), level.uniforms);
-        let mut commands = vec![RenderCommand::SetIndexBuffer {
-            buffer: self.scene.buffers().compacted,
-            offset: 0,
-        }];
+        let mut commands = Vec::new();
         let mut groups = Vec::new();
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
@@ -2516,7 +2512,7 @@ impl Renderer {
                 depth_format: None,
                 sample_count: 1,
             },
-            &commands,
+            &bound_once(commands),
         );
         let level = self.drape.as_mut().expect("found above");
         level.bundle[at] = Some((bundle, groups));
@@ -2603,6 +2599,7 @@ impl Renderer {
             } else {
                 &self.symbol_passes[..1]
             };
+            let quads = self.driver.quads(self.scene.buffers(), i as u32);
             commands.extend([
                 RenderCommand::SetPipeline(pipeline),
                 RenderCommand::SetBindGroup {
@@ -2610,11 +2607,15 @@ impl Renderer {
                     group: scene,
                 },
                 RenderCommand::SetBindGroup { index: 1, group },
+                RenderCommand::SetIndexBuffer {
+                    buffer: self.quad_indices,
+                    offset: 0,
+                },
             ]);
             for &group in passes {
                 commands.extend([
                     RenderCommand::SetBindGroup { index: 2, group },
-                    draw.clone(),
+                    quads.clone(),
                 ]);
             }
             return true;
@@ -2648,10 +2649,31 @@ impl Renderer {
                 group: scene,
             },
             RenderCommand::SetBindGroup { index: 1, group },
-            draw,
         ]);
+        if node.cull.draw == NodeDraw::Indexed {
+            commands.push(RenderCommand::SetIndexBuffer {
+                buffer: self.scene.buffers().compacted,
+                offset: 0,
+            });
+        }
+        commands.push(draw);
         true
     }
+}
+
+/// A bundle's `commands` without the index buffer bindings that bind what
+/// is bound already: each indexed draw binds its own (the compacted
+/// indices, or symbols' [`QUAD_INDICES`]), and runs of one kind need it
+/// bound once.
+fn bound_once(mut commands: Vec<RenderCommand>) -> Vec<RenderCommand> {
+    let mut bound = None;
+    commands.retain(|c| match c {
+        &RenderCommand::SetIndexBuffer { buffer, offset } => {
+            bound.replace((buffer, offset)) != Some((buffer, offset))
+        }
+        _ => true,
+    });
+    commands
 }
 
 /// The style layer a node composites once with, when it does: below layer

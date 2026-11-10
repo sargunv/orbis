@@ -5,7 +5,7 @@
 // shifts its label to the variable anchor placement chose.
 //
 // One instance per quad: visible chunks of at most 256 quads (orb-render's
-// symbol meshes), six vertices each. A mesh's tables sit behind a header in
+// symbol meshes), four vertices each (six indices). A mesh's tables sit behind a header in
 // the vertex arena; its state words, paint rows and the glyph row table in
 // the property arena.
 //
@@ -581,8 +581,9 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
         }
     }
 
-    // Corners tl, tr, bl, br; two triangles.
-    let corner = array<u32, 6>(0u, 1u, 2u, 1u, 2u, 3u)[index % 6u];
+    // Corners tl, tr, bl, br, indexed into two triangles (orb-render's
+    // `QUAD_INDICES`).
+    let corner = index & 3u;
     let offset = unpack_i16x2(vertex_at(qa + corner));
     let tex_words = vec2<u32>(vertex_at(qa + 4u), vertex_at(qa + 5u));
     let x0 = f32(tex_words.x & 0xffffu);

@@ -116,6 +116,7 @@ layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform;
 module "symbol line"#0: wgsl
 render "symbol line"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol line"#0 vs_symbol [("plane", 1.0), ("feature_rows", 0.0)]; module "symbol line"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#59: layout layout "node"#0; 0 buffer "node uniforms"#0 at 41984 size Some(512)
+buffer "quad indices"#0: BufferUsages(COPY_DST | INDEX)
 buffer "symbol passes"#0: BufferUsages(COPY_DST | UNIFORM)
 group "symbol pass"#0: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 256 size Some(16)
 group "symbol pass"#1: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 512 size Some(16)
@@ -131,10 +132,10 @@ group "node"#65: layout layout "node"#0; 0 buffer "node uniforms"#0 at 52224 siz
 group "node"#66: layout layout "node"#0; 0 buffer "node uniforms"#0 at 56320 size Some(512)
 group "node"#67: layout layout "node"#0; 0 buffer "node uniforms"#0 at 61440 size Some(512)
 bundle "layers"#0: [Rgba8Unorm] depth None samples 1
-    index buffer "compacted indices"#0 at 0
     pipeline render "fill"#0
     group 0 group "scene"#0
     group 1 group "node"#0
+    index buffer "compacted indices"#0 at 0
     draw indexed indirect buffer "draw args"#0 at 0
     pipeline render "raster"#0
     group 0 group "scene"#0
@@ -375,49 +376,50 @@ bundle "layers"#0: [Rgba8Unorm] depth None samples 1
     pipeline render "symbol line"#0
     group 0 group "scene"#0
     group 1 group "node"#59
+    index buffer "quad indices"#0 at 0
     group 2 group "symbol pass"#0
-    draw indirect buffer "draw args"#0 at 2624
+    draw indexed indirect buffer "draw args"#0 at 2624
     group 2 group "symbol pass"#1
-    draw indirect buffer "draw args"#0 at 2624
+    draw indexed indirect buffer "draw args"#0 at 2624
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#60
     group 2 group "symbol pass"#0
-    draw indirect buffer "draw args"#0 at 2688
+    draw indexed indirect buffer "draw args"#0 at 2688
     group 2 group "symbol pass"#1
-    draw indirect buffer "draw args"#0 at 2688
+    draw indexed indirect buffer "draw args"#0 at 2688
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#61
     group 2 group "symbol pass"#2
-    draw indirect buffer "draw args"#0 at 2976
+    draw indexed indirect buffer "draw args"#0 at 2976
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#62
     group 2 group "symbol pass"#2
-    draw indirect buffer "draw args"#0 at 3008
+    draw indexed indirect buffer "draw args"#0 at 3008
     pipeline render "symbol line"#0
     group 0 group "scene"#0
     group 1 group "node"#63
     group 2 group "symbol pass"#2
-    draw indirect buffer "draw args"#0 at 3200
+    draw indexed indirect buffer "draw args"#0 at 3200
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#64
     group 2 group "symbol pass"#2
-    draw indirect buffer "draw args"#0 at 3232
+    draw indexed indirect buffer "draw args"#0 at 3232
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#65
     group 2 group "symbol pass"#2
-    draw indirect buffer "draw args"#0 at 3264
+    draw indexed indirect buffer "draw args"#0 at 3264
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#66
     group 2 group "symbol pass"#2
-    draw indirect buffer "draw args"#0 at 3520
+    draw indexed indirect buffer "draw args"#0 at 3520
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#67
     group 2 group "symbol pass"#2
-    draw indirect buffer "draw args"#0 at 3840
+    draw indexed indirect buffer "draw args"#0 at 3840
