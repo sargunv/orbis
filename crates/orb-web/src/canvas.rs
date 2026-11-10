@@ -213,7 +213,10 @@ impl Canvas {
         if !GL {
             warm_image_copies(device.clone(), queue.clone());
         }
-        let gpu = WgpuGpu::new(device, queue);
+        #[cfg_attr(not(feature = "gl"), allow(unused_mut))]
+        let mut gpu = WgpuGpu::new(device, queue);
+        #[cfg(feature = "gl")]
+        gpu.read_formats(&adapter);
         // A map waiting only for pipelines draws when one arrives.
         gpu.set_compile_wake(std::rc::Rc::new(move || crate::wake(map)));
         Ok(Self {

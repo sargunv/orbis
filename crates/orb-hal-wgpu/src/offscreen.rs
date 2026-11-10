@@ -105,6 +105,8 @@ impl WgpuGpu {
             .map_err(|e| format!("no device: {e}"))?;
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut gpu = Self::new(device, queue);
+        #[cfg(not(webgpu))]
+        gpu.read_formats(&adapter);
         #[cfg(not(target_arch = "wasm32"))]
         {
             gpu.watch_loss();

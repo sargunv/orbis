@@ -294,7 +294,9 @@ impl WgpuGpu {
             compute: !gl && limits.max_compute_invocations_per_workgroup > 0,
             indirect: !gl && limits.max_compute_invocations_per_workgroup > 0,
             vertex_storage: !gl && limits.max_storage_buffers_per_shader_stage > 0,
-            float_targets: limits.max_compute_invocations_per_workgroup > 0,
+            // WebGPU guarantees both; elsewhere `read_formats` asks the
+            // adapter (WebGL 2 has them with `EXT_color_buffer_float`).
+            float_targets: cfg!(webgpu),
             multi_draw: false,
         };
         Self {
@@ -517,6 +519,24 @@ impl WgpuGpu {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_compile_wake(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
         self.compiler.set_wake(wake);
+    }
+
+    /// Reads what `adapter`, this device's, renders to, where WebGPU
+    /// doesn't guarantee it: [`Caps::float_targets`].
+    #[cfg(not(webgpu))]
+    pub fn read_formats(&mut self, adapter: &wgpu::Adapter) {
+        let renders = |format, blended: bool| {
+            let features = adapter.get_texture_format_features(format);
+            features
+                .allowed_usages
+                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+                && (!blended
+                    || features
+                        .flags
+                        .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE))
+        };
+        self.caps.float_targets = renders(wgpu::TextureFormat::Rgba16Float, true)
+            && renders(wgpu::TextureFormat::R32Float, false);
     }
 
     /// Calls `wake` whenever a pipeline's `create*PipelineAsync` promise
