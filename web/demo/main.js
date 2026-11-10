@@ -97,13 +97,23 @@ function hashOf({ center: [lon, lat], zoom, bearing = 0, pitch = 0 }) {
     parts.push(bearing.toFixed(1), pitch.toFixed(0));
   return `#${parts.join("/")}`;
 }
+let hashTimer;
 function writeHash() {
+  clearTimeout(hashTimer);
+  hashTimer = undefined;
   if (map)
     history.replaceState(
       history.state,
       "",
       `${location.pathname}${location.search}${hashOf(map.camera.current)}`,
     );
+}
+/** Writes the camera once moves pause: a camera set every frame (the
+ * comparison's other map, a script's tour) ends a move every frame, and
+ * Safari throws past 100 `replaceState` calls in 10 s. */
+function writeHashSoon() {
+  clearTimeout(hashTimer);
+  hashTimer = setTimeout(writeHash, 250);
 }
 /** Sets the URL's `name` to `value` (`true` for a bare flag), or removes it for a falsy one. */
 function setParam(name, value) {
@@ -297,6 +307,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
     return;
   }
   const switched = ++switches;
+  clearTimeout(hashTimer);
   const url = urlFor(next, camera ?? map.camera.current, {
     keepOptions: mode !== "push" || next.scene === current.scene,
   });
@@ -471,7 +482,7 @@ async function load(next, { camera }) {
     hudControl.frame(ack);
     showCompass();
   });
-  map.on("moveend", writeHash);
+  map.on("moveend", writeHashSoon);
   // How long a device loss took to recover: to the first frame on the new
   // device, and to the next complete one.
   let lostAt;
