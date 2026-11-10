@@ -2681,8 +2681,10 @@ impl Map {
             // Destroyed once the renderer's terrain is off.
             self.retired_pages.extend(terrain.page);
         }
-        // In-flight tiles belong to the old scene.
+        // In-flight tiles belong to the old scene: none lands to be
+        // dropped as stale.
         self.tile_generation += 1;
+        self.host_tiles.clear_stale();
     }
 }
 

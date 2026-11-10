@@ -102,4 +102,9 @@ impl HostTiles {
     pub(crate) fn landed_stale(&mut self, source: u32, tile: TileIndex) -> bool {
         self.stale.remove(&(source, tile))
     }
+
+    /// Forgets the stale loads: a new scene's loads land nowhere else.
+    pub(crate) fn clear_stale(&mut self) {
+        self.stale.clear();
+    }
 }

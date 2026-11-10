@@ -263,7 +263,8 @@ enum Task {
 /// What a resource is for, once it arrives.
 #[derive(Debug)]
 enum Then {
-    Nothing,
+    /// Kept for the region, a resource of this kind, and nothing follows.
+    Keep(ResourceKind),
     Style,
     /// TileJSON of a source.
     TileJson(String),
@@ -272,11 +273,10 @@ enum Then {
 }
 
 impl Then {
-    /// The kind of resource that arrives for this. `Nothing` follows
-    /// sprites, glyphs and archive reads alike.
+    /// The kind of resource that arrives for this.
     fn kind(&self) -> ResourceKind {
         match self {
-            Then::Nothing => ResourceKind::Unknown,
+            &Then::Keep(kind) => kind,
             Then::Style => ResourceKind::Style,
             Then::TileJson(_) | Then::Header(_) => ResourceKind::Source,
         }
@@ -461,7 +461,7 @@ impl Job {
                         let resource = Task::Resource {
                             url,
                             range: Some((range.offset, range.length)),
-                            then: Then::Nothing,
+                            then: Then::Keep(ResourceKind::Tile),
                         };
                         // Counted once: as this task.
                         self.start(resource, tries);
@@ -630,7 +630,7 @@ impl Job {
 
     fn then(self: &Arc<Self>, then: Then, url: &str, bytes: &[u8]) {
         match then {
-            Then::Nothing => {}
+            Then::Keep(_) => {}
             Then::Style => match std::str::from_utf8(bytes)
                 .map_err(|e| e.to_string())
                 .and_then(|text| {
@@ -661,10 +661,13 @@ impl Job {
         self.lock().style = Some(style.clone());
         for sprite in &style.sprites {
             for ratio in ["", "@2x"] {
-                for ext in [".json", ".png"] {
+                for (ext, kind) in [
+                    (".json", ResourceKind::SpriteJson),
+                    (".png", ResourceKind::SpriteImage),
+                ] {
                     let split = sprite.url.find(['?', '#']).unwrap_or(sprite.url.len());
                     let (path, query) = sprite.url.split_at(split);
-                    self.resource(format!("{path}{ratio}{ext}{query}"), Then::Nothing);
+                    self.resource(format!("{path}{ratio}{ext}{query}"), Then::Keep(kind));
                 }
             }
         }
@@ -684,7 +687,10 @@ impl Job {
                     if local(first) && local(last) {
                         continue;
                     }
-                    self.resource(orb_text::glyphs_url(template, &stack, range), Then::Nothing);
+                    self.resource(
+                        orb_text::glyphs_url(template, &stack, range),
+                        Then::Keep(ResourceKind::Glyphs),
+                    );
                 }
             }
         }
@@ -695,13 +701,13 @@ impl Job {
                 SourceKind::RasterDem(d) => self.tileset(&source.id, &d.raster.tileset),
                 SourceKind::GeoJson(g) => {
                     if let GeoJsonData::Url(url) = &g.data {
-                        self.resource(url.clone(), Then::Nothing);
+                        self.resource(url.clone(), Then::Keep(ResourceKind::Source));
                     }
                 }
                 SourceKind::Image(image) => {
                     // A video streams from its host's player: not stored.
                     if let orb_style::ImageContent::Image(url) = &image.content {
-                        self.resource(url.clone(), Then::Nothing);
+                        self.resource(url.clone(), Then::Keep(ResourceKind::Image));
                     }
                 }
             }
@@ -774,7 +780,7 @@ impl Job {
         });
         if !templated {
             for tile in tiles {
-                self.resource(endpoint.url(tile), Then::Nothing);
+                self.resource(endpoint.url(tile), Then::Keep(ResourceKind::Tile));
             }
             return;
         }
