@@ -607,7 +607,14 @@ impl Terrain {
             let stack = |s: Option<u8>| s.map_or(NONE, u32::from);
             // A slope stack by its rank on the slope page.
             let slopes = (layer.shade).map_or(NONE, |(_, s)| u32::from(s) - colour);
-            let words = [stack(layer.below), stack(layer.above), slopes, 0];
+            // The first layer is the ground: it fogs where it draws
+            // nothing too, and the layers over it only their own content.
+            let words = [
+                stack(layer.below),
+                stack(layer.above),
+                slopes,
+                u32::from(i == 0),
+            ];
             gpu.write_buffer(
                 buffer,
                 UNIFORM_STRIDE * i as u64,
@@ -1000,9 +1007,11 @@ impl Terrain {
     }
 
     /// This frame's passes before the map: redrawn drape slots (`drape`
-    /// draws the draped nodes into level 0), their mip levels, and each
-    /// terrain layer into its texture, the first clearing `depth`. A layer
-    /// shades its hillshade where `shades` has the node's group.
+    /// draws the draped nodes into level 0) and their mip levels into
+    /// `passes`, and into `layers` each terrain layer's pass into its
+    /// texture, in order, the first clearing `depth`, the rest loading it.
+    /// The caller places the layer passes among the 3D layers' passes. A
+    /// layer shades its hillshade where `shades` has the node's group.
     pub(crate) fn passes(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1010,7 +1019,7 @@ impl Terrain {
         (drape, shades): (&[DrapeBundle], &[Option<BindGroupId>]),
         (depth, depth_store): (TextureId, StoreOp),
         downsampler: &crate::downsample::Downsampler,
-        passes: &mut Vec<Pass>,
+        (passes, layers): (&mut Vec<Pass>, &mut Vec<RenderPass>),
     ) -> u32 {
         let mut draws = 0;
         if !self.ready(gpu) || !downsampler.ready(gpu) {
@@ -1181,7 +1190,7 @@ impl Terrain {
         for (layer, target) in self.targets.iter().enumerate() {
             let shade = shades.get(layer).copied().flatten();
             let pipeline = pipelines[usize::from(shade.is_some())].expect("made above");
-            passes.push(Pass::Render(RenderPass {
+            layers.push(RenderPass {
                 label: "terrain",
                 colors: vec![target.target.attachment(0, LoadOp::Clear([0.0; 4]))],
                 depth: Some(DepthAttachment {
@@ -1194,7 +1203,7 @@ impl Terrain {
                     store: depth_store,
                 }),
                 commands: draw(pipeline, self.stack_groups[layer], shade),
-            }));
+            });
             draws += 1;
         }
         draws

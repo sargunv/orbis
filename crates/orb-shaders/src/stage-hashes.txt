@@ -19,11 +19,11 @@ composite encode fs_replace 13713a2c5f64dfcf
 composite encode fs_encode a1a27fca1a9510e5
 terrain vs_terrain 5ddbbd4d0b7125d2
 terrain fs_terrain_depth efd30ac907d78431
-terrain fs_terrain b8f14d7ad0620aa3
+terrain fs_terrain 88159658e2209218
 terrain shade vs_terrain 68a8d6e997f41d56
 terrain shade fs_terrain_depth 7f07e6887ec9a9fb
-terrain shade fs_terrain fa487ca5477c5e23
-terrain shade fs_terrain_shaded 0355e5bb29d4e132
+terrain shade fs_terrain 43ba3d34cbca516a
+terrain shade fs_terrain_shaded ab8c3474cb4fbb1d
 drape vs_slot e22d84da18d45c8e
 drape fs_clear 87c933f264755498
 extrusion vs_extrusion 17536621746ce633

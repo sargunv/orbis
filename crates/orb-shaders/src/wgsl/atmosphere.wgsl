@@ -258,19 +258,29 @@ fn atmosphere_fog_depth(a: Atmosphere, w: f32) -> f32 {
     return a.fog_far / (a.fog_far - a.fog_near) * (1.0 - a.fog_near / max(w, 1e-6));
 }
 
-// GL JS's terrain fog over a surface colour at a fog depth, blended in
-// linear space toward the horizon colour far off: through GL JS's 2.2
-// gamma for encoded colours, as they are in linear light.
-fn atmosphere_fog(a: Atmosphere, surface: vec4<f32>, depth: f32) -> vec4<f32> {
-    if a.fog_opacity <= 0.0 || depth <= a.fog_ground_blend {
+// GL JS's terrain fog over a premultiplied surface colour at a fog depth,
+// blended in linear space toward the horizon colour far off: through GL
+// JS's 2.2 gamma for encoded colours, as they are in linear light.
+// `ground` fogs the whole surface, drawn on or not, as GL JS's terrain
+// does; otherwise only what is drawn, by its coverage: a terrain layer
+// over the ground then fogs its own content and leaves what lies beneath
+// as it was, so the fog lands once however many layers drape the surface.
+fn atmosphere_fog(a: Atmosphere, surface: vec4<f32>, depth: f32, ground: bool) -> vec4<f32> {
+    if a.fog_opacity <= 0.0 || depth <= a.fog_ground_blend || (!ground && surface.a <= 0.0) {
         return surface;
     }
     let blend = smoothstep(0.0, 1.0, max((depth - a.horizon_fog_blend) / (1.0 - a.horizon_fog_blend), 0.0));
     let factor = pow(max(depth - a.fog_ground_blend, 0.0) / (1.0 - a.fog_ground_blend), 2.0) * a.fog_opacity;
     if a.linear != 0.0 {
-        return mix(surface, mix(a.fog_color, a.horizon_color, blend), factor);
+        let coverage = select(surface.a, 1.0, ground);
+        return mix(surface, mix(a.fog_color, a.horizon_color, blend) * coverage, factor);
     }
     let gamma = vec4<f32>(ATMOSPHERE_GAMMA);
     let fog = mix(pow(a.fog_color, gamma), pow(a.horizon_color, gamma), blend);
-    return pow(mix(pow(surface, gamma), fog, factor), 1.0 / gamma);
+    if ground {
+        return pow(mix(pow(surface, gamma), fog, factor), 1.0 / gamma);
+    }
+    // Content alone: its straight colour fogged, covering as it did.
+    let straight = vec4<f32>(surface.rgb / surface.a, 1.0);
+    return pow(mix(pow(straight, gamma), fog, factor), 1.0 / gamma) * surface.a;
 }

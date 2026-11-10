@@ -59,13 +59,14 @@ struct Terrain {
 };
 
 // A terrain layer: the colour stacks drawn below and above its shaded
-// hillshade, and the slope stack (by its rank on the slope page) holding
-// that hillshade's slopes, or NO_STACK.
+// hillshade, the slope stack (by its rank on the slope page) holding
+// that hillshade's slopes, or NO_STACK, and 1 for the map's first terrain
+// layer, the ground, which fogs where it draws nothing too.
 struct Layer {
     below: u32,
     above: u32,
     slopes: u32,
-    _pad: u32,
+    ground: u32,
 };
 
 const TERRAIN_EXTENT: f32 = 8192.0;
@@ -230,7 +231,8 @@ fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
     return fogged(in, over(drape_color(in, at, layer.above), drape_color(in, at, layer.below)));
 }
 
-// The surface's colour as the atmosphere fogs it.
+// The layer's colour as the atmosphere fogs it: the ground whole, a layer
+// over it only where it draws (`atmosphere_fog`).
 fn fogged(in: TerrainOut, color: vec4<f32>) -> vec4<f32> {
-    return atmosphere_fog(atmosphere, color, in.fog_depth);
+    return atmosphere_fog(atmosphere, color, in.fog_depth, layer.ground != 0u);
 }

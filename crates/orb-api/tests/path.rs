@@ -551,6 +551,100 @@ fn a_resized_terrain_map_draws_its_next_frame() {
     }
 }
 
+/// Tokyo's buildings (unless `buildings` is false) standing on low
+/// rolling ground under a sky, over a plain ground and under the
+/// comma-separated `above`, and nothing else: a frame of them pitched far
+/// enough for fog, which begins near (fog reaches from sea level's depth
+/// at the target, so the ground stays low).
+fn foggy_extrusions_under(buildings: bool, above: &str) -> Vec<u8> {
+    let (lowland, _dem) = dem("lowland", (139.2, 35.2, 140.3, 36.2), 11, |lon, lat| {
+        20.0 + 15.0 * (lon * 170.0).sin() * (lat * 210.0).cos()
+    });
+    let style = tokyo(
+        r##""terrain": {"source": "lowland"},
+            "sky": {"sky-color": "#4f8fd9", "horizon-color": "#d6e8fb", "fog-color": "#c8d8f0",
+                    "fog-ground-blend": 0.2},"##,
+        &lowland,
+    );
+    let mut layers = vec![
+        r##"{"id": "ground", "type": "background", "paint": {"background-color": "#e8e4dc"}}"##,
+    ];
+    if buildings {
+        layers.push(
+            r##"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles",
+                 "source-layer": "building", "minzoom": 14,
+                 "paint": {"fill-extrusion-color": "#d9d0c9",
+                           "fill-extrusion-height": ["get", "render_height"]}}"##,
+        );
+    }
+    layers.extend(Some(above).filter(|a| !a.is_empty()));
+    let at = style.find("\"layers\": [").unwrap();
+    let style = format!("{}\"layers\": [{}]}}", &style[..at], layers.join(","));
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    fresh_at(&runtime, &mut target, &style, (STATION, 15.5, 30.0, 80.0)).0
+}
+
+/// A draped layer over a fill-extrusion layer on terrain that draws
+/// nothing changes nothing: its terrain layer fogs only what it draws, so
+/// the fog doesn't land on the ground twice, nor on the buildings in
+/// front (the demo's hover highlights, inserted before the first label,
+/// hazed the Globe entry's buildings toward the horizon).
+#[test]
+fn a_draped_layer_that_draws_nothing_over_extrusions_changes_nothing() {
+    let plain = foggy_extrusions_under(true, "");
+    let highlight = r##"{"id": "highlight", "type": "fill", "source": "openmaptiles",
+        "source-layer": "building",
+        "paint": {"fill-color": "#e5007e",
+                  "fill-opacity": ["case", ["boolean", ["feature-state", "hover"], false], 0.3, 0]}}"##;
+    assert_same(
+        "empty-drape-over-3d",
+        (foggy_extrusions_under(true, highlight), plain),
+    );
+}
+
+/// Buildings hide a draped layer above their layer where they stand in
+/// front of it, as GL JS draws such a layer's terrain over their depth:
+/// an opaque background above them covers the ground and leaves the
+/// buildings as they were.
+#[test]
+fn buildings_hide_the_draped_layers_above_them() {
+    let cover =
+        r##"{"id": "cover", "type": "background", "paint": {"background-color": "#ff00ff"}}"##;
+    let bare = foggy_extrusions_under(false, "");
+    let plain = foggy_extrusions_under(true, "");
+    let covered = foggy_extrusions_under(true, cover);
+    let px = |frame: &[u8], i: usize| frame[i * 4..i * 4 + 4].to_vec();
+    let total = plain.len() / 4;
+    let building: Vec<bool> = (0..total).map(|i| px(&plain, i) != px(&bare, i)).collect();
+    // Their edges blend with what lies behind them, which the cover
+    // changes: only pixels inside a building count.
+    let w = WIDTH as usize;
+    let buildings: Vec<usize> = (w..total - w)
+        .filter(|&i| [i, i - 1, i + 1, i - w, i + w].iter().all(|&j| building[j]))
+        .collect();
+    let kept = (buildings.iter())
+        .filter(|&&i| px(&covered, i) == px(&plain, i))
+        .count();
+    let ground = (0..total)
+        .filter(|&i| px(&covered, i) == [255, 0, 255, 255])
+        .count();
+    assert!(
+        buildings.len() > total / 20,
+        "buildings drew {} of {total} pixels",
+        buildings.len()
+    );
+    assert!(
+        ground > total / 20,
+        "the cover drew {ground} of {total} pixels"
+    );
+    assert!(
+        kept * 20 > buildings.len() * 19,
+        "buildings kept {kept} of their {} pixels",
+        buildings.len()
+    );
+}
+
 /// Houses on a hillside each stand on the ground under them: a row of
 /// them climbs a slope 300 m high across a few overzoom slices, each house
 /// a block of two (OpenMapTiles merges a block's buildings into one

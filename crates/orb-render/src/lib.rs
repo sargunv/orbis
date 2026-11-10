@@ -1980,6 +1980,11 @@ impl Renderer {
             }
         }
         Pass::group(&mut passes, start, "heatmaps");
+        let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
+        // Terrain layers above a 3D layer, by their first node, and whether
+        // a pass cleared the depth 3D passes share.
+        let mut terrain_above: Vec<(usize, RenderPass)> = Vec::new();
+        let mut depth_cleared = false;
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
             let passing = clock();
             let start = passes.len();
@@ -1993,21 +1998,52 @@ impl Renderer {
                     node.cull.visible.then_some(node.group)
                 })
                 .collect();
+            let mut layers = Vec::with_capacity(self.terrain_layers.len());
             stats.draws += terrain.passes(
                 gpu,
                 (b.frame, b.props),
                 (&drape, &shades),
                 depth,
                 &self.downsampler,
-                &mut passes,
+                (&mut passes, &mut layers),
             );
+            // A terrain layer draws after the 3D layers below it, over
+            // their depth, so that buildings hide what they stand in front
+            // of: draped layers above a fill-extrusion layer, and their
+            // fog, would otherwise composite over its buildings. Those
+            // below every 3D layer draw here.
+            let first_3d = (self.nodes.iter())
+                .position(|n| n.extrusion.is_some() && n.drawn && extrusions_ready);
+            for (layer, pass) in layers.into_iter().enumerate() {
+                let at = (self.nodes.iter())
+                    .position(|n| n.terrain_layer == Some(layer as u8))
+                    .unwrap_or(0);
+                match first_3d {
+                    Some(first) if first < at => terrain_above.push((at, pass)),
+                    _ => {
+                        depth_cleared = true;
+                        passes.push(Pass::Render(pass));
+                    }
+                }
+            }
             Pass::group(&mut passes, start, "terrain");
             drape_passes = micros(passing, clock());
         }
-        let mut first = !terrain_on;
-        let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
         let (draw_group, buffers) = (self.draw_group, *self.scene.buffers());
         let start = passes.len();
+        let mut terrain_above = terrain_above.into_iter().peekable();
+        // The first pass on the shared depth clears it, the rest load it.
+        fn push_terrain(passes: &mut Vec<Pass>, mut pass: RenderPass, cleared: &mut bool) {
+            if let Some(depth) = &mut pass.depth {
+                depth.load = if *cleared {
+                    LoadOp::Load
+                } else {
+                    LoadOp::Clear(0.0)
+                };
+            }
+            *cleared = true;
+            passes.push(Pass::Render(pass));
+        }
         for (index, node) in self.nodes.iter_mut().enumerate() {
             let Some(target) = node
                 .extrusion
@@ -2016,6 +2052,11 @@ impl Renderer {
             else {
                 continue;
             };
+            while let Some((_, pass)) = terrain_above.next_if(|(at, _)| *at < index) {
+                push_terrain(&mut passes, pass, &mut depth_cleared);
+            }
+            let first = !depth_cleared;
+            depth_cleared = true;
             // Ground passes join the recorded draw as they compile.
             let ground = self.extrusions.ground_ready(gpu, node.ground);
             if ground != node.ground_drawn {
@@ -2035,8 +2076,10 @@ impl Renderer {
                 first,
             );
             passes.push(Pass::Render(pass));
-            first = false;
             stats.draws += 1;
+        }
+        for (_, pass) in terrain_above {
+            push_terrain(&mut passes, pass, &mut depth_cleared);
         }
         Pass::group(&mut passes, start, "3d layers");
         let start = passes.len();
