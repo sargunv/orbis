@@ -27,8 +27,9 @@
 // Firefox instead, which draws Orbis with WebGL 2 where it has no WebGPU
 // (macOS, Linux). `--unpaced` runs animation frames as fast as the
 // browser draws them (Chromium's flags, Firefox's `layout.frame_rate`
-// 0), so a still view's repaint interval is what a frame costs rather
-// than the display's. `--precise` allows WebGPU's unsafe APIs,
+// 0; in Firefox with Orbis on the page, whose workers stay paced), so a
+// still view's repaint interval is what a frame costs rather than the
+// display's. `--precise` allows WebGPU's unsafe APIs,
 // which stops the first, and serves the page cross-origin isolated, which
 // refines the second to 5 µs: to check that the page's means agree with
 // exact medians. `--android` reverses the server's port onto this worktree's
@@ -62,6 +63,11 @@ for (const arg of args) {
   if (!match) throw new Error(`unknown argument ${arg}`);
   params.set(match[1], match[2]);
 }
+// Firefox keeps a worker's animation frames on the display's rate under
+// `layout.frame_rate` 0 (Orbis's interval stayed at 16.7 ms there, on
+// Linux, where GL JS's on the page went unpaced), so unpaced Firefox draws
+// Orbis on the page unless `--worker` says otherwise.
+if (inFirefox && unpaced && !params.has("worker")) params.set("worker", "0");
 if ((android || inFirefox) && precise)
   throw new Error("--precise needs headless Chromium");
 if (android && (inFirefox || unpaced))
