@@ -24,10 +24,48 @@ const MANHATTAN = [-73.9855, 40.758];
 const MANHATTAN_SOUTH = [-73.9975, 40.731];
 const TOKYO_STATION = [139.767, 35.681];
 const ASIA = [105, 30];
+const ATLANTIC = [-40, 30];
 const ALPS = [7.7491, 46.0207];
 
 const ease = (f) => f * f * (3 - 2 * f);
 const lerp = (a, b, f) => a + (b - a) * f;
+
+/** Liberty's buildings lit as the demo's Globe entry lights its own (orb-bench's GLOBE_LIT). */
+const lit = (tx) =>
+  tx
+    .setLight({
+      anchor: "viewport",
+      position: [1.15, 210, 30],
+      intensity: 0.35,
+      "shadow-intensity": 0.5,
+    })
+    .setPaintProperty(
+      "building-3d",
+      "fill-extrusion-ambient-occlusion-wall-intensity",
+      0.6,
+    )
+    .setPaintProperty(
+      "building-3d",
+      "fill-extrusion-ambient-occlusion-ground-intensity",
+      0.5,
+    );
+
+/** 6 s from the whole globe down to Midtown at z16, tilting to pitch 60 as the buildings come in, then 2 s turning. */
+function globeManhattan(f) {
+  const zoomIn = Math.min(1, f / 0.75),
+    e = ease(zoomIn),
+    g = ease(Math.min(1, zoomIn / 0.6));
+  const turn = Math.min(1, Math.max(0, (f - 0.75) / 0.25));
+  return {
+    center: [
+      lerp(ATLANTIC[0], MANHATTAN[0], g),
+      lerp(ATLANTIC[1], MANHATTAN[1], g),
+    ],
+    zoom: lerp(1.5, 16, e),
+    bearing: 29 + 30 * turn,
+    pitch: lerp(0, 60, e),
+  };
+}
 
 /** The native bench's scenarios (crates/orb-bench/src/stutter.rs). */
 const SCENARIOS = [
@@ -47,6 +85,30 @@ const SCENARIOS = [
         pitch: 60,
       };
     },
+  },
+  {
+    name: "buildings, shadows and AO: zoom z12 → z16 at pitch 60, then pan, Manhattan",
+    style: "liberty",
+    frames: 600,
+    edit: (tx) =>
+      tx
+        .setLight({
+          anchor: "viewport",
+          position: [1.15, 210, 30],
+          intensity: 0.5,
+          "shadow-intensity": 0.35,
+        })
+        .setPaintProperty(
+          "building-3d",
+          "fill-extrusion-ambient-occlusion-wall-intensity",
+          0.5,
+        )
+        .setPaintProperty(
+          "building-3d",
+          "fill-extrusion-ambient-occlusion-ground-intensity",
+          0.4,
+        ),
+    camera: (f) => SCENARIOS[0].camera(f),
   },
   {
     name: "terrain: fast turns at z11.6, pitch 80, Alps",
@@ -83,6 +145,21 @@ const SCENARIOS = [
         pitch: lerp(0, 40, e),
       };
     },
+  },
+  {
+    name: "globe, buildings: zoom z1.5 → z16 onto Manhattan",
+    style: "liberty",
+    globe: true,
+    frames: 480,
+    camera: globeManhattan,
+  },
+  {
+    name: "globe, buildings, shadows and AO: zoom z1.5 → z16 onto Manhattan",
+    style: "liberty",
+    globe: true,
+    edit: lit,
+    frames: 480,
+    camera: globeManhattan,
   },
 ];
 
@@ -161,9 +238,12 @@ async function runOrbis(container, scenario, style, legs, show) {
   });
   try {
     await idle(() => map.once("idle"), scenario.name);
-    if (scenario.globe) {
+    if (scenario.globe || scenario.edit) {
       const loaded = idle(() => map.once("idle"), scenario.name);
-      map.edit((tx) => tx.setProjection({ type: "globe" }));
+      map.edit((tx) => {
+        if (scenario.globe) tx.setProjection({ type: "globe" });
+        scenario.edit?.(tx);
+      });
       await loaded;
     }
     show(`${scenario.name}: moving`);
@@ -225,11 +305,16 @@ async function runOrbis(container, scenario, style, legs, show) {
     await idle(() => map.once("idle"), scenario.name);
     off();
     const moving = frames.filter((f) => f.t > started && f.t <= ended);
+    const gpu = submissions.map((s) =>
+      s.passes.reduce((sum, [, d]) => sum + d, 0),
+    );
     return {
       frames: moving,
       longTasks: long.tasks,
       settle: performance.now() - settled,
       gpuMatched,
+      gpu,
+      timedFrames: timed.length,
     };
   } finally {
     map.remove();
@@ -440,7 +525,8 @@ function engineReport(rows, gl) {
     const f = r.frames;
     const gaps = intervals(f);
     const cpu = sorted(f.map((x) => x.cpu));
-    const gpu = sorted(f.filter((x) => x.gpu !== undefined).map((x) => x.gpu));
+    // Each submission's, paired with its frame or not.
+    const gpu = sorted(r.gpu ?? []);
     const cells = [
       r.scenario.name,
       f.length,
@@ -490,8 +576,12 @@ function engineReport(rows, gl) {
     lines.push("", `#### ${r.scenario.name}`, "", `- style: ${r.style}`);
     if (!gl) {
       lines.push(...shares(r.frames));
-      if (!r.gpuMatched)
-        lines.push("- GPU: submissions didn't pair with frames; no GPU times");
+      if (!r.gpuMatched) {
+        lines.push(
+          `- GPU: ${r.gpu.length} submissions drew for ${r.timedFrames} frames, unpaired: the table's GPU ` +
+            "columns are over the submissions, the worst frames have none",
+        );
+      }
     }
     lines.push("", ...worstTable(r.frames, gl));
     if (!gl) lines.push("", ...histogram(r.frames));
@@ -566,9 +656,13 @@ export async function runStutter({
   const results = Object.fromEntries(keys.map((key) => [key, []]));
   const flight = alpsFlight.legs.slice(0, legs ?? alpsFlight.legs.length);
   try {
-    for (const scenario of SCENARIOS.filter(
-      (s) => !filter || s.name.includes(filter),
-    )) {
+    // GL JS has no shadows or ambient occlusion: the paths that light the buildings are Orbis's alone.
+    const chosen = SCENARIOS.filter(
+      (s) =>
+        (!filter || s.name.includes(filter)) &&
+        !(s.edit && keys.includes("gl")),
+    );
+    for (const scenario of chosen) {
       const style = scenario.style === "alps" ? alps : liberty;
       if (keys.length > 1) {
         for (const key of keys) {

@@ -8,7 +8,9 @@
 //! at pitch 60 and panning on across new ground, plain and then with
 //! style-spec#1797's shadows and #1796's ambient occlusion; the Alps terrain style's fast
 //! turns and its flight (`web/demo/data/alps.json`); and Liberty on the
-//! globe, zooming from the whole world onto Tokyo. Each starts cold from
+//! globe, zooming from the whole world onto Tokyo, and onto Manhattan as
+//! its buildings arrive, plain and then lit as the demo's Globe entry
+//! lights its own. Each starts cold from
 //! its first camera at rest and runs at a 60 Hz pace, as the gestures bench
 //! does. `cargo xtask bench stutter`; in the browser
 //! `bench.html?experiment=stutter` runs the same paths through the page's
@@ -39,6 +41,8 @@ pub const LIBERTY: &str = "https://tiles.openfreemap.org/styles/liberty";
 const MANHATTAN: (f64, f64) = (-73.9855, 40.758);
 /// Where the Manhattan pan ends: down the avenues, by Washington Square.
 const MANHATTAN_SOUTH: (f64, f64) = (-73.9975, 40.731);
+/// Where the globe zoom onto Manhattan starts: over the Atlantic.
+const ATLANTIC: (f64, f64) = (-40.0, 30.0);
 /// Tokyo Station, and where the globe zoom starts over Asia.
 const TOKYO_STATION: (f64, f64) = (139.767, 35.681);
 const ASIA: (f64, f64) = (105.0, 30.0);
@@ -77,6 +81,36 @@ fn manhattan(f: f64) -> CameraState {
     );
     camera(lon, lat, zoom, 29.0, 60.0)
 }
+
+/// 6 s from the whole globe down to Midtown at z16, tilting to pitch 60
+/// as the buildings come in, then 2 s turning there.
+fn globe_manhattan(f: f64) -> CameraState {
+    let zoom_in = (f / 0.75).min(1.0);
+    let e = ease(zoom_in);
+    let g = ease((zoom_in / 0.6).min(1.0));
+    let lon = lerp(ATLANTIC.0, MANHATTAN.0, g);
+    let lat = lerp(ATLANTIC.1, MANHATTAN.1, g);
+    let turn = ((f - 0.75) / 0.25).clamp(0.0, 1.0);
+    camera(
+        lon,
+        lat,
+        lerp(1.5, 16.0, e),
+        29.0 + 30.0 * turn,
+        lerp(0.0, 60.0, e),
+    )
+}
+
+/// The globe, as the globe zoom onto Manhattan draws it.
+const GLOBE: &str = r#"[["setProjection", {"type": "globe"}]]"#;
+/// The globe with Liberty's buildings lit as the demo's Globe entry lights
+/// its own: shadows at 0.5, occlusion 0.6 on the walls and 0.5 on the
+/// ground.
+const GLOBE_LIT: &str = r#"[
+    ["setProjection", {"type": "globe"}],
+    ["setLight", {"anchor": "viewport", "position": [1.15, 210, 30], "intensity": 0.35, "shadow-intensity": 0.5}],
+    ["setPaintProperty", "building-3d", "fill-extrusion-ambient-occlusion-wall-intensity", 0.6],
+    ["setPaintProperty", "building-3d", "fill-extrusion-ambient-occlusion-ground-intensity", 0.5]
+]"#;
 
 fn camera(lon: f64, lat: f64, zoom: f64, bearing: f64, pitch: f64) -> CameraState {
     CameraState {
@@ -147,6 +181,22 @@ const SCENARIOS: &[Scenario] = &[
             let lat = lerp(ASIA.1, TOKYO_STATION.1, ease(f.min(0.6) / 0.6));
             camera(lon, lat, lerp(1.5, 13.0, e), 0.0, lerp(0.0, 40.0, e))
         },
+        flight: false,
+    },
+    Scenario {
+        name: "globe, buildings: zoom z1.5 → z16 onto Manhattan",
+        style: Style::Liberty,
+        edit: Some(GLOBE),
+        frames: 480,
+        camera: globe_manhattan,
+        flight: false,
+    },
+    Scenario {
+        name: "globe, buildings, shadows and AO: zoom z1.5 → z16 onto Manhattan",
+        style: Style::Liberty,
+        edit: Some(GLOBE_LIT),
+        frames: 480,
+        camera: globe_manhattan,
         flight: false,
     },
 ];
