@@ -46,6 +46,28 @@ pub(crate) fn native_services(wake: Arc<dyn Fn() + Send + Sync>) -> Services {
     }
 }
 
+/// Native fetches with tile jobs on `executor`, and no system fonts: for
+/// tests that count frames or hold jobs back.
+pub(crate) fn services_on(
+    executor: Arc<dyn orb_host::jobs::Executor>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) -> Services {
+    let fetch = NativeFetch::new();
+    Services {
+        clock: Arc::new(orb_host_native::NativeClock::default()),
+        image_decode: Arc::new(NativeImageDecode),
+        images: Default::default(),
+        jobs: PoolJobs::new(fetch.clone(), Arc::new(NativeImageDecode), executor),
+        fetch,
+        wake,
+    }
+}
+
+/// A camera at Null Island, zoom 1.5.
+pub(crate) fn null_island() -> CameraState {
+    CameraState::new(Geodetic::new(0.0, 0.0), 1.5, &web_mercator())
+}
+
 /// The committed extract and reduced Liberty style, or an explicit style URL.
 pub(crate) fn load_style(map: &mut Map, options: &Options) -> Result<(), String> {
     if let Some(url) = &options.style {

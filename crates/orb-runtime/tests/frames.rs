@@ -523,26 +523,13 @@ mod tests {
         let executor = Arc::new(HeldExecutor::default());
         let wakes = Arc::new(AtomicUsize::new(0));
         let wake_count = wakes.clone();
-        let fetch = crate::common::NativeFetch::new();
-        let services = crate::common::Services {
-            clock: Arc::new(orb_host_native::NativeClock::default()),
-            image_decode: Arc::new(crate::common::NativeImageDecode),
-            images: Default::default(),
-            jobs: crate::common::PoolJobs::new(
-                fetch.clone(),
-                Arc::new(crate::common::NativeImageDecode),
-                executor.clone(),
-            ),
-            fetch,
-            wake: Arc::new(move || {
+        let services = crate::common::services_on(
+            executor.clone(),
+            Arc::new(move || {
                 wake_count.fetch_add(1, Ordering::SeqCst);
             }),
-        };
-        let camera = crate::common::CameraState::new(
-            orb_crs::Geodetic::new(0.0, 0.0),
-            1.5,
-            &crate::common::web_mercator(),
         );
+        let camera = crate::common::null_island();
         let mut offscreen =
             crate::common::Offscreen::with_map(crate::common::Map::new(services, Some(camera)))
                 .unwrap();
@@ -711,24 +698,9 @@ mod tests {
             ]
         }"#,
         ] {
-            let fetch = crate::common::NativeFetch::new();
-            let services = crate::common::Services {
-                clock: Arc::new(orb_host_native::NativeClock::default()),
-                image_decode: Arc::new(crate::common::NativeImageDecode),
-                images: Default::default(),
-                jobs: crate::common::PoolJobs::new(
-                    fetch.clone(),
-                    Arc::new(crate::common::NativeImageDecode),
-                    Arc::new(orb_host::jobs::Inline),
-                ),
-                fetch,
-                wake: Arc::new(|| {}),
-            };
-            let camera = crate::common::CameraState::new(
-                orb_crs::Geodetic::new(0.0, 0.0),
-                1.5,
-                &crate::common::web_mercator(),
-            );
+            let services =
+                crate::common::services_on(Arc::new(orb_host::jobs::Inline), Arc::new(|| {}));
+            let camera = crate::common::null_island();
             let mut offscreen =
                 crate::common::Offscreen::with_map(crate::common::Map::new(services, Some(camera)))
                     .unwrap();
@@ -1098,11 +1070,7 @@ mod tests {
             fetch,
             wake: Arc::new(|| {}),
         };
-        let camera = crate::common::CameraState::new(
-            orb_crs::Geodetic::new(0.0, 0.0),
-            1.5,
-            &crate::common::web_mercator(),
-        );
+        let camera = crate::common::null_island();
         let mut offscreen =
             crate::common::Offscreen::with_map(crate::common::Map::new(services, Some(camera)))
                 .unwrap();
@@ -1112,24 +1080,9 @@ mod tests {
 
     #[test]
     fn styles_with_symbol_layers_render() {
-        let fetch = crate::common::NativeFetch::new();
-        let services = crate::common::Services {
-            clock: Arc::new(orb_host_native::NativeClock::default()),
-            image_decode: Arc::new(crate::common::NativeImageDecode),
-            images: Default::default(),
-            jobs: crate::common::PoolJobs::new(
-                fetch.clone(),
-                Arc::new(crate::common::NativeImageDecode),
-                Arc::new(orb_host::jobs::Inline),
-            ),
-            fetch,
-            wake: Arc::new(|| {}),
-        };
-        let camera = crate::common::CameraState::new(
-            orb_crs::Geodetic::new(0.0, 0.0),
-            1.5,
-            &crate::common::web_mercator(),
-        );
+        let services =
+            crate::common::services_on(Arc::new(orb_host::jobs::Inline), Arc::new(|| {}));
+        let camera = crate::common::null_island();
         let mut offscreen =
             crate::common::Offscreen::with_map(crate::common::Map::new(services, Some(camera)))
                 .unwrap();
