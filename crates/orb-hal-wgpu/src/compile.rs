@@ -149,8 +149,22 @@ pub(crate) struct RenderJob {
     pub(crate) topology: PrimitiveTopology,
     pub(crate) cull_back: bool,
     pub(crate) sample_count: u32,
+    /// Whether the vertex stage reads WebGL 2's attribute zero
+    /// ([`Caps::gl_shaders`]).
+    pub(crate) attribute_zero: bool,
     pub(crate) cache: Option<wgpu::PipelineCache>,
 }
+
+/// WebGL 2's attribute zero: a `u32` an instance (#179).
+const ATTRIBUTE_ZERO: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+    array_stride: 4,
+    step_mode: wgpu::VertexStepMode::Instance,
+    attributes: &[wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32,
+        offset: 0,
+        shader_location: 0,
+    }],
+};
 
 /// A compute pipeline request, owned.
 #[derive(Debug)]
@@ -284,7 +298,11 @@ impl RenderJob {
                     constants: &vertex_constants,
                     ..Default::default()
                 },
-                buffers: &[],
+                buffers: if self.attribute_zero {
+                    &[Some(ATTRIBUTE_ZERO)]
+                } else {
+                    &[]
+                },
             },
             primitive: wgpu::PrimitiveState {
                 cull_mode: self.cull_back.then_some(wgpu::Face::Back),

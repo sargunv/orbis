@@ -107,7 +107,7 @@ impl Shader {
         if !self.compute.is_empty() || self.parts.contains(&CLIP_PLANES) {
             return None;
         }
-        Some(self.swapped(GL_SWAPS))
+        Some(with_attribute_zero(&self.swapped(GL_SWAPS)))
     }
 
     /// Its source for a device that reads the scene's and the terrain's
@@ -126,6 +126,50 @@ impl Shader {
         }
         source
     }
+}
+
+/// The name of WebGL 2's vertex input at `@location(0)`
+/// ([`with_attribute_zero`]).
+pub const ATTRIBUTE_ZERO: &str = "orb_attribute_zero";
+
+/// `source` with every vertex entry point taking a `u32` at
+/// `@location(0)`, which the HAL binds instance-stepped over zeros, and
+/// OR-ing it into the vertex index so no compiler drops it (#179). Every
+/// vertex is pulled, so programs would otherwise have no attribute, and
+/// Firefox on desktop GL then fakes attribute 0 with an array as long as
+/// a draw's largest index: compacted indices pass its 10M limit, and it
+/// refuses the draw.
+fn with_attribute_zero(source: &str) -> String {
+    const INDEX: &str = "@builtin(vertex_index)";
+    let mut out = String::with_capacity(source.len() + 1024);
+    let mut rest = source;
+    while let Some(at) = rest.find("@vertex") {
+        let (head, tail) = rest.split_at(at);
+        out.push_str(head);
+        let open = tail.find('(').expect("a vertex entry point's parameters");
+        let body = tail.find('{').expect("a vertex entry point's body");
+        let signature = &tail[..body];
+        let index = signature
+            .find(INDEX)
+            .unwrap_or_else(|| panic!("`{signature}` takes no {INDEX}"));
+        let name = index + INDEX.len();
+        let name_end = name + signature[name..].find(':').expect("a typed parameter");
+        out.push_str(&tail[..=open]);
+        out.push_str("@location(0) ");
+        out.push_str(ATTRIBUTE_ZERO);
+        out.push_str(": u32, ");
+        out.push_str(&tail[open + 1..name]);
+        out.push_str(" orb_vertex_index");
+        out.push_str(&tail[name_end..=body]);
+        out.push_str("\n    let ");
+        out.push_str(signature[name..name_end].trim());
+        out.push_str(" = orb_vertex_index | ");
+        out.push_str(ATTRIBUTE_ZERO);
+        out.push(';');
+        rest = &tail[body + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 pub const TERRAIN_SHADER: Shader = Shader {

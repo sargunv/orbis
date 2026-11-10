@@ -91,6 +91,10 @@ pub struct WgpuGpu {
     /// `None` while compiling.
     render_pipelines: Slots<Option<wgpu::RenderPipeline>>,
     compute_pipelines: Slots<Option<wgpu::ComputePipeline>>,
+    /// Zeros that WebGL 2's shaders read at `@location(0)`, a `u32` per
+    /// instance ([`Caps::gl_shaders`], #179): set with every pipeline,
+    /// and grown to the most instances a pass or bundle draws.
+    attribute_zero: Option<wgpu::Buffer>,
     compiler: compile::Compiler,
     /// Pipelines asked for and not yet compiled.
     pending: u32,
@@ -350,6 +354,7 @@ impl WgpuGpu {
             bind_groups: Slots::default(),
             render_pipelines: Slots::default(),
             compute_pipelines: Slots::default(),
+            attribute_zero: None,
             compiler: compile::Compiler::new(),
             pending: 0,
             hung: None,
@@ -951,6 +956,37 @@ impl WgpuGpu {
             })
     }
 
+    /// Grows [`attribute_zero`](Self::attribute_zero) to the most
+    /// instances `commands` draw, where shaders read it. Bundles recorded
+    /// before keep the smaller buffer they set.
+    fn reserve_attribute_zero<'c>(
+        &mut self,
+        commands: impl IntoIterator<Item = &'c RenderCommand>,
+    ) {
+        if !self.caps.gl_shaders() {
+            return;
+        }
+        let instances = (commands.into_iter())
+            .filter_map(|command| match command {
+                RenderCommand::Draw { instances, .. }
+                | RenderCommand::DrawIndexed { instances, .. } => Some(instances.end),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let needed = u64::from(instances.max(1)) * 4;
+        if (self.attribute_zero.as_ref()).is_some_and(|b| b.size() >= needed) {
+            return;
+        }
+        // wgpu zeroes a buffer before its first use.
+        self.attribute_zero = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("attribute zero"),
+            size: needed.next_power_of_two().max(4 << 10),
+            usage: wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        }));
+    }
+
     /// Encodes a command bundles may hold.
     fn encode_render<'p>(
         &'p self,
@@ -958,11 +994,16 @@ impl WgpuGpu {
         command: &'p RenderCommand,
     ) {
         match command {
-            RenderCommand::SetPipeline(id) => pass.set_pipeline(
-                self.render_pipelines[id.0]
-                    .as_ref()
-                    .expect("a pipeline used before it compiled"),
-            ),
+            RenderCommand::SetPipeline(id) => {
+                pass.set_pipeline(
+                    self.render_pipelines[id.0]
+                        .as_ref()
+                        .expect("a pipeline used before it compiled"),
+                );
+                if let Some(zeros) = &self.attribute_zero {
+                    pass.set_vertex_buffer(0, Some(zeros.slice(..)));
+                }
+            }
             RenderCommand::SetBindGroup { index, group } => {
                 pass.set_bind_group(*index, Some(&self.bind_groups[group.0]), &[])
             }
@@ -1419,6 +1460,7 @@ impl Gpu for WgpuGpu {
             topology: desc.topology,
             cull_back: desc.cull_back,
             sample_count: desc.sample_count,
+            attribute_zero: self.caps.gl_shaders(),
             cache: self.cache(),
         };
         let slot = self.render_pipelines.insert(None);
@@ -1470,6 +1512,7 @@ impl Gpu for WgpuGpu {
         desc: &RenderBundleDesc<'_>,
         commands: &[RenderCommand],
     ) -> RenderBundleId {
+        self.reserve_attribute_zero(commands);
         let color_formats: Vec<_> = desc
             .color_formats
             .iter()
@@ -1508,6 +1551,10 @@ impl Gpu for WgpuGpu {
 
     fn submit(&mut self, passes: &[Pass]) {
         let started = timing::now();
+        self.reserve_attribute_zero(passes.iter().flat_map(|pass| match pass {
+            Pass::Render(render) => render.commands.as_slice(),
+            _ => &[],
+        }));
         // While timing, each compute and render pass's first query.
         let queries = match &mut self.timing {
             Some(timing) => timing.begin(passes.iter().map(|pass| match pass {

@@ -318,6 +318,18 @@ mod tests {
             for (entry, one) in split::entry_modules(&module) {
                 let stage = one.entry_points[0].stage;
                 assert_ne!(stage, naga::ShaderStage::Compute, "{label} {entry}");
+                // The input the HAL binds so Firefox doesn't fake one (#179).
+                if stage == naga::ShaderStage::Vertex
+                    && !one.entry_points[0].function.arguments.iter().any(|a| {
+                        a.name.as_deref() == Some(ATTRIBUTE_ZERO)
+                            && matches!(
+                                a.binding,
+                                Some(naga::Binding::Location { location: 0, .. })
+                            )
+                    })
+                {
+                    failures.push(format!("{label} {entry}: no u32 at @location(0)"));
+                }
                 let info = naga::valid::Validator::new(
                     naga::valid::ValidationFlags::all(),
                     naga::valid::Capabilities::empty(),

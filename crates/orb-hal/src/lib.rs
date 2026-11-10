@@ -201,6 +201,14 @@ impl Caps {
     pub fn gpu_driven(&self) -> bool {
         self.compute && self.indirect && self.vertex_storage
     }
+
+    /// Whether pipelines take WebGL 2's shaders (`Shader::gl_source`):
+    /// on a device without compute or vertex-stage storage. Their vertex
+    /// stages read a `u32` at `@location(0)`, which the HAL binds,
+    /// instance-stepped, over zeros (#179).
+    pub fn gl_shaders(&self) -> bool {
+        !self.compute && !self.vertex_storage
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

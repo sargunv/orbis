@@ -142,10 +142,10 @@ pub(crate) fn compute(
 fn module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
     #[cfg(cpu_driven)]
     if !gpu.caps().vertex_storage {
-        let source = if gpu.caps().compute {
-            shader.texture_tables_source()
-        } else {
+        let source = if gpu.caps().gl_shaders() {
             (shader.gl_source()).unwrap_or_else(|| panic!("{} has no WebGL 2 source", shader.label))
+        } else {
+            shader.texture_tables_source()
         };
         return gpu.create_shader_module(&ShaderModuleDesc {
             label: shader.label,

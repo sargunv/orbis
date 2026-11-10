@@ -2974,6 +2974,41 @@ async function webgl2(webgpuBrowser, server) {
   } finally {
     await browser.close();
   }
+  await firefoxAttributeZero(server);
+}
+
+/**
+ * Firefox on desktop GL fakes vertex attribute 0 for a program without
+ * one, sized by the draw's largest index, and refuses draws past 10M
+ * indices (#179): every WebGL 2 program has one, so Firefox warns of no
+ * emulation. Its warnings are capped at 32 a context, which texture
+ * uploads use up, so the cap is raised.
+ */
+async function firefoxAttributeZero(server) {
+  const browser = await firefox.launch({
+    firefoxUserPrefs: { "webgl.max-warnings-per-context": 100_000 },
+  });
+  try {
+    const { page, errors } = await open(browser, { width: 600, height: 400 });
+    await page.goto(
+      `${server.url}?style=tokyo-mvt&backend=webgl2#15/35.68/139.76`,
+    );
+    await page.waitForFunction(
+      () => document.getElementById("app")?.dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
+    assert.equal(await page.evaluate(() => app.map.backend), "webgl2");
+    await page.close();
+    assert.deepEqual(
+      errors.filter((e) => /vertex attrib 0/.test(e)),
+      [],
+      "Firefox emulates attribute 0",
+    );
+    console.log("webgl2: Firefox draws without emulating attribute 0");
+  } finally {
+    await browser.close();
+  }
 }
 
 const CHECKS = {
