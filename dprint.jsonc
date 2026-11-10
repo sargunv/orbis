@@ -48,6 +48,8 @@
     "crates/*/tests/data/**",
     "crates/orb-crs/tests/proj_reference.json",
     "web/demo/data/**",
+    // The demos' hand-written scene catalogue.
+    "!web/demo/data/scenes.json",
     "web/pnpm-lock.yaml",
   ],
   "plugins": [

@@ -7,10 +7,11 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+eframe.workspace = true
 glam.workspace = true
 orb-api.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-winit.workspace = true
 
 [lints]
 workspace = true

@@ -113,6 +113,18 @@ impl Target {
         }
     }
 
+    /// A texture target's texture, for a host that composites it with the
+    /// runtime's device (`Runtime::with_device`); `None` for a surface
+    /// target, or once the GPU was replaced until the next frame.
+    pub fn wgpu_texture(&self) -> Option<orb_hal_wgpu::wgpu::Texture> {
+        match self.kind {
+            Kind::Texture(id) if self.generation == self.shared.generation.get() => {
+                Some(self.shared.gpu.borrow().texture(id).clone())
+            }
+            _ => None,
+        }
+    }
+
     /// Copies a texture target's pixels out: RGBA8, rows top to bottom
     /// without padding. Blocks until the GPU is done. The pixels of a
     /// replaced GPU went with it: draw a frame first.

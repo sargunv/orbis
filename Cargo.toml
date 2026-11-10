@@ -63,6 +63,14 @@ serde = { version = "1.0.229", default-features = false, features = [
 ] }
 serde_json = "1.0.154"
 winit = "0.30.13"
+# The native demo's UI, on the same wgpu device as its map.
+eframe = { version = "0.37.0", default-features = false, features = [
+  "accesskit",
+  "default_fonts",
+  "wayland",
+  "wgpu_no_default_features",
+  "x11",
+] }
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
 web-sys = "0.3.107"

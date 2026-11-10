@@ -2,6 +2,7 @@ import alpsFlight from "./data/alps-flight.json";
 import alps from "./data/alps.json?url";
 import arctic from "./data/crs/arctic.json?url";
 import osmCarto from "./data/osm-carto.json?url";
+import catalogue from "./data/scenes.json";
 import mlt from "./data/tokyo-mlt.json?url";
 // The demo's styles: the catalogue the map app's picker shows (the
 // basemaps by provider, and a few entries for features: the globe with
@@ -12,15 +13,7 @@ import mvt from "./data/tokyo-mvt.json?url";
 /** OpenFreeMap's live Liberty style over the planet: the benches' and measurements' live style. */
 export const LIVE = "https://tiles.openfreemap.org/styles/liberty";
 /** Where a fresh page of a basemap opens without a camera in its hash: central Tokyo, around Tokyo Station. */
-export const LIVE_CAMERA = { center: [139.767, 35.681], zoom: 13 };
-
-// The demo key for api.protomaps.com that maplibre-compose's demo app
-// publishes; it allows any origin.
-const PROTOMAPS_KEY = "73c45a97eddd43fb";
-const protomaps = (name) =>
-  `https://api.protomaps.com/styles/v5/${name}/en.json?key=${PROTOMAPS_KEY}`;
-const versatiles = (name) =>
-  `https://tiles.versatiles.org/assets/styles/${name}/style.json`;
+export const LIVE_CAMERA = catalogue.basemapCamera;
 
 /** The union of the zoom-`z` tiles that touch `bounds`: where an extract cut that way has data at every zoom. */
 function tileBounds([west, south, east, north], z) {
@@ -106,48 +99,8 @@ const MAPTERHORN = {
 };
 
 /**
- * The Globe entry's terrain, off until its switch turns it on: draped lines
- * still jump in width at zoom steps (#151).
- */
-const PROTOMAPS_TERRAIN = { source: "terrain", exaggeration: 1.3 };
-
-/**
- * The Globe entry's sky, from Protomaps Light's palette: a pale cyan after
- * its water (#80deea) fading to a horizon and fog of its land (#e2dfda),
- * so far terrain dissolves into the map's own ground, and a full
- * atmosphere at low zoom that thins out as it hands over to Mercator: in
- * the entry's linear light it tints the sunlit face and glows at the limb
- * (GL JS's model washes the face out at this blend). Behind it,
- * style-spec#1889's night: a deep blue-black backdrop with stars that fade
- * out by zoom 6, by when the sky covers them anyway.
- */
-const PROTOMAPS_SKY = {
-  "sky-color": "#9fd3e0",
-  "horizon-color": "#eef1ef",
-  "fog-color": "#e6e4df",
-  "sky-horizon-blend": 0.6,
-  "horizon-fog-blend": 0.6,
-  "fog-ground-blend": 0.6,
-  "atmosphere-blend": [
-    "interpolate",
-    ["linear"],
-    ["zoom"],
-    0,
-    1,
-    2,
-    0.9,
-    4,
-    0.5,
-    8,
-    0,
-  ],
-  "backdrop-color": "#060a17",
-  "star-opacity": ["interpolate", ["linear"], ["zoom"], 2, 1, 6, 0],
-};
-
-/**
  * Protomaps Light (v5) with what it lacks for a 3D map: Mapterhorn's DEM
- * for PROTOMAPS_TERRAIN, a hillshade from a DEM source of its own over the
+ * for the entry's terrain, a hillshade from a DEM source of its own over the
  * land and water fills and under the roads and labels, a viewport-anchored
  * light (the spec's default, which reads best on the globe in both engines),
  * the buildings extruded under the labels with their footprints rounded
@@ -268,176 +221,33 @@ function protomaps3d(style) {
   };
 }
 
-/** @type {{ name: string, scenes: Scene[] }[]} */
-export const GROUPS = [
-  {
-    name: "Features",
-    scenes: [
-      {
-        key: "globe",
-        name: "Globe",
-        detail:
-          "Protomaps Light on the globe in 3D: hillshade, buildings, a night sky, and Mapterhorn terrain",
-        url: protomaps("light"),
-        projection: { type: "globe" },
-        sky: PROTOMAPS_SKY,
-        restyle: protomaps3d,
-        // Shadows and ambient occlusion start off: zooming fast from space
-        // into a city stutters as the buildings arrive with either on.
-        terrain: PROTOMAPS_TERRAIN,
-        off: ["shadows", "ao"],
-        camera: { center: [10, 30], zoom: 1.5 },
-        constraints: { minZoom: 0 },
-        flight: alpsFlight.legs,
-        light: true,
-        dark: true,
-        swatch: ["#e2dfda", "#80deea", "#060a17"],
-      },
-      {
-        key: "equal-earth",
-        name: "Equal Earth",
-        detail:
-          "The whole world equal-area, handing over to Web Mercator by zoom 7",
-        url: LIVE,
-        projection: { type: "equal-earth" },
-        camera: { center: [0, 10], zoom: 0.5 },
-        swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"],
-        unsupported: {
-          gljs: "GL JS has no Equal Earth projection",
-          native: "MapLibre Native has no Equal Earth projection",
-        },
-      },
-      {
-        key: "arctic",
-        name: "Arctic",
-        detail: "A polar stereographic CRS, EPSG:3413",
-        url: arctic,
-        dark: true,
-        swatch: ["#24476b", "#e9eef2", "#9aa6ad"],
-        unsupported: {
-          gljs: "GL JS can't draw tile matrix sets",
-          native: "MapLibre Native can't draw tile matrix sets",
-        },
-      },
-    ],
-  },
-  {
-    name: "OpenFreeMap",
-    scenes: [
-      {
-        key: "liberty",
-        name: "Liberty",
-        url: LIVE,
-        basemap: true,
-        swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"],
-      },
-      {
-        key: "bright",
-        name: "Bright",
-        url: "https://tiles.openfreemap.org/styles/bright",
-        basemap: true,
-        swatch: ["#f8f4f0", "#a0c8f0", "#f2934a"],
-      },
-      {
-        key: "positron",
-        name: "Positron",
-        url: "https://tiles.openfreemap.org/styles/positron",
-        basemap: true,
-        swatch: ["#f2f3f0", "#c2c8ca", "#ffffff"],
-      },
-    ],
-  },
-  {
-    name: "Protomaps",
-    scenes: [
-      {
-        key: "protomaps-light",
-        name: "Light",
-        url: protomaps("light"),
-        basemap: true,
-        swatch: ["#e2dfda", "#80deea", "#ffffff"],
-      },
-      {
-        key: "protomaps-dark",
-        name: "Dark",
-        url: protomaps("dark"),
-        basemap: true,
-        dark: true,
-        swatch: ["#34373d", "#22252b", "#4a4f57"],
-      },
-      {
-        key: "protomaps-white",
-        name: "White",
-        url: protomaps("white"),
-        basemap: true,
-        swatch: ["#ffffff", "#dcdcdc", "#c4c4c4"],
-      },
-      {
-        key: "protomaps-grayscale",
-        name: "Grayscale",
-        url: protomaps("grayscale"),
-        basemap: true,
-        swatch: ["#e0e0e0", "#a3a3a3", "#fafafa"],
-      },
-      {
-        key: "protomaps-black",
-        name: "Black",
-        url: protomaps("black"),
-        basemap: true,
-        dark: true,
-        swatch: ["#2b2b2b", "#0f0f0f", "#444444"],
-      },
-    ],
-  },
-  {
-    name: "VersaTiles",
-    scenes: [
-      {
-        key: "versatiles-colorful",
-        name: "Colorful",
-        url: versatiles("colorful"),
-        basemap: true,
-        swatch: ["#f9f4ee", "#beddf3", "#ffcc88"],
-      },
-      {
-        key: "versatiles-eclipse",
-        name: "Eclipse",
-        url: versatiles("colorful-dark"),
-        basemap: true,
-        dark: true,
-        swatch: ["#171b20", "#0b2033", "#4a4436"],
-      },
-      {
-        key: "versatiles-graybeard",
-        name: "Graybeard",
-        url: versatiles("gray"),
-        basemap: true,
-        swatch: ["#f2f2f2", "#cfcfcf", "#ffffff"],
-      },
-    ],
-  },
-  {
-    name: "OpenStreetMap",
-    scenes: [
-      {
-        key: "osm",
-        name: "OpenStreetMap Carto",
-        detail: "Raster tiles from openstreetmap.org",
-        url: osmCarto,
-        basemap: true,
-        swatch: ["#f2efe9", "#aad3df", "#e892a2"],
-      },
-      {
-        key: "americana",
-        name: "Americana",
-        detail: "Route shields come from its own page, not shown",
-        url: "https://americanamap.org/style.json",
-        basemap: true,
-        swatch: ["#f3efe6", "#a6cfe6", "#c8553d"],
-      },
-    ],
-  },
-];
+/** What a catalogue entry's `restyle` names. */
+const RESTYLES = { "protomaps-3d": protomaps3d };
+/** The catalogue's local files, as the build emits them. */
+const LOCAL = {
+  "alps-flight.json": alpsFlight,
+  "crs/arctic.json": arctic,
+  "osm-carto.json": osmCarto,
+};
+
+/**
+ * The picker's catalogue, from data/scenes.json, which orb-demo shows
+ * too: local URLs and flights resolved, restyles named by function. The
+ * Globe's terrain starts off, as draped lines still jump in width at zoom
+ * steps (#151), and so do its shadows and ambient occlusion: zooming fast
+ * from space into a city stutters as the buildings arrive with either on.
+ *
+ * @type {{ name: string, scenes: Scene[] }[]}
+ */
+export const GROUPS = catalogue.groups.map((group) => ({
+  name: group.name,
+  scenes: group.scenes.map((scene) => ({
+    ...scene,
+    url: LOCAL[scene.url] ?? scene.url,
+    ...(scene.flight && { flight: LOCAL[scene.flight].legs }),
+    ...(scene.restyle && { restyle: RESTYLES[scene.restyle] }),
+  })),
+}));
 for (const group of GROUPS)
   for (const scene of group.scenes) scene.provider = group.name;
 

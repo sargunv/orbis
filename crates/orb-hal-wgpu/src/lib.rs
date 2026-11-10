@@ -577,6 +577,15 @@ impl WgpuGpu {
         )
     }
 
+    /// The instance and adapter behind a device made here, for a host
+    /// that draws with the same device (a UI toolkit on wgpu).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn instance_and_adapter(&self) -> Option<(&wgpu::Instance, &wgpu::Adapter)> {
+        self.native
+            .as_ref()
+            .map(|(instance, adapter)| (instance, adapter))
+    }
+
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }

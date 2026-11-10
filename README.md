@@ -73,11 +73,10 @@ from `rust-toolchain.toml`):
 
 ```sh
 mise install
-pnpm -C web install
 
-cargo run --release -p orb-demo        # native window over the bundled Tokyo extract
-cargo xtask web && pnpm -C web dev     # web demo at http://127.0.0.1:5173/orbis/
-cargo xtask check                      # fmt, clippy (native and wasm32), tests, boundary rules
+mise run demo:desktop                  # the map app in a native window
+mise run demo:web                      # the web demo at http://127.0.0.1:5173/orbis/
+cargo xtask check                      # formatting, clippy (native and wasm32), tests, boundary rules
 ```
 
 [AGENTS.md](AGENTS.md) lists the other commands.
