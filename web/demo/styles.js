@@ -234,8 +234,7 @@ const LOCAL = {
  * The picker's catalogue, from data/scenes.json, which orb-demo shows
  * too: local URLs and flights resolved, restyles named by function. The
  * Globe's terrain starts off, as draped lines still jump in width at zoom
- * steps (#151), and so do its shadows and ambient occlusion: zooming fast
- * from space into a city stutters as the buildings arrive with either on.
+ * steps (#151).
  *
  * @type {{ name: string, scenes: Scene[] }[]}
  */

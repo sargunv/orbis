@@ -1526,14 +1526,14 @@ async function offlineGlobe(page, server) {
   );
 }
 
-// The Globe's options, in the panel's order, and the entry's defaults: shadows and AO off.
+// The Globe's options, in the panel's order, and their values as it designs them.
 const GLOBE_OPTIONS = {
   terrain: false,
   hillshade: true,
   light: "viewport",
   buildings: true,
-  shadows: false,
-  ao: false,
+  shadows: true,
+  ao: true,
   projection: "globe",
   atmosphere: true,
   fog: true,
@@ -1550,7 +1550,7 @@ async function options(browser, server) {
   page.on("pageerror", (e) => errors.push(e.message));
   await offlineGlobe(page, server);
   await page.goto(
-    `${server.url}?style=globe&shadows=1&projection=mercator&colors=srgb#14/35.687/139.74`,
+    `${server.url}?style=globe&shadows=0&projection=mercator&colors=srgb#14/35.687/139.74`,
   );
   await page.waitForFunction(
     () => app.scene === "globe" && app.options.values,
@@ -1593,12 +1593,12 @@ async function options(browser, server) {
   const expect = (values, style, disabled, url) => ({
     values: { ...GLOBE_OPTIONS, ...values },
     style: {
-      shadows: 0,
+      shadows: 0.5,
       projection: "globe",
       terrain: false,
       colors: "linear",
       buildings: "visible",
-      ao: 0,
+      ao: 0.6,
       labels: ["visible"],
       ...style,
     },
@@ -1610,10 +1610,10 @@ async function options(browser, server) {
     page,
     state,
     expect(
-      { shadows: true, projection: "mercator", colors: "srgb" },
-      { shadows: 0.5, projection: "mercator", colors: "srgb" },
+      { shadows: false, projection: "mercator", colors: "srgb" },
+      { shadows: 0, projection: "mercator", colors: "srgb" },
       ["atmosphere", "fog", "stars"],
-      { shadows: "1", projection: "mercator", colors: "srgb" },
+      { shadows: "0", projection: "mercator", colors: "srgb" },
     ),
     "the URL's choices apply as the Globe loads",
   );
@@ -1665,7 +1665,7 @@ async function options(browser, server) {
     page,
     state,
     expect({ colors: "srgb" }, { colors: "srgb" }, ["fog"], { colors: "srgb" }),
-    "shadows back off and the globe leave the URL",
+    "shadows back on and the globe leave the URL",
   );
   await option(page, "buildings").click();
   await settles(
@@ -1688,10 +1688,10 @@ async function options(browser, server) {
   await option(page, "colors").locator('[aria-checked="true"]').focus();
   await page.keyboard.press("ArrowLeft");
   const chosen = expect(
-    { ao: true, terrain: true, labels: false },
-    { ao: 0.6, terrain: true, labels: ["none"] },
+    { ao: false, terrain: true, labels: false },
+    { ao: 0, terrain: true, labels: ["none"] },
     [],
-    { ao: "1", terrain: "1", labels: "0" },
+    { ao: "0", terrain: "1", labels: "0" },
   );
   await settles(
     page,
