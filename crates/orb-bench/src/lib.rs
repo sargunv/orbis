@@ -14,12 +14,15 @@
 //! - `stutter` ([`stutter`]): paths that bring many tiles in, each frame's
 //!   CPU time by stage, GPU time, uploads and arrivals, and the worst
 //!   frames' attribution.
+//! - `cull` ([`cull`]): at each view, the candidates the cull keeps by
+//!   draw kind, and the GPU time and pixels of keeping them all.
 //!
 //! [`run`] returns a [`Report`], which formats as Markdown.
 
 #![forbid(unsafe_code)]
 
 mod clock;
+mod cull;
 mod gestures;
 mod load;
 mod report;
@@ -29,6 +32,7 @@ mod tiles;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+pub use cull::CullReport;
 pub use gestures::GesturesReport;
 pub use load::LoadReport;
 use orb_api::{
@@ -100,6 +104,9 @@ pub enum Experiment {
     /// Paths bringing many tiles in: each frame's stages, the worst
     /// frames.
     Stutter,
+    /// What the cull keeps at each view, and what keeping everything
+    /// costs.
+    Cull,
 }
 
 /// The gestures bench's camera paths.
@@ -121,6 +128,7 @@ pub enum Report {
     Load(LoadReport),
     Tiles(TilesReport),
     Stutter(StutterReport),
+    Cull(CullReport),
 }
 
 impl Report {
@@ -133,6 +141,7 @@ impl Report {
             Self::Load(r) => r.write(&mut out),
             Self::Tiles(r) => r.write(&mut out),
             Self::Stutter(r) => r.write(&mut out),
+            Self::Cull(r) => r.write(&mut out),
         }
         .expect("writing to a String");
         out
@@ -221,8 +230,8 @@ impl Default for Settings {
 impl Settings {
     /// Sets one option by name, as the tool's `--name value` gives it:
     /// `frames`, `warmup`, `rounds`, `samples`, `size` (`WxH`), `ratio`, `at`
-    /// (`lon,lat`), `experiment` (`frames`, `gestures`, `load`, `tiles` or
-    /// `stutter`), `legs` (a flight's first legs, for `stutter`),
+    /// (`lon,lat`), `experiment` (`frames`, `gestures`, `load`, `tiles`,
+    /// `stutter` or `cull`), `legs` (a flight's first legs, for `stutter`),
     /// `paths` (`city` or `alps`, the gestures bench's), `view`
     /// (`zoom,pitch,bearing`, adding a view to measure instead of the
     /// bench's own) or `filter` (a substring of the views' names, of
@@ -280,9 +289,11 @@ impl Settings {
                     "load" => Experiment::Load,
                     "tiles" => Experiment::Tiles,
                     "stutter" => Experiment::Stutter,
+                    "cull" => Experiment::Cull,
                     _ => {
                         return Err(
-                            "experiment needs frames, gestures, load, tiles or stutter".into()
+                            "experiment needs frames, gestures, load, tiles, stutter or cull"
+                                .into(),
                         );
                     }
                 }
@@ -464,6 +475,9 @@ pub fn run(
             return stutter::run(runtime, settings, about, (style, &alps), progress)
                 .map(Report::Stutter);
         }
+        Experiment::Cull => {
+            return cull::run(runtime, settings, about, style, progress).map(Report::Cull);
+        }
         Experiment::Frames | Experiment::Gestures => {}
     }
     if !runtime.stats().gpu_timestamps {
@@ -495,36 +509,13 @@ pub fn run(
     for (view, camera, size) in settings.cameras() {
         let name = view.name.clone();
         progress(&format!("{name}: loading"));
-        let target = match &mut target {
-            Some((s, t)) if *s == size => t,
-            _ => {
-                let (w, h) = size.physical();
-                let t = Target::texture(runtime, w, h, f64::from(size.ratio));
-                &mut target.insert((size, t)).1
-            }
-        };
-        let map = match &mut map {
-            Some(map) => {
-                map.jump_to_state(camera);
-                map
-            }
-            None => map.insert(new_map(runtime, style, camera)),
-        };
-        settle(map, target, &mut warnings)?;
-        // The map carries on from the view before, which may have added
-        // the buildings already.
-        if view.buildings != Buildings::None
-            && let Some(edit) = add_buildings(map)?
-        {
-            let tx = orb_api::Transaction::from_commands(&edit)?;
-            map.edit(&tx).map_err(|e| e.to_string())?;
-            settle(map, target, &mut warnings)?;
-        }
-        if view.buildings == Buildings::Lit {
-            let tx = orb_api::Transaction::from_commands(SHADOWS_AND_OCCLUSION)?;
-            map.edit(&tx).map_err(|e| e.to_string())?;
-            settle(map, target, &mut warnings)?;
-        }
+        let (map, target) = prepare_view(
+            runtime,
+            style,
+            (&mut map, &mut target),
+            (&view, camera, size),
+            &mut warnings,
+        )?;
 
         let mut s = Samples::default();
         runtime.set_gpu_timing(true);
@@ -593,6 +584,46 @@ pub fn run(
         views,
         warnings,
     }))
+}
+
+/// The bench's map at a view, loaded until idle: the map before, moved
+/// there (or one made for it), with the view's buildings, on a target of
+/// its size (the one before, if the size is the same).
+pub(crate) fn prepare_view<'a>(
+    runtime: &Runtime,
+    style: &str,
+    (map, target): (&'a mut Option<Map>, &'a mut Option<(ViewSize, Target)>),
+    (view, camera, size): (&View, CameraState, ViewSize),
+    warnings: &mut Vec<String>,
+) -> Result<(&'a mut Map, &'a mut Target), String> {
+    if !matches!(target, Some((s, _)) if *s == size) {
+        let (w, h) = size.physical();
+        *target = Some((size, Target::texture(runtime, w, h, f64::from(size.ratio))));
+    }
+    let target = &mut target.as_mut().expect("made above").1;
+    let map = match map {
+        Some(map) => {
+            map.jump_to_state(camera);
+            map
+        }
+        None => map.insert(new_map(runtime, style, camera)),
+    };
+    settle(map, target, warnings)?;
+    // The map carries on from the view before, which may have added
+    // the buildings already.
+    if view.buildings != Buildings::None
+        && let Some(edit) = add_buildings(map)?
+    {
+        let tx = orb_api::Transaction::from_commands(&edit)?;
+        map.edit(&tx).map_err(|e| e.to_string())?;
+        settle(map, target, warnings)?;
+    }
+    if view.buildings == Buildings::Lit {
+        let tx = orb_api::Transaction::from_commands(SHADOWS_AND_OCCLUSION)?;
+        map.edit(&tx).map_err(|e| e.to_string())?;
+        settle(map, target, warnings)?;
+    }
+    Ok((map, target))
 }
 
 /// The edit adding Liberty's extrusions beneath its labels, unless the

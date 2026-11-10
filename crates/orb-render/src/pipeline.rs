@@ -92,11 +92,13 @@ impl<'a> Draw<'a> {
     }
 }
 
-/// A compute pipeline of `shader`'s compute entry point.
+/// A compute pipeline of `shader`'s compute entry point, with values for
+/// its override constants.
 pub(crate) fn compute(
     gpu: &mut dyn Gpu,
     shader: &Shader,
     layouts: &[BindGroupLayoutId],
+    constants: &[(&str, f64)],
 ) -> ComputePipelineId {
     let module = module(gpu, shader);
     let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
@@ -105,7 +107,7 @@ pub(crate) fn compute(
         compute: ShaderStage {
             module,
             entry_point: shader.compute,
-            constants: &[],
+            constants,
         },
     });
     gpu.destroy_shader_module(module);

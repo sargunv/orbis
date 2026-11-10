@@ -829,6 +829,43 @@ fn compacted_slots_follow_the_view_without_recording() {
     );
 }
 
+/// With `keep_all` the cull keeps the copy off screen too, and draws the
+/// same pixels: it drops only what draws nothing. Back on, it drops it
+/// again.
+#[test]
+fn keeping_every_candidate_draws_the_same_pixels() {
+    let mut h = Harness::new();
+    red_fill(&mut h);
+    let tile = h.tile();
+    h.renderer
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, EXTENT),
+            &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
+        )
+        .unwrap();
+    let mut clipped = full_view_tile(1.5);
+    clipped.clips[0] = ClipRect::new([0, 0], [2048, 2048]);
+    h.renderer
+        .place(
+            tile,
+            EXTENT,
+            &[full_view_tile(0.0), clipped, full_view_tile(4.0)],
+        )
+        .unwrap();
+    let culled = h.render();
+    let mesh_indices = left_half_square().vertex_indices().count() as u32;
+    assert_eq!(cull_counters(&mut h)[0], 2);
+    h.renderer.set_keep_all(&mut h.gpu, true);
+    assert_eq!(h.render(), culled);
+    assert_eq!(cull_counters(&mut h), [3, mesh_indices, 3 * mesh_indices]);
+    h.renderer.set_keep_all(&mut h.gpu, false);
+    assert_eq!(h.render(), culled);
+    assert_eq!(cull_counters(&mut h), [2, mesh_indices, 2 * mesh_indices]);
+}
+
 /// The compacted node's chunks kept, indices written and indices drawn by
 /// the last cull (`cull.wgsl`'s counters).
 fn cull_counters(h: &mut Harness) -> [u32; 3] {

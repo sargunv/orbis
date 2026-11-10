@@ -45,6 +45,10 @@ struct Candidate {
 @group(0) @binding(8) var<storage, read_write> compacted: array<u32>;
 
 const ARGS_WORDS: u32 = 8u;
+// Keeps every candidate, culling nothing: what a driver without the cull
+// draws, for tests that hold the two to the same buffers and pixels. A
+// pipeline constant, false in shipping builds, where it folds away.
+override keep_all: bool = false;
 // Candidates per workgroup of an indexed node (orb-render's INDEXED_BATCH).
 const INDEXED_BATCH: u32 = 64u;
 // The view-volume planes a clip-space corner lies outside, a bit each:
@@ -186,7 +190,7 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
         var candidate: Candidate;
         if i < count {
             candidate = candidates[node.visible_base + i];
-            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
+            keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
         }
         // Inclusive Hillis–Steele scan of `keep` across the workgroup.
         scan[lane] = keep;
@@ -233,7 +237,7 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
     let i = start + lane;
     if lane < INDEXED_BATCH && i < count {
         let candidate = candidates[node.visible_base + i];
-        let keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
+        let keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
         let chunk = chunks[candidate.chunk];
         if keep == 1u {
             atomicMax(&extent, candidate.slot + chunk.index_count - node.index_base);

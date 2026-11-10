@@ -73,8 +73,8 @@ impl Downsampler {
             return;
         }
         let layouts = [self.layout];
-        self.pipeline = Some(compute(gpu, &DOWNSAMPLE_SHADER, &layouts));
-        self.extend = Some(compute(gpu, &EXTEND_SHADER, &layouts));
+        self.pipeline = Some(compute(gpu, &DOWNSAMPLE_SHADER, &layouts, &[]));
+        self.extend = Some(compute(gpu, &EXTEND_SHADER, &layouts, &[]));
     }
 
     /// Whether its pipelines compiled, or none is needed yet.

@@ -266,6 +266,8 @@ pub struct Renderer {
     draw_group: BindGroupId,
     /// The cull dispatch's pipeline and group.
     cull: (ComputePipelineId, BindGroupId),
+    /// The cull keeps every candidate ([`Renderer::set_keep_all`]).
+    keep_all: bool,
     draw_layout: BindGroupLayoutId,
     node_layout: BindGroupLayoutId,
     /// The vector families' pipelines, each made for the family's first
@@ -562,7 +564,7 @@ impl Renderer {
         });
         // The cull pipeline first: nothing draws without it.
         let cull = (
-            pipeline::compute(gpu, &CULL_SHADER, &[cull_layout]),
+            pipeline::compute(gpu, &CULL_SHADER, &[cull_layout], &[]),
             cull_group,
         );
 
@@ -599,6 +601,7 @@ impl Renderer {
             scene,
             draw_group,
             cull,
+            keep_all: false,
             draw_layout,
             node_layout,
             paint: PaintPipelines::default(),
@@ -713,11 +716,52 @@ impl Renderer {
         }
     }
 
+    /// Has the cull keep every candidate when `on` (`cull.wgsl`'s
+    /// `keep_all`): it culls nothing, as a driver without it draws. For
+    /// tests and measurements: what the cull saves, and that it only drops
+    /// what draws nothing.
+    pub fn set_keep_all(&mut self, gpu: &mut dyn Gpu, on: bool) {
+        if self.keep_all == on {
+            return;
+        }
+        self.keep_all = on;
+        let pipeline = pipeline::compute(
+            gpu,
+            &CULL_SHADER,
+            &[self.cull_layout],
+            &[("keep_all", f64::from(u8::from(on)))],
+        );
+        gpu.destroy_pipeline(std::mem::replace(&mut self.cull.0, pipeline).into());
+        self.invalidate_bundle(gpu);
+    }
+
     /// The scene's per-node draw arguments and cull counters, for
     /// diagnostics: [`ARGS_WORDS`] words per node, as
     /// `cull.wgsl` writes them, and the number of nodes.
     pub fn draw_args(&self) -> (BufferId, u32) {
         (self.scene.buffers().args, self.nodes.len() as u32)
+    }
+
+    /// Per node, its family, the candidates its cull considers (as last
+    /// laid out, none for a hidden node, which draws nothing) and those
+    /// the cull kept, from the bytes of [`draw_args`](Self::draw_args)'
+    /// buffer read back after a frame.
+    pub fn cull_counts(&self, args: &[u8]) -> Vec<(Family, u32, u32)> {
+        let word = |i: usize| {
+            let at = 4 * (i * ARGS_WORDS + 5);
+            args.get(at..at + 4)
+                .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("a word")))
+        };
+        (self.nodes.iter().enumerate())
+            .map(|(i, n)| {
+                let candidates = self.scene.node_candidates(i as u32);
+                (
+                    n.family,
+                    if n.cull.visible { candidates } else { 0 },
+                    word(i),
+                )
+            })
+            .collect()
     }
 
     /// Replaces the render nodes, in draw order, none of them drawing a

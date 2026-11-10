@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub use map::{Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
+pub use map::{CullCount, Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
 pub use orb_camera::input::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_camera::{
     AnchoredMomentum, AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints,

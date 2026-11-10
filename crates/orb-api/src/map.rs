@@ -140,6 +140,16 @@ pub struct TileRequest {
 }
 type Finished = Arc<Mutex<Vec<(u64, Result<String, String>)>>>;
 
+/// A render node's candidates and those its cull kept
+/// ([`Map::cull_counts`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CullCount {
+    /// The node's family, as `orb-render` names it.
+    pub family: String,
+    pub candidates: u32,
+    pub kept: u32,
+}
+
 /// A map: style, camera, gestures and events. Draw it with
 /// [`render`](Self::render) whenever [`needs_frame`](Self::needs_frame).
 pub struct Map {
@@ -242,6 +252,9 @@ impl Map {
         map.set_stable_labels(options.stable_labels);
         map.set_tile_lod(options.tile_lod);
         map.set_missing_tiles(options.missing_tiles);
+        // Measurements and the fixtures' cull check draw with nothing
+        // culled.
+        map.set_keep_all_cull(std::env::var_os("ORB_CULL").is_some_and(|v| v == "keep-all"));
         Self {
             shared: runtime.shared.clone(),
             runtime: runtime.clone(),
@@ -261,6 +274,34 @@ impl Map {
             mode: RenderMode::Continuous,
             last_frame: None,
         }
+    }
+
+    /// Has the cull keep every candidate, culling nothing, from the next
+    /// frame (`ORB_CULL=keep-all` sets it for every map): what the cull
+    /// saves, for measurements, and that it drops only what draws nothing,
+    /// for tests.
+    pub fn set_keep_all_cull(&mut self, keep_all: bool) {
+        self.map.set_keep_all_cull(keep_all);
+        self.dirty = true;
+    }
+
+    /// Per render node of the last frame, its family and the candidates
+    /// (chunks in tile placements) its cull considered and kept: what the
+    /// cull drops. Reads the cull's counters back from the GPU, so it
+    /// waits for the frame.
+    pub fn cull_counts(&self) -> Vec<CullCount> {
+        let Some(renderer) = &self.renderer else {
+            return Vec::new();
+        };
+        let bytes =
+            pollster::block_on(self.shared.gpu.borrow().read_buffer(renderer.draw_args().0));
+        (renderer.cull_counts(&bytes).into_iter())
+            .map(|(family, candidates, kept)| CullCount {
+                family: format!("{family:?}"),
+                candidates,
+                kept,
+            })
+            .collect()
     }
 
     /// Calls `wake` from any thread when data arrives and the map needs a

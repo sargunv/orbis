@@ -499,6 +499,8 @@ pub struct Map {
     /// The previews styles parse with ([`Map::set_previews`]).
     previews: orb_style::Previews,
     pub(crate) antialias_3d: bool,
+    /// The cull keeps every candidate ([`Map::set_keep_all_cull`]).
+    keep_all_cull: bool,
     /// The plane the map draws on and its sources' tile matrix sets: the
     /// style's, planned for its tiles.
     pub(crate) surface: Surface,
@@ -697,6 +699,7 @@ impl Map {
             missing_tiles: MissingTiles::Parent,
             previews: orb_style::Previews::NONE,
             antialias_3d: true,
+            keep_all_cull: false,
             nodes_stale: false,
             capacity: SceneCapacity::default(),
             budget: orb_render::DESKTOP_BUDGET,
@@ -815,6 +818,13 @@ impl Map {
     /// single-sample rasterization, matching a GL JS map with antialias off.
     pub fn set_antialias_3d(&mut self, enabled: bool) {
         self.antialias_3d = enabled;
+    }
+
+    /// Has the renderer's cull keep every candidate, culling nothing
+    /// ([`Renderer::set_keep_all`]): for tests and measurements of what
+    /// the cull saves. Off by default.
+    pub fn set_keep_all_cull(&mut self, keep_all: bool) {
+        self.keep_all_cull = keep_all;
     }
 
     /// Sets how much the GPU scene holds, for renderers made after
@@ -1400,10 +1410,12 @@ impl Map {
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
         self.fit_color_space(gpu, renderer);
         renderer.set_antialias_3d(gpu, self.antialias_3d);
+        renderer.set_keep_all(gpu, self.keep_all_cull);
         self.apply_arrivals(gpu, renderer, pixel_ratio);
         // A style that arrived may mix colours in another space.
         if self.fit_color_space(gpu, renderer) {
             renderer.set_antialias_3d(gpu, self.antialias_3d);
+            renderer.set_keep_all(gpu, self.keep_all_cull);
             self.apply_arrivals(gpu, renderer, pixel_ratio);
         }
         let mut times = FrameTimes {
