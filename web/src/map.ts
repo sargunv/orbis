@@ -536,11 +536,7 @@ export class OrbisMap {
    * new style is in; a style with another tile grid, or other glyphs, loads
    * every tile afresh. */
   setStyle(style: string | object): void {
-    const url =
-      typeof style === "string"
-        ? new URL(style, location.href).href
-        : `data:application/json,${encodeURIComponent(JSON.stringify(style))}`;
-    this.#send(this.#link.call("setStyleUrl", url));
+    this.#send(this.#link.call("setStyleUrl", styleUrl(style)));
   }
 
   /** Applies GL JS map calls as one transaction, or rejects and applies
@@ -787,10 +783,7 @@ const workerCapable = () =>
  * neither or lacks the one picked. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
   const ratio = options.pixelRatio ?? devicePixelRatio;
-  const style =
-    typeof options.style === "string"
-      ? new URL(options.style, location.href).href
-      : `data:application/json,${encodeURIComponent(JSON.stringify(options.style))}`;
+  const style = styleUrl(options.style);
   const core = {
     fadeDuration: options.fadeDuration,
     crossSourceCollisions: options.crossSourceCollisions,
@@ -917,6 +910,14 @@ async function startOnPage(
 }
 
 /** The two numbers a query answered, or null when it had no answer. */
+/** A style as the map loads it: a URL resolved against the page's, or a
+ * style object as a `data:` URL. */
+function styleUrl(style: string | object): string {
+  return typeof style === "string"
+    ? new URL(style, location.href).href
+    : `data:application/json,${encodeURIComponent(JSON.stringify(style))}`;
+}
+
 function pair(xy: Float64Array | undefined): [number, number] | null {
   const [x, y] = xy ?? [];
   return x === undefined || y === undefined ? null : [x, y];
