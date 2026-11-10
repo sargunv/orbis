@@ -58,11 +58,11 @@ draw calls. Orbis carries out the principles above with a different design:
   which is why the spec keeps many properties constant. Orbis gives each
   feature a row of values that shaders read through one generic path, so it
   can let more properties vary by feature, zoom or camera, and animate them.
-- **Labels are placed on their own worker,** off both the page and the
-  render thread.
-- **Plain workers on the web.** No shared memory, so no cross-origin
-  isolation headers, and the map itself runs in a worker to keep the page
-  responsive.
+- **Label placement never holds up a frame.** Deciding which labels fit is
+  the costliest work a camera move triggers. GL JS does it on the page's
+  main thread and Native on its render thread, both re-placing only every
+  few hundred milliseconds to protect the frame rate. Orbis places labels on
+  a thread of their own and keeps drawing while it runs.
 - **Projections are first class.** Geometry is computed relative to the
   camera in double precision, so the globe, other projections and coordinate
   systems aren't special cases of Web Mercator.
