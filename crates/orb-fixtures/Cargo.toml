@@ -13,6 +13,7 @@ gl = ["dep:orb-hal-wgpu", "orb-hal-wgpu/angle"]
 [dependencies]
 glam.workspace = true
 orb-api.workspace = true
+orb-crs.workspace = true
 orb-expr = { workspace = true, features = ["conformance"] }
 orb-hal-wgpu = { workspace = true, optional = true }
 orb-runtime.workspace = true

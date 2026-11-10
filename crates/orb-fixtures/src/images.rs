@@ -9,6 +9,16 @@ pub(crate) struct Image {
     pub(crate) pixels: Vec<u8>,
 }
 
+impl From<orb_api::Image> for Image {
+    fn from(image: orb_api::Image) -> Self {
+        Self {
+            width: image.width,
+            height: image.height,
+            pixels: image.pixels,
+        }
+    }
+}
+
 impl Image {
     pub(crate) fn read(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;

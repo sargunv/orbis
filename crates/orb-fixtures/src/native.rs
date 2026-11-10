@@ -511,11 +511,7 @@ fn render_native(
     let image = if test.tile_mode {
         tiles(&mut map, test, diagnostics)
     } else {
-        still(&mut map, diagnostics).map(|image| Image {
-            width: image.width,
-            height: image.height,
-            pixels: image.pixels,
-        })
+        still(&mut map, diagnostics).map(Image::from)
     };
     record_warnings(&mut map, reasons, diagnostics);
     let failure = image.is_none().then_some("render");
@@ -535,20 +531,21 @@ fn tiles(map: &mut Map, test: &Test, diagnostics: &mut Vec<String>) -> Option<Im
         diagnostics.push(format!("render: {e}"));
         return None;
     }
-    let camera = map.camera();
+    let tms = TileMatrixSet::by_id("WebMercatorQuad").expect("built in");
     let z = map.zoom().max(0.0) as u8;
-    let world = TILE * f64::from(1u32 << z);
-    let lat = camera.target.lat.to_radians();
-    let cx = (camera.target.lon + 180.0) / 360.0 * world;
-    let cy = (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0 * world;
     // A view centred on a tile covers that tile alone, give or take the
     // rounding of its centre's coordinates.
-    let range = |c: f64| {
-        let first = ((c - TILE / 2.0) / TILE + 1e-6).floor().max(0.0) as u32;
-        let last = (((c + TILE / 2.0) / TILE - 1e-6).ceil() as u32).saturating_sub(1);
-        first..=last.max(first).min((1 << z) - 1)
+    let centre = tms.projection().forward(map.camera().target);
+    let half = glam::DVec2::splat(tms.tile_span(z) * (0.5 - 1e-6));
+    let view = orb_crs::WorldRect {
+        min: centre - half,
+        max: centre + half,
     };
-    let (xs, ys) = (range(cx), range(cy));
+    // Row by row: the first is the view's top left, the last its bottom
+    // right.
+    let tiles: Vec<_> = tms.tiles_in(view, z).collect();
+    let (first, last) = (tiles[0], tiles[tiles.len() - 1]);
+    let (xs, ys) = (first.col..=last.col, first.row..=last.row);
     let tile_px = (TILE * test.pixel_ratio) as u32;
     let columns = xs.clone().count() as u32;
     let rows = ys.clone().count() as u32;
@@ -557,7 +554,6 @@ fn tiles(map: &mut Map, test: &Test, diagnostics: &mut Vec<String>) -> Option<Im
         height: rows * tile_px,
         pixels: vec![0; (columns * tile_px * rows * tile_px * 4) as usize],
     };
-    let tms = TileMatrixSet::by_id("WebMercatorQuad").expect("built in");
     for (row, y) in ys.enumerate() {
         for (column, x) in xs.clone().enumerate() {
             let tile = match map.render_tile(&TileRequest {
