@@ -65,9 +65,9 @@ scripts/   helpers shared across languages (Android device access)
 
 `mise install` provides the pinned tools; `mise run` and `mise x` install
 `web/`'s packages when its lockfile changes. dprint formats every language
-(rustfmt, oxc for the web, Markdown, TOML and YAML, ktfmt, clang-format, ruff):
-`dprint fmt` applies it, `mise run check` runs it with jactionlint, shellcheck,
-vite-plus's lint and clippy, and `mise run fix` fixes what they can.
+(rustfmt, oxc for the web, Markdown, TOML and YAML, ktfmt, ruff): `dprint fmt`
+applies it, `mise run check` runs it with jactionlint, shellcheck, vite-plus's
+lint and clippy, and `mise run fix` fixes what they can.
 `mise run demo:desktop [scene|style URL] [--at …]` opens the native demo window,
 and `mise run demo:web [vite options]` builds `core.wasm` and serves the web
 demo.

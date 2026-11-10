@@ -186,7 +186,7 @@ fn full_check() -> Result<(), String> {
 }
 
 /// Every file's formatting, through dprint (rustfmt for Rust, oxc for the
-/// web, ktfmt, clang-format and ruff), as `dprint.jsonc` configures it.
+/// web, ktfmt and ruff), as `dprint.jsonc` configures it.
 fn format_check() -> Result<(), String> {
     eprintln!("$ dprint check");
     let status = Command::new("dprint")
