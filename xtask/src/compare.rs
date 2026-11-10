@@ -177,6 +177,15 @@ fn merge(before: &[String], after: &[String]) -> String {
                 cell.clone()
             } else if let (Some(b), Some(a)) = (medians(&b), medians(&a)) {
                 change(b, a, cell)
+            } else if let (Some(b), Some(a)) = (with_peaks(&b), with_peaks(&a)) {
+                // A total and its peak, as the stutter bench's uploads.
+                let (total, peak) = cell.split_once(" (").unwrap_or((cell, ""));
+                let peak = peak.trim_end_matches(')');
+                format!(
+                    "{} (peak {})",
+                    change(b.0, a.0, total),
+                    change(b.1, a.1, peak)
+                )
             } else if let (Some(b), Some(a)) = (ranges(&b), ranges(&a)) {
                 let digits = precision(cell);
                 format!(
@@ -206,6 +215,17 @@ fn medians(cells: &[String]) -> Option<f64> {
         .map(|c| number(c))
         .collect::<Option<Vec<_>>>()?;
     (!values.is_empty()).then(|| median(&mut values))
+}
+
+/// The medians of `total (peak)` cells, if every one is one.
+fn with_peaks(cells: &[String]) -> Option<(f64, f64)> {
+    let (mut totals, mut peaks) = (Vec::new(), Vec::new());
+    for cell in cells {
+        let (total, peak) = cell.split_once(" (")?;
+        totals.push(number(total)?);
+        peaks.push(number(peak.strip_suffix(')')?)?);
+    }
+    (!totals.is_empty()).then(|| (median(&mut totals), median(&mut peaks)))
 }
 
 /// The range over `min–max` cells, if every one is one.
@@ -375,6 +395,19 @@ mod tests {
         );
         assert!(
             merged.contains("| 0/0/0 | mlt | 8.0 → 4.0 (-50.0%) |"),
+            "{merged}"
+        );
+    }
+
+    #[test]
+    fn merges_totals_with_their_peaks() {
+        let report = |cell: &str| format!("| path | MiB (peak) |\n|---|---|\n| a | {cell} |\n");
+        let merged = merge(
+            &[report("800.0 (20.0)"), report("900.0 (30.0)")],
+            &[report("400.0 (10.0)"), report("400.0 (10.0)")],
+        );
+        assert!(
+            merged.contains("| a | 850.0 → 400.0 (-52.9%) (peak 25.0 → 10.0 (-60.0%)) |"),
             "{merged}"
         );
     }
