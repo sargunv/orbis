@@ -301,7 +301,7 @@ fn globe_hides_anchor(anchor: Ground, metres: f32) -> bool {
         return false;
     }
     let up = normalize(anchor.globe + frame.globe_target);
-    return sphere_hides(anchor.globe + up * (metres * frame.extrusion_scale * frame.globe_metres));
+    return sphere_hides(anchor.globe + up * (metres * frame.extrusion_scale * frame.globe_metres), false);
 }
 
 fn clip_to_px(c: vec4<f32>) -> vec2<f32> {

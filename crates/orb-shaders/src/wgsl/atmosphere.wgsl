@@ -74,7 +74,8 @@ const ATMOSPHERE_GAMMA: f32 = 2.2;
 
 // How far a logical pixel is above the horizon (positive above it), with
 // `ray` the view ray through it, and the sky's opacity there. On a globe
-// the distance is measured from the limb and the sky fades to space.
+// the distance is measured from a pixel below the limb and the sky fades
+// to space.
 fn atmosphere_horizon(a: Atmosphere, px: vec2<f32>, ray: vec3<f32>) -> vec2<f32> {
     var distance = dot(px - a.horizon, a.horizon_normal);
     var opacity = 1.0;
@@ -96,14 +97,18 @@ fn atmosphere_horizon(a: Atmosphere, px: vec2<f32>, ray: vec3<f32>) -> vec2<f32>
 
 // The sky at a pixel `horizon` gives (`atmosphere_horizon`): GL JS's
 // gradient from the horizon colour to the sky colour above the horizon, or
-// transparent below it. The sky takes the pixel row the horizon crosses
-// too, in the horizon colour: it draws per pixel and the ground per
-// sample, and the ground ending partway down that row would leave its
-// other samples clear.
+// transparent below it.
+//
+// On either surface the sky reaches a pixel below the horizon, under the
+// ground, in the horizon colour: the sky draws per pixel and the ground
+// per sample, so the row whose centre lies just below the horizon would
+// otherwise keep the samples above the ground's edge clear. The globe's
+// distance already counts from a pixel below its limb, the plane's from
+// the horizon itself, so the cut moves by the globe's share.
 fn atmosphere_sky(a: Atmosphere, horizon: vec2<f32>) -> vec4<f32> {
     let distance = max(horizon.x, 0.0);
     let opacity = horizon.y;
-    if horizon.x <= -1.0 {
+    if horizon.x <= a.globe_amount - 1.0 {
         return vec4<f32>(0.0);
     }
     var color = a.sky_color;

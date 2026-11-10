@@ -367,27 +367,36 @@ fn terrain_seen(projected: vec4<f32>, g: Ground, z: f32) -> vec4<f32> {
     return ground_clip_3d(g, vec2<f32>(0.0), z);
 }
 
-// Whether the solid globe stands between the eye and camera-relative `p`:
-// the sphere through the lowest ground the terrain shows, so that ground
-// below sea level near the limb (the Caspian's, the Dead Sea's) stays in
-// view while what hangs under it (skirts) hides. A point in front of the
-// sea-level horizon plane, which lies nearer the eye than that sphere's,
-// never is; only behind it does the ray test run.
+// Whether the globe stands between the eye and camera-relative `p`. A
+// point in front of the sea-level horizon plane never is; only behind it
+// does the ray test run.
 //
-// The sphere sinks by a pixel at `p`'s distance: the ground's last rows
-// before the horizon lie on it to within their patches' tolerance and
-// f32's, and a ray grazing it there would otherwise enter it just short
-// of them by that rounding alone, hiding them in a line along the
-// horizon. A skirt hangs a fifth of a tile, many pixels, below it.
-fn sphere_hides(p: vec3<f32>) -> bool {
+// For `solid` points (the ground's, what stands on it) the globe is the
+// sphere through the lowest ground the terrain shows, so that ground
+// below sea level near the limb (the Caspian's, the Dead Sea's) stays in
+// view while what hangs under it (skirts) hides; its own horizon plane
+// lies behind the sea level's. It sinks by a pixel at `p`'s distance: the
+// ground's last rows before the horizon lie on it to within their
+// patches' tolerance and f32's, and a ray grazing it there would
+// otherwise enter it just short of them by that rounding alone, hiding
+// them in a line along the horizon. A skirt hangs a fifth of a tile, many
+// pixels, below it.
+//
+// Labels take the sea-level sphere, as their placement does (orb-symbol's
+// `sphere_hides`): at low zoom a pixel is tens of kilometres at the limb,
+// and the sunk sphere let labels degrees behind it show along it.
+fn sphere_hides(p: vec3<f32>, solid: bool) -> bool {
     if dot(frame.globe_horizon.xyz, p) + frame.globe_horizon.w >= 0.0 {
         return false;
     }
     let from_center = frame.globe_eye + frame.globe_target;
     let d = p - frame.globe_eye;
     let a = dot(d, d);
-    let lowest = SPHERE_RADIUS + frame.terrain_lowest * frame.extrusion_scale * frame.globe_metres;
-    let radius = lowest - sqrt(a) / frame.camera_to_center;
+    var radius = SPHERE_RADIUS;
+    if solid {
+        let lowest = radius + frame.terrain_lowest * frame.extrusion_scale * frame.globe_metres;
+        radius = lowest - sqrt(a) / frame.camera_to_center;
+    }
     let b = dot(from_center, d);
     // The eye's height over it, taken whole: a difference of squares
     // would cancel.
@@ -480,7 +489,7 @@ fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<
         // after the 3D passes reverse the depth, so a triangle the sphere
         // partly hides (a skirt hanging into it) runs away from the eye
         // there rather than in front of the surface.
-        if sphere_hides(p) {
+        if sphere_hides(p, true) {
             clip.z = 2.0 * clip.w;
         }
         if !g.on_plane {
