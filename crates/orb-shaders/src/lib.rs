@@ -261,6 +261,131 @@ mod tests {
         );
     }
 
+    /// Where a uniform block's std140 layout (WGSL's uniform layout, which
+    /// naga keeps in the GL variant) differs from the one ANGLE's Metal
+    /// back end gives the block (`blocklayoutMetal.cpp`): there a `vec3`
+    /// takes 16 bytes, a struct aligns to its widest member and arrays of
+    /// scalars pack. ANGLE converts such a block on the CPU at the first
+    /// draw after each write to its buffer, and reads the buffer to do it:
+    /// one the GPU wrote (a copy of gathered writes) makes it wait for the
+    /// GPU, which stalled WebGL 2 frames on Apple devices (#140). `None`
+    /// when the two agree.
+    fn metal_mismatch(
+        types: &naga::UniqueArena<naga::Type>,
+        ty: naga::Handle<naga::Type>,
+        std_size: u32,
+    ) -> Option<String> {
+        use naga::{TypeInner, VectorSize};
+        fn align(types: &naga::UniqueArena<naga::Type>, ty: naga::Handle<naga::Type>) -> u32 {
+            match &types[ty].inner {
+                TypeInner::Vector {
+                    size: VectorSize::Bi,
+                    ..
+                }
+                | TypeInner::Matrix {
+                    rows: VectorSize::Bi,
+                    ..
+                } => 8,
+                TypeInner::Vector { .. } | TypeInner::Matrix { .. } => 16,
+                TypeInner::Array { base, .. } => align(types, *base),
+                TypeInner::Struct { members, .. } => (members.iter())
+                    .map(|m| align(types, m.ty))
+                    .max()
+                    .unwrap_or(4),
+                _ => 4,
+            }
+        }
+        /// A leaf's size in ANGLE's Metal layout.
+        fn leaf(inner: &TypeInner) -> u32 {
+            match *inner {
+                TypeInner::Vector {
+                    size: VectorSize::Bi,
+                    ..
+                } => 8,
+                TypeInner::Vector { .. } => 16,
+                TypeInner::Matrix { columns, rows, .. } => {
+                    columns as u32 * if rows == VectorSize::Bi { 8 } else { 16 }
+                }
+                _ => 4,
+            }
+        }
+        fn walk(
+            types: &naga::UniqueArena<naga::Type>,
+            ty: naga::Handle<naga::Type>,
+            at: u32,
+            metal: &mut u32,
+            path: &str,
+        ) -> Result<(), String> {
+            let a = align(types, ty);
+            match &types[ty].inner {
+                TypeInner::Struct { members, .. } => {
+                    *metal = metal.next_multiple_of(a);
+                    for m in members {
+                        let name = m.name.as_deref().unwrap_or("?");
+                        walk(types, m.ty, at + m.offset, metal, &format!("{path}.{name}"))?;
+                    }
+                    *metal = metal.next_multiple_of(a);
+                }
+                TypeInner::Array {
+                    base,
+                    size: naga::ArraySize::Constant(n),
+                    stride,
+                } if matches!(
+                    types[*base].inner,
+                    TypeInner::Struct { .. } | TypeInner::Array { .. }
+                ) =>
+                {
+                    for i in 0..n.get() {
+                        walk(
+                            types,
+                            *base,
+                            at + i * stride,
+                            metal,
+                            &format!("{path}[{i}]"),
+                        )?;
+                    }
+                }
+                TypeInner::Array {
+                    base,
+                    size: naga::ArraySize::Constant(n),
+                    stride,
+                } => {
+                    *metal = metal.next_multiple_of(a);
+                    let size = leaf(&types[*base].inner);
+                    if *metal != at || size != *stride {
+                        return Err(format!(
+                            "`{path}` at {at}, stride {stride} in std140; {metal}, stride {size} in Metal"
+                        ));
+                    }
+                    *metal += size * n.get();
+                }
+                inner => {
+                    *metal = metal.next_multiple_of(a);
+                    if *metal != at {
+                        return Err(format!("`{path}` at {at} in std140, {metal} in Metal"));
+                    }
+                    if matches!(
+                        inner,
+                        TypeInner::Matrix {
+                            rows: VectorSize::Bi,
+                            ..
+                        }
+                    ) {
+                        return Err(format!("`{path}`'s columns 16 apart in std140, 8 in Metal"));
+                    }
+                    *metal += leaf(inner);
+                }
+            }
+            Ok(())
+        }
+        let mut metal = 0;
+        if let Err(e) = walk(types, ty, 0, &mut metal, "") {
+            return Some(e);
+        }
+        let metal = metal.next_multiple_of(align(types, ty));
+        (metal > std_size).then(|| format!("{metal} bytes in Metal, {std_size} in std140"))
+    }
+
     /// GLSL ES 3.10 built-ins, which WebGL 2's ES 3.00 lacks.
     const ES_310_ONLY: &[&str] = &[
         "bitCount(",
@@ -425,11 +550,16 @@ mod tests {
                     ));
                 }
                 for (_, var) in uniforms {
+                    let name = var.name.as_deref().unwrap_or("?");
                     let size = layouter[var.ty].size;
                     if size > UNIFORM_BLOCK_BYTES {
                         fail(format!(
-                            "uniform `{}` of {size} bytes, past WebGL 2's {UNIFORM_BLOCK_BYTES}",
-                            var.name.as_deref().unwrap_or("?")
+                            "uniform `{name}` of {size} bytes, past WebGL 2's {UNIFORM_BLOCK_BYTES}"
+                        ));
+                    }
+                    if let Some(what) = metal_mismatch(&one.types, var.ty, size) {
+                        fail(format!(
+                            "uniform `{name}` lays out otherwise in ANGLE's Metal than in std140 ({what})"
                         ));
                     }
                 }

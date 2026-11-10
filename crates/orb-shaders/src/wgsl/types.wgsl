@@ -94,40 +94,34 @@ struct Frame {
     // globe must be behind to be hidden (`sphere_hides`).
     terrain_lowest: f32,
     // v8's `light` (see lighting.wgsl): its premultiplied colour with its
-    // intensity in w, and its position in GL JS's extrusion axes.
+    // intensity in w; its position in GL JS's extrusion axes is below.
     light_color: vec4<f32>,
-    light_position: vec3<f32>,
-    // The target's clip w (orb-camera's `View::camera_to_center`).
-    camera_to_center: f32,
     // style-spec#1797's extrusion shadows (extrusion_ground.wgsl): where a
     // point a metre up falls on the ground along the light, in metres east
     // and north, and how dark shadows are, 0 for none.
     shadow_offset: vec2<f32>,
     shadow_intensity: f32,
+    // The target's clip w (orb-camera's `View::camera_to_center`).
+    camera_to_center: f32,
     // The low-zoom surface (orb-render's `FrameGlobe`), the sphere or a plane
     // as `globe_plane` says: camera-relative ECEF metres →
     // clip, the horizon plane (`dot(xyz, p) + w`: 1 under the eye, 0 at the
-    // horizon), the target's ECEF position, how much of a globe the view
-    // is (0 the plane), and metres per plane world unit at the target.
+    // horizon), the target's ECEF position (below), how much of a globe the
+    // view is (0 the plane), and metres per plane world unit at the target.
     globe_view_proj: mat4x4<f32>,
     globe_horizon: vec4<f32>,
-    globe_target: vec3<f32>,
     globe_amount: f32,
     globe_metres: f32,
     // 1 when the low-zoom surface is a plane (its world units, z up, no
     // horizon) rather than the sphere.
     globe_plane: u32,
-    // The eye, camera-relative ECEF metres.
-    globe_eye: vec3<f32>,
-    // The camera's world position as whole quanta and a remainder (orb-
-    // render's `quantum`): rows' origins less it are camera-relative
-    // (`tile_origin`).
+    // The quanta of `camera_whole` and `globe_target_whole` (orb-render's
+    // `quantum`).
+    quantum: f32,
+    // The camera's world position as whole quanta and a remainder: rows'
+    // origins less it are camera-relative (`tile_origin`).
     camera_whole: vec2<i32>,
     camera_rest: vec2<f32>,
-    // `globe_target` split alike, at `globe_quantum`.
-    globe_target_whole: vec3<i32>,
-    quantum: f32,
-    globe_target_rest: vec3<f32>,
     globe_quantum: f32,
     // 1 when colours mix in linear light (`dev.sargunv.orbis:color-space`):
     // the target is sRGB, and shaders decode the style's colours (`color_in`).
@@ -145,6 +139,17 @@ struct Frame {
     // maplibre/maplibre#555's ambient light on extrusions (lighting.wgsl),
     // premultiplied, with how far they take it in w rather than GL JS's.
     light_ambient: vec4<f32>,
+    // The vec3s last, one after another: ANGLE's Metal back end gives a
+    // vec3 16 bytes where std140 packs a scalar into its fourth, and a
+    // block laid out otherwise than std140 is converted on the CPU at a
+    // draw, waiting for the GPU's copy into it (#140).
+    light_position: vec3<f32>,
+    globe_target: vec3<f32>,
+    // The eye, camera-relative ECEF metres.
+    globe_eye: vec3<f32>,
+    // `globe_target` split as the camera is, at `globe_quantum`.
+    globe_target_whole: vec3<i32>,
+    globe_target_rest: vec3<f32>,
 };
 
 // One placement of a tile's data: data units → world is
