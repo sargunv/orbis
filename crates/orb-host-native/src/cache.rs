@@ -38,7 +38,7 @@ pub struct HttpCache {
 #[derive(Debug)]
 struct Inner {
     storage: Arc<dyn Storage>,
-    max_bytes: u64,
+    max_bytes: std::sync::atomic::AtomicU64,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -91,7 +91,7 @@ impl HttpCache {
         let swept_below = state.next_id;
         let inner = Arc::new(Inner {
             storage,
-            max_bytes,
+            max_bytes: max_bytes.into(),
             state: Mutex::new(state),
             changed: Condvar::new(),
         });
@@ -117,6 +117,34 @@ impl HttpCache {
             entries: state.entries.len(),
             bytes: state.bytes,
         }
+    }
+
+    /// Keeps at most `max_bytes` of response bodies from here on, evicting
+    /// the least recently used down to it; 0 keeps nothing.
+    pub fn set_max_bytes(&self, max_bytes: u64) {
+        self.inner
+            .max_bytes
+            .store(max_bytes, std::sync::atomic::Ordering::Relaxed);
+        let removed = {
+            let mut state = self.inner.lock();
+            let removed = evict(&mut state, max_bytes);
+            state.dirty |= !removed.is_empty();
+            removed
+        };
+        self.inner.changed.notify_one();
+        self.inner.remove_blobs(removed);
+    }
+
+    /// Keeps every entry but makes each one stale, so the next request
+    /// for it revalidates it with the server.
+    pub fn invalidate(&self) {
+        let mut state = self.inner.lock();
+        for entry in state.entries.values_mut() {
+            entry.fresh_until = 0;
+        }
+        state.dirty = true;
+        drop(state);
+        self.inner.changed.notify_one();
     }
 
     /// Removes every entry.
@@ -162,7 +190,11 @@ impl HttpCache {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) {
-        if key.contains(['\t', '\n']) || bytes.len() as u64 > self.inner.max_bytes / 4 {
+        let max_bytes = self
+            .inner
+            .max_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if key.contains(['\t', '\n']) || max_bytes == 0 || bytes.len() as u64 > max_bytes / 4 {
             return;
         }
         let id = {
@@ -195,8 +227,8 @@ impl HttpCache {
                 state.bytes -= old.size;
                 removed.push(old.id);
             }
-            if state.bytes > self.inner.max_bytes {
-                removed.extend(evict(&mut state, self.inner.max_bytes / 10 * 9));
+            if state.bytes > max_bytes {
+                removed.extend(evict(&mut state, max_bytes / 10 * 9));
             }
             state.dirty = true;
         }

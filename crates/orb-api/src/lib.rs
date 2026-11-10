@@ -564,6 +564,23 @@ impl Runtime {
         }
     }
 
+    /// Keeps the HTTP cache's entries but has each revalidated with its
+    /// server before it is used again.
+    pub fn invalidate_http_cache(&self) {
+        if let Some(cache) = self.shared.fetch.cache() {
+            cache.invalidate();
+        }
+    }
+
+    /// Keeps at most `bytes` of response bodies in the HTTP cache (100 MiB,
+    /// [`HTTP_CACHE_BYTES`], by default), evicting the least recently used;
+    /// 0 keeps none. A runtime without a state directory keeps none anyway.
+    pub fn set_http_cache_size(&self, bytes: u64) {
+        if let Some(cache) = self.shared.fetch.cache() {
+            cache.set_max_bytes(bytes);
+        }
+    }
+
     /// A surface on a window or view that wgpu accepts safely (a winit
     /// window), in physical pixels.
     pub fn create_surface(
