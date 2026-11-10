@@ -213,10 +213,16 @@ fn glyph_offset(base: u32, quad: u32) -> f32 {
 // the placements asked for: first and last glyph, again flipped, then this
 // glyph. Adreno compilers inline every call, and five copies of its loop
 // made the symbol pipeline take 28 s to compile on an Adreno 619.
-fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32) -> LineGlyph {
+// `anchor_clip` is the untranslated anchor in clip space.
+fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32, anchor_clip: vec4<f32>) -> LineGlyph {
     var fail: LineGlyph;
     fail.ok = false;
-    let anchor = to_label_plane(tile, placed.anchor).p;
+    // The anchor in the label plane: on the screen, from `vs_symbol`'s
+    // projection of it (`anchor_clip`).
+    var anchor = clip_to_px(anchor_clip);
+    if (node.flags & PITCH_WITH_MAP) != 0u {
+        anchor = to_pitched_plane(tile, placed.anchor);
+    }
     let line_offset = placed.line_offset * font_scale;
     let own = glyph_offset(base, quad) * font_scale;
     let keep_upright = (node.flags & KEEP_UPRIGHT) != 0u;

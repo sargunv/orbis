@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! orbis render <style> -o out.png [--at lon,lat,zoom[,bearing,pitch]] [--size WxH] [--scale s]
-//!     [--capture]
+//!     [--capture] [--pipelines]
 //! orbis tiles <style> [-o dir] [--tms <id|tms.json>] (--zoom z[-z] [--bbox w,s,e,n] | --list file)
 //!     [--size px] [--scale s] [--still] [--times]
 //! ```
@@ -12,7 +12,8 @@
 //! mode (`--at`'s zoom is Web Mercator's, as the style's own plane is known
 //! only once it loads); with `--capture` it draws the settled picture once
 //! more for the graphics debugger it runs under (Xcode, RenderDoc) to
-//! capture. `tiles` draws tiles of a tile matrix set (default
+//! capture; with `--pipelines` it prints each pipeline's compile time,
+//! slowest first. `tiles` draws tiles of a tile matrix set (default
 //! `WebMercatorQuad`) on the style's plane in Tile mode, into
 //! `dir/z/col/row.png` when `-o` is given, rows in the set's own order:
 //! every tile of `--zoom`, those `--bbox` (degrees) touches, or the
@@ -53,7 +54,7 @@ fn main() -> ExitCode {
 }
 
 /// Flags that take no value.
-const SWITCHES: &[&str] = &["--still", "--times", "--capture"];
+const SWITCHES: &[&str] = &["--still", "--times", "--capture", "--pipelines"];
 
 /// Flags and the positional arguments.
 struct Args {
@@ -226,6 +227,13 @@ fn render(
         stats.pipelines_created,
         stats.pipeline_time.as_secs_f64() * 1000.0,
     );
+    if args.has("--pipelines") {
+        let mut timings = stats.pipeline_timings;
+        timings.sort_by_key(|(_, took)| std::cmp::Reverse(*took));
+        for (label, took) in timings {
+            eprintln!("  {:8.1} ms {label}", took.as_secs_f64() * 1000.0);
+        }
+    }
     Ok(())
 }
 

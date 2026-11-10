@@ -116,17 +116,21 @@ fn ground_elevation_at(g: GroundVertex, offset: vec2<f32>) -> f32 {
 
 // The clip position of ground vertex `g` moved `offset` world units along
 // the map (east, north), on the ground there: on terrain, the DEM's height
-// where it lands, or flat in the ground mask.
+// where it lands, or flat in the ground mask. One projection call site
+// (Adreno's compilers inline every call).
 fn ground_landing(g: GroundVertex, offset: vec2<f32>) -> vec4<f32> {
     if ground_mask {
         return ground_mask_clip(g.ground.flat + offset);
     }
-    if frame.dem_dim <= 0.0 {
-        return ground_clip_reversed(g.ground, offset, 0.0);
+    let terrain = frame.dem_dim > 0.0;
+    var z = 0.0;
+    if terrain {
+        z = ground_elevation_at(g, offset);
     }
-    let z = ground_elevation_at(g, offset);
     var clip = ground_clip_reversed(g.ground, offset, z * frame.extrusion_scale);
-    clip.z *= 1.0 + GROUND_TERRAIN_PULL;
+    if terrain {
+        clip.z *= 1.0 + GROUND_TERRAIN_PULL;
+    }
     return clip;
 }
 
@@ -226,16 +230,17 @@ fn vs_extrusion_occlusion(@builtin(vertex_index) index: u32) -> GroundOut {
     let mate = select(v.vertex - 8u, v.vertex + 8u, end == 1u);
     let along = g.pos - unpack_i16x2(vertex_at(mate));
     let span = length(along);
-    if vertex_at(mate + 1u) != g.feature || ((vertex_at(mate + 2u) ^ packed) & 0x10001u) != 0x10000u
-        || span <= 0.0 {
-        out.position = ground_landing(g, vec2<f32>(0.0));
-        out.ground = vec4<f32>(0.0);
-        return out;
-    }
+    // One landing either way (Adreno's compilers inline every call).
+    let lost = vertex_at(mate + 1u) != g.feature || ((vertex_at(mate + 2u) ^ packed) & 0x10001u) != 0x10000u
+        || span <= 0.0;
     let top = f32(packed & 1u);
     let to = vec2<f32>(along.x, -along.y) / span + ground_outward(packed) * top;
     let reach = radius * frame.extrusion_scale;
-    out.position = ground_landing(g, to * reach);
+    out.position = ground_landing(g, select(to * reach, vec2<f32>(0.0), lost));
+    if lost {
+        out.ground = vec4<f32>(0.0);
+        return out;
+    }
     let wall = span * ground_scale(g.tile, g.pos) / reach;
     out.ground = vec4<f32>(top, select(-1.0, wall + 1.0, end == 1u), wall, intensity);
     return out;

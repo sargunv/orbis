@@ -1,14 +1,19 @@
 // Pipeline creation in the browser (measure.html `?pipelines`): the
-// Tokyo extract from `createMap` to `idle`, counting
-// the shader modules and pipelines made and timing each queue submission
-// to its `onSubmittedWorkDone`. Browsers compile pipelines in the GPU
-// process when they are made or first used, so the queue's wait during
+// Tokyo extract (or `?style=`) from `createMap` to `idle` on the page's
+// thread, counting the shader modules and pipelines made, timing each
+// async compile by label and each queue submission to its
+// `onSubmittedWorkDone`; `?nonce=` compiles cold (`cold.js`). Browsers
+// compile pipelines in the GPU process when they are made or first used,
+// so the queue's wait during
 // load holds the compilation; `pnpm measure --pipelines` compares a
 // fresh profile (cold) with the same profile reopened (the browser's
 // shader cache warm).
 import { createMap } from "orbis";
 
+import { bustShaderCaches } from "./cold.js";
 import { demoStyle } from "./styles.js";
+
+bustShaderCaches(new URLSearchParams(location.search));
 
 const status = document.getElementById("status");
 // Async compiles count apart: wgpu makes each such pipeline again once
@@ -22,6 +27,9 @@ const counts = {
   createMs: 0,
 };
 const waits = [];
+// Each async compile: its label, when it was asked for and how long its
+// promise took, ms.
+const compiles = [];
 // A hidden page gets few animation frames (Firefox gives one every few
 // seconds), so its timings don't count.
 let visible = document.visibilityState === "visible";
@@ -41,6 +49,18 @@ for (const [method, key] of [
     const started = performance.now();
     const result = original.apply(this, args);
     counts.createMs += performance.now() - started;
+    if (method.endsWith("Async")) {
+      const at = started - (window.mapStarted ?? started);
+      result.then(
+        () =>
+          compiles.push({
+            label: args[0]?.label ?? "",
+            at,
+            ms: performance.now() - started,
+          }),
+        () => {},
+      );
+    }
     return result;
   };
 }
@@ -57,10 +77,13 @@ GPUQueue.prototype.submit = function (buffers) {
 window.pipelines = (async () => {
   try {
     const started = performance.now();
+    window.mapStarted = started;
+    // On the page's thread, where the device's calls above are counted.
     const map = await createMap({
       container: document.getElementById("map"),
       style: demoStyle(new URLSearchParams(location.search), "tokyo"),
       camera: { center: [139.74, 35.685], zoom: 15 },
+      worker: false,
     });
     // The first frame that draws a layer, and the first with no pipeline
     // compiling.
@@ -89,6 +112,7 @@ window.pipelines = (async () => {
       waitTotalMs: done.reduce((a, b) => a + b, 0),
       waitMaxMs: Math.max(...done),
       firstWaitMs: done[0],
+      compiles: compiles.sort((a, b) => b.ms - a.ms),
       adapter: await navigator.gpu
         .requestAdapter()
         .then((a) =>

@@ -88,13 +88,6 @@ fn warp_sum(at: u32, a: vec3<f32>, b: vec3<f32>) -> vec2<f32> {
     return sum;
 }
 
-fn tile_to_world(tile: Tile, p: vec2<f32>) -> vec2<f32> {
-    if tile.warp_cells == 0u {
-        return tile_affine(tile, p);
-    }
-    return tile_origin(tile) + tile_local(tile, p);
-}
-
 // Tile point `p` less the tile's origin, in world units.
 fn tile_local(tile: Tile, p: vec2<f32>) -> vec2<f32> {
     if tile.warp_cells == 0u {
@@ -112,9 +105,10 @@ fn tile_local(tile: Tile, p: vec2<f32>) -> vec2<f32> {
 // to it exactly. On the grid, not between its points: a point midway
 // rounds by the rasterizer's rule, which can differ by sign (a slot's edge
 // lies just off the page at row 0).
-fn drape_texel(tile: Tile, p: vec2<f32>) -> vec2<f32> {
+// `local` is the point's `tile_local`.
+fn drape_texel(tile: Tile, local: vec2<f32>) -> vec2<f32> {
     let whole = vec2<f32>(tile.origin - frame.camera_whole) * frame.quantum;
-    return whole + snap_texel((tile.origin_rest - frame.camera_rest) + tile_local(tile, p));
+    return whole + snap_texel((tile.origin_rest - frame.camera_rest) + local);
 }
 
 // Where a drape placement's tile origin's whole quanta put it in the page,
@@ -231,39 +225,66 @@ fn reaches_pole(tile: Tile, north: bool) -> bool {
     return false;
 }
 
+// Each projection inlines this, and Adreno's compilers inline every
+// call, so it calls each helper from one place: `tile_surface` once, and
+// the warp's patches and the Mercator sphere each once, in a loop over the
+// points they map.
 fn tile_ground(tile: Tile, p: vec2<f32>) -> Ground {
     let north = p.y <= -32767.5;
-    if north || p.y >= 32766.5 {
-        var g = tile_surface(tile, vec2<f32>(clamp(p.x, 0.0, tile.extent), select(tile.extent, 0.0, north)));
-        if frame.globe_amount > 0.0 && frame.globe_plane == 0u && reaches_pole(tile, north) {
-            g.globe = vec3<f32>(0.0, 0.0, select(-SPHERE_RADIUS, SPHERE_RADIUS, north)) - frame.globe_target;
-            g.pole = true;
-        }
-        return g;
+    let pole = north || p.y >= 32766.5;
+    let on_edge = vec2<f32>(clamp(p.x, 0.0, tile.extent), select(tile.extent, 0.0, north));
+    var g = tile_surface(tile, select(p, on_edge, pole));
+    if pole && frame.globe_amount > 0.0 && frame.globe_plane == 0u && reaches_pole(tile, north) {
+        g.globe = vec3<f32>(0.0, 0.0, select(-SPHERE_RADIUS, SPHERE_RADIUS, north)) - frame.globe_target;
+        g.pole = true;
     }
-    return tile_surface(tile, p);
+    return g;
 }
 
 fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     var g: Ground;
     g.on_plane = (tile.globe_flags & 1u) == 0u;
-    if g.on_plane {
-        if draped_placement(tile) {
-            g.flat = drape_texel(tile, p);
+    let globe = frame.globe_amount > 0.0 && tile.globe_cells > 0u;
+    // A point past the tile (a translated label or fill, a stroke's edge)
+    // goes onto the sphere at the tile's edge through its patches, and on
+    // from there exactly: the patches don't extend. Only a plane position
+    // that holds the whole tile carries it on (not one Web Mercator clamps
+    // part of).
+    let edge = clamp(p, vec2<f32>(0.0), vec2<f32>(tile.extent));
+    let carry = globe && any(edge != p) && g.on_plane && frame.globe_plane == 0u && warp_whole(tile);
+    // The point's and, carried on, the edge's places from the tile's
+    // origin.
+    var local = vec2<f32>(0.0);
+    var edge_local = vec2<f32>(0.0);
+    for (var k = 0u; k < select(select(0u, 1u, g.on_plane), 2u, carry); k++) {
+        let l = tile_local(tile, select(p, edge, k == 1u));
+        if k == 0u {
+            local = l;
         } else {
-            g.flat = tile_to_world(tile, p);
+            edge_local = l;
         }
     }
-    if frame.globe_amount > 0.0 && tile.globe_cells > 0u {
-        // A point past the tile (a translated label or fill, a stroke's
-        // edge) goes onto the sphere at the tile's edge through its
-        // patches, and on from there exactly: the patches don't extend.
-        // Only a plane position that holds the whole tile carries it on
-        // (not one Web Mercator clamps part of).
-        let edge = clamp(p, vec2<f32>(0.0), vec2<f32>(tile.extent));
+    if g.on_plane {
+        if draped_placement(tile) {
+            g.flat = drape_texel(tile, local);
+        } else {
+            g.flat = tile_origin(tile) + local;
+        }
+    }
+    if globe {
         g.globe = sphere_at(tile.globe_base, tile.globe_cells, tile_globe_origin(tile), edge / tile.extent);
-        if any(edge != p) && g.on_plane && frame.globe_plane == 0u && warp_whole(tile) {
-            g.globe += mercator_sphere(g.flat) - mercator_sphere(tile_to_world(tile, edge));
+        if carry {
+            var from_point = vec3<f32>(0.0);
+            var from_edge = vec3<f32>(0.0);
+            for (var k = 0u; k < 2u; k++) {
+                let m = mercator_sphere(select(g.flat, tile_origin(tile) + edge_local, k == 1u));
+                if k == 0u {
+                    from_point = m;
+                } else {
+                    from_edge = m;
+                }
+            }
+            g.globe += from_point - from_edge;
         }
     }
     return g;
@@ -296,13 +317,13 @@ fn sphere_at(base: u32, cells: u32, origin: vec3<f32>, uv: vec2<f32>) -> vec3<f3
 // and circle translate). On a globe, as in GL JS, the translation moves the
 // point in the tile's own units before it goes onto the sphere.
 fn tile_ground_shifted(tile: Tile, p: vec2<f32>, shift: vec2<f32>) -> Ground {
-    if frame.globe_amount <= 0.0 {
-        var g = tile_ground(tile, p);
+    let globe = frame.globe_amount > 0.0;
+    var g = tile_ground(tile, select(p, p + vec2<f32>(shift.x, -shift.y) / tile.scale, globe));
+    if !globe {
         // On a drape's grid too, a texel position plus it is exact.
         g.flat += select(shift, snap_texel(shift), draped_placement(tile));
-        return g;
     }
-    return tile_ground(tile, p + vec2<f32>(shift.x, -shift.y) / tile.scale);
+    return g;
 }
 
 // Clip position of a ground point moved by `offset` world units along the

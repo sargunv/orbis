@@ -33,11 +33,20 @@
 // in Orbis and GL JS by default. `--engines` takes `native` too: MapLibre
 // Native's browser build, as the demo's comparison loads it (not on the
 // globe, which it lacks).
+//
+// `--android [--physical]` loads in Chrome on this worktree's Android
+// device instead (`openAndroid`; `--physical` a phone the caller assigned),
+// a tab per sample with the HTTP cache disabled, after `chrome://gpuclean`
+// empties the GPU process's shader cache. The phone's driver keeps
+// compiled shaders of its own, so Orbis runs on the page's thread with
+// shaders unique to the sample (`demo/cold.js`): cold, as a first visit
+// compiles them. `--style=tokyo` loads the committed extract, which GL JS
+// can't (it has no `pmtiles://`).
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { launchChromium, serveDemo } from "./serve.mjs";
+import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
 import {
   extractCache,
   median,
@@ -83,7 +92,10 @@ const builds = Object.fromEntries(
     .filter(Boolean)
     .map((b) => b.split("=")),
 );
-const VIEWS = CAMERAS[cache ? "realWorld" : (scene ?? "liberty")];
+const VIEWS =
+  CAMERAS[
+    cache ? "realWorld" : (scene ?? (style === "tokyo" ? "tokyo" : "liberty"))
+  ];
 const views = option("views", Object.keys(VIEWS).join(",")).split(",");
 const SETTINGS = {
   normal: async () => {},
@@ -101,6 +113,10 @@ const viewport = cache
   ? { width: 512, height: 512 }
   : { width: 1024, height: 768 };
 const throttle = option("throttle") && (Number(option("throttle")) * 1e6) / 8;
+const physical = args.includes("--physical");
+const android = physical || args.includes("--android");
+if (android && settings.some((s) => s !== "normal"))
+  throw new Error("--android takes no --settings");
 const out = option(
   "out",
   fileURLToPath(new URL("../../target/h2h/web/", import.meta.url)),
@@ -127,7 +143,30 @@ if (scene === "terrain") {
 }
 const styleOf = (view) =>
   cache ? `${server.url}real-world/styles/${view}.json` : style;
-const browser = await launchChromium();
+const browser = android ? undefined : await launchChromium();
+// A sample's page: a fresh context in headless Chromium, or a tab in the
+// device's Chrome after its GPU cache is emptied.
+async function samplePage() {
+  if (!android) {
+    const context = await browser.newContext({
+      viewport,
+      deviceScaleFactor: 1,
+    });
+    return {
+      context,
+      page: await context.newPage(),
+      close: () => context.close(),
+    };
+  }
+  const clean = await openAndroid(server, { physical });
+  await clean.page.goto("chrome://gpuclean").catch(() => {});
+  await clean.close();
+  const { page, close } = await openAndroid(server, { physical });
+  await (
+    await page.context().newCDPSession(page)
+  ).send("Network.setCacheDisabled", { cacheDisabled: true });
+  return { context: page.context(), page, close };
+}
 const results = [];
 try {
   for (let run = -1; run < runs; run++) {
@@ -135,11 +174,7 @@ try {
       for (const view of views) {
         // The engines' order turns each run, so that neither always follows the other.
         for (const engine of run % 2 ? [...engines].reverse() : engines) {
-          const context = await browser.newContext({
-            viewport,
-            deviceScaleFactor: 1,
-          });
-          const page = await context.newPage();
+          const { context, page, close } = await samplePage();
           await SETTINGS[setting](await context.newCDPSession(page));
           const errors = [];
           page.on("console", (m) => {
@@ -152,14 +187,21 @@ try {
             at: VIEWS[view],
             mlnrs: `${new URL(server.url).pathname}mlnrs/index.js`,
             ...(scene === "globe" && { globe: "" }),
+            // Orbis's shaders unique to the sample, on the page's thread.
+            ...(android &&
+              engine.startsWith("orbis") && {
+                worker: "0",
+                nonce: 1 + Math.floor(Math.random() * 9999),
+              }),
           });
           const row = { engine, view, setting, run };
           // When the style's fetch starts, on the epoch clock: from whichever
           // thread the engine fetches it.
           let styleRequest;
-          context.on("request", (r) => {
+          const onRequest = (r) => {
             if (r.url() === styleOf(view) && !styleRequest) styleRequest = r;
-          });
+          };
+          context.on("request", onRequest);
           try {
             const build = engine.split("@")[1];
             await page.goto(
@@ -192,19 +234,22 @@ try {
             row.error = String(e).slice(0, 300);
           }
           if (errors.length) row.consoleErrors = errors.slice(0, 3);
-          await context.close();
+          context.off("request", onRequest);
+          await close();
           console.error(JSON.stringify(row));
           if (run >= 0) results.push(row);
         }
       }
   }
 } finally {
-  await browser.close();
+  await browser?.close();
   server.close();
 }
 writeFileSync(join(out, "load.json"), JSON.stringify(results, null, 1));
 
-const { width, height } = viewport;
+const { width, height } = android
+  ? { width: "phone", height: "screen" }
+  : viewport;
 const tagged = settings.length > 1;
 const gljs = JSON.parse(
   readFileSync(
@@ -219,7 +264,7 @@ for (const [what, from] of [
   ["the style's fetch", "style"],
 ]) {
   lines.push(
-    `### Web load: ms from ${what} to first idle (Chromium, WebGPU, ${width}×${height} @1×; ${runs} runs)`,
+    `### Web load: ms from ${what} to first idle (${android ? "Chrome on Android, cold GPU cache" : "Chromium"}, WebGPU, ${width}×${height}${android ? "" : " @1×"}; ${runs} runs)`,
     "",
     `| view | ${tagged ? "setting | " : ""}${engines.join(" | ")} |`,
     `|---|${tagged ? "---|" : ""}${engines.map(() => "---|").join("")}`,
@@ -271,3 +316,4 @@ lines.push(
   `Medians [min–max]. ${throttle ? `Engine files compressed over a ${option("throttle")} Mbit/s link. ` : ""}Style ${about}; mln-rs ${MLNRS.name}; GL JS ${gljs}. "Idle" is each engine's own event (MapLibre Native's: its snapshot fully loaded, polled each frame); GL JS's may not wait for symbol fades. Rows and screenshots: ${out}`,
 );
 console.log(lines.join("\n"));
+if (android) process.exit(0);

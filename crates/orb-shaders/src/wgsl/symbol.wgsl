@@ -380,25 +380,52 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     }
     let translation = t * tile_units_per_px(tile);
     let anchor = placed.anchor + translation;
-    // The anchor on the ground, once for its projection, the globe's
-    // horizon and pitched text's correction (Adreno compilers inline
-    // every call).
-    let anchor_ground = tile_ground(tile, anchor);
-    let anchor_metres = symbol_metres(tile, anchor);
-    let projected_point = ground_clip(anchor_ground, vec2<f32>(0.0), anchor_metres * frame.extrusion_scale);
+    // The anchor's east neighbour, which map-rotated shifted labels and
+    // in-shader rotation read.
+    let rotate_shifted = !LINE_LABELS && (state & S_SHIFTED) != 0u && !pitch
+        && (node.flags & ROTATE_WITH_MAP) != 0u;
+    let east = rotate_shifted || (node.flags & ROTATE_IN_SHADER) != 0u;
+    // A line label's untranslated anchor, where its glyphs follow the line
+    // from, on a screen label plane.
+    let line_anchor = LINE_LABELS && !pitch && any(translation != vec2<f32>(0.0));
+    // The anchor on the ground and in clip space, then the east neighbour
+    // and the line's anchor, through one projection: Adreno's compilers
+    // inline every call, and each projection's globe, warp and terrain
+    // terms took seconds to compile on an Adreno 619.
+    var anchor_ground: Ground;
+    var anchor_metres = 0.0;
+    var projected_point = vec4<f32>(0.0);
+    var east_clip = vec4<f32>(0.0);
+    var line_anchor_clip = vec4<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        if (k == 1u && !east) || (k == 2u && !line_anchor) {
+            continue;
+        }
+        let p = select(select(placed.anchor, anchor + vec2<f32>(1.0, 0.0), k == 1u), anchor, k == 0u);
+        let ground = tile_ground(tile, p);
+        let metres = symbol_metres(tile, p);
+        let clip = ground_clip(ground, vec2<f32>(0.0), metres * frame.extrusion_scale);
+        if k == 0u {
+            anchor_ground = ground;
+            anchor_metres = metres;
+            projected_point = clip;
+        } else if k == 1u {
+            east_clip = clip;
+        } else {
+            line_anchor_clip = clip;
+        }
+    }
+    if !east {
+        east_clip = projected_point;
+    }
+    if !line_anchor {
+        line_anchor_clip = projected_point;
+    }
     // Terrain in front of the anchor hides it (GL JS `calculate_visibility`).
     let visible_opacity = total_opacity * terrain_visibility(
         terrain_seen(projected_point, anchor_ground, anchor_metres * frame.extrusion_scale));
     if visible_opacity < 0.1 { return out; }
     if globe_hides_anchor(anchor_ground, anchor_metres) { return out; }
-    // The anchor's east neighbour, which map-rotated shifted labels and
-    // in-shader rotation read: projected at one call site.
-    let rotate_shifted = !LINE_LABELS && (state & S_SHIFTED) != 0u && !pitch
-        && (node.flags & ROTATE_WITH_MAP) != 0u;
-    var east_clip = projected_point;
-    if rotate_shifted || (node.flags & ROTATE_IN_SHADER) != 0u {
-        east_clip = tile_clip(tile, anchor + vec2<f32>(1.0, 0.0));
-    }
     let ctcd = frame.camera_to_center;
     let distance_ratio = select(ctcd / projected_point.w, projected_point.w / ctcd, pitch);
     let perspective_ratio = clamp(0.5 + 0.5 * distance_ratio, 0.0, 4.0);
@@ -415,7 +442,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
         // GL JS `updateLineLabels`: the unclamped ratio, sizes over 24.
         let line_ratio = 0.5 + 0.5 * ctcd / projected_point.w;
         let plane_size = select(size * line_ratio, size / line_ratio, pitch);
-        let glyph = line_glyph(tile, base, placed, quad_index, plane_size / 24.0);
+        let glyph = line_glyph(tile, base, placed, quad_index, plane_size / 24.0, line_anchor_clip);
         if !glyph.ok { return out; }
         plane_pos = glyph.p;
         segment_angle = -glyph.angle;

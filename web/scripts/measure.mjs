@@ -14,11 +14,13 @@
 // Liberty at `--at=2.35,48.857,15,0,60`.
 //
 // `--pipelines` measures pipeline creation instead: measure.html
-// `?pipelines` (web/demo/pipelines.js) loads the Tokyo extract `--runs`
-// times in a fresh profile (cold: the browser's shader cache empty) and as
-// often again in that profile reopened (warm), reporting pipelines made and
-// the GPU queue's wait from map creation to idle; on Android, cold after
-// `chrome://gpuclean` empties its GPU disk cache, warm in a tab after.
+// `?pipelines` (web/demo/pipelines.js) loads the Tokyo extract (or
+// `--style`) `--runs` times in a fresh profile (cold: the browser's shader
+// cache empty) and as often again in that profile reopened (warm),
+// reporting pipelines made, each async compile, and the GPU queue's wait
+// from map creation to idle; on Android, cold after `chrome://gpuclean`
+// empties its GPU disk cache, warm in a tab after. Each run's shaders are
+// its own (`demo/cold.js`), which a driver's own cache can't hold.
 //
 // `--android` runs on this worktree's Android emulator (`scripts/android-serial`;
 // `ANDROID_SERIAL` overrides); `--physical` on a phone that the caller assigned
@@ -447,15 +449,20 @@ try {
   server.close();
 }
 
+/** The pipelines page, its shaders unique to `nonce` (`cold.js`). */
+function pipelinesUrl(server, nonce) {
+  return `${server.url}measure.html?${new URLSearchParams({ pipelines: "", nonce, ...(view.style && { style: view.style }) })}`;
+}
+
 /** One load in a profile, the browser started for it and closed after. */
-async function load(server, profile) {
+async function load(server, profile, nonce) {
   const context = await chromium.launchPersistentContext(profile, {
     args: ["--enable-features=Vulkan,WebGPU", "--use-angle=metal"],
     viewport: { width: 1024, height: 768 },
   });
   try {
     const page = context.pages()[0] ?? (await context.newPage());
-    await page.goto(`${server.url}measure.html?pipelines`);
+    await page.goto(pipelinesUrl(server, nonce));
     await page.waitForFunction(() => window.pipelines);
     return await page.evaluate(() => window.pipelines);
   } finally {
@@ -464,7 +471,7 @@ async function load(server, profile) {
 }
 
 /** One load in a tab of Chrome on the device, after emptying its GPU cache if `clean`. */
-async function loadAndroid(server, clean) {
+async function loadAndroid(server, clean, nonce) {
   if (clean) {
     const { page, close } = await openAndroid(server, { physical });
     await page.goto("chrome://gpuclean").catch(() => {});
@@ -472,7 +479,7 @@ async function loadAndroid(server, clean) {
   }
   const { page, close } = await openAndroid(server, { physical });
   try {
-    await page.goto(`${server.url}measure.html?pipelines`);
+    await page.goto(pipelinesUrl(server, nonce));
     await page.waitForFunction(() => window.pipelines);
     return await page.evaluate(() => window.pipelines);
   } finally {
@@ -485,9 +492,12 @@ async function pipelines(server) {
   const rows = [];
   try {
     for (let r = 0; r < runs; r++) {
+      // Shaders no earlier run compiled: a phone's driver keeps compiled
+      // shaders where `chrome://gpuclean` doesn't reach.
+      const nonce = 1 + Math.floor(Math.random() * 9999);
       if (android) {
-        const cold = await loadAndroid(server, true);
-        const warm = await loadAndroid(server, false);
+        const cold = await loadAndroid(server, true, nonce);
+        const warm = await loadAndroid(server, false, nonce);
         rows.push({ cold, warm });
         console.error(
           `pipelines: run ${r + 1}: ${JSON.stringify({ cold, warm })}`,
@@ -496,8 +506,8 @@ async function pipelines(server) {
       }
       const profile = await mkdtemp(join(tmpdir(), "orbis-pipelines-"));
       try {
-        const cold = await load(server, profile);
-        const warm = await load(server, profile);
+        const cold = await load(server, profile, nonce);
+        const warm = await load(server, profile, nonce);
         rows.push({ cold, warm });
         console.error(
           `pipelines: run ${r + 1}: ${JSON.stringify({ cold, warm })}`,
@@ -529,6 +539,23 @@ async function pipelines(server) {
     const m = (k) => median(rows.map((r) => r[key][k]));
     console.log(
       `| ${key} | ${f(m("firstDrawMs"))} / ${f(m("compiledMs"))} / ${f(m("idleMs"))} | ${f(m("waitTotalMs"))} / ${f(m("waitMaxMs"))} / ${f(m("firstWaitMs"))} | ${m("createMs").toFixed(1)} |`,
+    );
+  }
+  // Each async compile's promise, from its call: the GPU process's queue
+  // of compiles as well as the compile.
+  const labels = [
+    ...new Set(rows.flatMap((r) => r.cold.compiles.map((c) => c.label))),
+  ];
+  const took = (key, label) =>
+    median(
+      rows.map((r) => r[key].compiles.find((c) => c.label === label)?.ms ?? 0),
+    );
+  console.log("\n| async compile | cold ms | warm ms |\n|---|---|---|");
+  for (const label of labels.sort(
+    (a, b) => took("cold", b) - took("cold", a),
+  )) {
+    console.log(
+      `| ${label} | ${f(took("cold", label))} | ${f(took("warm", label))} |`,
     );
   }
 }
