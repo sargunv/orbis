@@ -254,6 +254,12 @@ export interface MapOptions {
    * the page of pointer moves as they come (Chromium-based browsers).
    * True by default; false keeps it on the page. */
   worker?: boolean;
+  /** The GPU API to draw with ({@link OrbisMap.backend}): `auto` (the
+   * default) draws with WebGPU where it gives an adapter and WebGL 2
+   * otherwise; `webgl2` draws with WebGL 2 whatever WebGPU offers, without
+   * asking it, and downloads only that build; `webgpu` fails to start,
+   * saying why, where WebGPU gives no adapter. */
+  backend?: "auto" | "webgpu" | "webgl2";
 }
 
 /** How tiles coarsen with distance in pitched views: MapLibre Native's tile

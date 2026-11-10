@@ -121,11 +121,14 @@ export async function startHost(
     }));
   } catch (e) {
     terminateWorkers(workers);
-    // Neither WebGPU nor WebGL 2 draws here.
-    const why = (await compiling.catch(() => undefined))?.noWebgpu;
-    if (why)
+    // Neither WebGPU nor WebGL 2 draws here, or the one asked for doesn't.
+    const picked = await compiling.catch(() => undefined);
+    const message = e instanceof Error ? e.message : e;
+    if (picked?.forced && picked.backend === "webgl2")
+      throw new Error(`Orbis can't draw with WebGL 2, as asked: ${message}`);
+    if (picked?.noWebgpu)
       throw new Error(
-        `Orbis needs WebGPU or WebGL 2. WebGPU: ${why}; WebGL 2: ${e instanceof Error ? e.message : e}`,
+        `Orbis needs WebGPU or WebGL 2. WebGPU: ${picked.noWebgpu}; WebGL 2: ${message}`,
       );
     throw e;
   }

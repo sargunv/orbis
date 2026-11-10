@@ -1,17 +1,24 @@
 // The map's two wasm builds of the same crates: core.wasm draws with
-// WebGPU, core-gl.wasm with WebGL 2 where WebGPU gives no adapter. A
-// context picks one and compiles it once; its job and placement workers
-// instantiate that compiled module with the same build's bindings.
+// WebGPU, core-gl.wasm with WebGL 2 where WebGPU gives no adapter or the
+// map asks for it. A context picks one and compiles it once; its job and
+// placement workers instantiate that compiled module with the same
+// build's bindings.
 
 /** The GPU API a map draws with. */
 export type Backend = "webgpu" | "webgl2";
+
+/** The GPU API a map asks for: one of them, or `auto` for WebGPU where it
+ * gives an adapter and WebGL 2 otherwise. */
+export type BackendChoice = Backend | "auto";
 
 /** A compiled build. */
 export interface Build {
   backend: Backend;
   module: WebAssembly.Module;
-  /** Why not WebGPU, for core-gl.wasm. */
+  /** Why not WebGPU, for core-gl.wasm picked by `auto`. */
   noWebgpu?: string;
+  /** The map asked for this backend rather than leaving it to `auto`. */
+  forced?: true;
 }
 
 /** A build's wasm-bindgen bindings: both export the same API. */
@@ -43,20 +50,35 @@ async function noWebgpu(gpu: GPU | undefined): Promise<string | undefined> {
   }
 }
 
-/** This context's build, compiled: core.wasm where WebGPU gives an adapter,
- * core-gl.wasm otherwise. Where WebGPU is exposed core.wasm downloads while
- * the adapter is asked for, so a WebGPU map waits for nothing new; without
- * it core-gl.wasm downloads at once. `gpu` is this context's WebGPU, if
- * it has one. */
+/** This context's build for `choice`, compiled. `auto`: core.wasm where
+ * WebGPU gives an adapter, core-gl.wasm otherwise; where WebGPU is exposed
+ * core.wasm downloads while the adapter is asked for, so a WebGPU map
+ * waits for nothing new, and without it core-gl.wasm downloads at once.
+ * `webgl2` downloads only core-gl.wasm and asks WebGPU nothing; `webgpu`
+ * rejects, saying why, where WebGPU gives no adapter. `gpu` is this
+ * context's WebGPU, if it has one. */
 export function pickBuild(
   gpu = (globalThis.navigator as { gpu?: GPU } | undefined)?.gpu,
+  choice: BackendChoice = "auto",
 ): Promise<Build> {
+  if (choice === "webgl2")
+    return compile("webgl2").then((module) => ({
+      backend: "webgl2",
+      module,
+      forced: true,
+    }));
   const likely = gpu ? compile("webgpu") : undefined;
   likely?.catch(() => {});
   return (async () => {
     const missing = await noWebgpu(gpu);
     if (missing === undefined)
-      return { backend: "webgpu", module: await likely! };
+      return {
+        backend: "webgpu",
+        module: await likely!,
+        ...(choice === "webgpu" && { forced: true as const }),
+      };
+    if (choice === "webgpu")
+      throw new Error(`Orbis can't draw with WebGPU, as asked: ${missing}`);
     return {
       backend: "webgl2",
       module: await compile("webgl2"),

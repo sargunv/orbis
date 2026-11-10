@@ -517,6 +517,14 @@ button.option-row:hover:enabled {
   min-width: 72px;
   font-weight: 600;
 }
+/* A row whose choices don't fit beside its text takes them below. */
+.option-row.wrap {
+  flex-wrap: wrap;
+  padding-bottom: var(--space-2);
+}
+.option-row.wrap .option-text {
+  flex: 1 1 160px;
+}
 .option-row .segmented button:disabled {
   cursor: default;
 }

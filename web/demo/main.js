@@ -11,6 +11,7 @@
 // the style side by side, Orbis and GL JS by default, app/compare.js),
 // the map options that differ from the entry's own (`&terrain=1`,
 // `&light=map`, `&shadows=0`, `&projection=mercator`, …, app/options.js),
+// `&backend=webgpu|webgl2` (the renderer, Auto by default, app/options.js),
 // `&lose=<ms>` (lose the GPU that long after
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
@@ -20,7 +21,7 @@ import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
 import { hud as createHud } from "./app/hud.js";
 import { offline as createOffline } from "./app/offline.js";
-import { mapOptions, OPTION_PARAMS } from "./app/options.js";
+import { mapOptions, OPTION_PARAMS, wantedBackend } from "./app/options.js";
 import { picker as createPicker } from "./app/picker.js";
 import { expose, hashCamera } from "./expose.js";
 import {
@@ -130,7 +131,16 @@ const compare = comparison({
   },
   beforeReload: () => writeHash(),
 });
-const options = mapOptions({ params, setParam });
+// Another renderer starts the page again, at this camera.
+const options = mapOptions({
+  params,
+  setParam,
+  onBackend(backend) {
+    writeHash();
+    setParam("backend", backend === "auto" ? null : backend);
+    location.reload();
+  },
+});
 /** Whether `&terrain` asks for terrain: true, false, or null for the entry's default. */
 function wantedTerrain() {
   const value = params().get("terrain");
@@ -397,8 +407,10 @@ async function load(next, { camera }) {
       constraints: next.scene.constraints,
       // The demo shows what Orbis can do beyond the spec too.
       previews: "all",
+      backend: wantedBackend(params()),
     });
   } catch (e) {
+    options.drawing(null);
     app.dataset.map = "error";
     say(`The map couldn't start: ${e instanceof Error ? e.message : e}`, {
       error: true,
@@ -407,6 +419,7 @@ async function load(next, { camera }) {
     return;
   }
   map = created;
+  options.drawing(map.backend);
   expose(map);
   map.on("error", ({ message }) => {
     console.error(message);

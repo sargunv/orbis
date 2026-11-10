@@ -3,7 +3,7 @@
 // calls where the map runs on the page. Either way calls answer with
 // promises, in order, and the map reports after its frames.
 
-import type { Backend } from "./builds.ts";
+import type { Backend, BackendChoice } from "./builds.ts";
 import type { Engine, InputKind, MapState, Report } from "./engine.ts";
 import type { CoreOptions } from "./hosts.ts";
 import { answerWorker, connectWorker } from "./requests.ts";
@@ -99,8 +99,10 @@ export interface WorkerInit {
   /** The page's `performance.timeOrigin`: event times are on its clock. */
   origin: number;
   /** Whether the page has WebGPU: a worker without it then leaves the map
-   * to the page, rather than draw WebGL 2. */
+   * to the page, rather than draw WebGL 2, unless the map asks for WebGL 2. */
   pageWebgpu: boolean;
+  /** The GPU API the map asks for. */
+  backend: BackendChoice;
 }
 
 /** The map worker's messages to the page. */

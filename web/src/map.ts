@@ -9,7 +9,7 @@
 // frames.
 
 import { Annotations } from "./annotations.ts";
-import { pickBuild } from "./builds.ts";
+import { pickBuild, type BackendChoice } from "./builds.ts";
 import type { EngineEvent, MapState, Pixels, Report } from "./engine.ts";
 import { Emitter, type Listener } from "./events.ts";
 import { allowed, attachInput, type Allowed } from "./input.ts";
@@ -307,7 +307,8 @@ export class OrbisMap {
   }
 
   /** The GPU API the map draws with: WebGPU, or WebGL 2 where the browser
-   * gives WebGPU no adapter. On WebGL 2 it draws only a flat colour so far
+   * gives WebGPU no adapter or the map asked for it ({@link
+   * MapOptions.backend}). On WebGL 2 it draws only a flat colour so far
    * (#140). */
   get backend(): "webgpu" | "webgl2" {
     return this.#link.backend;
@@ -776,8 +777,9 @@ const workerCapable = () =>
     "function" && "onpointerrawupdate" in HTMLElement.prototype;
 
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on.
- * It draws with WebGPU, or WebGL 2 where WebGPU gives no adapter ({@link OrbisMap.backend});
- * rejects, saying why, where the browser has neither. */
+ * It draws with WebGPU, or WebGL 2 where WebGPU gives no adapter ({@link OrbisMap.backend}),
+ * unless `options.backend` picks one; rejects, saying why, where the browser has
+ * neither or lacks the one picked. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
   const ratio = options.pixelRatio ?? devicePixelRatio;
   const style =
@@ -845,6 +847,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
         jobWorkers: options.jobWorkers ?? defaultJobWorkers(),
         origin: performance.timeOrigin,
         pageWebgpu: "gpu" in navigator,
+        backend: options.backend ?? "auto",
       });
       // A worker that can't draw leaves the page to run the map, on a
       // canvas of its own.
@@ -857,6 +860,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
         preload,
         size(),
         options.jobWorkers,
+        options.backend,
       );
   } catch (e) {
     frame.remove();
@@ -887,11 +891,12 @@ async function startOnPage(
   preload: string | object,
   size: [number, number, number],
   jobWorkers?: number,
+  backend?: BackendChoice,
 ): Promise<Link> {
   // The style's first fetches start, the build is picked, downloads and
   // compiles, and the workers load.
   preloadStyle(preload, size[2], setup.camera?.zoom);
-  const build = pickBuild();
+  const build = pickBuild(undefined, backend);
   build.catch(() => {});
   // A page whose map runs in a worker never loads the bindings.
   const engine = import("./engine.ts");

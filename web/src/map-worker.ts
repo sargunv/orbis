@@ -31,16 +31,16 @@ const buffers = (value: unknown): Transferable[] => {
 
 async function start(init: WorkerInit): Promise<void> {
   // Without WebGPU here, a page that has it runs the map itself; one
-  // without draws WebGL 2 here.
+  // without, or a map that asks for WebGL 2, draws WebGL 2 here.
   const gpu = (navigator as WorkerNavigator & { gpu?: GPU }).gpu;
-  if (!gpu && init.pageWebgpu) {
+  if (!gpu && init.pageWebgpu && init.backend !== "webgl2") {
     post({ unsupported: "this browser has no WebGPU in workers" });
     return;
   }
   // The style's first fetches start and the workers load while the build
   // is picked and compiles.
   preloadStyle(init.preload, init.size[2], init.camera?.zoom);
-  const build = pickBuild(gpu);
+  const build = pickBuild(gpu, init.backend);
   build.catch(() => {});
   const workers = spawnWorkers(build, init.jobWorkers);
   try {

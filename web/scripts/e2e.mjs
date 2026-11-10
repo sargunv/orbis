@@ -65,9 +65,13 @@
 //   `VideoFrame` is gone too, so the noise reaches what a canvas reads.
 // - `boot`: which build a map picks, in the worker and on the page: WebGPU
 //   in Chromium, WebGL 2 (core-gl.wasm) in Firefox, whose adapter is
-//   blocklisted headless, and in Chromium without a GPU or without WebGPU.
-//   The empty style draws transparent on WebGPU and the flat colour of
-//   WebGL 2's boot on WebGL 2 (#140), with no errors or other warnings.
+//   blocklisted headless, and in Chromium without a GPU or without WebGPU;
+//   `backend: "webgl2"` loads only core-gl.wasm in Chromium with WebGPU,
+//   and `backend: "webgpu"` without it fails saying why. The empty style
+//   draws transparent on WebGPU and the flat colour of WebGL 2's boot on
+//   WebGL 2 (#140), with no errors or other warnings. Then the map app's
+//   `?backend=webgl2` draws WebGL 2, its renderer row saying so, and Auto
+//   starts it again on WebGPU at the same camera.
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
@@ -1358,6 +1362,15 @@ async function openOptions(page) {
   await page.waitForFunction(() => app.options.open);
 }
 const option = (page, key) => page.locator(`#options [data-option="${key}"]`);
+/** The renderer row's picked choice and the backend it says the map draws with. */
+const renderer = (page) =>
+  page.evaluate(() => {
+    const row = document.querySelector('#options [data-option="backend"]');
+    return {
+      picked: row.querySelector('[aria-checked="true"]').dataset.value,
+      active: row.dataset.active,
+    };
+  });
 
 /** Polls `read` until it gives `expected`: the map answers edits and queries in its own time. */
 async function settles(page, read, expected, message) {
@@ -1765,13 +1778,19 @@ async function options(browser, server) {
       .getBoundingClientRect()
       .toJSON(),
   }));
-  assert.deepEqual(panel.keys, Object.keys(GLOBE_OPTIONS));
+  // The renderer's row, last, which every map has: Auto, drawing WebGPU.
+  assert.deepEqual(panel.keys, [...Object.keys(GLOBE_OPTIONS), "backend"]);
   assert.deepEqual(panel.groups, [
     "Terrain and light",
     "Buildings",
     "Globe and sky",
     "Map",
+    "Renderer",
   ]);
+  assert.deepEqual(await renderer(page), {
+    picked: "auto",
+    active: "webgpu",
+  });
   assert.ok(
     panel.box.right <= panel.button.left &&
       panel.box.top >= 0 &&
@@ -2833,27 +2852,29 @@ const CHECKS = {
 const BOOTED = { webgl2: [64, 128, 191], webgpu: [255, 255, 255] };
 
 async function boot(webgpuBrowser, server) {
+  const noWebgpu = () =>
+    chromium.launch({
+      args: [
+        "--disable-features=WebGPU,Vulkan,WebGPUService",
+        "--use-angle=metal",
+      ],
+    });
+  // Each browser, the backend its map draws with, and what the map asks for.
   const browsers = [
     ["Chromium", "webgpu", () => webgpuBrowser],
+    // WebGL 2 asked for, though WebGPU has an adapter: only core-gl.wasm loads.
+    ["Chromium asked for WebGL 2", "webgl2", () => webgpuBrowser, "webgl2"],
     ["Firefox", "webgl2", () => firefox.launch()],
     [
       "Chromium without a GPU",
       "webgl2",
       () => chromium.launch({ args: ["--disable-gpu"] }),
     ],
-    [
-      "Chromium without WebGPU",
-      "webgl2",
-      () =>
-        chromium.launch({
-          args: [
-            "--disable-features=WebGPU,Vulkan,WebGPUService",
-            "--use-angle=metal",
-          ],
-        }),
-    ],
+    ["Chromium without WebGPU", "webgl2", noWebgpu],
+    // WebGPU asked for where it has none: the map doesn't start, saying why.
+    ["Chromium without WebGPU asked for it", null, noWebgpu, "webgpu"],
   ];
-  for (const [name, backend, launch] of browsers) {
+  for (const [name, backend, launch, asked] of browsers) {
     const browser = await launch();
     try {
       for (const worker of [true, false]) {
@@ -2862,10 +2883,35 @@ async function boot(webgpuBrowser, server) {
           width: 300,
           height: 300,
         });
-        await page.goto(`${server.url}boot.html${worker ? "" : "?worker=0"}`);
+        const builds = [];
+        page.on("request", (r) => {
+          const build = r.url().match(/\/(core(?:-gl)?)_bg[^/]*\.wasm/)?.[1];
+          if (build) builds.push(build);
+        });
+        const query = new URLSearchParams({
+          ...(!worker && { worker: "0" }),
+          ...(asked && { backend: asked }),
+        });
+        await page.goto(`${server.url}boot.html?${query}`);
         const booted = await page.evaluate(() => window.booted);
+        if (!backend) {
+          assert.match(
+            booted.error ?? "",
+            /^Orbis can't draw with WebGPU, as asked: /,
+            `${where}: ${JSON.stringify(booted)}`,
+          );
+          assert.ok(
+            !builds.includes("core-gl"),
+            `${where}: core-gl.wasm loads: ${builds}`,
+          );
+          await page.close();
+          console.log(`boot: ${where}: ${booted.error}`);
+          continue;
+        }
         assert.equal(booted.error, undefined, where);
         assert.equal(booted.backend, backend, where);
+        if (asked === "webgl2")
+          assert.deepEqual([...new Set(builds)], ["core-gl"], where);
         // Firefox and Chromium hand a worker the canvas.
         assert.equal(booted.inWorker, worker, where);
         await page.waitForTimeout(100);
@@ -2894,6 +2940,43 @@ async function boot(webgpuBrowser, server) {
       if (browser !== webgpuBrowser) await browser.close();
     }
   }
+
+  // The map app's `?backend=webgl2` draws WebGL 2 though WebGPU has an
+  // adapter, and its renderer row says so; Auto starts it again on WebGPU.
+  const { page } = await open(webgpuBrowser, { width: 1200, height: 800 });
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(e.message));
+  const style = encodeURIComponent(`${server.url}e2e/data/playground.json`);
+  const drawing = (backend) =>
+    page.waitForFunction(
+      (backend) =>
+        app.map?.backend === backend &&
+        document.querySelector('#options [data-option="backend"]')?.dataset
+          .active === backend,
+      backend,
+      { timeout: 60_000 },
+    );
+  await page.goto(
+    `${server.url}?style=${style}&backend=webgl2#15/35.68/139.76`,
+  );
+  await drawing("webgl2");
+  assert.deepEqual(await renderer(page), {
+    picked: "webgl2",
+    active: "webgl2",
+  });
+  await openOptions(page);
+  await Promise.all([
+    page.waitForEvent("load"),
+    option(page, "backend").locator('[data-value="auto"]').click(),
+  ]);
+  await drawing("webgpu");
+  assert.deepEqual(await renderer(page), { picked: "auto", active: "webgpu" });
+  const url = new URL(page.url());
+  assert.equal(url.searchParams.get("backend"), null, "Auto leaves the URL");
+  assert.equal(url.hash, "#15.00/35.68000/139.76000", "the camera stays");
+  assert.deepEqual(pageErrors, []);
+  await page.close();
+  console.log("boot: the map app's renderer: WebGL 2 asked for, then Auto");
 }
 
 const DATA = fileURLToPath(new URL("../demo/data/", import.meta.url));

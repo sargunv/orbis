@@ -2,11 +2,20 @@
 // side that picks Orbis while the app's own map shows the other.
 import { createMap } from "orbis";
 
+import { wantedBackend } from "./options.js";
+
 export const label = "Orbis";
 
 /** An Orbis map of `style` in `container`, at `camera` within `constraints`. */
 export async function open(container, { style, camera, constraints }) {
-  const map = await createMap({ container, style, camera, constraints });
+  // On the renderer the app's map was asked for.
+  const map = await createMap({
+    container,
+    style,
+    camera,
+    constraints,
+    backend: wantedBackend(),
+  });
   let idle = false;
   map.on("render", (ack) => {
     idle = ack.idle;

@@ -268,11 +268,25 @@ function decode(option, text) {
   return option.choices.some(([value]) => value === text) ? text : undefined;
 }
 
+/** The renderer's choices: `?backend=` (the package's `backend` option), Auto by default. */
+const BACKENDS = [
+  ["auto", "Auto"],
+  ["webgpu", "WebGPU"],
+  ["webgl2", "WebGL 2"],
+];
+const BACKEND_NAMES = { webgpu: "WebGPU", webgl2: "WebGL 2" };
+/** The renderer the URL asks for: `auto`, `webgpu` or `webgl2`. */
+export function wantedBackend(query = new URLSearchParams(location.search)) {
+  const value = query.get("backend");
+  return BACKENDS.some(([v]) => v === value) ? value : "auto";
+}
+
 /**
  * The panel and its button. `params()` reads the URL's query and
- * `setParam(name, value)` writes one (null removes it).
+ * `setParam(name, value)` writes one (null removes it); `onBackend(value)`
+ * starts the map again on another renderer.
  */
-export function mapOptions({ params, setParam }) {
+export function mapOptions({ params, setParam, onBackend }) {
   const panel = document.getElementById("options");
   const body = document.getElementById("options-body");
   let map;
@@ -328,6 +342,9 @@ export function mapOptions({ params, setParam }) {
     return Boolean(key && controls.has(key) && values[key] !== value);
   };
 
+  // The renderer, which every map has: its row stays through every render.
+  const renderer = rendererGroup(wantedBackend(params()), onBackend);
+
   function render(loading = false) {
     controls.clear();
     const groups = new Map();
@@ -357,7 +374,9 @@ export function mapOptions({ params, setParam }) {
         ),
       );
     }
+    body.append(renderer.element);
   }
+  render(true);
 
   const text = (option) =>
     h(
@@ -540,6 +559,10 @@ export function mapOptions({ params, setParam }) {
       ready = true;
       await refresh();
     },
+    /** The map draws with `backend` (`webgpu` or `webgl2`), or didn't start (null). */
+    drawing(backend) {
+      renderer.drawing(backend);
+    },
     /** Each available option's value, for the headless checks. */
     get values() {
       return ready ? { ...values } : null;
@@ -547,6 +570,75 @@ export function mapOptions({ params, setParam }) {
     /** Whether the panel is open. */
     get open() {
       return panel.matches(":popover-open");
+    },
+  };
+}
+
+/** The renderer's row, its `wanted` choice picked: picking another calls `onPick`. */
+function rendererGroup(wanted, onPick) {
+  const active = h("span", { class: "option-label" }, "Starting…");
+  const buttons = BACKENDS.map(([value, label]) =>
+    h(
+      "button",
+      {
+        type: "button",
+        role: "radio",
+        "data-value": value,
+        "aria-checked": String(value === wanted),
+        tabindex: value === wanted ? "0" : "-1",
+        title:
+          value === "webgl2"
+            ? "In progress: draws a flat colour until #140's S3"
+            : undefined,
+        onclick: () => value !== wanted && onPick(value),
+      },
+      label,
+    ),
+  );
+  const row = h(
+    "div",
+    { class: "option-row wrap", "data-option": "backend" },
+    h(
+      "span",
+      { class: "option-text" },
+      active,
+      h(
+        "span",
+        { class: "option-note" },
+        "In progress, WebGL 2 draws a flat colour until #140's S3",
+      ),
+    ),
+    h(
+      "span",
+      {
+        class: "segmented",
+        role: "radiogroup",
+        "aria-labelledby": "option-group-renderer",
+        // The arrow keys move the focus; a choice starts the map again,
+        // so it waits for Enter or a click.
+        onkeydown(e) {
+          const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+          if (!step) return;
+          e.preventDefault();
+          const at = buttons.indexOf(document.activeElement);
+          buttons[(at + step + buttons.length) % buttons.length].focus();
+        },
+      },
+      buttons,
+    ),
+  );
+  return {
+    element: h(
+      "section",
+      { class: "option-group", "aria-labelledby": "option-group-renderer" },
+      h("h3", { id: "option-group-renderer" }, "Renderer"),
+      row,
+    ),
+    drawing(backend) {
+      active.textContent = backend
+        ? `Drawing with ${BACKEND_NAMES[backend]}`
+        : "The map didn't start";
+      row.dataset.active = backend ?? "";
     },
   };
 }
