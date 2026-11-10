@@ -64,7 +64,6 @@ fn section<'a>(
     Section { path, members }
 }
 
-/// Validates a constant against the property's enum values and range.
 /// A property's slot from its JSON (`None`: unset), with diagnostics at
 /// `path`; an invalid value is the default.
 pub(crate) fn property_at(cx: &mut Cx, json: Option<&Json>, path: &str, prop: &Prop) -> Slot {
@@ -200,6 +199,7 @@ fn reads(parsed: &PropertyExpression) -> Inputs {
     inputs
 }
 
+/// Validates a constant against the property's enum values and range.
 fn check_constant(cx: &mut Cx, prop: &Prop, json: &Json, value: &Value<'_>, path: &str) {
     if let orb_expr::PropertyType::Enum(values) = prop.ty
         && let Some(s) = value.as_str()
