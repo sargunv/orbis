@@ -31,7 +31,8 @@ struct FillOut {
     @location(0) color: vec4<f32>,
     @location(1) tile_pos: vec2<f32>,
     @location(2) @interpolate(flat) tile: u32,
-    // The vertex in framebuffer pixels, for outline coverage.
+    // The vertex in framebuffer pixels less `screen_origin`, for outline
+    // coverage.
     @location(3) screen: vec2<f32>,
     @location(4) opacity: f32,
     @location(5) pattern_pos: vec2<f32>,
@@ -41,6 +42,9 @@ struct FillOut {
     // lands there), so a translated fill moves whole.
     @location(7) owner_pos: vec2<f32>,
     @location(8) @interpolate(flat) clip: vec2<u32>,
+    // An outline's `drape_origin`: carried flat, so its fragments read no
+    // tile for it.
+    @location(9) @interpolate(flat) screen_origin: vec2<f32>,
 };
 
 @vertex
@@ -71,7 +75,8 @@ fn fill_outline_vertex(v: Pulled) -> FillOut {
     var out = fill_vertex(v);
     let ndc = out.position.xy / out.position.w;
     let size = frame.viewport * frame.pixel_ratio;
-    out.screen = vec2<f32>(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * size - drape_origin(tile_at(v.tile));
+    out.screen_origin = drape_origin(tile_at(v.tile));
+    out.screen = vec2<f32>(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * size - out.screen_origin;
     return out;
 }
 
@@ -153,7 +158,7 @@ fn fs_fill_outline(in: FillOut) -> @location(0) vec4<f32> {
     if !clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos) {
         discard;
     }
-    let dist = length(in.screen - (in.position.xy - drape_origin(tile_at(in.tile))));
+    let dist = length(in.screen - (in.position.xy - in.screen_origin));
     var color = in.color;
     if node.pattern.enabled == 1u {
         color = fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);
