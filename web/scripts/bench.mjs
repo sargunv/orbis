@@ -12,8 +12,8 @@
 // cull's candidates out again and on the rest) and pace (`--pace=wall`:
 // each path takes 6 s however slowly frames come, as a hand's gesture
 // does, where by default it takes 360 display frames) for
-// `--experiment=gestures`; filter, legs and engine
-// for `--experiment=stutter`). Gesture paths are city, dense (pan, zoom
+// `--experiment=gestures`; filter, legs, engine and rest (ms at rest
+// before each path moves) for `--experiment=stutter`). Gesture paths are city, dense (pan, zoom
 // and turn at pitch 60 over Paris, on live Liberty unless `--style` gives
 // another, such as a `cargo xtask h2h mirror`'s Liberty), alps (the
 // default with `--style=alps`) or globe (the default with

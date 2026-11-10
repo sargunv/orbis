@@ -240,6 +240,8 @@ struct Frame {
     passes: Vec<(String, Duration)>,
     uploaded: u64,
     arrived: u32,
+    /// Layers it left out while their pipelines compiled.
+    waiting: u32,
 }
 
 impl Frame {
@@ -421,6 +423,7 @@ fn run_path(
             passes: Vec::new(),
             uploaded: runtime.stats().uploaded_bytes - before,
             arrived: report.tiles_arrived,
+            waiting: report.frame.nodes_waiting,
         });
         let next = started + FRAME * f;
         std::thread::sleep(next.saturating_sub(clock::now()));
@@ -490,11 +493,12 @@ impl StutterReport {
         writeln!(
             out,
             "| path | frames | CPU p50 | p99 | max | > 16.7 ms | > 33.3 ms | GPU p50 | p99 | max | \
-             > 16.7 ms | worst of both > 16.7 ms | tiles arrived | MiB uploaded (peak frame) | settle ms |"
+             > 16.7 ms | worst of both > 16.7 ms | tiles arrived | MiB uploaded (peak frame) | \
+             frames with layers compiling | settle ms |"
         )?;
         writeln!(
             out,
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         )?;
         for p in &self.paths {
             let cpu = sorted(p.frames.iter().map(|f| f.cpu));
@@ -509,7 +513,7 @@ impl StutterReport {
             };
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} | {} |",
                 p.name,
                 p.frames.len(),
                 ms(percentile(&cpu, 0.5)),
@@ -525,6 +529,7 @@ impl StutterReport {
                 p.frames.iter().map(|f| f.arrived).sum::<u32>(),
                 mib(p.frames.iter().map(|f| f.uploaded).sum()),
                 mib(p.frames.iter().map(|f| f.uploaded).max().unwrap_or(0)),
+                p.frames.iter().filter(|f| f.waiting > 0).count(),
                 if p.settle > SETTLE_TIMEOUT {
                     format!("> {}", SETTLE_TIMEOUT.as_millis())
                 } else {
@@ -537,8 +542,9 @@ impl StutterReport {
             out,
             "Times in ms. CPU: `Map::render`; GPU: its submissions, from the first pass's start \
              to the last one's end; worst of both: the slower of the two, what a display waits \
-             for; settle: from the path's end until the map is idle. Passes overlap on tiled \
-             GPUs, so their times below sum to more than the frame's."
+             for; frames with layers compiling: frames that left a layer out while its \
+             pipelines compiled; settle: from the path's end until the map is idle. Passes \
+             overlap on tiled GPUs, so their times below sum to more than the frame's."
         )?;
         for p in &self.paths {
             writeln!(out)?;

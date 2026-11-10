@@ -233,6 +233,9 @@ function longTasks() {
 
 /** The GPU API Orbis's maps draw with: `runStutter`'s `backend`. */
 let orbisBackend;
+/** Milliseconds each path waits at rest before it moves (`?rest=`). */
+let restMs = 0;
+const rest = () => new Promise((resolve) => setTimeout(resolve, restMs));
 
 /** One scenario through the orbis package on a fresh map; resolves to its frames. */
 async function runOrbis(container, scenario, style, legs, show) {
@@ -256,6 +259,7 @@ async function runOrbis(container, scenario, style, legs, show) {
       });
       await loaded;
     }
+    await rest();
     show(`${scenario.name}: moving`);
     const frames = [];
     // GPU timings each second, before the timestamp queries run out.
@@ -281,6 +285,7 @@ async function runOrbis(container, scenario, style, legs, show) {
         betweenStages: STAGES.map(([, key]) => s.prepared[key]),
         arrived: s.tilesArrived,
         uploaded: uploaded === undefined ? 0 : bytes - uploaded,
+        waiting: s.layersWaiting,
       });
       uploaded = bytes;
     });
@@ -353,6 +358,7 @@ async function runGl(container, scenario, style, legs, show) {
       map.triggerRepaint();
       await loaded;
     }
+    await rest();
     show(`${scenario.name}: moving (GL JS)`);
     // `_render` is a frame's work on the page: its CPU time.
     const frames = [];
@@ -585,6 +591,13 @@ function engineReport(rows, gl) {
   for (const r of rows) {
     lines.push("", `#### ${r.scenario.name}`, "", `- style: ${r.style}`);
     if (!gl) {
+      const waiting = r.frames.filter((f) => f.waiting > 0);
+      lines.push(
+        `- frames that left a layer out while its pipelines compiled: ${waiting.length}` +
+          (waiting.length
+            ? ` (the first at z${waiting[0].zoom.toFixed(2)}, ${(waiting.at(-1).t - waiting[0].t).toFixed(0)} ms to the last)`
+            : ""),
+      );
       lines.push(...shares(r.frames));
       if (!r.gpuMatched) {
         lines.push(
@@ -653,8 +666,10 @@ export async function runStutter({
   legs,
   engine = "orbis",
   backend,
+  restFor = 0,
 }) {
   orbisBackend = backend;
+  restMs = restFor;
   const keys = engine === "both" ? ["orbis", "gl"] : [engine];
   if (!keys.every((key) => ENGINES[key]))
     throw new Error("engine must be orbis, gl or both");

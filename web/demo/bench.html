@@ -90,8 +90,9 @@
     // both, or orbis,gl: path by path, interleaved); for stutter,
     // style=<url|key> for its Liberty scenarios
     // (live Liberty by default), filter=<substring of a scenario's name>,
-    // legs=<the flight's first legs> and engine=orbis|gl|both (both: per path
-    // an untimed pass of each engine, then each timed in turn).
+    // legs=<the flight's first legs>, engine=orbis|gl|both (both: per path
+    // an untimed pass of each engine, then each timed in turn) and
+    // rest=<ms each path waits at rest before it moves, as a reader would>.
     import { runFrames } from "./frames.js";
     import { PATH_CENTERS, runGestures } from "./gestures.js";
     import { runStutter } from "./stutter.js";
@@ -289,6 +290,7 @@
             legs: params.has("legs") ? Number(params.get("legs")) : undefined,
             engine: params.get("engine") ?? "orbis",
             backend,
+            restFor: number("rest", 0),
           });
         } else if (experiment === "gestures") {
           const center =
