@@ -27,6 +27,7 @@
 use crate::TargetFormat;
 use crate::pipeline::{DEPTH, Draw};
 use crate::release::Release;
+use crate::scene::{Backing, DataTable};
 use TextureViewDimension::D2Array;
 use orb_hal::*;
 use orb_shaders::{
@@ -422,12 +423,12 @@ pub(crate) struct Terrain {
     /// Clearing the colour page's slots and the slope page's, which differ
     /// in linear light.
     clear: [RenderPipelineId; 2],
-    grid: BufferId,
+    grid: DataTable,
     grid_indices: BufferId,
     /// The index range of each grid step's mesh, and the step drawn.
     grid_ranges: [std::ops::Range<u32>; GRID_STEPS.len()],
     grid_step: u32,
-    tiles: BufferId,
+    tiles: DataTable,
     tile_capacity: u32,
     tile_count: u32,
     params: BufferId,
@@ -443,7 +444,7 @@ pub(crate) struct Terrain {
     /// The DEM page texture and revision the group binds.
     dem: Option<(TextureId, u32)>,
     /// The group, and the frame and property buffers it binds.
-    group: Option<(BindGroupId, [BufferId; 2])>,
+    group: Option<(BindGroupId, (BufferId, BindGroupEntry))>,
     /// Each terrain layer's texture and its composite into the map.
     targets: Vec<Offscreen>,
     /// The terrain's depth as a colour, and the depth it's drawn with: what
@@ -475,20 +476,22 @@ impl Terrain {
         let vs = ShaderStages::VERTEX;
         let fs = ShaderStages::FRAGMENT;
         let vf = vs | fs;
+        let backing = Backing::of(gpu.caps());
+        let table = |binding, stages| DataTable::layout_entry(backing, binding, stages);
         let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "terrain",
             entries: &[
                 E::uniform(0, vf),
                 // Terrain tiles: a shaded hillshade reads their latitudes.
-                E::storage(1, vf),
-                E::storage(2, vs),
+                table(1, vf),
+                table(2, vs),
                 E::texture(3, vs, false, D2Array),
                 E::texture(4, fs, true, D2Array),
                 E::sampler(5, fs, true),
                 E::uniform(6, vf),
                 E::uniform(7, vf),
                 // The scene's property arena: globe patches.
-                E::storage(8, vs),
+                table(8, vs),
                 // The slope page (the colour page while there is none).
                 E::texture(9, fs, true, D2Array),
             ],
@@ -527,12 +530,8 @@ impl Terrain {
         };
 
         let (grid, indices, grid_ranges) = grid();
-        let grid_buffer = gpu.create_buffer(&BufferDesc {
-            label: "terrain grid",
-            size: grid.len() as u64 * 4,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        });
-        gpu.write_buffer(grid_buffer, 0, bytemuck::cast_slice(&grid));
+        let grid_buffer = DataTable::new(gpu, "terrain grid", grid.len() as u64);
+        grid_buffer.write(gpu, 0, &grid);
         let grid_indices = gpu.create_buffer(&BufferDesc {
             label: "terrain grid indices",
             size: indices.len() as u64 * 4,
@@ -567,11 +566,7 @@ impl Terrain {
             grid_indices,
             grid_ranges,
             grid_step: 1,
-            tiles: gpu.create_buffer(&BufferDesc {
-                label: "terrain tiles",
-                size: 64 * terrain_tile::WORDS as u64 * 4,
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            }),
+            tiles: DataTable::new(gpu, "terrain tiles", 64 * terrain_tile::WORDS as u64),
             tile_capacity: 64,
             tile_count: 0,
             params,
@@ -823,13 +818,13 @@ impl Terrain {
 
     pub(crate) fn set_tiles(&mut self, gpu: &mut dyn Gpu, tiles: &[TerrainTile]) {
         if tiles.len() as u32 > self.tile_capacity {
-            gpu.destroy_buffer(self.tiles);
+            self.tiles.destroy(gpu);
             self.tile_capacity = (tiles.len() as u32).next_power_of_two();
-            self.tiles = gpu.create_buffer(&BufferDesc {
-                label: "terrain tiles",
-                size: u64::from(self.tile_capacity) * terrain_tile::WORDS as u64 * 4,
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            });
+            self.tiles = DataTable::new(
+                gpu,
+                "terrain tiles",
+                u64::from(self.tile_capacity) * terrain_tile::WORDS as u64,
+            );
             self.forget_group(gpu);
         }
         let words: Vec<u32> = tiles
@@ -858,7 +853,7 @@ impl Terrain {
             })
             .collect();
         if !words.is_empty() {
-            gpu.write_buffer(self.tiles, 0, bytemuck::cast_slice(&words));
+            self.tiles.write(gpu, 0, &words);
         }
         self.tile_count = tiles.len() as u32;
         let at = params::TILES as u64 * 4;
@@ -1139,7 +1134,7 @@ impl Terrain {
     pub(crate) fn passes(
         &mut self,
         gpu: &mut dyn Gpu,
-        (frame, props): (BufferId, BufferId),
+        (frame, props): (BufferId, BindGroupEntry),
         (drape, shades): (&[(u32, RenderBundleId)], &[Option<BindGroupId>]),
         (depth, depth_store): (TextureId, StoreOp),
         downsampler: &crate::downsample::Downsampler,
@@ -1235,7 +1230,7 @@ impl Terrain {
         }
         let atlas_texture = colour.sampled;
         let slope_texture = self.atlas[1].as_ref().map_or(atlas_texture, |a| a.sampled);
-        if self.group.is_some_and(|(_, bound)| bound != [frame, props]) {
+        if self.group.is_some_and(|(_, bound)| bound != (frame, props)) {
             // The scene's buffers grew.
             self.forget_group(gpu);
         }
@@ -1247,18 +1242,18 @@ impl Terrain {
                     layout: self.layout,
                     entries: &[
                         BindGroupEntry::buffer(0, frame),
-                        BindGroupEntry::buffer(1, self.tiles),
-                        BindGroupEntry::buffer(2, self.grid),
+                        self.tiles.entry(1),
+                        self.grid.entry(2),
                         BindGroupEntry::texture(3, dem.0, D2Array),
                         BindGroupEntry::texture(4, atlas_texture, D2Array),
                         BindGroupEntry::sampler(5, self.linear),
                         BindGroupEntry::buffer(6, self.params),
                         BindGroupEntry::buffer(7, self.atmosphere),
-                        BindGroupEntry::buffer(8, props),
+                        props,
                         BindGroupEntry::texture(9, slope_texture, D2Array),
                     ],
                 });
-                self.group = Some((group, [frame, props]));
+                self.group = Some((group, (frame, props)));
                 group
             }
         };
@@ -1509,7 +1504,9 @@ impl crate::release::Release for Terrain {
             (slope_clear != colour_clear).then_some(slope_clear),
         );
         let pipelines = (self.pipelines, clear, self.occlusion_pipeline);
-        let buffers = (self.grid, self.grid_indices, self.tiles, self.params);
+        self.grid.destroy(gpu);
+        self.tiles.destroy(gpu);
+        let buffers = (self.grid_indices, self.params);
         (layouts, pipelines, buffers, self.stack_uniforms).release(gpu);
         (self.stack_groups, self.linear, self.targets).release(gpu);
     }

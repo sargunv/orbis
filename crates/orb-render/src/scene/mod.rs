@@ -15,12 +15,11 @@ mod symbol;
 mod tables;
 pub use glyph::{GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
 pub use image::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
-pub(crate) use tables::{Table, TableWriter, Tables};
+pub(crate) use tables::{Backing, DataTable, Table, TableWriter, Tables};
 
 use std::ops::Range;
 
-use crate::driver::SubmitLimits;
-use crate::driver::gpu::{ARGS_USAGE, COMPACTED_USAGE};
+use crate::driver::{self, SubmitLimits};
 use arena::{Arena, Slots};
 use orb_hal::{BufferDesc, BufferId, BufferUsages, Gpu, HostBytesId};
 use orb_layout::Chunk;
@@ -41,7 +40,7 @@ fn state_base(range: &Range<u32>) -> u32 {
     }
 }
 
-fn write_chunk_word(gpu: &mut dyn Gpu, tables: &Tables, chunk: u32, word: u64, value: u32) {
+fn write_chunk_word(gpu: &mut dyn Gpu, tables: &mut Tables, chunk: u32, word: u64, value: u32) {
     let at = u64::from(chunk) * CHUNK_WORDS as u64 + word;
     tables.write_words(gpu, Table::Chunks, at as u32, &[value]);
 }
@@ -213,6 +212,11 @@ fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
 /// scene's own, or another view's of the same scene (the terrain drape's).
 /// `linear` when colours mix in linear light.
 pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock, linear: bool) {
+    gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&frame_words(frame, linear)));
+}
+
+/// A frame block's words, as [`write_frame`] writes them.
+pub(crate) fn frame_words(frame: &FrameBlock, linear: bool) -> Vec<u32> {
     use layout::frame as f;
     let mut b = orb_shaders::Block::new(f::WORDS);
     let view_proj = frame.view_proj.map(|column| column.map(|v| v as f32));
@@ -273,7 +277,7 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
     }
     b.u(f::LINEAR, &[u32::from(linear)]);
     b.u(f::SURFACE_CELLS, &[surface_cells(frame.globe)]);
-    gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&b.0));
+    b.0
 }
 
 /// A surface quad's cells per side on a globe. A single quad is a chord:
@@ -638,32 +642,25 @@ pub const DESKTOP_BUDGET: u64 = 512 << 20;
 /// The GPU memory budget on phones, in bytes.
 pub const MOBILE_BUDGET: u64 = 192 << 20;
 
-/// The scene's GPU buffers, for binding.
+/// The scene's buffers besides its tables ([`Tables`]): what every
+/// pipeline reads of the frame, and what the driver writes for nodes to
+/// draw.
+///
+/// The tables: tile placements; chunks; `(chunk, placement)` candidates,
+/// grouped by node, with what the cull last wrote for indexed nodes'; node
+/// rows; per node, the visible `(chunk, placement)` list the cull writes
+/// for listed nodes, or an indexed node's runs; and the vertex, index and
+/// property arenas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SceneBuffers {
     pub frame: BufferId,
-    /// Tile placements.
-    pub tiles: BufferId,
-    pub chunks: BufferId,
-    /// `(chunk, placement)` pairs for the cull pass, grouped by node, and
-    /// what it last wrote for indexed nodes' candidates.
-    pub candidates: BufferId,
-    pub node_cull: BufferId,
-    /// Per node, `(chunk, placement)` pairs: the visible list the cull pass
-    /// writes for pulled and point nodes, the runs for indexed nodes.
-    pub visible: BufferId,
-    /// Per node, [`ARGS_WORDS`] words the cull pass writes: indirect draw
-    /// arguments (four for `drawIndirect`, five for
-    /// `drawIndexedIndirect`), then the counters of `cull.wgsl`.
+    /// Per node, [`ARGS_WORDS`] words its driver writes: draw arguments
+    /// (four for a draw, five for an indexed draw), then the counters of
+    /// `cull.wgsl`.
     pub args: BufferId,
-    pub vertices: BufferId,
-    /// Mesh indices: what pulled chunks read, and what the cull pass
-    /// copies into indexed nodes' slots.
-    pub indices: BufferId,
     /// Indexed nodes' index buffer: their candidates' slots, each the
     /// chunk's indices tagged with its run, or hidden.
     pub compacted: BufferId,
-    pub props: BufferId,
 }
 
 /// A stream of u32 words to upload: in core memory, or held by the host
@@ -914,20 +911,26 @@ impl NodeDraw {
 
 /// The cull's flag on a node's draw word: its candidates are drape
 /// placements (`cull.wgsl`'s `DRAPED`).
-const DRAPED: u32 = 1 << 8;
+pub(crate) const DRAPED: u32 = 1 << 8;
 /// The cull's flag on a node's draw word: the node draws nothing
 /// (`cull.wgsl`'s `HIDDEN`).
-const HIDDEN: u32 = 1 << 9;
+pub(crate) const HIDDEN: u32 = 1 << 9;
 /// The cull's flag on a node's draw word: its point quads lie on the
 /// surface (`cull.wgsl`'s `SURFACE`).
-const SURFACE: u32 = 1 << 10;
+pub(crate) const SURFACE: u32 = 1 << 10;
 /// The cull's flag on a node's draw word: its meshes draw past the clip
 /// rectangles (`cull.wgsl`'s `UNCLIPPED`).
-const UNCLIPPED: u32 = 1 << 11;
+pub(crate) const UNCLIPPED: u32 = 1 << 11;
 
 #[derive(Debug)]
 pub(crate) struct Scene {
     tables: Tables,
+    buffers: SceneBuffers,
+    /// The driver whose frames it lays candidates out for.
+    driver: driver::Kind,
+    /// The frame block as the last [`prepare`](Self::prepare) wrote it.
+    #[cfg(cpu_driven)]
+    frame: Vec<u32>,
     capacity: SceneCapacity,
     /// Bits of a compacted index on the renderer's driver
     /// ([`SubmitLimits::index_bits`]).
@@ -994,32 +997,18 @@ pub struct SceneStats {
 impl Scene {
     /// Destroys the scene's buffers, with the scene.
     pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {
-        let b = self.tables.buffers;
-        for buffer in [
-            b.frame,
-            b.tiles,
-            b.chunks,
-            b.candidates,
-            b.node_cull,
-            b.visible,
-            b.args,
-            b.vertices,
-            b.indices,
-            b.compacted,
-            b.props,
-        ] {
+        let b = self.buffers;
+        for buffer in [b.frame, b.args, b.compacted] {
             gpu.destroy_buffer(buffer);
         }
+        self.tables.destroy(gpu);
     }
 
-    pub(crate) fn new(gpu: &mut dyn Gpu, capacity: SceneCapacity) -> Self {
-        // The growable pools stay within one storage binding and buffer.
-        let limits = gpu.caps().limits;
-        let largest = (limits
-            .max_storage_buffer_binding_size
-            .min(limits.max_buffer_size)
-            / 4)
-        .min(u64::from(u32::MAX)) as u32;
+    /// A scene for `driver`'s frames, its tables on the device's backing.
+    pub(crate) fn new(gpu: &mut dyn Gpu, capacity: SceneCapacity, driver: driver::Kind) -> Self {
+        // The growable pools stay within one table.
+        let backing = Backing::of(gpu.caps());
+        let largest = backing.largest(&gpu.caps().limits);
         let mut capacity = capacity;
         // The glyph table is the property arena's first block.
         let glyph_words = capacity.glyph_rows * GLYPH_ROW_WORDS as u32;
@@ -1046,38 +1035,45 @@ impl Scene {
         };
         let c = capacity;
         let words = |count: u32, per: usize| u64::from(count) * per as u64;
-        let frame = buffer(
-            "frame",
-            FRAME_WORDS as u64,
-            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        );
-        let args = buffer("draw args", words(c.nodes, ARGS_WORDS), ARGS_USAGE);
-        let compacted = buffer(
-            "compacted indices",
-            u64::from(c.compacted_words),
-            COMPACTED_USAGE,
-        );
-        let mut table = |table, words| Tables::create(gpu, table, words);
         let buffers = SceneBuffers {
-            frame,
-            tiles: table(Table::Tiles, words(c.placements, TILE_WORDS)),
-            chunks: table(Table::Chunks, words(c.chunks, CHUNK_WORDS)),
-            candidates: table(Table::Candidates, words(c.candidates, CANDIDATE_WORDS)),
-            node_cull: table(Table::NodeCull, words(c.nodes, NODE_CULL_WORDS)),
-            visible: table(Table::Visible, words(c.candidates, VISIBLE_WORDS)),
-            args,
-            vertices: table(Table::Vertices, u64::from(c.vertex_words)),
-            indices: table(Table::Indices, u64::from(c.index_words)),
-            compacted,
-            props: table(Table::Props, u64::from(c.prop_words)),
+            frame: buffer(
+                "frame",
+                FRAME_WORDS as u64,
+                BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            ),
+            args: buffer("draw args", words(c.nodes, ARGS_WORDS), driver.args_usage()),
+            compacted: buffer(
+                "compacted indices",
+                u64::from(c.compacted_words),
+                driver.compacted_usage(),
+            ),
         };
+        let tables = Tables::new(
+            gpu,
+            backing,
+            [
+                words(c.placements, TILE_WORDS),
+                words(c.chunks, CHUNK_WORDS),
+                words(c.candidates, CANDIDATE_WORDS),
+                words(c.nodes, NODE_CULL_WORDS),
+                words(c.candidates, VISIBLE_WORDS),
+                u64::from(c.vertex_words),
+                u64::from(c.index_words),
+                u64::from(c.prop_words),
+            ],
+            driver.mirrored(),
+        );
         let mut prop_arena = Arena::new(c.prop_words);
         let glyphs = prop_arena.alloc(glyph_words).expect("the glyph table fits");
         debug_assert_eq!(glyphs.start, 0);
         Self {
-            tables: Tables::storage(buffers),
+            tables,
+            buffers,
+            driver,
+            #[cfg(cpu_driven)]
+            frame: Vec::new(),
             capacity,
-            index_bits: 32,
+            index_bits: driver.index_bits(),
             placement_slots: Slots::new(c.placements),
             chunk_slots: Slots::new(c.chunks),
             vertex_arena: Arena::new(c.vertex_words),
@@ -1106,11 +1102,36 @@ impl Scene {
     }
 
     pub(crate) fn buffers(&self) -> &SceneBuffers {
-        &self.tables.buffers
+        &self.buffers
     }
 
     pub(crate) fn tables(&self) -> &Tables {
         &self.tables
+    }
+
+    #[cfg(cpu_driven)]
+    pub(crate) fn tables_mut(&mut self) -> &mut Tables {
+        &mut self.tables
+    }
+
+    /// The frame block's words, as the last [`prepare`](Self::prepare)
+    /// wrote them.
+    #[cfg(cpu_driven)]
+    pub(crate) fn frame(&self) -> &[u32] {
+        &self.frame
+    }
+
+    /// The render nodes.
+    #[cfg(cpu_driven)]
+    pub(crate) fn node_count(&self) -> u32 {
+        self.nodes.len() as u32
+    }
+
+    /// Lays the candidates out again at the next
+    /// [`prepare`](Self::prepare), every slot to be written anew.
+    #[cfg(cpu_driven)]
+    pub(crate) fn lay_out_again(&mut self) {
+        self.candidates_dirty = true;
     }
 
     pub(crate) fn capacity(&self) -> &SceneCapacity {
@@ -1121,15 +1142,6 @@ impl Scene {
     /// the driver's index bits.
     pub(crate) fn limits(&self) -> SubmitLimits {
         SubmitLimits::new(&self.capacity, self.index_bits)
-    }
-
-    /// Lays candidates out for a driver whose compacted indices have
-    /// `bits` bits, from the next frame.
-    pub(crate) fn set_index_bits(&mut self, bits: u32) {
-        if bits != self.index_bits {
-            self.index_bits = bits;
-            self.candidates_dirty = true;
-        }
     }
 
     /// The cull dispatch's grid, as of the last [`prepare`](Self::prepare):
@@ -1192,9 +1204,9 @@ impl Scene {
         let desc = BufferDesc {
             label: "draw args",
             size: (words(ARGS_WORDS) * 4).max(16),
-            usage: ARGS_USAGE,
+            usage: self.driver.args_usage(),
         };
-        move_buffer(gpu, &mut self.tables.buffers.args, &desc, 0);
+        move_buffer(gpu, &mut self.buffers.args, &desc, 0);
         self.capacity.nodes = new;
         self.candidates_dirty = true;
         self.buffers_revision += 1;
@@ -1652,7 +1664,13 @@ impl Scene {
         if row_words != entry.row_words {
             entry.row_words = row_words;
             for &chunk in &entry.chunk_slots {
-                write_chunk_word(gpu, &self.tables, chunk, CHUNK_ROW_WORDS_WORD, row_words);
+                write_chunk_word(
+                    gpu,
+                    &mut self.tables,
+                    chunk,
+                    CHUNK_ROW_WORDS_WORD,
+                    row_words,
+                );
             }
         }
         if props.len() != entry.props.len() as u32 {
@@ -1660,7 +1678,7 @@ impl Scene {
             self.prop_arena
                 .free(std::mem::replace(&mut entry.props, range.clone()));
             for &chunk in &entry.chunk_slots {
-                write_chunk_word(gpu, &self.tables, chunk, CHUNK_PROPS_WORD, range.start);
+                write_chunk_word(gpu, &mut self.tables, chunk, CHUNK_PROPS_WORD, range.start);
             }
         }
         self.tables
@@ -1687,7 +1705,7 @@ impl Scene {
             for &chunk in &entry.chunk_slots {
                 write_chunk_word(
                     gpu,
-                    &self.tables,
+                    &mut self.tables,
                     chunk,
                     CHUNK_STATE_WORD,
                     state_base(&range),
@@ -1804,7 +1822,12 @@ impl Scene {
                 .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
         }
 
-        write_frame(gpu, self.tables.buffers.frame, frame, linear);
+        let words = frame_words(frame, linear);
+        gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
+        #[cfg(cpu_driven)]
+        {
+            self.frame = words;
+        }
         (self.candidate_count, rebuilt)
     }
 
@@ -2176,9 +2199,9 @@ impl Scene {
         let desc = BufferDesc {
             label: "compacted indices",
             size: u64::from(new) * 4,
-            usage: COMPACTED_USAGE,
+            usage: self.driver.compacted_usage(),
         };
-        move_buffer(gpu, &mut self.tables.buffers.compacted, &desc, 0);
+        move_buffer(gpu, &mut self.buffers.compacted, &desc, 0);
         self.capacity.compacted_words = new;
         self.buffers_revision += 1;
     }

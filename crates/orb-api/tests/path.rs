@@ -75,6 +75,13 @@ fn options() -> MapOptions {
     }
 }
 
+/// The cull dispatches a frame runs: one on the GPU driver, none on the
+/// CPU's (`ORB_DRIVER=cpu` runs these tests on it).
+fn culls() -> u32 {
+    let driver = std::env::var("ORB_DRIVER").unwrap_or_default();
+    u32::from(driver.is_empty() || driver == "gpu")
+}
+
 /// A camera: centre, zoom, bearing, pitch.
 type At = (Geodetic, f64, f64, f64);
 
@@ -1094,7 +1101,7 @@ fn an_alpine_view_at_rest_redoes_nothing() {
         assert!(report.idle, "frame {frame}");
         assert_eq!(report.frame.prepared, 0, "frame {frame}");
         assert_eq!(report.frame.placements_written, 0, "frame {frame}");
-        assert_eq!(report.frame.dispatches, 1, "frame {frame}");
+        assert_eq!(report.frame.dispatches, culls(), "frame {frame}");
         assert!(!report.frame.candidates_rebuilt, "frame {frame}");
     }
 }
@@ -1275,9 +1282,10 @@ fn camera_only_frames_write_no_rows() {
             assert_eq!(report.tiles_loading, 0, "the move loads nothing");
             assert_eq!(report.frame.placements_written, 0, "step {step}");
             assert!(!report.frame.candidates_rebuilt, "step {step}");
-            // One cull, and the recorded bundles replayed.
-            assert_eq!(report.frame.dispatches, 1, "step {step}");
-            assert!(!report.frame.bundle_recorded, "step {step}");
+            // One cull, and the recorded bundles replayed (the CPU driver's
+            // record again when what a node draws changes).
+            assert_eq!(report.frame.dispatches, culls(), "step {step}");
+            assert!(!report.frame.bundle_recorded || culls() == 0, "step {step}");
         }
     }
 }

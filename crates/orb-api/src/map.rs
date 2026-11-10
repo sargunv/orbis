@@ -1015,7 +1015,7 @@ impl Map {
             };
             device.start_frame();
             self.woken.store(false, Ordering::Release);
-            let draws = orb_hal::Gpu::caps(&*device).gpu_driven();
+            let draws = orb_runtime::Renderer::draws_on(orb_hal::Gpu::caps(&*device));
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
             let map = &mut self.map;
             let report = if draws {
@@ -1031,7 +1031,7 @@ impl Map {
                     frame_time,
                 )
             } else {
-                // GLES: a flat colour until the CPU frame driver draws (#140).
+                // GLES: a flat colour until the renderer draws there (#140).
                 orb_hal_wgpu::boot_frame(gpu, texture);
                 orb_runtime::FrameReport {
                     idle: true,
@@ -1133,7 +1133,7 @@ impl Map {
         {
             let mut device = self.shared.gpu();
             self.woken.store(false, Ordering::Release);
-            if !orb_hal::Gpu::caps(&*device).gpu_driven() {
+            if !orb_runtime::Renderer::draws_on(orb_hal::Gpu::caps(&*device)) {
                 return Ok(());
             }
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;

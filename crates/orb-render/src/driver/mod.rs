@@ -3,16 +3,20 @@
 //! The renderer records its passes and bundles once for every device; what
 //! differs between devices is only how a node's draw finds what to draw.
 //! On the GPU-driven path ([`gpu`]), a compute cull writes each node's
-//! indirect draw arguments every frame. The WebGL 2 path (#140), which has
-//! no compute or indirect draws, gets a CPU driver of direct draws behind
-//! the same calls. Everything else (the scene, the candidate layout, the
-//! passes and bundles) is shared and never asks which driver runs.
+//! indirect draw arguments every frame. A device without compute or
+//! indirect draws (WebGL 2, #140) takes the CPU driver ([`cpu`]): the same
+//! cull on the CPU, writing the same visible lists and compacted indices,
+//! and direct draws, which bundles record again when they change.
+//! Everything else (the scene, the candidate layout, the passes and
+//! bundles) is shared and never asks which driver runs.
 
+#[cfg(cpu_driven)]
+pub(crate) mod cpu;
 pub(crate) mod gpu;
 
-use orb_hal::{Gpu, Pass, PipelineId, RenderCommand};
+use orb_hal::{BufferUsages, Caps, Gpu, Pass, PipelineId, RenderCommand};
 
-use crate::scene::{NodeDraw, SceneBuffers, SceneCapacity};
+use crate::scene::{NodeDraw, Scene, SceneBuffers, SceneCapacity, Table};
 
 /// The limits the candidate layout packs within (`rebuild_candidates`),
 /// one set for whichever driver runs, so both drop the same candidates.
@@ -43,27 +47,84 @@ impl SubmitLimits {
     }
 }
 
+/// Which driver a device's frames take, which the scene is made for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Gpu,
+    #[cfg(cpu_driven)]
+    Cpu,
+}
+
+impl Kind {
+    /// The device's: the GPU-driven one wherever it has compute, indirect
+    /// draws and vertex-stage storage.
+    pub(crate) fn of(caps: &Caps) -> Self {
+        #[cfg(cpu_driven)]
+        if !caps.gpu_driven() {
+            return Self::Cpu;
+        }
+        assert!(
+            caps.gpu_driven(),
+            "the device lacks compute, indirect draws or vertex-stage storage, and this build has no CPU driver (#140)"
+        );
+        Self::Gpu
+    }
+
+    /// The draw arguments' usage.
+    pub(crate) fn args_usage(self) -> BufferUsages {
+        match self {
+            Self::Gpu => gpu::ARGS_USAGE,
+            #[cfg(cpu_driven)]
+            Self::Cpu => cpu::ARGS_USAGE,
+        }
+    }
+
+    /// The compacted indices' usage.
+    pub(crate) fn compacted_usage(self) -> BufferUsages {
+        match self {
+            Self::Gpu => gpu::COMPACTED_USAGE,
+            #[cfg(cpu_driven)]
+            Self::Cpu => cpu::COMPACTED_USAGE,
+        }
+    }
+
+    /// Bits of a compacted index.
+    pub(crate) fn index_bits(self) -> u32 {
+        match self {
+            Self::Gpu => gpu::INDEX_BITS,
+            #[cfg(cpu_driven)]
+            Self::Cpu => cpu::INDEX_BITS,
+        }
+    }
+
+    /// The tables the CPU keeps copies of, for the driver to read.
+    pub(crate) fn mirrored(self) -> &'static [Table] {
+        match self {
+            Self::Gpu => &[],
+            #[cfg(cpu_driven)]
+            Self::Cpu => cpu::MIRRORED,
+        }
+    }
+}
+
 /// The frame driver of a renderer's device.
 #[derive(Debug)]
 pub(crate) enum Driver {
     Gpu(gpu::GpuDriver),
+    #[cfg(cpu_driven)]
+    Cpu(cpu::CpuDriver),
 }
 
 impl Driver {
-    /// The driver the device runs: the GPU-driven one wherever it has
-    /// compute, indirect draws and vertex-stage storage.
-    pub(crate) fn new(gpu: &mut dyn Gpu, buffers: &SceneBuffers) -> Self {
-        assert!(
-            gpu.caps().gpu_driven(),
-            "the device lacks compute, indirect draws or vertex-stage storage, and there is no CPU driver yet (#140)"
-        );
-        Self::Gpu(gpu::GpuDriver::new(gpu, buffers))
-    }
-
-    /// Bits of a compacted index on this driver.
-    pub(crate) fn index_bits(&self) -> u32 {
-        match self {
-            Self::Gpu(_) => gpu::INDEX_BITS,
+    /// The driver of `kind`, over `scene`'s tables.
+    pub(crate) fn new(gpu: &mut dyn Gpu, kind: Kind, scene: &Scene) -> Self {
+        match kind {
+            Kind::Gpu => Self::Gpu(gpu::GpuDriver::new(
+                gpu,
+                gpu::CullBuffers::of(scene.tables(), scene.buffers()),
+            )),
+            #[cfg(cpu_driven)]
+            Kind::Cpu => Self::Cpu(cpu::CpuDriver::default()),
         }
     }
 
@@ -71,6 +132,8 @@ impl Driver {
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
         match self {
             Self::Gpu(d) => d.ready(gpu),
+            #[cfg(cpu_driven)]
+            Self::Cpu(_) => true,
         }
     }
 
@@ -78,13 +141,17 @@ impl Driver {
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
         match self {
             Self::Gpu(d) => d.pipelines(),
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.pipelines(),
         }
     }
 
-    /// Binds the scene's buffers again, after a pool moved.
-    pub(crate) fn rebind(&mut self, gpu: &mut dyn Gpu, buffers: &SceneBuffers) {
+    /// Binds the scene's tables again, after one moved.
+    pub(crate) fn rebind(&mut self, gpu: &mut dyn Gpu, scene: &Scene) {
         match self {
-            Self::Gpu(d) => d.rebind(gpu, buffers),
+            Self::Gpu(d) => d.rebind(gpu, gpu::CullBuffers::of(scene.tables(), scene.buffers())),
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.rebind(gpu, scene),
         }
     }
 
@@ -92,6 +159,21 @@ impl Driver {
     pub(crate) fn set_keep_all(&mut self, gpu: &mut dyn Gpu, on: bool) -> bool {
         match self {
             Self::Gpu(d) => d.set_keep_all(gpu, on),
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.set_keep_all(gpu, on),
+        }
+    }
+
+    /// The frame's work before bundles record: on the CPU, the cull,
+    /// which writes the visible lists, compacted indices and draws.
+    /// Returns whether any node's draw changed, so bundles that recorded
+    /// it must record again.
+    #[cfg_attr(not(cpu_driven), allow(unused_variables))]
+    pub(crate) fn prepare(&mut self, gpu: &mut dyn Gpu, scene: &mut Scene, rebuilt: bool) -> bool {
+        match self {
+            Self::Gpu(_) => false,
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.prepare(gpu, scene, rebuilt),
         }
     }
 
@@ -100,6 +182,8 @@ impl Driver {
     pub(crate) fn cull(&self, gpu: &mut dyn Gpu, frame: Cull<'_>, passes: &mut Vec<Pass>) -> u32 {
         match self {
             Self::Gpu(d) => d.cull(gpu, frame, passes),
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.cull(gpu, frame, passes),
         }
     }
 
@@ -108,12 +192,28 @@ impl Driver {
     pub(crate) fn draw(&self, buffers: &SceneBuffers, node: u32, draw: NodeDraw) -> RenderCommand {
         match self {
             Self::Gpu(_) => gpu::draw(buffers, node, draw),
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.draw(node, draw),
+        }
+    }
+
+    /// Whether node `node`'s draw draws nothing, so bundles may leave it
+    /// out: known only to a driver whose draws are recorded with their
+    /// counts.
+    #[cfg_attr(not(cpu_driven), allow(unused_variables))]
+    pub(crate) fn draws_nothing(&self, node: u32) -> bool {
+        match self {
+            Self::Gpu(_) => false,
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.draws_nothing(node),
         }
     }
 
     pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {
         match self {
             Self::Gpu(d) => d.destroy(gpu),
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.destroy(gpu),
         }
     }
 }

@@ -69,12 +69,17 @@ pub use tiles::{
 use crate::pipeline::{Draw, Variants};
 use crate::release::Release;
 
+#[cfg(cpu_driven)]
+#[doc(hidden)]
+pub use driver::cpu::{Compared, DriverCheck};
 use orb_hal::*;
 use orb_shaders::{
     CIRCLE_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, LINE_STYLED_SHADER,
     SYMBOL_SHADERS,
 };
-use scene::{Scene, Table};
+#[cfg(cpu_driven)]
+use scene::Backing;
+use scene::{DataTable, Scene, Table, Tables};
 
 /// How a family's nodes draw: meshes from compacted
 /// indices, instanced quads by vertex pulling.
@@ -406,6 +411,14 @@ impl Renderer {
             .release(gpu);
     }
 
+    /// Whether a renderer draws on a device of `caps`: one with compute,
+    /// which image mips, DEM prepares and the terrain's drape still need
+    /// whichever driver culls. WebGL 2 boots to a flat colour until they
+    /// draw another way (#140).
+    pub fn draws_on(caps: &Caps) -> bool {
+        caps.compute
+    }
+
     pub fn new(gpu: &mut dyn Gpu, target: TargetFormat, capacity: SceneCapacity) -> Self {
         let images = ImageAtlas::new(gpu, 512, 4, 4096);
         Self::with_images(gpu, target, capacity, images.bindings())
@@ -439,40 +452,35 @@ impl Renderer {
             },
             ..host
         };
-        let mut scene = Scene::new(gpu, capacity);
+        let kind = driver::Kind::of(gpu.caps());
+        let scene = Scene::new(gpu, capacity, kind);
         let b = *scene.buffers();
         // The driver's pipeline first: nothing draws without it.
-        let driver = driver::Driver::new(gpu, &b);
-        scene.set_index_bits(driver.index_bits());
+        let driver = driver::Driver::new(gpu, kind, &scene);
         let (vs, fs) = (ShaderStages::VERTEX, ShaderStages::FRAGMENT);
         let vf = vs | fs;
         use BindGroupLayoutEntry as E;
         use TextureViewDimension::{D2, D2Array};
+        let backing = scene.tables().backing();
+        let mut entries = vec![E::uniform(0, vf)];
+        entries.extend(Tables::layout_entries(backing));
+        entries.push(DataTable::layout_entry(backing, 8, fs));
+        entries.extend([
+            E::texture(9, fs, true, D2Array),
+            E::sampler(10, fs, true),
+            E::texture(11, fs, true, D2),
+            E::texture(12, fs, true, D2Array),
+            E::sampler(13, fs, true),
+            // Extrusions' walls read the ground per fragment.
+            E::texture(14, vf, false, D2Array),
+            E::texture(15, vf, false, D2),
+            // The image pages again, for the nearest sampler
+            // (`symbol.wgsl`).
+            E::texture(16, fs, true, D2Array),
+        ]);
         let draw_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "scene",
-            entries: &[
-                E::uniform(0, vf),
-                E::storage(1, vf),
-                E::storage(2, vs),
-                E::storage(3, vs),
-                E::storage(4, vs),
-                E::storage(5, vs),
-                // Extrusions' fragments read colours over the elevation.
-                E::storage(6, vf),
-                E::storage(7, vs),
-                E::storage(8, fs),
-                E::texture(9, fs, true, D2Array),
-                E::sampler(10, fs, true),
-                E::texture(11, fs, true, D2),
-                E::texture(12, fs, true, D2Array),
-                E::sampler(13, fs, true),
-                // Extrusions' walls read the ground per fragment.
-                E::texture(14, vf, false, D2Array),
-                E::texture(15, vf, false, D2),
-                // The image pages again, for the nearest sampler
-                // (`symbol.wgsl`).
-                E::texture(16, fs, true, D2Array),
-            ],
+            entries: &entries,
         });
         let node_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "node",
@@ -519,7 +527,7 @@ impl Renderer {
         let draw_group = scene_group(
             gpu,
             draw_layout,
-            &b,
+            scene.tables(),
             b.frame,
             &images,
             (glyphs.texture(), nearest, no_dem, no_terrain_depth),
@@ -708,6 +716,38 @@ impl Renderer {
     pub fn set_keep_all(&mut self, gpu: &mut dyn Gpu, on: bool) {
         if self.driver.set_keep_all(gpu, on) {
             self.invalidate_bundle(gpu);
+        }
+    }
+
+    /// Runs the GPU's cull beside the CPU driver's when `on`, over the same
+    /// scene and frames into buffers of its own, for a test to hold the
+    /// two to the same words ([`driver_check`](Self::driver_check)); the
+    /// candidates are laid out again, so both start alike. Only a
+    /// CPU-driven renderer on a device with compute and the tables in
+    /// storage buffers (orb-hal-wgpu's `force_cpu_driver(false)`) has a
+    /// twin; returns whether this one does.
+    #[cfg(cpu_driven)]
+    #[doc(hidden)]
+    pub fn check_driver(&mut self, gpu: &mut dyn Gpu, on: bool) -> bool {
+        let driver::Driver::Cpu(d) = &mut self.driver else {
+            return false;
+        };
+        if on && (!gpu.caps().compute || self.scene.tables().backing() != Backing::Storage) {
+            return false;
+        }
+        d.set_twin(gpu, &self.scene, on);
+        self.scene.lay_out_again();
+        on
+    }
+
+    /// What the CPU driver and its GPU twin wrote, to read back after a
+    /// frame and compare ([`check_driver`](Self::check_driver)).
+    #[cfg(cpu_driven)]
+    #[doc(hidden)]
+    pub fn driver_check(&self) -> Option<DriverCheck> {
+        match &self.driver {
+            driver::Driver::Cpu(d) => DriverCheck::new(d, &self.scene),
+            driver::Driver::Gpu(_) => None,
         }
     }
 
@@ -1270,6 +1310,20 @@ impl Renderer {
         }
     }
 
+    /// Records every bundle that draws nodes again, extrusions' and
+    /// heatmaps' too: after their bindings or their draws changed.
+    fn forget_draws(&mut self, gpu: &mut dyn Gpu) {
+        self.invalidate_bundle(gpu);
+        for node in &mut self.nodes {
+            if let Some(extrusion) = &mut node.extrusion {
+                extrusion.forget_bundle(gpu);
+            }
+            if let Some(heatmap) = &mut node.heatmap {
+                heatmap.apart.forget_bundle(gpu);
+            }
+        }
+    }
+
     /// A page of tile textures, `size` texels per tile, for image nodes to
     /// bind.
     pub fn create_page(&mut self, gpu: &mut dyn Gpu, kind: PageKind, size: [u32; 2]) -> PageId {
@@ -1759,15 +1813,14 @@ impl Renderer {
             self.images_bound = self.image_bindings.texture;
             if buffers != self.buffers_bound {
                 self.buffers_bound = buffers;
-                self.driver.rebind(gpu, self.scene.buffers());
+                self.driver.rebind(gpu, &self.scene);
             }
             gpu.destroy_bind_group(self.draw_group);
-            let b = *self.scene.buffers();
             self.draw_group = scene_group(
                 gpu,
                 self.draw_layout,
-                &b,
-                b.frame,
+                self.scene.tables(),
+                self.scene.buffers().frame,
                 &self.image_bindings,
                 (self.glyphs.texture(), self.nearest, dem, terrain_depth),
             );
@@ -1777,16 +1830,8 @@ impl Renderer {
             for scene in self.drape.iter_mut().flat_map(|d| &mut d.scene) {
                 scene.take().release(gpu);
             }
-            self.invalidate_bundle(gpu);
             // Extrusion and heatmap nodes record the scene group too.
-            for node in &mut self.nodes {
-                if let Some(extrusion) = &mut node.extrusion {
-                    extrusion.forget_bundle(gpu);
-                }
-                if let Some(heatmap) = &mut node.heatmap {
-                    heatmap.apart.forget_bundle(gpu);
-                }
-            }
+            self.forget_draws(gpu);
         }
     }
 
@@ -1802,6 +1847,13 @@ impl Renderer {
         let started = clock();
         let (candidates, candidates_rebuilt) =
             self.scene.prepare(gpu, frame, self.linear.is_some());
+        // The CPU driver's cull: draws that changed record again.
+        if self
+            .driver
+            .prepare(gpu, &mut self.scene, candidates_rebuilt)
+        {
+            self.forget_draws(gpu);
+        }
         times.cull = micros(started, clock());
         // A node the bundles left out for want of candidates draws once
         // it has some.
@@ -2132,7 +2184,7 @@ impl Renderer {
             let mut layers = Vec::with_capacity(self.terrain_layers.len());
             stats.draws += terrain.passes(
                 gpu,
-                (b.frame, b.props),
+                (b.frame, self.scene.tables().entry(Table::Props, 8)),
                 (&drape, &shades),
                 depth,
                 &self.downsampler,
@@ -2307,11 +2359,10 @@ impl Renderer {
             level.bundle.resize_with(at + 1, || None);
         }
         if level.scene[page].is_none() {
-            let b = *self.scene.buffers();
             level.scene[page] = Some(scene_group(
                 gpu,
                 self.draw_layout,
-                &b,
+                self.scene.tables(),
                 level.frame[page],
                 &self.image_bindings,
                 // Draped content isn't hidden by the terrain it's on.
@@ -2450,6 +2501,11 @@ impl Renderer {
         // draw the CPU encodes and the GPU reads every frame.
         if self.scene.node_candidates(i as u32) == 0 {
             node.left_out.set(true);
+            return true;
+        }
+        // A direct draw of nothing records nothing: the bundles record
+        // again when the node's draw changes.
+        if self.driver.draws_nothing(i as u32) {
             return true;
         }
         if node.family.is_symbol() {
@@ -2660,27 +2716,15 @@ impl PaintPipelines {
 fn scene_group(
     gpu: &mut dyn Gpu,
     layout: BindGroupLayoutId,
-    b: &crate::scene::SceneBuffers,
+    tables: &Tables,
     frame: BufferId,
     images: &ImageBindings,
     (glyphs, nearest, dem, terrain_depth): (TextureId, SamplerId, TextureId, TextureId),
 ) -> BindGroupId {
     use TextureViewDimension::{D2, D2Array};
-    let mut entries: Vec<BindGroupEntry> = [
-        frame,
-        b.tiles,
-        b.chunks,
-        b.visible,
-        b.vertices,
-        b.indices,
-        b.props,
-        b.node_cull,
-        images.table,
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, &buffer)| BindGroupEntry::buffer(i as u32, buffer))
-    .collect();
+    let mut entries = vec![BindGroupEntry::buffer(0, frame)];
+    entries.extend(tables.entries());
+    entries.push(images.table.entry(8));
     entries.extend([
         BindGroupEntry::texture(9, images.texture, D2Array),
         BindGroupEntry::sampler(10, images.sampler),

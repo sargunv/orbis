@@ -6,6 +6,11 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# The CPU frame driver and the tables' texture backing on the web (WebGL
+# 2's build); natively they're always built (`build.rs`).
+cpu-driven = []
+
 [dependencies]
 bytemuck.workspace = true
 orb-crs.workspace = true

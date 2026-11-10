@@ -163,22 +163,12 @@ const GPU_ONLY_FILES: &[(&str, Allows, &str)] = &[
             "create_texture_view_as",
             VIEWS,
         ]),
-        "its tables in storage: fetch_terrain.wgsl over data textures; drape mips: drawn ones; the atlas's sRGB views: a natively sRGB atlas",
-    ),
-    (
-        "orb-render/src/lib.rs",
-        Allows::Only(&["E::storage("]),
-        "the scene group's tables in storage: the `Tables` texture backing",
+        "the drape clear's regions in storage: fetch_drape.wgsl over a data texture; drape mips: drawn ones; the atlas's sRGB views: a natively sRGB atlas",
     ),
     (
         "orb-render/src/scene/tables.rs",
-        Allows::Only(&["BufferUsages::STORAGE"]),
-        "the storage backing: the texture backing",
-    ),
-    (
-        "orb-render/src/scene/image.rs",
-        Allows::Only(&["BufferUsages::STORAGE"]),
-        "the image rects in storage: rows of the texture backing",
+        Allows::Only(&["BufferUsages::STORAGE", "BindingType::Storage"]),
+        "the tables' storage backing: their texture backing",
     ),
 ];
 

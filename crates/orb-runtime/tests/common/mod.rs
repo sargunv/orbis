@@ -15,6 +15,8 @@ pub(crate) use orb_runtime::{
     CameraState, Map, MapEvent, PoolJobs, SceneCapacity, Services, TargetFormat, Viewport,
 };
 
+pub(crate) mod scenes;
+
 pub(crate) const DEMO_DATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/demo/data");
 
 /// How a test's map starts.

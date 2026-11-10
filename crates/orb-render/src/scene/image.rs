@@ -5,7 +5,11 @@ use std::collections::HashMap;
 
 use orb_hal::*;
 
+use crate::scene::DataTable;
 use crate::scene::shelf::Shelves;
+
+/// Words of a row of the rect table (`types.wgsl`'s `ImageRect`).
+const RECT_WORDS: u32 = 8;
 pub use orb_layout::{ImageKey, ImageMetadata};
 
 /// What a table row holds: an image as patterns and layers sample it, or
@@ -29,7 +33,8 @@ pub struct ImageUpload<'a> {
 /// the atlas grows a page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageBindings {
-    pub table: BufferId,
+    /// The rects, a row of [`RECT_WORDS`] words each.
+    pub(crate) table: DataTable,
     pub texture: TextureId,
     pub sampler: SamplerId,
     pub dashes: TextureId,
@@ -87,11 +92,7 @@ impl ImageAtlas {
     pub fn new(gpu: &mut dyn Gpu, size: u32, max_pages: u32, capacity: u32) -> Self {
         assert!(size > 2 && max_pages > 0 && capacity > 0);
         let texture = page_texture(gpu, size, 1);
-        let table = gpu.create_buffer(&BufferDesc {
-            label: "image rects",
-            size: u64::from(capacity) * 32,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        });
+        let table = DataTable::new(gpu, "image rects", u64::from(capacity) * RECT_WORDS as u64);
         let sampler = gpu.create_sampler(&SamplerDesc {
             label: "images",
             filter: FilterMode::Linear,
@@ -206,11 +207,7 @@ impl ImageAtlas {
                     0,
                     0,
                 ];
-                gpu.write_buffer(
-                    self.bindings.table,
-                    u64::from(id) * 32,
-                    bytemuck::cast_slice(&words),
-                );
+                self.bindings.table.write(gpu, id * RECT_WORDS, &words);
                 let entry = self.entries[id as usize].as_mut().unwrap();
                 entry.size = Some([crate::scene::line::WIDTH, rows[1]]);
                 entry.dash_rows = Some(rows);
@@ -352,11 +349,7 @@ impl ImageAtlas {
             u32::from(metadata.sdf),
             0,
         ];
-        gpu.write_buffer(
-            self.bindings.table,
-            u64::from(id) * 32,
-            bytemuck::cast_slice(&words),
-        );
+        self.bindings.table.write(gpu, id * RECT_WORDS, &words);
         let entry = self.entries[id as usize].as_mut().expect("checked above");
         entry.page = Some(layer);
         entry.origin = [x, y];
@@ -443,7 +436,9 @@ impl ImageAtlas {
         }
         entry.size = None;
         entry.metadata = None;
-        gpu.write_buffer(self.bindings.table, u64::from(id) * 32, &[0; 32]);
+        self.bindings
+            .table
+            .write(gpu, id * RECT_WORDS, &[0; RECT_WORDS as usize]);
     }
 
     /// Empties a style's named image, as a pattern and as an icon, for new

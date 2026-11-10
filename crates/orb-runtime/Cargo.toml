@@ -6,6 +6,11 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# The CPU frame driver and the tables' texture backing on the web
+# (`orb-render`'s `cpu-driven`), for WebGL 2.
+cpu-driven = ["orb-render/cpu-driven"]
+
 [dependencies]
 postcard.workspace = true
 serde.workspace = true

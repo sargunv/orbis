@@ -134,8 +134,18 @@ pub(crate) fn compute(
     pipeline
 }
 
-/// A module of `shader`'s WGSL.
+/// A module of `shader`'s WGSL: reading the tables from data textures
+/// where the device's vertex stage has no storage buffers (the tables'
+/// texture backing).
 fn module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
+    #[cfg(cpu_driven)]
+    if !gpu.caps().vertex_storage {
+        return gpu.create_shader_module(&ShaderModuleDesc {
+            label: shader.label,
+            source: shader.texture_tables_source().into(),
+            ir: None,
+        });
+    }
     gpu.create_shader_module(&ShaderModuleDesc {
         label: shader.label,
         source: shader.source().into(),

@@ -14,7 +14,7 @@ default = ["webgpu"]
 # The GPU backend, one of the two: core.wasm draws with WebGPU, core-gl.wasm
 # (`--no-default-features --features gl`) with WebGL 2.
 webgpu = ["orb-hal-wgpu/webgpu"]
-gl = ["orb-hal-wgpu/gl"]
+gl = ["orb-hal-wgpu/gl", "orb-runtime/cpu-driven"]
 
 [dependencies]
 futures-channel.workspace = true

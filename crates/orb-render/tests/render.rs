@@ -94,6 +94,14 @@ impl Harness {
         }
     }
 
+    /// Whether the renderer takes the GPU driver: `ORB_DRIVER=cpu` runs
+    /// these tests on the CPU one, whose draws record their counts, so
+    /// its bundles record again when those change and leave out what
+    /// draws nothing.
+    fn gpu_driven(&self) -> bool {
+        self.gpu.caps().gpu_driven()
+    }
+
     /// An empty tile to add meshes to and place.
     fn tile(&mut self) -> orb_render::GpuTile {
         let key = orb_render::TileKey {
@@ -107,7 +115,7 @@ impl Harness {
     /// [`full_view_tile`] covers the target exactly.
     fn render(&mut self) -> Vec<u8> {
         let stats = self.render_stats();
-        assert!(stats.draws > 0);
+        assert!(stats.draws > 0 || !self.gpu_driven());
         pollster::block_on(self.gpu.read_texture(self.target))
     }
 
@@ -429,9 +437,11 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
             &Default::default(),
         )
         .unwrap();
-    // Only what the nodes use is made: the cull and the fill.
+    // Only what the nodes use is made: the cull (on the GPU) and the
+    // fill.
+    let pipelines = 1 + u32::from(h.gpu_driven());
     let counts = h.renderer.pipelines(&mut h.gpu);
-    assert_eq!(counts.made + counts.pending, 2, "{counts:?}");
+    assert_eq!(counts.made + counts.pending, pipelines, "{counts:?}");
     // One worker can't have compiled both yet: the fill waits, and the
     // frame draws only the clear colour.
     let first = h.render_stats();
@@ -447,7 +457,7 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     assert!(next.bundle_recorded || first.pipelines_pending == 0);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     assert_eq!(pixel(&pixels, 4, 32), RED);
-    assert_eq!(h.gpu.pipelines_created(), 2);
+    assert_eq!(h.gpu.pipelines_created(), pipelines);
 }
 
 #[test]
@@ -791,7 +801,8 @@ fn compacted_slots_follow_the_view_without_recording() {
         .unwrap();
 
     let first = h.render_stats();
-    assert_eq!((first.draws, first.dispatches), (1, 1));
+    let dispatches = u32::from(h.gpu_driven());
+    assert_eq!((first.draws, first.dispatches), (1, dispatches));
     assert!(first.bundle_recorded);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     // The whole copy's left half, and the clipped copy's corner.
@@ -808,11 +819,15 @@ fn compacted_slots_follow_the_view_without_recording() {
     );
     // The same view replays and rewrites nothing.
     let second = h.render_stats();
-    assert_eq!((second.dispatches, second.bundle_recorded), (1, false));
+    assert_eq!(
+        (second.dispatches, second.bundle_recorded),
+        (dispatches, false)
+    );
     assert_eq!(pollster::block_on(h.gpu.read_texture(h.target)), pixels);
     assert_eq!(cull_counters(&mut h), [2, 0, 2 * mesh_indices]);
     // The first copy leaves the view and the third enters it: their slots
-    // are rewritten, without recording commands.
+    // are rewritten, without recording commands on the GPU (the CPU's
+    // draw reaches the third slot now).
     h.renderer
         .place(
             tile,
@@ -821,7 +836,7 @@ fn compacted_slots_follow_the_view_without_recording() {
         )
         .unwrap();
     let swapped = h.render_stats();
-    assert!(!swapped.bundle_recorded);
+    assert_eq!(swapped.bundle_recorded, !h.gpu_driven());
     assert_eq!(pollster::block_on(h.gpu.read_texture(h.target)), pixels);
     assert_eq!(
         cull_counters(&mut h),
@@ -1035,7 +1050,7 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     assert!(!h.render_stats_at_ratio(2.0).bundle_recorded);
     h.renderer.set_visible(0, false);
     let stats = h.render_stats_at_ratio(2.0);
-    assert!(!stats.bundle_recorded);
+    assert_eq!(stats.bundle_recorded, !h.gpu_driven());
     assert_eq!(stats.paints_written, 0);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     assert_eq!(pixel(&pixels, 48, 32), CLEAR);

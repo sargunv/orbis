@@ -107,11 +107,24 @@ impl Shader {
         if !self.compute.is_empty() || self.parts.contains(&CLIP_PLANES) {
             return None;
         }
+        Some(self.swapped(GL_SWAPS))
+    }
+
+    /// Its source for a device that reads the scene's and the terrain's
+    /// tables from data textures and has the rest of WebGPU: WebGL 2's
+    /// path run natively (orb-hal-wgpu's `force_cpu_driver`), the
+    /// built-ins and those tables' `fetch` modules swapped
+    /// ([`gl_source`](Self::gl_source)'s first three).
+    pub fn texture_tables_source(&self) -> String {
+        self.swapped(&GL_SWAPS[..3])
+    }
+
+    fn swapped(&self, swaps: &[(&str, &str)]) -> String {
         let mut source = self.source();
-        for (modern, gl) in GL_SWAPS {
+        for (modern, gl) in swaps {
             source = source.replace(modern, gl);
         }
-        Some(source)
+        source
     }
 }
 
