@@ -22,11 +22,13 @@
 
 mod base;
 mod delivery;
+mod expression;
 mod handles;
 mod logging;
 mod map;
 mod network;
 mod projection;
+mod queries;
 mod resources;
 mod runtime;
 mod session;

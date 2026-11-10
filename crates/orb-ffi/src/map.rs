@@ -129,6 +129,10 @@ pub(crate) struct MapEntry {
     idle: Option<orb_api::Target>,
     /// What the C API keeps of the style beyond Orbis's document.
     pub(crate) style: crate::style::StyleState,
+    /// Feature queries waiting for Orbis's answer, by its query id, and
+    /// the ids of a query's further parts.
+    pub(crate) queries: std::collections::HashMap<u64, crate::queries::Query>,
+    pub(crate) query_aliases: std::collections::HashMap<u64, u64>,
 }
 
 impl MapEntry {
@@ -252,8 +256,17 @@ pub(crate) fn take_events(state: &mut State, id: u64) {
         };
         let mut camera_phases = [false; 3];
         while let Some(event) = entry.map.poll_event() {
-            let orb_api::Event::Map(event) = event else {
-                continue;
+            let event = match event {
+                orb_api::Event::Map(event) => event,
+                orb_api::Event::Query { id, result } => {
+                    let id = entry.query_aliases.remove(&id).unwrap_or(id);
+                    if let Some(query) = entry.queries.remove(&id)
+                        && let Some(waiting) = crate::queries::answer(query, result)
+                    {
+                        entry.queries.insert(id, waiting);
+                    }
+                    continue;
+                }
             };
             use orb_api::MapEvent as E;
             match event {
@@ -512,6 +525,8 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         groups: 0,
                         idle: None,
                         style: Default::default(),
+                        queries: Default::default(),
+                        query_aliases: Default::default(),
                     },
                 );
                 // Native's map moves its camera into place as it's made.
@@ -588,7 +603,8 @@ fn release(map: mln_map, completion: Option<Completion>, force: bool) -> Result 
                 t.handler
                     .end(MLN_CAMERA_TRANSITION_OUTCOME_CLOSED, entry.generation);
             }
-            for c in entry.style_waiters.drain(..) {
+            let queries = entry.queries.drain().map(|(_, q)| q.completion);
+            for c in entry.style_waiters.drain(..).chain(queries) {
                 c.complete(
                     Err(Failure::new(MLN_STATUS_CANCELLED, "the map was released")),
                     0,

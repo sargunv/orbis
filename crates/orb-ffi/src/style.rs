@@ -1459,3 +1459,288 @@ command!(
         })
     }
 );
+
+// MARK: - GeoJSON sources
+
+/// A GeoJSON source's JSON with `options` and no data.
+unsafe fn geo_json_source(
+    options: *const mln_geo_json_source_options,
+    attribution: &str,
+) -> Result<String> {
+    let mut members = vec![
+        "\"type\":\"geojson\"".to_string(),
+        "\"data\":{\"type\":\"FeatureCollection\",\"features\":[]}".to_string(),
+    ];
+    if !attribution.is_empty() {
+        let mut a = String::from("\"attribution\":");
+        write_string(&mut a, attribution);
+        members.push(a);
+    }
+    if !options.is_null() {
+        // SAFETY: every sized struct starts with its u32 size.
+        if (unsafe { *options.cast::<u32>() } as usize)
+            < std::mem::size_of::<mln_geo_json_source_options>()
+        {
+            return Err(Failure::argument("options.size is too small"));
+        }
+        // SAFETY: the caller's options, of their full size.
+        let o = unsafe { *options };
+        let known = MLN_GEO_JSON_SOURCE_OPTION_MIN_ZOOM
+            | MLN_GEO_JSON_SOURCE_OPTION_MAX_ZOOM
+            | MLN_GEO_JSON_SOURCE_OPTION_TOLERANCE
+            | MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_MAX_ZOOM
+            | MLN_GEO_JSON_SOURCE_OPTION_BUFFER
+            | MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_RADIUS
+            | MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_MIN_POINTS
+            | MLN_GEO_JSON_SOURCE_OPTION_LINE_METRICS
+            | MLN_GEO_JSON_SOURCE_OPTION_CLUSTER;
+        if o.fields & !known != 0 {
+            return Err(Failure::argument("options.fields has unknown bits"));
+        }
+        let has = |bit| o.fields & bit != 0;
+        let zoom = |v: f64, what: &str, max: f64| -> Result<f64> {
+            if !(v.is_finite() && v.fract() == 0.0 && (0.0..=max).contains(&v)) {
+                return Err(Failure::argument(format!(
+                    "options.{what} must be an integer within [0, {max}]"
+                )));
+            }
+            Ok(v)
+        };
+        let min = has(MLN_GEO_JSON_SOURCE_OPTION_MIN_ZOOM)
+            .then(|| zoom(o.min_zoom, "min_zoom", 24.0))
+            .transpose()?;
+        let max = has(MLN_GEO_JSON_SOURCE_OPTION_MAX_ZOOM)
+            .then(|| zoom(o.max_zoom, "max_zoom", 24.0))
+            .transpose()?;
+        if min.unwrap_or(0.0) > max.unwrap_or(18.0) {
+            return Err(Failure::argument(
+                "options.min_zoom must be less than or equal to max_zoom",
+            ));
+        }
+        let mut push = |key: &str, value: String| members.push(format!("\"{key}\":{value}"));
+        if let Some(min) = min {
+            push("minzoom", format!("{min}"));
+        }
+        if let Some(max) = max {
+            push("maxzoom", format!("{max}"));
+        }
+        if has(MLN_GEO_JSON_SOURCE_OPTION_TOLERANCE) {
+            if !(o.tolerance.is_finite() && o.tolerance >= 0.0) {
+                return Err(Failure::argument(
+                    "options.tolerance must be finite and not negative",
+                ));
+            }
+            push("tolerance", format!("{}", o.tolerance));
+        }
+        if has(MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_MAX_ZOOM) {
+            push(
+                "clusterMaxZoom",
+                format!("{}", zoom(o.cluster_max_zoom, "cluster_max_zoom", 30.0)?),
+            );
+        }
+        if has(MLN_GEO_JSON_SOURCE_OPTION_BUFFER) {
+            if o.buffer > 512 {
+                return Err(Failure::argument("options.buffer must be at most 512"));
+            }
+            push("buffer", format!("{}", o.buffer));
+        }
+        if has(MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_RADIUS) {
+            if o.cluster_radius > 4095 {
+                return Err(Failure::argument(
+                    "options.cluster_radius must be at most 4095",
+                ));
+            }
+            push("clusterRadius", format!("{}", o.cluster_radius));
+        }
+        if has(MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_MIN_POINTS) {
+            if o.cluster_min_points > u64::from(u32::MAX) && usize::BITS <= 32 {
+                return Err(Failure::argument(
+                    "options.cluster_min_points must be at most 4294967295",
+                ));
+            }
+            push("clusterMinPoints", format!("{}", o.cluster_min_points));
+        }
+        if has(MLN_GEO_JSON_SOURCE_OPTION_LINE_METRICS) {
+            push("lineMetrics", format!("{}", o.line_metrics));
+        }
+        if has(MLN_GEO_JSON_SOURCE_OPTION_CLUSTER) {
+            push("cluster", format!("{}", o.cluster));
+        }
+        if o.cluster_properties.data.is_null() && o.cluster_properties.size != 0 {
+            return Err(Failure::argument("options.cluster_properties is null"));
+        }
+        // SAFETY: the caller's view.
+        let properties = unsafe { text(o.cluster_properties, "options.cluster_properties") }?;
+        if !properties.is_empty() {
+            let json = json::parse(&properties).map_err(|e| {
+                Failure::argument(format!("options.cluster_properties is not valid JSON: {e}"))
+            })?;
+            let Some(properties) = json.as_object() else {
+                return Err(Failure::argument(
+                    "options.cluster_properties must contain a JSON object",
+                ));
+            };
+            // Each property is an expression, or a map and a reduce one.
+            if properties.iter().any(|m| m.value.as_array().is_none()) {
+                return Err(Failure::argument(
+                    "the GeoJSON source options' cluster properties must be expressions",
+                ));
+            }
+            push("clusterProperties", json.to_string());
+        }
+    }
+    Ok(format!("{{{}}}", members.join(",")))
+}
+
+command!(
+    mln_map_add_geo_json_source(
+        source_id: mln_buffer_view,
+        options: *const mln_geo_json_source_options,
+        attribution: mln_buffer_view,
+    ),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let attribution = optional(attribution, "attribution")?.unwrap_or_default();
+        let json = geo_json_source(options, &attribution)?;
+        Ok(job(move |entry| add_source(entry, &source_id, &json)))
+    }
+);
+
+/// Checks that `id` names a GeoJSON source.
+fn geo_json(entry: &MapEntry, id: &str) -> Result {
+    if source_type(source(entry, id)?) != "geojson" {
+        return Err(Failure::argument(format!(
+            "source \"{id}\" is not a GeoJSON source"
+        )));
+    }
+    Ok(())
+}
+
+/// Checks data a clustered source takes: a feature collection of points.
+fn check_clustered(data: &Json) -> Result {
+    match data.get("type").and_then(Json::as_str) {
+        Some("FeatureCollection") => {}
+        Some("Feature") => {
+            return Err(Failure::argument(
+                "a clustered source requires a feature collection, not a single feature",
+            ));
+        }
+        _ => {
+            return Err(Failure::argument(
+                "a clustered source requires a feature collection, not a bare geometry",
+            ));
+        }
+    }
+    let features = data
+        .get("features")
+        .and_then(Json::as_array)
+        .unwrap_or_default();
+    for (i, f) in features.iter().enumerate() {
+        let kind = f
+            .get("geometry")
+            .and_then(|g| g.get("type"))
+            .and_then(Json::as_str)
+            .unwrap_or("null");
+        if kind != "Point" {
+            let name = match kind {
+                "LineString" => "line string",
+                "MultiLineString" => "multi line string",
+                "Polygon" => "polygon",
+                "MultiPolygon" => "multi polygon",
+                "MultiPoint" => "multi point",
+                "GeometryCollection" => "geometry collection",
+                _ => "missing geometry",
+            };
+            return Err(Failure::argument(format!(
+                "a clustered source requires a point geometry on every feature: feature {i} \
+                 has a {name}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+const GEOJSON_TYPES: [&str; 9] = [
+    "FeatureCollection",
+    "Feature",
+    "Point",
+    "MultiPoint",
+    "LineString",
+    "MultiLineString",
+    "Polygon",
+    "MultiPolygon",
+    "GeometryCollection",
+];
+
+command!(
+    mln_map_set_geo_json_source_data(source_id: mln_buffer_view, data: mln_buffer_view),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let data = json_text(data, "data")?;
+        Ok(job(move |entry| {
+            geo_json(entry, &source_id)?;
+            if data.contains('\0') {
+                return Err(Failure::argument("the GeoJSON data contains a NUL"));
+            }
+            let json = parse_json(&data, "the GeoJSON data")?;
+            if !json
+                .get("type")
+                .and_then(Json::as_str)
+                .is_some_and(|t| GEOJSON_TYPES.contains(&t))
+            {
+                return Err(Failure::argument("the data isn't GeoJSON"));
+            }
+            let clustered = source(entry, &source_id)?
+                .get("cluster")
+                .and_then(Json::as_bool)
+                .unwrap_or(false);
+            if clustered {
+                check_clustered(&json)?;
+            }
+            edit(
+                entry,
+                vec![Op::SetSourceData {
+                    id: source_id,
+                    data: json,
+                }],
+            )
+        }))
+    }
+);
+
+command!(
+    mln_map_set_geo_json_source_url(source_id: mln_buffer_view, url: mln_buffer_view),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        let url = id(url, "url")?;
+        Ok(job(move |entry| {
+            geo_json(entry, &source_id)?;
+            edit(
+                entry,
+                vec![Op::SetSourceData {
+                    id: source_id,
+                    data: Json::new(JsonValue::String(url), json::Span::default()),
+                }],
+            )
+        }))
+    }
+);
+
+command!(
+    mln_map_set_geo_json_source_synchronous_tiling(source_id: mln_buffer_view, enabled: bool),
+    false,
+    true,
+    |state, id| {
+        let source_id = id(source_id, "source_id")?;
+        // Orbis tiles on its job threads and shows new data once its
+        // tiles are built, so the hint changes nothing.
+        let _ = enabled;
+        Ok(job(move |entry| geo_json(entry, &source_id)))
+    }
+);

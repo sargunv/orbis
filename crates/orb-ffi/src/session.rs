@@ -19,7 +19,7 @@ use crate::sys::*;
 
 /// What the caller's threads share with the runtime thread.
 pub(crate) struct SessionHandle {
-    runtime: Arc<RuntimeHandle>,
+    pub(crate) runtime: Arc<RuntimeHandle>,
     id: OnceLock<u64>,
     frame_wake: Option<Wake>,
     results: Mutex<Vec<mln_render_frame_result>>,
@@ -37,6 +37,10 @@ pub(crate) struct SessionHandle {
 impl SessionHandle {
     fn id(&self) -> u64 {
         *self.id.get().expect("session id")
+    }
+
+    pub(crate) fn session_id(&self) -> u64 {
+        self.id()
     }
 
     fn push(&self, result: mln_render_frame_result) {
@@ -555,6 +559,40 @@ fn result(
     r
 }
 
+/// The map a live session draws.
+pub(crate) fn map_of(state: &State, session: u64) -> Option<u64> {
+    state
+        .sessions
+        .get(&session)
+        .map(|s| s.map)
+        .filter(|m| state.maps.contains_key(m))
+}
+
+/// How long a frame waits for the pipelines it needs.
+const PIPELINE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Draws a frame of everything the map holds. Orbis compiles pipelines
+/// off the frame and draws what has none yet in a later frame; a frame of
+/// the C API shows the map's state, as Native's synchronous compiles do,
+/// so one that left something out for a compile is drawn again once the
+/// compile is done.
+fn render_whole(
+    map: &mut orb_api::Map,
+    target: &mut orb_api::Target,
+    now: f64,
+) -> std::result::Result<Option<orb_api::FrameReport>, orb_api::Error> {
+    let deadline = std::time::Instant::now() + PIPELINE_WAIT;
+    loop {
+        let report = map.render(target, now)?;
+        match &report {
+            Some(r) if r.frame.waited && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            _ => return Ok(report),
+        }
+    }
+}
+
 /// Draws the frames that the sessions' demands and pacers ask for, and
 /// reports them; then takes the maps' events.
 pub(crate) fn pump(state: &mut State) {
@@ -614,7 +652,7 @@ pub(crate) fn pump(state: &mut State) {
                 ));
                 continue;
             }
-            let disposition = match map.map.render(&mut target.target, now) {
+            let disposition = match render_whole(&mut map.map, &mut target.target, now) {
                 Ok(Some(_report)) => {
                     entry.frame_generation += 1;
                     MLN_RENDER_RESULT_RENDERED

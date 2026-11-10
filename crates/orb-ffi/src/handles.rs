@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::base::{Failure, Result};
 use crate::delivery::DeliveryQueue;
+use crate::expression::ExpressionHandle;
 use crate::map::MapHandle;
 use crate::projection::ProjectionHandle;
 use crate::resources::{ResourceRequest, TransformRequest};
@@ -22,6 +23,7 @@ pub(crate) enum Kind {
     Projection = 8,
     ResourceRequest = 10,
     TransformRequest = 11,
+    Expression = 12,
     Batch = 21,
     Queue = 23,
     OffscreenDevice = 26,
@@ -37,6 +39,7 @@ impl Kind {
             Kind::Projection => "mln_map_projection",
             Kind::ResourceRequest => "mln_resource_request",
             Kind::TransformRequest => "mln_resource_transform_request",
+            Kind::Expression => "mln_style_expression",
             Kind::Batch => "mln_render_frame_batch",
             Kind::Queue => "mln_delivery_queue",
             Kind::OffscreenDevice => "mln_offscreen_device",
@@ -53,6 +56,7 @@ pub(crate) enum Object {
     Projection(Arc<ProjectionHandle>),
     ResourceRequest(Arc<ResourceRequest>),
     TransformRequest(Arc<TransformRequest>),
+    Expression(Arc<ExpressionHandle>),
     /// Holds the results a drained batch's view points at.
     Batch(#[allow(dead_code)] Arc<Vec<mln_render_frame_result>>),
     Queue(Arc<DeliveryQueue>),
@@ -75,6 +79,7 @@ impl Object {
             Object::Projection(_) => Kind::Projection,
             Object::ResourceRequest(_) => Kind::ResourceRequest,
             Object::TransformRequest(_) => Kind::TransformRequest,
+            Object::Expression(_) => Kind::Expression,
             Object::Batch(_) => Kind::Batch,
             Object::Queue(_) => Kind::Queue,
             Object::OffscreenDevice => Kind::OffscreenDevice,
@@ -162,6 +167,7 @@ fn kind_of(byte: u8) -> Option<Kind> {
         Kind::Projection,
         Kind::ResourceRequest,
         Kind::TransformRequest,
+        Kind::Expression,
         Kind::Batch,
         Kind::Queue,
         Kind::OffscreenDevice,

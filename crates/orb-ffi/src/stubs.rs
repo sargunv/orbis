@@ -231,19 +231,6 @@ pub unsafe extern "C" fn mln_map_add_custom_vector_source(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_add_custom_vector_source") }
 }
 
-/// `mln_map_add_geo_json_source`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_add_geo_json_source(
-    map: mln_map,
-    source_id: mln_buffer_view,
-    options: *const mln_geo_json_source_options,
-    attribution: mln_buffer_view,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_add_geo_json_source") }
-}
-
 /// `mln_map_add_image_source_image`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_add_image_source_image(
@@ -683,47 +670,6 @@ pub unsafe extern "C" fn mln_map_set_free_camera_options(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_free_camera_options") }
 }
 
-/// `mln_map_set_geo_json_source_data`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_geo_json_source_data(
-    map: mln_map,
-    source_id: mln_buffer_view,
-    data: mln_buffer_view,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_geo_json_source_data") }
-}
-
-/// `mln_map_set_geo_json_source_synchronous_tiling`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_geo_json_source_synchronous_tiling(
-    map: mln_map,
-    source_id: mln_buffer_view,
-    enabled: bool,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_map_set_geo_json_source_synchronous_tiling",
-        )
-    }
-}
-
-/// `mln_map_set_geo_json_source_url`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_geo_json_source_url(
-    map: mln_map,
-    source_id: mln_buffer_view,
-    url: mln_buffer_view,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_geo_json_source_url") }
-}
-
 /// `mln_map_set_image_source_coordinates`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_set_image_source_coordinates(
@@ -836,75 +782,6 @@ pub unsafe extern "C" fn mln_render_session_dump_debug_logs(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_dump_debug_logs") }
-}
-
-/// `mln_render_session_get_cluster_children`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_get_cluster_children(
-    session: mln_render_session,
-    source_id: mln_buffer_view,
-    cluster_id: u32,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_get_cluster_children") }
-}
-
-/// `mln_render_session_get_cluster_expansion_zoom`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_get_cluster_expansion_zoom(
-    session: mln_render_session,
-    source_id: mln_buffer_view,
-    cluster_id: u32,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_render_session_get_cluster_expansion_zoom",
-        )
-    }
-}
-
-/// `mln_render_session_get_cluster_leaves`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_get_cluster_leaves(
-    session: mln_render_session,
-    source_id: mln_buffer_view,
-    cluster_id: u32,
-    limit: u32,
-    offset: u32,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_get_cluster_leaves") }
-}
-
-/// `mln_render_session_query_rendered_features`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_query_rendered_features(
-    session: mln_render_session,
-    geometry: *const mln_rendered_query_geometry,
-    options: *const mln_rendered_feature_query_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(out_diagnostic, "mln_render_session_query_rendered_features")
-    }
-}
-
-/// `mln_render_session_query_source_features`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_query_source_features(
-    session: mln_render_session,
-    source_id: mln_buffer_view,
-    options: *const mln_source_feature_query_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_query_source_features") }
 }
 
 /// `mln_render_session_reduce_memory_use`: not implemented.
@@ -1242,44 +1119,6 @@ pub unsafe extern "C" fn mln_runtime_update_offline_region_metadata(
     }
 }
 
-/// `mln_style_expression_create`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_style_expression_create(
-    expression: mln_buffer_view,
-    options: *const mln_style_expression_options,
-    out_expression: *mut mln_style_expression,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_style_expression_create") }
-}
-
-/// `mln_style_expression_evaluate`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_style_expression_evaluate(
-    expression: mln_style_expression,
-    inputs: *const mln_style_expression_inputs,
-    out_json: *mut std::ffi::c_char,
-    json_capacity: usize,
-    out_json_length: *mut usize,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_style_expression_evaluate") }
-}
-
-/// `mln_style_expression_get_info`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_style_expression_get_info(
-    expression: mln_style_expression,
-    out_info: *mut mln_style_expression_info,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_style_expression_get_info") }
-}
-
-/// `mln_style_expression_release`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_style_expression_release(expression: mln_style_expression) {}
-
 /// `mln_vulkan_device_create`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_vulkan_device_create(
@@ -1356,6 +1195,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_logical_extent_physical_size,
         crate::base::mln_logical_extent_physical_size,
+    ];
+    let _ = [
+        crate::sys::mln_map_add_geo_json_source,
+        crate::style::mln_map_add_geo_json_source,
     ];
     let _ = [
         crate::sys::mln_map_add_style_layer_json,
@@ -1557,6 +1400,18 @@ const _: () = {
         crate::map::mln_map_set_event_mask,
     ];
     let _ = [
+        crate::sys::mln_map_set_geo_json_source_data,
+        crate::style::mln_map_set_geo_json_source_data,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_geo_json_source_synchronous_tiling,
+        crate::style::mln_map_set_geo_json_source_synchronous_tiling,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_geo_json_source_url,
+        crate::style::mln_map_set_geo_json_source_url,
+    ];
+    let _ = [
         crate::sys::mln_map_set_global_state_property,
         crate::style::mln_map_set_global_state_property,
     ];
@@ -1657,12 +1512,32 @@ const _: () = {
         crate::session::mln_render_session_get_capabilities,
     ];
     let _ = [
+        crate::sys::mln_render_session_get_cluster_children,
+        crate::queries::mln_render_session_get_cluster_children,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_get_cluster_expansion_zoom,
+        crate::queries::mln_render_session_get_cluster_expansion_zoom,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_get_cluster_leaves,
+        crate::queries::mln_render_session_get_cluster_leaves,
+    ];
+    let _ = [
         crate::sys::mln_render_session_get_failure,
         crate::session::mln_render_session_get_failure,
     ];
     let _ = [
         crate::sys::mln_render_session_get_snapshot,
         crate::session::mln_render_session_get_snapshot,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_query_rendered_features,
+        crate::queries::mln_render_session_query_rendered_features,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_query_source_features,
+        crate::queries::mln_render_session_query_source_features,
     ];
     let _ = [
         crate::sys::mln_render_session_read_texture,
@@ -1767,6 +1642,22 @@ const _: () = {
     let _ = [
         crate::sys::mln_runtime_set_resource_transform,
         crate::resources::mln_runtime_set_resource_transform,
+    ];
+    let _ = [
+        crate::sys::mln_style_expression_create,
+        crate::expression::mln_style_expression_create,
+    ];
+    let _ = [
+        crate::sys::mln_style_expression_evaluate,
+        crate::expression::mln_style_expression_evaluate,
+    ];
+    let _ = [
+        crate::sys::mln_style_expression_get_info,
+        crate::expression::mln_style_expression_get_info,
+    ];
+    let _ = [
+        crate::sys::mln_style_expression_release,
+        crate::expression::mln_style_expression_release,
     ];
     let _ = [
         crate::sys::mln_supported_render_backend_mask,
