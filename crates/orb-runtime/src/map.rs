@@ -1507,7 +1507,7 @@ impl Map {
         // Labels reading the daylight follow the ground's light.
         let frame_light = orb_render::FrameLight {
             ground: at.ground,
-            ..crate::light::frame_light(&root.light, self.camera.state().bearing)
+            ..crate::light::frame_light(&root.light, self.camera.state())
         };
         let mut frame_terrain = None;
         if let Some(style) = &mut self.style

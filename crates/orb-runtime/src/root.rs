@@ -35,10 +35,16 @@ pub(crate) struct LightValues {
     pub(crate) ambient_color: [f32; 4],
     pub(crate) ambient_intensity: f32,
     pub(crate) twilight: f32,
+    /// Toward a map-anchored sun on Earth-fixed axes, unit as evaluated
+    /// (an eased one is normalised where it's read): where it stands at
+    /// `dev.sargunv.orbis:datetime`, else as v8 places it, over 0°, 0°.
+    pub(crate) sun: [f32; 3],
+    /// Whether the sun comes from `dev.sargunv.orbis:datetime`.
+    pub(crate) timed: bool,
 }
 
 /// Slots a light eases in.
-const LIGHT_SLOTS: usize = 16;
+const LIGHT_SLOTS: usize = 19;
 
 impl LightValues {
     pub(crate) fn of(light: &Light, zoom: f64) -> Self {
@@ -52,6 +58,8 @@ impl LightValues {
             ambient_color: light.ambient_color.evaluate(zoom).premultiplied(),
             ambient_intensity: light.ambient_intensity.evaluate(zoom),
             twilight: light.twilight.evaluate(zoom),
+            sun: crate::light::map_sun(light, zoom),
+            timed: light.datetime.is_some(),
         }
     }
 
@@ -59,6 +67,7 @@ impl LightValues {
         let [r, g, b, a] = self.color;
         let [radius, azimuth, polar] = self.position;
         let [ar, ag, ab, aa] = self.ambient_color;
+        let [sx, sy, sz] = self.sun;
         [
             r,
             g,
@@ -76,6 +85,9 @@ impl LightValues {
             aa,
             self.ambient_intensity,
             self.twilight,
+            sx,
+            sy,
+            sz,
         ]
     }
 
@@ -89,6 +101,7 @@ impl LightValues {
             ambient_color: [s[10], s[11], s[12], s[13]],
             ambient_intensity: s[14],
             twilight: s[15],
+            sun: [s[16], s[17], s[18]],
             ..self
         }
     }
@@ -104,7 +117,11 @@ const LIGHT: &[(&str, usize)] = &[
     ("dev.sargunv.orbis:ambient-color", 4),
     ("dev.sargunv.orbis:ambient-intensity", 1),
     ("dev.sargunv.orbis:twilight", 1),
+    // Eased as `dev.sargunv.orbis:datetime` with a time, else `position`.
+    (SUN, 3),
 ];
+
+const SUN: &str = "sun";
 
 /// The sky's fields in slot order, with each one's slot count.
 const SKY: &[(&str, usize)] = &[
@@ -203,8 +220,16 @@ impl Root {
                 .map_or(style.transition, |(_, t)| t.over(style.transition))
         };
         let light = LightValues::of(&style.light, zoom).slots();
-        self.light
-            .start(LIGHT, &light, |name| lookup(&style.light.transitions, name));
+        let sun = match style.light.datetime {
+            Some(_) => orb_style::Preview::Datetime.name(),
+            None => "position",
+        };
+        self.light.start(LIGHT, &light, |name| {
+            lookup(
+                &style.light.transitions,
+                if name == SUN { sun } else { name },
+            )
+        });
         let sky = sky_slots(style.atmosphere.as_ref(), zoom);
         let none = Vec::new();
         let sky_transitions = style.atmosphere.as_ref().map_or(&none, |a| &a.transitions);

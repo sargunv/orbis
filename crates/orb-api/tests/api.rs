@@ -677,6 +677,48 @@ fn ground_lighting_darkens_the_night_side_to_its_limb() {
     );
 }
 
+/// `dev.sargunv.orbis:datetime` puts the night side where it is at that
+/// moment: at midnight UTC null island is dark and the antimeridian lit,
+/// at noon the other way round, wherever `position` says the sun is; a
+/// viewport-anchored light doesn't read it.
+#[test]
+fn a_datetime_puts_the_night_side_where_it_is() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let draw = |anchor: &str, time: &str, lon: f64| {
+        let style = format!(
+            r##"{{"version": 8, "projection": {{"type": "globe"}}, "center": [{lon}, 0], "zoom": 1,
+              "light": {{"anchor": "{anchor}", "position": [1.15, 0, 0],
+                "dev.sargunv.orbis:ground-lighting": 1, "dev.sargunv.orbis:ambient-intensity": 0.25,
+                "dev.sargunv.orbis:datetime": "{time}"}},
+              "sources": {{}}, "layers": [{{"id": "background", "type": "background",
+                "paint": {{"background-color": "#808080"}}}}]}}"##
+        );
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews: orb_api::Previews::ALL,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(&style).expect("style");
+        let image = map.snapshot(WIDE, WIDE, 1.0).expect("snapshot");
+        pixel_of(&image.pixels, WIDE, WIDE / 2, WIDE / 2)[0]
+    };
+    const WIDE: u32 = 128;
+    let (day, night) = (0x80, 0x80 / 2);
+    for (time, lit, dark) in [
+        ("2026-06-21T00:00:00Z", 180.0, 0.0),
+        ("2026-06-21T12:00:00Z", 0.0, 180.0),
+        // The same moment, written in Tokyo's time.
+        ("2026-06-21T21:00:00+09:00", 0.0, 180.0),
+    ] {
+        assert_eq!(draw("map", time, lit), day, "{time} at {lit}");
+        assert!(draw("map", time, dark) < night, "{time} at {dark}");
+    }
+    // A viewport light stands over the target, overhead here, at any time.
+    assert_eq!(draw("viewport", "2026-06-21T00:00:00Z", 0.0), day);
+}
+
 /// `dev.sargunv.orbis:color-space`: a translucent fill mixes with what's
 /// beneath in linear light, opaque colours draw as they are, and without
 /// the preview the key warns and the map blends as GL JS does. A map

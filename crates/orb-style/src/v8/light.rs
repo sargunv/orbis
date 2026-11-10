@@ -17,16 +17,90 @@ const GROUND_LIGHTING: &str = "dev.sargunv.orbis:ground-lighting";
 const AMBIENT_COLOR: &str = "dev.sargunv.orbis:ambient-color";
 const AMBIENT_INTENSITY: &str = "dev.sargunv.orbis:ambient-intensity";
 const TWILIGHT: &str = "dev.sargunv.orbis:twilight";
+pub(crate) const DATETIME: &str = "dev.sargunv.orbis:datetime";
 
 /// The light's properties beyond the spec, each behind its preview; all
 /// transition.
-const PREVIEWS: [(&str, Preview); 5] = [
+const PREVIEWS: [(&str, Preview); 6] = [
     (SHADOW_INTENSITY, Preview::ShadowIntensity),
     (GROUND_LIGHTING, Preview::GroundLighting),
     (AMBIENT_COLOR, Preview::AmbientColor),
     (AMBIENT_INTENSITY, Preview::AmbientIntensity),
     (TWILIGHT, Preview::Twilight),
+    (DATETIME, Preview::Datetime),
 ];
+
+/// `dev.sargunv.orbis:datetime` as milliseconds since 1970 UTC: a number
+/// as is, or an RFC 3339 date and time; `None` (warned) for anything else.
+fn datetime(cx: &mut Cx, json: &Json) -> Option<f64> {
+    let path = format!("light.{DATETIME}");
+    let ms = match &json.value {
+        orb_expr::json::JsonValue::Number(n) => Some(*n).filter(|n| n.is_finite()),
+        orb_expr::json::JsonValue::String(s) => rfc3339(s),
+        _ => None,
+    };
+    if ms.is_none() {
+        cx.warn(
+            path,
+            json.span,
+            format!("an RFC 3339 date and time or milliseconds since 1970 expected, {json} found; ignored"),
+        );
+    }
+    ms
+}
+
+/// An RFC 3339 date and time (`2026-06-21T12:00:00Z`, fractional seconds
+/// and a `±hh:mm` offset allowed) as milliseconds since 1970 UTC.
+fn rfc3339(s: &str) -> Option<f64> {
+    let b = s.as_bytes();
+    let digits = |r: std::ops::Range<usize>| -> Option<i64> {
+        let part = b.get(r)?;
+        part.iter()
+            .all(u8::is_ascii_digit)
+            .then(|| (part.iter()).fold(0, |n, d| n * 10 + i64::from(d - b'0')))
+    };
+    let at = |i: usize, c: &[u8]| b.get(i).is_some_and(|x| c.contains(x));
+    if !(at(4, b"-") && at(7, b"-") && at(10, b"Tt ") && at(13, b":") && at(16, b":")) {
+        return None;
+    }
+    let (y, mo, d) = (digits(0..4)?, digits(5..7)?, digits(8..10)?);
+    let (h, mi, sec) = (digits(11..13)?, digits(14..16)?, digits(17..19)?);
+    let mut i = 19;
+    let mut fraction = 0.0;
+    if at(i, b".") {
+        let end = (i + 1..b.len())
+            .find(|&j| !b[j].is_ascii_digit())
+            .unwrap_or(b.len());
+        fraction = s.get(i..end)?.parse::<f64>().ok()?;
+        i = end;
+    }
+    let offset = if at(i, b"Zz") && i + 1 == b.len() {
+        0
+    } else if at(i, b"+-") && at(i + 3, b":") && i + 6 == b.len() {
+        let minutes = digits(i + 1..i + 3)? * 60 + digits(i + 4..i + 6)?;
+        if b[i] == b'-' { -minutes } else { minutes }
+    } else {
+        return None;
+    };
+    let days_in = |m: i64| match m {
+        2 if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=12).contains(&mo) || !(1..=days_in(mo)).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    // Days since 1970 from the civil date (Howard Hinnant's algorithm).
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((mo + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let seconds = ((days * 24 + h) * 60 + mi - offset) * 60 + sec;
+    Some((seconds as f64 + fraction) * 1000.0)
+}
 
 pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
     let prop = |name, ty, default, interpolated, minimum, maximum| Prop {
@@ -126,6 +200,9 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
         ),
         ambient_intensity: read(cx, json, &on, &number(AMBIENT_INTENSITY, "0.5", 1.0)),
         twilight: read(cx, json, &on, &number(TWILIGHT, "12", 90.0)),
+        datetime: (json.and_then(|j| j.get(DATETIME)))
+            .filter(|_| on[PREVIEWS.len() - 1])
+            .and_then(|value| datetime(cx, value)),
         transitions: crate::v8::paint::root_transitions(cx, json, "light", &transitioned),
     }
 }
@@ -179,5 +256,43 @@ mod tests {
         }
         assert_eq!(off.light.ground_lighting.evaluate(0.0), 0.0);
         assert!(off.light.transitions.is_empty());
+    }
+
+    #[test]
+    fn datetime_reads_rfc_3339_or_milliseconds_behind_its_preview() {
+        let parse = |value: &str, previews| {
+            let doc = format!(
+                r#"{{"version": 8, "sources": {{}}, "layers": [],
+                    "light": {{"anchor": "map", "dev.sargunv.orbis:datetime": {value}}}}}"#
+            );
+            let style = crate::v8::parse_with(&doc, previews, &[]).unwrap();
+            (style.light.datetime, style.warnings.len())
+        };
+        let on = Previews::NONE.with(Preview::Datetime);
+        // 2026-06-21T12:00:00Z, as `Date.UTC(2026, 5, 21, 12)`.
+        let noon = 1_782_043_200_000.0;
+        assert_eq!(parse("\"2026-06-21T12:00:00Z\"", on), (Some(noon), 0));
+        assert_eq!(parse(&noon.to_string(), on), (Some(noon), 0));
+        assert_eq!(
+            parse("\"2026-06-21T21:30:00.5+09:30\"", on),
+            (Some(noon + 500.0), 0)
+        );
+        assert_eq!(
+            parse("\"1969-12-31T23:59:59-00:00\"", on),
+            (Some(-1000.0), 0)
+        );
+        assert_eq!(
+            parse("\"2024-02-29T00:00:00Z\"", on).0,
+            Some(1_709_164_800_000.0)
+        );
+        for bad in [
+            "\"2026-02-29T00:00:00Z\"",
+            "\"2026-06-21\"",
+            "\"2026-06-21T12:00:00\"",
+            "true",
+        ] {
+            assert_eq!(parse(bad, on), (None, 1), "{bad}");
+        }
+        assert_eq!(parse("\"2026-06-21T12:00:00Z\"", Previews::NONE), (None, 1));
     }
 }

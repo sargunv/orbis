@@ -1,5 +1,5 @@
 // The map options panel: switches for what the entry's style draws
-// (terrain, the light's anchor, buildings and their shadows, the globe and
+// (terrain, the light's anchor and its sun's time, buildings and their shadows, the globe and
 // its sky, labels, the colour space), grouped, and only those the style
 // can take. Each choice is one edit of the live style through `map.edit`,
 // so nothing reloads, and a comparison's other maps follow it as they
@@ -12,6 +12,7 @@ import { h } from "./dom.js";
 
 const COLOR_SPACE = "dev.sargunv.orbis:color-space";
 const GROUND_LIGHTING = "dev.sargunv.orbis:ground-lighting";
+const DATETIME = "dev.sargunv.orbis:datetime";
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
 const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map(
   (p) => `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-${p}`,
@@ -141,6 +142,27 @@ export const OPTIONS = [
         ...style.light,
         [GROUND_LIGHTING]: on ? designed.light[GROUND_LIGHTING] : 0,
       }),
+  },
+  {
+    key: "now",
+    group: "Terrain and light",
+    label: "Sun now",
+    note: "Where the sun stands at this moment",
+    kind: "switch",
+    orbisOnly: true,
+    supported: ({ designed }) => nonzero(designed.light?.[GROUND_LIGHTING], 0),
+    read: (style) => style.light?.[DATETIME] !== undefined,
+    // The time is a map-anchored sun's: it puts the light on the map, as
+    // the Light option's Map does.
+    apply(tx, on, { style }) {
+      const { [DATETIME]: _, ...light } = style.light ?? {};
+      if (on)
+        for (const layer of ofType(style, "hillshade"))
+          tx.setPaintProperty(layer.id, HILLSHADE_ANCHOR, "map");
+      tx.setLight(
+        on ? { ...light, anchor: "map", [DATETIME]: Date.now() } : light,
+      );
+    },
   },
   {
     key: "buildings",

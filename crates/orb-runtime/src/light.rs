@@ -7,17 +7,30 @@ use orb_style::TranslateAnchor;
 
 use crate::root::LightValues;
 
-/// The light, evaluated, for a camera turned `bearing` degrees.
-pub(crate) fn frame_light(light: &LightValues, bearing: f64) -> FrameLight {
+/// The light, evaluated, for `camera`.
+pub(crate) fn frame_light(light: &LightValues, camera: &orb_camera::CameraState) -> FrameLight {
     let [r, g, b, _] = light.color;
     let [radius, azimuth, polar] = light.position.map(f64::from);
     // GL JS's `sphericalToCartesian`.
     let (a, p) = ((azimuth + 90.0).to_radians(), polar.to_radians());
-    let [x, y, z] = [a.cos() * p.sin(), a.sin() * p.sin(), p.cos()].map(|v| radius * v);
+    let [mut x, mut y, mut z] = [a.cos() * p.sin(), a.sin() * p.sin(), p.cos()].map(|v| radius * v);
     let (s, c) = match light.anchor {
-        TranslateAnchor::Viewport => bearing.to_radians().sin_cos(),
+        TranslateAnchor::Viewport => camera.bearing.to_radians().sin_cos(),
         TranslateAnchor::Map => (0.0, 1.0),
     };
+    if light.anchor == TranslateAnchor::Map && light.timed {
+        // The sun as it stands over the target, in the same axes (west,
+        // north, up), its direct light fading out as it sets.
+        let sun = sun_direction(light);
+        let local = orb_crs::sphere::frame(camera.target).transpose() * sun;
+        let half = (f64::from(light.twilight) / 2.0).to_radians().sin();
+        let day = if half > 0.0 {
+            smoothstep(-half, half, local.z)
+        } else {
+            f64::from(u8::from(local.z >= 0.0))
+        };
+        [x, y, z] = [-local.x, local.y, local.z].map(|v| radius * day * v);
+    }
     FrameLight {
         color: [r, g, b],
         intensity: light.intensity,
@@ -120,14 +133,70 @@ fn globe_sky(
 /// map's is fixed to the globe, standing so over null island (0°, 0°), so
 /// the night side turns with the Earth.
 fn toward_light(camera: &orb_camera::CameraState, light: &LightValues) -> glam::DVec3 {
-    let [_, azimuth, polar] = light.position.map(f64::from);
-    let (at, azimuth) = match light.anchor {
-        TranslateAnchor::Viewport => (camera.target, azimuth + camera.bearing),
-        TranslateAnchor::Map => (Geodetic::new(0.0, 0.0), azimuth),
-    };
+    match light.anchor {
+        TranslateAnchor::Viewport => {
+            let [_, azimuth, polar] = light.position;
+            over(
+                camera.target,
+                f64::from(azimuth) + camera.bearing,
+                polar.into(),
+            )
+        }
+        TranslateAnchor::Map => sun_direction(light),
+    }
+}
+
+/// Toward a light at `azimuth` (clockwise from north) and `polar` degrees
+/// from the zenith over `at`, unit, on Earth-fixed axes.
+fn over(at: Geodetic, azimuth: f64, polar: f64) -> glam::DVec3 {
     let (a, p) = (azimuth.to_radians(), polar.to_radians());
     let local = glam::DVec3::new(p.sin() * a.sin(), p.sin() * a.cos(), p.cos());
     (orb_crs::sphere::frame(at) * local).normalize()
+}
+
+/// Toward the map-anchored sun, unit, on Earth-fixed axes.
+fn sun_direction(light: &LightValues) -> glam::DVec3 {
+    let sun = glam::DVec3::from(light.sun.map(f64::from));
+    sun.try_normalize().unwrap_or(glam::DVec3::Z)
+}
+
+/// Toward a map-anchored sun on Earth-fixed axes: overhead where it is at
+/// `dev.sargunv.orbis:datetime`, else as `position` places it over 0°, 0°.
+pub(crate) fn map_sun(light: &orb_style::Light, zoom: f64) -> [f32; 3] {
+    let sun = match light.datetime {
+        Some(ms) => orb_crs::sphere::up(subsolar(ms)),
+        None => {
+            let [_, azimuth, polar] = light.position.evaluate(zoom);
+            over(Geodetic::new(0.0, 0.0), azimuth.into(), polar.into())
+        }
+    };
+    sun.as_vec3().to_array()
+}
+
+/// Where the sun is overhead at `ms` milliseconds since 1970 UTC: the
+/// Astronomical Almanac's low-precision solar coordinates (about 0.01°
+/// from 1950 to 2050) and the Greenwich mean sidereal time.
+fn subsolar(ms: f64) -> Geodetic {
+    // Days since J2000.0, 2000-01-01T12:00Z.
+    let d = ms / 86_400_000.0 - 10_957.5;
+    let mean_longitude = 280.460 + 0.985_647_4 * d;
+    let anomaly = (357.528 + 0.985_600_3 * d).to_radians();
+    let longitude =
+        (mean_longitude + 1.915 * anomaly.sin() + 0.020 * (2.0 * anomaly).sin()).to_radians();
+    let obliquity = (23.439 - 0.000_000_4 * d).to_radians();
+    let right_ascension = (obliquity.cos() * longitude.sin()).atan2(longitude.cos());
+    let declination = (obliquity.sin() * longitude.sin()).asin();
+    let sidereal = 280.460_618_37 + 360.985_647_366_29 * d;
+    let lon = (right_ascension.to_degrees() - sidereal).rem_euclid(360.0);
+    Geodetic::new(
+        if lon > 180.0 { lon - 360.0 } else { lon },
+        declination.to_degrees(),
+    )
+}
+
+fn smoothstep(low: f64, high: f64, x: f64) -> f64 {
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// The view ray's matrix for the atmosphere: clip → camera-relative space
@@ -146,14 +215,74 @@ fn ray_inverse(view: &orb_camera::View, target: Geodetic) -> [[f32; 4]; 4] {
 mod tests {
     use super::*;
 
+    /// The sun overhead at a solstice's and an equinox's moments, against
+    /// published ephemerides.
+    #[test]
+    fn the_sun_stands_where_it_does_at_a_time() {
+        // 2026-06-21T12:00Z: declination 23.43°, solar noon at Greenwich
+        // 1.6 minutes later (the equation of time), so 0.4° east.
+        let noon = subsolar(1_782_043_200_000.0);
+        assert!((noon.lat - 23.43).abs() < 0.02, "{noon:?}");
+        assert!((noon.lon - 0.4).abs() < 0.1, "{noon:?}");
+        // 2026-03-20T14:46Z, the equinox: on the equator, the mean sun's
+        // 41.5° W less the equation of time's 7.4 minutes, 1.85°.
+        let equinox = subsolar(1_774_017_960_000.0);
+        assert!(equinox.lat.abs() < 0.02, "{equinox:?}");
+        assert!((equinox.lon - -39.65).abs() < 0.1, "{equinox:?}");
+    }
+
+    /// With a time, a map-anchored light's extrusions take the sun as it
+    /// stands over the target, and none of its direct light once it has set.
+    #[test]
+    fn a_timed_sun_lights_the_extrusions_as_it_stands_over_the_target() {
+        let style = |time: &str| {
+            orb_style::v8::parse_with(
+                &format!(
+                    r#"{{"version": 8, "sources": {{}}, "layers": [],
+                        "light": {{"anchor": "map", "dev.sargunv.orbis:datetime": "{time}"}}}}"#
+                ),
+                orb_style::Previews::ALL,
+                &[],
+            )
+            .unwrap()
+        };
+        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let camera =
+            |lon| orb_camera::CameraState::new(Geodetic::new(lon, 0.0), 2.0, tms.projection());
+        let light =
+            |time, lon| frame_light(&LightValues::of(&style(time).light, 0.0), &camera(lon));
+        // Noon at Greenwich in June: high in the north, as GL JS's axes put it.
+        let [x, y, z] = light("2026-06-21T12:00:00Z", 0.0).position;
+        let radius = 1.15;
+        assert!(
+            (z / radius - 23.43f32.to_radians().cos()).abs() < 0.01,
+            "{z}"
+        );
+        assert!(y > 0.0 && x.abs() < 0.01, "{x} {y}");
+        // Six hours later the sun sets there: low in the west...
+        let [x, _, z] = light("2026-06-21T17:00:00Z", 0.0).position;
+        assert!(x > 0.5 && z > 0.0 && z < 0.4, "{x} {z}");
+        // ...and stands over 90° W.
+        let [x, _, z] = light("2026-06-21T18:00:00Z", -90.0).position;
+        assert!(z > 1.0 && x.abs() < 0.1, "{x} {z}");
+        // Midnight: no direct light, and so no shadows.
+        let night = light("2026-06-21T00:00:00Z", 0.0);
+        assert_eq!(night.position, [0.0; 3]);
+        assert_eq!(night.shadow().1, 0.0);
+    }
+
     #[test]
     fn the_light_turns_with_a_viewport_anchor() {
         // v8's default light: intensity 0.5 at [1.15, 210, 30], turning
         // with the map.
         let light = LightValues::of(&orb_style::v8::default_light(), 0.0);
-        let still = frame_light(&light, 0.0);
+        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let mut camera =
+            orb_camera::CameraState::new(Geodetic::new(0.0, 0.0), 2.0, tms.projection());
+        let still = frame_light(&light, &camera);
         assert_eq!(still.intensity, 0.5);
-        let turned = frame_light(&light, 90.0);
+        camera.bearing = 90.0;
+        let turned = frame_light(&light, &camera);
         assert!((still.position[2] - turned.position[2]).abs() < 1e-6);
         assert!(
             (still.position[0] - turned.position[1]).abs() < 1e-5,

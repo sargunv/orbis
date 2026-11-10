@@ -72,6 +72,9 @@ pub enum Preview {
     /// `light["dev.sargunv.orbis:twilight"]`: the band of sun elevations
     /// the ground passes from night to day through, in degrees.
     Twilight,
+    /// `light["dev.sargunv.orbis:datetime"]`: the moment a map-anchored
+    /// sun stands for.
+    Datetime,
     /// `["dev.sargunv.orbis:daylight"]`: how lit the ground is where a
     /// label stands, which its colours may follow.
     Daylight,
@@ -79,7 +82,7 @@ pub enum Preview {
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Equirectangular,
         Self::NaturalEarth,
         Self::EqualEarth,
@@ -100,6 +103,7 @@ impl Preview {
         Self::AmbientColor,
         Self::AmbientIntensity,
         Self::Twilight,
+        Self::Datetime,
         Self::Daylight,
     ];
 
@@ -133,6 +137,7 @@ impl Preview {
             Self::AmbientColor => "dev.sargunv.orbis:ambient-color",
             Self::AmbientIntensity => "dev.sargunv.orbis:ambient-intensity",
             Self::Twilight => "dev.sargunv.orbis:twilight",
+            Self::Datetime => "dev.sargunv.orbis:datetime",
             Self::Daylight => "dev.sargunv.orbis:daylight",
         }
     }
@@ -164,6 +169,7 @@ impl Preview {
             | Self::AmbientColor
             | Self::AmbientIntensity
             | Self::Twilight
+            | Self::Datetime
             | Self::Daylight => return None,
         })
     }
@@ -220,7 +226,7 @@ impl Preview {
                 "`metadata[\"dev.sargunv.orbis:color-space\"]`, the space colours mix in wherever they meet: `\"srgb\"` (the default) mixes gamma-encoded values, as GL JS and MapLibre Native do; `\"linear\"` mixes linear light: translucent layers, antialiased edges, the terrain's drape, hillshade, fog, the sky's gradients and the globe's scattering, which then adds to what's beneath exactly. Colours in the style keep their meaning: one interpolates as the spec says, then mixes in linear light. In `metadata`, so GL JS, Native and validators ignore it. Our own design; no proposal yet."
             }
             Self::GroundLighting => {
-                "`light[\"dev.sargunv.orbis:ground-lighting\"]` (0 to 1, default 0, off): how much `light` shades the ground, so that a globe has a day side and a night side. The ground (every layer beneath the first symbol layer, on the globe, on terrain and on flat maps; labels keep their colours, which may follow it through `[\"dev.sargunv.orbis:daylight\"]`) is multiplied, in linear light, by the sun's `light.color` where the sun is up and by the ambient light (`dev.sargunv.orbis:ambient-color` times `dev.sargunv.orbis:ambient-intensity`) where it's down, passing from one to the other over `dev.sargunv.orbis:twilight`; this value mixes that toward no change. The sun is where `light.position` says, its polar angle from the zenith: with a viewport anchor over the camera's target, its azimuth from the top of the view (turning with the bearing, not the pitch); with a map anchor fixed to the globe, as if over 0°, 0°, so the night side turns with the Earth. Each point takes the globe's normal there, and a flat map its target's; the sky is lit as the target's ground, so a night view's sky is dark too, while the space around a globe seen from orbit stays unlit. The globe's scattering is lit by the same sun whether or not the light shades the ground (see Light and atmosphere), so shading it darkens the night side and moves nothing. Under a white sun the day side keeps the map's own colours: ground lighting only darkens, and brightening stays `sky.atmosphere-blend`'s, which keeps its spec meaning. `light.intensity` stays the extrusions', and slopes stay the hillshade's. It transitions and takes zoom expressions like the rest of `light`. As a style-spec proposal: `light.ground-lighting` with `light.ambient-color`, `light.ambient-intensity` and `light.twilight`, defined as here, the ambient pair shared with maplibre/maplibre#555's ambient light for extrusions; prior art is Mapbox GL v3's ambient and directional `lights`. Our own design; no proposal yet."
+                "`light[\"dev.sargunv.orbis:ground-lighting\"]` (0 to 1, default 0, off): how much `light` shades the ground, so that a globe has a day side and a night side. The ground (every layer beneath the first symbol layer, on the globe, on terrain and on flat maps; labels keep their colours, which may follow it through `[\"dev.sargunv.orbis:daylight\"]`) is multiplied, in linear light, by the sun's `light.color` where the sun is up and by the ambient light (`dev.sargunv.orbis:ambient-color` times `dev.sargunv.orbis:ambient-intensity`) where it's down, passing from one to the other over `dev.sargunv.orbis:twilight`; this value mixes that toward no change. The sun is where `light.position` says, its polar angle from the zenith: with a viewport anchor over the camera's target, its azimuth from the top of the view (turning with the bearing, not the pitch); with a map anchor fixed to the globe, as if over 0°, 0°, so the night side turns with the Earth, or where it stands at `dev.sargunv.orbis:datetime`. Each point takes the globe's normal there, and a flat map its target's; the sky is lit as the target's ground, so a night view's sky is dark too, while the space around a globe seen from orbit stays unlit. The globe's scattering is lit by the same sun whether or not the light shades the ground (see Light and atmosphere), so shading it darkens the night side and moves nothing. Under a white sun the day side keeps the map's own colours: ground lighting only darkens, and brightening stays `sky.atmosphere-blend`'s, which keeps its spec meaning. `light.intensity` stays the extrusions', and slopes stay the hillshade's. It transitions and takes zoom expressions like the rest of `light`. As a style-spec proposal: `light.ground-lighting` with `light.ambient-color`, `light.ambient-intensity` and `light.twilight`, defined as here, the ambient pair shared with maplibre/maplibre#555's ambient light for extrusions; prior art is Mapbox GL v3's ambient and directional `lights`. Our own design; no proposal yet."
             }
             Self::AmbientColor => {
                 "`light[\"dev.sargunv.orbis:ambient-color\"]` (colour, default `white`): the colour of the light the ground keeps where the sun is down, under `dev.sargunv.orbis:ground-lighting`. It mirrors maplibre/maplibre#555's proposed `light.ambient-color` and takes that name if the spec approves it; the extrusions don't read it yet."
@@ -230,6 +236,9 @@ impl Preview {
             }
             Self::Twilight => {
                 "`light[\"dev.sargunv.orbis:twilight\"]` (degrees, 0 to 90, default 12): the band of sun elevations, centred on the horizon, over which ground lit by `dev.sargunv.orbis:ground-lighting` passes smoothly from the ambient light to the sun's; 0 is a sharp terminator. Our own design."
+            }
+            Self::Datetime => {
+                "`light[\"dev.sargunv.orbis:datetime\"]` (default none): the moment a map-anchored light's sun stands for, so that the night side is the real one: an RFC 3339 date and time (`\"2026-06-21T12:00:00Z\"`, or with an offset such as `+09:00`), or milliseconds since 1970 UTC as JavaScript's `Date.now()` gives them. The sun then stands overhead where it does at that moment (its declination and the Earth's turn, within about a hundredth of a degree for centuries around 2000), and `light.position`'s azimuth and polar angle aren't read. Ground lighting and the globe's scattering take that sun; the extrusions' shading and shadows take it as it stands over the camera's target, its direct light fading out over `dev.sargunv.orbis:twilight` as it sets, so buildings at night keep only the light that doesn't come from the sun. A viewport-anchored light doesn't read it. An edit to it, or between it and a position, moves the sun across the sky by the light's transition rather than through the hours between. A constant, not an expression. Our own design; no proposal yet."
             }
             Self::Daylight => {
                 "`[\"dev.sargunv.orbis:daylight\"]`: how lit the ground is where a label stands, from 0 at night to 1 by day, so that labels can read well on both sides of the terminator, as night-mode maps do with light text on dark halos: `[\"interpolate\", [\"linear\"], [\"dev.sargunv.orbis:daylight\"], 0, night, 1, day]`. It is the ground lighting's own day side at the label's anchor (the sun's elevation over the globe's normal there, eased over `dev.sargunv.orbis:twilight`), mixed toward 1 as `dev.sargunv.orbis:ground-lighting` falls, so it is 1 everywhere while the light doesn't shade the ground. `text-color`, `text-halo-color`, `icon-color` and `icon-halo-color` read it, per label every frame in the shaders, as the input of one `step` with one stop or one linear or exponential `interpolate` in RGB with at most two, whose stops may read zoom, data and state like any colour; another shape warns and draws the day side's value. Filters and other properties don't read it. Our own design; no proposal yet."

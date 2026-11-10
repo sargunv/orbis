@@ -30,6 +30,9 @@ pub struct Light {
     /// `dev.sargunv.orbis:twilight`: the sun elevations, degrees, centred
     /// on the horizon, over which the ground passes from ambient to sunlit.
     pub twilight: Property<f32>,
+    /// `dev.sargunv.orbis:datetime`: the moment a map-anchored sun stands
+    /// for, milliseconds since 1970 UTC; `None` places it by `position`.
+    pub datetime: Option<f64>,
     /// Each property's own `*-transition`, by property name.
     pub transitions: Vec<(String, crate::TransitionOverride)>,
 }

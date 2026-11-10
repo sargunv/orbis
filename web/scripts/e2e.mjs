@@ -1694,6 +1694,7 @@ const GLOBE_OPTIONS = {
   hillshade: true,
   light: "viewport",
   night: true,
+  now: false,
   buildings: true,
   shadows: true,
   ao: true,
@@ -1730,6 +1731,8 @@ async function options(browser, server) {
         values: app.options.values,
         style: {
           shadows: style.light["dev.sargunv.orbis:shadow-intensity"],
+          now: typeof style.light["dev.sargunv.orbis:datetime"],
+          anchor: style.light.anchor,
           projection: style.projection.type,
           terrain: Boolean(style.terrain),
           colors: style.metadata["dev.sargunv.orbis:color-space"],
@@ -1757,6 +1760,8 @@ async function options(browser, server) {
     values: { ...GLOBE_OPTIONS, ...values },
     style: {
       shadows: 0.5,
+      now: "undefined",
+      anchor: "viewport",
       projection: "globe",
       terrain: false,
       colors: "linear",
@@ -1835,6 +1840,27 @@ async function options(browser, server) {
     state,
     expect({ colors: "srgb" }, { colors: "srgb" }, ["fog"], { colors: "srgb" }),
     "shadows back on and the globe leave the URL",
+  );
+  // The sun now: a time, which puts the light on the map.
+  await option(page, "now").click();
+  await settles(
+    page,
+    state,
+    expect(
+      { colors: "srgb", now: true, light: "map" },
+      { colors: "srgb", now: "number", anchor: "map" },
+      ["fog"],
+      { colors: "srgb", now: "1", light: "map" },
+    ),
+    "the sun now fixes the light to the map",
+  );
+  await option(page, "now").click();
+  await option(page, "light").locator('[data-value="viewport"]').click();
+  await settles(
+    page,
+    state,
+    expect({ colors: "srgb" }, { colors: "srgb" }, ["fog"], { colors: "srgb" }),
+    "the designed sun back",
   );
   await option(page, "buildings").click();
   await settles(
