@@ -14,9 +14,18 @@ use orb_hal::*;
 
 use super::{Words, move_buffer};
 
-/// Words per row of a data texture (`data_texture.wgsl`'s `DATA_WIDTH`).
+/// Words per row of a data texture on a device with `limits`
+/// (`data_texture.wgsl`'s `DATA_WIDTH`): 4096, or WebGL 2's least texture
+/// side, 2048, on a device whose side is shorter (`with_data_width`
+/// narrows the shaders to it).
 #[cfg(cpu_driven)]
-pub(crate) const DATA_WIDTH: u32 = 1 << 12;
+pub(crate) fn data_width(limits: &Limits) -> u32 {
+    if limits.max_texture_dimension_2d >= 1 << 12 {
+        1 << 12
+    } else {
+        1 << 11
+    }
+}
 
 /// A table of the scene.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,7 +127,9 @@ impl Backing {
                     / 4
             }
             #[cfg(cpu_driven)]
-            Self::Texture => u64::from(DATA_WIDTH) * u64::from(limits.max_texture_dimension_2d),
+            Self::Texture => {
+                u64::from(data_width(limits)) * u64::from(limits.max_texture_dimension_2d)
+            }
         };
         words.min(u64::from(u32::MAX)) as u32
     }
@@ -163,20 +174,21 @@ impl Place {
 /// Queues `words` into a data texture from word `at`: what's left of
 /// its row, the whole rows after, then the start of the last.
 fn write_texels(gpu: &mut dyn Gpu, texture: TextureId, at: u32, words: &[u32]) {
+    let row = data_width(&gpu.caps().limits);
     let (mut at, mut words) = (at, words);
     while !words.is_empty() {
-        let x = at % DATA_WIDTH;
-        let (width, height) = if x == 0 && words.len() >= DATA_WIDTH as usize {
-            (DATA_WIDTH, words.len() as u32 / DATA_WIDTH)
+        let x = at % row;
+        let (width, height) = if x == 0 && words.len() >= row as usize {
+            (row, words.len() as u32 / row)
         } else {
-            ((DATA_WIDTH - x).min(words.len() as u32), 1)
+            ((row - x).min(words.len() as u32), 1)
         };
         let n = (width * height) as usize;
         gpu.write_texture(
             &TextureRegion {
                 texture,
                 x,
-                y: at / DATA_WIDTH,
+                y: at / row,
                 layer: 0,
                 width,
                 height,
@@ -192,9 +204,10 @@ fn write_texels(gpu: &mut dyn Gpu, texture: TextureId, at: u32, words: &[u32]) {
 /// A data texture of `rows` rows.
 #[cfg(cpu_driven)]
 fn data_texture(gpu: &mut dyn Gpu, label: &str, rows: u32) -> TextureId {
+    let width = data_width(&gpu.caps().limits);
     gpu.create_texture(&TextureDesc {
         label,
-        width: DATA_WIDTH,
+        width,
         height: rows.max(1),
         array_layers: 1,
         dimension: TextureViewDimension::D2,
@@ -206,10 +219,10 @@ fn data_texture(gpu: &mut dyn Gpu, label: &str, rows: u32) -> TextureId {
     })
 }
 
-/// Rows of a data texture `words` take.
+/// Rows of a data texture `width` words wide that `words` take.
 #[cfg(cpu_driven)]
-fn rows(words: u64) -> u32 {
-    words.div_ceil(u64::from(DATA_WIDTH)).max(1) as u32
+pub(super) fn rows(words: u64, width: u32) -> u32 {
+    words.div_ceil(u64::from(width)).max(1) as u32
 }
 
 /// A table on its own, out of the scene's: the image atlas's rects, the
@@ -237,7 +250,10 @@ impl DataTable {
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             })),
             #[cfg(cpu_driven)]
-            Backing::Texture => TablePlace::Texture(data_texture(gpu, label, rows(words))),
+            Backing::Texture => {
+                let rows = rows(words, data_width(&gpu.caps().limits));
+                TablePlace::Texture(data_texture(gpu, label, rows))
+            }
         };
         Self { place }
     }
@@ -317,6 +333,8 @@ impl TableWriter {
 #[cfg(cpu_driven)]
 struct RowTexture {
     texture: TextureId,
+    /// Its rows' words ([`data_width`]).
+    width: u32,
     /// Per table of [`ROWS`], its first row and its rows.
     regions: [(u32, u32); 4],
     bases: BufferId,
@@ -330,10 +348,12 @@ impl RowTexture {
             size: 16,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        let regions = layout(words);
+        let width = data_width(&gpu.caps().limits);
+        let regions = layout(words, width);
         let texture = data_texture(gpu, "rows", total(&regions));
         let rows = Self {
             texture,
+            width,
             regions,
             bases,
         };
@@ -342,14 +362,14 @@ impl RowTexture {
     }
 
     fn write_bases(&self, gpu: &mut dyn Gpu) {
-        let bases = self.regions.map(|(first, _)| first * DATA_WIDTH);
+        let bases = self.regions.map(|(first, _)| first * self.width);
         gpu.write_buffer(self.bases, 0, bytemuck::cast_slice(&bases));
     }
 
     fn place(&self, region: usize) -> Place {
         Place::Texture {
             texture: self.texture,
-            base: self.regions[region].0 * DATA_WIDTH,
+            base: self.regions[region].0 * self.width,
         }
     }
 
@@ -358,14 +378,14 @@ impl RowTexture {
     fn resize(&mut self, gpu: &mut dyn Gpu, region: usize, words: u64, keep: u64) {
         let mut sizes = self
             .regions
-            .map(|(_, rows)| u64::from(rows) * u64::from(DATA_WIDTH));
+            .map(|(_, rows)| u64::from(rows) * u64::from(self.width));
         sizes[region] = words;
-        let regions = layout(sizes);
+        let regions = layout(sizes, self.width);
         let texture = data_texture(gpu, "rows", total(&regions));
         let copies: Vec<TextureCopy> = (0..ROWS.len())
             .filter_map(|r| {
                 let kept = if r == region {
-                    if keep == 0 { 0 } else { rows(keep) }
+                    if keep == 0 { 0 } else { rows(keep, self.width) }
                 } else {
                     self.regions[r].1
                 }
@@ -373,7 +393,7 @@ impl RowTexture {
                 (kept > 0).then(|| TextureCopy {
                     from: [0, self.regions[r].0, 0],
                     to: [0, regions[r].0, 0],
-                    size: [DATA_WIDTH, kept, 1],
+                    size: [self.width, kept, 1],
                 })
             })
             .collect();
@@ -394,11 +414,12 @@ impl RowTexture {
 }
 
 #[cfg(cpu_driven)]
-/// The row tables' regions, one after another, for tables of `words`.
-fn layout(words: [u64; 4]) -> [(u32, u32); 4] {
+/// The row tables' regions, one after another, for tables of `words`
+/// in rows `width` words wide.
+fn layout(words: [u64; 4], width: u32) -> [(u32, u32); 4] {
     let mut first = 0;
     words.map(|w| {
-        let region = (first, rows(w));
+        let region = (first, rows(w, width));
         first += region.1;
         region
     })
@@ -483,10 +504,13 @@ impl Tables {
                     .get_or_insert_with(|| RowTexture::new(gpu, ROWS.map(|t| words[t.index()])))
                     .place(region),
                 None if table == Table::Candidates => Place::Cpu,
-                None => Place::Texture {
-                    texture: data_texture(gpu, table.label(), self::rows(words[table.index()])),
-                    base: 0,
-                },
+                None => {
+                    let rows = self::rows(words[table.index()], data_width(&gpu.caps().limits));
+                    Place::Texture {
+                        texture: data_texture(gpu, table.label(), rows),
+                        base: 0,
+                    }
+                }
             },
         });
         #[cfg(cpu_driven)]
@@ -585,11 +609,12 @@ impl Tables {
             }
             #[cfg(cpu_driven)]
             Place::Texture { texture, .. } => {
-                let moved = data_texture(gpu, table.label(), rows(words));
+                let width = data_width(&gpu.caps().limits);
+                let moved = data_texture(gpu, table.label(), rows(words, width));
                 let kept = if keep == 0 {
                     0
                 } else {
-                    rows(keep).min(rows(words))
+                    rows(keep, width).min(rows(words, width))
                 };
                 if kept > 0 {
                     gpu.submit(&[Pass::CopyTexture {
@@ -598,7 +623,7 @@ impl Tables {
                         copies: vec![TextureCopy {
                             from: [0; 3],
                             to: [0; 3],
-                            size: [DATA_WIDTH, kept, 1],
+                            size: [width, kept, 1],
                         }],
                     }]);
                 }

@@ -147,6 +147,8 @@ fn module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
         } else {
             shader.texture_tables_source()
         };
+        let width = crate::scene::data_width(&gpu.caps().limits);
+        let source = orb_shaders::with_data_width(source, width);
         return gpu.create_shader_module(&ShaderModuleDesc {
             label: shader.label,
             source: source.into(),

@@ -4,7 +4,8 @@
 // functions the build script reflects from their structs
 // (`rows_texture.wgsl`, `terrain_rows_texture.wgsl`).
 
-// orb-render's DATA_WIDTH_LOG2.
+// orb-render's `data_width`: 4096 words, or 2048 on a device whose side is
+// shorter (`with_data_width` narrows it).
 const DATA_WIDTH_LOG2: u32 = 12u;
 
 fn data_word(t: texture_2d<u32>, i: u32) -> u32 {

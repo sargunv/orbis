@@ -128,6 +128,19 @@ impl Shader {
     }
 }
 
+/// `source` (a [`Shader::gl_source`] or
+/// [`texture_tables_source`](Shader::texture_tables_source)) reading data
+/// textures `width` words wide: 4096 as written, or 2048 on a device whose
+/// texture side is shorter (orb-render's `data_width`).
+pub fn with_data_width(source: String, width: u32) -> String {
+    const WRITTEN: &str = "const DATA_WIDTH_LOG2: u32 = 12u;";
+    if width == 1 << 12 || !source.contains(WRITTEN) {
+        return source;
+    }
+    let narrowed = format!("const DATA_WIDTH_LOG2: u32 = {}u;", width.ilog2());
+    source.replace(WRITTEN, &narrowed)
+}
+
 /// The name of WebGL 2's vertex input at `@location(0)`
 /// ([`with_attribute_zero`]).
 pub const ATTRIBUTE_ZERO: &str = "orb_attribute_zero";
