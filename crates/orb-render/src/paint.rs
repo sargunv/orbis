@@ -369,7 +369,18 @@ pub struct SymbolPaint {
     pub halo_width: f32,
     pub halo_blur: f32,
     pub table_mask: u32,
+    /// The slots' zoom curves; a colour's night stop shares its own.
     pub curves: [Curve; 5],
+    /// `["dev.sargunv.orbis:daylight"]`'s night stops of the colour and
+    /// the halo colour, slots 5 and 6.
+    pub night_color: [f32; 4],
+    pub night_halo_color: [f32; 4],
+    /// The colour's and halo colour's curves over the daylight, where they
+    /// follow it: the first stop's daylight, the last's, 0 for a step or 1
+    /// for an exponential curve, and its base.
+    pub daylight: [Option<[f32; 4]>; 2],
+    /// Words per feature of its property rows.
+    pub row_words: u32,
     pub translate: Translate,
     pub size: SymbolSize,
     /// For icons fitted to variable-anchored text: the text's size.
@@ -644,6 +655,8 @@ impl NodePaint {
                     p.translate.viewport,
                     false,
                     p.height_anchor_ground,
+                    p.daylight[0].is_some(),
+                    p.daylight[1].is_some(),
                 ];
                 b = Block::new(n::WORDS);
                 b.f(n::FILL_COLOR, &p.color).f(n::HALO_COLOR, &p.halo_color);
@@ -657,6 +670,11 @@ impl NodePaint {
                 p.size.put(&mut b, n::SIZE);
                 p.text_size.put(&mut b, n::TEXT_SIZE);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
+                b.u(n::ROW_WORDS, &[p.row_words]);
+                b.f(n::NIGHT_FILL, &p.night_color)
+                    .f(n::NIGHT_HALO, &p.night_halo_color);
+                b.f(n::DAYLIGHT_FILL, &p.daylight[0].unwrap_or_default())
+                    .f(n::DAYLIGHT_HALO, &p.daylight[1].unwrap_or_default());
             }
         }
         b.0

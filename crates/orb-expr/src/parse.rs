@@ -52,6 +52,7 @@ const OPERATORS: &[&str] = &[
     "cos",
     "distance",
     "downcase",
+    "dev.sargunv.orbis:daylight",
     "e",
     "elevation",
     "error",
@@ -212,6 +213,9 @@ fn compound(name: &str) -> Option<(Type, Vec<(Params, Build)>)> {
             vec![(none(), |_, _| Op::Call(Call::MetersPerPixel, vec![]))],
         ),
         "elevation" => (N, vec![(none(), |_, _| Op::Call(Call::Elevation, vec![]))]),
+        "dev.sargunv.orbis:daylight" => {
+            (N, vec![(none(), |_, _| Op::Call(Call::Daylight, vec![]))])
+        }
         "accumulated" => (
             V,
             vec![(none(), |_, _| Op::Call(Call::Accumulated, vec![]))],

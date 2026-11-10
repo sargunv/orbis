@@ -123,6 +123,7 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
             state: false,
             camera: false,
             elevation: false,
+            daylight: false,
             interpolated: false,
             tokens: false,
         }
@@ -140,6 +141,7 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
         state: matches!(property_type, "data-driven" | "cross-faded-data-driven"),
         camera: false,
         elevation: parameters.contains(&"elevation"),
+        daylight: false,
         interpolated,
         tokens: field("tokens").and_then(Json::as_bool).unwrap_or(false),
     };

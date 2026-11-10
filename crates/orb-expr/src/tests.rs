@@ -18,6 +18,7 @@ fn spec(ty: PropertyType, zoom: bool, feature: bool, interpolated: bool) -> Prop
         state: feature,
         camera: false,
         elevation: false,
+        daylight: false,
         interpolated,
         tokens: false,
     }

@@ -438,6 +438,7 @@ mod tests {
             state: false,
             camera: false,
             elevation: true,
+            daylight: false,
             interpolated: true,
             tokens: false,
         };

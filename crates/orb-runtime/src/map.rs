@@ -1483,7 +1483,11 @@ impl Map {
         if let Some(style) = &mut self.style {
             style.symbol_tiles.clear();
         }
-        let frame_light = crate::light::frame_light(&root.light, self.camera.state().bearing);
+        // Labels reading the daylight follow the ground's light.
+        let frame_light = orb_render::FrameLight {
+            ground: at.ground,
+            ..crate::light::frame_light(&root.light, self.camera.state().bearing)
+        };
         let mut frame_terrain = None;
         if let Some(style) = &mut self.style
             && !std::mem::replace(&mut style.glyphs_fetched, true)

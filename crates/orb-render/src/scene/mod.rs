@@ -108,6 +108,9 @@ pub struct FrameLight {
     /// style-spec#1797: how much extrusions' shadows darken the ground
     /// beneath them, 0 to 1, cast away from `position`.
     pub shadow_intensity: f32,
+    /// Its shading of the ground (`dev.sargunv.orbis:ground-lighting`),
+    /// which labels' `["dev.sargunv.orbis:daylight"]` follows.
+    pub ground: Option<crate::GroundLight>,
 }
 
 impl FrameLight {
@@ -254,6 +257,12 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
         b.u(f::GLOBE_TARGET_WHOLE, &whole)
             .u(f::GLOBE_TARGET_REST, &rest);
         b.u(f::GLOBE_PLANE, &[u32::from(plane)]);
+    }
+    if let Some(g) = frame.light.ground {
+        let [x, y, z] = g.sun;
+        b.f(f::GROUND_SUN, &[x, y, z, g.twilight / 2.0]);
+        let [x, y, z] = g.up;
+        b.f(f::GROUND_UP, &[x, y, z, g.amount]);
     }
     b.u(f::LINEAR, &[u32::from(linear)]);
     b.u(f::SURFACE_CELLS, &[surface_cells(frame.globe)]);

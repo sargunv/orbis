@@ -136,7 +136,7 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
         PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state).or_else(|errors| {
             // Inputs beyond the spec's that Orbis honours: drawn, with a
             // warning that GL JS and Native reject the style.
-            let extended = (!prop.extended.is_empty())
+            let extended = (prop.orbis_inputs() != prop.spec_inputs())
                 .then(|| {
                     let spec = prop.spec_with(prop.orbis_inputs());
                     PropertyExpression::parse_with_state(json, &spec, &cx.state).ok()
@@ -145,8 +145,8 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
             match extended {
                 Some(parsed) => {
                     // New syntax warns as its preview's instead.
-                    if !parsed.reads_meters_per_pixel() {
-                        let beyond = reads(&parsed).minus(prop.spec_inputs());
+                    let beyond = reads(&parsed).minus(prop.spec_inputs());
+                    if !parsed.reads_meters_per_pixel() && !beyond.is_empty() {
                         cx.not_portable(path, json.span, prop, beyond);
                     }
                     Ok(parsed)
@@ -159,6 +159,14 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
         Ok(p) if p.reads_meters_per_pixel() => {
             let what = "[\"meters-per-pixel\"]";
             if !cx.preview(Preview::GroundResolution, path, json.span, what) {
+                return Slot::constant(Value::Null, false);
+            }
+            Ok(p)
+        }
+        // Orbis's daylight too.
+        Ok(p) if p.reads_daylight() => {
+            let what = "[\"dev.sargunv.orbis:daylight\"]";
+            if !cx.preview(Preview::Daylight, path, json.span, what) {
                 return Slot::constant(Value::Null, false);
             }
             Ok(p)

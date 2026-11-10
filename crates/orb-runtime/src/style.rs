@@ -13,6 +13,7 @@ use orb_layout::Family;
 use orb_shaders::layout;
 use orb_style::{Color, LayerType, PropertyRef, SourceKind, Style, Value};
 
+use crate::daylight::LabelDaylight;
 use crate::elevation::ElevationColor;
 
 /// Node keys a layer has: a fill and its outline, or a symbol layer's
@@ -85,6 +86,8 @@ pub(crate) struct NodePlan {
     pub(crate) key: u32,
     /// An extrusion's colour over the elevation, drawn per fragment.
     pub(crate) elevation: Option<Arc<ElevationColor>>,
+    /// A symbol node's colours over the daylight, drawn per label.
+    pub(crate) daylight: Option<Arc<LabelDaylight>>,
 }
 
 /// A paint property as the renderer packs it.
@@ -240,6 +243,7 @@ impl StylePlan {
                         source: usize::MAX,
                         key,
                         elevation: None,
+                        daylight: None,
                     });
                     continue;
                 }
@@ -315,12 +319,20 @@ impl StylePlan {
                 }
                 None => None,
             };
+            let mut daylight = |part| {
+                let (daylight, why) = LabelDaylight::of(layer, part);
+                for why in why {
+                    warn(index, &why);
+                }
+                daylight.map(Arc::new)
+            };
             nodes.push(NodePlan {
                 layer: index,
                 family,
                 source,
                 key,
                 elevation,
+                daylight: daylight(orb_style::ICON_PART),
             });
             // A symbol layer draws its icons, then its text (GL JS
             // `drawSymbols`).
@@ -331,6 +343,7 @@ impl StylePlan {
                     source,
                     key: key + 1,
                     elevation: None,
+                    daylight: daylight(orb_style::TEXT_PART),
                 });
             }
             // GL JS antialiases fills by drawing their outlines after them.
@@ -341,6 +354,7 @@ impl StylePlan {
                     source,
                     key: key + 1,
                     elevation: None,
+                    daylight: None,
                 });
             }
         }
@@ -447,7 +461,10 @@ impl StylePlan {
             }
             Family::Circle => layout::CIRCLE_ROW_WORDS,
             Family::Heatmap => layout::HEATMAP_ROW_WORDS,
-            Family::SymbolIcon | Family::SymbolText => layout::SYMBOL_ROW_WORDS,
+            Family::SymbolIcon | Family::SymbolText => {
+                let daylight = node.daylight.is_some();
+                layout::SYMBOL_ROW_WORDS + usize::from(daylight) * layout::SYMBOL_DAYLIGHT_ROW_WORDS
+            }
             image => unreachable!("{image:?} nodes have no property rows"),
         }
     }
@@ -585,12 +602,25 @@ impl StylePlan {
                     Family::SymbolIcon => ICON_PART,
                     _ => TEXT_PART,
                 };
+                // Over the daylight, the colours' day stops, then their
+                // night stops ([`crate::daylight`]).
+                let Some(d) = &node.daylight else {
+                    return vec![
+                        N(l.get(part.opacity)),
+                        C(l.get(part.color)),
+                        C(l.get(part.halo_color)),
+                        N(l.get(part.halo_width)),
+                        N(l.get(part.halo_blur)),
+                    ];
+                };
                 vec![
                     N(l.get(part.opacity)),
-                    C(l.get(part.color)),
-                    C(l.get(part.halo_color)),
+                    C(d.day(l, 0, part.color)),
+                    C(d.day(l, 1, part.halo_color)),
                     N(l.get(part.halo_width)),
                     N(l.get(part.halo_blur)),
+                    C(d.night(l, 0, part.color)),
+                    C(d.night(l, 1, part.halo_color)),
                 ]
             }
             // Image families have no property rows.

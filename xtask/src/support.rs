@@ -299,8 +299,9 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
         "\n## Properties\n\n\
          Inputs are `zoom`; `camera`, the camera's pitch and bearing (and with\n\
          `style-spec#1881` its ground resolution), in values the same for every\n\
-         feature; `data`, the feature's properties, id and geometry; and\n\
-         `state`, its feature state.\n\
+         feature; `data`, the feature's properties, id and geometry;\n\
+         `state`, its feature state; and with `dev.sargunv.orbis:daylight`\n\
+         `daylight`, how lit the ground is where a label stands.\n\
          **Spec** lists the spec's expression parameters; **GL JS** and **Native**\n\
          the first versions with the property and its data-driven form (the\n\
          spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads:\n\
@@ -344,6 +345,9 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
             let mut orbis = inputs(prop.spec_inputs());
             if !prop.extended.is_empty() {
                 let _ = write!(orbis, "; {} accepted (not portable)", inputs(prop.extended));
+            }
+            if prop.daylight {
+                let _ = write!(orbis, "; `daylight` with preview `{}`", Preview::Daylight);
             }
             // A proposal's property isn't in the spec yet.
             let spec_inputs = match prop.preview {

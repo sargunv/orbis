@@ -53,6 +53,9 @@ pub struct Prop {
     /// Inputs beyond the spec's that Orbis honours in its phase, always
     /// accepted, with a warning that GL JS and Native reject them.
     pub extended: Inputs,
+    /// It reads `["dev.sargunv.orbis:daylight"]`, behind its preview: a
+    /// label's colours.
+    pub daylight: bool,
     /// The preview a property beyond the approved spec needs: off, a
     /// layer setting it warns and leaves it at its default.
     pub preview: Option<crate::Preview>,
@@ -101,7 +104,8 @@ impl Phase {
                 .union(Inputs::CAMERA)
                 .union(Inputs::DATA)
                 .union(Inputs::STATE)
-                .union(Inputs::ELEVATION),
+                .union(Inputs::ELEVATION)
+                .union(Inputs::DAYLIGHT),
             Self::Layer => Inputs::ZOOM.union(Inputs::CAMERA).union(Inputs::ELEVATION),
         }
     }
@@ -125,13 +129,17 @@ impl Inputs {
     pub const STATE: Self = Self(8);
     /// `["elevation"]`: a DEM's, or the height on an extrusion.
     pub const ELEVATION: Self = Self(16);
+    /// `["dev.sargunv.orbis:daylight"]`: how lit the ground is where a
+    /// label stands.
+    pub const DAYLIGHT: Self = Self(32);
 
-    pub const ALL: [(Self, &'static str); 5] = [
+    pub const ALL: [(Self, &'static str); 6] = [
         (Self::ZOOM, "zoom"),
         (Self::CAMERA, "camera"),
         (Self::DATA, "data"),
         (Self::STATE, "state"),
         (Self::ELEVATION, "elevation"),
+        (Self::DAYLIGHT, "daylight"),
     ];
 
     #[must_use]
@@ -188,10 +196,15 @@ impl Prop {
         inputs
     }
 
-    /// What Orbis lets it read: the spec's inputs and the further ones
-    /// Orbis honours.
+    /// What Orbis lets it read: the spec's inputs, the further ones
+    /// Orbis honours, and the daylight behind its preview.
     pub const fn orbis_inputs(&self) -> Inputs {
-        self.spec_inputs().union(self.extended)
+        let inputs = self.spec_inputs().union(self.extended);
+        if self.daylight {
+            inputs.union(Inputs::DAYLIGHT)
+        } else {
+            inputs
+        }
     }
 
     pub const fn phase(&self) -> Phase {
@@ -219,6 +232,7 @@ impl Prop {
             state: inputs.contains(Inputs::STATE) || (self.paint && data),
             camera: inputs.contains(Inputs::CAMERA),
             elevation: inputs.contains(Inputs::ELEVATION),
+            daylight: inputs.contains(Inputs::DAYLIGHT),
             interpolated: self.interpolated,
             tokens: self.tokens,
         }
@@ -261,6 +275,7 @@ pub const fn prop(name: &'static str, ty: PropertyType, default: Option<&'static
         elevation: false,
         phase: None,
         extended: Inputs::NONE,
+        daylight: false,
         preview: None,
     }
 }
@@ -304,6 +319,11 @@ impl Prop {
     /// Orbis honours `inputs` beyond the spec's.
     const fn extends(mut self, inputs: Inputs) -> Self {
         self.extended = self.extended.union(inputs);
+        self
+    }
+    /// It reads the daylight, behind its preview.
+    const fn daylight(mut self) -> Self {
+        self.daylight = true;
         self
     }
     const fn list(mut self) -> Self {
@@ -729,15 +749,15 @@ properties! {
         layout SYMBOL_HEIGHT_OFFSET: f64 = prop("symbol-height-offset", NUMBER, Some("0")).data_driven().interpolated();
         layout SYMBOL_HEIGHT_ANCHOR: HeightAnchor = prop("symbol-height-anchor", enumeration::<HeightAnchor>(), Some("\"ground\"")).in_phase(Phase::Placement);
         paint ICON_OPACITY: f32 = prop("icon-opacity", NUMBER, Some("1")).data_driven().interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
-        paint ICON_COLOR: Color = prop("icon-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA);
-        paint ICON_HALO_COLOR: Color = prop("icon-halo-color", COLOR, Some("\"rgba(0, 0, 0, 0)\"")).data_driven().interpolated().extends(Inputs::CAMERA);
+        paint ICON_COLOR: Color = prop("icon-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA).daylight();
+        paint ICON_HALO_COLOR: Color = prop("icon-halo-color", COLOR, Some("\"rgba(0, 0, 0, 0)\"")).data_driven().interpolated().extends(Inputs::CAMERA).daylight();
         paint ICON_HALO_WIDTH: f32 = prop("icon-halo-width", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint ICON_HALO_BLUR: f32 = prop("icon-halo-blur", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint ICON_TRANSLATE: [f32; 2] = prop("icon-translate", TRANSLATE, Some("[0, 0]")).interpolated();
         paint ICON_TRANSLATE_ANCHOR: TranslateAnchor = prop("icon-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
         paint TEXT_OPACITY: f32 = prop("text-opacity", NUMBER, Some("1")).data_driven().interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
-        paint TEXT_COLOR: Color = prop("text-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA);
-        paint TEXT_HALO_COLOR: Color = prop("text-halo-color", COLOR, Some("\"rgba(0, 0, 0, 0)\"")).data_driven().interpolated().extends(Inputs::CAMERA);
+        paint TEXT_COLOR: Color = prop("text-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA).daylight();
+        paint TEXT_HALO_COLOR: Color = prop("text-halo-color", COLOR, Some("\"rgba(0, 0, 0, 0)\"")).data_driven().interpolated().extends(Inputs::CAMERA).daylight();
         paint TEXT_HALO_WIDTH: f32 = prop("text-halo-width", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint TEXT_HALO_BLUR: f32 = prop("text-halo-blur", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA);
         paint TEXT_TRANSLATE: [f32; 2] = prop("text-translate", TRANSLATE, Some("[0, 0]")).interpolated();

@@ -1,16 +1,16 @@
 # Each pipeline stage's Metal, hashed (`stages_keep_their_hashes`).
-sky vs_sky 9920e9058c3beff4
-sky fs_sky 981c2381e46ef47c
-sky fs_scatter 17bd1f074031f950
-sky fs_ground 647f14931fdc4d02
-atmosphere scattering vs_sky 9920e9058c3beff4
-atmosphere scattering fs_sky 981c2381e46ef47c
-atmosphere scattering fs_scatter 17bd1f074031f950
-atmosphere scattering fs_ground 647f14931fdc4d02
-ground lighting vs_sky 9920e9058c3beff4
-ground lighting fs_sky 981c2381e46ef47c
-ground lighting fs_scatter 17bd1f074031f950
-ground lighting fs_ground 647f14931fdc4d02
+sky vs_sky 71e36185980c397b
+sky fs_sky 99d49c6c2c0c4f68
+sky fs_scatter d4e5c918b2fbef38
+sky fs_ground fb7eb6ec18c6aefa
+atmosphere scattering vs_sky 71e36185980c397b
+atmosphere scattering fs_sky 99d49c6c2c0c4f68
+atmosphere scattering fs_scatter d4e5c918b2fbef38
+atmosphere scattering fs_ground fb7eb6ec18c6aefa
+ground lighting vs_sky 71e36185980c397b
+ground lighting fs_sky 99d49c6c2c0c4f68
+ground lighting fs_scatter d4e5c918b2fbef38
+ground lighting fs_ground fb7eb6ec18c6aefa
 composite over vs_composite fe2b34eabe869054
 composite over fs_over a9613473514cf06a
 composite over fs_replace 13713a2c5f64dfcf
@@ -23,77 +23,77 @@ composite encode vs_composite fe2b34eabe869054
 composite encode fs_over a9613473514cf06a
 composite encode fs_replace 13713a2c5f64dfcf
 composite encode fs_encode a1a27fca1a9510e5
-terrain vs_terrain 18f35903460c09a0
-terrain fs_terrain_depth 3d282837982d1c8a
-terrain fs_terrain c0fb0ec20405ac02
-terrain shade vs_terrain 4128fa73b85a2060
-terrain shade fs_terrain_depth b350496dcff57af6
-terrain shade fs_terrain 2942f289acba64e0
-terrain shade fs_terrain_shaded c01f803c371f7e89
-terrain decal vs_terrain 18f35903460c09a0
-terrain decal fs_terrain_depth 3d282837982d1c8a
-terrain decal fs_terrain c0fb0ec20405ac02
-terrain decal fs_terrain_decal efdc47c590e2100b
+terrain vs_terrain 0759c464eea8f2dc
+terrain fs_terrain_depth c4556ff9b7391fe1
+terrain fs_terrain da2750c4ea3edba5
+terrain shade vs_terrain dff4a0f5a6516024
+terrain shade fs_terrain_depth cbdcf8dd96305fab
+terrain shade fs_terrain d7f9973e98438c69
+terrain shade fs_terrain_shaded 8410a6e23a19c2d4
+terrain decal vs_terrain 0759c464eea8f2dc
+terrain decal fs_terrain_depth c4556ff9b7391fe1
+terrain decal fs_terrain da2750c4ea3edba5
+terrain decal fs_terrain_decal 816a9be51e2d7665
 drape vs_slot e22d84da18d45c8e
 drape fs_clear 87c933f264755498
-extrusion vs_extrusion 658517e671ff2786
-extrusion vs_extrusion_cut 62399edf64c5e4c6
-extrusion vs_extrusion_cut_planes ee66b6262add2029
-extrusion vs_extrusion_cut_split 1b4daf1fee780ecc
-extrusion fs_extrusion 345bc74ae859e520
-extrusion fs_extrusion_cut 42a58ff43ec014f0
-extrusion cut vs_extrusion 658517e671ff2786
-extrusion cut vs_extrusion_cut 62399edf64c5e4c6
-extrusion cut vs_extrusion_cut_planes ee66b6262add2029
-extrusion cut vs_extrusion_cut_split 1b4daf1fee780ecc
-extrusion cut fs_extrusion 345bc74ae859e520
-extrusion cut fs_extrusion_cut 42a58ff43ec014f0
-extrusion planes vs_extrusion 498cd728412ca190
-extrusion planes vs_extrusion_cut 340944f7b1dc4d64
-extrusion planes vs_extrusion_cut_planes b82860525c96d7b5
-extrusion planes vs_extrusion_cut_split 83d1bd4dd4a191ca
-extrusion ground vs_extrusion e833a07f2c4b5dd7
-extrusion ground vs_extrusion_cut a742502d4e1f324d
-extrusion ground vs_extrusion_cut_planes 3e3398bcc613bb2a
-extrusion ground vs_extrusion_cut_split 8035d849b72032a1
-extrusion ground vs_extrusion_shadow 1fef87efab815a7c
-extrusion ground vs_extrusion_occlusion ecc001c0127c4066
-extrusion ground fs_extrusion_ground e7878858a4343f42
-extrusion ground fs_extrusion_ground_mask 9e7fd0546ac49178
-fill vs_fill 27ba49c8374fbffb
-fill vs_fill_outline 76349a46b948f7a1
-fill fs_fill 6f648d61cd3afd8e
-fill fs_fill_outline 4e5326ef003f0052
-fill outline vs_fill 27ba49c8374fbffb
-fill outline vs_fill_outline 76349a46b948f7a1
-fill outline fs_fill 6f648d61cd3afd8e
-fill outline fs_fill_outline 4e5326ef003f0052
-line vs_line de143ea4781f1a45
-line vs_line_styled 4dbd2cd0764cf121
-line fs_line 172dbd370537227e
-line fs_line_styled e9c66049581b8aa5
-line styled vs_line de143ea4781f1a45
-line styled vs_line_styled 4dbd2cd0764cf121
-line styled fs_line 172dbd370537227e
-line styled fs_line_styled e9c66049581b8aa5
-circle vs_circle 98ad473aece420f4
-circle fs_circle 536c81d1d5af081a
-symbol vs_symbol 51d21bfecaab3a74
-symbol fs_symbol 4e61249074b92a71
-symbol line vs_symbol 5e09a98acc2cf01d
-symbol line fs_symbol d967f402f3beb232
-heatmap density vs_heatmap 0c1e816c0407fbf2
-heatmap density fs_heatmap e689c8d3095a3ba8
-raster vs_raster b43bccc921519a37
-raster fs_raster 1c103ffc7a690a9d
-hillshade vs_hillshade cc4184d1095dd153
-hillshade fs_hillshade 67159e52dd562ad8
-hillshade fs_hillshade_slopes 3d34ffd4b9acb28c
-hillshade slopes vs_hillshade cc4184d1095dd153
-hillshade slopes fs_hillshade 67159e52dd562ad8
-hillshade slopes fs_hillshade_slopes 3d34ffd4b9acb28c
-color relief vs_color_relief 6456fd61ec88071d
-color relief fs_color_relief abc46dfaaa3bd108
+extrusion vs_extrusion 0091262e3d300656
+extrusion vs_extrusion_cut ec7ec8e17c013fb6
+extrusion vs_extrusion_cut_planes 14cfdfe053c11459
+extrusion vs_extrusion_cut_split a54eb060ffcf963c
+extrusion fs_extrusion 02805ce4e9b8a396
+extrusion fs_extrusion_cut e0af29a252489dea
+extrusion cut vs_extrusion 0091262e3d300656
+extrusion cut vs_extrusion_cut ec7ec8e17c013fb6
+extrusion cut vs_extrusion_cut_planes 14cfdfe053c11459
+extrusion cut vs_extrusion_cut_split a54eb060ffcf963c
+extrusion cut fs_extrusion 02805ce4e9b8a396
+extrusion cut fs_extrusion_cut e0af29a252489dea
+extrusion planes vs_extrusion be9d5893950b1362
+extrusion planes vs_extrusion_cut abfa4e3c1c77dde2
+extrusion planes vs_extrusion_cut_planes ee28c86a7084f1ab
+extrusion planes vs_extrusion_cut_split 9ebc1db4d6d19020
+extrusion ground vs_extrusion 6216abc1f9baf027
+extrusion ground vs_extrusion_cut 735f237305412efd
+extrusion ground vs_extrusion_cut_planes 3ab9d7c985df40da
+extrusion ground vs_extrusion_cut_split 0a844f2d4310bb51
+extrusion ground vs_extrusion_shadow 1302330baac7263e
+extrusion ground vs_extrusion_occlusion fe253c1f4a6d4f68
+extrusion ground fs_extrusion_ground c6bb86a7c6d000c1
+extrusion ground fs_extrusion_ground_mask aca756767f7d3601
+fill vs_fill a72840f5edb2a3dd
+fill vs_fill_outline 01ad22ec52bb1043
+fill fs_fill 6a69b4455f080076
+fill fs_fill_outline d00f0ded8d6db25a
+fill outline vs_fill a72840f5edb2a3dd
+fill outline vs_fill_outline 01ad22ec52bb1043
+fill outline fs_fill 6a69b4455f080076
+fill outline fs_fill_outline d00f0ded8d6db25a
+line vs_line 65f28fff77edf421
+line vs_line_styled 579c740da6ece457
+line fs_line a782a25cc0fb0582
+line fs_line_styled fe3b198c424d2761
+line styled vs_line 65f28fff77edf421
+line styled vs_line_styled 579c740da6ece457
+line styled fs_line a782a25cc0fb0582
+line styled fs_line_styled fe3b198c424d2761
+circle vs_circle 838b0e66c99e3cf2
+circle fs_circle 1ece45af91c05abf
+symbol vs_symbol 4e33112af980d48c
+symbol fs_symbol 40ebb9bef70545d5
+symbol line vs_symbol 861c9a5b29b94ad2
+symbol line fs_symbol 5c463765af3381fe
+heatmap density vs_heatmap e34b7318749158e8
+heatmap density fs_heatmap ce3065a7088ee475
+raster vs_raster b9c02993340ca2b7
+raster fs_raster e065b3a71df782a9
+hillshade vs_hillshade be3023fcb65dc92b
+hillshade fs_hillshade e054e53773258b2b
+hillshade fs_hillshade_slopes f5c8ac1ca59b0587
+hillshade slopes vs_hillshade be3023fcb65dc92b
+hillshade slopes fs_hillshade e054e53773258b2b
+hillshade slopes fs_hillshade_slopes f5c8ac1ca59b0587
+color relief vs_color_relief 5b5826f62f995e19
+color relief fs_color_relief aeb610890a9aedfc
 prepare pad vs_prepare ea116bca462dc866
 prepare pad fs_pad 4a94be78e58d58e7
 prepare slope vs_prepare 1236b0e52eb708d4
@@ -110,4 +110,4 @@ extend draw vs_mip f5d4de61f22b1ec3
 extend draw fs_mip 9f85dcefc807ec5d
 extend draw vs_extend 6bc6993feb343828
 extend draw fs_extend 078179eac3dca1cb
-cull cull f84c091981c65212
+cull cull 13d2254dfbb85ec8

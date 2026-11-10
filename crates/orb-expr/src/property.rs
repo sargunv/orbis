@@ -51,6 +51,9 @@ pub struct PropertySpec {
     /// as its data does between them: a colour relief's ramp, an
     /// extrusion's colour.
     pub elevation: bool,
+    /// It reads `["dev.sargunv.orbis:daylight"]` per feature, as it is
+    /// drawn: a label's colours (Orbis's own).
+    pub daylight: bool,
     /// The property may use `interpolate`.
     pub interpolated: bool,
     /// Strings expand `{token}`s: legacy string stops (`convertFunction`)
@@ -254,6 +257,13 @@ impl PropertyExpression {
         if camera && elevation {
             return Err("camera expressions cannot read the elevation");
         }
+        let daylight = deps.contains(Deps::DAYLIGHT);
+        if daylight && !spec.daylight {
+            return Err("[\"dev.sargunv.orbis:daylight\"] is not supported with this property");
+        }
+        if camera && daylight {
+            return Err("camera expressions cannot read the daylight");
+        }
         let mut memo = vec![None; ir.nodes.len()];
         let curve = match find_zoom_curve(ir, ir.root(), &mut memo)? {
             None if !zoom_constant => return Err(TOP_LEVEL),
@@ -281,7 +291,7 @@ impl PropertyExpression {
                 _ => unreachable!("a zoom curve is a step or interpolate"),
             }),
         };
-        let kind = match (&curve, feature_constant && !elevation) {
+        let kind = match (&curve, feature_constant && !elevation && !daylight) {
             (None, true) if camera => Kind::Camera,
             (None, true) => Kind::Constant,
             (None, false) => Kind::Source,

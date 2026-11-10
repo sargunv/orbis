@@ -16,6 +16,8 @@ pub struct EvaluationContext<'a> {
     pub line_progress: f64,
     pub heatmap_density: f64,
     pub elevation: f64,
+    /// `["dev.sargunv.orbis:daylight"]`, 0 at night to 1 by day.
+    pub daylight: f64,
     pub accumulated: Value<'a>,
     pub feature_state: &'a [(String, Value<'static>)],
     pub global_state: &'a [(String, Value<'static>)],
@@ -33,6 +35,7 @@ impl Default for EvaluationContext<'_> {
             line_progress: 0.0,
             heatmap_density: 0.0,
             elevation: 0.0,
+            daylight: 1.0,
             accumulated: Value::Null,
             feature_state: &[],
             global_state: &[],

@@ -37,6 +37,9 @@ const TRANSLATE_ROW_WORDS: u32 = 2u;
 const TRANSLATE_ROW_UNITS: u32 = 16u;
 const HEATMAP_ROW_WORDS: u32 = 4u;
 const SYMBOL_ROW_WORDS: u32 = 10u;
+// A symbol node whose colours follow the daylight (`symbol.wgsl`) has
+// each colour's night stop in two more slots, after the rest.
+const SYMBOL_DAYLIGHT_ROW_WORDS: u32 = 4u;
 
 // The most light sources a hillshade node holds.
 const MAX_LIGHTS: u32 = 4u;
@@ -125,6 +128,12 @@ struct Frame {
     // orb-render's `surface_cells` of the view, so the cull, the point
     // shaders and a driver that draws without the cull count them alike.
     surface_cells: u32,
+    // Ground lighting (`dev.sargunv.orbis:ground-lighting`), which labels'
+    // `["dev.sargunv.orbis:daylight"]` follows (`symbol.wgsl`): toward the
+    // sun with half the twilight in degrees, and the target's up with how
+    // much the light shades the ground (0 off), unit Earth-fixed axes.
+    ground_sun: vec4<f32>,
+    ground_up: vec4<f32>,
 };
 
 // One placement of a tile's data: data units → world is

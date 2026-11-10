@@ -986,6 +986,38 @@ fn meters_per_pixel_follows_its_preview() {
     assert!(parse_with(&layer("", layout), Previews::ALL, &[]).is_err());
 }
 
+/// `["dev.sargunv.orbis:daylight"]` behind its preview: a label colour
+/// over it with the preview, without it a warning and the default. Other
+/// properties can't read it, even with the preview.
+#[test]
+fn daylight_follows_its_preview() {
+    let layer = |ty: &str, paint: &str| {
+        format!(
+            r#"{{"version": 8, "sources": {{"s": {{"type": "geojson",
+                "data": {{"type": "FeatureCollection", "features": []}}}}}},
+                "layers": [{{"id": "l", "type": "{ty}", "source": "s",
+                "paint": {{{paint}}}}}]}}"#
+        )
+    };
+    let curve =
+        r##"["interpolate", ["linear"], ["dev.sargunv.orbis:daylight"], 0, "#fff", 1, "#000"]"##;
+    let halo = layer("symbol", &format!(r#""text-halo-color": {curve}"#));
+    let on = parse_with(&halo, Previews::NONE.with(Preview::Daylight), &[]).unwrap();
+    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+    let color = on.layers[0].get(TEXT_HALO_COLOR);
+    assert!(color.as_expression().is_some_and(|e| e.reads_daylight()));
+    let off = parse(&halo).unwrap();
+    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
+    assert!(
+        off.warnings[0]
+            .message
+            .contains("dev.sargunv.orbis:daylight")
+    );
+    assert!(!off.layers[0].get(TEXT_HALO_COLOR).is_set());
+    let line = layer("line", &format!(r#""line-color": {curve}"#));
+    assert!(parse_with(&line, Previews::ALL, &[]).is_err());
+}
+
 /// `metadata["dev.sargunv.orbis:color-space"]` behind its preview: off, the
 /// key warns and colours mix as sRGB; an unknown value warns too. Other
 /// metadata is anyone's.

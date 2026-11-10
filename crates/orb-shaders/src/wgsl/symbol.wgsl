@@ -9,7 +9,9 @@
 // the vertex arena; its state words, paint rows and the glyph row table in
 // the property arena.
 
-// Paint slots: opacity, colour, halo colour, halo width, halo blur.
+// Paint slots: opacity, colour, halo colour, halo width, halo blur, and
+// with `["dev.sargunv.orbis:daylight"]` the colour's and halo colour's
+// night stops, which share their day stops' curves.
 struct SymbolSize {
     // 0 constant, 1 source, 2 camera, 3 composite.
     kind: u32,
@@ -37,12 +39,20 @@ struct SymbolNode {
     // `*-translate` in pixels.
     translate: vec2<f32>,
     image_page: f32,
-    _pad: u32,
+    // Words per feature of its property rows.
+    row_words: u32,
     size: SymbolSize,
     // The text size an icon fitted to variable-anchored text moves with.
     text_size: SymbolSize,
     curves: array<Curve, 5>,
     state: StateLookup,
+    // The colours' night stops, and their curves over the daylight (with
+    // `DAYLIGHT_FILL` and `DAYLIGHT_HALO`): the first stop's daylight, the
+    // last's, 0 for a step or 1 for an exponential curve, and its base.
+    night_fill: vec4<f32>,
+    night_halo: vec4<f32>,
+    daylight_fill: vec4<f32>,
+    daylight_halo: vec4<f32>,
 };
 @group(1) @binding(0) var<uniform> node: SymbolNode;
 
@@ -67,6 +77,9 @@ const TRANSLATE_VIEWPORT: u32 = 512u;
 const ICONS_IN_TEXT: u32 = 1024u;
 // `symbol-height-anchor: ground`: heights count from the terrain.
 const HEIGHT_ANCHOR_GROUND: u32 = 2048u;
+// The colour and the halo colour follow the daylight.
+const DAYLIGHT_FILL: u32 = 4096u;
+const DAYLIGHT_HALO: u32 = 8192u;
 
 // Header words (orb-render `symbol_header`).
 const H_QUADS: u32 = 0u;
@@ -203,13 +216,51 @@ fn paint_number(row: u32, state: u32, slot: u32, constant: f32, z: f32) -> f32 {
 
 fn paint_color(row: u32, state: u32, slot: u32, constant: vec4<f32>, z: f32) -> vec4<f32> {
     var value = constant;
+    // A night stop (slots 5 and 6) shares its day stop's curve.
+    let curve = node.curves[select(slot, slot - 4u, slot > 4u)];
     if (node.table_mask & (1u << slot)) != 0u {
-        value = table_color(row, slot, node.curves[slot], z);
+        value = table_color(row, slot, curve, z);
     }
     if from_state(state, node.state, slot) {
-        value = state_color(state, node.state, slot, node.curves[slot], value);
+        value = state_color(state, node.state, slot, curve, value);
     }
     return value;
+}
+
+// `["dev.sargunv.orbis:daylight"]` at a label's anchor: ground lighting's
+// day side there (`sky.wgsl`'s `fs_ground`), by the sun's elevation over the
+// globe's normal at the anchor, mixed toward the target's up as the globe
+// hands over to a flat surface, which takes the target's; then mixed toward
+// full daylight as the light shades the ground less.
+fn label_daylight(anchor: Ground) -> f32 {
+    let amount = frame.ground_up.w;
+    if amount <= 0.0 {
+        return 1.0;
+    }
+    var normal = frame.ground_up.xyz;
+    if frame.globe_amount > 0.0 && frame.globe_plane == 0u {
+        let sphere = normalize(anchor.globe + frame.globe_target);
+        normal = normalize(mix(normal, sphere, frame.globe_amount));
+    }
+    let elevation = degrees(asin(clamp(dot(normal, frame.ground_sun.xyz), -1.0, 1.0)));
+    let half = frame.ground_sun.w;
+    var day = select(0.0, 1.0, elevation >= 0.0);
+    if half > 0.0 {
+        day = smoothstep(-half, half, elevation);
+    }
+    return mix(1.0, day, amount);
+}
+
+// How far a colour goes from its night stop toward its day stop at
+// `daylight`, over its curve `c` (`SymbolNode`'s `daylight_fill`).
+fn daylight_t(c: vec4<f32>, daylight: f32) -> f32 {
+    if c.z == 0.0 {
+        return select(0.0, 1.0, daylight >= c.y);
+    }
+    var curve: Curve;
+    curve.kind = 1u;
+    curve.params = vec4<f32>(c.w, 0.0, 0.0, 0.0);
+    return curve_factor(curve, clamp(daylight, c.x, c.y), c.x, c.y);
 }
 
 // The drawn symbol's `symbol-height-offset`, metres.
@@ -358,7 +409,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let instance_row = base + vertex_at(base + H_INSTANCE_ROWS) + placed.instance * 2u;
     let slot = vertex_at(instance_row);
     symbol_height = bitcast<f32>(vertex_at(instance_row + 1u));
-    let row = chunk.prop_base + slot * 10u;
+    let row = chunk.prop_base + slot * node.row_words;
     var pulled: Pulled;
     pulled.state_base = chunk.state_base;
     let state_at_slot = state_block(pulled, slot, node.state);
@@ -562,12 +613,26 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
         }
     }
     out.data = vec3<f32>(final_pos.w, size, visible_opacity);
+    // Over the daylight, between the colours' night and day stops.
+    var fill = paint_color(row, state_at_slot, 1u, node.fill_color, tile.zoom);
+    var halo = paint_color(row, state_at_slot, 2u, node.halo_color, tile.zoom);
+    if (node.flags & (DAYLIGHT_FILL | DAYLIGHT_HALO)) != 0u {
+        let daylight = label_daylight(anchor_ground);
+        if (node.flags & DAYLIGHT_FILL) != 0u {
+            let night = paint_color(row, state_at_slot, 5u, node.night_fill, tile.zoom);
+            fill = mix(night, fill, daylight_t(node.daylight_fill, daylight));
+        }
+        if (node.flags & DAYLIGHT_HALO) != 0u {
+            let night = paint_color(row, state_at_slot, 6u, node.night_halo, tile.zoom);
+            halo = mix(night, halo, daylight_t(node.daylight_halo, daylight));
+        }
+    }
     if (flags & Q_COLOR) != 0u {
         out.fill = color_in(unpack4x8unorm(vertex_at(base + vertex_at(base + H_COLORS) + quad_index)));
     } else {
-        out.fill = color_in(paint_color(row, state_at_slot, 1u, node.fill_color, tile.zoom));
+        out.fill = color_in(fill);
     }
-    out.halo = color_in(paint_color(row, state_at_slot, 2u, node.halo_color, tile.zoom));
+    out.halo = color_in(halo);
     out.halo_params = vec2<f32>(paint_number(row, state_at_slot, 3u, node.halo_width, tile.zoom), paint_number(row, state_at_slot, 4u, node.halo_blur, tile.zoom));
     let linear = (node.flags & LINEAR_ICONS) != 0u || (vertex_at(base + H_FLAGS) & 1u) != 0u
         || abs(frame.pitch) > 0.0;

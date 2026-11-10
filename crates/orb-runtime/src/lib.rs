@@ -6,6 +6,7 @@
 
 mod arrival;
 mod camera;
+mod daylight;
 mod edit;
 mod elevation;
 mod events;
