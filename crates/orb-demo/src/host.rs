@@ -16,7 +16,7 @@ use egui_winit::accesskit_winit;
 use orb_api::Runtime;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::WindowEvent;
+use winit::event::{TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
@@ -60,11 +60,27 @@ impl From<accesskit_winit::Event> for UserEvent {
     }
 }
 
+/// A trackpad gesture the platform recognized (macOS magnify and rotate),
+/// with its phase, which egui drops, and when it came.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Trackpad {
+    pub at: Instant,
+    /// Above 1 spreads the fingers.
+    pub scale: f64,
+    /// Degrees the fingers turned clockwise.
+    pub rotation: f64,
+    pub phase: TouchPhase,
+    /// A rotation's stream, not a pinch's: macOS phases each apart.
+    pub rotating: bool,
+}
+
 /// What the main thread hands the render thread.
 #[derive(Default)]
 struct Inbox {
     /// Input since the last frame took it.
     input: Option<RawInput>,
+    /// Trackpad gestures since the last frame took them.
+    trackpad: Vec<Trackpad>,
     size: Option<PhysicalSize<u32>>,
     surface: Option<wgpu::Surface<'static>>,
     /// When egui or the map next wants a frame.
@@ -101,7 +117,11 @@ impl Shared {
             if inbox.quit {
                 return false;
             }
-            if inbox.input.is_some() || inbox.size.is_some() || inbox.surface.is_some() {
+            if inbox.input.is_some()
+                || !inbox.trackpad.is_empty()
+                || inbox.size.is_some()
+                || inbox.surface.is_some()
+            {
                 return true;
             }
             inbox = match inbox.repaint_at {
@@ -255,6 +275,30 @@ impl ApplicationHandler<UserEvent> for Host {
                 let size = *size;
                 open.shared.send(|inbox| inbox.size = Some(size));
             }
+            // The map's, with their phases; egui has no use for them.
+            &WindowEvent::PinchGesture { delta, phase, .. } => {
+                let gesture = Trackpad {
+                    at: Instant::now(),
+                    scale: delta.exp(),
+                    rotation: 0.0,
+                    phase,
+                    rotating: false,
+                };
+                open.shared.send(|inbox| inbox.trackpad.push(gesture));
+                return;
+            }
+            &WindowEvent::RotationGesture { delta, phase, .. } => {
+                // winit's turn counterclockwise.
+                let gesture = Trackpad {
+                    at: Instant::now(),
+                    scale: 1.0,
+                    rotation: -f64::from(delta),
+                    phase,
+                    rotating: true,
+                };
+                open.shared.send(|inbox| inbox.trackpad.push(gesture));
+                return;
+            }
             _ => {}
         }
         if matches!(
@@ -391,6 +435,7 @@ fn render(
         let input = {
             let mut inbox = shared.inbox();
             inbox.repaint_at = None;
+            demo.trackpad(std::mem::take(&mut inbox.trackpad));
             inbox.input.take()
         };
         let mut raw = match input {

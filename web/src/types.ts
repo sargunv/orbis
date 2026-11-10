@@ -134,6 +134,36 @@ export interface AnchoredMomentum {
   snap?: boolean | MomentumSnap;
 }
 
+/** One camera movement the map's gestures make: whether they do, how a
+ * release keeps it going (`false` for no momentum, or a decay over the
+ * part's default), and where it settles after input that changed it (pans
+ * don't settle). */
+export interface MovementOptions {
+  enabled?: boolean;
+  momentum?: boolean | MomentumDecay;
+  snap?: boolean | MomentumSnap;
+}
+
+/** What the map's gestures may move, as MapLibre Compose's
+ * `MapInteractions` sets it, and when presses are clicks. A movement is
+ * `true`, `false` or its options; what is left out takes its default:
+ * every movement on with mln-ffi's momentum, and the bearing settling on
+ * north within 7°. */
+export interface GestureOptions {
+  pan?: boolean | MovementOptions;
+  zoom?: boolean | MovementOptions;
+  rotate?: boolean | MovementOptions;
+  pitch?: boolean | MovementOptions;
+  /** CSS pixels a press may move and still be a click; 3 by default. */
+  clickTolerance?: number;
+  /** How far apart two taps may be for a double tap; 30 by default. */
+  tapTolerance?: number;
+  /** Milliseconds between the taps of a double tap; 500 by default. */
+  tapInterval?: number;
+  /** Milliseconds a touch holds still for a `contextmenu`; 400 by default. */
+  longPress?: number;
+}
+
 /** How a gesture the page recognized itself keeps moving the camera after
  * release: maplibre-native-ffi's `mln_gesture_momentum`. */
 export interface GestureMomentum {
@@ -176,8 +206,10 @@ export interface MapOptions {
   /** The starting camera; the style's by default. */
   camera?: CameraOptions;
   constraints?: Constraints;
-  /** Whether input moves the map; true by default. */
+  /** Whether the map takes input; true by default. */
   interactive?: boolean;
+  /** What its gestures may move; see {@link OrbisMap.setGestures}. */
+  gestures?: GestureOptions;
   /** Device pixels per CSS pixel to draw with; the display's
    * (`devicePixelRatio`) by default. */
   pixelRatio?: number;
@@ -344,7 +376,6 @@ export interface CameraEventData {
 export interface PointerEventData {
   point: Point;
   lngLat: LngLat | null;
-  button?: number;
 }
 
 /** Every event, by name, with what its listeners receive. */
@@ -363,6 +394,8 @@ export interface MapEvents {
   pitchend: CameraEventData;
   click: PointerEventData;
   dblclick: PointerEventData;
+  /** A right click, or a touch held still. */
+  contextmenu: PointerEventData;
   /** The map needs a tile of a source the app feeds (`"tiles":
    * ["orbis-host:"]`): answer with `setHostTile`. Once per tile until answered. */
   tilerequest: { source: string; z: number; x: number; y: number };

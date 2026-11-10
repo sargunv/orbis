@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 
 use glam::DVec2;
 use orb_camera::CameraEvent;
-use orb_camera::input::Button;
 
 /// Something the map did, drained with [`Map::take_events`](crate::Map::take_events).
 #[derive(Clone, Debug, PartialEq)]
@@ -58,12 +57,17 @@ pub enum MapEvent {
     /// The camera started, went on or stopped moving, zooming, rotating or
     /// pitching, or an animation ended.
     Camera(CameraEvent),
-    /// A press and release that didn't move the map, in logical pixels.
+    /// A primary press and release that didn't move the map, in logical
+    /// pixels.
     Click {
         position: DVec2,
-        button: Button,
     },
     DoubleClick {
+        position: DVec2,
+    },
+    /// A touch or pen held still, or a right click (Compose's
+    /// `longClick`, GL JS's `contextmenu`).
+    LongClick {
         position: DVec2,
     },
     /// The map needs a tile of a source the app feeds

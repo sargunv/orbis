@@ -12,7 +12,7 @@ import { Annotations } from "./annotations.ts";
 import { pickBuild } from "./builds.ts";
 import type { EngineEvent, MapState, Pixels, Report } from "./engine.ts";
 import { Emitter, type Listener } from "./events.ts";
-import { attachInput } from "./input.ts";
+import { allowed, attachInput, type Allowed } from "./input.ts";
 import { directLink, workerLink, type Link } from "./link.ts";
 import { preloadStyle } from "./preload.ts";
 import {
@@ -32,6 +32,7 @@ import type {
   FreeCamera,
   FrameStats,
   GestureMomentum,
+  GestureOptions,
   GpuSubmission,
   Hit,
   LngLat,
@@ -208,6 +209,7 @@ export class OrbisMap {
    * when undefined. */
   #pixelRatio: number | undefined;
   #showBox: ((corners: number[] | null) => void) | undefined;
+  #allow: ((allowed: Allowed) => void) | undefined;
   #removed = false;
 
   /** @internal */
@@ -266,6 +268,7 @@ export class OrbisMap {
         link.worker,
       );
       this.#showBox = input.showBox;
+      this.#allow = input.allow;
       this.#detach.push(input.detach);
     }
     const observer = new ResizeObserver(() => this.#resize());
@@ -278,6 +281,16 @@ export class OrbisMap {
     addEventListener("online", online);
     this.#detach.push(() => removeEventListener("online", online));
     link.listen((report) => this.#receive(report));
+  }
+
+  /** Sets what the map's gestures may move, how releases continue and
+   * when presses are clicks (MapLibre Compose's `MapInteractions`); what
+   * `options` leaves out takes its default. A wheel or key whose movement
+   * is off scrolls the page as it would without the map. A change cancels
+   * a gesture under way. */
+  setGestures(options: GestureOptions): void {
+    this.#allow?.(allowed(options));
+    this.#link.call("setGestures", options).catch((e) => this.#error(e));
   }
 
   /** The canvas the map draws into and takes input from. */
@@ -838,7 +851,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     frame.remove();
     throw e;
   }
-  return new OrbisMap(
+  const map = new OrbisMap(
     options.container,
     frame,
     element,
@@ -847,6 +860,8 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     options.interactive ?? true,
     options.pixelRatio,
   );
+  if (options.gestures) map.setGestures(options.gestures);
+  return map;
 }
 
 /** The map on the page's thread. */

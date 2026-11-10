@@ -461,6 +461,45 @@ async function scenarioOn(browser, server, thread) {
   const quiet = await scenario((s) => s.quiet(1000));
   assert.deepEqual(quiet, { rafs: 0, renders: 0 }, "idle draws nothing");
 
+  // A right click is a context menu, not a click.
+  await page.mouse.click(...CENTER, { button: "right" });
+  const menu = await scenario(async (s) => {
+    const events = [];
+    for (
+      const until = performance.now() + 1000;
+      !events.some((e) => e.type === "contextmenu") &&
+      performance.now() < until;
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      events.push(...s.events());
+    }
+    await s.idle();
+    return [...events, ...s.events()].filter((e) => e.point);
+  });
+  assert.deepEqual(
+    menu.map((e) => [e.type, e.point]),
+    [["contextmenu", CENTER]],
+  );
+
+  // With zoom off, a wheel scrolls the page and the map stays.
+  const unzoomed = await scenario(async (s) => {
+    s.map.setGestures({ zoom: false });
+    await s.sync();
+    const zoom = s.map.camera.current.zoom;
+    const wheel = new WheelEvent("wheel", {
+      deltaY: -100,
+      cancelable: true,
+      bubbles: true,
+    });
+    s.map.canvas.dispatchEvent(wheel);
+    await s.idle();
+    const after = s.map.camera.current.zoom;
+    s.map.setGestures({});
+    await s.sync();
+    return { prevented: wheel.defaultPrevented, moved: after !== zoom };
+  });
+  assert.deepEqual(unzoomed, { prevented: false, moved: false });
+
   // Errors: an edit of a layer that isn't there fails, and the map keeps its style.
   const rejected = await scenario((s) =>
     s.map

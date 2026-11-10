@@ -6,7 +6,10 @@
 //! read by name.
 
 use glam::DVec2;
-use orb_camera::input::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
+use orb_camera::input::{
+    Button, Fling, GestureOptions, Input, Key, Modifiers, Movement, PointerKind, Thresholds,
+    WheelSource, WheelUnit,
+};
 use orb_camera::{
     AnchoredMomentum, Bounds, CameraTarget, Constraints, DecayModel, EaseOptions, Easing,
     FitOptions, FlyOptions, GestureMomentum, MomentumDecay, MomentumSnap, Padding, PanMomentum,
@@ -204,12 +207,7 @@ fn anchored(
     let snap = if snap.as_bool() == Some(true) {
         Some(snap_default)
     } else if snap.is_object() {
-        Some(MomentumSnap {
-            spacing: number(&snap, "spacing").unwrap_or(snap_default.spacing),
-            offset: number(&snap, "offset").unwrap_or(snap_default.offset),
-            tolerance: number(&snap, "tolerance").unwrap_or(snap_default.tolerance),
-            duration: number(&snap, "duration").unwrap_or(snap_default.duration),
-        })
+        Some(snap_options(&snap, snap_default))
     } else {
         None
     };
@@ -219,6 +217,65 @@ fn anchored(
         snap,
         ..base
     })
+}
+
+/// A `GestureOptions` object over the defaults.
+fn gestures(value: &JsValue) -> GestureOptions {
+    let defaults = GestureOptions::default();
+    let movement = |key: &str, default: Movement, snap_default: MomentumSnap| {
+        let value = get(value, key);
+        if let Some(enabled) = value.as_bool() {
+            return Movement { enabled, ..default };
+        }
+        if !value.is_object() {
+            return default;
+        }
+        let decay_default = match default.momentum {
+            Some(Fling::Decay(decay)) => decay,
+            _ => MomentumDecay::PAN,
+        };
+        let momentum = get(&value, "momentum");
+        let momentum = match momentum.as_bool() {
+            Some(false) => None,
+            Some(true) => default.momentum.or(Some(Fling::Decay(decay_default))),
+            None if momentum.is_object() => Some(Fling::Decay(decay(&momentum, decay_default))),
+            None => default.momentum,
+        };
+        let snap = get(&value, "snap");
+        let snap = match snap.as_bool() {
+            Some(on) => on.then_some(default.snap.unwrap_or(snap_default)),
+            None if snap.is_object() => Some(snap_options(&snap, snap_default)),
+            None => default.snap,
+        };
+        Movement {
+            enabled: get(&value, "enabled").as_bool().unwrap_or(default.enabled),
+            momentum,
+            snap,
+        }
+    };
+    let t = defaults.thresholds;
+    GestureOptions {
+        pan: movement("pan", defaults.pan, MomentumSnap::ZOOM),
+        zoom: movement("zoom", defaults.zoom, MomentumSnap::ZOOM),
+        rotate: movement("rotate", defaults.rotate, MomentumSnap::BEARING),
+        pitch: movement("pitch", defaults.pitch, MomentumSnap::PITCH),
+        thresholds: Thresholds {
+            click_tolerance: number(value, "clickTolerance").unwrap_or(t.click_tolerance),
+            tap_tolerance: number(value, "tapTolerance").unwrap_or(t.tap_tolerance),
+            tap_interval: number(value, "tapInterval").unwrap_or(t.tap_interval),
+            long_press: number(value, "longPress").unwrap_or(t.long_press),
+        },
+    }
+}
+
+/// A `MomentumSnap` object over `default`.
+fn snap_options(value: &JsValue, default: MomentumSnap) -> MomentumSnap {
+    MomentumSnap {
+        spacing: number(value, "spacing").unwrap_or(default.spacing),
+        offset: number(value, "offset").unwrap_or(default.offset),
+        tolerance: number(value, "tolerance").unwrap_or(default.tolerance),
+        duration: number(value, "duration").unwrap_or(default.duration),
+    }
 }
 
 fn modifiers(bits: u32) -> Modifiers {
@@ -349,8 +406,21 @@ impl OrbisMap {
             delta: DVec2::new(dx, dy),
             unit,
             modifiers: modifiers(modifiers_bits),
+            // The DOM doesn't say.
+            source: WheelSource::Unknown,
         };
         self.map.input(input, time)
+    }
+
+    /// Sets what gestures may move from a `GestureOptions` object: `pan`,
+    /// `zoom`, `rotate` and `pitch`, each a boolean or `{ enabled,
+    /// momentum, snap }` (`momentum`: a boolean or a `MomentumDecay`;
+    /// `snap`: a boolean or a `MomentumSnap`), and `clickTolerance`,
+    /// `tapTolerance`, `tapInterval`, `longPress`. What it leaves out is
+    /// the default. A change cancels a gesture under way.
+    #[wasm_bindgen(js_name = setGestures)]
+    pub fn set_gestures(&mut self, options: &JsValue) {
+        self.map.set_gestures(gestures(options));
     }
 
     /// A DOM `keydown`'s `key`; returns whether the map used it.

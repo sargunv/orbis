@@ -12,11 +12,13 @@ use egui::{
 };
 use glam::DVec2;
 use orb_api::{
-    Button, CameraTarget, EaseOptions, Error, Event, Input, Key, Map, MapEvent, MapOptions,
-    Modifiers, PointerKind, Previews, Runtime, Target, Transaction, WheelUnit,
+    Button, CameraTarget, EaseOptions, Error, Event, GesturePhase, Input, Key, Map, MapEvent,
+    MapOptions, Modifiers, PointerKind, Previews, Runtime, Target, Transaction, WheelSource,
+    WheelUnit,
 };
 use serde_json::{Value, json};
 
+use crate::host::Trackpad;
 use crate::options::{Context, Kind, Opt, Panel};
 use crate::scenes::{Catalogue, Flight, Scene};
 
@@ -71,6 +73,12 @@ struct InputState {
     touches: usize,
     modifiers: Modifiers,
     cursor: DVec2,
+    /// Trackpad gestures not yet handed over.
+    trackpad: Vec<Trackpad>,
+    /// The trackpad's pinch and rotation streams under way: the map sees
+    /// one pinch from the first's start to the last's end.
+    pinching: bool,
+    rotating: bool,
 }
 
 impl Demo {
@@ -244,21 +252,25 @@ impl Demo {
                         self.toast = None;
                     }
                 }
-                MapEvent::Click {
-                    position,
-                    button: Button::Primary,
-                } => match self.map.hit_test(position) {
-                    Some(hit) => println!(
-                        "clicked {} ({}{}) id {}",
-                        hit.layer,
-                        hit.source,
-                        hit.source_layer
-                            .map(|l| format!(" / {l}"))
-                            .unwrap_or_default(),
-                        hit.id.as_deref().unwrap_or("none")
-                    ),
-                    None => println!("clicked nothing"),
-                },
+                MapEvent::Click { position } | MapEvent::LongClick { position } => {
+                    match self.map.hit_test(position) {
+                        Some(hit) => println!(
+                            "{} {} ({}{}) id {}",
+                            if matches!(event, MapEvent::Click { .. }) {
+                                "clicked"
+                            } else {
+                                "long-clicked"
+                            },
+                            hit.layer,
+                            hit.source,
+                            hit.source_layer
+                                .map(|l| format!(" / {l}"))
+                                .unwrap_or_default(),
+                            hit.id.as_deref().unwrap_or("none")
+                        ),
+                        None => println!("clicked nothing"),
+                    }
+                }
                 MapEvent::Error { message } => {
                     eprintln!("orb-demo: {message}");
                     if self.loading {
@@ -272,10 +284,74 @@ impl Demo {
     }
 
     fn map_input(&mut self, input: Input) {
+        let now = self.now();
+        self.map_input_at(input, now);
+    }
+
+    fn map_input_at(&mut self, input: Input, now: f64) {
         // The user takes the camera from a flight.
         self.flight = None;
-        let now = self.now();
         self.map.input(input, now);
+    }
+
+    /// Trackpad gestures for the next frame to hand over.
+    pub(crate) fn trackpad(&mut self, gestures: Vec<Trackpad>) {
+        self.input.trackpad.extend(gestures);
+    }
+
+    /// Hands the map the trackpad's pinches and rotations as one pinch,
+    /// at their own times.
+    fn forward_trackpad(&mut self, over_ui: impl Fn(Pos2) -> bool) {
+        for gesture in std::mem::take(&mut self.input.trackpad) {
+            let at = gesture
+                .at
+                .saturating_duration_since(self.started)
+                .as_secs_f64()
+                * 1000.0;
+            let center = self.input.cursor;
+            let active = self.input.pinching || self.input.rotating;
+            let stream = if gesture.rotating {
+                &mut self.input.rotating
+            } else {
+                &mut self.input.pinching
+            };
+            let phase = match gesture.phase {
+                winit::event::TouchPhase::Started => {
+                    // The second stream joins the first's pinch.
+                    if active {
+                        *stream = true;
+                        continue;
+                    }
+                    if over_ui(pos2(center.x as f32, center.y as f32)) {
+                        continue;
+                    }
+                    *stream = true;
+                    GesturePhase::Begin
+                }
+                winit::event::TouchPhase::Moved if *stream => GesturePhase::Update,
+                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                    if *stream =>
+                {
+                    *stream = false;
+                    if self.input.pinching || self.input.rotating {
+                        continue;
+                    }
+                    if gesture.phase == winit::event::TouchPhase::Ended {
+                        GesturePhase::End
+                    } else {
+                        GesturePhase::Cancel
+                    }
+                }
+                _ => continue,
+            };
+            let input = Input::Pinch {
+                center,
+                scale: gesture.scale,
+                rotation: gesture.rotation,
+                phase,
+            };
+            self.map_input_at(input, at);
+        }
     }
 
     /// Hands the map the window's input that egui's controls don't take.
@@ -285,6 +361,7 @@ impl Demo {
                 .is_some_and(|l| l.order != Order::Background)
         };
         let keyboard = !ctx.egui_wants_keyboard_input();
+        self.forward_trackpad(over_ui);
         let events = ctx.input(|i| i.events.clone());
         for event in events {
             match event {
@@ -333,7 +410,12 @@ impl Demo {
                         self.map_input(Input::PointerUp { id: 0, position });
                     }
                 }
-                egui::Event::MouseWheel { unit, delta, .. } => {
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    source,
+                    ..
+                } => {
                     let pos = pos2(self.input.cursor.x as f32, self.input.cursor.y as f32);
                     if over_ui(pos) {
                         continue;
@@ -346,30 +428,22 @@ impl Demo {
                         egui::MouseWheelUnit::Line => WheelUnit::Line,
                         egui::MouseWheelUnit::Page => WheelUnit::Page,
                     };
+                    // egui tells trackpads, and their momentum, from
+                    // wheels on macOS.
+                    let source = match source {
+                        egui::MouseWheelSource::Wheel => WheelSource::Wheel,
+                        egui::MouseWheelSource::Trackpad | egui::MouseWheelSource::Momentum => {
+                            WheelSource::Trackpad
+                        }
+                        _ => WheelSource::Unknown,
+                    };
                     let (position, modifiers) = (self.input.cursor, self.input.modifiers);
                     self.map_input(Input::Wheel {
                         position,
                         delta,
                         unit,
                         modifiers,
-                    });
-                }
-                // A trackpad pinch, as browsers report it: a wheel with Ctrl.
-                egui::Event::Zoom(factor) => {
-                    let pos = pos2(self.input.cursor.x as f32, self.input.cursor.y as f32);
-                    if over_ui(pos) || factor <= 0.0 {
-                        continue;
-                    }
-                    let position = self.input.cursor;
-                    let modifiers = Modifiers {
-                        ctrl: true,
-                        ..self.input.modifiers
-                    };
-                    self.map_input(Input::Wheel {
-                        position,
-                        delta: DVec2::new(0.0, -f64::from(factor.ln()) * 100.0),
-                        unit: WheelUnit::Pixel,
-                        modifiers,
+                        source,
                     });
                 }
                 egui::Event::Touch { id, phase, pos, .. } => {
@@ -534,6 +608,19 @@ impl Demo {
                 rect,
                 Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
                 Color32::WHITE,
+            );
+        }
+        // A Shift-drag's box, as the web map draws it.
+        if let Some([a, b]) = self.map.box_zoom() {
+            let corner = |p: DVec2| rect.min + vec2(p.x as f32, p.y as f32);
+            let shape = Rect::from_two_pos(corner(a), corner(b));
+            let painter = ui.painter();
+            painter.rect_filled(shape, 0.0, Color32::from_white_alpha(128));
+            painter.rect_stroke(
+                shape,
+                0.0,
+                Stroke::new(2.0, Color32::from_gray(32)),
+                StrokeKind::Inside,
             );
         }
         self.scene_button(&ctx, &palette);

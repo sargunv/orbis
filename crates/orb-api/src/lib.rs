@@ -21,7 +21,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use map::{CullCount, Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
-pub use orb_camera::input::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
+pub use orb_camera::input::{
+    Button, Fling, GestureOptions, GesturePhase, Input, Key, Modifiers, Movement, PointerKind,
+    Thresholds, WheelSource, WheelUnit,
+};
 pub use orb_camera::{
     AnchoredMomentum, AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints,
     DecayModel, EaseOptions, Easing, FitOptions, FlyOptions, FreeCamera, GestureMomentum,

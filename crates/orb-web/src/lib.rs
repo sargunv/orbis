@@ -588,8 +588,9 @@ impl OrbisMap {
     /// `loaded`), `load`, `idle`, `error` and `warning` (`message`),
     /// `styleimagemissing` (`id`), `restored`, `camera`
     /// (`change`: move, zoom, rotate or pitch; `phase`: start, progress or
-    /// end; `user`), `animationend` (`id`, `interrupted`), `click` (`x`,
-    /// `y`, `button`), `dblclick` (`x`, `y`), and for the page's video
+    /// end; `user`), `animationend` (`id`, `interrupted`), `click`,
+    /// `dblclick` and `contextmenu` (a right click or a touch held still;
+    /// each `x`, `y`), and for the page's video
     /// player `video` (`source`, `request`: `open` with `urls`, `play`,
     /// `pause`, `seek` with `seconds`, `close`).
     #[wasm_bindgen(js_name = takeEvents)]
@@ -696,21 +697,20 @@ impl OrbisMap {
                     set(&object, "velocity", v.into());
                     "animationend"
                 }
-                MapEvent::Click { position, button } => {
+                MapEvent::Click { position } => {
                     set(&object, "x", position.x.into());
                     set(&object, "y", position.y.into());
-                    let button = match button {
-                        orb_runtime::Button::Primary => 0,
-                        orb_runtime::Button::Middle => 1,
-                        orb_runtime::Button::Secondary => 2,
-                    };
-                    set(&object, "button", button.into());
                     "click"
                 }
                 MapEvent::DoubleClick { position } => {
                     set(&object, "x", position.x.into());
                     set(&object, "y", position.y.into());
                     "dblclick"
+                }
+                MapEvent::LongClick { position } => {
+                    set(&object, "x", position.x.into());
+                    set(&object, "y", position.y.into());
+                    "contextmenu"
                 }
             };
             set(&object, "type", name(kind));

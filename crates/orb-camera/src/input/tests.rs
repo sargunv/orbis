@@ -4,6 +4,7 @@ use orb_crs::Geodetic;
 use orb_crs::TileMatrixSet;
 
 use super::*;
+use crate::MomentumSnap;
 
 fn camera() -> Camera {
     let projection = *TileMatrixSet::by_id("WebMercatorQuad")
@@ -174,7 +175,6 @@ fn clicks_and_double_clicks() {
         rig.input.take_events(),
         [InteractEvent::Click {
             position: DVec2::new(201.0, 200.0),
-            button: Button::Primary
         }]
     );
     rig.now += 100.0;
@@ -291,6 +291,7 @@ fn wheels_zoom_smoothly_and_trackpads_at_once() {
         delta: DVec2::new(0.0, -100.0 * WHEEL_STEP / 4.0 * 4.0 / 100.0 * 25.0),
         unit: WheelUnit::Pixel,
         modifiers: Modifiers::default(),
+        source: WheelSource::Unknown,
     });
     assert_eq!(rig.camera.zoom(), zoom, "eased, not immediate");
     let frames = rig.settle();
@@ -306,6 +307,7 @@ fn wheels_zoom_smoothly_and_trackpads_at_once() {
         delta: DVec2::new(0.0, 2.0),
         unit: WheelUnit::Pixel,
         modifiers: Modifiers::default(),
+        source: WheelSource::Unknown,
     });
     assert!(rig.camera.zoom() < before);
     rig.camera.take_events();
@@ -516,4 +518,309 @@ fn shift_double_click_zooms_out() {
     }
     rig.settle();
     assert!((rig.camera.zoom() - (zoom - 1.0)).abs() < 1e-9);
+}
+
+impl Rig {
+    fn with(options: GestureOptions) -> Self {
+        let mut rig = Self::new();
+        rig.input.set_options(&mut rig.camera, options);
+        rig
+    }
+
+    fn pinch(&mut self, scale: f64, rotation: f64, phase: GesturePhase) {
+        self.send(Input::Pinch {
+            center: DVec2::new(200.0, 200.0),
+            scale,
+            rotation,
+            phase,
+        });
+    }
+
+    /// A pinch spreading the fingers from 200 to 400 px apart over 20
+    /// moves, released at once.
+    fn spread(&mut self) {
+        self.down(1, PointerKind::Touch, 300.0, 300.0);
+        self.down(2, PointerKind::Touch, 500.0, 300.0);
+        for i in 1..=20 {
+            let half = 100.0 * (1.0 + f64::from(i) / 20.0);
+            self.now += 16.0;
+            self.to(1, 400.0 - half, 300.0);
+            self.to(2, 400.0 + half, 300.0);
+        }
+        self.up(1, 200.0, 300.0);
+        self.up(2, 600.0, 300.0);
+    }
+}
+
+#[test]
+fn a_touch_held_still_is_a_long_click() {
+    let mut rig = Rig::new();
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    for _ in 0..20 {
+        rig.frame();
+    }
+    assert!(rig.input.take_events().is_empty(), "320 ms is a press");
+    rig.to(1, 302.0, 301.0);
+    for _ in 0..6 {
+        rig.frame();
+    }
+    assert_eq!(
+        rig.input.take_events(),
+        [InteractEvent::LongClick {
+            position: DVec2::new(302.0, 301.0)
+        }]
+    );
+    rig.frame();
+    rig.up(1, 302.0, 301.0);
+    rig.settle();
+    assert!(rig.input.take_events().is_empty(), "and not a click too");
+
+    // A press that moves on is a drag; a mouse held still is a press.
+    let mut rig = Rig::new();
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    rig.now += 16.0;
+    rig.to(1, 320.0, 300.0);
+    for _ in 0..40 {
+        rig.frame();
+    }
+    rig.up(1, 320.0, 300.0);
+    assert!(rig.input.take_events().is_empty());
+    let mut rig = Rig::new();
+    rig.down(1, PointerKind::Mouse, 300.0, 300.0);
+    for _ in 0..40 {
+        rig.frame();
+    }
+    rig.up(1, 300.0, 300.0);
+    assert_eq!(
+        rig.input.take_events(),
+        [InteractEvent::Click {
+            position: DVec2::new(300.0, 300.0)
+        }]
+    );
+}
+
+#[test]
+fn a_right_click_is_a_long_click() {
+    let mut rig = Rig::new();
+    rig.send(Input::PointerDown {
+        id: 1,
+        kind: PointerKind::Mouse,
+        button: Button::Secondary,
+        position: DVec2::new(100.0, 120.0),
+        modifiers: Modifiers::default(),
+    });
+    rig.up(1, 100.0, 120.0);
+    assert_eq!(
+        rig.input.take_events(),
+        [InteractEvent::LongClick {
+            position: DVec2::new(100.0, 120.0)
+        }]
+    );
+}
+
+#[test]
+fn movements_turned_off_stay_put() {
+    let mut rig = Rig::with(GestureOptions::none());
+    let state = *rig.camera.state();
+    rig.fling(100.0, 10.0);
+    rig.spread();
+    rig.settle();
+    let used = rig.input.handle(
+        &mut rig.camera,
+        Input::Wheel {
+            position: DVec2::new(100.0, 100.0),
+            delta: DVec2::new(0.0, -100.0),
+            unit: WheelUnit::Pixel,
+            modifiers: Modifiers::default(),
+            source: WheelSource::Unknown,
+        },
+        rig.now,
+    );
+    assert!(!used, "the page scrolls instead");
+    rig.send(Input::Key {
+        key: Key::ZoomIn,
+        modifiers: Modifiers::default(),
+    });
+    rig.settle();
+    assert_eq!(*rig.camera.state(), state);
+
+    // Pinching with rotation off zooms and doesn't turn.
+    let mut rig = Rig::with(GestureOptions {
+        rotate: Movement {
+            enabled: false,
+            ..GestureOptions::default().rotate
+        },
+        ..GestureOptions::default()
+    });
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    rig.down(2, PointerKind::Touch, 500.0, 300.0);
+    for i in 1..=20 {
+        let t = f64::from(i) / 20.0;
+        let half = 100.0 * (1.0 + t);
+        let angle = t * std::f64::consts::FRAC_PI_2;
+        let offset = DVec2::new(angle.cos(), angle.sin()) * half;
+        rig.now += 16.0;
+        rig.to(1, 400.0 - offset.x, 300.0 - offset.y);
+        rig.to(2, 400.0 + offset.x, 300.0 + offset.y);
+    }
+    assert!(rig.camera.zoom() > 12.9);
+    assert_eq!(rig.camera.state().bearing, 0.0);
+}
+
+#[test]
+fn changing_the_options_cancels_a_gesture() {
+    let mut rig = Rig::new();
+    rig.down(1, PointerKind::Mouse, 100.0, 300.0);
+    rig.now += 16.0;
+    rig.to(1, 150.0, 300.0);
+    assert!(rig.camera.is_held());
+    let options = GestureOptions {
+        thresholds: Thresholds {
+            click_tolerance: 8.0,
+            ..Thresholds::default()
+        },
+        ..GestureOptions::default()
+    };
+    rig.input.set_options(&mut rig.camera, options);
+    assert!(!rig.camera.is_held());
+    let state = *rig.camera.state();
+    rig.now += 16.0;
+    rig.to(1, 200.0, 300.0);
+    rig.up(1, 200.0, 300.0);
+    assert_eq!(rig.settle(), 0);
+    assert_eq!(*rig.camera.state(), state);
+    assert!(rig.input.take_events().is_empty());
+
+    // The new tolerance holds: 6 px is still a click.
+    rig.down(1, PointerKind::Touch, 100.0, 300.0);
+    rig.to(1, 106.0, 300.0);
+    rig.up(1, 106.0, 300.0);
+    assert_eq!(rig.input.take_events().len(), 1);
+    assert_eq!(*rig.camera.state(), state);
+}
+
+#[test]
+fn momentum_follows_each_movements_fling() {
+    // Off: the drag stops where it lets go.
+    let mut rig = Rig::with(GestureOptions {
+        pan: Movement {
+            momentum: None,
+            ..GestureOptions::default().pan
+        },
+        ..GestureOptions::default()
+    });
+    assert!(rig.fling(100.0, 10.0).abs() < 1e-6);
+
+    // Android's: 625 px/s glides as its `OverScroller` would.
+    let friction = Rig::new().fling(100.0, 10.0);
+    let mut rig = Rig::with(GestureOptions {
+        pan: Movement {
+            momentum: Some(Fling::ANDROID),
+            ..GestureOptions::default().pan
+        },
+        ..GestureOptions::default()
+    });
+    let android = rig.fling(100.0, 10.0);
+    let speed = 625.0f64;
+    let (i, f, p) = (0.35, 0.015, 9.80665 * 39.37 * 160.0 * 0.84);
+    let rate = 0.78f64.ln() / 0.9f64.ln();
+    let expected = f * p * (rate / (rate - 1.0) * (i * speed / (f * p)).ln()).exp();
+    assert!((android - expected).abs() < 0.01, "{android} vs {expected}");
+    // 86 px against friction's 124: Android's slow flings stop sooner,
+    // and its fast ones go farther.
+    assert!(android < friction, "{android} vs {friction}");
+}
+
+#[test]
+fn zoom_settles_on_a_whole_level_when_asked() {
+    let mut rig = Rig::with(GestureOptions {
+        zoom: Movement {
+            momentum: None,
+            snap: Some(MomentumSnap::ZOOM),
+            ..GestureOptions::default().zoom
+        },
+        ..GestureOptions::default()
+    });
+    rig.spread();
+    rig.settle();
+    assert!(
+        (rig.camera.zoom() - 13.0).abs() < 1e-9,
+        "{}",
+        rig.camera.zoom()
+    );
+
+    // Without a snap it stays where the pinch left it.
+    let mut rig = Rig::with(GestureOptions {
+        zoom: Movement {
+            momentum: None,
+            ..GestureOptions::default().zoom
+        },
+        ..GestureOptions::default()
+    });
+    rig.spread();
+    rig.settle();
+    assert!(
+        (rig.camera.zoom() - 12.93).abs() < 0.02,
+        "{}",
+        rig.camera.zoom()
+    );
+}
+
+#[test]
+fn platform_pinches_zoom_turn_and_glide() {
+    let mut rig = Rig::new();
+    let ground = rig.camera.unproject(DVec2::new(200.0, 200.0)).unwrap();
+    rig.pinch(1.0, 0.0, GesturePhase::Begin);
+    assert!(rig.input.is_active() && rig.camera.is_held());
+    for _ in 0..10 {
+        rig.now += 16.0;
+        rig.pinch(2f64.powf(0.05), -2.0, GesturePhase::Update);
+    }
+    // Half a level in, and 20° counterclockwise: the bearing rises.
+    assert!((rig.camera.zoom() - 12.5).abs() < 1e-9);
+    assert!((rig.camera.state().bearing - 20.0).abs() < 1e-9);
+    let at = rig.camera.project(ground).unwrap();
+    assert!(at.distance(DVec2::new(200.0, 200.0)) < 1e-6, "{at}");
+    rig.pinch(1.0, 0.0, GesturePhase::End);
+    rig.settle();
+    // 0.05 levels per 16 ms glides on, as touch pinches do.
+    assert!(rig.camera.zoom() > 12.7, "{}", rig.camera.zoom());
+    assert!(rig.camera.state().bearing > 25.0);
+    assert!(!rig.input.is_active());
+
+    // Cancelled, nothing glides; a touch takes over from one.
+    let mut rig = Rig::new();
+    for _ in 0..10 {
+        rig.now += 16.0;
+        rig.pinch(2f64.powf(0.05), 0.0, GesturePhase::Update);
+    }
+    rig.pinch(1.0, 0.0, GesturePhase::Cancel);
+    assert_eq!(rig.settle(), 0);
+    assert!((rig.camera.zoom() - 12.5).abs() < 1e-9);
+    rig.pinch(2.0, 0.0, GesturePhase::Begin);
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    rig.pinch(2.0, 0.0, GesturePhase::Update);
+    assert!((rig.camera.zoom() - 12.5).abs() < 1e-9);
+}
+
+#[test]
+fn a_known_trackpad_zooms_at_once_from_its_first_event() {
+    let mut rig = Rig::new();
+    let zoom = rig.camera.zoom();
+    // 10 px alone would read as a wheel's first step and ease.
+    for source in [WheelSource::Unknown, WheelSource::Trackpad] {
+        rig.now += 1000.0;
+        let before = rig.camera.zoom();
+        rig.send(Input::Wheel {
+            position: DVec2::new(100.0, 100.0),
+            delta: DVec2::new(0.0, -10.0),
+            unit: WheelUnit::Pixel,
+            modifiers: Modifiers::default(),
+            source,
+        });
+        let at_once = rig.camera.zoom() != before;
+        assert_eq!(at_once, source == WheelSource::Trackpad, "{source:?}");
+        rig.settle();
+    }
+    assert!(rig.camera.zoom() > zoom);
 }

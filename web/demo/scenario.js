@@ -73,13 +73,14 @@ window.scenario = (async () => {
     "movestart",
     "moveend",
     "click",
+    "contextmenu",
     "error",
     "styleimagemissing",
   ]) {
     map.on(type, (e) =>
       events.push({
         type,
-        ...(type === "click" ? { point: e.point, lngLat: e.lngLat } : {}),
+        ...(e.point ? { point: e.point, lngLat: e.lngLat } : {}),
         ...(e.id ? { id: e.id } : {}),
       }),
     );

@@ -4,7 +4,7 @@
 //! advances gestures and animations at the frame's timestamp, then draws.
 
 use glam::DVec2;
-use orb_camera::input::{Input, InteractEvent};
+use orb_camera::input::{GestureOptions, Input, InteractEvent};
 use orb_camera::{
     AnimationId, Bounds, CameraState, CameraTarget, Constraints, EaseOptions, FitOptions,
     FlyOptions, FreeCamera, GestureMomentum, Viewport,
@@ -88,6 +88,16 @@ impl Map {
     /// used it, so hosts can stop the platform's default.
     pub fn input(&mut self, input: Input, time: f64) -> bool {
         self.input.handle(&mut self.camera, input, time)
+    }
+
+    /// What gestures may move, how releases continue, and the platform's
+    /// thresholds; changing it cancels a gesture under way.
+    pub fn set_gestures(&mut self, options: GestureOptions) {
+        self.input.set_options(&mut self.camera, options);
+    }
+
+    pub fn gestures(&self) -> &GestureOptions {
+        self.input.options()
     }
 
     /// The box a Shift-drag zooms to while it is drawn, corner to corner
@@ -188,8 +198,9 @@ impl Map {
         }
         for event in self.input.take_events() {
             self.events.push(match event {
-                InteractEvent::Click { position, button } => MapEvent::Click { position, button },
+                InteractEvent::Click { position } => MapEvent::Click { position },
                 InteractEvent::DoubleClick { position } => MapEvent::DoubleClick { position },
+                InteractEvent::LongClick { position } => MapEvent::LongClick { position },
             });
         }
         gesture || animating

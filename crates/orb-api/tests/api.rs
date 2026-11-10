@@ -254,13 +254,9 @@ fn style_frame_query_edit_gesture_idle() {
     }
     let events = settle(&mut map, &mut target);
     assert!(
-        events.iter().any(|e| matches!(
-            e,
-            Event::Map(MapEvent::Click {
-                button: Button::Primary,
-                ..
-            })
-        )),
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Map(MapEvent::Click { .. }))),
         "{events:?}"
     );
     assert!(!map.needs_frame());

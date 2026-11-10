@@ -5,6 +5,28 @@
 // box shows over the canvas while it is drawn.
 
 import type { InputKind } from "./engine.ts";
+import type { GestureOptions } from "./types.ts";
+
+/** Which movements the map's gestures make: the wheel and keys of those
+ * that don't scroll the page as they would without the map. */
+export interface Allowed {
+  pan: boolean;
+  zoom: boolean;
+  rotate: boolean;
+  pitch: boolean;
+}
+
+/** What `options` allows. */
+export const allowed = (options: GestureOptions = {}): Allowed => {
+  const on = (m: GestureOptions["pan"]) =>
+    typeof m === "boolean" ? m : (m?.enabled ?? true);
+  return {
+    pan: on(options.pan),
+    zoom: on(options.zoom),
+    rotate: on(options.rotate),
+    pitch: on(options.pitch),
+  };
+};
 
 const modifiers = (e: KeyboardEvent | MouseEvent) =>
   (e.shiftKey ? 1 : 0) |
@@ -12,17 +34,25 @@ const modifiers = (e: KeyboardEvent | MouseEvent) =>
   (e.altKey ? 4 : 0) |
   (e.metaKey ? 8 : 0);
 
-/** The keys the map uses (orb-web's `key`); Escape only ends a box zoom. */
-const KEYS = new Set([
-  "ArrowLeft",
-  "ArrowRight",
-  "ArrowUp",
-  "ArrowDown",
-  "+",
-  "=",
-  "-",
-  "_",
-]);
+/** Whether the map uses a key (orb-web's `key`) with what it allows;
+ * Escape only ends a box zoom. */
+const usesKey = (e: KeyboardEvent, allowed: Allowed) => {
+  switch (e.key) {
+    case "ArrowLeft":
+    case "ArrowRight":
+      return e.shiftKey ? allowed.rotate : allowed.pan;
+    case "ArrowUp":
+    case "ArrowDown":
+      return e.shiftKey ? allowed.pitch : allowed.pan;
+    case "+":
+    case "=":
+    case "-":
+    case "_":
+      return allowed.zoom;
+    default:
+      return false;
+  }
+};
 
 /** Where input goes: `send(kind, args, time)` while the map takes it (not
  * while it recovers its GPU). */
@@ -35,13 +65,15 @@ export type InputSink = (
 /** Feeds `canvas`'s input to `send`. Moves arrive as `pointerrawupdate`s
  * with `raw` (as soon as the browser has them, for a map in a worker:
  * `pointermove` waits for the page's next frame, and the worker's would
- * already have begun). Returns the detach function and `showBox`, which
- * shows a Shift-drag's box ([x0, y0, x1, y1], or null to hide it). */
+ * already have begun). Returns the detach function, `showBox`, which
+ * shows a Shift-drag's box ([x0, y0, x1, y1], or null to hide it), and
+ * `allow`, which says what the map's gestures move now. */
 export function attachInput(
   canvas: HTMLCanvasElement,
   send: InputSink,
   raw: boolean,
 ) {
+  let allowedNow = allowed();
   canvas.tabIndex = 0;
   canvas.style.touchAction = "none";
   const box = document.createElement("div");
@@ -111,8 +143,10 @@ export function attachInput(
   };
   const cancel = (e: PointerEvent) =>
     send("pointerCancel", [e.pointerId], e.timeStamp);
-  // The map zooms on every wheel event and uses its keys.
+  // The map zooms on every wheel event, unless it doesn't zoom, and uses
+  // its keys.
   const wheel = (e: WheelEvent) => {
+    if (!allowedNow.zoom) return;
     e.preventDefault();
     send(
       "wheel",
@@ -121,8 +155,9 @@ export function attachInput(
     );
   };
   const key = (e: KeyboardEvent) => {
-    if (KEYS.has(e.key)) e.preventDefault();
-    if (KEYS.has(e.key) || e.key === "Escape")
+    const uses = usesKey(e, allowedNow);
+    if (uses) e.preventDefault();
+    if (uses || e.key === "Escape")
       send("key", [e.key, modifiers(e)], e.timeStamp);
   };
   const blur = (e: FocusEvent) => send("blur", [], e.timeStamp);
@@ -142,6 +177,9 @@ export function attachInput(
     canvas.addEventListener(type, listener, options);
   return {
     showBox,
+    allow: (next: Allowed) => {
+      allowedNow = next;
+    },
     detach: () => {
       for (const [type, listener, options] of listeners)
         canvas.removeEventListener(type, listener, options);

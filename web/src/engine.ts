@@ -18,10 +18,12 @@ import type {
   FrameStats,
   FreeCamera,
   GestureMomentum,
+  GestureOptions,
   GpuSubmission,
   Hit,
   MapEvents,
   Padding,
+  PointerEventData,
   TileLod,
 } from "./types.ts";
 import type { VideoEventObject } from "./videos.ts";
@@ -78,8 +80,7 @@ type CoreEvent =
       user: boolean;
     }
   | { type: "animationend"; id: number; interrupted: boolean }
-  | { type: "click"; x: number; y: number; button: number }
-  | { type: "dblclick"; x: number; y: number }
+  | { type: "click" | "dblclick" | "contextmenu"; x: number; y: number }
   | { type: "tilerequest"; source: string; z: number; x: number; y: number }
   | VideoEventObject;
 
@@ -339,6 +340,10 @@ export class Engine {
   }
   setCenterClampedToGround(clamped: boolean): void {
     this.#core.setCenterClampedToGround(clamped);
+    this.#request();
+  }
+  setGestures(options: GestureOptions): void {
+    this.#core.setGestures(options);
     this.#request();
   }
   setCenterElevation(elevation: number): void {
@@ -790,22 +795,14 @@ export class Engine {
           });
           break;
         case "click":
-        case "dblclick": {
+        case "dblclick":
+        case "contextmenu": {
           const g = this.#core.unproject(event.x, event.y, undefined);
-          const data = {
-            point: [event.x, event.y] as [number, number],
-            lngLat: g ? ([g[0], g[1]] as [number, number]) : null,
+          const data: PointerEventData = {
+            point: [event.x, event.y],
+            lngLat: g ? [g[0]!, g[1]!] : null,
           };
-          if (event.type === "click")
-            out.push({
-              type: "click",
-              data: { ...data, button: event.button },
-            });
-          else
-            out.push({
-              type: "dblclick",
-              data: { ...data, button: undefined },
-            });
+          out.push({ type: event.type, data } as EngineEvent);
           break;
         }
       }

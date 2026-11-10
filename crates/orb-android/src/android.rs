@@ -148,6 +148,52 @@ pub(crate) fn finishing() -> bool {
     })
 }
 
+/// The platform's gesture thresholds, from the activity's
+/// `ViewConfiguration`, or `None` when the platform won't say.
+pub(crate) fn view_configuration() -> Option<crate::ViewConfiguration> {
+    let app = APP.get()?;
+    let read = with_activity(app, |env, activity| {
+        let config = env
+            .call_static_method(
+                jni_str!("android/view/ViewConfiguration"),
+                jni_str!("get"),
+                jni_sig!("(Landroid/content/Context;)Landroid/view/ViewConfiguration;"),
+                &[JValue::Object(activity)],
+            )?
+            .l()?;
+        let mut int = |name: &'static jni::strings::JNIStr| -> jni::errors::Result<f64> {
+            Ok(f64::from(
+                env.call_method(&config, name, jni_sig!("()I"), &[])?.i()?,
+            ))
+        };
+        let touch_slop = int(jni_str!("getScaledTouchSlop"))?;
+        let double_tap_slop = int(jni_str!("getScaledDoubleTapSlop"))?;
+        let min_fling = int(jni_str!("getScaledMinimumFlingVelocity"))?;
+        let max_fling = int(jni_str!("getScaledMaximumFlingVelocity"))?;
+        let mut timeout = |name: &'static jni::strings::JNIStr| -> jni::errors::Result<f64> {
+            Ok(f64::from(
+                env.call_static_method(
+                    jni_str!("android/view/ViewConfiguration"),
+                    name,
+                    jni_sig!("()I"),
+                    &[],
+                )?
+                .i()?,
+            ))
+        };
+        Ok(crate::ViewConfiguration {
+            touch_slop,
+            double_tap_slop,
+            min_fling,
+            max_fling,
+            double_tap_timeout: timeout(jni_str!("getDoubleTapTimeout"))?,
+            long_press_timeout: timeout(jni_str!("getLongPressTimeout"))?,
+        })
+    });
+    read.inspect_err(|e| log(&format!("ViewConfiguration: {e}")))
+        .ok()
+}
+
 /// Calls `f` with the activity, on this thread attached to the VM.
 #[allow(unsafe_code)]
 fn with_activity<T>(

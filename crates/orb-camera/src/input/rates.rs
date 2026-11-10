@@ -21,3 +21,6 @@ pub(crate) const TRACKPAD_ZOOM_RATE: f64 = 1.0 / 100.0;
 pub(crate) const KEY_PAN: f64 = 100.0;
 pub(crate) const KEY_BEARING: f64 = 15.0;
 pub(crate) const KEY_PITCH: f64 = 10.0;
+/// Milliseconds a touch holds still for a long press (Compose's and
+/// Android's `ViewConfiguration` default).
+pub(crate) const LONG_PRESS: f64 = 400.0;

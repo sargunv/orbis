@@ -7,7 +7,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use glam::DVec2;
-use orb_camera::input::Input;
+use orb_camera::input::{GestureOptions, Input};
 use orb_camera::{
     AnimationId, Bounds, CameraTarget, Constraints, EaseOptions, FitOptions, FlyOptions,
     FreeCamera, GestureMomentum, Padding,
@@ -636,6 +636,17 @@ impl Map {
         let used = self.map.input(input, time);
         self.dirty |= used;
         used
+    }
+
+    /// What gestures may move, how releases continue, and the platform's
+    /// thresholds; changing it cancels a gesture under way.
+    pub fn set_gestures(&mut self, options: GestureOptions) {
+        self.map.set_gestures(options);
+        self.dirty = true;
+    }
+
+    pub fn gestures(&self) -> &GestureOptions {
+        self.map.gestures()
     }
 
     /// The box a Shift-drag zooms to while it is drawn, corner to corner

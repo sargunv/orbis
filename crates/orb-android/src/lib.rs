@@ -20,8 +20,9 @@ use std::time::{Duration, Instant};
 
 use glam::DVec2;
 use orb_api::{
-    Button, CameraState, Error, Event, Geodetic, Input, Map, MapEvent, MapOptions, Modifiers,
-    PointerKind, Previews, Runtime, RuntimeOptions, Target, TileMatrixSet, WheelUnit,
+    Button, CameraState, Error, Event, Fling, Geodetic, GestureOptions, Input, Map, MapEvent,
+    MapOptions, Modifiers, Movement, PointerKind, Previews, Runtime, RuntimeOptions, Target,
+    Thresholds, TileMatrixSet, WheelSource, WheelUnit,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -69,6 +70,53 @@ impl Options {
             pitch,
             ..CameraState::new(target, zoom, &mercator())
         })
+    }
+}
+
+/// Android's gesture thresholds (`ViewConfiguration`), in physical pixels
+/// and milliseconds.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewConfiguration {
+    pub touch_slop: f64,
+    pub double_tap_slop: f64,
+    /// Pixels per second.
+    pub min_fling: f64,
+    pub max_fling: f64,
+    pub double_tap_timeout: f64,
+    pub long_press_timeout: f64,
+}
+
+/// The gestures as Android's own feel: pans fling along its
+/// `OverScroller` (Compose's Android default), and taps, slop and long
+/// presses keep the platform's thresholds, in logical pixels at `scale`
+/// device pixels each.
+fn android_gestures(config: Option<ViewConfiguration>, scale: f64) -> GestureOptions {
+    let defaults = GestureOptions::default();
+    let Some(c) = config else {
+        return GestureOptions {
+            pan: Movement {
+                momentum: Some(Fling::ANDROID),
+                ..defaults.pan
+            },
+            ..defaults
+        };
+    };
+    GestureOptions {
+        pan: Movement {
+            momentum: Some(Fling::Android {
+                min_speed: c.min_fling / scale,
+                max_speed: c.max_fling / scale,
+                max_distance: f64::INFINITY,
+            }),
+            ..defaults.pan
+        },
+        thresholds: Thresholds {
+            click_tolerance: c.touch_slop / scale,
+            tap_tolerance: c.double_tap_slop / scale,
+            tap_interval: c.double_tap_timeout,
+            long_press: c.long_press_timeout,
+        },
+        ..defaults
     }
 }
 
@@ -159,6 +207,13 @@ impl State {
         map.set_wake(move || {
             let _ = proxy.send_event(Wake::Data);
         });
+        #[cfg(target_os = "android")]
+        let config = android::view_configuration();
+        #[cfg(not(target_os = "android"))]
+        let config = None;
+        let gestures = android_gestures(config, window.scale_factor());
+        log(&format!("gestures: {:?}", gestures.thresholds));
+        map.set_gestures(gestures);
         map.load_style_url(&options.style);
         let mut state = Self {
             window,
@@ -223,12 +278,16 @@ impl State {
     fn events(&mut self) {
         while let Some(event) = self.map.poll_event() {
             match event {
-                Event::Map(MapEvent::Click {
-                    position,
-                    button: Button::Primary,
-                }) => match self.map.hit_test(position) {
+                Event::Map(
+                    ref event @ (MapEvent::Click { position } | MapEvent::LongClick { position }),
+                ) => match self.map.hit_test(position) {
                     Some(hit) => log(&format!(
-                        "clicked {} ({}{}) id {}",
+                        "{} {} ({}{}) id {}",
+                        if matches!(event, MapEvent::Click { .. }) {
+                            "clicked"
+                        } else {
+                            "long-clicked"
+                        },
                         hit.layer,
                         hit.source,
                         hit.source_layer
@@ -236,7 +295,11 @@ impl State {
                             .unwrap_or_default(),
                         hit.id.as_deref().unwrap_or("none")
                     )),
-                    None => log("clicked nothing"),
+                    None => log(if matches!(event, MapEvent::Click { .. }) {
+                        "clicked nothing"
+                    } else {
+                        "long-clicked nothing"
+                    }),
                 },
                 Event::Map(MapEvent::Error { message } | MapEvent::Warning { message }) => {
                     log(&message);
@@ -458,13 +521,19 @@ impl ApplicationHandler<Wake> for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 // winit's deltas point away from the user; the DOM's, which
                 // the gestures follow, toward.
-                let (delta, unit) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => {
-                        (-DVec2::new(f64::from(x), f64::from(y)), WheelUnit::Line)
-                    }
-                    MouseScrollDelta::PixelDelta(p) => {
-                        (-DVec2::new(p.x, p.y) / scale, WheelUnit::Pixel)
-                    }
+                // Wheels scroll by lines, trackpads by pixels. (winit's
+                // Android backend reports every pointer as touches.)
+                let (delta, unit, source) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (
+                        -DVec2::new(f64::from(x), f64::from(y)),
+                        WheelUnit::Line,
+                        WheelSource::Wheel,
+                    ),
+                    MouseScrollDelta::PixelDelta(p) => (
+                        -DVec2::new(p.x, p.y) / scale,
+                        WheelUnit::Pixel,
+                        WheelSource::Trackpad,
+                    ),
                 };
                 let position = state.cursor;
                 state.input(Input::Wheel {
@@ -472,6 +541,7 @@ impl ApplicationHandler<Wake> for App {
                     delta,
                     unit,
                     modifiers: Modifiers::default(),
+                    source,
                 });
             }
             WindowEvent::Touch(touch) => {
