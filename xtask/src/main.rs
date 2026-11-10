@@ -46,7 +46,7 @@ cargo xtask <task>
                names, to target/web/core-names.wasm (for `pnpm -C web coverage`)
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
-  rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|lavapipe|all]
+  rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|lavapipe|all|native-cpu|native-cpu-tex]
                the fixtures: GL JS's render (default) and query suites, or
                MapLibre Native's native-render, native-query and
                native-expression suites; lavapipe runs the render suites
@@ -215,6 +215,7 @@ fn full_check() -> Result<(), String> {
     clippy(&[])?;
     windows_clippy()?;
     cargo(&["test", "--workspace", "--quiet"])?;
+    cpu_driver_tests(true, true)?;
     mln_ffi::check_declarations()?;
     boundaries::check()
 }
@@ -313,10 +314,44 @@ fn affected_check(base: &str) -> Result<(), String> {
         windows_clippy()?;
     }
     cargo(&test)?;
+    cpu_driver_tests(
+        selection.contains("orb-render"),
+        selection.contains("orb-api"),
+    )?;
     if selection.contains("orb-ffi") {
         mln_ffi::check_declarations()?;
     }
     boundaries::check()
+}
+
+/// The renderer's tests and `orb-api`'s path tests again on the CPU frame
+/// driver with its tables in data textures, WebGL 2's path (#140), run
+/// natively (`ORB_DRIVER=cpu-tex`). `orb-runtime`'s `drivers` test holds
+/// the CPU driver to the GPU's word for word in every run.
+fn cpu_driver_tests(render: bool, path: bool) -> Result<(), String> {
+    // One run each: `--test` would narrow orb-render's too.
+    let runs: [(bool, &[&str]); 2] = [
+        (render, &["test", "--quiet", "-p", "orb-render"]),
+        (
+            path,
+            &["test", "--quiet", "-p", "orb-api", "--test", "path"],
+        ),
+    ];
+    for (_, args) in runs.into_iter().filter(|(run, _)| *run) {
+        eprintln!("$ ORB_DRIVER=cpu-tex cargo {}", args.join(" "));
+        let status = Command::new(env!("CARGO"))
+            .args(args)
+            .env("ORB_DRIVER", "cpu-tex")
+            .status()
+            .map_err(|e| format!("failed to run cargo: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "`ORB_DRIVER=cpu-tex cargo {}` failed",
+                args.join(" ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Clippy over orb-hal-wgpu for Windows, where its D3D12 code builds: it

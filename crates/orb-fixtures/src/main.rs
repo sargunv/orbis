@@ -46,20 +46,22 @@ fn run() -> Result<(), String> {
     let mut filter = String::new();
     let mut platform = "native".to_string();
     let mut suite = "render".to_string();
-    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>] [--platform native|chrome|lavapipe|all]";
+    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>] [--platform native|chrome|lavapipe|all|native-cpu|native-cpu-tex]";
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--suite" => suite = args.next().ok_or(USAGE)?,
             "--filter" => filter = args.next().ok_or("--filter needs a substring")?,
             "--platform" => {
-                platform = args
-                    .next()
-                    .ok_or("--platform needs native|chrome|lavapipe|all")?
+                platform = args.next().ok_or(
+                    "--platform needs native|chrome|lavapipe|all|native-cpu|native-cpu-tex",
+                )?
             }
             _ => return Err(format!("unknown argument {arg}; {USAGE}")),
         }
     }
-    if !["native", "chrome", "lavapipe", "all"].contains(&platform.as_str()) {
+    if !["native", "chrome", "lavapipe", "all"].contains(&platform.as_str())
+        && platforms::cpu_driver(&platform).is_none()
+    {
         return Err(format!("unknown platform {platform}"));
     }
     // The repository, as Cargo gave the manifest's directory: not

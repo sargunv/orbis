@@ -20,6 +20,14 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
         suite.run(root, filter, "lavapipe")?;
         return Ok(());
     }
+    // A CPU driver platform's own process, its device made to take it.
+    if std::env::var_os(CHILD).is_some() {
+        suite.run(root, filter, platform)?;
+        return Ok(());
+    }
+    if let Some(driver) = cpu_driver(platform) {
+        return run_cpu_driver(root, filter, platform, driver, suite);
+    }
     std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let combined = output.join("summary.json");
     if combined.exists() {
@@ -307,6 +315,167 @@ fn identity(output: &Path, native: &Value, chrome: &Value, suite: Suite) -> Resu
     Ok(
         json!({"eligible":tests.len(),"match":matches,"different":different,"unavailable":unavailable,"tests":tests}),
     )
+}
+
+/// Set in a CPU driver platform's process.
+const CHILD: &str = "ORB_FIXTURES_CPU_DRIVER";
+
+/// The `ORB_DRIVER` of a platform that runs the native suite on WebGL
+/// 2's frame driver (#140): `native-cpu` with the tables in storage
+/// buffers, `native-cpu-tex` in data textures.
+pub(crate) fn cpu_driver(platform: &str) -> Option<&'static str> {
+    match platform {
+        "native-cpu" => Some("cpu"),
+        "native-cpu-tex" => Some("cpu-tex"),
+        _ => None,
+    }
+}
+
+/// Runs the suite natively, then in a process of its own with the CPU
+/// frame driver (`ORB_DRIVER`), and compares the two's images byte for
+/// byte: they draw the same frames.
+fn run_cpu_driver(
+    root: &Path,
+    filter: &str,
+    platform: &str,
+    driver: &str,
+    suite: Suite,
+) -> Result<(), String> {
+    let output = match suite {
+        Suite::Render => root.join("docs/scratch/rt"),
+        Suite::NativeRender => root.join("docs/scratch/rt").join(suite.name()),
+    };
+    let native = suite.run(root, filter, "native")?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    run_command(
+        Command::new(exe)
+            .args([
+                "--suite",
+                suite.name(),
+                "--filter",
+                filter,
+                "--platform",
+                platform,
+            ])
+            .env("ORB_DRIVER", driver)
+            .env(CHILD, "1"),
+    )?;
+    let path = output.join(platform).join("summary.json");
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let other: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    println!("\nplatform        pass  fail  skip");
+    for (name, report) in [("native", &native), (platform, &other)] {
+        let c = counts_from(&report["totals"]);
+        println!("{name:<15} {:>4}  {:>4}  {:>4}", c.pass, c.fail, c.skip);
+    }
+    let identity = byte_identity(&output, &native, &other, platform)?;
+    println!(
+        "\n{platform}/native: {} identical, {} differ, {} without both images ({} tests)",
+        identity["identical"], identity["different"], identity["unavailable"], identity["tests"]
+    );
+    for test in identity["differing"].as_array().expect("differing") {
+        println!(
+            "  {}: {} pixels differ{}",
+            test["id"].as_str().unwrap_or_default(),
+            test["pixels"],
+            test["status"]
+                .as_str()
+                .map_or(String::new(), |s| format!(" ({s})"))
+        );
+    }
+    let combined = output.join(format!("{platform}-identity.json"));
+    write_json(&combined, &identity)?;
+    println!("\nReport: {}", combined.display());
+    Ok(())
+}
+
+/// Compares `other`'s image of every test with native's, byte for byte;
+/// writes each pair that differs, and a mask of where, under
+/// `<output>/<platform>-identity`.
+fn byte_identity(
+    output: &Path,
+    native: &Value,
+    other: &Value,
+    platform: &str,
+) -> Result<Value, String> {
+    let dir = output.join(format!("{platform}-identity"));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    let others: BTreeMap<_, _> = other["tests"]
+        .as_array()
+        .expect("tests")
+        .iter()
+        .map(|t| (t["id"].as_str().unwrap_or_default(), t))
+        .collect();
+    let (mut identical, mut unavailable, mut differing) = (0, 0, Vec::new());
+    let tests = native["tests"].as_array().expect("tests");
+    for test in tests {
+        let id = test["id"].as_str().unwrap_or_default();
+        let theirs = others.get(id);
+        let status = |t: &Value| t["status"].as_str().unwrap_or_default().to_string();
+        let statuses = theirs
+            .map(|t| status(t))
+            .filter(|s| *s != status(test))
+            .map(|s| format!("{} natively, {s} here", status(test)));
+        let images = test["image"]
+            .as_str()
+            .zip(theirs.and_then(|t| t["image"].as_str()));
+        let Some((a, b)) = images else {
+            unavailable += 1;
+            if let Some(statuses) = statuses {
+                differing.push(json!({"id":id,"pixels":Value::Null,"status":statuses}));
+            }
+            continue;
+        };
+        let a = Image::read(&output.join("native").join(a))?;
+        let b = Image::read(&output.join(platform).join(b))?;
+        let pixels = if (a.width, a.height) == (b.width, b.height) {
+            a.pixels
+                .chunks(4)
+                .zip(b.pixels.chunks(4))
+                .filter(|(p, q)| p != q)
+                .count()
+        } else {
+            (a.width * a.height) as usize
+        };
+        if pixels == 0 && statuses.is_none() {
+            identical += 1;
+            continue;
+        }
+        if pixels > 0 && (a.width, a.height) == (b.width, b.height) {
+            let target = dir.join(id);
+            std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+            a.write(&target.join("native.png"))?;
+            b.write(&target.join(format!("{platform}.png")))?;
+            let mask = a
+                .pixels
+                .chunks(4)
+                .zip(b.pixels.chunks(4))
+                .flat_map(|(p, q)| {
+                    if p == q {
+                        [p[0] / 4 + 160, p[1] / 4 + 160, p[2] / 4 + 160, 255]
+                    } else {
+                        [255, 0, 0, 255]
+                    }
+                })
+                .collect();
+            Image {
+                width: a.width,
+                height: a.height,
+                pixels: mask,
+            }
+            .write(&target.join("diff.png"))?;
+        }
+        differing.push(json!({"id":id,"pixels":pixels,"status":statuses}));
+    }
+    Ok(json!({
+        "tests": tests.len(),
+        "identical": identical,
+        "different": differing.len(),
+        "unavailable": unavailable,
+        "differing": differing,
+    }))
 }
 
 #[cfg(test)]
