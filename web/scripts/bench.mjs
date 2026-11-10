@@ -66,8 +66,10 @@ try {
     if (from.endsWith("/favicon.ico")) return;
     if (!["error", "warning"].includes(m.type())) return;
     console.error(`page: ${m.text()}`);
-    // GL JS's console warnings are about the style, not the run.
-    if (!from.includes("/maplibre-gl")) errors++;
+    // Warnings are shown, not failures: Chrome warns that it ignores
+    // `powerPreference` on Windows, GL JS about the style. GL JS's errors
+    // are about the style too, not the run.
+    if (m.type() === "error" && !from.includes("/maplibre-gl")) errors++;
   });
   page.on("pageerror", (e) => {
     errors++;
@@ -103,7 +105,7 @@ try {
     process.stdout.write(`${await page.locator("#markdown").inputValue()}\n`);
   }
   if (tracing) process.stdout.write(presentsReport(await tracing.stop()));
-  if (errors) throw new Error(`${errors} page warnings/errors`);
+  if (errors) throw new Error(`${errors} page errors`);
 } finally {
   if (android) await cleanup();
   else await browser.close();

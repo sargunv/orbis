@@ -25,8 +25,10 @@
 //! Runs interleave the engines (A, B, A, B) after an untimed pass of each,
 //! so drift and caches hit both alike; tables give medians over runs. The
 //! cache (mirror, mln-rs's build, about 2 GB) is in `$ORB_H2H_CACHE`, or
-//! `~/Library/Caches/orbis-h2h` (`~/.cache/orbis-h2h` elsewhere), shared
-//! by worktrees; raw results go to `target/h2h/`.
+//! `~/Library/Caches/orbis-h2h` (`%LOCALAPPDATA%\orbis-h2h` on Windows,
+//! `~/.cache/orbis-h2h` elsewhere), shared by worktrees; raw results go to
+//! `target/h2h/`. CPU, peak memory and instructions come from
+//! `/usr/bin/time`: without one (Windows) the tables leave them blank.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -88,7 +90,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
                 crate::compare::Build::new(&rev, &["orb-cli", "orb-bench"], options.profile())?;
             options
                 .bins
-                .push((rev.replace('/', "-"), build.bin.join("orbis")));
+                .push((rev.replace('/', "-"), build.bin.join(crate::exe("orbis"))));
             Some(build)
         }
         None => None,
@@ -239,9 +241,12 @@ impl Options {
                     let (name, path) = v
                         .split_once('=')
                         .ok_or("h2h: --bin takes <name>=<path to orbis>")?;
-                    let path = Path::new(path)
-                        .canonicalize()
-                        .map_err(|e| format!("h2h: {path}: {e}"))?;
+                    // Absolute, not canonical: Windows's canonical form
+                    // (`\\?\D:\…`) is lost on Node and some tools.
+                    let path = std::path::absolute(path)
+                        .ok()
+                        .filter(|p| p.is_file())
+                        .ok_or_else(|| format!("h2h: {path}: no such file"))?;
                     options.bins.push((name.to_string(), path));
                 }
                 "--engines" => {
@@ -265,8 +270,12 @@ impl Options {
 fn cache_dir() -> Result<PathBuf, String> {
     let dir = match std::env::var_os("ORB_H2H_CACHE") {
         Some(dir) => PathBuf::from(dir),
+        None if cfg!(windows) => std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .ok_or("h2h: LOCALAPPDATA is unset; set ORB_H2H_CACHE")?
+            .join("orbis-h2h"),
         None => {
-            let home = PathBuf::from(std::env::var_os("HOME").ok_or("h2h: HOME is unset")?);
+            let home = std::env::home_dir().ok_or("h2h: no home directory; set ORB_H2H_CACHE")?;
             if cfg!(target_os = "macos") {
                 home.join("Library/Caches/orbis-h2h")
             } else {
@@ -319,7 +328,7 @@ impl H2h {
         let root = root();
         let mut known: Vec<Engine> = vec![Engine::Orbis {
             name: "orbis".into(),
-            orbis: root.join("target/release/orbis"),
+            orbis: root.join("target/release").join(crate::exe("orbis")),
         }];
         for (name, orbis) in &options.bins {
             known.push(Engine::Orbis {
@@ -376,6 +385,9 @@ impl H2h {
             Some(views) => views.clone(),
             None => mln_checkout(&manifest)?.join("tools/liberty-compare/views.txt"),
         };
+        if !Path::new(TIME).exists() {
+            eprintln!("h2h: no {TIME} here, so runs' CPU, memory and instructions go unmeasured");
+        }
         let out = root.join("target/h2h");
         std::fs::create_dir_all(out.join("png")).map_err(|e| format!("{}: {e}", out.display()))?;
         Ok(Self {
@@ -403,7 +415,8 @@ impl H2h {
     /// The report's head: machine, builds, data, method.
     fn about(&self) -> String {
         let mut out = String::from("## Orbis head to head\n\n");
-        let cpu = output(Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]));
+        let cpu = output(Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]))
+            .or_else(|| std::env::var("PROCESSOR_IDENTIFIER").ok());
         let rev = output(Command::new("git").args(["rev-parse", "--short", "HEAD"]));
         let planet = std::fs::read_to_string(self.mirror.cache.join("planet.__f"))
             .ok()
@@ -516,7 +529,7 @@ impl H2h {
                     v[5].clone(),
                 ],
                 Engine::Mln => vec![
-                    self.mln.join("mlnstill").display().to_string(),
+                    self.mln.join(crate::exe("mlnstill")).display().to_string(),
                     style.clone(),
                     "-o".into(),
                     png,
@@ -664,7 +677,12 @@ impl H2h {
         }
         writeln!(
             out,
-            "\nWall: exec to exit; CPU: user + system, and instructions retired, from `/usr/bin/time`; requests: what the engine asked the mirror for. Timed runs: {}. Raw rows: {}.",
+            "\nWall: exec to exit; CPU: user + system, and instructions retired, from `/usr/bin/time`{}; requests: what the engine asked the mirror for. Timed runs: {}. Raw rows: {}.",
+            if Path::new(TIME).exists() {
+                ""
+            } else {
+                " (none here, so not measured)"
+            },
             net.answers(),
             csv_path.display()
         )
@@ -752,7 +770,7 @@ impl H2h {
                         "--times".into(),
                     ],
                     Engine::Mln => vec![
-                        self.mln.join("mlntiles").display().to_string(),
+                        self.mln.join(crate::exe("mlntiles")).display().to_string(),
                         style.clone(),
                         "--list".into(),
                         list.display().to_string(),
@@ -884,7 +902,10 @@ impl H2h {
         let command = |engine: &Engine| {
             let mut c = match engine {
                 Engine::Orbis { orbis, .. } => vec![
-                    orbis.with_file_name("orb-bench").display().to_string(),
+                    orbis
+                        .with_file_name(crate::exe("orb-bench"))
+                        .display()
+                        .to_string(),
                     style.clone(),
                     "--views".into(),
                     views.clone(),
@@ -897,7 +918,7 @@ impl H2h {
                     "1".into(),
                 ],
                 Engine::Mln => vec![
-                    self.mln.join("mlnframes").display().to_string(),
+                    self.mln.join(crate::exe("mlnframes")).display().to_string(),
                     style.clone(),
                     "--views".into(),
                     views.clone(),
@@ -1029,10 +1050,15 @@ impl H2h {
         for engine in &self.engines {
             match engine {
                 Engine::Orbis { name, .. } if name == "orbis" => {
-                    binaries.push(("orbis".to_string(), root().join("target/dist/orbis")));
+                    binaries.push((
+                        "orbis".to_string(),
+                        root().join("target/dist").join(crate::exe("orbis")),
+                    ));
                 }
                 Engine::Orbis { name, orbis } => binaries.push((name.clone(), orbis.clone())),
-                Engine::Mln => binaries.push(("mlnstill".into(), self.mln.join("mlnstill"))),
+                Engine::Mln => {
+                    binaries.push(("mlnstill".into(), self.mln.join(crate::exe("mlnstill"))))
+                }
             }
         }
         for (name, path) in binaries {
@@ -1175,10 +1201,14 @@ struct Timed {
     stdout: String,
 }
 
+/// What measures a run's CPU and memory, where there is one.
+const TIME: &str = "/usr/bin/time";
+
 /// Runs a command under `/usr/bin/time` (`-l` on macOS, `-v` elsewhere),
-/// failing if it fails.
+/// failing if it fails. Without one (Windows) only the wall time and what
+/// the engine reports are measured.
 fn timed(command: &[String]) -> Result<Timed, String> {
-    let time = Path::new("/usr/bin/time");
+    let time = Path::new(TIME);
     let mut c = if time.exists() {
         let mut c = Command::new(time);
         c.arg(if cfg!(target_os = "macos") {

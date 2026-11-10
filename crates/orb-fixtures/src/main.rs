@@ -62,10 +62,14 @@ fn run() -> Result<(), String> {
     if !["native", "chrome", "lavapipe", "all"].contains(&platform.as_str()) {
         return Err(format!("unknown platform {platform}"));
     }
+    // The repository, as Cargo gave the manifest's directory: not
+    // canonicalized, which on Windows makes a `\\?\D:\…` path Node can't
+    // open the Chrome driver by (`EISDIR: lstat 'D:'`).
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
+        .ancestors()
+        .nth(2)
+        .ok_or("orb-fixtures sits two levels below the repository")?
+        .to_path_buf();
     match suite.as_str() {
         "render" => platforms::run(&root, &filter, &platform, Suite::Render),
         "native-render" => platforms::run(&root, &filter, &platform, Suite::NativeRender),

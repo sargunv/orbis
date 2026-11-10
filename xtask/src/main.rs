@@ -25,9 +25,9 @@ use std::process::{Command, ExitCode};
 const HELP: &str = "\
 cargo xtask <task>
 
-  check [--affected [--base <rev>]]  formatting (dprint), clippy (native and
-               wasm32), tests,
-               generated bindings and boundary rules; --affected scopes them
+  check [--affected [--base <rev>]]  formatting (dprint), clippy (native,
+               wasm32, and orb-hal-wgpu for Windows when its Rust target is
+               installed), tests, generated bindings and boundary rules; --affected scopes them
                to the packages changed since <rev>'s merge base with HEAD
                (default origin/main), the working tree and untracked files,
                and every package depending on those
@@ -186,6 +186,7 @@ fn check(args: &[String]) -> Result<(), String> {
 fn full_check() -> Result<(), String> {
     format_check()?;
     clippy(&[])?;
+    windows_clippy()?;
     cargo(&["test", "--workspace", "--quiet"])?;
     bindings::run(&["--check".into()])?;
     boundaries::check()
@@ -276,6 +277,9 @@ fn affected_check(base: &str) -> Result<(), String> {
         cargo(&wasm)?;
     }
 
+    if selection.contains("orb-hal-wgpu") {
+        windows_clippy()?;
+    }
     cargo(&test)?;
     // The bindings are generated from orb-capi's bridge through
     // diplomat-swift-kotlin.
@@ -286,6 +290,42 @@ fn affected_check(base: &str) -> Result<(), String> {
         bindings::run(&["--check".into()])?;
     }
     boundaries::check()
+}
+
+/// Clippy over orb-hal-wgpu for Windows, where its D3D12 code builds: it
+/// needs no C toolchain, unlike the crates above it (ring). Skipped, with a
+/// note, without the Rust target.
+fn windows_clippy() -> Result<(), String> {
+    const TARGET: &str = "x86_64-pc-windows-msvc";
+    let installed = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l == TARGET)
+        });
+    if !installed {
+        eprintln!("check: no {TARGET} target (`rustup target add {TARGET}`), so no Windows clippy");
+        return Ok(());
+    }
+    cargo(&[
+        "clippy",
+        "--quiet",
+        "--target",
+        TARGET,
+        "-p",
+        "orb-hal-wgpu",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ])
+}
+
+/// A binary's file name on this platform (`orbis.exe` on Windows).
+pub(crate) fn exe(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
 pub(crate) fn cargo(args: &[&str]) -> Result<(), String> {

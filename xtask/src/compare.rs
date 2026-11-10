@@ -111,13 +111,16 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
     let rev = rev.ok_or("bench: --compare takes a revision")?;
     let before = Build::new(rev, &["orb-bench"], "release")?;
     crate::cargo(&["build", "--release", "-p", "orb-bench"])?;
-    let after = root().join("target/release/orb-bench");
+    let after = root().join("target/release").join(crate::exe("orb-bench"));
     let mut outputs: [Vec<String>; 2] = [Vec::new(), Vec::new()];
     for run in 0..runs {
         let order = if run % 2 == 0 { [0, 1] } else { [1, 0] };
         for side in order {
             let (name, bin) = match side {
-                0 => (before.rev.as_str(), before.bin.join("orb-bench")),
+                0 => (
+                    before.rev.as_str(),
+                    before.bin.join(crate::exe("orb-bench")),
+                ),
                 _ => ("working tree", after.clone()),
             };
             eprintln!("compare: run {} of {runs}: {name}", run + 1);

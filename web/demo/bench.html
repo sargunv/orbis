@@ -118,13 +118,12 @@
       status.dataset.state = state;
     }
 
-    // What the browser says about the adapter: wgpu's adapter info has only the
-    // description on the web.
+    // What the browser says about the adapter Orbis draws on (the default, as
+    // wgpu asks for it; Chrome warns that it ignores a power preference on
+    // Windows): wgpu's adapter info has only the description on the web.
     async function about() {
       const lines = [];
-      const adapter = await navigator.gpu?.requestAdapter({
-        powerPreference: "high-performance",
-      });
+      const adapter = await navigator.gpu?.requestAdapter();
       if (adapter) {
         const info = adapter.info ?? {};
         const parts = [
