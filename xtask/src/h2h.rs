@@ -608,41 +608,35 @@ impl H2h {
             ("G instr", &|r| r.t.ginstr, 2),
             ("requests", &|r| Some(r.net.requests as f64), 0),
         ];
-        let mut out = format!(
-            "### Stills: one process per view ({} views × {runs} runs, 512 px unless the view says otherwise)\n\n| view |",
-            views.len()
+        let mut table = Table::new(
+            ["view".to_string()].into_iter().chain(
+                (metrics.iter())
+                    .flat_map(|(metric, ..)| names.iter().map(move |n| format!("{metric} {n}"))),
+            ),
         );
-        for (metric, ..) in &metrics {
-            for name in &names {
-                write!(out, " {metric} {name} |").expect("a String");
-            }
-        }
-        writeln!(out, "\n|---|{}", "---|".repeat(metrics.len() * names.len())).expect("a String");
         let mut sums = vec![0.0; metrics.len() * names.len()];
         for (view, _) in &views {
-            write!(out, "| {view} |").expect("a String");
-            let mut i = 0;
+            let mut row = vec![view.clone()];
             for (_, f, digits) in &metrics {
                 for name in &names {
                     let m = median_of(name, view, *f);
-                    sums[i] += m.unwrap_or(0.0);
-                    i += 1;
-                    write!(
-                        out,
-                        " {} |",
-                        m.map_or("—".into(), |m| format!("{m:.digits$}"))
-                    )
-                    .expect("a String");
+                    sums[row.len() - 1] += m.unwrap_or(0.0);
+                    row.push(cell(m, *digits));
                 }
             }
-            out.push('\n');
+            table.row(row);
         }
-        write!(out, "| **sum** |").expect("a String");
-        for (i, s) in sums.iter().enumerate() {
-            let digits = metrics[i / names.len()].2;
-            write!(out, " **{s:.digits$}** |").expect("a String");
-        }
-        out.push('\n');
+        table.row(
+            ["**sum**".to_string()].into_iter().chain(
+                (sums.iter().enumerate())
+                    .map(|(i, s)| format!("**{s:.*}**", metrics[i / names.len()].2)),
+            ),
+        );
+        let mut out = format!(
+            "### Stills: one process per view ({} views × {runs} runs, 512 px unless the view says otherwise)\n\n{}",
+            views.len(),
+            table.finish()
+        );
         // Each engine against the last (mln-rs by default), view by view.
         if let [first @ .., last] = &names[..] {
             for name in first {
@@ -698,10 +692,7 @@ impl H2h {
         // An earlier run's diff images would pass for this run's.
         let _ = std::fs::remove_dir_all(&diffs);
         std::fs::create_dir_all(&diffs).map_err(|e| format!("{}: {e}", diffs.display()))?;
-        let mut out = format!(
-            "\n### Stills against {}\n\n| view | engine | mismatched px | of all |\n|---|---|---|---|\n",
-            dir.display()
-        );
+        let mut table = Table::new(["view", "engine", "mismatched px", "of all"]);
         for (view, _) in views {
             let reference = dir.join(format!("orbis-{view}.png"));
             for engine in &self.engines {
@@ -714,12 +705,9 @@ impl H2h {
                 }
                 let (a, b) = (Rgba::read(&still)?, Rgba::read(&reference)?);
                 if (a.width, a.height) != (b.width, b.height) {
-                    writeln!(
-                        out,
-                        "| {view} | {name} | {}×{} against {}×{} |  |",
-                        a.width, a.height, b.width, b.height
-                    )
-                    .expect("a String");
+                    let sizes =
+                        format!("{}×{} against {}×{}", a.width, a.height, b.width, b.height);
+                    table.row([view, name, &sizes, ""]);
                     continue;
                 }
                 let (count, image) = pixelmatch::compare(
@@ -733,16 +721,20 @@ impl H2h {
                     Rgba { pixels: image, ..a }.write(&diffs.join(format!("{name}-{view}.png")))?;
                 }
                 let share = count as f64 / f64::from(a.width * a.height) * 100.0;
-                writeln!(out, "| {view} | {name} | {count} | {share:.3}% |").expect("a String");
+                table.row([
+                    view.clone(),
+                    name.clone(),
+                    count.to_string(),
+                    format!("{share:.3}%"),
+                ]);
             }
         }
-        writeln!(
-            out,
-            "\nMismatched: pixels pixelmatch tells apart (threshold 0.1, anti-aliasing aside); diff images of those that differ in {}.",
+        Ok(format!(
+            "\n### Stills against {}\n\n{}\nMismatched: pixels pixelmatch tells apart (threshold 0.1, anti-aliasing aside); diff images of those that differ in {}.\n",
+            dir.display(),
+            table.finish(),
             diffs.display()
-        )
-        .expect("a String");
-        Ok(out)
+        ))
     }
 
     fn tiles(&self) -> Result<String, String> {
@@ -824,24 +816,15 @@ impl H2h {
                     }
                 }
             }
-            write!(
-                out,
-                "### Tiles: {mode} ({runs} runs, one process each)\n\n| set | tiles |"
-            )
-            .expect("a String");
             let names: Vec<&str> = self.engines.iter().map(Engine::name).collect();
+            let mut head = vec!["set".to_string(), "tiles".into()];
             for name in &names {
-                write!(out, " wall {name} | CPU {name} |").expect("a String");
+                head.extend([format!("wall {name}"), format!("CPU {name}")]);
             }
             if names.len() > 1 {
-                write!(out, " CPU {} / {} |", names[0], names[names.len() - 1]).expect("a String");
+                head.push(format!("CPU {} / {}", names[0], names[names.len() - 1]));
             }
-            writeln!(
-                out,
-                "\n|---|---|{}",
-                "---|".repeat(2 * names.len() + usize::from(names.len() > 1))
-            )
-            .expect("a String");
+            let mut table = Table::new(head);
             let column = |name: &str, set: &str, i: usize| {
                 let mut v: Vec<f64> = (totals
                     .get(&(name.to_string(), set.to_string()))
@@ -856,31 +839,24 @@ impl H2h {
                     .get(&(names[0].to_string(), set.clone()))
                     .and_then(|t| t.first())
                     .map_or(0, |t| t.2);
-                write!(out, "| {set} | {count} |").expect("a String");
+                let mut row = vec![set.clone(), count.to_string()];
                 for name in &names {
-                    let show = |v: Option<f64>| v.map_or("—".into(), |v| format!("{v:.0}"));
-                    write!(
-                        out,
-                        " {} | {} |",
-                        show(column(name, set, 0)),
-                        show(column(name, set, 1))
-                    )
-                    .expect("a String");
+                    row.extend([cell(column(name, set, 0), 0), cell(column(name, set, 1), 0)]);
                 }
                 if names.len() > 1 {
                     let ratio = column(names[0], set, 1)
                         .zip(column(names[names.len() - 1], set, 1))
                         .map(|(a, b)| a / b);
-                    write!(
-                        out,
-                        " {} |",
-                        ratio.map_or("—".into(), |r| format!("{r:.2}"))
-                    )
-                    .expect("a String");
+                    row.push(cell(ratio, 2));
                 }
-                out.push('\n');
+                table.row(row);
             }
-            write!(out, "\nRequests per pass:").expect("a String");
+            write!(
+                out,
+                "### Tiles: {mode} ({runs} runs, one process each)\n\n{}\nRequests per pass:",
+                table.finish()
+            )
+            .expect("a String");
             for name in &names {
                 let r = median(requests.get_mut(*name).map_or(&mut Vec::new(), |v| v));
                 write!(out, " {name} {:.0};", r.unwrap_or(0.0)).expect("a String");
@@ -968,28 +944,17 @@ impl H2h {
             }
         }
         let names: Vec<&str> = self.engines.iter().map(Engine::name).collect();
-        let mut out = format!(
-            "### Frames: whole frames read back, the zoom nudged by 0.001 a frame ({frames} frames a view after 10, {runs} runs)\n\n| view |"
-        );
-        for name in &names {
-            write!(out, " {name} |").expect("a String");
-        }
-        if names.len() > 1 {
-            write!(out, " {} / {} |", names[0], names[names.len() - 1]).expect("a String");
-        }
         let orbis: Vec<&str> = (self.engines.iter())
             .filter(|e| matches!(e, Engine::Orbis { .. }))
             .map(Engine::name)
             .collect();
-        for name in &orbis {
-            write!(out, " GPU {name} |").expect("a String");
+        let mut head = vec!["view".to_string()];
+        head.extend(names.iter().map(|name| name.to_string()));
+        if names.len() > 1 {
+            head.push(format!("{} / {}", names[0], names[names.len() - 1]));
         }
-        writeln!(
-            out,
-            "\n|---|{}",
-            "---|".repeat(names.len() + usize::from(names.len() > 1) + orbis.len())
-        )
-        .expect("a String");
+        head.extend(orbis.iter().map(|name| format!("GPU {name}")));
+        let mut table = Table::new(head);
         let get = |map: &BTreeMap<(String, String), Vec<f64>>, name: &str, view: &str| {
             median(
                 &mut map
@@ -1000,49 +965,35 @@ impl H2h {
         };
         let mut sums = vec![0.0; names.len()];
         for view in &order {
-            write!(out, "| {view} |").expect("a String");
+            let mut row = vec![view.clone()];
             for (i, name) in names.iter().enumerate() {
                 let m = get(&walls, name, view);
                 sums[i] += m.unwrap_or(0.0);
-                write!(out, " {} |", m.map_or("—".into(), |m| format!("{m:.2}")))
-                    .expect("a String");
+                row.push(cell(m, 2));
             }
             if names.len() > 1 {
                 let r = get(&walls, names[0], view).zip(get(&walls, names[names.len() - 1], view));
-                write!(
-                    out,
-                    " {} |",
-                    r.map_or("—".into(), |(a, b)| format!("{:.2}", a / b))
-                )
-                .expect("a String");
+                row.push(cell(r.map(|(a, b)| a / b), 2));
             }
-            for name in &orbis {
-                write!(
-                    out,
-                    " {} |",
-                    get(&gpu, name, view).map_or("—".into(), |m| format!("{m:.2}"))
-                )
-                .expect("a String");
-            }
-            out.push('\n');
+            row.extend(orbis.iter().map(|name| cell(get(&gpu, name, view), 2)));
+            table.row(row);
         }
-        write!(out, "| **sum** |").expect("a String");
-        for s in &sums {
-            write!(out, " **{s:.1}** |").expect("a String");
-        }
-        out.push_str(&" |".repeat(usize::from(names.len() > 1) + orbis.len()));
-        writeln!(
-            out,
-            "\n\nMedian ms a frame: Orbis renders continuously into a texture and reads each frame back (`orb-bench --nudge`); mln-rs renders each frame as a Static-mode still and reads it back (its own still bench)."
-        )
-        .expect("a String");
+        let mut row = vec!["**sum**".to_string()];
+        row.extend(sums.iter().map(|s| format!("**{s:.1}**")));
+        row.resize(
+            row.len() + usize::from(names.len() > 1) + orbis.len(),
+            String::new(),
+        );
+        table.row(row);
+        let out = format!(
+            "### Frames: whole frames read back, the zoom nudged by 0.001 a frame ({frames} frames a view after 10, {runs} runs)\n\n{}\nMedian ms a frame: Orbis renders continuously into a texture and reads each frame back (`orb-bench --nudge`); mln-rs renders each frame as a Static-mode still and reads it back (its own still bench).\n",
+            table.finish()
+        );
         Ok(out)
     }
 
     fn size(&self) -> Result<String, String> {
-        let mut out = String::from(
-            "### Size: still renderers, `dist` profile (LTO, one codegen unit, abort on panic, stripped)\n\n| binary | bytes | gzip -9 |\n|---|---|---|\n",
-        );
+        let mut table = Table::new(["binary", "bytes", "gzip -9"]);
         let mut binaries = Vec::new();
         for engine in &self.engines {
             match engine {
@@ -1063,9 +1014,12 @@ impl H2h {
             let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
             gz.write_all(&bytes).map_err(|e| e.to_string())?;
             let gz = gz.finish().map_err(|e| e.to_string())?;
-            writeln!(out, "| {name} | {} | {} |", bytes.len(), gz.len()).expect("a String");
+            table.row([name, bytes.len().to_string(), gz.len().to_string()]);
         }
-        Ok(out)
+        Ok(format!(
+            "### Size: still renderers, `dist` profile (LTO, one codegen unit, abort on panic, stripped)\n\n{}",
+            table.finish()
+        ))
     }
 
     fn network_tag(&self) -> String {
@@ -1125,6 +1079,44 @@ fn mln_checkout(manifest: &Path) -> Result<PathBuf, String> {
 }
 
 /// A table column: its name, a row's value, and the digits shown.
+/// A Markdown table, built a row at a time.
+struct Table(String);
+
+impl Table {
+    /// A table with these column heads.
+    fn new<S: AsRef<str>>(head: impl IntoIterator<Item = S>) -> Self {
+        let mut table = Self(String::new());
+        let columns = table.row(head);
+        table.0.push('|');
+        table.0.push_str(&"---|".repeat(columns));
+        table.0.push('\n');
+        table
+    }
+
+    /// Adds a row of `cells`; how many there were.
+    fn row<S: AsRef<str>>(&mut self, cells: impl IntoIterator<Item = S>) -> usize {
+        let mut count = 0;
+        for cell in cells {
+            self.0.push_str("| ");
+            self.0.push_str(cell.as_ref());
+            self.0.push(' ');
+            count += 1;
+        }
+        self.0.push_str("|\n");
+        count
+    }
+
+    fn finish(self) -> String {
+        self.0
+    }
+}
+
+/// A table cell for a measurement: `digits` after the point, or a dash
+/// for none.
+fn cell(value: Option<f64>, digits: usize) -> String {
+    value.map_or("—".into(), |v| format!("{v:.digits$}"))
+}
+
 type Metric<'a> = (&'a str, &'a dyn Fn(&StillRow) -> Option<f64>, usize);
 
 /// Per engine and tile set, each run's wall and CPU totals and tile count.
@@ -1669,6 +1661,17 @@ fn percent_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tables_are_markdown_with_a_dash_for_no_value() {
+        let mut table = Table::new(["view", "orbis"]);
+        table.row(["tokyo".to_string(), cell(Some(1.25), 1)]);
+        table.row(["paris".to_string(), cell(None, 1)]);
+        assert_eq!(
+            table.finish(),
+            "| view | orbis |\n|---|---|\n| tokyo | 1.2 |\n| paris | — |\n"
+        );
+    }
 
     #[test]
     fn cache_paths_decode_and_stay_inside() {
