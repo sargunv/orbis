@@ -191,18 +191,25 @@ export async function serveDemo({
 // `unsafe` allows WebGPU's unsafe APIs, which also stops Chrome quantizing
 // timestamps; a user's Chrome runs without it. `headed` opens a window on
 // the display rather than drawing offscreen; `unpaced` runs animation frames
-// as fast as they draw rather than at the display's rate.
+// as fast as they draw rather than at the display's rate. `ORB_CHROME` names
+// a Chrome to run instead of Playwright's (on Windows ARM64, a native one).
+// ANGLE is pinned to Metal on macOS only, and Vulkan asked for on macOS and
+// Linux, not on Windows, where Chrome's WebGPU runs on D3D12.
 export function launchChromium({
   unsafe = true,
   headed = false,
   unpaced = false,
 } = {}) {
+  const platform = {
+    darwin: ["--enable-features=Vulkan,WebGPU", "--use-angle=metal"],
+    linux: ["--enable-features=Vulkan,WebGPU"],
+  }[process.platform] ?? ["--enable-features=WebGPU"];
   return chromium.launch({
     headless: !headed,
+    executablePath: process.env.ORB_CHROME || undefined,
     args: [
       ...(unsafe ? ["--enable-unsafe-webgpu"] : []),
-      "--enable-features=Vulkan,WebGPU",
-      "--use-angle=metal",
+      ...platform,
       ...(unpaced ? ["--disable-gpu-vsync", "--disable-frame-rate-limit"] : []),
     ],
   });
