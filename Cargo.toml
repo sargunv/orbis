@@ -118,7 +118,10 @@ orb-web = { path = "crates/orb-web" }
 # apart. orb-runtime's `validation` test checks the scenes under Vulkan's
 # validation layer. And GLES uploading an `ImageBitmap` with the default
 # unpack layout, not the last buffer copy's, which sheared raster and DEM
-# tiles on WebGL 2 or (Firefox) dropped them (gfx-rs/wgpu#8668). Every
+# tiles on WebGL 2 or (Firefox) dropped them (gfx-rs/wgpu#8668). And GLES
+# and GL 4.3 restarting strips at the fixed index, as WebGPU and WebGL 2 do
+# (`PRIMITIVE_RESTART_FIXED_INDEX`, never enabled): without it ANGLE dropped
+# draws holding hidden slots. Every
 # crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }

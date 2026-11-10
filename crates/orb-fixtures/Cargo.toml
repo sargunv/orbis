@@ -6,10 +6,15 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# The `native-gl` platform's GLES: through ANGLE on macOS, EGL elsewhere.
+gl = ["dep:orb-hal-wgpu", "orb-hal-wgpu/angle"]
+
 [dependencies]
 glam.workspace = true
 orb-api.workspace = true
 orb-expr = { workspace = true, features = ["conformance"] }
+orb-hal-wgpu = { workspace = true, optional = true }
 orb-runtime.workspace = true
 orb-style.workspace = true
 png.workspace = true

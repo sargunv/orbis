@@ -20,13 +20,13 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
         suite.run(root, filter, "lavapipe")?;
         return Ok(());
     }
-    // A CPU driver platform's own process, its device made to take it.
+    // A beside-native platform's own process, its device made to take it.
     if std::env::var_os(CHILD).is_some() {
         suite.run(root, filter, platform)?;
         return Ok(());
     }
-    if let Some(driver) = cpu_driver(platform) {
-        return run_cpu_driver(root, filter, platform, driver, suite);
+    if let Some(env) = beside_native(platform) {
+        return run_beside_native(root, filter, platform, &env?, suite);
     }
     std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let combined = output.join("summary.json");
@@ -362,30 +362,81 @@ fn identity(output: &Path, native: &Value, chrome: &Value, suite: Suite) -> Resu
     )
 }
 
-/// Set in a CPU driver platform's process.
+/// Set in a beside-native platform's process.
 const CHILD: &str = "ORB_FIXTURES_CPU_DRIVER";
 
-/// The `ORB_DRIVER` of a platform that runs the native suite on WebGL
-/// 2's frame driver (#140): `native-cpu` with the tables in storage
-/// buffers, `native-cpu-tex` in data textures, `native-webgl2` with
-/// everything else WebGL 2 lacks too (compute: drawn mips; its gaps).
-pub(crate) fn cpu_driver(platform: &str) -> Option<&'static str> {
-    match platform {
-        "native-cpu" => Some("cpu"),
-        "native-cpu-tex" => Some("cpu-tex"),
-        "native-webgl2" => Some("webgl2"),
-        _ => None,
-    }
+/// The environment of a platform that runs the native suite again in a
+/// process of its own, beside native: WebGL 2's frame driver (#140,
+/// `ORB_DRIVER`), `native-cpu` with the tables in storage buffers,
+/// `native-cpu-tex` in data textures, `native-webgl2` with everything
+/// else WebGL 2 lacks too (compute: drawn mips; its gaps); or `native-gl`,
+/// wgpu's GLES back end itself (`ORB_BACKEND=gl`), through ANGLE on macOS,
+/// where GL's own quirks show without a browser.
+pub(crate) fn beside_native(platform: &str) -> Option<Result<Vec<(&'static str, String)>, String>> {
+    let driver = match platform {
+        "native-cpu" => "cpu",
+        "native-cpu-tex" => "cpu-tex",
+        "native-webgl2" => "webgl2",
+        "native-gl" => return Some(gl_env()),
+        _ => return None,
+    };
+    Some(Ok(vec![("ORB_DRIVER", driver.to_string())]))
 }
 
-/// Runs the suite natively, then in a process of its own with the CPU
-/// frame driver (`ORB_DRIVER`), and compares the two's images byte for
-/// byte: they draw the same frames.
-fn run_cpu_driver(
+/// `native-gl`'s environment: GLES, and on macOS ANGLE's libraries from
+/// `ORB_ANGLE_DIR` or the newest Playwright headless Chromium that ships
+/// them whole (some ship 736-byte stubs).
+fn gl_env() -> Result<Vec<(&'static str, String)>, String> {
+    if !cfg!(feature = "gl") {
+        return Err("native-gl needs orb-fixtures' `gl` feature (`cargo xtask rt` adds it)".into());
+    }
+    let mut env = vec![("ORB_BACKEND", "gl".to_string())];
+    if cfg!(target_os = "macos") {
+        let whole = |dir: &Path| {
+            ["libEGL.dylib", "libGLESv2.dylib"]
+                .iter()
+                .all(|lib| std::fs::metadata(dir.join(lib)).is_ok_and(|m| m.len() > 64 << 10))
+        };
+        let dir = match std::env::var_os("ORB_ANGLE_DIR") {
+            Some(dir) => Some(std::path::PathBuf::from(dir)),
+            None => {
+                let cache = Path::new(&std::env::var_os("HOME").unwrap_or_default())
+                    .join("Library/Caches/ms-playwright");
+                let mut shells: Vec<_> = std::fs::read_dir(&cache)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("chromium_headless_shell-"))
+                    })
+                    .flat_map(|p| std::fs::read_dir(p).into_iter().flatten().flatten())
+                    .map(|e| e.path())
+                    .collect();
+                shells.sort();
+                shells.into_iter().rev().find(|dir| whole(dir))
+            }
+        }
+        .filter(|dir| whole(dir))
+        .ok_or(
+            "native-gl on macOS needs ANGLE: a Playwright headless Chromium \
+             (`pnpm -C web install`) or ORB_ANGLE_DIR at libEGL.dylib and libGLESv2.dylib",
+        )?;
+        env.push(("DYLD_LIBRARY_PATH", dir.display().to_string()));
+    }
+    Ok(env)
+}
+
+/// Runs the suite natively, then in a process of its own in `env`, and
+/// compares the two's images byte for byte: the CPU drivers draw the same
+/// frames, and GL lists what it draws otherwise.
+fn run_beside_native(
     root: &Path,
     filter: &str,
     platform: &str,
-    driver: &str,
+    env: &[(&'static str, String)],
     suite: Suite,
 ) -> Result<(), String> {
     let output = match suite {
@@ -393,6 +444,9 @@ fn run_cpu_driver(
         Suite::NativeRender => root.join("docs/scratch/rt").join(suite.name()),
     };
     let native = suite.run(root, filter, "native")?;
+    for (key, value) in env {
+        println!("{platform}: {key}={value}");
+    }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     run_command(
         Command::new(exe)
@@ -404,7 +458,7 @@ fn run_cpu_driver(
                 "--platform",
                 platform,
             ])
-            .env("ORB_DRIVER", driver)
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .env(CHILD, "1"),
     )?;
     let path = output.join(platform).join("summary.json");
