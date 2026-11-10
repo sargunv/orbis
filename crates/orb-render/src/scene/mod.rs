@@ -20,6 +20,7 @@ pub(crate) use tables::{Table, TableWriter, Tables};
 use std::ops::Range;
 
 use crate::driver::SubmitLimits;
+use crate::driver::gpu::{ARGS_USAGE, COMPACTED_USAGE};
 use arena::{Arena, Slots};
 use orb_hal::{BufferDesc, BufferId, BufferUsages, Gpu, HostBytesId};
 use orb_layout::Chunk;
@@ -2253,18 +2254,6 @@ enum Pool {
     Indices,
     Props,
 }
-
-/// The draw arguments: the cull dispatch writes them, indirect draws read
-/// them, and tests read them back.
-const ARGS_USAGE: BufferUsages = BufferUsages::STORAGE
-    .union(BufferUsages::INDIRECT)
-    .union(BufferUsages::COPY_DST)
-    .union(BufferUsages::COPY_SRC);
-
-/// The compacted indices: the cull dispatch writes them, draws read them.
-const COMPACTED_USAGE: BufferUsages = BufferUsages::INDEX
-    .union(BufferUsages::COPY_DST)
-    .union(BufferUsages::STORAGE);
 
 /// `old` halved while `held` lies in its lowest quarter, no lower than
 /// `first`: a capacity's size once what it held went, keeping room to grow

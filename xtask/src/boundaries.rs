@@ -87,55 +87,114 @@ pub(crate) const NATIVE_ONLY: &[&str] = &[
 ];
 
 /// What only the GPU-driven path has (compute, indirect draws, storage
-/// bindings, reinterpreting views), which the WebGL 2 path (#140) lacks:
-/// in `orb-render` these may appear only in the files of
-/// [`GPU_ONLY_FILES`].
+/// buffers and textures, reinterpreting views), which the WebGL 2 path
+/// (#140) lacks. Outside the HALs that define it, only the files of
+/// [`GPU_ONLY_FILES`] may name it, each only what its entry allows.
 const GPU_ONLY: &[&str] = &[
     "Pass::Compute",
     "ComputePass",
     "ComputeCommand",
+    "create_compute_pipeline",
     "DrawIndirect",
     "DrawIndexedIndirect",
+    "BufferUsages::INDIRECT",
+    "BufferUsages::STORAGE",
     "E::storage(",
     "E::storage_rw(",
     "BindingType::Storage",
     "StorageTexture",
     "STORAGE_BINDING",
     "create_texture_view_as",
+    VIEWS,
 ];
 
-/// The `orb-render` files that may use [`GPU_ONLY`] API (or views in other
-/// formats), each with what stands in for it on WebGL 2, or the gap it
-/// leaves. A feature born in compute names its GL formulation here, in the
-/// same commit.
-const GPU_ONLY_FILES: &[(&str, &str)] = &[
+/// Views in other formats: `view_formats` that aren't empty.
+const VIEWS: &str = "view_formats";
+
+/// The crates that define and implement [`GPU_ONLY`] API.
+const HALS: &[&str] = &["orb-hal", "orb-hal-wgpu"];
+
+/// What a file of [`GPU_ONLY_FILES`] may name of [`GPU_ONLY`].
+#[derive(Clone, Copy)]
+enum Allows {
+    All,
+    Only(&'static [&'static str]),
+}
+
+/// The files, under `crates/`, that may name [`GPU_ONLY`] API: each with
+/// the API it may name, and what stands in for that on WebGL 2 or the gap
+/// it leaves. A feature born in compute names its GL formulation here, in
+/// the same commit; an entry that allows what its file no longer names
+/// fails too, so the list never grants more than is used.
+const GPU_ONLY_FILES: &[(&str, Allows, &str)] = &[
     (
-        "driver/gpu.rs",
+        "orb-render/src/driver/gpu.rs",
+        Allows::All,
         "the GPU driver: the CPU driver's direct draws",
     ),
     (
-        "downsample.rs",
+        "orb-render/src/pipeline.rs",
+        Allows::Only(&["create_compute_pipeline"]),
+        "the compute pipelines of the files below, which WebGL 2 never makes",
+    ),
+    (
+        "orb-render/src/downsample.rs",
+        Allows::Only(&["ComputeCommand", "BindingType::Storage", "StorageTexture"]),
         "compute mips and edges: downsample_draw.wgsl's drawn ones",
     ),
     (
-        "image.rs",
-        "raster pages' compute mips and edges: drawn ones; their storage views go with them",
+        "orb-render/src/image.rs",
+        Allows::Only(&[
+            "Pass::Compute",
+            "ComputePass",
+            "BufferUsages::STORAGE",
+            "STORAGE_BINDING",
+        ]),
+        "raster pages' compute mips and edges: drawn ones; their regions and storage views go with them",
     ),
     (
-        "terrain.rs",
+        "orb-render/src/terrain.rs",
+        Allows::Only(&[
+            "Pass::Compute",
+            "ComputePass",
+            "BufferUsages::STORAGE",
+            "E::storage(",
+            "STORAGE_BINDING",
+            "create_texture_view_as",
+            VIEWS,
+        ]),
         "its tables in storage: fetch_terrain.wgsl over data textures; drape mips: drawn ones; the atlas's sRGB views: a natively sRGB atlas",
     ),
     (
-        "lib.rs",
+        "orb-render/src/lib.rs",
+        Allows::Only(&["E::storage("]),
         "the scene group's tables in storage: the `Tables` texture backing",
+    ),
+    (
+        "orb-render/src/scene/tables.rs",
+        Allows::Only(&["BufferUsages::STORAGE"]),
+        "the storage backing: the texture backing",
+    ),
+    (
+        "orb-render/src/scene/image.rs",
+        Allows::Only(&["BufferUsages::STORAGE"]),
+        "the image rects in storage: rows of the texture backing",
     ),
 ];
 
-/// [`GPU_ONLY`] API outside [`GPU_ONLY_FILES`] in `orb-render`'s sources.
+/// [`GPU_ONLY`] API outside what [`GPU_ONLY_FILES`] allows, in every
+/// crate's sources but the HALs'.
 fn gpu_only_uses() -> Result<Vec<String>, String> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/orb-render/src");
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
     let mut files = Vec::new();
-    let mut dirs = vec![src.clone()];
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(&crates).map_err(|e| format!("{}: {e}", crates.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if !HALS.contains(&name.as_ref()) && path.join("src").is_dir() {
+            dirs.push(path.join("src"));
+        }
+    }
     while let Some(dir) = dirs.pop() {
         for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
             let path = entry.map_err(|e| e.to_string())?.path();
@@ -147,33 +206,57 @@ fn gpu_only_uses() -> Result<Vec<String>, String> {
         }
     }
     let mut errors = Vec::new();
+    let mut listed = BTreeSet::new();
     for path in files {
         let name = path
-            .strip_prefix(&src)
-            .expect("under src")
+            .strip_prefix(&crates)
+            .expect("under crates")
             .to_string_lossy()
             .replace('\\', "/");
-        if GPU_ONLY_FILES.iter().any(|(f, _)| *f == name) {
-            continue;
-        }
+        let allows = GPU_ONLY_FILES
+            .iter()
+            .find(|(f, ..)| *f == name)
+            .map_or(Allows::Only(&[]), |&(_, allows, _)| allows);
         let source =
             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut named = BTreeSet::new();
         for (i, line) in source.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
-            let views = code.contains("view_formats:") && !code.contains("view_formats: &[]");
-            for api in GPU_ONLY.iter().filter(|api| code.contains(*api)) {
-                errors.push(format!(
-                    "orb-render's {name}:{}: `{api}` outside the GPU-only files; draw it another way, or list the file in xtask's GPU_ONLY_FILES with what stands in for it on WebGL 2 (#140)",
-                    i + 1
-                ));
+            let names = |api: &str| {
+                if api == VIEWS {
+                    code.contains("view_formats:")
+                        && !code.contains("view_formats: &[]")
+                        && !code.contains("view_formats: vec![]")
+                        && !code.contains("view_formats: Vec::new()")
+                } else {
+                    code.contains(api)
+                }
+            };
+            for &api in GPU_ONLY.iter().filter(|api| names(api)) {
+                named.insert(api);
+                if let Allows::Only(allowed) = allows
+                    && !allowed.contains(&api)
+                {
+                    errors.push(format!(
+                        "{name}:{}: `{api}` is GPU-only; draw it another way, or allow it in xtask's GPU_ONLY_FILES with what stands in for it on WebGL 2 (#140)",
+                        i + 1
+                    ));
+                }
             }
-            if views {
+        }
+        if let Allows::Only(allowed) = allows {
+            for api in allowed.iter().filter(|api| !named.contains(*api)) {
                 errors.push(format!(
-                    "orb-render's {name}:{}: views in other formats outside the GPU-only files (#140)",
-                    i + 1
+                    "xtask's GPU_ONLY_FILES allows {name} `{api}`, which it no longer names"
                 ));
             }
         }
+        listed.insert(name);
+    }
+    for (file, ..) in GPU_ONLY_FILES.iter().filter(|(f, ..)| !listed.contains(*f)) {
+        errors.push(format!(
+            "xtask's GPU_ONLY_FILES lists {file}, which is gone"
+        ));
     }
     Ok(errors)
 }

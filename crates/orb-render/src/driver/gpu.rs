@@ -17,6 +17,18 @@ use super::Cull;
 /// Compacted indices are full u32s.
 pub(crate) const INDEX_BITS: u32 = 32;
 
+/// The draw arguments: the cull dispatch writes them, indirect draws read
+/// them, and tests read them back.
+pub(crate) const ARGS_USAGE: BufferUsages = BufferUsages::STORAGE
+    .union(BufferUsages::INDIRECT)
+    .union(BufferUsages::COPY_DST)
+    .union(BufferUsages::COPY_SRC);
+
+/// The compacted indices: the cull dispatch writes them, draws read them.
+pub(crate) const COMPACTED_USAGE: BufferUsages = BufferUsages::INDEX
+    .union(BufferUsages::COPY_DST)
+    .union(BufferUsages::STORAGE);
+
 /// Where node `index`'s draw arguments start in the scene's args buffer.
 pub(crate) fn args_offset(index: u32) -> u64 {
     u64::from(index) * ARGS_WORDS as u64 * 4
