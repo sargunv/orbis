@@ -7,7 +7,7 @@
 //! [`WgpuGpu::register_view`].
 
 // `unsafe` only where a surface is made from a raw platform handle, and
-// where D3D12's compiler is loaded.
+// where D3D12's compiler or the Vulkan loader is loaded.
 #![deny(unsafe_code)]
 
 #[cfg(not(target_arch = "wasm32"))]

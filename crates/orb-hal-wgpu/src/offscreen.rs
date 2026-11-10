@@ -364,6 +364,15 @@ const BACKEND: &str = "ORB_BACKEND";
 
 /// `descriptor` configured from wgpu's environment variables and
 /// [`BACKEND`].
+///
+/// On Linux, without wgpu's debug object names (`InstanceFlags::DEBUG`, on
+/// in debug builds) where the Vulkan loader is older than 1.4.345, unless
+/// `WGPU_DEBUG=1` asks for them. Those loaders look up a device's names
+/// under a different lock than the one creating and destroying devices
+/// holds, so naming an object while another thread makes or drops a device
+/// can crash in `loader_get_icd_and_device` (#169; fixed by
+/// KhronosGroup/Vulkan-Loader@5ee27b30c). Fedora 44 ships 1.4.341, where
+/// parallel test binaries crashed four runs in five.
 fn with_env(descriptor: wgpu::InstanceDescriptor) -> wgpu::InstanceDescriptor {
     #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut descriptor = descriptor.with_env();
@@ -371,5 +380,34 @@ fn with_env(descriptor: wgpu::InstanceDescriptor) -> wgpu::InstanceDescriptor {
     if let Ok(names) = std::env::var(BACKEND) {
         descriptor.backends = wgpu::Backends::from_comma_list(&names);
     }
+    #[cfg(target_os = "linux")]
+    if descriptor.flags.contains(wgpu::InstanceFlags::DEBUG)
+        && descriptor.backends.contains(wgpu::Backends::VULKAN)
+        && std::env::var_os("WGPU_DEBUG").is_none()
+        && racy_vulkan_loader()
+    {
+        descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
+    }
     descriptor
+}
+
+/// Whether the system's Vulkan loader predates 1.4.345, whose debug object
+/// names race with device creation on other threads ([`with_env`]).
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn racy_vulkan_loader() -> bool {
+    static RACY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *RACY.get_or_init(|| {
+        // SAFETY: loading the system's loader runs no code of ours; wgpu
+        // loads the same library.
+        let Ok(entry) = (unsafe { ash::Entry::load() }) else {
+            return false;
+        };
+        // SAFETY: a global command, valid with no instance.
+        let version = unsafe { entry.try_enumerate_instance_version() }
+            .ok()
+            .flatten()
+            .unwrap_or(ash::vk::API_VERSION_1_0);
+        version < ash::vk::make_api_version(0, 1, 4, 345)
+    })
 }

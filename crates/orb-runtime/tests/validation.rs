@@ -62,6 +62,11 @@ fn scenes_validate() {
         eprintln!("skipped: wgpu's validation is off (a release build without WGPU_VALIDATION=1)");
         return;
     }
+    // wgpu-hal hears the layer through debug utils, which offscreen
+    // devices leave off on Vulkan loaders that race on them (#169) unless
+    // asked; this binary makes one device at a time.
+    // SAFETY: no other thread runs yet.
+    unsafe { std::env::set_var("WGPU_DEBUG", "1") };
     log::set_logger(&LOG).unwrap();
     // Only while the first instance is made: wgpu-hal says at `debug`
     // that Vulkan's layer is missing, and the layer's messages it asks for

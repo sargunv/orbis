@@ -16,6 +16,7 @@ unreachable_pub = "warn"
 all = { level = "warn", priority = -1 }
 
 [workspace.dependencies]
+ash = { version = "0.38.0", default-features = false, features = ["loaded"] }
 mlt-core = { version = "0.22.1", default-features = false }
 brotli = "9.1.1"
 bitflags = "2.13.2"

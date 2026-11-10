@@ -49,6 +49,9 @@ wgpu = { workspace = true, features = ["metal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { workspace = true, features = ["vulkan"] }
+# The Vulkan loader's version, for loaders that race on object names
+# (src/offscreen.rs's `with_env`).
+ash.workspace = true
 
 # GLES for Android 11 and below, whose Vulkan Orbis can't use.
 [target.'cfg(target_os = "android")'.dependencies]
