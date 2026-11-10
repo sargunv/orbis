@@ -1,6 +1,7 @@
 //! The persistent document.
 
 use crate::*;
+use rustc_hash::FxHashSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -46,7 +47,7 @@ pub(crate) struct Draft {
     pub(crate) layers: Vec<LayerEntry>,
     pub(crate) overrides: Vec<(String, Value<'static>)>,
     /// Layers whose JSON changed.
-    pub(crate) dirty: Vec<LayerKey>,
+    pub(crate) dirty: FxHashSet<LayerKey>,
     /// Sources given new data.
     pub(crate) new_data: Vec<SourceKey>,
     /// Sources whose data changed by diffs alone, with the diffs.
@@ -283,7 +284,7 @@ impl StyleDoc {
             sources: self.sources.clone(),
             layers: self.layers.clone(),
             overrides: self.overrides.clone(),
-            dirty: Vec::new(),
+            dirty: FxHashSet::default(),
             new_data: Vec::new(),
             diffs: Vec::new(),
             new_root: false,
@@ -364,9 +365,7 @@ impl Draft {
         let mut members = entry.json.as_object().expect("layers are objects").to_vec();
         edit(&mut members);
         entry.json = Arc::new(synthetic(JsonValue::Object(members)));
-        if !self.dirty.contains(&entry.key) {
-            self.dirty.push(entry.key);
-        }
+        self.dirty.insert(entry.key);
         Ok(())
     }
 
@@ -623,20 +622,27 @@ impl Draft {
         let identity = |json: &Json| {
             ["type", "source", "source-layer"].map(|k| json.get(k).map(ToString::to_string))
         };
+        let old_layers = std::mem::take(&mut self.layers);
+        let mut by_id: HashMap<&str, &LayerEntry> = HashMap::new();
+        for layer in &old_layers {
+            if let Some(id) = layer_id(&layer.json) {
+                by_id.entry(id).or_insert(layer);
+            }
+        }
         let mut layers = Vec::new();
         for json in member(members, "layers")
             .and_then(Json::as_array)
             .unwrap_or_default()
         {
-            let old = layer_id(json).and_then(|id| self.layer(id).ok());
-            let kept = old.map(|i| &self.layers[i]).filter(|old| {
+            let old = layer_id(json).and_then(|id| by_id.get(id));
+            let kept = old.filter(|old| {
                 identity(&old.json) == identity(json)
                     && source_key(&self.sources, &old.json) == source_key(&sources, json)
             });
             let key = match kept {
                 Some(old) => {
                     if !same(&old.json, json) {
-                        self.dirty.push(old.key);
+                        self.dirty.insert(old.key);
                     }
                     old.key
                 }

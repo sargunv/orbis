@@ -3,6 +3,7 @@
 
 use crate::*;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::v8::{Diagnostic, Diagnostics};
 use orb_expr::json::{Json, JsonValue, Member};
@@ -12,6 +13,9 @@ use crate::v8::doc::{same, same_opt};
 
 /// Whether `json` reads any of `keys` through `global-state`.
 fn reads_global(json: &Json, keys: &HashSet<&str>) -> bool {
+    if keys.is_empty() {
+        return false;
+    }
     match &json.value {
         JsonValue::Array(items) => {
             matches!(items.as_slice(), [op, key] if op.as_str() == Some("global-state")
@@ -92,6 +96,13 @@ fn layer_changes(
 /// load again.
 const RESTYLE_ROOT: &[&str] = &["glyphs", "font-faces"];
 
+/// Adds `change` unless an earlier step did.
+fn add_once(changes: &mut Vec<Change>, change: Change) {
+    if !changes.contains(&change) {
+        changes.push(change);
+    }
+}
+
 /// The new snapshot and the patch from `doc` to `draft`.
 pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diagnostics> {
     let old = doc.style();
@@ -101,27 +112,11 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
 
     // The root: camera and state defaults, sprites.
     let mut style = Style {
-        name: old.name.clone(),
-        center: old.center,
-        zoom: old.zoom,
-        bearing: old.bearing,
-        pitch: old.pitch,
-        roll: old.roll,
-        transition: old.transition,
-        sprites: old.sprites.clone(),
-        glyphs: old.glyphs.clone(),
-        font_faces: old.font_faces.clone(),
-        light: old.light.clone(),
-        atmosphere: old.atmosphere.clone(),
         terrain: None,
-        globe: old.globe,
-        projection: old.projection,
-        state: old.state.clone(),
         sources: Vec::new(),
         layers: Vec::new(),
         warnings: Vec::new(),
-        previews,
-        color_space: old.color_space,
+        ..(**old).clone()
     };
     if draft.new_root {
         // Terrain names a source: it is parsed with the sources below.
@@ -191,18 +186,14 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         let (sky, w) = crate::v8::parse_sky(json, &new_state, previews)?;
         style.atmosphere = Some(sky);
         warnings.extend(w);
-        if !changes.contains(&Change::Root) {
-            changes.push(Change::Root);
-        }
+        add_once(&mut changes, Change::Root);
     }
 
     if let Some(json) = member(&draft.root, "light")
         && reads_global(json, &changed)
     {
         style.light = crate::v8::parse_light(json, &new_state, previews)?;
-        if !changes.contains(&Change::Root) {
-            changes.push(Change::Root);
-        }
+        add_once(&mut changes, Change::Root);
     }
 
     // A projection that reads the global state follows it.
@@ -211,8 +202,8 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     {
         let (plane, globe, w) = crate::v8::parse_projection(json, &new_state, previews);
         warnings.extend(w);
-        if globe != old.globe && !changes.contains(&Change::Projection) {
-            changes.push(Change::Projection);
+        if globe != old.globe {
+            add_once(&mut changes, Change::Projection);
         }
         style.projection = plane;
         style.globe = globe;
@@ -220,47 +211,43 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
 
     // Sources.
     let mut source_diffs = Vec::new();
-    let old_sources: HashMap<SourceKey, &std::sync::Arc<Source>> =
+    let old_sources: HashMap<SourceKey, &Arc<Source>> =
         doc.source_keys().zip(&old.sources).collect();
     for entry in &draft.sources {
-        match old_sources.get(&entry.key) {
-            Some(_) if draft.new_data.contains(&entry.key) => {
-                let (source, w) = crate::v8::parse_source(&entry.id, &entry.json, previews)?;
-                warnings.extend(w);
-                style.sources.push(std::sync::Arc::new(source));
-                changes.push(Change::SourceData(entry.key));
-            }
-            Some(source)
-                if let Some((_, diffs)) = draft.diffs.iter().find(|(k, _)| *k == entry.key) =>
-            {
+        let old = old_sources.get(&entry.key);
+        let kept = old.filter(|_| !draft.new_data.contains(&entry.key));
+        match (kept, draft.diffs.iter().find(|(k, _)| *k == entry.key)) {
+            (Some(source), Some((_, diffs))) => {
                 // The parsed features change by the diffs; the JSON already did.
                 let source = crate::v8::geojson::apply_diffs(source, diffs)
                     .map_err(crate::v8::doc::error)?;
-                style.sources.push(std::sync::Arc::new(source));
+                style.sources.push(Arc::new(source));
                 changes.push(Change::SourceData(entry.key));
                 source_diffs.push((entry.key, diffs.clone()));
             }
-            Some(source) => style.sources.push(std::sync::Arc::clone(source)),
-            None => {
+            (Some(source), None) => style.sources.push(Arc::clone(source)),
+            (None, _) => {
                 let (source, w) = crate::v8::parse_source(&entry.id, &entry.json, previews)?;
                 warnings.extend(w);
-                style.sources.push(std::sync::Arc::new(source));
-                changes.push(Change::SourceAdded(entry.key));
+                style.sources.push(Arc::new(source));
+                changes.push(match old {
+                    Some(_) => Change::SourceData(entry.key),
+                    None => Change::SourceAdded(entry.key),
+                });
             }
         }
     }
-    for key in doc.source_keys() {
-        if !draft.sources.iter().any(|s| s.key == key) {
-            changes.push(Change::SourceRemoved(key));
-        }
-    }
+    let new_sources: HashSet<SourceKey> = draft.sources.iter().map(|s| s.key).collect();
+    changes.extend(
+        (doc.source_keys())
+            .filter(|k| !new_sources.contains(k))
+            .map(Change::SourceRemoved),
+    );
 
     // Another plane, or sources in other tile matrix sets: the surface is
     // planned again and every tile loads on it.
-    if (style.projection != old.projection || style.tile_matrix_sets() != old.tile_matrix_sets())
-        && !changes.contains(&Change::Restyle)
-    {
-        changes.push(Change::Restyle);
+    if style.projection != old.projection || style.tile_matrix_sets() != old.tile_matrix_sets() {
+        add_once(&mut changes, Change::Restyle);
     }
 
     // Terrain reads the new sources; switching it needs no reload.
@@ -271,7 +258,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     }
 
     // Layers.
-    let old_layers: HashMap<LayerKey, (usize, &std::sync::Arc<Layer>)> = doc
+    let old_layers: HashMap<LayerKey, (usize, &Arc<Layer>)> = doc
         .layer_keys()
         .zip(&old.layers)
         .enumerate()
@@ -295,12 +282,11 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             });
         }
         let old_entry = old_layers.get(&entry.key);
-        let global = reads_global(&entry.json, &changed);
-        let reparse = old_entry.is_none() || draft.dirty.contains(&entry.key) || global;
-        if !reparse {
-            style
-                .layers
-                .push(std::sync::Arc::clone(old_entry.expect("kept").1));
+        if let Some(&(_, old)) = old_entry
+            && !draft.dirty.contains(&entry.key)
+            && !reads_global(&entry.json, &changed)
+        {
+            style.layers.push(Arc::clone(old));
             continue;
         }
         let (layer, w) =
@@ -316,24 +302,18 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
                 &mut changes,
             ),
         }
-        style.layers.push(std::sync::Arc::new(layer));
+        style.layers.push(Arc::new(layer));
     }
-    for key in doc.layer_keys() {
-        if !draft.layers.iter().any(|l| l.key == key) {
-            changes.push(Change::LayerRemoved(key));
-        }
-    }
-    let kept: Vec<LayerKey> = draft
-        .layers
-        .iter()
-        .map(|l| l.key)
-        .filter(|k| old_layers.contains_key(k))
-        .collect();
-    let before: Vec<LayerKey> = doc
-        .layer_keys()
-        .filter(|k| draft.layers.iter().any(|l| l.key == *k))
-        .collect();
-    if kept != before {
+    let new_layers: HashSet<LayerKey> = draft.layers.iter().map(|l| l.key).collect();
+    changes.extend(
+        (doc.layer_keys())
+            .filter(|k| !new_layers.contains(k))
+            .map(Change::LayerRemoved),
+    );
+    // The layers both have, in their old order and in their new.
+    let before = doc.layer_keys().filter(|k| new_layers.contains(k));
+    let after = (draft.layers.iter().map(|l| l.key)).filter(|k| old_layers.contains_key(k));
+    if !before.eq(after) {
         changes.push(Change::LayersReordered);
     }
     // Unchanged layers' JSON is shared; only edited ones were compared.
