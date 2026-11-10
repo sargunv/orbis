@@ -14,7 +14,9 @@
 //! uses across command buffers. A write that overlaps an earlier one
 //! lands in a later wave, so the later texels still win. Writes into
 //! different blocks share a wave, and a burst of packed bitmaps takes a
-//! handful of waves, not one each.
+//! handful of waves, not one each. A write sharing no block with one made
+//! since the last submission would land in the first wave anyway: it is
+//! issued at once, its texels not copied or held.
 
 use orb_hal::{TextureId, TextureRegion};
 
@@ -22,9 +24,12 @@ use orb_hal::{TextureId, TextureRegion};
 /// twice the 16 seen on Apple GPUs.
 const BLOCK: u32 = 32;
 
-/// Where a held write's texels come from.
+/// Where a write's texels come from.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Source {
+    /// Issued when it was made, in the first wave: kept for the blocks it
+    /// takes.
+    Issued,
     /// `len` bytes from `at` in the held texels, rows `bytes_per_row`
     /// apart.
     Core {
@@ -40,7 +45,7 @@ pub(crate) enum Source {
     },
 }
 
-/// A write held until the next submission.
+/// A write made since the last submission.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TextureWrite {
     pub(crate) region: TextureRegion,
@@ -76,6 +81,9 @@ fn intersect(a: [u32; 4], b: [u32; 4]) -> bool {
     a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 }
 
+/// Bytes of held texels whose allocation outlives a submission.
+const KEPT_TEXELS: usize = 1 << 20;
+
 /// The texture writes made since the last submission.
 #[derive(Debug, Default)]
 pub(crate) struct TextureWrites {
@@ -88,8 +96,24 @@ pub(crate) struct TextureWrites {
 }
 
 impl TextureWrites {
-    /// Holds a write of `data`, rows `bytes_per_row` apart.
-    pub(crate) fn core(&mut self, region: &TextureRegion, data: &[u8], bytes_per_row: u32) {
+    /// Takes a write of `data`, rows `bytes_per_row` apart: holds it if it
+    /// shares a block with one made since the last submission, else
+    /// returns `false` for the caller to issue it now.
+    #[must_use]
+    pub(crate) fn core(&mut self, region: &TextureRegion, data: &[u8], bytes_per_row: u32) -> bool {
+        let write = TextureWrite {
+            region: *region,
+            source: Source::Issued,
+        };
+        let (subresource, blocks) = (write.subresource(), write.blocks());
+        if !self
+            .writes
+            .iter()
+            .any(|w| w.subresource() == subresource && intersect(blocks, w.blocks()))
+        {
+            self.writes.push(write);
+            return false;
+        }
         let at = self.texels.len();
         self.texels.extend_from_slice(data);
         self.writes.push(TextureWrite {
@@ -100,6 +124,7 @@ impl TextureWrites {
                 bytes_per_row,
             },
         });
+        true
     }
 
     /// Holds a write from a host image.
@@ -131,8 +156,8 @@ impl TextureWrites {
     }
 
     /// Assigns each write its wave: after every earlier write it overlaps,
-    /// and in the first wave from there with no write in its blocks.
-    /// Returns the number of waves.
+    /// and in the first wave from there with no write in its blocks (the
+    /// first, for one issued when made). Returns the number of waves.
     fn plan(&mut self) -> u32 {
         let Self {
             writes,
@@ -179,13 +204,19 @@ impl TextureWrites {
     }
 
     /// Issues the held writes: `put` each, wave by wave and in the order
-    /// they came within a wave, and `separate` between waves.
+    /// they came within a wave, and `separate` between waves. The first
+    /// wave may have been issued already, when its writes were made.
     pub(crate) fn issue(
         &mut self,
         mut put: impl FnMut(&TextureWrite, &[u8]),
         mut separate: impl FnMut(),
     ) {
-        if self.writes.is_empty() {
+        if self
+            .writes
+            .iter()
+            .all(|w| matches!(w.source, Source::Issued))
+        {
+            self.writes.clear();
             return;
         }
         let count = self.plan();
@@ -200,6 +231,7 @@ impl TextureWrites {
                 .filter(|&(_, &v)| v == wave)
             {
                 let texels = match w.source {
+                    Source::Issued => continue,
                     Source::Core { at, len, .. } => &self.texels[at..at + len],
                     #[cfg(target_arch = "wasm32")]
                     Source::Host { .. } => &[][..],
@@ -209,6 +241,7 @@ impl TextureWrites {
         }
         self.writes.clear();
         self.texels.clear();
+        self.texels.shrink_to(KEPT_TEXELS);
     }
 }
 
@@ -231,11 +264,13 @@ mod tests {
     /// The waves `writes` are issued in, as each write's index.
     fn waves(writes: &[TextureRegion]) -> Vec<Vec<usize>> {
         let mut held = TextureWrites::default();
+        let waves = std::cell::RefCell::new(vec![Vec::new()]);
         for (i, r) in writes.iter().enumerate() {
             let len = (r.width * r.height) as usize;
-            held.core(r, &vec![i as u8; len], r.width);
+            if !held.core(r, &vec![i as u8; len], r.width) {
+                waves.borrow_mut()[0].push(i);
+            }
         }
-        let waves = std::cell::RefCell::new(vec![Vec::new()]);
         held.issue(
             |w, texels| {
                 assert_eq!(texels.len(), (w.region.width * w.region.height) as usize);
@@ -258,6 +293,20 @@ mod tests {
             region(1, 0, 200, 200, 20, 20),
         ];
         assert_eq!(waves(&writes), [vec![0, 3], vec![1], vec![2]]);
+    }
+
+    #[test]
+    fn writes_in_free_blocks_are_issued_at_once() {
+        // A whole layer, another layer, then a write into the first one's
+        // blocks: only the last is held, its texels alone kept.
+        let mut held = TextureWrites::default();
+        assert!(!held.core(&region(1, 0, 0, 0, 64, 64), &[0; 64 * 64], 64));
+        assert!(!held.core(&region(1, 1, 0, 0, 64, 64), &[0; 64 * 64], 64));
+        assert!(held.core(&region(1, 0, 8, 8, 4, 4), &[0; 16], 4));
+        assert_eq!(held.texels.len(), 16);
+        let (mut put, mut separated) = (0, 0);
+        held.issue(|_, _| put += 1, || separated += 1);
+        assert_eq!((put, separated), (1, 1));
     }
 
     #[test]

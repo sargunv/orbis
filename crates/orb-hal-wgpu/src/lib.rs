@@ -111,7 +111,8 @@ pub struct WgpuGpu {
     uploaded: Uploaded,
     /// Small buffer writes, copied in at the next submission.
     writes: writes::Writes,
-    /// Texture writes, issued in waves at the next submission.
+    /// Texture writes since the last submission, those sharing a block
+    /// with an earlier one issued in waves at the next.
     texture_writes: std::sync::Mutex<texture_writes::TextureWrites>,
     /// Readback buffers back from their last readback, for the next of
     /// their size: a new one maps fresh pages each time.
@@ -386,6 +387,7 @@ impl WgpuGpu {
             depth_or_array_layers: 1,
         };
         match write.source {
+            texture_writes::Source::Issued => unreachable!("issued when made"),
             texture_writes::Source::Core { bytes_per_row, .. } => self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: self.texture(region.texture),
@@ -1082,10 +1084,23 @@ impl Gpu for WgpuGpu {
             (bytes_per_row * region.height) as usize,
             "texture write size mismatch"
         );
-        self.texture_writes
+        let held = self
+            .texture_writes
             .get_mut()
             .expect("texture writes poisoned")
             .core(region, data, bytes_per_row);
+        if !held {
+            let source = texture_writes::Source::Core {
+                at: 0,
+                len: data.len(),
+                bytes_per_row,
+            };
+            let write = texture_writes::TextureWrite {
+                region: *region,
+                source,
+            };
+            self.issue_texture_write(&write, data);
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
