@@ -54,12 +54,9 @@ pub struct LayerParams {
     /// Placed at zooms `[minzoom, maxzoom)`; 0 sets no bound.
     pub minzoom: f64,
     pub maxzoom: f64,
-    pub text_overlap: Overlap,
-    pub icon_overlap: Overlap,
-    pub text_optional: bool,
-    pub icon_optional: bool,
-    pub text_ignore_placement: bool,
-    pub icon_ignore_placement: bool,
+    /// The overlap, optional and ignore-placement settings; a symbol's
+    /// own where its feature gives them ([`SymbolFlags::of`]).
+    pub flags: SymbolFlags,
     /// `text-rotation-alignment: map` (after `auto`).
     pub rotate_with_map: bool,
     /// `text-pitch-alignment: map` (after `auto`).
@@ -83,6 +80,72 @@ pub struct LayerParams {
     pub writing_modes: Vec<WritingMode>,
     /// The layer sets `text-variable-anchor` or `text-variable-anchor-offset`.
     pub variable_placement: bool,
+}
+
+/// How a symbol collides: `text-overlap`, `icon-overlap` (after the
+/// `*-allow-overlap`s), and the optional and ignore-placement flags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SymbolFlags {
+    pub text_overlap: Overlap,
+    pub icon_overlap: Overlap,
+    pub text_optional: bool,
+    pub icon_optional: bool,
+    pub text_ignore_placement: bool,
+    pub icon_ignore_placement: bool,
+}
+
+impl SymbolFlags {
+    /// [`instance_flags::OWN_PLACEMENT`] and the bits after it hold them.
+    const SHIFT: u32 = 9;
+
+    /// The instance's own, where its feature gives them (beyond the spec:
+    /// GL JS and Native read them per layer), else these.
+    pub fn of(self, instance: &SymbolInstance) -> Self {
+        if instance.flags & instance_flags::OWN_PLACEMENT == 0 {
+            return self;
+        }
+        let bits = instance.flags >> Self::SHIFT;
+        let overlap = |b: u32| match b & 3 {
+            1 => Overlap::Always,
+            2 => Overlap::Cooperative,
+            _ => Overlap::Never,
+        };
+        Self {
+            text_overlap: overlap(bits),
+            icon_overlap: overlap(bits >> 2),
+            text_optional: bits & 16 != 0,
+            icon_optional: bits & 32 != 0,
+            text_ignore_placement: bits & 64 != 0,
+            icon_ignore_placement: bits & 128 != 0,
+        }
+    }
+
+    /// Their instance flags, which [`of`](Self::of) reads.
+    pub(crate) fn instance_bits(self) -> u32 {
+        let overlap = |o: Overlap| match o {
+            Overlap::Never => 0,
+            Overlap::Always => 1,
+            Overlap::Cooperative => 2,
+        };
+        let bits = overlap(self.text_overlap)
+            | overlap(self.icon_overlap) << 2
+            | u32::from(self.text_optional) << 4
+            | u32::from(self.icon_optional) << 5
+            | u32::from(self.text_ignore_placement) << 6
+            | u32::from(self.icon_ignore_placement) << 7;
+        instance_flags::OWN_PLACEMENT | bits << Self::SHIFT
+    }
+
+    /// Whether text and icon show whatever else collides (GL JS
+    /// `alwaysShowText`, `alwaysShowIcon`).
+    fn always(self, has_text: bool, has_icon: bool) -> (bool, bool) {
+        let text = self.text_overlap == Overlap::Always;
+        let icon = self.icon_overlap == Overlap::Always;
+        (
+            text && (icon || !has_icon || self.icon_optional),
+            icon && (text || !has_text || self.text_optional),
+        )
+    }
 }
 
 /// A text size evaluated at the camera's zoom for one tile (GL JS
@@ -883,10 +946,6 @@ impl<'a> Pass<'a> {
         let t = &b.tables;
         let has_text_data = !t.text_placed.is_empty();
         let has_icon_data = !t.icon_placed.is_empty();
-        let text_always = p.text_overlap == Overlap::Always;
-        let icon_always = p.icon_overlap == Overlap::Always;
-        let always_text = text_always && (icon_always || !has_icon_data || p.icon_optional);
-        let always_icon = icon_always && (text_always || !has_text_data || p.text_optional);
         let pixel_ratio = 512.0 / EXTENT;
         let text_translation = translation(self.camera, &tile.view, p.text_translate);
         let icon_translation = translation(self.camera, &tile.view, p.icon_translate);
@@ -923,6 +982,8 @@ impl<'a> Pass<'a> {
             if seen.contains(&id) {
                 continue;
             }
+            let f = p.flags.of(instance);
+            let (always_text, always_icon) = f.always(has_text_data, has_icon_data);
             // Tile scope: a tile places the labels anchored in it.
             if self.record.is_some() && !self.index.in_view(&tile.view, instance.anchor) {
                 continue;
@@ -978,7 +1039,7 @@ impl<'a> Pass<'a> {
                         };
                         let result = self.index.place_box(
                             &bx,
-                            &base(p.text_overlap, text_translation),
+                            &base(f.text_overlap, text_translation),
                             None,
                         );
                         if result.placeable {
@@ -1005,7 +1066,7 @@ impl<'a> Pass<'a> {
                                 (text_box, icon_box, SymbolWritingMode::Horizontal)
                             }
                         };
-                        let variable_icon = if p.icon_text_fit && p.icon_overlap == Overlap::Never {
+                        let variable_icon = if p.icon_text_fit && f.icon_overlap == Overlap::Never {
                             ibox
                         } else {
                             None
@@ -1061,7 +1122,7 @@ impl<'a> Pass<'a> {
                 let symbol = &t.text_placed[center as usize];
                 let font_size = feature_size(t.text_size, tile.text_size, symbol);
                 let result = self.index.place_circles(
-                    p.text_overlap,
+                    f.text_overlap,
                     symbol,
                     &t.lines,
                     &t.text_glyph_offsets,
@@ -1079,8 +1140,8 @@ impl<'a> Pass<'a> {
                         p.height_anchor_ground,
                     ),
                 );
-                place_text =
-                    text_always || (!result.circles.is_empty() && !result.collision_detected);
+                place_text = f.text_overlap == Overlap::Always
+                    || (!result.circles.is_empty() && !result.collision_detected);
                 offscreen &= result.offscreen;
                 circles = Some(result);
             }
@@ -1100,15 +1161,15 @@ impl<'a> Pass<'a> {
                 let icon_shift = if p.icon_text_fit { shift } else { None };
                 let result =
                     self.index
-                        .place_box(&bx, &base(p.icon_overlap, icon_translation), icon_shift);
+                        .place_box(&bx, &base(f.icon_overlap, icon_translation), icon_shift);
                 place_icon = result.placeable;
                 offscreen &= result.offscreen;
                 placed_icon = Some(result);
             }
 
             let icon_without_text =
-                p.text_optional || (horizontal_glyphs == 0 && vertical_glyphs == 0);
-            let text_without_icon = p.icon_optional || quads(&t.icon_placed, instance.icon[0]) == 0;
+                f.text_optional || (horizontal_glyphs == 0 && vertical_glyphs == 0);
+            let text_without_icon = f.icon_optional || quads(&t.icon_placed, instance.icon[0]) == 0;
             if !icon_without_text && !text_without_icon {
                 place_icon = place_icon && place_text;
                 place_text = place_icon;
@@ -1134,34 +1195,34 @@ impl<'a> Pass<'a> {
             };
             if place_text && let Some(b) = placed.filter(|b| b.placeable) {
                 self.index
-                    .insert_box(b.bounds, key(p.text_overlap), p.text_ignore_placement);
+                    .insert_box(b.bounds, key(f.text_overlap), f.text_ignore_placement);
                 shapes.extend(recording.then(|| {
                     shape(
                         ShapeGeometry::Box(b.bounds),
-                        p.text_overlap,
-                        p.text_ignore_placement,
+                        f.text_overlap,
+                        f.text_ignore_placement,
                     )
                 }));
             }
             if place_icon && let Some(b) = placed_icon.filter(|b| b.placeable) {
                 self.index
-                    .insert_box(b.bounds, key(p.icon_overlap), p.icon_ignore_placement);
+                    .insert_box(b.bounds, key(f.icon_overlap), f.icon_ignore_placement);
                 shapes.extend(recording.then(|| {
                     shape(
                         ShapeGeometry::Box(b.bounds),
-                        p.icon_overlap,
-                        p.icon_ignore_placement,
+                        f.icon_overlap,
+                        f.icon_ignore_placement,
                     )
                 }));
             }
             if place_text && let Some(c) = &circles {
                 self.index
-                    .insert_circles(&c.circles, key(p.text_overlap), p.text_ignore_placement);
+                    .insert_circles(&c.circles, key(f.text_overlap), f.text_ignore_placement);
                 for &circle in c.circles.iter().filter(|_| recording) {
                     shapes.push(shape(
                         ShapeGeometry::Circle(circle),
-                        p.text_overlap,
-                        p.text_ignore_placement,
+                        f.text_overlap,
+                        f.text_ignore_placement,
                     ));
                 }
             }
@@ -1210,6 +1271,7 @@ impl<'a> Pass<'a> {
         orientation: SymbolWritingMode,
         shift_out: &mut Option<Point>,
     ) -> Option<PlacedBox> {
+        let f = p.flags.of(instance);
         let width = text_box.x2 - text_box.x1;
         let height = text_box.y2 - text_box.y1;
         let scale = f64::from(instance.text_box_scale);
@@ -1230,7 +1292,7 @@ impl<'a> Pass<'a> {
                 .collect();
             offsets = &reordered;
         }
-        let passes = if p.text_overlap == Overlap::Never {
+        let passes = if f.text_overlap == Overlap::Never {
             1
         } else {
             2
@@ -1272,7 +1334,7 @@ impl<'a> Pass<'a> {
                     return placed;
                 }
             }
-            overlap = p.text_overlap;
+            overlap = f.text_overlap;
         }
         placed
     }
@@ -1364,22 +1426,17 @@ fn bucket_states(
         ..BucketStates::default()
     };
     let duplicate = JointOpacity::new(None, 0.0, false, false, true);
-    let text_allow = params.text_overlap == Overlap::Always;
-    let icon_allow = params.icon_overlap == Overlap::Always;
-    let default = JointOpacity::new(
-        None,
-        0.0,
-        text_allow && (icon_allow || t.icon_placed.is_empty() || params.icon_optional),
-        icon_allow && (text_allow || t.text_placed.is_empty() || params.text_optional),
-        true,
-    );
+    let has = (!t.text_placed.is_empty(), !t.icon_placed.is_empty());
     let vertical = SymbolWritingMode::Vertical as u8;
     for (i, instance) in t.instances.iter().enumerate() {
         let id = b.ids[i];
         let opacity = if !seen.insert(id) {
             duplicate
         } else {
-            *now.opacities.entry(id).or_insert(default)
+            *now.opacities.entry(id).or_insert_with(|| {
+                let (text, icon) = params.flags.of(instance).always(has.0, has.1);
+                JointOpacity::new(None, 0.0, text, icon, true)
+            })
         };
         let orientation = now.orientations.get(&id).copied();
         let horizontal_hidden = orientation == Some(vertical);
@@ -1581,12 +1638,7 @@ mod tests {
             source: 1,
             minzoom: 0.0,
             maxzoom: 0.0,
-            text_overlap: Overlap::Never,
-            icon_overlap: Overlap::Never,
-            text_optional: false,
-            icon_optional: false,
-            text_ignore_placement: false,
-            icon_ignore_placement: false,
+            flags: SymbolFlags::default(),
             rotate_with_map: false,
             pitch_with_map: false,
             icon_text_fit: false,
@@ -1695,7 +1747,7 @@ mod tests {
         assert_eq!(c.fade_change(0.0), 1.0);
 
         let mut overlap = params(7);
-        overlap.text_overlap = Overlap::Always;
+        overlap.flags.text_overlap = Overlap::Always;
         let c = placer.place(&frame(
             vec![LayerFrame {
                 params: overlap,
@@ -1816,7 +1868,7 @@ mod tests {
         assert_eq!(c.fade_change(150.0), 0.5);
         // Allowing overlap places label 2, which fades in from 0.
         let mut overlap = params(7);
-        overlap.text_overlap = Overlap::Always;
+        overlap.flags.text_overlap = Overlap::Always;
         let c = placer.place(&frame(layer(overlap.clone()), 1000.0, 300.0));
         let w = word(&c.changed[0].2, 1);
         assert_eq!((w & state::OPACITY, w & state::PLACED != 0), (0, true));
@@ -2060,7 +2112,7 @@ mod tests {
         placer.ingest(1, labels(&[(1, [4096, 4096]), (2, [4100, 4100])]));
         let layer = |overlap| {
             let mut p = params(7);
-            p.text_overlap = overlap;
+            p.flags.text_overlap = overlap;
             vec![LayerFrame {
                 params: p,
                 tiles: vec![tile(1, 0)],

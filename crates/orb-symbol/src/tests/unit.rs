@@ -197,13 +197,13 @@ fn keep_upright_adds_a_vertical_shaping_for_vertical_scripts() {
 fn variable_anchors_shape_once_per_justification() {
     let layer = points(&[[4096, 4096]]);
     let style = LayerLayout {
-        text_variable_anchor: Some(vec![Anchor::Left, Anchor::Right, Anchor::Top]),
         text_radial_offset_set: true,
         ..LayerLayout::default()
     };
     let with = |text: &str| {
         let mut f = feature(0, text);
         f.layout.text_justify = TextJustify::Auto;
+        f.layout.text_variable_anchor = Some(vec![Anchor::Left, Anchor::Right, Anchor::Top]);
         f.layout.text_radial_offset = 1.0;
         f.layout.text_max_width = 3.0;
         f

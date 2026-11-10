@@ -219,18 +219,11 @@ fn layer_layout(symbol: &orb_style::Layer, zoom: f64) -> LayerLayout {
     };
     LayerLayout {
         placement,
-        spacing: l.get(orb_style::SYMBOL_SPACING).evaluate(zoom),
         text_rotation_alignment,
         icon_rotation_alignment,
         text_keep_upright: l.get(orb_style::TEXT_KEEP_UPRIGHT).evaluate(zoom),
-        text_max_angle: l.get(orb_style::TEXT_MAX_ANGLE).evaluate(zoom),
-        text_line_height: l.get(orb_style::TEXT_LINE_HEIGHT).evaluate(zoom),
         text_padding: l.get(orb_style::TEXT_PADDING).evaluate(zoom),
         text_writing_mode,
-        text_variable_anchor: l
-            .get(orb_style::TEXT_VARIABLE_ANCHOR)
-            .evaluate(zoom)
-            .map(|a| a.into_iter().map(anchor).collect()),
         text_radial_offset_set: l.get(orb_style::TEXT_RADIAL_OFFSET).is_set(),
         icon_text_fit: match l.get(orb_style::ICON_TEXT_FIT).evaluate(zoom) {
             orb_style::IconTextFit::None => orb_symbol::IconTextFit::None,
@@ -347,6 +340,31 @@ pub(crate) fn prepare(
         .get(orb_style::SYMBOL_HEIGHT_OFFSET)
         .bind(layer)
         .with_tile(tile);
+    // GL JS reads these per layer; Orbis per feature, beyond the spec.
+    let own_flags = crate::labels::own_symbol_flags(l).then(|| {
+        let flag = |key| l.get(key).bind(layer).with_tile(tile);
+        let overlap = |key| l.get(key).bind(layer).with_tile(tile);
+        (
+            [orb_style::TEXT_ALLOW_OVERLAP, orb_style::ICON_ALLOW_OVERLAP].map(flag),
+            [orb_style::TEXT_OVERLAP, orb_style::ICON_OVERLAP].map(overlap),
+            [orb_style::TEXT_OPTIONAL, orb_style::ICON_OPTIONAL].map(flag),
+            [
+                orb_style::TEXT_IGNORE_PLACEMENT,
+                orb_style::ICON_IGNORE_PLACEMENT,
+            ]
+            .map(flag),
+        )
+    });
+    let spacing = l.get(orb_style::SYMBOL_SPACING).bind(layer).with_tile(tile);
+    let max_angle = l.get(orb_style::TEXT_MAX_ANGLE).bind(layer).with_tile(tile);
+    let line_height = l
+        .get(orb_style::TEXT_LINE_HEIGHT)
+        .bind(layer)
+        .with_tile(tile);
+    let variable_anchor = l
+        .get(orb_style::TEXT_VARIABLE_ANCHOR)
+        .bind(layer)
+        .with_tile(tile);
 
     let sizes = |bound: &orb_style::BoundProperty<'_, f64>, kind: SizeKind, row: usize| {
         let stops = match kind {
@@ -430,6 +448,30 @@ pub(crate) fn prepare(
             icon_rotate: icon_rotate.evaluate(zoom, row),
             icon_padding: icon_padding.evaluate(zoom, row).0,
             height_offset: height_offset.evaluate(zoom, row),
+            spacing: spacing.evaluate(zoom, row),
+            text_max_angle: max_angle.evaluate(zoom, row),
+            text_line_height: line_height.evaluate(zoom, row),
+            text_variable_anchor: variable_anchor
+                .evaluate(zoom, row)
+                .map(|a| a.into_iter().map(anchor).collect()),
+            placement: own_flags
+                .as_ref()
+                .map(|(allow, overlap, optional, ignore)| {
+                    let at = |[text, icon]: &[orb_style::BoundProperty<'_, bool>; 2]| {
+                        [text.evaluate(zoom, row), icon.evaluate(zoom, row)]
+                    };
+                    let (allow, optional, ignore) = (at(allow), at(optional), at(ignore));
+                    let mode =
+                        |i: usize| crate::labels::overlap(overlap[i].evaluate(zoom, row), allow[i]);
+                    orb_symbol::SymbolFlags {
+                        text_overlap: mode(0),
+                        icon_overlap: mode(1),
+                        text_optional: optional[0],
+                        icon_optional: optional[1],
+                        text_ignore_placement: ignore[0],
+                        icon_ignore_placement: ignore[1],
+                    }
+                }),
         };
         prepared.push(SymbolFeature {
             index,
@@ -709,14 +751,17 @@ mod tests {
                 g["iconRotationAlignment"],
                 "{name}"
             );
-            assert_eq!(s.spacing, num(&g["spacing"]), "{name}: spacing");
             assert_eq!(
                 s.text_keep_upright,
                 g["keepUpright"].as_bool().unwrap(),
                 "{name}"
             );
-            assert_eq!(s.text_max_angle, num(&g["maxAngle"]), "{name}");
-            assert_eq!(s.text_line_height, num(&g["lineHeight"]), "{name}");
+            for f in &prepared.features {
+                let f = &f.layout;
+                assert_eq!(f.spacing, num(&g["spacing"]), "{name}: spacing");
+                assert_eq!(f.text_max_angle, num(&g["maxAngle"]), "{name}");
+                assert_eq!(f.text_line_height, num(&g["lineHeight"]), "{name}");
+            }
             assert_eq!(s.text_padding, num(&g["textPadding"]), "{name}");
             let modes: Vec<&str> = s
                 .text_writing_mode
@@ -731,14 +776,14 @@ mod tests {
                 .map(|m| m.iter().map(|m| m.as_str().unwrap()).collect())
                 .unwrap_or_default();
             assert_eq!(modes, golden_modes, "{name}: writing modes");
-            let variable: Option<Vec<&str>> = s
-                .text_variable_anchor
-                .as_ref()
-                .map(|a| a.iter().map(|&a| anchor_name(a)).collect());
             let golden_variable: Option<Vec<&str>> = g["variableAnchor"]
                 .as_array()
                 .map(|a| a.iter().map(|a| a.as_str().unwrap()).collect());
-            assert_eq!(variable, golden_variable, "{name}: variable anchors");
+            for f in &prepared.features {
+                let variable: Option<Vec<&str>> = (f.layout.text_variable_anchor.as_ref())
+                    .map(|a| a.iter().map(|&a| anchor_name(a)).collect());
+                assert_eq!(variable, golden_variable, "{name}: variable anchors");
+            }
             assert_eq!(
                 s.text_radial_offset_set,
                 g["radialOffsetSet"].as_bool().unwrap(),

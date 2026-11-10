@@ -184,3 +184,126 @@ fn buildings_pick_wherever_they_draw() {
         "{missed} of {drawn} drawn pixels miss"
     );
 }
+
+/// A symbol layer of points `[id, lon, lat]` with `layout`, 20 px labels from the demo's glyphs, drawn into a 400 × 300 map at zoom 3.
+fn labels(points: &[(u32, f64, f64)], layout: &str) -> (Map, Target) {
+    let glyphs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../web/demo/data/glyphs")
+        .canonicalize()
+        .unwrap();
+    let features: Vec<String> = points
+        .iter()
+        .map(|(id, lon, lat)| {
+            format!(
+                r#"{{"type": "Feature", "id": {id}, "properties": {{"k": {id}}},
+                  "geometry": {{"type": "Point", "coordinates": [{lon}, {lat}]}}}}"#
+            )
+        })
+        .collect();
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 3,
+        "glyphs": "file://{}/{{fontstack}}/{{range}}.pbf",
+        "sources": {{"p": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": [{}]}}}}}},
+        "layers": [
+          {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+          {{"id": "t", "type": "symbol", "source": "p",
+           "layout": {{"text-font": ["Noto Sans Regular"], "text-size": 20, {layout}}}}}]}}"##,
+        glyphs.display(),
+        features.join(","),
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 400, 300, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    settle(&mut map, &mut target);
+    (map, target)
+}
+
+/// The id of the label at `(x, y)`, if one shows there.
+fn label_at(map: &mut Map, x: f64, y: f64) -> Option<String> {
+    map.hit_test(DVec2::new(x, y)).and_then(|h| h.id)
+}
+
+/// Beyond the spec, each feature takes its own `text-variable-anchor`:
+/// one label runs east of its point, the other west of its own.
+#[test]
+fn labels_take_their_own_variable_anchors() {
+    let anchors = r#""text-field": "WWWW", "text-variable-anchor": ["match", ["get", "k"], 1, ["literal", ["left"]], ["literal", ["right"]]]"#;
+    // Zoom 3: 4096 px about the world; 10° is 114 px.
+    let (mut map, _target) = labels(&[(1, 0.0, 6.0), (2, 0.0, -6.0)], anchors);
+    let (east, west) = (200.0 + 50.0, 200.0 - 50.0);
+    let (north, south) = (150.0 - 68.0, 150.0 + 68.0);
+    assert_eq!(label_at(&mut map, east, north).as_deref(), Some("1"));
+    assert_eq!(label_at(&mut map, west, north), None);
+    assert_eq!(label_at(&mut map, west, south).as_deref(), Some("2"));
+    assert_eq!(label_at(&mut map, east, south), None);
+}
+
+/// Beyond the spec, each feature takes its own overlap and
+/// `text-line-height`: of two labels that collide, the one allowed to
+/// overlap and ignoring placement shows beside the other, which it
+/// doesn't block, and a two-line label set
+/// three ems apart stands taller than one set at 1.2.
+#[test]
+fn labels_take_their_own_overlap_and_line_height() {
+    // 2° apart, about 23 px: the labels collide.
+    let points = [(1, -1.0, 0.0), (2, 1.0, 0.0)];
+    let (mut map, _target) = labels(&points, r#""text-field": "WWWW""#);
+    let shown = |map: &mut Map| {
+        (140..260)
+            .step_by(4)
+            .filter_map(|x| label_at(map, f64::from(x), 150.0))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(shown(&mut map).len(), 1, "one hides the other");
+    let allow = r#""text-field": "WWWW", "text-allow-overlap": ["==", ["get", "k"], 2],
+        "text-ignore-placement": ["==", ["get", "k"], 2]"#;
+    let (mut map, _target) = labels(&points, allow);
+    assert_eq!(shown(&mut map).len(), 2, "the second shows over the first");
+
+    let lines = r#""text-field": "WW WW", "text-max-width": 1, "text-allow-overlap": true,
+        "text-line-height": ["match", ["get", "k"], 1, 3, 1.2]"#;
+    let (mut map, _target) = labels(&[(1, -8.0, 0.0), (2, 8.0, 0.0)], lines);
+    // Each label's two lines centre on its point (x 109 and 291 px).
+    let tall = |map: &mut Map, x: f64| {
+        (0..150u32)
+            .filter(|&dy| label_at(map, x, 150.0 - f64::from(dy)).is_some())
+            .max()
+            .unwrap_or(0)
+    };
+    let (three, normal) = (tall(&mut map, 109.0), tall(&mut map, 291.0));
+    assert!(
+        three > normal + 15,
+        "three ems apart, {three} px above the point; 1.2, {normal}"
+    );
+}
+
+/// Beyond the spec, overlap follows the camera at each placement: two
+/// colliding labels both show once the map tilts past 30°, and one hides
+/// again when it levels, as a fresh map at each camera places them.
+#[test]
+fn label_overlap_follows_the_camera() {
+    let points = [(1, -1.0, 0.0), (2, 1.0, 0.0)];
+    let tilted = r#""text-field": "WWWW", "text-allow-overlap": [">", ["pitch"], 30],
+        "text-ignore-placement": [">", ["pitch"], 30]"#;
+    let shown = |map: &mut Map| {
+        (140..260)
+            .step_by(4)
+            .filter_map(|x| label_at(map, f64::from(x), 150.0))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    };
+    let (mut map, mut target) = labels(&points, tilted);
+    assert_eq!(shown(&mut map), 1, "level, one hides the other");
+    let tilt = |map: &mut Map, target: &mut Target, pitch: f64| {
+        map.jump_to(&orb_api::CameraTarget {
+            pitch: Some(pitch),
+            ..orb_api::CameraTarget::default()
+        });
+        settle(map, target);
+    };
+    tilt(&mut map, &mut target, 45.0);
+    assert_eq!(shown(&mut map), 2, "tilted, both show");
+    tilt(&mut map, &mut target, 0.0);
+    assert_eq!(shown(&mut map), 1, "level again");
+}

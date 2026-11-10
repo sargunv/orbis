@@ -86,12 +86,9 @@ fn layer_layout(v: &Value) -> LayerLayout {
             "line-center" => Placement::LineCenter,
             _ => Placement::Point,
         },
-        spacing: num(&v["spacing"]),
         text_rotation_alignment: alignment(&v["textRotationAlignment"]),
         icon_rotation_alignment: alignment(&v["iconRotationAlignment"]),
         text_keep_upright: v["keepUpright"].as_bool().unwrap(),
-        text_max_angle: num(&v["maxAngle"]),
-        text_line_height: num(&v["lineHeight"]),
         text_padding: num(&v["textPadding"]),
         text_writing_mode: v["writingModes"]
             .as_array()
@@ -105,9 +102,6 @@ fn layer_layout(v: &Value) -> LayerLayout {
                     .collect()
             })
             .unwrap_or_default(),
-        text_variable_anchor: v["variableAnchor"]
-            .as_array()
-            .map(|a| a.iter().map(|a| anchor(a.as_str().unwrap())).collect()),
         text_radial_offset_set: v["radialOffsetSet"].as_bool().unwrap(),
         icon_text_fit: match v["iconTextFit"].as_str().unwrap() {
             "width" => IconTextFit::Width,
@@ -200,6 +194,7 @@ fn feature(v: &Value) -> SymbolFeature {
             icon_rotate: num(&v["iconRotate"]),
             icon_padding: nums(&v["iconPadding"]),
             height_offset: num(&v["heightOffset"]),
+            ..FeatureLayout::default()
         },
     }
 }
@@ -315,11 +310,22 @@ fn run_in<'a>(name: &'a str, json: &str, ancestor: Option<Ancestor>) -> Case<'a>
         .layer(spec["sourceLayer"].as_str().unwrap())
         .expect("the case's source layer");
     let style = layer_layout(&golden["layer"]);
+    // GL JS's per-layer values that Orbis reads per feature.
+    let l = &golden["layer"];
     let features: Vec<SymbolFeature> = golden["features"]
         .as_array()
         .unwrap()
         .iter()
-        .map(feature)
+        .map(|v| {
+            let mut f = feature(v);
+            f.layout.spacing = num(&l["spacing"]);
+            f.layout.text_max_angle = num(&l["maxAngle"]);
+            f.layout.text_line_height = num(&l["lineHeight"]);
+            f.layout.text_variable_anchor = l["variableAnchor"]
+                .as_array()
+                .map(|a| a.iter().map(|a| anchor(a.as_str().unwrap())).collect());
+            f
+        })
         .collect();
 
     let mut requests = GlyphRequests::default();

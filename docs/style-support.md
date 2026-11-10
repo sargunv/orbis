@@ -96,14 +96,14 @@ pass.
 | Property | Section | Phase | Spec | GL JS | Native | Orbis | GL JS query (native) | GL JS render (native) | Native query (native) | Native render (native) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `symbol-placement` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom | — | 9/9, 2 skipped | — | 3/5, 3 skipped |
-| `symbol-spacing` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom | — | 5/5 | — | 4/5 |
+| `symbol-spacing` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom; data accepted (not portable) | — | 5/5 | — | 4/5 |
 | `symbol-avoid-edges` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
 | `symbol-sort-key` | layout | tile | zoom, data | 0.53.0; data 0.53.0 | 7.4.0; data 7.4.0 | zoom, data | — | 5/5 | — | 5/6 |
 | `symbol-z-order` | layout | placement | zoom | 0.49.0 | 6.6.0 | zoom | — | 5/5 | — | 5/5 |
-| `icon-allow-overlap` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
-| `icon-overlap` | layout | placement | zoom | 2.1.0 | [no](https://github.com/maplibre/maplibre-native/issues/251) | zoom | — | 4/4 | — | — |
-| `icon-ignore-placement` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
-| `icon-optional` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
+| `icon-allow-overlap` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
+| `icon-overlap` | layout | placement | zoom | 2.1.0 | [no](https://github.com/maplibre/maplibre-native/issues/251) | zoom; camera, data accepted (not portable) | — | 4/4 | — | — |
+| `icon-ignore-placement` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
+| `icon-optional` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
 | `icon-rotation-alignment` | layout | tile | zoom, data | 0.10.0; data [no](https://github.com/maplibre/maplibre-gl-js/issues/3461) | 2.0.1; data [no](https://github.com/maplibre/maplibre-native/issues/4517) | zoom, data | — | 6/6 | — | 6/6 |
 | `icon-size` | layout | frame | zoom, data | 0.10.0; data 0.35.0 | 2.0.1; data 5.1.0 | zoom, data | — | 12/12 | — | 12/12 |
 | `icon-text-fit` | layout | tile | zoom | 0.21.0 | 4.2.0 | zoom | — | 45/45 | — | 44/45 |
@@ -121,24 +121,24 @@ pass.
 | `text-font` | layout | tile | zoom, data | 0.10.0; data 0.43.0 | 2.0.1; data 6.0.0 | zoom, data | — | 5/5 | — | 4/4, 3 skipped |
 | `text-size` | layout | frame | zoom, data | 0.10.0; data 0.35.0 | 2.0.1; data 5.1.0 | zoom, data | — | 11/11 | — | 12/12 |
 | `text-max-width` | layout | tile | zoom, data | 0.10.0; data 0.40.0 | 2.0.1; data 5.2.0 | zoom, data | — | 12/12 | — | 12/12 |
-| `text-line-height` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom | — | 1/1 | — | 1/1 |
+| `text-line-height` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom; data accepted (not portable) | — | 1/1 | — | 1/1 |
 | `text-letter-spacing` | layout | tile | zoom, data | 0.10.0; data 0.40.0 | 2.0.1; data 5.2.0 | zoom, data | — | 5/5 | — | 5/5 |
 | `text-justify` | layout | tile | zoom, data | 0.10.0; data 0.39.0 | 2.0.1; data 5.2.0 | zoom, data | — | 4/4 | — | 4/4 |
 | `text-radial-offset` | layout | tile | zoom, data | 0.54.0; data 0.54.0 | 7.4.0; data 7.4.0 | zoom, data | — | 1/1 | — | 1/1 |
-| `text-variable-anchor` | layout | tile | zoom | 0.54.0 | 7.4.0 | zoom | — | 29/31, 2 skipped | — | 18/22, 5 skipped |
+| `text-variable-anchor` | layout | tile | zoom | 0.54.0 | 7.4.0 | zoom; data accepted (not portable) | — | 29/31, 2 skipped | — | 18/22, 5 skipped |
 | `text-variable-anchor-offset` | layout | tile | zoom, data | 3.3.0; data 3.3.0 | 11.6.0; data [no](https://github.com/maplibre/maplibre-native/issues/2358) | zoom, data | — | 17/17, 1 skipped | — | 14/16, 4 skipped |
 | `text-anchor` | layout | tile | zoom, data | 0.10.0; data 0.39.0 | 2.0.1; data 5.2.0 | zoom, data | — | 10/10 | — | 10/10 |
-| `text-max-angle` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom | — | 2/2 | — | 2/2 |
+| `text-max-angle` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom; data accepted (not portable) | — | 2/2 | — | 2/2 |
 | `text-writing-mode` | layout | tile | zoom | 1.3.0 | 8.3.0 | zoom | — | 18/18 | — | 18/18 |
 | `text-rotate` | layout | tile | zoom, data | 0.10.0; data 0.35.0 | 2.0.1; data 5.1.0 | zoom, data | — | 7/7, 1 skipped | — | 7/7, 1 skipped |
 | `text-padding` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
 | `text-keep-upright` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom | — | 12/12 | — | 9/12 |
 | `text-transform` | layout | tile | zoom, data | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data | — | 3/3 | — | 3/3 |
 | `text-offset` | layout | tile | zoom, data | 0.10.0; data 0.35.0 | 2.0.1; data 5.1.0 | zoom, data | — | 27/27, 1 skipped | — | 21/21 |
-| `text-allow-overlap` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
-| `text-overlap` | layout | placement | zoom | 2.1.0 | [no](https://github.com/maplibre/maplibre-native/issues/251) | zoom | — | 4/4 | — | — |
-| `text-ignore-placement` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
-| `text-optional` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
+| `text-allow-overlap` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
+| `text-overlap` | layout | placement | zoom | 2.1.0 | [no](https://github.com/maplibre/maplibre-native/issues/251) | zoom; camera, data accepted (not portable) | — | 4/4 | — | — |
+| `text-ignore-placement` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
+| `text-optional` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
 | `symbol-height-offset` | layout | tile | zoom, data | 6.6.0; data 6.6.0 | [no](https://github.com/maplibre/maplibre-native/issues/1929); data [no](https://github.com/maplibre/maplibre-native/issues/1929) | zoom, data | — | 1/1, 1 skipped | — | — |
 | `symbol-height-anchor` | layout | placement | zoom | [no](https://github.com/maplibre/maplibre-gl-js/issues/644) | [no](https://github.com/maplibre/maplibre-native/issues/1929) | zoom | — | — | — | — |
 | `icon-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |

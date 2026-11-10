@@ -77,25 +77,20 @@ pub enum TextJustify {
     Right,
 }
 
-/// The layout properties GL JS reads once per layer: not data-driven.
+/// The layout properties read once per layer. Those GL JS reads per layer
+/// that only lay out each feature (`symbol-spacing`, `text-max-angle`,
+/// `text-line-height`, `text-variable-anchor`) are [`FeatureLayout`]'s,
+/// which Orbis reads per feature beyond the spec.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerLayout {
     pub placement: Placement,
-    /// `symbol-spacing`, pixels.
-    pub spacing: f64,
     pub text_rotation_alignment: Alignment,
     pub icon_rotation_alignment: Alignment,
     pub text_keep_upright: bool,
-    /// `text-max-angle`, degrees.
-    pub text_max_angle: f64,
-    /// `text-line-height`, ems.
-    pub text_line_height: f64,
     /// `text-padding`, pixels.
     pub text_padding: f64,
     /// `text-writing-mode`, in order.
     pub text_writing_mode: Vec<WritingMode>,
-    /// `text-variable-anchor`.
-    pub text_variable_anchor: Option<Vec<Anchor>>,
     /// Whether the style sets `text-radial-offset`: then variable anchors
     /// use it rather than `text-offset`.
     pub text_radial_offset_set: bool,
@@ -113,15 +108,11 @@ impl Default for LayerLayout {
     fn default() -> Self {
         Self {
             placement: Placement::Point,
-            spacing: 250.0,
             text_rotation_alignment: Alignment::Auto,
             icon_rotation_alignment: Alignment::Auto,
             text_keep_upright: true,
-            text_max_angle: 45.0,
-            text_line_height: 1.2,
             text_padding: 2.0,
             text_writing_mode: Vec::new(),
-            text_variable_anchor: None,
             text_radial_offset_set: false,
             icon_text_fit: IconTextFit::None,
             icon_text_fit_padding: [0.0; 4],
@@ -206,6 +197,17 @@ pub struct FeatureLayout {
     pub icon_padding: [f64; 4],
     /// `symbol-height-offset`, meters.
     pub height_offset: f64,
+    /// `symbol-spacing`, pixels.
+    pub spacing: f64,
+    /// `text-max-angle`, degrees.
+    pub text_max_angle: f64,
+    /// `text-line-height`, ems.
+    pub text_line_height: f64,
+    /// `text-variable-anchor`.
+    pub text_variable_anchor: Option<Vec<Anchor>>,
+    /// Its own overlap, optional and ignore-placement settings, where the
+    /// layer reads them per feature; `None` for the layer's.
+    pub placement: Option<crate::placement::SymbolFlags>,
 }
 
 impl Default for FeatureLayout {
@@ -228,6 +230,11 @@ impl Default for FeatureLayout {
             icon_rotate: 0.0,
             icon_padding: [2.0; 4],
             height_offset: 0.0,
+            spacing: 250.0,
+            text_max_angle: 45.0,
+            text_line_height: 1.2,
+            text_variable_anchor: None,
+            placement: None,
         }
     }
 }
@@ -751,7 +758,7 @@ impl<'a> Builder<'a> {
     fn add_feature(&mut self, feature: &SymbolFeature, geometry: &Geometry) {
         let style = self.style;
         let f = &feature.layout;
-        let line_height = style.text_line_height * ONE_EM;
+        let line_height = f.text_line_height * ONE_EM;
         let text_along_line = style.text_along_line();
         let allow_vertical_placement = style.allow_vertical_placement();
 
@@ -910,7 +917,7 @@ impl<'a> Builder<'a> {
         let mut out = Vec::new();
         if let Some(values) = &f.text_variable_anchor_offset {
             variable::from_anchor_offsets(values, &mut out);
-        } else if let Some(anchors) = &self.style.text_variable_anchor {
+        } else if let Some(anchors) = &f.text_variable_anchor {
             let offset = if self.style.text_radial_offset_set {
                 TextOffset::Radial(f.text_radial_offset * ONE_EM)
             } else {
@@ -944,10 +951,10 @@ impl<'a> Builder<'a> {
         let text_box_scale = tile_pixel_ratio * font_scale;
         let text_max_box_scale = tile_pixel_ratio * text_max_size / GLYPH_SIZE;
         let icon_box_scale = tile_pixel_ratio * f.icon_size.layout;
-        let symbol_min_distance = tile_pixel_ratio * style.spacing;
+        let symbol_min_distance = tile_pixel_ratio * f.spacing;
         let text_padding = style.text_padding * tile_pixel_ratio;
         let icon_padding = f.icon_padding.map(|p| p * tile_pixel_ratio);
-        let text_max_angle = style.text_max_angle / 180.0 * PI;
+        let text_max_angle = f.text_max_angle / 180.0 * PI;
         let text_repeat_distance = symbol_min_distance / 2.0;
 
         let mut icon = icon;
@@ -1264,7 +1271,12 @@ impl<'a> Builder<'a> {
             );
         }
 
-        let mut flags = 0;
+        // Beyond the spec, the feature's own collision settings.
+        let mut flags = s
+            .feature
+            .layout
+            .placement
+            .map_or(0, crate::placement::SymbolFlags::instance_bits);
         let mut boxes = [[0i16; 4]; 4];
         let features = [
             text_feature,

@@ -240,7 +240,7 @@ pub(crate) struct SymbolTile {
     pub(crate) globe: Option<Arc<orb_crs::Series<glam::DVec3>>>,
 }
 
-fn overlap(mode: Option<orb_style::Overlap>, allow: bool) -> orb_symbol::Overlap {
+pub(crate) fn overlap(mode: Option<orb_style::Overlap>, allow: bool) -> orb_symbol::Overlap {
     match mode {
         Some(orb_style::Overlap::Never) => orb_symbol::Overlap::Never,
         Some(orb_style::Overlap::Always) => orb_symbol::Overlap::Always,
@@ -274,11 +274,13 @@ pub(crate) fn text_pitches_with_map(symbol: &orb_style::Layer, zoom: f64) -> boo
     }
 }
 
-/// A symbol layer's placement settings at `zoom`.
+/// A symbol layer's placement settings at `zoom` and `camera`: values
+/// that read the camera (beyond the spec) follow it at each placement.
 fn layer_params(
     plan: &StylePlan,
     node: &crate::style::NodePlan,
     zoom: f64,
+    camera: orb_style::CameraInputs,
 ) -> orb_symbol::LayerParams {
     let layer = &plan.style.layers[node.layer];
     let symbol = layer;
@@ -325,18 +327,30 @@ fn layer_params(
         } else {
             0.0
         },
-        text_overlap: overlap(
-            l.get(orb_style::TEXT_OVERLAP).evaluate(zoom),
-            l.get(orb_style::TEXT_ALLOW_OVERLAP).evaluate(zoom),
-        ),
-        icon_overlap: overlap(
-            l.get(orb_style::ICON_OVERLAP).evaluate(zoom),
-            l.get(orb_style::ICON_ALLOW_OVERLAP).evaluate(zoom),
-        ),
-        text_optional: l.get(orb_style::TEXT_OPTIONAL).evaluate(zoom),
-        icon_optional: l.get(orb_style::ICON_OPTIONAL).evaluate(zoom),
-        text_ignore_placement: l.get(orb_style::TEXT_IGNORE_PLACEMENT).evaluate(zoom),
-        icon_ignore_placement: l.get(orb_style::ICON_IGNORE_PLACEMENT).evaluate(zoom),
+        flags: orb_symbol::SymbolFlags {
+            text_overlap: overlap(
+                l.get(orb_style::TEXT_OVERLAP).evaluate_camera(zoom, camera),
+                l.get(orb_style::TEXT_ALLOW_OVERLAP)
+                    .evaluate_camera(zoom, camera),
+            ),
+            icon_overlap: overlap(
+                l.get(orb_style::ICON_OVERLAP).evaluate_camera(zoom, camera),
+                l.get(orb_style::ICON_ALLOW_OVERLAP)
+                    .evaluate_camera(zoom, camera),
+            ),
+            text_optional: l
+                .get(orb_style::TEXT_OPTIONAL)
+                .evaluate_camera(zoom, camera),
+            icon_optional: l
+                .get(orb_style::ICON_OPTIONAL)
+                .evaluate_camera(zoom, camera),
+            text_ignore_placement: l
+                .get(orb_style::TEXT_IGNORE_PLACEMENT)
+                .evaluate_camera(zoom, camera),
+            icon_ignore_placement: l
+                .get(orb_style::ICON_IGNORE_PLACEMENT)
+                .evaluate_camera(zoom, camera),
+        },
         rotate_with_map: text_rotates_with_map(symbol, zoom),
         pitch_with_map: text_pitches_with_map(symbol, zoom),
         icon_text_fit: l.get(orb_style::ICON_TEXT_FIT).evaluate(zoom)
@@ -385,8 +399,46 @@ fn draws_by_viewport_y(symbol: &orb_style::Layer, zoom: f64) -> bool {
             l.get(orb_style::ICON_ALLOW_OVERLAP).evaluate(zoom),
         ) != orb_symbol::Overlap::Never
         || l.get(orb_style::TEXT_IGNORE_PLACEMENT).evaluate(zoom)
-        || l.get(orb_style::ICON_IGNORE_PLACEMENT).evaluate(zoom);
+        || l.get(orb_style::ICON_IGNORE_PLACEMENT).evaluate(zoom)
+        // Per feature or following the camera, any symbol may.
+        || symbol_flag_values(symbol)
+            .any(|e| e.reads_camera() || matches!(e.kind(), orb_style::Kind::Source | orb_style::Kind::Composite));
     by_y && can_overlap
+}
+
+/// Whether the layer reads any overlap, optional or ignore-placement
+/// setting per feature, beyond the spec: each symbol then collides by its
+/// own ([`orb_symbol::SymbolFlags::of`]).
+pub(crate) fn own_symbol_flags(symbol: &orb_style::Layer) -> bool {
+    symbol_flag_values(symbol).any(|e| {
+        matches!(
+            e.kind(),
+            orb_style::Kind::Source | orb_style::Kind::Composite
+        )
+    })
+}
+
+/// The expressions of the layer's overlap, optional and ignore-placement
+/// settings.
+fn symbol_flag_values(
+    symbol: &orb_style::Layer,
+) -> impl Iterator<Item = &orb_style::PropertyExpression> {
+    let flags = [
+        orb_style::TEXT_ALLOW_OVERLAP,
+        orb_style::ICON_ALLOW_OVERLAP,
+        orb_style::TEXT_OPTIONAL,
+        orb_style::ICON_OPTIONAL,
+        orb_style::TEXT_IGNORE_PLACEMENT,
+        orb_style::ICON_IGNORE_PLACEMENT,
+    ];
+    let overlaps = [orb_style::TEXT_OVERLAP, orb_style::ICON_OVERLAP];
+    (flags.into_iter())
+        .filter_map(|k| symbol.get(k).as_expression())
+        .chain(
+            overlaps
+                .into_iter()
+                .filter_map(|k| symbol.get(k).as_expression()),
+        )
 }
 
 /// The layer sets `text-variable-anchor` or `text-variable-anchor-offset`.
@@ -1248,6 +1300,7 @@ impl Labels {
     ) -> orb_symbol::Frame {
         let view_proj = view.view_proj();
         let viewport = view.viewport();
+        let camera_inputs = crate::paint::camera_inputs(camera);
         let layers = plan
             .nodes
             .iter()
@@ -1307,7 +1360,7 @@ impl Labels {
                     })
                     .collect();
                 orb_symbol::LayerFrame {
-                    params: layer_params(plan, node, zoom),
+                    params: layer_params(plan, node, zoom, camera_inputs),
                     tiles,
                 }
             })
@@ -1785,7 +1838,17 @@ mod tests {
                 },
                 text_size: orb_symbol::ZoomSize::default(),
             };
-            let params = layer_params(self.worker.plan(), &self.worker.plan().nodes[0], 14.0);
+            let camera = orb_style::CameraInputs {
+                pitch: 0.0,
+                bearing: 0.0,
+                meters_per_pixel: f64::NAN,
+            };
+            let params = layer_params(
+                self.worker.plan(),
+                &self.worker.plan().nodes[0],
+                14.0,
+                camera,
+            );
             Frame {
                 camera: Camera {
                     width: 512.0,
