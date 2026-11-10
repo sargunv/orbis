@@ -24,6 +24,8 @@ import alpsFlight from "./data/alps-flight.json";
 
 /** Frames per path: 6 s at 60 Hz. */
 const PATH_FRAMES = 360;
+/** A path's length with `pace=wall`. */
+const PATH_MS = 6000;
 /** Gaps between frames over these (ms) count, each with 1 ms for the browser's coarsened clock. */
 const LATE = [16.7, 25];
 const LATE_SLACK = 1;
@@ -167,10 +169,29 @@ const percentile = (xs, p) => {
     : NaN;
 };
 const ms = (x) => (Number.isFinite(x) ? x.toFixed(1) : "—");
+const whole = (x) => (Number.isFinite(x) ? x.toFixed(0) : "—");
 const nextFrame = () =>
   new Promise((resolve) => requestAnimationFrame(resolve));
 /** The current animation frame's time: a frame drawn in it reaches the screen with that frame. */
 const frameTime = () => document.timeline.currentTime;
+/**
+ * Where along a path (0 to 1) display frame `i` (from 1) puts the camera:
+ * `i` of PATH_FRAMES, or with `wall`, the time since the clock started
+ * over PATH_MS, as a hand moves whatever the frame rate. On a device that
+ * draws slower than the display, a frame-paced path slows the camera down
+ * with it, and the tiles it asks for: only a wall-paced one shows whether
+ * tile loads keep up with a gesture.
+ */
+function pathClock(wall) {
+  const start = performance.now();
+  return (i) =>
+    wall ? Math.min(1, (performance.now() - start) / PATH_MS) : i / PATH_FRAMES;
+}
+/** How the reports say a path was paced. */
+const pace = (wall) =>
+  wall
+    ? `${PATH_MS / 1000} s a path (\`pace=wall\`), the camera moved once a display frame to where the time puts it`
+    : `${PATH_FRAMES} frames a path, the camera moved once a display frame`;
 
 /** Frame pacing from frames' times: the gaps' percentiles and how many are late. */
 function pacing(times) {
@@ -227,7 +248,15 @@ function idle(map, label) {
 }
 
 /** Runs one path on a fresh map; resolves to its row. */
-async function runPath(container, style, jobWorkers, center, path, show, gpu) {
+async function runPath(
+  container,
+  style,
+  jobWorkers,
+  center,
+  path,
+  show,
+  { gpu, wall },
+) {
   const label = path.name;
   show(`${label}: loading`);
   const created = performance.now();
@@ -263,8 +292,10 @@ async function runPath(container, style, jobWorkers, center, path, show, gpu) {
     if (path.flight) {
       for (const leg of path.flight) await map.camera.flyTo(leg);
     } else {
-      for (let f = 1; f <= PATH_FRAMES; f++) {
-        map.camera.jumpTo(path.camera(center, f / PATH_FRAMES));
+      const at = pathClock(wall);
+      for (let i = 1, f = 0; f < 1; i++) {
+        f = at(i);
+        map.camera.jumpTo(path.camera(center, f));
         await nextFrame();
       }
     }
@@ -466,7 +497,7 @@ export async function glStyle(style) {
 }
 
 /** Runs one path through GL JS on a fresh map; resolves to its row. */
-async function runGlPath(container, style, center, path, show) {
+async function runGlPath(container, style, center, path, show, wall) {
   const maplibregl = await loadGl();
   show(`${path.name}: loading (GL JS)`);
   const created = performance.now();
@@ -490,10 +521,12 @@ async function runGlPath(container, style, center, path, show) {
     map.on("render", drawn);
     const { longs, stop } = longTasks();
     performance.mark(`gestures:gl:${path.name}:start`);
-    for (let f = 1; f <= PATH_FRAMES; f++) {
-      map.jumpTo(path.camera(center, f / PATH_FRAMES));
+    const at = pathClock(wall);
+    for (let i = 1, f = 0; f < 1; i++) {
+      f = at(i);
+      map.jumpTo(path.camera(center, f));
       await nextFrame();
-      counter.frame(f, glShown(map, maplibregl, texts));
+      counter.frame(i, glShown(map, maplibregl, texts));
     }
     map.off("render", drawn);
     stop();
@@ -519,14 +552,14 @@ async function runGlPath(container, style, center, path, show) {
 }
 
 /** The GL JS rows' Markdown report. */
-function glReport({ rows, center, size, about }) {
+function glReport({ rows, center, size, about, wall }) {
   return (
     [
       "### Gestures bench (page, MapLibre GL JS)",
       "",
       ...about.map((line) => `- ${line}`),
-      `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
-        "the camera moved once a display frame (`jumpTo`), each path from a fresh map at rest; flights left out",
+      `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${pace(wall)}` +
+        " (`jumpTo`), each path from a fresh map at rest; flights left out",
       "",
       `| path | load to idle ms | frames | ${PACING_HEAD} | long tasks (max ms) | label blinks (frames) | label returns (drops) | idle after ms |`,
       "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
@@ -561,6 +594,7 @@ export async function runGestures({
   show,
   engines = ["orbis"],
   gpu = false,
+  wall = false,
 }) {
   const run = PATH_SETS[paths];
   if (!run)
@@ -583,18 +617,15 @@ export async function runGestures({
       for (const engine of i % 2 ? [...engines].reverse() : engines) {
         if (engine === "orbis")
           rows.orbis.push(
-            await runPath(
-              container,
-              style,
-              jobWorkers,
-              center,
-              path,
-              show,
+            await runPath(container, style, jobWorkers, center, path, show, {
               gpu,
-            ),
+              wall,
+            }),
           );
         else if (!path.flight)
-          rows.gl.push(await runGlPath(container, style, center, path, show));
+          rows.gl.push(
+            await runGlPath(container, style, center, path, show, wall),
+          );
       }
     }
   } finally {
@@ -603,19 +634,26 @@ export async function runGestures({
   const report = { orbis: orbisReport, gl: glReport };
   return engines
     .map((engine) =>
-      report[engine]({ rows: rows[engine], center, size, about, jobWorkers }),
+      report[engine]({
+        rows: rows[engine],
+        center,
+        size,
+        about,
+        jobWorkers,
+        wall,
+      }),
     )
     .join("\n");
 }
 
 /** The Orbis rows' Markdown report. */
-function orbisReport({ rows, center, size, about, jobWorkers }) {
+function orbisReport({ rows, center, size, about, jobWorkers, wall }) {
   const lines = [
     "### Gestures bench (page)",
     "",
     ...about.map((line) => `- ${line}`),
-    `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
-      "the camera moved once a display frame (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest; " +
+    `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${pace(wall)}` +
+      " (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest; " +
       `${jobWorkers ?? "default"} job workers`,
     "",
     `| path | load to idle ms | frames | ${PACING_HEAD} | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 | loads in flight max | at end | loaded after ms | drained after ms |`,
@@ -624,7 +662,7 @@ function orbisReport({ rows, center, size, about, jobWorkers }) {
       (r) =>
         `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ` +
         `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} | ` +
-        `${r.loads.max} | ${r.loads.end} | ${r.loads.loaded.toFixed(0)} | ${r.loads.drained.toFixed(0)} |`,
+        `${r.loads.max} | ${r.loads.end} | ${whole(r.loads.loaded)} | ${whole(r.loads.drained)} |`,
     ),
     "",
     `Times in ms. ${PACING_NOTE} Render CPU: the frame's ` +
@@ -632,7 +670,7 @@ function orbisReport({ rows, center, size, about, jobWorkers }) {
       "from the path's end until the map's `idle` event; after: the frames and the page's long tasks from the path's end to `idle`; " +
       "placement: the page thread's share of render CPU (building the placement worker's frame, applying commits; 0.2 ms); " +
       "loads in flight: the map's tile loads (`tilesLoading`), most while the camera moved and at its last frame; " +
-      "loaded after: from the path's end to the first frame the map reports loaded (the view's tiles in, its labels placed); drained after: to the first with no load in flight.",
+      "loaded after: from the path's end to the first frame the map reports loaded (the view's tiles in, its labels placed); drained after: to the first with no load in flight (—: the map was idle with no frame after the path).",
   ];
   if (rows.some((r) => r.passes)) {
     const mean = (xs) =>

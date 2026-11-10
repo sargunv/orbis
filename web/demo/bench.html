@@ -280,6 +280,7 @@
             size: [w, h],
             about: lines,
             gpu: params.has("gpu"),
+            wall: params.get("pace") === "wall",
             jobWorkers: params.has("workers")
               ? Number(params.get("workers"))
               : undefined,

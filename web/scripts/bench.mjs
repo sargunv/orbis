@@ -6,7 +6,9 @@
 // `--name=value` pairs become the page's query (format, style, frames,
 // warmup, rounds, size, ratio, at, experiment; workers (job workers),
 // paths, engine and gpu (`--gpu=1`: GPU passes on frames that laid the
-// cull's candidates out again and on the rest) for
+// cull's candidates out again and on the rest) and pace (`--pace=wall`:
+// each path takes 6 s however slowly frames come, as a hand's gesture
+// does, where by default it takes 360 display frames) for
 // `--experiment=gestures`; filter, legs and engine
 // for `--experiment=stutter`). Gesture paths are city, dense (pan, zoom
 // and turn at pitch 60 over Paris, on live Liberty unless `--style` gives
