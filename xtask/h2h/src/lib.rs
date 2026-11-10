@@ -30,9 +30,33 @@ pub fn render(frontend: &mut HeadlessFrontend, map: &mut Map) -> PremultipliedIm
 }
 
 /// The process's CPU time so far, every thread's.
+#[cfg(unix)]
 pub fn cpu() -> Duration {
     let t = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+}
+
+/// The process's CPU time so far, every thread's: its kernel and user
+/// time, in the 100 ns ticks Windows counts.
+#[cfg(windows)]
+pub fn cpu() -> Duration {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let mut times = [FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    }; 4];
+    let [creation, exit, kernel, user] = &mut times;
+    // SAFETY: the current process's pseudo-handle, which needs no closing,
+    // and four `FILETIME`s it writes.
+    let ok = unsafe { GetProcessTimes(GetCurrentProcess(), creation, exit, kernel, user) };
+    assert!(
+        ok != 0,
+        "GetProcessTimes: {}",
+        std::io::Error::last_os_error()
+    );
+    let ticks = |t: &FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    Duration::from_nanos((ticks(&times[2]) + ticks(&times[3])) * 100)
 }
 
 pub fn ms(d: Duration) -> f64 {

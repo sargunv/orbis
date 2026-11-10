@@ -11,9 +11,18 @@ publish = false
 
 [dependencies]
 mln-rs = { git = "https://github.com/louwers/mln-rs", rev = "38cc1a177559e61e168bef9e6ea6a42ed0aae378" }
+
+# Process CPU time: `clock_gettime` on Unix, `GetProcessTimes` on Windows.
+[target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.6", default-features = false, features = [
   "std",
   "time",
+] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
 ] }
 
 [workspace]
