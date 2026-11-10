@@ -62,9 +62,10 @@ pub(crate) fn build(names: bool) -> Result<(), String> {
     report_crates(&built);
     let js = std::fs::read(out.join("core.js")).map_err(|e| format!("core.js: {e}"))?;
     eprintln!(
-        "core.wasm: {} KiB raw, {} KiB brotli; core.js {} KiB raw ({OUT_DIR})",
+        "core.wasm: {} KiB raw, {} KiB brotli ({} bytes); core.js {} KiB raw ({OUT_DIR})",
         core.raw / 1024,
         core.brotli / 1024,
+        core.brotli,
         js.len() / 1024,
     );
     watch("core.wasm", core.brotli, CORE_WATCH_KIB);
