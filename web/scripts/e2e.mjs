@@ -2406,8 +2406,11 @@ async function gestures(browser, server) {
   }
 
   const results = [];
+  // One move a frame: the slow fling's 10 px is about 600 px/s at 60 fps,
+  // three times the slowest release that glides, so a loaded machine's
+  // slower frames still release a fling.
   for (const [kind, dx] of [
-    ["mouse", 6],
+    ["mouse", 10],
     ["mouse", 20],
     ["touch", 10],
     ["touch", 30],
