@@ -8,7 +8,8 @@ pub struct Source {
     pub id: String,
     pub kind: SourceKind,
     /// The tile matrix set its tiles are in (its `tileMatrixSet`); `None`
-    /// for `WebMercatorQuad`.
+    /// for `WebMercatorQuad`, and for GeoJSON, which tiles on the map's
+    /// plane.
     pub tile_matrix_set: Option<orb_crs::TileMatrixSet>,
 }
 #[derive(Clone, Debug, PartialEq)]
