@@ -19,10 +19,12 @@
 use orb_hal::{BufferUsages, Gpu, Pass, PipelineId, RenderCommand};
 use orb_shaders::layout;
 
-use crate::scene::{ARGS_WORDS, DRAPED, HIDDEN, NodeDraw, SURFACE, Scene, Table, UNCLIPPED};
+use crate::scene::{
+    ARGS_WORDS, DRAPED, HIDDEN, NO_CHUNK, NodeDraw, SURFACE, Scene, Table, UNCLIPPED,
+};
 
 use super::Cull;
-use super::gpu::Twin;
+use super::gpu::{HIDDEN_INDEX, Twin};
 
 /// WebGL rejects element indices from 2^31.
 pub(crate) const INDEX_BITS: u32 = 31;
@@ -52,15 +54,12 @@ const NODE_WORDS: usize = layout::node_cull::WORDS;
 const DRAW_IMAGES: u32 = 0;
 const DRAW_POINTS: u32 = 1;
 const DRAW_INDEXED: u32 = 2;
-/// `types.wgsl`'s compacted index that draws nothing, which the GPU cull
-/// writes.
-const HIDDEN_INDEX: u32 = 0xffff_fffe;
 /// What this driver hides with: the primitive restart index, which WebGL 2
 /// skips without drawing. WebGL rejects element indices from 2^31, and
 /// ANGLE drops a whole draw holding one, such as [`HIDDEN_INDEX`]; where
 /// it isn't a restart (Metal's triangle lists), `pull_indexed` takes it
 /// as hidden too.
-const RESTART_INDEX: u32 = 0xffff_ffff;
+pub(crate) const RESTART_INDEX: u32 = 0xffff_ffff;
 /// `types.wgsl`'s vertices an image chunk draws.
 const CHUNK_VERTICES: u32 = 768;
 /// `types.wgsl`'s metres per unit of a placement's terrain range.
@@ -144,6 +143,18 @@ impl CpuDriver {
         if rebuilt {
             self.listed.clear();
             self.runs.clear();
+            // The slots of runs that went, which the scene hid in its own
+            // compacted buffer.
+            if let Some(twin) = &self.twin {
+                for range in scene.hidden() {
+                    let words = vec![HIDDEN_INDEX; (range.end - range.start) as usize];
+                    gpu.write_buffer(
+                        twin.compacted,
+                        u64::from(range.start) * 4,
+                        bytemuck::cast_slice(&words),
+                    );
+                }
+            }
         }
         self.listed.resize_with(nodes, Vec::new);
         if !rebuilt && self.seen.as_ref() == Some(&seen) && self.args.len() == args.len() {
@@ -230,6 +241,10 @@ impl CpuDriver {
                 for (i, &keep) in keeps.iter().enumerate() {
                     let at = (base as usize + i) * CANDIDATE_WORDS;
                     let candidate = &mut candidates[at..at + CANDIDATE_WORDS];
+                    // A hole runs left.
+                    if candidate[c::CHUNK] == NO_CHUNK {
+                        continue;
+                    }
                     let chunk = rows_at(chunks, candidate[c::CHUNK] as usize, CHUNK_WORDS);
                     let index_count = chunk[ch::INDEX_COUNT];
                     if keep {
@@ -356,15 +371,17 @@ impl CpuDriver {
                 keeps.push(
                     met && {
                         let candidate = candidate(i);
-                        let chunk = rows_at(chunks, candidate[c::CHUNK] as usize, CHUNK_WORDS);
-                        let tile = rows_at(tiles, candidate[c::TILE] as usize, TILE_WORDS);
-                        test.candidate_visible(
-                            tile,
-                            chunk[layout::chunk::BOUNDS_MIN],
-                            chunk[layout::chunk::BOUNDS_MAX],
-                            0.0,
-                            0.0,
-                        )
+                        candidate[c::CHUNK] != NO_CHUNK && {
+                            let chunk = rows_at(chunks, candidate[c::CHUNK] as usize, CHUNK_WORDS);
+                            let tile = rows_at(tiles, candidate[c::TILE] as usize, TILE_WORDS);
+                            test.candidate_visible(
+                                tile,
+                                chunk[layout::chunk::BOUNDS_MIN],
+                                chunk[layout::chunk::BOUNDS_MAX],
+                                0.0,
+                                0.0,
+                            )
+                        }
                     },
                 );
             }
@@ -421,7 +438,8 @@ fn rows_at(rows: &[u32], i: usize, words: usize) -> &[u32] {
 }
 
 /// A node's `count` candidates in runs of one mesh (its vertex base) in
-/// one placement, each with its chunks' bounds.
+/// one placement, each with its chunks' bounds; each hole runs left
+/// ([`NO_CHUNK`]) a run of its own.
 fn runs(count: u32, candidate: impl Fn(u32) -> [u32; CANDIDATE_WORDS], chunks: &[u32]) -> Vec<Run> {
     use layout::candidate as c;
     use layout::chunk as ch;
@@ -429,6 +447,14 @@ fn runs(count: u32, candidate: impl Fn(u32) -> [u32; CANDIDATE_WORDS], chunks: &
     let mut key = None;
     for i in 0..count {
         let candidate = candidate(i);
+        if candidate[c::CHUNK] == NO_CHUNK {
+            runs.push(Run {
+                end: i + 1,
+                bounds: [0; 2],
+            });
+            key = None;
+            continue;
+        }
         let chunk = rows_at(chunks, candidate[c::CHUNK] as usize, CHUNK_WORDS);
         let this = (candidate[c::TILE], chunk[ch::VERTEX_BASE]);
         let [lo, hi] = [chunk[ch::BOUNDS_MIN], chunk[ch::BOUNDS_MAX]].map(unpack);

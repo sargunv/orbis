@@ -6,6 +6,7 @@
 //! structs in `orb-shaders`' `types.wgsl` and `cull.wgsl`.
 
 mod arena;
+mod candidates;
 mod glyph;
 mod image;
 mod line;
@@ -13,6 +14,8 @@ mod pages;
 mod shelf;
 mod symbol;
 mod tables;
+#[cfg(cpu_driven)]
+pub(crate) use candidates::NO_CHUNK;
 pub use glyph::{GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
 pub use image::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
 pub(crate) use tables::{Backing, DataTable, Table, TableWriter, Tables};
@@ -960,9 +963,21 @@ pub(crate) struct Scene {
     node_rows: Vec<u32>,
     /// Cull parameters changed since the node rows were last written.
     params_dirty: bool,
+    /// Candidates laid out, holes aside.
     candidate_count: u32,
     candidates_dropped: u32,
+    /// The ends of the node slices of the candidate lists and the
+    /// compacted buffer.
+    rows_end: u32,
     compacted_words: u32,
+    /// Each node's slices as last laid out, so a rebuild lays out only
+    /// what changed (`candidates`); empty when the next is laid out whole.
+    laid: Vec<candidates::LaidNode>,
+    /// Compacted words the last rebuild hid, the slots of runs that went.
+    hidden: Vec<Range<u32>>,
+    /// Each mesh's serial, by mesh slot: no two meshes take the same.
+    mesh_serials: Vec<u64>,
+    next_serial: u64,
     /// Rows of the cull dispatch: the most batches an indexed node has.
     cull_batches: u32,
     /// Changes whenever a pool or table moves into a larger buffer: bind
@@ -1091,7 +1106,12 @@ impl Scene {
             params_dirty: false,
             candidate_count: 0,
             candidates_dropped: 0,
+            rows_end: 0,
             compacted_words: 0,
+            laid: Vec::new(),
+            hidden: Vec::new(),
+            mesh_serials: Vec::new(),
+            next_serial: 0,
             cull_batches: 1,
             buffers_revision: 0,
             placements_written: 0,
@@ -1132,6 +1152,7 @@ impl Scene {
     #[cfg(cpu_driven)]
     pub(crate) fn lay_out_again(&mut self) {
         self.candidates_dirty = true;
+        self.laid.clear();
     }
 
     pub(crate) fn capacity(&self) -> &SceneCapacity {
@@ -1209,6 +1230,7 @@ impl Scene {
         move_buffer(gpu, &mut self.buffers.args, &desc, 0);
         self.capacity.nodes = new;
         self.candidates_dirty = true;
+        self.laid.clear();
         self.buffers_revision += 1;
     }
 
@@ -1241,6 +1263,7 @@ impl Scene {
         }
         self.nodes = entries;
         self.candidates_dirty = true;
+        self.laid.clear();
     }
 
     /// Sets how each render node is culled. Changing the number of nodes
@@ -1265,6 +1288,7 @@ impl Scene {
                 })
                 .collect();
             self.candidates_dirty = true;
+            self.laid.clear();
             return;
         }
         for (i, &cull) in nodes.iter().enumerate() {
@@ -1443,8 +1467,14 @@ impl Scene {
 
     /// How many candidates render `node` had at the last layout.
     pub(crate) fn node_candidates(&self, node: u32) -> u32 {
-        let at = node as usize * NODE_CULL_WORDS + layout::node_cull::CANDIDATE_COUNT;
-        self.node_rows.get(at).copied().unwrap_or(0)
+        self.laid.get(node as usize).map_or(0, |n| n.live)
+    }
+
+    /// Compacted words the last rebuild hid: the slots of runs that went,
+    /// which a driver writing compacted indices of its own hides too.
+    #[cfg(cpu_driven)]
+    pub(crate) fn hidden(&self) -> &[Range<u32>] {
+        &self.hidden
     }
 
     /// Keeps only a tile's labels drawing: its map placements become
@@ -1625,6 +1655,9 @@ impl Scene {
                 MeshId(self.meshes.len() as u32 - 1)
             }
         };
+        self.mesh_serials.resize(self.meshes.len(), 0);
+        self.mesh_serials[id.0 as usize] = self.next_serial;
+        self.next_serial += 1;
         self.nodes[node as usize].meshes.push(id);
         self.tiles[tile.0 as usize]
             .as_mut()
@@ -1800,9 +1833,9 @@ impl Scene {
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;
-            // The cull rewrites every compacted slot, and every list is
-            // written whole: larger buffers need no copy, only the
-            // candidates laid out again. Room in one can show a want of it
+            // A list moved to a larger buffer is written whole, and the
+            // cull writes every compacted slot again: they need no copy,
+            // only the candidates laid out again. Room in one can show a want of it
             // in the other (candidates left out for the compacted words
             // weren't counted against the lists), so both grow until
             // everything fits or neither can.
@@ -1831,150 +1864,14 @@ impl Scene {
         (self.candidate_count, rebuilt)
     }
 
-    /// Lays out every node's candidates contiguously, in mesh, placement
-    /// and chunk order (or by sort key): the order the cull pass keeps and
-    /// the draws follow. An indexed node's runs go to its slice of the
-    /// visible list, and its candidates get consecutive slots of the
-    /// compacted index buffer, to be written by the next cull.
-    /// Returns the compacted index words the candidates left out for want
-    /// of room there.
+    /// Lays out the candidates again: only what changed where every node's
+    /// slices hold it, else everything (`candidates`). Returns the
+    /// compacted index words and candidates left out for want of room.
     fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu) -> (u64, u64) {
-        let limits = self.limits();
-        let limit = limits.candidates as usize;
-        let mut compacted_short = 0u64;
-        let mut candidates_short = 0u64;
-        let mut rows: Vec<u32> = Vec::new();
-        let mut runs: Vec<(u32, [u32; 2])> = Vec::new();
-        let mut node_cull = Vec::with_capacity(self.nodes.len() * NODE_CULL_WORDS);
-        let mut dropped = 0u32;
-        let mut compacted = 0u32;
-        let mut batches = 1u32;
-        for node in &self.nodes {
-            let base = (rows.len() / CANDIDATE_WORDS) as u32;
-            let indexed = node.cull.draw == NodeDraw::Indexed;
-            // (sort key, chunk slot, placement slot, index count, run)
-            let mut candidates = Vec::new();
-            let mut node_runs: Vec<[u32; 2]> = Vec::new();
-            let mut vertex_words = 1u32;
-            for mesh in &node.meshes {
-                let mesh = self.meshes[mesh.0 as usize]
-                    .as_ref()
-                    .expect("node lists live meshes");
-                let tile = self.tiles[mesh.tile.0 as usize]
-                    .as_ref()
-                    .expect("meshes have tiles");
-                let Some(&first) = mesh.chunk_slots.first() else {
-                    continue;
-                };
-                vertex_words = vertex_words.max(mesh.vertices.len() as u32);
-                for placement in &tile.placements {
-                    if !node.cull.draws(placement.row.target) {
-                        continue;
-                    }
-                    let run = node_runs.len() as u32;
-                    node_runs.push([first, placement.slot]);
-                    for (&chunk, record) in mesh.chunk_slots.iter().zip(&mesh.chunks) {
-                        candidates.push((
-                            record.sort_key,
-                            chunk,
-                            placement.slot,
-                            record.index_count,
-                            run,
-                        ));
-                    }
-                }
-            }
-            if candidates.iter().any(|c| c.0.is_some()) {
-                candidates.sort_by(|a, b| a.0.unwrap_or(0.0).total_cmp(&b.0.unwrap_or(0.0)));
-            }
-            // An indexed node's index is `run << run_shift | vertex`; the
-            // all-ones run is reserved for hidden indices.
-            let run_shift = 32 - (vertex_words - 1).leading_zeros().min(31);
-            let max_runs = limits.max_runs(run_shift);
-            let index_base = compacted;
-            // Runs in order of first use by a kept candidate: no more than
-            // the kept candidates, so they fit the node's visible slice.
-            let mut renumbered = vec![u32::MAX; node_runs.len()];
-            let mut used = 0u32;
-            for (_, chunk, tile, index_count, run) in candidates {
-                // The cull's copy stops at CHUNK_INDICES.
-                debug_assert!(!indexed || index_count <= orb_layout::CHUNK_INDICES);
-                let room = u64::from(compacted) + u64::from(index_count)
-                    <= u64::from(limits.compacted_words);
-                let fits = (rows.len() / CANDIDATE_WORDS) < limit
-                    && (!indexed
-                        || ((renumbered[run as usize] != u32::MAX || u64::from(used) < max_runs)
-                            && room));
-                if !fits {
-                    if indexed && !room {
-                        compacted_short += u64::from(index_count);
-                    }
-                    if (rows.len() / CANDIDATE_WORDS) >= limit {
-                        candidates_short += 1;
-                    }
-                    dropped += 1;
-                    continue;
-                }
-                if indexed {
-                    let run = &mut renumbered[run as usize];
-                    if *run == u32::MAX {
-                        *run = used;
-                        used += 1;
-                    }
-                    rows.extend([chunk, tile, compacted, *run, UNKNOWN]);
-                    compacted += index_count;
-                } else {
-                    rows.extend([chunk, tile, 0, 0, 0]);
-                }
-            }
-            let count = (rows.len() / CANDIDATE_WORDS) as u32 - base;
-            if indexed {
-                batches = batches.max(count.div_ceil(INDEXED_BATCH));
-                let mut order = vec![[0u32; 2]; used as usize];
-                for (run, &new) in node_runs.iter().zip(&renumbered) {
-                    if new != u32::MAX {
-                        order[new as usize] = *run;
-                    }
-                }
-                runs.extend((base..).zip(order));
-            }
-            node_cull.extend([
-                base,
-                node.cull.margin_px.to_bits(),
-                count,
-                node.cull.draw_word(),
-                node.cull.elevation.to_bits(),
-                index_base,
-                compacted - index_base,
-                if indexed { run_shift } else { 0 },
-            ]);
+        if self.lay_out_changes(gpu) {
+            return (0, 0);
         }
-        self.candidate_count = (rows.len() / CANDIDATE_WORDS) as u32;
-        self.candidates_dropped = dropped;
-        self.compacted_words = compacted;
-        self.cull_batches = batches;
-        if !rows.is_empty() {
-            self.tables.write_words(gpu, Table::Candidates, 0, &rows);
-        }
-        if !node_cull.is_empty() {
-            self.tables.write_words(gpu, Table::NodeCull, 0, &node_cull);
-        }
-        self.node_rows = node_cull;
-        self.params_dirty = false;
-        // Each node's runs are contiguous in its slice.
-        let mut at = 0;
-        while at < runs.len() {
-            let start = runs[at].0;
-            let mut end = at + 1;
-            while end < runs.len() && runs[end].0 == start + (end - at) as u32 {
-                end += 1;
-            }
-            let words: Vec<u32> = runs[at..end].iter().flat_map(|(_, run)| *run).collect();
-            let first = start * VISIBLE_WORDS as u32;
-            self.tables.write_words(gpu, Table::Visible, first, &words);
-            at = end;
-        }
-        (compacted_short, candidates_short)
+        self.lay_out(gpu)
     }
 
     /// Grows the vertex and index pools, each doubling to its ceiling (the
@@ -2178,6 +2075,7 @@ impl Scene {
                 .resize(gpu, table, u64::from(new) * words as u64, 0);
         }
         self.capacity.candidates = new;
+        self.laid.clear();
         self.buffers_revision += 1;
     }
 
@@ -2203,6 +2101,7 @@ impl Scene {
         };
         move_buffer(gpu, &mut self.buffers.compacted, &desc, 0);
         self.capacity.compacted_words = new;
+        self.laid.clear();
         self.buffers_revision += 1;
     }
 
@@ -2217,7 +2116,7 @@ impl Scene {
             self.compacted_words,
             first.compacted_words,
         );
-        let candidates = shrunk(c.candidates, self.candidate_count, first.candidates);
+        let candidates = shrunk(c.candidates, self.rows_end, first.candidates);
         if compacted < c.compacted_words {
             self.resize_compacted(gpu, compacted);
         }

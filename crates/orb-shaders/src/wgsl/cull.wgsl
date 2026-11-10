@@ -8,18 +8,22 @@
 // deterministically. They draw it with `drawIndirect`.
 //
 // Indexed nodes give every candidate a fixed slot in the compacted index
-// buffer, so their batches are independent. A candidate whose visibility
-// changed since the last cull rewrites its slot, the batch's lanes copying
-// together: the chunk's indices tagged with its run when it enters the
-// view, hidden indices when it leaves. The node draws its slots up to the
-// last visible one with `drawIndexedIndirect`, so frames where nothing
-// enters or leaves write no indices. Batches combine their arguments and
-// counters atomically into words the frame cleared before the dispatch.
+// buffer, so their batches are independent. A slot stays put while its
+// candidate lives, through layouts of the candidates after tiles come or
+// go; the rows a candidate left are holes (`NO_CHUNK`) the cull skips. A
+// candidate whose visibility changed since the last cull rewrites its
+// slot, the batch's lanes copying together: the chunk's indices tagged
+// with its run when it enters the view, hidden indices when it leaves.
+// The node draws its slots up to the last visible one with
+// `drawIndexedIndirect`, so frames where nothing enters or leaves write no
+// indices. Batches combine their arguments and counters atomically into
+// words the frame cleared before the dispatch.
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> tiles: array<Tile>;
 @group(0) @binding(2) var<storage, read> chunks: array<Chunk>;
 struct Candidate {
+    // The chunk, or NO_CHUNK in a hole.
     chunk: u32,
     tile: u32,
     // Indexed nodes: the first index of the candidate's slot, its run, and
@@ -45,6 +49,9 @@ struct Candidate {
 @group(0) @binding(8) var<storage, read_write> compacted: array<u32>;
 
 const ARGS_WORDS: u32 = 8u;
+// An indexed node's candidate row that holds none (orb-render's
+// `NO_CHUNK`): its slot is hidden and taken by no candidate.
+const NO_CHUNK: u32 = 0xffffffffu;
 // Keeps every candidate, culling nothing: what a driver without the cull
 // draws, for tests that hold the two to the same buffers and pixels. A
 // pipeline constant, false in shipping builds, where it folds away.
@@ -240,7 +247,7 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
         return;
     }
     let i = start + lane;
-    if lane < INDEXED_BATCH && i < count {
+    if lane < INDEXED_BATCH && i < count && candidates[node.visible_base + i].chunk != NO_CHUNK {
         let candidate = candidates[node.visible_base + i];
         let keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
         let chunk = chunks[candidate.chunk];

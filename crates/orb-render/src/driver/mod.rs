@@ -88,6 +88,15 @@ impl Kind {
         }
     }
 
+    /// The compacted index that hides a slot, as the driver writes it.
+    pub(crate) fn hidden_index(self) -> u32 {
+        match self {
+            Self::Gpu => gpu::HIDDEN_INDEX,
+            #[cfg(cpu_driven)]
+            Self::Cpu => cpu::RESTART_INDEX,
+        }
+    }
+
     /// Bits of a compacted index.
     pub(crate) fn index_bits(self) -> u32 {
         match self {

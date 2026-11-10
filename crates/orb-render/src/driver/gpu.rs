@@ -19,6 +19,10 @@ use super::Cull;
 /// Compacted indices are full u32s.
 pub(crate) const INDEX_BITS: u32 = 32;
 
+/// `types.wgsl`'s compacted index that draws nothing, which the cull
+/// writes.
+pub(crate) const HIDDEN_INDEX: u32 = 0xffff_fffe;
+
 /// The draw arguments: the cull dispatch writes them, indirect draws read
 /// them, and tests read them back.
 pub(crate) const ARGS_USAGE: BufferUsages = BufferUsages::STORAGE
