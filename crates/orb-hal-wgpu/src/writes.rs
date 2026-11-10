@@ -19,8 +19,13 @@ use std::sync::Mutex;
 
 use orb_hal::BufferId;
 
-/// Writes up to this size are gathered; larger ones go to the queue.
+/// Writes up to this size are gathered; larger ones go to the queue (on
+/// WebGL 2, gathered too).
 pub(crate) const GATHERED: usize = 64 << 10;
+
+/// The uploads WebGL 2 takes in turn: more than the submissions in flight.
+#[cfg(target_arch = "wasm32")]
+const RING: usize = 4;
 
 /// A gathered write: `len` bytes at `offset` in `buffer`, from `at` in the
 /// gathered data.
@@ -53,10 +58,17 @@ struct Pending {
     /// into: kept for their allocations.
     order: Vec<usize>,
     runs: Vec<Run>,
-    /// The upload, reused while it's big enough: writes to it are ordered
-    /// after the submissions that copied from it.
+    /// The uploads' buffers, each reused while it's big enough: writes to
+    /// one are ordered after the submissions that copied from it. WebGPU
+    /// keeps one. WebGL 2 takes [`RING`] in turn, so the one written is
+    /// one the GPU is done with (ANGLE's Metal back end copies a buffer
+    /// the GPU still reads into a new one on every write), and as many
+    /// again for index buffers: WebGL copies into an element buffer only
+    /// from another.
     #[cfg(target_arch = "wasm32")]
-    staging: Option<wgpu::Buffer>,
+    staging: [Vec<Option<wgpu::Buffer>>; 2],
+    #[cfg(target_arch = "wasm32")]
+    turn: usize,
     #[cfg(target_arch = "wasm32")]
     upload: Vec<u8>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -64,8 +76,9 @@ struct Pending {
 }
 
 impl Pending {
-    /// Merges the writes into runs and returns the upload's size.
-    fn plan(&mut self) -> u64 {
+    /// Merges the writes into runs and returns the upload's size: the
+    /// runs into buffers `apart` picks after the rest, in the upload too.
+    fn plan(&mut self, apart: impl Fn(BufferId) -> bool) -> u64 {
         let Self {
             writes,
             order,
@@ -74,7 +87,10 @@ impl Pending {
         } = self;
         order.clear();
         order.extend(0..writes.len());
-        order.sort_unstable_by_key(|&i| (writes[i].buffer, writes[i].offset, i));
+        order.sort_unstable_by_key(|&i| {
+            let w = writes[i];
+            (apart(w.buffer), w.buffer, w.offset, i)
+        });
         runs.clear();
         let mut size = 0;
         for (n, &i) in order.iter().enumerate() {
@@ -204,7 +220,7 @@ impl Writes {
             pending.clear();
             return true;
         }
-        let size = wgpu::BufferSize::new(pending.plan()).expect("writes gathered");
+        let size = wgpu::BufferSize::new(pending.plan(|_| false)).expect("writes gathered");
         let mut belt = pending
             .belt
             .take()
@@ -246,29 +262,52 @@ impl Writes {
             pending.clear();
             return true;
         }
-        let size = pending.plan();
+        // Index buffers' runs last, from their own upload on WebGL 2.
+        let index = |id| cfg!(webgl) && buffer(id).usage().contains(wgpu::BufferUsages::INDEX);
+        let size = pending.plan(index);
         let mut upload = std::mem::take(&mut pending.upload);
         upload.clear();
         upload.resize(size as usize, 0);
         pending.fill(|to, bytes| upload[to..to + bytes.len()].copy_from_slice(bytes));
-        if pending.staging.as_ref().is_none_or(|s| s.size() < size) {
-            pending.staging = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("gathered writes"),
-                size: size.next_power_of_two().max(GATHERED as u64),
-                usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-        }
-        let staging = pending.staging.as_ref().expect("made above");
-        queue.write_buffer(staging, 0, &upload);
-        for run in &pending.runs {
-            encoder.copy_buffer_to_buffer(
-                staging,
-                run.at,
-                &buffer(run.buffer),
-                run.offset,
-                run.len,
-            );
+        let ring = if cfg!(webgl) { RING } else { 1 };
+        let turn = pending.turn % ring;
+        pending.turn = turn + 1;
+        let split = (pending.runs.iter())
+            .position(|run| index(run.buffer))
+            .unwrap_or(pending.runs.len());
+        let Pending { runs, staging, .. } = &mut *pending;
+        for (kind, runs) in [&runs[..split], &runs[split..]].into_iter().enumerate() {
+            let (Some(first), Some(last)) = (runs.first(), runs.last()) else {
+                continue;
+            };
+            let (start, end) = (first.at, last.at + last.len);
+            let ring = &mut staging[kind];
+            ring.resize(ring.len().max(turn + 1), None);
+            let staging = &mut ring[turn];
+            if staging.as_ref().is_none_or(|s| s.size() < end - start) {
+                let usage = wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+                *staging = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gathered writes"),
+                    size: (end - start).next_power_of_two().max(GATHERED as u64),
+                    usage: if kind == 1 {
+                        usage | wgpu::BufferUsages::INDEX
+                    } else {
+                        usage
+                    },
+                    mapped_at_creation: false,
+                }));
+            }
+            let staging = staging.as_ref().expect("made above");
+            queue.write_buffer(staging, 0, &upload[start as usize..end as usize]);
+            for run in runs {
+                encoder.copy_buffer_to_buffer(
+                    staging,
+                    run.at - start,
+                    &buffer(run.buffer),
+                    run.offset,
+                    run.len,
+                );
+            }
         }
         pending.upload = upload;
         pending.clear();
@@ -286,7 +325,7 @@ mod tests {
             gathered.gather(BufferId(b), o, d);
         }
         let pending = gathered.0.get_mut().unwrap();
-        let size = pending.plan();
+        let size = pending.plan(|_| false);
         let mut bytes = vec![0; size as usize];
         pending.fill(|to, b| bytes[to..to + b.len()].copy_from_slice(b));
         let runs = pending

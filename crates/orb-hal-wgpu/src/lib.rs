@@ -184,10 +184,7 @@ pub struct Uploaded {
 }
 
 /// A write from core memory: gathered when small, or when it overlaps a
-/// gathered one it must land after; otherwise straight to the queue. On
-/// WebGL 2 index buffers always take the queue: WebGL copies nothing into
-/// an element buffer from any other kind of buffer, and wgpu's own writes
-/// land through its CPU-side staging.
+/// gathered one it must land after; otherwise straight to the queue.
 fn write_core(
     writes: &mut writes::Writes,
     queue: &wgpu::Queue,
@@ -196,12 +193,16 @@ fn write_core(
     offset: u64,
     data: &[u8],
 ) {
-    #[cfg(webgl)]
-    if buffers[id.0].usage().contains(wgpu::BufferUsages::INDEX) {
-        queue.write_buffer(&buffers[id.0], offset, data);
-        return;
-    }
-    if data.len() <= writes::GATHERED || writes.overlaps(id, offset, data.len() as u64) {
+    // On WebGL 2 every write is gathered, whatever its size: a
+    // `bufferSubData` into a buffer the GPU still reads makes ANGLE's Metal
+    // back end copy the whole buffer into a new one, and a frame's writes
+    // into the scene's arenas then cost hundreds of milliseconds (#140).
+    // Gathered, they land in a staging buffer the GPU is done with and are
+    // copied into place on the GPU.
+    if cfg!(webgl)
+        || data.len() <= writes::GATHERED
+        || writes.overlaps(id, offset, data.len() as u64)
+    {
         writes.gather(id, offset, data);
     } else {
         queue.write_buffer(&buffers[id.0], offset, data);
