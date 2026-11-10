@@ -281,16 +281,7 @@ fn js_order(op: CmpOp, a: &Value<'_>, b: &Value<'_>) -> bool {
         (Value::Null, Value::Null) => Some(Ordering::Equal),
         _ => None,
     };
-    let Some(ordering) = ordering else {
-        return false;
-    };
-    match op {
-        CmpOp::Lt => ordering == Ordering::Less,
-        CmpOp::Le => ordering != Ordering::Greater,
-        CmpOp::Gt => ordering == Ordering::Greater,
-        CmpOp::Ge => ordering != Ordering::Less,
-        CmpOp::Eq | CmpOp::Ne => unreachable!("equality is not an ordering"),
-    }
+    ordering.is_some_and(|o| op.test(o))
 }
 
 /// The item of a borrowed or owned array or object, keeping the borrow.
@@ -599,15 +590,7 @@ impl<'a> Evaluator<'_, 'a> {
                     && let (Value::String(a), Value::String(b), Value::Collator(c)) =
                         (&a, &b, self.eval(*c)?)
                 {
-                    let ordering = crate::locale::compare(a, b, &c);
-                    return Ok(Value::Bool(match op {
-                        CmpOp::Eq => ordering == Ordering::Equal,
-                        CmpOp::Ne => ordering != Ordering::Equal,
-                        CmpOp::Lt => ordering == Ordering::Less,
-                        CmpOp::Le => ordering != Ordering::Greater,
-                        CmpOp::Gt => ordering == Ordering::Greater,
-                        CmpOp::Ge => ordering != Ordering::Less,
-                    }));
+                    return Ok(Value::Bool(op.test(crate::locale::compare(a, b, &c))));
                 }
                 Value::Bool(match op {
                     CmpOp::Eq => a.strict_eq(&b),

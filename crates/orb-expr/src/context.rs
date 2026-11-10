@@ -1,4 +1,4 @@
-//! Explicit inputs shared by every expression backend.
+//! What an evaluation reads beyond the feature.
 use crate::Value;
 
 /// Evaluation inputs that vary independently of tile properties.

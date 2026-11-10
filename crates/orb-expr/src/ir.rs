@@ -1,10 +1,8 @@
 //! The compiled form of an expression.
 //!
 //! Nodes live in one arena in post order: every operand is defined before
-//! the node that uses it, and the root is the last node. That is the shape of
-//! an SSA DAG, so a register VM or a column evaluator can be
-//! lowered from it by a linear walk. Each node carries its static type
-//! and the inputs it depends on.
+//! the node that uses it, and the root is the last node. Each node carries
+//! its static type and the inputs it depends on.
 
 use std::ops::BitOr;
 
@@ -83,6 +81,26 @@ pub(crate) enum CmpOp {
 }
 
 impl CmpOp {
+    const ALL: [Self; 6] = [Self::Eq, Self::Ne, Self::Lt, Self::Le, Self::Gt, Self::Ge];
+
+    /// The operator spelled `name` (`"<="`).
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|op| op.name() == name)
+    }
+
+    /// Whether two values ordered `ordering` pass the comparison.
+    pub(crate) fn test(self, ordering: std::cmp::Ordering) -> bool {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        match self {
+            Self::Eq => ordering == Equal,
+            Self::Ne => ordering != Equal,
+            Self::Lt => ordering == Less,
+            Self::Le => ordering != Greater,
+            Self::Gt => ordering == Greater,
+            Self::Ge => ordering != Less,
+        }
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Eq => "==",

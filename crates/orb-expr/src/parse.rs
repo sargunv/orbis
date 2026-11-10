@@ -373,6 +373,46 @@ impl<'l> Parser<'l> {
         });
     }
 
+    /// Checks that `items` holds exactly `count` arguments after the operator.
+    pub(super) fn arity(
+        &mut self,
+        items: &[Json],
+        count: usize,
+        span: Span,
+        key: &str,
+    ) -> Option<()> {
+        let n = items.len() - 1;
+        if n != count {
+            let s = if count == 1 { "" } else { "s" };
+            let message = format!("Expected {count} argument{s}, but found {n} instead.");
+            self.error(key, span, message);
+            return None;
+        }
+        Some(())
+    }
+
+    /// Checks that `items` holds an input and pairs after the operator
+    /// (`match`, `step`, `interpolate`): at least `min` arguments, as many
+    /// as `min` is even or odd.
+    fn pairs_arity(&mut self, items: &[Json], min: usize, span: Span, key: &str) -> Option<()> {
+        let n = items.len() - 1;
+        if n < min {
+            let message = format!("Expected at least {min} arguments, but found only {n}.");
+            self.error(key, span, message);
+            return None;
+        }
+        if n % 2 != min % 2 {
+            let parity = if min.is_multiple_of(2) { "even" } else { "odd" };
+            self.error(
+                key,
+                span,
+                format!("Expected an {parity} number of arguments."),
+            );
+            return None;
+        }
+        Some(())
+    }
+
     pub(super) fn ty(&self, id: NodeId) -> &Type {
         &self.ir.node(id).ty
     }
@@ -613,12 +653,9 @@ impl<'l> Parser<'l> {
             | "number-format" | "format" | "image" | "within" | "distance" => {
                 self.parse_extra(op, items, span, key, expected)
             }
-            "==" => self.parse_comparison(CmpOp::Eq, items, span, key),
-            "!=" => self.parse_comparison(CmpOp::Ne, items, span, key),
-            "<" => self.parse_comparison(CmpOp::Lt, items, span, key),
-            "<=" => self.parse_comparison(CmpOp::Le, items, span, key),
-            ">" => self.parse_comparison(CmpOp::Gt, items, span, key),
-            ">=" => self.parse_comparison(CmpOp::Ge, items, span, key),
+            op if let Some(cmp) = CmpOp::from_name(op) => {
+                self.parse_comparison(cmp, items, span, key)
+            }
             "in" => self.parse_in(items, span, key),
             "at" => self.parse_at(items, span, key, expected),
             "length" => self.parse_length(items, span, key),
@@ -727,21 +764,7 @@ impl<'l> Parser<'l> {
         key: &str,
         expected: Option<&Type>,
     ) -> Option<NodeId> {
-        if items.len() < 5 {
-            self.error(
-                key,
-                span,
-                format!(
-                    "Expected at least 4 arguments, but found only {}.",
-                    items.len() - 1
-                ),
-            );
-            return None;
-        }
-        if items.len() % 2 != 1 {
-            self.error(key, span, "Expected an even number of arguments.");
-            return None;
-        }
+        self.pairs_arity(items, 4, span, key)?;
 
         enum Label {
             Number(f64),
@@ -878,21 +901,7 @@ impl<'l> Parser<'l> {
         key: &str,
         expected: Option<&Type>,
     ) -> Option<NodeId> {
-        if items.len() < 4 {
-            self.error(
-                key,
-                span,
-                format!(
-                    "Expected at least 3 arguments, but found only {}.",
-                    items.len() - 1
-                ),
-            );
-            return None;
-        }
-        if !items.len().is_multiple_of(2) {
-            self.error(key, span, "Expected an odd number of arguments.");
-            return None;
-        }
+        self.pairs_arity(items, 3, span, key)?;
         let mut output_type = Self::output_type(expected);
         let mut branches = Vec::new();
         let last = items.len() - 1;
@@ -968,19 +977,7 @@ impl<'l> Parser<'l> {
         key: &str,
         expected: Option<&Type>,
     ) -> Option<NodeId> {
-        let n = items.len() - 1;
-        if n < 4 {
-            self.error(
-                key,
-                span,
-                format!("Expected at least 4 arguments, but found only {n}."),
-            );
-            return None;
-        }
-        if !n.is_multiple_of(2) {
-            self.error(key, span, "Expected an even number of arguments.");
-            return None;
-        }
+        self.pairs_arity(items, 4, span, key)?;
         let input = self.parse(&items[1], &child_key(key, 1), Some(&Type::Number), None)?;
         let mut output_type = Self::output_type(expected);
         let mut labels = Vec::new();
@@ -1100,19 +1097,7 @@ impl<'l> Parser<'l> {
             return None;
         };
         let interpolation = self.parse_interpolation(interpolation_json, key)?;
-        let n = items.len() - 1;
-        if n < 4 {
-            self.error(
-                key,
-                span,
-                format!("Expected at least 4 arguments, but found only {n}."),
-            );
-            return None;
-        }
-        if !n.is_multiple_of(2) {
-            self.error(key, span, "Expected an even number of arguments.");
-            return None;
-        }
+        self.pairs_arity(items, 4, span, key)?;
         let input = self.parse(&items[2], &child_key(key, 2), Some(&Type::Number), None)?;
         let color_space = match items[0].as_str() {
             Some("interpolate-lab") => ColorSpace::Lab,
@@ -1259,17 +1244,7 @@ impl<'l> Parser<'l> {
     }
 
     fn parse_in(&mut self, items: &[Json], span: Span, key: &str) -> Option<NodeId> {
-        if items.len() != 3 {
-            self.error(
-                key,
-                span,
-                format!(
-                    "Expected 2 arguments, but found {} instead.",
-                    items.len() - 1
-                ),
-            );
-            return None;
-        }
+        self.arity(items, 2, span, key)?;
         let needle = self.parse(&items[1], &child_key(key, 1), Some(&Type::Value), None);
         let haystack = self.parse(&items[2], &child_key(key, 2), Some(&Type::Value), None);
         let (needle, haystack) = (needle?, haystack?);
@@ -1297,17 +1272,7 @@ impl<'l> Parser<'l> {
         key: &str,
         expected: Option<&Type>,
     ) -> Option<NodeId> {
-        if items.len() != 3 {
-            self.error(
-                key,
-                span,
-                format!(
-                    "Expected 2 arguments, but found {} instead.",
-                    items.len() - 1
-                ),
-            );
-            return None;
-        }
+        self.arity(items, 2, span, key)?;
         let array_type = Type::array(expected.cloned().unwrap_or(Type::Value), None);
         let index = self.parse(&items[1], &child_key(key, 1), Some(&Type::Number), None);
         let array = self.parse(&items[2], &child_key(key, 2), Some(&array_type), None);
@@ -1320,17 +1285,7 @@ impl<'l> Parser<'l> {
     }
 
     fn parse_length(&mut self, items: &[Json], span: Span, key: &str) -> Option<NodeId> {
-        if items.len() != 2 {
-            self.error(
-                key,
-                span,
-                format!(
-                    "Expected 1 argument, but found {} instead.",
-                    items.len() - 1
-                ),
-            );
-            return None;
-        }
+        self.arity(items, 1, span, key)?;
         let input = self.parse(&items[1], &child_key(key, 1), None, None)?;
         if !matches!(self.ty(input), Type::Array(..) | Type::String | Type::Value) {
             let message = format!(

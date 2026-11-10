@@ -415,7 +415,7 @@ pub fn check(name: &str, fixture: &Json, reference: Reference) -> Result<(), Str
 }
 
 /// Runs the entire pinned suite through the CPU evaluator. Shared by native
-/// tests and wasm tests in Chrome; future backends can call the same cases.
+/// tests and wasm tests in Chrome.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn style_spec_expression_fixtures() {

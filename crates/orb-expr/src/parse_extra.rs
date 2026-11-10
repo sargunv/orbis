@@ -114,14 +114,7 @@ impl Parser<'_> {
                 )
             }
             "global-state" => {
-                if n != 1 {
-                    self.error(
-                        key,
-                        span,
-                        format!("Expected 1 argument, but found {n} instead."),
-                    );
-                    return None;
-                }
+                self.arity(items, 1, span, key)?;
                 if items[1].is_null() {
                     self.error(key, span, "Global state property must be defined.");
                     return None;

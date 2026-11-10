@@ -216,7 +216,7 @@ pub(crate) fn lower_filter(p: &mut Parser, filter: &Json, key: &str) -> Option<N
     }
     let boolean = |p: &mut Parser, op: Op| p.ir.push(op, Type::Boolean, key);
     match op {
-        "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+        op if let Some(cmp) = CmpOp::from_name(op) => {
             if items.len() != 3 {
                 p.error(
                     key,
@@ -226,14 +226,6 @@ pub(crate) fn lower_filter(p: &mut Parser, filter: &Json, key: &str) -> Option<N
                 return None;
             }
             let subject = subject(p, &items[1], &child_key(key, 1))?;
-            let cmp = match op {
-                "==" => CmpOp::Eq,
-                "!=" => CmpOp::Ne,
-                "<" => CmpOp::Lt,
-                "<=" => CmpOp::Le,
-                ">" => CmpOp::Gt,
-                _ => CmpOp::Ge,
-            };
             if subject == Subject::Type && cmp.is_order() {
                 p.error(
                     key,
