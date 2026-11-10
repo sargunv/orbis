@@ -28,10 +28,6 @@ pub trait PlacementLane: Send + Sync {
     }
 }
 
-/// A test's trap in the next placement.
-#[cfg(test)]
-pub(crate) static TRAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 enum Message {
     Ingest(u64, Arc<PlacementTables>),
     Remove(u64),
@@ -52,23 +48,39 @@ fn run(placer: &mut Placer, message: Message) {
 #[derive(Debug)]
 pub(crate) struct ThreadPlacement {
     sender: Mutex<Sender<Message>>,
-    restarted: Arc<AtomicBool>,
+    flags: Arc<Flags>,
+}
+
+/// What the lane and its thread share.
+#[derive(Debug, Default)]
+struct Flags {
+    /// The placer started afresh.
+    restarted: AtomicBool,
+    /// A test's trap in this lane's next placement.
+    #[cfg(test)]
+    trap: AtomicBool,
 }
 
 impl ThreadPlacement {
     pub(crate) fn new() -> Arc<Self> {
-        let restarted = Arc::new(AtomicBool::new(false));
+        let flags = Arc::new(Flags::default());
         Arc::new(Self {
-            sender: Mutex::new(spawn(Arc::clone(&restarted))),
-            restarted,
+            sender: Mutex::new(spawn(Arc::clone(&flags))),
+            flags,
         })
+    }
+
+    /// Has this lane's next placement panic, as a bug in it would.
+    #[cfg(test)]
+    pub(crate) fn trap_next(&self) {
+        self.flags.trap.store(true, Ordering::Release);
     }
 
     fn send(&self, message: Message) {
         let mut sender = self.sender.lock().expect("lane poisoned");
         if let Err(std::sync::mpsc::SendError(message)) = sender.send(message) {
-            *sender = spawn(Arc::clone(&self.restarted));
-            self.restarted.store(true, Ordering::Release);
+            *sender = spawn(Arc::clone(&self.flags));
+            self.flags.restarted.store(true, Ordering::Release);
             // The map sends its buckets again; a placement asks again.
             if let Message::Place(_, done) = message {
                 done(Err("the placement thread was lost".into()));
@@ -78,7 +90,7 @@ impl ThreadPlacement {
 }
 
 /// The placement thread: a panic leaves a fresh placer.
-fn spawn(restarted: Arc<AtomicBool>) -> Sender<Message> {
+fn spawn(flags: Arc<Flags>) -> Sender<Message> {
     let (sender, receiver) = channel::<Message>();
     std::thread::Builder::new()
         .name("placement".into())
@@ -86,7 +98,7 @@ fn spawn(restarted: Arc<AtomicBool>) -> Sender<Message> {
             let mut placer = Placer::default();
             let failed = |placer: &mut Placer| {
                 *placer = Placer::default();
-                restarted.store(true, Ordering::Release);
+                flags.restarted.store(true, Ordering::Release);
             };
             while let Ok(message) = receiver.recv() {
                 let Message::Place(frame, done) = message else {
@@ -100,7 +112,7 @@ fn spawn(restarted: Arc<AtomicBool>) -> Sender<Message> {
                 };
                 let placed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     #[cfg(test)]
-                    if TRAP.swap(false, Ordering::Relaxed) {
+                    if flags.trap.swap(false, Ordering::AcqRel) {
                         panic!("an injected trap");
                     }
                     placer.place(&frame)
@@ -138,7 +150,7 @@ impl PlacementLane for ThreadPlacement {
     }
 
     fn restarted(&self) -> bool {
-        self.restarted.swap(false, Ordering::Acquire)
+        self.flags.restarted.swap(false, Ordering::Acquire)
     }
 }
 

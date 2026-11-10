@@ -1967,7 +1967,8 @@ mod tests {
     #[test]
     fn a_trapped_placement_lane_places_again() {
         let mut h = Harness::new(SceneCapacity::default());
-        h.labels.lane = crate::placement::ThreadPlacement::new();
+        let lane = crate::placement::ThreadPlacement::new();
+        h.labels.lane = lane.clone();
         let mut resident = h.tile();
         h.upload(&mut resident).unwrap();
         let bucket = resident.symbols[0].bucket;
@@ -1979,7 +1980,7 @@ mod tests {
         };
         let placed = |c: &Committed| c.changed.iter().any(|(b, _, _)| *b == bucket);
         assert!(placed(&place(&h).unwrap()));
-        crate::placement::TRAP.store(true, std::sync::atomic::Ordering::Relaxed);
+        lane.trap_next();
         assert!(place(&h).is_err());
         h.labels.resend_if_restarted();
         assert!(placed(&place(&h).unwrap()), "the bucket, sent again");
