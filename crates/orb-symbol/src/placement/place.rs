@@ -235,6 +235,11 @@ pub struct Committed {
     /// started (GL JS `lastPlacementChangeTime`): a commit that changes
     /// nothing keeps the earlier fades' time, as they run on.
     pub last_change_time: f64,
+    /// Some symbol's opacity was committed partway: its state word holds
+    /// it rounded down to 1/127, so it reaches its end only once
+    /// [`fade_change`](Self::fade_change) does, which can be after the
+    /// fade's last change plus its duration.
+    pub partway: bool,
 }
 
 impl Committed {
@@ -247,9 +252,12 @@ impl Committed {
         }
     }
 
-    /// GL JS `Placement.hasTransitions`: whether fades still run at `now`.
+    /// GL JS `Placement.hasTransitions`: whether fades still run at `now`,
+    /// and until every opacity committed partway reaches its end: what an
+    /// idle frame shows mustn't depend on when the last commit fell.
     pub fn fading(&self, now: f64) -> bool {
         now - self.last_change_time < self.fade_duration
+            || (self.partway && self.fade_change(now) < 1.0)
     }
 }
 
@@ -271,6 +279,11 @@ impl OpacityState {
 
     fn is_hidden(&self) -> bool {
         self.opacity == 0.0 && !self.placed
+    }
+
+    /// Still fading toward shown or hidden.
+    fn partway(&self) -> bool {
+        self.opacity != if self.placed { 1.0 } else { 0.0 }
     }
 
     /// GL JS `packOpacity`, as one word's low byte.
@@ -335,6 +348,8 @@ struct Decisions {
     orientations: HashMap<u32, u8>,
     commit_time: f64,
     last_change_time: f64,
+    /// Some opacity is partway (see [`Committed::partway`]).
+    partway: bool,
     zoom: f64,
 }
 
@@ -632,6 +647,7 @@ impl Placer {
             fade_duration: frame.fade_duration,
             zoom_adjustment,
             last_change_time: now.last_change_time,
+            partway: now.partway,
         };
         self.prev = Some(now);
         committed
@@ -1323,6 +1339,7 @@ fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duratio
             }
         }
     }
+    now.partway = (now.opacities.values()).any(|o| o.text.partway() || o.icon.partway());
     // Without a change nor an earlier one, nothing fades.
     now.last_change_time = if changed {
         time
@@ -1806,6 +1823,36 @@ mod tests {
         // Half a fade later it is half in.
         let c = placer.place(&frame(layer(overlap), 1150.0, 300.0));
         assert_eq!(word(&c.changed[0].2, 1) & state::OPACITY, 63);
+    }
+
+    /// A fade committed partway is stored rounded down, so it runs on past
+    /// its change's time plus the duration, until it has run a whole fade
+    /// since that commit: idle frames show every label at its end, whenever
+    /// the last commit fell.
+    #[test]
+    fn fades_committed_partway_run_to_their_end() {
+        let mut placer = Placer::default();
+        placer.ingest(1, labels(&[(1, [4096, 4096])]));
+        let layer = || {
+            vec![LayerFrame {
+                params: params(7),
+                tiles: vec![tile(1, 0)],
+            }]
+        };
+        placer.place(&frame(layer(), 0.0, 300.0));
+        // Almost in at the next commit: 0.997, stored as 126/127.
+        let c = placer.place(&frame(layer(), 299.0, 300.0));
+        assert_eq!(word(&c.changed[0].2, 0) & state::OPACITY, 126);
+        assert!(c.partway);
+        // The change began at 0, but the stored opacity reaches 1 only a
+        // fade after the commit.
+        assert!(c.fading(300.0));
+        assert!(c.fading(598.0));
+        assert!(!c.fading(599.0));
+        // Fully in: nothing waits.
+        let c = placer.place(&frame(layer(), 400.0, 300.0));
+        assert!(!c.partway);
+        assert!(!c.fading(400.0));
     }
 
     #[test]
