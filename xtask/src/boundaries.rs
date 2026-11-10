@@ -87,6 +87,98 @@ pub(crate) const NATIVE_ONLY: &[&str] = &[
     "xtask",
 ];
 
+/// What only the GPU-driven path has (compute, indirect draws, storage
+/// bindings, reinterpreting views), which the WebGL 2 path (#140) lacks:
+/// in `orb-render` these may appear only in the files of
+/// [`GPU_ONLY_FILES`].
+const GPU_ONLY: &[&str] = &[
+    "Pass::Compute",
+    "ComputePass",
+    "ComputeCommand",
+    "DrawIndirect",
+    "DrawIndexedIndirect",
+    "E::storage(",
+    "E::storage_rw(",
+    "BindingType::Storage",
+    "StorageTexture",
+    "STORAGE_BINDING",
+    "create_texture_view_as",
+];
+
+/// The `orb-render` files that may use [`GPU_ONLY`] API (or views in other
+/// formats), each with what stands in for it on WebGL 2, or the gap it
+/// leaves. A feature born in compute names its GL formulation here, in the
+/// same commit.
+const GPU_ONLY_FILES: &[(&str, &str)] = &[
+    (
+        "driver/gpu.rs",
+        "the GPU driver: the CPU driver's direct draws",
+    ),
+    (
+        "downsample.rs",
+        "compute mips and edges: downsample_draw.wgsl's drawn ones",
+    ),
+    (
+        "image.rs",
+        "raster pages' compute mips and edges: drawn ones; their storage views go with them",
+    ),
+    (
+        "terrain.rs",
+        "its tables in storage: fetch_terrain.wgsl over data textures; drape mips: drawn ones; the atlas's sRGB views: a natively sRGB atlas",
+    ),
+    (
+        "lib.rs",
+        "the scene group's tables in storage: the `Tables` texture backing",
+    ),
+];
+
+/// [`GPU_ONLY`] API outside [`GPU_ONLY_FILES`] in `orb-render`'s sources.
+fn gpu_only_uses() -> Result<Vec<String>, String> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/orb-render/src");
+    let mut files = Vec::new();
+    let mut dirs = vec![src.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    let mut errors = Vec::new();
+    for path in files {
+        let name = path
+            .strip_prefix(&src)
+            .expect("under src")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if GPU_ONLY_FILES.iter().any(|(f, _)| *f == name) {
+            continue;
+        }
+        let source =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        for (i, line) in source.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            let views = code.contains("view_formats:") && !code.contains("view_formats: &[]");
+            for api in GPU_ONLY.iter().filter(|api| code.contains(*api)) {
+                errors.push(format!(
+                    "orb-render's {name}:{}: `{api}` outside the GPU-only files; draw it another way, or list the file in xtask's GPU_ONLY_FILES with what stands in for it on WebGL 2 (#140)",
+                    i + 1
+                ));
+            }
+            if views {
+                errors.push(format!(
+                    "orb-render's {name}:{}: views in other formats outside the GPU-only files (#140)",
+                    i + 1
+                ));
+            }
+        }
+    }
+    Ok(errors)
+}
+
 pub(crate) fn check() -> Result<(), String> {
     let metadata = metadata()?;
     let graph = Graph::new(&metadata)?;
@@ -138,6 +230,8 @@ pub(crate) fn check() -> Result<(), String> {
             }
         }
     }
+
+    errors.extend(gpu_only_uses()?);
 
     if errors.is_empty() {
         eprintln!("boundaries: {} crates ok", graph.workspace.len());
