@@ -519,14 +519,8 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
         self.slot.as_expression()
     }
 
-    /// GL JS's fallback: `null`, `NaN`, an evaluation error or a value of
-    /// the wrong shape yields the default.
     fn fit(&self, value: Option<&Value<'_>>) -> T {
-        match value {
-            None | Some(Value::Null) => self.default.get(),
-            Some(Value::Number(n)) if n.is_nan() => self.default.get(),
-            Some(v) => T::from_value(v).unwrap_or_else(|| self.default.get()),
-        }
+        fit(value, || self.default.get())
     }
 
     /// The value at `zoom` without a feature: exact for constant and camera
@@ -606,22 +600,6 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
             default: self.default.get(),
         }
     }
-
-    /// Binds the property to a tile layer with the style's images, which
-    /// `image` expressions find available.
-    pub fn bind_with_images(
-        &self,
-        layer: &'a orb_tile::Layer,
-        images: &'a [String],
-    ) -> BoundProperty<'a, T> {
-        BoundProperty {
-            constant: self.constant(),
-            bound: self
-                .as_expression()
-                .map(|e| e.expression().bind(layer).with_images(images)),
-            default: self.default.get(),
-        }
-    }
 }
 
 impl<T: PropertyValue + Into<f64>> PropertyRef<'_, T> {
@@ -684,11 +662,11 @@ impl<T: PropertyValue> Property<T> {
 
 /// GL JS's fallback: `null`, `NaN`, an evaluation error or a value of the
 /// wrong shape yields the default.
-pub fn fit<T: PropertyValue>(value: Option<Value<'_>>, default: &T) -> T {
+fn fit<T: PropertyValue>(value: Option<&Value<'_>>, default: impl FnOnce() -> T) -> T {
     match value {
-        None | Some(Value::Null) => default.clone(),
-        Some(Value::Number(n)) if n.is_nan() => default.clone(),
-        Some(v) => T::from_value(&v).unwrap_or_else(|| default.clone()),
+        None | Some(Value::Null) => default(),
+        Some(Value::Number(n)) if n.is_nan() => default(),
+        Some(v) => T::from_value(v).unwrap_or_else(default),
     }
 }
 
@@ -700,11 +678,17 @@ pub struct BoundProperty<'a, T> {
     default: T,
 }
 
-impl<T> BoundProperty<'_, T> {
+impl<'a, T> BoundProperty<'a, T> {
     /// The canonical tile the layer is in, for expressions that read a
     /// feature's geometry (`within`, `distance`).
     pub fn with_tile(mut self, tile: Option<orb_expr::CanonicalTile>) -> Self {
         self.bound = self.bound.map(|b| b.with_tile(tile));
+        self
+    }
+
+    /// The style's images, which `image` expressions find available.
+    pub fn with_images(mut self, images: &'a [String]) -> Self {
+        self.bound = self.bound.map(|b| b.with_images(images));
         self
     }
 }
@@ -714,7 +698,9 @@ impl<T: PropertyValue> BoundProperty<'_, T> {
     pub fn evaluate(&self, zoom: f64, row: usize) -> T {
         match (&self.constant, &self.bound) {
             (Some(v), _) => v.clone(),
-            (None, Some(bound)) => fit(bound.evaluate(zoom, row).ok(), &self.default),
+            (None, Some(bound)) => fit(bound.evaluate(zoom, row).ok().as_ref(), || {
+                self.default.clone()
+            }),
             (None, None) => self.default.clone(),
         }
     }

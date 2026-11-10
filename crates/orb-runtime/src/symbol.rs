@@ -301,13 +301,15 @@ pub(crate) fn prepare(
 
     let text_field = l
         .get(orb_style::TEXT_FIELD)
-        .bind_with_images(layer, images)
+        .bind(layer)
+        .with_images(images)
         .with_tile(tile);
     let text_transform = l.get(orb_style::TEXT_TRANSFORM).bind(layer).with_tile(tile);
     let text_font = l.get(orb_style::TEXT_FONT).bind(layer).with_tile(tile);
     let icon_image = l
         .get(orb_style::ICON_IMAGE)
-        .bind_with_images(layer, images)
+        .bind(layer)
+        .with_images(images)
         .with_tile(tile);
     let sort_key = l
         .get(orb_style::SYMBOL_SORT_KEY)

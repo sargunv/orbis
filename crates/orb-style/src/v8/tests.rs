@@ -413,7 +413,7 @@ fn image_expressions_resolve_with_the_styles_images() {
     let tile = b.finish();
     let icon = s.get(ICON_IMAGE);
     let images = ["c".to_string(), "b".to_string()];
-    let with = |images: &[String]| icon.bind_with_images(&tile, images).evaluate(0.0, 0);
+    let with = |images: &[String]| icon.bind(&tile).with_images(images).evaluate(0.0, 0);
     assert_eq!(with(&images).as_deref(), Some("b"));
     // None available: the first requested.
     assert_eq!(with(&[]).as_deref(), Some("a"));
