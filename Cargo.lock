@@ -2775,6 +2775,10 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "orb-api",
+ "orb-camera",
+ "orb-crs",
+ "orb-expr",
+ "orb-style",
 ]
 
 [[package]]

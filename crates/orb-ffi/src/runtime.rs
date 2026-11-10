@@ -41,6 +41,7 @@ pub(crate) struct State {
     pub(crate) epoch: Instant,
     /// Events raised and not yet sent.
     pub(crate) events: Vec<Event>,
+    pub(crate) hook: Arc<crate::resources::Hook>,
 }
 
 thread_local! {
@@ -55,6 +56,9 @@ pub(crate) struct RuntimeHandle {
     /// Maps alive on the runtime, counted on the caller's side so a
     /// release can refuse at once.
     pub(crate) maps: std::sync::atomic::AtomicUsize,
+    /// The resource provider and transforms, where the runtime's fetches
+    /// would reach the network.
+    pub(crate) hook: Arc<crate::resources::Hook>,
 }
 
 impl RuntimeHandle {
@@ -320,6 +324,8 @@ fn run(rx: Receiver<Msg>) {
                 if let Some(handler) = state.handler.take() {
                     handler.release();
                 }
+                state.runtime.set_network_hook(None);
+                state.hook.clear();
             }
             if let Some(completion) = completion {
                 completion.complete(Ok(Value::None), 0);
@@ -361,6 +367,9 @@ pub unsafe extern "C" fn mln_runtime_create(
             }
             let (tx, rx) = mpsc::channel();
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+            let hook = crate::resources::hook();
+            let network_hook: Arc<dyn orb_api::NetworkHook> = hook.clone();
+            let state_hook = hook.clone();
             let join = std::thread::Builder::new()
                 .name("orbis-runtime".into())
                 .spawn(move || {
@@ -372,6 +381,7 @@ pub unsafe extern "C" fn mln_runtime_create(
                     match orb_api::Runtime::new(&options) {
                         Ok(runtime) => {
                             runtime.set_online(crate::network::online());
+                            runtime.set_network_hook(Some(network_hook));
                             STATE.with(|s| {
                                 *s.borrow_mut() = Some(State {
                                     runtime,
@@ -381,6 +391,7 @@ pub unsafe extern "C" fn mln_runtime_create(
                                     handler: None,
                                     epoch: Instant::now(),
                                     events: Vec::new(),
+                                    hook: state_hook,
                                 })
                             });
                             let _ = ready_tx.send(Ok(()));
@@ -401,6 +412,7 @@ pub unsafe extern "C" fn mln_runtime_create(
                 thread,
                 join: Mutex::new(Some(join)),
                 maps: Default::default(),
+                hook,
             });
             let id = handles::insert(Object::Runtime(handle.clone()));
             crate::network::register(&handle);

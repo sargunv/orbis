@@ -127,6 +127,8 @@ pub(crate) struct MapEntry {
     pub(crate) groups: u32,
     /// Draws the map's frames while no session does, so animations run.
     idle: Option<orb_api::Target>,
+    /// What the C API keeps of the style beyond Orbis's document.
+    pub(crate) style: crate::style::StyleState,
 }
 
 impl MapEntry {
@@ -374,7 +376,7 @@ pub(crate) fn take_events(state: &mut State, id: u64) {
 ///
 /// # Safety
 /// `completion` is null or a readable `mln_completion`.
-unsafe fn post(
+pub(crate) unsafe fn post(
     map: mln_map,
     completion: *const mln_completion,
     required: bool,
@@ -509,6 +511,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         ending: MLN_CAMERA_TRANSITION_OUTCOME_REPLACED,
                         groups: 0,
                         idle: None,
+                        style: Default::default(),
                     },
                 );
                 // Native's map moves its camera into place as it's made.
@@ -669,8 +672,10 @@ macro_rules! command {
     };
 }
 
+pub(crate) use command;
+
 /// A job that only changes the map entry.
-fn job(
+pub(crate) fn job(
     f: impl FnOnce(&mut MapEntry) -> Result + Send + 'static,
 ) -> impl FnOnce(&mut State, u64) -> Result<Value> + Send + 'static {
     move |state, id| f(entry(state, id)).map(|()| Value::None)
@@ -778,11 +783,8 @@ command!(mln_map_get_style_url(), true, false, |state, id| {
 command!(mln_map_get_loaded_style_json(), true, false, |state, id| {
     Ok(|state: &mut State, id: u64| {
         let entry = &state.maps[&id];
-        entry
-            .loaded_style
-            .clone()
-            .map(Value::Text)
-            .ok_or_else(|| Failure::state("no style has loaded"))
+        // Before any style loads, the document is empty.
+        Ok(Value::Text(entry.loaded_style.clone().unwrap_or_default()))
     })
 });
 
@@ -927,6 +929,7 @@ pub unsafe extern "C" fn mln_map_set_style_url(
                     return;
                 };
                 entry.map.load_style_url(&url);
+                entry.style.reset();
                 entry.style_url = url;
                 entry.style_loaded = false;
                 entry.loaded_style = None;
@@ -980,6 +983,7 @@ command!(
             }
             let result = entry.map.set_style_json(&json);
             if result.is_ok() {
+                entry.style.reset();
                 entry.loaded_style = Some(json);
                 // The document is in: take its StyleLoad now, as Native
                 // notifies inside the command.
@@ -999,7 +1003,10 @@ command!(
                     e.message().into(),
                 );
             }
-            result.map(|()| Value::None).map_err(Failure::from)
+            // A document that doesn't parse leaves the style as it was.
+            result
+                .map(|()| Value::None)
+                .map_err(|e| Failure::native(e.message()))
         })
     }
 );

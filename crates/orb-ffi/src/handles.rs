@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use crate::base::{Failure, Result};
 use crate::delivery::DeliveryQueue;
 use crate::map::MapHandle;
+use crate::projection::ProjectionHandle;
+use crate::resources::{ResourceRequest, TransformRequest};
 use crate::runtime::RuntimeHandle;
 use crate::session::{FramePacer, SessionHandle};
 use crate::sys::mln_render_frame_result;
@@ -17,6 +19,9 @@ pub(crate) enum Kind {
     Runtime = 1,
     Map = 2,
     Session = 4,
+    Projection = 8,
+    ResourceRequest = 10,
+    TransformRequest = 11,
     Batch = 21,
     Queue = 23,
     OffscreenDevice = 26,
@@ -29,6 +34,9 @@ impl Kind {
             Kind::Runtime => "mln_runtime",
             Kind::Map => "mln_map",
             Kind::Session => "mln_render_session",
+            Kind::Projection => "mln_map_projection",
+            Kind::ResourceRequest => "mln_resource_request",
+            Kind::TransformRequest => "mln_resource_transform_request",
             Kind::Batch => "mln_render_frame_batch",
             Kind::Queue => "mln_delivery_queue",
             Kind::OffscreenDevice => "mln_offscreen_device",
@@ -42,6 +50,9 @@ pub(crate) enum Object {
     Runtime(Arc<RuntimeHandle>),
     Map(Arc<MapHandle>),
     Session(Arc<SessionHandle>),
+    Projection(Arc<ProjectionHandle>),
+    ResourceRequest(Arc<ResourceRequest>),
+    TransformRequest(Arc<TransformRequest>),
     /// Holds the results a drained batch's view points at.
     Batch(#[allow(dead_code)] Arc<Vec<mln_render_frame_result>>),
     Queue(Arc<DeliveryQueue>),
@@ -61,6 +72,9 @@ impl Object {
             Object::Runtime(_) => Kind::Runtime,
             Object::Map(_) => Kind::Map,
             Object::Session(_) => Kind::Session,
+            Object::Projection(_) => Kind::Projection,
+            Object::ResourceRequest(_) => Kind::ResourceRequest,
+            Object::TransformRequest(_) => Kind::TransformRequest,
             Object::Batch(_) => Kind::Batch,
             Object::Queue(_) => Kind::Queue,
             Object::OffscreenDevice => Kind::OffscreenDevice,
@@ -145,6 +159,9 @@ fn kind_of(byte: u8) -> Option<Kind> {
         Kind::Runtime,
         Kind::Map,
         Kind::Session,
+        Kind::Projection,
+        Kind::ResourceRequest,
+        Kind::TransformRequest,
         Kind::Batch,
         Kind::Queue,
         Kind::OffscreenDevice,
@@ -154,7 +171,7 @@ fn kind_of(byte: u8) -> Option<Kind> {
     .find(|k| *k as u8 == byte)
 }
 
-fn lookup(handle: u64, kind: Kind) -> Result<Object> {
+pub(crate) fn lookup(handle: u64, kind: Kind) -> Result<Object> {
     let name = kind.name();
     if handle == 0 {
         return Err(Failure::argument(format!("the {name} handle is null")));
