@@ -390,6 +390,9 @@ pub enum BlendState {
     PremultipliedAlpha,
     /// ONE + ONE, for Gaussian density accumulation.
     Additive,
+    /// The greater of source and destination, per channel: overlapping
+    /// shadows darken once.
+    Max,
 }
 
 /// A depth test in reversed Z: a fragment passes at or nearer than the

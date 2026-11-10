@@ -30,16 +30,28 @@ pub enum Preview {
     /// `metadata["dev.sargunv.orbis:color-space"]`: `"srgb"` or `"linear"`,
     /// the space colours mix in.
     ColorSpace,
+    /// style-spec#1797: `light.shadow-intensity`, extrusions' shadows on
+    /// the ground, cast from `light.position`.
+    Shadows,
+    /// style-spec#1796: `fill-extrusion-ambient-occlusion-*`, extrusions'
+    /// walls darkened toward their foot and the ground darkened along them.
+    AmbientOcclusion,
+    /// style-spec#1047: `fill-rounded-corner-distance`, fills' corners
+    /// rounded as extrusions' are.
+    RoundedFills,
 }
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
         Self::Equirectangular,
         Self::EqualEarth,
         Self::ProjectionTransition,
         Self::Stars,
         Self::GroundResolution,
+        Self::Shadows,
+        Self::AmbientOcclusion,
+        Self::RoundedFills,
         Self::Crs,
         Self::ColorSpace,
     ];
@@ -53,6 +65,9 @@ impl Preview {
             Self::ProjectionTransition => "style-spec#1866",
             Self::Stars => "style-spec#1889",
             Self::GroundResolution => "style-spec#1881",
+            Self::Shadows => "style-spec#1797",
+            Self::AmbientOcclusion => "style-spec#1796",
+            Self::RoundedFills => "style-spec#1047",
             Self::Crs => "orbis:crs",
             Self::ColorSpace => "dev.sargunv.orbis:color-space",
         }
@@ -79,6 +94,15 @@ impl Preview {
             }
             Self::GroundResolution => {
                 "`[\"meters-per-pixel\"]`: ground metres per logical pixel at the camera's target, unpitched, from the projection's scale there (Web Mercator's shrinks toward the poles), so `[\"/\", 10, [\"meters-per-pixel\"]]` is 10 m in pixels. Paint evaluated per frame or per layer reads it, in values the same for every feature, as it reads `[\"pitch\"]`, and so do the overlap, optional and ignore-placement settings at each placement; the rest of layout, laid out once per tile, doesn't. The name is still open (`[\"scale\"]`, `[\"meters-per-px\"]`, `[\"px-per-meter\"]`, `[\"meters-to-px\", n]`, or an engine-provided `global-state` key); Orbis takes the spelled-out form the discussion leans to, after the platform SDKs' meters-per-pixel."
+            }
+            Self::Shadows => {
+                "`light.shadow-intensity` (0 to 1, default 0, off), as maplibre/maplibre#555 (where #1797's discussion moved) proposes: how much extrusions' shadows darken what lies beneath them, with no colour of their own. They fall away from `light.position` and follow `light.anchor`, as the extrusions' shading does: with the spec's default viewport anchor they turn with the map. Each building's shadow is its walls and roof projected along the light onto the ground it stands on, drawn under the buildings: it darkens the ground and the layers beneath the extrusions, not other buildings (the proposal's later shadow maps would). Overlapping shadows darken once. It transitions like the rest of `light`. Spec PR #1870's per-layer `fill-extrusion-shadow-opacity` and `-color` are on hold and not read."
+            }
+            Self::AmbientOcclusion => {
+                "Spec PR #1944's `fill-extrusion-ambient-occlusion-wall-intensity` and `-ground-intensity` (0 to 1, default 0, off) and `-wall-radius` and `-ground-radius` (metres, default 3), zoom-interpolated and transitioned, from each building's own footprint: walls darken toward the ground they stand on over the wall radius above it, as MapLibre Native's walls PR (#4909) shades them, and the ground darkens along the walls over the ground radius out from them. A part standing higher than the wall radius isn't darkened, and neither is anything where buildings stand on or face each other closely."
+            }
+            Self::RoundedFills => {
+                "`fill-rounded-corner-distance` (metres, default 0, off), a layout constant mirroring `fill-extrusion-rounded-corner-distance`: each corner replaced by an arc that far along its edges, at most a fifth of either edge, the same arc as an extrusion's, so a footprint drawn flat matches the building. The outline (`fill-antialias`, `fill-outline-color`) follows the rounded shape, and corners the tile's clipping made stay sharp. The name is Orbis's guess: #1047 has no 2D design yet."
             }
             Self::Crs => {
                 "Coordinate reference systems as the projection type (`EPSG:3413`, or a parametric kind such as `polar-stereographic` with PROJ-named numeric parameters beside the `type`) and OGC 2D tile matrix sets on sources (`tileMatrixSet`: a registered identifier or an inline document). Our own design; no proposal yet."

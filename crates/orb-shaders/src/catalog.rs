@@ -13,6 +13,7 @@ const DRAW: &str = concat!(
 const PATTERN: &str = wgsl!("pattern");
 const EXTRUSION: &str = wgsl!("extrusion");
 const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
+const EXTRUSION_GROUND: &str = wgsl!("extrusion_ground");
 
 const FILL: &str = wgsl!("fill");
 const LINE: &str = wgsl!("line");
@@ -325,6 +326,16 @@ pub const EXTRUSION_PLANES_SHADER: Shader = Shader {
     fragment: "",
     ..EXTRUSION_SHADER
 };
+/// What extrusions darken on the ground beneath them, from their own
+/// vertices: shadows (`vs_extrusion_shadow`) and the walls' ground
+/// occlusion (`vs_extrusion_occlusion`).
+pub const EXTRUSION_GROUND_SHADER: Shader = Shader {
+    label: "extrusion ground",
+    parts: &[TYPES, DRAW, PATTERN, LIGHTING, EXTRUSION, EXTRUSION_GROUND],
+    vertex: "vs_extrusion_shadow",
+    fragment: "fs_extrusion_ground",
+    compute: "",
+};
 /// Every shader: what the build script reflects layouts from, and the
 /// tests validate.
 pub const SHADERS: &[Shader] = &[
@@ -339,6 +350,7 @@ pub const SHADERS: &[Shader] = &[
     EXTRUSION_SHADER,
     EXTRUSION_CUT_SHADER,
     EXTRUSION_PLANES_SHADER,
+    EXTRUSION_GROUND_SHADER,
     FILL_SHADER,
     FILL_OUTLINE_SHADER,
     LINE_SHADER,

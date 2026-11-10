@@ -85,6 +85,11 @@ struct Frame {
     light_position: vec3<f32>,
     // The target's clip w (orb-camera's `View::camera_to_center`).
     camera_to_center: f32,
+    // style-spec#1797's extrusion shadows (extrusion_ground.wgsl): where a
+    // point a metre up falls on the ground along the light, in metres east
+    // and north, and how dark shadows are, 0 for none.
+    shadow_offset: vec2<f32>,
+    shadow_intensity: f32,
     // The low-zoom surface (orb-render's `FrameGlobe`), the sphere or a plane
     // as `globe_plane` says: camera-relative ECEF metres →
     // clip, the horizon plane (`dot(xyz, p) + w`: 1 under the eye, 0 at the

@@ -11,6 +11,9 @@ pub fn default_light() -> Light {
 /// The light's properties that transition (`anchor` doesn't).
 const TRANSITIONED: &[&str] = &["position", "color", "intensity"];
 
+/// style-spec#1797's shadows, as maplibre/maplibre#555 names them.
+const SHADOW_INTENSITY: &str = "shadow-intensity";
+
 pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
     let prop = |name, ty, default, interpolated, minimum, maximum| Prop {
         name,
@@ -49,9 +52,26 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
         Some(0.0),
         Some(1.0),
     );
+    // style-spec#1797's, behind its preview.
+    let shadow_intensity = prop(
+        SHADOW_INTENSITY,
+        PropertyType::Number,
+        "0",
+        true,
+        Some(0.0),
+        Some(1.0),
+    );
+    let mut shadows = false;
     if let Some(json) = json {
         for member in cx.object(json, "light").unwrap_or_default() {
-            let known = match member.key.strip_suffix("-transition") {
+            let name = member.key.strip_suffix("-transition");
+            if name.unwrap_or(&member.key) == SHADOW_INTENSITY {
+                let what = format!("\"light.{}\"", member.key);
+                let path = format!("light.{}", member.key);
+                shadows |= cx.preview(Preview::Shadows, path, member.key_span, what);
+                continue;
+            }
+            let known = match name {
                 Some(name) => TRANSITIONED.contains(&name),
                 None => ["anchor", "position", "color", "intensity"].contains(&member.key.as_str()),
             };
@@ -59,6 +79,10 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
                 cx.warn_unknown("light", member);
             }
         }
+    }
+    let mut transitioned = TRANSITIONED.to_vec();
+    if shadows {
+        transitioned.push(SHADOW_INTENSITY);
     }
     Light {
         anchor: typed_property_at(
@@ -80,6 +104,13 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
             "light.intensity",
             &intensity,
         ),
-        transitions: crate::v8::paint::root_transitions(cx, json, "light", TRANSITIONED),
+        shadow_intensity: typed_property_at(
+            cx,
+            json.and_then(|j| j.get(SHADOW_INTENSITY))
+                .filter(|_| shadows),
+            "light.shadow-intensity",
+            &shadow_intensity,
+        ),
+        transitions: crate::v8::paint::root_transitions(cx, json, "light", &transitioned),
     }
 }

@@ -1,6 +1,13 @@
 //! Extrusion layers draw into a target of their own, resolve it, then
 //! composite it at their layer opacity once. The shared depth attachment
 //! keeps occlusion between 3D layers and the terrain.
+//!
+//! What a layer darkens on the ground beneath its buildings (style-spec
+//! #1797's shadows, #1796's ground occlusion) draws first in the same
+//! pass, from the buildings' own vertices (`extrusion_ground.wgsl`): black
+//! whose alpha is how dark, the darkest kept where shapes overlap. The
+//! buildings then cover what they stand over, and the composite darkens
+//! the map beneath by what is left.
 use crate::TargetFormat;
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use crate::paint::ElevationShape;
@@ -8,7 +15,29 @@ use crate::pipeline::{DEPTH, Draw};
 use crate::release::Release;
 use crate::scene::SceneBuffers;
 use orb_hal::*;
-use orb_shaders::{EXTRUSION_CUT_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADER, Shader};
+use orb_shaders::{
+    EXTRUSION_CUT_SHADER, EXTRUSION_GROUND_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADER,
+    Shader,
+};
+
+/// What an extrusion node darkens on the ground beneath its buildings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Ground {
+    /// style-spec#1797's shadows, cast from the light.
+    pub(crate) shadows: bool,
+    /// style-spec#1796's ambient occlusion along the walls' feet.
+    pub(crate) occlusion: bool,
+}
+
+impl Ground {
+    /// Each pass's vertex entry point, if it draws.
+    fn passes(self) -> [(bool, &'static str); 2] {
+        [
+            (self.shadows, "vs_extrusion_shadow"),
+            (self.occlusion, "vs_extrusion_occlusion"),
+        ]
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Extrusions {
@@ -16,6 +45,9 @@ pub(crate) struct Extrusions {
     /// clipped per fragment, which alone discard; and where clip distances
     /// are, cut ones clipped by planes; at one sample and at four.
     pipelines: Vec<(ElevationShape, Pipelines)>,
+    /// The shadow and ground occlusion passes, at one sample and at four,
+    /// made for the first node that draws each.
+    ground: [[Option<RenderPipelineId>; 2]; 2],
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
     /// The targets' format: the map's.
@@ -37,6 +69,7 @@ impl Extrusions {
     ) -> Self {
         Self {
             pipelines: Vec::new(),
+            ground: [[None; 2]; 2],
             layouts: [scene, node],
             samples: 4,
             format,
@@ -97,6 +130,59 @@ impl Extrusions {
                 self.pipelines[index].1[kind][samples] = Some(pipeline);
             }
         }
+    }
+
+    /// Makes the ground passes `ground` draws at the current sample count,
+    /// unless they are made: depth-tested against what stands before them
+    /// (the terrain, earlier 3D layers) without writing it, keeping the
+    /// darkest of what overlaps.
+    pub(crate) fn make_ground(&mut self, gpu: &mut dyn Gpu, ground: Ground) {
+        let samples = usize::from(self.samples == 4);
+        let target = TargetFormat {
+            color: self.format,
+            sample_count: self.samples,
+        };
+        let shader = &EXTRUSION_GROUND_SHADER;
+        for (kind, (on, entry)) in ground.passes().into_iter().enumerate() {
+            if on && self.ground[kind][samples].is_none() {
+                let draw = Draw {
+                    vertex: (shader, entry),
+                    depth: Some(DepthState {
+                        format: TextureFormat::Depth32Float,
+                        write: false,
+                    }),
+                    ..Draw::new(shader, &self.layouts, target, Some(BlendState::Max))
+                };
+                self.ground[kind][samples] = Some(draw.make(gpu));
+            }
+        }
+    }
+
+    /// The ground passes `ground` draws whose pipelines are made at the
+    /// current sample count.
+    fn ground_made(&self, ground: Ground) -> [Option<RenderPipelineId>; 2] {
+        let samples = usize::from(self.samples == 4);
+        let mut made = [None; 2];
+        for (kind, (on, _)) in ground.passes().into_iter().enumerate() {
+            made[kind] = self.ground[kind][samples].filter(|_| on);
+        }
+        made
+    }
+
+    /// What of `ground` can draw now: the passes whose pipelines compiled.
+    /// A node draws its buildings without the rest until they have.
+    pub(crate) fn ground_ready(&self, gpu: &mut dyn Gpu, ground: Ground) -> Ground {
+        let [shadows, occlusion] = self
+            .ground_made(ground)
+            .map(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())));
+        Ground { shadows, occlusion }
+    }
+
+    /// The ground passes' pipelines `ground` draws with, made or not.
+    pub(crate) fn ground_pipelines(&self, ground: Ground) -> Vec<PipelineId> {
+        (self.ground_made(ground).into_iter().flatten())
+            .map(PipelineId::from)
+            .collect()
     }
 
     /// A pipeline of a vertex stage and a fragment stage, each a shader and
@@ -216,16 +302,18 @@ impl Extrusions {
     }
 
     /// An extrusion node's pass into its target over the shared depth,
-    /// replaying its draws, recorded once.
+    /// replaying its draws, recorded once: what `ground` darkens on the
+    /// ground, then its buildings.
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeExtrusion,
         (scene, group): (BindGroupId, BindGroupId),
         buffers: &SceneBuffers,
-        (index, shape): (u32, ElevationShape),
+        (index, shape, ground): (u32, ElevationShape, Ground),
         first: bool,
     ) -> RenderPass {
+        let ground = self.ground_made(ground);
         let pipelines = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
             let draw = RenderCommand::DrawIndexedIndirect {
@@ -243,7 +331,7 @@ impl Extrusions {
                     offset: 0,
                 },
             ];
-            for &pipeline in pipelines.iter().flatten() {
+            for &pipeline in ground.iter().chain(&pipelines).flatten() {
                 commands.extend([RenderCommand::SetPipeline(pipeline), draw.clone()]);
             }
             gpu.create_render_bundle(
@@ -282,6 +370,6 @@ impl Extrusions {
 impl crate::release::Release for Extrusions {
     fn release(self, gpu: &mut dyn Gpu) {
         let pipelines: Vec<Pipelines> = self.pipelines.into_iter().map(|(_, p)| p).collect();
-        (pipelines, self.depth).release(gpu);
+        (pipelines, self.ground, self.depth).release(gpu);
     }
 }

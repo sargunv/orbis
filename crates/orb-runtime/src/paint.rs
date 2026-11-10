@@ -638,6 +638,13 @@ fn node_paint(
                 ],
                 state: lookup,
                 elevation: node.elevation.as_ref().map(|e| e.paint(&properties, zoom)),
+                occlusion: [
+                    orb_style::EXTRUSION_AO_WALL_INTENSITY,
+                    orb_style::EXTRUSION_AO_WALL_RADIUS,
+                    orb_style::EXTRUSION_AO_GROUND_INTENSITY,
+                    orb_style::EXTRUSION_AO_GROUND_RADIUS,
+                ]
+                .map(|key| e.get(key).evaluate(zoom)),
             })
         }
         Family::Line => NodePaint::Line(LinePaint {

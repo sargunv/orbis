@@ -1,6 +1,8 @@
 //! Flat extrusions, following GL JS's pinned `fill_extrusion_bucket.ts`.
 //! Four words: i16 position, feature slot, i16 normal.xy (scale 16384,
-//! bottom/top in x's low bit), then i16 normal.z and u16 edge distance.
+//! bottom/top in x's low bit, and in y's which end of its wall a wall
+//! vertex is), then i16 normal.z and u16 edge distance. A wall is four
+//! vertices in a row: its end's bottom and top, then its start's.
 //! Roofs reuse fill triangulation. A building whole in the tile's data, one
 //! polygon with no edge on the source's buffer clip that the tile owning
 //! its centroid keeps whole too ([`Layer::is_whole`]), keeps its roof and
@@ -9,9 +11,9 @@
 //! A building the source cut at its buffer is clipped to the square, roof
 //! and walls; walls clip original segments independently, so clipping never
 //! introduces a wall across the tile square.
-use crate::round_corners::{round_ring, wall_normals};
+use crate::round_corners::{rounded_layer, wall_normals};
 use crate::{Mesh, MeshBuilder, clip::clip_segment, fill};
-use orb_tile::{GeometryType, Layer, LayerBuilder};
+use orb_tile::{GeometryType, Layer};
 
 pub const STRIDE: usize = 4;
 
@@ -43,45 +45,8 @@ pub fn layout_in_extent(
     if output_extent == layer.extent() && !rounded {
         return layout_normalized(layer, features, &whole, false, bend);
     }
-    let extent = output_extent as i32;
-    let mut normalized = LayerBuilder::new("extrusion", output_extent);
-    let rings = || {
-        (features.iter())
-            .flat_map(|&f| layer.geometry(f as usize).parts())
-            .flat_map(|part| part.rings())
-    };
-    normalized.reserve(rings().map(<[_]>::len).sum());
-    let scale = |p: &[i32; 2]| {
-        p.map(|v| {
-            (f64::from(v) * f64::from(output_extent) / f64::from(layer.extent()) + 0.5).floor()
-                as i32
-        })
-    };
-    let mut scaled = Vec::new();
-    for &feature in features {
-        let feature = feature as usize;
-        normalized.begin_feature(None, layer.geometry_type(feature));
-        let polygon = layer.geometry_type(feature) == GeometryType::Polygon;
-        for part in layer.geometry(feature).parts() {
-            normalized.begin_part();
-            for ring in part.rings() {
-                normalized.begin_ring();
-                if rounded && polygon {
-                    scaled.clear();
-                    scaled.extend(ring.iter().map(scale));
-                    for p in round_ring(&scaled, rounding, extent) {
-                        normalized.push_vertex(p);
-                    }
-                } else {
-                    for p in ring {
-                        normalized.push_vertex(scale(p));
-                    }
-                }
-            }
-        }
-    }
     layout_normalized(
-        &normalized.finish(),
+        &rounded_layer(layer, features, output_extent, rounding),
         &(0..features.len() as u32).collect::<Vec<_>>(),
         &whole,
         rounded,
@@ -198,9 +163,11 @@ fn layout_normalized(
                         let (start_normal, end_normal) =
                             smooth.as_ref().and_then(|s| s[i]).unwrap_or((flat, flat));
                         let start = builder.vertex_count();
-                        for (p, normal) in [(cb, end_normal), (ca, start_normal)] {
+                        for (end, p, normal) in [(1, cb, end_normal), (0, ca, start_normal)] {
                             let nx = (normal[0] * 8192.0).floor() as i16 * 2;
-                            let ny = (normal[1] * 16384.0) as i16;
+                            // Ground occlusion finds the wall's other end
+                            // by this bit (`extrusion_ground.wgsl`).
+                            let ny = ((normal[1] * 8192.0).floor() as i16 * 2) | end;
                             // GL JS assigns the cumulative distance to the
                             // edge's end, then distance + length to its start.
                             // Retain that phase even when either end is clipped.
@@ -233,6 +200,7 @@ fn layout_normalized(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orb_tile::LayerBuilder;
     #[test]
     fn normalized_source_extents_have_identical_geometry_and_pattern_phase() {
         let make = |extent: u32| {

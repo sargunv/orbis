@@ -58,6 +58,16 @@ fn section<'a>(
             let transition = m.key.strip_suffix("-transition").filter(|_| paint);
             if !known(&m.key) && !transition.is_some_and(known) {
                 cx.warn_unknown(&path, m);
+                continue;
+            }
+            // A property beyond the approved spec warns while its preview
+            // is off, and is then left at its default.
+            let name = transition.filter(|n| known(n)).unwrap_or(&m.key);
+            if let Some(preview) =
+                PropertyId::find(ty, paint, name).and_then(|id| id.prop().preview)
+            {
+                let what = format!("\"{}\"", m.key);
+                cx.preview(preview, format!("{path}.{}", m.key), m.key_span, what);
             }
         }
     }
@@ -443,7 +453,8 @@ pub(crate) fn parse_layer(
         .map(|id| {
             let prop = id.prop();
             let section = if prop.paint { &paint } else { &layout };
-            let json = section.get(prop.name);
+            let json = (section.get(prop.name))
+                .filter(|_| prop.preview.is_none_or(|p| cx.previews.contains(p)));
             // Only a property the layer sets has diagnostics to locate.
             let path = json.map_or_else(String::new, |_| format!("{}.{}", section.path, prop.name));
             property_at(cx, json, &path, prop)

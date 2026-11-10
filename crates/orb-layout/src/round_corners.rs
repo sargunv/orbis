@@ -3,8 +3,54 @@
 //! arc of steps of 30° or less, snapped to the integer tile grid, and walls
 //! whose normals blend across an arc so it shades as one curved surface.
 
+use orb_tile::{GeometryType, Layer, LayerBuilder};
+
 /// A point in tile units.
 type Point = [f64; 2];
+
+/// `features` of `layer` scaled to a grid of `extent` units a side, their
+/// polygons' corners rounded by `distance` grid units (none at 0): a layer
+/// whose features are their slots. Extrusions lay out from it
+/// (`fill-extrusion-rounded-corner-distance`), and so do fills with
+/// style-spec#1047's `fill-rounded-corner-distance`, on the same arcs.
+pub fn rounded_layer(layer: &Layer, features: &[u32], extent: u32, distance: f64) -> Layer {
+    let mut out = LayerBuilder::new(layer.name(), extent);
+    let rings = || {
+        (features.iter())
+            .flat_map(|&f| layer.geometry(f as usize).parts())
+            .flat_map(|part| part.rings())
+    };
+    out.reserve(rings().map(<[_]>::len).sum());
+    let scale = |p: &[i32; 2]| {
+        p.map(|v| {
+            (f64::from(v) * f64::from(extent) / f64::from(layer.extent()) + 0.5).floor() as i32
+        })
+    };
+    let mut scaled = Vec::new();
+    for &feature in features {
+        let feature = feature as usize;
+        out.begin_feature(None, layer.geometry_type(feature));
+        let polygon = layer.geometry_type(feature) == GeometryType::Polygon;
+        for part in layer.geometry(feature).parts() {
+            out.begin_part();
+            for ring in part.rings() {
+                out.begin_ring();
+                if distance > 0.0 && polygon {
+                    scaled.clear();
+                    scaled.extend(ring.iter().map(scale));
+                    for p in round_ring(&scaled, distance, extent as i32) {
+                        out.push_vertex(p);
+                    }
+                } else {
+                    for p in ring {
+                        out.push_vertex(scale(p));
+                    }
+                }
+            }
+        }
+    }
+    out.finish()
+}
 
 /// GL JS's `isBoundaryEdge`: an edge along the tile's buffer, which
 /// clipping made, outside the tile square.

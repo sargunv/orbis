@@ -11,6 +11,10 @@ struct ExtrusionNode {
     vertical_gradient: u32,
     opacity: f32,
     image_from: u32, image_to: u32,
+    // style-spec#1796's ambient occlusion: the walls' intensity and radius
+    // (metres up from the ground), then the ground's (metres out from the
+    // walls, extrusion_ground.wgsl). An intensity of 0 is none.
+    occlusion: vec4<f32>,
     // Color, height, base, and per-feature opacity.
     curves: array<Curve, 4>,
     translate_curve: Curve,
@@ -67,6 +71,9 @@ struct ExtrusionOut {
     @location(2) @interpolate(flat) tile: u32,
     @location(3) pattern_pos: vec2<f32>,
     @location(4) @interpolate(flat) images: vec2<u32>,
+    // A wall's height above the ground, metres, for its ambient occlusion;
+    // EXTRUSION_ROOF_ABOVE on roofs, which it leaves alone.
+    @location(5) above: f32,
 };
 // Extrusions draw in two pipelines: whole buildings, and buildings cut at
 // the source's buffer, clipped per fragment to the placement. Only the
@@ -187,6 +194,27 @@ fn extrusion_depth_scale(height: f32, feature: u32) -> f32 {
     let tall = min(u32(log2(max(height, 0.0) + 1.0) * 3.1), 31u);
     return 1.0 - f32((31u - tall) * 4u + feature % 4u) * EXTRUSION_DEPTH_STEP;
 }
+// A roof's height above the ground for ambient occlusion: beyond any
+// radius, so it stays unshaded.
+const EXTRUSION_ROOF_ABOVE: f32 = 1e30;
+// A feature's base, height and opacity, from the node, its row (its
+// opacity, beyond the spec, packed beside the whole-building bit) or its
+// state.
+fn extrusion_feature(tile: Tile, row: u32, state: u32) -> vec3<f32> {
+    var height = node.height;
+    var base = node.base;
+    if (node.table_mask & 2u) != 0u { height = table_number(row, 1u, node.curves[1], tile.zoom); }
+    if (node.table_mask & 4u) != 0u { base = table_number(row, 2u, node.curves[2], tile.zoom); }
+    if from_state(state, node.state, 1u) { height = state_number(state, node.state, 1u, node.curves[1], height); }
+    if from_state(state, node.state, 2u) { base = state_number(state, node.state, 2u, node.curves[2], base); }
+    var opacity = 1.0;
+    if (node.table_mask & EXTRUSION_OPACITY_ROWS) != 0u {
+        let flags = prop_at(row + EXTRUSION_ROW_WHOLE);
+        let at = vec2<f32>(f32((flags >> 8u) & 255u), f32((flags >> 16u) & 255u)) / 255.0;
+        opacity = mix(at.x, at.y, curve_t(node.curves[3], tile.zoom));
+    }
+    return vec3<f32>(base, height, opacity);
+}
 fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     var out: ExtrusionOut;
     let tile = tile_at(v.tile);
@@ -195,28 +223,19 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
     var color = node.color;
-    var height = node.height;
-    var base = node.base;
     if (node.table_mask & 1u) != 0u { color = table_color(row, 0u, node.curves[0], tile.zoom); }
-    if (node.table_mask & 2u) != 0u { height = table_number(row, 1u, node.curves[1], tile.zoom); }
-    if (node.table_mask & 4u) != 0u { base = table_number(row, 2u, node.curves[2], tile.zoom); }
     if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0], color); }
-    if from_state(state, node.state, 1u) { height = state_number(state, node.state, 1u, node.curves[1], height); }
-    if from_state(state, node.state, 2u) { base = state_number(state, node.state, 2u, node.curves[2], base); }
-    // Per-feature opacity and vertical gradient (beyond the spec),
-    // packed beside the whole-building bit.
-    let flags = prop_at(row + EXTRUSION_ROW_WHOLE);
-    var opacity = 1.0;
-    if (node.table_mask & EXTRUSION_OPACITY_ROWS) != 0u {
-        let at = vec2<f32>(f32((flags >> 8u) & 255u), f32((flags >> 16u) & 255u)) / 255.0;
-        opacity = mix(at.x, at.y, curve_t(node.curves[3], tile.zoom));
-        // The target keeps the nearest surface per pixel: a building at
-        // zero would hide what stands behind it.
-        if opacity <= 0.0 {
-            out.position = discarded_vertex();
-            return out;
-        }
+    let part = extrusion_feature(tile, row, state);
+    var base = part.x;
+    var height = part.y;
+    let opacity = part.z;
+    // The target keeps the nearest surface per pixel: a building at zero
+    // would hide what stands behind it.
+    if opacity <= 0.0 {
+        out.position = discarded_vertex();
+        return out;
     }
+    let flags = prop_at(row + EXTRUSION_ROW_WHOLE);
     var vertical_gradient = node.vertical_gradient != 0u;
     if (node.table_mask & EXTRUSION_GRADIENT_ROWS) != 0u {
         vertical_gradient = (flags & 2u) != 0u;
@@ -242,6 +261,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     out.position.z *= extrusion_depth_scale(gradient_height, feature);
     out.tile_pos = pos;
     out.tile = v.tile;
+    out.above = select(EXTRUSION_ROOF_ABOVE, mix(gradient_base - basement, gradient_height, top), normal.z == 0.0);
     var gradient = 1.0;
     if normal.z == 0.0 && vertical_gradient {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
@@ -377,7 +397,21 @@ fn elevation_shade(in: ExtrusionOut) -> vec4<f32> {
     }
     return color_in(vec4<f32>(light_lit(color.rgb, in.color.x, in.color.y), 1.0) * in.color.z);
 }
+// The fragment's colour, its wall darkened toward the ground by
+// style-spec#1796's ambient occlusion as MapLibre Native's walls PR (#4909)
+// shades it: by the intensity at the foot, fading out over the radius. On
+// terrain, a wall's basement below the ground at its centroid shows on the
+// downhill side, darkened as its foot is.
 fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {
+    let color = extrusion_color(in);
+    let occlusion = node.occlusion;
+    if occlusion.x <= 0.0 || occlusion.y <= 0.0 {
+        return color;
+    }
+    let lit = 1.0 - occlusion.x * (1.0 - smoothstep(0.0, occlusion.y, in.above));
+    return vec4<f32>(color.rgb * lit, color.a);
+}
+fn extrusion_color(in: ExtrusionOut) -> vec4<f32> {
     if node.pattern.enabled == 0u {
         if elevation_stops > 0u {
             return elevation_shade(in);

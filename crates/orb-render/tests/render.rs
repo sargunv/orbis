@@ -157,6 +157,7 @@ impl Harness {
                 color: [1.0; 3],
                 intensity: 0.5,
                 position: [0.0, 0.0, 1.0],
+                shadow_intensity: 0.0,
             },
             globe: None,
         }

@@ -120,9 +120,14 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     let rise = ground.y - ground.x + elevation * frame.extrusion_scale;
     let raised = frame.view_proj * vec4<f32>(0.0, 0.0, rise, 0.0);
     let m = 2.0 * margin_px / frame.viewport;
+    // Extrusions' shadows (style-spec#1797) reach along the ground away
+    // from the light as far as the tallest casts them (none without).
+    let shadow = frame.view_proj * vec4<f32>(frame.shadow_offset * (elevation * frame.extrusion_scale), 0.0, 0.0);
     let outside = outside_planes(c0, m) & outside_planes(c1, m) & outside_planes(c2, m)
         & outside_planes(c3, m) & outside_planes(c0 + raised, m) & outside_planes(c1 + raised, m)
-        & outside_planes(c2 + raised, m) & outside_planes(c3 + raised, m);
+        & outside_planes(c2 + raised, m) & outside_planes(c3 + raised, m)
+        & outside_planes(c0 + shadow, m) & outside_planes(c1 + shadow, m)
+        & outside_planes(c2 + shadow, m) & outside_planes(c3 + shadow, m);
     return outside == 0u;
 }
 

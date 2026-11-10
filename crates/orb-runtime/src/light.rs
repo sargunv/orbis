@@ -22,6 +22,7 @@ pub(crate) fn frame_light(light: &LightValues, bearing: f64) -> FrameLight {
         color: [r, g, b],
         intensity: light.intensity,
         position: [x * c - y * s, x * s + y * c, z].map(|v| v as f32),
+        shadow_intensity: light.shadow_intensity,
     }
 }
 

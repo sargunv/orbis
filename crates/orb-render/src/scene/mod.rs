@@ -107,6 +107,31 @@ pub struct FrameLight {
     /// (y south) with the horizontal parts negated, as long as v8's radial
     /// position. Viewport anchoring is already applied.
     pub position: [f32; 3],
+    /// style-spec#1797: how much extrusions' shadows darken the ground
+    /// beneath them, 0 to 1, cast away from `position`.
+    pub shadow_intensity: f32,
+}
+
+impl FrameLight {
+    /// The longest a shadow gets, in heights: about a sun 6° up's.
+    const LONGEST_SHADOW: f32 = 10.0;
+
+    /// Where a point a metre up falls on the ground along the light, in
+    /// metres east and north, and how dark extrusions' shadows are. As the
+    /// light sinks to 3° above the horizon its shadows fade out rather
+    /// than streak across the map, and with it below there are none.
+    pub fn shadow(&self) -> ([f32; 2], f32) {
+        let [x, y, z] = self.position;
+        let radius = (x * x + y * y + z * z).sqrt();
+        if self.shadow_intensity <= 0.0 || z <= 0.0 {
+            return ([0.0; 2], 0.0);
+        }
+        let (low, high) = (3f32.to_radians().sin(), 6f32.to_radians().sin());
+        let fade = ((z / radius - low) / (high - low)).clamp(0.0, 1.0);
+        let reach = (x.hypot(y) / z).min(Self::LONGEST_SHADOW);
+        let along = [x, -y].map(|v| v / x.hypot(y).max(f32::MIN_POSITIVE) * reach);
+        (along, self.shadow_intensity * fade)
+    }
 }
 
 /// A low-zoom surface's terms (`project.wgsl`), as a globe's; positions on the sphere are
@@ -208,6 +233,9 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
     let [red, green, blue] = frame.light.color;
     b.f(f::LIGHT_COLOR, &[red, green, blue, frame.light.intensity]);
     b.f(f::LIGHT_POSITION, &frame.light.position);
+    let (offset, intensity) = frame.light.shadow();
+    b.f(f::SHADOW_OFFSET, &offset);
+    b.f(f::SHADOW_INTENSITY, &[intensity]);
     let globe = frame.globe.map(|g| {
         b.f(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());
         b.f(f::GLOBE_HORIZON, &g.horizon);

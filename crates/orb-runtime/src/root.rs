@@ -27,6 +27,8 @@ pub(crate) struct LightValues {
     /// Radius, azimuth and polar angle, degrees.
     pub(crate) position: [f32; 3],
     pub(crate) intensity: f32,
+    /// style-spec#1797's extrusion shadows, 0 for none.
+    pub(crate) shadow_intensity: f32,
 }
 
 impl LightValues {
@@ -36,27 +38,44 @@ impl LightValues {
             color: light.color.evaluate(zoom).premultiplied(),
             position: light.position.evaluate(zoom),
             intensity: light.intensity.evaluate(zoom),
+            shadow_intensity: light.shadow_intensity.evaluate(zoom),
         }
     }
 
-    fn slots(&self) -> [f32; 8] {
+    fn slots(&self) -> [f32; 9] {
         let [r, g, b, a] = self.color;
         let [radius, azimuth, polar] = self.position;
-        [r, g, b, a, radius, azimuth, polar, self.intensity]
+        [
+            r,
+            g,
+            b,
+            a,
+            radius,
+            azimuth,
+            polar,
+            self.intensity,
+            self.shadow_intensity,
+        ]
     }
 
-    fn with(self, s: [f32; 8]) -> Self {
+    fn with(self, s: [f32; 9]) -> Self {
         Self {
             color: [s[0], s[1], s[2], s[3]],
             position: [s[4], s[5], s[6]],
             intensity: s[7],
+            shadow_intensity: s[8],
             ..self
         }
     }
 }
 
 /// The light's fields in slot order, with each one's slot count.
-const LIGHT: &[(&str, usize)] = &[("color", 4), ("position", 3), ("intensity", 1)];
+const LIGHT: &[(&str, usize)] = &[
+    ("color", 4),
+    ("position", 3),
+    ("intensity", 1),
+    ("shadow-intensity", 1),
+];
 
 /// The sky's fields in slot order, with each one's slot count.
 const SKY: &[(&str, usize)] = &[
@@ -140,7 +159,7 @@ pub(crate) struct RootFrame {
 /// The eased root values of a map.
 #[derive(Debug, Default)]
 pub(crate) struct Root {
-    light: Eases<8>,
+    light: Eases<9>,
     sky: Eases<21>,
     terrain: Eases<2>,
 }

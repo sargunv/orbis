@@ -1028,3 +1028,61 @@ fn color_space_reads_metadata_with_its_preview() {
         );
     }
 }
+
+/// The 3D proposals' syntax follows each one's preview: style-spec#1797's
+/// `light.shadow-intensity`, #1796's ambient occlusion and #1047's rounded
+/// fills. Off, each warns once (a transition too) and stays at its default.
+#[test]
+fn shadows_occlusion_and_rounded_fills_follow_their_previews() {
+    let doc = r#"{"version": 8,
+        "light": {"shadow-intensity": 0.4, "shadow-intensity-transition": {"duration": 0}},
+        "sources": {"s": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
+        "layers": [
+            {"id": "f", "type": "fill", "source": "s",
+             "layout": {"fill-rounded-corner-distance": 2}},
+            {"id": "b", "type": "fill-extrusion", "source": "s",
+             "paint": {"fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
+                       "fill-extrusion-ambient-occlusion-ground-radius":
+                           ["interpolate", ["linear"], ["zoom"], 15, 2, 18, 6]}}]}"#;
+    let on = parse_with(doc, Previews::ALL, &[]).unwrap();
+    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+    assert_eq!(on.light.shadow_intensity.evaluate(0.0), 0.4);
+    assert!((on.light.transitions.iter()).any(|(name, _)| name == "shadow-intensity"));
+    assert_eq!(on.layers[0].get(FILL_ROUNDED_CORNER).evaluate(0.0), 2.0);
+    let building = &on.layers[1];
+    assert_eq!(building.get(EXTRUSION_AO_WALL_INTENSITY).evaluate(0.0), 0.5);
+    assert_eq!(building.get(EXTRUSION_AO_GROUND_RADIUS).evaluate(16.5), 4.0);
+    assert_eq!(building.get(EXTRUSION_AO_WALL_RADIUS).evaluate(0.0), 3.0);
+
+    let off = parse(doc).unwrap();
+    let mut warned: Vec<(&str, &str)> = (off.warnings.iter())
+        .map(|w| (w.path.as_str(), w.message.as_str()))
+        .collect();
+    warned.sort_unstable();
+    let expected = [
+        (
+            "layers[0].layout.fill-rounded-corner-distance",
+            Preview::RoundedFills,
+        ),
+        (
+            "layers[1].paint.fill-extrusion-ambient-occlusion-ground-radius",
+            Preview::AmbientOcclusion,
+        ),
+        (
+            "layers[1].paint.fill-extrusion-ambient-occlusion-wall-intensity",
+            Preview::AmbientOcclusion,
+        ),
+        ("light.shadow-intensity", Preview::Shadows),
+        ("light.shadow-intensity-transition", Preview::Shadows),
+    ];
+    assert_eq!(warned.len(), expected.len(), "{warned:?}");
+    for ((path, message), (want, preview)) in warned.into_iter().zip(expected) {
+        assert_eq!(path, want);
+        assert!(message.contains(preview.name()), "{path}: {message}");
+    }
+    assert_eq!(off.light.shadow_intensity.evaluate(0.0), 0.0);
+    assert!(off.light.transitions.is_empty());
+    assert_eq!(off.layers[0].get(FILL_ROUNDED_CORNER).evaluate(0.0), 0.0);
+    assert!(!off.layers[1].get(EXTRUSION_AO_WALL_INTENSITY).is_set());
+    assert!(!off.layers[1].get(EXTRUSION_AO_GROUND_RADIUS).is_set());
+}

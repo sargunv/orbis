@@ -345,12 +345,19 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
             if !prop.extended.is_empty() {
                 let _ = write!(orbis, "; {} accepted (not portable)", inputs(prop.extended));
             }
+            // A proposal's property isn't in the spec yet.
+            let spec_inputs = match prop.preview {
+                Some(preview) => {
+                    let _ = write!(orbis, "; preview `{preview}`");
+                    "—".to_string()
+                }
+                None => spec_inputs(entry),
+            };
             let _ = write!(
                 out,
-                "| `{}` | {section} | {} | {} | {} | {} | {orbis} |",
+                "| `{}` | {section} | {} | {spec_inputs} | {} | {} | {orbis} |",
                 prop.name,
                 prop.phase().name(),
-                spec_inputs(entry),
                 platform_support(entry, &["js"]),
                 platform_support(entry, &["android", "ios"]),
             );

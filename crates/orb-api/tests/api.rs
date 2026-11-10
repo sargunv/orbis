@@ -1620,3 +1620,146 @@ fn fits_before_the_first_frame_use_the_viewport_set() {
     );
     assert_eq!(map.viewport().width, 64.0);
 }
+
+/// A building `height` metres tall and 44 m square at the equator seen
+/// from above, its light from the south 45° up, on white: the pixel
+/// `metres` north of its middle (south for negative), with `light` and
+/// `paint` added to its style.
+fn beside_a_building(height: f64, light: &str, paint: &str, metres: &[f64]) -> Vec<[u8; 4]> {
+    const VIEW: u32 = 256;
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 17,
+          "light": {{"anchor": "map", "position": [1.15, 180, 45], {light}}},
+          "sources": {{"b": {{"type": "geojson", "data": {{"type": "Polygon", "coordinates":
+            [[[-0.0002, -0.0002], [0.0002, -0.0002], [0.0002, 0.0002], [-0.0002, 0.0002], [-0.0002, -0.0002]]]}}}}}},
+          "layers": [
+            {{"id": "background", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+            {{"id": "b", "type": "fill-extrusion", "source": "b", "paint": {{
+              "fill-extrusion-color": "#ffffff", "fill-extrusion-height": {height} {paint}}}}}]}}"##
+    );
+    let mut map = Map::new(
+        &runtime,
+        MapOptions {
+            previews: orb_api::Previews::ALL,
+            ..MapOptions::default()
+        },
+    );
+    map.set_style_json(&style).expect("style");
+    let image = map.snapshot(VIEW, VIEW, 1.0).expect("snapshot");
+    (metres.iter())
+        .map(|&m| {
+            let p = map
+                .project(orb_api::Geodetic::new(0.0, m / 110_574.0))
+                .expect("in view");
+            pixel_of(&image.pixels, VIEW, p.x as u32, p.y as u32)
+        })
+        .collect()
+}
+
+fn pixel_of(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let at = ((y * width + x) * 4) as usize;
+    pixels[at..at + 4].try_into().unwrap()
+}
+
+/// style-spec#1797: a building's shadow falls away from the light, as far
+/// as its height times the tangent of the light's angle from the zenith,
+/// darkening the ground by the shadow intensity; overlapping wall and roof
+/// shadows darken it once. Off, there is none.
+#[test]
+fn shadows_fall_away_from_the_light() {
+    // North of the building 10 m and 25 m (its shadow reaches 30 m), 40 m
+    // (past it), and 10 m south.
+    let at = [32.0, 47.0, 62.0, -32.0];
+    let off = beside_a_building(30.0, r#""intensity": 0.5"#, "", &at);
+    assert!(off.iter().all(|p| p[0] == 255), "{off:?}");
+    let on = beside_a_building(
+        30.0,
+        r#""intensity": 0.5, "shadow-intensity": 0.6"#,
+        "",
+        &at,
+    );
+    for p in &on[..2] {
+        assert!((p[0] as i32 - 102).abs() <= 2, "shadowed: {on:?}");
+    }
+    assert_eq!(on[2][0], 255, "past the shadow: {on:?}");
+    assert_eq!(on[3][0], 255, "on the lit side: {on:?}");
+}
+
+/// style-spec#1796: the ground darkens along the walls by the ground
+/// intensity at their foot, fading out over the ground radius; the walls
+/// darken toward the ground over theirs (a wall, from above, shows at the
+/// building's edge in perspective).
+#[test]
+fn ambient_occlusion_darkens_the_ground_along_the_walls() {
+    // South of the building 1 m, 4 m and 12 m out, with a radius of 8 m.
+    let at = [-23.0, -26.0, -34.0];
+    let paint = r#", "fill-extrusion-ambient-occlusion-ground-intensity": 0.8,
+        "fill-extrusion-ambient-occlusion-ground-radius": 8"#;
+    let on = beside_a_building(2.0, r#""intensity": 0.5"#, paint, &at);
+    assert!(on[0][0] < 80, "at the foot: {on:?}");
+    assert!(on[0][0] < on[1][0] && on[1][0] < 255, "fading out: {on:?}");
+    assert_eq!(on[2][0], 255, "past the radius: {on:?}");
+}
+
+/// style-spec#1047: a fill's corners round off by the distance along their
+/// edges, at most a fifth of each, and its outline follows the arc.
+#[test]
+fn fill_corners_round_off_with_their_outline() {
+    const VIEW: u32 = 256;
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = |layout: &str| {
+        format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 17,
+              "sources": {{"f": {{"type": "geojson", "data": {{"type": "Polygon", "coordinates":
+                [[[-0.0002, -0.0002], [0.0002, -0.0002], [0.0002, 0.0002], [-0.0002, 0.0002], [-0.0002, -0.0002]]]}}}}}},
+              "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+                {{"id": "f", "type": "fill", "source": "f", "layout": {{{layout}}},
+                  "paint": {{"fill-color": "#000000", "fill-outline-color": "#ff0000"}}}}]}}"##
+        )
+    };
+    let corner = |layout: &str| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews: orb_api::Previews::ALL,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(&style(layout)).expect("style");
+        let image = map.snapshot(VIEW, VIEW, 1.0).expect("snapshot");
+        // Just inside the north-east corner, and inside the arc beside it.
+        [(0.000_19, 0.000_19), (0.000_19, 0.000_1)].map(|(lon, lat)| {
+            let p = map.project(orb_api::Geodetic::new(lon, lat)).unwrap();
+            pixel_of(&image.pixels, VIEW, p.x as u32, p.y as u32)
+        })
+    };
+    assert_eq!(corner("")[0], [0, 0, 0, 255]);
+    let [cut, kept] = corner(r#""fill-rounded-corner-distance": 8"#);
+    assert_eq!(cut, [255, 255, 255, 255], "the corner is gone");
+    assert_eq!(kept, [0, 0, 0, 255], "the edge stays");
+    // The outline runs round the arc: red pixels about its middle, 3.3 m in
+    // from the corner along the diagonal.
+    let mut map = Map::new(
+        &runtime,
+        MapOptions {
+            previews: orb_api::Previews::ALL,
+            ..MapOptions::default()
+        },
+    );
+    map.set_style_json(&style(r#""fill-rounded-corner-distance": 8"#))
+        .expect("style");
+    let image = map.snapshot(VIEW, VIEW, 1.0).expect("snapshot");
+    let arc = 0.0002 - 3.3 / 110_574.0 / 2f64.sqrt();
+    let mid = map.project(orb_api::Geodetic::new(arc, arc)).unwrap();
+    let red = (-4..=4)
+        .flat_map(|y| (-4..=4).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let at = (mid.x as i32 + x, mid.y as i32 + y);
+            pixel_of(&image.pixels, VIEW, at.0 as u32, at.1 as u32)
+        })
+        .filter(|p| p[0] > 150 && p[1] < 60)
+        .count();
+    assert!(red >= 4, "{red} outline pixels about the arc");
+}

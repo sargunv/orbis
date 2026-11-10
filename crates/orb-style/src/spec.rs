@@ -53,6 +53,9 @@ pub struct Prop {
     /// Inputs beyond the spec's that Orbis honours in its phase, always
     /// accepted, with a warning that GL JS and Native reject them.
     pub extended: Inputs,
+    /// The preview a property beyond the approved spec needs: off, a
+    /// layer setting it warns and leaves it at its default.
+    pub preview: Option<crate::Preview>,
 }
 
 /// When a property is evaluated, on Orbis's architecture. A value shows
@@ -258,6 +261,7 @@ pub const fn prop(name: &'static str, ty: PropertyType, default: Option<&'static
         elevation: false,
         phase: None,
         extended: Inputs::NONE,
+        preview: None,
     }
 }
 
@@ -312,6 +316,11 @@ impl Prop {
     }
     const fn elevation(mut self) -> Self {
         self.elevation = true;
+        self
+    }
+    /// Beyond the approved spec, behind `preview`.
+    const fn preview(mut self, preview: crate::Preview) -> Self {
+        self.preview = Some(preview);
         self
     }
     const fn range(mut self, minimum: f64, maximum: Option<f64>) -> Self {
@@ -561,6 +570,9 @@ properties! {
     }
     Fill {
         layout FILL_SORT_KEY: Option<f32> = prop("fill-sort-key", NUMBER, None).data_driven();
+        /// style-spec#1047: `fill-extrusion-rounded-corner-distance` for
+        /// fills, a provisional name.
+        layout FILL_ROUNDED_CORNER: f32 = prop("fill-rounded-corner-distance", NUMBER, Some("0")).range(0.0, None).zoom_independent().preview(crate::Preview::RoundedFills);
         paint FILL_ANTIALIAS: bool = prop("fill-antialias", PropertyType::Boolean, Some("true"));
         paint FILL_OPACITY: f32 = prop("fill-opacity", NUMBER, Some("1")).data_driven().interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
         /// The layer composited once at this opacity (style-spec 26).
@@ -584,6 +596,14 @@ properties! {
         paint EXTRUSION_TRANSLATE_ANCHOR: TranslateAnchor = prop("fill-extrusion-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
         paint EXTRUSION_VERTICAL_GRADIENT: bool = prop("fill-extrusion-vertical-gradient", PropertyType::Boolean, Some("true")).extends(Inputs::DATA);
         paint EXTRUSION_PATTERN: Option<String> = prop("fill-extrusion-pattern", IMAGE, None).data_driven().in_phase(Phase::Tile);
+        /// style-spec#1796 (spec PR #1944): how dark walls get at their foot.
+        paint EXTRUSION_AO_WALL_INTENSITY: f32 = prop("fill-extrusion-ambient-occlusion-wall-intensity", NUMBER, Some("0")).interpolated().range(0.0, Some(1.0)).preview(crate::Preview::AmbientOcclusion);
+        /// The height above the ground, metres, walls darken over.
+        paint EXTRUSION_AO_WALL_RADIUS: f32 = prop("fill-extrusion-ambient-occlusion-wall-radius", NUMBER, Some("3")).interpolated().range(0.0, None).preview(crate::Preview::AmbientOcclusion);
+        /// How dark the ground gets along the walls.
+        paint EXTRUSION_AO_GROUND_INTENSITY: f32 = prop("fill-extrusion-ambient-occlusion-ground-intensity", NUMBER, Some("0")).interpolated().range(0.0, Some(1.0)).preview(crate::Preview::AmbientOcclusion);
+        /// How far out from the walls, metres, the ground darkens.
+        paint EXTRUSION_AO_GROUND_RADIUS: f32 = prop("fill-extrusion-ambient-occlusion-ground-radius", NUMBER, Some("3")).interpolated().range(0.0, None).preview(crate::Preview::AmbientOcclusion);
     }
     Line {
         layout LINE_CAP: LineCap = prop("line-cap", enumeration::<LineCap>(), Some("\"butt\"")).data_driven();

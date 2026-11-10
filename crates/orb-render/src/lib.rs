@@ -206,6 +206,12 @@ struct Node {
     styled: bool,
     /// What an extrusion node's pipelines are specialised for.
     elevation: paint::ElevationShape,
+    /// What an extrusion node darkens on the ground: the frame's shadows,
+    /// its paint's occlusion. Its paint asks for occlusion.
+    ground: extrusion::Ground,
+    occlusion: bool,
+    /// What its recorded draw darkens: what of `ground` had compiled.
+    ground_drawn: extrusion::Ground,
     /// On terrain, the drape stack a draped node draws into, and the
     /// terrain layer that composites it.
     stack: Option<u8>,
@@ -838,6 +844,9 @@ impl Renderer {
                 along_line: false,
                 styled: false,
                 elevation: paint::ElevationShape::default(),
+                ground: extrusion::Ground::default(),
+                occlusion: false,
+                ground_drawn: extrusion::Ground::default(),
                 stack: None,
                 terrain_layer: None,
                 shaded: false,
@@ -1321,6 +1330,7 @@ impl Renderer {
                     e.forget_bundle(gpu);
                 }
             }
+            entry.occlusion = p.ground_occlusion();
         }
         if words != entry.written {
             let (node, stride) = (node as usize, (self.node_stride / 4) as usize);
@@ -1506,7 +1516,10 @@ impl Renderer {
                 }
             }
             Family::Heatmap => self.heatmaps.make(gpu),
-            Family::FillExtrusion => self.extrusions.make(gpu, self.nodes[i].elevation),
+            Family::FillExtrusion => {
+                self.extrusions.make(gpu, self.nodes[i].elevation);
+                self.extrusions.make_ground(gpu, self.nodes[i].ground);
+            }
         }
     }
 
@@ -1540,7 +1553,10 @@ impl Renderer {
         }
         match node.family {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
-            Family::FillExtrusion => out.extend(self.extrusions.pipelines(node.elevation)),
+            Family::FillExtrusion => {
+                out.extend(self.extrusions.pipelines(node.elevation));
+                out.extend(self.extrusions.ground_pipelines(node.ground));
+            }
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(
                     self.symbol_pipelines[usize::from(node.along_line)].map(PipelineId::from),
@@ -1704,6 +1720,19 @@ impl Renderer {
             }
         }
         self.refresh_image_groups(gpu);
+        // What extrusion nodes darken on the ground: their pipelines are
+        // made with the rest.
+        let shadows = frame.light.shadow().1 > 0.0;
+        for node in self.nodes.iter_mut().filter(|n| n.extrusion.is_some()) {
+            let ground = extrusion::Ground {
+                shadows,
+                occlusion: node.occlusion,
+            };
+            if node.ground != ground {
+                node.ground = ground;
+                self.pipelines_stale |= node.drawn;
+            }
+        }
         let compiling = self.pipelines(gpu);
         let made = compiling.made;
         if compiling.made != self.made_seen {
@@ -2004,12 +2033,18 @@ impl Renderer {
             else {
                 continue;
             };
+            // Ground passes join the recorded draw as they compile.
+            let ground = self.extrusions.ground_ready(gpu, node.ground);
+            if ground != node.ground_drawn {
+                node.ground_drawn = ground;
+                target.forget_bundle(gpu);
+            }
             let pass = self.extrusions.prepare(
                 gpu,
                 target,
                 (draw_group, node.group),
                 &buffers,
-                (index as u32, node.elevation),
+                (index as u32, node.elevation, ground),
                 first,
             );
             passes.push(Pass::Render(pass));

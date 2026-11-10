@@ -210,6 +210,10 @@ pub struct ExtrusionPaint {
     pub state: StateLookup,
     /// The colour over the elevation, drawn per fragment.
     pub elevation: Option<ElevationPaint>,
+    /// style-spec#1796's ambient occlusion: the walls' intensity and
+    /// radius (metres up from the ground), then the ground's (metres out
+    /// from the walls); an intensity of 0 is none.
+    pub occlusion: [f32; 4],
 }
 
 use orb_shaders::layout::{MAX_ELEVATION_OPS, MAX_ELEVATION_STOPS};
@@ -267,6 +271,11 @@ impl ElevationShape {
 }
 
 impl ExtrusionPaint {
+    /// Whether it darkens the ground along its walls: a pass of its own.
+    pub(crate) fn ground_occlusion(&self) -> bool {
+        self.occlusion[2] > 0.0 && self.occlusion[3] > 0.0 && self.opacity > 0.0
+    }
+
     pub(crate) fn elevation_shape(&self) -> ElevationShape {
         let Some(e) = &self.elevation else {
             return ElevationShape::default();
@@ -464,6 +473,7 @@ impl NodePaint {
                 );
                 b.u(n::VERTICAL_GRADIENT, &[u32::from(p.vertical_gradient)]);
                 b.f(n::OPACITY, &[p.opacity]);
+                b.f(n::OCCLUSION, &p.occlusion);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
                 b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
                 if let Some(e) = &p.elevation {
