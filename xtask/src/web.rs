@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use crate::split;
+use crate::{run, split};
 
 const OUT_DIR: &str = "web/pkg";
 /// Where `cargo xtask web --names` writes `core.wasm` whole, with its
@@ -210,7 +210,6 @@ fn module(
         ]);
     }
     args.extend(features);
-    eprintln!("$ RUSTC_BOOTSTRAP=1 cargo {}", args.join(" "));
     run(Command::new(env!("CARGO"))
         .env("RUSTC_BOOTSTRAP", "1")
         .args(&args))?;
@@ -389,17 +388,5 @@ fn report_crates(wasm: &Path) {
     eprintln!("code by crate before wasm-opt ({} KiB):", code / 1024);
     for (krate, size) in sizes.iter().take(15) {
         eprintln!("  {:>6.1}%  {krate}", *size as f64 * 100.0 / code as f64);
-    }
-}
-
-pub(crate) fn run(command: &mut Command) -> Result<(), String> {
-    let name = command.get_program().to_string_lossy().into_owned();
-    let status = command
-        .status()
-        .map_err(|e| format!("failed to run {name} ({e}); `mise install` provides it"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{name} failed"))
     }
 }

@@ -238,16 +238,8 @@ fn full_check() -> Result<(), String> {
 /// Every file's formatting, through dprint (rustfmt for Rust, oxc for the
 /// web, ktfmt and ruff), as `dprint.jsonc` configures it.
 fn format_check() -> Result<(), String> {
-    eprintln!("$ dprint check");
-    let status = Command::new("dprint")
-        .arg("check")
-        .status()
-        .map_err(|e| format!("failed to run dprint ({e}); `mise install` provides it"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("formatting differs; `dprint fmt` fixes it".to_string())
-    }
+    run(Command::new("dprint").arg("check"))
+        .map_err(|e| format!("{e}; `dprint fmt` fixes formatting"))
 }
 
 /// `clippy [--fix]`: clippy over the workspace natively and, without the
@@ -353,18 +345,9 @@ fn cpu_driver_tests(render: bool, path: bool) -> Result<(), String> {
         ),
     ];
     for (_, args) in runs.into_iter().filter(|(run, _)| *run) {
-        eprintln!("$ ORB_DRIVER=cpu-tex cargo {}", args.join(" "));
-        let status = Command::new(env!("CARGO"))
+        run(Command::new(env!("CARGO"))
             .args(args)
-            .env("ORB_DRIVER", "cpu-tex")
-            .status()
-            .map_err(|e| format!("failed to run cargo: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "`ORB_DRIVER=cpu-tex cargo {}` failed",
-                args.join(" ")
-            ));
-        }
+            .env("ORB_DRIVER", "cpu-tex"))?;
     }
     Ok(())
 }
@@ -414,14 +397,53 @@ pub(crate) fn root() -> PathBuf {
 }
 
 pub(crate) fn cargo(args: &[&str]) -> Result<(), String> {
-    eprintln!("$ cargo {}", args.join(" "));
-    let status = Command::new(env!("CARGO"))
-        .args(args)
-        .status()
-        .map_err(|e| format!("failed to run cargo: {e}"))?;
+    run(Command::new(env!("CARGO")).args(args))
+}
+
+/// Runs `command`, echoed first as a shell would show it; an error if it
+/// can't start or fails.
+pub(crate) fn run(command: &mut Command) -> Result<(), String> {
+    let shown = shown(command);
+    eprintln!("$ {shown}");
+    let status = command.status().map_err(|e| {
+        format!("failed to run `{shown}` ({e}); `mise install` provides the pinned tools")
+    })?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("`cargo {}` failed", args.join(" ")))
+        Err(format!("`{shown}` failed"))
+    }
+}
+
+/// `command` as a shell would show it: its environment, then its
+/// program's name and its arguments.
+fn shown(command: &Command) -> String {
+    let env = command.get_envs().filter_map(|(key, value)| {
+        Some(format!(
+            "{}={}",
+            key.to_string_lossy(),
+            value?.to_string_lossy()
+        ))
+    });
+    let program = Path::new(command.get_program());
+    let program = program.file_name().unwrap_or(program.as_os_str());
+    let args = command.get_args().map(|a| a.to_string_lossy().into_owned());
+    env.chain([program.to_string_lossy().into_owned()])
+        .chain(args)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_command_shows_its_environment_program_name_and_arguments() {
+        let mut command = Command::new("/usr/local/bin/cargo");
+        command
+            .args(["build", "-p", "orb-web"])
+            .env("RUSTC_BOOTSTRAP", "1");
+        assert_eq!(shown(&command), "RUSTC_BOOTSTRAP=1 cargo build -p orb-web");
     }
 }

@@ -164,7 +164,7 @@ pub(crate) fn split(
     // Kept beside `whole`: the indices deferred, which the symbol map names.
     let split_file = whole.with_extension("deferred");
     std::fs::write(&split_file, split).map_err(|e| format!("{}: {e}", split_file.display()))?;
-    crate::web::run(
+    crate::run(
         Command::new("wasm-split")
             .args(features)
             .arg(format!("--placeholder-namespace={PREFIX}"))

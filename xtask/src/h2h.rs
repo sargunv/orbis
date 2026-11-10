@@ -362,20 +362,13 @@ impl H2h {
         }
         // mln-rs builds even when it isn't an engine: its checkout has the
         // views.
-        eprintln!(
-            "$ CARGO_TARGET_DIR={} cargo build --profile {profile} --manifest-path {}",
-            target.display(),
-            manifest.display()
-        );
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "--profile", profile, "--manifest-path"])
-            .arg(&manifest)
-            .env("CARGO_TARGET_DIR", &target)
-            .status()
-            .map_err(|e| format!("cargo: {e}"))?;
-        if !status.success() {
-            return Err("h2h: building mln-rs's harness failed".into());
-        }
+        crate::run(
+            Command::new(env!("CARGO"))
+                .args(["build", "--profile", profile, "--manifest-path"])
+                .arg(&manifest)
+                .env("CARGO_TARGET_DIR", &target),
+        )
+        .map_err(|e| format!("h2h: building mln-rs's harness: {e}"))?;
         let views = match &options.views {
             Some(views) => views.clone(),
             None => mln_checkout(&manifest)?.join("tools/liberty-compare/views.txt"),

@@ -45,7 +45,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
 
     // liborbis.so, with the NDK's clang for C dependencies and the link.
     let target_env = TARGET.replace('-', "_");
-    check(
+    crate::run(
         Command::new(env!("CARGO"))
             .current_dir(&root)
             .env(format!("CC_{target_env}"), &clang)
@@ -90,7 +90,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         &root.join(DATA),
         &project.join("app/build/generated/assets"),
     )?;
-    check(
+    crate::run(
         Command::new("gradle")
             .current_dir(&project)
             .args(["--quiet", ":app:assembleRelease"]),
@@ -140,16 +140,6 @@ fn write_index(data: &Path, out: &Path) -> Result<(), String> {
     std::fs::write(out.join(INDEX), index).map_err(|e| e.to_string())
 }
 
-fn check(command: &mut Command) -> Result<(), String> {
-    eprintln!("$ {command:?}");
-    let status = command.status().map_err(|e| format!("{command:?}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{command:?} failed"))
-    }
-}
-
 /// The newest NDK's LLVM tools.
 fn ndk_bin(sdk: &Path) -> Result<PathBuf, String> {
     let mut versions: Vec<PathBuf> = std::fs::read_dir(sdk.join("ndk"))
@@ -177,7 +167,7 @@ fn install(root: &Path, apk: &Path, leakcheck: bool) -> Result<(), String> {
         command.arg("-s").arg(&serial).args(args);
         command
     };
-    check(adb(&["install", "-r"]).arg(apk))?;
+    crate::run(adb(&["install", "-r"]).arg(apk))?;
     let start = [
         "shell",
         "am",
@@ -187,12 +177,12 @@ fn install(root: &Path, apk: &Path, leakcheck: bool) -> Result<(), String> {
         "dev.orbis.demo/.MainActivity",
     ];
     if !leakcheck {
-        return check(&mut adb(&start));
+        return crate::run(&mut adb(&start));
     }
-    check(&mut adb(&["shell", "am", "force-stop", "dev.orbis.demo"]))?;
-    check(&mut adb(&["logcat", "-c"]))?;
+    crate::run(&mut adb(&["shell", "am", "force-stop", "dev.orbis.demo"]))?;
+    crate::run(&mut adb(&["logcat", "-c"]))?;
     let extras = ["--ez", "leakcheck", "true"];
-    check(adb(&start).args(extras))?;
+    crate::run(adb(&start).args(extras))?;
     // Cold pipelines on the emulator take minutes before the first map draws.
     for _ in 0..600 {
         let log = adb(&["logcat", "-d", "-s", "Orbis"])

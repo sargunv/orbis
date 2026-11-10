@@ -786,13 +786,7 @@ pub(crate) fn generate() -> Result<(), String> {
     writeln!(out, "];").unwrap();
 
     std::fs::write(OUT, &out).map_err(|e| format!("{OUT}: {e}"))?;
-    let status = Command::new("rustfmt")
-        .args(["--edition", "2024", OUT])
-        .status()
-        .map_err(|e| format!("rustfmt: {e}"))?;
-    if !status.success() {
-        return Err("rustfmt failed".into());
-    }
+    crate::run(Command::new("rustfmt").args(["--edition", "2024", OUT]))?;
     let size = std::fs::metadata(Path::new(OUT))
         .map_err(|e| e.to_string())?
         .len();

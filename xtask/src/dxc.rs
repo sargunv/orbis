@@ -68,17 +68,15 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     }
     // bsdtar reads zips: macOS's tar, and Windows's own tar.exe.
     let members: Vec<String> = DLLS.iter().map(|d| format!("bin/{arch}/{d}")).collect();
-    let status = Command::new("tar")
-        .arg("-xf")
-        .arg(&zip)
-        .arg("-C")
-        .arg(&cache)
-        .args(&members)
-        .status()
-        .map_err(|e| format!("dxc: tar: {e}"))?;
-    if !status.success() {
-        return Err(format!("dxc: tar couldn't extract {members:?} from {ZIP}"));
-    }
+    crate::run(
+        Command::new("tar")
+            .arg("-xf")
+            .arg(&zip)
+            .arg("-C")
+            .arg(&cache)
+            .args(&members),
+    )
+    .map_err(|e| format!("dxc: extracting {members:?} from {ZIP}: {e}"))?;
     for profile in ["debug", "release"] {
         let dir = target.join(profile);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
