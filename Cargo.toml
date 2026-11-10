@@ -105,9 +105,9 @@ orb-tile = { path = "crates/orb-tile" }
 orb-web = { path = "crates/orb-web" }
 
 [patch.crates-io]
-# wgpu 30.0.1 with D3D12 render passes (BeginRenderPass): a tiling GPU
-# (Adreno on Snapdragon X) can then keep a multisampled pass on chip and
-# resolve it there instead of storing, reloading and resolving it (#164).
+# wgpu 30.0.1 with D3D12 render passes (BeginRenderPass), off unless
+# `WGPU_DX12_RENDER_PASSES=1`: on the Adreno X1, the tiler they were for,
+# they made the multisampled 3D pass slower, not faster (#164).
 # The same branch carries naga's SPIR-V fixes: no explicit layout on
 # Function, Private and Workgroup variables (VUID-StandaloneSpirv-None-10684,
 # gfx-rs/wgpu#7696), and a u32 one clamping u32 image coordinates; orb-shaders'
