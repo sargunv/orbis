@@ -468,13 +468,18 @@ impl WgpuGpu {
     }
 
     /// Issues the held texture writes to the queue, wave by wave, each wave
-    /// before the last its own submission (see `texture_writes`).
+    /// before the last its own submission (see `texture_writes`). GL
+    /// orders its texture uploads as they come, so there the waves share
+    /// one: each submission is a flush, which ANGLE's Metal back end
+    /// commits as a command buffer of its own (#140).
     fn issue_texture_writes(&self) {
         let mut held = self.texture_writes.lock().expect("texture writes poisoned");
         held.issue(
             |write, texels| self.issue_texture_write(write, texels),
             || {
-                self.queue.submit([]);
+                if !self.gl {
+                    self.queue.submit([]);
+                }
             },
         );
     }
