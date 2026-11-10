@@ -59,6 +59,8 @@ pub(crate) struct RuntimeHandle {
     /// The resource provider and transforms, where the runtime's fetches
     /// would reach the network.
     pub(crate) hook: Arc<crate::resources::Hook>,
+    /// Disposed while maps lived: it stops once the last one is released.
+    disposed: std::sync::atomic::AtomicBool,
 }
 
 impl RuntimeHandle {
@@ -104,6 +106,16 @@ impl RuntimeHandle {
 
     pub(crate) fn on_thread(&self) -> bool {
         std::thread::current().id() == self.thread
+    }
+
+    /// Finishes a disposal that waited for the runtime's maps.
+    pub(crate) fn last_map_released(&self) {
+        if self
+            .disposed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            let _ = self.sender().send(Msg::Stop(None));
+        }
     }
 }
 
@@ -353,9 +365,7 @@ pub unsafe extern "C" fn mln_runtime_create(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
-            if out_runtime.is_null() {
-                return Err(Failure::argument("out_runtime is null"));
-            }
+            crate::base::fresh_out(out_runtime, "out_runtime")?;
             let mut state_dir = None;
             if !options.is_null() {
                 let options = sized(options, "options")?;
@@ -413,6 +423,7 @@ pub unsafe extern "C" fn mln_runtime_create(
                 join: Mutex::new(Some(join)),
                 maps: Default::default(),
                 hook,
+                disposed: Default::default(),
             });
             let id = handles::insert(Object::Runtime(handle.clone()));
             crate::network::register(&handle);
@@ -423,21 +434,48 @@ pub unsafe extern "C" fn mln_runtime_create(
 }
 
 /// Where Orbis keeps a runtime's state for MapLibre Native's cache file:
-/// a directory beside it, made if need be, so an unwritable place fails
-/// the create as an unopenable database does.
+/// a directory beside the file, which names it. Both are made if need be,
+/// in a directory that must exist and be writable, as Native's database
+/// file is.
 fn state_dir_for(cache: &str) -> Result<std::path::PathBuf> {
+    let file = std::path::Path::new(cache);
+    let name = file
+        .file_name()
+        .ok_or_else(|| Failure::argument(format!("can't open the cache at {cache}: no file name")))?
+        .to_string_lossy()
+        .into_owned();
+    let open =
+        |e: std::io::Error| Failure::argument(format!("can't open the cache at {cache}: {e}"));
+    if !file.exists() {
+        std::fs::write(
+            file,
+            format!("An Orbis cache: its resources and offline regions are in {name}.orbis.\n"),
+        )
+        .map_err(open)?;
+    }
     let path = std::path::PathBuf::from(format!("{cache}.orbis"));
-    std::fs::create_dir_all(&path)
-        .map_err(|e| Failure::argument(format!("can't open the cache at {cache}: {e}")))?;
+    std::fs::create_dir_all(&path).map_err(open)?;
     Ok(path)
 }
 
 fn stop(runtime: mln_runtime, completion: Option<Completion>, wait: bool) -> Result {
     let handle = handles::runtime(runtime.0)?;
     if handle.maps.load(std::sync::atomic::Ordering::Acquire) > 0 {
-        return Err(Failure::state(
-            "the runtime still has maps: release them first",
-        ));
+        if completion.is_some() {
+            return Err(Failure::state(
+                "the runtime still has maps: release them first",
+            ));
+        }
+        // A disposal finishes once the last map is released.
+        handles::remove(runtime.0);
+        crate::network::unregister(&handle);
+        handle
+            .disposed
+            .store(true, std::sync::atomic::Ordering::Release);
+        if handle.maps.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            handle.last_map_released();
+        }
+        return Ok(());
     }
     handles::remove(runtime.0);
     crate::network::unregister(&handle);

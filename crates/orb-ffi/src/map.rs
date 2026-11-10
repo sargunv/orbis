@@ -443,11 +443,18 @@ pub unsafe extern "C" fn mln_runtime_create_map(
     unsafe {
         boundary(out_diagnostic, || {
             let runtime = handles::runtime(runtime.0)?;
-            let options = *sized(options, "options")?;
-            crate::base::physical(options.initial_extent)?;
+            let options = *sized(options, "mln_map_options")?;
+            if options.fields & !(MLN_MAP_OPTION_EVENT_MASK | MLN_MAP_OPTION_TILE_CACHE_ENABLED)
+                != 0
+            {
+                return Err(Failure::argument("mln_map_options.fields has unknown bits"));
+            }
+            crate::base::physical(options.initial_extent).map_err(|f| {
+                Failure::argument(format!("the initial extent is invalid: {}", f.message))
+            })?;
             if options.map_mode > MLN_MAP_MODE_TILE {
                 return Err(Failure::argument(format!(
-                    "{} names no map mode",
+                    "mln_map_options.map_mode {} names no map mode",
                     options.map_mode
                 )));
             }
@@ -591,7 +598,9 @@ fn release(map: mln_map, completion: Option<Completion>, force: bool) -> Result 
     handles::remove(map.0);
     // The runtime's release can follow at once: the map's teardown runs
     // before it on the runtime thread.
-    handle.runtime.maps.fetch_sub(1, Ordering::AcqRel);
+    if handle.runtime.maps.fetch_sub(1, Ordering::AcqRel) == 1 {
+        handle.runtime.last_map_released();
+    }
     let id = handle.id();
     let runtime = handle.runtime.clone();
     runtime.post(move |state| {
@@ -979,8 +988,8 @@ command!(
     false,
     true,
     |state, id| {
-        if json.data.is_null() {
-            return Err(Failure::argument("json is null"));
+        if json.data.is_null() || json.size == 0 {
+            return Err(Failure::argument("the style JSON must not be empty"));
         }
         let json = text(json, "json")?;
         Ok(move |state: &mut State, id: u64| {
