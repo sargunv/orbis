@@ -250,6 +250,16 @@ pub(crate) enum Payload {
         stats: mln_rendering_stats,
     },
     StyleImage(String),
+    SourceChanged(String),
+    TileAction {
+        source: String,
+        operation: mln_tile_operation,
+        tile: orb_api::TileIndex,
+    },
+    Sprite {
+        id: String,
+        url: String,
+    },
 }
 
 /// A registered `mln_runtime_event_handler`.
@@ -330,6 +340,38 @@ fn c_event(e: &mut Event) -> mln_runtime_event {
             event.payload_type = MLN_RUNTIME_EVENT_PAYLOAD_STYLE_IMAGE;
             event.payload.style_image = mln_runtime_event_style_image {
                 image_id: crate::base::lend(id),
+            };
+        }
+        Payload::SourceChanged(id) => {
+            event.payload_type = MLN_RUNTIME_EVENT_PAYLOAD_SOURCE_CHANGED;
+            event.payload.source_changed = mln_runtime_event_source_changed {
+                source_id: crate::base::lend(id),
+            };
+        }
+        Payload::TileAction {
+            source,
+            operation,
+            tile,
+        } => {
+            event.payload_type = MLN_RUNTIME_EVENT_PAYLOAD_TILE_ACTION;
+            let z = u32::from(tile.z);
+            event.payload.tile_action = mln_runtime_event_tile_action {
+                source_id: crate::base::lend(source),
+                operation: *operation,
+                tile_id: mln_tile_id {
+                    overscaled_z: z,
+                    wrap: 0,
+                    canonical_z: z,
+                    canonical_x: tile.col,
+                    canonical_y: tile.row,
+                },
+            };
+        }
+        Payload::Sprite { id, url } => {
+            event.payload_type = MLN_RUNTIME_EVENT_PAYLOAD_SPRITE;
+            event.payload.sprite = mln_runtime_event_sprite {
+                id: crate::base::lend(id),
+                url: crate::base::lend(url),
             };
         }
     }

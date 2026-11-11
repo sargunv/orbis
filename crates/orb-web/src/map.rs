@@ -606,6 +606,13 @@ impl OrbisMap {
         for event in self.map.take_events() {
             let object = js_sys::Object::new();
             let kind = match event {
+                // MapLibre Native's resource and tile events, which the
+                // page's API doesn't report.
+                MapEvent::SourceChanged { .. }
+                | MapEvent::Tile { .. }
+                | MapEvent::Sprite { .. } => {
+                    continue;
+                }
                 MapEvent::StyleLoad => "styleload",
                 MapEvent::StyleData { generation } => {
                     set(&object, "generation", (generation as f64).into());

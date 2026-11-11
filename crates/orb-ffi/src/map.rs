@@ -214,6 +214,10 @@ pub(crate) struct MapEntry {
     /// frame at a time, as Native renders stills asynchronously: the
     /// runtime's other work goes on meanwhile.
     pub(crate) still: Option<Completion>,
+    /// Whether a session drew the map yet, and whether its last frame
+    /// showed everything loaded: Native's render state, for its render
+    /// map events.
+    pub(crate) rendered: Option<bool>,
 }
 
 impl MapEntry {
@@ -411,6 +415,46 @@ pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> 
                         custom.fetch(id, &source, tile);
                     }
                 }
+                E::SourceChanged { source } => out.push((
+                    MLN_RUNTIME_EVENT_MAP_SOURCE_CHANGED,
+                    Payload::SourceChanged(source),
+                    String::new(),
+                )),
+                E::Tile {
+                    source,
+                    tile,
+                    progress,
+                } => {
+                    // Native's tile actions carry no message.
+                    let operation = match progress {
+                        orb_api::Progress::Requested => MLN_TILE_OPERATION_REQUESTED_FROM_NETWORK,
+                        orb_api::Progress::Loaded => MLN_TILE_OPERATION_END_PARSE,
+                        orb_api::Progress::Failed(_) => MLN_TILE_OPERATION_ERROR,
+                        orb_api::Progress::Cancelled => MLN_TILE_OPERATION_CANCELLED,
+                    };
+                    out.push((
+                        MLN_RUNTIME_EVENT_MAP_TILE_ACTION,
+                        Payload::TileAction {
+                            source,
+                            operation,
+                            tile,
+                        },
+                        String::new(),
+                    ));
+                }
+                E::Sprite { id, url, progress } => {
+                    let (kind, message) = match progress {
+                        orb_api::Progress::Requested => {
+                            (MLN_RUNTIME_EVENT_MAP_SPRITE_REQUESTED, String::new())
+                        }
+                        orb_api::Progress::Loaded => {
+                            (MLN_RUNTIME_EVENT_MAP_SPRITE_LOADED, String::new())
+                        }
+                        orb_api::Progress::Failed(e) => (MLN_RUNTIME_EVENT_MAP_SPRITE_ERROR, e),
+                        orb_api::Progress::Cancelled => continue,
+                    };
+                    out.push((kind, Payload::Sprite { id, url }, message));
+                }
                 E::StyleImageMissing { name } => out.push((
                     MLN_RUNTIME_EVENT_MAP_STYLE_IMAGE_MISSING,
                     Payload::StyleImage(name),
@@ -420,9 +464,13 @@ pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> 
                 // ones are a source's, a tile's or a sprite's, which
                 // MapLibre Native logs.
                 E::Error { message } if !entry.style_loaded => {
+                    let error = match entry.map.style_unparsed() {
+                        true => MLN_MAP_LOAD_ERROR_STYLE_PARSE,
+                        false => MLN_MAP_LOAD_ERROR_STYLE_LOAD,
+                    };
                     out.push((
                         MLN_RUNTIME_EVENT_MAP_LOADING_FAILED,
-                        Payload::LoadingFailed(MLN_MAP_LOAD_ERROR_STYLE_LOAD),
+                        Payload::LoadingFailed(error),
                         message.clone(),
                     ));
                     waiters.extend(entry.style_waiters.drain(..).map(|c| {
@@ -723,6 +771,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         queries: Default::default(),
                         query_aliases: Default::default(),
                         still: None,
+                        rendered: None,
                     },
                 );
                 // Native's map moves its camera into place as it's made.

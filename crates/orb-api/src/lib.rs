@@ -42,8 +42,8 @@ pub use orb_host::{
 };
 pub use orb_runtime::{
     CameraState, ClusterQuery, FeatureTarget, FrameReport, FrameTimes, HOST_TILES, Hit, HostTile,
-    MapEvent, MapOptions, MissingTiles, Op, Preview, Previews, StyleDoc, StyleImage, Transaction,
-    VideoRequest, json,
+    MapEvent, MapOptions, MissingTiles, Op, Preview, Previews, Progress, StyleDoc, StyleImage,
+    Transaction, VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Target;

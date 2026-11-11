@@ -428,6 +428,8 @@ pub(crate) struct SpriteState {
     /// Each sprite's image names, by its index in the style's, to take
     /// back if its pixels fail.
     pub(crate) icon_names: Vec<Vec<String>>,
+    /// Each sprite's failure has been reported, by its index.
+    pub(crate) failed: Vec<bool>,
     /// Whether labels laid out again (an edit's) took their icons' atlas
     /// rectangles before the sprites' pixels were in: they lay out once
     /// more when the pixels are.
@@ -624,6 +626,8 @@ pub struct Map {
     /// Why the latest style request failed: nothing will load until
     /// another style replaces it.
     pub(crate) style_error: Option<String>,
+    /// Whether that failure was the style's text, not its fetch.
+    style_unparsed: bool,
     /// Gives up the style URL loading, once another style replaces it.
     pub(crate) style_fetch: Abort,
     /// Gives up what the style generation fetches (TileJSON, archive
@@ -827,6 +831,7 @@ impl Map {
             style_request: 0,
             style_fetching: false,
             style_error: None,
+            style_unparsed: false,
             style_fetch: Abort::NEVER,
             style_loads: Abort::new(),
             generation: 0,
@@ -1216,6 +1221,13 @@ impl Map {
     /// error. Frames draw nothing until another style replaces it.
     pub fn style_error(&self) -> Option<&str> {
         self.style_error.as_deref()
+    }
+
+    /// Whether the latest style request's failure ([`style_error`](Self::style_error))
+    /// was its text's, which didn't parse as a style, rather than its
+    /// fetch's, which brought none (an error, or an empty answer).
+    pub fn style_unparsed(&self) -> bool {
+        self.style_error.is_some() && self.style_unparsed
     }
 
     /// The style asked for last is installed, with its sprites and its
@@ -2211,7 +2223,24 @@ impl Map {
         style.sprites.loading = sprites.len() as u32;
         style.sprites.pixels_loading = sprites.len() as u32;
         style.sprites.icon_names = vec![Vec::new(); sprites.len()];
+        style.sprites.failed = vec![false; sprites.len()];
         style.icons.pixel_ratio = f64::from(pixel_ratio);
+        // A style without a sprite reports an empty one loaded, as Native
+        // does; each sprite reports its request.
+        if sprites.is_empty() {
+            self.events.push(MapEvent::Sprite {
+                id: String::new(),
+                url: String::new(),
+                progress: crate::Progress::Loaded,
+            });
+        }
+        for sprite in sprites {
+            self.events.push(MapEvent::Sprite {
+                id: sprite.id.clone(),
+                url: sprite.url.clone(),
+                progress: crate::Progress::Requested,
+            });
+        }
         if sprites.is_empty() && style.sprites.stale.is_some() {
             drop(guard);
             self.sprites_done(gpu);
@@ -2866,7 +2895,16 @@ impl Map {
             return;
         }
         self.style_fetching = false;
-        let installed = result.map_err(|e| e.to_string()).and_then(|json| {
+        // A first answer without a style (no content, or not modified
+        // with nothing earlier to confirm) fails as Native's does.
+        let fetched = match result {
+            Err(FetchError::Status(304)) => Err("not modified".to_string()),
+            Err(e) => Err(e.to_string()),
+            Ok(json) if json.trim().is_empty() => Err("no content".to_string()),
+            Ok(json) => Ok(json),
+        };
+        self.style_unparsed = fetched.is_ok();
+        let installed = fetched.and_then(|json| {
             if self.style.is_some() {
                 self.diff_document(&json, url)
             } else {

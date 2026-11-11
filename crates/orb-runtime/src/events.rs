@@ -76,6 +76,26 @@ pub enum MapEvent {
     LongClick {
         position: DVec2,
     },
+    /// A source's description arrived: its TileJSON (MapLibre Native's
+    /// `onSourceChanged`).
+    SourceChanged {
+        source: String,
+    },
+    /// A tile of a source arrived from its load: laid out, failed or
+    /// given up (MapLibre Native's `onTileAction`).
+    Tile {
+        source: String,
+        tile: orb_crs::TileIndex,
+        progress: Progress,
+    },
+    /// A sprite of the style was asked for, loaded or failed (MapLibre
+    /// Native's sprite events). A style without a sprite reports an empty
+    /// one loaded, as Native does.
+    Sprite {
+        id: String,
+        url: String,
+        progress: Progress,
+    },
     /// The map needs a tile of a source the app feeds
     /// ([`HOST_TILES`](crate::HOST_TILES)): answer with
     /// [`Map::host_tile`](crate::Map::host_tile). Once per tile until
@@ -84,6 +104,16 @@ pub enum MapEvent {
         source: String,
         tile: orb_crs::TileIndex,
     },
+}
+
+/// How a load went, for [`MapEvent::Tile`] and [`MapEvent::Sprite`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Progress {
+    Requested,
+    Loaded,
+    Failed(String),
+    /// Given up before it loaded.
+    Cancelled,
 }
 
 #[derive(Debug, Default)]

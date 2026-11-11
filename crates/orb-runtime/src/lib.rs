@@ -51,7 +51,7 @@ mod video;
 pub mod wire;
 mod worker;
 
-pub use events::MapEvent;
+pub use events::{MapEvent, Progress};
 pub use video::{NO_VIDEO, VideoRequest};
 
 pub use features::{FeatureRequest, FeaturesDone, TileFeature};

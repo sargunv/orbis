@@ -1155,6 +1155,13 @@ impl Map {
         }
     }
 
+    /// Whether the latest style request failed because its text didn't
+    /// parse as a style, not because its fetch brought none
+    /// ([`orb_runtime::Map::style_unparsed`]).
+    pub fn style_unparsed(&self) -> bool {
+        self.map.style_unparsed()
+    }
+
     /// The latest style request's failure, as an error.
     fn style_failed(&self) -> Result<(), Error> {
         match self.map.style_error() {

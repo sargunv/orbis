@@ -9,12 +9,12 @@ use orb_hal::Gpu;
 use orb_render::{ImageUpload, OutOfSpace, Renderer, TileKey};
 use orb_style::{LayerType, SourceKind};
 
-use crate::MapEvent;
 use crate::image::ResidentImage;
 use crate::jobs::TileResult;
 use crate::map::*;
 use crate::meshes::*;
 use crate::resident::*;
+use crate::{MapEvent, Progress};
 use orb_source::endpoint::TileEndpoint;
 
 impl Map {
@@ -80,6 +80,14 @@ impl Map {
                         style.sprites.loading -= 1;
                         match result {
                             Err(e) => {
+                                let sprite = &style.worker.plan().style.sprites[index];
+                                if !std::mem::replace(&mut style.sprites.failed[index], true) {
+                                    self.events.push(MapEvent::Sprite {
+                                        id: sprite.id.clone(),
+                                        url: sprite.url.clone(),
+                                        progress: Progress::Failed(e.clone()),
+                                    });
+                                }
                                 let message = format!("sprite: {e}");
                                 self.events.push(MapEvent::Error { message });
                             }
@@ -139,6 +147,11 @@ impl Map {
                             .map(|endpoint| (endpoint, warp)),
                     };
                     let image = plan.image_kind(index).is_some();
+                    if endpoint.is_ok() {
+                        self.events.push(MapEvent::SourceChanged {
+                            source: def.id.clone(),
+                        });
+                    }
                     style.sources[index] = ready_source(endpoint, &def.id, image, &mut self.events);
                     self.events.sources.insert(source);
                     // Color-relief ramps wait for their source's encoding.
@@ -221,6 +234,18 @@ impl Map {
         };
         style.sprites.pixels_loading -= 1;
         let mut relayout = false;
+        let sprite = &style.worker.plan().style.sprites[index];
+        let failed = std::mem::replace(&mut style.sprites.failed[index], result.is_err());
+        if !failed {
+            self.events.push(MapEvent::Sprite {
+                id: sprite.id.clone(),
+                url: sprite.url.clone(),
+                progress: match &result {
+                    Ok(_) => Progress::Loaded,
+                    Err(e) => Progress::Failed(e.clone()),
+                },
+            });
+        }
         match result {
             Err(e) => {
                 let message = format!("sprite: {e}");
@@ -394,6 +419,16 @@ impl Map {
         if arrived {
             *loading = loading.saturating_sub(1);
             self.events.sources.insert(key);
+            let progress = match &result {
+                Err(e) => Progress::Failed(e.clone()),
+                Ok(build) if build.cancelled => Progress::Cancelled,
+                Ok(_) => Progress::Loaded,
+            };
+            self.events.push(MapEvent::Tile {
+                source: plan.source_def(source).id.clone(),
+                tile,
+                progress,
+            });
             // An app's answer a reload forgot: asked for again instead.
             if self.host_tiles.landed_stale(key, tile) {
                 pyramid.forget_loading(tile);

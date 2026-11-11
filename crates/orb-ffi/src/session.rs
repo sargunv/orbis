@@ -920,6 +920,16 @@ pub(crate) fn pump_one(state: &mut State, id: u64) {
     };
     let (drawn, still) = step(entry, map, now);
     for (map, needs_repaint, full, stats) in drawn {
+        // The map's first frame starts rendering it, and the first that
+        // shows everything after one that didn't finishes that, as
+        // Native's renderer reports them.
+        let rendered = state.maps.get_mut(&map).map(|m| m.rendered.replace(full));
+        if let Some(None) = rendered {
+            let event = MLN_RUNTIME_EVENT_MAP_RENDER_MAP_STARTED;
+            state.event(map, event, Payload::None, String::new());
+        }
+        let event = MLN_RUNTIME_EVENT_MAP_RENDER_FRAME_STARTED;
+        state.event(map, event, Payload::None, String::new());
         state.event(
             map,
             MLN_RUNTIME_EVENT_MAP_RENDER_FRAME_FINISHED,
@@ -930,6 +940,10 @@ pub(crate) fn pump_one(state: &mut State, id: u64) {
             },
             String::new(),
         );
+        if full && matches!(rendered, Some(None | Some(false))) {
+            let event = MLN_RUNTIME_EVENT_MAP_RENDER_MAP_FINISHED;
+            state.event(map, event, Payload::None, String::new());
+        }
     }
     if let Some((completion, result, generation)) = still {
         state.complete(Some(completion), result, generation);
