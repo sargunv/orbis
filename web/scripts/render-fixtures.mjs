@@ -6,13 +6,15 @@
 // unpremultiplying and pixel comparison belong to Rust. The first argument
 // is the assets directory to serve (GL JS's by default); `--offline` serves
 // MapLibre Native's cache, whose `https://` and `mapbox://` URLs are files
-// too.
+// too. `--android` draws them in Chrome on the phone assigned to this
+// worktree (`devices-cli assign`), its WebGPU or with `--webgl2` its
+// WebGL 2.
 import { writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-import { launchChromium, serveDemo } from "./serve.mjs";
+import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
 
 const assets = process.argv[2]
   ? resolve(process.argv[2]) + sep
@@ -21,11 +23,20 @@ const offline = process.argv.includes("--offline");
 // `--webgl2`: Chromium without WebGPU, its maps on WebGL 2
 // (`--platform chrome-webgl2`).
 const webgl2 = process.argv.includes("--webgl2");
+const android = process.argv.includes("--android");
 const reply = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const server = await serveDemo({ assets, offline });
-const browser = await launchChromium({ unpaced: true, webgpu: !webgl2 });
+// A phone's Chrome has WebGPU; `?backend=webgl2` puts its maps on WebGL 2.
+const { browser, page, close } = android
+  ? await openAndroid(server, { physical: true })
+  : await launchChromium({ unpaced: true, webgpu: !webgl2 }).then(
+      async (browser) => ({
+        browser,
+        page: await browser.newPage(),
+        close: () => browser.close(),
+      }),
+    );
 try {
-  const page = await browser.newPage();
   page.on("console", (m) => {
     if (["error", "warning"].includes(m.type())) console.error(m.text());
   });
@@ -42,7 +53,13 @@ try {
     const gl = new OffscreenCanvas(1, 1).getContext("webgl2");
     return gl.getParameter(gl.MAX_TEXTURE_SIZE);
   }, webgl2);
-  reply({ ready: true, browser: browser.version(), max_size: maxSize });
+  reply({
+    ready: true,
+    browser: android
+      ? await page.evaluate(() => navigator.userAgent)
+      : browser.version(),
+    max_size: maxSize,
+  });
   for await (const line of createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
@@ -76,6 +93,6 @@ try {
   reply({ error: String(error) });
   process.exitCode = 1;
 } finally {
-  await browser.close();
+  await close();
   server.close();
 }

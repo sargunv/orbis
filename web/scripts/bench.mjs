@@ -38,6 +38,10 @@
 // opens the page in its Chrome; keep the screen on and unlocked. `--physical`
 // measures a phone instead of the emulator: assign one to this worktree with
 // `devices-cli assign <serial>` first and run `devices-cli release` after.
+// A device's frame bench is checked against this machine: the same views
+// drawn here, in headless Chromium on the same backend, their snapshots
+// compared cell by cell, and the run fails where a view's picture differs
+// (a phone's WebGL 2 drew no fills or lines for days of benches, #140).
 import { firefox } from "playwright";
 
 import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
@@ -50,6 +54,12 @@ const FLAGS = [
   "--firefox",
   "--unpaced",
 ];
+// The picture check (`checkPictures`).
+/** A cell whose channels differ by more than this differs. */
+const CELL_TOLERANCE = 24;
+/** A view whose cells differ beyond this share drew wrong. */
+const WRONG_SHARE = 0.1;
+
 const args = process.argv.slice(2);
 const precise = args.includes("--precise");
 const inFirefox = args.includes("--firefox");
@@ -125,27 +135,22 @@ try {
     params.get("experiment") === "gestures" && !android && !inFirefox
       ? await startTrace(await page.context().newCDPSession(page))
       : null;
+  const checked =
+    android && (params.get("experiment") ?? "frames") === "frames";
   for (const engine of engines) {
     params.set("engine", engine);
-    await page.goto(`${server.url}bench.html?${params}`);
-    let last = "";
-    for (;;) {
-      const { state, text } = await page
-        .locator("#status")
-        .evaluate(
-          (e) => ({ state: e.dataset.state, text: e.textContent }),
-          null,
-          { timeout: 600_000 },
-        );
-      if (text !== last) {
-        console.error(`bench: ${text}`);
-        last = text;
-      }
-      if (state === "error") throw new Error(text);
-      if (state === "done") break;
-      await page.waitForTimeout(500);
-    }
+    await runPage(page, `${server.url}bench.html?${params}`);
     process.stdout.write(`${await page.locator("#markdown").inputValue()}\n`);
+    if (checked) {
+      const pictures = await page.evaluate(() => globalThis.benchPictures);
+      const wrong = await checkPictures(server, params, pictures);
+      if (wrong) {
+        process.exitCode = 1;
+        console.error(
+          `bench: ${wrong} views drew pictures unlike this machine's`,
+        );
+      }
+    }
   }
   if (tracing) process.stdout.write(presentsReport(await tracing.stop()));
   if (errors) throw new Error(`${errors} page errors`);
@@ -153,6 +158,80 @@ try {
   if (android) await cleanup();
   else await browser.close();
   server.close();
+}
+
+/** Runs the bench page at `url` on `page` until it's done. */
+async function runPage(page, url) {
+  await page.goto(url);
+  let last = "";
+  for (;;) {
+    const { state, text } = await page
+      .locator("#status")
+      .evaluate(
+        (e) => ({ state: e.dataset.state, text: e.textContent }),
+        null,
+        { timeout: 600_000 },
+      );
+    if (text !== last) {
+      console.error(`bench: ${text}`);
+      last = text;
+    }
+    if (state === "error") throw new Error(text);
+    if (state === "done") return;
+    await page.waitForTimeout(500);
+  }
+}
+
+/**
+ * Draws `params`' views in headless Chromium on this machine, a round of
+ * two frames each, and prints how the device's `pictures`
+ * (`frames.js`'s `benchPictures`) differ from them; resolves to how many
+ * views differ past `WRONG_SHARE`.
+ */
+async function checkPictures(server, params, pictures) {
+  const here = new URLSearchParams(params);
+  for (const [key, value] of [
+    ["frames", "2"],
+    ["warmup", "1"],
+    ["rounds", "1"],
+  ])
+    here.set(key, value);
+  const browser = await launchChromium();
+  let reference;
+  try {
+    const page = await browser.newPage();
+    await runPage(page, `${server.url}bench.html?${here}`);
+    reference = await page.evaluate(() => globalThis.benchPictures);
+  } finally {
+    await browser.close();
+  }
+  const lines = ["", "#### Pictures against this machine's", ""];
+  let wrong = 0;
+  for (const [engine, views] of Object.entries(pictures)) {
+    for (const [view, cells] of Object.entries(views)) {
+      const theirs = reference[engine]?.[view];
+      if (!theirs || theirs.length !== cells.length) {
+        lines.push(`- ${engine}, ${view}: **no picture here to compare**`);
+        wrong++;
+        continue;
+      }
+      let differ = 0;
+      for (let i = 0; i < cells.length; i += 3) {
+        const d = Math.max(
+          ...[0, 1, 2].map((c) => Math.abs(cells[i + c] - theirs[i + c])),
+        );
+        if (d > CELL_TOLERANCE) differ++;
+      }
+      const share = differ / (cells.length / 3);
+      const bad = share > WRONG_SHARE;
+      if (bad) wrong++;
+      lines.push(
+        `- ${engine}, ${view}: ${(share * 100).toFixed(1)}% of cells differ${bad ? " — **drawn wrong**" : ""}`,
+      );
+    }
+  }
+  process.stdout.write(`${lines.join("\n")}\n`);
+  return wrong;
 }
 
 /** Traces the page's user timing marks and the GPU process's presents; `stop()` resolves to the events. */

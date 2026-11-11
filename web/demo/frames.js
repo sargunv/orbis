@@ -133,6 +133,31 @@ async function repaints(repaint, { rounds, warmup, frames }, show) {
   return s;
 }
 
+/** The CSS pixels of a view's snapshot for its picture. */
+const PICTURE_SIZE = [256, 192];
+/** Snapshot pixels a picture's cell averages, on a side. */
+const PICTURE_CELL = 8;
+
+/** `image` as the mean RGB of each `PICTURE_CELL`-square cell, row by row:
+ * coarse enough that two GPUs' antialiasing agree, fine enough that a
+ * view drawn blank or with missing layers doesn't. */
+function picture({ width, height, data }) {
+  const cells = [];
+  for (let cy = 0; cy + PICTURE_CELL <= height; cy += PICTURE_CELL) {
+    for (let cx = 0; cx + PICTURE_CELL <= width; cx += PICTURE_CELL) {
+      const sum = [0, 0, 0];
+      for (let y = cy; y < cy + PICTURE_CELL; y++) {
+        for (let x = cx; x < cx + PICTURE_CELL; x++) {
+          const i = (y * width + x) * 4;
+          for (let c = 0; c < 3; c++) sum[c] += data[i + c];
+        }
+      }
+      cells.push(...sum.map((v) => Math.round(v / PICTURE_CELL ** 2)));
+    }
+  }
+  return cells;
+}
+
 /** An Orbis map at `center`. */
 async function orbisEngine(
   container,
@@ -173,6 +198,10 @@ async function orbisEngine(
         await map.edit((tx) => tx.addLayer(BUILDINGS_3D, before));
         await built;
       }
+    },
+    /** The view's snapshot as a `PICTURE` grid (`picture`). */
+    async picture() {
+      return picture(await map.snapshot(...PICTURE_SIZE, 1));
     },
     async measure(counts, show) {
       const s = { gpu: [], cull: [], main: [], extrusion: [], submit: [] };
@@ -308,6 +337,9 @@ export async function runFrames({
   const made = [];
   const counts = { frames, warmup, rounds };
   const results = new Map();
+  // Each Orbis view's picture, for `bench.mjs` to check a phone's against
+  // this machine's.
+  globalThis.benchPictures = {};
   try {
     for (const engine of engines) {
       const container = document.createElement("div");
@@ -349,6 +381,12 @@ export async function runFrames({
         for (const [other, container] of containers)
           container.style.zIndex = other === engine ? "1" : "0";
         await engine.view(name, zoom, pitch, buildings);
+        // Before the measured frames, whose GPU submissions are counted:
+        // the snapshot's own lands while the view settles.
+        if (engine.picture) {
+          (globalThis.benchPictures[engine.name] ??= {})[name] =
+            await engine.picture();
+        }
         const s = await engine.measure(counts, (round) =>
           show(`${engine.name}, ${name}: round ${round + 1} of ${rounds}`),
         );

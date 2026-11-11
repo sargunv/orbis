@@ -48,20 +48,29 @@ fn run() -> Result<(), String> {
     let mut filter = String::new();
     let mut platform = "native".to_string();
     let mut suite = "render".to_string();
-    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>[,<substring>…]] [--platform native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]";
+    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>[,<substring>…]] [--platform native|chrome|chrome-webgl2|android-chrome|android-chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]";
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--suite" => suite = args.next().ok_or(USAGE)?,
             "--filter" => filter = args.next().ok_or("--filter needs a substring (or several, comma-separated)")?,
             "--platform" => {
                 platform = args.next().ok_or(
-                    "--platform needs native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl",
+                    "--platform needs native|chrome|chrome-webgl2|android-chrome|android-chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl",
                 )?
             }
             _ => return Err(format!("unknown argument {arg}; {USAGE}")),
         }
     }
-    if !["native", "chrome", "chrome-webgl2", "lavapipe", "all"].contains(&platform.as_str())
+    if ![
+        "native",
+        "chrome",
+        "chrome-webgl2",
+        "android-chrome",
+        "android-chrome-webgl2",
+        "lavapipe",
+        "all",
+    ]
+    .contains(&platform.as_str())
         && platforms::beside_native(&platform).is_none()
     {
         return Err(format!("unknown platform {platform}"));

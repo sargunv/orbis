@@ -51,7 +51,7 @@ cargo xtask <task>
                core-gl.wasm alone
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
-  rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]
+  rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|chrome-webgl2|android-chrome|android-chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]
                the fixtures: GL JS's render (default) and query suites, or
                MapLibre Native's native-render, native-query and
                native-expression suites; lavapipe runs the render suites
@@ -168,7 +168,15 @@ fn rt(args: &[String]) -> Result<(), String> {
         fixtures::ensure()?;
     }
     if args.windows(2).any(|pair| {
-        pair[0] == "--platform" && ["chrome", "chrome-webgl2", "all"].contains(&pair[1].as_str())
+        pair[0] == "--platform"
+            && [
+                "chrome",
+                "chrome-webgl2",
+                "android-chrome",
+                "android-chrome-webgl2",
+                "all",
+            ]
+            .contains(&pair[1].as_str())
     }) {
         web::build(Default::default())?;
     }

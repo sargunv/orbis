@@ -48,6 +48,12 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
         reports.insert("chrome", suite.run(root, filter, "chrome")?);
         reports.insert("chrome-webgl2", suite.run(root, filter, "chrome-webgl2")?);
     }
+    // A phone's Chrome beside this machine's on the same backend: what the
+    // phone alone fails.
+    if let Some(desktop) = platform.strip_prefix("android-") {
+        reports.insert(desktop, suite.run(root, filter, desktop)?);
+        reports.insert(platform, suite.run(root, filter, platform)?);
+    }
     if ["lavapipe", "all"].contains(&platform) {
         let start = Instant::now();
         container(root, filter, suite, &output)?;
@@ -63,13 +69,17 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
         } else {
             Value::Null
         };
-    println!("\nplatform  prefix          pass  fail  skip  in-scope pass rate");
+    let width = reports.keys().map(|p| p.len()).max().unwrap_or(0).max(8);
+    println!(
+        "\n{:<width$}  prefix          pass  fail  skip  in-scope pass rate",
+        "platform"
+    );
     for (platform, report) in &reports {
         for (prefix, counts) in report["prefixes"].as_object().expect("prefixes") {
-            print!("{platform:<9} ");
+            print!("{platform:<width$}  ");
             Counts::from_json(counts).print(prefix);
         }
-        print!("{platform:<9} ");
+        print!("{platform:<width$}  ");
         Counts::from_json(&report["totals"]).print("TOTAL");
         if let Some(ignored) = report.get("native_ignored") {
             println!(
@@ -118,19 +128,24 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
         }
     }
     let webgl2 = match (reports.get("chrome"), reports.get("chrome-webgl2")) {
-        (Some(webgpu), Some(gl)) => webgl2_report(webgpu, gl),
+        (Some(webgpu), Some(gl)) => lost_report("WebGPU", webgpu, "GL", gl),
         _ => Value::Null,
     };
-    let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity,"webgl2":webgl2});
+    let phone = match platform.strip_prefix("android-") {
+        Some(desktop) => lost_report(desktop, &reports[desktop], platform, &reports[platform]),
+        None => Value::Null,
+    };
+    let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity,"webgl2":webgl2,"phone":phone});
     write_json(&combined, &summary)?;
     println!("\nReport: {}", combined.display());
     Ok(())
 }
 
-/// The tests WebGPU passes and WebGL 2 doesn't, by cause: a gap the map
+/// The tests `first` passes and `second` doesn't, by cause: a gap the map
 /// reported (`degraded:<gap>`), or one the renderer didn't, which is a bug
-/// of the GL path (#140). Printed, and the summary's `webgl2`.
-fn webgl2_report(webgpu: &Value, gl: &Value) -> Value {
+/// of the second's path (WebGL 2's against WebGPU, #140; a phone's against
+/// this machine). Printed, and the summary's `webgl2` or `phone`.
+fn lost_report(first_name: &str, webgpu: &Value, second_name: &str, gl: &Value) -> Value {
     let status = |report: &Value| -> BTreeMap<String, Value> {
         (report["tests"].as_array().into_iter().flatten())
             .map(|t| (t["id"].as_str().unwrap_or_default().to_string(), t.clone()))
@@ -151,7 +166,7 @@ fn webgl2_report(webgpu: &Value, gl: &Value) -> Value {
         causes.entry(cause).or_default().push(id.clone());
     }
     let lost: usize = causes.values().map(Vec::len).sum();
-    println!("\nWebGL 2: {lost} tests WebGPU passes fail on GL, by cause:");
+    println!("\n{lost} tests {first_name} passes fail on {second_name}, by cause:");
     for (cause, ids) in &causes {
         println!("  {cause}: {}", ids.len());
         if !cause.starts_with("degraded:") {
