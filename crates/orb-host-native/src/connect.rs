@@ -1,11 +1,15 @@
 //! Opening connections: ureq's connector chain with its TCP step racing a
 //! host's addresses (Happy Eyeballs, RFC 8305), as curl and browsers do.
 //! ureq alone tries each address in turn, waiting out the first.
+//! HTTPS runs over rustls with ring and verifies servers as the platform
+//! does (rustls-platform-verifier): its trust store, enterprise and user
+//! roots, and revocation, rather than a copy of Mozilla's roots.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use ureq::tls::{RootCerts, TlsConfig};
 use ureq::unversioned::resolver::{DefaultResolver, Resolver};
 use ureq::unversioned::transport::{
     ConnectProxyConnector, ConnectionDetails, Connector, Either, RustlsConnector, TcpConnector,
@@ -17,24 +21,30 @@ use ureq::unversioned::transport::{
 const HEAD_START: Duration = Duration::from_millis(200);
 
 /// An agent whose connections race their host's addresses and that keeps
-/// up to `idle_per_host` connections to a host open between requests.
-pub(crate) fn agent(idle_per_host: usize) -> ureq::Agent {
+/// up to `idle_per_host` connections to a host open between requests. Its
+/// HTTPS verifies servers with `roots`.
+pub(crate) fn agent(idle_per_host: usize, roots: RootCerts) -> ureq::Agent {
     agent_with(
         TcpConnector::default(),
         DefaultResolver::default(),
-        idle_per_host,
+        (idle_per_host, roots),
     )
 }
 
 fn agent_with(
     per_address: impl Connector,
     resolver: impl Resolver,
-    idle_per_host: usize,
+    (idle_per_host, roots): (usize, RootCerts),
 ) -> ureq::Agent {
+    let tls = TlsConfig::builder()
+        .root_certs(roots)
+        .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .build();
     let config = ureq::Agent::config_builder()
         .user_agent(concat!("orbis/", env!("CARGO_PKG_VERSION")))
         .max_idle_connections(idle_per_host.max(10))
         .max_idle_connections_per_host(idle_per_host)
+        .tls_config(tls)
         .build();
     // ureq's default chain, with the race for its TCP step.
     let connector = ()
@@ -219,7 +229,11 @@ mod tests {
         });
         // An IPv6 address first, as resolvers order them.
         let silent: SocketAddr = format!("[::1]:{}", answers.port()).parse().unwrap();
-        let agent = agent_with(Hang { silent }, Resolve { silent, answers }, 4);
+        let agent = agent_with(
+            Hang { silent },
+            Resolve { silent, answers },
+            (4, RootCerts::PlatformVerifier),
+        );
         let started = std::time::Instant::now();
         let body = agent
             .get("http://tiles.test/")

@@ -63,6 +63,17 @@ fn android_main(app: AndroidApp) {
     let started = Instant::now();
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
     let _ = APP.set(app.clone());
+    // HTTPS verifies servers with Android's trust store from here on.
+    let https = with_activity(&app, |env, activity| {
+        // SAFETY: the thread's env and a live reference to the activity.
+        let init = unsafe { orb_api::init_android(env.get_raw().cast(), activity.as_raw().cast()) };
+        Ok(init)
+    });
+    match https {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => log(&format!("HTTPS keeps Mozilla's roots: {e}")),
+        Err(e) => log(&format!("HTTPS keeps Mozilla's roots: {e}")),
+    }
     let extras = match extras(&app) {
         Ok(extras) => extras,
         Err(e) => {

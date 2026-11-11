@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- No Java or Kotlin: orb-android's liborbis.so is the whole app. -->
-    <application android:label="Orbis" android:allowBackup="false" android:hasCode="false">
+    <!-- No Java or Kotlin of its own: orb-android's liborbis.so is the
+         app, and the only code beside it is rustls-platform-verifier's
+         Kotlin half, which its HTTPS calls. -->
+    <application android:label="Orbis" android:allowBackup="false">
         <!-- Shown over the keyguard so it runs on locked test devices; one
              instance, since android-activity runs one activity a process. -->
         <activity

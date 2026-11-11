@@ -57,7 +57,8 @@ rustix = { version = "1.1.6", default-features = false, features = [
   "std",
   "time",
 ] }
-ureq = "3.5.1"
+# Each user picks its TLS roots: orb-host-native the platform's.
+ureq = { version = "3.5.1", default-features = false, features = ["gzip"] }
 # Reads MapLibre Native's render-test cache (cargo xtask fixtures native).
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 flate2 = "1.1"

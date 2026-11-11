@@ -15,6 +15,12 @@ dependencyResolutionManagement {
   repositories {
     google()
     mavenCentral()
+    // rustls-platform-verifier publishes its Android half here alone.
+    maven(
+      "https://github.com/rustls/rustls-platform-verifier/raw/maven-archive/android-release-support/maven/",
+    ) {
+      content { includeGroup("org.rustls") }
+    }
   }
 }
 

@@ -20,16 +20,6 @@ pub unsafe extern "C" fn mln_android_frame_pacer_create(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_android_frame_pacer_create") }
 }
 
-/// `mln_android_init`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_android_init(
-    jni_env: *mut std::ffi::c_void,
-    context: *mut std::ffi::c_void,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_android_init") }
-}
-
 /// `mln_binding_dart_wake_create`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_binding_dart_wake_create(
@@ -650,6 +640,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_acquired_frame_view_end,
         crate::frames::mln_acquired_frame_view_end,
+    ];
+    let _ = [
+        crate::sys::mln_android_init,
+        crate::network::mln_android_init,
     ];
     let _ = [
         crate::sys::mln_apple_frame_pacer_create,

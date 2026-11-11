@@ -11,7 +11,24 @@ fontdb = "0.24.0"
 image = { workspace = true, features = ["jpeg"] }
 orb-host = { workspace = true, features = ["fonts"] }
 orb-text = { workspace = true, features = ["fonts"] }
-ureq.workspace = true
+# HTTPS over rustls with ring, verifying servers as the platform does
+# (rustls-platform-verifier: its trust store, settings and revocation).
+rustls = { version = "0.23.46", default-features = false, features = [
+  "ring",
+  "std",
+  "tls12",
+] }
+ureq = { workspace = true, features = [
+  "rustls-no-provider",
+  "platform-verifier",
+] }
+
+# On Android the verifier calls the app's JVM, which the app hands in
+# (`android::init`); until then HTTPS trusts Mozilla's roots.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22.4"
+rustls-platform-verifier = "0.7.1"
+ureq = { workspace = true, features = ["rustls-webpki-roots"] }
 
 [lints]
 workspace = true

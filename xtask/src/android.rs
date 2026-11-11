@@ -90,11 +90,15 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         &root.join(DATA),
         &project.join("app/build/generated/assets"),
     )?;
-    crate::run(
-        Command::new("gradle")
-            .current_dir(&project)
-            .args(["--quiet", ":app:assembleRelease"]),
-    )?;
+    let verifier = format!(
+        "-PrustlsPlatformVerifier={}",
+        locked_version(&root, "rustls-platform-verifier-android")?
+    );
+    crate::run(Command::new("gradle").current_dir(&project).args([
+        "--quiet",
+        &verifier,
+        ":app:assembleRelease",
+    ]))?;
     let apk = project.join("app/build/outputs/apk/release/app-release.apk");
     let size = std::fs::metadata(&apk)
         .map_err(|e| format!("{}: {e}", apk.display()))?
@@ -108,6 +112,20 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         install(&root, &apk, leakcheck)?;
     }
     Ok(())
+}
+
+/// The version of `package` that `Cargo.lock` pins: the Kotlin half of
+/// rustls-platform-verifier must be its Rust half's.
+fn locked_version(root: &Path, package: &str) -> Result<String, String> {
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).map_err(|e| e.to_string())?;
+    let name = format!("name = \"{package}\"");
+    let mut lines = lock.lines().skip_while(|l| *l != name).skip(1);
+    lines
+        .next()
+        .and_then(|l| l.strip_prefix("version = \""))
+        .and_then(|v| v.strip_suffix('"'))
+        .map(str::to_string)
+        .ok_or_else(|| format!("android: Cargo.lock pins no {package}"))
 }
 
 /// Writes the asset index into `out`: a line naming this build, so the app

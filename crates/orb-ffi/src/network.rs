@@ -86,3 +86,27 @@ pub unsafe extern "C" fn mln_network_set_status(
         })
     }
 }
+
+/// HTTPS verifies servers with Android's trust store once it has the app's
+/// JVM and `Context` (its Kotlin half, `org.rustls:rustls-platform-verifier`,
+/// in the app); before, it trusts Mozilla's roots. Elsewhere there is
+/// nothing to give.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_android_init(
+    jni_env: *mut std::ffi::c_void,
+    context: *mut std::ffi::c_void,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            #[cfg(target_os = "android")]
+            return orb_api::init_android(jni_env, context).map_err(Failure::native);
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = (jni_env, context);
+                Err(Failure::unsupported("mln_android_init is for Android"))
+            }
+        })
+    }
+}

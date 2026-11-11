@@ -2,6 +2,8 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(target_os = "android")]
+pub mod android;
 mod cache;
 mod connect;
 mod fonts;
@@ -19,6 +21,7 @@ use orb_host::{
     Abort, DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone, NetworkAnswer,
     NetworkHook, NetworkRequest, Prior, Request, RequestTransform, ResourceKind,
 };
+use ureq::tls::RootCerts;
 
 /// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
 /// small pool of I/O threads, through an [`HttpCache`] when it has one. A
@@ -26,7 +29,12 @@ use orb_host::{
 /// request still waiting for a thread never starts, and one reading its
 /// body stops reading and drops its connection.
 pub struct NativeFetch {
+    /// HTTPS verifying servers as the platform does.
     agent: ureq::Agent,
+    /// On Android until [`android::init`] gives the verifier the app's
+    /// JVM: HTTPS trusting Mozilla's roots.
+    #[cfg(target_os = "android")]
+    roots: ureq::Agent,
     pool: Arc<ThreadPool>,
     cache: Option<Arc<HttpCache>>,
     transform: std::sync::RwLock<Option<Arc<RequestTransform>>>,
@@ -79,7 +87,9 @@ impl NativeFetch {
     pub fn with_cache(cache: Option<Arc<HttpCache>>) -> Arc<Self> {
         Arc::new(Self {
             // Every thread's connection stays open for the next request.
-            agent: connect::agent(FETCH_THREADS),
+            agent: connect::agent(FETCH_THREADS, RootCerts::PlatformVerifier),
+            #[cfg(target_os = "android")]
+            roots: connect::agent(FETCH_THREADS, RootCerts::WebPki),
             pool: Arc::new(ThreadPool::new("fetch", FETCH_THREADS)),
             cache,
             transform: Default::default(),
@@ -110,6 +120,15 @@ impl NativeFetch {
 
     pub fn online(&self) -> bool {
         self.online.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The agent HTTPS goes through now.
+    fn agent(&self) -> &ureq::Agent {
+        #[cfg(target_os = "android")]
+        if !android::ready() {
+            return &self.roots;
+        }
+        &self.agent
     }
 
     /// The cache fetches go through.
@@ -519,7 +538,7 @@ impl NativeFetch {
             },
         };
         let hook = self.hook.read().expect("hook poisoned").clone();
-        let (agent, cache, online) = (self.agent.clone(), self.cache.clone(), self.online());
+        let (agent, cache, online) = (self.agent().clone(), self.cache.clone(), self.online());
         let (pool, url) = (self.pool.clone(), url.to_string());
         self.pool.spawn(Box::new(move || {
             // Given up while it waited for a thread: `done` has its answer.
@@ -753,6 +772,17 @@ mod tests {
         );
         let plain = "https://a.org/t/1/2/3.pbf?k=v%20";
         assert!(matches!(encode_url(plain), std::borrow::Cow::Borrowed(p) if p == plain));
+    }
+
+    /// HTTPS verifies servers as the platform does, not with a copy of
+    /// Mozilla's roots (#188).
+    #[test]
+    fn https_verifies_with_the_platform() {
+        let fetch = NativeFetch::new();
+        let roots = |agent: &ureq::Agent| agent.config().tls_config().root_certs().clone();
+        assert!(matches!(roots(&fetch.agent), RootCerts::PlatformVerifier));
+        #[cfg(not(target_os = "android"))]
+        assert!(matches!(roots(fetch.agent()), RootCerts::PlatformVerifier));
     }
 
     #[test]

@@ -16,6 +16,9 @@ android {
     release {
       // A demo app: signed with the debug key to install directly.
       signingConfig = signingConfigs.getByName("debug")
+      // R8 keeps of the Kotlin stdlib only what the verifier calls.
+      isMinifyEnabled = true
+      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
     }
   }
   // The web demo's Tokyo extract, styles, glyphs and sprites, and the
@@ -25,4 +28,15 @@ android {
     // PMTiles are read by range: keep them uncompressed in the APK.
     noCompress += "pmtiles"
   }
+}
+
+dependencies {
+  // rustls-platform-verifier's Kotlin half, through which HTTPS verifies
+  // with Android's trust store. Its version must be the one of
+  // rustls-platform-verifier-android in Cargo.lock, which `cargo xtask
+  // android` passes; it declares no dependency on the stdlib it calls.
+  implementation(
+    "org.rustls:rustls-platform-verifier:${providers.gradleProperty("rustlsPlatformVerifier").get()}",
+  )
+  implementation("org.jetbrains.kotlin:kotlin-stdlib:2.3.21")
 }
