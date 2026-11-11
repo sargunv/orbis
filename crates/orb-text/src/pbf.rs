@@ -50,7 +50,9 @@ pub struct GlyphRange {
 
 impl GlyphRange {
     /// Parses a range file. Glyphs from every font stack in it are kept, as
-    /// GL JS keeps them; a later duplicate code point wins.
+    /// GL JS keeps them; a later duplicate code point wins. A glyph whose
+    /// metrics are out of range is left out, as MapLibre Native leaves it
+    /// out: none is that big, and its bitmap's size would overflow.
     pub fn parse(bytes: &[u8]) -> Result<Self, PbfError> {
         let mut glyphs = Vec::new();
         let mut file = Reader::new(bytes);
@@ -59,7 +61,7 @@ impl GlyphRange {
                 let mut stack = Reader::new(stack);
                 while let Some((tag, value)) = stack.field()? {
                     if let (3, Value::Bytes(glyph)) = (tag, value) {
-                        glyphs.push(parse_glyph(glyph)?);
+                        glyphs.extend(parse_glyph(glyph)?);
                     }
                 }
             }
@@ -91,30 +93,44 @@ impl GlyphRange {
     }
 }
 
-fn parse_glyph(bytes: &[u8]) -> Result<PbfGlyph, PbfError> {
+/// A glyph, or `None` where its code point or metrics are out of the
+/// range MapLibre Native's `parseGlyphPBF` keeps: sizes and advances
+/// under 256, offsets from −128 up to 128.
+fn parse_glyph(bytes: &[u8]) -> Result<Option<PbfGlyph>, PbfError> {
     let mut glyph = PbfGlyph {
         code_point: 0,
         metrics: GlyphMetrics::default(),
         bitmap: Vec::new(),
     };
+    // The largest size or advance, and the code point.
+    let (mut largest, mut code_point) = (0, 0);
     let mut reader = Reader::new(bytes);
     while let Some((tag, value)) = reader.field()? {
         match (tag, value) {
-            (1, Value::Varint(v)) => glyph.code_point = v as u32,
+            (1, Value::Varint(v)) => code_point = v,
             (2, Value::Bytes(b)) => glyph.bitmap = b.to_vec(),
-            (3, Value::Varint(v)) => glyph.metrics.width = v as u32 as f64,
-            (4, Value::Varint(v)) => glyph.metrics.height = v as u32 as f64,
+            (3, Value::Varint(v)) => (glyph.metrics.width, largest) = (v as f64, largest.max(v)),
+            (4, Value::Varint(v)) => (glyph.metrics.height, largest) = (v as f64, largest.max(v)),
             (5, Value::Varint(v)) => glyph.metrics.left = zigzag(v),
             (6, Value::Varint(v)) => glyph.metrics.top = zigzag(v),
-            (7, Value::Varint(v)) => glyph.metrics.advance = v as u32 as f64,
+            (7, Value::Varint(v)) => (glyph.metrics.advance, largest) = (v as f64, largest.max(v)),
             _ => {}
         }
+    }
+    let offsets = -128.0..128.0;
+    let GlyphMetrics { left, top, .. } = glyph.metrics;
+    match u32::try_from(code_point) {
+        Ok(c) if c <= u32::from(char::MAX) => glyph.code_point = c,
+        _ => return Ok(None),
+    }
+    if largest >= 256 || !offsets.contains(&left) || !offsets.contains(&top) {
+        return Ok(None);
     }
     let [w, h] = glyph.bitmap_size();
     if !glyph.bitmap.is_empty() && glyph.bitmap.len() != (w * h) as usize {
         return Err(PbfError::BitmapSize(glyph.code_point));
     }
-    Ok(glyph)
+    Ok(Some(glyph))
 }
 
 fn zigzag(v: u64) -> f64 {
@@ -285,5 +301,27 @@ mod tests {
             GlyphRange::parse(&file[..file.len() - 1]),
             Err(PbfError::Truncated)
         );
+    }
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn leaves_out_glyphs_out_of_range() {
+        let mut stack = Vec::new();
+        bytes_field(3, &glyph(0x61, 0, 0, 0, 0, 255), &mut stack);
+        bytes_field(3, &glyph(0x62, 0, 0, -128, 127, 6), &mut stack);
+        // Too wide, too far left, an advance too long.
+        bytes_field(3, &glyph(0x63, 256, 0, 0, 0, 6), &mut stack);
+        bytes_field(3, &glyph(0x64, 0, 0, -129, 0, 6), &mut stack);
+        bytes_field(3, &glyph(0x65, 0, 0, 0, 0, 256), &mut stack);
+        // Sizes whose bitmap's would overflow, and no code point.
+        let mut huge = Vec::new();
+        varint_field(3, u64::from(u32::MAX), &mut huge);
+        varint_field(4, u64::from(u32::MAX), &mut huge);
+        bytes_field(3, &huge, &mut stack);
+        bytes_field(3, &glyph(0x11_0000, 0, 0, 0, 0, 6), &mut stack);
+        let mut file = Vec::new();
+        bytes_field(1, &stack, &mut file);
+        let range = GlyphRange::parse(&file).unwrap();
+        let kept: Vec<_> = range.glyphs().iter().map(|g| g.code_point).collect();
+        assert_eq!(kept, [0x61, 0x62]);
     }
 }
