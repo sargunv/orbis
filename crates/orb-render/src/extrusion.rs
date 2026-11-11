@@ -336,6 +336,7 @@ impl Extrusions {
             depth: DEPTH,
             cull_back: true,
             plane: !self.full,
+            state: !shape.stateless,
             ..Draw::new(vertex.0, &self.layouts, target, None)
         }
         .make(gpu)

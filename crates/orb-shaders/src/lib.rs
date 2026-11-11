@@ -75,6 +75,11 @@ pub const PLANE: &str = "plane";
 /// that take no property from a feature's row or state.
 pub const FEATURE_ROWS: &str = "feature_rows";
 
+/// The override constant that, set false, makes a pipeline its variant
+/// without feature state (`draw.wgsl`'s `feature_state`): for nodes whose
+/// paint reads no feature's state.
+pub const FEATURE_STATE: &str = "feature_state";
+
 /// Each shader's override constants by entry point, as the build script
 /// found them in each entry point's module.
 type Overrides = &'static [(
@@ -586,10 +591,10 @@ mod tests {
 
     /// The draw pipelines that compile a plane variant (orb-render's
     /// paint, symbol and extrusion pipelines) take [`PLANE`] in their
-    /// vertex stage, the paint and symbol ones [`FEATURE_ROWS`] too (the
-    /// extrusions' variant keeps rows), and every stage that takes either
-    /// validates and writes as Metal with each set as its variants set it,
-    /// alone and together.
+    /// vertex stage, the paint and symbol ones [`FEATURE_ROWS`] too, the
+    /// extrusions (whose variants keep rows) [`FEATURE_STATE`], and every
+    /// stage that takes either validates and writes as Metal with each set
+    /// as its variants set it, alone and together.
     #[test]
     fn variants_compile() {
         let rows = [
@@ -606,16 +611,11 @@ mod tests {
             &EXTRUSION_CUT_SHADER,
             &EXTRUSION_PLANES_SHADER,
         ];
-        for (shader, has_rows) in
-            (rows.map(|s| (s, true)).into_iter()).chain(planes.map(|s| (s, false)))
+        for (shader, variant) in
+            (rows.map(|s| (s, FEATURE_ROWS)).into_iter()).chain(planes.map(|s| (s, FEATURE_STATE)))
         {
             assert!(shader.takes(shader.vertex, PLANE), "{}", shader.label);
-            assert!(
-                !has_rows || shader.takes(shader.vertex, FEATURE_ROWS),
-                "{}",
-                shader.label
-            );
-            let rows = if has_rows { 0.0 } else { 1.0 };
+            assert!(shader.takes(shader.vertex, variant), "{}", shader.label);
             for (entry, one) in split::entry_modules(&validate(shader)) {
                 let info = naga::valid::Validator::new(
                     naga::valid::ValidationFlags::all(),
@@ -624,13 +624,12 @@ mod tests {
                 .validate(&one)
                 .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
                 for set in [[true, false], [false, true], [true, true]] {
-                    let constants: naga::back::PipelineConstants =
-                        [(PLANE, 1.0), (FEATURE_ROWS, rows)]
-                            .into_iter()
-                            .zip(set)
-                            .filter(|&((name, _), on)| on && shader.takes(&entry, name))
-                            .map(|((name, value), _)| (name.to_string(), value))
-                            .collect();
+                    let constants: naga::back::PipelineConstants = [(PLANE, 1.0), (variant, 0.0)]
+                        .into_iter()
+                        .zip(set)
+                        .filter(|&((name, _), on)| on && shader.takes(&entry, name))
+                        .map(|((name, value), _)| (name.to_string(), value))
+                        .collect();
                     if constants.is_empty() {
                         continue;
                     }

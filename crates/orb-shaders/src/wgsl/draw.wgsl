@@ -155,6 +155,13 @@ fn clip_drawn(clip: vec2<u32>, tile: u32, owner: vec2<f32>, p: vec2<f32>) -> boo
 // (#180). On by default: the variant with rows draws every node.
 override feature_rows: bool = true;
 
+// A pipeline's variant without feature state (orb-render's extrusion
+// pipelines): its nodes' paint reads no feature's state, and the state
+// lookups and every property's state branch compile out. On the moto g
+// they cost a pitched 3D frame's buildings a sixth of their vertex time
+// in a style without feature state (#180). On by default.
+override feature_state: bool = true;
+
 // A node's `table_mask`, none of it in a variant without rows.
 fn row_mask(mask: u32) -> u32 {
     return select(0u, mask, feature_rows);
@@ -189,7 +196,7 @@ const STATE_SLOT_WORDS: u32 = 2u * STATE_ZOOMS + 2u;
 // A feature's state block for a node, or NO_STATE when the feature has
 // the default state and nothing fades.
 fn state_block(v: Pulled, feature: u32, lookup: StateLookup) -> u32 {
-    if !feature_rows || lookup.stride == 0u || v.state_base == NO_STATE {
+    if !feature_rows || !feature_state || lookup.stride == 0u || v.state_base == NO_STATE {
         return NO_STATE;
     }
     let index = prop_at(v.state_base + feature);

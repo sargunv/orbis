@@ -242,7 +242,8 @@ pub struct ElevationPaint {
 
 /// What an extrusion node's pipelines are specialised for: the shape of
 /// its colour over the elevation (`extrusion.wgsl`'s overrides), none by
-/// default.
+/// default, and whether its paint reads no feature state
+/// ([`orb_shaders::FEATURE_STATE`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct ElevationShape {
     stops: u32,
@@ -250,6 +251,7 @@ pub(crate) struct ElevationShape {
     curve: u32,
     /// Stops from features' rows (bit 0) or state (bit 1).
     dynamic: u32,
+    pub(crate) stateless: bool,
 }
 
 impl ElevationShape {
@@ -278,8 +280,12 @@ impl ExtrusionPaint {
     }
 
     pub(crate) fn elevation_shape(&self) -> ElevationShape {
+        let stateless = self.state.mask == 0;
         let Some(e) = &self.elevation else {
-            return ElevationShape::default();
+            return ElevationShape {
+                stateless,
+                ..ElevationShape::default()
+            };
         };
         // Colour slots: 0, and 3 on (height and base between).
         let state = self.state.mask & !0b110 != 0;
@@ -295,6 +301,7 @@ impl ExtrusionPaint {
                 Curve::CubicBezier(_) => 3,
             },
             dynamic: u32::from(e.rows != 0) | u32::from(state) << 1,
+            stateless,
         }
     }
 }

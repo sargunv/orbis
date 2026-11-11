@@ -49,12 +49,12 @@ layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform;
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512)
 module "extrusion"#0: wgsl
-render "extrusion"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion"#0 vs_extrusion [("plane", 1.0)]; module "extrusion"#0 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1
+render "extrusion"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion"#0 vs_extrusion [("plane", 1.0), ("feature_state", 0.0)]; module "extrusion"#0 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1
 module "extrusion cut"#0: wgsl
-render "extrusion cut"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion cut"#0 vs_extrusion_cut_split [("plane", 1.0)]; module "extrusion cut"#0 fs_extrusion_cut [("plane", 1.0)]; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1
+render "extrusion cut"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion cut"#0 vs_extrusion_cut_split [("plane", 1.0), ("feature_state", 0.0)]; module "extrusion cut"#0 fs_extrusion_cut [("plane", 1.0)]; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1
 module "extrusion planes"#0: wgsl
 module "extrusion"#1: wgsl
-render "extrusion planes"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion planes"#0 vs_extrusion_cut_planes [("plane", 1.0)]; module "extrusion"#1 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1
+render "extrusion planes"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion planes"#0 vs_extrusion_cut_planes [("plane", 1.0), ("feature_state", 0.0)]; module "extrusion"#1 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1
 bundle "3d layer"#0: [Rgba8Unorm] depth Some(Depth32Float) samples 1
     group 0 group "scene"#0
     group 1 group "node"#0

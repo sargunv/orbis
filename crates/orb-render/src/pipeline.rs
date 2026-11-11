@@ -31,6 +31,10 @@ pub(crate) struct Draw<'a> {
     /// ([`orb_shaders::FEATURE_ROWS`], set in the stages that read it): for
     /// nodes whose paint reads no feature's row or state.
     pub(crate) rows: bool,
+    /// False for its variant without feature state
+    /// ([`orb_shaders::FEATURE_STATE`], set in the stages that read it):
+    /// for nodes whose paint reads no feature's state.
+    pub(crate) state: bool,
     pub(crate) layouts: &'a [BindGroupLayoutId],
     pub(crate) target: ColorTargetState,
     pub(crate) sample_count: u32,
@@ -53,6 +57,7 @@ impl<'a> Draw<'a> {
             constants: [&[], &[]],
             plane: false,
             rows: true,
+            state: true,
             layouts,
             target: ColorTargetState {
                 format: target.color,
@@ -86,6 +91,9 @@ impl<'a> Draw<'a> {
             if !self.rows && shader.takes(entry, orb_shaders::FEATURE_ROWS) {
                 constants.push((orb_shaders::FEATURE_ROWS, 0.0));
             }
+            if !self.state && shader.takes(entry, orb_shaders::FEATURE_STATE) {
+                constants.push((orb_shaders::FEATURE_STATE, 0.0));
+            }
             constants
         });
         debug_assert!(
@@ -96,6 +104,11 @@ impl<'a> Draw<'a> {
         debug_assert!(
             self.rows || vertex.takes(vertex_entry, orb_shaders::FEATURE_ROWS),
             "{}: no variant without rows",
+            self.label
+        );
+        debug_assert!(
+            self.state || vertex.takes(vertex_entry, orb_shaders::FEATURE_STATE),
+            "{}: no variant without feature state",
             self.label
         );
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
