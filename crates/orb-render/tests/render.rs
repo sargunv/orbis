@@ -379,7 +379,7 @@ fn red_fill(h: &mut Harness) {
             opacity: 1.0,
             translate: Default::default(),
             table_mask: 0,
-            curves: [Curve::Step; 2],
+            curves: [Curve::STEP; 2],
             state: Default::default(),
         }),
     );
@@ -401,7 +401,7 @@ fn node_tables_grow_for_more_nodes() {
             opacity: 1.0,
             translate: Default::default(),
             table_mask: 0,
-            curves: [Curve::Step; 2],
+            curves: [Curve::STEP; 2],
             state: Default::default(),
         }),
     );
@@ -585,7 +585,7 @@ fn adjacent_clip_regions_do_not_double_blend_their_shared_edge() {
             opacity: 0.5,
             translate: Default::default(),
             table_mask: 0,
-            curves: [Curve::Step; 2],
+            curves: [Curve::STEP; 2],
             state: Default::default(),
         }),
     );
@@ -702,7 +702,7 @@ fn translates_fills_and_clips_where_they_land() {
                 rows: None,
             },
             table_mask: 0,
-            curves: [Curve::Step; 2],
+            curves: [Curve::STEP; 2],
             state: Default::default(),
         }),
     );
@@ -758,7 +758,7 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
                 rows: None,
             },
             table_mask: 0,
-            curves: [Curve::Step; 2],
+            curves: [Curve::STEP; 2],
             state: Default::default(),
         })
     };
@@ -906,7 +906,7 @@ fn circle_paint(color: [f32; 4]) -> NodePaint {
         pitch_alignment_map: false,
         pitch_rows: false,
         table_mask: 0,
-        curves: [Curve::Step; 7],
+        curves: [Curve::STEP; 7],
         state: Default::default(),
     })
 }
@@ -1005,7 +1005,7 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
             intensity: 1.0,
             opacity: 1.0,
             table_mask: 0,
-            curves: [Curve::Step; 2],
+            curves: [Curve::STEP; 2],
         }),
     );
     let green = orb_render::pack_color([0.0, 1.0, 0.0, 1.0]);
@@ -1018,7 +1018,7 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
             opacity: 1.0,
             translate: Default::default(),
             table_mask: 0,
-            curves: [Curve::Step; 2],
+            curves: [Curve::STEP; 2],
             state: Default::default(),
         }),
     );
@@ -1079,7 +1079,7 @@ fn glyph_atlas_growth_rerecords_node_bundles() {
             intensity: 1.0,
             opacity: 1.0,
             table_mask: 0,
-            curves: [Curve::Step; 2],
+            curves: [Curve::STEP; 2],
         }),
     );
     let green = orb_render::pack_color([0.0, 1.0, 0.0, 1.0]);
@@ -1175,7 +1175,7 @@ fn image_rows_fill_late_span_pages_and_recycle_without_recording_commands() {
                 opacity: 1.0,
                 translate: Default::default(),
                 table_mask: 0,
-                curves: [Curve::Step; 2],
+                curves: [Curve::STEP; 2],
                 state: Default::default(),
             },
             PatternPaint {
@@ -1265,7 +1265,7 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
             offset: 0.0,
             blur: 0.0,
             table_mask: 0,
-            curves: [Curve::Step; 6],
+            curves: [Curve::STEP; 6],
             gradient: true,
             metrics: true,
             dash: Some(PatternPaint {
@@ -1592,7 +1592,7 @@ fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
                 opacity: 1.0,
                 translate: Default::default(),
                 table_mask: 0,
-                curves: [Curve::Step; 2],
+                curves: [Curve::STEP; 2],
                 state: Default::default(),
             }),
         );

@@ -1648,16 +1648,7 @@ fn size_paint(property: &orb_style::PropertyRef<'_, f64>, zoom: f64) -> orb_rend
             .as_expression()
             .and_then(|e| e.zoom_curve())
             .and_then(|c| c.interpolation);
-        match interpolation {
-            None => orb_render::Curve::Step,
-            Some(orb_expr::Interpolation::Linear) => orb_render::Curve::Exponential(1.0),
-            Some(orb_expr::Interpolation::Exponential(base)) => {
-                orb_render::Curve::Exponential(base as f32)
-            }
-            Some(orb_expr::Interpolation::CubicBezier(p)) => {
-                orb_render::Curve::CubicBezier(p.map(|v| v as f32))
-            }
-        }
+        crate::paint::interpolation_curve(interpolation)
     };
     match property.kind() {
         orb_style::Kind::Constant => {
@@ -1749,7 +1740,7 @@ pub(crate) fn paint(
         halo_width: 0.0,
         halo_blur: 0.0,
         table_mask: 0,
-        curves: [orb_render::Curve::Step; 5],
+        curves: [orb_render::Curve::STEP; 5],
         night_color: [0.0; 4],
         night_halo_color: [0.0; 4],
         daylight: node.daylight.as_ref().map_or([None; 2], |d| d.curves()),
@@ -1807,12 +1798,12 @@ pub(crate) fn paint(
         let curve = if slot > 4 { slot - 4 } else { slot };
         if property.per_feature() {
             paint.table_mask |= 1 << slot;
-            paint.curves[curve] = crate::paint::curve(property);
+            paint.curves[curve] = crate::paint::curve(property, zoom);
         }
         // A state lookup's constant is its value with no state.
         let lookup = property.is_state_lookup();
         if lookup {
-            paint.curves[curve] = crate::paint::curve(property);
+            paint.curves[curve] = crate::paint::curve(property, zoom);
         }
         let number = |p: &crate::style::PaintProperty<'_>| match p {
             _ if lookup => p.default_number(zoom),
@@ -1830,7 +1821,10 @@ pub(crate) fn paint(
             0 => paint.opacity = number(property),
             1 => paint.color = color(property),
             2 => paint.halo_color = color(property),
-            3 => paint.halo_width = number(property).max(maxima.get(3).copied().unwrap_or(0.0)),
+            3 => {
+                let max = maxima.get(3).copied().unwrap_or(0.0);
+                paint.halo_width = number(property).max(property.row_maximum(zoom, max));
+            }
             4 => paint.halo_blur = number(property),
             5 => paint.night_color = color(property),
             _ => paint.night_halo_color = color(property),

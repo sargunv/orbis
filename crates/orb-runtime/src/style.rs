@@ -188,11 +188,39 @@ impl PaintProperty<'_> {
         }
     }
 
-    /// The node constant of a state lookup: its value with no state.
+    /// The node constant of a state lookup: its value with no state, as
+    /// the camera scales it.
     pub(crate) fn default_number(&self, zoom: f64) -> f32 {
         match self {
-            Self::Number(p) => p.evaluate_state(zoom, &[], None),
+            Self::Number(p) => {
+                let value = p.evaluate_state(zoom, &[], None);
+                self.scale(zoom).apply(f64::from(value)) as f32
+            }
             _ => unreachable!("not a number"),
+        }
+    }
+
+    /// What the camera scales a number's rows and state values by at
+    /// `zoom`, in a plan with its camera reads resolved
+    /// ([`crate::paint::at_camera`]): the identity unless the value reads
+    /// the camera and the feature.
+    pub(crate) fn scale(&self, zoom: f64) -> orb_expr::Scale {
+        match self {
+            Self::Number(p) => p.scale(&orb_expr::EvaluationContext {
+                zoom,
+                ..Default::default()
+            }),
+            _ => orb_expr::Scale::IDENTITY,
+        }
+    }
+
+    /// The node constant of a per-feature number, the largest of its
+    /// rows' values (`max`) for culling margins: as the camera scales them,
+    /// the largest magnitude they reach.
+    pub(crate) fn row_maximum(&self, zoom: f64, max: f32) -> f32 {
+        match self.expression().and_then(|e| e.camera_scale()) {
+            Some(_) => self.scale(zoom).magnitude(f64::from(max)) as f32,
+            None => max,
         }
     }
 

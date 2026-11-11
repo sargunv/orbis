@@ -1111,6 +1111,169 @@ fn meters_per_pixel_follows_the_target_with_its_preview() {
     );
 }
 
+/// The lit runs along row `y` of a `width`-wide target: each one's first
+/// column and length.
+fn lit_runs(pixels: &[u8], width: u32, y: u32) -> Vec<(u32, u32)> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for x in 0..width {
+        if pixel_of(pixels, width, x, y)[0] <= 128 {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((start, len)) if *start + *len == x => *len += 1,
+            _ => runs.push((x, 1)),
+        }
+    }
+    runs
+}
+
+/// A radius in metres per feature, `["/", ["get", "r"],
+/// ["dev.sargunv.orbis:meters-per-pixel"]]` and at least 8 px (beyond the
+/// spec): the rows hold each feature's metres and the camera's ground
+/// resolution scales them, so circles of 200 and 100 km draw 20 and (held
+/// at 8 px) 16 px across on the equator at zoom 2, and twice as wide at
+/// 60° north; they pick as wide, and a map moved there draws as one made
+/// there. Off, the radius is the default.
+#[test]
+fn feature_metres_scale_by_the_ground_resolution() {
+    const WIDTH: u32 = 256;
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let point = |lon: f64, lat: f64, r: f64| {
+        format!(
+            r#"{{"type": "Feature", "properties": {{"r": {r}}}, "geometry": {{"type": "Point", "coordinates": [{lon}, {lat}]}}}}"#
+        )
+    };
+    let points = [(0.0), (60.0)]
+        .iter()
+        .flat_map(|&lat| [point(-12.0, lat, 200_000.0), point(12.0, lat, 100_000.0)])
+        .collect::<Vec<_>>()
+        .join(", ");
+    let radius = r#"["max", 8, ["/", ["get", "r"], ["dev.sargunv.orbis:meters-per-pixel"]]]"#;
+    let style = format!(
+        r##"{{"version": 8, "sources": {{"c": {{"type": "geojson",
+          "data": {{"type": "FeatureCollection", "features": [{points}]}}}}}},
+          "layers": [
+            {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+            {{"id": "c", "type": "circle", "source": "c", "paint": {{"circle-color": "#ffffff",
+              "circle-pitch-alignment": "map", "circle-radius": {radius}}}}}]}}"##
+    );
+    let mut target = Target::texture(&runtime, WIDTH, SIZE, 1.0);
+    let at = |lat: f64| CameraTarget {
+        center: Some(orb_api::Geodetic::new(0.0, lat)),
+        zoom: Some(2.0),
+        ..CameraTarget::default()
+    };
+    let widths = |map: &mut Map, target: &mut Target| {
+        settle(map, target);
+        let pixels = target.read_pixels().unwrap();
+        let runs = lit_runs(&pixels, WIDTH, SIZE / 2);
+        runs.iter().map(|r| r.1).collect::<Vec<_>>()
+    };
+    let near = |got: &[u32], want: [u32; 2]| {
+        got.len() == 2 && got.iter().zip(want).all(|(&g, w)| g.abs_diff(w) <= 2)
+    };
+    let map = |previews| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(&style).expect("style");
+        map
+    };
+    let mut moved = map(orb_api::Previews::ALL);
+    moved.jump_to(&at(0.0));
+    let equator = widths(&mut moved, &mut target);
+    // 200 km over 19568 m a pixel at zoom 2, twice; 100 km is held at 8 px.
+    assert!(near(&equator, [20, 16]), "{equator:?} px on the equator");
+    moved.jump_to(&at(60.0));
+    let north = widths(&mut moved, &mut target);
+    assert!(near(&north, [40, 20]), "{north:?} px at 60°");
+    // 12° east of the centre is 68 px at zoom 2; the edge of the larger
+    // circle, 12° west, is 20 px from its centre.
+    let centre = f64::from(WIDTH) / 2.0 - 68.0;
+    let pick = |map: &mut Map, dx: f64| {
+        let hit = map.hit_test(glam::DVec2::new(centre + dx, f64::from(SIZE) / 2.0));
+        hit.map(|h| h.layer)
+    };
+    assert_eq!(
+        pick(&mut moved, 18.0).as_deref(),
+        Some("c"),
+        "picks as wide"
+    );
+    assert_eq!(pick(&mut moved, 24.0), None, "and no wider");
+    let mut fresh = map(orb_api::Previews::ALL);
+    fresh.jump_to(&at(60.0));
+    assert_eq!(widths(&mut fresh, &mut target), north, "fresh at 60°");
+
+    let mut off = map(orb_api::Previews::NONE);
+    off.jump_to(&at(60.0));
+    let default = widths(&mut off, &mut target);
+    assert!(
+        near(&default, [10, 10]),
+        "{default:?}: the default radius, 5"
+    );
+}
+
+/// A radius from the feature's data or state times a factor of the pitch
+/// (beyond the spec) draws, queries and picks at the camera's pitch: rows
+/// and the state table hold the feature's part, the node the pitch's.
+#[test]
+fn pitch_scales_feature_data_and_state() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(
+        r##"{"version": 8, "center": [0, 0], "zoom": 2,
+            "sources": {"p": {"type": "geojson", "data": {"type": "Feature", "id": 3,
+                "properties": {"r": 6}, "geometry": {"type": "Point", "coordinates": [0, 0]}}}},
+            "layers": [
+                {"id": "background", "type": "background", "paint": {"background-color": "#000000"}},
+                {"id": "c", "type": "circle", "source": "p",
+                "paint": {
+                    "circle-radius": ["*", ["coalesce", ["feature-state", "r"], ["get", "r"]],
+                        ["interpolate", ["linear"], ["pitch"], 0, 1, 60, 2]],
+                    "circle-pitch-scale": "viewport",
+                    "circle-color": "#ffffff"}}]}"##,
+    )
+    .expect("style");
+    let width = |map: &mut Map, target: &mut Target| {
+        settle(map, target);
+        let pixels = target.read_pixels().unwrap();
+        let runs = lit_runs(&pixels, SIZE, SIZE / 2);
+        runs.iter().map(|r| r.1).max().unwrap_or(0)
+    };
+    let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
+    let radius = |map: &mut Map, target: &mut Target| {
+        let query = map.query_rendered(center, center);
+        let doc = json::parse(&query_answer(map, target, query)).unwrap();
+        let layer = doc.as_array().unwrap()[0].get("layer").unwrap();
+        let paint = layer.get("paint").unwrap();
+        paint.get("circle-radius").unwrap().as_f64().unwrap()
+    };
+    let flat = width(&mut map, &mut target);
+    assert!(flat.abs_diff(12) <= 2, "{flat} px flat");
+    assert_eq!(radius(&mut map, &mut target), 6.0);
+    map.jump_to(&CameraTarget {
+        pitch: Some(60.0),
+        ..CameraTarget::default()
+    });
+    let tilted = width(&mut map, &mut target);
+    assert!(tilted.abs_diff(24) <= 2, "{tilted} px at pitch 60");
+    assert_eq!(radius(&mut map, &mut target), 12.0);
+    let edge = center + glam::DVec2::new(10.0, 0.0);
+    assert!(map.hit_test(edge).is_some(), "picks at its tilted radius");
+    map.edit(&commands(
+        r#"[["setFeatureState", {"source": "p", "id": 3}, {"r": 10}]]"#,
+    ))
+    .expect("state");
+    let state = width(&mut map, &mut target);
+    assert!(state.abs_diff(40) <= 2, "{state} px from its state");
+    assert_eq!(radius(&mut map, &mut target), 20.0);
+}
+
 /// Buildings larger than an overzoom slice draw whole at z15, z16 and z19
 /// below a source's z14 tiles, looking down and tilted, where the view's
 /// tiles span several zooms (#143): a long slab, a building whose

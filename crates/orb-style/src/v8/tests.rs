@@ -919,12 +919,17 @@ fn extended_inputs_are_drawn_and_warn_once() {
     );
 
     for (paint, layout) in [
-        // Not honoured: the camera where tiles are laid out, or with data.
+        // Not honoured: the camera where tiles are laid out, or with data
+        // other than as a scale, or in a colour.
         (
             r#""fill-translate": ["literal", [0, 0]], "fill-pattern": ["case", [">", ["pitch"], 1], "a", "b"]"#,
             "",
         ),
-        (r#""fill-opacity": ["*", ["pitch"], ["get", "x"]]"#, ""),
+        (r#""fill-opacity": ["+", ["pitch"], ["get", "x"]]"#, ""),
+        (
+            r#""fill-color": ["case", [">", ["pitch"], 1], ["to-color", ["get", "c"]], "red"]"#,
+            "",
+        ),
         ("", r#""fill-sort-key": ["pitch"]"#),
         // The spec's validator: no feature state in layout.
         ("", r#""fill-sort-key": ["feature-state", "x"]"#),
@@ -949,6 +954,56 @@ fn extended_inputs_are_drawn_and_warn_once() {
         "data": {"type": "FeatureCollection", "features": []}}},
         "layers": [{"id": "f", "type": "fill", "source": "s", "filter": [">", ["pitch"], 10]}]}"#;
     assert!(parse_with(filter, Previews::ALL, &[]).is_err());
+}
+
+/// A per-feature value times one of the camera draws per feature, its
+/// rows holding the feature's part and the camera's scaling it: not
+/// portable, and behind the ground resolution's preview where it reads
+/// that.
+#[test]
+fn camera_scales_of_feature_data_are_drawn() {
+    let layer = |paint: &str| {
+        format!(
+            r#"{{"version": 8, "sources": {{"s": {{"type": "geojson",
+                "data": {{"type": "FeatureCollection", "features": []}}}}}},
+                "layers": [{{"id": "l", "type": "line", "source": "s",
+                "paint": {{{paint}}}}}]}}"#
+        )
+    };
+    let width = r#""line-width": ["interpolate", ["linear"], ["pitch"], 0, ["get", "w"], 60, ["*", 2, ["get", "w"]]]"#;
+    let style = parse(&layer(width)).unwrap();
+    assert_eq!(style.warnings.len(), 1, "{:?}", style.warnings);
+    assert!(
+        style.warnings[0].message.contains("camera × data"),
+        "{}",
+        style.warnings[0].message
+    );
+    let w = style.layers[0].get(LINE_WIDTH);
+    assert_eq!(w.kind(), Kind::Source);
+    let context = orb_expr::EvaluationContext {
+        pitch: 30.0,
+        ..Default::default()
+    };
+    assert_eq!(w.scale(&context).apply(4.0), 6.0);
+
+    let metres =
+        r#""line-width": ["max", 1, ["/", ["get", "w"], ["dev.sargunv.orbis:meters-per-pixel"]]]"#;
+    let off = parse_with(&layer(metres), Previews::NONE, &[]).unwrap();
+    assert!(off.layers[0].get(LINE_WIDTH).as_expression().is_none());
+    assert!(
+        off.warnings[0].message.contains("preview"),
+        "{:?}",
+        off.warnings
+    );
+    let on = parse_with(&layer(metres), Previews::ALL, &[]).unwrap();
+    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+    let w = on.layers[0].get(LINE_WIDTH);
+    let context = orb_expr::EvaluationContext {
+        meters_per_pixel: 0.5,
+        ..Default::default()
+    };
+    assert_eq!(w.scale(&context).apply(4.0), 8.0);
+    assert_eq!(w.scale(&context).apply(0.1), 1.0);
 }
 
 #[test]

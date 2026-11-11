@@ -234,9 +234,9 @@ fn state_number_at(at: u32, lookup: StateLookup, c: Curve) -> f32 {
     let t = bitcast<f32>(w.y);
     let a = bitcast<f32>(prop_at(w.x));
     if t == 0.0 {
-        return a;
+        return camera_scaled(a, c);
     }
-    return mix(a, bitcast<f32>(prop_at(w.x + 1u)), t);
+    return camera_scaled(mix(a, bitcast<f32>(prop_at(w.x + 1u)), t), c);
 }
 
 fn state_color_at(at: u32, lookup: StateLookup, c: Curve) -> vec4<f32> {
@@ -304,16 +304,24 @@ fn state_color(block: u32, lookup: StateLookup, slot: u32, c: Curve, base: vec4<
 }
 
 // How a feature-dependent property interpolates between its values at the
-// tile's zoom and the next zoom, after GL JS's composite binders.
+// tile's zoom and the next zoom, after GL JS's composite binders, and what
+// the camera scales a number's by (`orb_expr::CameraScale`).
 struct Curve {
     // Exponential: base in x. Cubic bezier: control points.
     params: vec4<f32>,
     // 0: step (no interpolation), 1: exponential, 2: cubic bezier.
     kind: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    // A number is `clamp(value * scale, scale_min, scale_max)`: 1 and the
+    // largest finite floats for most.
+    scale: f32,
+    scale_min: f32,
+    scale_max: f32,
 };
+
+// A feature's number as the camera scales it.
+fn camera_scaled(v: f32, c: Curve) -> f32 {
+    return min(max(v * c.scale, c.scale_min), c.scale_max);
+}
 
 // The interpolation factor between the values at `tile_zoom` and
 // `tile_zoom + 1`, clamped to [0, 1].
@@ -337,11 +345,11 @@ fn curve_t(c: Curve, tile_zoom: f32) -> f32 {
 }
 
 // A number property from a property row: two f32 words, its values at the
-// tile's zoom and the next.
+// tile's zoom and the next, as the camera scales them.
 fn table_number(row: u32, slot: u32, c: Curve, tile_zoom: f32) -> f32 {
     let a = bitcast<f32>(prop_at(row + 2u * slot));
     let b = bitcast<f32>(prop_at(row + 2u * slot + 1u));
-    return mix(a, b, curve_t(c, tile_zoom));
+    return camera_scaled(mix(a, b, curve_t(c, tile_zoom)), c);
 }
 
 // A premultiplied style or image colour as it mixes in the frame's colour

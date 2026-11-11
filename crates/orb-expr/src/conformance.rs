@@ -85,6 +85,7 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
             feature: false,
             state: false,
             camera: false,
+            camera_data: false,
             elevation: false,
             daylight: false,
             interpolated: false,
@@ -103,6 +104,7 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
         // validator rejects it in layout.
         state: matches!(property_type, "data-driven" | "cross-faded-data-driven"),
         camera: false,
+        camera_data: false,
         elevation: parameters.contains(&"elevation"),
         daylight: false,
         interpolated,

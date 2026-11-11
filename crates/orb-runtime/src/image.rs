@@ -438,6 +438,7 @@ mod tests {
             feature: false,
             state: false,
             camera: false,
+            camera_data: false,
             elevation: true,
             daylight: false,
             interpolated: true,

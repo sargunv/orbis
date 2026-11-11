@@ -14,6 +14,7 @@ use std::sync::{Arc, OnceLock};
 use glam::{DVec2, Vec2};
 use orb_camera::{CameraState, View};
 use orb_crs::{Metres, TileIndex, TileMatrixSet};
+use orb_expr::Scale;
 use orb_style::{Kind, LayerType, Property, TranslateAnchor};
 
 use crate::state::FeatureState;
@@ -1012,6 +1013,10 @@ struct LayerAt {
     /// Where the translate is per feature: whether it turns with the
     /// bearing (its anchor is `viewport`).
     feature_translate: Option<bool>,
+    /// What the camera scales each of [`HitPaint::dimensions`] by, beyond
+    /// the spec ([`orb_expr::CameraScale`]): records hold each feature's
+    /// part, and a line's its half width's.
+    scales: [Scale; 3],
 }
 
 /// A query on the ground: the tiles it reads, as GL JS's `tilesIn`.
@@ -1071,6 +1076,17 @@ impl Query<'_> {
         let zoom = self.zoom;
         // Values that read the camera read the query's, as frames do.
         let camera = crate::paint::camera_inputs(self.camera);
+        let context = orb_expr::EvaluationContext {
+            zoom,
+            pitch: camera.pitch,
+            bearing: camera.bearing,
+            meters_per_pixel: camera.meters_per_pixel,
+            ..Default::default()
+        };
+        let mut scales = [Scale::IDENTITY; 3];
+        for (s, p) in scales.iter_mut().zip(layer.paint.dimensions()) {
+            *s = p.get().scale(&context);
+        }
         let uniform =
             |p: &Property<f32>| (!per_feature(p.kind())).then(|| p.evaluate_camera(zoom, camera));
         // Extrusions bind their base and height per feature unless constant
@@ -1124,6 +1140,7 @@ impl Query<'_> {
             circle_pitch,
             shift,
             feature_translate,
+            scales,
         }
     }
 
@@ -1158,33 +1175,39 @@ impl Query<'_> {
         state: FeatureState<'_>,
     ) -> (f32, f32, Option<(Metres, Metres)>) {
         let zoom = self.zoom;
+        let s = at.scales;
+        // The layer's value, else the feature's: its record's, or its
+        // state's, as the camera scales it.
+        let value = |p: &Property<f32>, layer: Option<f32>, record: f32, scale: Scale| {
+            layer.unwrap_or_else(|| {
+                let part = live(p, zoom, state, record);
+                scale.apply(f64::from(part)) as f32
+            })
+        };
         let (radius, offset) = match &layer.paint {
             HitPaint::Circle { radius, stroke, .. } => (
-                live(radius, zoom, state, at.radius.unwrap_or(f.radius))
-                    + live(stroke, zoom, state, at.stroke.unwrap_or(f.stroke)),
+                value(radius, at.radius, f.radius, s[0]) + value(stroke, at.stroke, f.stroke, s[1]),
                 0.0,
             ),
             // GL JS `getLineWidth`: a gap's line is two strokes about it.
             HitPaint::Line {
                 width, gap, offset, ..
             } => {
-                let width = live(width, zoom, state, at.radius.unwrap_or(f.radius) * 2.0);
-                let gap = live(gap, zoom, state, at.gap.unwrap_or(f.stroke));
+                let width = value(width, at.radius.map(|r| r * 2.0), f.radius * 2.0, s[0]);
+                let gap = value(gap, at.gap, f.stroke, s[1]);
                 let total = if gap > 0.0 { gap + 2.0 * width } else { width };
-                (
-                    total / 2.0,
-                    live(offset, zoom, state, at.offset.unwrap_or(f.base)),
-                )
+                (total / 2.0, value(offset, at.offset, f.base, s[2]))
             }
             HitPaint::Extrusion { .. } => (0.0, 0.0),
             _ => (f.radius, 0.0),
         };
         let elevation = match &layer.paint {
             HitPaint::Extrusion { base, height, .. } => {
-                let metres = |p, fallback| Metres(f64::from(live(p, zoom, state, fallback)));
+                let metres =
+                    |p, layer, record, scale| Metres(f64::from(value(p, layer, record, scale)));
                 Some((
-                    metres(base, at.base.unwrap_or(f.base)),
-                    metres(height, at.height.unwrap_or(f.height)),
+                    metres(base, at.base, f.base, s[0]),
+                    metres(height, at.height, f.height, s[1]),
                 ))
             }
             _ => None,
@@ -1197,22 +1220,26 @@ impl Query<'_> {
     fn mesh_bound(&self, layer: &HitLayer, at: &LayerAt, mesh: &MeshHits) -> (f32, Metres) {
         let (radius, stroke, height) = (mesh.header(1), mesh.header(2), mesh.header(3));
         let reach = mesh.translate_reach(at);
+        // The largest any feature's reaches, as the camera scales it.
+        let most = |s: Scale, max: f32| s.magnitude(f64::from(max)) as f32;
+        let s = at.scales;
         let (pad, top) = match &layer.paint {
             HitPaint::Circle { .. } => (
-                at.radius.unwrap_or(radius) + at.stroke.unwrap_or(stroke),
+                at.radius.unwrap_or_else(|| most(s[0], radius))
+                    + at.stroke.unwrap_or_else(|| most(s[1], stroke)),
                 Metres::ZERO,
             ),
             HitPaint::Line { .. } => {
-                let width = at.radius.unwrap_or(radius) * 2.0;
-                let gap = at.gap.unwrap_or(stroke);
+                let width =
+                    (at.radius.map(|r| r * 2.0)).unwrap_or_else(|| most(s[0], radius * 2.0));
+                let gap = at.gap.unwrap_or_else(|| most(s[1], stroke));
                 let total = if gap > 0.0 { gap + 2.0 * width } else { width };
-                (
-                    total / 2.0 + at.offset.map_or(height, f32::abs),
-                    Metres::ZERO,
-                )
+                let offset = at.offset.map_or_else(|| most(s[2], height), f32::abs);
+                (total / 2.0 + offset, Metres::ZERO)
             }
             HitPaint::Extrusion { .. } => {
-                let top = at.height.unwrap_or(height).max(at.base.unwrap_or(height));
+                let top = (at.height.unwrap_or_else(|| most(s[1], height)))
+                    .max(at.base.unwrap_or_else(|| most(s[0], height)));
                 (0.0, Metres(f64::from(top)))
             }
             _ => (radius, Metres::ZERO),

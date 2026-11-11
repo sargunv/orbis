@@ -219,7 +219,9 @@ fn reads(parsed: &PropertyExpression) -> Inputs {
     if parsed.zoom_curve().is_some() {
         inputs = inputs.union(Inputs::ZOOM);
     }
-    if parsed.reads_camera() {
+    if parsed.camera_scale().is_some() {
+        inputs = inputs.union(Inputs::CAMERA_DATA);
+    } else if parsed.reads_camera() {
         inputs = inputs.union(Inputs::CAMERA);
     }
     if parsed.reads_feature_properties() {

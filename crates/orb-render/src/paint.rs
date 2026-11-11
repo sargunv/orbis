@@ -58,15 +58,60 @@ pub struct HeatmapPaint {
 }
 
 /// How a property row's two values blend as the camera zooms past the
+/// tile's zoom, and what the camera scales a number by.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Curve {
+    pub blend: ZoomBlend,
+    pub scale: RowScale,
+}
+
+impl Curve {
+    /// Always the first value, unscaled.
+    pub const STEP: Self = Self::blend(ZoomBlend::Step);
+
+    pub const fn blend(blend: ZoomBlend) -> Self {
+        Self {
+            blend,
+            scale: RowScale::IDENTITY,
+        }
+    }
+}
+
+/// How a property row's two values blend as the camera zooms past the
 /// tile's zoom (GL JS's `interpolationFactor`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum Curve {
+pub enum ZoomBlend {
     /// Always the first value: feature-only properties and `step` curves.
     #[default]
     Step,
     /// Exponential with this base; 1 is linear.
     Exponential(f32),
     CubicBezier([f32; 4]),
+}
+
+/// What the camera scales a feature's number by, for a value that reads
+/// the camera and the feature's data (beyond the spec):
+/// `clamp(value × factor, min, max)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowScale {
+    pub factor: f32,
+    /// The largest finite floats where the value has no bound.
+    pub min: f32,
+    pub max: f32,
+}
+
+impl RowScale {
+    pub const IDENTITY: Self = Self {
+        factor: 1.0,
+        min: f32::MIN,
+        max: f32::MAX,
+    };
+}
+
+impl Default for RowScale {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
 }
 
 /// A `*-translate` offset in pixels and its anchor.
@@ -222,7 +267,7 @@ use orb_shaders::layout::{MAX_ELEVATION_OPS, MAX_ELEVATION_STOPS};
 /// An extrusion's colour as a curve over the elevation, the height above
 /// the ground (`extrusion.wgsl`'s `ElevationColor`): its input is the
 /// elevation through `input`, and between stops, the colours mix by
-/// `curve` ([`Curve::Step`] for a `step`). Stop `i`'s colour is property
+/// `curve` ([`Curve::STEP`] for a `step`). Stop `i`'s colour is property
 /// slot 0 for the first, `2 + i` after, which may come from the feature's
 /// state; else from its row where bit `i` of `rows` is set, else `colors`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -294,11 +339,11 @@ impl ExtrusionPaint {
             input: (e.input[..e.ops].iter().enumerate())
                 .map(|(i, &(code, _))| (code + 1) << (5 * i))
                 .sum(),
-            curve: match e.curve {
-                Curve::Step => 0,
-                Curve::Exponential(1.0) => 1,
-                Curve::Exponential(_) => 2,
-                Curve::CubicBezier(_) => 3,
+            curve: match e.curve.blend {
+                ZoomBlend::Step => 0,
+                ZoomBlend::Exponential(1.0) => 1,
+                ZoomBlend::Exponential(_) => 2,
+                ZoomBlend::CubicBezier(_) => 3,
             },
             dynamic: u32::from(e.rows != 0) | u32::from(state) << 1,
             stateless,
@@ -360,8 +405,8 @@ impl SymbolSize {
     fn put(&self, b: &mut Block, at: usize) {
         use orb_shaders::layout::symbol_size as n;
         let (kind, size, curve, stops) = match self {
-            Self::Constant(size) => (0, *size, Curve::Step, &[][..]),
-            Self::Source => (1, 0.0, Curve::Step, &[][..]),
+            Self::Constant(size) => (0, *size, Curve::STEP, &[][..]),
+            Self::Source => (1, 0.0, Curve::STEP, &[][..]),
             Self::Camera { curve, stops } => (2, 0.0, *curve, &stops[..]),
             Self::Composite { curve } => (3, 0.0, *curve, &[][..]),
         };
@@ -440,7 +485,7 @@ impl NodePaint {
     /// reliefs map their tiles into a slot whatever the zoom.
     pub fn drapes_by_zoom(&self, states_by_zoom: bool) -> bool {
         let blends = |mask: u32, curves: &[Curve]| {
-            (curves.iter().enumerate()).any(|(i, c)| mask & 1 << i != 0 && *c != Curve::Step)
+            (curves.iter().enumerate()).any(|(i, c)| mask & 1 << i != 0 && *c != Curve::STEP)
         };
         match self {
             Self::Fill(p) | Self::Background(p) => {
@@ -782,13 +827,17 @@ impl PaintBlock for Block {
     fn curves(&mut self, at: usize, curves: &[Curve]) -> &mut Self {
         use orb_shaders::layout::curve as n;
         for (i, curve) in curves.iter().enumerate() {
-            let (kind, params) = match *curve {
-                Curve::Step => (0, [0.0; 4]),
-                Curve::Exponential(base) => (1, [base, 0.0, 0.0, 0.0]),
-                Curve::CubicBezier(p) => (2, p),
+            let (kind, params) = match curve.blend {
+                ZoomBlend::Step => (0, [0.0; 4]),
+                ZoomBlend::Exponential(base) => (1, [base, 0.0, 0.0, 0.0]),
+                ZoomBlend::CubicBezier(p) => (2, p),
             };
             let at = at + i * n::WORDS;
+            let s = curve.scale;
             self.f(at + n::PARAMS, &params).u(at + n::KIND, &[kind]);
+            self.f(at + n::SCALE, &[s.factor])
+                .f(at + n::SCALE_MIN, &[s.min])
+                .f(at + n::SCALE_MAX, &[s.max]);
         }
         self
     }

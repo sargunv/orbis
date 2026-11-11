@@ -107,12 +107,7 @@ impl ElevationColor {
             colors: [0; MAX_ELEVATION_STOPS],
             stops: self.colors.len(),
             rows: 0,
-            curve: match self.interpolation {
-                None => Curve::Step,
-                Some(Interpolation::Linear) => Curve::Exponential(1.0),
-                Some(Interpolation::Exponential(base)) => Curve::Exponential(base as f32),
-                Some(Interpolation::CubicBezier(p)) => Curve::CubicBezier(p.map(|v| v as f32)),
-            },
+            curve: crate::paint::interpolation_curve(self.interpolation),
         };
         for (to, &op) in paint.input.iter_mut().zip(&self.input) {
             *to = encode(op);

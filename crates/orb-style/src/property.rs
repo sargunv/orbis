@@ -582,7 +582,8 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
 
     /// The value for feature `row` of `layer` (in canonical `tile`, for
     /// `within` and `distance`) in `context`: its zoom, camera, state and
-    /// images. Exact for every kind.
+    /// images. Exact for every kind, as it draws: a value with a camera
+    /// scale scales its feature part's, or the default where that fails.
     pub fn evaluate_feature(
         &self,
         context: &orb_expr::EvaluationContext<'_>,
@@ -594,10 +595,40 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
             Inner::Expression(expression) => {
                 let bound = expression.expression().bind(layer).with_tile(tile);
                 let value = bound.evaluate_in(context, row);
-                self.fit(value.ok().as_ref())
+                match expression.camera_scale() {
+                    Some(scale) => {
+                        let default = self.default_number();
+                        let n = match value {
+                            Ok(Value::Number(n)) if !n.is_nan() => n,
+                            _ => default,
+                        };
+                        let scaled = scale.at(context, default).apply(n);
+                        self.fit(Some(&Value::Number(scaled)))
+                    }
+                    None => self.fit(value.ok().as_ref()),
+                }
             }
             Inner::List(_) => unreachable!("a list's items are values"),
         }
+    }
+
+    /// The default of a number property: 0 for one read with a typed
+    /// default.
+    fn default_number(&self) -> f64 {
+        match &self.default {
+            Fallback::Table(id) => id.default_value().as_f64().unwrap_or(0.0),
+            Fallback::Typed(_) => 0.0,
+        }
+    }
+
+    /// What the camera in `context` scales a per-feature value by
+    /// ([`orb_expr::CameraScale`]): the identity for a value without a
+    /// camera scale.
+    pub fn scale(&self, context: &orb_expr::EvaluationContext<'_>) -> orb_expr::Scale {
+        (self.as_expression().and_then(|e| e.camera_scale()))
+            .map_or(orb_expr::Scale::IDENTITY, |s| {
+                s.at(context, self.default_number())
+            })
     }
 
     /// Whether the value reads `feature-state`, but no feature properties:

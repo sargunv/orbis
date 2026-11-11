@@ -347,6 +347,21 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          feature; `data`, the feature's properties, id and geometry;\n\
          `state`, its feature state; and with `dev.sargunv.orbis:daylight`\n\
          `daylight`, how lit the ground is where a label stands.\n\
+         `camera × data` is the camera and data in one number:\n\
+         `clamp(feature × factor, min, max)`, where the feature part reads\n\
+         data, state and the zoom but no camera, and the factor and bounds\n\
+         read the camera and the zoom but no data. Property rows hold each\n\
+         feature's part, laid out with its tile, and the camera's part\n\
+         scales it every frame, so `[\"/\", [\"get\", \"width_m\"],\n\
+         [\"dev.sargunv.orbis:meters-per-pixel\"]]` draws each feature's\n\
+         metres as pixels at every zoom. Parts combine through `*` and `/`;\n\
+         a `step`, `interpolate`, `match` or `case` the camera chooses by\n\
+         takes outputs that are constant multiples of one feature part (or\n\
+         0), one the feature chooses by outputs sharing one camera part;\n\
+         `min` and `max` of camera values may bound the whole. Other mixes\n\
+         (`[\"+\", [\"get\", \"w\"], [\"pitch\"]]`, a colour) are errors.\n\
+         Where a feature's part gives no number, the default stands in for\n\
+         it, scaled.\n\
          **Spec** lists the spec's expression parameters; **GL JS** and **Native**\n\
          the first versions with the property and its data-driven form (the\n\
          spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads:\n\

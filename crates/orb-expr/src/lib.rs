@@ -33,6 +33,7 @@ mod parse;
 mod parse_extra;
 mod property;
 mod range;
+mod scale;
 mod tile;
 mod value;
 
@@ -46,6 +47,7 @@ pub use filter::{Filter, FilterGroups};
 pub use ir::Interpolation;
 pub use locale::Collator;
 pub use property::{Kind, PropertyExpression, PropertySpec, PropertyType, ZoomCurve};
+pub use scale::{CameraScale, Scale};
 pub use tile::{Bound, FeatureData};
 pub use value::FormattedSection;
 pub use value::{Type, Value};

@@ -46,8 +46,8 @@ pub use orb_layout::{Family, pack_color};
 pub use paint::{
     CirclePaint, ColorReliefPaint, Curve, EXTRUSION_GRADIENT_ROWS, EXTRUSION_OPACITY_ROWS,
     ElevationPaint, ExtrusionPaint, FILL_ANTIALIAS_ROWS, FillPaint, HeatmapPaint, HillshadeMethod,
-    HillshadePaint, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup,
-    SymbolPaint, SymbolSize, Translate,
+    HillshadePaint, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, RowScale,
+    StateLookup, SymbolPaint, SymbolSize, Translate, ZoomBlend,
 };
 pub use scene::Pixels;
 pub use scene::{

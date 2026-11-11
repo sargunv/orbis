@@ -33,7 +33,7 @@ and PROJ parameters keep their standard names.
 | `dev.sargunv.orbis:tileMatrixSet` | — | `dev.sargunv.orbis:tileMatrixSet` on a source: the OGC 2D tile matrix set its tiles are cut by, a registered identifier (`WorldCRS84Quad`) or an inline document (version 2.0, or 1.0's names). A GeoJSON source ignores it and tiles on the map's own plane. Our own design; no proposal yet. |
 | `dev.sargunv.orbis:backdrop-color` | [style-spec#1889](https://github.com/maplibre/maplibre-style-spec/issues/1889) | `sky["dev.sargunv.orbis:backdrop-color"]` (default transparent), the colour the map is drawn on, behind the stars and the sky, which covers it where it's opaque. It takes expressions and transitions like the rest of `sky`. The proposal calls it `sky.backdrop-color`. |
 | `dev.sargunv.orbis:star-opacity` | [style-spec#1889](https://github.com/maplibre/maplibre-style-spec/issues/1889) | `sky["dev.sargunv.orbis:star-opacity"]` (0 to 1, default 0), a fixed procedural pattern of stars on the backdrop that turns with the globe. The draw order is backdrop, stars, then the sky, which covers them where it's opaque and reveals them as it fades with altitude; on a flat map they show above the horizon where the sky is transparent. It takes expressions and transitions like the rest of `sky`. The proposal calls it `sky.star-opacity`. |
-| `dev.sargunv.orbis:meters-per-pixel` | [style-spec#1881](https://github.com/maplibre/maplibre-style-spec/issues/1881) | `["dev.sargunv.orbis:meters-per-pixel"]`: ground metres per logical pixel at the camera's target, unpitched, from the projection's scale there (Web Mercator's shrinks toward the poles), so `["/", 10, ["dev.sargunv.orbis:meters-per-pixel"]]` is 10 m in pixels. Paint evaluated per frame or per layer reads it, in values the same for every feature, as it reads `["pitch"]`, and so do the overlap, optional and ignore-placement settings at each placement; the rest of layout, laid out once per tile, doesn't. The proposal's name is still open (`["meters-per-pixel"]`, `["scale"]`, `["meters-per-px"]`, `["px-per-meter"]`, `["meters-to-px", n]`, or an engine-provided `global-state` key); Orbis takes the spelled-out form the discussion leans to, after the platform SDKs' meters-per-pixel. |
+| `dev.sargunv.orbis:meters-per-pixel` | [style-spec#1881](https://github.com/maplibre/maplibre-style-spec/issues/1881) | `["dev.sargunv.orbis:meters-per-pixel"]`: ground metres per logical pixel at the camera's target, unpitched, from the projection's scale there (Web Mercator's shrinks toward the poles), so `["/", 10, ["dev.sargunv.orbis:meters-per-pixel"]]` is 10 m in pixels. Paint evaluated per frame or per layer reads it, in values the same for every feature, as it reads `["pitch"]`, and per-feature numbers drawn per frame read it with the feature's data as a scale of it (`camera × data` in Properties): `["/", ["get", "width_m"], ["dev.sargunv.orbis:meters-per-pixel"]]` is each feature's width in metres. So do the overlap, optional and ignore-placement settings at each placement; the rest of layout, laid out once per tile, doesn't. The proposal's name is still open (`["meters-per-pixel"]`, `["scale"]`, `["meters-per-px"]`, `["px-per-meter"]`, `["meters-to-px", n]`, or an engine-provided `global-state` key); Orbis takes the spelled-out form the discussion leans to, after the platform SDKs' meters-per-pixel. |
 | `dev.sargunv.orbis:shadow-intensity` | [style-spec#1797](https://github.com/maplibre/maplibre-style-spec/issues/1797) | `light["dev.sargunv.orbis:shadow-intensity"]` (0 to 1, default 0, off), maplibre/maplibre#555's `light.shadow-intensity` (where the proposal's discussion moved): how much extrusions' shadows darken what lies beneath them, with no colour of their own. They fall away from `light.position` and follow `light.anchor`, as the extrusions' shading does: with the spec's default viewport anchor they turn with the map. Each building's shadow is its walls and roof projected along the light onto the ground it stands on, drawn under the buildings: it darkens the ground and the layers beneath the extrusions, not other buildings (the proposal's later shadow maps would). Overlapping shadows darken once. On terrain each shadow falls where the light meets the terrain, shorter on ground rising away from the light and longer, at most twice as long, on ground falling away, and lies on the surface drawn. It transitions like the rest of `light`. Spec PR #1870's per-layer `fill-extrusion-shadow-opacity` and `-color` are on hold and not read. |
 | `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity` | [style-spec#1796](https://github.com/maplibre/maplibre-style-spec/issues/1796) | `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity` (0 to 1, default 0, off), spec PR #1944's `fill-extrusion-ambient-occlusion-wall-intensity`: walls darken toward the ground they stand on, over the wall radius above it, as MapLibre Native's walls PR (#4909) shades them, from each building's own footprint. On terrain a wall measures its height from the terrain under each point of it. A part standing higher than the wall radius isn't darkened, and neither is anything where buildings stand on or face each other closely. Like the other three, it is zoom-interpolated and transitioned. |
 | `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-radius` | [style-spec#1796](https://github.com/maplibre/maplibre-style-spec/issues/1796) | `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-radius` (metres, default 3), spec PR #1944's `fill-extrusion-ambient-occlusion-wall-radius`: how far up the walls their darkening reaches. |
@@ -87,7 +87,7 @@ phase, which bounds the inputs it can follow.
 |---|---|---|---|---|---|
 | tile | Once per tile at the tile's zoom, on the job workers | When the tile is laid out again: an edit, or crossing a whole zoom | The layer's layout in every tile it draws | Highest: job time and uploads per tile | zoom, data |
 | placement | Per camera snapshot, in placement | At the next placement | Collision and placement of the layer's labels | Placement time; no layout | zoom, camera, data |
-| frame | Every frame in the shaders, per feature: property rows at the tile's zoom and the next, or the feature-state table | The next frame | Row or state-table uploads for data; node paint for the rest | Low: a uniform, or rows written once per tile | zoom, camera, data, state, elevation, daylight |
+| frame | Every frame in the shaders, per feature: property rows at the tile's zoom and the next, or the feature-state table | The next frame | Row or state-table uploads for data; node paint for the rest | Low: a uniform, or rows written once per tile | zoom, camera, camera × data, data, state, elevation, daylight |
 | layer | Every frame, once for the whole layer | The next frame | The node's paint | Lowest | zoom, camera, elevation |
 
 ## Properties
@@ -98,6 +98,21 @@ the same for every
 feature; `data`, the feature's properties, id and geometry;
 `state`, its feature state; and with `dev.sargunv.orbis:daylight`
 `daylight`, how lit the ground is where a label stands.
+`camera × data` is the camera and data in one number:
+`clamp(feature × factor, min, max)`, where the feature part reads
+data, state and the zoom but no camera, and the factor and bounds
+read the camera and the zoom but no data. Property rows hold each
+feature's part, laid out with its tile, and the camera's part
+scales it every frame, so `["/", ["get", "width_m"],
+["dev.sargunv.orbis:meters-per-pixel"]]` draws each feature's
+metres as pixels at every zoom. Parts combine through `*` and `/`;
+a `step`, `interpolate`, `match` or `case` the camera chooses by
+takes outputs that are constant multiples of one feature part (or
+0), one the feature chooses by outputs sharing one camera part;
+`min` and `max` of camera values may bound the whole. Other mixes
+(`["+", ["get", "w"], ["pitch"]]`, a colour) are errors.
+Where a feature's part gives no number, the default stands in for
+it, scaled.
 **Spec** lists the spec's expression parameters; **GL JS** and **Native**
 the first versions with the property and its data-driven form (the
 spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads:
@@ -114,7 +129,7 @@ pass.
 | `fill-sort-key` | layout | tile | zoom, data | 1.2.0; data 1.2.0 | 9.1.0; data 9.1.0 | zoom, data | — | 1/1 | — | 1/1 |
 | `dev.sargunv.orbis:fill-rounded-corner-distance` | layout | tile | — | — | — | constant; behind its preview ([style-spec#1047](https://github.com/maplibre/maplibre-style-spec/issues/1047)) | — | — | — | — |
 | `fill-antialias` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | 1/1 | — | 1/1 |
-| `fill-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.21.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 9/9 | — | 9/9 |
+| `fill-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.21.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 9/9 | — | 9/9 |
 | `fill-layer-opacity` | paint | layer | zoom | 6.0.0 | [no](https://github.com/maplibre/maplibre-native/issues/4298) | zoom; camera accepted (not portable) | — | 16/16 | — | — |
 | `fill-layer-blend` | paint | layer | constant | [no](https://github.com/maplibre/maplibre-gl-js/issues/48) | [no](https://github.com/maplibre/maplibre-native/issues/2963) | constant | — | — | — | — |
 | `fill-color` | paint | frame | zoom, data, state | 0.10.0; data 0.19.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 9/9 | — | 9/9 |
@@ -132,16 +147,16 @@ pass.
 | `line-miter-limit` | layout | tile | zoom, data | 0.10.0; data 5.22.0 | 2.0.1; data [no](https://github.com/maplibre/maplibre-native/issues/4194) | zoom, data | — | 1/3 | — | 1/1 |
 | `line-round-limit` | layout | tile | zoom, data | 0.10.0; data 5.22.0 | 2.0.1; data [no](https://github.com/maplibre/maplibre-native/issues/4194) | zoom, data | — | 3/3 | — | 1/1 |
 | `line-sort-key` | layout | tile | zoom, data | 1.2.0; data 1.2.0 | 9.1.0; data 9.1.0 | zoom, data | — | 1/1 | — | 1/1 |
-| `line-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 5/5 |
+| `line-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 7/7 | — | 5/5 |
 | `line-layer-opacity` | paint | layer | zoom | 6.0.0 | [no](https://github.com/maplibre/maplibre-native/issues/4298) | zoom; camera accepted (not portable) | — | 18/18 | — | — |
 | `line-layer-blend` | paint | layer | constant | [no](https://github.com/maplibre/maplibre-gl-js/issues/48) | [no](https://github.com/maplibre/maplibre-native/issues/2963) | constant | — | — | — | — |
 | `line-color` | paint | frame | zoom, data, state | 0.10.0; data 0.23.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 8/8 | — | 7/7 |
 | `line-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | 2/2 | 3/3 | 2/2 | 3/3 |
 | `line-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 0/2 | 2/2 | 2/2 | 2/2 |
-| `line-width` | paint | frame | zoom, data, state | 0.10.0; data 0.39.0 | 2.0.1; data 5.2.0 | zoom, data, state; camera accepted (not portable) | 6/6 | 7/7 | 6/6 | 7/7 |
-| `line-gap-width` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | 6/6 | 4/4 | 6/6 | 4/4 |
-| `line-offset` | paint | frame | zoom, data, state | 0.12.1; data 0.29.0 | 3.0.0; data 5.0.0 | zoom, data, state; camera accepted (not portable) | 8/8 | 10/10 | 7/7 | 5/5 |
-| `line-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `line-width` | paint | frame | zoom, data, state | 0.10.0; data 0.39.0 | 2.0.1; data 5.2.0 | zoom, data, state; camera, camera × data accepted (not portable) | 6/6 | 7/7 | 6/6 | 7/7 |
+| `line-gap-width` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | 6/6 | 4/4 | 6/6 | 4/4 |
+| `line-offset` | paint | frame | zoom, data, state | 0.12.1; data 0.29.0 | 3.0.0; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | 8/8 | 10/10 | 7/7 | 5/5 |
+| `line-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.29.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 4/4 | — | 4/4 |
 | `line-dasharray` | paint | tile | zoom, data | 0.10.0; data 5.8.0 | 2.0.1; data [no](https://github.com/maplibre/maplibre-native/issues/744) | zoom, data | — | 22/22 | — | 9/16 |
 | `line-pattern` | paint | tile | zoom, data | 0.10.0; data 0.49.0 | 2.0.1; data 6.5.0 | zoom, data | — | 11/11 | — | 12/13 |
 | `line-gradient` | paint | tile | line-progress | 0.45.0; data — | 6.5.0; data — | constant | — | 9/9 | — | 4/4 |
@@ -196,18 +211,18 @@ pass.
 | `text-optional` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
 | `symbol-height-offset` | layout | tile | zoom, data | 6.6.0; data 6.6.0 | [no](https://github.com/maplibre/maplibre-native/issues/1929); data [no](https://github.com/maplibre/maplibre-native/issues/1929) | zoom, data | — | 0/1, 1 skipped | — | — |
 | `symbol-height-anchor` | layout | placement | zoom | [no](https://github.com/maplibre/maplibre-gl-js/issues/644) | [no](https://github.com/maplibre/maplibre-native/issues/1929) | zoom | — | — | — | — |
-| `icon-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
+| `icon-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 7/7 | — | 7/7 |
 | `icon-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable); `daylight` with preview `dev.sargunv.orbis:daylight` | — | 4/4 | — | 4/4 |
 | `icon-halo-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable); `daylight` with preview `dev.sargunv.orbis:daylight` | — | 7/7 | — | 7/7 |
-| `icon-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
-| `icon-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `icon-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 4/4 | — | 4/4 |
+| `icon-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 4/4 | — | 4/4 |
 | `icon-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | 3/3 | — | 3/3 |
 | `icon-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 2/2 | — | 2/2 |
-| `text-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `text-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 4/4 | — | 4/4 |
 | `text-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable); `daylight` with preview `dev.sargunv.orbis:daylight` | — | 7/8 | — | 7/9 |
 | `text-halo-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable); `daylight` with preview `dev.sargunv.orbis:daylight` | — | 4/4 | — | 4/4 |
-| `text-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
-| `text-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
+| `text-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 4/4 | — | 4/4 |
+| `text-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 4/4 | — | 4/4 |
 | `text-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | 3/3 | — | 3/3 |
 | `text-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 10/10 | — | 2/2 |
 
@@ -216,24 +231,24 @@ pass.
 | Property | Section | Phase | Spec | GL JS | Native | Orbis | GL JS query (native) | GL JS render (native) | Native query (native) | Native render (native) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `circle-sort-key` | layout | tile | zoom, data | 1.2.0; data 1.2.0 | 9.2.0; data 9.2.0 | zoom, data | — | 1 skipped | — | 1 skipped |
-| `circle-radius` | paint | frame | zoom, data, state | 0.10.0; data 0.18.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | 7/7 | 8/8 | 7/7 | 8/8 |
+| `circle-radius` | paint | frame | zoom, data, state | 0.10.0; data 0.18.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | 7/7 | 8/8 | 7/7 | 8/8 |
 | `circle-color` | paint | frame | zoom, data, state | 0.10.0; data 0.18.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
-| `circle-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 7/7 | — | 7/7 |
-| `circle-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 6/6 | — | 6/6 |
+| `circle-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 7/7 | — | 7/7 |
+| `circle-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.20.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 6/6 | — | 6/6 |
 | `circle-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | 3/3 | 3/3 | 3/3 | 3/3 |
 | `circle-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | 2/2 | 2/2 | 2/2 | 2/2 |
 | `circle-pitch-scale` | paint | frame | zoom | 0.21.0 | 4.2.0 | zoom; data accepted (not portable) | 8/8 | 3/3 | 8/8 | 3/3 |
 | `circle-pitch-alignment` | paint | frame | zoom | 0.39.0 | 5.2.0 | zoom; data accepted (not portable) | — | 13/13 | — | 4/4 |
-| `circle-stroke-width` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera accepted (not portable) | 3/3 | 5/5 | 3/3 | 5/5 |
+| `circle-stroke-width` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | 3/3 | 5/5 | 3/3 | 5/5 |
 | `circle-stroke-color` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 5/5 | — | 5/5 |
-| `circle-stroke-opacity` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 6/6 | — | 6/6 |
+| `circle-stroke-opacity` | paint | frame | zoom, data, state | 0.29.0; data 0.29.0 | 5.0.0; data 5.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 6/6 | — | 6/6 |
 
 ### heatmap
 
 | Property | Section | Phase | Spec | GL JS | Native | Orbis | GL JS query (native) | GL JS render (native) | Native query (native) | Native render (native) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `heatmap-radius` | paint | frame | zoom, data, state | 0.41.0; data 0.43.0 | 6.0.0; data 6.0.0 | zoom, data, state; camera accepted (not portable) | — | 6/6 | — | 6/6 |
-| `heatmap-weight` | paint | frame | zoom, data, state | 0.41.0; data 0.41.0 | 6.0.0; data 6.0.0 | zoom, data, state; camera accepted (not portable) | — | 3/3 | — | 3/3 |
+| `heatmap-radius` | paint | frame | zoom, data, state | 0.41.0; data 0.43.0 | 6.0.0; data 6.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 6/6 | — | 6/6 |
+| `heatmap-weight` | paint | frame | zoom, data, state | 0.41.0; data 0.41.0 | 6.0.0; data 6.0.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 3/3 | — | 3/3 |
 | `heatmap-intensity` | paint | layer | zoom | 0.41.0 | 6.0.0 | zoom; camera accepted (not portable) | — | 3/3 | — | 3/3 |
 | `heatmap-color` | paint | layer | heatmap-density | 0.41.0; data — | 6.0.0; data — | constant | — | 2/2 | — | 2/2 |
 | `heatmap-opacity` | paint | layer | zoom | 0.41.0 | 6.0.0 | zoom; camera accepted (not portable) | — | 3/3 | — | 3/3 |
@@ -245,8 +260,8 @@ pass.
 | `fill-extrusion-rounded-corner-distance` | layout | tile | constant | 6.2.0 | 13.4.0 | constant | — | 5/8 | — | — |
 | `fill-extrusion-color` | paint | frame | zoom, data, state, elevation | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state, elevation; camera accepted (not portable) | — | 8/8 | — | 8/8 |
 | `fill-extrusion-opacity` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom; camera, data accepted (not portable) | — | 3/3 | — | 3/3 |
-| `fill-extrusion-height` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state; camera accepted (not portable) | — | 5/6 | — | 5/5 |
-| `fill-extrusion-base` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state; camera accepted (not portable) | — | 6/6 | — | 2/6 |
+| `fill-extrusion-height` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 5/6 | — | 5/5 |
+| `fill-extrusion-base` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state; camera, camera × data accepted (not portable) | — | 6/6 | — | 2/6 |
 | `fill-extrusion-translate` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom; camera, data accepted (not portable) | 1/1 | 4/4 | 1/1 | 4/4 |
 | `fill-extrusion-translate-anchor` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom | — | 2/2 | — | 0/2 |
 | `fill-extrusion-vertical-gradient` | paint | frame | zoom | 0.50.0 | 7.0.0 | zoom; data accepted (not portable) | — | 2/3 | — | 2/2 |

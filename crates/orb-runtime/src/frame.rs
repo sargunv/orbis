@@ -48,6 +48,7 @@ impl Map {
             return None;
         }
         let zoom = self.camera.state().zoom(self.surface.projection());
+        let camera = crate::paint::camera_inputs(self.camera.state());
         // The tallest extrusion or the highest a symbol layer lifts its
         // labels (`symbol-height-offset`): their tiles stay covered while
         // the lifted content can show, as in GL JS. Per feature, the most
@@ -74,12 +75,12 @@ impl Map {
                 // maxima, raised by every tile laid out so far: its bound
                 // stands in.
                 match (n.family == Family::FillExtrusion)
-                    .then(|| extrusion_bound(layer, zoom))
+                    .then(|| extrusion_bound(layer, zoom, camera))
                     .flatten()
                 {
-                    Some((tallest, bounded)) => {
+                    Some((tallest, bounded, scales)) => {
                         if !bounded {
-                            unbounded.extrusions.push(n.key);
+                            unbounded.extrusions.push((n.key, scales));
                         }
                         tallest
                     }
@@ -1461,7 +1462,12 @@ mod tests {
                     "layers": [{{"id": "e", "type": "fill-extrusion", "source": "b", "paint": {paint}}}]}}"#
             ))
             .unwrap();
-            extrusion_bound(&style.layers[0], 10.0)
+            let camera = orb_style::CameraInputs {
+                pitch: 30.0,
+                bearing: 0.0,
+                meters_per_pixel: 1.0,
+            };
+            extrusion_bound(&style.layers[0], 10.0, camera).map(|(t, b, _)| (t, b))
         };
         assert_eq!(bound(r#"{"fill-extrusion-height": 300}"#), None);
         // A base no expression bounds leaves the constant height standing.
@@ -1473,23 +1479,46 @@ mod tests {
             bound(r#"{"fill-extrusion-height": ["min", ["get", "h"], 800]}"#),
             Some((800.0, true))
         );
+        // Scaled by the camera, as the rows draw.
+        assert_eq!(
+            bound(
+                r#"{"fill-extrusion-height": ["*", ["min", ["get", "h"], 800], ["/", ["pitch"], 60]]}"#
+            ),
+            Some((400.0, true))
+        );
     }
 }
 
 /// For an extrusion layer whose height or base varies per feature, the
-/// most either can give at `zoom`, a constant one's value included, and
-/// whether both set a bound: where one doesn't (a bare `get`), the tiles
-/// the cover holds tell the rest. `None` when every feature shares both.
-fn extrusion_bound(layer: &orb_style::Layer, zoom: f64) -> Option<(f32, bool)> {
+/// most either can give at `zoom` and `camera`, a constant one's value
+/// included, and whether both set a bound: where one doesn't (a bare
+/// `get`), the tiles the cover holds tell the rest, their rows scaled by
+/// the camera as the height's and base's are. `None` when every feature
+/// shares both.
+fn extrusion_bound(
+    layer: &orb_style::Layer,
+    zoom: f64,
+    camera: orb_style::CameraInputs,
+) -> Option<(f32, bool, [orb_expr::Scale; 2])> {
     let top = layer.get(orb_style::EXTRUSION_HEIGHT);
     let base = layer.get(orb_style::EXTRUSION_BASE);
     let per_feature = |kind| matches!(kind, orb_style::Kind::Source | orb_style::Kind::Composite);
     if !per_feature(top.kind()) && !per_feature(base.kind()) {
         return None;
     }
+    let context = orb_expr::EvaluationContext {
+        zoom,
+        pitch: camera.pitch,
+        bearing: camera.bearing,
+        meters_per_pixel: camera.meters_per_pixel,
+        ..Default::default()
+    };
+    let scales = [top.scale(&context), base.scale(&context)];
     let bounds = [top.max_value(zoom), base.max_value(zoom)];
-    let tallest = bounds.into_iter().flatten().fold(0.0, f64::max) as f32;
-    Some((tallest, bounds.iter().all(Option::is_some)))
+    let tallest = (bounds.iter().zip(scales))
+        .filter_map(|(b, s)| b.map(|b| s.magnitude(b)))
+        .fold(0.0, f64::max) as f32;
+    Some((tallest, bounds.iter().all(Option::is_some), scales))
 }
 
 /// A source's plan for a frame ([`Map::plan_source`]).
@@ -1516,8 +1545,9 @@ impl SourcePlan {
 struct Unbounded {
     /// Symbol layers' keys, lifted by `symbol-height-offset`.
     labels: Vec<u32>,
-    /// Extrusion nodes' keys.
-    extrusions: Vec<u32>,
+    /// Extrusion nodes' keys, and what the camera scales their heights'
+    /// and bases' rows by.
+    extrusions: Vec<(u32, [orb_expr::Scale; 2])>,
 }
 
 impl Unbounded {
@@ -1531,9 +1561,12 @@ impl Unbounded {
             .filter(|s| self.labels.contains(&s.layer))
             .map(|s| s.max_height_offset as f32);
         // An extrusion's paint slots: colour, height, base.
-        let extrusions = (tile.meshes.iter())
-            .filter(|m| self.extrusions.contains(&m.node))
-            .flat_map(|m| m.maxima.get(1..3).into_iter().flatten().copied());
+        let extrusions = tile.meshes.iter().flat_map(|m| {
+            let scales = (self.extrusions.iter()).find_map(|(n, s)| (*n == m.node).then_some(s));
+            let rows = scales.and_then(|_| m.maxima.get(1..3)).unwrap_or_default();
+            (rows.iter().zip(scales.into_iter().flatten()))
+                .map(|(&max, s)| s.magnitude(f64::from(max)) as f32)
+        });
         labels.chain(extrusions).fold(0.0, f32::max)
     }
 }

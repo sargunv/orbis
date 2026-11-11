@@ -58,7 +58,7 @@ pub(crate) fn node_paint(
     if !matches!(l.ty, LayerType::Circle | LayerType::Heatmap) {
         return None;
     }
-    let mut curves = [Curve::Step; 7];
+    let mut curves = [Curve::STEP; 7];
     let mut numbers = [0.0; 7];
     let mut colors = [[0.0; 4]; 7];
     let mut table_mask = 0;
@@ -66,10 +66,10 @@ pub(crate) fn node_paint(
     for (slot, property) in properties.iter().enumerate() {
         if property.per_feature() {
             table_mask |= 1 << slot;
-            curves[slot] = crate::paint::curve(property);
-            numbers[slot] = maxima[slot];
+            curves[slot] = crate::paint::curve(property, zoom);
+            numbers[slot] = property.row_maximum(zoom, maxima[slot]);
         } else if property.is_state_lookup() {
-            curves[slot] = crate::paint::curve(property);
+            curves[slot] = crate::paint::curve(property, zoom);
             match property {
                 PaintProperty::Number(_) => numbers[slot] = property.default_number(zoom),
                 p => colors[slot] = p.default_color(zoom),

@@ -6,6 +6,7 @@ use crate::ir::{Call, Deps, Interpolation, Ir, NodeId, Op};
 use crate::json::Json;
 use crate::legacy::lower_function;
 use crate::parse::{Annotation, Parser, is_expression};
+use crate::scale::CameraScale;
 use crate::value::Type;
 use crate::{Diagnostic, Expression};
 
@@ -47,6 +48,10 @@ pub struct PropertySpec {
     /// It may read the camera beyond its zoom (`pitch`, `bearing`), for a
     /// value the same for every feature: Orbis's own extension.
     pub camera: bool,
+    /// It may read the camera and feature data in one value, as a
+    /// per-feature value scaled by one of the camera
+    /// ([`CameraScale`]): Orbis's own.
+    pub camera_data: bool,
     /// It reads `["elevation"]` per point, which varies within a feature
     /// as its data does between them: a colour relief's ramp, an
     /// extrusion's colour.
@@ -110,9 +115,11 @@ pub struct ZoomCurve {
 /// A parsed and classified property value.
 #[derive(Clone, Debug)]
 pub struct PropertyExpression {
+    /// For a value with a camera scale, its feature part.
     expression: Expression,
     kind: Kind,
     curve: Option<ZoomCurve>,
+    scale: Option<Box<CameraScale>>,
 }
 
 const TOP_LEVEL: &str = "\"zoom\" expression may only be used as input to a top-level \"step\" or \"interpolate\" expression.";
@@ -163,6 +170,22 @@ fn find_zoom_curve(ir: &Ir, id: NodeId, memo: &mut [Option<CurveResult>]) -> Cur
     }
     memo[id as usize] = Some(result);
     result
+}
+
+/// `ir` with its camera reads resolved to `camera`'s.
+pub(crate) fn fold_camera(ir: &crate::ir::Ir, camera: crate::CameraInputs) -> crate::ir::Ir {
+    let mut ir = ir.clone();
+    for node in &mut ir.nodes {
+        let value = match node.op {
+            Op::Call(Call::Pitch, _) => camera.pitch,
+            Op::Call(Call::Bearing, _) => camera.bearing,
+            Op::Call(Call::MetersPerPixel, _) => camera.meters_per_pixel,
+            _ => continue,
+        };
+        node.op = Op::Literal(crate::Value::Number(value));
+    }
+    ir.recount_deps();
+    ir
 }
 
 impl PropertyExpression {
@@ -250,7 +273,7 @@ impl PropertyExpression {
         if camera && !spec.camera {
             return Err("camera expressions not supported");
         }
-        if camera && !feature_constant {
+        if camera && !feature_constant && !spec.camera_data {
             return Err("camera expressions cannot read the feature");
         }
         let elevation = spec.elevation && deps.contains(Deps::ELEVATION);
@@ -265,7 +288,19 @@ impl PropertyExpression {
             return Err("camera expressions cannot read the daylight");
         }
         let mut memo = vec![None; ir.nodes.len()];
-        let curve = match find_zoom_curve(ir, ir.root(), &mut memo)? {
+        let found = find_zoom_curve(ir, ir.root(), &mut memo)?;
+        if camera && !feature_constant {
+            // The zoom reads as in any value; then the feature part draws
+            // per feature and the camera's scales it.
+            if found.is_none() && !zoom_constant {
+                return Err(TOP_LEVEL);
+            }
+            let (feature, scale) = crate::scale::split(ir)?;
+            let mut value = Self::classify(Expression { ir: feature }, spec)?;
+            value.scale = Some(Box::new(scale));
+            return Ok(value);
+        }
+        let curve = match found {
             None if !zoom_constant => return Err(TOP_LEVEL),
             None => None,
             Some(id) => Some(match &ir.node(id).op {
@@ -302,6 +337,7 @@ impl PropertyExpression {
             expression,
             kind,
             curve,
+            scale: None,
         })
     }
 
@@ -314,48 +350,56 @@ impl PropertyExpression {
             expression,
             kind,
             curve,
+            scale: None,
         }
     }
 
     /// Whether the value reads the camera beyond its zoom: `pitch`,
     /// `bearing` or `dev.sargunv.orbis:meters-per-pixel`.
     pub fn reads_camera(&self) -> bool {
-        self.expression.deps().contains(Deps::CAMERA)
+        self.scale.is_some() || self.expression.deps().contains(Deps::CAMERA)
     }
 
     /// Whether the value reads `["dev.sargunv.orbis:meters-per-pixel"]`.
     pub fn reads_meters_per_pixel(&self) -> bool {
+        let reads = |e: &Expression| {
+            (e.ir.nodes.iter()).any(|n| matches!(n.op, Op::Call(Call::MetersPerPixel, _)))
+        };
         self.reads_camera()
-            && (self.expression.ir.nodes.iter())
-                .any(|n| matches!(n.op, Op::Call(Call::MetersPerPixel, _)))
+            && (reads(&self.expression) || (self.scale.iter()).any(|s| s.expressions().any(reads)))
+    }
+
+    /// The camera scale of a per-feature value that reads the camera:
+    /// its rows hold [`expression`](Self::expression), the feature part.
+    pub fn camera_scale(&self) -> Option<&CameraScale> {
+        self.scale.as_deref()
     }
 
     /// The value with its camera reads resolved to `camera`'s: a camera
-    /// value over its zoom curve, or a constant without one. `None` when
-    /// it reads no camera.
+    /// value over its zoom curve, or a constant without one, or a
+    /// per-feature value with its camera scale resolved. `None` when it
+    /// reads no camera.
     pub fn at_camera(&self, camera: crate::CameraInputs) -> Option<Self> {
+        if let Some(scale) = &self.scale {
+            return Some(Self {
+                scale: Some(Box::new(scale.at_camera(camera))),
+                ..self.clone()
+            });
+        }
         if !self.reads_camera() {
             return None;
         }
-        let mut ir = self.expression.ir.clone();
-        for node in &mut ir.nodes {
-            let value = match node.op {
-                Op::Call(Call::Pitch, _) => camera.pitch,
-                Op::Call(Call::Bearing, _) => camera.bearing,
-                Op::Call(Call::MetersPerPixel, _) => camera.meters_per_pixel,
-                _ => continue,
-            };
-            node.op = Op::Literal(crate::Value::Number(value));
-        }
-        ir.recount_deps();
         Some(Self {
-            expression: Expression { ir },
+            expression: Expression {
+                ir: fold_camera(&self.expression.ir, camera),
+            },
             kind: if self.curve.is_some() {
                 Kind::Camera
             } else {
                 Kind::Constant
             },
             curve: self.curve.clone(),
+            scale: None,
         })
     }
 

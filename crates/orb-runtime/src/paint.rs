@@ -7,7 +7,7 @@ use std::sync::Arc;
 use orb_hal::Gpu;
 use orb_render::{
     Curve, Family, FillPaint, ImageAtlas, ImageKey, LinePaint, NodePaint, PatternPaint, Renderer,
-    Translate,
+    RowScale, Translate, ZoomBlend,
 };
 use orb_style::{
     CameraInputs, Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH,
@@ -482,8 +482,9 @@ struct PaintAt {
 /// Whether a node's paint is the same at every zoom, bearing and
 /// crossfade: a vector node whose layer reads no camera (constant, per
 /// feature, or per feature and zoom in rows, which don't change with the
-/// camera), and draws no pattern, dash or gradient textures, which cross
-/// fade with the zoom. Its visibility still follows the zoom.
+/// camera, unless the camera scales them), and draws no pattern, dash or
+/// gradient textures, which cross fade with the zoom. Its visibility
+/// still follows the zoom.
 fn camera_free(plan: &StylePlan, node: &crate::style::NodePlan) -> bool {
     let layer = &plan.style.layers[node.layer];
     matches!(
@@ -495,6 +496,7 @@ fn camera_free(plan: &StylePlan, node: &crate::style::NodePlan) -> bool {
             | Family::Heatmap
             | Family::FillExtrusion
     ) && layer.slots().all(|(_, slot)| match slot.kind() {
+        _ if slot.as_expression().is_some_and(|e| e.reads_camera()) => false,
         orb_expr::Kind::Constant | orb_expr::Kind::Source => true,
         // Rows hold it at two zooms; a state lookup's default is per zoom.
         orb_expr::Kind::Composite => slot
@@ -665,9 +667,12 @@ fn write_paint(
 /// slots while the camera zooms
 /// ([`Renderer::set_drapes_by_zoom`](orb_render::Renderer::set_drapes_by_zoom)).
 pub(crate) fn drapes_by_zoom(l: &orb_style::Layer) -> bool {
-    let follows = l
-        .slots()
-        .any(|(_, slot)| matches!(slot.kind(), Kind::Camera | Kind::Composite));
+    let follows = l.slots().any(|(_, slot)| {
+        matches!(slot.kind(), Kind::Camera | Kind::Composite)
+            || slot
+                .as_expression()
+                .is_some_and(|e| e.camera_scale().is_some())
+    });
     follows
         || match l.ty {
             LayerType::Line => true,
@@ -741,7 +746,7 @@ fn node_paint(
     let lookup = style.states.lookup(index as usize);
     let maxima = &state.maxima;
     let mut table_mask = 0;
-    let mut curves = [Curve::Step; 6];
+    let mut curves = [Curve::STEP; 6];
     let mut numbers = [0.0f32; 6];
     let mut color = [0.0f32; 4];
     // An extrusion's further elevation colours are its curve's.
@@ -752,10 +757,10 @@ fn node_paint(
     for (slot, property) in properties.iter().enumerate().take(base_slots) {
         if property.per_feature() {
             table_mask |= 1 << slot;
-            curves[slot] = curve(property);
-            numbers[slot] = maxima[slot];
+            curves[slot] = curve(property, zoom);
+            numbers[slot] = property.row_maximum(zoom, maxima[slot]);
         } else if property.is_state_lookup() {
-            curves[slot] = curve(property);
+            curves[slot] = curve(property, zoom);
             match property {
                 PaintProperty::Number(_) => numbers[slot] = property.default_number(zoom),
                 _ => color = property.default_color(zoom),
@@ -794,7 +799,7 @@ fn node_paint(
             let opacity_curve = opacity_rows
                 .then(|| opacity.as_expression().map(expression_curve))
                 .flatten()
-                .unwrap_or(Curve::Step);
+                .unwrap_or(Curve::STEP);
             NodePaint::Extrusion(orb_render::ExtrusionPaint {
                 color,
                 height: numbers[1],
@@ -1038,9 +1043,13 @@ fn line_paint(
     NodePaint::Line(paint)
 }
 
-/// How a property's row values blend with zoom.
-pub(crate) fn curve(property: &PaintProperty<'_>) -> Curve {
-    property.expression().map_or(Curve::Step, expression_curve)
+/// How a property's row values blend with zoom, and what the camera
+/// scales them by at `zoom` (in a plan with its camera reads resolved).
+pub(crate) fn curve(property: &PaintProperty<'_>, zoom: f64) -> Curve {
+    Curve {
+        scale: row_scale(property.scale(zoom)),
+        ..property.expression().map_or(Curve::STEP, expression_curve)
+    }
 }
 
 /// A fill, line, extrusion or circle node's translate at `zoom`. Per
@@ -1078,16 +1087,32 @@ fn is_per_feature(kind: Kind) -> bool {
 /// How a composite value's rows blend between the tile's zoom and the
 /// next.
 pub(crate) fn expression_curve(expression: &orb_expr::PropertyExpression) -> Curve {
-    use orb_expr::Interpolation;
     let interpolation = Some(expression)
         .filter(|e| e.kind() == Kind::Composite)
         .and_then(|e| e.zoom_curve())
         .and_then(|c| c.interpolation);
-    match interpolation {
-        None => Curve::Step,
-        Some(Interpolation::Linear) => Curve::Exponential(1.0),
-        Some(Interpolation::Exponential(base)) => Curve::Exponential(base as f32),
-        Some(Interpolation::CubicBezier(p)) => Curve::CubicBezier(p.map(|v| v as f32)),
+    interpolation_curve(interpolation)
+}
+
+/// The curve that blends two values by `interpolation`, unscaled: a step
+/// for none.
+pub(crate) fn interpolation_curve(interpolation: Option<orb_expr::Interpolation>) -> Curve {
+    use orb_expr::Interpolation;
+    Curve::blend(match interpolation {
+        None => ZoomBlend::Step,
+        Some(Interpolation::Linear) => ZoomBlend::Exponential(1.0),
+        Some(Interpolation::Exponential(base)) => ZoomBlend::Exponential(base as f32),
+        Some(Interpolation::CubicBezier(p)) => ZoomBlend::CubicBezier(p.map(|v| v as f32)),
+    })
+}
+
+/// `scale` as the renderer scales rows by, its bounds finite.
+pub(crate) fn row_scale(scale: orb_expr::Scale) -> RowScale {
+    let finite = |v: f64| (v as f32).clamp(f32::MIN, f32::MAX);
+    RowScale {
+        factor: finite(scale.factor),
+        min: finite(scale.min),
+        max: finite(scale.max),
     }
 }
 
