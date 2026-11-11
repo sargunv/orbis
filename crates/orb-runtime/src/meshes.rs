@@ -204,9 +204,12 @@ fn background_tile(
         .expect("a tile without patches fits");
     let data = MeshData::new(&mesh, &[], 0);
     for &node in nodes {
-        renderer
-            .add_mesh(gpu, tile, (node, 8192), &data, &Default::default())
-            .expect("background mesh fits");
+        // The pools grow for it as for a tile's meshes: the scene may be
+        // full of tiles, or a new device's still small.
+        crate::resident::with_room(gpu, renderer, true, |gpu, renderer| {
+            renderer.add_mesh(gpu, tile, (node, 8192), &data, &Default::default())
+        })
+        .expect("background mesh fits the pools at their ceilings");
     }
     tile
 }

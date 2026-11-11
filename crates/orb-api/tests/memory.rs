@@ -60,3 +60,28 @@ fn dropped_maps_leave_nothing_behind() {
     eprintln!("live resources after each map: {live:?}");
     assert!(live.iter().all(|&n| n == live[0]), "{live:?}");
 }
+
+/// The background's meshes take room in the scene's pools as a tile's do,
+/// growing them when they're full: on the globe each background layer
+/// draws a grid of 65 × 65 vertices, and forty of them outgrow the pools
+/// a new map starts with. Making it used to panic, its pools ungrown, as
+/// a style switch's could in the browser once tiles had filled them.
+#[test]
+fn a_background_grows_the_pools_it_needs() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 64, 64, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    let layers: Vec<String> = (0..40)
+        .map(|i| {
+            format!(
+                r##"{{"id":"bg{i}","type":"background","paint":{{"background-color":"#00ff00","background-opacity":0.1}}}}"##
+            )
+        })
+        .collect();
+    map.set_style_json(&format!(
+        r#"{{"version":8,"projection":{{"type":"globe"}},"sources":{{}},"layers":[{}]}}"#,
+        layers.join(",")
+    ))
+    .unwrap();
+    common::settle(&mut map, &mut target);
+}
