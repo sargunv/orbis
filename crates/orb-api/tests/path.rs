@@ -1606,11 +1606,12 @@ fn draped_edits_ease_as_flat_ones_do() {
             let before = centre(&target.read_pixels().unwrap());
             map.edit(&orb_api::Transaction::from_commands(commands).unwrap())
                 .unwrap();
-            // Frame times run on from well past the settled frames'.
-            let started = std::time::Instant::now();
+            // Frame times run on from well past the settled frames', 20 ms
+            // apart whatever the wall clock does: under load a frame took
+            // most of the fade, which then seemed to snap.
             let mut seen = Vec::new();
-            while started.elapsed() < Duration::from_millis(800) {
-                let time = 1e6 + started.elapsed().as_secs_f64() * 1000.0;
+            for frame in 0..40 {
+                let time = 1e6 + f64::from(frame) * 20.0;
                 map.render(&mut target, time).unwrap();
                 let pixels = target.read_pixels().unwrap();
                 assert!(
