@@ -694,6 +694,14 @@ pub struct SceneMemory {
     pub tables: u64,
 }
 
+impl SceneMemory {
+    /// GPU bytes allocated: the pools and the tables.
+    pub fn allocated(&self) -> u64 {
+        let pools = [self.vertices, self.indices, self.compacted, self.props];
+        pools.iter().map(|p| p.allocated).sum::<u64>() + self.tables
+    }
+}
+
 impl Default for SceneCapacity {
     /// [`growable`](Self::growable) pools.
     fn default() -> Self {

@@ -6,15 +6,13 @@ use std::sync::Arc;
 
 use orb_crs::TileIndex;
 use orb_hal::{Gpu, HostBytesId};
-use orb_render::{
-    GpuTile, ImageAtlas, MeshData, MeshId, MeshSize, OutOfSpace, Renderer, TileKey, Words,
-};
+use orb_render::{GpuTile, ImageAtlas, MeshData, MeshId, MeshSize, OutOfSpace, Renderer, TileKey};
 use orb_source::TilePyramid;
 use orb_source::endpoint::TileEndpoint;
 
 use crate::MapEvent;
 use crate::image::ResidentImage;
-use crate::jobs::{ResultMesh, Stream, TileResult};
+use crate::jobs::{ResultMesh, TileResult};
 use crate::map::NodeState;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
@@ -198,17 +196,6 @@ pub(crate) fn drop_stale(build: &mut TileResult, plan: &StylePlan, stale: &[u32]
     });
 }
 
-pub(crate) fn words(stream: &Stream, bytes: Option<HostBytesId>) -> Words<'_> {
-    match stream {
-        Stream::Core(words) => Words::Core(words),
-        Stream::Host { offset, len } => Words::Host {
-            bytes: bytes.expect("host streams come with host bytes"),
-            offset: *offset,
-            len: *len,
-        },
-    }
-}
-
 /// What a result mesh's rows refer to besides their words: the images
 /// patched into them, the ramps among those (retained), and the
 /// feature-state indices its features refer to (interned).
@@ -307,9 +294,9 @@ pub(crate) fn upload_mesh(
     let node = plan.node(mesh.node).expect("meshes of planned nodes") as u32;
     // Alone, it uploads the words it shares too.
     let data = MeshData {
-        vertices: words(result.vertices(mesh), result.host_bytes),
-        indices: words(result.indices(mesh), result.host_bytes),
-        props: words(&mesh.props, result.host_bytes),
+        vertices: result.vertices(mesh).words(result.host_bytes),
+        indices: result.indices(mesh).words(result.host_bytes),
+        props: mesh.props.words(result.host_bytes),
         row_words: mesh.row_words,
         chunks: &mesh.chunks,
     };
@@ -350,17 +337,7 @@ pub(crate) fn upload(
     tile_zoom: f64,
     warnings: &mut Vec<String>,
 ) -> Result<ResidentTile, OutOfSpace> {
-    // Symbol nodes' rows go up with their layer's bucket.
-    let (indices, meshes): (Vec<usize>, Vec<&ResultMesh>) = result
-        .meshes
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| {
-            !plan
-                .node(m.node)
-                .is_some_and(|i| plan.nodes[i].family.is_symbol())
-        })
-        .unzip();
+    let (indices, meshes): (Vec<usize>, Vec<&ResultMesh>) = scene_meshes(plan, result).unzip();
     // A mesh shares another's words as the build's index of that mesh.
     let build_index = |of: u32| indices.binary_search(&(of as usize)).ok();
     let rows: Vec<ResolvedRows> = meshes
@@ -374,9 +351,9 @@ pub(crate) fn upload(
             node: plan.node(m.node).expect("meshes of planned nodes") as u32,
             extent: m.extent,
             data: MeshData {
-                vertices: words(&m.vertices, result.host_bytes),
-                indices: words(&m.indices, result.host_bytes),
-                props: words(&m.props, result.host_bytes),
+                vertices: m.vertices.words(result.host_bytes),
+                indices: m.indices.words(result.host_bytes),
+                props: m.props.words(result.host_bytes),
                 row_words: m.row_words,
                 chunks: &m.chunks,
             },
@@ -465,25 +442,29 @@ pub(crate) fn evict_stand_in(
         })
 }
 
-/// What a tile result's meshes take in the scene, as [`upload`] inserts
-/// them.
-pub(crate) fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {
-    let words = |stream: &Stream| match stream {
-        Stream::Core(words) => words.len() as u32,
-        Stream::Host { len, .. } => *len,
-    };
+/// A tile result's meshes the scene holds as meshes, by their index in it:
+/// symbol nodes' rows go up with their layer's bucket instead.
+fn scene_meshes<'a>(
+    plan: &StylePlan,
+    result: &'a TileResult,
+) -> impl Iterator<Item = (usize, &'a ResultMesh)> {
+    let symbol =
+        |m: &ResultMesh| (plan.node(m.node)).is_some_and(|i| plan.nodes[i].family.is_symbol());
     result
         .meshes
         .iter()
-        .filter(|mesh| {
-            !plan
-                .node(mesh.node)
-                .is_some_and(|i| plan.nodes[i].family.is_symbol())
-        })
-        .map(|mesh| MeshSize {
-            vertices: words(&mesh.vertices),
-            indices: words(&mesh.indices),
-            props: words(&mesh.props),
+        .enumerate()
+        .filter(move |(_, m)| !symbol(m))
+}
+
+/// What a tile result's meshes take in the scene, as [`upload`] inserts
+/// them.
+pub(crate) fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {
+    scene_meshes(plan, result)
+        .map(|(_, mesh)| MeshSize {
+            vertices: mesh.vertices.len(),
+            indices: mesh.indices.len(),
+            props: mesh.props.len(),
             chunks: mesh.chunks.len() as u32,
         })
         .collect()
@@ -511,17 +492,7 @@ pub(crate) fn with_room<T>(
 /// pools grow for arriving tiles before cached ones go, and the cache is
 /// held to its share of the budget by `trim_cache`.
 pub(crate) fn under_budget(renderer: &Renderer, atlas: u64, budget: u64) -> bool {
-    let m = renderer.memory();
-    let (tiles, glyphs) = renderer.texture_bytes();
-    let allocated = m.vertices.allocated
-        + m.indices.allocated
-        + m.compacted.allocated
-        + m.props.allocated
-        + m.tables
-        + tiles
-        + glyphs
-        + atlas;
-    allocated < budget
+    crate::Memory::of(renderer, atlas).allocated() < budget
 }
 
 /// What a resident tile costs to keep: the GPU bytes of its meshes and its

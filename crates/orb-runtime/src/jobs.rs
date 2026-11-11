@@ -464,6 +464,49 @@ pub enum Stream {
     },
 }
 
+impl Stream {
+    /// Its length in words.
+    pub(crate) fn len(&self) -> u32 {
+        match self {
+            Self::Core(words) => words.len() as u32,
+            Self::Host { len, .. } => *len,
+        }
+    }
+
+    /// Its words for an upload, in core memory or in the result's host
+    /// `bytes`.
+    pub(crate) fn words(&self, bytes: Option<HostBytesId>) -> orb_render::Words<'_> {
+        match self {
+            Self::Core(words) => orb_render::Words::Core(words),
+            Self::Host { offset, len } => orb_render::Words::Host {
+                bytes: bytes.expect("host streams come with host bytes"),
+                offset: *offset,
+                len: *len,
+            },
+        }
+    }
+
+    /// Its words in core memory, read back from the host's `bytes` when
+    /// they are there.
+    pub(crate) fn core_words(
+        &self,
+        gpu: &dyn orb_hal::Gpu,
+        bytes: Option<HostBytesId>,
+    ) -> std::borrow::Cow<'_, [u32]> {
+        match self {
+            Self::Core(words) => std::borrow::Cow::Borrowed(words),
+            Self::Host { offset, len } => {
+                let bytes = gpu.read_host_bytes(
+                    bytes.expect("host streams come with host bytes"),
+                    *offset..offset + u64::from(*len) * 4,
+                );
+                let words = bytes.as_chunks::<4>().0.iter();
+                std::borrow::Cow::Owned(words.map(|w| u32::from_le_bytes(*w)).collect())
+            }
+        }
+    }
+}
+
 impl From<TileBuild> for TileResult {
     fn from(build: TileBuild) -> Self {
         let hit_geometry: Vec<_> = build.hits.into_iter().map(|(_, g)| Arc::new(g)).collect();
@@ -510,15 +553,6 @@ impl From<TileBuild> for TileResult {
         result.link_hits();
         result.share_geometry();
         result
-    }
-}
-
-impl Stream {
-    fn len(&self) -> u32 {
-        match self {
-            Self::Core(words) => words.len() as u32,
-            Self::Host { len, .. } => *len,
-        }
     }
 }
 

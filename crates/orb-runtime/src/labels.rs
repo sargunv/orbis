@@ -2,11 +2,10 @@
 //! meshes, the glyph rows they lease, rasterization of new glyphs, and the
 //! placement lane's inputs and results.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use orb_hal::{Gpu, HostBytesId};
+use orb_hal::Gpu;
 use orb_render::{
     GlyphAtlas, ImageAtlas, MeshId, OutOfSpace, PLACED_WORDS, Renderer, SymbolMeshData, Words,
     pack_image_rect,
@@ -17,7 +16,7 @@ use orb_symbol::{
 };
 use orb_text::GlyphKey;
 
-use crate::jobs::{Stream, TileResult};
+use crate::jobs::TileResult;
 use crate::placement::PlacementLane;
 use crate::resident::{Resident, ResidentTile};
 use crate::state::FeatureStates;
@@ -551,28 +550,6 @@ impl std::fmt::Debug for Labels {
     }
 }
 
-/// A table's words in core memory, copied from the host when they are
-/// there.
-fn core_words<'a>(gpu: &dyn Gpu, stream: &'a Stream, bytes: Option<HostBytesId>) -> Cow<'a, [u32]> {
-    match stream {
-        Stream::Core(words) => Cow::Borrowed(words),
-        Stream::Host { offset, len } => {
-            let bytes = gpu.read_host_bytes(
-                bytes.expect("host streams come with host bytes"),
-                *offset..offset + u64::from(*len) * 4,
-            );
-            Cow::Owned(
-                bytes
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|w| u32::from_le_bytes(*w))
-                    .collect(),
-            )
-        }
-    }
-}
-
 /// Rows of a `Pod` table from its words, copied to the rows' alignment.
 fn rows<T: bytemuck::Pod>(words: &[u32]) -> Vec<T> {
     let bytes: &[u8] = bytemuck::cast_slice(words);
@@ -734,7 +711,7 @@ impl Labels {
         };
         let symbol = &plan.style.layers[plan.nodes[icon_node].layer];
         let bytes = result.host_bytes;
-        let table = |t: SymbolTable| core_words(gpu, s.table(t), bytes);
+        let table = |t: SymbolTable| s.table(t).core_words(gpu, bytes);
         let instances: Vec<SymbolInstance> = rows(&table(SymbolTable::Instances));
         let text_placed: Vec<PlacedSymbol> = rows(&table(SymbolTable::TextPlaced));
         let icon_placed: Vec<PlacedSymbol> = rows(&table(SymbolTable::IconPlaced));
@@ -873,32 +850,28 @@ impl Labels {
                     c.bounds = all;
                 }
             }
-            let quads_words = crate::resident::words(s.table(quads), bytes);
+            let quads_words = s.table(quads).words(bytes);
             if quads_words.len() / (std::mem::size_of::<Quad>() as u32 / 4) == 0 {
                 continue;
             }
             let rows_mesh = result.meshes.iter().find(|m| m.node == key);
-            let props = rows_mesh.map_or(Words::Core(&[]), |m| {
-                crate::resident::words(&m.props, bytes)
-            });
+            let props = rows_mesh.map_or(Words::Core(&[]), |m| m.props.words(bytes));
             let data = SymbolMeshData {
                 quads: quads_words,
-                placed: crate::resident::words(
-                    if key == text_key {
-                        s.table(SymbolTable::TextPlaced)
-                    } else {
-                        s.table(SymbolTable::IconPlaced)
-                    },
-                    bytes,
-                ),
-                glyph_offsets: crate::resident::words(s.table(offsets), bytes),
-                lines: crate::resident::words(s.table(SymbolTable::Lines), bytes),
+                placed: if key == text_key {
+                    s.table(SymbolTable::TextPlaced)
+                } else {
+                    s.table(SymbolTable::IconPlaced)
+                }
+                .words(bytes),
+                glyph_offsets: s.table(offsets).words(bytes),
+                lines: s.table(SymbolTable::Lines).words(bytes),
                 glyphs: &owner.rows,
                 images: &image_rects,
-                instance_rows: crate::resident::words(s.table(SymbolTable::InstanceRows), bytes),
+                instance_rows: s.table(SymbolTable::InstanceRows).words(bytes),
                 text_sizes,
                 colors: if key == text_key {
-                    crate::resident::words(s.table(SymbolTable::TextColors), bytes)
+                    s.table(SymbolTable::TextColors).words(bytes)
                 } else {
                     Words::Core(&[])
                 },
@@ -1945,7 +1918,7 @@ mod tests {
         /// A commit showing every text symbol of `bucket` at `wraps`.
         fn commit(&self, bucket: u64, wraps: &[i32]) -> Committed {
             let placed = self.result.symbols[0].table(SymbolTable::TextPlaced);
-            let Stream::Core(words) = placed else {
+            let crate::jobs::Stream::Core(words) = placed else {
                 panic!("core streams")
             };
             let count = words.len() / PLACED_WORDS as usize;

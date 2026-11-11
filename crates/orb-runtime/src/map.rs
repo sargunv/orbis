@@ -178,17 +178,23 @@ pub struct Memory {
 }
 
 impl Memory {
-    /// GPU bytes allocated.
+    /// The GPU memory of `renderer` and an image atlas of `atlas` bytes,
+    /// its other fields left empty.
+    pub(crate) fn of(renderer: &Renderer, atlas: u64) -> Self {
+        let (tile_textures, glyph_textures) = renderer.texture_bytes();
+        Self {
+            scene: renderer.memory(),
+            tile_textures,
+            glyph_textures,
+            image_atlas: atlas,
+            ..Self::default()
+        }
+    }
+
+    /// GPU bytes allocated: what the budget holds (the drape atlas
+    /// aside).
     pub fn allocated(&self) -> u64 {
-        let s = &self.scene;
-        s.vertices.allocated
-            + s.indices.allocated
-            + s.compacted.allocated
-            + s.props.allocated
-            + s.tables
-            + self.tile_textures
-            + self.glyph_textures
-            + self.image_atlas
+        self.scene.allocated() + self.tile_textures + self.glyph_textures + self.image_atlas
     }
 }
 
@@ -2314,7 +2320,6 @@ impl Map {
 
     /// The map's memory against its budget.
     fn memory(&self, renderer: &Renderer) -> Memory {
-        let (tile_textures, glyph_textures) = renderer.texture_bytes();
         let (mut cached_tiles, mut cached) = (0, 0);
         for source in self.style.iter().flat_map(|s| &s.sources) {
             if let SourceState::Ready { pyramid, .. } = source {
@@ -2325,16 +2330,14 @@ impl Map {
             }
         }
         let images = self.services.images.0.lock().expect("images poisoned");
+        let atlas = images.atlas.as_ref().map_or(0, ImageAtlas::bytes);
         Memory {
             budget: self.budget,
-            scene: renderer.memory(),
-            tile_textures,
-            glyph_textures,
-            image_atlas: images.atlas.as_ref().map_or(0, ImageAtlas::bytes),
             drape_atlas: renderer.drape_bytes(),
             cached_tiles,
             cached,
             cache_budget: self.budget / 4,
+            ..Memory::of(renderer, atlas)
         }
     }
 

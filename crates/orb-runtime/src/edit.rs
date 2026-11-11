@@ -29,7 +29,7 @@ use crate::jobs::TileResult;
 use crate::map::{Map, NodeState, revise};
 use crate::resident::{
     SourceState, evict_unused, mesh_sizes, record_maxima, remove_resident, resolve_rows,
-    under_budget, upload_mesh, with_room, words,
+    under_budget, upload_mesh, with_room,
 };
 use crate::worker::StyleUpdate;
 
@@ -509,7 +509,7 @@ impl Map {
                 if state.layout_epoch > current.layout_rev || build.revision < state.rows_epoch {
                     continue;
                 }
-                let props = words(&mesh.props, build.host_bytes);
+                let props = mesh.props.words(build.host_bytes);
                 let rows = resolve_rows(
                     gpu,
                     plan,
