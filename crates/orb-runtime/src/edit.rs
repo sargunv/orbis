@@ -119,9 +119,6 @@ impl Map {
         layers.dedup();
         let doc = &style.doc;
         let update = StyleUpdate {
-            revision: version,
-            layers: doc.layer_keys().map(|k| k.0).collect(),
-            sources: doc.source_keys().map(|k| k.0).collect(),
             layer_json: doc
                 .layer_keys()
                 .enumerate()
@@ -149,12 +146,12 @@ impl Map {
                 .iter()
                 .map(|(key, diffs)| (key.0, diffs.clone()))
                 .collect(),
-            state: doc.global_state(),
-            previews: doc.style().previews,
-            glyphs: doc.style().glyphs.clone(),
-            font_faces: doc.style().font_faces.clone(),
-            local_ideographs: self.labels.ideographs.clone(),
-            surface: self.surface.tiles(),
+            ..StyleUpdate::base(
+                doc,
+                version,
+                self.labels.ideographs.clone(),
+                self.surface.tiles(),
+            )
         };
         self.services.jobs.set_style(style.id, &update, &worker);
         self.warnings.extend(
@@ -372,19 +369,12 @@ impl Map {
             self.labels.ideographs.clone(),
             self.surface.tiles(),
         ));
-        let doc = &style.doc;
-        let update = StyleUpdate {
-            revision: version,
-            layers: doc.layer_keys().map(|k| k.0).collect(),
-            sources: doc.source_keys().map(|k| k.0).collect(),
-            state: doc.global_state(),
-            previews: doc.style().previews,
-            glyphs: doc.style().glyphs.clone(),
-            font_faces: doc.style().font_faces.clone(),
-            local_ideographs: self.labels.ideographs.clone(),
-            surface: self.surface.tiles(),
-            ..StyleUpdate::default()
-        };
+        let update = StyleUpdate::base(
+            &style.doc,
+            version,
+            self.labels.ideographs.clone(),
+            self.surface.tiles(),
+        );
         self.services.jobs.set_style(style.id, &update, &worker);
         style.worker = Arc::clone(&worker);
         let plan = worker.plan();

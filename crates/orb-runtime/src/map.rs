@@ -610,15 +610,11 @@ pub(crate) fn full_update(
     surface: crate::surface::SurfaceTiles,
 ) -> StyleUpdate {
     StyleUpdate {
-        revision,
-        layers: doc.layer_keys().map(|k| k.0).collect(),
-        sources: doc.source_keys().map(|k| k.0).collect(),
         layer_json: doc
             .layer_keys()
             .enumerate()
             .map(|(i, k)| (k.0, Arc::new(doc.layer_json(i).clone())))
             .collect(),
-        source_diffs: Vec::new(),
         source_json: doc
             .source_keys()
             .enumerate()
@@ -627,12 +623,33 @@ pub(crate) fn full_update(
                 (k.0, id, Arc::new(doc.source_json(i).clone()))
             })
             .collect(),
-        state: doc.global_state(),
-        previews: doc.style().previews,
-        glyphs: doc.style().glyphs.clone(),
-        font_faces: doc.style().font_faces.clone(),
-        local_ideographs,
-        surface,
+        ..StyleUpdate::base(doc, revision, local_ideographs, surface)
+    }
+}
+
+impl StyleUpdate {
+    /// The jobs' view of `doc` with no layer or source changed: what
+    /// every update carries, which those that change some add to.
+    pub(crate) fn base(
+        doc: &StyleDoc,
+        revision: u64,
+        local_ideographs: Option<String>,
+        surface: crate::surface::SurfaceTiles,
+    ) -> Self {
+        Self {
+            revision,
+            layers: doc.layer_keys().map(|k| k.0).collect(),
+            sources: doc.source_keys().map(|k| k.0).collect(),
+            layer_json: Vec::new(),
+            source_json: Vec::new(),
+            source_diffs: Vec::new(),
+            state: doc.global_state(),
+            previews: doc.style().previews,
+            glyphs: doc.style().glyphs.clone(),
+            font_faces: doc.style().font_faces.clone(),
+            local_ideographs,
+            surface,
+        }
     }
 }
 
