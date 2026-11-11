@@ -337,8 +337,11 @@ fn hidden_layers_compile_ahead_of_need() {
     // The frame at rest asks for one more, which asks for them.
     assert!(map.needs_frame());
     rest(&mut map, &mut target);
+    // Long enough for the slowed compile to end on a loaded machine (a
+    // full test run, other builds), where twice its time fell short and
+    // the zoom then waited for it.
     let rested = Instant::now();
-    while rested.elapsed() < COMPILE * 2 {
+    while rested.elapsed() < COMPILE * 5 {
         assert!(!map.needs_frame(), "a background compile woke the map");
         std::thread::sleep(Duration::from_millis(10));
     }
