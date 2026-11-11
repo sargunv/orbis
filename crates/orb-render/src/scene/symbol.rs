@@ -92,6 +92,16 @@ fn shows(word: u32) -> bool {
     word & HIDDEN == 0 && word & (OPACITY | PLACED) != 0
 }
 
+/// Per placed symbol of state `words`, a bit of `shown`: whether it
+/// [`shows`].
+fn shown_bits(words: &[u32], shown: &mut [u64]) {
+    let states = words.as_chunks::<{ SYMBOL_STATE_WORDS as usize }>().0;
+    for (bits, states) in shown.iter_mut().zip(states.chunks(64)) {
+        *bits = (states.iter().enumerate())
+            .fold(0, |bits, (p, state)| bits | u64::from(shows(state[0])) << p);
+    }
+}
+
 /// The chunk row word that holds, for a symbol chunk, the world copies it
 /// shows in: bit `wrap & 31` (`types.wgsl`'s `Chunk`).
 const SHOWN_WORD: u64 = orb_shaders::layout::chunk::FIRST_VERTEX as u64;
@@ -115,6 +125,13 @@ pub(super) struct SymbolEntry {
     quad_placed: Vec<u32>,
     /// The quads in draw order, as last written: empty for quad order.
     order: Vec<u32>,
+    /// The placed symbols each chunk draws quads of, as ranges: chunk
+    /// `k`'s are `runs[run_ends[k - 1]..run_ends[k]]`. A chunk's quads run
+    /// through few placed symbols in turn, so testing a chunk on each
+    /// placement reads a few words of [`shown`](Self::shown), not a word
+    /// per quad.
+    runs: Vec<[u32; 2]>,
+    run_ends: Vec<u32>,
     /// Per block, a bit per placed symbol: whether it [`shows`].
     shown: Vec<u64>,
     /// Each chunk's row word of copies it shows in, as last written.
@@ -122,42 +139,108 @@ pub(super) struct SymbolEntry {
 }
 
 impl SymbolEntry {
+    fn new(
+        states: Range<u32>,
+        order_at: u32,
+        placed_quads: &[[u32; 2]],
+        quads: u32,
+        chunks: &[Chunk],
+    ) -> Self {
+        let mut quad_placed = vec![u32::MAX; quads as usize];
+        for (p, &[first, count]) in placed_quads.iter().enumerate() {
+            let end = first.saturating_add(count).min(quads);
+            quad_placed[first.min(end) as usize..end as usize].fill(p as u32);
+        }
+        let mut entry = Self {
+            states,
+            copies: 1,
+            order_at,
+            quad_placed,
+            order: Vec::new(),
+            runs: Vec::new(),
+            run_ends: Vec::new(),
+            shown: vec![0; placed_quads.len().div_ceil(64)],
+            masks: vec![0; chunks.len()],
+        };
+        entry.lay_runs(chunks);
+        entry
+    }
+
     /// Words of [`shown`](Self::shown) per block.
     fn block_words(&self) -> usize {
         let placed = self.states.len() as u32 / self.copies / SYMBOL_STATE_WORDS;
         (placed as usize).div_ceil(64)
     }
 
-    /// Each chunk's copies, by `wrap & 31` as the cull tests them: those
-    /// whose block shows any of the chunk's quads. Past 32 blocks a bit
-    /// stands for several, and every chunk keeps them all.
-    fn masks(&self, chunks: &[Chunk]) -> Vec<u32> {
-        let words = self.block_words();
-        let shown = |block: u32, quad: u32| {
-            let p = self.quad_placed.get(quad as usize).copied();
-            p.filter(|&p| p != u32::MAX).is_some_and(|p| {
-                let at = block as usize * words + p as usize / 64;
-                self.shown[at] >> (p % 64) & 1 != 0
-            })
-        };
-        let quads = |c: &Chunk| {
-            (c.first_index..c.first_index + c.index_count)
-                .map(|at| self.order.get(at as usize).copied().unwrap_or(at))
-        };
-        (chunks.iter())
-            .map(|c| {
-                if self.copies > 32 {
-                    return u32::MAX;
+    /// Sets [`runs`](Self::runs) from the quads' draw order.
+    fn lay_runs(&mut self, chunks: &[Chunk]) {
+        self.runs.clear();
+        self.run_ends.clear();
+        for c in chunks {
+            let first = self.runs.len();
+            for at in c.first_index..c.first_index + c.index_count {
+                let quad = self.order.get(at as usize).copied().unwrap_or(at);
+                let p = self.quad_placed.get(quad as usize).copied();
+                let Some(p) = p.filter(|&p| p != u32::MAX) else {
+                    continue;
+                };
+                match self.runs[first..].last_mut() {
+                    Some(run) if (run[0]..=run[1]).contains(&p) => run[1] = run[1].max(p + 1),
+                    _ => self.runs.push([p, p + 1]),
                 }
-                let blocks = (0..self.copies)
-                    .filter(|&block| quads(c).any(|quad| shown(block, quad)))
-                    .fold(0u32, |bits, block| bits | 1 << block);
-                (0..32)
-                    .filter(|&bit| blocks >> (bit & (self.copies - 1)) & 1 != 0)
-                    .fold(0, |mask, bit| mask | 1 << bit)
-            })
-            .collect()
+            }
+            self.run_ends.push(self.runs.len() as u32);
+        }
     }
+
+    /// Sets each chunk's copies, by `wrap & 31` as the cull tests them:
+    /// those whose block shows any of its quads, testing block `block`
+    /// again and keeping the others' bits (every block for `None`), and
+    /// calls `changed` with each chunk whose mask changed. Past 32 blocks
+    /// a bit stands for several, and every chunk keeps them all.
+    fn update_masks(&mut self, block: Option<u32>, mut changed: impl FnMut(usize, u32)) {
+        let (copies, words) = (self.copies, self.block_words());
+        // The bits standing for block `b` are this shifted by `b`: `b`,
+        // `b + copies`, and so on.
+        let first = (0..32)
+            .step_by(copies as usize)
+            .fold(0u32, |m, b| m | 1 << b);
+        let blocks = block.map_or(0..copies, |b| b..b + 1);
+        let mut from = 0;
+        for (k, (old, &end)) in self.masks.iter_mut().zip(&self.run_ends).enumerate() {
+            let runs = &self.runs[from..end as usize];
+            from = end as usize;
+            let mask = if copies > 32 {
+                u32::MAX
+            } else {
+                let kept = block.map_or(0, |b| *old & !(first << b));
+                (blocks.clone())
+                    .filter(|&b| {
+                        let shown = &self.shown[b as usize * words..][..words];
+                        runs.iter().any(|&run| any_bit(shown, run))
+                    })
+                    .fold(kept, |mask, b| mask | first << b)
+            };
+            if *old != mask {
+                *old = mask;
+                changed(k, mask);
+            }
+        }
+    }
+}
+
+/// Whether any bit of `bits` from `start` to `end` is set.
+fn any_bit(bits: &[u64], [start, end]: [u32; 2]) -> bool {
+    let mut at = start;
+    while at < end {
+        let bit = at % 64;
+        let n = (64 - bit).min(end - at);
+        if bits[at as usize / 64] >> bit & (u64::MAX >> (64 - n)) != 0 {
+            return true;
+        }
+        at += n;
+    }
+    false
 }
 
 /// A symbol stream ready to upload. Tables are word streams of
@@ -267,20 +350,13 @@ impl Scene {
                 .write_words(gpu, Table::Chunks, id * CHUNK_WORDS as u32, &row);
             chunk_ids.push(id);
         }
-        let mut quad_placed = vec![u32::MAX; quads as usize];
-        for (p, &[first, count]) in data.placed_quads.iter().enumerate() {
-            let end = first.saturating_add(count).min(quads);
-            quad_placed[first.min(end) as usize..end as usize].fill(p as u32);
-        }
-        let symbol = SymbolEntry {
+        let symbol = SymbolEntry::new(
             states,
-            copies: 1,
-            order_at: header[symbol_header::ORDER],
-            quad_placed,
-            order: Vec::new(),
-            shown: vec![0; (placed_count as usize).div_ceil(64)],
-            masks: vec![0; data.chunks.len()],
-        };
+            header[symbol_header::ORDER],
+            data.placed_quads,
+            quads,
+            data.chunks,
+        );
         let entry = MeshEntry {
             tile,
             node,
@@ -303,17 +379,14 @@ impl Scene {
     }
 
     /// Writes the chunk rows of a symbol mesh whose copies they show in
-    /// changed.
-    fn write_symbol_masks(&mut self, gpu: &mut dyn Gpu, mesh: MeshId) {
+    /// changed: in block `block`'s copies, or (`None`) in any.
+    fn write_symbol_masks(&mut self, gpu: &mut dyn Gpu, mesh: MeshId, block: Option<u32>) {
         let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
         let symbol = entry.symbol.as_deref_mut().expect("a symbol mesh");
-        let masks = symbol.masks(&entry.chunks);
-        for ((&slot, old), new) in (entry.chunk_slots.iter()).zip(&mut symbol.masks).zip(masks) {
-            if *old != new {
-                *old = new;
-                write_chunk_word(gpu, &mut self.tables, slot, SHOWN_WORD, new);
-            }
-        }
+        let tables = &mut self.tables;
+        symbol.update_masks(block, |k, mask| {
+            write_chunk_word(gpu, tables, entry.chunk_slots[k], SHOWN_WORD, mask);
+        });
     }
 
     /// Sets the order a symbol mesh's quads draw in: every quad once.
@@ -325,10 +398,11 @@ impl Scene {
             return;
         }
         symbol.order = order.to_vec();
+        symbol.lay_runs(&entry.chunks);
         let at = entry.vertices.start + symbol.order_at;
         self.tables
             .write(gpu, Table::Vertices, at, Words::Core(order));
-        self.write_symbol_masks(gpu, mesh);
+        self.write_symbol_masks(gpu, mesh, None);
     }
 
     /// How many world copies a symbol mesh keeps state words for.
@@ -364,7 +438,7 @@ impl Scene {
             header,
             Words::Core(&[states.start, copies]),
         );
-        self.write_symbol_masks(gpu, mesh);
+        self.write_symbol_masks(gpu, mesh, None);
         Ok(())
     }
 
@@ -384,17 +458,89 @@ impl Scene {
         let copy = wrap.rem_euclid(symbol.copies as i32) as u32;
         let at = symbol.states.start + copy * block;
         let bits = symbol.block_words();
-        let shown = &mut symbol.shown[copy as usize * bits..][..bits];
-        shown.fill(0);
-        for (p, state) in (words
-            .as_chunks::<{ SYMBOL_STATE_WORDS as usize }>()
-            .0
-            .iter())
-        .enumerate()
-        {
-            shown[p / 64] |= u64::from(shows(state[0])) << (p % 64);
-        }
+        shown_bits(words, &mut symbol.shown[copy as usize * bits..][..bits]);
         self.tables.write(gpu, Table::Props, at, Words::Core(words));
-        self.write_symbol_masks(gpu, mesh);
+        self.write_symbol_masks(gpu, mesh, Some(copy));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orb_layout::{Owner, TileBox};
+
+    /// The masks against a read of every quad, over placed symbols of one
+    /// to three quads, chunks across them, a reversed draw order, one to
+    /// 64 copies and states written copy by copy.
+    #[test]
+    fn chunk_masks_match_every_quad() {
+        let placed: Vec<[u32; 2]> = (0..150)
+            .scan(0, |q, p| {
+                let n = p % 3 + 1;
+                *q += n;
+                Some([*q - n, n])
+            })
+            .collect();
+        let quads = placed.last().map_or(0, |&[f, n]| f + n);
+        let chunks: Vec<Chunk> = (0..quads.div_ceil(64))
+            .map(|k| Chunk {
+                first_index: k * 64,
+                index_count: (quads - k * 64).min(64),
+                first_vertex: 0,
+                bounds: TileBox {
+                    min: [0; 2],
+                    max: [0; 2],
+                },
+                sort_key: None,
+                owner: Owner::Every,
+            })
+            .collect();
+        for copies in [1, 2, 8, 64] {
+            for reversed in [false, true] {
+                let words = placed.len() as u32 * SYMBOL_STATE_WORDS;
+                let mut e = SymbolEntry::new(0..words, 0, &placed, quads, &chunks);
+                e.states = 0..words * copies;
+                e.copies = copies;
+                e.shown = vec![0; copies as usize * e.block_words()];
+                if reversed {
+                    e.order = (0..quads).rev().collect();
+                    e.lay_runs(&chunks);
+                }
+                let mut states = vec![vec![0u32; placed.len()]; copies as usize];
+                for (round, copy) in (0..copies).chain(0..copies).enumerate() {
+                    // A few placed symbols shown, fading or hidden.
+                    for (p, s) in states[copy as usize].iter_mut().enumerate() {
+                        *s = match (p as u32 * 7 + copy * 13 + round as u32 * 5) % 41 {
+                            0 => symbol_state::PLACED,
+                            1 => 20,
+                            2 => symbol_state::HIDDEN | 127,
+                            _ => 0,
+                        };
+                    }
+                    let words: Vec<u32> = (states[copy as usize].iter())
+                        .flat_map(|&s| [s, 0, 0])
+                        .collect();
+                    let bits = e.block_words();
+                    shown_bits(&words, &mut e.shown[copy as usize * bits..][..bits]);
+                    e.update_masks(Some(copy), |_, _| {});
+                    let kept = e.masks.clone();
+                    e.update_masks(None, |k, _| panic!("chunk {k} changed"));
+                    assert_eq!(e.masks, kept);
+                    for (k, c) in chunks.iter().enumerate() {
+                        let want = (0..32u32).fold(0, |m, bit| {
+                            let block = (bit & (copies - 1)) as usize;
+                            let shows_any = (c.first_index..c.first_index + c.index_count)
+                                .map(|at| e.order.get(at as usize).copied().unwrap_or(at))
+                                .any(|q| shows(states[block][e.quad_placed[q as usize] as usize]));
+                            m | u32::from(shows_any || copies > 32) << bit
+                        });
+                        assert_eq!(
+                            e.masks[k], want,
+                            "chunk {k}, {copies} copies, reversed {reversed}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
