@@ -10,6 +10,7 @@ use glam::DVec2;
 
 use crate::animate::Easing;
 use crate::moves::{Constraints, wrap_bearing};
+use crate::store::Fields;
 use crate::{CameraState, Surface, Viewport};
 
 /// How a part's speed falls from its release speed.
@@ -376,7 +377,13 @@ pub(crate) struct Momentum {
     parts: [Option<Scalar>; 3],
     /// Seconds in at the last frame.
     elapsed: f64,
+    /// A later move took a property a moving or settling part needed,
+    /// which stopped that part.
+    replaced: bool,
 }
+
+/// The property each scalar part moves.
+const PART_FIELDS: [Fields; 3] = [Fields::ZOOM, Fields::BEARING, Fields::PITCH];
 
 /// The camera's limits and frame, which each step keeps to.
 pub(crate) struct Stage<'a> {
@@ -503,7 +510,59 @@ impl Momentum {
             pan,
             parts,
             elapsed: 0.0,
+            replaced: false,
         })
+    }
+
+    /// The properties a part needs: its own, and the center when it turns
+    /// about an anchor.
+    fn part_fields(i: usize, part: &Scalar) -> Fields {
+        match part.anchor {
+            Some(_) => PART_FIELDS[i] | Fields::CENTER,
+            None => PART_FIELDS[i],
+        }
+    }
+
+    /// The properties the parts still moving or settling need.
+    pub(crate) fn fields(&self) -> Fields {
+        let mut fields = Fields::NONE;
+        if self.pan.is_some_and(|p| p.moving) {
+            fields |= Fields::CENTER;
+        }
+        for (i, part) in self.parts.iter().enumerate() {
+            if let Some(part) = part.filter(Scalar::active) {
+                fields |= Self::part_fields(i, &part);
+            }
+        }
+        fields
+    }
+
+    /// Stops the parts that need a property not in `owned`, which a later
+    /// move took, and returns what the rest still need.
+    pub(crate) fn retain(&mut self, owned: Fields) -> Fields {
+        if let Some(pan) = self.pan.as_mut().filter(|p| p.moving)
+            && !owned.contains(Fields::CENTER)
+        {
+            pan.moving = false;
+            self.replaced = true;
+        }
+        for (i, slot) in self.parts.iter_mut().enumerate() {
+            let Some(part) = slot.as_mut().filter(|p| p.active()) else {
+                continue;
+            };
+            if !owned.contains(Self::part_fields(i, part)) {
+                self.replaced |= part.moving || part.settling.is_some();
+                part.moving = false;
+                part.snap_pending = false;
+                part.settling = None;
+            }
+        }
+        self.fields()
+    }
+
+    /// Whether a later move stopped a part that was moving or settling.
+    pub(crate) fn replaced(&self) -> bool {
+        self.replaced
     }
 
     /// Whether any part still moves or settles.

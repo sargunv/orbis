@@ -134,6 +134,9 @@ export class CameraControl {
     return this.#state().moving;
   }
 
+  /** Moves at once. Each move takes only the properties it sets: animations
+   * of the others go on, as in MapLibre Native, and one left with nothing to
+   * move is interrupted. {@link stop} ends them all. */
   jumpTo(options: CameraOptions): void {
     this.#send(this.#link.call("jumpTo", options));
   }
@@ -180,7 +183,7 @@ export class CameraControl {
     return this.#track(this.#link.call("startMomentum", momentum));
   }
 
-  /** Stops the running animation; its promise resolves false. */
+  /** Stops every running animation; their promises resolve false. */
   stop(): void {
     this.#send(this.#link.call("stop"));
   }

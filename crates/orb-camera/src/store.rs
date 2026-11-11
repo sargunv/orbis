@@ -59,10 +59,138 @@ pub enum CameraEvent {
 
 const CHANGES: [Change; 4] = [Change::Move, Change::Zoom, Change::Rotate, Change::Pitch];
 
+/// The camera properties an animation moves. A later move takes the ones
+/// it sets from the animations running, which go on moving the rest, as
+/// MapLibre Native's transitions do; one left with none ends interrupted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Fields(u8);
+
+impl Fields {
+    pub(crate) const NONE: Self = Self(0);
+    pub(crate) const CENTER: Self = Self(1);
+    pub(crate) const ZOOM: Self = Self(1 << 1);
+    pub(crate) const BEARING: Self = Self(1 << 2);
+    pub(crate) const PITCH: Self = Self(1 << 3);
+    const ROLL: Self = Self(1 << 4);
+    const FOV: Self = Self(1 << 5);
+    const ELEVATION: Self = Self(1 << 6);
+    const PADDING: Self = Self(1 << 7);
+    const ALL: Self = Self(u8::MAX);
+
+    pub(crate) fn has(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub(crate) fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// What differs between two cameras.
+    fn between(a: &CameraState, b: &CameraState) -> Self {
+        let set = |on: bool, field: Self| if on { field } else { Self::NONE };
+        set(a.target != b.target, Self::CENTER)
+            | set(a.resolution != b.resolution, Self::ZOOM)
+            | set(a.bearing != b.bearing, Self::BEARING)
+            | set(a.pitch != b.pitch, Self::PITCH)
+            | set(a.roll != b.roll, Self::ROLL)
+            | set(a.fov != b.fov, Self::FOV)
+            | set(a.elevation != b.elevation, Self::ELEVATION)
+            | set(a.padding != b.padding, Self::PADDING)
+    }
+
+    /// What a move to `target` sets. The center moves with a center or an
+    /// offset, and so does its height when it lands on the terrain
+    /// (`aims`).
+    fn of(target: &CameraTarget, aims: bool) -> Self {
+        let set = |on: bool, field: Self| if on { field } else { Self::NONE };
+        let center = target.center.is_some() || target.offset != DVec2::ZERO;
+        set(center, Self::CENTER)
+            | set(target.zoom.is_some(), Self::ZOOM)
+            | set(target.bearing.is_some(), Self::BEARING)
+            | set(target.pitch.is_some(), Self::PITCH)
+            | set(target.roll.is_some(), Self::ROLL)
+            | set(target.fov.is_some(), Self::FOV)
+            | set(
+                target.elevation.is_some() || (center && aims),
+                Self::ELEVATION,
+            )
+            | set(target.padding.is_some(), Self::PADDING)
+    }
+}
+
+impl std::ops::BitOr for Fields {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl std::ops::BitOrAssign for Fields {
+    fn bitor_assign(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+/// Copies the `fields` of `from` onto `next`. A zoom without its center
+/// keeps its style zoom wherever the center is; a center without its zoom
+/// keeps the scale, as a pan does.
+fn take(next: &mut CameraState, from: &CameraState, fields: Fields, surface: &Surface) {
+    let projection = &surface.projection;
+    match (fields.has(Fields::CENTER), fields.has(Fields::ZOOM)) {
+        (true, true) => {
+            next.target = from.target;
+            next.resolution = from.resolution;
+        }
+        (true, false) if next.target != from.target => {
+            let world_per_px = next.world_per_px(projection);
+            next.target = from.target;
+            if !next.on_sphere(surface) {
+                next.resolution = world_per_px / projection.scale_factor(next.target);
+            }
+        }
+        (false, true) if next.target == from.target => next.resolution = from.resolution,
+        (false, true) => next.set_zoom(projection, from.zoom(projection)),
+        _ => {}
+    }
+    if fields.has(Fields::BEARING) {
+        next.bearing = from.bearing;
+    }
+    if fields.has(Fields::PITCH) {
+        next.pitch = from.pitch;
+    }
+    if fields.has(Fields::ROLL) {
+        next.roll = from.roll;
+    }
+    if fields.has(Fields::FOV) {
+        next.fov = from.fov;
+    }
+    if fields.has(Fields::ELEVATION) {
+        next.elevation = from.elevation;
+    }
+    if fields.has(Fields::PADDING) {
+        next.padding = from.padding;
+    }
+}
+
 #[derive(Debug)]
 struct Running {
     id: AnimationId,
     motion: Motion,
+    /// The properties it still moves.
+    fields: Fields,
+    /// Properties that go together: a later move that takes one takes
+    /// them all (a flight's center and zoom, or whatever turns about a
+    /// point).
+    coupled: Fields,
     /// When it started: `None` until the first frame after the call.
     started: Option<f64>,
     /// Milliseconds in at the last frame.
@@ -80,7 +208,9 @@ pub struct Camera {
     surface: Surface,
     viewport: Viewport,
     constraints: Constraints,
-    running: Option<Running>,
+    /// The animations running, oldest first: each frame applies them in
+    /// turn, each to the properties it moves.
+    running: Vec<Running>,
     next_id: u64,
     /// User input is moving the camera.
     held: bool,
@@ -108,7 +238,7 @@ impl Camera {
             surface,
             viewport,
             constraints: Constraints::default(),
-            running: None,
+            running: Vec::new(),
             next_id: 0,
             held: false,
             reported: state,
@@ -201,7 +331,7 @@ impl Camera {
             return;
         }
         self.surface = surface;
-        self.running = None;
+        self.stop();
         self.write(self.state);
     }
 
@@ -288,10 +418,11 @@ impl Camera {
         self.jump_to_state(state);
     }
 
-    /// Moves to `target` at once (GL JS `jumpTo`).
+    /// Moves to `target` at once (GL JS `jumpTo`). Animations go on
+    /// moving the properties it doesn't set, as in MapLibre Native.
     pub fn jump_to(&mut self, target: &CameraTarget) {
-        self.stop();
-        let (to, _) = self.resolve(target);
+        let (to, around) = self.resolve(target);
+        self.yield_fields(Self::claims(target, around.is_some(), self.aims(target)).0);
         self.modified = true;
         self.user = false;
         self.write(to);
@@ -336,10 +467,52 @@ impl Camera {
         start: Option<f64>,
         user: bool,
     ) -> AnimationId {
-        self.stop();
         let (to, around) = self.resolve(target);
+        let aims = self.aims(target);
+        let (fields, coupled) = match user {
+            // Input takes the whole camera.
+            true => (Fields::ALL, Fields::ALL),
+            false => Self::claims(target, around.is_some(), aims),
+        };
+        self.yield_fields(fields);
         let motion = Motion::ease(self.state, to, around, options, &self.surface);
-        self.start(motion, start, user, self.aims(target))
+        self.start(motion, fields, coupled, start, user, aims)
+    }
+
+    /// The properties a move to `target` takes, and those of them that go
+    /// together: whatever turns about a point goes with the center.
+    fn claims(target: &CameraTarget, around: bool, aims: bool) -> (Fields, Fields) {
+        let fields = Fields::of(target, aims);
+        match around {
+            true => (fields | Fields::CENTER, fields | Fields::CENTER),
+            false => (fields, Fields::NONE),
+        }
+    }
+
+    /// Takes `fields` from the animations running: the ones left moving
+    /// nothing end interrupted.
+    fn yield_fields(&mut self, fields: Fields) {
+        if fields.is_empty() {
+            return;
+        }
+        let mut i = 0;
+        while i < self.running.len() {
+            let running = &mut self.running[i];
+            let mut taken = fields;
+            if running.coupled.has(taken) {
+                taken |= running.coupled;
+            }
+            running.fields = running.fields.without(taken);
+            if let Motion::Momentum(momentum) = &mut running.motion {
+                running.fields = momentum.retain(running.fields);
+            }
+            if running.fields.is_empty() {
+                let running = self.running.remove(i);
+                self.end(running, true);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Flies to `target` along a zoom-out curve (GL JS `flyTo`), starting
@@ -350,8 +523,16 @@ impl Camera {
         options: &FlyOptions,
         start: Option<f64>,
     ) -> AnimationId {
-        self.stop();
         let (to, _) = self.resolve(target);
+        let aims = self.aims(target);
+        // A flight's center and zoom move along one curve, and the
+        // height it lands at with them.
+        let path = match aims {
+            true => Fields::CENTER | Fields::ZOOM | Fields::ELEVATION,
+            false => Fields::CENTER | Fields::ZOOM,
+        };
+        let fields = Fields::of(target, aims) | path;
+        self.yield_fields(fields);
         let motion = Motion::fly(
             self.state,
             to,
@@ -360,7 +541,7 @@ impl Camera {
             &self.surface,
             self.viewport,
         );
-        self.start(motion, start, false, self.aims(target))
+        self.start(motion, fields, path, start, false, aims)
     }
 
     /// The camera that shows `bounds` (GL JS `cameraForBounds`), for
@@ -389,31 +570,28 @@ impl Camera {
     /// Continues a user's move with a glide (smooth wheel zoom). A
     /// glide started during another adds what that one had left.
     pub(crate) fn glide(&mut self, mut glide: Glide, now: f64) -> AnimationId {
-        if let Some(rest) = self
-            .running
-            .as_ref()
-            .and_then(|r| r.motion.remaining_glide())
-        {
+        if let Some(rest) = self.running.iter().find_map(|r| r.motion.remaining_glide()) {
             merge(&mut glide.zoom, rest.zoom);
             merge(&mut glide.bearing, rest.bearing);
             merge(&mut glide.pitch, rest.pitch);
             merge(&mut glide.pan, rest.pan);
         }
         self.stop();
-        self.start(Motion::glide(glide), Some(now), true, false)
+        let motion = Motion::glide(glide);
+        self.start(motion, Fields::ALL, Fields::ALL, Some(now), true, false)
     }
 
     /// Continues a gesture with `momentum` from host time `start`
     /// (milliseconds, the release's), or from the next frame without one.
-    /// It replaces any animation. Returns `None` when nothing moves and
-    /// nothing settles over time; snaps that settle at once without motion
-    /// apply here.
+    /// It takes the properties it moves from the animations running, and
+    /// a later move that takes one of them stops the parts that need it.
+    /// Returns `None` when nothing moves and nothing settles over time;
+    /// snaps that settle at once without motion apply here.
     pub fn start_momentum(
         &mut self,
         momentum: &GestureMomentum,
         start: Option<f64>,
     ) -> Option<AnimationId> {
-        self.stop();
         let mut next = self.state;
         let stage = Stage {
             surface: &self.surface,
@@ -421,35 +599,64 @@ impl Camera {
             constraints: &self.constraints,
         };
         let planned = Momentum::new(momentum, &mut next, &stage);
+        let fields = match &planned {
+            Some(planned) => planned.fields(),
+            None => Fields::between(&self.state, &next),
+        };
+        self.yield_fields(fields);
         if next != self.state {
             self.user_write(next);
         }
-        Some(self.start(Motion::Momentum(Box::new(planned?)), start, true, false))
+        let motion = Motion::Momentum(Box::new(planned?));
+        Some(self.start(motion, fields, Fields::NONE, start, true, false))
     }
 
-    /// Stops the running animation, if any, as interrupted.
+    /// Stops every running animation where it is, as interrupted.
     pub fn stop(&mut self) {
         self.interrupt();
     }
 
-    /// Stops the running animation as interrupted, returning how fast a
-    /// momentum still moved.
+    /// Stops the animation `id`, if it runs, as interrupted: the others go
+    /// on.
+    pub fn stop_animation(&mut self, id: AnimationId) {
+        if let Some(i) = self.running.iter().position(|r| r.id == id) {
+            let running = self.running.remove(i);
+            self.end(running, true);
+        }
+    }
+
+    /// Stops every running animation as interrupted, returning how fast a
+    /// momentum among them still moved.
     fn interrupt(&mut self) -> Option<MomentumVelocity> {
-        let running = self.running.take()?;
-        let velocity = match &running.motion {
-            Motion::Momentum(momentum) => Some(momentum.velocity()),
-            _ => None,
+        let mut velocity = None;
+        for running in std::mem::take(&mut self.running) {
+            velocity = velocity.or(self.end(running, true));
+        }
+        velocity
+    }
+
+    /// Queues the end of an animation taken from the running ones, and
+    /// returns how fast it still moved if it is a momentum. A momentum
+    /// that settles after a later move stopped part of it reports itself
+    /// interrupted too.
+    fn end(&mut self, running: Running, interrupted: bool) -> Option<MomentumVelocity> {
+        let (velocity, cut) = match &running.motion {
+            Motion::Momentum(momentum) => (Some(momentum.velocity()), momentum.replaced()),
+            _ => (None, false),
         };
         self.events.push(CameraEvent::AnimationEnd {
             id: running.id,
-            interrupted: true,
-            velocity: velocity.unwrap_or_default(),
+            interrupted: interrupted || cut,
+            velocity: match interrupted {
+                true => velocity.unwrap_or_default(),
+                false => MomentumVelocity::default(),
+            },
         });
         velocity
     }
 
     pub fn is_animating(&self) -> bool {
-        self.running.is_some()
+        !self.running.is_empty()
     }
 
     /// User input holds the camera: movement continues, frame to frame,
@@ -502,54 +709,71 @@ impl Camera {
         self.user_write(next);
     }
 
-    /// Advances the running animation to `now`, then queues this frame's
+    /// Advances the running animations to `now`, then queues this frame's
     /// events. Returns whether the camera is still moving on its own, so
     /// the host keeps drawing frames.
     pub fn frame(&mut self, now: f64) -> bool {
-        let Some(running) = self.running.as_mut() else {
+        if self.running.is_empty() {
             self.report();
             return false;
-        };
-        // An app's move ends on the terrain under its destination, known
-        // once its DEM data lands; a gesture holds the elevation.
-        if let Some(terrain) = self
-            .terrain
-            .as_deref()
-            .filter(|_| !running.user && running.aims)
-            && let Some(ground) = running.motion.destination().and_then(|w| terrain.at(w))
-        {
-            running.motion.aim_elevation(ground, running.elapsed);
         }
         let mut next = self.state;
-        let elapsed = now - *running.started.get_or_insert(now);
-        running.elapsed = elapsed;
-        match &mut running.motion {
-            Motion::Momentum(momentum) => {
-                let stage = Stage {
-                    surface: &self.surface,
-                    viewport: self.viewport,
-                    constraints: &self.constraints,
-                };
-                momentum.apply(&mut next, elapsed, &stage);
+        let mut user = false;
+        let stage = Stage {
+            surface: &self.surface,
+            viewport: self.viewport,
+            constraints: &self.constraints,
+        };
+        for running in &mut self.running {
+            // An app's move ends on the terrain under its destination,
+            // known once its DEM data lands; a gesture holds the
+            // elevation.
+            if let Some(terrain) = self
+                .terrain
+                .as_deref()
+                .filter(|_| !running.user && running.aims)
+                && let Some(ground) = running.motion.destination().and_then(|w| terrain.at(w))
+            {
+                running.motion.aim_elevation(ground, running.elapsed);
             }
-            motion => motion.apply(&mut next, elapsed, &self.surface, self.viewport),
+            let elapsed = now - *running.started.get_or_insert(now);
+            running.elapsed = elapsed;
+            user |= running.user;
+            match &mut running.motion {
+                Motion::Momentum(momentum) => momentum.apply(&mut next, elapsed, &stage),
+                // A glide moves the camera on from where it is, and owns
+                // all of it.
+                motion @ Motion::Glide { .. } => {
+                    motion.apply(&mut next, elapsed, stage.surface, stage.viewport);
+                }
+                motion => {
+                    let mut at = next;
+                    motion.apply(&mut at, elapsed, stage.surface, stage.viewport);
+                    take(&mut next, &at, running.fields, stage.surface);
+                }
+            }
         }
-        self.user = running.user;
-        let done = elapsed >= running.motion.duration();
-        // Written while the move still runs, so its elevation stays its own.
+        self.user = user;
+        // Written while the moves still run, so their elevation stays
+        // their own.
         self.write(next);
-        if done {
-            let running = self.running.take().expect("running");
-            self.events.push(CameraEvent::AnimationEnd {
-                id: running.id,
-                interrupted: false,
-                velocity: MomentumVelocity::default(),
-            });
+        let mut ended = false;
+        let mut i = 0;
+        while i < self.running.len() {
+            if self.running[i].elapsed >= self.running[i].motion.duration() {
+                let running = self.running.remove(i);
+                self.end(running, false);
+                ended = true;
+            } else {
+                i += 1;
+            }
+        }
+        if ended && self.running.is_empty() {
             // At rest: on the terrain.
             self.write(self.state);
         }
         self.report();
-        self.running.is_some()
+        !self.running.is_empty()
     }
 
     /// The events queued by frames since the last call.
@@ -585,7 +809,7 @@ impl Camera {
                 });
             }
         }
-        if self.running.is_none() && !self.held {
+        if self.running.is_empty() && !self.held {
             // GL JS ends zoom, rotate and pitch before the move.
             for i in [1, 2, 3, 0] {
                 if std::mem::take(&mut self.active[i]) {
@@ -600,14 +824,24 @@ impl Camera {
         self.reported = self.state;
     }
 
-    fn start(&mut self, motion: Motion, start: Option<f64>, user: bool, aims: bool) -> AnimationId {
+    fn start(
+        &mut self,
+        motion: Motion,
+        fields: Fields,
+        coupled: Fields,
+        start: Option<f64>,
+        user: bool,
+        aims: bool,
+    ) -> AnimationId {
         self.next_id += 1;
         let id = AnimationId(self.next_id);
         self.modified = true;
         self.user = user;
-        self.running = Some(Running {
+        self.running.push(Running {
             id,
             motion,
+            fields,
+            coupled,
             started: start,
             elapsed: 0.0,
             user,
@@ -630,10 +864,10 @@ impl Camera {
         if let Some(terrain) = self.terrain.as_deref().filter(|_| self.clamped) {
             // Gestures hold the target's elevation, as GL JS's do; at rest
             // it stands on the terrain.
-            let gesture = self.held || self.running.as_ref().is_some_and(|r| r.user);
+            let gesture = self.held || self.running.iter().any(|r| r.user);
             if gesture {
                 self.elevation_held = true;
-            } else if self.running.is_none() {
+            } else if self.running.is_empty() {
                 if std::mem::take(&mut self.elevation_held) {
                     next.recenter_on(terrain, &self.surface, self.viewport);
                 } else {
@@ -1031,6 +1265,160 @@ mod tests {
             changes(&camera.take_events()),
             [(Change::Zoom, Phase::End), (Change::Move, Phase::End)]
         );
+    }
+
+    fn ends(events: &[CameraEvent]) -> Vec<(AnimationId, bool)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                CameraEvent::AnimationEnd {
+                    id, interrupted, ..
+                } => Some((*id, *interrupted)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A move takes the properties it sets from the animations running,
+    /// which go on moving the rest; one left with nothing ends
+    /// interrupted, as MapLibre Native's transitions do.
+    #[test]
+    fn moves_take_only_the_properties_they_set() {
+        let mut camera = camera();
+        let linear = EaseOptions {
+            duration: 100.0,
+            easing: Easing::Linear,
+        };
+        let to = Geodetic::new(139.8, 35.6);
+        let ease = camera.ease_to(
+            &CameraTarget {
+                center: Some(to),
+                bearing: Some(90.0),
+                ..CameraTarget::default()
+            },
+            linear,
+            Some(0.0),
+        );
+        let zoom = camera.ease_to(
+            &CameraTarget {
+                zoom: Some(12.0),
+                ..CameraTarget::default()
+            },
+            linear,
+            Some(0.0),
+        );
+        camera.frame(50.0);
+        assert!((camera.state().bearing - 45.0).abs() < 1e-9);
+        assert!((camera.zoom() - 11.0).abs() < 1e-9);
+        // A jump of the bearing leaves the center and the zoom moving.
+        camera.jump_to(&CameraTarget {
+            bearing: Some(10.0),
+            ..CameraTarget::default()
+        });
+        assert!(ends(&camera.take_events()).is_empty());
+        camera.frame(75.0);
+        assert_eq!(camera.state().bearing, 10.0);
+        assert!((camera.zoom() - 11.5).abs() < 1e-9);
+        // A zoom ease takes the zoom's whole animation.
+        let again = camera.ease_to(
+            &CameraTarget {
+                zoom: Some(10.0),
+                ..CameraTarget::default()
+            },
+            linear,
+            Some(75.0),
+        );
+        assert_eq!(ends(&camera.take_events()), [(zoom, true)]);
+        // A jump of the center ends the ease left with nothing else.
+        camera.jump_to(&CameraTarget {
+            center: Some(to),
+            ..CameraTarget::default()
+        });
+        assert_eq!(ends(&camera.take_events()), [(ease, true)]);
+        assert!(!camera.frame(175.0));
+        assert_eq!(ends(&camera.take_events()), [(again, false)]);
+        assert_eq!(camera.state().target, to);
+        assert!((camera.zoom() - 10.0).abs() < 1e-9);
+    }
+
+    /// A flight's center and zoom go together, and stopping one animation
+    /// leaves the others.
+    #[test]
+    fn flights_yield_their_path_whole() {
+        let mut camera = camera();
+        let flight = camera.fly_to(
+            &CameraTarget {
+                center: Some(Geodetic::new(-74.0, 40.7)),
+                ..CameraTarget::default()
+            },
+            &FlyOptions::default(),
+            Some(0.0),
+        );
+        let pitch = camera.ease_to(
+            &CameraTarget {
+                pitch: Some(40.0),
+                ..CameraTarget::default()
+            },
+            EaseOptions::default(),
+            Some(0.0),
+        );
+        camera.frame(10.0);
+        camera.jump_to(&CameraTarget {
+            zoom: Some(3.0),
+            ..CameraTarget::default()
+        });
+        assert_eq!(ends(&camera.take_events()), [(flight, true)]);
+        assert!(camera.is_animating());
+        camera.stop_animation(pitch);
+        assert_eq!(ends(&camera.take_events()), [(pitch, true)]);
+        assert!(!camera.is_animating());
+    }
+
+    /// A move that takes what a momentum part needs stops that part; the
+    /// momentum ends interrupted once its last part does.
+    #[test]
+    fn moves_stop_the_momentum_parts_they_take() {
+        let mut camera = camera();
+        let friction = crate::MomentumDecay {
+            model: crate::DecayModel::Friction {
+                half_life: 600_000.0,
+                stop_speed: 1.0,
+            },
+            ..crate::MomentumDecay::PAN
+        };
+        let id = camera
+            .start_momentum(
+                &GestureMomentum {
+                    pan: Some(crate::PanMomentum {
+                        decay: friction,
+                        ..crate::PanMomentum::new(DVec2::new(1000.0, 0.0))
+                    }),
+                    zoom: Some(crate::AnchoredMomentum {
+                        decay: friction,
+                        ..crate::AnchoredMomentum::zoom(Some(1.0))
+                    }),
+                    ..GestureMomentum::default()
+                },
+                Some(0.0),
+            )
+            .expect("it moves");
+        camera.frame(10.0);
+        camera.jump_to(&CameraTarget {
+            zoom: Some(3.0),
+            ..CameraTarget::default()
+        });
+        assert!(ends(&camera.take_events()).is_empty());
+        let zoom = camera.zoom();
+        let lon = camera.state().target.lon;
+        camera.frame(20.0);
+        assert_eq!(camera.zoom(), zoom);
+        assert!(camera.state().target.lon < lon, "the pan goes on");
+        camera.jump_to(&CameraTarget {
+            center: Some(Geodetic::new(0.0, 0.0)),
+            ..CameraTarget::default()
+        });
+        assert_eq!(ends(&camera.take_events()), [(id, true)]);
+        assert!(!camera.is_animating());
     }
 
     #[test]

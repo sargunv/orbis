@@ -641,7 +641,7 @@ impl OrbisMap {
         self.map.box_zoom().map(|[a, b]| vec![a.x, a.y, b.x, b.y])
     }
 
-    /// Stops the running animation, as interrupted.
+    /// Stops every running animation, as interrupted.
     pub fn stop(&mut self) {
         self.map.stop();
     }

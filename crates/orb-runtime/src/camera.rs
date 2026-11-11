@@ -19,7 +19,8 @@ impl Map {
         self.camera.state()
     }
 
-    /// Moves the camera at once (GL JS `jumpTo`), ending any animation.
+    /// Moves the camera at once (GL JS `jumpTo`). Like every move, it
+    /// takes only the properties it sets from the animations running.
     pub fn jump_to(&mut self, target: &CameraTarget) {
         self.camera.jump_to(target);
     }
@@ -48,9 +49,15 @@ impl Map {
         self.camera.start_momentum(momentum, None)
     }
 
-    /// Stops the running animation where it is, as interrupted.
+    /// Stops every running animation where it is, as interrupted.
     pub fn stop(&mut self) {
         self.camera.stop();
+    }
+
+    /// Stops the animation `id` where it is, as interrupted, leaving the
+    /// others running.
+    pub fn stop_animation(&mut self, id: AnimationId) {
+        self.camera.stop_animation(id);
     }
 
     /// The camera that shows `bounds` in the viewport (GL JS

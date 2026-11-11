@@ -507,7 +507,10 @@ impl Map {
         self.dirty = true;
     }
 
-    /// Moves the camera at once, ending any animation.
+    /// Moves the camera at once. Each move takes only the properties it
+    /// sets from the animations running, which go on moving the others,
+    /// as in MapLibre Native; one left with nothing to move ends
+    /// interrupted.
     pub fn jump_to(&mut self, target: &CameraTarget) {
         self.map.jump_to(target);
         self.dirty = true;
@@ -575,9 +578,14 @@ impl Map {
         self.map.camera_for_bounds(bounds, options)
     }
 
-    /// Stops any camera animation where it is.
+    /// Stops every camera animation where it is.
     pub fn stop(&mut self) {
         self.map.stop();
+    }
+
+    /// Stops the camera animation `id` where it is, leaving the others.
+    pub fn stop_animation(&mut self, id: AnimationId) {
+        self.map.stop_animation(id);
     }
 
     /// Zoom and pitch ranges and bounds the camera keeps to.
@@ -1208,7 +1216,8 @@ impl Map {
         Ok(())
     }
 
-    /// The oldest event not yet taken.
+    /// The oldest event not yet taken. What the map did between frames
+    /// (an animation a command stopped) comes out without one.
     pub fn poll_event(&mut self) -> Option<Event> {
         let finished = std::mem::take(&mut *self.finished.lock().expect("queries poisoned"));
         self.events.extend(
@@ -1216,6 +1225,10 @@ impl Map {
                 .into_iter()
                 .map(|(id, result)| Event::Query { id, result }),
         );
+        if self.events.is_empty() {
+            self.events
+                .extend(self.map.take_events().into_iter().map(Event::Map));
+        }
         self.events.pop_front()
     }
 }
