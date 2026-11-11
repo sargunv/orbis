@@ -22,15 +22,16 @@ use std::sync::Arc;
 
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
-use orb_style::v8::Transaction;
-use orb_style::{Binding, Change, Class, LayerKey, PropertyId};
+use orb_style::v8::{StyleDoc, Transaction};
+use orb_style::{Binding, Change, Class, LayerKey, Patch, PropertyId};
 
 use crate::jobs::TileResult;
-use crate::map::{Map, NodeState, revise};
+use crate::map::{LoadedStyle, Map, NodeState, revise};
 use crate::resident::{
     SourceState, evict_unused, mesh_sizes, record_maxima, remove_resident, resolve_rows,
     under_budget, upload_mesh, with_room,
 };
+use crate::style::StylePlan;
 use crate::worker::StyleUpdate;
 
 /// The class a paint change costs this renderer for one node:
@@ -120,14 +121,61 @@ impl Map {
             self.labels.options.ideographs.clone(),
             self.surface.tiles(),
         ));
+        let update = self.edit_update(&style.doc, &patch, version);
+        self.services.jobs.set_style(style.id, &update, &worker);
+        self.warnings.extend(
+            worker
+                .plan()
+                .warnings
+                .iter()
+                .filter(|w| !old.plan().warnings.contains(w))
+                .cloned(),
+        );
+        style.worker = Arc::clone(&worker);
+        let plan = worker.plan();
+
+        self.start_transitions(&patch, old.plan(), plan);
+        let added = carry_sources(&mut style, old.plan(), plan);
+        let (relayout, columns) = stale_nodes(
+            &mut style,
+            (old.plan(), plan),
+            &patch,
+            (version, reproject, &new_data),
+        );
+        // Another sprite loads over the old one, next frame.
+        if patch.changes.contains(&Change::Sprite) {
+            style.sprites.started = false;
+            let names = std::mem::take(&mut style.sprites.names);
+            style
+                .sprites
+                .stale
+                .get_or_insert_with(Default::default)
+                .extend(names);
+        }
+        style.paint.invalidate();
+        self.style = Some(style);
+        for index in added {
+            let state = self.start_source(plan, index);
+            self.style.as_mut().expect("restored").sources[index] = state;
+        }
+
+        self.send_relayouts(relayout, columns, version);
+        self.events.push(crate::MapEvent::StyleData {
+            generation: self.version,
+        });
+        Ok(self.version)
+    }
+
+    /// The jobs' view of an edit's `patch` of `doc`, at `version`: the
+    /// layers it changed, and the sources it added or gave data.
+    fn edit_update(&self, doc: &StyleDoc, patch: &Patch, version: u64) -> StyleUpdate {
         let mut layers: Vec<u32> = patch
             .changes
             .iter()
             .filter_map(|c| c.layer().map(|l| l.0))
             .collect();
         layers.dedup();
-        let doc = &style.doc;
-        let update = StyleUpdate {
+        StyleUpdate {
             layer_json: doc
                 .layer_keys()
                 .enumerate()
@@ -161,26 +209,18 @@ impl Map {
                 self.labels.options.ideographs.clone(),
                 self.surface.tiles(),
             )
-        };
-        self.services.jobs.set_style(style.id, &update, &worker);
-        self.warnings.extend(
-            worker
-                .plan()
-                .warnings
-                .iter()
-                .filter(|w| !old.plan().warnings.contains(w))
-                .cloned(),
-        );
-        style.worker = Arc::clone(&worker);
-        let plan = worker.plan();
+        }
+    }
 
-        // Paint changes ease from the property before the edit, and the
-        // root's light, sky and terrain from what the last frame showed.
+    /// Starts the transitions an edit's `patch` from `old_plan` to `plan`
+    /// brings: paint eases from the property before the edit, a layer
+    /// shown or hidden fades, and the root's light, sky and terrain ease
+    /// from what the last frame showed.
+    fn start_transitions(&mut self, patch: &Patch, old_plan: &StylePlan, plan: &StylePlan) {
         let (now, zoom) = (self.frame_time, self.zoom());
         if patch.changes.contains(&Change::Root) {
             self.root.start(&plan.style, zoom);
         }
-        let old_plan = old.plan();
         for change in &patch.changes {
             // A layer shown or hidden fades in or out.
             if let Change::Visibility(layer) = change {
@@ -216,126 +256,17 @@ impl Map {
             self.transitions
                 .start(&new.id, *id, old.slot(*id), transition, (now, zoom));
         }
+    }
 
-        // Sources, by key: removed ones leave the scene next frame.
-        let old_keys: Vec<u32> = old.plan().sources.iter().map(|s| s.key).collect();
-        let mut old_sources: Vec<Option<_>> = std::mem::take(&mut style.sources)
-            .into_iter()
-            .zip(std::mem::take(&mut style.placed))
-            .zip(std::mem::take(&mut style.held))
-            .map(Some)
-            .collect();
-        let mut added = Vec::new();
-        for (index, source) in plan.sources.iter().enumerate() {
-            match old_keys
-                .iter()
-                .position(|k| *k == source.key)
-                .and_then(|i| old_sources[i].take())
-            {
-                Some(((state, placed), held)) => {
-                    style.sources.push(state);
-                    style.placed.push(placed);
-                    style.held.push(held);
-                }
-                None => {
-                    style.sources.push(SourceState::Failed);
-                    style.placed.push(Vec::new());
-                    style.held.push(Vec::new());
-                    added.push(index);
-                }
-            }
-        }
-        style.retired.extend(
-            old_sources
-                .into_iter()
-                .flatten()
-                .map(|((state, _), _)| state),
-        );
-
-        // Nodes, by key: new nodes are stale everywhere.
-        let mut relayout: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
-        let mut columns: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
-        style.nodes.retain(|key, _| plan.node(*key).is_some());
-        for node in &plan.nodes {
-            if style.nodes.contains_key(&node.key) {
-                continue;
-            }
-            style
-                .nodes
-                .insert(node.key, NodeState::new(plan, node, version));
-            if node.source != usize::MAX && plan.image_kind(node.source).is_none() {
-                relayout.entry(node.source).or_default().push(node.key);
-            }
-        }
-        for change in &patch.changes {
-            let Some(layer) = change.layer() else {
-                continue;
-            };
-            let Some(index) = plan.layer_keys.iter().position(|k| *k == layer.0) else {
-                continue;
-            };
-            let layer = &plan.style.layers[index];
-            for node in plan.nodes.iter().filter(|n| n.layer == index) {
-                let before = old.plan().node(node.key).map(|i| &old.plan().nodes[i]);
-                let class = match change {
-                    Change::Paint { id, from, to, .. } => {
-                        let class = paint_class(layer, *id, *from, *to);
-                        // Meshes need feature ids to read state.
-                        let ids = plan.reads_state(node)
-                            && !before.is_some_and(|b| old.plan().reads_state(b));
-                        if ids { class.max(Class::Column) } else { class }
-                    }
-                    change => change.class(),
-                };
-                let state = style.nodes.get_mut(&node.key).expect("added above");
-                state.ramp = None;
-                let image = node.source == usize::MAX || plan.image_kind(node.source).is_some();
-                if image || state.layout_epoch == version {
-                    continue;
-                }
-                match class {
-                    Class::Column => {
-                        state.rows_epoch = version;
-                        columns.entry(node.source).or_default().push(node.key);
-                    }
-                    Class::Relayout => {
-                        state.layout_epoch = version;
-                        state.rows_epoch = version;
-                        relayout.entry(node.source).or_default().push(node.key);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        for node in &plan.nodes {
-            let image = node.source == usize::MAX || plan.image_kind(node.source).is_some();
-            let new_data = !image && new_data.contains(&plan.sources[node.source].key);
-            let state = style.nodes.get_mut(&node.key).expect("added above");
-            if !(reproject || new_data) || image || state.layout_epoch == version {
-                continue;
-            }
-            state.layout_epoch = version;
-            state.rows_epoch = version;
-            relayout.entry(node.source).or_default().push(node.key);
-        }
-        // Another sprite loads over the old one, next frame.
-        if patch.changes.contains(&Change::Sprite) {
-            style.sprites.started = false;
-            let names = std::mem::take(&mut style.sprites.names);
-            style
-                .sprites
-                .stale
-                .get_or_insert_with(Default::default)
-                .extend(names);
-        }
-        style.paint.invalidate();
-        self.style = Some(style);
-        for index in added {
-            let state = self.start_source(plan, index);
-            self.style.as_mut().expect("restored").sources[index] = state;
-        }
-
-        // Jobs for the resident tiles, from the jobs' cached tiles.
+    /// Sends the jobs that lay `relayout`'s nodes out again, and that
+    /// evaluate `columns`' rows again, by source, for the resident tiles,
+    /// from the jobs' cached tiles.
+    fn send_relayouts(
+        &mut self,
+        relayout: BTreeMap<usize, Vec<u32>>,
+        columns: BTreeMap<usize, Vec<u32>>,
+        version: u64,
+    ) {
         for (source, mut nodes) in relayout {
             nodes.sort_unstable();
             nodes.dedup();
@@ -350,10 +281,6 @@ impl Map {
                 self.send_job(source, tile, Some(nodes.clone()), true, Some(version));
             }
         }
-        self.events.push(crate::MapEvent::StyleData {
-            generation: self.version,
-        });
-        Ok(self.version)
     }
 
     /// Lays every symbol layer out again from the jobs' cached tiles, in a
@@ -646,4 +573,124 @@ impl Map {
             self.send_job(index, tile, Some(stale_rows), true, Some(version));
         }
     }
+}
+
+/// Carries `style`'s sources over an edit from `old_plan` to `plan`, by
+/// key: removed ones leave the scene next frame. Returns the indices of
+/// those added, which start loading.
+fn carry_sources(style: &mut LoadedStyle, old_plan: &StylePlan, plan: &StylePlan) -> Vec<usize> {
+    let old_keys: Vec<u32> = old_plan.sources.iter().map(|s| s.key).collect();
+    let mut old_sources: Vec<Option<_>> = std::mem::take(&mut style.sources)
+        .into_iter()
+        .zip(std::mem::take(&mut style.placed))
+        .zip(std::mem::take(&mut style.held))
+        .map(Some)
+        .collect();
+    let mut added = Vec::new();
+    for (index, source) in plan.sources.iter().enumerate() {
+        match old_keys
+            .iter()
+            .position(|k| *k == source.key)
+            .and_then(|i| old_sources[i].take())
+        {
+            Some(((state, placed), held)) => {
+                style.sources.push(state);
+                style.placed.push(placed);
+                style.held.push(held);
+            }
+            None => {
+                style.sources.push(SourceState::Failed);
+                style.placed.push(Vec::new());
+                style.held.push(Vec::new());
+                added.push(index);
+            }
+        }
+    }
+    style.retired.extend(
+        old_sources
+            .into_iter()
+            .flatten()
+            .map(|((state, _), _)| state),
+    );
+    added
+}
+
+/// Marks `style`'s nodes an edit's `patch` from `old_plan` to `plan` (the
+/// style's `version`) left stale, by key: new nodes everywhere, and those
+/// a change, a projection (`reproject`) or a source's `new_data` touched.
+/// Returns, by source, the nodes to lay out again and those whose rows
+/// alone are evaluated again.
+#[allow(clippy::type_complexity)]
+fn stale_nodes(
+    style: &mut LoadedStyle,
+    (old_plan, plan): (&StylePlan, &StylePlan),
+    patch: &Patch,
+    (version, reproject, new_data): (u64, bool, &[u32]),
+) -> (BTreeMap<usize, Vec<u32>>, BTreeMap<usize, Vec<u32>>) {
+    let mut relayout: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
+    let mut columns: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
+    style.nodes.retain(|key, _| plan.node(*key).is_some());
+    for node in &plan.nodes {
+        if style.nodes.contains_key(&node.key) {
+            continue;
+        }
+        style
+            .nodes
+            .insert(node.key, NodeState::new(plan, node, version));
+        if node.source != usize::MAX && plan.image_kind(node.source).is_none() {
+            relayout.entry(node.source).or_default().push(node.key);
+        }
+    }
+    for change in &patch.changes {
+        let Some(layer) = change.layer() else {
+            continue;
+        };
+        let Some(index) = plan.layer_keys.iter().position(|k| *k == layer.0) else {
+            continue;
+        };
+        let layer = &plan.style.layers[index];
+        for node in plan.nodes.iter().filter(|n| n.layer == index) {
+            let before = old_plan.node(node.key).map(|i| &old_plan.nodes[i]);
+            let class = match change {
+                Change::Paint { id, from, to, .. } => {
+                    let class = paint_class(layer, *id, *from, *to);
+                    // Meshes need feature ids to read state.
+                    let ids =
+                        plan.reads_state(node) && !before.is_some_and(|b| old_plan.reads_state(b));
+                    if ids { class.max(Class::Column) } else { class }
+                }
+                change => change.class(),
+            };
+            let state = style.nodes.get_mut(&node.key).expect("added above");
+            state.ramp = None;
+            let image = node.source == usize::MAX || plan.image_kind(node.source).is_some();
+            if image || state.layout_epoch == version {
+                continue;
+            }
+            match class {
+                Class::Column => {
+                    state.rows_epoch = version;
+                    columns.entry(node.source).or_default().push(node.key);
+                }
+                Class::Relayout => {
+                    state.layout_epoch = version;
+                    state.rows_epoch = version;
+                    relayout.entry(node.source).or_default().push(node.key);
+                }
+                _ => {}
+            }
+        }
+    }
+    for node in &plan.nodes {
+        let image = node.source == usize::MAX || plan.image_kind(node.source).is_some();
+        let new_data = !image && new_data.contains(&plan.sources[node.source].key);
+        let state = style.nodes.get_mut(&node.key).expect("added above");
+        if !(reproject || new_data) || image || state.layout_epoch == version {
+            continue;
+        }
+        state.layout_epoch = version;
+        state.rows_epoch = version;
+        relayout.entry(node.source).or_default().push(node.key);
+    }
+    (relayout, columns)
 }
