@@ -2648,9 +2648,7 @@ pub unsafe extern "C" fn mln_camera_for_tile(
             // A vector tile is 512 pixels wide at its zoom: a wider map
             // shows several.
             if logical_size.width > 512 {
-                return Err(Failure::argument(
-                    "a tile's map is at most 512 pixels wide",
-                ));
+                return Err(Failure::argument("a tile's map is at most 512 pixels wide"));
             }
             if tile.z > 30 || u64::from(tile.x) >= 1 << tile.z || u64::from(tile.y) >= 1 << tile.z {
                 return Err(Failure::argument("no such tile"));

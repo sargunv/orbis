@@ -104,6 +104,26 @@ fn glob(pattern: &[char], text: &[char]) -> bool {
 /// or headers) it adds to them.
 type Rules = Vec<(Pattern, Vec<(String, String)>)>;
 
+/// The most tokens a glob may hold, as mln-ffi bounds its matching.
+const MAX_GLOB_TOKENS: usize = 4096;
+
+/// A glob's tokens: each character, escaped character and run of `*`.
+fn glob_tokens(pattern: &str) -> usize {
+    let mut chars = pattern.chars().peekable();
+    let mut tokens = 0;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '*' => while chars.next_if_eq(&'*').is_some() {},
+            _ => {}
+        }
+        tokens += 1;
+    }
+    tokens
+}
+
 /// A route's or rule's selection of requests.
 #[derive(Clone, Debug)]
 struct Pattern {
@@ -128,11 +148,13 @@ impl Pattern {
         if url.contains('\0') {
             return Err(Failure::argument(format!("{what}.url contains a NUL")));
         }
-        Ok(Self {
-            kinds,
-            glob: flags & MLN_URL_MATCH_GLOB != 0,
-            url,
-        })
+        let glob = flags & MLN_URL_MATCH_GLOB != 0;
+        if glob && glob_tokens(&url) > MAX_GLOB_TOKENS {
+            return Err(Failure::argument(format!(
+                "{what}.url is a glob of more than {MAX_GLOB_TOKENS} tokens"
+            )));
+        }
+        Ok(Self { kinds, glob, url })
     }
 
     fn matches(&self, kind: ResourceKind, url: &str) -> bool {
@@ -868,18 +890,20 @@ pub unsafe extern "C" fn mln_http_header_transform_response_set_header(
     unsafe {
         boundary(out_diagnostic, || {
             let r = sized(response.cast_const(), "response")?;
-            let context = r.context as usize;
-            if context == 0 || !ACTIVE.with(|a| a.borrow().contains(&context)) {
-                return Err(Failure::state(
-                    "the response belongs to no running header transform",
-                ));
-            }
+            // The header is checked first: a bad one is refused wherever
+            // it's set.
             if name.data.is_null() && name.size != 0 {
                 return Err(Failure::argument("name is null"));
             }
             let name = text(name, "name")?;
             let value = text(value, "value")?;
             check_header(&name, &value)?;
+            let context = r.context as usize;
+            if context == 0 || !ACTIVE.with(|a| a.borrow().contains(&context)) {
+                return Err(Failure::state(
+                    "the response belongs to no running header transform",
+                ));
+            }
             // SAFETY: the active callback's header list.
             let set = &mut *(r.context.cast::<Vec<(String, String)>>());
             set.retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
@@ -918,10 +942,15 @@ fn configure(
     })
 }
 
+/// Reads `count` routes or rules from `items`, named `noun i` in
+/// messages. Each steps to the next by its own size, so a caller built
+/// against a later header passes larger ones, whose members past this
+/// header's struct are skipped.
 unsafe fn patterns<T>(
     items: *const T,
     count: usize,
     what: &str,
+    noun: &str,
     each: impl Fn(&T, &str) -> Result<(Pattern, Vec<(String, String)>)>,
 ) -> Result<Rules> {
     if count == 0 {
@@ -930,18 +959,20 @@ unsafe fn patterns<T>(
     if items.is_null() {
         return Err(Failure::argument(format!("{what} is null")));
     }
-    // SAFETY: the caller's array.
-    let items = unsafe { std::slice::from_raw_parts(items, count) };
-    items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            // SAFETY: every sized item starts with its u32 size.
-            let size = unsafe { *std::ptr::from_ref(item).cast::<u32>() } as usize;
+    let mut at = items.cast::<u8>();
+    (0..count)
+        .map(|i| {
+            let label = format!("{noun} {i}");
+            // SAFETY: the caller's array; every sized item starts with its
+            // u32 size, and the one before it said where this one starts.
+            let size = unsafe { at.cast::<u32>().read_unaligned() } as usize;
             if size < std::mem::size_of::<T>() {
-                return Err(Failure::argument(format!("{what}[{i}].size is too small")));
+                return Err(Failure::argument(format!("{label} has an invalid size")));
             }
-            each(item, &format!("{what}[{i}]"))
+            // SAFETY: as above; `size` bytes are the item's.
+            let item = unsafe { &*at.cast::<T>() };
+            at = at.wrapping_add(size);
+            each(item, &label)
         })
         .collect()
 }
@@ -960,6 +991,11 @@ unsafe fn pairs(
             }
             // SAFETY: the caller's views.
             let name = unsafe { text(name, &format!("{what}[{i}].name")) }?;
+            if name.contains('\0') {
+                return Err(Failure::argument(format!(
+                    "{what}[{i}].name contains a NUL"
+                )));
+            }
             if value.data.is_null() && value.size != 0 {
                 return Err(Failure::argument(format!("{what}[{i}].value is null")));
             }
@@ -991,6 +1027,7 @@ pub unsafe extern "C" fn mln_runtime_set_resource_provider(
                 p.routes,
                 p.route_count,
                 "provider.routes",
+                "route",
                 |r: &mln_resource_route, what| {
                     Ok((Pattern::from_c(r.kinds, r.flags, r.url, what)?, Vec::new()))
                 },
@@ -1055,15 +1092,16 @@ pub unsafe extern "C" fn mln_runtime_set_resource_transform(
                     }
                 }
                 (None, _) => {
-                    if t.release_user_data.is_some() || t.queue.0 != 0 {
+                    if !t.user_data.is_null() || t.release_user_data.is_some() || t.queue.0 != 0 {
                         return Err(Failure::argument(
-                            "transform's rules take no release or queue",
+                            "a transform's rules take no user_data, release or queue",
                         ));
                     }
                     Transform::Rules(patterns(
                         t.rules,
                         t.rule_count,
                         "transform.rules",
+                        "rule",
                         |r: &mln_resource_transform_rule, what| {
                             let pattern = Pattern::from_c(r.kinds, r.flags, r.url, what)?;
                             if r.parameter_count > 0 && r.parameters.is_null() {
@@ -1142,6 +1180,7 @@ pub unsafe extern "C" fn mln_runtime_set_http_header_transform(
                         t.rules,
                         t.rule_count,
                         "transform.rules",
+                        "header rule",
                         |r: &mln_http_header_rule, what| {
                             let pattern = Pattern::from_c(r.kinds, r.flags, r.url, what)?;
                             if r.header_count > 0 && r.headers.is_null() {
@@ -1157,7 +1196,9 @@ pub unsafe extern "C" fn mln_runtime_set_http_header_transform(
                                 &format!("{what}.headers"),
                             )?;
                             for (name, value) in &headers {
-                                check_header(name, value)?;
+                                check_header(name, value).map_err(|e| {
+                                    Failure::argument(format!("{what}: {}", e.message))
+                                })?;
                             }
                             Ok((pattern, headers))
                         },
