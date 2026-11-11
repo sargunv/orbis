@@ -26,6 +26,10 @@ pub struct MapOptions {
     /// with instead of the style's glyphs (GL JS
     /// `localIdeographFontFamily`); `None` draws the glyphs.
     pub local_ideograph_font_family: Option<String>,
+    /// Font files every font stack draws with after the style's own
+    /// `font-faces` (MapLibre Native's `fallbackFontFaces`). None by
+    /// default.
+    pub fallback_font_faces: Vec<orb_style::FontFace>,
     /// 4× multisampling for 3D surfaces: extrusion layers and the
     /// terrain (GL JS `antialias`). Off by default, as in GL JS (MapLibre
     /// Native never multisamples): off, their edges step visibly at a
@@ -68,6 +72,7 @@ impl Default for MapOptions {
             fade_duration: 300.0,
             cross_source_collisions: true,
             local_ideograph_font_family: Some("sans-serif".into()),
+            fallback_font_faces: Vec::new(),
             antialias: false,
             terrain_skirts: true,
             previews: Previews::NONE,
@@ -87,6 +92,7 @@ impl Map {
         self.set_fade_duration(options.fade_duration);
         self.set_cross_source_collisions(options.cross_source_collisions);
         self.set_local_ideograph_font_family(options.local_ideograph_font_family.as_deref());
+        self.set_fallback_font_faces(options.fallback_font_faces.clone());
         self.set_antialias_3d(options.antialias);
         self.set_terrain_skirts(options.terrain_skirts);
         self.set_previews(options.previews);

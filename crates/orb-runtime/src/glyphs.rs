@@ -87,6 +87,34 @@ enum RangeState {
     Failed,
 }
 
+/// The font files text may draw with: the style's, by name, and the
+/// map's fallbacks, which every stack tries after its own names.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Fonts<'a> {
+    pub(crate) declared: &'a orb_style::FontFaces,
+    pub(crate) fallback: &'a [orb_style::FontFace],
+}
+
+impl<'a> Fonts<'a> {
+    /// No font files.
+    #[cfg(test)]
+    pub(crate) const NONE: Fonts<'static> = Fonts {
+        declared: &Vec::new(),
+        fallback: &[],
+    };
+
+    /// Every file, declared ones first.
+    pub(crate) fn files(self) -> impl Iterator<Item = &'a orb_style::FontFace> {
+        (self.declared.iter())
+            .flat_map(|(_, files)| files)
+            .chain(self.fallback)
+    }
+
+    fn is_empty(self) -> bool {
+        self.declared.is_empty() && self.fallback.is_empty()
+    }
+}
+
 /// What resolving a tile's requests found.
 #[derive(Debug, Default)]
 pub(crate) struct Resolved {
@@ -128,12 +156,12 @@ impl GlyphCatalog {
     }
 
     /// The declared file that draws `request`, GL JS `getFontFamily`: each
-    /// name of the stack in turn, each of its files covering the first code
-    /// point, skipping files that failed. `Err` names a file not fetched
-    /// yet.
+    /// name of the stack in turn, then the map's fallbacks, each of their
+    /// files covering the first code point, skipping files that failed.
+    /// `Err` names a file not fetched yet.
     fn font_file<'a>(
         &self,
-        faces: &'a orb_style::FontFaces,
+        faces: Fonts<'a>,
         request: &orb_text::GlyphRequest,
     ) -> Result<Option<&'a str>, &'a str> {
         if faces.is_empty() || request.variant != orb_text::Variant::Default {
@@ -141,11 +169,12 @@ impl GlyphCatalog {
         }
         let code_point = request.text.chars().next().map_or(0, u32::from);
         let fonts = self.fonts.lock().expect("glyph catalog poisoned");
-        for name in request.stack.as_str().split(',') {
-            let Some((_, declared)) = faces.iter().find(|(n, _)| n == name.trim()) else {
-                continue;
-            };
-            for face in declared.iter().filter(|f| f.covers(code_point)) {
+        let named = request.stack.as_str().split(',').filter_map(|name| {
+            let declared = faces.declared.iter().find(|(n, _)| n == name.trim());
+            declared.map(|(_, files)| files.as_slice())
+        });
+        for files in named.chain([faces.fallback]) {
+            for face in files.iter().filter(|f| f.covers(code_point)) {
                 match fonts.get(&face.url) {
                     Some(true) => return Ok(Some(&face.url)),
                     Some(false) => {}
@@ -236,7 +265,7 @@ impl GlyphCatalog {
         requests: &GlyphRequests,
         template: Option<&str>,
         policy: FontPolicy,
-        faces: &orb_style::FontFaces,
+        faces: Fonts<'_>,
     ) -> Vec<String> {
         let mut missing: Vec<String> = Vec::new();
         let mut pbf = Vec::new();
@@ -277,7 +306,7 @@ impl GlyphCatalog {
         template: Option<&str>,
         policy: FontPolicy,
         ideographs: Option<&str>,
-        faces: &orb_style::FontFaces,
+        faces: Fonts<'_>,
     ) -> Resolved {
         let files = self.files.lock().expect("glyph catalog poisoned").clone();
         let mut file_measured = self.file_measured.lock().expect("glyph catalog poisoned");
@@ -516,7 +545,7 @@ mod tests {
             local_ideographs: false,
         };
         let r = requests("Ab東");
-        let missing = catalog.missing(&r, Some(TEMPLATE), policy, &Vec::new());
+        let missing = catalog.missing(&r, Some(TEMPLATE), policy, Fonts::NONE);
         assert_eq!(
             missing,
             [
@@ -530,10 +559,10 @@ mod tests {
         assert_eq!(catalog.take_warnings().len(), 1);
         assert!(
             catalog
-                .missing(&r, Some(TEMPLATE), policy, &Vec::new())
+                .missing(&r, Some(TEMPLATE), policy, Fonts::NONE)
                 .is_empty()
         );
-        let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, &Vec::new());
+        let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, Fonts::NONE);
         let stack = FontStack::new(&["Noto Sans Regular"]);
         let (_, a) = resolved
             .glyphs
@@ -555,12 +584,12 @@ mod tests {
         catalog.retry_failed();
         let r = requests("Ab東");
         assert_eq!(
-            catalog.missing(&r, Some(TEMPLATE), policy, &Vec::new()),
+            catalog.missing(&r, Some(TEMPLATE), policy, Fonts::NONE),
             [missing[1].clone()]
         );
         assert!(!catalog.has(&missing[1]) && catalog.has(&missing[0]));
         catalog.insert(&missing[1], Ok(&range_bytes()));
-        let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, &Vec::new());
+        let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, Fonts::NONE);
         assert!(!resolved.failed && resolved.local == 0);
     }
 
@@ -586,8 +615,8 @@ mod tests {
         let catalog = GlyphCatalog::default();
         let policy = FontPolicy::default();
         let r = requests("ab");
-        assert!(catalog.missing(&r, None, policy, &Vec::new()).is_empty());
-        assert_eq!(catalog.resolve(r, None, policy, None, &Vec::new()).local, 2);
+        assert!(catalog.missing(&r, None, policy, Fonts::NONE).is_empty());
+        assert_eq!(catalog.resolve(r, None, policy, None, Fonts::NONE).local, 2);
     }
 
     #[derive(Debug)]
@@ -635,10 +664,14 @@ mod tests {
                 ranges: vec![[0x41, 0x5A]],
             }],
         )];
+        let fonts = Fonts {
+            declared: &faces,
+            fallback: &[],
+        };
         let r = requests("Ab");
         // "A" needs the file first; "b" (outside its range) the PBF range.
         assert_eq!(
-            catalog.missing(&r, Some(TEMPLATE), policy, &faces),
+            catalog.missing(&r, Some(TEMPLATE), policy, fonts),
             vec![
                 "test://latin.woff2".to_string(),
                 TEMPLATE
@@ -653,7 +686,7 @@ mod tests {
                 .replace("{range}", "0-255"),
             Ok(&range_bytes()),
         );
-        let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, &faces);
+        let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, fonts);
         let stack = FontStack::new(&["Noto Sans Regular"]);
         let key = |text: &str| {
             resolved
@@ -670,7 +703,36 @@ mod tests {
         failed.set_files(Arc::new(FakeFiles));
         failed.insert_font("test://latin.woff2", Ok(b"html"));
         assert_eq!(failed.take_warnings().len(), 1);
-        let missing = failed.missing(&requests("A"), Some(TEMPLATE), policy, &faces);
+        let missing = failed.missing(&requests("A"), Some(TEMPLATE), policy, fonts);
         assert!(missing.iter().all(|m| m.ends_with(".pbf")), "{missing:?}");
+    }
+
+    /// A map's fallback files draw what a stack's own names don't cover,
+    /// whatever the stack.
+    #[test]
+    fn fallback_font_files_follow_the_stacks_own() {
+        let catalog = GlyphCatalog::default();
+        catalog.set_files(Arc::new(FakeFiles));
+        let policy = FontPolicy {
+            glyphs_url: true,
+            local_ideographs: false,
+        };
+        let face = |url: &str, ranges| orb_style::FontFace {
+            url: url.into(),
+            ranges,
+        };
+        let declared: orb_style::FontFaces = vec![(
+            "Noto Sans Regular".into(),
+            vec![face("test://a.woff2", vec![[0x41, 0x41]])],
+        )];
+        let fallback = [face("test://any.ttf", vec![[0x41, 0x42]])];
+        let fonts = Fonts {
+            declared: &declared,
+            fallback: &fallback,
+        };
+        // "A" takes the stack's own file, "B" the fallback; "c" neither.
+        let missing = catalog.missing(&requests("ABc"), Some(TEMPLATE), policy, fonts);
+        assert_eq!(missing[..2], ["test://a.woff2", "test://any.ttf"]);
+        assert!(missing[2].ends_with("0-255.pbf"), "{missing:?}");
     }
 }

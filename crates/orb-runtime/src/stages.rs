@@ -40,7 +40,10 @@ impl Stages {
             sources,
             &[],
             0,
-            local_ideographs,
+            crate::worker::MapFonts {
+                local_ideographs,
+                fallback: Vec::new(),
+            },
             crate::surface::SurfaceTiles::default(),
         );
         if let Some(local) = local {

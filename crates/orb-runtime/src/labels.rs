@@ -571,6 +571,8 @@ pub(crate) struct LabelOptions {
     pub(crate) cross_source_collisions: bool,
     /// The map's `localIdeographFontFamily`, for local raster jobs.
     pub(crate) ideographs: Option<String>,
+    /// The map's fallback font files.
+    pub(crate) fallback_fonts: Vec<orb_style::FontFace>,
     /// Labels keep their place across placements, as in MapLibre Native
     /// ([`orb_symbol::Frame::stable_labels`]).
     pub(crate) stable_labels: bool,
@@ -582,7 +584,18 @@ impl From<&crate::MapOptions> for LabelOptions {
             fade_duration: options.fade_duration,
             cross_source_collisions: options.cross_source_collisions,
             ideographs: options.local_ideograph_font_family.clone(),
+            fallback_fonts: options.fallback_font_faces.clone(),
             stable_labels: options.stable_labels,
+        }
+    }
+}
+
+impl LabelOptions {
+    /// What the map adds to its styles' fonts.
+    pub(crate) fn fonts(&self) -> crate::worker::MapFonts {
+        crate::worker::MapFonts {
+            local_ideographs: self.ideographs.clone(),
+            fallback: self.fallback_fonts.clone(),
         }
     }
 }
@@ -1037,7 +1050,7 @@ impl Labels {
         atlas: &mut GlyphAtlas,
         jobs: &dyn Jobs,
         raster_done: &dyn Fn(Vec<RasterRow>) -> crate::RasterDone,
-        faces: &orb_style::FontFaces,
+        faces: crate::glyphs::Fonts<'_>,
     ) {
         self.retire(gpu, atlas);
         // Each job's glyphs, deduplicated, with every row by its index.
@@ -1072,8 +1085,7 @@ impl Labels {
         for (font, rows) in std::mem::take(&mut self.glyphs.pending_files) {
             // A file the style no longer declares leaves its rows clear.
             let Some(url) = faces
-                .iter()
-                .flat_map(|(_, files)| files)
+                .files()
                 .map(|f| f.url.as_str())
                 .find(|&url| crate::glyphs::file_id(url) == font)
             else {

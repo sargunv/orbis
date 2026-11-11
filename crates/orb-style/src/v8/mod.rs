@@ -22,6 +22,7 @@ mod tx;
 use std::fmt;
 
 pub use doc::StyleDoc;
+pub use font_faces::parse_font_files;
 pub use geojson::{apply_diffs, geojson_features, parse_geojson};
 pub use light::default_light;
 pub use orb_expr::json::Span;

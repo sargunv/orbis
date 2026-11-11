@@ -143,6 +143,8 @@ pub struct TileWorker {
     pub(crate) data: Arc<WorkerData>,
     /// The map's `localIdeographFontFamily`.
     ideographs: Option<String>,
+    /// The map's fallback font files.
+    fallback_fonts: Vec<orb_style::FontFace>,
     /// The plane GeoJSON tiles in, and sources' tile matrix sets.
     surface: crate::surface::SurfaceTiles,
 }
@@ -170,7 +172,7 @@ impl TileWorker {
             sources,
             &[],
             0,
-            None,
+            MapFonts::default(),
             crate::surface::SurfaceTiles::default(),
         ))
     }
@@ -189,7 +191,7 @@ impl TileWorker {
         source_keys: Vec<u32>,
         new_data: &[u32],
         revision: u64,
-        ideographs: Option<String>,
+        fonts: MapFonts,
         surface: crate::surface::SurfaceTiles,
     ) -> Self {
         let plan = StylePlan::new(style, layer_keys, source_keys, revision);
@@ -213,8 +215,17 @@ impl TileWorker {
         Self {
             plan,
             data,
-            ideographs,
+            ideographs: fonts.local_ideographs,
+            fallback_fonts: fonts.fallback,
             surface,
+        }
+    }
+
+    /// The font files the style declares, and the map's fallbacks.
+    pub(crate) fn fonts(&self) -> crate::glyphs::Fonts<'_> {
+        crate::glyphs::Fonts {
+            declared: &self.plan.style.font_faces,
+            fallback: &self.fallback_fonts,
         }
     }
 
@@ -240,10 +251,10 @@ impl TileWorker {
         self.data.glyphs.set_local(local);
     }
 
-    /// Whether the style declares `url` as a font file (`font-faces`).
+    /// Whether the style declares `url` as a font file (`font-faces`), or
+    /// the map falls back to it.
     pub(crate) fn declares_font(&self, url: &str) -> bool {
-        let declared = self.plan.style.font_faces.iter();
-        declared.flat_map(|(_, files)| files).any(|f| f.url == url)
+        self.fonts().files().any(|f| f.url == url)
     }
 
     /// Whether `url`, fetched for a tile's text, is a glyph range: not a
@@ -394,7 +405,10 @@ impl TileWorker {
             update.sources.clone(),
             &new_data,
             update.revision,
-            update.local_ideographs.clone(),
+            MapFonts {
+                local_ideographs: update.local_ideographs.clone(),
+                fallback: update.fallback_fonts.clone(),
+            },
             update.surface.clone(),
         ))
     }
@@ -435,8 +449,10 @@ impl TileWorker {
                 requests.add_label(&label, &orb_text::FontStack::new(&stack), false, false);
             }
         }
-        let faces = &style.font_faces;
-        let missing = self.data.glyphs.missing(&requests, template, policy, faces);
+        let missing = self
+            .data
+            .glyphs
+            .missing(&requests, template, policy, self.fonts());
         missing
             .into_iter()
             .filter(|url| self.is_glyph_range(url))
@@ -643,6 +659,7 @@ impl TileWorker {
             glyphs: &self.data.glyphs,
             icons: &icons,
             ideographs: self.ideographs.as_deref(),
+            fallback_fonts: &self.fallback_fonts,
             words: words.0.as_deref(),
         };
         let bend = request.bend;
@@ -888,9 +905,22 @@ pub struct StyleUpdate {
     pub font_faces: orb_style::FontFaces,
     /// The map's `localIdeographFontFamily`: ideographs draw with it.
     pub local_ideographs: Option<String>,
+    /// The map's fallback font files, which every font stack draws with
+    /// after the style's own.
+    pub fallback_fonts: Vec<orb_style::FontFace>,
     /// The plane GeoJSON sources tile in and the tile matrix sets of
     /// sources not in `WebMercatorQuad`.
     pub surface: crate::surface::SurfaceTiles,
+}
+
+/// What a map adds to its style's fonts.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MapFonts {
+    /// The map's `localIdeographFontFamily`.
+    pub(crate) local_ideographs: Option<String>,
+    /// Font files every font stack draws with after the style's own
+    /// (MapLibre Native's `fallbackFontFaces`).
+    pub(crate) fallback: Vec<orb_style::FontFace>,
 }
 
 /// A tile for a job to load and lay out.
@@ -1280,6 +1310,7 @@ pub(crate) mod tests {
                 }],
             )],
             local_ideographs: Some("Hiragino Sans".into()),
+            fallback_fonts: Vec::new(),
             surface: crate::surface::SurfaceTiles {
                 plane: Some(polar_plane()),
                 sources: vec![("geo".into(), TileMatrixSet::by_id("NZTM2000Quad").unwrap())],
@@ -1756,7 +1787,7 @@ pub(crate) mod tests {
             vec![1],
             &[1],
             1,
-            None,
+            MapFonts::default(),
             crate::surface::SurfaceTiles::default(),
         ));
         host.set_style(1, Arc::clone(&second));

@@ -54,6 +54,8 @@ pub(crate) struct Symbols<'a> {
     pub(crate) words: Option<&'a orb_text::WordBreaker>,
     /// The map's `localIdeographFontFamily`.
     pub(crate) ideographs: Option<&'a str>,
+    /// The map's fallback font files.
+    pub(crate) fallback_fonts: &'a [orb_style::FontFace],
 }
 
 /// Which of a source's nodes to lay out.
@@ -622,7 +624,10 @@ fn build_symbols<'f>(
             images,
             (tile, ancestor),
         );
-        let faces = &plan.style.font_faces;
+        let faces = crate::glyphs::Fonts {
+            declared: &plan.style.font_faces,
+            fallback: symbols.fallback_fonts,
+        };
         for url in symbols.glyphs.missing(&p.requests, template, policy, faces) {
             if !missing.contains(&url) {
                 missing.push(url);
@@ -642,7 +647,10 @@ fn build_symbols<'f>(
             template,
             policy,
             symbols.ideographs,
-            &plan.style.font_faces,
+            crate::glyphs::Fonts {
+                declared: &plan.style.font_faces,
+                fallback: symbols.fallback_fonts,
+            },
         );
         *glyphs_failed |= resolved.failed;
         if resolved.local > 0 && symbols.glyphs.warn_local() {
@@ -1304,6 +1312,7 @@ mod tests {
             icons: &ICONS,
             words: None,
             ideographs: None,
+            fallback_fonts: &[],
         }
     }
 

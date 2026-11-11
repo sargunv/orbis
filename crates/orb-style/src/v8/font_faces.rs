@@ -102,9 +102,66 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> FontFaces {
     faces
 }
 
+/// Parses a list of font files, each `{"url", "unicode-range"?}` as a
+/// font face of `font-faces` declares it (MapLibre Native's
+/// `fallbackFontFaces`), refusing what isn't one rather than dropping it:
+/// a host's option, not a style to draw as best it can.
+pub fn parse_font_files(text: &str) -> Result<Vec<FontFace>, String> {
+    let json = orb_expr::json::parse(text).map_err(|e| e.message)?;
+    let items = json.as_array().ok_or("not an array of font files")?;
+    let mut files = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let url = item
+            .get("url")
+            .and_then(Json::as_str)
+            .ok_or_else(|| format!("font file {i} has no URL"))?;
+        let ranges = match item.get("unicode-range") {
+            None => vec![[0, MAX_CODE_POINT]],
+            Some(ranges) => {
+                let entries = ranges
+                    .as_array()
+                    .ok_or_else(|| format!("font file {i}'s unicode-range isn't an array"))?;
+                let parsed = entries
+                    .iter()
+                    .map(|e| e.as_str().and_then(unicode_range))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| format!("font file {i} has an invalid unicode range"))?;
+                match parsed.is_empty() {
+                    true => vec![[0, MAX_CODE_POINT]],
+                    false => parsed,
+                }
+            }
+        };
+        files.push(FontFace {
+            url: url.to_string(),
+            ranges,
+        });
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_files_parse_strictly() {
+        let files = parse_font_files(
+            r#"[{"url":"a.ttf","unicode-range":["U+1000-109F"]},{"url":"b.otf"}]"#,
+        )
+        .unwrap();
+        assert_eq!(files[0].ranges, vec![[0x1000, 0x109F]]);
+        assert_eq!(files[1].ranges, vec![[0, MAX_CODE_POINT]]);
+        assert_eq!(parse_font_files("[]").unwrap(), Vec::new());
+        for bad in [
+            "{}",
+            r#"[{"unicode-range":["U+1000-109F"]}]"#,
+            r#"[{"url":"a.ttf","unicode-range":["U+XYZ-FF"]}]"#,
+            "not json",
+        ] {
+            assert!(parse_font_files(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn unicode_ranges_follow_css() {

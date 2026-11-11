@@ -615,11 +615,14 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                 MLN_RUNTIME_EVENT_FLAG_ALL
             };
             let fonts = text(options.fallback_font_faces, "fallback_font_faces")?;
-            if !fonts.trim().is_empty() && !fonts.trim_start().starts_with('[') {
-                return Err(Failure::argument(
-                    "fallback_font_faces isn't an array of font files",
-                ));
-            }
+            let fallback_font_faces = match fonts.trim() {
+                "" => Vec::new(),
+                fonts => orb_style::v8::parse_font_files(fonts).map_err(|e| {
+                    Failure::argument(format!(
+                        "fallback_font_faces isn't an array of font files: {e}"
+                    ))
+                })?,
+            };
             fresh_out(out_map, "out_map")?;
             let completion = Completion::required(completion)?;
             let handle = Arc::new(MapHandle {
@@ -634,7 +637,13 @@ pub unsafe extern "C" fn mln_runtime_create_map(
             runtime.maps.fetch_add(1, Ordering::AcqRel);
             let wake_tx = Mutex::new(runtime.sender());
             runtime.post(move |state| {
-                let mut map = orb_api::Map::new(&state.runtime, orb_api::MapOptions::default());
+                let mut map = orb_api::Map::new(
+                    &state.runtime,
+                    orb_api::MapOptions {
+                        fallback_font_faces,
+                        ..orb_api::MapOptions::default()
+                    },
+                );
                 let extent = options.initial_extent;
                 map.set_viewport(f64::from(extent.width), f64::from(extent.height));
                 // Native's limits, not orb-camera's GL JS ones (zoom from

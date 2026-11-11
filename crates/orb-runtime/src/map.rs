@@ -707,7 +707,7 @@ fn default_lane() -> Arc<dyn crate::placement::PlacementLane> {
 pub(crate) fn full_update(
     doc: &StyleDoc,
     revision: u64,
-    local_ideographs: Option<String>,
+    fonts: crate::worker::MapFonts,
     surface: crate::surface::SurfaceTiles,
 ) -> StyleUpdate {
     StyleUpdate {
@@ -724,7 +724,7 @@ pub(crate) fn full_update(
                 (k.0, id, Arc::new(doc.source_json(i).clone()))
             })
             .collect(),
-        ..StyleUpdate::base(doc, revision, local_ideographs, surface)
+        ..StyleUpdate::base(doc, revision, fonts, surface)
     }
 }
 
@@ -734,7 +734,7 @@ impl StyleUpdate {
     pub(crate) fn base(
         doc: &StyleDoc,
         revision: u64,
-        local_ideographs: Option<String>,
+        fonts: crate::worker::MapFonts,
         surface: crate::surface::SurfaceTiles,
     ) -> Self {
         Self {
@@ -748,7 +748,8 @@ impl StyleUpdate {
             previews: doc.style().previews,
             glyphs: doc.style().glyphs.clone(),
             font_faces: doc.style().font_faces.clone(),
-            local_ideographs,
+            local_ideographs: fonts.local_ideographs,
+            fallback_fonts: fonts.fallback,
             surface,
         }
     }
@@ -760,7 +761,7 @@ pub(crate) fn revise(
     doc: &StyleDoc,
     new_data: &[u32],
     revision: u64,
-    local_ideographs: Option<String>,
+    fonts: crate::worker::MapFonts,
     surface: crate::surface::SurfaceTiles,
 ) -> TileWorker {
     TileWorker::with_style(
@@ -770,7 +771,7 @@ pub(crate) fn revise(
         doc.source_keys().map(|k| k.0).collect(),
         new_data,
         revision,
-        local_ideographs,
+        fonts,
         surface,
     )
 }
@@ -906,6 +907,14 @@ impl Map {
         self.labels.options.ideographs = family.map(str::to_string);
     }
 
+    /// Font files every font stack draws with after the style's own
+    /// `font-faces` (MapLibre Native's `fallbackFontFaces`): text in
+    /// scripts the style's fonts don't cover, say. Applies to styles
+    /// loaded afterwards.
+    pub fn set_fallback_font_faces(&mut self, files: Vec<orb_style::FontFace>) {
+        self.labels.options.fallback_fonts = files;
+    }
+
     /// Places labels on `lane` instead of the host's default (a thread
     /// natively, inline on the web). Call it before loading a style.
     pub fn set_placement_lane(&mut self, lane: Arc<dyn crate::placement::PlacementLane>) {
@@ -991,7 +1000,7 @@ impl Map {
         let update = full_update(
             &style.doc,
             self.version,
-            self.labels.options.ideographs.clone(),
+            self.labels.options.fonts(),
             self.surface.tiles(),
         );
         Some((style.id, update, style.icons.clone()))
@@ -1353,7 +1362,7 @@ impl Map {
             &doc,
             &[],
             self.version,
-            self.labels.options.ideographs.clone(),
+            self.labels.options.fonts(),
             self.surface.tiles(),
         ));
         let plan = worker.plan();
@@ -1393,7 +1402,7 @@ impl Map {
             &full_update(
                 &doc,
                 self.version,
-                self.labels.options.ideographs.clone(),
+                self.labels.options.fonts(),
                 self.surface.tiles(),
             ),
             &worker,
@@ -2540,7 +2549,7 @@ impl Map {
             renderer.glyphs(),
             self.services.jobs.as_ref(),
             &raster_done,
-            &style.worker.plan().style.font_faces,
+            style.worker.fonts(),
         );
         // Glyph rasterization above is the jobs'; placement starts here.
         let started = self.services.clock.now();
