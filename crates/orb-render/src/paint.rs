@@ -758,6 +758,7 @@ impl NodePaint {
                     p.height_anchor_ground,
                     p.daylight[0].is_some(),
                     p.daylight[1].is_some(),
+                    p.along_line,
                 ];
                 b = Block::new(n::WORDS);
                 b.f(n::FILL_COLOR, &p.color).f(n::HALO_COLOR, &p.halo_color);

@@ -88,10 +88,16 @@ fn outside_planes(p: vec4<f32>, margin: vec2<f32>) -> u32 {
 // corners, the tile's copied clip rectangles) miscompiled on an Adreno 830
 // (Chrome 156, Vulkan): the dispatch wrote nothing or lost the device.
 // A test in orb-shaders keeps the cull shader free of them.
-fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32, draped: bool, unclipped_meshes: bool) -> bool {
+fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32, draped: bool, unclipped_meshes: bool, symbols: bool) -> bool {
     let point_instances = draw == DRAW_POINTS;
     let chunk = chunks[candidate.chunk];
     let tile = tiles[candidate.tile];
+    // A symbol chunk placement shows nothing of in the placement's world
+    // copy: hidden labels leave here rather than run each quad's vertices
+    // to read that they are.
+    if symbols && ((chunk.first_vertex >> (bitcast<u32>(tile.wrap) & 31u)) & 1u) == 0u {
+        return false;
+    }
 
     let margin = margin_px * tile_world_per_px(tile) / tile.scale;
     let before_clip = select(margin, 0.0, point_instances);
@@ -148,14 +154,6 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
         & outside_planes(c0 + shadow, m) & outside_planes(c1 + shadow, m)
         & outside_planes(c2 + shadow, m) & outside_planes(c3 + shadow, m);
     return outside == 0u;
-}
-
-// Whether placement shows any of a symbol chunk's quads in the
-// candidate's world copy: chunks of hidden labels leave here rather than
-// run each quad's vertices to read that it is hidden.
-fn symbol_shown(candidate: Candidate) -> bool {
-    let copy = bitcast<u32>(tiles[candidate.tile].wrap) & 31u;
-    return ((chunks[candidate.chunk].first_vertex >> copy) & 1u) != 0u;
 }
 
 const WORKGROUP: u32 = 256u;
@@ -216,8 +214,7 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
         var candidate: Candidate;
         if i < count {
             candidate = candidates[node.visible_base + i];
-            let shown = (node.draw & SYMBOLS) == 0u || symbol_shown(candidate);
-            keep = select(0u, 1u, keep_all || (shown && candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u)));
+            keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u, (node.draw & SYMBOLS) != 0u));
         }
         // Inclusive Hillis–Steele scan of `keep` across the workgroup.
         scan[lane] = keep;
@@ -261,7 +258,7 @@ fn cull_indexed(index: u32, lane: u32, node: NodeCull) {
         let i = start + lane;
         if i < count && candidates[node.visible_base + i].chunk != NO_CHUNK {
             let candidate = candidates[node.visible_base + i];
-            let keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
+            let keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u, false));
             let chunk = chunks[candidate.chunk];
             if keep == 1u {
                 atomicMax(&extent, candidate.slot + chunk.index_count - node.index_base);

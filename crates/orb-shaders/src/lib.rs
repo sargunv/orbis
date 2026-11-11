@@ -271,6 +271,20 @@ mod tests {
         );
     }
 
+    /// How deep structs nest in `ty`, arrays aside: 0 for a plain type.
+    fn struct_depth(types: &naga::UniqueArena<naga::Type>, ty: naga::Handle<naga::Type>) -> usize {
+        match &types[ty].inner {
+            naga::TypeInner::Struct { members, .. } => {
+                1 + (members.iter())
+                    .map(|m| struct_depth(types, m.ty))
+                    .max()
+                    .unwrap_or(0)
+            }
+            naga::TypeInner::Array { base, .. } => struct_depth(types, *base),
+            _ => 0,
+        }
+    }
+
     /// Where a uniform block's std140 layout (WGSL's uniform layout, which
     /// naga keeps in the GL variant) differs from the one ANGLE's Metal
     /// back end gives the block (`blocklayoutMetal.cpp`): there a `vec3`
@@ -603,6 +617,14 @@ mod tests {
                     if size > UNIFORM_BLOCK_BYTES {
                         fail(format!(
                             "uniform `{name}` of {size} bytes, past WebGL 2's {UNIFORM_BLOCK_BYTES}"
+                        ));
+                    }
+                    // ANGLE refuses a block whose structs nest past 4
+                    // levels, the block's own counted.
+                    let depth = struct_depth(&one.types, var.ty);
+                    if depth > 3 {
+                        fail(format!(
+                            "uniform `{name}` nests structs {depth} deep, past the 3 ANGLE takes in a block"
                         ));
                     }
                     if let Some(what) = metal_mismatch(&one.types, var.ty, size) {

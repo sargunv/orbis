@@ -45,8 +45,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::driver::SubmitLimits;
 
 use super::{
-    CANDIDATE_WORDS, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, PlacementTarget, Route, Scene,
-    Stream, Table, UNKNOWN, VISIBLE_WORDS,
+    CANDIDATE_WORDS, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, NodeMeshes, PlacementTarget,
+    Route, Scene, Stream, Table, UNKNOWN, VISIBLE_WORDS,
 };
 
 /// A candidate row that holds no candidate: a hole a run left in an
@@ -202,7 +202,7 @@ type RunKey = (u64, u32, Route);
 #[derive(Clone, Debug)]
 pub(super) struct LaidNode {
     /// How it draws, which a layout depends on.
-    shape: (NodeDraw, PlacementTarget, bool, bool),
+    shape: Shape,
     /// Its candidate rows (and, for an indexed node, its runs' rows of the
     /// visible list).
     row_base: u32,
@@ -266,9 +266,12 @@ impl RunPlan<'_> {
     }
 }
 
-fn shape(node: &NodeEntry) -> (NodeDraw, PlacementTarget, bool, bool) {
+/// What of a node decides how its candidates lay out.
+type Shape = (NodeDraw, PlacementTarget, bool, bool, NodeMeshes);
+
+fn shape(node: &NodeEntry) -> Shape {
     let c = &node.cull;
-    (c.draw, c.target, c.labels, c.unclipped)
+    (c.draw, c.target, c.labels, c.unclipped, c.meshes)
 }
 
 /// An indexed node's index is `run << run_shift | vertex`.
@@ -283,19 +286,29 @@ fn headroom(used: u32, step: u32) -> u32 {
 }
 
 impl Scene {
-    /// A node's runs into `runs` (emptied first; one list serves every
-    /// node of a layout), in mesh, placement and chunk order, and the most
-    /// vertex words a mesh of it has. A cut stream's are its render
-    /// node's meshes; a stream's runs hold the chunks their placements'
-    /// routes keep, and none that keep none.
-    fn node_runs<'a>(&'a self, node: &NodeEntry, runs: &mut Vec<RunPlan<'a>>) -> u32 {
+    /// Node `n`'s runs into `runs` (emptied first; one list serves every
+    /// node of a layout), in mesh, placement and chunk order, its own
+    /// meshes' before those of the next node it takes, and the most vertex
+    /// words a mesh of them has. A cut stream's are its render node's
+    /// meshes; a stream's runs hold the chunks their placements' routes
+    /// keep, and none that keep none.
+    fn node_runs<'a>(&'a self, n: usize, runs: &mut Vec<RunPlan<'a>>) -> u32 {
         runs.clear();
-        let mut vertex_words = 1u32;
-        let meshes = match node.stream {
-            Stream::Cut(of) => &self.nodes[of as usize].meshes,
-            Stream::All | Stream::Whole(_) => &node.meshes,
+        let node = &self.nodes[n];
+        let (own, next) = match node.cull.meshes {
+            NodeMeshes::Own => (true, false),
+            NodeMeshes::WithNext { own, next } => (own, next),
+            NodeMeshes::Previous => (false, false),
         };
-        for mesh in meshes {
+        let (own, next) = match node.stream {
+            Stream::Cut(of) => (Some(&self.nodes[of as usize].meshes), None),
+            Stream::All | Stream::Whole(_) => (
+                own.then_some(&node.meshes),
+                next.then(|| &self.nodes[n + 1].meshes),
+            ),
+        };
+        let mut vertex_words = 1u32;
+        for mesh in own.into_iter().chain(next).flatten() {
             let entry = self.meshes[mesh.0 as usize]
                 .as_ref()
                 .expect("node lists live meshes");
@@ -348,7 +361,7 @@ impl Scene {
         let plans: Vec<NodePlan> = (self.nodes.iter().enumerate())
             .map(|(n, node)| {
                 let indexed = node.cull.draw == NodeDraw::Indexed;
-                let vertex_words = self.node_runs(node, &mut runs);
+                let vertex_words = self.node_runs(n, &mut runs);
                 let shift = if indexed { run_shift(vertex_words) } else { 0 };
                 let old = old(n, node).and_then(|o| o.movable(shift));
                 NodePlan::new(&runs, indexed, shift, &limits, &mut budget, old)
@@ -430,7 +443,7 @@ impl Scene {
                 break;
             }
             let indexed = node.cull.draw == NodeDraw::Indexed;
-            let vertex_words = self.node_runs(node, &mut runs);
+            let vertex_words = self.node_runs(n, &mut runs);
             let shift = if indexed { run_shift(vertex_words) } else { 0 };
             if laid.runs.is_some() && shift == laid.run_shift {
                 let mut node_writes = Writes::default();
@@ -1136,7 +1149,13 @@ mod tests {
         let plan = NodePlan::new(runs, true, 8, limits, &mut Budget::unbounded(), None);
         let [rows, words] = plan.room();
         let mut node = LaidNode {
-            shape: (NodeDraw::Indexed, PlacementTarget::Map, false, false),
+            shape: (
+                NodeDraw::Indexed,
+                PlacementTarget::Map,
+                false,
+                false,
+                NodeMeshes::Own,
+            ),
             row_base: 0,
             rows: Space::new(0, rows),
             word_base: 0,

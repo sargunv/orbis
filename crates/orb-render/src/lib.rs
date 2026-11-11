@@ -53,8 +53,8 @@ pub use scene::Pixels;
 pub use scene::{
     ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLight, FrameTerrain, ImageAtlas,
     ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData, MeshId, MeshSize, NodeCull,
-    NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity, SceneStats, TileId, TileRow,
-    TileWarp, Words, warp_words,
+    NodeDraw, NodeMeshes, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity, SceneStats, TileId,
+    TileRow, TileWarp, Words, warp_words,
 };
 pub use scene::{DESKTOP_BUDGET, MOBILE_BUDGET, PoolMemory, SceneMemory};
 pub use scene::{
@@ -321,17 +321,6 @@ impl Node {
             rows: self.rows,
         }
     }
-
-    /// A symbol node's slot of the symbol pipelines: along lines or not,
-    /// with property rows or without.
-    fn symbol_kind(&self) -> usize {
-        2 * usize::from(self.along_line) + usize::from(self.rows)
-    }
-
-    /// What the cull sees of it.
-    fn scene_cull(&self) -> NodeCull {
-        self.cull
-    }
 }
 
 #[derive(Debug)]
@@ -358,8 +347,8 @@ pub struct Renderer {
     /// node.
     paint: PaintPipelines,
     /// Point and line labels' symbol pipelines, each made for the first
-    /// node that draws with it.
-    /// By [`Node::symbol_kind`].
+    /// symbol layer that draws with it.
+    /// By [`Renderer::symbol_kind`].
     symbol_pipelines: [Variants; 4],
     /// Whether the map's views may need the full projection
     /// ([`set_full_projection`](Self::set_full_projection)).
@@ -368,9 +357,9 @@ pub struct Renderer {
     /// variants, not their plane ones (`Variants`): its bundles drew with
     /// them.
     full: bool,
-    /// The symbol shader's pass (group 2): halo and fill together, halo
-    /// only, fill only.
-    symbol_passes: [BindGroupId; 3],
+    /// The symbol shader's passes (group 2), one per [`SYMBOL_PASSES`]
+    /// entry.
+    symbol_passes: [BindGroupId; SYMBOL_PASSES.len()],
     symbol_pass_buffer: BufferId,
     symbol_pass_layout: BindGroupLayoutId,
     /// [`QUAD_INDICES`], the index buffer symbol quads draw with.
@@ -405,7 +394,6 @@ pub struct Renderer {
     /// Nodes the main bundles record draws for.
     recorded: u32,
     node_uniforms: BufferId,
-    node_stride: u64,
     /// The node uniforms as written, and the nodes changed since the last
     /// frame: one buffer write a frame, not one a node, and one for the
     /// cut streams' rows past them.
@@ -460,8 +448,49 @@ pub struct Renderer {
     images_bound: TextureId,
 }
 
-/// Bytes reserved per node uniform; every node struct fits.
+/// Bytes reserved per node uniform; every node struct fits. A symbol
+/// layer's icon node binds its text node's after its own, this far apart
+/// (`symbol.wgsl`'s `halves`).
 const NODE_UNIFORM_SIZE: u64 = 512;
+const _: () = assert!(orb_shaders::layout::symbol_node::WORDS as u64 * 4 == NODE_UNIFORM_SIZE);
+
+/// What a symbol pass draws of a layer's icons or of its text
+/// (`symbol.wgsl`'s `PASS_*`): halo and fill, the halo, the fill, or
+/// nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SymbolPass {
+    Whole = 0,
+    Halo = 1,
+    Fill = 2,
+    Skip = 3,
+}
+
+/// The symbol passes there are, each `[icons, text]`. A symbol layer draws
+/// its icons, then its text, each halo and fill together or, where glyphs
+/// overlap (`separate_halo`), every halo, then every fill: one or more of
+/// these over the one list ([`symbol_passes`]).
+const SYMBOL_PASSES: [[SymbolPass; 2]; 6] = {
+    use SymbolPass::*;
+    [
+        [Whole, Whole],
+        [Halo, Skip],
+        [Fill, Whole],
+        [Whole, Halo],
+        [Skip, Fill],
+        [Fill, Halo],
+    ]
+};
+
+/// The passes of [`SYMBOL_PASSES`] a symbol layer draws, in order, by
+/// whether its icons and its text draw their halos apart.
+fn symbol_passes(icons_apart: bool, text_apart: bool) -> &'static [usize] {
+    match (icons_apart, text_apart) {
+        (false, false) => &[0],
+        (true, false) => &[1, 2],
+        (false, true) => &[3, 4],
+        (true, true) => &[1, 5, 4],
+    }
+}
 
 /// A symbol quad's two triangles over its corners (tl, tr, bl, br;
 /// `symbol.wgsl`'s `vs_symbol`). Drawn indexed, each corner runs the
@@ -627,29 +656,22 @@ impl Renderer {
 
         let symbol_pass_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "symbol pass",
-            entries: &[E::uniform(0, fs)],
+            entries: &[E::uniform(0, vf)],
         });
         let pass_stride = u64::from(gpu.caps().limits.min_uniform_buffer_offset_alignment).max(16);
         let pass_buffer = gpu.create_buffer(&BufferDesc {
             label: "symbol passes",
-            size: 3 * pass_stride,
+            size: SYMBOL_PASSES.len() as u64 * pass_stride,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        let symbol_passes = [0u32, 1, 2].map(|pass| {
-            gpu.write_buffer(
-                pass_buffer,
-                u64::from(pass) * pass_stride,
-                bytemuck::cast_slice(&[pass, 0, 0, 0]),
-            );
+        let symbol_passes = std::array::from_fn(|i| {
+            let at = i as u64 * pass_stride;
+            let [icons, text] = SYMBOL_PASSES[i].map(|p| p as u32);
+            gpu.write_buffer(pass_buffer, at, bytemuck::cast_slice(&[icons, text, 0, 0]));
             gpu.create_bind_group(&BindGroupDesc {
                 label: "symbol pass",
                 layout: symbol_pass_layout,
-                entries: &[BindGroupEntry::slice(
-                    0,
-                    pass_buffer,
-                    u64::from(pass) * pass_stride,
-                    16,
-                )],
+                entries: &[BindGroupEntry::slice(0, pass_buffer, at, 16)],
             })
         });
         let quad_indices = gpu.create_buffer(&BufferDesc {
@@ -669,12 +691,16 @@ impl Renderer {
             TextureFormat::Rgba8Unorm
         };
         let extrusions = extrusion::Extrusions::new(draw_layout, node_layout, extrusion_format);
-        let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
-            gpu.caps().limits.min_uniform_buffer_offset_alignment,
-        ));
+        // WebGPU aligns uniform offsets to at most 256 bytes: nodes lie
+        // NODE_UNIFORM_SIZE apart, as the symbol shader's halves do.
+        let alignment = gpu.caps().limits.min_uniform_buffer_offset_alignment;
+        assert!(
+            NODE_UNIFORM_SIZE.is_multiple_of(u64::from(alignment)),
+            "uniform offsets aligned to {alignment} bytes"
+        );
         let node_uniforms = gpu.create_buffer(&BufferDesc {
             label: "node uniforms",
-            size: node_stride * u64::from(capacity.nodes),
+            size: NODE_UNIFORM_SIZE * u64::from(capacity.nodes),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
 
@@ -710,8 +736,7 @@ impl Renderer {
             drape_waiting: false,
             recorded: 0,
             node_uniforms,
-            node_stride,
-            node_words: vec![0; (node_stride / 4) as usize * capacity.nodes as usize],
+            node_words: vec![0; (NODE_UNIFORM_SIZE / 4) as usize * capacity.nodes as usize],
             nodes_dirty: [None, None],
             nodes: Vec::new(),
             tiles: Default::default(),
@@ -880,7 +905,15 @@ impl Renderer {
                 let (candidates, kept) = rows.fold((0, 0), |(c, k), row| {
                     (c + self.scene.node_candidates(row), k + word(row as usize))
                 });
-                (n.family, if n.cull.visible { candidates } else { 0 }, kept)
+                (
+                    n.family,
+                    if self.scene_cull(i).visible {
+                        candidates
+                    } else {
+                        0
+                    },
+                    kept,
+                )
             })
             .collect()
     }
@@ -927,12 +960,12 @@ impl Renderer {
             self.scene.grow_nodes(gpu, count);
             let uniforms = gpu.create_buffer(&BufferDesc {
                 label: "node uniforms",
-                size: self.node_stride * u64::from(self.scene.capacity().nodes),
+                size: NODE_UNIFORM_SIZE * u64::from(self.scene.capacity().nodes),
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             });
             retired_uniforms = Some(std::mem::replace(&mut self.node_uniforms, uniforms));
             // The uniforms' CPU copy grows with them.
-            let words = (self.node_stride / 4) as usize * self.scene.capacity().nodes as usize;
+            let words = (NODE_UNIFORM_SIZE / 4) as usize * self.scene.capacity().nodes as usize;
             self.node_words.resize(words, 0);
         }
         let mut old: Vec<Option<Node>> = self.nodes.drain(..).map(Some).collect();
@@ -964,7 +997,15 @@ impl Renderer {
         old.release(gpu);
         let mut added = Vec::new();
         for (i, ((&family, node), desc)) in families.iter().zip(kept).zip(nodes).enumerate() {
-            let uniform = self.node_uniform(i as u32);
+            // A symbol layer's icon node draws its text too, and binds the
+            // text node's uniform after its own.
+            let text = families.get(i + 1) == Some(&Family::SymbolText);
+            assert_eq!(
+                family == Family::SymbolIcon,
+                text,
+                "a symbol layer's icon node comes right before its text node"
+            );
+            let uniform = self.node_uniform(i as u32, text);
             if node.is_none() && family.is_image() {
                 added.push(i as u32);
             }
@@ -986,6 +1027,7 @@ impl Renderer {
                         labels: family.is_symbol(),
                         surface: false,
                         unclipped: family == Family::FillExtrusion,
+                        meshes: NodeMeshes::Own,
                     },
                     (false, false),
                 ),
@@ -1031,18 +1073,32 @@ impl Renderer {
                 left_out: Default::default(),
             });
         }
+        // A symbol layer's draw finds its list by its icon node's index,
+        // which its uniform holds even while no paint shows its icons.
+        let stride = (NODE_UNIFORM_SIZE / 4) as usize;
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].family == Family::SymbolIcon {
+                let at = i * stride + orb_shaders::layout::symbol_node::INDEX;
+                self.node_words[at] = i as u32;
+                let dirty = &mut self.nodes_dirty[0];
+                *dirty = Some(match dirty.take() {
+                    Some(r) => r.start.min(i)..r.end.max(i + 1),
+                    None => i..i + 1,
+                });
+            }
+        }
         // Every group that bound the old uniforms is gone.
         retired_uniforms.release(gpu);
         self.assign_stacks();
         // Nodes moved: their drape paint is set again at their indices.
         self.drape.take().release(gpu);
-        let cull: Vec<NodeCull> = self.nodes.iter().map(Node::scene_cull).collect();
+        let cull: Vec<NodeCull> = (0..self.nodes.len()).map(|i| self.scene_cull(i)).collect();
         self.scene.remap_nodes(&map, &cull);
         for i in 0..self.nodes.len() {
             let Some(row) = self.scene.cut_row(i as u32) else {
                 continue;
             };
-            let uniform = self.node_uniform(row);
+            let uniform = self.node_uniform(row, false);
             let group = gpu.create_bind_group(&BindGroupDesc {
                 label: "node cut stream",
                 layout: self.node_layout,
@@ -1310,7 +1366,7 @@ impl Renderer {
             p.uniform_words(node, self.linear.is_some())
         });
         let nodes = self.nodes.len() as u64;
-        let stride = self.node_stride;
+        let stride = NODE_UNIFORM_SIZE;
         let level = self.drape.get_or_insert_with(|| Drape {
             frame: [(); 2].map(|()| {
                 gpu.create_buffer(&BufferDesc {
@@ -1355,11 +1411,12 @@ impl Renderer {
         }
     }
 
-    fn node_uniform(&self, node: u32) -> BindingResource {
+    /// Node `node`'s uniform, and with `next` the next node's after it.
+    fn node_uniform(&self, node: u32, next: bool) -> BindingResource {
         BindingResource::Buffer {
             buffer: self.node_uniforms,
-            offset: u64::from(node) * self.node_stride,
-            size: Some(NODE_UNIFORM_SIZE),
+            offset: u64::from(node) * NODE_UNIFORM_SIZE,
+            size: Some(NODE_UNIFORM_SIZE + if next { NODE_UNIFORM_SIZE } else { 0 }),
         }
     }
 
@@ -1494,7 +1551,7 @@ impl Renderer {
     fn refresh_image_groups(&mut self, gpu: &mut dyn Gpu) {
         let mut rebuilt = false;
         for i in 0..self.nodes.len() {
-            let uniform = self.node_uniform(i as u32);
+            let uniform = self.node_uniform(i as u32, false);
             let node = &mut self.nodes[i];
             let Some(image) = &mut node.image else {
                 continue;
@@ -1558,7 +1615,7 @@ impl Renderer {
         if (entry.styled, entry.rows) != (styled, rows) {
             entry.styled = styled;
             entry.rows = rows;
-            if entry.drawn {
+            if self.nodes[self.drawer(node as usize)].drawn {
                 self.pipelines_stale = true;
                 self.invalidate_bundle(gpu);
             }
@@ -1576,7 +1633,7 @@ impl Renderer {
             entry.occlusion = p.ground_occlusion();
         }
         if words != entry.written {
-            let stride = (self.node_stride / 4) as usize;
+            let stride = (NODE_UNIFORM_SIZE / 4) as usize;
             // An extrusion node's cut stream draws with its paint, from
             // its own row, past the render nodes'.
             let cut = cut_row.map(|row| {
@@ -1623,19 +1680,80 @@ impl Renderer {
             entry.cull.margin_px = margin;
             entry.cull.elevation = elevation;
             entry.cull.surface = surface;
-            self.scene.set_node(node, entry.scene_cull());
+            self.sync_node(node as usize);
         }
     }
 
     /// Shows or hides a node without re-recording the bundle or laying the
-    /// cull's candidates out again.
+    /// cull's candidates out again (but for one half of a symbol layer).
     pub fn set_visible(&mut self, node: u32, visible: bool) {
         let entry = &mut self.nodes[node as usize];
         if entry.cull.visible != visible {
             entry.cull.visible = visible;
-            self.pipelines_stale |= visible && !entry.drawn;
-            self.scene.set_node(node, entry.scene_cull());
+            let drawer = self.drawer(node as usize);
+            self.pipelines_stale |= visible && !self.nodes[drawer].drawn;
+            self.sync_node(node as usize);
         }
+    }
+
+    /// The node whose draw draws node `i`'s meshes: a symbol layer's icon
+    /// node draws its text's.
+    fn drawer(&self, i: usize) -> usize {
+        match self.nodes[i].family {
+            Family::SymbolText => i - 1,
+            _ => i,
+        }
+    }
+
+    /// What the cull sees of node `i`: its own, but that a symbol layer's
+    /// icon node takes its text node's meshes after its own, in one list,
+    /// and shows while either does. Its margin is the wider of the two, and
+    /// the text node draws nothing itself.
+    fn scene_cull(&self, i: usize) -> NodeCull {
+        let node = &self.nodes[i];
+        match node.family {
+            Family::SymbolIcon => {
+                let (icons, text) = (node.cull, self.nodes[i + 1].cull);
+                NodeCull {
+                    margin_px: icons.margin_px.max(text.margin_px),
+                    visible: icons.visible || text.visible,
+                    // A half hidden alone leaves the list; the two hidden
+                    // keep it as it is, for when they show again.
+                    meshes: NodeMeshes::WithNext {
+                        own: icons.visible || !text.visible,
+                        next: text.visible || !icons.visible,
+                    },
+                    ..icons
+                }
+            }
+            Family::SymbolText => NodeCull {
+                visible: false,
+                meshes: NodeMeshes::Previous,
+                ..node.cull
+            },
+            _ => node.cull,
+        }
+    }
+
+    /// Gives the cull node `i` as it is now, with its symbol layer's other
+    /// node.
+    fn sync_node(&mut self, i: usize) {
+        let drawer = self.drawer(i);
+        let nodes = match self.nodes[drawer].family {
+            Family::SymbolIcon => drawer..drawer + 2,
+            _ => drawer..drawer + 1,
+        };
+        for n in nodes {
+            self.scene.set_node(n as u32, self.scene_cull(n));
+        }
+    }
+
+    /// The symbol pipeline a symbol layer's icon node `i` draws both its
+    /// halves with: along lines if either places along them, with property
+    /// rows if either reads them.
+    fn symbol_kind(&self, i: usize) -> usize {
+        let [icons, text] = [&self.nodes[i], &self.nodes[i + 1]];
+        2 * usize::from(icons.along_line || text.along_line) + usize::from(icons.rows || text.rows)
     }
 
     /// Sets whether the frame's backgrounds cover every pixel: drawn flat
@@ -1664,7 +1782,7 @@ impl Renderer {
     }
 
     fn sync_cull(&mut self) {
-        let cull: Vec<NodeCull> = self.nodes.iter().map(Node::scene_cull).collect();
+        let cull: Vec<NodeCull> = (0..self.nodes.len()).map(|i| self.scene_cull(i)).collect();
         self.scene.set_nodes(&cull);
     }
 
@@ -1712,8 +1830,9 @@ impl Renderer {
         for i in 0..self.nodes.len() {
             // A node that drew keeps its pipelines made for what it draws
             // into (the 3D sample count, the terrain's drape) while it
-            // hides: the bundles record it, and it may show again.
-            if !self.nodes[i].cull.visible && !self.nodes[i].drawn {
+            // hides: the bundles record it, and it may show again. A
+            // symbol layer's text node draws with its icon node.
+            if !self.scene_cull(i).visible && !self.nodes[i].drawn {
                 continue;
             }
             let node = &mut self.nodes[i];
@@ -1772,7 +1891,7 @@ impl Renderer {
                     _ => {}
                 }
             }
-            self.make_for_node(gpu, i, true);
+            self.make_for_node(gpu, self.drawer(i), true);
             let node = &mut self.nodes[i];
             (
                 node.styled,
@@ -1840,14 +1959,14 @@ impl Renderer {
             }
             Family::SymbolIcon | Family::SymbolText => {
                 let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
-                let node = &self.nodes[i];
+                let kind = self.symbol_kind(self.drawer(i));
                 let blend = Some(BlendState::PremultipliedAlpha);
-                let shader = &SYMBOL_SHADERS[usize::from(node.along_line)];
+                let shader = &SYMBOL_SHADERS[kind / 2];
                 let draw = Draw {
-                    rows: node.rows,
+                    rows: kind % 2 == 1,
                     ..Draw::new(shader, &layouts, self.target, blend)
                 };
-                self.symbol_pipelines[node.symbol_kind()].make(gpu, variants, draw);
+                self.symbol_pipelines[kind].make(gpu, variants, draw);
             }
             Family::Raster | Family::Hillshade | Family::ColorRelief => {
                 self.images.make(gpu, family);
@@ -1921,7 +2040,7 @@ impl Renderer {
             }
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(
-                    (self.symbol_pipelines[node.symbol_kind()].wanted(self.full))
+                    (self.symbol_pipelines[self.symbol_kind(self.drawer(i))].wanted(self.full))
                         .map(PipelineId::from),
                 );
             }
@@ -1985,10 +2104,10 @@ impl Renderer {
             .into_iter()
             .flatten()
         {
-            let stride = (self.node_stride / 4) as usize;
+            let stride = (NODE_UNIFORM_SIZE / 4) as usize;
             gpu.write_buffer(
                 self.node_uniforms,
-                nodes.start as u64 * self.node_stride,
+                nodes.start as u64 * NODE_UNIFORM_SIZE,
                 bytemuck::cast_slice(&self.node_words[nodes.start * stride..nodes.end * stride]),
             );
         }
@@ -2755,7 +2874,7 @@ impl Renderer {
             }
             let uniform = BindingResource::Buffer {
                 buffer: uniforms,
-                offset: i as u64 * self.node_stride,
+                offset: i as u64 * NODE_UNIFORM_SIZE,
                 size: Some(NODE_UNIFORM_SIZE),
             };
             let group = match &node.image {
@@ -2865,15 +2984,14 @@ impl Renderer {
             return true;
         }
         if node.family.is_symbol() {
-            let Some(pipeline) = self.symbol_pipelines[node.symbol_kind()].drawn(gpu, self.full)
+            // Its icons and its text, in one list.
+            let Some(pipeline) = self.symbol_pipelines[self.symbol_kind(i)].drawn(gpu, self.full)
             else {
                 return false;
             };
-            let passes = if node.separate_halo {
-                &self.symbol_passes[1..]
-            } else {
-                &self.symbol_passes[..1]
-            };
+            let passes = symbol_passes(node.separate_halo, self.nodes[i + 1].separate_halo)
+                .iter()
+                .map(|&p| self.symbol_passes[p]);
             // The cull's point arguments read as indexed ones: 6 indices
             // into [`QUAD_INDICES`], and the first index, base vertex and
             // first instance all 0, as points always have them.
@@ -2890,7 +3008,7 @@ impl Renderer {
                     offset: 0,
                 },
             ]);
-            for &group in passes {
+            for group in passes {
                 commands.extend([
                     RenderCommand::SetBindGroup { index: 2, group },
                     quads.clone(),

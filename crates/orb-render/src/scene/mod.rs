@@ -1027,6 +1027,22 @@ pub struct NodeCull {
     /// extrusion draws entire from the placement owning it
     /// (`extrusion.wgsl`), so the cull keeps chunks by their own bounds.
     pub unclipped: bool,
+    /// Whose meshes its candidates are.
+    pub meshes: NodeMeshes,
+}
+
+/// Whose meshes a render node's candidates are: a symbol layer's icon node
+/// takes its text node's (the next) after its own, so that one draw draws
+/// both in one order, by sort key, a key's icons then its text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NodeMeshes {
+    /// Its own.
+    #[default]
+    Own,
+    /// Its own (`own`) and the next node's (`next`), which takes none.
+    WithNext { own: bool, next: bool },
+    /// None: the node before takes them.
+    Previous,
 }
 
 /// How a render node draws its visible chunks, which the cull pass
@@ -1527,7 +1543,7 @@ impl Scene {
         if entry.cull == cull {
             return;
         }
-        let shape = |c: &NodeCull| (c.draw, c.target, c.labels);
+        let shape = |c: &NodeCull| (c.draw, c.target, c.labels, c.meshes);
         if shape(&entry.cull) != shape(&cull) {
             self.candidates_dirty = true;
         } else if let Some(row) = self

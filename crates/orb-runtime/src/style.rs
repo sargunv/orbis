@@ -363,8 +363,10 @@ impl StylePlan {
                 elevation,
                 daylight: daylight(orb_style::ICON_PART),
             });
-            // A symbol layer draws its icons, then its text (GL JS
-            // `drawSymbols`).
+            // A symbol layer has a node for its icons and one for its text,
+            // which the icon node draws with its own: all its icons, then
+            // all its text (GL JS `drawSymbols`), or by sort key, a key's
+            // icons then its text (MapLibre Native's segments).
             if layer.ty == LayerType::Symbol {
                 nodes.push(NodePlan {
                     layer: index,

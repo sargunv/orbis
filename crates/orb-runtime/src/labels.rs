@@ -613,7 +613,8 @@ fn layout_size(property: &orb_style::PropertyRef<'_, f64>, tile_zoom: f64) -> f3
 
 /// Chunks of up to `MAX_CHUNK_INSTANCES` quads, in quad order. With `symbol-sort-key` a
 /// chunk holds one key, which the scene orders candidates by across tiles
-/// (GL JS draws sort-key segments across tiles in key order).
+/// and the layer's icons and text, a key's icons before its text (MapLibre
+/// Native draws one list of sort-key segments).
 fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_layout::Chunk> {
     // The ranges run in instance order.
     let key_of = |instance: u32| {
@@ -826,7 +827,12 @@ impl Labels {
         let f = f32::to_bits;
         // Images need filtering when drawn at another pixel ratio, rotated,
         // or as SDFs (GL JS `iconsNeedLinear`).
-        let mesh_flags = u32::from(meta.icons_need_linear || meta.sdf_icons == Some(true));
+        use orb_render::symbol_header::{LINEAR_IMAGES, TEXT};
+        let mesh_flags = if meta.icons_need_linear || meta.sdf_icons == Some(true) {
+            LINEAR_IMAGES
+        } else {
+            0
+        };
         let text_params = [
             f(text_layout),
             f(text_lo),
@@ -834,7 +840,7 @@ impl Labels {
             f(text_layout),
             f(text_lo),
             f(text_hi),
-            0,
+            TEXT,
             0,
         ];
         let icon_params = [

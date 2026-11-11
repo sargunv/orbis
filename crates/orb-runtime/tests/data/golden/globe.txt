@@ -53,20 +53,18 @@ group "node"#1: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10240 size
 module "fill outline"#0: wgsl
 render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline [("feature_rows", 0.0)]; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
 group "node"#2: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10752 size Some(512)
-layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
+layout "symbol pass"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 
 module "symbol"#0: wgsl
 render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol [("feature_rows", 0.0)]; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
-group "node"#3: layout layout "node"#0; 0 buffer "node uniforms"#0 at 42496 size Some(512)
+group "node"#3: layout layout "node"#0; 0 buffer "node uniforms"#0 at 41984 size Some(1024)
 buffer "quad indices"#0: BufferUsages(COPY_DST | INDEX)
 buffer "symbol passes"#0: BufferUsages(COPY_DST | UNIFORM)
-group "symbol pass"#0: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 256 size Some(16)
-group "symbol pass"#1: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 512 size Some(16)
-group "node"#4: layout layout "node"#0; 0 buffer "node uniforms"#0 at 59392 size Some(512)
+group "symbol pass"#0: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 768 size Some(16)
+group "symbol pass"#1: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 1024 size Some(16)
+group "node"#4: layout layout "node"#0; 0 buffer "node uniforms"#0 at 59392 size Some(1024)
 group "symbol pass"#2: layout layout "symbol pass"#0; 0 buffer "symbol passes"#0 at 0 size Some(16)
-group "node"#5: layout layout "node"#0; 0 buffer "node uniforms"#0 at 59904 size Some(512)
-group "node"#6: layout layout "node"#0; 0 buffer "node uniforms"#0 at 60416 size Some(512)
-group "node"#7: layout layout "node"#0; 0 buffer "node uniforms"#0 at 60928 size Some(512)
-group "node"#8: layout layout "node"#0; 0 buffer "node uniforms"#0 at 64000 size Some(512)
+group "node"#5: layout layout "node"#0; 0 buffer "node uniforms"#0 at 60416 size Some(1024)
+group "node"#6: layout layout "node"#0; 0 buffer "node uniforms"#0 at 63488 size Some(1024)
 bundle "layers"#1: [Rgba8Unorm] depth None samples 1
     pipeline render "fill"#0
     group 0 group "scene"#0
@@ -82,9 +80,9 @@ bundle "layers"#1: [Rgba8Unorm] depth None samples 1
     group 1 group "node"#3
     index buffer "quad indices"#0 at 0
     group 2 group "symbol pass"#0
-    draw indexed indirect buffer "draw args"#0 at 2656
+    draw indexed indirect buffer "draw args"#0 at 2624
     group 2 group "symbol pass"#1
-    draw indexed indirect buffer "draw args"#0 at 2656
+    draw indexed indirect buffer "draw args"#0 at 2624
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#4
@@ -94,19 +92,9 @@ bundle "layers"#1: [Rgba8Unorm] depth None samples 1
     group 0 group "scene"#0
     group 1 group "node"#5
     group 2 group "symbol pass"#2
-    draw indexed indirect buffer "draw args"#0 at 3744
+    draw indexed indirect buffer "draw args"#0 at 3776
     pipeline render "symbol"#0
     group 0 group "scene"#0
     group 1 group "node"#6
     group 2 group "symbol pass"#2
-    draw indexed indirect buffer "draw args"#0 at 3776
-    pipeline render "symbol"#0
-    group 0 group "scene"#0
-    group 1 group "node"#7
-    group 2 group "symbol pass"#2
-    draw indexed indirect buffer "draw args"#0 at 3808
-    pipeline render "symbol"#0
-    group 0 group "scene"#0
-    group 1 group "node"#8
-    group 2 group "symbol pass"#2
-    draw indexed indirect buffer "draw args"#0 at 4000
+    draw indexed indirect buffer "draw args"#0 at 3968

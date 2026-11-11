@@ -13,7 +13,7 @@ struct PlanePoint {
 };
 
 fn to_label_plane(tile: Tile, p: vec2<f32>) -> PlanePoint {
-    if (node.flags & PITCH_WITH_MAP) != 0u {
+    if (halves[half].flags & PITCH_WITH_MAP) != 0u {
         return PlanePoint(to_pitched_plane(tile, p), 1.0);
     }
     let c = tile_clip(tile, p);
@@ -23,7 +23,7 @@ fn to_label_plane(tile: Tile, p: vec2<f32>) -> PlanePoint {
 // A label-plane point in clip space (GL JS
 // `projectFromLabelPlaneToClipSpace`), for orientation tests.
 fn label_plane_to_clip(tile: Tile, p: vec2<f32>) -> vec2<f32> {
-    if (node.flags & PITCH_WITH_MAP) != 0u {
+    if (halves[half].flags & PITCH_WITH_MAP) != 0u {
         let c = tile_clip(tile, from_pitched_plane(tile, p));
         return c.xy / c.w;
     }
@@ -182,7 +182,7 @@ fn place_glyph(tile: Tile, base: u32, placed: Placed, anchor: vec2<f32>, offset_
     }
     let t = select(0.0, (abs_offset - distance) / segment_distance, segment_distance > 0.0);
     out.p = start + segment * t;
-    let rotate_to_line = (node.flags & ROTATE_WITH_MAP) != 0u;
+    let rotate_to_line = (halves[half].flags & ROTATE_WITH_MAP) != 0u;
     out.angle = select(0.0, angle + atan2(current.y - previous.y, current.x - previous.x), rotate_to_line);
     out.ok = true;
     return out;
@@ -220,12 +220,12 @@ fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32,
     // The anchor in the label plane: on the screen, from `vs_symbol`'s
     // projection of it (`anchor_clip`).
     var anchor = clip_to_px(anchor_clip);
-    if (node.flags & PITCH_WITH_MAP) != 0u {
+    if (halves[half].flags & PITCH_WITH_MAP) != 0u {
         anchor = to_pitched_plane(tile, placed.anchor);
     }
     let line_offset = placed.line_offset * font_scale;
     let own = glyph_offset(base, quad) * font_scale;
-    let keep_upright = (node.flags & KEEP_UPRIGHT) != 0u;
+    let keep_upright = (halves[half].flags & KEEP_UPRIGHT) != 0u;
     let aspect = frame.viewport.x / frame.viewport.y;
     let several = placed.quad_count > 1u;
     let first_offset = glyph_offset(base, placed.quad_start) * font_scale;

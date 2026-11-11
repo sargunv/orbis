@@ -50,8 +50,15 @@ pub mod symbol_header {
     pub const STATES: usize = 10;
     /// How many blocks of state words there are: a power of two.
     pub const COPIES: usize = 11;
-    /// The rest is the runtime's: sizes (see `symbol.wgsl`).
+    /// The rest is the runtime's: sizes (see `symbol.wgsl`), then flags.
     pub const PARAMS: usize = 12;
+    /// The flags word: [`LINEAR_IMAGES`], [`TEXT`].
+    pub const FLAGS: usize = 18;
+    /// Its images need linear filtering.
+    pub const LINEAR_IMAGES: u32 = 1;
+    /// It is a layer's text, not its icons: the half of its layer's draw
+    /// it reads its paint from.
+    pub const TEXT: u32 = 2;
 }
 
 /// An image's padded rectangle origin and page layer in one word: x and y
