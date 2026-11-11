@@ -137,7 +137,9 @@ orb-web = { path = "crates/orb-web" }
 # planes, which stored it whole (#141). And GLES clipping depth from 0 to 1
 # where the context has clip control (`EXT_clip_control`; naga's GLSL then
 # flips Y only), rather than remapping it into GL's -1 to 1, which spent
-# reversed depth's precision far from the camera (#140).
+# reversed depth's precision far from the camera (#140). And naga's GLSL
+# leaving out `invariant gl_FragCoord` in every GLSL ES fragment shader, not
+# only WebGL 2's: native GLES (ANGLE, Android) rejected the terrain's.
 # Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }

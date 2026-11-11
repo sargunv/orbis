@@ -13,13 +13,12 @@ type Fields<T> = {
   ]: T[K] extends object ? Fields<T[K]> : T[K];
 };
 
-/** What a map on WebGL 2 draws otherwise than on WebGPU: `terrain`
- * isn't drawn (the map is flat); `heatmap-precision`, heatmap density in 8
- * bits, which bands; `depth-precision`, without `EXT_clip_control`
- * (Firefox), far 3D buildings may fight at high pitch. */
-export type Gap = "terrain" | "heatmap-precision" | "depth-precision";
-/** A gap the style uses, and the layers it affects (none for `terrain`,
- * which flattens the whole map). */
+/** What a map on WebGL 2 draws otherwise than on WebGPU:
+ * `heatmap-precision`, without float targets, heatmap density in 8 bits,
+ * which bands; `depth-precision`, without `EXT_clip_control` (Firefox), far
+ * 3D buildings may fight at high pitch. */
+export type Gap = "heatmap-precision" | "depth-precision";
+/** A gap the style uses, and the layers it affects. */
 export interface Degradation {
   gap: Gap;
   layers: string[];
@@ -451,7 +450,7 @@ export interface MapEvents {
    * the loss. */
   restored: { recoveredMs: number };
   /** The map's GPU lacks something the style uses, so `layers` draw
-   * otherwise than on WebGPU (`gap`; `terrain` names none: the map is flat).
+   * otherwise than on WebGPU (`gap`).
    * Once per gap whenever the style or the GPU changes what's degraded. */
   degraded: { gap: Gap; layers: string[] };
   /** Everything the map's GPU draws otherwise than on WebGPU now, whenever

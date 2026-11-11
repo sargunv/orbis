@@ -47,7 +47,6 @@ let map;
 
 /** What each gap does to the map, said briefly. */
 const GAP_NAMES = {
-  terrain: "flat terrain",
   "depth-precision": "coarser 3D depth",
   "heatmap-precision": "8-bit heatmaps",
 };

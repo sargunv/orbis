@@ -121,8 +121,6 @@ pub(crate) fn color_in(c: [f32; 4], linear: bool) -> [f32; 4] {
 /// with; a map reports those its style uses (`MapEvent::Degraded`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Gap {
-    /// No compute: terrain isn't drawn yet, and the map is flat.
-    Terrain,
     /// No blendable `Rgba16Float` target: heatmap density accumulates in 8
     /// bits, which bands and saturates (GL JS's own fallback).
     HeatmapPrecision,
@@ -135,7 +133,6 @@ impl Gap {
     /// Its name, as events and fixtures give it.
     pub fn name(self) -> &'static str {
         match self {
-            Self::Terrain => "terrain",
             Self::HeatmapPrecision => "heatmap-precision",
             Self::DepthPrecision => "depth-precision",
         }
@@ -509,9 +506,6 @@ impl Renderer {
     /// WebGPU, whether or not a style uses it: [`Gap`].
     pub fn gaps_on(caps: &Caps) -> Vec<Gap> {
         let mut gaps = Vec::new();
-        if !caps.compute {
-            gaps.push(Gap::Terrain);
-        }
         if !caps.float_targets {
             gaps.push(Gap::HeatmapPrecision);
         }

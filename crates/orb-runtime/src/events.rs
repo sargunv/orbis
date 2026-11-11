@@ -50,8 +50,7 @@ pub enum MapEvent {
     Restored,
     /// What the renderer's device draws otherwise than WebGPU, whenever a
     /// style revision or renderer changes it: each [`Gap`](crate::Gap) the
-    /// style uses and the layers it affects (none for a gap of the whole
-    /// style, its terrain); empty once nothing is.
+    /// style uses and the layers it affects; empty once nothing is.
     Degraded {
         gaps: Vec<(crate::Gap, Vec<String>)>,
     },

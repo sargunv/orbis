@@ -2446,11 +2446,6 @@ impl Map {
             self.warnings.push(warning);
             wanted = None;
         }
-        // A device that can't draw terrain draws the map flat, and says
-        // so (`MapEvent::Degraded`).
-        if renderer.gaps().contains(&crate::Gap::Terrain) {
-            wanted = None;
-        }
         // Terrain turned off falls flat before it goes.
         let same = match (&mut style.terrain, wanted) {
             (Some(t), Some(index)) => {
@@ -2568,7 +2563,6 @@ impl Map {
         let mut found = Vec::new();
         for &gap in renderer.gaps() {
             let uses = |family: Family| match gap {
-                crate::Gap::Terrain => false,
                 crate::Gap::HeatmapPrecision => family == Family::Heatmap,
                 crate::Gap::DepthPrecision => family == Family::FillExtrusion,
             };
@@ -2577,8 +2571,7 @@ impl Map {
                 .map(|n| plan.style.layers[n.layer].id.clone())
                 .collect();
             layers.dedup();
-            let whole = gap == crate::Gap::Terrain && plan.style.terrain.is_some();
-            if whole || !layers.is_empty() {
+            if !layers.is_empty() {
                 found.push((gap, layers));
             }
         }

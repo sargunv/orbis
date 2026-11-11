@@ -541,9 +541,15 @@ impl Terrain {
                 E::sampler(2, fs, true),
             ],
         });
+        // The atlas's mip regions, as the downsampler keeps them.
+        let regions = if cfg!(cpu_driven) && !gpu.caps().compute {
+            table(1, vs)
+        } else {
+            E::storage(1, vs)
+        };
         let clear_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "drape clear",
-            entries: &[E::uniform(0, vs), E::storage(1, vs)],
+            entries: &[E::uniform(0, vs), regions],
         });
         let mut clear_pipeline = |color| {
             let target = TargetFormat {

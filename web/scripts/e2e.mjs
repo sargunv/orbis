@@ -79,9 +79,10 @@
 //   synchronously: web/deferred.txt defers something first frames run,
 //   and `pnpm coverage --tour --write` refreshes it), then fetch it.
 // - `webgl2`: in a Chromium without WebGPU (#140), the scenario in the
-//   worker and on the page; the Tokyo extract at two views, within 1% of
-//   pixels of WebGPU's; a style given terrain draws flat and reports it
-//   once (`degraded`); and a lost GPU recovers on WebGL 2.
+//   worker and on the page; the Tokyo extract at two views and pitched
+//   terrain, each within 1% of pixels of WebGPU's; extrusions report
+//   `depth-precision` (`degraded`) exactly where `EXT_clip_control` is
+//   missing; and a lost GPU recovers on WebGL 2.
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
@@ -2913,6 +2914,34 @@ async function gestures(browser, server) {
   );
 }
 
+/** Hides `EXT_clip_control` from WebGL 2 in this context and every worker
+ * it starts, before their own scripts run, as Firefox lacks it. */
+function withoutClipControl() {
+  const Context = globalThis.WebGL2RenderingContext;
+  if (Context) {
+    const get = Context.prototype.getExtension;
+    Context.prototype.getExtension = function (name) {
+      return name === "EXT_clip_control" ? null : get.call(this, name);
+    };
+    const list = Context.prototype.getSupportedExtensions;
+    Context.prototype.getSupportedExtensions = function () {
+      return list.call(this)?.filter((n) => n !== "EXT_clip_control") ?? null;
+    };
+  }
+  const Base = globalThis.Worker;
+  if (!Base) return;
+  const patch = `data:text/javascript,${encodeURIComponent(`(${withoutClipControl})()`)}`;
+  globalThis.Worker = class extends Base {
+    constructor(url, options) {
+      const source = `import ${JSON.stringify(patch)}; import ${JSON.stringify(String(url))};`;
+      super(
+        URL.createObjectURL(new Blob([source], { type: "text/javascript" })),
+        options,
+      );
+    }
+  };
+}
+
 /** Patches this context, and every worker it starts, before their own
  * scripts run: `noise` flips the low bit of the red byte of about half the
  * texels a 2D canvas's `getImageData` returns (a DEM's 6.5 km in Mapbox
@@ -2949,8 +2978,9 @@ function perturbReadback(noise, frames) {
   };
 }
 
-async function readback(browser, server) {
-  // A Mapbox-encoded DEM of hills 800 m high, every tile the same.
+/** A Mapbox-encoded DEM of hills 800 m high, every tile the same, served
+ * by `server`: a raster-dem source of it. */
+async function hills(server) {
   const size = 256;
   const dem = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) {
@@ -2961,17 +2991,48 @@ async function readback(browser, server) {
     }
   }
   await writeFile(join(server.styles, "dem.png"), encodePng(size, size, dem));
+  return {
+    type: "raster-dem",
+    tiles: [`${server.url}e2e/styles/dem.png`],
+    tileSize: size,
+    encoding: "mapbox",
+    maxzoom: 14,
+  };
+}
+
+/** `style` drawn by fixture.html (`backend`: its `createMap` option) in
+ * `browser` at 256x256: RGBA bytes, after checking nothing warned. */
+async function fixtureDraw(browser, server, style, backend) {
+  const { page, errors } = await open(browser, { width: 256, height: 256 });
+  try {
+    await page.goto(
+      `${server.url}fixture.html${backend ? `?backend=${backend}` : ""}`,
+    );
+    await page.waitForFunction(() => window.fixture);
+    const { rgba, warnings } = await page.evaluate((r) => window.fixture(r), {
+      native: true,
+      style: JSON.stringify(style),
+      width: 256,
+      height: 256,
+      ratio: 1,
+      max_pitch: 60,
+      cross_source_collisions: true,
+      timeout_ms: 20_000,
+      operations: [],
+    });
+    assert.deepEqual([...warnings, ...errors], [], backend);
+    return Buffer.from(rgba, "base64");
+  } finally {
+    await page.close();
+  }
+}
+
+async function readback(browser, server) {
   const style = {
     version: 8,
     sprite: `${server.url}e2e/data/sprites/ofm`,
     sources: {
-      dem: {
-        type: "raster-dem",
-        tiles: [`${server.url}e2e/styles/dem.png`],
-        tileSize: size,
-        encoding: "mapbox",
-        maxzoom: 14,
-      },
+      dem: await hills(server),
       point: { type: "geojson", data: { type: "Point", coordinates: [0, 0] } },
     },
     terrain: { source: "dem" },
@@ -3091,9 +3152,65 @@ async function webgl2(webgpuBrowser, server) {
       );
     }
 
-    // A style with terrain draws flat, and says so once; its extrusions
-    // say their depth is GL's only where the context has no clip control
-    // (Firefox); a GPU lost recovers on WebGL 2 and draws again.
+    // Terrain draws as on WebGPU: pitched hills under a hillshade and a
+    // box, its drape slots cleared, drawn and mipmapped without compute.
+    const terrain = {
+      version: 8,
+      sources: {
+        dem: await hills(server),
+        box: {
+          type: "geojson",
+          data: {
+            type: "Polygon",
+            coordinates: [
+              [
+                [-0.01, -0.01],
+                [0.01, -0.01],
+                [0.01, 0.01],
+                [-0.01, 0.01],
+                [-0.01, -0.01],
+              ],
+            ],
+          },
+        },
+      },
+      terrain: { source: "dem", exaggeration: 2 },
+      layers: [
+        {
+          id: "background",
+          type: "background",
+          paint: { "background-color": "#ddd" },
+        },
+        { id: "hillshade", type: "hillshade", source: "dem" },
+        {
+          id: "box",
+          type: "fill",
+          source: "box",
+          paint: { "fill-color": "#00f" },
+        },
+      ],
+      center: [0, 0],
+      zoom: 13,
+      pitch: 60,
+    };
+    const [onGpu, onGl] = [
+      await fixtureDraw(webgpuBrowser, server, terrain),
+      await fixtureDraw(browser, server, terrain, "webgl2"),
+    ];
+    let differ = 0;
+    for (let i = 0; i < onGpu.length; i += 4) {
+      const d = [0, 1, 2].map((c) => Math.abs(onGpu[i + c] - onGl[i + c]));
+      if (Math.max(...d) > 24) differ++;
+    }
+    const share = differ / (onGpu.length / 4);
+    assert.ok(share < 0.01, `terrain: ${(share * 100).toFixed(2)}% differ`);
+    console.log(
+      `webgl2: terrain as on WebGPU (${(share * 100).toFixed(2)}% of pixels differ)`,
+    );
+
+    // Extrusions say their depth is GL's only where the context has no
+    // clip control (Firefox); a GPU lost recovers on WebGL 2 and draws
+    // again.
     const { page, errors } = await open(browser, { width: 300, height: 200 });
     await page.goto(`${server.url}scenario.html?backend=webgl2`);
     const lost = await page.evaluate(() =>
@@ -3101,18 +3218,12 @@ async function webgl2(webgpuBrowser, server) {
         const degraded = [];
         map.on("degraded", (d) => degraded.push(d));
         map.edit((tx) =>
-          tx
-            .addSource("dem", {
-              type: "raster-dem",
-              tiles: ["http://127.0.0.1:9/{z}/{x}/{y}.png"],
-            })
-            .setTerrain({ source: "dem" })
-            .addLayer({
-              id: "towers",
-              type: "fill-extrusion",
-              source: "box",
-              filter: ["==", ["get", "none"], 1],
-            }),
+          tx.addLayer({
+            id: "towers",
+            type: "fill-extrusion",
+            source: "box",
+            filter: ["==", ["get", "none"], 1],
+          }),
         );
         await map.once("idle");
         const restored = map.once("restored");
@@ -3127,12 +3238,9 @@ async function webgl2(webgpuBrowser, server) {
       }),
     );
     assert.deepEqual(lost, {
-      degraded: [
-        { gap: "terrain", layers: [] },
-        ...(lost.clipControl
-          ? []
-          : [{ gap: "depth-precision", layers: ["towers"] }]),
-      ],
+      degraded: lost.clipControl
+        ? []
+        : [{ gap: "depth-precision", layers: ["towers"] }],
       backend: "webgl2",
       clipControl: lost.clipControl,
     });
@@ -3140,17 +3248,14 @@ async function webgl2(webgpuBrowser, server) {
     const at =
       ((image.height >> 1) * image.width + (image.width >> 1)) * image.channels;
     assert.deepEqual([...image.pixels.subarray(at, at + 3)], [0, 0, 255]);
-    // The gap's console warning, and the DEM tiles nothing serves.
+    // The gap's console warning, where there is one.
     const unexpected = errors.filter(
-      (e) =>
-        !/draws terrain otherwise than on WebGPU|127\.0\.0\.1:9|ERR_CONNECTION_REFUSED|Failed to load resource/.test(
-          e,
-        ),
+      (e) => !/otherwise than on WebGPU/.test(e),
     );
     assert.deepEqual(unexpected, []);
     await page.close();
     console.log(
-      `webgl2: terrain degrades flat and says so; extrusions ${lost.clipControl ? "keep WebGPU's depth (EXT_clip_control)" : "say their depth is GL's"}; a lost GPU recovers`,
+      `webgl2: extrusions ${lost.clipControl ? "keep WebGPU's depth (EXT_clip_control)" : "say their depth is GL's"}; a lost GPU recovers`,
     );
   } finally {
     await browser.close();
@@ -3310,6 +3415,8 @@ async function boot(webgpuBrowser, server) {
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
   const style = encodeURIComponent(`${server.url}e2e/data/playground.json`);
+  // Without clip control, as in Firefox, extrusions show the badge.
+  await page.addInitScript(`(${withoutClipControl})()`);
   const drawing = (backend) =>
     page.waitForFunction(
       (backend) =>
