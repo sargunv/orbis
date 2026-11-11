@@ -228,15 +228,18 @@ impl GlyphLoads {
             .glyphs
             .files()
             .filter(|_| worker.declares_font(&url));
+        // Shared with the recent ranges, not copied into them.
+        let fetched = fetched.map(Arc::new);
         if let Ok(bytes) = &fetched
             && worker.is_glyph_range(&url)
         {
             let mut recent = self.recent.lock().expect("ranges poisoned");
-            recent.insert(&url, Arc::new(bytes.clone()));
+            recent.insert(&url, Arc::clone(bytes));
         }
         let this = Arc::clone(self);
         let finish = move |prepared: Result<(), String>| {
-            let bytes = prepared.and(fetched.as_deref().map_err(Clone::clone));
+            let fetched = fetched.as_ref().map(|b| b.as_slice());
+            let bytes = prepared.and(fetched.map_err(Clone::clone));
             worker.add_resource(&url, bytes);
             let waiters = this
                 .waiting

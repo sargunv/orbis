@@ -18,6 +18,7 @@ use crate::image;
 use crate::map::LoadedStyle;
 use crate::resident::SourceState;
 use crate::style::{PaintProperty, StylePlan};
+use crate::worker::TileWorker;
 
 /// What a style's paint was last written for.
 #[derive(Debug, Default)]
@@ -42,6 +43,18 @@ pub(crate) struct PaintState {
     /// (`LoadedStyle::drawn`) whose pipelines were asked for ahead of need
     /// ([`prewarm`]).
     prewarmed: Option<(u64, usize, Vec<u32>)>,
+    /// The style's plan with its camera reads resolved, the last time
+    /// they were ([`camera_plan`]).
+    camera_plan: Option<CameraPlan>,
+}
+
+/// A plan of the worker `of` with its camera reads resolved at `read`
+/// ([`read_by`]).
+#[derive(Debug)]
+struct CameraPlan {
+    of: std::sync::Weak<TileWorker>,
+    read: CameraInputs,
+    plan: Arc<StylePlan>,
 }
 
 impl PaintState {
@@ -105,6 +118,37 @@ pub(crate) fn at_camera(plan: &StylePlan, camera: CameraInputs) -> Option<StyleP
     })
 }
 
+/// [`at_camera`] of `plan`: kept in `style`'s paint state while the camera
+/// moves within what the plan reads, when `plan` is its worker's (an
+/// overlay's is made each frame).
+fn camera_plan(
+    style: &mut LoadedStyle,
+    plan: &StylePlan,
+    camera: CameraInputs,
+) -> Option<Arc<StylePlan>> {
+    if !std::ptr::eq(plan, style.worker.plan()) {
+        return at_camera(plan, camera).map(Arc::new);
+    }
+    let read = read_by(plan, camera);
+    let of = Arc::downgrade(&style.worker);
+    let cache = &mut style.paint.camera_plan;
+    if let Some(c) = cache.as_ref()
+        && c.of.ptr_eq(&of)
+        && c.read == read
+    {
+        return Some(Arc::clone(&c.plan));
+    }
+    // A plan that reads no ground resolution folds alike at any.
+    let plan = Arc::new(at_camera(plan, camera)?);
+    let kept = Arc::clone(&plan);
+    *cache = Some(CameraPlan {
+        of,
+        read,
+        plan: kept,
+    });
+    Some(plan)
+}
+
 /// Writes this frame's node paint: at `zoom` and `camera`, with
 /// paint transitions eased in at `now`, and feature state as of frame time
 /// `time` (the shaders'). Returns whether the pattern and dash cross-fade
@@ -125,13 +169,13 @@ pub(crate) fn frame(
     }
     // Paint that reads the camera is written again as it moves.
     let bearing = inputs.bearing;
-    let camera = at_camera(plan, inputs);
+    let camera = camera_plan(style, plan, inputs);
     let read = read_by(plan, inputs);
     if camera.is_some() && style.paint.camera != Some(read) {
         style.paint.camera = Some(read);
         style.paint.invalidate();
     }
-    let plan = camera.as_ref().unwrap_or(plan);
+    let plan = camera.as_deref().unwrap_or(plan);
     let crossfade = style.paint.zoom_history.update(zoom, now);
     let fading = crossfade.mix < 1.0
         && plan.nodes.iter().any(|n| {
@@ -198,8 +242,8 @@ pub(crate) fn prewarm(
     let worker = Arc::clone(&style.worker);
     let plan = worker.plan();
     style.paint.prewarmed = Some(prewarm_key(renderer, style));
-    let camera = at_camera(plan, inputs);
-    let plan = camera.as_ref().unwrap_or(plan);
+    let camera = camera_plan(style, plan, inputs);
+    let plan = camera.as_deref().unwrap_or(plan);
     let crossfade = Crossfade {
         from_scale: 1.0,
         mix: 1.0,
@@ -267,8 +311,8 @@ pub(crate) fn drape(
     atlas: &mut ImageAtlas,
 ) {
     let bearing = inputs.bearing;
-    let camera = at_camera(plan, inputs);
-    let plan = camera.as_ref().unwrap_or(plan);
+    let camera = camera_plan(style, plan, inputs);
+    let plan = camera.as_deref().unwrap_or(plan);
     let drape = &mut style.paint.drape;
     if drape.generation != Some(generation) || drape.stacks.len() != stacks {
         // A new atlas, or one whose slots all draw again.

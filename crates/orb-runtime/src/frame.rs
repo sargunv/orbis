@@ -438,30 +438,34 @@ impl Map {
         let placed = &mut style.placed[index];
         // Labels past a Web Mercator tile go on exactly on a globe.
         let on_mercator = view.globe().is_some() && *tms.projection() == mercator_projection();
+        let mut wraps: Vec<i32> = Vec::new();
         for (&tile, draws) in &rows {
             let resident = pyramid.get(tile).expect("drawn tiles are ready");
             let globe = view
                 .globe()
                 .and_then(|_| self.globe_warps.series(tms, tile));
             // Each world copy places its labels, as GL JS's wrapped tiles do.
-            for symbols in &resident.symbols {
-                let mut wraps: Vec<i32> = draws.iter().map(|d| d.wrap).collect();
+            if !resident.symbols.is_empty() {
+                wraps.clear();
+                wraps.extend(draws.iter().map(|d| d.wrap));
                 wraps.sort_unstable();
                 wraps.dedup();
-                for wrap in wraps {
-                    let to_world = match &resident.series {
-                        Some(series) => series.linear(orb_symbol::EXTENT),
-                        None => tms.data_to_world(tile, orb_symbol::EXTENT as u32),
-                    };
-                    style.symbol_tiles.push(crate::labels::SymbolTile {
-                        to_world,
-                        layer: symbols.layer,
-                        bucket: symbols.bucket,
-                        tile,
-                        wrap,
-                        mercator: on_mercator && resident.series.is_none(),
-                        globe: globe.clone(),
-                    });
+                let to_world = match &resident.series {
+                    Some(series) => series.linear(orb_symbol::EXTENT),
+                    None => tms.data_to_world(tile, orb_symbol::EXTENT as u32),
+                };
+                for symbols in &resident.symbols {
+                    for &wrap in &wraps {
+                        style.symbol_tiles.push(crate::labels::SymbolTile {
+                            to_world,
+                            layer: symbols.layer,
+                            bucket: symbols.bucket,
+                            tile,
+                            wrap,
+                            mercator: on_mercator && resident.series.is_none(),
+                            globe: globe.clone(),
+                        });
+                    }
                 }
             }
             let frame = resident
