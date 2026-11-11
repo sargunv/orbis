@@ -696,6 +696,10 @@ pub(crate) fn pump(state: &mut State) {
                 token: 0,
             });
         }
+        // Demands that wait for the map's next update, set aside so the
+        // ones behind them run: a static or tile map's next update comes
+        // only with its next still image, and a barrier ends the wait.
+        let mut waiting = VecDeque::new();
         while let Some(demand) = entry.demands.pop_front() {
             if entry.handle.failure.lock().unwrap().is_some() {
                 entry.handle.push(result(
@@ -736,8 +740,8 @@ pub(crate) fn pump(state: &mut State) {
             }
             if held || !(force || update) {
                 if demand.flags & MLN_FRAME_DEMAND_WAIT_FOR_UPDATE != 0 {
-                    entry.demands.push_front(demand);
-                    break;
+                    waiting.push_back(demand);
+                    continue;
                 }
                 entry.handle.push(result(
                     demand.token,
@@ -813,6 +817,7 @@ pub(crate) fn pump(state: &mut State) {
                 rendered.push((entry.map, needs_repaint, full, stats));
             }
         }
+        entry.demands = waiting;
         entry.sync_state();
         // The host draws at its next refresh when told there's something new.
         if entry.target.is_some()
