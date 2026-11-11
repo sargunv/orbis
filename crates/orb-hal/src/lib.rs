@@ -201,8 +201,9 @@ pub struct Caps {
     pub float_targets: bool,
     /// Many direct draws in one call (`WEBGL_multi_draw`).
     pub multi_draw: bool,
-    /// Clip-space depth from 0 to 1 as the shaders write it. wgpu's GL
-    /// back end remaps it into GL's −1 to 1 (`2z − w`), which spends
+    /// Clip-space depth from 0 to 1 as the shaders write it. On a GL
+    /// context without clip control (`EXT_clip_control`: Firefox), wgpu's
+    /// GL back end remaps it into GL's −1 to 1 (`2z − w`), which spends
     /// reversed Z's precision far from the camera.
     pub zero_to_one_depth: bool,
 }

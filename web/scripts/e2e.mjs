@@ -3091,8 +3091,9 @@ async function webgl2(webgpuBrowser, server) {
       );
     }
 
-    // A style with terrain draws flat, and says so once; a GPU lost
-    // recovers on WebGL 2 and draws again.
+    // A style with terrain draws flat, and says so once; its extrusions
+    // say their depth is GL's only where the context has no clip control
+    // (Firefox); a GPU lost recovers on WebGL 2 and draws again.
     const { page, errors } = await open(browser, { width: 300, height: 200 });
     await page.goto(`${server.url}scenario.html?backend=webgl2`);
     const lost = await page.evaluate(() =>
@@ -3105,19 +3106,35 @@ async function webgl2(webgpuBrowser, server) {
               type: "raster-dem",
               tiles: ["http://127.0.0.1:9/{z}/{x}/{y}.png"],
             })
-            .setTerrain({ source: "dem" }),
+            .setTerrain({ source: "dem" })
+            .addLayer({
+              id: "towers",
+              type: "fill-extrusion",
+              source: "box",
+              filter: ["==", ["get", "none"], 1],
+            }),
         );
         await map.once("idle");
         const restored = map.once("restored");
         map.loseDevice();
         await restored;
         await map.once("idle");
-        return { degraded, backend: map.backend };
+        const clipControl = !!document
+          .createElement("canvas")
+          .getContext("webgl2")
+          ?.getExtension("EXT_clip_control");
+        return { degraded, backend: map.backend, clipControl };
       }),
     );
     assert.deepEqual(lost, {
-      degraded: [{ gap: "terrain", layers: [] }],
+      degraded: [
+        { gap: "terrain", layers: [] },
+        ...(lost.clipControl
+          ? []
+          : [{ gap: "depth-precision", layers: ["towers"] }]),
+      ],
       backend: "webgl2",
+      clipControl: lost.clipControl,
     });
     const image = decodePng(await page.locator("#map").screenshot());
     const at =
@@ -3133,7 +3150,7 @@ async function webgl2(webgpuBrowser, server) {
     assert.deepEqual(unexpected, []);
     await page.close();
     console.log(
-      "webgl2: terrain degrades flat and says so; a lost GPU recovers",
+      `webgl2: terrain degrades flat and says so; extrusions ${lost.clipControl ? "keep WebGPU's depth (EXT_clip_control)" : "say their depth is GL's"}; a lost GPU recovers`,
     );
   } finally {
     await browser.close();

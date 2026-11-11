@@ -15,8 +15,8 @@ type Fields<T> = {
 
 /** What a map on WebGL 2 draws otherwise than on WebGPU: `terrain`
  * isn't drawn (the map is flat); `heatmap-precision`, heatmap density in 8
- * bits, which bands; `depth-precision`, far 3D buildings may fight at high
- * pitch. */
+ * bits, which bands; `depth-precision`, without `EXT_clip_control`
+ * (Firefox), far 3D buildings may fight at high pitch. */
 export type Gap = "terrain" | "heatmap-precision" | "depth-precision";
 /** A gap the style uses, and the layers it affects (none for `terrain`,
  * which flattens the whole map). */

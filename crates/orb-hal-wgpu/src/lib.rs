@@ -304,6 +304,23 @@ fn platform_texture_usages() -> wgpu::TextureUsages {
     }
 }
 
+/// Whether `device`, a GL one, clips depth from 0 to 1 as the shaders
+/// write it (`EXT_clip_control`; Chrome, Safari and ANGLE have it, Firefox
+/// doesn't), rather than wgpu remapping it into GL's -1 to 1.
+#[allow(unsafe_code)]
+#[cfg_attr(
+    not(any(feature = "gl", target_os = "android")),
+    allow(unused_variables)
+)]
+fn gl_clips_zero_to_one(device: &wgpu::Device) -> bool {
+    // SAFETY: only reads a flag of the device's.
+    #[cfg(any(feature = "gl", target_os = "android"))]
+    return unsafe { device.as_hal::<wgpu::hal::api::Gles>() }
+        .is_some_and(|d| d.zero_to_one_depth());
+    #[cfg(not(any(feature = "gl", target_os = "android")))]
+    false
+}
+
 impl WgpuGpu {
     /// A view of `levels` of `texture`'s, in `format` or the texture's.
     fn view_of(
@@ -362,7 +379,7 @@ impl WgpuGpu {
             // adapter (WebGL 2 has them with `EXT_color_buffer_float`).
             float_targets: cfg!(webgpu),
             multi_draw: false,
-            zero_to_one_depth: !gl,
+            zero_to_one_depth: !gl || gl_clips_zero_to_one(&device),
         };
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut gpu = Self {

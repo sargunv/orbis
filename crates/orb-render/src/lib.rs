@@ -126,8 +126,8 @@ pub enum Gap {
     /// No blendable `Rgba16Float` target: heatmap density accumulates in 8
     /// bits, which bands and saturates (GL JS's own fallback).
     HeatmapPrecision,
-    /// Depth remapped from 0–1 into GL's −1–1: far 3D buildings may fight
-    /// at high pitch.
+    /// Depth remapped from 0–1 into GL's −1–1, where the context has no
+    /// clip control (Firefox): far 3D buildings may fight at high pitch.
     DepthPrecision,
 }
 
