@@ -352,6 +352,15 @@ export class OrbisMap {
   trap(): void {
     this.#send(this.#link.call("trap"));
   }
+  /** For test runners: frames show `time` (milliseconds on the page's
+   * clock, as `performance.now()` gives it) instead of their animation
+   * frame's, never earlier than the last frame, as under fake timers:
+   * transitions and fades move only when the clock does. Without `time`,
+   * frames follow the animation frames again. Resolves once the map has
+   * it, so every frame it reports after that shows `time`. */
+  setFrameClock(time?: number): Promise<void> {
+    return this.#link.call("setFrameClock", time);
+  }
 
   /** The last frame's counters. */
   get stats(): FrameStats | undefined {

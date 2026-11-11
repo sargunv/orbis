@@ -201,6 +201,8 @@ export class Engine {
   #fallback: ReturnType<typeof setTimeout> | undefined;
   /** The last frame's time: a frame never goes back before it. */
   #shown = -Infinity;
+  /** The time a test runner's clock gives frames, on this thread's clock. */
+  #frameClock: number | undefined;
   /** The last animation frame's time, and the display's frame interval. */
   #vsync = 0;
   #interval = 1000 / 60;
@@ -634,6 +636,10 @@ export class Engine {
   trap(): void {
     this.#core.trap();
   }
+  /** Frames show `time`, on the page's clock, until another call. */
+  setFrameClock(time?: number): void {
+    this.#frameClock = time === undefined ? undefined : time + this.#clock;
+  }
 
   /** Stops drawing and releases the map's workers. */
   remove(): void {
@@ -688,7 +694,7 @@ export class Engine {
     // A frame input drew can come after an animation frame began and
     // before its callback ran, with a later time than that callback's:
     // animations and fades must not step back.
-    now = this.#shown = Math.max(now, this.#shown);
+    now = this.#shown = Math.max(this.#frameClock ?? now, this.#shown);
     const frame = this.#core.render(now);
     if (frame.lost) {
       frame.free();
