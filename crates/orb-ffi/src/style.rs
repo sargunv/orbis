@@ -807,6 +807,12 @@ fn slot(layer_id: &str, json: &Json, name: &str) -> Result<(Slot, bool)> {
     if let Some(p) = PropertyId::find(ty, true, name) {
         return Ok((Slot::Paint, p.prop().ty == PropertyType::Color));
     }
+    // A paint property's own transition sits beside it.
+    if let Some(property) = name.strip_suffix("-transition")
+        && PropertyId::find(ty, true, property).is_some()
+    {
+        return Ok((Slot::Paint, false));
+    }
     if let Some(p) = PropertyId::find(ty, false, name) {
         return Ok((Slot::Layout, p.prop().ty == PropertyType::Color));
     }
@@ -1954,10 +1960,14 @@ pub unsafe extern "C" fn mln_map_set_feature_state(
                     s.id.clone().unwrap_or_default(),
                 );
                 let kept = entry.style.feature_states.entry(key).or_default();
+                let mut changed = false;
                 for (k, v) in &members {
+                    changed |= !kept.iter().any(|(old, value)| old == k && value == v);
                     kept.retain(|(old, _)| old != k);
                     kept.push((k.clone(), v.clone()));
                 }
+                // State the features already hold draws nothing new.
+                entry.unchanged = !changed;
                 push_state(
                     entry,
                     Op::SetFeatureState {
@@ -2013,6 +2023,10 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
             post(map, completion, false, true, move |state, id| {
                 let entry = entry(state, id);
                 let states = &mut entry.style.feature_states;
+                let count = |states: &std::collections::BTreeMap<FeatureKey, FeatureState>| {
+                    states.values().map(Vec::len).sum::<usize>()
+                };
+                let before = count(states);
                 match (&s.id, &s.key) {
                     (Some(fid), Some(key)) => {
                         let k = (s.source.clone(), s.layer.clone(), fid.clone());
@@ -2032,6 +2046,8 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
                         });
                     }
                 }
+                // Removing state no feature holds draws nothing new.
+                entry.unchanged = count(&entry.style.feature_states) == before;
                 push_state(
                     entry,
                     Op::RemoveFeatureState {

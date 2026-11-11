@@ -179,9 +179,21 @@ impl State {
         result: Result<Value>,
         generation: u64,
     ) {
+        self.complete_update(completion, result, generation, generation);
+    }
+
+    /// As [`complete`](Self::complete), for a map command whose change
+    /// the render update `render_update` first shows.
+    pub(crate) fn complete_update(
+        &mut self,
+        completion: Option<Completion>,
+        result: Result<Value>,
+        generation: u64,
+        render_update: u64,
+    ) {
         self.settle();
         match (completion, result) {
-            (Some(c), result) => c.complete(result, generation),
+            (Some(c), result) => c.complete_update(result, generation, render_update),
             // A command posted without a completion has nobody to tell of
             // its failure but the log, as in Native.
             (None, Err(failure)) => crate::logging::log(
@@ -210,7 +222,11 @@ pub(crate) enum Payload {
     None,
     CameraChange(mln_camera_change_mode, mln_camera_change_source),
     LoadingFailed(mln_map_load_error),
-    RenderFrame { needs_repaint: bool },
+    RenderFrame {
+        needs_repaint: bool,
+        full: bool,
+        stats: mln_rendering_stats,
+    },
     StyleImage(String),
 }
 
@@ -271,13 +287,22 @@ fn c_event(e: &mut Event) -> mln_runtime_event {
             event.payload_type = MLN_RUNTIME_EVENT_PAYLOAD_LOADING_FAILED;
             event.payload.loading_failed = mln_runtime_event_loading_failed { error: *error };
         }
-        Payload::RenderFrame { needs_repaint } => {
+        Payload::RenderFrame {
+            needs_repaint,
+            full,
+            stats,
+        } => {
             event.payload_type = MLN_RUNTIME_EVENT_PAYLOAD_RENDER_FRAME;
-            // SAFETY: plain C data.
-            let mut frame: mln_runtime_event_render_frame = unsafe { std::mem::zeroed() };
-            frame.mode = MLN_RENDER_MODE_FULL;
-            frame.needs_repaint = *needs_repaint;
-            event.payload.render_frame = frame;
+            event.payload.render_frame = mln_runtime_event_render_frame {
+                mode: if *full {
+                    MLN_RENDER_MODE_FULL
+                } else {
+                    MLN_RENDER_MODE_PARTIAL
+                },
+                needs_repaint: *needs_repaint,
+                placement_changed: false,
+                stats: *stats,
+            };
         }
         Payload::StyleImage(id) => {
             event.payload_type = MLN_RUNTIME_EVENT_PAYLOAD_STYLE_IMAGE;

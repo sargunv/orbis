@@ -522,46 +522,6 @@ pub unsafe extern "C" fn mln_render_session_acquire_frame(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_acquire_frame") }
 }
 
-/// `mln_render_session_barrier`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_barrier(
-    session: mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_barrier") }
-}
-
-/// `mln_render_session_clear_data`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_clear_data(
-    session: mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_clear_data") }
-}
-
-/// `mln_render_session_dump_debug_logs`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_dump_debug_logs(
-    session: mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_dump_debug_logs") }
-}
-
-/// `mln_render_session_reduce_memory_use`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_reduce_memory_use(
-    session: mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_reduce_memory_use") }
-}
-
 /// `mln_render_session_service_driver_work`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_render_session_service_driver_work(
@@ -1300,6 +1260,14 @@ const _: () = {
         crate::session::mln_render_frame_batch_release,
     ];
     let _ = [
+        crate::sys::mln_render_session_barrier,
+        crate::session::mln_render_session_barrier,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_clear_data,
+        crate::session::mln_render_session_clear_data,
+    ];
+    let _ = [
         crate::sys::mln_render_session_demand_frame,
         crate::session::mln_render_session_demand_frame,
     ];
@@ -1314,6 +1282,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_render_session_drain_frame_results,
         crate::session::mln_render_session_drain_frame_results,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_dump_debug_logs,
+        crate::session::mln_render_session_dump_debug_logs,
     ];
     let _ = [
         crate::sys::mln_render_session_get_capabilities,
@@ -1350,6 +1322,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_render_session_read_texture,
         crate::session::mln_render_session_read_texture,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_reduce_memory_use,
+        crate::session::mln_render_session_reduce_memory_use,
     ];
     let _ = [
         crate::sys::mln_render_session_release,

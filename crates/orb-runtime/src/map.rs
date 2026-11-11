@@ -551,6 +551,9 @@ pub struct Map {
     pub(crate) capacity: SceneCapacity,
     /// The GPU memory budget.
     pub(crate) budget: u64,
+    /// The next frame lets go of every cached tile out of view
+    /// ([`Map::release_cached_tiles`]).
+    pub(crate) release_cached: bool,
     /// The last style id given to the jobs.
     pub(crate) style_id: u64,
     /// Counts style revisions: every new style and every edit.
@@ -741,6 +744,7 @@ impl Map {
             nodes_stale: false,
             capacity: SceneCapacity::default(),
             budget: orb_render::DESKTOP_BUDGET,
+            release_cached: false,
             style_id: 0,
             version: 0,
             pending: BTreeMap::new(),
@@ -912,6 +916,21 @@ impl Map {
         if let Some(terrain) = &mut style.terrain {
             terrain.pyramid.retry_failed(f64::INFINITY);
         }
+        (self.services.wake)();
+    }
+
+    /// Lets go of the tiles kept out of view at the next frame, as a
+    /// platform's low-memory warning asks: they load again when the view
+    /// needs them.
+    pub fn release_cached_tiles(&mut self) {
+        self.release_cached = true;
+        (self.services.wake)();
+    }
+
+    /// Drops every loaded tile of the style, which load again for the next
+    /// frames, as a map's data is cleared.
+    pub fn clear_tiles(&mut self) {
+        self.clear_style_tiles();
         (self.services.wake)();
     }
 

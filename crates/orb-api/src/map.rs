@@ -287,6 +287,19 @@ impl Map {
         self.dirty = true;
     }
 
+    /// Lets go of the tiles cached out of view at the next frame; they
+    /// load again when the view needs them. For low-memory warnings.
+    pub fn release_cached_tiles(&mut self) {
+        self.map.release_cached_tiles();
+        self.dirty = true;
+    }
+
+    /// Drops every loaded tile, which load again for the next frames.
+    pub fn clear_tiles(&mut self) {
+        self.map.clear_tiles();
+        self.dirty = true;
+    }
+
     /// Loads a style from a URL (`http(s)://`, `file://`, `pmtiles://`).
     pub fn load_style_url(&mut self, url: &str) {
         self.map.load_style_url(url);

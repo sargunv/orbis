@@ -261,6 +261,17 @@ impl Completion {
 
     /// Delivers the result: `generation` is the map generation that shows it.
     pub(crate) fn complete(self, result: Result<Value>, generation: u64) {
+        self.complete_update(result, generation, generation);
+    }
+
+    /// Delivers the result of a map command whose change the render update
+    /// `render_update` first shows.
+    pub(crate) fn complete_update(
+        self,
+        result: Result<Value>,
+        generation: u64,
+        render_update: u64,
+    ) {
         let Completion {
             callback,
             user_data,
@@ -315,7 +326,7 @@ impl Completion {
                         status,
                         value_size: value_size as u32,
                         generation,
-                        render_update_generation: generation,
+                        render_update_generation: render_update,
                         diagnostic,
                         value,
                         value_count,

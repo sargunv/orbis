@@ -608,7 +608,11 @@ impl Map {
         let Some(style) = &mut self.style else {
             return;
         };
-        let budget = self.budget / 4;
+        let budget = if std::mem::take(&mut self.release_cached) {
+            0
+        } else {
+            self.budget / 4
+        };
         // (age, source, tile, cost), oldest first.
         let mut unused: Vec<(u64, usize, TileIndex, u64)> = Vec::new();
         for (index, source) in style.sources.iter().enumerate() {

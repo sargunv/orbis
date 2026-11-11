@@ -111,7 +111,16 @@ pub(crate) struct MapEntry {
     pub(crate) session: Option<u64>,
     /// Grows with each change to the map's state.
     pub(crate) generation: u64,
+    /// The render updates the map has published for its session: each
+    /// command that changes what it draws publishes one, and with a session
+    /// so does each change the map makes on its own (data arriving, an
+    /// animation's next step).
     pub(crate) render_update_generation: u64,
+    /// A change inside a command group, which its outermost end publishes.
+    pub(crate) held_update: bool,
+    /// Set by a command's job that changed nothing the map draws, so it
+    /// publishes no render update.
+    pub(crate) unchanged: bool,
     /// Data arrived since the map last took it in.
     woken: Arc<AtomicBool>,
     /// A style or source change awaits its loads, for LOADING_FINISHED.
@@ -209,6 +218,21 @@ impl MapEntry {
             .snapshot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snapshot);
+    }
+
+    /// Publishes a render update for a change, or holds it for the end of
+    /// the open command group.
+    pub(crate) fn update(&mut self) {
+        if self.groups > 0 {
+            self.held_update = true;
+        } else {
+            self.render_update_generation += 1;
+        }
+    }
+
+    /// The render update that first shows the changes made so far.
+    pub(crate) fn next_update(&self) -> u64 {
+        self.render_update_generation + u64::from(self.held_update)
     }
 
     /// Marks whether a session draws the map, on the caller's side.
@@ -429,15 +453,21 @@ pub(crate) unsafe fn post(
                 "the map isn't made: its creation failed or it was released",
             ))
         };
-        if changes
-            && result.is_ok()
-            && let Some(entry) = state.maps.get_mut(&id)
-        {
-            entry.generation += 1;
+        if let Some(entry) = state.maps.get_mut(&id) {
+            let unchanged = std::mem::take(&mut entry.unchanged);
+            if changes && result.is_ok() {
+                entry.generation += 1;
+                if !unchanged {
+                    entry.update();
+                }
+            }
         }
         state.settle();
-        let generation = state.maps.get(&id).map_or(0, |m| m.generation);
-        state.complete(completion, result, generation);
+        let (generation, update) = state
+            .maps
+            .get(&id)
+            .map_or((0, 0), |m| (m.generation, m.next_update()));
+        state.complete_update(completion, result, generation, update);
     })
 }
 
@@ -539,6 +569,8 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         session: None,
                         generation: 1,
                         render_update_generation: 0,
+                        held_update: false,
+                        unchanged: false,
                         woken,
                         loading: false,
                         style_loaded: false,
@@ -730,6 +762,7 @@ command!(
     true,
     |state, id| {
         Ok(job(move |entry| {
+            entry.unchanged = entry.debug_flags == flags;
             entry.debug_flags = flags;
             Ok(())
         }))
@@ -742,6 +775,7 @@ command!(
     true,
     |state, id| {
         Ok(job(move |entry| {
+            entry.unchanged = entry.stats_view == enabled;
             entry.stats_view = enabled;
             Ok(())
         }))
@@ -771,6 +805,7 @@ command!(
         check_mask(mask)?;
         Ok(job(move |entry| {
             entry.event_mask = mask;
+            entry.unchanged = true;
             Ok(())
         }))
     }
@@ -785,6 +820,8 @@ command!(
             return Err(Failure::argument("the size is empty"));
         }
         Ok(job(move |entry| {
+            entry.unchanged =
+                (entry.extent.width, entry.extent.height) == (size.width, size.height);
             entry.extent.width = size.width;
             entry.extent.height = size.height;
             entry
@@ -815,6 +852,11 @@ command!(mln_map_end_command_group(), false, true, |state, id| {
     Ok(job(|entry| {
         entry.groups = (entry.groups.checked_sub(1))
             .ok_or_else(|| Failure::state("the map has no open command group"))?;
+        // The outermost end publishes what the groups held, as one update.
+        entry.unchanged = true;
+        if entry.groups == 0 && std::mem::take(&mut entry.held_update) {
+            entry.render_update_generation += 1;
+        }
         Ok(())
     }))
 });
@@ -841,7 +883,8 @@ command!(
             return Err(Failure::argument("lod_mode names no mode"));
         }
         Ok(job(move |entry| {
-            let mut lod = entry.map.tile_lod();
+            let before = (entry.map.tile_lod(), entry.prefetch_zoom_delta);
+            let mut lod = before.0;
             let has = |bit| o.fields & bit != 0;
             if has(MLN_MAP_TILE_OPTION_PREFETCH_ZOOM_DELTA) {
                 entry.prefetch_zoom_delta = o.prefetch_zoom_delta;
@@ -865,7 +908,10 @@ command!(
                     orb_api::TileLodMode::Default
                 };
             }
-            entry.map.set_tile_lod(lod);
+            entry.unchanged = (lod, entry.prefetch_zoom_delta) == before;
+            if lod != before.0 {
+                entry.map.set_tile_lod(lod);
+            }
             Ok(())
         }))
     }

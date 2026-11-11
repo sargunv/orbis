@@ -59,9 +59,29 @@ impl SessionHandle {
         }
     }
 
+    /// Posts a change to the session's state: its generation grows once
+    /// the change is made.
     fn command(
         &self,
         completion: Option<Completion>,
+        job: impl FnOnce(&mut State, u64) -> Result<Value> + Send + 'static,
+    ) -> Result {
+        self.post(completion, true, job)
+    }
+
+    /// Posts work that leaves the session's state as it is.
+    fn operation(
+        &self,
+        completion: Option<Completion>,
+        job: impl FnOnce(&mut State, u64) -> Result<Value> + Send + 'static,
+    ) -> Result {
+        self.post(completion, false, job)
+    }
+
+    fn post(
+        &self,
+        completion: Option<Completion>,
+        changes: bool,
         job: impl FnOnce(&mut State, u64) -> Result<Value> + Send + 'static,
     ) -> Result {
         let id = self.id();
@@ -71,7 +91,8 @@ impl SessionHandle {
             } else {
                 Err(Failure::state("the session was released"))
             };
-            if result.is_ok()
+            if changes
+                && result.is_ok()
                 && let Some(entry) = state.sessions.get_mut(&id)
             {
                 entry.generation += 1;
@@ -93,6 +114,12 @@ pub(crate) struct SessionEntry {
     redraw_signaled: bool,
     pacer: Option<Arc<FramePacer>>,
     frame_generation: u64,
+    /// The render update of the map that the session drew last, and what
+    /// that frame showed.
+    drawn_update: u64,
+    shown: Option<Shown>,
+    /// Draw calls of every frame the session drew.
+    draws: i64,
     /// Grows with each change to the session's state.
     generation: u64,
     /// The last still image, which a readback returns.
@@ -226,6 +253,18 @@ unsafe fn attach(
             "Orbis sessions render on the runtime's thread (MLN_RENDER_DRIVER_CORE_WORKER)",
         ));
     }
+    let lock = &options.queue_lock;
+    if lock.lock.is_some() != lock.unlock.is_some() {
+        return Err(Failure::argument(
+            "options.queue_lock sets one of lock and unlock: set both or neither",
+        ));
+    }
+    if lock.lock.is_some() {
+        return Err(Failure::unsupported(
+            "Orbis sessions submit to their runtime's own queue, which no caller shares",
+        ));
+    }
+    physical(logical, 1.0)?;
     if options.producer_sync_kinds != 0
         && options.producer_sync_kinds & MLN_GPU_SYNC_KIND_FLAG_CPU_COMPLETE == 0
     {
@@ -307,6 +346,9 @@ unsafe fn attach(
                     redraw_signaled: false,
                     pacer: None,
                     frame_generation: 0,
+                    drawn_update: 0,
+                    shown: None,
+                    draws: 0,
                     generation: 1,
                     still: None,
                 };
@@ -538,11 +580,23 @@ fn queue_demand(entry: &mut SessionEntry, demand: mln_frame_demand) {
     entry.demands.push_back(demand);
 }
 
+/// What a rendered frame shows.
+#[derive(Clone, Copy)]
+struct Shown {
+    view: mln_map_view,
+    /// The map's generation, and the render update the frame draws.
+    generation: u64,
+    update: u64,
+    needs_repaint: bool,
+    /// Everything the view needs had loaded.
+    full: bool,
+}
+
 fn result(
     token: u64,
     disposition: mln_render_result,
     frame_generation: u64,
-    view: Option<(mln_map_view, u64, bool)>,
+    shown: Option<Shown>,
 ) -> mln_render_frame_result {
     let mut r = mln_render_frame_result {
         size: std::mem::size_of::<mln_render_frame_result>() as u32,
@@ -552,11 +606,14 @@ fn result(
         mode: MLN_RENDER_MODE_FULL,
         ..Default::default()
     };
-    if let Some((view, generation, needs_repaint)) = view {
-        r.view = view;
-        r.generation = generation;
-        r.map_update_generation = generation;
-        r.needs_repaint = needs_repaint;
+    if let Some(shown) = shown {
+        r.view = shown.view;
+        r.generation = shown.generation;
+        r.map_update_generation = shown.update;
+        r.needs_repaint = shown.needs_repaint;
+        if !shown.full {
+            r.mode = MLN_RENDER_MODE_PARTIAL;
+        }
     }
     r
 }
@@ -617,6 +674,17 @@ pub(crate) fn pump(state: &mut State) {
         if !held && entry.target.is_some() && entry.handle.failed().is_ok() {
             stills.extend(step_still(map, entry));
         }
+        // A continuous map with something new to draw that its session
+        // hasn't drawn yet (data arrived, an animation's next step)
+        // publishes an update for it, once until the session draws it.
+        let continuous = map.mode == MLN_MAP_MODE_CONTINUOUS;
+        if continuous
+            && !held
+            && map.map.needs_frame()
+            && map.render_update_generation <= entry.drawn_update
+        {
+            map.render_update_generation = entry.drawn_update + 1;
+        }
         if entry.handle.tick.swap(false, Ordering::AcqRel)
             && entry.demands.is_empty()
             && !held
@@ -629,7 +697,6 @@ pub(crate) fn pump(state: &mut State) {
             });
         }
         while let Some(demand) = entry.demands.pop_front() {
-            let generation = map.map.generation();
             if entry.handle.failure.lock().unwrap().is_some() {
                 entry.handle.push(result(
                     demand.token,
@@ -648,10 +715,27 @@ pub(crate) fn pump(state: &mut State) {
                 ));
                 continue;
             };
-            let continuous = map.mode == MLN_MAP_MODE_CONTINUOUS;
+            // A static or tile map publishes updates only with its still
+            // images, so only a forced demand draws it between them.
             let force = demand.flags & MLN_FRAME_DEMAND_FORCE != 0;
-            if !continuous || held || !(force || map.map.needs_frame()) {
-                if continuous && demand.flags & MLN_FRAME_DEMAND_WAIT_FOR_UPDATE != 0 {
+            let update = continuous && map.render_update_generation > entry.drawn_update;
+            // Inside a command group a forced frame shows the update the
+            // session drew last again, which its target still holds.
+            if held
+                && force
+                && let Some(shown) = entry.shown
+            {
+                entry.frame_generation += 1;
+                entry.handle.push(result(
+                    demand.token,
+                    MLN_RENDER_RESULT_RENDERED,
+                    entry.frame_generation,
+                    Some(shown),
+                ));
+                continue;
+            }
+            if held || !(force || update) {
+                if demand.flags & MLN_FRAME_DEMAND_WAIT_FOR_UPDATE != 0 {
                     entry.demands.push_front(demand);
                     break;
                 }
@@ -663,9 +747,30 @@ pub(crate) fn pump(state: &mut State) {
                 ));
                 continue;
             }
+            let mut full = true;
+            let mut stats = mln_rendering_stats {
+                encoding_time_ms: 0.0,
+                rendering_time_ms: 0.0,
+                frame_count: 0,
+                draw_call_count: 0,
+                total_draw_call_count: 0,
+            };
             let disposition = match render_whole(&mut map.map, &mut target.target, now) {
-                Ok(Some(_report)) => {
+                Ok(Some(report)) => {
                     entry.frame_generation += 1;
+                    full = report.loaded;
+                    let draws = i64::from(report.frame.draws);
+                    entry.draws += draws;
+                    let t = &report.times;
+                    let r = &t.render;
+                    let encoding = r.cull + r.bundles + r.drape + r.encode + r.submit;
+                    stats = mln_rendering_stats {
+                        encoding_time_ms: f64::from(encoding) / 1000.0,
+                        rendering_time_ms: f64::from(t.total) / 1000.0,
+                        frame_count: entry.frame_generation as i64,
+                        draw_call_count: draws,
+                        total_draw_call_count: entry.draws,
+                    };
                     MLN_RENDER_RESULT_RENDERED
                 }
                 Ok(None) => MLN_RENDER_RESULT_TARGET_NOT_READY,
@@ -687,17 +792,25 @@ pub(crate) fn pump(state: &mut State) {
                 }
             };
             let needs_repaint = map.map.needs_frame();
-            let view = (disposition == MLN_RENDER_RESULT_RENDERED)
-                .then(|| (map.view(), generation, needs_repaint));
+            let shown = (disposition == MLN_RENDER_RESULT_RENDERED).then(|| Shown {
+                view: map.view(),
+                generation: map.generation,
+                update: map.render_update_generation,
+                needs_repaint,
+                full,
+            });
             entry.handle.push(result(
                 demand.token,
                 disposition,
                 entry.frame_generation,
-                view,
+                shown,
             ));
-            if disposition == MLN_RENDER_RESULT_RENDERED {
-                map.render_update_generation += 1;
-                rendered.push((entry.map, needs_repaint));
+            if shown.is_some() {
+                // A readback now reads the frame, not an earlier still.
+                entry.still = None;
+                entry.drawn_update = map.render_update_generation;
+                entry.shown = shown;
+                rendered.push((entry.map, needs_repaint, full, stats));
             }
         }
         entry.sync_state();
@@ -713,11 +826,15 @@ pub(crate) fn pump(state: &mut State) {
             wake.signal();
         }
     }
-    for (map, needs_repaint) in rendered {
+    for (map, needs_repaint, full, stats) in rendered {
         state.event(
             map,
             MLN_RUNTIME_EVENT_MAP_RENDER_FRAME_FINISHED,
-            Payload::RenderFrame { needs_repaint },
+            Payload::RenderFrame {
+                needs_repaint,
+                full,
+                stats,
+            },
             String::new(),
         );
     }
@@ -895,6 +1012,121 @@ pub unsafe extern "C" fn mln_render_session_read_texture(
     }
 }
 
+/// Posts one of the session's maintenance operations, which run in order
+/// with its frames on the runtime's thread.
+///
+/// # Safety
+/// The caller's pointers.
+unsafe fn maintain(
+    session: mln_render_session,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+    job: impl FnOnce(&mut State, u64) -> Result<Value> + Send + 'static,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            let handle = handles::session(session.0)?;
+            handle.failed()?;
+            handle.operation(Completion::from_c(completion)?, move |state, id| {
+                state.sessions[&id].handle.failed()?;
+                job(state, id)
+            })
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_render_session_barrier(
+    session: mln_render_session,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        maintain(session, completion, out_diagnostic, |state, id| {
+            // The runtime's thread runs work in the order it's posted, so
+            // what came before the barrier has run; demands still waiting
+            // end.
+            let entry = state.sessions.get_mut(&id).expect("session");
+            for demand in std::mem::take(&mut entry.demands) {
+                entry.handle.push(result(
+                    demand.token,
+                    MLN_RENDER_RESULT_NO_UPDATE,
+                    entry.frame_generation,
+                    None,
+                ));
+            }
+            Ok(Value::None)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_render_session_reduce_memory_use(
+    session: mln_render_session,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        maintain(session, completion, out_diagnostic, |state, id| {
+            if let Some(map) = map_of(state, id) {
+                let map = &mut state.maps.get_mut(&map).expect("map").map;
+                map.release_cached_tiles();
+            }
+            Ok(Value::None)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_render_session_clear_data(
+    session: mln_render_session,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        maintain(session, completion, out_diagnostic, |state, id| {
+            if let Some(map) = map_of(state, id) {
+                state.maps.get_mut(&map).expect("map").map.clear_tiles();
+            }
+            Ok(Value::None)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_render_session_dump_debug_logs(
+    session: mln_render_session,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        maintain(session, completion, out_diagnostic, |state, id| {
+            let entry = &state.sessions[&id];
+            let (width, height) = physical(entry.logical, entry.scale)?;
+            let target = if entry.target.is_some() {
+                "attached"
+            } else {
+                "released"
+            };
+            let message = format!(
+                "render session: {width}x{height} px at scale {}, {} frames drawn, \
+                 {} demands waiting, target {target}, on {}",
+                entry.scale,
+                entry.frame_generation,
+                entry.demands.len(),
+                state.runtime.stats().adapter,
+            );
+            crate::logging::log(MLN_LOG_SEVERITY_INFO, &message);
+            Ok(Value::None)
+        })
+    }
+}
+
 /// The tile a TILE map's camera shows: its zoom fits one tile to the map.
 fn tile_of(camera: &mln_camera, logical: mln_logical_size) -> Result<orb_api::TileRequest> {
     let z = (camera.zoom - (f64::from(logical.width) / 512.0).log2()).round();
@@ -977,13 +1209,23 @@ fn step_still(
     };
     entry.still = Some(image);
     entry.frame_generation += 1;
+    // A still image publishes the update it draws.
     map.render_update_generation += 1;
     let generation = map.generation;
+    let shown = Shown {
+        view: map.view(),
+        generation,
+        update: map.render_update_generation,
+        needs_repaint: false,
+        full: true,
+    };
+    entry.drawn_update = shown.update;
+    entry.shown = Some(shown);
     entry.handle.push(result(
         MLN_FRAME_DEMAND_TOKEN_STILL_IMAGE,
         MLN_RENDER_RESULT_RENDERED,
         entry.frame_generation,
-        Some((map.view(), generation, false)),
+        Some(shown),
     ));
     entry.sync_state();
     Some((map.still.take()?, Ok(Value::None), generation))
@@ -1077,13 +1319,42 @@ pub unsafe extern "C" fn mln_render_session_dispose(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_offscreen_device_create(
-    _options: *const mln_offscreen_device_options,
+    options: *const mln_offscreen_device_options,
     out_device: *mut mln_offscreen_device,
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
+            if !options.is_null() {
+                let o = sized(options, "options")?;
+                let known = MLN_OFFSCREEN_DEVICE_OPTION_ADAPTER_INDEX
+                    | MLN_OFFSCREEN_DEVICE_OPTION_SINGLE_CONTEXT
+                    | MLN_OFFSCREEN_DEVICE_OPTION_CLIENT_API;
+                if o.fields & !known != 0 {
+                    return Err(Failure::argument("options.fields sets an unknown field"));
+                }
+                if o.fields & MLN_OFFSCREEN_DEVICE_OPTION_CLIENT_API != 0 {
+                    match o.client_api {
+                        MLN_OPEN_GL_CLIENT_API_GL | MLN_OPEN_GL_CLIENT_API_GLES => {
+                            return Err(Failure::unsupported(
+                                "Orbis renders through Metal or Vulkan, with no OpenGL API",
+                            ));
+                        }
+                        _ => return Err(Failure::argument("options.client_api names no API")),
+                    }
+                }
+                // The runtime's device is on the default adapter, the one
+                // GPU its sessions can render on.
+                if o.fields & MLN_OFFSCREEN_DEVICE_OPTION_ADAPTER_INDEX != 0 && o.adapter_index != 0
+                {
+                    return Err(Failure::native(format!(
+                        "adapter {} names no GPU: Orbis renders on its runtime's adapter, 0",
+                        o.adapter_index
+                    )));
+                }
+            }
+            crate::base::fresh_out(out_device, "out_device")?;
             put(
                 out_device,
                 mln_offscreen_device(handles::insert(Object::OffscreenDevice)),
