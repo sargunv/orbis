@@ -244,13 +244,13 @@ impl Driver {
         }
     }
 
-    /// The frame's passes before its draws: on the GPU, the cull. Returns
-    /// the dispatches it adds.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, frame: Cull<'_>, passes: &mut Vec<Pass>) -> u32 {
+    /// The frame's passes before its draws: on the GPU, the cull of the
+    /// scene's `nodes`. Returns the dispatches it adds.
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, nodes: u32, passes: &mut Vec<Pass>) -> u32 {
         match self {
-            Self::Gpu(d) => d.cull(gpu, frame, passes),
+            Self::Gpu(d) => d.cull(gpu, nodes, passes),
             #[cfg(cpu_driven)]
-            Self::Cpu(d) => d.cull(gpu, frame, passes),
+            Self::Cpu(d) => d.cull(gpu, nodes, passes),
         }
     }
 
@@ -296,15 +296,4 @@ impl Driver {
             Self::Cpu(d) => d.destroy(gpu),
         }
     }
-}
-
-/// What a frame's cull reads of the scene.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Cull<'a> {
-    pub buffers: &'a SceneBuffers,
-    pub nodes: u32,
-    /// Whether any node draws indexed meshes.
-    pub indexed: bool,
-    /// The dispatch's grid (`Scene::cull_grid`).
-    pub grid: [u32; 2],
 }

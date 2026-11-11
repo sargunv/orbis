@@ -14,8 +14,6 @@ use orb_shaders::CULL_SHADER;
 use crate::scene::Scene;
 use crate::scene::{ARGS_WORDS, NodeDraw, SceneBuffers, Table, Tables};
 
-use super::Cull;
-
 /// Compacted indices are full u32s.
 pub(crate) const INDEX_BITS: u32 = 32;
 
@@ -109,22 +107,13 @@ impl GpuDriver {
         true
     }
 
-    /// The cull dispatch. It writes every node's arguments, zeros
-    /// included, so it runs even when nothing is resident; indexed nodes'
-    /// batches add to arguments cleared before it.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, frame: Cull<'_>, passes: &mut Vec<Pass>) -> u32 {
-        if frame.nodes == 0 || !self.ready(gpu) {
+    /// The cull dispatch, a workgroup per node. It writes every node's
+    /// arguments, zeros included, so it runs even when nothing is resident.
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, nodes: u32, passes: &mut Vec<Pass>) -> u32 {
+        if nodes == 0 || !self.ready(gpu) {
             return 0;
         }
         let start = passes.len();
-        if frame.indexed {
-            passes.push(Pass::ClearBuffer {
-                buffer: frame.buffers.args,
-                offset: 0,
-                size: Some(args_offset(frame.nodes)),
-            });
-        }
-        let [x, y] = frame.grid;
         passes.push(Pass::Compute(ComputePass {
             label: "cull",
             commands: vec![
@@ -133,7 +122,11 @@ impl GpuDriver {
                     index: 0,
                     group: self.group,
                 },
-                ComputeCommand::Dispatch { x, y, z: 1 },
+                ComputeCommand::Dispatch {
+                    x: nodes,
+                    y: 1,
+                    z: 1,
+                },
             ],
         }));
         Pass::group(passes, start, "cull");
@@ -302,20 +295,8 @@ impl Twin {
     }
 
     /// Its cull, writing its own buffers.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, frame: Cull<'_>, passes: &mut Vec<Pass>) -> u32 {
-        let buffers = SceneBuffers {
-            args: self.args,
-            compacted: self.compacted,
-            ..*frame.buffers
-        };
-        self.cull.cull(
-            gpu,
-            Cull {
-                buffers: &buffers,
-                ..frame
-            },
-            passes,
-        )
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, nodes: u32, passes: &mut Vec<Pass>) -> u32 {
+        self.cull.cull(gpu, nodes, passes)
     }
 
     pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {

@@ -589,8 +589,6 @@ const NODE_CULL_WORDS: usize = layout::node_cull::WORDS;
 /// Words per node of `SceneBuffers::args`: a draw's indirect arguments
 /// and the cull's counters.
 pub const ARGS_WORDS: usize = 8;
-/// Candidates per cull workgroup of an indexed node (`cull.wgsl`).
-const INDEXED_BATCH: u32 = 64;
 /// A candidate's `drawn` word before its first cull: neither drawn (1) nor
 /// hidden (0), so the cull pass writes its slot (`cull.wgsl`).
 const UNKNOWN: u32 = u32::MAX;
@@ -1059,8 +1057,6 @@ pub(crate) struct Scene {
     /// Each mesh's serial, by mesh slot: no two meshes take the same.
     mesh_serials: Vec<u64>,
     next_serial: u64,
-    /// Rows of the cull dispatch: the most batches an indexed node has.
-    cull_batches: u32,
     /// Changes whenever a pool or table moves into a larger buffer: bind
     /// groups and
     /// recorded commands over the old one must be made again.
@@ -1204,7 +1200,6 @@ impl Scene {
             scratch: None,
             mesh_serials: Vec::new(),
             next_serial: 0,
-            cull_batches: 1,
             buffers_revision: 0,
             placements_written: 0,
             tile_rows: Vec::new(),
@@ -1255,13 +1250,6 @@ impl Scene {
     /// the driver's index bits.
     pub(crate) fn limits(&self) -> SubmitLimits {
         SubmitLimits::new(&self.capacity, self.index_bits)
-    }
-
-    /// The cull dispatch's grid, as of the last [`prepare`](Self::prepare):
-    /// one workgroup per node, by as many rows as the indexed node with the
-    /// most candidates has batches of them.
-    pub(crate) fn cull_grid(&self) -> [u32; 2] {
-        [self.nodes.len() as u32, self.cull_batches]
     }
 
     /// Orders tiles within each render node independently of upload order.
@@ -2375,7 +2363,7 @@ fn move_buffer(gpu: &mut dyn Gpu, buffer: &mut BufferId, desc: &BufferDesc<'_>, 
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameLight, INDEXED_BATCH, grown};
+    use super::{FrameLight, grown};
 
     /// With the style's ambient light a shadow takes away the sun's share
     /// of the light on the ground, so a sun under a bright sky casts faint
@@ -2400,20 +2388,16 @@ mod tests {
         assert!((light(0.5, 0.5).shadow().1 - 0.6).abs() < 1e-6);
     }
 
-    /// The cull shader's constants are the scene's: its batches, and the
-    /// most indices a chunk has, which bounds its copy loop.
+    /// The cull shader's most indices a chunk has, which bounds its copy
+    /// loop, is the layout's.
     #[test]
-    fn the_cull_shares_its_constants() {
+    fn the_cull_shares_the_chunk_size() {
         let source = orb_shaders::CULL_SHADER.source();
-        for (name, value) in [
-            ("INDEXED_BATCH", INDEXED_BATCH),
-            ("CHUNK_INDICES", orb_layout::CHUNK_INDICES),
-        ] {
-            assert!(
-                source.contains(&format!("const {name}: u32 = {value}u;")),
-                "cull.wgsl's {name} isn't {value}"
-            );
-        }
+        let value = orb_layout::CHUNK_INDICES;
+        assert!(
+            source.contains(&format!("const CHUNK_INDICES: u32 = {value}u;")),
+            "cull.wgsl's CHUNK_INDICES isn't {value}"
+        );
     }
 
     #[test]

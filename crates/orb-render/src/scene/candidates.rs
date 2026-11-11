@@ -45,8 +45,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::driver::SubmitLimits;
 
 use super::{
-    CANDIDATE_WORDS, HIDDEN, INDEXED_BATCH, NODE_CULL_WORDS, NodeDraw, NodeEntry, PlacementTarget,
-    Scene, Table, UNKNOWN, VISIBLE_WORDS,
+    CANDIDATE_WORDS, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, PlacementTarget, Scene, Table,
+    UNKNOWN, VISIBLE_WORDS,
 };
 
 /// A candidate row that holds no candidate: a hole a run left in an
@@ -516,7 +516,6 @@ impl Scene {
         for (at, words) in &writes.visible {
             self.tables.write_words(gpu, Table::Visible, *at, words);
         }
-        let mut batches = 1u32;
         let mut live = 0u32;
         for (n, (node, laid)) in self.nodes.iter().zip(&laid).enumerate() {
             use layout::node_cull as nc;
@@ -529,16 +528,12 @@ impl Scene {
             row[nc::MARGIN_PX] = node.cull.margin_px.to_bits();
             row[nc::DRAW] = node.cull.draw_word();
             row[nc::ELEVATION] = node.cull.elevation.to_bits();
-            if node.cull.draw == NodeDraw::Indexed {
-                batches = batches.max(laid.rows.end.div_ceil(INDEXED_BATCH));
-            }
             live += laid.live;
         }
         self.tables
             .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
         self.params_dirty = false;
         self.candidate_count = live;
-        self.cull_batches = batches;
         self.rows_end = rows_end;
         self.compacted_words = words_end;
         self.laid = laid;

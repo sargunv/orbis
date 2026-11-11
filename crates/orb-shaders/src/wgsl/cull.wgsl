@@ -1,5 +1,4 @@
-// Cull and compact in one dispatch, a workgroup per render node and, for
-// indexed nodes, per batch of their candidates (`group.y`).
+// Cull and compact in one dispatch, a workgroup per render node.
 //
 // Pulled and point nodes have one workgroup, which walks the node's
 // `(chunk, tile placement)` candidates in order, 256 at a time, and
@@ -8,7 +7,7 @@
 // deterministically. They draw it with `drawIndirect`.
 //
 // Indexed nodes give every candidate a fixed slot in the compacted index
-// buffer, so their batches are independent. A slot stays put while its
+// buffer, so their batches of 256 are independent. A slot stays put while its
 // candidate lives, through layouts of the candidates after tiles come or
 // go; the rows a candidate left are holes (`NO_CHUNK`) the cull skips. A
 // layout that moves a run's slots copies them (`MOVED`). A candidate
@@ -17,8 +16,10 @@
 // when it enters the view, hidden indices when it leaves.
 // The node draws its slots up to the last visible one with
 // `drawIndexedIndirect`, so frames where nothing enters or leaves write no
-// indices. Batches combine their arguments and counters atomically into
-// words the frame cleared before the dispatch.
+// indices. The node's workgroup walks its batches in turn: a workgroup for
+// each batch the node with the most candidates has, in every node, most
+// with nothing to do, cost the moto g's cull as much again once one line
+// node had thousands of chunks (#180).
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> tiles: array<Tile>;
@@ -61,8 +62,6 @@ const MOVED: u32 = 2u;
 // draws, for tests that hold the two to the same buffers and pixels. A
 // pipeline constant, false in shipping builds, where it folds away.
 override keep_all: bool = false;
-// Candidates per workgroup of an indexed node (orb-render's INDEXED_BATCH).
-const INDEXED_BATCH: u32 = 64u;
 // Indices per chunk at most (orb-layout's CHUNK_INDICES).
 const CHUNK_INDICES: u32 = 768u;
 // The view-volume planes a clip-space corner lies outside, a bit each:
@@ -156,11 +155,11 @@ var<workgroup> node_count: u32;
 var<workgroup> node_draw: u32;
 // Indexed nodes: the batch's slots to rewrite (source index, or
 // HIDDEN_INDEX to hide; count; destination; run tag plus the chunk's first
-// vertex), the end of its last visible slot, and its counters.
-var<workgroup> rewrite_src: array<u32, INDEXED_BATCH>;
-var<workgroup> rewrite_count: array<u32, INDEXED_BATCH>;
-var<workgroup> rewrite_dst: array<u32, INDEXED_BATCH>;
-var<workgroup> rewrite_tag: array<u32, INDEXED_BATCH>;
+// vertex), the end of the node's last visible slot, and its counters.
+var<workgroup> rewrite_src: array<u32, WORKGROUP>;
+var<workgroup> rewrite_count: array<u32, WORKGROUP>;
+var<workgroup> rewrite_dst: array<u32, WORKGROUP>;
+var<workgroup> rewrite_tag: array<u32, WORKGROUP>;
 var<workgroup> rewrites: atomic<u32>;
 var<workgroup> extent: atomic<u32>;
 var<workgroup> kept: atomic<u32>;
@@ -182,7 +181,7 @@ fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     // A hidden node draws nothing, and an indexed node's slots stay as
     // they are for when it shows.
     if (word & HIDDEN) != 0u {
-        if lane == 0u && group.y == 0u {
+        if lane == 0u {
             let at = group.x * ARGS_WORDS;
             for (var w = 0u; w < ARGS_WORDS; w++) {
                 atomicStore(&args[at + w], 0u);
@@ -191,8 +190,8 @@ fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
         return;
     }
     if draw == DRAW_INDEXED {
-        cull_indexed(group.x, group.y, lane, node);
-    } else if group.y == 0u {
+        cull_indexed(group.x, lane, node);
+    } else {
         cull_listed(group.x, lane, node, draw);
     }
 }
@@ -245,59 +244,63 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
     }
 }
 
-fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
+fn cull_indexed(index: u32, lane: u32, node: NodeCull) {
     let count = workgroupUniformLoad(&node_count);
-    let start = batch * INDEXED_BATCH;
-    if start >= count {
-        return;
-    }
-    let i = start + lane;
-    if lane < INDEXED_BATCH && i < count && candidates[node.visible_base + i].chunk != NO_CHUNK {
-        let candidate = candidates[node.visible_base + i];
-        let keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
-        let chunk = chunks[candidate.chunk];
-        if keep == 1u {
-            atomicMax(&extent, candidate.slot + chunk.index_count - node.index_base);
-            atomicAdd(&kept, 1u);
-            atomicAdd(&drawn_indices, chunk.index_count);
-        }
-        var drawn = candidate.drawn;
-        if drawn == MOVED {
-            // Hidden either way: this index, or the CPU driver's restart.
-            let hidden = chunk.index_count == 0u || compacted[candidate.slot] >= HIDDEN_INDEX;
-            drawn = select(1u, 0u, hidden);
-            candidates[node.visible_base + i].drawn = drawn;
-        }
-        if drawn != keep {
-            let at = atomicAdd(&rewrites, 1u);
-            rewrite_src[at] = select(HIDDEN_INDEX, chunk.first_index, keep == 1u);
-            // A chunk's indices are at most CHUNK_INDICES: a row gone
-            // stale can't loop the copy below for long.
-            rewrite_count[at] = min(chunk.index_count, CHUNK_INDICES);
-            rewrite_dst[at] = candidate.slot;
-            // A compacted index counts from the mesh's first vertex, and
-            // the mesh's vertices fit below the run's bits.
-            rewrite_tag[at] = (candidate.run << node.run_shift) + chunk.first_vertex;
-            candidates[node.visible_base + i].drawn = keep;
-            atomicAdd(&written_indices, chunk.index_count);
-        }
-    }
-    workgroupBarrier();
-    // Every lane copies a slot's indices in turn.
-    let n = atomicLoad(&rewrites);
-    for (var r = 0u; r < n; r++) {
-        let src = rewrite_src[r];
-        let dst = rewrite_dst[r];
-        let tag = rewrite_tag[r];
-        for (var k = lane; k < rewrite_count[r]; k += WORKGROUP) {
-            // Arena indices never reach HIDDEN_INDEX.
-            if src == HIDDEN_INDEX {
-                compacted[dst + k] = HIDDEN_INDEX;
-            } else {
-                let i = src + k;
-                compacted[dst + k] = tag + ((indices[i >> 1u] >> ((i & 1u) << 4u)) & 0xffffu);
+    for (var start = 0u; start < count; start += WORKGROUP) {
+        let i = start + lane;
+        if i < count && candidates[node.visible_base + i].chunk != NO_CHUNK {
+            let candidate = candidates[node.visible_base + i];
+            let keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
+            let chunk = chunks[candidate.chunk];
+            if keep == 1u {
+                atomicMax(&extent, candidate.slot + chunk.index_count - node.index_base);
+                atomicAdd(&kept, 1u);
+                atomicAdd(&drawn_indices, chunk.index_count);
+            }
+            var drawn = candidate.drawn;
+            if drawn == MOVED {
+                // Hidden either way: this index, or the CPU driver's restart.
+                let hidden = chunk.index_count == 0u || compacted[candidate.slot] >= HIDDEN_INDEX;
+                drawn = select(1u, 0u, hidden);
+                candidates[node.visible_base + i].drawn = drawn;
+            }
+            if drawn != keep {
+                let at = atomicAdd(&rewrites, 1u);
+                rewrite_src[at] = select(HIDDEN_INDEX, chunk.first_index, keep == 1u);
+                // A chunk's indices are at most CHUNK_INDICES: a row gone
+                // stale can't loop the copy below for long.
+                rewrite_count[at] = min(chunk.index_count, CHUNK_INDICES);
+                rewrite_dst[at] = candidate.slot;
+                // A compacted index counts from the mesh's first vertex, and
+                // the mesh's vertices fit below the run's bits.
+                rewrite_tag[at] = (candidate.run << node.run_shift) + chunk.first_vertex;
+                candidates[node.visible_base + i].drawn = keep;
+                atomicAdd(&written_indices, chunk.index_count);
             }
         }
+        workgroupBarrier();
+        // Every lane copies a slot's indices in turn.
+        let n = atomicLoad(&rewrites);
+        for (var r = 0u; r < n; r++) {
+            let src = rewrite_src[r];
+            let dst = rewrite_dst[r];
+            let tag = rewrite_tag[r];
+            for (var k = lane; k < rewrite_count[r]; k += WORKGROUP) {
+                // Arena indices never reach HIDDEN_INDEX.
+                if src == HIDDEN_INDEX {
+                    compacted[dst + k] = HIDDEN_INDEX;
+                } else {
+                    let i = src + k;
+                    compacted[dst + k] = tag + ((indices[i >> 1u] >> ((i & 1u) << 4u)) & 0xffffu);
+                }
+            }
+        }
+        // Every lane has read this batch's rewrites before the next's.
+        workgroupBarrier();
+        if lane == 0u {
+            atomicStore(&rewrites, 0u);
+        }
+        workgroupBarrier();
     }
     if lane == 0u {
         let at = index * ARGS_WORDS;
@@ -308,13 +311,14 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
         // A node with nothing in view keeps all-zero arguments: an indexed
         // indirect draw of no indices but one instance loses the device on
         // an Adreno 619 (Chrome 156, Vulkan).
-        if visible > 0u {
-            atomicMax(&args[at], visible);
-            atomicStore(&args[at + 1u], 1u);
-            atomicStore(&args[at + 2u], node.index_base);
-        }
-        atomicAdd(&args[at + 5u], atomicLoad(&kept));
-        atomicAdd(&args[at + 6u], atomicLoad(&written_indices));
-        atomicAdd(&args[at + 7u], atomicLoad(&drawn_indices));
+        let drawn = visible > 0u;
+        atomicStore(&args[at], visible);
+        atomicStore(&args[at + 1u], select(0u, 1u, drawn));
+        atomicStore(&args[at + 2u], select(0u, node.index_base, drawn));
+        atomicStore(&args[at + 3u], 0u);
+        atomicStore(&args[at + 4u], 0u);
+        atomicStore(&args[at + 5u], atomicLoad(&kept));
+        atomicStore(&args[at + 6u], atomicLoad(&written_indices));
+        atomicStore(&args[at + 7u], atomicLoad(&drawn_indices));
     }
 }

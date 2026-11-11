@@ -30,7 +30,6 @@ use crate::scene::{
     ARGS_WORDS, DRAPED, HIDDEN, MOVED, Move, NO_CHUNK, NodeDraw, SURFACE, Scene, Table, UNCLIPPED,
 };
 
-use super::Cull;
 use super::gpu::{HIDDEN_INDEX, Twin};
 
 /// WebGL rejects element indices from 2^31.
@@ -649,10 +648,10 @@ impl CpuDriver {
     }
 
     /// The GPU twin's cull, writing its own buffers.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, frame: Cull<'_>, passes: &mut Vec<Pass>) -> u32 {
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, nodes: u32, passes: &mut Vec<Pass>) -> u32 {
         self.twin
             .as_ref()
-            .map_or(0, |twin| twin.cull(gpu, frame, passes))
+            .map_or(0, |twin| twin.cull(gpu, nodes, passes))
     }
 
     /// Node `node`'s draw, from its arguments.

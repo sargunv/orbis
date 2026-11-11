@@ -1,10 +1,9 @@
 submit 0
   push "cull"
-  clear buffer "draw args"#0 at 0 size Some(4032)
   compute pass "cull"
     pipeline compute "cull"#0
     group 0 group "cull"#0
-    dispatch 126 3 1
+    dispatch 126 1 1
   pop
   push "main"
   render pass "main"
@@ -12,7 +11,6 @@ submit 0
     bundles [bundle "layers"#0]
   pop
 
-buffer "draw args"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE | INDIRECT)
 layout "cull"#0: 0 ShaderStages(COMPUTE) Uniform; 1 ShaderStages(COMPUTE) Storage { read_only: true }; 2 ShaderStages(COMPUTE) Storage { read_only: true }; 3 ShaderStages(COMPUTE) Storage { read_only: false }; 4 ShaderStages(COMPUTE) Storage { read_only: true }; 5 ShaderStages(COMPUTE) Storage { read_only: false }; 6 ShaderStages(COMPUTE) Storage { read_only: false }; 7 ShaderStages(COMPUTE) Storage { read_only: true }; 8 ShaderStages(COMPUTE) Storage { read_only: false }; 
 module "cull"#0: wgsl
 compute "cull"#0: layouts [layout "cull"#0]; module "cull"#0 cull []; 
@@ -22,6 +20,7 @@ buffer "chunks"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "candidates"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "node cull"#0: BufferUsages(COPY_DST | STORAGE)
 buffer "visible"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
+buffer "draw args"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE | INDIRECT)
 buffer "indices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "compacted indices"#0: BufferUsages(COPY_SRC | COPY_DST | INDEX | STORAGE)
 group "cull"#0: layout layout "cull"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "candidates"#0 at 0 size None; 4 buffer "node cull"#0 at 0 size None; 5 buffer "visible"#0 at 0 size None; 6 buffer "draw args"#0 at 0 size None; 7 buffer "indices"#0 at 0 size None; 8 buffer "compacted indices"#0 at 0 size None

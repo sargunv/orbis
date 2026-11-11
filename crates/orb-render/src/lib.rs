@@ -2375,13 +2375,7 @@ impl Renderer {
             Pass::group(passes, start, "image mips");
         }
         let cull_ready = self.driver.ready(gpu);
-        let cull = driver::Cull {
-            buffers: self.scene.buffers(),
-            nodes: self.nodes.len() as u32,
-            indexed: self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed),
-            grid: self.scene.cull_grid(),
-        };
-        let dispatches = self.driver.cull(gpu, cull, passes);
+        let dispatches = self.driver.cull(gpu, self.nodes.len() as u32, passes);
         if self.driver.culled(dispatches) {
             self.scene.culled();
         }
