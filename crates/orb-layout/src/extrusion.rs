@@ -171,8 +171,8 @@ fn layout_normalized(
                             // GL JS assigns the cumulative distance to the
                             // edge's end, then distance + length to its start.
                             // Retain that phase even when either end is clipped.
-                            let edge =
-                                distance + ((b[0] - p[0]) as f32).hypot((b[1] - p[1]) as f32);
+                            let [ex, ey] = [0, 1].map(|k| b[k] as f32 - p[k] as f32);
+                            let edge = distance + ex.hypot(ey);
                             for top in [0u16, 1] {
                                 let p = [p[0] as i16, p[1] as i16];
                                 builder.push_vertex(
@@ -277,6 +277,21 @@ mod tests {
         let mesh = layout(&b.finish(), &[0]);
         assert_eq!(mesh.vertex_indices().count(), 6 + 4 * 6);
     }
+    #[test]
+    fn walls_from_coordinates_far_outside_the_tile() {
+        // Edges between i32::MIN and the tile overflow i32; their walls
+        // still clip to the tile.
+        let mut b = LayerBuilder::new("building", 100);
+        b.begin_feature(None, GeometryType::Polygon);
+        b.begin_part();
+        b.begin_ring();
+        for p in [[i32::MIN, 20], [50, 20], [50, 80], [i32::MIN, 80]] {
+            b.push_vertex(p);
+        }
+        let mesh = layout(&b.finish(), &[0]);
+        assert!(mesh.vertex_indices().count() > 0);
+    }
+
     #[test]
     fn surrounding_polygon_has_only_a_roof() {
         let mut b = LayerBuilder::new("building", 100);

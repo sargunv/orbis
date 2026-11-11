@@ -43,7 +43,7 @@ mod tests;
 /// Whether an edge of polygon `part` lies on the line its source clipped
 /// along, `buffer` past the square of `extent` (none when `buffer` is 0).
 pub(crate) fn part_cut(part: &Part<'_>, buffer: i32, extent: i32) -> bool {
-    let (lo, hi) = (-buffer, extent + buffer);
+    let (lo, hi) = (-buffer, extent.saturating_add(buffer));
     let cut = |a: [i32; 2], b: [i32; 2]| {
         buffer > 0 && (0..2).any(|axis| a[axis] == b[axis] && (a[axis] == lo || a[axis] == hi))
     };

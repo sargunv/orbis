@@ -155,7 +155,7 @@ pub(crate) fn wall_normals(ring: &[[i32; 2]], extent: i32) -> Vec<Option<WallNor
     let perps: Vec<Option<[f64; 2]>> = (0..n)
         .map(|i| {
             let (a, b) = (ring[i], ring[(i + 1) % n]);
-            let edge = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
+            let edge = [0, 1].map(|k| f64::from(b[k]) - f64::from(a[k]));
             (!is_boundary_edge(a, b, extent) && edge != [0.0; 2]).then_some([-edge[1], edge[0]])
         })
         .collect();
