@@ -185,6 +185,9 @@ Advice that cost time to learn, not rules:
   frame, and splitting a pass in two adds to the sum without adding to the
   frame. Compare whole-frame times, from the first pass's start to the last
   one's end, as every bench reports them.
+- Size, performance, simplicity and correctness all count at once: take the
+  best design, not the one that games a number. The build's watch levels are
+  tripwires for a look, not budgets, and room under one isn't margin to spend.
 - Burn issues down rather than piling them up. The focus is performance, size,
   style parity and clean, modern Rust. Fix small follow-ups in the same piece of
   work. File an issue only for something substantial in that focus, and drop the
