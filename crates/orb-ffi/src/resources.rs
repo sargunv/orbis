@@ -214,11 +214,12 @@ impl Provider {
         });
         let id = handles::insert(Object::ResourceRequest(Arc::clone(&handle)));
         let given_up = Arc::downgrade(&handle);
-        abort.on_abort(move || {
+        let listening = abort.on_abort(move || {
             if let Some(request) = given_up.upgrade() {
                 request.cancel(id);
             }
         });
+        handle.state().listening = Some(listening);
         let provider = self.clone();
         let unrun = Unrun(id);
         delivery::deliver(
@@ -358,6 +359,8 @@ struct RequestState {
     handler: Option<CancelHandler>,
     /// A cancel callback was registered: a request takes one.
     registered: bool,
+    /// Its listener on the requester's abort, taken off once it ends.
+    listening: Option<orb_api::Listening>,
 }
 
 /// An `mln_resource_request_cancel_handler`.
@@ -396,10 +399,14 @@ impl ResourceRequest {
     fn take(&self) -> Result<(NetworkRequest, Chain, NetworkDone)> {
         let mut state = self.state();
         let handler = state.handler.take();
+        let listening = state.listening.take();
         let parts = state.parts.take().ok_or_else(|| ended(state.cancelled));
         drop(state);
         if let Some(handler) = handler {
             handler.release();
+        }
+        if let (Ok(parts), Some(listening)) = (&parts, listening) {
+            parts.0.abort.forget(listening);
         }
         parts.map(|parts| *parts)
     }

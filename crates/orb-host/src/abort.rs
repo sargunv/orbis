@@ -13,8 +13,15 @@ type Listener = Box<dyn FnOnce() + Send>;
 #[derive(Default)]
 struct State {
     aborted: bool,
-    listeners: Vec<Listener>,
+    /// Numbers the listeners, for [`Abort::forget`].
+    next: u64,
+    listeners: Vec<(u64, Listener)>,
 }
+
+/// A listener [`Abort::on_abort`] added, which [`Abort::forget`] takes
+/// off again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Listening(Option<u64>);
 
 /// Gives up the fetches it is passed with, as a browser's `AbortSignal`
 /// does: a requester makes one for a load it may abandon, keeps a clone,
@@ -57,7 +64,7 @@ impl Abort {
             }
             _ => return,
         };
-        for listener in listeners {
+        for (_, listener) in listeners {
             listener();
         }
     }
@@ -67,22 +74,40 @@ impl Abort {
     }
 
     /// Runs `listener` when this fires, or now if it has. Dropped unrun
-    /// when every clone is, unfired.
-    pub fn on_abort(&self, listener: impl FnOnce() + Send + 'static) {
+    /// when every clone is, unfired, or when [`forget`](Self::forget)
+    /// takes it off: a load that ends unaborted takes off what it added,
+    /// so that one abort can serve many loads (an offline download's).
+    pub fn on_abort(&self, listener: impl FnOnce() + Send + 'static) -> Listening {
         let Some(mut state) = self.state() else {
-            return;
+            return Listening(None);
         };
         if state.aborted {
             drop(state);
             listener();
-        } else {
-            state.listeners.push(Box::new(listener));
+            return Listening(None);
+        }
+        let number = state.next;
+        state.next += 1;
+        state.listeners.push((number, Box::new(listener)));
+        Listening(Some(number))
+    }
+
+    /// Takes a listener off unrun, if it hasn't run.
+    pub fn forget(&self, listening: Listening) {
+        let (Some(number), Some(mut state)) = (listening.0, self.state()) else {
+            return;
+        };
+        if let Some(i) = state.listeners.iter().position(|(n, _)| *n == number) {
+            // Dropped once the lock is let go: it may hold a clone.
+            let (_, listener) = state.listeners.swap_remove(i);
+            drop(state);
+            drop(listener);
         }
     }
 
     /// `done`, answered [`FetchError::Aborted`] as soon as this fires
     /// unless the fetch answered first: what comes after the first answer
-    /// goes nowhere.
+    /// goes nowhere. An answer first takes the abort's listener off.
     pub fn answer(&self, done: FetchDone) -> FetchDone {
         if self.0.is_none() {
             return done;
@@ -94,13 +119,15 @@ impl Abort {
                 .take()
         };
         let aborted = Arc::clone(&slot);
-        self.on_abort(move || {
+        let listening = self.on_abort(move || {
             if let Some(done) = take(&aborted) {
                 done(Err(FetchError::Aborted));
             }
         });
+        let abort = self.clone();
         Box::new(move |result| {
             if let Some(done) = take(&slot) {
+                abort.forget(listening);
                 done(result);
             }
         })
@@ -112,6 +139,7 @@ impl Abort {
         Aborted {
             abort: self.clone(),
             waker: None,
+            listening: Listening(None),
         }
     }
 
@@ -136,6 +164,14 @@ pub struct Aborted {
     abort: Abort,
     /// The waker the abort wakes, once it listens.
     waker: Option<Arc<Mutex<Option<Waker>>>>,
+    /// Its listener, taken off when the future is dropped unfired.
+    listening: Listening,
+}
+
+impl Drop for Aborted {
+    fn drop(&mut self) {
+        self.abort.forget(self.listening);
+    }
 }
 
 impl Future for Aborted {
@@ -145,17 +181,17 @@ impl Future for Aborted {
         if self.abort.is_aborted() {
             return Poll::Ready(());
         }
-        let abort = self.abort.clone();
-        let slot = self.waker.get_or_insert_with(|| {
+        if self.waker.is_none() {
             let slot: Arc<Mutex<Option<Waker>>> = Arc::default();
             let woken = Arc::clone(&slot);
-            abort.on_abort(move || {
+            self.listening = self.abort.on_abort(move || {
                 if let Some(waker) = woken.lock().ok().and_then(|mut w| w.take()) {
                     waker.wake();
                 }
             });
-            slot
-        });
+            self.waker = Some(slot);
+        }
+        let slot = self.waker.as_ref().expect("listening");
         *slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cx.waker().clone());
@@ -194,6 +230,28 @@ mod tests {
         done(Ok(vec![1]));
         abort.abort();
         assert_eq!(*answers.lock().unwrap(), vec![Ok(vec![1])]);
+    }
+
+    /// Loads that end take their listeners off: one abort serving many
+    /// loads holds none for those that ended.
+    #[test]
+    fn ended_loads_leave_no_listener() {
+        let abort = Abort::new();
+        for _ in 0..3 {
+            abort.answer(Box::new(|_| {}))(Ok(Vec::new()));
+        }
+        let mut future = abort.aborted();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(Pin::new(&mut future).poll(&mut cx).is_pending());
+        drop(future);
+        assert!(abort.state().unwrap().listeners.is_empty());
+        // One still waiting keeps its listener, and is answered.
+        let answers = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&answers);
+        let _done = abort.answer(Box::new(move |r| seen.lock().unwrap().push(r)));
+        assert_eq!(abort.state().unwrap().listeners.len(), 1);
+        abort.abort();
+        assert_eq!(*answers.lock().unwrap(), vec![Err(FetchError::Aborted)]);
     }
 
     #[test]
