@@ -1046,3 +1046,59 @@ fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
         removed.memory.scene
     );
 }
+
+/// A pattern samples the same texels wherever the atlas packed its image:
+/// two maps whose sprites list the same images in opposite orders, so
+/// that the atlas packs them in other places, draw the same bytes.
+#[test]
+fn patterns_draw_the_same_wherever_the_atlas_packs_them() {
+    let scratch = Scratch::new("pattern");
+    let sprites = std::path::Path::new(crate::common::DEMO_DATA).join("sprites");
+    for suffix in ["", "@2x"] {
+        let text = std::fs::read_to_string(sprites.join(format!("ofm{suffix}.json"))).unwrap();
+        let json: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).unwrap();
+        let members: Vec<String> = (json.iter())
+            .map(|(name, rect)| format!("{name:?}:{rect}"))
+            .collect();
+        for (name, order) in [
+            ("forward", members.clone()),
+            ("reverse", {
+                let mut members = members.clone();
+                members.reverse();
+                members
+            }),
+        ] {
+            let path = scratch.0.join(format!("{name}{suffix}.json"));
+            std::fs::write(path, format!("{{{}}}", order.join(","))).unwrap();
+            std::fs::copy(
+                sprites.join(format!("ofm{suffix}.png")),
+                scratch.0.join(format!("{name}{suffix}.png")),
+            )
+            .unwrap();
+        }
+    }
+    let frame = |sprite: &str| {
+        let mut style: serde_json::Value = serde_json::from_str(&tokyo_json()).unwrap();
+        style["sprite"] = format!("file://{}/{sprite}", scratch.0.display()).into();
+        style["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "id": "pattern",
+                "type": "background",
+                "paint": {"background-pattern": "airfield", "background-opacity": 0.8}
+            }));
+        let path = scratch.0.join(format!("{sprite}-style.json"));
+        std::fs::write(&path, style.to_string()).unwrap();
+        let (mut map, _, _) = Offscreen::load(&Options {
+            style: Some(format!("file://{}", path.display())),
+            encoding: "mvt".into(),
+            at: Some((orb_crs::Geodetic::new(139.74, 35.685), 16.85, 20.0, 55.0)),
+        })
+        .unwrap();
+        settle(&mut map);
+        map.pixels()
+    };
+    let (forward, reverse) = (frame("forward"), frame("reverse"));
+    assert_eq!(crate::common::differing_pixels(&forward, &reverse), 0);
+}
