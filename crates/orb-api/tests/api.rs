@@ -1385,6 +1385,48 @@ fn padding_draws_the_center_where_it_projects() {
     assert_eq!(hit.layer, "box");
 }
 
+/// A queried feature's `layer` gives the paint and layout the style sets,
+/// evaluated for that feature, its state and the camera, as GL JS's
+/// `queryRenderedFeatures` does.
+#[test]
+fn queried_layers_are_evaluated_for_their_feature() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(
+        r##"{"version": 8, "center": [0, 0], "zoom": 2,
+            "sources": {"p": {"type": "geojson", "data": {"type": "Feature", "id": 3,
+                "properties": {"r": 6}, "geometry": {"type": "Point", "coordinates": [0, 0]}}}},
+            "layers": [{"id": "c", "type": "circle", "source": "p",
+                "layout": {"circle-sort-key": ["get", "r"]},
+                "paint": {
+                    "circle-radius": ["case", ["boolean", ["feature-state", "big"], false], 20, ["get", "r"]],
+                    "circle-color": "#ff0000",
+                    "circle-opacity": ["interpolate", ["linear"], ["zoom"], 0, 0, 4, 1]}}]}"##,
+    )
+    .expect("style");
+    settle(&mut map, &mut target);
+    let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
+    let layer = |map: &mut Map, target: &mut Target| {
+        let query = map.query_rendered(center, center);
+        let doc = json::parse(&query_answer(map, target, query)).unwrap();
+        doc.as_array().unwrap()[0].get("layer").unwrap().to_string()
+    };
+    assert_eq!(
+        layer(&mut map, &mut target),
+        r#"{"id":"c","type":"circle","source":"p","paint":{"circle-radius":6,"circle-color":{"r":1,"g":0,"b":0,"a":1},"circle-opacity":0.5},"layout":{"circle-sort-key":6}}"#
+    );
+    map.edit(&commands(
+        r#"[["setFeatureState", {"source": "p", "id": 3}, {"big": true}]]"#,
+    ))
+    .expect("state");
+    settle(&mut map, &mut target);
+    assert!(
+        layer(&mut map, &mut target).contains(r#""circle-radius":20,"#),
+        "the state's radius"
+    );
+}
+
 /// The answer to query `id`, waiting for it.
 fn answer(map: &mut Map, id: u64) -> String {
     let started = std::time::Instant::now();

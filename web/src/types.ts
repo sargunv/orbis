@@ -328,8 +328,18 @@ export interface Feature {
   properties: Record<string, unknown>;
   source: string;
   sourceLayer?: string;
-  /** The style layer it was drawn by; absent from `querySourceFeatures`. */
-  layer?: { id: string; type: string; source: string; "source-layer"?: string };
+  /** The style layer it was drawn by, with the `paint` and `layout`
+   * properties the style sets evaluated for this feature at the query's
+   * camera (colours as premultiplied `{r, g, b, a}`, as GL JS gives them);
+   * absent from `querySourceFeatures`. */
+  layer?: {
+    id: string;
+    type: string;
+    source: string;
+    "source-layer"?: string;
+    paint: Record<string, unknown>;
+    layout: Record<string, unknown>;
+  };
   state: Record<string, unknown>;
 }
 

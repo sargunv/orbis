@@ -144,7 +144,9 @@ lists.
   map as one interactive frame (queries read the last one), then queries its
   point or box. The answer must equal `expected.json` in order, numbers to six
   significant figures (Native's `stripPrecision` and `deepEqual`); failures that
-  differ only in order are reported.
+  differ only in order are reported. Native's answers carry no `layer`, so it is
+  compared only where the expectation has one (`evaluated/line-width`, which
+  Native ignores for that reason).
 - **Expression suite**: each `test.json` through orb-expr's conformance runner
   (`orb_expr::conformance`, the `conformance` feature) with Native's
   expectations: evaluation errors are the bare message, and formatted sections

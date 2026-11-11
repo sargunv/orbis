@@ -1188,27 +1188,38 @@ fn run_query_test(
         result["seconds"] = json!(started.elapsed().as_secs_f64());
         return Ok(result);
     };
-    for feature in actual.as_array_mut().into_iter().flatten() {
-        if let Some(f) = feature.as_object_mut() {
-            f.remove("layer");
-        }
-    }
     let dir = path.parent().expect("style parent");
     let expected = manifest.expected(id, dir, ".json");
     if expected.is_empty() {
         return Err(format!("{id}: missing expected*.json"));
     }
+    let expected = (expected.iter())
+        .map(|path| {
+            serde_json::from_slice::<Value>(&std::fs::read(path).map_err(|e| format!("{id}: {e}"))?)
+                .map_err(|e| format!("{id}: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    // Native's answers carry no `layer`, and its expectations have it only
+    // where a test checks the evaluated layer (as GL JS's harness keeps
+    // it): compare it there.
+    let has_layer = |features: &Value| {
+        (features.as_array().into_iter().flatten()).any(|f| f.get("layer").is_some())
+    };
+    if !expected.iter().any(has_layer) {
+        for feature in actual.as_array_mut().into_iter().flatten() {
+            if let Some(f) = feature.as_object_mut() {
+                f.remove("layer");
+            }
+        }
+    }
     // Every expected file must match, as the runner checks them all.
     let mut equal = true;
     let mut same_features = true;
     let mut expected_count = 0;
-    for path in &expected {
-        let expected: Value =
-            serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("{id}: {e}"))?)
-                .map_err(|e| format!("{id}: {e}"))?;
+    for expected in &expected {
         expected_count = expected.as_array().map_or(0, Vec::len);
-        equal &= deep_equal(&actual, &expected);
-        same_features &= unordered_equal(&actual, &expected);
+        equal &= deep_equal(&actual, expected);
+        same_features &= unordered_equal(&actual, expected);
     }
     result["status"] = json!(if equal { "pass" } else { "fail" });
     result["actual"] = json!(actual.as_array().map_or(0, Vec::len));

@@ -580,6 +580,26 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
         }
     }
 
+    /// The value for feature `row` of `layer` (in canonical `tile`, for
+    /// `within` and `distance`) in `context`: its zoom, camera, state and
+    /// images. Exact for every kind.
+    pub fn evaluate_feature(
+        &self,
+        context: &orb_expr::EvaluationContext<'_>,
+        (layer, row, tile): (&orb_tile::Layer, usize, Option<orb_expr::CanonicalTile>),
+    ) -> T {
+        let slot = self.slot.items().first().unwrap_or(self.slot);
+        match &slot.value {
+            Inner::Constant(v) => self.fit(Some(v)),
+            Inner::Expression(expression) => {
+                let bound = expression.expression().bind(layer).with_tile(tile);
+                let value = bound.evaluate_in(context, row);
+                self.fit(value.ok().as_ref())
+            }
+            Inner::List(_) => unreachable!("a list's items are values"),
+        }
+    }
+
     /// Whether the value reads `feature-state`, but no feature properties:
     /// a `StateLookup`.
     pub fn is_state_lookup(&self) -> bool {

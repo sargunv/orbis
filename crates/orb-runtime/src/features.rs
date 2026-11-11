@@ -8,16 +8,42 @@ use orb_tile::{GeometryType, Layer, ValueRef};
 use crate::worker::{TileRequest, TileWorker};
 
 /// Which features of a tile a query wants.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FeatureSelect {
-    /// These features of a source layer, by index.
-    Indices { layer: String, features: Vec<u32> },
+    /// These features of a source layer, by index, each with the style
+    /// layer that drew it, whose `paint` and `layout` the answer gives as
+    /// evaluated for it (GL JS's `evaluateProperties`).
+    Indices {
+        layer: String,
+        features: Vec<Drawn>,
+        camera: QueryCamera,
+    },
     /// Every feature of a source layer (every layer if `None`) that a v8
     /// filter, as JSON, selects (all of them without one).
     Filter {
         layer: Option<String>,
         filter: Option<String>,
     },
+}
+
+/// A feature a rendered query answers, and what drew it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Drawn {
+    /// The feature's index in its source layer.
+    pub feature: u32,
+    /// The key of the style layer that drew it.
+    pub layer: u32,
+    /// Its feature state, a JSON object, if it has any.
+    pub state: Option<String>,
+}
+
+/// The camera a rendered query's layers are evaluated at.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QueryCamera {
+    pub zoom: f64,
+    pub pitch: f64,
+    pub bearing: f64,
+    pub meters_per_pixel: f64,
 }
 
 /// A query to a tile's owner worker: the tile, as it was loaded, and what
@@ -46,6 +72,9 @@ pub struct TileFeature {
     pub(crate) state_id: Option<String>,
     /// `"geometry":…,"properties":…`, a GeoJSON feature's members.
     pub body: String,
+    /// By the key of a style layer that drew it, that layer's `"paint":…,
+    /// "layout":…` members, evaluated for the feature.
+    pub evaluated: Vec<(u32, String)>,
 }
 
 /// Called once with a feature query's answer, on any thread.
@@ -93,13 +122,58 @@ impl TileWorker {
                         }),
                         state_id: id.map(state_key),
                         body: body(layer, f as usize, tile, tms),
+                        evaluated: Vec::new(),
                     }
                 })
                 .collect::<Vec<_>>()
         };
         Ok(match &request.select {
-            FeatureSelect::Indices { layer, features } => match frame.layer(layer) {
-                Some(l) => read(l, &mut features.iter().copied()),
+            FeatureSelect::Indices {
+                layer,
+                features,
+                camera,
+            } => match frame.layer(layer) {
+                Some(l) => {
+                    let mut indices: Vec<u32> = features.iter().map(|d| d.feature).collect();
+                    indices.sort_unstable();
+                    indices.dedup();
+                    let mut read = read(l, &mut indices.into_iter());
+                    let icons = self.icons();
+                    let canonical = self.canonical(index, tile);
+                    let plan = self.plan();
+                    for drawn in features {
+                        let Ok(at) = read.binary_search_by_key(&drawn.feature, |f| f.index) else {
+                            continue;
+                        };
+                        let feature = &mut read[at];
+                        let Some(style_layer) = (plan.layer_keys.iter())
+                            .position(|&k| k == drawn.layer)
+                            .map(|i| &plan.style.layers[i])
+                        else {
+                            continue;
+                        };
+                        if feature.evaluated.iter().any(|(k, _)| *k == drawn.layer) {
+                            continue;
+                        }
+                        let state = drawn.state.as_deref().map_or_else(Vec::new, parse_state);
+                        let context = orb_expr::EvaluationContext {
+                            zoom: camera.zoom,
+                            pitch: camera.pitch,
+                            bearing: camera.bearing,
+                            meters_per_pixel: camera.meters_per_pixel,
+                            feature_state: &state,
+                            available_images: icons.names(),
+                            ..Default::default()
+                        };
+                        let members = evaluated(
+                            style_layer,
+                            &context,
+                            (l, drawn.feature as usize, canonical),
+                        );
+                        feature.evaluated.push((drawn.layer, members));
+                    }
+                    read
+                }
                 None => Vec::new(),
             },
             FeatureSelect::Filter { layer, filter } => {
@@ -133,6 +207,43 @@ impl TileWorker {
             }
         })
     }
+}
+
+/// A feature state's JSON object, as values.
+fn parse_state(json: &str) -> Vec<(String, orb_expr::Value<'static>)> {
+    match orb_expr::json::parse(json).map(|j| orb_expr::Value::from_json(&j)) {
+        Ok(orb_expr::Value::Object(members)) => members.into_owned(),
+        _ => Vec::new(),
+    }
+}
+
+/// A style layer's `"paint":{…},"layout":{…}` for one feature, as GL JS's
+/// `evaluateProperties` gives a queried feature's layer: each property
+/// the style sets, evaluated at the camera with the feature's data and
+/// state. Colour ramps, which have no value of their own, are left out.
+fn evaluated(
+    style_layer: &orb_style::Layer,
+    context: &orb_expr::EvaluationContext<'_>,
+    feature: (&Layer, usize, Option<orb_expr::CanonicalTile>),
+) -> String {
+    let mut sections = [String::new(), String::new()];
+    for (id, slot) in style_layer.slots() {
+        let prop = id.prop();
+        if !slot.is_set() || prop.ramp || prop.list {
+            continue;
+        }
+        let value: orb_expr::Value<'static> =
+            orb_style::PropertyRef::of(slot, id).evaluate_feature(context, feature);
+        let out = &mut sections[usize::from(prop.paint)];
+        if !out.is_empty() {
+            out.push(',');
+        }
+        write_string(out, id.name());
+        out.push(':');
+        out.push_str(&value.to_json_string());
+    }
+    let [layout, paint] = sections;
+    format!("\"paint\":{{{paint}}},\"layout\":{{{layout}}}")
 }
 
 /// GL JS's `String(id)`, the feature-state key of an id.

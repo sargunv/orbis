@@ -282,6 +282,11 @@ impl TileWorker {
         self.data.icons.lock().expect("icons poisoned").icons.epoch < epoch
     }
 
+    /// The sprite icons the worker lays out with.
+    pub(crate) fn icons(&self) -> Arc<SpriteIcons> {
+        Arc::clone(&self.data.icons.lock().expect("icons poisoned").icons)
+    }
+
     /// Runs `ready` once this worker has icons set `epoch`: now, or when
     /// [`set_icons`](Self::set_icons) brings it.
     pub(crate) fn with_icons(&self, epoch: u32, ready: Box<dyn FnOnce() + Send>) {
@@ -606,7 +611,7 @@ impl TileWorker {
             rows_only: request.rows_only,
             neighbour: request.neighbour,
         };
-        let icons = Arc::clone(&self.data.icons.lock().expect("icons poisoned").icons);
+        let icons = self.icons();
         let words = self.data.words.lock().expect("words poisoned").clone();
         let symbols = tile::Symbols {
             glyphs: &self.data.glyphs,

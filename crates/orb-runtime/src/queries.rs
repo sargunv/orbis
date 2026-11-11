@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use glam::DVec2;
 use orb_crs::TileIndex;
 
-use crate::features::{FeatureRequest, FeatureSelect, TileFeature, write_string};
+use crate::features::{
+    Drawn, FeatureRequest, FeatureSelect, QueryCamera, TileFeature, write_string,
+};
 use crate::query::FeatureKey;
 use crate::resident::SourceState;
 use crate::worker::TileRequest;
@@ -27,9 +29,12 @@ struct Wanted {
     key: FeatureKey,
     /// The source layer, as the tile names it.
     tile_layer: String,
-    /// The `"source":…` and following members, and the `"layer"` object for
-    /// rendered features.
+    /// The `"source":…` and following members, and the `"layer"` object's
+    /// opening members, which the layer's evaluated `paint` and `layout`
+    /// close.
     members: String,
+    /// The key of the style layer that drew it.
+    layer_key: u32,
     source_key: u32,
     source_layer: Option<String>,
 }
@@ -58,12 +63,20 @@ impl crate::Map {
         };
         let plan = style.worker.plan();
         let (min, max) = (min.min(max), min.max(max));
-        let hits = self
-            .with_scene(|scene, view, camera, zoom| {
-                scene.query(view, camera, zoom, min, max, layers)
-            })
-            .unwrap_or_default();
+        let Some((hits, camera)) = self.with_scene(|scene, view, camera, zoom| {
+            let inputs = crate::paint::camera_inputs(camera);
+            let at = QueryCamera {
+                zoom,
+                pitch: inputs.pitch,
+                bearing: inputs.bearing,
+                meters_per_pixel: inputs.meters_per_pixel,
+            };
+            (scene.query(view, camera, zoom, min, max, layers), at)
+        }) else {
+            return done(Ok("[]".into()));
+        };
         let mut wanted = Vec::new();
+        let mut drawn: HashMap<(usize, TileIndex, String), Vec<Drawn>> = HashMap::new();
         for (hit, order, key) in hits {
             let Some(source) = plan.sources.iter().position(|s| s.key == key.source) else {
                 continue;
@@ -87,27 +100,40 @@ impl crate::Map {
                 members.push(',');
                 write_member(&mut members, "source-layer", source_layer);
             }
-            members.push('}');
+            let tile_layer = hit
+                .source_layer
+                .clone()
+                .unwrap_or_else(|| orb_tile::geojson::LAYER_NAME.into());
+            let layer_key = plan.layer_keys[order];
+            // The state its paint is evaluated with; the answer's `state`
+            // member is read apart, with every queried feature's.
+            let state = (hit.id.as_deref())
+                .and_then(|id| {
+                    style
+                        .states
+                        .feature(key.source, hit.source_layer.as_deref(), id)
+                })
+                .filter(|(state, _)| !state.is_empty())
+                .map(|(state, _)| orb_style::Value::Object(state.into()).to_json_string());
+            drawn
+                .entry((source, key.tile, tile_layer.clone()))
+                .or_default()
+                .push(Drawn {
+                    feature: key.feature,
+                    layer: layer_key,
+                    state,
+                });
             wanted.push(Wanted {
                 source,
                 key,
-                tile_layer: hit
-                    .source_layer
-                    .clone()
-                    .unwrap_or_else(|| orb_tile::geojson::LAYER_NAME.into()),
+                tile_layer,
                 members,
+                layer_key,
                 source_key: key.source,
                 source_layer: hit.source_layer.clone(),
             });
         }
-        let mut groups: HashMap<(usize, TileIndex, String), Vec<u32>> = HashMap::new();
-        for w in &wanted {
-            groups
-                .entry((w.source, w.key.tile, w.tile_layer.clone()))
-                .or_default()
-                .push(w.key.feature);
-        }
-        let requests = groups
+        let requests = drawn
             .into_iter()
             .filter_map(|((source, tile, layer), features)| {
                 let request = self.tile_request(source, tile)?;
@@ -116,7 +142,11 @@ impl crate::Map {
                     FeatureRequest {
                         revision: self.drawn_revision(source, tile),
                         tile: request,
-                        select: FeatureSelect::Indices { layer, features },
+                        select: FeatureSelect::Indices {
+                            layer,
+                            features,
+                            camera,
+                        },
                     },
                 ))
             })
@@ -372,7 +402,15 @@ fn assemble(
                 let key = (w.source, w.key.tile, w.tile_layer.as_str(), w.key.feature);
                 if let Some(feature) = by_index.get(&key) {
                     let state = state(w.source_key, w.source_layer.clone(), feature);
-                    push(&mut out, feature, &w.members, state);
+                    let mut members = w.members.clone();
+                    if let Some((_, evaluated)) =
+                        feature.evaluated.iter().find(|(k, _)| *k == w.layer_key)
+                    {
+                        members.push(',');
+                        members.push_str(evaluated);
+                    }
+                    members.push('}');
+                    push(&mut out, feature, &members, state);
                 }
             }
         }

@@ -83,6 +83,38 @@ impl<'a> Bound<'a> {
         )
     }
 
+    /// Evaluates feature `row` in `context` (its zoom, camera, state and
+    /// images), with the feature's geometry where the expression reads it
+    /// and the tile is known.
+    pub fn evaluate_in(
+        &self,
+        context: &crate::EvaluationContext<'a>,
+        row: usize,
+    ) -> Result<Value<'a>, EvalError> {
+        match self.tile.filter(|_| self.reads_geometry) {
+            Some(tile) => {
+                let geometry = crate::FeatureGeometry::from_layer(self.layer, row, tile);
+                let context = crate::EvaluationContext {
+                    geometry: Some(&geometry),
+                    accumulated: context.accumulated.clone(),
+                    ..*context
+                };
+                Evaluator {
+                    context: &context,
+                    ir: self.ir,
+                    feature: Some(&Row {
+                        layer: self.layer,
+                        columns: &self.columns,
+                        row,
+                    }),
+                }
+                .eval_root()
+                .map(Value::into_owned)
+            }
+            None => self.evaluate_with(context, row),
+        }
+    }
+
     /// Evaluates a row with explicit state, geometry and globals.
     /// Literal property keys still address the columns resolved at bind time.
     pub fn evaluate_with(
