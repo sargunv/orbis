@@ -131,6 +131,8 @@ pub(crate) struct Test {
     pub(crate) tile_mode: bool,
     pub(crate) cross_source_collisions: bool,
     pub(crate) max_pitch: f64,
+    /// `axonometric`, with its `skew` (`[0, 1]` unless set).
+    pub(crate) axonometric: Option<orb_api::Skew>,
     pub(crate) operations: Vec<Value>,
     /// The query box, `[x1, y1, x2, y2]`, for a query test.
     pub(crate) query: Option<[f64; 4]>,
@@ -191,15 +193,20 @@ impl Test {
                 skips.insert(format!("metadata:{key}"));
             }
         }
-        if test.get("axonometric") == Some(&json!(true)) {
-            skips.insert("metadata:axonometric".into());
-        }
-        if test
-            .get("skew")
-            .is_some_and(|s| s.as_array().is_none_or(|s| s != &[json!(0), json!(1)]))
-        {
+        let skew = match test.get("skew") {
+            None => Some(orb_api::Skew::default()),
+            Some(s) => match s.as_array().map(Vec::as_slice) {
+                Some([x, y]) => x
+                    .as_f64()
+                    .zip(y.as_f64())
+                    .map(|(x, y)| orb_api::Skew { x, y }),
+                _ => None,
+            },
+        };
+        if skew.is_none() {
             skips.insert("metadata:skew".into());
         }
+        let axonometric = skew.filter(|_| test.get("axonometric") == Some(&json!(true)));
         if test.get("queryOptions").is_some() {
             skips.insert("query:options".into());
         }
@@ -244,6 +251,7 @@ impl Test {
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
             max_pitch,
+            axonometric,
             operations,
             query,
             replacements,
@@ -453,6 +461,7 @@ fn map(runtime: &Runtime, test: &Test) -> Map {
         max_pitch: test.max_pitch,
         ..orb_api::Constraints::WORLD
     });
+    map.set_axonometric(test.axonometric);
     map
 }
 
@@ -615,8 +624,12 @@ fn render(
         Backend::Native(runtime) => {
             render_native(runtime, test, text, assets, reasons, diagnostics)
         }
-        Backend::Chrome(_) if test.tile_mode => {
-            reasons.insert("host:tile-mode".into());
+        Backend::Chrome(_) if test.tile_mode || test.axonometric.is_some() => {
+            reasons.insert(if test.tile_mode {
+                "host:tile-mode".into()
+            } else {
+                "host:axonometric".into()
+            });
             Ok(Rendered {
                 image: None,
                 failure: None,

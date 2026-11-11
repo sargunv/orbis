@@ -19,7 +19,7 @@ use orb_runtime::{
     RenderMode, StyleImage, Transaction, VideoRequest, Viewport,
 };
 
-use crate::{Error, Runtime, Target};
+use crate::{Error, Runtime, Skew, Target};
 
 /// Something a map, its camera or a gesture did.
 #[derive(Clone, Debug, PartialEq)]
@@ -555,6 +555,13 @@ impl Map {
         self.dirty = true;
     }
 
+    /// Draws the map in MapLibre Native's axonometric projection, heights
+    /// leaning by `skew` and padding ignored, or in perspective (`None`).
+    pub fn set_axonometric(&mut self, skew: Option<Skew>) {
+        self.map.set_axonometric(skew);
+        self.dirty = true;
+    }
+
     pub fn center_clamped_to_ground(&self) -> bool {
         self.map.center_clamped_to_ground()
     }
@@ -977,6 +984,7 @@ impl Map {
                     fov: CameraState::DEFAULT_FOV,
                     elevation: 0.0,
                     padding: Padding::default(),
+                    axonometric: None,
                 },
                 viewport,
                 center,

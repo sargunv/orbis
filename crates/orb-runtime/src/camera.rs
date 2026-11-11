@@ -7,7 +7,7 @@ use glam::DVec2;
 use orb_camera::input::{GestureOptions, Input, InteractEvent};
 use orb_camera::{
     AnimationId, Bounds, CameraState, CameraTarget, Constraints, EaseOptions, FitOptions,
-    FlyOptions, FreeCamera, GestureMomentum, Viewport,
+    FlyOptions, FreeCamera, GestureMomentum, Skew, Viewport,
 };
 use orb_crs::Geodetic;
 
@@ -77,6 +77,13 @@ impl Map {
     /// it is given, and the camera orbits a point in the air.
     pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
         self.camera.set_center_clamped_to_ground(clamped);
+    }
+
+    /// Draws the map in MapLibre Native's axonometric projection, heights
+    /// leaning by `skew` and padding ignored, or in perspective (`None`).
+    pub fn set_axonometric(&mut self, skew: Option<Skew>) {
+        self.camera.set_axonometric(skew);
+        (self.services.wake)();
     }
 
     pub fn center_clamped_to_ground(&self) -> bool {

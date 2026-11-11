@@ -66,6 +66,28 @@ pub struct CameraState {
     /// `padding`): the target and the vanishing point sit at the middle
     /// of what is left.
     pub padding: Padding,
+    /// MapLibre Native's axonometric projection, when set: heights stand
+    /// without perspective, leaning by its skew, and padding is ignored.
+    /// The ground projects as it does in perspective.
+    pub axonometric: Option<Skew>,
+}
+
+/// How an axonometric view leans what stands above the ground, as
+/// MapLibre Native's `xSkew` and `ySkew` do (`(0, 1)` by default: heights
+/// rise straight up): a height `h` pixels long at the target's scale moves
+/// the picture by `x × h` and `y × h` in clip units at the eye's distance
+/// in pixels, right and up. At the target's depth that is `x × h × width
+/// ÷ 2d` pixels right, `d` that distance, and likewise up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Skew {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Default for Skew {
+    fn default() -> Self {
+        Self { x: 0.0, y: 1.0 }
+    }
 }
 
 /// Size of one tile side at its own zoom in the style zoom convention, in
@@ -104,15 +126,19 @@ impl CameraState {
             fov: Self::DEFAULT_FOV,
             elevation: 0.0,
             padding: Padding::default(),
+            axonometric: None,
         };
         camera.set_zoom(projection, zoom);
         camera
     }
 
     /// Where the target shows in `viewport`: the middle of its padded
-    /// area, in logical pixels.
+    /// area (of the whole viewport, axonometric), in logical pixels.
     pub fn center(&self, viewport: Viewport) -> DVec2 {
-        let p = self.padding;
+        let p = match self.axonometric {
+            Some(_) => Padding::default(),
+            None => self.padding,
+        };
         DVec2::new(
             (viewport.width + p.left - p.right) / 2.0,
             (viewport.height + p.top - p.bottom) / 2.0,
@@ -377,7 +403,20 @@ impl View {
             );
         let eye = view.inverse().transform_point3(DVec3::ZERO);
 
-        let view_proj = proj * view;
+        let mut view_proj = proj * view;
+        // Native's axonometric matrix: a height adds nothing to the depth
+        // it divides by, and moves the picture by its skew instead, its
+        // length in pixels each way (`TransformState::getProjMatrix`).
+        // Heights count from the target's.
+        if let Some(skew) = camera.axonometric {
+            let mut z = view_proj.z_axis;
+            let at_target = view_proj.w_axis + z * target_z;
+            z.x = skew.x / world_per_px;
+            z.y = skew.y / world_per_px;
+            z.w = 0.0;
+            view_proj.z_axis = z;
+            view_proj.w_axis = at_target - z * target_z;
+        }
 
         let amount = surface.globe_amount(camera.zoom(projection));
         let low_plane = surface.globe.and_then(|g| g.plane);
@@ -1557,6 +1596,57 @@ mod tests {
         // the ground with it.
         assert!(b.ground_horizon() < a.ground_horizon() + moved.y);
         assert_eq!(a.eye(), b.eye());
+    }
+
+    /// An axonometric view draws the ground as perspective does without
+    /// padding, and a height as its skew times its length in pixels, as
+    /// MapLibre Native's does, however far ahead it stands.
+    #[test]
+    fn axonometric_heights_lean_by_their_skew() {
+        let viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        let surface = Surface::plane(mercator());
+        let perspective = CameraState {
+            pitch: 40.0,
+            ..CameraState::new(Geodetic::new(139.7, 35.7), 15.0, &mercator())
+        };
+        let axonometric = CameraState {
+            padding: Padding {
+                top: 80.0,
+                ..Padding::default()
+            },
+            axonometric: Some(Skew { x: 0.5, y: -1.0 }),
+            ..perspective
+        };
+        let (a, b) = (
+            View::new(&perspective, viewport, &surface),
+            View::new(&axonometric, viewport, &surface),
+        );
+        let target = mercator().forward(perspective.target);
+        for ahead in [0.0, 300.0] {
+            let ground = target + DVec2::new(100.0, ahead);
+            let flat = a.project(ground).unwrap();
+            assert!((b.project(ground).unwrap() - flat).length() < 1e-6);
+            // 10 pixels tall at the target's scale.
+            let height = b.height_of(10.0 * b.world_per_px());
+            let up = b.project_3d(ground, height).unwrap() - flat;
+            // Right and down at the target's depth, in clip units over the
+            // eye's distance; farther ahead, the same way, shrunk with depth.
+            let eye = 300.0 / (CameraState::DEFAULT_FOV / 2.0).to_radians().tan();
+            let near = DVec2::new(0.5 * 400.0, 300.0) * 10.0 / eye;
+            let scale = up.x / near.x;
+            assert!(ahead > 0.0 || (scale - 1.0).abs() < 1e-9);
+            assert!(
+                scale > 0.0 && scale < 1.0 + 1e-9,
+                "{ahead}: {up} against {near}"
+            );
+            assert!(
+                (up.y - near.y * scale).abs() < 1e-6,
+                "{ahead}: {up} against {near}"
+            );
+        }
     }
 
     #[test]

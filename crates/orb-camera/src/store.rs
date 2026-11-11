@@ -8,6 +8,7 @@ use glam::DVec2;
 use orb_crs::Geodetic;
 use orb_crs::Projection;
 
+use crate::Skew;
 use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion, Track};
 use crate::fit::FitOptions;
 use crate::momentum::{GestureMomentum, Momentum, MomentumVelocity, Stage};
@@ -274,6 +275,16 @@ impl Camera {
 
     pub fn center_clamped_to_ground(&self) -> bool {
         self.clamped
+    }
+
+    /// Draws the map in MapLibre Native's axonometric projection, leaning
+    /// heights by `skew`, or in perspective (`None`). Moves and animations
+    /// keep it.
+    pub fn set_axonometric(&mut self, skew: Option<Skew>) {
+        if self.state.axonometric != skew {
+            self.state.axonometric = skew;
+            self.revision += 1;
+        }
     }
 
     /// Puts the target this many metres above the surface at once (GL JS
@@ -863,6 +874,8 @@ impl Camera {
     /// Writes a constrained state. Moves outside the limits are clamped,
     /// whoever makes them.
     fn write(&mut self, mut next: CameraState) {
+        // Only `set_axonometric` changes the projection.
+        next.axonometric = self.state.axonometric;
         next.bearing = wrap_bearing(next.bearing);
         next.constrain(&self.constraints, &self.surface, self.viewport);
         if let Some(terrain) = self.terrain.as_deref().filter(|_| self.clamped) {

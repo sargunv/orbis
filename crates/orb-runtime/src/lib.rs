@@ -71,7 +71,7 @@ pub use options::MapOptions;
 pub use orb_camera::input::{Button, Input};
 pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraState, CameraTarget, Constraints, EaseOptions,
-    FitOptions, FlyOptions, View, Viewport,
+    FitOptions, FlyOptions, Skew, View, Viewport,
 };
 pub use orb_expr::json;
 pub use orb_layout::fill::Bend;

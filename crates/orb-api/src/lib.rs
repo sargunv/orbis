@@ -28,7 +28,7 @@ pub use orb_camera::input::{
 pub use orb_camera::{
     AnchoredMomentum, AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints,
     DecayModel, EaseOptions, Easing, FitOptions, FlyOptions, FreeCamera, GestureMomentum,
-    MomentumDecay, MomentumSnap, MomentumVelocity, Padding, PanMomentum, Phase, TileLod,
+    MomentumDecay, MomentumSnap, MomentumVelocity, Padding, PanMomentum, Phase, Skew, TileLod,
     TileLodMode,
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
