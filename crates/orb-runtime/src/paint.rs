@@ -226,9 +226,10 @@ pub(crate) fn prewarm_needed(renderer: &Renderer, style: &LoadedStyle) -> bool {
 /// Asks the renderer, in the background, for the pipelines the style's
 /// nodes may draw with at any zoom, unless it was asked for these nodes of
 /// this plan: each node painted at every whole zoom its layer draws at
-/// (from `zoom`, outwards), so a gesture that brings a layer in, or
-/// changes what a layer's paint reads, doesn't wait for compiles. Called
-/// once the map is idle: what the view needs compiled first.
+/// (from `zoom`, outwards), a symbol layer's two halves together, so a
+/// gesture that brings a layer in, or changes what a layer's paint reads,
+/// doesn't wait for compiles. Called once the map is idle: what the view
+/// needs compiled first.
 pub(crate) fn prewarm(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
@@ -251,50 +252,71 @@ pub(crate) fn prewarm(
     // Whole zooms nearest the camera's first.
     let mut zooms: Vec<f64> = (0..=24).map(f64::from).collect();
     zooms.sort_by(|a, b| (a - zoom).abs().total_cmp(&(b - zoom).abs()));
-    let mut paints = Vec::new();
+    let mut groups: Vec<Vec<(u32, Option<NodePaint>)>> = Vec::new();
     for (index, node) in plan.nodes.iter().enumerate() {
         let layer = &plan.style.layers[node.layer];
         if node.family.is_image() || node.family == Family::Heatmap {
             // Their family alone picks their pipelines.
             if (zooms.iter()).any(|&z| drawn_at(layer, node, z)) {
-                paints.push((index as u32, None));
+                groups.push(vec![(index as u32, None)]);
             }
             continue;
         }
-        let state = style.nodes.entry(node.key).or_default();
-        let properties = plan.paint_properties(node).len();
-        if state.maxima.len() < properties {
-            state.maxima.resize(properties, 0.0);
-        }
-        let lookup = style.states.lookup(index);
-        let first = paints.len();
-        for &at in zooms.iter().filter(|&&z| drawn_at(layer, node, z)) {
+        // A symbol layer's icon node draws its text node's quads too, with
+        // one pipeline both halves' paint at a zoom picks.
+        let nodes = match node.family {
+            Family::SymbolText => continue,
+            Family::SymbolIcon => index..index + 2,
+            _ => index..index + 1,
+        };
+        for i in nodes.clone() {
+            let node = &plan.nodes[i];
             let state = style.nodes.entry(node.key).or_default();
-            let paint = if node.family.is_symbol() {
-                crate::labels::paint(plan, node, at, &state.maxima, lookup).map(NodePaint::Symbol)
-            } else if node.family == Family::Circle {
-                crate::point::node_paint(plan, node, at, &state.maxima, lookup)
-            } else {
-                let at = PaintAt {
-                    zoom: at,
-                    bearing: inputs.bearing,
-                    crossfade,
-                };
-                node_paint(gpu, renderer, (style, plan), index as u32, at, atlas)
-            };
-            let Some(paint) = paint else {
+            let properties = plan.paint_properties(node).len();
+            if state.maxima.len() < properties {
+                state.maxima.resize(properties, 0.0);
+            }
+        }
+        let first = groups.len();
+        for &at in zooms.iter().filter(|&&z| drawn_at(layer, node, z)) {
+            let group: Vec<_> = (nodes.clone())
+                .map(|i| {
+                    let node = &plan.nodes[i];
+                    let state = style.nodes.entry(node.key).or_default();
+                    let lookup = style.states.lookup(i);
+                    let paint = if node.family.is_symbol() {
+                        crate::labels::paint(plan, node, at, &state.maxima, lookup)
+                            .map(NodePaint::Symbol)
+                    } else if node.family == Family::Circle {
+                        crate::point::node_paint(plan, node, at, &state.maxima, lookup)
+                    } else {
+                        let at = PaintAt {
+                            zoom: at,
+                            bearing: inputs.bearing,
+                            crossfade,
+                        };
+                        node_paint(gpu, renderer, (style, plan), i as u32, at, atlas)
+                    };
+                    (i as u32, paint)
+                })
+                .collect();
+            if group.iter().all(|(_, paint)| paint.is_none()) {
                 continue;
-            };
+            }
             // The renderer makes each pipeline once: only paint that may
             // pick others is kept.
-            let seen = (paints[first..].iter().flat_map(|(_, p)| p))
-                .any(|p| orb_render::same_pipelines(p, &paint));
-            if !seen {
-                paints.push((index as u32, Some(paint)));
+            let same = |a: &[(u32, Option<NodePaint>)]| {
+                a.iter().zip(&group).all(|((_, a), (_, b))| match (a, b) {
+                    (Some(a), Some(b)) => orb_render::same_pipelines(a, b),
+                    (a, b) => a.is_none() && b.is_none(),
+                })
+            };
+            if !groups[first..].iter().any(|g| same(g)) {
+                groups.push(group);
             }
         }
     }
-    renderer.prewarm(gpu, &paints);
+    renderer.prewarm(gpu, &groups);
 }
 
 /// Writes the draped nodes' paint at the camera's `zoom` for drape layout

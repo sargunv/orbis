@@ -5,7 +5,8 @@ use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
     Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameLight, FrameStats,
-    MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow, Words,
+    MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity, SymbolPaint, TargetFormat,
+    TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -1833,4 +1834,32 @@ fn default_capacity_holds_a_large_basemaps_nodes() {
         images.bindings(),
     );
     renderer.set_nodes(&mut gpu, &[Family::Line; 400]);
+}
+
+#[test]
+fn prewarm_asks_for_the_symbol_pipeline_both_halves_pick() {
+    let mut h = Harness::new();
+    h.renderer
+        .set_nodes(&mut h.gpu, &[Family::SymbolIcon, Family::SymbolText]);
+    let plain = NodePaint::Symbol(SymbolPaint::default());
+    let rows = NodePaint::Symbol(SymbolPaint {
+        table_mask: 1,
+        ..SymbolPaint::default()
+    });
+    // Neither half painted yet: the icons alone, with text that draws
+    // nothing, or with text painted alike pick the pipeline without rows.
+    h.renderer.prewarm(
+        &mut h.gpu,
+        &[
+            vec![(0, Some(plain))],
+            vec![(0, Some(plain)), (1, None)],
+            vec![(0, Some(plain)), (1, Some(plain))],
+        ],
+    );
+    let plain_pipelines = h.gpu.background_pending();
+    assert!(plain_pipelines > 0);
+    // Text reading rows picks the variant with them for both halves.
+    h.renderer
+        .prewarm(&mut h.gpu, &[vec![(0, Some(plain)), (1, Some(rows))]]);
+    assert_eq!(h.gpu.background_pending(), 2 * plain_pipelines);
 }

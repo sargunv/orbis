@@ -700,6 +700,13 @@ impl WgpuGpu {
         self.pipelines_created
     }
 
+    /// Background pipelines asked for ([`Gpu::set_background_compiles`])
+    /// that haven't compiled, and no frame asked for since. Without a
+    /// compile executor they wait for a frame: every one asked for.
+    pub fn background_pending(&self) -> usize {
+        self.background_pending.len()
+    }
+
     /// Each pipeline compiled so far and how long it took, in the order
     /// they finished: natively the worker's time in wgpu and the driver;
     /// in the browser from the request to its promise resolving.

@@ -321,7 +321,49 @@ impl Node {
             rows: self.rows,
         }
     }
+
+    /// What of it picks its pipelines, which [`Renderer::prewarm`] sets
+    /// from a paint it may draw with and puts back.
+    fn shape(&self) -> NodeShape {
+        (
+            self.styled,
+            self.rows,
+            self.along_line,
+            self.elevation,
+            self.ground,
+        )
+    }
+
+    /// Its pipelines' shape as `paint` picks them, with the frame's
+    /// `ground`.
+    fn set_shape(&mut self, paint: &NodePaint, ground: extrusion::Ground) {
+        (self.styled, self.rows) = (paint.styled(), paint.reads_rows());
+        match paint {
+            NodePaint::Symbol(p) => self.along_line = p.along_line,
+            NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
+                self.elevation = paint.extrusion_shape();
+                self.ground = extrusion::Ground {
+                    occlusion: p.ground_occlusion(),
+                    ..ground
+                };
+            }
+            _ => {}
+        }
+    }
+
+    fn restore_shape(&mut self, shape: NodeShape) {
+        (
+            self.styled,
+            self.rows,
+            self.along_line,
+            self.elevation,
+            self.ground,
+        ) = shape;
+    }
 }
+
+/// [`Node::shape`]: styled, rows, along lines, elevation and ground.
+type NodeShape = (bool, bool, bool, paint::ExtrusionShape, extrusion::Ground);
 
 #[derive(Debug)]
 pub struct Renderer {
@@ -1058,7 +1100,10 @@ impl Renderer {
                 separate_halo: false,
                 along_line: false,
                 styled: false,
-                rows: true,
+                // A symbol half adds to the pipeline its layer draws with
+                // only once painted: unpainted (its layer not shown yet, or
+                // its part's opacity 0), it draws nothing.
+                rows: !family.is_symbol(),
                 elevation: paint::ExtrusionShape::default(),
                 ground: extrusion::Ground::default(),
                 occlusion: false,
@@ -1851,55 +1896,49 @@ impl Renderer {
         }
     }
 
-    /// Asks, in the background, for the pipelines node `i` draws with for
-    /// each `(i, paint)` (its paint at a zoom it shows at; `None` for a
-    /// family whose pipelines its paint doesn't pick), so a gesture
-    /// that shows it later, or changes what its paint reads, doesn't wait
-    /// for their compiles: for the map's variants, sample count and
-    /// terrain as they are now. They compile after every pipeline a frame
-    /// asks for, and frames don't wait for them until a node shown draws
-    /// with one.
-    pub fn prewarm(&mut self, gpu: &mut dyn Gpu, paints: &[(u32, Option<NodePaint>)]) {
+    /// Asks, in the background, for the pipelines each group of `(i,
+    /// paint)` draws with, so a gesture that shows them later, or changes
+    /// what their paint reads, doesn't wait for their compiles: for the
+    /// map's variants, sample count and terrain as they are now. A group
+    /// is what draws together at one zoom it shows at: a node and its
+    /// paint (`None` for a family whose pipelines its paint doesn't pick),
+    /// or a symbol layer's icon and text nodes, which draw in one list
+    /// with one pipeline (`None` for a half that draws nothing there).
+    /// They compile after every pipeline a frame asks for, and frames
+    /// don't wait for them until a node shown draws with one.
+    pub fn prewarm(&mut self, gpu: &mut dyn Gpu, groups: &[Vec<(u32, Option<NodePaint>)>]) {
         gpu.set_background_compiles(true);
-        for (i, paint) in paints {
-            let i = *i as usize;
-            let shape = match paint {
-                _ if i >= self.nodes.len() => continue,
-                None => None,
-                Some(paint) if paint.fits(self.nodes[i].family) => Some(paint),
-                Some(_) => continue,
+        for group in groups {
+            let fits = |&(i, ref paint): &(u32, Option<NodePaint>)| {
+                let node = self.nodes.get(i as usize);
+                node.is_some_and(|n| paint.as_ref().is_none_or(|p| p.fits(n.family)))
             };
-            let node = &mut self.nodes[i];
-            let kept = (
-                node.styled,
-                node.rows,
-                node.along_line,
-                node.elevation,
-                node.ground,
-            );
-            if let Some(paint) = shape {
-                (node.styled, node.rows) = (paint.styled(), paint.reads_rows());
-                match paint {
-                    NodePaint::Symbol(p) => node.along_line = p.along_line,
-                    NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
-                        node.elevation = paint.extrusion_shape();
-                        node.ground = extrusion::Ground {
-                            occlusion: p.ground_occlusion(),
-                            ..self.frame_ground
-                        };
-                    }
-                    _ => {}
-                }
+            if !group.iter().all(fits) {
+                continue;
             }
-            self.make_for_node(gpu, self.drawer(i), true);
-            let node = &mut self.nodes[i];
-            (
-                node.styled,
-                node.rows,
-                node.along_line,
-                node.elevation,
-                node.ground,
-            ) = kept;
+            let kept: Vec<_> = (group.iter())
+                .map(|(i, paint)| {
+                    let node = &mut self.nodes[*i as usize];
+                    let kept = node.shape();
+                    match paint {
+                        Some(paint) => node.set_shape(paint, self.frame_ground),
+                        // A symbol half that draws nothing reads nothing.
+                        None if node.family.is_symbol() => {
+                            (node.rows, node.along_line) = (false, false)
+                        }
+                        None => {}
+                    }
+                    (*i as usize, kept)
+                })
+                .collect();
+            let mut drawers: Vec<usize> = kept.iter().map(|&(i, _)| self.drawer(i)).collect();
+            drawers.dedup();
+            for i in drawers {
+                self.make_for_node(gpu, i, true);
+            }
+            for (i, kept) in kept {
+                self.nodes[i].restore_shape(kept);
+            }
         }
         gpu.set_background_compiles(false);
     }

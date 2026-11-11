@@ -427,7 +427,7 @@ impl SymbolSize {
 
 /// A symbol node's paint and drawing mode (`symbol.wgsl`'s `SymbolNode`).
 /// Slots: opacity, colour, halo colour, halo width, halo blur.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SymbolPaint {
     pub color: [f32; 4],
     pub halo_color: [f32; 4],
