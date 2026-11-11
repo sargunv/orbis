@@ -100,13 +100,15 @@ pub unsafe extern "C" fn mln_android_init(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
+            if jni_env.is_null() || context.is_null() {
+                return Err(Failure::argument("jni_env and context must not be null"));
+            }
             #[cfg(target_os = "android")]
             return orb_api::init_android(jni_env, context).map_err(Failure::native);
             #[cfg(not(target_os = "android"))]
-            {
-                let _ = (jni_env, context);
-                Err(Failure::unsupported("mln_android_init is for Android"))
-            }
+            Err(Failure::unsupported(
+                "Android initialization is not supported",
+            ))
         })
     }
 }

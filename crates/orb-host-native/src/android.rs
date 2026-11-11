@@ -15,7 +15,7 @@ pub(crate) fn ready() -> bool {
 /// Gives HTTPS the app's JVM and `Context`, from then on verifying servers
 /// with Android's trust store and the app's network security config: `env`
 /// is the calling thread's `JNIEnv*`, `context` a `jobject` reference to a
-/// `Context` (the application, say). Later calls change nothing.
+/// `Context`, whose application it keeps. Later calls change nothing.
 ///
 /// # Safety
 /// `env` is the calling thread's live `JNIEnv`, and `context` a live
@@ -34,6 +34,21 @@ pub unsafe fn init(
         .with_env(|env| -> Result<(), jni::errors::Error> {
             // SAFETY: the caller's contract; the reference outlives the call.
             let context = unsafe { jni::objects::JObject::from_raw(env, context.cast()) };
+            // The verifier keeps what it's given for the process's life and
+            // takes it for the application: an activity would leak.
+            let application = env
+                .call_method(
+                    &context,
+                    jni::jni_str!("getApplicationContext"),
+                    jni::jni_sig!("()Landroid/content/Context;"),
+                    &[],
+                )?
+                .l()?;
+            let context = if application.is_null() {
+                context
+            } else {
+                application
+            };
             rustls_platform_verifier::android::init_with_env(env, context)
         })
         .into_outcome();
