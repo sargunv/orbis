@@ -563,18 +563,6 @@ impl CpuDriver {
         }
     }
 
-    /// Node `node`'s point quads from 4 vertices each, as the GPU
-    /// driver's `quads`.
-    pub(crate) fn quads(&self, node: u32) -> RenderCommand {
-        let at = node as usize * ARGS_WORDS;
-        let a = self.args.get(at..at + 4).unwrap_or(&[0; 4]);
-        RenderCommand::DrawIndexed {
-            indices: 0..a[0],
-            base_vertex: a[2] as i32,
-            instances: a[3]..a[3] + a[1],
-        }
-    }
-
     pub(crate) fn draws_nothing(&self, node: u32) -> bool {
         let at = node as usize * ARGS_WORDS;
         self.args

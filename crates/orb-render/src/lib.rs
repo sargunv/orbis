@@ -2786,7 +2786,10 @@ impl Renderer {
             } else {
                 &self.symbol_passes[..1]
             };
-            let quads = self.driver.quads(self.scene.buffers(), i as u32);
+            // The cull's point arguments read as indexed ones: 6 indices
+            // into [`QUAD_INDICES`], and the first index, base vertex and
+            // first instance all 0, as points always have them.
+            let quads = (self.driver).draw(self.scene.buffers(), i as u32, NodeDraw::Indexed);
             commands.extend([
                 RenderCommand::SetPipeline(pipeline),
                 RenderCommand::SetBindGroup {

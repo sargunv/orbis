@@ -268,17 +268,6 @@ impl Driver {
         }
     }
 
-    /// Node `node`'s point quads (a [`NodeDraw::Points`] node's), each
-    /// drawn from 4 vertices with [`QUAD_INDICES`](crate::QUAD_INDICES)
-    /// bound rather than 6.
-    pub(crate) fn quads(&self, buffers: &SceneBuffers, node: u32) -> RenderCommand {
-        match self {
-            Self::Gpu(_) => gpu::quads(buffers, node),
-            #[cfg(cpu_driven)]
-            Self::Cpu(d) => d.quads(node),
-        }
-    }
-
     /// Whether node `node`'s draw draws nothing, so bundles may leave it
     /// out: known only to a driver whose draws are recorded with their
     /// counts.
