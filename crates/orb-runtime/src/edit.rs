@@ -211,13 +211,7 @@ impl Map {
                 continue;
             };
             let new = &plan.style.layers[after];
-            let transition = new
-                .transitions
-                .iter()
-                .find(|(n, _)| n == id.name())
-                .map_or(plan.style.transition, |(_, t)| {
-                    t.over(plan.style.transition)
-                });
+            let transition = crate::transitions::transition_of(&plan.style, new, *id);
             let old = &old_plan.style.layers[before];
             self.transitions
                 .start(&new.id, *id, old.slot(*id), transition, (now, zoom));
