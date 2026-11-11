@@ -109,13 +109,7 @@ impl WgpuGpu {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
-                // Natively, warm starts reuse pipelines through a cache;
-                // timestamps time passes for measurements (`set_timing`);
-                // clip distances clip cut buildings without discarding.
-                required_features: adapter.features()
-                    & (wgpu::Features::PIPELINE_CACHE
-                        | wgpu::Features::TIMESTAMP_QUERY
-                        | wgpu::Features::CLIP_DISTANCES),
+                required_features: crate::device_features(&adapter),
                 required_limits: crate::device_limits(&adapter),
                 ..Default::default()
             })

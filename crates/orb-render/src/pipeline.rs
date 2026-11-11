@@ -94,6 +94,7 @@ impl<'a> Draw<'a> {
             if !self.state && shader.takes(entry, orb_shaders::FEATURE_STATE) {
                 constants.push((orb_shaders::FEATURE_STATE, 0.0));
             }
+            constants.extend(data_width(gpu, shader, entry));
             constants
         });
         debug_assert!(
@@ -147,13 +148,15 @@ pub(crate) fn compute(
     constants: &[(&str, f64)],
 ) -> ComputePipelineId {
     let module = module(gpu, shader);
+    let mut constants = constants.to_vec();
+    constants.extend(data_width(gpu, shader, shader.compute));
     let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
         label: shader.label,
         bind_group_layouts: layouts,
         compute: ShaderStage {
             module,
             entry_point: shader.compute,
-            constants,
+            constants: &constants,
         },
     });
     gpu.destroy_shader_module(module);
@@ -164,28 +167,49 @@ pub(crate) fn compute(
 /// where the device's vertex stage has no storage buffers (the tables'
 /// texture backing), and on a device without compute (WebGL 2) every
 /// other table too, with the built-ins written out
-/// ([`Shader::gl_source`]).
+/// ([`Shader::gl_source`]), and that written as GLSL ES 3.00 by the build
+/// (`orb_shaders::glsl`), which a GL ES device compiles as it is. WebGL 2's
+/// build (core-gl.wasm) carries that GLSL alone, no WGSL.
 fn module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
     #[cfg(cpu_driven)]
-    if !gpu.caps().vertex_storage {
-        let source = if gpu.caps().gl_shaders() {
-            (shader.gl_source()).unwrap_or_else(|| panic!("{} has no WebGL 2 source", shader.label))
-        } else {
-            shader.texture_tables_source()
-        };
-        let width = crate::scene::data_width(&gpu.caps().limits);
-        let source = orb_shaders::with_data_width(source, width);
-        return gpu.create_shader_module(&ShaderModuleDesc {
-            label: shader.label,
-            source: source.into(),
-            ir: None,
-        });
-    }
+    let gl: Option<Glsl> = Some(orb_shaders::glsl);
+    #[cfg(all(cpu_driven, target_arch = "wasm32"))]
+    let (source, ir, glsl) = (String::new(), None, gl);
+    #[cfg(not(target_arch = "wasm32"))]
+    let (source, ir, glsl) = if gpu.caps().gl_shaders() {
+        let source = (shader.gl_source())
+            .unwrap_or_else(|| panic!("{} has no WebGL 2 source", shader.label));
+        (source, None, gl)
+    } else if !gpu.caps().vertex_storage {
+        (shader.texture_tables_source(), None, None)
+    } else {
+        (shader.source(), shader.ir(), None)
+    };
+    #[cfg(all(not(cpu_driven), target_arch = "wasm32"))]
+    let (source, ir, glsl) = (shader.source(), shader.ir(), None);
     gpu.create_shader_module(&ShaderModuleDesc {
         label: shader.label,
-        source: shader.source().into(),
-        ir: shader.ir(),
+        source: source.into(),
+        ir,
+        glsl,
     })
+}
+
+/// The data width a stage reading data textures takes, where it isn't
+/// its default (orb_shaders' `DATA_WIDTH_LOG2`).
+fn data_width(gpu: &dyn Gpu, shader: &Shader, entry: &str) -> Option<(&'static str, f64)> {
+    #[cfg(cpu_driven)]
+    {
+        use orb_shaders::DATA_WIDTH_LOG2;
+        let width = crate::scene::data_width(&gpu.caps().limits);
+        (!gpu.caps().vertex_storage && width != 1 << 12 && shader.takes(entry, DATA_WIDTH_LOG2))
+            .then(|| (DATA_WIDTH_LOG2, f64::from(width.ilog2())))
+    }
+    #[cfg(not(cpu_driven))]
+    {
+        let _ = (gpu, shader, entry);
+        None
+    }
 }
 
 /// A draw pipeline's plane and full variants ([`Draw::plane`]), each made

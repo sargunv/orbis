@@ -319,6 +319,6 @@ impl Job {
                 error.get_or_insert(e.to_string());
             }
         }
-        error.map_or(Ok(built), Err)
+        error.map_or(built, Err)
     }
 }

@@ -8,9 +8,10 @@ version.workspace = true
 
 [features]
 # On the web, the backend: exactly one of the two. `webgpu` is core.wasm's,
-# `gl` core-gl.wasm's (WebGL 2). Natively, `gl` adds GLES over EGL beside
-# the platform's own backend (Android always has it).
-webgpu = ["wgpu/webgpu"]
+# `gl` core-gl.wasm's (WebGL 2), which compiles the build's GLSL alone (no
+# `wgpu/wgsl`). Natively, `gl` adds GLES over EGL beside the platform's own
+# backend (Android always has it).
+webgpu = ["wgpu/webgpu", "wgpu/wgsl"]
 gl = ["wgpu/webgl", "wgpu/gles"]
 # Vulkan beside Metal on Apple platforms (MoltenVK), for checking the Vulkan
 # path under the validation layer there, and beside D3D12 on Windows, for
@@ -40,10 +41,11 @@ orb-host.workspace = true
 sha2.workspace = true
 # Compile threads pop wgpu's (immediately ready) error scopes.
 pollster.workspace = true
-# Shader modules from the build's naga modules (`ShaderModuleDesc::ir`).
+# Shader modules from the build's naga modules (`ShaderModuleDesc::ir`), or
+# its WGSL.
 naga = { workspace = true, features = ["deserialize"] }
 postcard.workspace = true
-wgpu = { workspace = true, features = ["naga-ir"] }
+wgpu = { workspace = true, features = ["naga-ir", "wgsl"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 wgpu = { workspace = true, features = ["metal"] }

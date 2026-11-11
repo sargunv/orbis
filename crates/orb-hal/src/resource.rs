@@ -174,7 +174,7 @@ pub struct SamplerDesc<'a> {
     pub anisotropy: u16,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ShaderModuleDesc<'a> {
     pub label: &'a str,
     /// WGSL.
@@ -184,7 +184,22 @@ pub struct ShaderModuleDesc<'a> {
     /// compiles with naga makes each stage's module from these rather than
     /// parse `source`.
     pub ir: Option<&'static [(&'static str, &'static [u8])]>,
+    /// `source`'s stages as the build wrote them in GLSL ES 3.00
+    /// (`orb_shaders::glsl`), for a GL ES device to compile as they are
+    /// rather than translate `source`.
+    pub glsl: Option<Glsl>,
 }
+
+/// Shader `label`'s stage at `entry` as GLSL ES 3.00, with a pipeline's
+/// override constants written in and its depth clipped from 0 to 1 where
+/// the device does (`zero_to_one_depth`), else remapped into GL's -1 to 1;
+/// `None` for a stage or constant it hasn't.
+pub type Glsl = fn(
+    label: &str,
+    entry: &str,
+    constants: &[(&str, f64)],
+    zero_to_one_depth: bool,
+) -> Option<String>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BindGroupLayoutDesc<'a> {

@@ -29,9 +29,9 @@ const WHOLE_CORE: &str = "target/web/core-whole.wasm";
 /// crossing one means something grew. Find what in the per-crate report;
 /// if the growth earns its bytes, raise the level to the new size plus the
 /// same margin, and when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 700;
+const CORE_WATCH_KIB: usize = 720;
 const CORE_DEFERRED_WATCH_KIB: usize = 260;
-const CORE_GL_WATCH_KIB: usize = 1330;
+const CORE_GL_WATCH_KIB: usize = 1220;
 const SHAPER_WATCH_KIB: usize = 380;
 
 /// Crates whose code the size report attributes separately.

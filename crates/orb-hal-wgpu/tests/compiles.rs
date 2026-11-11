@@ -37,6 +37,7 @@ fn one_at_a_time_compiles_one_at_a_time() {
         label: "slow",
         source: SHADER.into(),
         ir: None,
+        glsl: None,
     });
     let stage = |entry_point| ShaderStage {
         module,

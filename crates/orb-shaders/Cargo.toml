@@ -1,6 +1,6 @@
 [package]
 name = "orb-shaders"
-description = "WGSL modules and their composition"
+description = "WGSL modules and their composition, and WebGL 2's stages written from them in GLSL"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -9,13 +9,16 @@ version.workspace = true
 [features]
 # Each shader's naga module, parsed at build time (`Shader::ir`).
 ir = ["dep:miniz_oxide"]
+# WebGL 2's stages written as GLSL ES 3.00 at build time (`glsl`), which a GL
+# device compiles as they are rather than translate WGSL on every load.
+glsl = []
 
 [dependencies]
 miniz_oxide = { workspace = true, optional = true }
 
 [build-dependencies]
 miniz_oxide.workspace = true
-naga = { workspace = true, features = ["serialize"] }
+naga = { workspace = true, features = ["serialize", "glsl-out"] }
 postcard.workspace = true
 
 [dev-dependencies]

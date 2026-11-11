@@ -20,9 +20,9 @@ use orb_hal::*;
 use super::{Words, move_buffer};
 
 /// Words per row of a data texture on a device with `limits`
-/// (`data_texture.wgsl`'s `DATA_WIDTH`): 4096, or WebGL 2's least texture
-/// side, 2048, on a device whose side is shorter (`with_data_width`
-/// narrows the shaders to it).
+/// (`data_texture.wgsl`'s `data_width_log2`): 4096, or WebGL 2's least
+/// texture side, 2048, on a device whose side is shorter (pipelines set
+/// `orb_shaders::DATA_WIDTH_LOG2` for it).
 #[cfg(cpu_driven)]
 pub(crate) fn data_width(limits: &Limits) -> u32 {
     if limits.max_texture_dimension_2d >= 1 << 12 {

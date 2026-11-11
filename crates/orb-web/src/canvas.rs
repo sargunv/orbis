@@ -81,22 +81,54 @@ impl ReadTarget {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let [vertex, fragment] = READ_BLIT.map(|glsl| {
+            // SAFETY: GLSL ES 3.00 that binds what the layout below has.
+            #[allow(unsafe_code)]
+            unsafe {
+                device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
+                    label: Some("read frame"),
+                    entry_points: std::borrow::Cow::Borrowed(&[
+                        wgpu::PassthroughShaderEntryPoint {
+                            name: std::borrow::Cow::Borrowed("main"),
+                            workgroup_size: (0, 0, 0),
+                        },
+                    ]),
+                    glsl: Some(glsl.into()),
+                    ..Default::default()
+                })
+            }
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("read frame"),
-            source: wgpu::ShaderSource::Wgsl(READ_BLIT.into()),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("read frame"),
-            layout: None,
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("read frame"),
+                    bind_group_layouts: &[Some(&layout)],
+                    immediate_size: 0,
+                }),
+            ),
             vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
+                module: &vertex,
+                entry_point: Some("main"),
                 compilation_options: Default::default(),
                 buffers: &[],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
+                module: &fragment,
+                entry_point: Some("main"),
                 compilation_options: Default::default(),
                 targets: &[Some(format.into())],
             }),
@@ -108,7 +140,7 @@ impl ReadTarget {
         });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("read frame"),
-            layout: &pipeline.get_bind_group_layout(0),
+            layout: &layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::TextureView(&view),
@@ -147,21 +179,27 @@ impl ReadTarget {
     }
 }
 
-/// A triangle over the canvas, each pixel the read frame's.
-const READ_BLIT: &str = "
-@group(0) @binding(0) var frame: texture_2d<f32>;
-
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+/// A triangle over the canvas, each pixel the read frame's, as GLSL ES
+/// 3.00 wgpu takes as it is (its passthrough binding line names the frame's
+/// binding).
+const READ_BLIT: [&str; 2] = [
+    "#version 300 es
+void main() {
+    uint i = uint(gl_VertexID);
+    vec2 uv = vec2(float((i << 1u) & 2u), float(i & 2u));
+    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }
-
-@fragment
-fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
-    return textureLoad(frame, vec2<i32>(at.xy), 0);
+",
+    "#version 300 es
+precision highp float;
+//@texture frame 0 0
+uniform highp sampler2D frame;
+layout(location = 0) out vec4 color;
+void main() {
+    color = texelFetch(frame, ivec2(gl_FragCoord.xy), 0);
 }
-";
+",
+];
 
 impl Canvas {
     pub(crate) fn gpu(&mut self) -> &mut WgpuGpu {
@@ -303,10 +341,7 @@ impl Canvas {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
-                // Timestamps time passes for measurements (`setGpuTiming`);
-                // clip distances clip cut buildings without discarding.
-                required_features: adapter.features()
-                    & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::CLIP_DISTANCES),
+                required_features: orb_hal_wgpu::device_features(&adapter),
                 required_limits: orb_hal_wgpu::device_limits(&adapter),
                 ..Default::default()
             })

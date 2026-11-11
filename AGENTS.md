@@ -184,10 +184,12 @@ Advice that cost time to learn, not rules:
   reports. A shader that breaks GLSL ES 3.00, WebGL 2's limits (15 varyings, 16
   textures, 16 KiB uniform blocks) or ANGLE's uniform layout fails
   `orb-shaders`' dry run on your machine, as does a flat varying that isn't
-  `flat, either` (GL takes the last vertex's value). The two drivers are held
-  word for word by `orb-runtime`'s `drivers` test, so a change to
-  `driver/cpu.rs` should say in its commit why the GPU driver needs no twin of
-  it.
+  `flat, either` (GL takes the last vertex's value). WebGL 2 and native GL ES
+  compile GLSL that `orb-shaders`' build script writes (`glsl`), not wgpu's
+  translation at load, so GL's GLSL changes go there or in naga's writer. The
+  two drivers are held word for word by `orb-runtime`'s `drivers` test, so a
+  change to `driver/cpu.rs` should say in its commit why the GPU driver needs no
+  twin of it.
 - When a feature puts nontrivial work on a hot path (frames, tile arrival, first
   use), a focused bench of it on against off pays for itself; most features
   don't need one. Shadows and ambient occlusion were measured only at rest, and

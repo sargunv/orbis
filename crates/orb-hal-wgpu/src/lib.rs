@@ -54,6 +54,21 @@ const DRIVER: &str = "ORB_DRIVER";
 #[cfg(not(target_arch = "wasm32"))]
 const TEXTURE_SIDE: &str = "ORB_TEXTURE_SIDE";
 
+/// The features Orbis asks `adapter`'s device for, those it has of them:
+/// natively, a pipeline cache, which warm starts reuse pipelines through;
+/// timestamps, which time passes for measurements; clip distances, which
+/// clip cut buildings without discarding; and on GL, passthrough shaders,
+/// which take the build's GLSL (`ShaderModuleDesc::glsl`).
+pub fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    let mut wanted = wgpu::Features::PIPELINE_CACHE
+        | wgpu::Features::TIMESTAMP_QUERY
+        | wgpu::Features::CLIP_DISTANCES;
+    if !cfg!(webgpu) && adapter.get_info().backend == wgpu::Backend::Gl {
+        wanted |= wgpu::Features::PASSTHROUGH_SHADERS;
+    }
+    adapter.features() & wanted
+}
+
 /// The limits Orbis asks `adapter`'s device for: WebGPU's defaults, lowered
 /// where the adapter falls short of them (the iOS simulator has 15
 /// inter-stage variables), with buffers and storage bindings as large as it
@@ -96,6 +111,9 @@ pub struct WgpuGpu {
     caps: Caps,
     /// The device is wgpu's GL back end (WebGL 2, GLES).
     gl: bool,
+    /// The device is a GL one that takes GLSL ES (WebGL 2, OpenGL ES):
+    /// pipelines compile the build's GLSL there (`ShaderModuleDesc::glsl`).
+    glsl_es: bool,
     /// Texture usages the platform defines. Browsers before
     /// `GPUTextureUsage.TRANSIENT_ATTACHMENT` (Samsung Internet 30,
     /// Chromium 143) reject it, so that hint is dropped there.
@@ -309,6 +327,21 @@ fn platform_texture_usages() -> wgpu::TextureUsages {
     }
 }
 
+/// Whether `device`, a GL one, takes GLSL ES (WebGL 2's or OpenGL ES's
+/// context, not desktop OpenGL's).
+#[allow(unsafe_code)]
+#[cfg_attr(
+    not(any(feature = "gl", target_os = "android")),
+    allow(unused_variables)
+)]
+fn gl_takes_glsl_es(device: &wgpu::Device) -> bool {
+    // SAFETY: only reads a flag of the device's.
+    #[cfg(any(feature = "gl", target_os = "android"))]
+    return unsafe { device.as_hal::<wgpu::hal::api::Gles>() }.is_some_and(|d| d.is_embedded());
+    #[cfg(not(any(feature = "gl", target_os = "android")))]
+    false
+}
+
 /// Whether `device`, a GL one, clips depth from 0 to 1 as the shaders
 /// write it (`EXT_clip_control`; Chrome, Safari and ANGLE have it, Firefox
 /// doesn't), rather than wgpu remapping it into GL's -1 to 1.
@@ -386,6 +419,7 @@ impl WgpuGpu {
             multi_draw: false,
             zero_to_one_depth: !gl || gl_clips_zero_to_one(&device),
         };
+        let glsl_es = gl && gl_takes_glsl_es(&device);
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut gpu = Self {
             device,
@@ -398,6 +432,7 @@ impl WgpuGpu {
             pipeline_cache_kept: None,
             caps,
             gl,
+            glsl_es,
             texture_usages: platform_texture_usages(),
             buffers: Slots::default(),
             idle_writes: Default::default(),
@@ -1445,10 +1480,12 @@ impl Gpu for WgpuGpu {
 
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId {
         let source = desc.source.to_string();
-        ShaderModuleId(
-            self.shader_modules
-                .insert(compile::Module::new(desc.label, source, desc.ir)),
-        )
+        ShaderModuleId(self.shader_modules.insert(compile::Module::new(
+            desc.label,
+            source,
+            desc.ir,
+            (desc.glsl.filter(|_| self.glsl_es)).map(|g| (g, self.caps.zero_to_one_depth)),
+        )))
     }
 
     fn create_bind_group_layout(&mut self, desc: &BindGroupLayoutDesc<'_>) -> BindGroupLayoutId {

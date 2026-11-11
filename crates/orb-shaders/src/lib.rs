@@ -1,19 +1,30 @@
 //! WGSL modules and their composition.
 //!
 //! Each pipeline's source is the shared scene types, the bindings of its
-//! kind (draw or cull) and its own module, concatenated.
+//! kind (draw or cull) and its own module, concatenated. With `glsl`, also
+//! WebGL 2's stages as the build wrote them in GLSL ES 3.00 (`glsl`).
 
 #![forbid(unsafe_code)]
 
 /// A WGSL module as the build script wrote it: without comments or
-/// indentation, which only the source tree needs.
+/// indentation, which only the source tree needs. WebGL 2's web build
+/// (`glsl_only`, build.rs) carries none: its pipelines compile the build's
+/// GLSL, so its shaders have no sources.
+#[cfg(not(glsl_only))]
 macro_rules! wgsl {
     ($name:literal) => {
         include_str!(concat!(env!("OUT_DIR"), "/wgsl/", $name, ".wgsl"))
     };
 }
+#[cfg(glsl_only)]
+macro_rules! wgsl {
+    ($name:literal) => {
+        ""
+    };
+}
 
 /// A WGSL module the build script generated.
+#[cfg(not(glsl_only))]
 macro_rules! generated {
     ($name:literal) => {
         include_str!(concat!(env!("OUT_DIR"), "/wgsl/", $name, ".wgsl"))
@@ -22,6 +33,8 @@ macro_rules! generated {
 
 mod catalog;
 pub use catalog::*;
+#[cfg(not(glsl_only))]
+mod sources;
 
 #[cfg(feature = "ir")]
 mod ir {
@@ -59,6 +72,11 @@ mod ir {
     }
 }
 
+#[cfg(feature = "glsl")]
+mod glsl;
+#[cfg(feature = "glsl")]
+pub use glsl::glsl;
+
 #[cfg(test)]
 mod split;
 
@@ -79,6 +97,12 @@ pub const FEATURE_ROWS: &str = "feature_rows";
 /// without feature state (`draw.wgsl`'s `feature_state`): for nodes whose
 /// paint reads no feature's state.
 pub const FEATURE_STATE: &str = "feature_state";
+
+/// The override constant that, set to 11, makes a pipeline read data
+/// textures 2048 words wide (`data_texture.wgsl`'s `data_width_log2`;
+/// 4096 by default): for a device whose texture side is shorter
+/// (orb-render's `data_width`).
+pub const DATA_WIDTH_LOG2: &str = "data_width_log2";
 
 /// Each shader's override constants by entry point, as the build script
 /// found them in each entry point's module.

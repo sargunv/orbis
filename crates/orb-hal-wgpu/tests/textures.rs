@@ -79,6 +79,7 @@ fn samples_written_layers_of_a_texture_array() {
         label: "sample",
         source: SHADER.into(),
         ir: None,
+        glsl: None,
     });
     let stage = |entry_point| ShaderStage {
         module,

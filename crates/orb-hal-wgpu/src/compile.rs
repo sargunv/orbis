@@ -11,6 +11,8 @@
 //! pipeline cache (Dawn's, keyed by content) returns without compiling it
 //! again. wgpu has no async creation yet (gfx-rs/wgpu#3794). WebGL 2's: `webgl`.
 
+use std::borrow::Cow;
+#[cfg(not(webgl))]
 use std::sync::OnceLock;
 
 /// How modules are shared between requests: across compile threads
@@ -30,11 +32,18 @@ use crate::convert;
 #[derive(Debug)]
 pub(crate) struct Module {
     pub(crate) label: String,
+    #[cfg(not(webgl))]
     pub(crate) source: String,
     /// Natively, `source` as one naga module per entry point,
     /// postcard-encoded, and each made when a stage first uses it.
     #[cfg(not(target_arch = "wasm32"))]
     entries: Vec<EntryModule>,
+    /// On a GL ES device, the build's GLSL of its stages, and whether the
+    /// device clips depth from 0 to 1: each stage is a module of its own,
+    /// its constants written in, which wgpu compiles as it is.
+    #[cfg(not(webgpu))]
+    glsl: Option<(Glsl, bool)>,
+    #[cfg(not(webgl))]
     made: OnceLock<wgpu::ShaderModule>,
     /// The browser's module for async compiles.
     #[cfg(webgpu)]
@@ -43,9 +52,15 @@ pub(crate) struct Module {
 
 impl Module {
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
-    pub(crate) fn new(label: &str, source: String, ir: Option<IrModules>) -> Shared<Self> {
+    pub(crate) fn new(
+        label: &str,
+        source: String,
+        ir: Option<IrModules>,
+        glsl: Option<(Glsl, bool)>,
+    ) -> Shared<Self> {
         Shared::new(Self {
             label: label.to_owned(),
+            #[cfg(not(webgl))]
             source,
             #[cfg(not(target_arch = "wasm32"))]
             entries: (ir.into_iter().flatten())
@@ -55,6 +70,9 @@ impl Module {
                     made: OnceLock::new(),
                 })
                 .collect(),
+            #[cfg(not(webgpu))]
+            glsl,
+            #[cfg(not(webgl))]
             made: OnceLock::new(),
             #[cfg(webgpu)]
             raw: Default::default(),
@@ -65,6 +83,7 @@ impl Module {
     /// that entry point when there is one, which skips parsing the WGSL
     /// (most of a module's cost) and wgpu's split of a module per stage;
     /// the WGSL's otherwise.
+    #[cfg(not(webgl))]
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn get(&self, device: &wgpu::Device, entry: &str) -> &wgpu::ShaderModule {
         #[cfg(not(target_arch = "wasm32"))]
@@ -75,7 +94,7 @@ impl Module {
                     let module = postcard::from_bytes::<naga::Module>(one.bytes).ok()?;
                     Some(device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some(&self.label),
-                        source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+                        source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
                     }))
                 })
                 .as_ref()
@@ -105,6 +124,9 @@ struct EntryModule {
     made: OnceLock<Option<wgpu::ShaderModule>>,
 }
 
+/// A stage's module, and the override constants its pipeline sets.
+type StageModule<'a> = (Cow<'a, wgpu::ShaderModule>, Vec<(&'a str, f64)>);
+
 #[derive(Debug)]
 pub(crate) struct Stage {
     pub(crate) module: Shared<Module>,
@@ -125,15 +147,49 @@ impl Stage {
         }
     }
 
-    fn module(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
-        self.module.get(device, &self.entry_point)
-    }
-
-    fn constants(&self) -> Vec<(&str, f64)> {
-        self.constants
-            .iter()
+    /// Its module, and the override constants the pipeline sets: none for
+    /// the build's GLSL, which has them written in.
+    fn module(&self, device: &wgpu::Device) -> Result<StageModule<'_>, String> {
+        let constants: Vec<(&str, f64)> = (self.constants.iter())
             .map(|(k, v)| (k.as_str(), *v))
-            .collect()
+            .collect();
+        #[cfg(not(webgpu))]
+        if let Module {
+            label,
+            glsl: Some((glsl, zero_to_one_depth)),
+            ..
+        } = &*self.module
+        {
+            let (entry, zero_to_one_depth) = (&self.entry_point, *zero_to_one_depth);
+            let source = glsl(label, entry, &constants, zero_to_one_depth)
+                .ok_or_else(|| format!("{label}: no GLSL of {entry} with {constants:?}"))?;
+            // SAFETY: the build wrote and validated the GLSL as wgpu's GL
+            // back end writes it, its bindings named for the pipeline's
+            // layout (orb-shaders' build.rs).
+            #[allow(unsafe_code)]
+            let module = unsafe {
+                device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
+                    label: Some(label),
+                    entry_points: Cow::Borrowed(&[wgpu::PassthroughShaderEntryPoint {
+                        name: Cow::Borrowed(entry),
+                        workgroup_size: (0, 0, 0),
+                    }]),
+                    glsl: Some(source.into()),
+                    ..Default::default()
+                })
+            };
+            return Ok((Cow::Owned(module), Vec::new()));
+        }
+        #[cfg(webgl)]
+        return Err(format!(
+            "{}: WebGL 2 compiles the build's GLSL alone",
+            self.module.label
+        ));
+        #[cfg(not(webgl))]
+        Ok((
+            Cow::Borrowed(self.module.get(device, &self.entry_point)),
+            constants,
+        ))
     }
 }
 
@@ -213,19 +269,19 @@ impl Job {
     }
 
     /// Makes the pipeline with wgpu.
-    fn build(&self, device: &wgpu::Device) -> Built {
+    fn build(&self, device: &wgpu::Device) -> Result<Built, String> {
         #[cfg(not(target_arch = "wasm32"))]
         dump::job(self);
-        match self {
-            Self::Render(slot, job) => Built::Render(*slot, job.build(device)),
+        Ok(match self {
+            Self::Render(slot, job) => Built::Render(*slot, job.build(device)?),
             Self::Compute(slot, job) => {
-                let constants = job.compute.constants();
+                let (module, constants) = job.compute.module(device)?;
                 Built::Compute(
                     *slot,
                     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                         label: Some(&job.label),
                         layout: Some(&job.layout),
-                        module: job.compute.module(device),
+                        module: &module,
                         entry_point: Some(&job.compute.entry_point),
                         compilation_options: wgpu::PipelineCompilationOptions {
                             constants: &constants,
@@ -235,7 +291,7 @@ impl Job {
                     }),
                 )
             }
-        }
+        })
     }
 
     /// Makes the pipeline, catching validation and internal errors and
@@ -266,7 +322,7 @@ impl Job {
                     .unwrap_or_default();
                 Err(format!("the device was lost making it{reason}"))
             }
-            (Ok(built), None) => Ok(built),
+            (Ok(built), None) => built,
             (_, Some(error)) => Err(error.to_string()),
             (Err(panic), None) => Err(panic
                 .downcast_ref::<String>()
@@ -282,67 +338,69 @@ impl Job {
     /// its promise.
     #[cfg(webgpu)]
     fn compile(&self, device: &wgpu::Device) -> Result<Built, String> {
-        Ok(self.build(device))
+        self.build(device)
     }
 }
 
 impl RenderJob {
-    fn build(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+    fn build(&self, device: &wgpu::Device) -> Result<wgpu::RenderPipeline, String> {
         let targets: Vec<_> = self
             .targets
             .iter()
             .map(|&t| Some(convert::color_target(t)))
             .collect();
-        let vertex_constants = self.vertex.constants();
-        let fragment_constants = self.fragment.constants();
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(&self.label),
-            layout: Some(&self.layout),
-            vertex: wgpu::VertexState {
-                module: self.vertex.module(device),
-                entry_point: Some(&self.vertex.entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &vertex_constants,
+        let (vertex, vertex_constants) = self.vertex.module(device)?;
+        let (fragment, fragment_constants) = self.fragment.module(device)?;
+        Ok(
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(&self.label),
+                layout: Some(&self.layout),
+                vertex: wgpu::VertexState {
+                    module: &vertex,
+                    entry_point: Some(&self.vertex.entry_point),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &vertex_constants,
+                        ..Default::default()
+                    },
+                    buffers: if self.attribute_zero {
+                        &[Some(ATTRIBUTE_ZERO)]
+                    } else {
+                        &[]
+                    },
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: self.cull_back.then_some(wgpu::Face::Back),
+                    topology: match self.topology {
+                        PrimitiveTopology::LineList => wgpu::PrimitiveTopology::LineList,
+                        PrimitiveTopology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
+                        PrimitiveTopology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
+                    },
                     ..Default::default()
                 },
-                buffers: if self.attribute_zero {
-                    &[Some(ATTRIBUTE_ZERO)]
-                } else {
-                    &[]
-                },
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: self.cull_back.then_some(wgpu::Face::Back),
-                topology: match self.topology {
-                    PrimitiveTopology::LineList => wgpu::PrimitiveTopology::LineList,
-                    PrimitiveTopology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
-                    PrimitiveTopology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
-                },
-                ..Default::default()
-            },
-            depth_stencil: self.depth.map(|d| wgpu::DepthStencilState {
-                format: convert::texture_format(d.format),
-                depth_write_enabled: Some(d.write),
-                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: self.sample_count,
-                ..Default::default()
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: self.fragment.module(device),
-                entry_point: Some(&self.fragment.entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &fragment_constants,
+                depth_stencil: self.depth.map(|d| wgpu::DepthStencilState {
+                    format: convert::texture_format(d.format),
+                    depth_write_enabled: Some(d.write),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: self.sample_count,
                     ..Default::default()
                 },
-                targets: &targets,
+                fragment: Some(wgpu::FragmentState {
+                    module: &fragment,
+                    entry_point: Some(&self.fragment.entry_point),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &fragment_constants,
+                        ..Default::default()
+                    },
+                    targets: &targets,
+                }),
+                multiview_mask: None,
+                cache: self.cache.as_ref(),
             }),
-            multiview_mask: None,
-            cache: self.cache.as_ref(),
-        })
+        )
     }
 }
 

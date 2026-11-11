@@ -13,36 +13,6 @@ const DRAW: &str = concat!(
     wgsl!("project"),
     wgsl!("fetch")
 );
-/// The modules a WebGL 2 build swaps (#140), modern first, then each's
-/// GL counterpart: built-ins written out, and tables read from data
-/// textures where the modern path reads storage buffers.
-const GL_SWAPS: &[(&str, &str)] = &[
-    (wgsl!("builtins"), wgsl!("builtins_gl")),
-    (
-        wgsl!("fetch"),
-        concat!(
-            wgsl!("data_texture"),
-            wgsl!("fetch_texture"),
-            generated!("rows_texture")
-        ),
-    ),
-    (
-        wgsl!("fetch_terrain"),
-        concat!(
-            wgsl!("data_texture"),
-            wgsl!("fetch_terrain_texture"),
-            generated!("terrain_rows_texture")
-        ),
-    ),
-    (
-        wgsl!("fetch_drape"),
-        concat!(wgsl!("data_texture"), wgsl!("fetch_drape_texture")),
-    ),
-    (
-        wgsl!("fetch_regions"),
-        concat!(wgsl!("data_texture"), wgsl!("fetch_regions_texture")),
-    ),
-];
 const PATTERN: &str = wgsl!("pattern");
 const EXTRUSION: &str = wgsl!("extrusion");
 const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
@@ -75,7 +45,7 @@ const PREPARE_PAD: &str = wgsl!("prepare_pad");
 /// `CLIP_DISTANCES`, WebGPU's `clip-distances`): it enables them, and the
 /// parts' lines marked `//planes ` become code. A fragment stage can't take
 /// clip distances, so such a shader leaves its fragment stages out.
-const CLIP_PLANES: &str = "enable clip_distances;\n";
+pub(crate) const CLIP_PLANES: &str = "enable clip_distances;\n";
 const PREPARE_SLOPE: &str = wgsl!("prepare_slope");
 /// The downsampler's texels (`mip_texel`, `extend_texel`), and its reads
 /// of its regions.
@@ -86,105 +56,27 @@ const FETCH_REGIONS: &str = wgsl!("fetch_regions");
 #[derive(Clone, Copy, Debug)]
 pub struct Shader {
     pub label: &'static str,
-    parts: &'static [&'static str],
+    /// Its WGSL modules (`sources.rs` puts them together), which WebGL 2's
+    /// web build leaves empty (`glsl_only`).
+    #[allow(dead_code, reason = "WebGL 2's web build reads no WGSL")]
+    pub(crate) parts: &'static [&'static str],
     pub vertex: &'static str,
     pub fragment: &'static str,
     pub compute: &'static str,
 }
 
-impl Shader {
-    pub fn source(&self) -> String {
-        let mut source: String = self.parts.concat();
-        if self.parts.contains(&CLIP_PLANES) {
-            source = source.replace("//planes ", "");
-        }
-        source
-    }
-
-    /// Its source for WebGL 2 (#140), its swapped modules (`GL_SWAPS`)
-    /// replaced; `None` for what WebGL 2 can't run: compute, and clip
-    /// distances, which a device without them draws another way.
-    pub fn gl_source(&self) -> Option<String> {
-        if !self.compute.is_empty() || self.parts.contains(&CLIP_PLANES) {
-            return None;
-        }
-        Some(with_attribute_zero(&self.swapped(GL_SWAPS)))
-    }
-
-    /// Its source for a device that reads the scene's and the terrain's
-    /// tables from data textures and has the rest of WebGPU: WebGL 2's
-    /// path run natively (orb-hal-wgpu's `force_cpu_driver`), the
-    /// built-ins and those tables' `fetch` modules swapped
-    /// ([`gl_source`](Self::gl_source)'s first three).
-    pub fn texture_tables_source(&self) -> String {
-        self.swapped(&GL_SWAPS[..3])
-    }
-
-    fn swapped(&self, swaps: &[(&str, &str)]) -> String {
-        let mut source = self.source();
-        for (modern, gl) in swaps {
-            source = source.replace(modern, gl);
-        }
-        source
-    }
-}
-
-/// `source` (a [`Shader::gl_source`] or
-/// [`texture_tables_source`](Shader::texture_tables_source)) reading data
-/// textures `width` words wide: 4096 as written, or 2048 on a device whose
-/// texture side is shorter (orb-render's `data_width`).
-pub fn with_data_width(source: String, width: u32) -> String {
-    const WRITTEN: &str = "const DATA_WIDTH_LOG2: u32 = 12u;";
-    if width == 1 << 12 || !source.contains(WRITTEN) {
-        return source;
-    }
-    let narrowed = format!("const DATA_WIDTH_LOG2: u32 = {}u;", width.ilog2());
-    source.replace(WRITTEN, &narrowed)
-}
+/// naga's line ending a GLSL vertex stage that clips depth from 0 to 1,
+/// as the build writes WebGL 2's stages, and the line it writes where depth
+/// is remapped into GL's -1 to 1 instead (a context without clip control).
+#[cfg_attr(not(feature = "glsl"), allow(dead_code))]
+pub(crate) const GLSL_ZERO_TO_ONE: &str = "gl_Position.y = -gl_Position.y;";
+#[cfg_attr(not(feature = "glsl"), allow(dead_code))]
+pub(crate) const GLSL_MINUS_ONE_TO_ONE: &str =
+    "gl_Position.yz = vec2(-gl_Position.y, gl_Position.z * 2.0 - gl_Position.w);";
 
 /// The name of WebGL 2's vertex input at `@location(0)`
-/// ([`with_attribute_zero`]).
+/// (`sources.rs`'s `with_attribute_zero`).
 pub const ATTRIBUTE_ZERO: &str = "orb_attribute_zero";
-
-/// `source` with every vertex entry point taking a `u32` at
-/// `@location(0)`, which the HAL binds instance-stepped over zeros, and
-/// OR-ing it into the vertex index so no compiler drops it (#179). Every
-/// vertex is pulled, so programs would otherwise have no attribute, and
-/// Firefox on desktop GL then fakes attribute 0 with an array as long as
-/// a draw's largest index: compacted indices pass its 10M limit, and it
-/// refuses the draw.
-fn with_attribute_zero(source: &str) -> String {
-    const INDEX: &str = "@builtin(vertex_index)";
-    let mut out = String::with_capacity(source.len() + 1024);
-    let mut rest = source;
-    while let Some(at) = rest.find("@vertex") {
-        let (head, tail) = rest.split_at(at);
-        out.push_str(head);
-        let open = tail.find('(').expect("a vertex entry point's parameters");
-        let body = tail.find('{').expect("a vertex entry point's body");
-        let signature = &tail[..body];
-        let index = signature
-            .find(INDEX)
-            .unwrap_or_else(|| panic!("`{signature}` takes no {INDEX}"));
-        let name = index + INDEX.len();
-        let name_end = name + signature[name..].find(':').expect("a typed parameter");
-        out.push_str(&tail[..=open]);
-        out.push_str("@location(0) ");
-        out.push_str(ATTRIBUTE_ZERO);
-        out.push_str(": u32, ");
-        out.push_str(&tail[open + 1..name]);
-        out.push_str(" orb_vertex_index");
-        out.push_str(&tail[name_end..=body]);
-        out.push_str("\n    let ");
-        out.push_str(signature[name..name_end].trim());
-        out.push_str(" = orb_vertex_index | ");
-        out.push_str(ATTRIBUTE_ZERO);
-        out.push(';');
-        rest = &tail[body + 1..];
-    }
-    out.push_str(rest);
-    out
-}
 
 pub const TERRAIN_SHADER: Shader = Shader {
     label: "terrain",

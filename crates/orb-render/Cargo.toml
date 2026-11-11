@@ -7,9 +7,9 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-# The CPU frame driver and the tables' texture backing on the web (WebGL
-# 2's build); natively they're always built (`build.rs`).
-cpu-driven = []
+# The CPU frame driver, the tables' texture backing and the build's GLSL on
+# the web (WebGL 2's build); natively they're always built (`build.rs`).
+cpu-driven = ["orb-shaders/glsl"]
 
 [dependencies]
 bytemuck = { workspace = true, features = ["extern_crate_alloc"] }
@@ -20,8 +20,9 @@ orb-shaders.workspace = true
 rustc-hash.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Natively, wgpu makes shader modules from the build's naga modules.
-orb-shaders = { workspace = true, features = ["ir"] }
+# Natively, wgpu makes shader modules from the build's naga modules, and
+# GL ES devices compile its GLSL (`cpu_driven` is always on).
+orb-shaders = { workspace = true, features = ["ir", "glsl"] }
 
 [dev-dependencies]
 orb-hal-wgpu.workspace = true
