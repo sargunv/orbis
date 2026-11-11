@@ -490,23 +490,33 @@ impl TileWorker {
     }
 
     /// A source's newest data.
-    fn data(&self, source: u32) -> Arc<SourceData> {
-        self.data_at(source, None).1
+    /// A source's data as of this worker's revision.
+    fn data(&self, source: u32) -> Result<(u64, Arc<SourceData>), String> {
+        self.data_at(source, Some(self.plan.revision))
     }
 
-    /// A source's data as of style revision `revision`: the newest that
-    /// began by then, or the newest of all, with the revision it began at.
-    fn data_at(&self, source: u32, revision: Option<u64>) -> (u64, Arc<SourceData>) {
+    /// A source's data as of style revision `revision`, the newest that
+    /// began by then (the newest of all when `None`), with the revision it
+    /// began at. A later revision's data, which a worker of an earlier one
+    /// would take, is never the answer: a document fetched for the earlier
+    /// revision isn't the later one's data.
+    fn data_at(
+        &self,
+        source: u32,
+        revision: Option<u64>,
+    ) -> Result<(u64, Arc<SourceData>), String> {
         let mut data = self.data.sources.lock().expect("worker data poisoned");
         let revisions = data.entry(source).or_default();
         if revisions.is_empty() {
             revisions.push((0, Arc::default()));
         }
-        let at = revision
-            .and_then(|r| revisions.iter().rposition(|(began, _)| *began <= r))
-            .unwrap_or(revisions.len() - 1);
+        let at = match revision {
+            Some(r) => (revisions.iter().rposition(|(began, _)| *began <= r))
+                .ok_or_else(|| format!("source {source}'s data of revision {r} was replaced"))?,
+            None => revisions.len() - 1,
+        };
         let (began, data) = &revisions[at];
-        (*began, Arc::clone(data))
+        Ok((*began, Arc::clone(data)))
     }
 
     /// Whether `source` (a source key) has image tiles to decode rather
@@ -561,7 +571,9 @@ impl TileWorker {
         {
             return false;
         }
-        let (began, data) = self.data_at(request.source, None);
+        let Ok((began, data)) = self.data(request.source) else {
+            return false;
+        };
         let key = (request.source, began, request.tile);
         // An overzoomed tile slices its ancestor's frame, decoded for a
         // sibling.
@@ -667,7 +679,7 @@ impl TileWorker {
         let geojson = self
             .geojson_source(source)
             .ok_or("the source isn't a GeoJSON source")?;
-        let data = self.data(source);
+        let (_, data) = self.data(source)?;
         let mut cached = data.geojson.lock().expect("GeoJSON index poisoned");
         cached
             .get_or_insert_with(|| self.geojson_index(bytes, geojson))
@@ -683,7 +695,7 @@ impl TileWorker {
         encoding: Encoding,
         request: &TileRequest,
     ) -> Result<Arc<TileFrame>, String> {
-        self.frame_at(bytes, encoding, request, None)
+        self.frame_at(bytes, encoding, request, Some(self.plan.revision))
     }
 
     /// [`frame`](Self::frame) from the source's data as of style revision
@@ -708,7 +720,7 @@ impl TileWorker {
             .plan
             .source(source)
             .ok_or_else(|| format!("source {source} was removed"))?;
-        let (began, data) = self.data_at(source, revision);
+        let (began, data) = self.data_at(source, revision)?;
         // An app's tile: decoded from its answer, which a later one
         // replaces, rather than kept.
         if let crate::TileLocation::Host(answer) = &request.location {
@@ -1166,7 +1178,14 @@ pub(crate) mod tests {
         };
         let tile = request(TileIndex::new(0, 0, 0));
         let frame = worker
-            .decode(&[], Encoding::Mvt, 0, &worker.data(1), tile.tile, 0)
+            .decode(
+                &[],
+                Encoding::Mvt,
+                0,
+                &worker.data(1).unwrap().1,
+                tile.tile,
+                0,
+            )
             .unwrap();
         let layer = frame.layer(orb_tile::geojson::LAYER_NAME).unwrap();
         // The pole is the plane's centre; the southern point is outside the
@@ -1672,6 +1691,89 @@ pub(crate) mod tests {
             panic!("answered without a build")
         };
         assert_eq!(e, "style 1 was replaced");
+    }
+
+    /// A GeoJSON URL replaced while its document loads: the new revision
+    /// fetches its own document rather than wait on the old one, and each
+    /// revision's tiles draw its own data.
+    #[test]
+    fn a_geojson_url_replaced_mid_fetch_loads_its_own_document() {
+        struct Held(Mutex<Vec<(String, orb_host::FetchDone)>>);
+        impl Fetch for Held {
+            fn get(
+                &self,
+                _: orb_host::ResourceKind,
+                url: &str,
+                _: &orb_host::Abort,
+                done: orb_host::FetchDone,
+            ) {
+                self.0.lock().unwrap().push((url.to_string(), done));
+            }
+            fn get_range(
+                &self,
+                _: orb_host::ResourceKind,
+                _: &str,
+                _: u64,
+                _: u64,
+                _: &orb_host::Abort,
+                _: orb_host::FetchDone,
+            ) {
+                unreachable!("no archives")
+            }
+        }
+        let data = orb_expr::json::parse(INLINE).unwrap();
+        let data = data.get("sources").unwrap().get("geo").unwrap();
+        let polygon = data.get("data").unwrap().to_string();
+        let style = |url: &str| INLINE.replace(&polygon, &format!("{url:?}"));
+        let fetch = Arc::new(Held(Mutex::default()));
+        let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+        let first = Arc::new(TileWorker::new(&style("test://a.json")).unwrap());
+        host.set_style(1, Arc::clone(&first));
+        let tile = request(TileIndex::new(0, 0, 0));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sent = tx.clone();
+        host.load(tile.clone(), Box::new(move |r| sent.send(r).unwrap()));
+        // The next revision points the source elsewhere, before A arrives.
+        let parsed = orb_style::v8::parse(&style("test://b.json")).unwrap();
+        let second = Arc::new(TileWorker::with_style(
+            Some(&first),
+            Arc::new(parsed),
+            vec![1, 2],
+            vec![1],
+            &[1],
+            1,
+            None,
+            crate::surface::SurfaceTiles::default(),
+        ));
+        host.set_style(1, Arc::clone(&second));
+        host.load(tile.clone(), Box::new(move |r| tx.send(r).unwrap()));
+        let held = std::mem::take(&mut *fetch.0.lock().unwrap());
+        let urls: Vec<&str> = held.iter().map(|(url, _)| url.as_str()).collect();
+        assert_eq!(urls, ["test://a.json", "test://b.json"]);
+        let drawn = |r: Result<crate::Loaded, String>| match r {
+            Ok(crate::Loaded::Tile(build)) => build.meshes.iter().any(|m| !m.mesh.is_empty()),
+            other => panic!("not a tile: {other:?}"),
+        };
+        let documents = [
+            polygon.clone(),
+            r#"{"type":"FeatureCollection","features":[]}"#.into(),
+        ];
+        for ((_, done), document) in held.into_iter().zip(documents) {
+            done(Ok(document.into_bytes()));
+        }
+        let answers: Vec<bool> = rx.try_iter().map(drawn).collect();
+        assert_eq!(
+            answers,
+            [true, false],
+            "A's polygon, then B's empty collection"
+        );
+        // Each worker keeps reading its own revision's document.
+        for (worker, polygon) in [(&first, true), (&second, false)] {
+            let Ok(Built::Tile(build)) = worker.build(&[], Encoding::Mvt, &tile) else {
+                panic!("a tile");
+            };
+            assert_eq!(build.meshes.iter().any(|m| !m.mesh.is_empty()), polygon);
+        }
     }
 
     /// A tile asked for while the sprites load is fetched at once, and laid

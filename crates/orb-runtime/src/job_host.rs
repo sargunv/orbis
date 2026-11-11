@@ -107,9 +107,11 @@ fn start_waiting(fetches: &Arc<Mutex<Fetches>>) {
 /// Called once with a load's outcome, on any thread.
 pub(crate) type LoadedDone = Box<dyn FnOnce(Result<Loaded, String>) + Send>;
 
-/// Loads of a source's data document in flight, by style and source: the
-/// requests waiting on each.
-type DataLoads = HashMap<(u64, u32), Vec<(TileRequest, LoadedDone)>>;
+/// Loads of a source's data document in flight, by style, source and URL:
+/// the requests waiting on each, with the worker of the revision each was
+/// asked for in, which a later revision with other data doesn't share.
+type DataLoads = HashMap<(u64, u32, String), Vec<DataWaiter>>;
+type DataWaiter = (Arc<TileWorker>, TileRequest, LoadedDone);
 
 /// Glyph range, word data and font file fetches in flight, by style and
 /// URL: what to run when each arrives.
@@ -610,11 +612,11 @@ impl JobHost {
         request: TileRequest,
         done: LoadedDone,
     ) {
-        let key = (request.style, request.source);
+        let key = (request.style, request.source, url.clone());
         let glyphs = Arc::clone(&self.glyphs);
         let mut loads = self.data_loads.lock().expect("data loads poisoned");
         if let Some(waiting) = loads.get_mut(&key) {
-            waiting.push((request, done));
+            waiting.push((worker, request, done));
             return;
         }
         // Recheck while holding the registry: a previous load may have
@@ -626,7 +628,7 @@ impl JobHost {
             }));
             return;
         }
-        loads.insert(key, vec![(request, done)]);
+        loads.insert(key.clone(), vec![(worker, request, done)]);
         drop(loads);
         let loads = Arc::clone(&self.data_loads);
         let executor = Arc::clone(&self.executor);
@@ -638,7 +640,7 @@ impl JobHost {
                 executor.spawn(Box::new(move || {
                     // Index the document before removing the in-flight
                     // entry, without holding the registry during CPU work.
-                    let (request, done) = loads
+                    let first = loads
                         .lock()
                         .expect("data loads poisoned")
                         .get_mut(&key)
@@ -646,20 +648,20 @@ impl JobHost {
                         .pop()
                         .expect("first request");
                     let fetched = fetched.map(Arc::new).map_err(|e| e.to_string());
-                    let build = |request: TileRequest, done: LoadedDone, bytes| match &fetched {
-                        Ok(_) => glyphs.complete(Arc::clone(&worker), bytes, request, done),
+                    // Every waiter gets the bytes: a revision that set the
+                    // same URL again has data of its own to index, and one
+                    // already indexed ignores them.
+                    let build = |(worker, request, done): DataWaiter| match &fetched {
+                        Ok(bytes) => glyphs.complete(worker, Arc::clone(bytes), request, done),
                         Err(e) => done(Err(e.clone())),
                     };
-                    build(request, done, fetched.clone().unwrap_or_default());
+                    build(first);
                     let waiting = loads
                         .lock()
                         .expect("data loads poisoned")
                         .remove(&key)
                         .expect("registered fetch");
-                    // The document is indexed: later requests ignore bytes.
-                    for (request, done) in waiting {
-                        build(request, done, Arc::default());
-                    }
+                    waiting.into_iter().for_each(build);
                 }));
             }),
         );
