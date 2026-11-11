@@ -255,8 +255,9 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     out.opacity = opacity;
     out.linesofar = f32(vertex_at(v.vertex + 2u) >> 2u) * 2.0 * tile.extent / 8192.0;
     out.floorwidth = node.pattern.floor_width;
+    // A per-feature width's rows, as the camera scales them.
     if (row_mask(node.table_mask) & 4u) != 0u {
-        out.floorwidth = bitcast<f32>(prop_at(row + 4u + select(0u, 1u, floor(frame.zoom) > tile.zoom)));
+        out.floorwidth = camera_scaled(bitcast<f32>(prop_at(row + 4u + select(0u, 1u, floor(frame.zoom) > tile.zoom))), node.curves[2]);
     }
     out.images = pattern_ids(row, LINE_ROW_PATTERN, node.image_from, node.image_to, row_mask(node.table_mask), node.pattern);
     if node.metrics != 0u { out.progress = bitcast<f32>(vertex_at(v.vertex + 4u)); }
@@ -268,7 +269,7 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
         }
         out.floorwidth = node.dash_floor_width;
         if (row_mask(node.table_mask) & 4u) != 0u {
-            out.floorwidth = bitcast<f32>(prop_at(row + LINE_ROW_FLOOR_WIDTH));
+            out.floorwidth = camera_scaled(bitcast<f32>(prop_at(row + LINE_ROW_FLOOR_WIDTH)), node.curves[2]);
         }
     }
     out.normal = normal;

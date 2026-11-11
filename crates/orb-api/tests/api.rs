@@ -1272,6 +1272,46 @@ fn pitch_scales_feature_data_and_state() {
     assert_eq!(radius(&mut map, &mut target), 20.0);
 }
 
+/// A dashed line whose width the camera scales (beyond the spec) sizes
+/// its dashes by the width it draws, not by its feature's part: 4 px
+/// from metres over the ground resolution dashes as 4 px from the
+/// feature's pixels.
+#[test]
+fn scaled_line_widths_size_dashes_as_drawn() {
+    const WIDTH: u32 = 256;
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, WIDTH, SIZE, 1.0);
+    // 4 px at zoom 2 on the equator, 19568 m a pixel.
+    let metres = 4.0 * 40_075_016.686 / 2048.0;
+    let draw = |width: &str, paint: &str, target: &mut Target| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews: orb_api::Previews::ALL,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(&format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 2,
+              "sources": {{"l": {{"type": "geojson", "data": {{"type": "Feature",
+                "properties": {{"m": {metres}, "px": 4}},
+                "geometry": {{"type": "LineString", "coordinates": [[-60, 0], [60, 0]]}}}}}}}},
+              "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+                {{"id": "l", "type": "line", "source": "l",
+                  "paint": {{"line-color": "#ffffff", "line-width": {width}, {paint}}}}}]}}"##
+        ))
+        .expect("style");
+        settle(&mut map, target);
+        lit_runs(&target.read_pixels().unwrap(), WIDTH, SIZE / 2)
+    };
+    let scaled = r#"["/", ["get", "m"], ["dev.sargunv.orbis:meters-per-pixel"]]"#;
+    let dashes = r#""line-dasharray": [2, 2]"#;
+    let want = draw(r#"["get", "px"]"#, dashes, &mut target);
+    assert!(want.len() > 4, "{want:?}: dashes");
+    assert_eq!(draw(scaled, dashes, &mut target), want, "dashes");
+}
+
 /// Buildings larger than an overzoom slice draw whole at z15, z16 and z19
 /// below a source's z14 tiles, looking down and tilted, where the view's
 /// tiles span several zooms (#143): a long slab, a building whose
