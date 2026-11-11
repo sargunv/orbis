@@ -251,7 +251,8 @@ export async function startHost(
       at(ports, index % ports.length).postMessage({ trap: true }),
     jobWorkers: ports.length,
     async recover() {
-      await core.recover(canvas);
+      // The map takes calls while its new device is made.
+      core.recovered(await core.newDevice(canvas));
       if (size) core.resize(...size);
     },
     fetchDeferred() {

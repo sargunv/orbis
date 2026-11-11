@@ -73,3 +73,28 @@ fn gathered_writes_go_quietly_with_the_device() {
     }
     assert!(gpu.lost());
 }
+
+/// Host data outlives a lost device: what was registered with it (in the
+/// browser, a job worker's packed tile, as its reply arrives) is found,
+/// and released, under its id on the device made to replace it, though
+/// that device's own ids start again. Before, the map dropping a tile that
+/// arrived for the lost device released its bytes on the new one, which
+/// had no such id and panicked, the map's wasm with it.
+#[test]
+fn host_data_moves_to_the_device_that_replaces_a_lost_one() {
+    let mut lost = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+    let ids: Vec<_> = (0..3u8).map(|i| lost.register_bytes(vec![i; 8])).collect();
+    lost.release_host_bytes(ids[0]);
+    lost.lose();
+    let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+    gpu.adopt_host_data(lost.take_host_data());
+    assert_eq!(gpu.read_host_bytes(ids[1], 0..8), vec![1; 8]);
+    gpu.release_host_bytes(ids[1]);
+    let fresh = gpu.register_bytes(vec![9; 4]);
+    assert!(
+        !ids.contains(&fresh),
+        "{fresh:?} reuses an id of the lost device's"
+    );
+    assert_eq!(gpu.read_host_bytes(ids[2], 0..8), vec![2; 8]);
+    assert_eq!(gpu.read_host_bytes(fresh, 0..4), vec![9; 4]);
+}

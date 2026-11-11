@@ -220,10 +220,14 @@ impl Canvas {
         (self.config.width, self.config.height)
     }
 
+    /// Sizes the drawing buffer; a lost device's waits for the new
+    /// device, made at this size.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        self.surface.configure(self.gpu.device(), &self.config);
+        if !self.lost() {
+            self.surface.configure(self.gpu.device(), &self.config);
+        }
     }
 
     /// Whether the device was lost: the map needs another.

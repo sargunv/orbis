@@ -250,6 +250,19 @@ fn write_core(
     }
 }
 
+/// What hosts registered with a device that lives in host memory rather
+/// than on the device: bytes for [`Gpu::write_buffer_from_host`] and, in
+/// the browser, images for [`Gpu::write_texture_from_host`], by their ids.
+/// A device made to replace a lost one takes the lost one's
+/// ([`WgpuGpu::take_host_data`]), so that what was registered before the
+/// loss is still found, and released, under its id.
+#[derive(Debug, Default)]
+pub struct HostData {
+    bytes: Slots<HostBytes>,
+    #[cfg(target_arch = "wasm32")]
+    images: Slots<wgpu::ExternalImageSource>,
+}
+
 /// Bytes held for [`Gpu::write_buffer_from_host`].
 #[derive(Debug)]
 enum HostBytes {
@@ -970,6 +983,38 @@ impl WgpuGpu {
     /// Registers bytes in Rust memory for [`Gpu::write_buffer_from_host`].
     pub fn register_bytes(&mut self, bytes: Vec<u8>) -> HostBytesId {
         HostBytesId(self.host_bytes.insert(HostBytes::Owned(bytes)))
+    }
+
+    /// Hands over the host data registered here, for the device that
+    /// replaces this lost one: results that arrived before the loss hold
+    /// its ids. Images released while a write still read them are closed
+    /// now: that write went with the device.
+    pub fn take_host_data(&mut self) -> HostData {
+        #[cfg(target_arch = "wasm32")]
+        for image in std::mem::take(&mut self.released_images) {
+            if let wgpu::ExternalImageSource::ImageBitmap(bitmap) = self.host_images.remove(image.0)
+            {
+                bitmap.close();
+            }
+        }
+        HostData {
+            bytes: std::mem::take(&mut self.host_bytes),
+            #[cfg(target_arch = "wasm32")]
+            images: std::mem::take(&mut self.host_images),
+        }
+    }
+
+    /// Takes over a lost device's host data ([`take_host_data`](Self::take_host_data)),
+    /// in place of this new device's, which holds none yet: its ids find
+    /// the same data here, and ids registered from now on follow them.
+    pub fn adopt_host_data(&mut self, data: HostData) {
+        assert_eq!(self.host_bytes.len(), 0, "a device that holds host bytes");
+        self.host_bytes = data.bytes;
+        #[cfg(target_arch = "wasm32")]
+        {
+            assert_eq!(self.host_images.len(), 0, "a device that holds host images");
+            self.host_images = data.images;
+        }
     }
 
     /// Registers a JS `ArrayBuffer` for [`Gpu::write_buffer_from_host`].

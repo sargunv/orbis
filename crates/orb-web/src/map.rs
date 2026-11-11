@@ -428,6 +428,12 @@ pub async fn create_map(
     })
 }
 
+/// A GPU made for a map after a loss ([`OrbisMap::new_device`]), which
+/// [`OrbisMap::recovered`] puts in.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct NewDevice(Canvas);
+
 #[wasm_bindgen]
 impl OrbisMap {
     /// The current style JSON, including successful edits.
@@ -1009,23 +1015,41 @@ impl OrbisMap {
         panic!("a trap asked for");
     }
 
-    /// Draws on a new GPU in `canvas` after a loss. The map keeps its
-    /// style, camera and cached tiles; the next frames lay the visible
-    /// tiles out again.
-    pub async fn recover(&mut self, canvas: JsValue) -> Result<(), JsError> {
-        let size = self.canvas.size();
-        // A WebGL 2 context comes back on the same canvas once restored.
-        #[cfg(feature = "gl")]
-        crate::gl_context::restored(&canvas)
-            .await
-            .map_err(|e| JsError::new(&format!("{e:?}")))?;
-        self.canvas = Canvas::new(canvas, size, self.id)
-            .await
-            .map_err(|e| JsError::new(&e))?;
+    /// Makes a new GPU in `canvas` after a loss, for
+    /// [`recovered`](Self::recovered) to put in. The map isn't held while
+    /// it is made: job workers' replies and the page's calls (another
+    /// style, say) go on reaching it, rather than failing as a call into a
+    /// map already in use.
+    #[wasm_bindgen(js_name = newDevice)]
+    pub fn new_device(&self, canvas: JsValue) -> js_sys::Promise {
+        let (size, id) = (self.canvas.size(), self.id);
+        wasm_bindgen_futures::future_to_promise(async move {
+            // A WebGL 2 context comes back on the same canvas once restored.
+            #[cfg(feature = "gl")]
+            crate::gl_context::restored(&canvas)
+                .await
+                .map_err(|e| JsError::new(&format!("{e:?}")))?;
+            let canvas = Canvas::new(canvas, size, id)
+                .await
+                .map_err(|e| JsError::new(&e))?;
+            Ok(NewDevice(canvas).into())
+        })
+    }
+
+    /// Draws on `device` from now on. The map keeps its style, camera and
+    /// cached tiles; the next frames lay the visible tiles out again.
+    pub fn recovered(&mut self, device: NewDevice) {
+        let NewDevice(mut canvas) = device;
+        // Job replies that came since the loss, or before it but not yet
+        // applied, hold their packed tiles and bitmaps by the lost device's
+        // ids, as the page's videos do.
+        canvas
+            .gpu()
+            .adopt_host_data(self.canvas.gpu().take_host_data());
+        self.canvas = canvas;
         self.renderer = None;
         self.images.reset();
         wake(self.id);
-        Ok(())
     }
 
     /// Draws the frame shown at `frame_time`, the animation frame's
