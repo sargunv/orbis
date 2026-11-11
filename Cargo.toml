@@ -131,7 +131,10 @@ orb-web = { path = "crates/orb-web" }
 # `RenderPipeline::as_hal` (orb-hal-wgpu's WebGL 2 compiler, #182).
 # And naga's SPIR-V putting a struct taken out of a composite back
 # together member by member: the Adreno 830's Vulkan compiler failed to
-# link both symbol pipelines on the whole extract (#141).
+# link both symbol pipelines on the whole extract (#141). And naga's
+# SPIR-V storing a built-in output array (the clip distances) element by
+# element: the Adreno X1's Vulkan compiler failed to link extrusion
+# planes, which stored it whole (#141).
 # Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
