@@ -576,10 +576,9 @@ impl JobHost {
         start_waiting(&self.fetches);
     }
 
-    /// Gives up the load of `tile` of style `style`'s source `source`: if
-    /// its fetch hasn't started, it never does; if it has, it is aborted
-    /// (a fetch other loads share goes on for them). Either way the load
-    /// answers [`Loaded::Cancelled`], unless its bytes already came.
+    /// Drops what style `style`'s worker keeps of `tile` of its source
+    /// `source` (its decoded frames), so that its next load fetches it
+    /// again ([`Jobs::forget`](crate::Jobs::forget)).
     pub fn forget(&self, style: u64, source: u32, tile: TileIndex) {
         let styles = self.styles.lock().expect("styles poisoned");
         if let Some((_, worker)) = styles.iter().find(|(id, _)| *id == style) {
@@ -587,6 +586,10 @@ impl JobHost {
         }
     }
 
+    /// Gives up the load of `tile` of style `style`'s source `source`: if
+    /// its fetch hasn't started, it never does; if it has, it is aborted
+    /// (a fetch other loads share goes on for them). Either way the load
+    /// answers [`Loaded::Cancelled`], unless its bytes already came.
     pub fn cancel(&self, style: u64, source: u32, tile: TileIndex) {
         let key = Some((style, source, tile));
         let (given_up, running): (Vec<Waiting>, Vec<Abort>) = {

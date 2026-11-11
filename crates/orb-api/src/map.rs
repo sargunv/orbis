@@ -900,9 +900,10 @@ impl Map {
     /// host with nothing to draw into yet (a map before its first target)
     /// still gets its style in and its events ([`MapEvent::StyleLoad`]),
     /// and the requests the style starts go out. Hosts that draw frames
-    /// needn't call it. A frame into a target of another format than still
-    /// output's (an RGBA8 texture) then lays the tiles out again, as after
-    /// [`snapshot`](Self::snapshot).
+    /// needn't call it. It keeps the renderer of the map's last frame: only
+    /// a map that has drawn none gets one for still output's format (an
+    /// RGBA8 texture), so that its first frame into a window of another
+    /// format lays the tiles out again.
     pub fn apply_arrivals(&mut self) -> Result<(), Error> {
         let mut target = self.offscreen(1, 1, 1.0);
         let applied = self.arrive(&mut target);
@@ -1128,6 +1129,16 @@ impl Map {
             return Ok(None);
         }
         let format = target.format();
+        // A target of another format than the map drew last (a BGRA8
+        // window after an RGBA8 still, say) takes a renderer of its own,
+        // which lays the tiles out again. Applying arrivals draws nothing,
+        // so it keeps whichever renderer the map has.
+        if self.renderer.as_ref().is_some_and(|r| r.format() != format)
+            && let Some(renderer) = self.renderer.take()
+        {
+            renderer.destroy(&mut *self.runtime.shared.gpu());
+            self.dirty = true;
+        }
         let viewport = target.viewport();
         // The frame borrows the device once: the target begins and ends
         // with it, and it's let go before anything else here borrows it.
@@ -1220,18 +1231,6 @@ impl Map {
         if self.device != self.runtime.shared.generation() {
             self.device = self.runtime.shared.generation();
             self.renderer = None;
-            self.dirty = true;
-        }
-        // A target of another format than the map drew last (a BGRA8
-        // window after an RGBA8 still, say) takes a renderer of its own,
-        // which lays the tiles out again.
-        if self
-            .renderer
-            .as_ref()
-            .is_some_and(|r| r.format() != target.format())
-            && let Some(renderer) = self.renderer.take()
-        {
-            renderer.destroy(&mut *self.runtime.shared.gpu());
             self.dirty = true;
         }
         Ok(true)
