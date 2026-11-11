@@ -98,7 +98,9 @@ window.scenario = (async () => {
     firstProjection,
     /** The events since the last call. */
     events: () => events.splice(0),
-    /** Resolves once the map has the calls made so far and is idle. */
+    /** Resolves once the map has the calls made so far and its last frame
+     * was idle; that frame can predate those calls, so after one that
+     * draws a new frame (a camera jump), wait for it with `drawn`. */
     idle: async () => {
       await map.hasImage("");
       if (!map.stats?.idle || map.camera.moving) await map.once("idle");

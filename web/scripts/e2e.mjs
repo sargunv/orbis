@@ -564,7 +564,9 @@ async function scenarioOn(browser, server, thread, backend = "webgpu") {
     fire("gestureend", 2, 10);
     await s.idle();
     s.map.camera.jumpTo({ zoom: before.zoom, bearing: before.bearing });
-    await s.idle();
+    // Its frame, not `idle()`: the last report's idle is the frame's
+    // before the jump, and the hit test below reads the drawn frame.
+    await s.drawn();
     const round = (v) => Math.round(v * 1000) / 1000;
     return {
       prevented,
