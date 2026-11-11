@@ -428,17 +428,6 @@ pub unsafe extern "C" fn mln_map_attach_win32_window(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_win32_window") }
 }
 
-/// `mln_map_set_free_camera_options`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_free_camera_options(
-    map: mln_map,
-    options: *const mln_free_camera_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_free_camera_options") }
-}
-
 /// `mln_map_set_image_source_image`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_set_image_source_image(
@@ -1142,6 +1131,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_map_set_feature_state,
         crate::style::mln_map_set_feature_state,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_free_camera_options,
+        crate::map::mln_map_set_free_camera_options,
     ];
     let _ = [
         crate::sys::mln_map_set_geo_json_source_data,

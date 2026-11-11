@@ -42,14 +42,39 @@ impl MapHandle {
     }
 }
 
-/// A camera transition's end handler, waiting for its animation.
+/// A camera command's animations, and its end handler, which runs once
+/// the last of them ends.
 struct Transition {
-    animation: Option<AnimationId>,
+    animations: Vec<AnimationId>,
     id: Option<u64>,
-    handler: EndHandler,
+    handler: Option<EndHandler>,
     /// How it ends, once a command cancelled it: its animation's end
     /// reports the speed it had left.
     outcome: Option<mln_camera_transition_outcome>,
+    /// A later command took the last property one of its animations
+    /// moved.
+    replaced: bool,
+}
+
+impl Transition {
+    fn new(animations: Vec<AnimationId>, animation: &Animation) -> Self {
+        Self {
+            animations,
+            id: (animation.fields & MLN_ANIMATION_OPTION_TRANSITION_ID != 0)
+                .then_some(animation.transition_id),
+            handler: animation.handler,
+            outcome: None,
+            replaced: false,
+        }
+    }
+
+    /// How it ends once nothing of it runs.
+    fn outcome(&self) -> mln_camera_transition_outcome {
+        self.outcome.unwrap_or(match self.replaced {
+            true => MLN_CAMERA_TRANSITION_OUTCOME_REPLACED,
+            false => MLN_CAMERA_TRANSITION_OUTCOME_COMPLETED,
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -151,10 +176,8 @@ pub(crate) struct MapEntry {
     style_loaded: bool,
     /// Completions of URL style loads, waiting for the style.
     style_waiters: Vec<Completion>,
+    /// Camera commands whose animations run.
     transitions: Vec<Transition>,
-    /// What ends the transitions an interruption ends: a cancel, or by
-    /// default a replacement.
-    ending: mln_camera_transition_outcome,
     /// Command groups open: while any is, a session draws none of the
     /// map's changes, so they show together once the outermost ends.
     pub(crate) groups: u32,
@@ -163,6 +186,9 @@ pub(crate) struct MapEntry {
     gesture: bool,
     /// The glide a gesture's release started.
     momentum: Option<AnimationId>,
+    /// Whether the gesture under way changed the zoom, the bearing and
+    /// the pitch: only those settle on a release's snaps.
+    gesture_changed: [bool; 3],
     /// How the camera's latest change was made, for its camera events.
     change: (mln_camera_change_mode, mln_camera_change_source),
     /// An immediate move raised its camera events with its command, so
@@ -240,7 +266,7 @@ impl MapEntry {
                 prefetch_zoom_delta: self.prefetch_zoom_delta,
                 lod_min_radius: lod.min_radius,
                 lod_scale: lod.scale,
-                lod_pitch_threshold: lod.pitch_threshold,
+                lod_pitch_threshold: lod.pitch_threshold.to_degrees(),
                 lod_zoom_shift: lod.zoom_shift,
                 lod_mode: match lod.mode {
                     orb_api::TileLodMode::Default => MLN_TILE_LOD_MODE_DEFAULT,
@@ -248,8 +274,7 @@ impl MapEntry {
                 },
             },
             bounds: self.bounds,
-            // SAFETY: plain C data.
-            free_camera: unsafe { std::mem::zeroed() },
+            free_camera: free_camera(&self.map),
             view: self.view(),
         };
         *self
@@ -438,23 +463,26 @@ pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> 
                     interrupted,
                     velocity,
                 }) => {
-                    let outcome = if interrupted {
-                        entry.ending
-                    } else {
-                        MLN_CAMERA_TRANSITION_OUTCOME_COMPLETED
-                    };
                     // A gesture's glide ends the gesture.
                     if entry.momentum == Some(id) {
                         entry.momentum = None;
                         entry.gesture = false;
                     }
-                    let mut i = 0;
-                    while i < entry.transitions.len() {
-                        if entry.transitions[i].animation == Some(id) {
+                    // An animation interrupted without a cancel lost what
+                    // it moved to a later command.
+                    if let Some(i) = entry
+                        .transitions
+                        .iter()
+                        .position(|t| t.animations.contains(&id))
+                    {
+                        let t = &mut entry.transitions[i];
+                        t.animations.retain(|a| *a != id);
+                        t.replaced |= interrupted;
+                        if t.animations.is_empty() {
                             let t = entry.transitions.remove(i);
-                            moving.push((t.handler, t.outcome.unwrap_or(outcome), velocity));
-                        } else {
-                            i += 1;
+                            if let Some(handler) = t.handler {
+                                moving.push((handler, t.outcome(), velocity));
+                            }
                         }
                     }
                 }
@@ -464,15 +492,14 @@ pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> 
         if jump_ended {
             entry.jumped = false;
         }
-        // Transitions whose animation never started (a zero duration) end
-        // with the camera at rest.
+        // Transitions whose animations ended unreported end with the
+        // camera at rest.
         if !entry.map.is_moving() {
             for t in entry.transitions.drain(..) {
-                let outcome = t.outcome.unwrap_or(MLN_CAMERA_TRANSITION_OUTCOME_COMPLETED);
-                ended.push((t.handler, outcome));
+                let outcome = t.outcome();
+                ended.extend(t.handler.map(|h| (h, outcome)));
             }
         }
-        entry.ending = MLN_CAMERA_TRANSITION_OUTCOME_REPLACED;
         if !ended.is_empty() || !out.is_empty() {
             entry.generation += 1;
         }
@@ -651,10 +678,10 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         style_loaded: false,
                         style_waiters: Vec::new(),
                         transitions: Vec::new(),
-                        ending: MLN_CAMERA_TRANSITION_OUTCOME_REPLACED,
                         groups: 0,
                         gesture: false,
                         momentum: None,
+                        gesture_changed: [false; 3],
                         camera_events: Vec::new(),
                         ended: Vec::new(),
                         change: (
@@ -741,9 +768,9 @@ fn release(map: mln_map, completion: Option<Completion>, force: bool) -> Result 
             crate::session::drop_session(state, session);
         }
         if let Some(mut entry) = state.maps.remove(&id) {
-            for t in entry.transitions.drain(..) {
+            for handler in entry.transitions.drain(..).filter_map(|t| t.handler) {
                 // A closed transition reports no generation: its map is gone.
-                t.handler.end(MLN_CAMERA_TRANSITION_OUTCOME_CLOSED, 0);
+                handler.end(MLN_CAMERA_TRANSITION_OUTCOME_CLOSED, 0);
             }
             let queries = entry.queries.drain().map(|(_, q)| q.completion);
             let still = entry.still.take();
@@ -908,9 +935,15 @@ command!(
                 (entry.extent.width, entry.extent.height) == (size.width, size.height);
             entry.extent.width = size.width;
             entry.extent.height = size.height;
+            let before = entry.map.camera();
             entry
                 .map
                 .set_viewport(f64::from(size.width), f64::from(size.height));
+            // A resize that moves the camera back within its limits
+            // cancels its transitions, as in Native.
+            if entry.map.camera() != before {
+                cancel(entry, None);
+            }
             Ok(())
         }))
     }
@@ -963,8 +996,43 @@ command!(
     true,
     |state, id| {
         let o = *sized(options, "options")?;
-        if o.fields & MLN_MAP_TILE_OPTION_LOD_MODE != 0 && o.lod_mode > MLN_TILE_LOD_MODE_DISTANCE {
-            return Err(Failure::argument("lod_mode names no mode"));
+        let known = MLN_MAP_TILE_OPTION_PREFETCH_ZOOM_DELTA
+            | MLN_MAP_TILE_OPTION_LOD_MIN_RADIUS
+            | MLN_MAP_TILE_OPTION_LOD_SCALE
+            | MLN_MAP_TILE_OPTION_LOD_PITCH_THRESHOLD
+            | MLN_MAP_TILE_OPTION_LOD_ZOOM_SHIFT
+            | MLN_MAP_TILE_OPTION_LOD_MODE;
+        if o.fields & !known != 0 {
+            return Err(Failure::argument("the tile options have unknown bits"));
+        }
+        let has = |bit| o.fields & bit != 0;
+        if has(MLN_MAP_TILE_OPTION_PREFETCH_ZOOM_DELTA) && o.prefetch_zoom_delta > 255 {
+            return Err(Failure::argument("prefetch_zoom_delta is at most 255"));
+        }
+        for (bit, value, what) in [
+            (
+                MLN_MAP_TILE_OPTION_LOD_MIN_RADIUS,
+                o.lod_min_radius,
+                "lod_min_radius",
+            ),
+            (MLN_MAP_TILE_OPTION_LOD_SCALE, o.lod_scale, "lod_scale"),
+            (
+                MLN_MAP_TILE_OPTION_LOD_PITCH_THRESHOLD,
+                o.lod_pitch_threshold,
+                "lod_pitch_threshold",
+            ),
+            (
+                MLN_MAP_TILE_OPTION_LOD_ZOOM_SHIFT,
+                o.lod_zoom_shift,
+                "lod_zoom_shift",
+            ),
+        ] {
+            if has(bit) && !value.is_finite() {
+                return Err(Failure::argument(format!("{what} must be finite")));
+            }
+        }
+        if has(MLN_MAP_TILE_OPTION_LOD_MODE) && o.lod_mode > MLN_TILE_LOD_MODE_DISTANCE {
+            return Err(Failure::argument("lod_mode is invalid"));
         }
         Ok(job(move |entry| {
             let before = (entry.map.tile_lod(), entry.prefetch_zoom_delta);
@@ -980,7 +1048,7 @@ command!(
                 lod.scale = o.lod_scale;
             }
             if has(MLN_MAP_TILE_OPTION_LOD_PITCH_THRESHOLD) {
-                lod.pitch_threshold = o.lod_pitch_threshold;
+                lod.pitch_threshold = o.lod_pitch_threshold.to_radians();
             }
             if has(MLN_MAP_TILE_OPTION_LOD_ZOOM_SHIFT) {
                 lod.zoom_shift = o.lod_zoom_shift;
@@ -1007,10 +1075,42 @@ command!(
     true,
     |state, id| {
         let o = *sized(options, "options")?;
-        if o.fields & MLN_MAP_VIEWPORT_OPTION_CONSTRAIN_MODE != 0
+        let known = MLN_MAP_VIEWPORT_OPTION_NORTH_ORIENTATION
+            | MLN_MAP_VIEWPORT_OPTION_CONSTRAIN_MODE
+            | MLN_MAP_VIEWPORT_OPTION_VIEWPORT_MODE
+            | MLN_MAP_VIEWPORT_OPTION_FRUSTUM_OFFSET;
+        if o.fields & !known != 0 {
+            return Err(Failure::argument("the viewport options have unknown bits"));
+        }
+        let has = |bit| o.fields & bit != 0;
+        if has(MLN_MAP_VIEWPORT_OPTION_NORTH_ORIENTATION)
+            && o.north_orientation > MLN_NORTH_ORIENTATION_LEFT
+        {
+            return Err(Failure::argument("north_orientation is invalid"));
+        }
+        if has(MLN_MAP_VIEWPORT_OPTION_CONSTRAIN_MODE)
             && o.constrain_mode > MLN_CONSTRAIN_MODE_SCREEN
         {
-            return Err(Failure::argument("constrain_mode names no mode"));
+            return Err(Failure::argument("constrain_mode is invalid"));
+        }
+        if has(MLN_MAP_VIEWPORT_OPTION_VIEWPORT_MODE)
+            && o.viewport_mode > MLN_VIEWPORT_MODE_FLIPPED_Y
+        {
+            return Err(Failure::argument("viewport_mode is invalid"));
+        }
+        if has(MLN_MAP_VIEWPORT_OPTION_FRUSTUM_OFFSET) {
+            let f = o.frustum_offset;
+            let sides = [f.top, f.left, f.bottom, f.right];
+            if !sides.iter().all(|v| v.is_finite()) {
+                return Err(Failure::argument(
+                    "the frustum offset's sides must be finite",
+                ));
+            }
+            if sides.iter().any(|v| *v < 0.0) {
+                return Err(Failure::argument(
+                    "the frustum offset's sides must be greater than or equal to 0",
+                ));
+            }
         }
         Ok(job(move |entry| {
             let has = |bit| o.fields & bit != 0;
@@ -1103,6 +1203,16 @@ command!(
             if b.min_zoom > b.max_zoom || b.min_pitch > b.max_pitch {
                 return Err(Failure::argument("the minimum is above the maximum"));
             }
+            // A new limit the camera is past moves it there at once, as
+            // a jump, which takes that property from its animations.
+            let (zoom, pitch) = (entry.map.zoom(), entry.map.camera().pitch);
+            let limited = CameraTarget {
+                zoom: (zoom < b.min_zoom || zoom > b.max_zoom)
+                    .then(|| zoom.clamp(b.min_zoom, b.max_zoom)),
+                pitch: (pitch < b.min_pitch || pitch > b.max_pitch)
+                    .then(|| pitch.clamp(b.min_pitch, b.max_pitch)),
+                ..CameraTarget::default()
+            };
             entry.map.set_constraints(orb_api::Constraints {
                 min_zoom: b.min_zoom,
                 max_zoom: b.max_zoom,
@@ -1110,6 +1220,9 @@ command!(
                 max_pitch: b.max_pitch,
                 bounds: (!b.unbounded).then(|| bounds(b.bounds)),
             });
+            if limited != CameraTarget::default() {
+                entry.map.jump_to(&limited);
+            }
             Ok(())
         }))
     }
@@ -1441,6 +1554,19 @@ fn update_camera(
     let duration =
         (animation.fields & MLN_ANIMATION_OPTION_DURATION != 0).then_some(animation.duration_ms);
     gesture_phase(entry, phase);
+    if phase != MLN_GESTURE_PHASE_NONE {
+        // A gesture's update can repeat a value it doesn't change.
+        let camera = entry.map.camera();
+        let now = [entry.map.zoom(), camera.bearing, camera.pitch];
+        for ((changed, to), now) in entry
+            .gesture_changed
+            .iter_mut()
+            .zip([t.zoom, t.bearing, t.pitch])
+            .zip(now)
+        {
+            *changed |= to.is_some_and(|v| v != now);
+        }
+    }
     // Native eases without a duration at once, and a flight of no duration
     // jumps.
     let immediate = match mode {
@@ -1475,8 +1601,6 @@ fn update_camera(
             entry.camera_events.push((kind, payload, String::new()));
         }
     }
-    // The transitions running now end replaced.
-    entry.ending = MLN_CAMERA_TRANSITION_OUTCOME_REPLACED;
     // An animation reports its own changes, and an earlier jump's with
     // them.
     entry.jumped &= immediate;
@@ -1515,36 +1639,32 @@ fn update_camera(
         }
         _ => return Err(Failure::argument("unknown camera update mode")),
     };
-    // A jump ends the transitions it interrupts now.
-    if animation_id.is_none() {
-        // Cancelled ones end with their animation's end, as cancelled.
-        let (cancelled, replaced): (Vec<_>, Vec<_>) = entry
-            .transitions
-            .drain(..)
-            .partition(|t| t.outcome.is_some());
-        entry.transitions = cancelled;
-        for t in replaced {
-            entry
-                .ended
-                .push((t.handler, MLN_CAMERA_TRANSITION_OUTCOME_REPLACED));
-        }
-    }
-    if let Some(handler) = animation.handler {
-        entry.transitions.push(Transition {
-            animation: animation_id,
-            id: (animation.fields & MLN_ANIMATION_OPTION_TRANSITION_ID != 0)
-                .then_some(animation.transition_id),
-            handler,
-            outcome: None,
-        });
-    }
+    track(entry, animation_id, animation);
     Ok(())
+}
+
+/// Keeps a command's animation for its end handler and its transition
+/// ID; a command that moved at once ends now.
+fn track(entry: &mut MapEntry, animation_id: Option<AnimationId>, animation: &Animation) {
+    match animation_id {
+        Some(a) => entry.transitions.push(Transition::new(vec![a], animation)),
+        None => entry.ended.extend(
+            animation
+                .handler
+                .map(|h| (h, MLN_CAMERA_TRANSITION_OUTCOME_COMPLETED)),
+        ),
+    }
 }
 
 /// A gesture's phase: a begin cancels the camera's transitions, and the
 /// snapshot shows a gesture from its begin to its end or cancel, which
 /// cancels the transitions started during it.
 fn gesture_phase(entry: &mut MapEntry, phase: mln_gesture_phase) {
+    // A begin, or the first phase after the input ended, starts a gesture.
+    let input = entry.gesture && entry.momentum.is_none();
+    if phase == MLN_GESTURE_PHASE_BEGIN || (phase != MLN_GESTURE_PHASE_NONE && !input) {
+        entry.gesture_changed = [false; 3];
+    }
     match phase {
         MLN_GESTURE_PHASE_BEGIN => {
             // The glide a new gesture stops no longer ends a gesture.
@@ -1765,7 +1885,7 @@ fn anchored(
         return Err(Failure::argument("momentum velocities must be finite"));
     }
     let mut out = part;
-    out.velocity = Some(m.velocity);
+    out.velocity = has(MLN_ANCHORED_MOMENTUM_VELOCITY).then_some(m.velocity);
     out.decay = checked;
     if has(MLN_ANCHORED_MOMENTUM_ANCHOR) {
         check_point(&m.anchor)?;
@@ -1801,8 +1921,8 @@ fn anchored(
         }
         out.snap = Some(snap);
     }
-    // Every part is checked; only one with a velocity moves.
-    Ok(has(MLN_ANCHORED_MOMENTUM_VELOCITY).then_some(out))
+    // Every part is checked; only one with a velocity or a snap moves.
+    Ok((out.velocity.is_some() || out.snap.is_some()).then_some(out))
 }
 
 /// A release's momentum as Orbis's camera takes it.
@@ -1852,7 +1972,17 @@ fn release_gesture(entry: &mut MapEntry, d: &Delta, glide: &orb_api::GestureMome
         ..*d
     };
     apply_delta(entry, &step)?;
-    let started = entry.map.start_momentum(glide);
+    // Only what the gesture changed settles.
+    let mut glide = *glide;
+    for (part, changed) in [&mut glide.zoom, &mut glide.bearing, &mut glide.pitch]
+        .into_iter()
+        .zip(entry.gesture_changed)
+    {
+        if let Some(part) = part.as_mut().filter(|_| !changed) {
+            part.snap = None;
+        }
+    }
+    let started = entry.map.start_momentum(&glide);
     entry.momentum = started;
     entry.gesture = started.is_some();
     if started.is_some() {
@@ -1862,15 +1992,7 @@ fn release_gesture(entry: &mut MapEntry, d: &Delta, glide: &orb_api::GestureMome
             MLN_CAMERA_CHANGE_SOURCE_MOMENTUM,
         );
     }
-    if let Some(handler) = d.animation.handler {
-        entry.transitions.push(Transition {
-            animation: started,
-            id: (d.animation.fields & MLN_ANIMATION_OPTION_TRANSITION_ID != 0)
-                .then_some(d.animation.transition_id),
-            handler,
-            outcome: None,
-        });
-    }
+    track(entry, started, &d.animation);
     Ok(())
 }
 
@@ -1970,33 +2092,24 @@ command!(mln_map_get_camera(), true, false, |state, id| {
     })
 });
 
-/// Ends the transitions `which` names as cancelled, and stops the camera
-/// if they were animating it.
+/// Ends the transitions `which` names, or all of them, as cancelled, and
+/// stops their animations where they are. Each ends with its animations,
+/// whose ends report the speed they had left.
 fn cancel(entry: &mut MapEntry, which: Option<u64>) {
-    let mut stop = false;
-    let mut i = 0;
-    while i < entry.transitions.len() {
-        let t = &mut entry.transitions[i];
+    let mut stopping = Vec::new();
+    for t in &mut entry.transitions {
         if which.is_none() || t.id == which {
-            // An animated one ends with its animation, which reports the
-            // speed it had left.
-            if t.animation.is_some() {
-                stop = true;
-                t.outcome = Some(MLN_CAMERA_TRANSITION_OUTCOME_CANCELLED);
-                i += 1;
-                continue;
-            }
-            let t = entry.transitions.remove(i);
-            entry
-                .ended
-                .push((t.handler, MLN_CAMERA_TRANSITION_OUTCOME_CANCELLED));
-        } else {
-            i += 1;
+            t.outcome = Some(MLN_CAMERA_TRANSITION_OUTCOME_CANCELLED);
+            stopping.extend_from_slice(&t.animations);
         }
     }
-    if which.is_none() || stop {
-        entry.ending = MLN_CAMERA_TRANSITION_OUTCOME_CANCELLED;
-        entry.map.stop();
+    match which {
+        None => entry.map.stop(),
+        Some(_) => {
+            for a in stopping {
+                entry.map.stop_animation(a);
+            }
+        }
     }
 }
 
@@ -2019,6 +2132,132 @@ command!(
     |state, id| {
         Ok(job(move |entry| {
             cancel(entry, Some(transition_id));
+            Ok(())
+        }))
+    }
+);
+
+/// The Earth's circumference at the equator, metres: Native's free
+/// camera measures altitude in Web Mercator units of it.
+const EARTH_CIRCUMFERENCE_M: f64 = 2.0 * std::f64::consts::PI * 6_378_137.0;
+
+/// Native's free camera orientation: the bearing turns about the up axis,
+/// then the pitch about the view's right axis, then the roll about the
+/// view axis.
+fn orientation(bearing: f64, pitch: f64, roll: f64) -> glam::DQuat {
+    glam::DQuat::from_rotation_z(bearing.to_radians())
+        * glam::DQuat::from_rotation_x(-pitch.to_radians())
+        * glam::DQuat::from_rotation_z(roll.to_radians())
+}
+
+/// The bearing, pitch and roll of a unit orientation, in degrees, as
+/// Native reads them back from its view's frame.
+fn bearing_pitch_roll(q: glam::DQuat) -> (f64, f64, f64) {
+    use glam::DVec3;
+    let forward = q * DVec3::new(0.0, 0.0, -1.0);
+    let up = q * DVec3::new(0.0, -1.0, 0.0);
+    let right = up.cross(forward);
+    let flat = forward.x.hypot(forward.y);
+    let pitch = flat.atan2(-forward.z);
+    // Looking straight down, the frame's right gives the bearing.
+    let (bearing, roll) = if flat > 1e-3 {
+        (forward.x.atan2(-forward.y), -right.z.atan2(up.z))
+    } else {
+        (-(-right.y).atan2(right.x), 0.0)
+    };
+    (bearing.to_degrees(), pitch.to_degrees(), roll.to_degrees())
+}
+
+/// The map's free camera in Native's terms: the eye in Web Mercator units,
+/// and its orientation.
+pub(crate) fn free_camera(map: &orb_api::Map) -> mln_free_camera {
+    let free = map.free_camera();
+    let (lon, lat) = (free.position.lon, free.position.lat);
+    let q = orientation(free.bearing, free.pitch, free.roll);
+    mln_free_camera {
+        position: mln_vec3 {
+            x: (lon + 180.0) / 360.0,
+            y: 0.5
+                - (std::f64::consts::FRAC_PI_4 + lat.to_radians() / 2.0)
+                    .tan()
+                    .ln()
+                    / (2.0 * std::f64::consts::PI),
+            z: free.altitude / (lat.to_radians().cos() * EARTH_CIRCUMFERENCE_M),
+        },
+        orientation: mln_quaternion {
+            x: q.x,
+            y: q.y,
+            z: q.z,
+            w: q.w,
+        },
+    }
+}
+
+// Puts the camera's eye where the options say at once, cancelling its
+// transitions; what they leave out stays.
+command!(
+    mln_map_set_free_camera_options(options: *const mln_free_camera_options),
+    false,
+    true,
+    |state, id| {
+        let o = *sized(options, "options")?;
+        let known = MLN_FREE_CAMERA_OPTION_POSITION | MLN_FREE_CAMERA_OPTION_ORIENTATION;
+        if o.fields & !known != 0 {
+            return Err(Failure::argument(
+                "the free camera options have unknown bits",
+            ));
+        }
+        let fields = o.fields;
+        let has = move |bit| fields & bit != 0;
+        let p = o.position;
+        if has(MLN_FREE_CAMERA_OPTION_POSITION)
+            && !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        {
+            return Err(Failure::argument("the position must be finite"));
+        }
+        let q = o.orientation;
+        let q = glam::DQuat::from_xyzw(q.x, q.y, q.z, q.w);
+        if has(MLN_FREE_CAMERA_OPTION_ORIENTATION) {
+            if !q.is_finite() {
+                return Err(Failure::argument("the orientation must be finite"));
+            }
+            if q.length() == 0.0 {
+                return Err(Failure::argument(
+                    "the orientation is a quaternion of zero length",
+                ));
+            }
+        }
+        Ok(job(move |entry| {
+            cancel(entry, None);
+            let mut free = entry.map.free_camera();
+            if has(MLN_FREE_CAMERA_OPTION_POSITION) {
+                let lat = (std::f64::consts::PI * (1.0 - 2.0 * p.y))
+                    .sinh()
+                    .atan()
+                    .to_degrees();
+                free.position = Geodetic::new(p.x * 360.0 - 180.0, lat);
+                free.altitude = p.z * lat.to_radians().cos() * EARTH_CIRCUMFERENCE_M;
+            }
+            if has(MLN_FREE_CAMERA_OPTION_ORIENTATION) {
+                (free.bearing, free.pitch, free.roll) = bearing_pitch_roll(q.normalize());
+            }
+            entry.change = (
+                MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
+                MLN_CAMERA_CHANGE_SOURCE_COMMAND,
+            );
+            let before = entry.map.camera();
+            entry.map.jump_to_free(&free);
+            if entry.map.camera() != before {
+                // Native reports an immediate move as it makes it.
+                for kind in [
+                    MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE,
+                    MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE,
+                ] {
+                    let payload = Payload::CameraChange(entry.change.0, entry.change.1);
+                    entry.camera_events.push((kind, payload, String::new()));
+                }
+                entry.jumped = true;
+            }
             Ok(())
         }))
     }
