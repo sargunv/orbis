@@ -223,9 +223,52 @@ impl NativeFetch {
     }
 }
 
-fn read_file(path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
+/// The file a `file://` URL's path names, its `%XX` escapes decoded.
+fn file_path(url_path: &str) -> std::path::PathBuf {
+    let bytes = percent_decode(url_path);
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::OsStr::from_bytes(&bytes).into()
+    }
+    #[cfg(not(unix))]
+    {
+        String::from_utf8_lossy(&bytes).into_owned().into()
+    }
+}
+
+/// `text` with each `%` and two hex digits decoded to their byte, as the
+/// WHATWG URL standard decodes: a `%` without two digits stays as it is.
+fn percent_decode(text: &str) -> std::borrow::Cow<'_, [u8]> {
+    let bytes = text.as_bytes();
+    if !bytes.contains(&b'%') {
+        return bytes.into();
+    }
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = (bytes[i] == b'%')
+            .then(|| Some((hex(*bytes.get(i + 1)?)?, hex(*bytes.get(i + 2)?)?)))
+            .flatten();
+        match escaped {
+            Some((high, low)) => {
+                out.push(high << 4 | low);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    out.into()
+}
+
+/// Reads a `file://` URL's path, `range` of it when given.
+fn read_file(url_path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(path).map_err(|e| match e.kind() {
+    let mut file = std::fs::File::open(file_path(url_path)).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => FetchError::NotFound,
         _ => FetchError::Network(e.to_string()),
     })?;
@@ -720,6 +763,24 @@ mod tests {
         assert_eq!(results[0].1, Err(FetchError::NotFound));
         assert_eq!(results[1].1, Ok(b"hello".to_vec()));
         assert!(matches!(results[2].1, Err(FetchError::UnsupportedUrl(_))));
+    }
+
+    #[test]
+    fn file_urls_are_percent_decoded() {
+        assert_eq!(&*percent_decode("a%20b%2fc%zz%4"), b"a b/c%zz%4");
+        let dir = std::env::temp_dir().join(format!("orb-file-url-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a b%.json"), b"{}").unwrap();
+        let agent = ureq::Agent::new_with_defaults();
+        let get = |name: &str| {
+            let url = format!("file://{}/{name}", dir.display());
+            NativeFetch::get_blocking(&agent, None, &plain(&url), None, true, &Abort::NEVER)
+        };
+        let (escaped, bare, raw) = (get("a%20b%25.json"), get("a%20b%.json"), get("a b%.json"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(escaped.unwrap(), b"{}");
+        assert_eq!(bare.unwrap(), b"{}");
+        assert_eq!(raw.unwrap(), b"{}");
     }
 
     fn response(status: &str, headers: &str, body: &[u8]) -> Result<Vec<u8>, FetchError> {
