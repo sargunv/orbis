@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use orb_host::{InkRect, LocalFace, LocalGlyphs, TextMetrics};
+use orb_host::{LocalFace, LocalGlyphs, TextMetrics};
 use orb_text::FontId;
 use orb_text::font::{Drawn, Face, draw};
 use orb_text::sdf::InkBox;
@@ -229,27 +229,13 @@ impl LocalGlyphs for SystemFonts {
         let Some(drawn) = state.drawn(font, text) else {
             return TextMetrics::default();
         };
-        let m = drawn.metrics;
-        TextMetrics {
-            advance: m.advance,
-            ascent: m.ascent,
-            descent: m.descent,
-            left: m.left,
-            right: m.right,
-        }
+        drawn.metrics
     }
 
-    fn coverage(&self, font: &LocalFace<'_>, text: &str, ink: InkRect) -> Vec<u8> {
+    fn coverage(&self, font: &LocalFace<'_>, text: &str, ink: &InkBox) -> Vec<u8> {
         let mut state = self.state();
-        let ink = InkBox {
-            glyph_width: ink.width,
-            glyph_height: ink.height,
-            glyph_top: ink.top,
-            glyph_left: ink.left,
-            advance: 0.0,
-        };
         match state.drawn(font, text) {
-            Some(drawn) => drawn.ink_alpha(&ink),
+            Some(drawn) => drawn.ink_alpha(ink),
             None => vec![0; (ink.glyph_width * ink.glyph_height) as usize],
         }
     }
@@ -270,13 +256,8 @@ mod tests {
         for text in ["A", "क्ष", "東"] {
             let m = fonts.measure(&face, text);
             assert!(m.advance > 10.0 && m.ascent > 10.0, "{text}: {m:?}");
-            let ink = InkRect {
-                left: (-m.left).floor() as i32,
-                top: m.ascent.ceil() as i32,
-                width: (m.right.ceil() - (-m.left).floor()) as u32,
-                height: (m.ascent.ceil() + m.descent.ceil()) as u32,
-            };
-            let alpha = fonts.coverage(&face, text, ink);
+            let ink = orb_text::sdf::local::ink_box(text, &m);
+            let alpha = fonts.coverage(&face, text, &ink);
             assert!(alpha.contains(&255), "{text} has solid ink");
         }
     }

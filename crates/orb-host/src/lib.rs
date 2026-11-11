@@ -233,34 +233,19 @@ pub struct LocalFace<'a> {
     pub style: &'a str,
 }
 
-/// What canvas `measureText` reports, in pixels: the advance and the ink's
-/// `actualBoundingBox{Ascent,Descent,Left,Right}`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct TextMetrics {
-    pub advance: f64,
-    pub ascent: f64,
-    pub descent: f64,
-    pub left: f64,
-    pub right: f64,
-}
-
-/// A text's ink box relative to its pen origin, whole pixels, as TinySDF
-/// sizes it: the text is drawn with its origin at `(-left, top)` of the box.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InkRect {
-    pub left: i32,
-    pub top: i32,
-    pub width: u32,
-    pub height: u32,
-}
+/// What canvas `measureText` reports, and the ink box TinySDF draws a
+/// text into: `orb-text`'s, which the glyph jobs take as they are.
+pub use orb_text::sdf::InkBox;
+pub use orb_text::sdf::local::TextMetrics;
 
 /// Draws glyphs with fonts only the host can read (the "local" provider): the browser's canvas on the web, system fonts natively.
 pub trait LocalGlyphs: Send + Sync + std::fmt::Debug {
     /// Canvas `measureText` of `text` in `font`.
     fn measure(&self, font: &LocalFace<'_>, text: &str) -> TextMetrics;
     /// The alpha coverage of `ink`'s box, row-major, with `text` drawn as
-    /// TinySDF draws it.
-    fn coverage(&self, font: &LocalFace<'_>, text: &str, ink: InkRect) -> Vec<u8>;
+    /// TinySDF draws it: its origin at `(-glyph_left, glyph_top)` of the
+    /// box.
+    fn coverage(&self, font: &LocalFace<'_>, text: &str, ink: &InkBox) -> Vec<u8>;
 }
 
 /// Draws glyphs from font files a style declares (`font-faces`), from the
@@ -282,7 +267,7 @@ pub trait FontFiles: Send + Sync + std::fmt::Debug {
     /// [`LocalGlyphs::measure`] measures it, at 48 px.
     fn measure(&self, url: &str, text: &str) -> TextMetrics;
     /// The coverage of `ink`'s box, as [`LocalGlyphs::coverage`].
-    fn coverage(&self, url: &str, text: &str, ink: InkRect) -> Vec<u8>;
+    fn coverage(&self, url: &str, text: &str, ink: &InkBox) -> Vec<u8>;
 }
 
 #[cfg(feature = "fonts")]
@@ -315,24 +300,10 @@ impl FontFiles for FontFileFaces {
     }
 
     fn measure(&self, url: &str, text: &str) -> TextMetrics {
-        let m = self.files().measure(url, text);
-        TextMetrics {
-            advance: m.advance,
-            ascent: m.ascent,
-            descent: m.descent,
-            left: m.left,
-            right: m.right,
-        }
+        self.files().measure(url, text)
     }
 
-    fn coverage(&self, url: &str, text: &str, ink: InkRect) -> Vec<u8> {
-        let ink = orb_text::sdf::InkBox {
-            glyph_width: ink.width,
-            glyph_height: ink.height,
-            glyph_top: ink.top,
-            glyph_left: ink.left,
-            advance: 0.0,
-        };
-        self.files().coverage(url, text, &ink)
+    fn coverage(&self, url: &str, text: &str, ink: &InkBox) -> Vec<u8> {
+        self.files().coverage(url, text, ink)
     }
 }

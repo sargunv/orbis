@@ -9,10 +9,10 @@ version.workspace = true
 [features]
 # `FontFileFaces`: `FontFiles` drawn by `orb-text` in this module (native
 # hosts and the test harness; map pages load `shaper.wasm` instead).
-fonts = ["dep:orb-text", "orb-text/fonts"]
+fonts = ["orb-text/fonts"]
 
 [dependencies]
-orb-text = { workspace = true, optional = true }
+orb-text.workspace = true
 
 [lints]
 workspace = true

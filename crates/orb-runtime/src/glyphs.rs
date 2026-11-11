@@ -27,39 +27,20 @@ fn face(font: &LocalFont) -> orb_host::LocalFace<'_> {
     }
 }
 
-fn text_metrics(m: orb_host::TextMetrics) -> TextMetrics {
-    TextMetrics {
-        advance: m.advance,
-        ascent: m.ascent,
-        descent: m.descent,
-        left: m.left,
-        right: m.right,
-    }
-}
-
 fn measure(local: &dyn LocalGlyphs, font: &LocalFont, text: &str) -> TextMetrics {
-    text_metrics(local.measure(&face(font), text))
+    local.measure(&face(font), text)
 }
 
 fn coverage(local: &dyn LocalGlyphs, font: &LocalFont, text: &str, ink: &InkBox) -> Vec<u8> {
-    local.coverage(&face(font), text, ink_rect(ink))
+    local.coverage(&face(font), text, ink)
 }
 
 /// A local glyph's layout metrics and bitmap size.
 type LocalMetrics = (GlyphMetrics, [u32; 2]);
 
 fn file_metrics(files: &dyn FontFiles, url: &str, text: &str) -> LocalMetrics {
-    let m = text_metrics(files.measure(url, text));
+    let m = files.measure(url, text);
     local::metrics(text, &local::ink_box(text, &m))
-}
-
-fn ink_rect(ink: &InkBox) -> orb_host::InkRect {
-    orb_host::InkRect {
-        left: ink.glyph_left,
-        top: ink.glyph_top,
-        width: ink.glyph_width,
-        height: ink.glyph_height,
-    }
 }
 
 /// The font a declared file draws: its URL's hash, the same everywhere.
@@ -471,11 +452,11 @@ impl GlyphRaster {
             .iter()
             .enumerate()
             .filter_map(|(i, text)| {
-                let ink = local::ink_box(text, &text_metrics(files.measure(url, text)));
+                let ink = local::ink_box(text, &files.measure(url, text));
                 if ink.glyph_width == 0 || ink.glyph_height == 0 {
                     return None;
                 }
-                let sdf = local::sdf(&ink, &files.coverage(url, text, ink_rect(&ink)));
+                let sdf = local::sdf(&ink, &files.coverage(url, text, &ink));
                 Some(GlyphBitmap {
                     index: i as u32,
                     size: [sdf.width, sdf.height],
@@ -605,8 +586,8 @@ mod tests {
                 right: 18.0,
             }
         }
-        fn coverage(&self, _: &str, _: &str, ink: orb_host::InkRect) -> Vec<u8> {
-            vec![255; (ink.width * ink.height) as usize]
+        fn coverage(&self, _: &str, _: &str, ink: &InkBox) -> Vec<u8> {
+            vec![255; (ink.glyph_width * ink.glyph_height) as usize]
         }
     }
 

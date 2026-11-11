@@ -511,9 +511,9 @@ impl orb_host::LocalGlyphs for CanvasGlyphs {
         &self,
         font: &orb_host::LocalFace<'_>,
         text: &str,
-        ink: orb_host::InkRect,
+        ink: &orb_host::InkBox,
     ) -> Vec<u8> {
-        let (w, h) = (ink.width, ink.height);
+        let (w, h) = (ink.glyph_width, ink.glyph_height);
         if w == 0 || h == 0 {
             return Vec::new();
         }
@@ -521,7 +521,11 @@ impl orb_host::LocalGlyphs for CanvasGlyphs {
             let b = f64::from(CANVAS_BUFFER);
             context.clear_rect(b, b, f64::from(w), f64::from(h));
             context
-                .fill_text(text, b - f64::from(ink.left), b + f64::from(ink.top))
+                .fill_text(
+                    text,
+                    b - f64::from(ink.glyph_left),
+                    b + f64::from(ink.glyph_top),
+                )
                 .ok()?;
             let image = context
                 .get_image_data(b, b, f64::from(w), f64::from(h))
@@ -652,18 +656,18 @@ impl orb_host::FontFiles for ShaperFiles {
         }
     }
 
-    fn coverage(&self, url: &str, text: &str, ink: orb_host::InkRect) -> Vec<u8> {
+    fn coverage(&self, url: &str, text: &str, ink: &orb_host::InkBox) -> Vec<u8> {
         let args = [
             url.into(),
             text.into(),
-            ink.left.into(),
-            ink.top.into(),
-            ink.width.into(),
-            ink.height.into(),
+            ink.glyph_left.into(),
+            ink.glyph_top.into(),
+            ink.glyph_width.into(),
+            ink.glyph_height.into(),
         ];
         match Self::call("coverage", &args) {
             Ok(alpha) => Uint8Array::new(&alpha).to_vec(),
-            Err(_) => vec![0; (ink.width * ink.height) as usize],
+            Err(_) => vec![0; (ink.glyph_width * ink.glyph_height) as usize],
         }
     }
 }
