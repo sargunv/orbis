@@ -41,21 +41,39 @@ pub(crate) struct Readback {
 /// On Windows, D3D12's shader compiler too ([`crate::dx12`]): what it is,
 /// when the adapter is D3D12's.
 async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter, Option<String>), String> {
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    descriptor
-        .flags
-        .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+    let described = || {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor
+            .flags
+            .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+        with_env(descriptor)
+    };
     #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut descriptor = with_env(descriptor);
+    let mut descriptor = described();
     #[cfg(windows)]
     let compiler = Some(crate::dx12::choose(&mut descriptor));
     #[cfg(not(windows))]
     let compiler: Option<String> = None;
-    let instance = wgpu::Instance::new(descriptor);
-    let adapter = instance
+    let backends = descriptor.backends;
+    let mut instance = wgpu::Instance::new(descriptor);
+    let mut adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions::default())
         .await
         .map_err(|e| format!("no adapter: {e}"))?;
+    // GL taken where another backend was asked for too (Android 8's
+    // emulator, which has a Vulkan loader but no Vulkan device): an
+    // instance of GL alone, whose window surfaces are GL's. Beside the
+    // others, its surface on an Android window failed to configure
+    // ("Invalid surface").
+    if adapter.get_info().backend == wgpu::Backend::Gl && backends != wgpu::Backends::GL {
+        let mut descriptor = described();
+        descriptor.backends = wgpu::Backends::GL;
+        instance = wgpu::Instance::new(descriptor);
+        adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .map_err(|e| format!("no adapter: {e}"))?;
+    }
     #[cfg(windows)]
     let compiler = compiler
         .filter(|_| adapter.get_info().backend == wgpu::Backend::Dx12)
