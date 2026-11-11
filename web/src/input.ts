@@ -1,8 +1,9 @@
 // DOM input to the map's gestures (orb-camera's input): pointer events for
 // mouse, pen and touch, wheel, Safari's trackpad pinches, keys and focus,
-// sent to the map wherever it runs. Each carries the event's timestamp, which release velocities and
-// double taps measure, on the clock frames' timestamps use. A Shift-drag's
-// box shows over the canvas while it is drawn.
+// sent to the map wherever it runs. Each carries the event's timestamp,
+// which release velocities and double taps measure, on the clock frames'
+// timestamps use. A Shift-drag's box shows over the canvas while it is
+// drawn.
 
 import type { InputKind } from "./engine.ts";
 import type { GestureOptions } from "./types.ts";
