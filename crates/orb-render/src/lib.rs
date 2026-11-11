@@ -1055,82 +1055,25 @@ impl Renderer {
     /// which the drape keeps on a page of their own ([`DrapeLayout`]).
     fn assign_stacks(&mut self) {
         let on = self.terrain_on();
-        let mut stacks = 0u8;
-        let mut layers: Vec<terrain::TerrainLayer> = Vec::new();
-        let mut previous: Option<Option<u32>> = None;
-        for (i, node) in self.nodes.iter_mut().enumerate() {
-            let draped = on && node.family.is_draped();
-            let group = composite_group(node.composite);
-            let shaded = draped && node.shaded;
-            let open = layers
-                .last()
-                .filter(|l| draped && previous == Some(group) && !(shaded && l.shade.is_some()));
-            if draped && open.is_none() {
-                layers.push(terrain::TerrainLayer::default());
-            }
-            previous = draped.then_some(group);
-            node.stack = None;
-            node.terrain_layer = draped.then(|| layers.len() as u8 - 1);
-            if let Some(layer) = layers.last_mut().filter(|_| draped) {
-                let mut next = || {
-                    stacks = stacks.saturating_add(1);
-                    stacks - 1
-                };
-                node.stack = Some(if shaded {
-                    let slopes = next();
-                    layer.shade = Some((i as u32, slopes));
-                    slopes
-                } else {
-                    let part = match layer.shade {
-                        Some(_) => &mut layer.above,
-                        None => &mut layer.below,
-                    };
-                    *part.get_or_insert_with(next)
-                });
-            }
-        }
-        // A layer without a shade whose zoom-free nodes come first splits
-        // above them: the stack below keeps its slots while the camera
-        // zooms.
-        for (index, layer) in layers.iter_mut().enumerate() {
-            if layer.shade.is_some() {
-                continue;
-            }
-            let members: Vec<usize> = (0..self.nodes.len())
-                .filter(|&i| self.nodes[i].terrain_layer == Some(index as u8))
-                .collect();
-            let Some(split) =
-                (members.iter().position(|&i| self.nodes[i].by_zoom)).filter(|&split| split > 0)
-            else {
-                continue;
-            };
-            stacks = stacks.saturating_add(1);
-            layer.above = Some(stacks - 1);
-            for &i in &members[split..] {
-                self.nodes[i].stack = layer.above;
-            }
-        }
-        // Colour stacks keep their order ahead of the slope stacks.
-        let slopes: Vec<u8> = layers.iter().filter_map(|l| Some(l.shade?.1)).collect();
-        let colour = u32::from(stacks) - slopes.len() as u32;
-        let renumber = |stack: u8| match slopes.iter().position(|&s| s == stack) {
-            Some(rank) => colour as u8 + rank as u8,
-            None => stack - slopes.iter().filter(|&&s| s < stack).count() as u8,
-        };
-        for layer in &mut layers {
-            layer.below = layer.below.map(renumber);
-            layer.above = layer.above.map(renumber);
-            layer.shade = layer.shade.map(|(node, s)| (node, renumber(s)));
-        }
-        for node in &mut self.nodes {
-            node.stack = node.stack.map(renumber);
-            node.cull.target = match node.stack {
+        let inputs: Vec<StackInput> = (self.nodes.iter())
+            .map(|node| StackInput {
+                draped: on && node.family.is_draped(),
+                group: composite_group(node.composite),
+                shaded: node.shaded,
+                by_zoom: node.by_zoom,
+            })
+            .collect();
+        let stacks = drape_stacks(&inputs);
+        for (node, (stack, layer)) in (self.nodes.iter_mut()).zip(stacks.nodes) {
+            node.stack = stack;
+            node.terrain_layer = layer;
+            node.cull.target = match stack {
                 Some(stack) => PlacementTarget::Drape(stack),
                 None => PlacementTarget::Map,
             };
         }
-        self.drape_stacks = [colour, slopes.len() as u32];
-        self.terrain_layers = layers;
+        self.drape_stacks = stacks.counts;
+        self.terrain_layers = stacks.layers;
     }
 
     /// Makes node `node`, a hillshade, one the terrain pass lights from
@@ -2924,6 +2867,111 @@ impl Renderer {
     }
 }
 
+/// What puts a node in a drape stack ([`Renderer::assign_stacks`]).
+#[derive(Clone, Copy, Debug, Default)]
+struct StackInput {
+    /// Terrain is on and the node's family drapes.
+    draped: bool,
+    /// The layer it composites with, if its layer composites once.
+    group: Option<u32>,
+    /// A hillshade the terrain lights between stacks.
+    shaded: bool,
+    /// What it draws changes with the zoom.
+    by_zoom: bool,
+}
+
+/// The nodes' drape stacks and terrain layers.
+#[derive(Debug, PartialEq, Eq)]
+struct DrapeStacks {
+    /// Per node, its stack and terrain layer.
+    nodes: Vec<(Option<u8>, Option<u8>)>,
+    layers: Vec<terrain::TerrainLayer>,
+    /// Colour stacks, then slope stacks.
+    counts: [u32; 2],
+}
+
+/// The drape stacks and terrain layers of nodes `inputs`, as
+/// [`Renderer::assign_stacks`] tells.
+fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
+    let mut stacks = 0u8;
+    let mut layers: Vec<terrain::TerrainLayer> = Vec::new();
+    let mut nodes: Vec<(Option<u8>, Option<u8>)> = Vec::with_capacity(inputs.len());
+    let mut previous: Option<Option<u32>> = None;
+    for (i, node) in inputs.iter().enumerate() {
+        let draped = node.draped;
+        let group = node.group;
+        let shaded = draped && node.shaded;
+        let open = layers
+            .last()
+            .filter(|l| draped && previous == Some(group) && !(shaded && l.shade.is_some()));
+        if draped && open.is_none() {
+            layers.push(terrain::TerrainLayer::default());
+        }
+        previous = draped.then_some(group);
+        let terrain_layer = draped.then(|| layers.len() as u8 - 1);
+        let mut stack = None;
+        if let Some(layer) = layers.last_mut().filter(|_| draped) {
+            let mut next = || {
+                stacks = stacks.saturating_add(1);
+                stacks - 1
+            };
+            stack = Some(if shaded {
+                let slopes = next();
+                layer.shade = Some((i as u32, slopes));
+                slopes
+            } else {
+                let part = match layer.shade {
+                    Some(_) => &mut layer.above,
+                    None => &mut layer.below,
+                };
+                *part.get_or_insert_with(next)
+            });
+        }
+        nodes.push((stack, terrain_layer));
+    }
+    // A layer without a shade whose zoom-free nodes come first splits
+    // above them: the stack below keeps its slots while the camera
+    // zooms.
+    for (index, layer) in layers.iter_mut().enumerate() {
+        if layer.shade.is_some() {
+            continue;
+        }
+        let members: Vec<usize> = (0..nodes.len())
+            .filter(|&i| nodes[i].1 == Some(index as u8))
+            .collect();
+        let Some(split) =
+            (members.iter().position(|&i| inputs[i].by_zoom)).filter(|&split| split > 0)
+        else {
+            continue;
+        };
+        stacks = stacks.saturating_add(1);
+        layer.above = Some(stacks - 1);
+        for &i in &members[split..] {
+            nodes[i].0 = layer.above;
+        }
+    }
+    // Colour stacks keep their order ahead of the slope stacks.
+    let slopes: Vec<u8> = layers.iter().filter_map(|l| Some(l.shade?.1)).collect();
+    let colour = u32::from(stacks) - slopes.len() as u32;
+    let renumber = |stack: u8| match slopes.iter().position(|&s| s == stack) {
+        Some(rank) => colour as u8 + rank as u8,
+        None => stack - slopes.iter().filter(|&&s| s < stack).count() as u8,
+    };
+    for layer in &mut layers {
+        layer.below = layer.below.map(renumber);
+        layer.above = layer.above.map(renumber);
+        layer.shade = layer.shade.map(|(node, s)| (node, renumber(s)));
+    }
+    for node in &mut nodes {
+        node.0 = node.0.map(renumber);
+    }
+    DrapeStacks {
+        nodes,
+        layers,
+        counts: [colour, slopes.len() as u32],
+    }
+}
+
 /// A bundle's `commands` without the index buffer bindings that bind what
 /// is bound already: each indexed draw binds its own (the compacted
 /// indices, or symbols' [`QUAD_INDICES`]), and runs of one kind need it
@@ -3116,4 +3164,110 @@ fn scene_group(
         layout,
         entries: &entries,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use terrain::TerrainLayer;
+
+    /// Drape stacks by case: per node, whether it drapes, its composite
+    /// group, whether it's a shaded hillshade and whether it draws by zoom;
+    /// then each node's stack and terrain layer, the layers and the counts.
+    #[test]
+    fn drape_stacks_by_case() {
+        let node = |draped, group, shaded, by_zoom| StackInput {
+            draped,
+            group,
+            shaded,
+            by_zoom,
+        };
+        let plain = node(true, None, false, false);
+        let layer = |below, shade, above| TerrainLayer {
+            below,
+            shade,
+            above,
+        };
+        type Case = (&'static str, Vec<StackInput>, DrapeStacks);
+        let cases: Vec<Case> = vec![
+            (
+                "terrain off",
+                vec![node(false, None, false, false); 2],
+                DrapeStacks {
+                    nodes: vec![(None, None); 2],
+                    layers: vec![],
+                    counts: [0, 0],
+                },
+            ),
+            (
+                "a run is one stack",
+                vec![plain, plain],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)); 2],
+                    layers: vec![layer(Some(0), None, None)],
+                    counts: [1, 0],
+                },
+            ),
+            (
+                "a node that doesn't drape ends the run",
+                vec![plain, node(false, None, false, false), plain],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)), (None, None), (Some(1), Some(1))],
+                    layers: vec![layer(Some(0), None, None), layer(Some(1), None, None)],
+                    counts: [2, 0],
+                },
+            ),
+            (
+                "a layer that composites once has a terrain layer of its own",
+                vec![plain, node(true, Some(5), false, false)],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)), (Some(1), Some(1))],
+                    layers: vec![layer(Some(0), None, None), layer(Some(1), None, None)],
+                    counts: [2, 0],
+                },
+            ),
+            (
+                "a shaded hillshade's slopes stack after the colour stacks",
+                vec![plain, node(true, None, true, false), plain],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)), (Some(2), Some(0)), (Some(1), Some(0))],
+                    layers: vec![layer(Some(0), Some((1, 2)), Some(1))],
+                    counts: [2, 1],
+                },
+            ),
+            (
+                "a second shaded hillshade starts a terrain layer",
+                vec![node(true, None, true, false), node(true, None, true, false)],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)), (Some(1), Some(1))],
+                    layers: vec![
+                        layer(None, Some((0, 0)), None),
+                        layer(None, Some((1, 1)), None),
+                    ],
+                    counts: [0, 2],
+                },
+            ),
+            (
+                "zoom-free nodes first split from those drawn by zoom",
+                vec![plain, node(true, None, false, true), plain],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)), (Some(1), Some(0)), (Some(1), Some(0))],
+                    layers: vec![layer(Some(0), None, Some(1))],
+                    counts: [2, 0],
+                },
+            ),
+            (
+                "nodes drawn by zoom first don't split",
+                vec![node(true, None, false, true), plain],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)); 2],
+                    layers: vec![layer(Some(0), None, None)],
+                    counts: [1, 0],
+                },
+            ),
+        ];
+        for (name, inputs, expected) in cases {
+            assert_eq!(drape_stacks(&inputs), expected, "{name}");
+        }
+    }
 }
