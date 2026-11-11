@@ -17,17 +17,25 @@ pub struct DemGrid {
     max: f32,
 }
 
+/// Texels in a tile `dim` texels a side: at least one.
+fn area(dim: u32) -> Result<usize, String> {
+    let side = usize::try_from(dim).map_err(|e| e.to_string())?;
+    (side.checked_mul(side))
+        .filter(|&n| n > 0)
+        .ok_or_else(|| format!("a DEM tile can't be {dim} texels a side"))
+}
+
 impl DemGrid {
     /// Decodes RGBA8 texels with GL JS's unpack vector: metres are
     /// `r·x + g·y + b·z − w` over the 0–255 channels, except that
     /// terrarium's no-data texel, black (−32768 m), reads as sea level, as
     /// the GPU's decode reads it (`dem.wgsl`).
     pub fn from_rgba(dim: u32, texels: &[u8], unpack: [f64; 4]) -> Result<Self, String> {
-        if texels.len() != (dim * dim * 4) as usize {
+        if area(dim)?.checked_mul(4) != Some(texels.len()) {
             return Err(format!(
                 "a {dim}×{dim} DEM tile has {} bytes, not {}",
                 texels.len(),
-                dim * dim * 4
+                4 * u128::from(dim).pow(2)
             ));
         }
         let [r, g, b, offset] = unpack;
@@ -48,7 +56,7 @@ impl DemGrid {
     /// A tile's elevations in metres, rows top to bottom, as
     /// [`elevations`](Self::elevations) gives them (to cross threads).
     pub fn from_elevations(dim: u32, elevations: Vec<f32>) -> Result<Self, String> {
-        if elevations.len() != (dim * dim) as usize {
+        if elevations.len() != area(dim)? {
             return Err(format!(
                 "a {dim}×{dim} DEM tile has {} elevations",
                 elevations.len()
@@ -115,6 +123,10 @@ mod tests {
         assert_eq!(grid.texel(5, 5), 10.0, "clamped to the last pixel");
         assert_eq!((grid.min(), grid.max()), (-256.0, 258.5));
         assert!(DemGrid::from_rgba(3, &texels, terrarium).is_err());
+        // Tiles without texels, and sides whose texels overflow, are refused.
+        assert!(DemGrid::from_rgba(0, &[], terrarium).is_err());
+        assert!(DemGrid::from_rgba(1 << 15, &[], terrarium).is_err());
+        assert!(DemGrid::from_elevations(0, vec![]).is_err());
     }
 
     #[test]
