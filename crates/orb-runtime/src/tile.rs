@@ -785,6 +785,14 @@ pub(crate) fn build(
             Some((pieces, origin)) => (pieces, Some(origin.as_slice())),
             None => (layer, None),
         };
+        let at = NodeLayout {
+            plan,
+            node,
+            style_layer,
+            layer,
+            zoom,
+            geometry_tile,
+        };
         for features in split.groups {
             let row_words = plan.row_words(node);
             // Rounded fills lay out in an 8192 grid, as lines do.
@@ -831,172 +839,14 @@ pub(crate) fn build(
 
             let properties = plan.paint_properties(node);
             let mut maxima = vec![0.0f32; properties.len()];
-            let pattern = plan
-                .pattern(node)
-                .filter(|p| matches!(p.kind(), Kind::Source | Kind::Composite));
-            let line_effects = crate::line::has_textures(style_layer);
-            // Extrusion rows carry each feature's centroid, for terrain and
-            // ownership.
-            let translate_rows = plan.translate_rows(node);
-            let pitch_rows = plan.circle_pitch_rows(node);
-            let antialias_rows = plan.antialias_rows(node);
-            let per_feature = line_effects
-                || node.family == Family::FillExtrusion
-                || pattern.is_some()
-                || translate_rows
-                || pitch_rows
-                || antialias_rows
-                || properties.iter().any(PaintProperty::per_feature);
-            let props = if per_feature {
-                let mut rows = vec![0u32; features.len() * row_words];
-                for (slot, property) in properties.iter().enumerate() {
-                    if !property.per_feature() {
-                        continue;
-                    }
-                    let composite = property.kind() == Kind::Composite;
-                    // Per feature at a zoom: its row word, and its
-                    // magnitude for culling margins (none for colours).
-                    let value: Box<dyn Fn(f64, usize) -> (u32, f32)> = match property {
-                        PaintProperty::Color(p) => {
-                            let b = p.bind(layer).with_tile(geometry_tile);
-                            Box::new(move |z, f| {
-                                (pack_color(b.evaluate(z, f).premultiplied()), 0.0)
-                            })
-                        }
-                        PaintProperty::OptionalColor(p) => {
-                            let b = p.bind(layer).with_tile(geometry_tile);
-                            Box::new(move |z, f| {
-                                let c = b.evaluate(z, f).map_or([0.0; 4], |c| c.premultiplied());
-                                (pack_color(c), 0.0)
-                            })
-                        }
-                        PaintProperty::Number(p) => {
-                            let b = p.bind(layer).with_tile(geometry_tile);
-                            Box::new(move |z, f| {
-                                let v = b.evaluate(z, f);
-                                (v.to_bits(), v)
-                            })
-                        }
-                    };
-                    for (i, &feature) in features.iter().enumerate() {
-                        let f = feature as usize;
-                        let (start, a) = value(zoom, f);
-                        let (end, b) = if composite {
-                            value(zoom + 1.0, f)
-                        } else {
-                            (start, a)
-                        };
-                        maxima[slot] = maxima[slot].max(a).max(b);
-                        rows[i * row_words + plan.row_word(node, slot)..][..2]
-                            .copy_from_slice(&[start, end]);
-                    }
-                }
-                if node.family == Family::FillExtrusion {
-                    let whole = orb_layout::extrusion::whole(layer, &features, bend.is_some());
-                    // Per-feature opacity and vertical gradient
-                    // (beyond the spec) share the flags word.
-                    let opacity = style_layer.get(orb_style::EXTRUSION_OPACITY);
-                    let gradient = style_layer.get(orb_style::EXTRUSION_VERTICAL_GRADIENT);
-                    let per_feature = |kind| matches!(kind, Kind::Source | Kind::Composite);
-                    let composite = opacity.kind() == Kind::Composite;
-                    let opacity = per_feature(opacity.kind()).then(|| opacity.bind(layer));
-                    let gradient = per_feature(gradient.kind()).then(|| gradient.bind(layer));
-                    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
-                    for (i, &feature) in features.iter().enumerate() {
-                        let f = feature as usize;
-                        let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
-                        rows[i * row_words + layout::EXTRUSION_ROW_CENTROID] =
-                            u32::from(x as u16) | u32::from(y as u16) << 16;
-                        let mut flags = u32::from(whole[i]);
-                        if let Some(gradient) = &gradient {
-                            flags |= u32::from(gradient.evaluate(zoom, f)) << 1;
-                        }
-                        if let Some(opacity) = &opacity {
-                            let at = opacity.evaluate(zoom, f);
-                            let next = if composite {
-                                opacity.evaluate(zoom + 1.0, f)
-                            } else {
-                                at
-                            };
-                            flags |= byte(at) << 8 | byte(next) << 16;
-                        }
-                        rows[i * row_words + layout::EXTRUSION_ROW_WHOLE] = flags;
-                    }
-                }
-                if pitch_rows {
-                    // Beyond the spec: each circle's pitch scale and
-                    // alignment, as the node's flags word has them.
-                    let map = |key| {
-                        let bound = style_layer.get(key).bind(layer);
-                        move |f| u32::from(bound.evaluate(zoom, f) == TranslateAnchor::Map)
-                    };
-                    let scale = map(orb_style::CIRCLE_PITCH_SCALE);
-                    let alignment = map(orb_style::CIRCLE_PITCH_ALIGNMENT);
-                    for (i, &feature) in features.iter().enumerate() {
-                        let f = feature as usize;
-                        rows[i * row_words + layout::CIRCLE_ROW_PITCH] =
-                            scale(f) << 1 | alignment(f) << 2;
-                    }
-                }
-                if antialias_rows {
-                    // Beyond the spec: each feature's `fill-antialias` at
-                    // the tile's zoom, as the vertical gradient is.
-                    let bound = style_layer.get(orb_style::FILL_ANTIALIAS).bind(layer);
-                    for (i, &feature) in features.iter().enumerate() {
-                        rows[i * row_words + layout::FILL_ROW_ANTIALIAS] =
-                            u32::from(bound.evaluate(zoom, feature as usize));
-                    }
-                }
-                if translate_rows {
-                    // Beyond the spec: each feature's translate ends its
-                    // row, and its farthest is the node's culling margin.
-                    let (px, _) = plan.translate(node).expect("a translated node");
-                    let composite = px.kind() == Kind::Composite;
-                    let bound = px.bind(layer).with_tile(geometry_tile);
-                    let mut reach = 0.0f32;
-                    for (i, &feature) in features.iter().enumerate() {
-                        let f = feature as usize;
-                        let at = bound.evaluate(zoom, f);
-                        let next = if composite {
-                            bound.evaluate(zoom + 1.0, f)
-                        } else {
-                            at
-                        };
-                        let (at, next) = (pack_translate(at), pack_translate(next));
-                        reach = reach.max(at.1).max(next.1);
-                        rows[(i + 1) * row_words - layout::TRANSLATE_ROW_WORDS..][..2]
-                            .copy_from_slice(&[at.0, next.0]);
-                    }
-                    maxima.push(reach);
-                }
-                rows
-            } else {
-                Vec::new()
-            };
-
-            let mut props = props;
-            let mut images = Vec::new();
-            if let Some(pattern) = pattern {
-                let bound = pattern.bind(layer);
-                for (slot, &feature) in features.iter().enumerate() {
-                    for (j, z) in [zoom - 1.0, zoom, zoom + 1.0].into_iter().enumerate() {
-                        if let Some(name) = bound.evaluate(z, feature as usize) {
-                            images.push(ImageRef {
-                                word: (slot * row_words
-                                    + match node.family {
-                                        Family::Line => layout::LINE_ROW_PATTERN,
-                                        Family::FillExtrusion => layout::EXTRUSION_ROW_PATTERN,
-                                        _ => layout::FILL_ROW_PATTERN,
-                                    }
-                                    + j) as u32,
-                                key: ImageKey::Name(name),
-                            });
-                        }
-                    }
-                }
-                // Image slots are patched after upload, including host-held rows.
-                props.shrink_to_fit();
-            }
+            let mut props = at.property_rows(
+                &features,
+                row_words,
+                bend.is_some(),
+                &properties,
+                &mut maxima,
+            );
+            let mut images = at.pattern_images(&features, row_words, &mut props);
             if style_layer.ty == LayerType::Line {
                 let l = style_layer;
                 let maxzoom = match &source_def.kind {
@@ -1051,91 +901,8 @@ pub(crate) fn build(
                     })
                     .collect()
             };
-            let kind = match node.family {
-                Family::Fill | Family::FillExtrusion => Some(0),
-                Family::Line => Some(1),
-                Family::Circle | Family::Heatmap => Some(2),
-                Family::SymbolIcon | Family::SymbolText => Some(crate::query::LABEL),
-                _ => None,
-            };
-            let geometry = &mut build.hits[hit_layer].1;
-            // Beyond the spec, a feature's own translate and circle pitch;
-            // labels answer from where placement put them instead.
-            use crate::query::HitExtras;
-            let translate = (plan.translate_rows(node) && !node.family.is_symbol())
-                .then(|| plan.translate(node).expect("translated").0.bind(layer));
-            let pitch = plan.circle_pitch_rows(node).then(|| {
-                let map = |key| style_layer.get(key).bind(layer);
-                (
-                    map(orb_style::CIRCLE_PITCH_SCALE),
-                    map(orb_style::CIRCLE_PITCH_ALIGNMENT),
-                )
-            });
-            let extras = if translate.is_some() {
-                HitExtras::TRANSLATE
-            } else {
-                0
-            } | if pitch.is_some() { HitExtras::PITCH } else { 0 };
-            let mut hits = crate::query::MeshHits::new(hit_layer as u32, extras);
-            // What a hit test reads of each feature's paint.
-            let dimensions: &[_] = match style_layer.ty {
-                LayerType::Circle => &[orb_style::CIRCLE_RADIUS, orb_style::CIRCLE_STROKE_WIDTH],
-                LayerType::Heatmap => &[orb_style::HEATMAP_RADIUS],
-                LayerType::Line => &[
-                    orb_style::LINE_WIDTH,
-                    orb_style::LINE_GAP_WIDTH,
-                    orb_style::LINE_OFFSET,
-                ],
-                LayerType::FillExtrusion => {
-                    &[orb_style::EXTRUSION_HEIGHT, orb_style::EXTRUSION_BASE]
-                }
-                _ => &[],
-            };
-            let dimensions: Vec<_> = (dimensions.iter())
-                .map(|&key| style_layer.get(key).bind(layer))
-                .collect();
-            for &f in features.iter().filter(|_| kind.is_some()) {
-                let i = f as usize;
-                let shape = layer.geometry_type(i);
-                let fits = match node.family {
-                    Family::Fill | Family::FillExtrusion => shape == GeometryType::Polygon,
-                    Family::Line => shape != GeometryType::Point,
-                    _ => true,
-                };
-                // Queries read the feature from the tile's layer.
-                let feature = origin.map_or(f, |origin| origin[i]);
-                if !fits || (origin.is_some() && !picked.insert(feature)) {
-                    continue;
-                }
-                let kind = kind.expect("a picked family");
-                let id = tile_promote
-                    .unwrap_or(tile_layer.ids())
-                    .get(feature as usize);
-                let at = |d: usize| dimensions[d].evaluate(zoom, i);
-                let dimensions = match style_layer.ty {
-                    LayerType::Circle => [at(0), at(1), 0.0, 0.0],
-                    LayerType::Heatmap => [at(0), 0.0, 0.0, 0.0],
-                    LayerType::Line => {
-                        let offset = at(2);
-                        [at(0) / 2.0, at(1), offset.abs(), offset]
-                    }
-                    LayerType::FillExtrusion => [0.0, 0.0, at(0), at(1)],
-                    _ => [0.0; 4],
-                };
-                let parts = kind != crate::query::LABEL;
-                let record = geometry.add(tile_layer, feature, id, parts);
-                let mut words = Vec::new();
-                if let Some(translate) = &translate {
-                    words.push(pack_translate(translate.evaluate(zoom, i)).0);
-                }
-                if let Some((scale, alignment)) = &pitch {
-                    let map = |p: &orb_style::BoundProperty<'_, TranslateAnchor>| {
-                        u32::from(p.evaluate(zoom, i) == TranslateAnchor::Map)
-                    };
-                    words.push(map(scale) << 1 | map(alignment) << 2);
-                }
-                hits.push(geometry, record, feature, kind, dimensions, &words);
-            }
+            let source = (tile_layer, tile_promote, origin);
+            let hits = at.hits(&features, source, &mut build.hits, hit_layer, &mut picked);
             build.meshes.push(NodeMesh {
                 hits,
                 node: node.key,
@@ -1165,6 +932,324 @@ pub(crate) fn build(
     table.sort_unstable_by_key(|&(_, i)| i);
     build.ids = table.into_iter().map(|(id, _)| id).collect();
     Ok(build)
+}
+
+/// A node's layout from a tile's layer (or a layer of its pieces) at the
+/// tile's style zoom: what its rows, images and hit records read.
+struct NodeLayout<'a> {
+    plan: &'a StylePlan,
+    node: &'a NodePlan,
+    style_layer: &'a orb_style::Layer,
+    layer: &'a Layer,
+    zoom: f64,
+    /// Where `within` and `distance` find the features' geometry.
+    geometry_tile: Option<orb_expr::CanonicalTile>,
+}
+
+impl NodeLayout<'_> {
+    /// The property rows of `features`, `row_words` each, or none when no
+    /// paint is per feature; each property's largest number goes in
+    /// `maxima` (and the farthest translate after them). `bent`: the
+    /// geometry bends (`orb_layout::fill::Bend`).
+    fn property_rows(
+        &self,
+        features: &[u32],
+        row_words: usize,
+        bent: bool,
+        properties: &[PaintProperty<'_>],
+        maxima: &mut Vec<f32>,
+    ) -> Vec<u32> {
+        let NodeLayout {
+            plan,
+            node,
+            style_layer,
+            layer,
+            zoom,
+            geometry_tile,
+        } = *self;
+        let pattern = plan
+            .pattern(node)
+            .filter(|p| matches!(p.kind(), Kind::Source | Kind::Composite));
+        let line_effects = crate::line::has_textures(style_layer);
+        // Extrusion rows carry each feature's centroid, for terrain and
+        // ownership.
+        let translate_rows = plan.translate_rows(node);
+        let pitch_rows = plan.circle_pitch_rows(node);
+        let antialias_rows = plan.antialias_rows(node);
+        let per_feature = line_effects
+            || node.family == Family::FillExtrusion
+            || pattern.is_some()
+            || translate_rows
+            || pitch_rows
+            || antialias_rows
+            || properties.iter().any(PaintProperty::per_feature);
+        if per_feature {
+            let mut rows = vec![0u32; features.len() * row_words];
+            for (slot, property) in properties.iter().enumerate() {
+                if !property.per_feature() {
+                    continue;
+                }
+                let composite = property.kind() == Kind::Composite;
+                // Per feature at a zoom: its row word, and its
+                // magnitude for culling margins (none for colours).
+                let value: Box<dyn Fn(f64, usize) -> (u32, f32)> = match property {
+                    PaintProperty::Color(p) => {
+                        let b = p.bind(layer).with_tile(geometry_tile);
+                        Box::new(move |z, f| (pack_color(b.evaluate(z, f).premultiplied()), 0.0))
+                    }
+                    PaintProperty::OptionalColor(p) => {
+                        let b = p.bind(layer).with_tile(geometry_tile);
+                        Box::new(move |z, f| {
+                            let c = b.evaluate(z, f).map_or([0.0; 4], |c| c.premultiplied());
+                            (pack_color(c), 0.0)
+                        })
+                    }
+                    PaintProperty::Number(p) => {
+                        let b = p.bind(layer).with_tile(geometry_tile);
+                        Box::new(move |z, f| {
+                            let v = b.evaluate(z, f);
+                            (v.to_bits(), v)
+                        })
+                    }
+                };
+                for (i, &feature) in features.iter().enumerate() {
+                    let f = feature as usize;
+                    let (start, a) = value(zoom, f);
+                    let (end, b) = if composite {
+                        value(zoom + 1.0, f)
+                    } else {
+                        (start, a)
+                    };
+                    maxima[slot] = maxima[slot].max(a).max(b);
+                    rows[i * row_words + plan.row_word(node, slot)..][..2]
+                        .copy_from_slice(&[start, end]);
+                }
+            }
+            if node.family == Family::FillExtrusion {
+                let whole = orb_layout::extrusion::whole(layer, features, bent);
+                // Per-feature opacity and vertical gradient
+                // (beyond the spec) share the flags word.
+                let opacity = style_layer.get(orb_style::EXTRUSION_OPACITY);
+                let gradient = style_layer.get(orb_style::EXTRUSION_VERTICAL_GRADIENT);
+                let per_feature = |kind| matches!(kind, Kind::Source | Kind::Composite);
+                let composite = opacity.kind() == Kind::Composite;
+                let opacity = per_feature(opacity.kind()).then(|| opacity.bind(layer));
+                let gradient = per_feature(gradient.kind()).then(|| gradient.bind(layer));
+                let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+                for (i, &feature) in features.iter().enumerate() {
+                    let f = feature as usize;
+                    let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
+                    rows[i * row_words + layout::EXTRUSION_ROW_CENTROID] =
+                        u32::from(x as u16) | u32::from(y as u16) << 16;
+                    let mut flags = u32::from(whole[i]);
+                    if let Some(gradient) = &gradient {
+                        flags |= u32::from(gradient.evaluate(zoom, f)) << 1;
+                    }
+                    if let Some(opacity) = &opacity {
+                        let at = opacity.evaluate(zoom, f);
+                        let next = if composite {
+                            opacity.evaluate(zoom + 1.0, f)
+                        } else {
+                            at
+                        };
+                        flags |= byte(at) << 8 | byte(next) << 16;
+                    }
+                    rows[i * row_words + layout::EXTRUSION_ROW_WHOLE] = flags;
+                }
+            }
+            if pitch_rows {
+                // Beyond the spec: each circle's pitch scale and
+                // alignment, as the node's flags word has them.
+                let map = |key| {
+                    let bound = style_layer.get(key).bind(layer);
+                    move |f| u32::from(bound.evaluate(zoom, f) == TranslateAnchor::Map)
+                };
+                let scale = map(orb_style::CIRCLE_PITCH_SCALE);
+                let alignment = map(orb_style::CIRCLE_PITCH_ALIGNMENT);
+                for (i, &feature) in features.iter().enumerate() {
+                    let f = feature as usize;
+                    rows[i * row_words + layout::CIRCLE_ROW_PITCH] =
+                        scale(f) << 1 | alignment(f) << 2;
+                }
+            }
+            if antialias_rows {
+                // Beyond the spec: each feature's `fill-antialias` at
+                // the tile's zoom, as the vertical gradient is.
+                let bound = style_layer.get(orb_style::FILL_ANTIALIAS).bind(layer);
+                for (i, &feature) in features.iter().enumerate() {
+                    rows[i * row_words + layout::FILL_ROW_ANTIALIAS] =
+                        u32::from(bound.evaluate(zoom, feature as usize));
+                }
+            }
+            if translate_rows {
+                // Beyond the spec: each feature's translate ends its
+                // row, and its farthest is the node's culling margin.
+                let (px, _) = plan.translate(node).expect("a translated node");
+                let composite = px.kind() == Kind::Composite;
+                let bound = px.bind(layer).with_tile(geometry_tile);
+                let mut reach = 0.0f32;
+                for (i, &feature) in features.iter().enumerate() {
+                    let f = feature as usize;
+                    let at = bound.evaluate(zoom, f);
+                    let next = if composite {
+                        bound.evaluate(zoom + 1.0, f)
+                    } else {
+                        at
+                    };
+                    let (at, next) = (pack_translate(at), pack_translate(next));
+                    reach = reach.max(at.1).max(next.1);
+                    rows[(i + 1) * row_words - layout::TRANSLATE_ROW_WORDS..][..2]
+                        .copy_from_slice(&[at.0, next.0]);
+                }
+                maxima.push(reach);
+            }
+            rows
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The pattern images `features` name, at the zoom below the tile's,
+    /// its own and the one above, by the row word each patches.
+    fn pattern_images(
+        &self,
+        features: &[u32],
+        row_words: usize,
+        props: &mut Vec<u32>,
+    ) -> Vec<ImageRef> {
+        let (plan, node, layer, zoom) = (self.plan, self.node, self.layer, self.zoom);
+        let pattern = plan
+            .pattern(node)
+            .filter(|p| matches!(p.kind(), Kind::Source | Kind::Composite));
+        let mut images = Vec::new();
+        if let Some(pattern) = pattern {
+            let bound = pattern.bind(layer);
+            for (slot, &feature) in features.iter().enumerate() {
+                for (j, z) in [zoom - 1.0, zoom, zoom + 1.0].into_iter().enumerate() {
+                    if let Some(name) = bound.evaluate(z, feature as usize) {
+                        images.push(ImageRef {
+                            word: (slot * row_words
+                                + match node.family {
+                                    Family::Line => layout::LINE_ROW_PATTERN,
+                                    Family::FillExtrusion => layout::EXTRUSION_ROW_PATTERN,
+                                    _ => layout::FILL_ROW_PATTERN,
+                                }
+                                + j) as u32,
+                            key: ImageKey::Name(name),
+                        });
+                    }
+                }
+            }
+            // Image slots are patched after upload, including host-held rows.
+            props.shrink_to_fit();
+        }
+        images
+    }
+
+    /// The hit records of `features`, in `hit_layers[hit_layer]`'s
+    /// geometry: read from the tile's layer `tile_layer` (ids promoted by
+    /// `tile_promote`), through `origin` for a layer of pieces, whose
+    /// features record once (`picked`).
+    fn hits(
+        &self,
+        features: &[u32],
+        (tile_layer, tile_promote, origin): (&Layer, Option<&orb_tile::Column>, Option<&[u32]>),
+        hit_layers: &mut [(String, crate::query::HitGeometry)],
+        hit_layer: usize,
+        picked: &mut std::collections::HashSet<u32>,
+    ) -> crate::query::MeshHits {
+        let (plan, node, style_layer, layer, zoom) = (
+            self.plan,
+            self.node,
+            self.style_layer,
+            self.layer,
+            self.zoom,
+        );
+        let kind = match node.family {
+            Family::Fill | Family::FillExtrusion => Some(0),
+            Family::Line => Some(1),
+            Family::Circle | Family::Heatmap => Some(2),
+            Family::SymbolIcon | Family::SymbolText => Some(crate::query::LABEL),
+            _ => None,
+        };
+        let geometry = &mut hit_layers[hit_layer].1;
+        // Beyond the spec, a feature's own translate and circle pitch;
+        // labels answer from where placement put them instead.
+        use crate::query::HitExtras;
+        let translate = (plan.translate_rows(node) && !node.family.is_symbol())
+            .then(|| plan.translate(node).expect("translated").0.bind(layer));
+        let pitch = plan.circle_pitch_rows(node).then(|| {
+            let map = |key| style_layer.get(key).bind(layer);
+            (
+                map(orb_style::CIRCLE_PITCH_SCALE),
+                map(orb_style::CIRCLE_PITCH_ALIGNMENT),
+            )
+        });
+        let extras = if translate.is_some() {
+            HitExtras::TRANSLATE
+        } else {
+            0
+        } | if pitch.is_some() { HitExtras::PITCH } else { 0 };
+        let mut hits = crate::query::MeshHits::new(hit_layer as u32, extras);
+        // What a hit test reads of each feature's paint.
+        let dimensions: &[_] = match style_layer.ty {
+            LayerType::Circle => &[orb_style::CIRCLE_RADIUS, orb_style::CIRCLE_STROKE_WIDTH],
+            LayerType::Heatmap => &[orb_style::HEATMAP_RADIUS],
+            LayerType::Line => &[
+                orb_style::LINE_WIDTH,
+                orb_style::LINE_GAP_WIDTH,
+                orb_style::LINE_OFFSET,
+            ],
+            LayerType::FillExtrusion => &[orb_style::EXTRUSION_HEIGHT, orb_style::EXTRUSION_BASE],
+            _ => &[],
+        };
+        let dimensions: Vec<_> = (dimensions.iter())
+            .map(|&key| style_layer.get(key).bind(layer))
+            .collect();
+        for &f in features.iter().filter(|_| kind.is_some()) {
+            let i = f as usize;
+            let shape = layer.geometry_type(i);
+            let fits = match node.family {
+                Family::Fill | Family::FillExtrusion => shape == GeometryType::Polygon,
+                Family::Line => shape != GeometryType::Point,
+                _ => true,
+            };
+            // Queries read the feature from the tile's layer.
+            let feature = origin.map_or(f, |origin| origin[i]);
+            if !fits || (origin.is_some() && !picked.insert(feature)) {
+                continue;
+            }
+            let kind = kind.expect("a picked family");
+            let id = tile_promote
+                .unwrap_or(tile_layer.ids())
+                .get(feature as usize);
+            let at = |d: usize| dimensions[d].evaluate(zoom, i);
+            let dimensions = match style_layer.ty {
+                LayerType::Circle => [at(0), at(1), 0.0, 0.0],
+                LayerType::Heatmap => [at(0), 0.0, 0.0, 0.0],
+                LayerType::Line => {
+                    let offset = at(2);
+                    [at(0) / 2.0, at(1), offset.abs(), offset]
+                }
+                LayerType::FillExtrusion => [0.0, 0.0, at(0), at(1)],
+                _ => [0.0; 4],
+            };
+            let parts = kind != crate::query::LABEL;
+            let record = geometry.add(tile_layer, feature, id, parts);
+            let mut words = Vec::new();
+            if let Some(translate) = &translate {
+                words.push(pack_translate(translate.evaluate(zoom, i)).0);
+            }
+            if let Some((scale, alignment)) = &pitch {
+                let map = |p: &orb_style::BoundProperty<'_, TranslateAnchor>| {
+                    u32::from(p.evaluate(zoom, i) == TranslateAnchor::Map)
+                };
+                words.push(map(scale) << 1 | map(alignment) << 2);
+            }
+            hits.push(geometry, record, feature, kind, dimensions, &words);
+        }
+        hits
+    }
 }
 
 /// A translate's row word (`types.wgsl`'s `TRANSLATE_ROW_UNITS`): an i16
