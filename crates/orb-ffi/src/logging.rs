@@ -2,10 +2,12 @@
 // MapLibre Native logs instead (a tile's or a sprite's failure) come here.
 
 use std::cell::Cell;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use crate::base::{Failure, Result, UserData, boundary, sized};
-use crate::delivery::deliver;
+use crate::delivery::{deliver, deliver_now};
 use crate::sys::*;
 
 struct Handler {
@@ -19,9 +21,53 @@ struct Handler {
     user_data: UserData,
     release_user_data: mln_user_data_release,
     queue: u64,
+    /// The severities that also go to the platform's log.
+    platform: mln_log_severity_flags,
 }
 
 static HANDLER: Mutex<Option<Handler>> = Mutex::new(None);
+
+/// The severities logged on the log thread rather than the one that logs
+/// them.
+static ASYNC: AtomicU32 = AtomicU32::new(MLN_LOG_SEVERITY_FLAG_DEFAULT);
+
+/// A message for the log thread.
+struct Record {
+    severity: mln_log_severity,
+    message: String,
+}
+
+/// The log thread, which delivers the asynchronous severities in order,
+/// as MapLibre Native's logging thread does.
+fn log_thread() -> &'static Mutex<Sender<Record>> {
+    static THREAD: OnceLock<Mutex<Sender<Record>>> = OnceLock::new();
+    THREAD.get_or_init(|| {
+        let (send, receive) = channel::<Record>();
+        std::thread::Builder::new()
+            .name("orbis-log".into())
+            .spawn(move || {
+                for record in receive {
+                    write(record.severity, record.message);
+                }
+            })
+            .expect("the log thread starts");
+        Mutex::new(send)
+    })
+}
+
+fn flag(severity: mln_log_severity) -> mln_log_severity_flags {
+    1 << severity
+}
+
+/// Checks that `mask` names severities only.
+fn check_severities(mask: mln_log_severity_flags, what: &str) -> Result {
+    if mask & !MLN_LOG_SEVERITY_FLAG_ALL != 0 {
+        return Err(Failure::argument(format!(
+            "{what} {mask:#x} has unknown bits: they name no severity"
+        )));
+    }
+    Ok(())
+}
 
 thread_local! {
     /// Set while this thread runs a log callback or its release. Both may
@@ -75,7 +121,25 @@ fn release(old: Option<Handler>) {
     }
 }
 
+/// Logs `message`: on this thread, or for the asynchronous severities on
+/// the log thread.
 pub(crate) fn log(severity: mln_log_severity, message: &str) {
+    let message = message.to_owned();
+    if ASYNC.load(Ordering::Relaxed) & flag(severity) == 0 {
+        return write(severity, message);
+    }
+    let sent = log_thread()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .send(Record { severity, message });
+    // Without the log thread, the message goes out here.
+    if let Err(unsent) = sent {
+        write(severity, unsent.0.message);
+    }
+}
+
+/// Hands a message to the callback, or its queue, or the platform's log.
+fn write(severity: mln_log_severity, mut message: String) {
     // A message raised inside a log callback can't reach the callback:
     // this thread may hold its lock.
     let handler = (!IN_CALLBACK.get()).then(handler);
@@ -85,18 +149,24 @@ pub(crate) fn log(severity: mln_log_severity, message: &str) {
         }
         return;
     };
+    if h.platform & flag(severity) != 0 {
+        eprintln!("orbis: {message}");
+    }
     let (callback, user_data) = (h.callback, h.user_data);
-    let mut message = message.to_owned();
-    deliver(
+    // A record reaches a callback without a queue at once, under the
+    // handler's lock, as Native calls its observer.
+    deliver_now(
         h.queue,
         Box::new(move || {
-            // SAFETY: the caller's registration; the message lives until it returns.
+            // SAFETY: the caller's registration; the message lives until it
+            // returns. Native's records carry no code, which it reports as
+            // -1.
             in_callback(|| unsafe {
                 callback(
                     user_data.get(),
                     severity,
                     MLN_LOG_EVENT_GENERAL,
-                    0,
+                    -1,
                     crate::base::lend(&mut message),
                 )
             });
@@ -118,11 +188,13 @@ pub unsafe extern "C" fn mln_log_set_callback(
                 .callback
                 .ok_or_else(|| Failure::argument("handler.callback is null"))?;
             crate::delivery::check_queue(h.queue.0, "handler.queue")?;
+            check_severities(h.platform_severities, "handler.platform_severities")?;
             let new = Handler {
                 callback,
                 user_data: UserData(h.user_data),
                 release_user_data: h.release_user_data,
                 queue: h.queue.0,
+                platform: h.platform_severities,
             };
             release(self::handler().replace(new));
             Ok(())
@@ -147,16 +219,11 @@ pub unsafe extern "C" fn mln_log_set_async_severity_mask(
     mask: mln_log_severity_flags,
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
-    // Every message is delivered from the thread that raises it; there is
-    // no synchronous path to choose against.
     // SAFETY: the caller's pointer.
     unsafe {
         boundary(out_diagnostic, || {
-            if mask & !MLN_LOG_SEVERITY_FLAG_ALL != 0 {
-                return Err(Failure::argument(format!(
-                    "the severity mask {mask:#x} has bits that name no severity"
-                )));
-            }
+            check_severities(mask, "the severity mask")?;
+            ASYNC.store(mask, Ordering::Relaxed);
             Ok(())
         })
     }

@@ -895,15 +895,17 @@ command!(
 
 command!(mln_map_dump_debug_logs(), false, false, |state, id| {
     Ok(job(move |entry| {
-        crate::logging::log(
-            MLN_LOG_SEVERITY_INFO,
-            &format!(
-                "map: generation {}, camera {:?}, {} transitions",
-                entry.generation,
-                entry.map.camera(),
-                entry.transitions.len()
-            ),
-        );
+        // Native's dump: the style's URL and its sources between rules.
+        let rule = "-".repeat(80);
+        let info = |message: &str| crate::logging::log(MLN_LOG_SEVERITY_INFO, message);
+        info(&rule);
+        info(&format!("styleURL: {}", entry.style_url));
+        if let Some(style) = entry.map.style() {
+            for source in style.source_ids() {
+                info(&format!("Source::id: {source}"));
+            }
+        }
+        info(&rule);
         Ok(())
     }))
 });

@@ -89,6 +89,18 @@ fn deliver_pending(queue: u64, call: Pending) {
     }
 }
 
+/// Runs `call` on this thread now, or hands it to `queue`, even on a
+/// runtime thread: for calls the library makes as it goes (log records).
+pub(crate) fn deliver_now(queue: u64, call: Call) {
+    send(
+        queue,
+        Pending {
+            run: call,
+            abandons: None,
+        },
+    );
+}
+
 /// Calls a registration's `release` with its user data once, on its queue.
 pub(crate) fn release_later(queue: u64, release: mln_user_data_release, user_data: UserData) {
     if let Some(release) = release {
