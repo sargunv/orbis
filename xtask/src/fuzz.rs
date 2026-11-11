@@ -9,7 +9,8 @@ use std::process::Command;
 
 use crate::root;
 
-/// Each target and the files under `fixtures/` (and `web/demo/data`) it is
+/// Each target and the files under `fixtures/` (and `web/demo/data` and
+/// orb-text's test fonts) it is
 /// seeded with: their extensions, and a byte put before each one for the
 /// targets that read options from their first byte.
 const TARGETS: &[(&str, &[&str], Option<u8>)] = &[
@@ -17,6 +18,7 @@ const TARGETS: &[(&str, &[&str], Option<u8>)] = &[
     ("mvt", &["mvt", "pbf"], Some(14)),
     ("mlt", &["mlt"], Some(14)),
     ("glyphs", &["pbf"], None),
+    ("font", &["ttf", "otf", "woff", "woff2"], None),
     ("geojson", &["geojson"], None),
     ("dem", &[], None),
 ];
@@ -49,7 +51,12 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
     let mut count = 0;
-    for source in ["fixtures/gl-js", "fixtures/native", "web/demo/data"] {
+    for source in [
+        "fixtures/gl-js",
+        "fixtures/native",
+        "web/demo/data",
+        "crates/orb-text/tests/data/fonts",
+    ] {
         seed(
             &root.join(source),
             &seeds,

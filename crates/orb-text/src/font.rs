@@ -244,9 +244,59 @@ impl Drawn {
 pub(crate) fn sfnt(bytes: &[u8]) -> Result<Vec<u8>, String> {
     match bytes.get(..4) {
         Some(b"wOF2") => wuff::decompress_woff2(bytes).map_err(|e| format!("WOFF2: {e:?}")),
-        Some(b"wOFF") => wuff::decompress_woff1(bytes).map_err(|e| format!("WOFF: {e:?}")),
+        Some(b"wOFF") => {
+            check_woff1(bytes)?;
+            wuff::decompress_woff1(bytes).map_err(|e| format!("WOFF: {e:?}"))
+        }
         _ => Ok(bytes.to_vec()),
     }
+}
+
+/// Deflate's largest ratio of output to input, from the zlib manual.
+const MAX_DEFLATE_RATIO: u64 = 1032;
+/// The most a WOFF file may unpack to, several times any real font.
+const MAX_SFNT: u64 = 128 << 20;
+
+/// Checks a WOFF 1.0 file's table directory before wuff unpacks it. wuff
+/// sizes a compressed table's buffer by the `origLength` it declares and
+/// lets tables share bytes, so a 100-byte file could ask for 4 GiB (a trap
+/// on wasm32) and a small one repeat a table thousands of times. Here the
+/// tables must lie in the file without overlapping, none may claim to
+/// inflate past deflate's 1032:1, and all together to no more than
+/// [`MAX_SFNT`].
+fn check_woff1(bytes: &[u8]) -> Result<(), String> {
+    let word = |at: usize| {
+        let b = bytes.get(at..at + 4)?;
+        Some(u64::from(u32::from_be_bytes([b[0], b[1], b[2], b[3]])))
+    };
+    let n = bytes
+        .get(12..14)
+        .map_or(0, |b| usize::from(u16::from_be_bytes([b[0], b[1]])));
+    let mut tables = (0..n)
+        .map(|i| {
+            let at = 44 + i * 20;
+            Some((word(at + 4)?, word(at + 8)?, word(at + 12)?))
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or("WOFF: truncated table directory")?;
+    tables.sort_unstable();
+    let (mut end, mut sfnt) = (44 + 20 * n as u64, 12 + 16 * n as u64);
+    for (offset, compressed, original) in tables {
+        if offset < end || offset + compressed > bytes.len() as u64 {
+            return Err("WOFF: a table overlaps another or the file's end".into());
+        }
+        if compressed > original || original > compressed * MAX_DEFLATE_RATIO {
+            return Err(format!(
+                "WOFF: a {compressed}-byte table claims {original} bytes"
+            ));
+        }
+        end = offset + compressed;
+        sfnt += original.next_multiple_of(4);
+    }
+    if sfnt > MAX_SFNT {
+        return Err(format!("WOFF: {sfnt} bytes unpacked, past {MAX_SFNT}"));
+    }
+    Ok(())
 }
 
 /// Open font files by URL, drawn as GL JS's local path draws glyphs
@@ -317,5 +367,87 @@ mod tests {
         let m = files.measure("latin", "á");
         assert!(m.advance > 20.0 && m.ascent > 30.0, "{m:?}");
         assert!(files.open("bad", b"<html>").is_err());
+    }
+
+    /// `sfnt` as a WOFF 1.0 file, each table zlib-compressed when that
+    /// makes it smaller.
+    fn woff1(sfnt: &[u8]) -> Vec<u8> {
+        let u16_at = |at: usize| usize::from(u16::from_be_bytes([sfnt[at], sfnt[at + 1]]));
+        let n = u16_at(4);
+        let mut directory = Vec::new();
+        let mut data = Vec::new();
+        for i in 0..n {
+            let entry = &sfnt[12 + i * 16..28 + i * 16];
+            let field = |j: usize| u32::from_be_bytes(entry[j..j + 4].try_into().unwrap());
+            let (offset, length) = (field(8) as usize, field(12) as usize);
+            let table = &sfnt[offset..offset + length];
+            let deflated = miniz_oxide::deflate::compress_to_vec_zlib(table, 6);
+            let stored = if deflated.len() < table.len() {
+                &deflated[..]
+            } else {
+                table
+            };
+            let at = 44 + n * 20 + data.len();
+            directory.extend_from_slice(&entry[..4]);
+            for word in [at as u32, stored.len() as u32, length as u32, field(4)] {
+                directory.extend_from_slice(&word.to_be_bytes());
+            }
+            data.extend_from_slice(stored);
+            data.resize(data.len().next_multiple_of(4), 0);
+        }
+        let mut woff = b"wOFF".to_vec();
+        woff.extend_from_slice(&sfnt[..4]);
+        woff.extend_from_slice(&((44 + directory.len() + data.len()) as u32).to_be_bytes());
+        woff.extend_from_slice(&(n as u16).to_be_bytes());
+        woff.resize(44, 0);
+        woff.extend(directory);
+        woff.extend(data);
+        woff
+    }
+
+    #[test]
+    fn opens_woff1_files() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/fonts/NotoSans.ttf");
+        let ttf = std::fs::read(path).expect("the test font");
+        let woff = woff1(&ttf);
+        assert!(woff.len() < ttf.len(), "{} of {}", woff.len(), ttf.len());
+        let mut files = Files::default();
+        files.open("ttf", &ttf).expect("a TrueType font");
+        files.open("woff", &woff).expect("a WOFF font");
+        let m = files.measure("woff", "Ag");
+        assert_eq!(m, files.measure("ttf", "Ag"));
+        assert!(m.advance > 50.0 && m.ascent > 20.0, "{m:?}");
+    }
+
+    /// A WOFF header and table directory of `(offset, compLength,
+    /// origLength)` entries, zeros to `len` bytes.
+    fn forged(tables: &[(u32, u32, u32)], len: usize) -> Vec<u8> {
+        let mut woff = b"wOFF\0\x01\0\0".to_vec();
+        woff.extend_from_slice(&(len as u32).to_be_bytes());
+        woff.extend_from_slice(&(tables.len() as u16).to_be_bytes());
+        woff.resize(44, 0);
+        for (tag, &(offset, compressed, original)) in tables.iter().enumerate() {
+            for word in [tag as u32, offset, compressed, original, 0] {
+                woff.extend_from_slice(&word.to_be_bytes());
+            }
+        }
+        woff.resize(len, 0);
+        woff
+    }
+
+    /// wuff reserves a compressed table's `origLength` before inflating
+    /// it, and copies tables that share bytes once per entry.
+    #[test]
+    fn woff1_tables_cannot_claim_more_than_their_bytes_make() {
+        // 72 bytes whose one 8-byte table claims to inflate to 4 GiB.
+        let error = sfnt(&forged(&[(64, 8, 0xffff_fff0)], 72)).expect_err("a forged WOFF");
+        assert!(error.contains("claims 4294967280 bytes"), "{error}");
+        // Two entries for one table's bytes.
+        let error = sfnt(&forged(&[(84, 8, 8), (84, 8, 8)], 92)).expect_err("a forged WOFF");
+        assert!(error.contains("overlaps"), "{error}");
+        // Tables each within deflate's ratio, together past the cap.
+        let tables: Vec<_> = (0..256).map(|i| (5164 + i * 1024, 1024, 1 << 20)).collect();
+        let error = sfnt(&forged(&tables, 5164 + 256 * 1024)).expect_err("a forged WOFF");
+        assert!(error.contains("past"), "{error}");
     }
 }

@@ -37,6 +37,7 @@ unicode-bidi = { version = "0.3.18", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+miniz_oxide.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
