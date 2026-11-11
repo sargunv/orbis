@@ -2,8 +2,6 @@
 //! and the `parse` methods of its expression classes. Messages match the
 //! reference so the spec's fixtures compare exactly.
 
-use std::mem;
-
 use crate::Diagnostic;
 use crate::eval::Evaluator;
 use crate::ir::{Call, CmpOp, ColorSpace, Interpolation, Ir, MatchLabels, MathFn, NodeId, Op};
@@ -294,20 +292,8 @@ fn compound(name: &str) -> Option<(Type, Vec<(Params, Build)>)> {
         "ceil" => (N, vec![(one(N), |_, a| Op::Math(MathFn::Ceil, a[0]))]),
         "min" => (N, vec![(Varargs(N), |_, a| Op::Min(a.to_vec()))]),
         "max" => (N, vec![(Varargs(N), |_, a| Op::Max(a.to_vec()))]),
-        "all" => (
-            B,
-            vec![
-                (two(B, B), |_, a| Op::All(a.to_vec())),
-                (Varargs(B), |_, a| Op::All(a.to_vec())),
-            ],
-        ),
-        "any" => (
-            B,
-            vec![
-                (two(B, B), |_, a| Op::Any(a.to_vec())),
-                (Varargs(B), |_, a| Op::Any(a.to_vec())),
-            ],
-        ),
+        "all" => (B, vec![(Varargs(B), |_, a| Op::All(a.to_vec()))]),
+        "any" => (B, vec![(Varargs(B), |_, a| Op::Any(a.to_vec()))]),
         "!" => (B, vec![(one(B), |_, a| Op::Not(a[0]))]),
         "upcase" => (S, vec![(one(S), |_, a| Op::Upcase(a[0]))]),
         "downcase" => (S, vec![(one(S), |_, a| Op::Downcase(a[0]))]),
@@ -687,55 +673,21 @@ impl<'l> Parser<'l> {
         key: &str,
     ) -> Option<NodeId> {
         let args = &items[1..];
-        let candidates: Vec<&(Params, Build)> = overloads
-            .iter()
-            .filter(|(params, _)| match params {
-                Params::Fixed(types) => types.len() == args.len(),
-                Params::Varargs(_) => true,
-            })
-            .collect();
-
-        let mut last_errors = Vec::new();
-        for (params, build) in &candidates {
-            // A fresh error list per signature, so a later match isn't
-            // polluted by an earlier attempt.
-            let saved = mem::take(&mut self.errors);
-            let mut parsed = Vec::new();
-            for (i, arg) in args.iter().enumerate() {
-                match self.parse(arg, &child_key(key, i + 1), Some(params.get(i)), None) {
-                    Some(id) => parsed.push(id),
-                    None => break,
-                }
-            }
-            if parsed.len() == args.len() {
-                for (i, &arg) in parsed.iter().enumerate() {
-                    if let Err(message) = check_subtype(params.get(i), self.ty(arg)) {
-                        self.error(child_key(key, i + 1), args[i].span, message);
-                    }
-                }
-            }
-            let errors = mem::replace(&mut self.errors, saved);
-            if parsed.len() == args.len() && errors.is_empty() {
-                let op = build(self, &parsed);
-                return Some(self.ir.push(op, ty, key));
-            }
-            last_errors = errors;
-        }
-
-        if candidates.len() == 1 {
-            self.errors.extend(last_errors);
-        } else {
-            let shown: Vec<&Params> = if candidates.is_empty() {
-                overloads.iter().map(|(p, _)| p).collect()
-            } else {
-                candidates.iter().map(|(p, _)| p).collect()
-            };
-            let signatures = shown
+        // At most one overload takes a call's arity (a test checks), so
+        // each argument is parsed once: with two, a failing argument nested
+        // n deep would be parsed 3^n times, for each overload and again for
+        // the error.
+        let takes = |params: &Params| match params {
+            Params::Fixed(types) => types.len() == args.len(),
+            Params::Varargs(_) => true,
+        };
+        let Some((params, build)) = overloads.iter().find(|(params, _)| takes(params)) else {
+            let signatures = overloads
                 .iter()
-                .map(|p| stringify_signature(p))
+                .map(|(p, _)| stringify_signature(p))
                 .collect::<Vec<_>>()
                 .join(" | ");
-            // Re-parse without coercions to report the actual types.
+            // Parsed without coercions to report the actual types.
             let mut actual = Vec::new();
             for (i, arg) in args.iter().enumerate() {
                 let id = self.parse(arg, &child_key(key, i + 1), None, None)?;
@@ -749,8 +701,23 @@ impl<'l> Parser<'l> {
                     actual.join(", ")
                 ),
             );
+            return None;
+        };
+        let errors = self.errors.len();
+        let mut parsed = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            parsed.push(self.parse(arg, &child_key(key, i + 1), Some(params.get(i)), None)?);
         }
-        None
+        for (i, &arg) in parsed.iter().enumerate() {
+            if let Err(message) = check_subtype(params.get(i), self.ty(arg)) {
+                self.error(child_key(key, i + 1), args[i].span, message);
+            }
+        }
+        if self.errors.len() > errors {
+            return None;
+        }
+        let op = build(self, &parsed);
+        Some(self.ir.push(op, ty, key))
     }
 
     fn output_type(expected: Option<&Type>) -> Option<Type> {
@@ -1390,5 +1357,34 @@ impl<'l> Parser<'l> {
             args.push(self.parse(arg, &child_key(key, i), Some(&Type::Value), None)?);
         }
         Some(self.ir.push(Op::Assert(args), ty, key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `parse_compound` parses a call's arguments against the one overload
+    /// that takes its arity.
+    #[test]
+    fn one_overload_takes_each_arity() {
+        let names = OPERATORS
+            .iter()
+            .chain(&["dev.sargunv.orbis:meters-per-pixel"]);
+        for (name, (_, overloads)) in names.filter_map(|n| Some((n, compound(n)?))) {
+            for arity in 0..8 {
+                let taking = overloads
+                    .iter()
+                    .filter(|(params, _)| match params {
+                        Params::Fixed(types) => types.len() == arity,
+                        Params::Varargs(_) => true,
+                    })
+                    .count();
+                assert!(
+                    taking <= 1,
+                    "{name} has {taking} overloads of arity {arity}"
+                );
+            }
+        }
     }
 }

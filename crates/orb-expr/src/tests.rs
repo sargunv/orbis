@@ -459,3 +459,45 @@ fn number_format_rejects_out_of_range_digits() {
         .is_err()
     );
 }
+
+/// A failing argument is parsed once however deep it is nested: when
+/// `all` had a two-argument overload beside its variadic one, each level
+/// parsed its failing child three times.
+#[test]
+fn failing_nested_expressions_parse_in_linear_time() {
+    for template in [
+        r#"["all", {}, true]"#,
+        r#"["any", {}, false]"#,
+        r#"["!", {}]"#,
+        r#"["-", {}, 1]"#,
+        r#"["+", {}, 1]"#,
+        r#"["==", {}, true]"#,
+        r#"["case", {}, true, false]"#,
+        r#"["coalesce", {}, true]"#,
+        r#"["to-boolean", {}]"#,
+        r#"["let", "a", 1, {}]"#,
+        r#"["match", {}, 1, true, false]"#,
+        r#"["step", {}, true, 1, false]"#,
+        r#"["at", 0, ["array", {}]]"#,
+    ] {
+        for leaf in [r#"["!", "x"]"#, r#"["get", 1]"#] {
+            let text = (0..30).fold(leaf.to_string(), |inner, _| template.replace("{}", &inner));
+            let started = std::time::Instant::now();
+            assert!(
+                Expression::parse(&parse(&text), None).is_err(),
+                "{template}"
+            );
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed.as_millis() < 50,
+                "{template} over {leaf}: {elapsed:?}"
+            );
+        }
+    }
+    // A failing argument of a two-argument `all` is named, as Native names it.
+    let errors = Expression::parse(&parse(r#"["all", 1, true]"#), None).unwrap_err();
+    assert_eq!(
+        errors[0].to_string(),
+        "[1]: Expected boolean but found number instead."
+    );
+}
