@@ -2044,7 +2044,7 @@ impl Scene {
     /// Forgets the pools' and chunk table's refusals: they are for the
     /// upload retrying after them, and one that made room another way
     /// asks no growth later.
-    fn forget_refusals(&mut self) {
+    pub(crate) fn forget_refusals(&mut self) {
         for pool in [Pool::Vertices, Pool::Indices, Pool::Props] {
             self.arena_mut(pool).take_needed();
         }
@@ -2062,6 +2062,50 @@ impl Scene {
         }
     }
 
+    /// Whether a pool or the chunk table holds more than three quarters of
+    /// its size, below its ceiling, and its doubling fits in `room` bytes:
+    /// [`grow_headroom`](Self::grow_headroom) would grow it.
+    pub(crate) fn wants_headroom(&self, room: u64) -> bool {
+        self.headroom().any(|(_, bytes)| bytes <= room)
+    }
+
+    /// Doubles each pool, and the chunk table, that holds more than three
+    /// quarters of its size, within its ceiling and the `room` bytes left,
+    /// which it takes from: room a map at rest makes for the next view, so
+    /// that it grows into new memory there rather than in a frame of a
+    /// gesture. Returns whether any grew.
+    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: &mut u64) -> bool {
+        let mut grew = false;
+        for (growth, bytes) in self.headroom().collect::<Vec<_>>() {
+            if bytes > *room {
+                continue;
+            }
+            *room -= bytes;
+            grew |= match growth {
+                Some(pool) => self.grow_pool(gpu, pool),
+                None => self.grow_chunks(gpu, u64::from(self.capacity.chunks) + 1),
+            };
+        }
+        grew
+    }
+
+    /// The pools (`Some`) and chunk table (`None`) more than three quarters
+    /// full below their ceilings, and the bytes doubling each would add.
+    fn headroom(&self) -> impl Iterator<Item = (Option<Pool>, u64)> + '_ {
+        let full = |used: u32, size: u32| u64::from(used) * 4 > u64::from(size) * 3;
+        let pools = POOLS.into_iter().filter_map(move |pool| {
+            let (size, max) = self.pool_words(pool);
+            let new = grown(size, u64::from(size) + 1, max);
+            (new > size && full(self.arena(pool).used(), size))
+                .then(|| (Some(pool), u64::from(new - size) * 4))
+        });
+        let c = &self.capacity;
+        let new = grown(c.chunks, u64::from(c.chunks) + 1, c.max_chunks);
+        let chunks = (new > c.chunks && full(self.chunk_slots.used(), c.chunks))
+            .then(|| (None, u64::from(new - c.chunks) * (CHUNK_WORDS * 4) as u64));
+        pools.chain(chunks)
+    }
+
     /// Halves the vertex, index and property pools and the chunk table
     /// while what they hold all lies in their lowest quarter, down to their
     /// first sizes: a view that emptied gives back what it grew them to,
@@ -2070,29 +2114,14 @@ impl Scene {
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
         self.forget_refusals();
         let mut shrank = false;
-        let first = [
-            self.first.vertex_words,
-            self.first.index_words,
-            self.first.prop_words,
-        ];
-        for (pool, first) in [Pool::Vertices, Pool::Indices, Pool::Props]
-            .into_iter()
-            .zip(first)
-        {
-            let (old, _) = self.pool_words(pool);
-            let held = match pool {
-                Pool::Vertices => self.vertex_arena.free_from(old),
-                Pool::Indices => self.index_arena.free_from(old),
-                Pool::Props => self.prop_arena.free_from(old),
-            };
-            let new = shrunk(old, held, first);
-            if new < old {
+        let (pools, chunks) = self.shrunk_sizes();
+        for (pool, new) in POOLS.into_iter().zip(pools) {
+            if new < self.pool_words(pool).0 {
                 self.resize_pool(gpu, pool, new);
                 shrank = true;
             }
         }
-        let old = self.capacity.chunks;
-        let new = shrunk(old, self.chunk_slots.held_below(), self.first.chunks);
+        let (old, new) = (self.capacity.chunks, chunks);
         if new < old {
             let words = |count: u32| u64::from(count) * CHUNK_WORDS as u64;
             let kept = words(self.chunk_slots.held_below());
@@ -2103,6 +2132,41 @@ impl Scene {
             shrank = true;
         }
         shrank
+    }
+
+    /// Whether [`shrink`](Self::shrink) would shrink a pool or the chunk
+    /// table.
+    pub(crate) fn would_shrink(&self) -> bool {
+        let (shrunk, chunks) = self.shrunk_sizes();
+        POOLS.map(|pool| self.pool_words(pool).0) != shrunk || chunks < self.capacity.chunks
+    }
+
+    /// The sizes [`shrink`](Self::shrink) halves the pools (in words) and
+    /// the chunk table to.
+    fn shrunk_sizes(&self) -> ([u32; 3], u32) {
+        let first = [
+            self.first.vertex_words,
+            self.first.index_words,
+            self.first.prop_words,
+        ];
+        let sizes = std::array::from_fn(|i| {
+            let (old, _) = self.pool_words(POOLS[i]);
+            shrunk(old, self.arena(POOLS[i]).free_from(old), first[i])
+        });
+        let chunks = shrunk(
+            self.capacity.chunks,
+            self.chunk_slots.held_below(),
+            self.first.chunks,
+        );
+        (sizes, chunks)
+    }
+
+    fn arena(&self, pool: Pool) -> &Arena {
+        match pool {
+            Pool::Vertices => &self.vertex_arena,
+            Pool::Indices => &self.index_arena,
+            Pool::Props => &self.prop_arena,
+        }
     }
 
     /// A pool's size and ceiling, in words.
@@ -2283,6 +2347,8 @@ impl Scene {
         }
     }
 }
+
+const POOLS: [Pool; 3] = [Pool::Vertices, Pool::Indices, Pool::Props];
 
 /// The pools that grow by copying into a larger buffer.
 #[derive(Clone, Copy, Debug)]

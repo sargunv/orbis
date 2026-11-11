@@ -1012,6 +1012,18 @@ fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
         words(&loaded),
         words(&edited)
     );
+    // At rest the pools have room for the next view (#176): none is more
+    // than three quarters full below its ceiling. Loaded, the property
+    // pool would be 98% full.
+    for (name, r) in [("loaded", &loaded), ("edited", &edited)] {
+        let s = r.memory.scene;
+        for pool in [s.vertices, s.indices, s.props] {
+            assert!(
+                pool.used * 4 <= pool.allocated * 3 || pool.allocated == pool.ceiling,
+                "{name} at rest: {pool:?}"
+            );
+        }
+    }
     assert_matches_fresh(&mut map);
     let remove: Vec<serde_json::Value> = added()
         .map(|l| serde_json::json!(["removeLayer", l["id"]]))

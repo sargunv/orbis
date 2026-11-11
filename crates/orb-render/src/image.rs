@@ -504,6 +504,33 @@ impl Images {
         shrank
     }
 
+    /// Whether [`shrink`](Self::shrink) would shrink a page.
+    pub(crate) fn would_shrink(&self) -> bool {
+        self.pages
+            .iter()
+            .flatten()
+            .any(|page| page.page.would_shrink())
+    }
+
+    /// Whether a page holds more than three quarters of its layers, and
+    /// growing it fits in `room` bytes.
+    pub(crate) fn wants_headroom(&self, room: u64) -> bool {
+        (self.pages.iter().flatten()).any(|page| page.page.headroom().is_some_and(|b| b <= room))
+    }
+
+    /// Grows each page holding more than three quarters of its layers,
+    /// within the `room` bytes left, which it takes from; whether any grew.
+    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: &mut u64) -> bool {
+        let mut grew = false;
+        for page in self.pages.iter_mut().flatten() {
+            if let Some(bytes) = page.page.headroom().filter(|&b| b <= *room) {
+                *room -= bytes;
+                grew |= page.page.grow(gpu).is_ok();
+            }
+        }
+        grew
+    }
+
     /// A layer the page already has, without growing it.
     pub(crate) fn alloc_existing_layer(&mut self, id: PageId) -> Option<u32> {
         self.page_mut(id).page.alloc_existing()

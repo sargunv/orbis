@@ -167,11 +167,26 @@ impl TilePage {
         if self.capacity >= self.max_layers {
             return Err(OutOfSpace);
         }
-        let capacity =
-            (self.capacity + (self.capacity / 2).max(INITIAL_LAYERS)).min(self.max_layers);
+        let capacity = self.grown_capacity();
         self.resize(gpu, capacity);
         self.layers.grow(capacity);
         Ok(())
+    }
+
+    /// The bytes growing the arrays would add, when they hold more than
+    /// three quarters of their layers below the device's most: room a map
+    /// at rest makes by growing them ([`grow`](Self::grow)).
+    pub(crate) fn headroom(&self) -> Option<u64> {
+        let capacity = self.grown_capacity();
+        (capacity > self.capacity && self.layers.used() * 4 > self.capacity * 3).then(|| {
+            (self.textures.iter())
+                .map(|(desc, _)| texture_bytes(desc, capacity) - texture_bytes(desc, self.capacity))
+                .sum()
+        })
+    }
+
+    fn grown_capacity(&self) -> u32 {
+        (self.capacity + (self.capacity / 2).max(INITIAL_LAYERS)).min(self.max_layers)
     }
 
     /// Halves the arrays while every held layer lies in their lowest
@@ -179,14 +194,23 @@ impl TilePage {
     /// what a view of many grew them to (layers are handed out lowest
     /// first, so they stay low). Returns whether they shrank.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let first = INITIAL_LAYERS.min(self.max_layers);
-        let capacity = super::shrunk(self.capacity, self.layers.held_below(), first);
+        let capacity = self.shrunk_capacity();
         if capacity == self.capacity {
             return false;
         }
         self.layers.shrink(capacity);
         self.resize(gpu, capacity);
         true
+    }
+
+    /// Whether [`shrink`](Self::shrink) would shrink the arrays.
+    pub(crate) fn would_shrink(&self) -> bool {
+        self.shrunk_capacity() != self.capacity
+    }
+
+    fn shrunk_capacity(&self) -> u32 {
+        let first = INITIAL_LAYERS.min(self.max_layers);
+        super::shrunk(self.capacity, self.layers.held_below(), first)
     }
 
     /// Moves the arrays into ones of `capacity` layers, the layers held

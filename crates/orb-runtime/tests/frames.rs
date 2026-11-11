@@ -429,7 +429,12 @@ mod tests {
         let fresh = pages(&mut fresh);
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(many > 4 * fresh, "{many} bytes of pages at the tilted view");
-        assert_eq!(few, fresh, "pages of {many} bytes shrank to {few}");
+        // No more than a fresh map's, which loaded within a budget that
+        // left it room to grow ahead of need at rest (#176).
+        assert!(
+            few <= fresh,
+            "pages of {many} bytes shrank to {few}, past {fresh}"
+        );
     }
 
     /// Tiles out of view stay cached by their memory, within a

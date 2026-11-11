@@ -144,17 +144,19 @@ fn assert_same(name: &str, pair: (Vec<u8>, Vec<u8>)) {
     assert_within(name, pair, 0);
 }
 
-/// [`assert_same`] for a map over 3D terrain: to one step in a channel.
+/// [`assert_same`] for a map over 3D terrain: to two steps in a channel.
 ///
 /// Which drape atlas slot a terrain tile gets follows the tiles that came
 /// and went, and the GPU's anisotropic filter places its taps from the
 /// absolute texture coordinate, so the same texel of the same tile can
-/// filter a step apart in another slot (#174). The slots' data is the
-/// same: sampled at level 0 without anisotropy, every terrain path test
-/// here is byte-identical on RADV, where the hardware's taps differ at up
-/// to a few hundred pixels by one (#172).
+/// filter a step or two apart in another slot (#174). The slots' data is
+/// the same: sampled at level 0 without anisotropy, every terrain path
+/// test here is byte-identical on RADV, where the hardware's taps differ
+/// at up to a few hundred pixels by one (#172), and by two at one pixel
+/// once a map at rest grows its DEM pages ahead of need, which moves its
+/// slots (#176).
 fn assert_same_terrain(name: &str, pair: (Vec<u8>, Vec<u8>)) {
-    assert_within(name, pair, 1);
+    assert_within(name, pair, 2);
 }
 
 /// [`assert_same`] to `steps` in a channel.

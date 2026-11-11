@@ -58,6 +58,9 @@ fn atlas_side(max: u32, slot_px: u32) -> u32 {
     1 << (max / slot_px).max(1).ilog2()
 }
 
+/// A page's grid: stacks a layer, and the layers' columns and rows.
+type Grid = (u32, u32, u32);
+
 /// A page's grid for `tiles` tile slots of `stacks` stacks: stacks a
 /// layer and the layers' (columns, rows); or `None` to keep the grid
 /// `held`, kept while its stacks have room for the tiles and they fill
@@ -693,24 +696,22 @@ impl Terrain {
         self.layers = layers.to_vec();
     }
 
-    /// Sizes the pages for `tile_slots` blocks of `stacks` colour and
-    /// slope slots ([`atlas_grid`]); each new page copies the kept slots.
-    /// The tile slots in `kept` carry their texels into new pages, those
-    /// past the new end moved to free slots; returns the moves (from, to),
-    /// or `None` when the pages stay. A change of stacks blanks every slot
-    /// (a new [`DrapeLayout::generation`]). Fails when the slots exceed the
-    /// device's texture size ([`room`]).
-    pub(crate) fn reserve(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        (tile_slots, kept): (u32, &[u32]),
+    /// Whether [`reserve`](Self::reserve) of `tile_slots` at rest would
+    /// make new pages.
+    pub(crate) fn would_reserve(&self, gpu: &dyn Gpu, tile_slots: u32, stacks: [u32; 2]) -> bool {
+        tile_slots <= room(gpu, stacks) && self.grids(gpu, tile_slots, stacks, true).1
+    }
+
+    /// Each page's grid for `tile_slots` slots ([`atlas_grid`]), and
+    /// whether any differs from the pages held.
+    fn grids(
+        &self,
+        gpu: &dyn Gpu,
+        tile_slots: u32,
         stacks: [u32; 2],
-        downsampler: &mut crate::downsample::Downsampler,
-    ) -> Result<Option<Vec<(u32, u32)>>, crate::OutOfSpace> {
+        may_shrink: bool,
+    ) -> ([Option<Grid>; 2], bool) {
         let state = self.layout_state;
-        if tile_slots > room(gpu, stacks) {
-            return Err(crate::OutOfSpace);
-        }
         let alloc = allocated(stacks);
         let same = self.atlas[0].is_some() && state.stacks == stacks;
         let mut grids = [None; 2];
@@ -723,16 +724,46 @@ impl Terrain {
                 .filter(|_| same)
                 .map(|a| (state.per_layer[page], a.grid()))
                 .map(|(per_layer, (columns, rows))| (per_layer, columns, rows));
+            let holds = held.is_some_and(|(k, c, r)| tile_slots <= c * r / k);
             let largest = gpu.caps().limits.largest_texture_dimension_2d;
-            let grid = atlas_grid(
-                tile_slots,
-                held,
-                alloc[page],
-                atlas_side(largest, PAGE_PX[page]),
-            );
+            let grid = (may_shrink || !holds)
+                .then(|| {
+                    atlas_grid(
+                        tile_slots,
+                        held,
+                        alloc[page],
+                        atlas_side(largest, PAGE_PX[page]),
+                    )
+                })
+                .flatten();
             changed |= grid.is_some();
             grids[page] = grid.or(held);
         }
+        (grids, changed)
+    }
+
+    /// Sizes the pages for `tile_slots` blocks of `stacks` colour and
+    /// slope slots ([`atlas_grid`]); each new page copies the kept slots.
+    /// The tile slots in `kept` carry their texels into new pages, those
+    /// past the new end moved to free slots; returns the moves (from, to),
+    /// or `None` when the pages stay. A change of stacks blanks every slot
+    /// (a new [`DrapeLayout::generation`]). Pages that hold the slots
+    /// stay unless `may_shrink`, which a map at rest passes. Fails when
+    /// the slots exceed the device's texture size ([`room`]).
+    pub(crate) fn reserve(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        (tile_slots, kept): (u32, &[u32]),
+        (stacks, may_shrink): ([u32; 2], bool),
+        downsampler: &mut crate::downsample::Downsampler,
+    ) -> Result<Option<Vec<(u32, u32)>>, crate::OutOfSpace> {
+        let state = self.layout_state;
+        if tile_slots > room(gpu, stacks) {
+            return Err(crate::OutOfSpace);
+        }
+        let alloc = allocated(stacks);
+        let same = self.atlas[0].is_some() && state.stacks == stacks;
+        let (grids, changed) = self.grids(gpu, tile_slots, stacks, may_shrink);
         if !changed {
             return Ok(None);
         }

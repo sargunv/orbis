@@ -1207,19 +1207,43 @@ impl Renderer {
         terrain::room(gpu, self.drape_stacks())
     }
 
+    /// The tile slots a map at rest with `tiles` terrain tiles reserves,
+    /// when that resizes the drape pages: one past their room when the
+    /// tiles take more than three quarters of it (within
+    /// [`drape_room`](Self::drape_room)), so that they grow before a
+    /// gesture needs them to, or the tiles when the pages would shrink to
+    /// them. `None` when the pages stay.
+    pub fn drape_at_rest(&self, gpu: &dyn Gpu, tiles: u32) -> Option<u32> {
+        let terrain = self.terrain.as_ref()?;
+        let held = terrain.layout().tile_slots;
+        let stacks = self.drape_stacks();
+        let ahead = (held + 1).min(self.drape_room(gpu));
+        if held > 0 && u64::from(tiles) * 4 > u64::from(held) * 3 && ahead > held {
+            return Some(ahead);
+        }
+        (held > 0 && terrain.would_reserve(gpu, tiles, stacks)).then_some(tiles)
+    }
+
     /// Makes room for `tile_slots` terrain tiles' drape slots, one per
     /// drape stack, keeping the texels of the tile slots in `kept`. Returns
     /// the layout and the kept slots that moved (from, to). A new layout
     /// generation means every slot is blank. Fails past the
-    /// [`drape_room`](Self::drape_room).
+    /// [`drape_room`](Self::drape_room). Pages that hold the slots stay
+    /// unless `may_shrink`: a continuous map shrinks them at rest.
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,
         (tile_slots, kept): (u32, &[u32]),
+        may_shrink: bool,
     ) -> Result<(DrapeLayout, Vec<(u32, u32)>), OutOfSpace> {
         let stacks = self.drape_stacks();
         let terrain = self.terrain.as_mut().expect("terrain is on");
-        let made = terrain.reserve(gpu, (tile_slots, kept), stacks, &mut self.downsampler)?;
+        let made = terrain.reserve(
+            gpu,
+            (tile_slots, kept),
+            (stacks, may_shrink),
+            &mut self.downsampler,
+        )?;
         let layout = terrain.layout();
         if made.is_some() {
             // Stack layers and the main bundle's composites follow it.

@@ -636,6 +636,37 @@ impl Renderer {
         self.images.shrink(gpu) | shrank
     }
 
+    /// Whether [`shrink`](Self::shrink) would shrink anything.
+    pub fn would_shrink(&self) -> bool {
+        self.scene.would_shrink() || self.images.would_shrink()
+    }
+
+    /// Forgets the pools' refusals, as [`shrink`](Self::shrink) does, on
+    /// a frame that doesn't shrink.
+    pub fn forget_refusals(&mut self) {
+        self.scene.forget_refusals();
+    }
+
+    /// Whether a pool, the chunk table or an image tile page is more than
+    /// three quarters full, below its ceiling, and growing it fits in
+    /// `room` bytes.
+    pub fn wants_headroom(&self, room: u64) -> bool {
+        self.scene.wants_headroom(room) || self.images.wants_headroom(room)
+    }
+
+    /// Grows what is more than three quarters full, within its ceiling and
+    /// `room` bytes in all: a map at rest makes room ahead of the next
+    /// view, so that a gesture from rest needn't grow them. New memory
+    /// costs its clearing, and a device may hold up other work while it
+    /// clears (#176: on RADV 43 µs a MiB, holding up submissions). Whether
+    /// any grew.
+    pub fn grow_headroom(&mut self, gpu: &mut dyn Gpu, mut room: u64) -> bool {
+        let grew = self.scene.grow_headroom(gpu, &mut room);
+        self.glyphs
+            .set_table(self.scene.tables().writer(Table::Props));
+        self.images.grow_headroom(gpu, &mut room) | grew
+    }
+
     /// Grows the pools once, within their limits; whether they grew.
     pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
         let grew = self.scene.grow(gpu);

@@ -392,6 +392,9 @@ pub(crate) struct SpriteState {
     pub(crate) stale: Option<HashSet<String>>,
 }
 
+/// The most resize frames a rest takes (`Map::resizes`).
+const RESIZES: u8 = 4;
+
 /// What tiles and styles let go of between frames, released at the next:
 /// from the renderer, or from the runtime's image atlas.
 #[derive(Debug, Default)]
@@ -511,6 +514,15 @@ pub struct Map {
     /// A frame at rest asked for the style's pipelines to be made ahead of
     /// need ([`crate::paint::prewarm`]) by the next.
     prewarm_due: bool,
+    /// A frame at rest found pools, pages or the drape atlas to resize for
+    /// the view (more than three quarters full, or at most a quarter), for
+    /// the next to resize: its arrivals step, drape plan and placement read
+    /// it, and it settles it again. A continuous map resizes only then.
+    pub(crate) resize_due: bool,
+    /// This rest's resize frames so far: a few at most, so that a resize
+    /// that changes nothing doesn't keep the map from idling. A view
+    /// emptied between frames gives its meshes back over more than one.
+    resizes: u8,
     pub(crate) services: Services,
     pub(crate) videos: crate::video::Videos,
     pub(crate) host_tiles: crate::host_tiles::HostTiles,
@@ -728,6 +740,8 @@ impl Map {
             waiting: Vec::new(),
             candidates_dropped: 0,
             prewarm_due: false,
+            resize_due: false,
+            resizes: 0,
             services,
             videos: Default::default(),
             host_tiles: Default::default(),
@@ -1484,6 +1498,12 @@ impl Map {
         let started = clock.now();
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
         self.take_arrivals(gpu, renderer, pixel_ratio);
+        // Room a frame at rest asked for, made where arrivals grow what they
+        // fill, before anything this frame reads it; the drape pages resize
+        // in its plan.
+        if self.resize_due {
+            renderer.grow_headroom(gpu, self.headroom_room(renderer));
+        }
         let mut times = FrameTimes {
             // Uploads and label commits are stages of their own.
             arrivals: micros(started + self.upload_ms + self.placement_ms, clock.now()),
@@ -1641,7 +1661,7 @@ impl Map {
         // finishes: a frame that waited with none pending (a pipeline's
         // arrival blanked the drape slots, to draw from the next frame)
         // asks for that frame itself.
-        self.settle_report(renderer, &mut report, moving);
+        self.settle_report(gpu, renderer, &mut report, moving);
         times.total = micros(started, clock.now());
         report.times = times;
         report
@@ -1755,7 +1775,13 @@ impl Map {
             self.place_source(gpu, renderer, view, index, drape.as_ref(), report, drawn);
         }
         self.trim_cache(renderer);
-        renderer.shrink(gpu);
+        // A moving view only grows what it fills: shrinking as soon as its
+        // tiles dipped made the next ones grow it again, into new memory.
+        if self.resize_due || self.mode != RenderMode::Continuous {
+            renderer.shrink(gpu);
+        } else {
+            renderer.forget_refusals();
+        }
         times.place = micros(placing, clock.now());
         (frame_terrain, redrew)
     }
@@ -1810,8 +1836,14 @@ impl Map {
     /// Settles a drawn frame's report on what the renderer did: whether it
     /// waited for a compile, whether the camera rests (`moving` it moved
     /// this frame), its scene and memory; asks for the pipelines later
-    /// views may need once at rest.
-    fn settle_report(&mut self, renderer: &Renderer, report: &mut FrameReport, moving: bool) {
+    /// views may need, and room for them, once at rest.
+    fn settle_report(
+        &mut self,
+        gpu: &dyn Gpu,
+        renderer: &Renderer,
+        report: &mut FrameReport,
+        moving: bool,
+    ) {
         report.compiling = report.idle && report.frame.waited && report.frame.pipelines_pending > 0;
         report.loaded &= !report.frame.waited;
         report.idle &= !report.frame.waited;
@@ -1820,6 +1852,30 @@ impl Map {
         // lands on: then this frame isn't a rest.
         let moving = self.stand_on_terrain() || moving;
         let held = self.camera.is_held() || self.input.is_active();
+        // At rest, what the view leaves mostly free shrinks and what it
+        // nearly fills grows ahead of the next view, in a frame of its own
+        // that the map isn't idle until, a few a rest. New GPU memory costs
+        // its clearing (on RADV 43 µs a MiB, holding up the frame's
+        // submissions too; #176): unseen at rest, and then not in a
+        // gesture's first frames.
+        let rest = report.idle && !moving && !held && self.mode == RenderMode::Continuous;
+        self.resizes = match rest {
+            true => self.resizes + u8::from(std::mem::take(&mut self.resize_due)),
+            false => 0,
+        };
+        self.resize_due = false;
+        if rest
+            && self.resizes < RESIZES
+            && (renderer.would_shrink()
+                // What the budget leaves is summed only for something full.
+                || (renderer.wants_headroom(u64::MAX)
+                    && renderer.wants_headroom(self.headroom_room(renderer)))
+                || self.drape_at_rest(gpu, renderer).is_some())
+        {
+            self.resize_due = true;
+            report.idle = false;
+            (self.services.wake)();
+        }
         self.events
             .frame(report.loaded, report.idle && !moving && !held);
         report.idle &= !moving;
@@ -1848,6 +1904,25 @@ impl Map {
             self.events.push(MapEvent::Error { message });
         }
         self.candidates_dropped = dropped;
+    }
+
+    /// The bytes growing ahead of need may take: what the memory budget has
+    /// left (the drape atlas aside, as the budget leaves it).
+    fn headroom_room(&self, renderer: &Renderer) -> u64 {
+        let images = self.services.images.0.lock().expect("images poisoned");
+        let atlas = images.atlas.as_ref().map_or(0, ImageAtlas::bytes);
+        self.budget
+            .saturating_sub(Memory::of(renderer, atlas).allocated())
+    }
+
+    /// The drape tile slots a map at rest reserves, when that resizes the
+    /// drape pages ([`Renderer::drape_at_rest`]).
+    fn drape_at_rest(&self, gpu: &dyn Gpu, renderer: &Renderer) -> Option<u32> {
+        let terrain = self.style.as_ref()?.terrain.as_ref()?;
+        renderer
+            .terrain_on()
+            .then(|| renderer.drape_at_rest(gpu, terrain.tiles.len() as u32))
+            .flatten()
     }
 
     /// Asks for the style's pipelines ahead of need, if a frame at rest
