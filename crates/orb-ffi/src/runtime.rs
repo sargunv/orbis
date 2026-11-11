@@ -154,8 +154,9 @@ impl State {
     /// what a completion delivered after it can rely on.
     pub(crate) fn settle(&mut self) {
         let ids: Vec<u64> = self.maps.keys().copied().collect();
+        let mut after = Vec::new();
         for id in ids {
-            crate::map::take_events(self, id);
+            after.extend(crate::map::take_events(self, id));
         }
         for entry in self.maps.values() {
             entry.publish();
@@ -168,6 +169,9 @@ impl State {
             && let Some(handler) = &self.handler
         {
             handler.send(events);
+        }
+        for end in after {
+            end();
         }
     }
 
