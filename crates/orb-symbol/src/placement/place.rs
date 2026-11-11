@@ -979,6 +979,10 @@ pub(crate) struct RecordedShape {
     pub(crate) blocks: bool,
 }
 
+/// A run of a bucket's instances a layer places in one go: its sort key,
+/// tile, bucket and instances.
+type Part<'b> = (f64, &'b PlacedTile, &'b Bucket, std::ops::Range<usize>);
+
 struct Pass<'a> {
     index: CollisionIndex,
     now: Decisions,
@@ -1044,69 +1048,56 @@ impl<'a> Pass<'a> {
             }
             self.layer = rank as u32;
             let group = (!cross_source_collisions).then_some(params.source);
-            let mut parts: Vec<(f64, &PlacedTile, std::ops::Range<usize>)> = Vec::new();
+            let mut parts: Vec<Part<'_>> = Vec::new();
             for t in tiles {
                 let b = &buckets[&copy_key(t)];
                 if params.sort_across_tiles {
                     for r in &b.tables.sort_key_ranges {
-                        parts.push((r.sort_key, t, r.start as usize..r.end as usize));
+                        parts.push((r.sort_key, t, b, r.start as usize..r.end as usize));
                     }
                 } else {
-                    parts.push((0.0, t, 0..b.tables.instances.len()));
+                    parts.push((0.0, t, b, 0..b.tables.instances.len()));
                 }
             }
             if params.sort_across_tiles {
                 parts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             }
             // Overzoom slices laid out in one ancestor place as its one
-            // overscaled tile would in GL JS and Native: merged, in its
-            // instance order, so the labels along a line pack the same
-            // way whichever slices the line crosses.
-            let ancestor = |t: &PlacedTile| {
-                let scale = buckets[&copy_key(t)].tables.ancestor_scale;
+            // overscaled tile would in GL JS and Native: merged (those
+            // with one sort key), in its instance order, so the labels
+            // along a line pack the same way whichever slices the line
+            // crosses. A merge takes the place of its first part.
+            let mut merges: Vec<Vec<usize>> = Vec::with_capacity(parts.len());
+            let mut ancestors: HashMap<_, usize> = HashMap::new();
+            for (i, &(key, t, b, _)) in parts.iter().enumerate() {
+                let scale = b.tables.ancestor_scale;
                 let id = t.view.id;
-                (scale > 1 && !params.z_order_viewport_y)
-                    .then(|| (id.z, id.x / scale, id.y / scale, id.wrap))
-            };
+                if scale > 1 && !params.z_order_viewport_y {
+                    let ancestor = (key.to_bits(), id.z, id.x / scale, id.y / scale, id.wrap);
+                    if let Some(&m) = ancestors.get(&ancestor) {
+                        merges[m].push(i);
+                        continue;
+                    }
+                    ancestors.insert(ancestor, merges.len());
+                }
+                merges.push(vec![i]);
+            }
             let mut seen = HashSet::new();
-            let mut done = vec![false; parts.len()];
-            for i in 0..parts.len() {
-                if done[i] {
-                    continue;
-                }
-                let (key, t, _) = parts[i];
-                self.sort_key = key;
-                let members: Vec<usize> = match ancestor(t) {
-                    Some(a) => (i..parts.len())
-                        .filter(|&j| {
-                            !done[j]
-                                && parts[j].0.to_bits() == key.to_bits()
-                                && ancestor(parts[j].1) == Some(a)
-                        })
-                        .collect(),
-                    None => vec![i],
-                };
-                for &j in &members {
-                    done[j] = true;
-                }
-                let slices: Vec<(&PlacedTile, &Bucket, std::ops::Range<usize>)> = (members.iter())
-                    .map(|&j| {
-                        (
-                            parts[j].1,
-                            &buckets[&copy_key(parts[j].1)],
-                            parts[j].2.clone(),
-                        )
-                    })
-                    .collect();
+            let mut slices = Vec::new();
+            for members in merges {
+                self.sort_key = parts[members[0]].0;
+                slices.clear();
+                slices.extend(members.iter().map(|&j| parts[j].clone()));
                 let order = self.order(params, &slices);
                 for run in order.chunk_by(|a, b| a.0 == b.0) {
-                    let (t, b, _) = &slices[run[0].0];
+                    let (_, t, b, _) = &slices[run[0].0];
                     let run = run.iter().map(|&(_, i)| i);
                     self.place_part(params, group, t, b, run, &mut seen);
                 }
             }
         }
     }
+
     /// GL JS `markUsedOrientation` records which orientation shows; the
     /// words read it from `orientations`.
     fn mark_orientation(&mut self, id: u32, orientation: u8) {
@@ -1117,24 +1108,20 @@ impl<'a> Pass<'a> {
     /// instance): a lone part's in its order, or several slices of one
     /// ancestor merged in the ancestor's (by feature, then along each
     /// feature's anchors).
-    fn order(
-        &self,
-        p: &LayerParams,
-        parts: &[(&PlacedTile, &Bucket, std::ops::Range<usize>)],
-    ) -> Vec<(usize, usize)> {
+    fn order(&self, p: &LayerParams, parts: &[Part<'_>]) -> Vec<(usize, usize)> {
         let mut order: Vec<(usize, usize)> = match parts {
-            [(_, b, _)] if p.z_order_viewport_y => {
+            [(_, _, b, _)] if p.z_order_viewport_y => {
                 let mut order = viewport_y_order(&b.tables, -self.camera.bearing);
                 order.reverse();
                 order.into_iter().map(|i| (0, i)).collect()
             }
-            [(_, _, range)] => range.clone().map(|i| (0, i)).collect(),
+            [(_, _, _, range)] => range.clone().map(|i| (0, i)).collect(),
             _ => {
                 let mut all: Vec<(usize, usize)> = (parts.iter().enumerate())
-                    .flat_map(|(s, (_, _, range))| range.clone().map(move |i| (s, i)))
+                    .flat_map(|(s, (_, _, _, range))| range.clone().map(move |i| (s, i)))
                     .collect();
                 all.sort_by_key(|&(s, i)| {
-                    let instance = &parts[s].1.tables.instances[i];
+                    let instance = &parts[s].2.tables.instances[i];
                     (instance.feature, instance.ordinal)
                 });
                 all
@@ -1143,7 +1130,7 @@ impl<'a> Pass<'a> {
         // MapLibre Native's `getSortedSymbols`: in a tilted view, labels
         // shown before go first, then new ones, then those hidden before.
         if let Some(prev) = self.stable_prev().filter(|_| self.tilted()) {
-            order.sort_by_key(|&(s, i)| match prev.placements.get(&parts[s].1.ids[i]) {
+            order.sort_by_key(|&(s, i)| match prev.placements.get(&parts[s].2.ids[i]) {
                 Some(p) if p.text || p.icon => 0,
                 None => 1,
                 Some(_) => 2,
