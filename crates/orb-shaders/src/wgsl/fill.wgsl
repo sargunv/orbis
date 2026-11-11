@@ -41,7 +41,7 @@ struct FillOut {
     // where it was on a globe and in a drape slot (`tile_pos` is where it
     // lands there), so a translated fill moves whole.
     @location(7) owner_pos: vec2<f32>,
-    @location(8) @interpolate(flat, either) clip: vec2<u32>,
+    @location(8) @interpolate(flat, either) clip: vec4<f32>,
     // An outline's `drape_origin`: carried flat, so its fragments read no
     // tile for it.
     @location(9) @interpolate(flat, either) screen_origin: vec2<f32>,

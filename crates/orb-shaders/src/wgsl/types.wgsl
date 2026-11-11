@@ -387,28 +387,38 @@ fn warped(tile: Tile) -> bool {
     return !plane && tile.warp_cells != 0u;
 }
 
-// A placement's clip as its fragments test it (`clip_drawn`), packed as
-// a clip rectangle: the one rectangle it owns, within its bound, where its
-// tile is affine and its content lands where it was (`moved` false, or a
-// map placement, which owns where content lands), so the test reads no
-// tile; otherwise CLIP_FETCHED, and fragments test the tile's rectangles
-// and bound. On a pitched city view, reading the tile in every line and
-// fill fragment cost a fifth of the frame; redrawing drape slots over the
-// Alps, a quarter of the drape pass, image fragments included. The row
-// holds it for content that lands where it was (orb-render's
+// A placement's clip as its fragments test it (`clip_drawn`): the one
+// rectangle it owns, within its bound, where its tile is affine and its
+// content lands where it was (`moved` false, or a map placement, which
+// owns where content lands), so the test reads no tile; otherwise
+// CLIP_FETCHED, and fragments test the tile's rectangles and bound. On a
+// pitched city view, reading the tile in every line and fill fragment
+// cost a fifth of the frame; redrawing drape slots over the Alps, a
+// quarter of the drape pass, image fragments included. The row holds it
+// packed for content that lands where it was (orb-render's
 // `TileRow::fragment_clip`): working it out in every vertex cost lines a
-// sixth of their vertex time on the moto g (#180).
-const CLIP_FETCHED: vec2<u32> = vec2<u32>(0x80008000u, 0x80008000u);
-fn fragment_clip(tile: Tile, moved: bool) -> vec2<u32> {
+// sixth of their vertex time on the moto g (#180). The vertex unpacks it
+// into (min, max): the Adreno 619's GLES compiler miscompiled the
+// fragment stages' unpacking of it, and WebGL 2 there drew no fill or
+// line, every fragment outside its rectangle.
+const ROW_CLIP_FETCHED: vec2<u32> = vec2<u32>(0x80008000u, 0x80008000u);
+// ROW_CLIP_FETCHED unpacked.
+const CLIP_FETCHED: vec4<f32> = vec4<f32>(-32768.0);
+fn fragment_clip(tile: Tile, moved: bool) -> vec4<f32> {
     if moved && draped_placement(tile) {
         return CLIP_FETCHED;
     }
-    return tile.clip;
+    return row_clip(tile);
+}
+
+// The row's packed clip as (min, max).
+fn row_clip(tile: Tile) -> vec4<f32> {
+    return vec4<f32>(unpack_i16x2(tile.clip.x), unpack_i16x2(tile.clip.y));
 }
 
 // Whether `p` lies in a `fragment_clip` rectangle.
-fn in_clip(clip: vec2<u32>, p: vec2<f32>) -> bool {
-    return all(p >= unpack_i16x2(clip.x)) && all(p < unpack_i16x2(clip.y));
+fn in_clip(clip: vec4<f32>, p: vec2<f32>) -> bool {
+    return all(p >= clip.xy) && all(p < clip.zw);
 }
 
 // Whether `p` lies where the placement's content may land (`bound`).

@@ -212,7 +212,7 @@ fn extrusion_drawn(v: Pulled) -> u32 {
     // (`fragment_clip`): testing the four in every vertex of every
     // pipeline cost a pitched 3D frame's buildings an eighth of their time
     // on the moto g (#180).
-    let one = any(tile.clip != CLIP_FETCHED);
+    let one = any(tile.clip != ROW_CLIP_FETCHED);
     var cut = EXTRUSION_CUT;
     if !one && clips_split(tile) {
         cut = EXTRUSION_CUT_SPLIT;
@@ -240,8 +240,8 @@ fn extrusion_owned(v: Pulled) -> bool {
 // Whether a placement's clip holds a whole building's `centroid`: the one
 // rectangle its row holds (`fragment_clip`), else its rectangles.
 fn holds_centroid(tile: Tile, centroid: vec2<f32>) -> bool {
-    if any(tile.clip != CLIP_FETCHED) {
-        return in_clip(tile.clip, centroid);
+    if any(tile.clip != ROW_CLIP_FETCHED) {
+        return in_clip(row_clip(tile), centroid);
     }
     return inside_clips(tile, centroid);
 }

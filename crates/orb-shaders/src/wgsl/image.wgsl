@@ -42,7 +42,7 @@ struct ImageOut {
     // Its fade's three row words.
     @location(6) @interpolate(flat, either) fade: vec3<u32>,
     // The placement's clip as fragments test it (`fragment_clip`).
-    @location(7) @interpolate(flat, either) clip: vec2<u32>,
+    @location(7) @interpolate(flat, either) clip: vec4<f32>,
 };
 
 const NO_ANCESTOR: u32 = 0xffffffffu;

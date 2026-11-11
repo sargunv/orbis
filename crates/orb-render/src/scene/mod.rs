@@ -564,7 +564,7 @@ impl ClipRect {
     }
 }
 
-/// `types.wgsl`'s `CLIP_FETCHED`: a tile row's clip that fragments test
+/// `types.wgsl`'s `ROW_CLIP_FETCHED`: a tile row's clip that fragments test
 /// against its rectangles and bound.
 const CLIP_FETCHED: ClipRect = ClipRect::new([i16::MIN; 2], [i16::MIN; 2]);
 

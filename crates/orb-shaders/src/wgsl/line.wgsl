@@ -63,7 +63,7 @@ struct StyledLineOut {
     // in a drape slot, so a translated line moves whole into it, bounded
     // by the slot where it lands (`tile_pos`).
     @location(7) owner_pos: vec2<f32>,
-    @location(8) @interpolate(flat, either) clip: vec2<u32>,
+    @location(8) @interpolate(flat, either) clip: vec4<f32>,
     @location(9) linesofar: f32,
     @location(10) @interpolate(flat, either) floorwidth: f32,
     @location(11) @interpolate(flat, either) images: vec2<u32>,
@@ -88,7 +88,7 @@ struct LineOut {
     @location(5) tile_pos: vec2<f32>,
     @location(6) @interpolate(flat, either) tile: u32,
     @location(7) owner_pos: vec2<f32>,
-    @location(8) @interpolate(flat, either) clip: vec2<u32>,
+    @location(8) @interpolate(flat, either) clip: vec4<f32>,
 };
 
 fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {
