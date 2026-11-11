@@ -20,7 +20,8 @@
 //! buffer (GL JS's GeoJSON buffer reaches at most a tile) and fits i16: a
 //! stroke drawn from a neighbour's line in the buffer reaches into the tile,
 //! as GL JS's unclipped buckets do. The fragment shader must discard outside
-//! the actual tile square. Clipped ends use butt caps. Sharp-corner vertices use MapLibre's 512-pixel tile at overscaling 1.
+//! the actual tile square; what lies well past it chunks apart
+//! ([`MeshBuilder::set_focus`]), for the cull to drop. Clipped ends use butt caps. Sharp-corner vertices use MapLibre's 512-pixel tile at overscaling 1.
 //!
 //! Extrusion ported from MapLibre GL JS 2b68611a4e2d4f7f076f6c6ebf758e2d53f91471, src/data/bucket/line_bucket.ts
 //! (addLine, addCurrentVertex, addHalfVertex and the fakeround pie slices):
@@ -193,6 +194,15 @@ fn lay_out(
         STRIDE
     };
     let mut builder = MeshBuilder::new(stride);
+    // What lies past the square by more than a stroke usually reaches
+    // (32 px at the tile's zoom) goes in chunks of its own, which the cull
+    // drops unless the node's widths reach that far.
+    let near = (extent / 16) as i16;
+    let far = (extent as i16).saturating_add(near);
+    builder.set_focus(crate::TileBox {
+        min: [-near; 2],
+        max: [far; 2],
+    });
     let distance_scale = 8192.0 / f64::from(extent);
     let (mut scaled, mut lines) = (Vec::new(), Vec::new());
     for (slot, &feature) in features.iter().enumerate() {
@@ -1195,6 +1205,31 @@ mod tests {
         counts(&one_end, 6, 4);
         assert_eq!(&data(&one_end)[..2], &[[0, 63, 0], [0, -63, 2]]);
         assert_eq!(&data(&one_end)[4..], &[[63, 63, 1], [63, -63, 3]]);
+    }
+
+    #[test]
+    fn what_lies_well_past_the_square_chunks_apart() {
+        // Along y = 50 from far west of the tile into it: the segments
+        // west of x = −256 (a sixteenth of 4096) stand apart.
+        let mesh = line(
+            &[
+                [-4000, 50],
+                [-3000, 50],
+                [-2000, 50],
+                [-1000, 50],
+                [1000, 50],
+            ],
+            &params(LineJoin::Miter, LineCap::Butt),
+        );
+        let bounds: Vec<_> = mesh
+            .chunks
+            .iter()
+            .map(|c| (c.bounds.min, c.bounds.max))
+            .collect();
+        assert_eq!(
+            bounds,
+            [([-4000, 50], [-1000, 50]), ([-1000, 50], [1000, 50])]
+        );
     }
 
     #[test]

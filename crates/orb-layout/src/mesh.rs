@@ -25,6 +25,16 @@ impl TileBox {
         self.min = [self.min[0].min(p[0]), self.min[1].min(p[1])];
         self.max = [self.max[0].max(p[0]), self.max[1].max(p[1])];
     }
+
+    fn union(mut self, other: Self) -> Self {
+        self.include(other.min);
+        self.include(other.max);
+        self
+    }
+
+    fn meets(&self, other: &Self) -> bool {
+        (0..2).all(|i| self.min[i] <= other.max[i] && other.min[i] <= self.max[i])
+    }
 }
 
 /// A run of triangles, segments or point instances culled as one unit.
@@ -101,6 +111,10 @@ pub struct MeshBuilder {
     positions: Vec<[i16; 2]>,
     open: TileBox,
     sort_key: Option<f32>,
+    /// Where the open chunk's primitives lie against `focus`: meeting it,
+    /// or all away from it.
+    focus: Option<TileBox>,
+    open_meets: bool,
 }
 
 impl MeshBuilder {
@@ -113,7 +127,19 @@ impl MeshBuilder {
             positions: Vec::new(),
             open: TileBox::EMPTY,
             sort_key: None,
+            focus: None,
+            open_meets: false,
         }
+    }
+
+    /// Keeps primitives meeting `focus` and those away from it in separate
+    /// chunks, and chunks away from it from reaching it, so the cull can
+    /// drop what lies away from the tile while keeping draw order. Lines
+    /// lay out a tile past the square for wide strokes; drawing it all and
+    /// discarding it per fragment cost a third of a pitched overzoomed
+    /// view's main pass on the moto g (#180).
+    pub(crate) fn set_focus(&mut self, focus: TileBox) {
+        self.focus = Some(focus);
     }
 
     /// Starts a sorted run, closing the previous chunk when the key changes.
@@ -160,6 +186,20 @@ impl MeshBuilder {
         // Each primitive kind divides its limit, so none straddle chunks.
         if self.indices.len() as u32 - chunk_start == limit {
             self.close_chunk();
+        }
+        if let Some(focus) = self.focus {
+            let mut bounds = TileBox::EMPTY;
+            vertices
+                .iter()
+                .for_each(|&i| bounds.include(self.positions[i as usize]));
+            let meets = bounds.meets(&focus);
+            let open = self.open != TileBox::EMPTY;
+            if open
+                && (meets != self.open_meets || (!meets && self.open.union(bounds).meets(&focus)))
+            {
+                self.close_chunk();
+            }
+            self.open_meets = meets;
         }
         for &i in vertices {
             self.open.include(self.positions[i as usize]);
@@ -249,6 +289,31 @@ mod tests {
         let first_x = (MAX_CHUNK_TRIANGLES * 2) as i16;
         assert_eq!(last.min, [first_x, 0]);
         assert_eq!(last.max, [n as i16, 1]);
+    }
+
+    #[test]
+    fn keeps_what_lies_away_from_the_focus_in_chunks_of_its_own() {
+        let mut b = MeshBuilder::new(1);
+        b.set_focus(TileBox {
+            min: [0, 0],
+            max: [10, 10],
+        });
+        let mut triangle = |x: i16, y: i16| {
+            let v = [[x, y], [x + 1, y], [x, y + 1]].map(|p| b.push_vertex(p, &[0]));
+            b.push_triangle(v[0], v[1], v[2]);
+        };
+        // In, in, west, west, east (whose chunk with the west would reach
+        // over the focus), in.
+        for (x, y) in [(1, 1), (5, 5), (-20, 5), (-30, 2), (40, 5), (2, 2)] {
+            triangle(x, y);
+        }
+        let mesh = b.finish();
+        let counts: Vec<_> = mesh.chunks.iter().map(|c| c.index_count / 3).collect();
+        assert_eq!(counts, [2, 2, 1, 1]);
+        assert_eq!(mesh.chunks[1].bounds.min, [-30, 2]);
+        assert_eq!(mesh.chunks[1].bounds.max, [-19, 6]);
+        // Draw order holds.
+        assert!(mesh.vertex_indices().eq(0..18));
     }
 
     #[test]
