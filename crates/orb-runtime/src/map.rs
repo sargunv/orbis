@@ -386,14 +386,20 @@ impl LoadedStyle {
     }
 }
 
-/// What tiles and styles let go of between frames, released from the
-/// renderer at the next.
+/// What tiles and styles let go of between frames, released at the next:
+/// from the renderer, or from the runtime's image atlas.
 #[derive(Debug, Default)]
 pub(crate) struct Retired {
     /// Tiles of sources and the background.
     tiles: Vec<GpuTile>,
     /// A replaced style's feature-state table.
     tables: Vec<std::ops::Range<u32>>,
+    /// Terrain pages of a replaced style.
+    pub(crate) pages: Vec<PageId>,
+    /// Image namespaces of replaced styles.
+    pub(crate) images: Vec<u64>,
+    /// Gradient ramps of meshes that went.
+    pub(crate) ramps: Vec<u32>,
 }
 
 impl Retired {
@@ -404,6 +410,13 @@ impl Retired {
         for table in self.tables.drain(..) {
             renderer.free_table(table);
         }
+    }
+
+    /// Hands the atlas's images and ramps to the runtime's images, which
+    /// release them with the next sprites.
+    fn hand_to(&mut self, images: &mut ImageState) {
+        images.retired.append(&mut self.images);
+        images.retired_ramps.append(&mut self.ramps);
     }
 }
 
@@ -572,11 +585,6 @@ pub struct Map {
     /// revision and renderer they were found for: `MapEvent::Degraded`.
     pub(crate) degraded: (Option<(u64, u64)>, Vec<Degraded>),
     pub(crate) events: crate::events::EventQueue,
-    /// Terrain pages of a replaced style, to destroy with the next
-    /// frame's GPU.
-    pub(crate) retired_pages: Vec<PageId>,
-    pub(crate) retired_images: Vec<u64>,
-    pub(crate) retired_ramps: Vec<u32>,
     /// Tiles' patches on the globe.
     pub(crate) globe_warps: crate::globe::GlobeWarps,
     /// Terrains made so far: each new one's id.
@@ -594,8 +602,7 @@ impl std::fmt::Debug for Map {
 impl Drop for Map {
     fn drop(&mut self) {
         let mut images = self.services.images.0.lock().expect("images poisoned");
-        images.retired.append(&mut self.retired_images);
-        images.retired_ramps.append(&mut self.retired_ramps);
+        self.retired.hand_to(&mut images);
         if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
             images.retired.push(namespace);
         }
@@ -756,9 +763,6 @@ impl Map {
             warned: HashSet::new(),
             degraded: (None, Vec::new()),
             events: Default::default(),
-            retired_pages: Vec::new(),
-            retired_images: Vec::new(),
-            retired_ramps: Vec::new(),
             terrains: 0,
             labels: crate::labels::Labels::new(default_lane(), (&defaults).into()),
             label_epoch: 0,
@@ -1141,11 +1145,10 @@ impl Map {
             // tiles' gradient ramps) and those retired go back to it before
             // the style is installed again in a namespace of its own.
             if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
-                self.retired_images.push(namespace);
+                self.retired.images.push(namespace);
             }
             let mut images = self.services.images.0.lock().expect("images poisoned");
-            images.retired.append(&mut self.retired_images);
-            images.retired_ramps.append(&mut self.retired_ramps);
+            self.retired.hand_to(&mut images);
             drop(images);
             self.forget_gpu();
             self.renderer = Some(renderer.id());
@@ -1161,9 +1164,7 @@ impl Map {
     /// glyphs load again.
     fn forget_gpu(&mut self) {
         self.globe_warps = crate::globe::GlobeWarps::new(*self.surface.projection());
-        self.retired_pages.clear();
-        self.retired_images.clear();
-        self.retired_ramps.clear();
+        self.retired = Retired::default();
         let old = &self.labels;
         self.labels = crate::labels::Labels::new(Arc::clone(&old.lane), old.options.clone());
         self.label_epoch += 1;
@@ -1182,7 +1183,7 @@ impl Map {
             }
         }
         // What the old renderer held went with it.
-        self.retired = Retired::default();
+        (self.retired.tiles, self.retired.tables) = Default::default();
     }
 
     /// Replaces the style with a document, every tile loaded fresh.
@@ -1662,13 +1663,13 @@ impl Map {
         report.prepared = prepared;
         report.tiles_arrived = self.tiles_arrived + arrived;
 
-        if !self.retired_ramps.is_empty() {
+        if !self.retired.ramps.is_empty() {
             let mut images = self.services.images.0.lock().expect("images poisoned");
             images
                 .atlas
                 .as_mut()
                 .unwrap()
-                .release_ramps(gpu, self.retired_ramps.drain(..));
+                .release_ramps(gpu, self.retired.ramps.drain(..));
         }
         report.generation = self.generation();
         let picking = self.picking.get_mut();
@@ -1816,7 +1817,8 @@ impl Map {
         for source in style.retired.drain(..) {
             if let SourceState::Ready { mut pyramid, .. } = source {
                 for tile in pyramid.drain() {
-                    self.retired_ramps
+                    self.retired
+                        .ramps
                         .extend(remove_resident(renderer, tile, &mut style.states));
                 }
             }
@@ -1850,7 +1852,7 @@ impl Map {
                     for &index in &mesh.states {
                         style.states.release(index);
                     }
-                    self.retired_ramps.append(&mut mesh.ramps);
+                    self.retired.ramps.append(&mut mesh.ramps);
                     false
                 });
             }
@@ -1877,12 +1879,12 @@ impl Map {
             self.warnings
                 .push("out of scene memory; an image layer misses tiles".into());
         }
-        if !self.retired_pages.is_empty() {
+        if !self.retired.pages.is_empty() {
             // The terrain may bind a retired terrain page; it turns on
             // again next.
             renderer.set_terrain(gpu, None);
         }
-        for page in self.retired_pages.drain(..) {
+        for page in self.retired.pages.drain(..) {
             renderer.remove_page(gpu, page);
         }
         style.background = make_background(gpu, renderer, plan, globe);
@@ -1902,9 +1904,9 @@ impl Map {
             gpu,
             retired_ramps
                 .into_iter()
-                .chain(self.retired_ramps.drain(..)),
+                .chain(self.retired.ramps.drain(..)),
         );
-        for namespace in retired.into_iter().chain(self.retired_images.drain(..)) {
+        for namespace in retired.into_iter().chain(self.retired.images.drain(..)) {
             images.release(gpu, namespace);
         }
         let Some(style) = &mut self.style else { return };
@@ -2753,7 +2755,7 @@ impl Map {
         // The old style's sources report nothing more.
         self.events.sources.clear();
         if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
-            self.retired_images.push(namespace);
+            self.retired.images.push(namespace);
         }
         self.generation += 1;
         self.clear_style_tiles();
@@ -2797,7 +2799,8 @@ impl Map {
                 *loading = 0;
                 for tile in pyramid.drain() {
                     self.retired.tiles.push(tile.gpu);
-                    self.retired_ramps
+                    self.retired
+                        .ramps
                         .extend(release_resident(tile, &mut style.states));
                 }
             }
@@ -2807,7 +2810,7 @@ impl Map {
         }
         if let Some(terrain) = style.terrain.take() {
             // Destroyed once the renderer's terrain is off.
-            self.retired_pages.extend(terrain.page);
+            self.retired.pages.extend(terrain.page);
         }
         // In-flight tiles belong to the old scene: none lands to be
         // dropped as stale.

@@ -546,7 +546,7 @@ impl Map {
         let mut grow = under_budget(renderer, atlas.bytes(), self.budget);
         let uploading = self.services.clock.now();
         let uploaded = loop {
-            atlas.release_ramps(gpu, self.retired_ramps.drain(..));
+            atlas.release_ramps(gpu, self.retired.ramps.drain(..));
             use orb_render::UploadError::{Invalid, NoRoom};
             let attempt = match &image_build {
                 Some(image_build) => renderer
@@ -593,7 +593,8 @@ impl Map {
             };
             match victim {
                 Some(victim) => {
-                    self.retired_ramps
+                    self.retired
+                        .ramps
                         .extend(remove_resident(renderer, victim, &mut style.states))
                 }
                 None => break Err(None),
@@ -644,7 +645,8 @@ impl Map {
         record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
         resident.cost = tile_cost(renderer, &resident);
         if let Some(unwanted) = pyramid.insert(tile, resident) {
-            self.retired_ramps
+            self.retired
+                .ramps
                 .extend(remove_resident(renderer, unwanted, &mut style.states));
         }
         if !stale.is_empty() {

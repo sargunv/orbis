@@ -474,7 +474,8 @@ impl Map {
             let Some(victim) = evict_unused(&mut style.sources, index) else {
                 break;
             };
-            self.retired_ramps
+            self.retired
+                .ramps
                 .extend(remove_resident(renderer, victim, &mut style.states));
         }
         let grow = wanted || under_budget(renderer, atlas.bytes(), self.budget);
@@ -536,7 +537,7 @@ impl Map {
                     no_room = true;
                     break;
                 }
-                self.retired_ramps.append(&mut current.ramps);
+                self.retired.ramps.append(&mut current.ramps);
                 for index in current.states.drain(..) {
                     style.states.release(index);
                 }
@@ -567,7 +568,7 @@ impl Map {
                     for index in old.states.drain(..) {
                         style.states.release(index);
                     }
-                    self.retired_ramps.append(&mut old.ramps);
+                    self.retired.ramps.append(&mut old.ramps);
                 }
                 // A symbol layer comes back whole with its bucket, below.
                 if plan
@@ -628,7 +629,8 @@ impl Map {
             let Some(resident) = pyramid.remove(tile) else {
                 unreachable!("the tile is ready");
             };
-            self.retired_ramps
+            self.retired
+                .ramps
                 .extend(remove_resident(renderer, resident, &mut style.states));
             return;
         }

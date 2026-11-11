@@ -281,7 +281,7 @@ impl Map {
                 continue;
             }
             let resident = pyramid.remove(tile).expect("checked above");
-            (self.retired_ramps).extend(remove_resident(renderer, resident, &mut style.states));
+            (self.retired.ramps).extend(remove_resident(renderer, resident, &mut style.states));
             update.draw.retain(|d| d.tile != tile);
             update.request.push(tile);
         }
@@ -638,7 +638,8 @@ impl Map {
             };
             if let Some(resident) = pyramid.evict_unused(tile) {
                 total -= cost;
-                self.retired_ramps
+                self.retired
+                    .ramps
                     .extend(remove_resident(renderer, resident, &mut style.states));
             }
         }
