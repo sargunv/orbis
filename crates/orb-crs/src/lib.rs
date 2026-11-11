@@ -31,6 +31,43 @@ pub use warp::{Footprint, MAX_EDGE_REFINE, Node, Patch, Series, Warp, WarpGrid, 
 
 use glam::DVec2;
 
+/// A height in v8's metres: an elevation, or how far something stands
+/// above the ground or the datum. World units are not metres: how many a
+/// metre spans depends on the projection and the latitude
+/// ([`Projection::style_height_scale`]), and on a globe heights stand off
+/// the sphere, so a view converts heights itself rather than its callers.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
+pub struct Metres(pub f64);
+
+impl Metres {
+    pub const ZERO: Self = Self(0.0);
+
+    #[must_use]
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.min(other.0))
+    }
+
+    #[must_use]
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.max(other.0))
+    }
+}
+
+impl std::ops::Add for Metres {
+    type Output = Self;
+    fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+}
+
+impl std::ops::Sub for Metres {
+    type Output = Self;
+    fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+}
+
 /// An axis-aligned rectangle in world space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldRect {

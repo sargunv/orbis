@@ -3,7 +3,7 @@
 //! the ground under a pixel.
 
 use glam::{DVec2, DVec3};
-use orb_crs::{Projection, WorldRect};
+use orb_crs::{Metres, Projection, WorldRect};
 
 use crate::{CameraState, View, Viewport};
 use orb_crs::Surface;
@@ -14,11 +14,11 @@ use orb_crs::Surface;
 pub trait Elevation: Send + Sync + std::fmt::Debug {
     /// The elevation at a world position, or `None` where no DEM data has
     /// loaded yet.
-    fn at(&self, world: DVec2) -> Option<f64>;
+    fn at(&self, world: DVec2) -> Option<Metres>;
 
     /// The lowest and highest elevation over a tile's world rectangle at
     /// zoom `z`, or `None` where unknown.
-    fn range(&self, rect: WorldRect, z: u8) -> Option<(f64, f64)>;
+    fn range(&self, rect: WorldRect, z: u8) -> Option<(Metres, Metres)>;
 }
 
 /// How close, in metres, the eye and its near plane may come to the
@@ -26,20 +26,21 @@ pub trait Elevation: Send + Sync + std::fmt::Debug {
 /// slope. GL JS keeps only the eye out of the terrain; a wider margin
 /// lifts low, steeply pitched cameras above where the same camera stands
 /// in GL JS, which moves their near plane and their fog.
-const CLEARANCE_M: f64 = 2.0;
+const CLEARANCE: Metres = Metres(2.0);
 
 impl View {
-    /// The terrain point under a logical pixel, as `(world, elevation in
-    /// metres)`, found by walking the view ray (a CPU DEM ray walk,
-    /// never a GPU readback). Where no DEM data has loaded the
-    /// ground is at sea level. `None` above the horizon.
-    pub fn unproject_terrain(&self, px: DVec2, terrain: &dyn Elevation) -> Option<(DVec2, f64)> {
+    /// The terrain point under a logical pixel, as `(world, elevation)`,
+    /// found by walking the view ray (a CPU DEM ray walk, never a GPU
+    /// readback). Where no DEM data has loaded the ground is at sea level.
+    /// `None` above the horizon.
+    pub fn unproject_terrain(&self, px: DVec2, terrain: &dyn Elevation) -> Option<(DVec2, Metres)> {
         let (near, far) = self.ray(px, &self.view_proj);
         let ground = |p: DVec3| {
-            terrain
-                .at(p.truncate() + self.camera_world())
-                .unwrap_or(0.0)
-                * self.height_scale()
+            self.world_z(
+                terrain
+                    .at(p.truncate() + self.camera_world())
+                    .unwrap_or_default(),
+            )
         };
         let above = |p: DVec3| p.z - ground(p);
         // Steps of about four pixels at the target's scale, as GL JS's
@@ -71,10 +72,7 @@ impl View {
                     }
                 }
                 let hit = (lo + hi) / 2.0;
-                return Some((
-                    hit.truncate() + self.camera_world(),
-                    hit.z / self.height_scale(),
-                ));
+                return Some((hit.truncate() + self.camera_world(), self.height_of(hit.z)));
             }
             previous = p;
         }
@@ -83,17 +81,17 @@ impl View {
 }
 
 impl View {
-    /// How far the eye and its near plane stand above `terrain`, in
-    /// metres: the least height over the ground of the eye and a grid of
-    /// points across the near plane, where the terrain would show cut open.
-    /// `None` where no DEM data has loaded under any of them.
-    pub fn clearance(&self, terrain: &dyn Elevation) -> Option<f64> {
+    /// How far the eye and its near plane stand above `terrain`: the
+    /// least height over the ground of the eye and a grid of points across
+    /// the near plane, where the terrain would show cut open. `None` where
+    /// no DEM data has loaded under any of them.
+    pub fn clearance(&self, terrain: &dyn Elevation) -> Option<Metres> {
         self.near_points()
             .filter_map(|p| {
                 let ground = terrain.at(p.truncate() + self.camera_world())?;
-                Some(p.z / self.height_scale() - ground)
+                Some(self.height_of(p.z) - ground)
             })
-            .min_by(f64::total_cmp)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 
     /// The ground [`clearance`](Self::clearance) reads, in world
@@ -147,7 +145,7 @@ impl View {
         let z = camera.zoom(projection).floor().clamp(0.0, 24.0) as u8;
         let lowest = terrain
             .range(point, z)
-            .map_or(camera.elevation, |(lo, _)| lo);
+            .map_or(camera.elevation, |(lo, _)| lo.0);
         Self::on_ground(camera, viewport, surface, lowest)
     }
 }
@@ -159,7 +157,7 @@ impl CameraState {
     /// lands (GL JS #8549). Returns whether it changed.
     pub(crate) fn settle_on(&mut self, terrain: &dyn Elevation, projection: &Projection) -> bool {
         match terrain.at(self.target_world(projection)) {
-            Some(elevation) if elevation != self.elevation => {
+            Some(Metres(elevation)) if elevation != self.elevation => {
                 self.elevation = elevation;
                 true
             }
@@ -183,12 +181,12 @@ impl CameraState {
         let Some((world, elevation)) = view.unproject_terrain(view.center(), terrain) else {
             return false;
         };
-        let hit = (world - view.camera_world()).extend(elevation * view.height_scale());
+        let hit = (world - view.camera_world()).extend(view.world_z(elevation));
         let distance = view.eye().distance(hit);
         let eye_distance_px = 0.5 * viewport.height / (self.fov.to_radians() / 2.0).tan();
         let before = *self;
         self.set_target_world(projection, world, distance / eye_distance_px);
-        self.elevation = elevation;
+        self.elevation = elevation.0;
         *self != before
     }
 
@@ -207,11 +205,11 @@ impl CameraState {
         let Some(clearance) = view.clearance(terrain) else {
             return false;
         };
-        let short = CLEARANCE_M - clearance;
-        if short <= 0.0 {
+        let short = CLEARANCE - clearance;
+        if short <= Metres::ZERO {
             return false;
         }
-        self.elevation += short;
+        self.elevation += short.0;
         true
     }
 }
@@ -231,11 +229,11 @@ mod tests {
     }
 
     impl Elevation for Ridge {
-        fn at(&self, world: DVec2) -> Option<f64> {
-            (world.x < self.loaded_until).then(|| 1000.0 + world.x.max(0.0) * 1e-3)
+        fn at(&self, world: DVec2) -> Option<Metres> {
+            (world.x < self.loaded_until).then(|| Metres(1000.0 + world.x.max(0.0) * 1e-3))
         }
-        fn range(&self, _: WorldRect, _: u8) -> Option<(f64, f64)> {
-            Some((0.0, 5000.0))
+        fn range(&self, _: WorldRect, _: u8) -> Option<(Metres, Metres)> {
+            Some((Metres(0.0), Metres(5000.0)))
         }
     }
 
@@ -262,14 +260,12 @@ mod tests {
         let center = DVec2::new(400.0, 300.0);
         let (world, elevation) = view.unproject_terrain(center, &ridge).unwrap();
         assert!(world.distance(view.camera_world()) < 0.01, "{world}");
-        assert!((elevation - 1000.0).abs() < 0.01);
+        assert!((elevation.0 - 1000.0).abs() < 0.01);
         // Off centre, the hit projects back to its pixel.
         let px = DVec2::new(200.0, 500.0);
         let (world, elevation) = view.unproject_terrain(px, &ridge).unwrap();
-        assert!((ridge.at(world).unwrap() - elevation).abs() < 0.01);
-        let back = view
-            .project_3d(world, elevation * view.height_scale())
-            .unwrap();
+        assert!((ridge.at(world).unwrap() - elevation).0.abs() < 0.01);
+        let back = view.project_3d(world, elevation).unwrap();
         assert!(back.distance(px) < 0.01, "{back}");
         // Sky has no ground.
         camera.pitch = 85.0;
@@ -310,7 +306,7 @@ mod tests {
         assert!(camera.keep_above(&ridge, &Surface::from(&projection), viewport));
         let view = View::new(&camera, viewport, &Surface::from(&projection));
         let eye_m = view.eye().z / view.height_scale();
-        assert!(eye_m >= 1000.0 + CLEARANCE_M - 1e-6);
+        assert!(eye_m >= 1000.0 + CLEARANCE.0 - 1e-6);
     }
 
     /// A cone 3000 m high with 45° slopes, its summit at the origin.
@@ -318,12 +314,12 @@ mod tests {
     struct Peak;
 
     impl Elevation for Peak {
-        fn at(&self, world: DVec2) -> Option<f64> {
+        fn at(&self, world: DVec2) -> Option<Metres> {
             // World units are metres on the equator.
-            Some((3000.0 - world.length()).max(0.0))
+            Some(Metres((3000.0 - world.length()).max(0.0)))
         }
-        fn range(&self, _: WorldRect, _: u8) -> Option<(f64, f64)> {
-            Some((0.0, 3000.0))
+        fn range(&self, _: WorldRect, _: u8) -> Option<(Metres, Metres)> {
+            Some((Metres(0.0), Metres(3000.0)))
         }
     }
 
@@ -377,9 +373,9 @@ mod tests {
                 self.viewport,
                 &Surface::from(&self.projection),
             );
-            let clearance = view.clearance(&Peak).unwrap();
+            let clearance = view.clearance(&Peak).unwrap().0;
             assert!(
-                clearance >= CLEARANCE_M - 1e-6,
+                clearance >= CLEARANCE.0 - 1e-6,
                 "{what}, step {}: {clearance} m",
                 self.steps
             );
@@ -498,7 +494,7 @@ mod tests {
         }
         .at(projection.forward(destination))
         .unwrap();
-        assert!((store.state().elevation - ground).abs() < 1e-6);
+        assert!((store.state().elevation - ground.0).abs() < 1e-6);
     }
 
     #[test]

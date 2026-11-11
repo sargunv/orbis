@@ -2,7 +2,7 @@
 //! the viewport among those already placed, and placing them.
 
 use crate::bucket::PlacedSymbol;
-use crate::geometry::{Point, js_max, js_min};
+use crate::geometry::{EXTENT, Point, js_max, js_min};
 use crate::lines::{Lines, clip_line};
 use crate::placement::along_line::{
     Elevation, LabelPlane, LineCache, LineContext, first_and_last_glyph,
@@ -50,9 +50,6 @@ pub(crate) struct PlacedCircles {
 pub(crate) struct BoxPlacement<'a> {
     pub(crate) tile: &'a TileView,
     pub(crate) overlap: Overlap,
-    /// Viewport pixels per tile unit at the tile's zoom (GL JS
-    /// `textPixelRatio`).
-    pub(crate) pixel_ratio: f64,
     pub(crate) pitch_with_map: bool,
     pub(crate) rotate_with_map: bool,
     /// `*-translate` in tile units.
@@ -103,6 +100,10 @@ pub(crate) struct CollisionIndex {
     pub(crate) view: Viewport,
     scratch: Scratch,
 }
+
+/// Viewport pixels per tile unit at a tile's zoom (GL JS
+/// `textPixelRatio`): a tile spans 512 of them, overscaled or not.
+const PX_PER_TILE_UNIT: f64 = 512.0 / EXTENT;
 
 /// Below this perspective ratio, near the horizon, nothing is placed.
 const PERSPECTIVE_RATIO_CUTOFF: f64 = 0.6;
@@ -261,7 +262,7 @@ impl Viewport {
         let ground = p.ground.map(|g| g.elevation(p.tile.id, x, y));
         let elevation = symbol_elevation(ground, p.height_offset, p.height_anchor_ground);
         let projected = self.project(p.tile, x, y, elevation);
-        let tile_to_viewport = p.pixel_ratio * projected.perspective_ratio;
+        let tile_to_viewport = PX_PER_TILE_UNIT * projected.perspective_ratio;
         let bounds = if !p.pitch_with_map && !p.rotate_with_map {
             let px = projected.x + shift.map_or(0.0, |s| s.x * tile_to_viewport);
             let py = projected.y + shift.map_or(0.0, |s| s.y * tile_to_viewport);

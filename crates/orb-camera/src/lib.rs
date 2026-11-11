@@ -37,7 +37,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 
 use glam::{DMat3, DMat4, DVec2, DVec3, DVec4};
 use orb_crs::{
-    CoverDecision, CoveredTile, Footprint, Projection, Surface, TileIndex, TileMatrixSet,
+    CoverDecision, CoveredTile, Footprint, Metres, Projection, Surface, TileIndex, TileMatrixSet,
     WorldRect, sphere,
 };
 use orb_crs::{Geodetic, wgs84};
@@ -155,6 +155,18 @@ pub struct Viewport {
     pub height: f64,
 }
 
+impl Viewport {
+    /// The viewport of a target `width × height` physical pixels at
+    /// `pixel_ratio` physical pixels per logical one: where a host's
+    /// physical pixels become the camera's logical ones.
+    pub fn of_physical(width: u32, height: u32, pixel_ratio: f64) -> Self {
+        Self {
+            width: f64::from(width) / pixel_ratio,
+            height: f64::from(height) / pixel_ratio,
+        }
+    }
+}
+
 /// A view's low-zoom surface ([`orb_crs::Globe`]): its matrices in
 /// camera-relative globe space, ECEF metres (`orb_crs::sphere`) less the
 /// target's position, or on a low-zoom plane that plane's world units (z
@@ -221,6 +233,8 @@ pub struct View {
     /// The target's height in world units: camera-relative world space
     /// keeps the surface datum at z = 0.
     target_z: f64,
+    /// The same in metres (the camera's elevation).
+    elevation: Metres,
     /// Distance from the eye to sea level along the view, in pixels: GL
     /// JS's fog matrix starts here.
     sea_level_px: f64,
@@ -419,6 +433,7 @@ impl View {
             view_proj,
             eye,
             target_z,
+            elevation: Metres(camera.elevation),
             sea_level_px,
             eye_distance_px,
             far_px,
@@ -462,13 +477,10 @@ impl View {
         &self.projection
     }
 
-    /// A world position's place on the low-zoom plane, and a height on it.
-    fn to_low(&self, low: &View, world: DVec2, z: f64) -> (DVec2, f64) {
-        let g = self.projection.inverse(world).wrapped();
-        (
-            low.projection.forward(g),
-            z / self.height_scale * low.height_scale,
-        )
+    /// A world position's place on the low-zoom plane.
+    fn to_low(&self, low: &View, world: DVec2) -> DVec2 {
+        low.projection
+            .forward(self.projection.inverse(world).wrapped())
     }
 
     /// Top logical pixel row where the ground plane enters the finite frustum.
@@ -527,6 +539,17 @@ impl View {
         self.height_scale
     }
 
+    /// A height in camera-relative world space's units, as the view's
+    /// matrices take it on a plane.
+    pub fn world_z(&self, height: Metres) -> f64 {
+        height.0 * self.height_scale
+    }
+
+    /// The height a camera-relative world z stands for on a plane.
+    pub fn height_of(&self, z: f64) -> Metres {
+        Metres(z / self.height_scale)
+    }
+
     /// Camera-relative world → clip space, with depth in [0, 1].
     pub fn view_proj(&self) -> DMat4 {
         self.view_proj
@@ -535,32 +558,34 @@ impl View {
     /// Projects a world position to logical pixels, top-left origin, or
     /// `None` if it is behind the eye.
     pub fn project(&self, world: DVec2) -> Option<DVec2> {
-        self.project_3d(world, self.target_z)
+        self.project_3d(world, self.elevation)
     }
 
-    /// Projects a world position `z` world units above the datum. On a
-    /// globe, positions beyond the horizon are `None` too.
-    pub fn project_3d(&self, world: DVec2, z: f64) -> Option<DVec2> {
-        self.project_depth(world, z).map(|(px, _)| px)
+    /// Projects a world position `height` above the datum. On a globe,
+    /// positions beyond the horizon are `None` too.
+    pub fn project_3d(&self, world: DVec2, height: Metres) -> Option<DVec2> {
+        self.project_depth(world, height).map(|(px, _)| px)
     }
 
     /// [`project_3d`](Self::project_3d) with the position's depth: its clip
     /// z over w, 0 at the near plane and 1 at the far one.
-    pub fn project_depth(&self, world: DVec2, z: f64) -> Option<(DVec2, f64)> {
+    pub fn project_depth(&self, world: DVec2, height: Metres) -> Option<(DVec2, f64)> {
         if let Some(low) = self.low_plane() {
-            let (world, z) = self.to_low(low, world, z);
-            return low.project_depth(world, z);
+            return low.project_depth(self.to_low(low, world), height);
         }
         let clip = match &self.globe {
             Some(globe) => {
                 let g = self.projection.inverse(world);
-                let p = sphere::ecef(g, z / self.height_scale) - globe.target;
+                let p = sphere::ecef(g, height.0) - globe.target;
                 if !globe.faces_eye(sphere::ecef(g, 0.0) - globe.target) {
                     return None;
                 }
                 globe.view_proj * p.extend(1.0)
             }
-            None => self.view_proj * (world - self.camera_world).extend(z).extend(1.0),
+            None => {
+                let z = self.world_z(height);
+                self.view_proj * (world - self.camera_world).extend(z).extend(1.0)
+            }
         };
         (clip.w > 0.0).then(|| {
             let ndc = clip.truncate() / clip.w;
@@ -577,17 +602,18 @@ impl View {
     /// terrain the plane gestures drag, as GL JS's do), or `None` above
     /// its horizon.
     pub fn unproject(&self, px: DVec2) -> Option<DVec2> {
-        self.unproject_at(px, self.target_z)
+        self.unproject_at(px, self.elevation)
     }
 
     /// The world position under a point in logical pixels on the level
-    /// plane `z` world units above the datum, or `None` above its horizon.
-    pub fn unproject_at(&self, px: DVec2, z: f64) -> Option<DVec2> {
+    /// plane `height` above the datum, or `None` above its horizon.
+    pub fn unproject_at(&self, px: DVec2, height: Metres) -> Option<DVec2> {
         if self.globe.is_some() {
-            let world = self.projection.forward(self.low_ground(px, z)?);
+            let world = self.projection.forward(self.low_ground(px, height)?);
             // The copy of a wrapping world nearest the target.
             return Some(self.projection.nearest_copy(world, self.camera_world));
         }
+        let z = self.world_z(height);
         let (near, far) = self.ray(px, &self.view_proj);
         let t = (near.z - z) / (near.z - far.z);
         (far.z < near.z && t >= 0.0)
@@ -630,25 +656,22 @@ impl View {
     }
 
     /// On a low-zoom surface, the point under a point in logical pixels on
-    /// it, `z` world units up, or `None` where the view ray misses it.
-    pub(crate) fn low_ground(&self, px: DVec2, z: f64) -> Option<Geodetic> {
+    /// it, `height` up, or `None` where the view ray misses it.
+    pub(crate) fn low_ground(&self, px: DVec2, height: Metres) -> Option<Geodetic> {
         match self.low_plane() {
-            Some(low) => {
-                let z = z / self.height_scale * low.height_scale;
-                Some(low.projection.inverse(low.unproject_at(px, z)?))
-            }
-            None => self.globe_ground(px, z).map(sphere::geodetic),
+            Some(low) => Some(low.projection.inverse(low.unproject_at(px, height)?)),
+            None => self.globe_ground(px, height).map(sphere::geodetic),
         }
     }
 
     /// On a globe, the ECEF position under a point in logical pixels on the
-    /// sphere `z` world units above it: the view ray's nearest meeting with
-    /// it, or `None` where the ray misses.
-    pub(crate) fn globe_ground(&self, px: DVec2, z: f64) -> Option<DVec3> {
+    /// sphere `height` above it: the view ray's nearest meeting with it, or
+    /// `None` where the ray misses.
+    pub(crate) fn globe_ground(&self, px: DVec2, height: Metres) -> Option<DVec3> {
         let globe = self.globe.as_ref().filter(|g| g.plane.is_none())?;
         let (near, far) = self.ray(px, &globe.view_proj);
         let (origin, dir) = (near + globe.target, (far - near).normalize());
-        let radius = sphere::RADIUS + z / self.height_scale;
+        let radius = sphere::RADIUS + height.0;
         let b = origin.dot(dir);
         let disc = b * b - (origin.length_squared() - radius * radius);
         if disc < 0.0 {
@@ -672,9 +695,9 @@ impl View {
         )
     }
 
-    /// The target's height in world units.
-    pub(crate) fn target_z(&self) -> f64 {
-        self.target_z
+    /// The target's height (the camera's elevation).
+    pub(crate) fn elevation(&self) -> Metres {
+        self.elevation
     }
 
     /// GL JS's fog depth range in pixels along the view: from where the
@@ -870,7 +893,7 @@ impl View {
             };
             let ground = terrain
                 .and_then(|t| t.range(bounds, index.z))
-                .map(|(lo, hi)| (lo * self.height_scale, hi * self.height_scale));
+                .map(|(lo, hi)| (self.world_z(lo), self.world_z(hi)));
             // Elevated content stands on the ground under the tile.
             let (lo, hi) = ground.map_or(flat_range, |(lo, hi)| (lo, hi + raised));
             let rel = bounds.translated(-self.camera_world);
@@ -1010,7 +1033,8 @@ impl View {
         tms.cover_with(0..=0, None, max_zoom, |index, _| {
             let b = tms.tile_area(index);
             // The heights its ground and the content on it span, in metres.
-            let (base, top) = terrain.and_then(|t| t.range(b, index.z)).unwrap_or(unknown);
+            let (base, top) = (terrain.and_then(|t| t.range(b, index.z)))
+                .map_or(unknown, |(lo, hi)| (lo.0, hi.0));
             let top = top.max(base) + height;
             // Over the lowest ground, the view's or the tile's own.
             let floor = globe.floor.min(sphere::RADIUS + base);
@@ -1658,7 +1682,9 @@ mod tests {
             let reach = ((r + altitude).powi(2) - r * r).sqrt() * view.height_scale;
             let under_eye = view.eye.truncate();
             let ahead = under_eye - under_eye.normalize() * reach;
-            let end = view.project_3d(ahead + view.camera_world, 0.0).unwrap();
+            let end = view
+                .project_3d(ahead + view.camera_world, Metres::ZERO)
+                .unwrap();
             assert!((end.y - view.sky_horizon()).abs() < 0.5, "{zoom}: {end}");
         }
     }
@@ -2074,12 +2100,12 @@ mod tests {
     struct Plateau;
 
     impl Elevation for Plateau {
-        fn at(&self, _: DVec2) -> Option<f64> {
-            Some(4000.0)
+        fn at(&self, _: DVec2) -> Option<Metres> {
+            Some(Metres(4000.0))
         }
 
-        fn range(&self, _: WorldRect, _: u8) -> Option<(f64, f64)> {
-            Some((4000.0, 4000.0))
+        fn range(&self, _: WorldRect, _: u8) -> Option<(Metres, Metres)> {
+            Some((Metres(4000.0), Metres(4000.0)))
         }
     }
 

@@ -167,7 +167,7 @@ impl CameraState {
         let projection = &surface.projection;
         let view = View::new(self, viewport, surface);
         if view.globe().is_some() {
-            if let Some(ground) = view.low_ground(from, view.target_z()) {
+            if let Some(ground) = view.low_ground(from, view.elevation()) {
                 self.put_under(surface, viewport, ground, to);
             }
             return;
@@ -220,7 +220,7 @@ impl CameraState {
         }
         let view = View::new(self, viewport, surface);
         if view.globe().is_some() {
-            let ground = view.low_ground(at, view.target_z());
+            let ground = view.low_ground(at, view.elevation());
             change(self);
             if let Some(ground) = ground {
                 self.put_under(surface, viewport, ground, at);
@@ -254,7 +254,7 @@ impl CameraState {
         let projection = &surface.projection;
         let zoom = self.zoom(projection);
         let view = View::new(self, viewport, surface);
-        let Some(now) = view.low_ground(px, view.target_z()) else {
+        let Some(now) = view.low_ground(px, view.elevation()) else {
             return;
         };
         let sphere = view.low_plane().is_none();
@@ -791,7 +791,7 @@ mod tests {
                 let at = DVec2::new(520.0, 420.0);
                 for to in [DVec2::new(560.0, 380.0), DVec2::new(400.0, 470.0)] {
                     let view = View::new(&camera, VIEWPORT, &surface);
-                    let ground = view.low_ground(at, view.target_z()).unwrap();
+                    let ground = view.low_ground(at, view.elevation()).unwrap();
                     let mut moved = camera;
                     moved.pan(&surface, VIEWPORT, at, to);
                     let view = View::new(&moved, VIEWPORT, &surface);
@@ -807,7 +807,7 @@ mod tests {
                 }
                 // Zooming around a point keeps it in place.
                 let view = View::new(&camera, VIEWPORT, &surface);
-                let ground = view.low_ground(at, view.target_z()).unwrap();
+                let ground = view.low_ground(at, view.elevation()).unwrap();
                 let mut zoomed = camera;
                 zoomed.zoom_around(&surface, VIEWPORT, at, zoom + 0.3);
                 let view = View::new(&zoomed, VIEWPORT, &surface);

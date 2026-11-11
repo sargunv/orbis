@@ -992,16 +992,16 @@ impl<'a> Builder<'a> {
         let style = self.style;
         let f = &feature.layout;
         // Tile units per layout pixel (GL JS `tilePixelRatio`).
-        let tile_pixel_ratio = EXTENT / (512.0 * self.tile.overscaling);
+        let tile_units_per_px = EXTENT / (512.0 * self.tile.overscaling);
         let text_max_size = f.text_size.max;
         let default_horizontal = shapings.default_horizontal();
         let font_scale = f.text_size.layout / GLYPH_SIZE;
-        let text_box_scale = tile_pixel_ratio * font_scale;
-        let text_max_box_scale = tile_pixel_ratio * text_max_size / GLYPH_SIZE;
-        let icon_box_scale = tile_pixel_ratio * f.icon_size.layout;
-        let symbol_min_distance = tile_pixel_ratio * f.spacing;
-        let text_padding = style.text_padding * tile_pixel_ratio;
-        let icon_padding = f.icon_padding.map(|p| p * tile_pixel_ratio);
+        let text_box_scale = tile_units_per_px * font_scale;
+        let text_max_box_scale = tile_units_per_px * text_max_size / GLYPH_SIZE;
+        let icon_box_scale = tile_units_per_px * f.icon_size.layout;
+        let symbol_min_distance = tile_units_per_px * f.spacing;
+        let text_padding = style.text_padding * tile_units_per_px;
+        let icon_padding = f.icon_padding.map(|p| p * tile_units_per_px);
         let text_max_angle = f.text_max_angle / 180.0 * PI;
         let text_repeat_distance = symbol_min_distance / 2.0;
 

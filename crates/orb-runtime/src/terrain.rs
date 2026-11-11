@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use glam::DVec2;
 use orb_camera::View;
-use orb_crs::{CoveredTile, TileIndex, TileMatrixSet, WorldRect};
+use orb_crs::{CoveredTile, Metres, TileIndex, TileMatrixSet, WorldRect};
 use orb_hal::Gpu;
 use orb_render::{
     ClipRect, DemRef, DrapeLayout, PageId, PlacementTarget, Renderer, TerrainDem, TerrainTile,
@@ -1082,17 +1082,17 @@ impl orb_symbol::Ground for TerrainElevation {
 }
 
 impl orb_camera::Elevation for TerrainElevation {
-    fn at(&self, world: DVec2) -> Option<f64> {
+    fn at(&self, world: DVec2) -> Option<Metres> {
         let world = self.wrapped(world);
         // The deepest DEM tile loaded, which the nearest terrain draws with.
         (self.zooms.min..=self.zooms.max).rev().find_map(|z| {
             let (tile, uv) = self.locate(world, z)?;
             let dem = self.dems.get(&tile)?;
-            Some(self.sample(tile, &dem.grid, uv) * self.exaggeration)
+            Some(Metres(self.sample(tile, &dem.grid, uv) * self.exaggeration))
         })
     }
 
-    fn range(&self, rect: WorldRect, z: u8) -> Option<(f64, f64)> {
+    fn range(&self, rect: WorldRect, z: u8) -> Option<(Metres, Metres)> {
         self.range_of(rect, z).map(|(_, _, range)| range)
     }
 }
@@ -1100,14 +1100,17 @@ impl orb_camera::Elevation for TerrainElevation {
 impl TerrainElevation {
     /// The tile at zoom `z` under `rect`, the DEM tile it reads and that
     /// DEM's range of elevations.
-    fn range_of(&self, rect: WorldRect, z: u8) -> Option<(TileIndex, TileIndex, (f64, f64))> {
+    fn range_of(&self, rect: WorldRect, z: u8) -> Option<(TileIndex, TileIndex, (Metres, Metres))> {
         let (tile, _) = self.locate(self.wrapped(rect.center()), z)?;
         let (dem, grid) = self.held_for(tile, true)?;
         let e = self.exaggeration;
         Some((
             tile,
             dem,
-            (f64::from(grid.min()) * e, f64::from(grid.max()) * e),
+            (
+                Metres(f64::from(grid.min()) * e),
+                Metres(f64::from(grid.max()) * e),
+            ),
         ))
     }
 }
@@ -1121,11 +1124,11 @@ struct Consulted<'a> {
 }
 
 impl orb_camera::Elevation for Consulted<'_> {
-    fn at(&self, world: DVec2) -> Option<f64> {
+    fn at(&self, world: DVec2) -> Option<Metres> {
         self.elevation.at(world)
     }
 
-    fn range(&self, rect: WorldRect, z: u8) -> Option<(f64, f64)> {
+    fn range(&self, rect: WorldRect, z: u8) -> Option<(Metres, Metres)> {
         let (tile, dem, range) = self.elevation.range_of(rect, z)?;
         self.ranges
             .lock()
@@ -1432,10 +1435,10 @@ mod tests {
                 bounds.max.y - v * bounds.size().y,
             )
         };
-        assert!((elevation.at(at(0.375, 0.5)).unwrap() - 220.0).abs() < 1e-9);
+        assert!((elevation.at(at(0.375, 0.5)).unwrap().0 - 220.0).abs() < 1e-9);
         assert_eq!(
             elevation.range(tms.tile_bounds(TileIndex::new(5, 16, 16)), 5),
-            Some((200.0, 260.0))
+            Some((Metres(200.0), Metres(260.0)))
         );
         // Nothing loaded elsewhere.
         assert!(elevation.at(at(-1.0, 0.5)).is_none());
@@ -1470,7 +1473,7 @@ mod tests {
                     bounds.min.x + (f64::from(i) + 0.5) / 50.0 * bounds.size().x,
                     bounds.max.y - (f64::from(j) + 0.5) / 50.0 * bounds.size().y,
                 );
-                let (a, b) = (full.at(p).unwrap(), coarse.at(p).unwrap());
+                let (a, b) = (full.at(p).unwrap().0, coarse.at(p).unwrap().0);
                 worst = worst.max((a - b).abs());
             }
         }

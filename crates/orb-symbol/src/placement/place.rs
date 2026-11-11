@@ -11,7 +11,7 @@ use crate::bucket::{
     AnchorOffset, NONE, PlacedSymbol, SizeKind, SortKeyRange, SymbolInstance, SymbolWritingMode,
     instance_flags, justification,
 };
-use crate::geometry::{EXTENT, Point};
+use crate::geometry::Point;
 use crate::layout::{anchor_justification, justification_slot};
 use crate::placement::collision::{
     BoxPlacement, CollisionBox, CollisionIndex, LineLabel, PlacedBox, PlacedCircles, Scratch,
@@ -598,7 +598,6 @@ pub fn label_circles(
     let placement = BoxPlacement {
         tile: &tile.view,
         overlap: Overlap::Always,
-        pixel_ratio: 512.0 / EXTENT,
         pitch_with_map: params.pitch_with_map,
         rotate_with_map: params.rotate_with_map,
         translation: translation(
@@ -1518,7 +1517,6 @@ impl<'b> Candidate<'b> {
         BoxPlacement {
             tile: &self.tile.view,
             overlap,
-            pixel_ratio: 512.0 / EXTENT,
             pitch_with_map: self.p.pitch_with_map,
             rotate_with_map: self.p.rotate_with_map,
             translation,

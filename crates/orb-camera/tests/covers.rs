@@ -75,7 +75,7 @@ fn covers_match_pinned_gl_js() {
                     };
                     // Ground past the far plane isn't drawn.
                     if view
-                        .project_depth(world, 0.0)
+                        .project_depth(world, orb_crs::Metres::ZERO)
                         .is_none_or(|(_, depth)| depth > 1.0)
                     {
                         continue;

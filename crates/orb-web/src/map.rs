@@ -572,10 +572,8 @@ impl OrbisMap {
         self.pixel_ratio = pixel_ratio;
         self.canvas.resize(width, height);
         // Fits and projections before the next frame use the new size.
-        self.map.set_viewport(orb_runtime::Viewport {
-            width: f64::from(width) / pixel_ratio,
-            height: f64::from(height) / pixel_ratio,
-        });
+        self.map
+            .set_viewport(Viewport::of_physical(width, height, pixel_ratio));
     }
 
     /// What the map did since the last call, as plain objects by `type`:
@@ -1120,10 +1118,7 @@ impl OrbisMap {
 
     fn viewport(&self) -> Viewport {
         let (width, height) = self.canvas.size();
-        Viewport {
-            width: f64::from(width) / self.pixel_ratio,
-            height: f64::from(height) / self.pixel_ratio,
-        }
+        Viewport::of_physical(width, height, self.pixel_ratio)
     }
 }
 

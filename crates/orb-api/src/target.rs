@@ -83,10 +83,7 @@ impl Target {
 
     /// The size in logical pixels, which the camera and gestures use.
     pub fn viewport(&self) -> Viewport {
-        Viewport {
-            width: f64::from(self.width) / self.scale,
-            height: f64::from(self.height) / self.scale,
-        }
+        Viewport::of_physical(self.width, self.height, self.scale)
     }
 
     /// Resizes the target, in physical pixels; a texture target's pixels

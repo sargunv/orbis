@@ -51,7 +51,7 @@ mod tests {
                         continue;
                     };
                     let view = orb_camera::View::new(&camera, viewport, &surface);
-                    let Some(clearance) = view.clearance(&*full) else {
+                    let Some(orb_crs::Metres(clearance)) = view.clearance(&*full) else {
                         continue;
                     };
                     frames += 1;

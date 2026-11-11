@@ -375,10 +375,7 @@ impl Camera {
             .projection
             .nearest_copy(world, view.camera_world());
         match self.terrain.as_deref() {
-            Some(terrain) => {
-                let metres = terrain.at(world).unwrap_or(0.0);
-                view.project_3d(world, metres * view.height_scale())
-            }
+            Some(terrain) => view.project_3d(world, terrain.at(world).unwrap_or_default()),
             None => view.project(world),
         }
     }
@@ -741,7 +738,7 @@ impl Camera {
                 .filter(|_| !running.user && running.aims)
                 && let Some(ground) = running.motion.destination().and_then(|w| terrain.at(w))
             {
-                running.motion.aim_elevation(ground, running.elapsed);
+                running.motion.aim_elevation(ground.0, running.elapsed);
             }
             let elapsed = now - *running.started.get_or_insert(now);
             running.elapsed = elapsed;

@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 
 use glam::{DVec2, Vec2};
 use orb_camera::{CameraState, View};
-use orb_crs::{TileIndex, TileMatrixSet};
+use orb_crs::{Metres, TileIndex, TileMatrixSet};
 use orb_style::{Kind, LayerType, Property, TranslateAnchor};
 
 use crate::state::FeatureState;
@@ -1038,20 +1038,17 @@ struct Query<'a> {
 }
 
 impl Query<'_> {
-    /// Where a world position `height` world units above the ground draws,
-    /// in logical pixels, as the renderer places it: on the terrain, on the
-    /// globe or its low-zoom plane. `None` behind the eye or the horizon.
-    fn project(&self, world: DVec2, height: f64) -> Option<Vec2> {
+    /// Where a world position `height` above the ground draws, in logical
+    /// pixels, as the renderer places it: on the terrain, on the globe or
+    /// its low-zoom plane. `None` behind the eye or the horizon.
+    fn project(&self, world: DVec2, height: Metres) -> Option<Vec2> {
         self.project_depth(world, height).map(|(p, _)| p)
     }
 
     /// [`project`](Self::project) with the position's depth, 0 at the near
     /// plane and 1 at the far one.
-    fn project_depth(&self, world: DVec2, height: f64) -> Option<(Vec2, f64)> {
-        let ground = self
-            .elevation
-            .and_then(|e| e.at(world))
-            .map_or(0.0, |metres| metres * self.view.height_scale());
+    fn project_depth(&self, world: DVec2, height: Metres) -> Option<(Vec2, f64)> {
+        let ground = self.elevation.and_then(|e| e.at(world)).unwrap_or_default();
         self.view
             .project_depth(world, ground + height)
             .map(|(p, depth)| (p.as_vec2(), depth))
@@ -1063,7 +1060,10 @@ impl Query<'_> {
         // A pixel along the screen's horizontal, which a pitch doesn't
         // foreshorten: east is that only at bearing 0.
         let step = self.shift([1.0, 0.0], true);
-        let (a, b) = (self.project(world, 0.0)?, self.project(world + step, 0.0)?);
+        let (a, b) = (
+            self.project(world, Metres::ZERO)?,
+            self.project(world + step, Metres::ZERO)?,
+        );
         Some(f64::from(a.distance(b)))
     }
 
@@ -1149,14 +1149,14 @@ impl Query<'_> {
     }
 
     /// The feature's tolerance in pixels, its line offset in pixels, and
-    /// an extrusion's base and top in world units, under its state.
+    /// an extrusion's base and top, under its state.
     fn feature(
         &self,
         layer: &HitLayer,
         at: &LayerAt,
         f: &FeatureRef<'_>,
         state: FeatureState<'_>,
-    ) -> (f32, f32, Option<(f64, f64)>) {
+    ) -> (f32, f32, Option<(Metres, Metres)>) {
         let zoom = self.zoom;
         let (radius, offset) = match &layer.paint {
             HitPaint::Circle { radius, stroke, .. } => (
@@ -1181,10 +1181,10 @@ impl Query<'_> {
         };
         let elevation = match &layer.paint {
             HitPaint::Extrusion { base, height, .. } => {
-                let scale = self.view.height_scale();
+                let metres = |p, fallback| Metres(f64::from(live(p, zoom, state, fallback)));
                 Some((
-                    f64::from(live(base, zoom, state, at.base.unwrap_or(f.base))) * scale,
-                    f64::from(live(height, zoom, state, at.height.unwrap_or(f.height))) * scale,
+                    metres(base, at.base.unwrap_or(f.base)),
+                    metres(height, at.height.unwrap_or(f.height)),
                 ))
             }
             _ => None,
@@ -1194,25 +1194,28 @@ impl Query<'_> {
 
     /// The largest tolerance and top any of a mesh's features can have,
     /// its farthest per-feature translate included.
-    fn mesh_bound(&self, layer: &HitLayer, at: &LayerAt, mesh: &MeshHits) -> (f32, f64) {
+    fn mesh_bound(&self, layer: &HitLayer, at: &LayerAt, mesh: &MeshHits) -> (f32, Metres) {
         let (radius, stroke, height) = (mesh.header(1), mesh.header(2), mesh.header(3));
         let reach = mesh.translate_reach(at);
         let (pad, top) = match &layer.paint {
             HitPaint::Circle { .. } => (
                 at.radius.unwrap_or(radius) + at.stroke.unwrap_or(stroke),
-                0.0,
+                Metres::ZERO,
             ),
             HitPaint::Line { .. } => {
                 let width = at.radius.unwrap_or(radius) * 2.0;
                 let gap = at.gap.unwrap_or(stroke);
                 let total = if gap > 0.0 { gap + 2.0 * width } else { width };
-                (total / 2.0 + at.offset.map_or(height, f32::abs), 0.0)
+                (
+                    total / 2.0 + at.offset.map_or(height, f32::abs),
+                    Metres::ZERO,
+                )
             }
             HitPaint::Extrusion { .. } => {
                 let top = at.height.unwrap_or(height).max(at.base.unwrap_or(height));
-                (0.0, f64::from(top) * self.view.height_scale())
+                (0.0, Metres(f64::from(top)))
             }
-            _ => (radius, 0.0),
+            _ => (radius, Metres::ZERO),
         };
         (pad + reach, top)
     }
@@ -1222,7 +1225,7 @@ impl Query<'_> {
     fn reach(&self, min: DVec2, max: DVec2, period: f64) -> Option<Reach> {
         let ground = |px: DVec2| match self.elevation {
             Some(e) => self.view.unproject_terrain(px, e).map(|(world, _)| world),
-            None => self.view.unproject_at(px, 0.0),
+            None => self.view.unproject_at(px, Metres::ZERO),
         };
         let mut corners = vec![min];
         if min != max {
@@ -1241,7 +1244,7 @@ impl Query<'_> {
         let height = self.view.viewport().height;
         let far = (0..8)
             .map(|i| DVec2::new(0.0, height * f64::from(i) / 8.0))
-            .find_map(|px| self.view.unproject_at(px, 0.0))?;
+            .find_map(|px| self.view.unproject_at(px, Metres::ZERO))?;
         let w = |world: DVec2| {
             let at = world - self.view.camera_world();
             (self.view.view_proj() * glam::DVec4::new(at.x, at.y, 0.0, 1.0)).w
@@ -1270,23 +1273,22 @@ impl Query<'_> {
     /// World bounds of everything at heights `0..=top` that projects into
     /// the pixel box `min..max` grown by `pad`; `None` when part of it
     /// sees above the horizon.
-    fn ground(&self, min: DVec2, max: DVec2, pad: f64, top: f64) -> Option<(DVec2, DVec2)> {
+    fn ground(&self, min: DVec2, max: DVec2, pad: f64, top: Metres) -> Option<(DVec2, DVec2)> {
         let (min, max) = (min - pad, max + pad);
         let corners = [min, DVec2::new(max.x, min.y), max, DVec2::new(min.x, max.y)];
         let (mut lo, mut hi) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
         // On terrain, features stand anywhere in its range of heights.
         let (low, high) = match self.elevation {
-            None => (0.0, 0.0),
+            None => (Metres::ZERO, Metres::ZERO),
             Some(e) => {
                 let world = self.view.projection().world_bounds();
                 let (low, high) = e.range(world, 0)?;
-                let scale = self.view.height_scale();
-                (low.min(0.0) * scale, high.max(0.0) * scale)
+                (low.min(Metres::ZERO), high.max(Metres::ZERO))
             }
         };
-        for z in [low, top + high] {
+        for height in [low, top + high] {
             for c in corners {
-                let world = self.view.unproject_at(c, z)?;
+                let world = self.view.unproject_at(c, height)?;
                 lo = lo.min(world);
                 hi = hi.max(world);
             }
@@ -1307,7 +1309,7 @@ impl Scene<'_> {
             layer.visible_at(q.zoom).then_some(layer)
         };
         // The furthest any feature reaches in pixels and how high.
-        let (mut pad, mut top, mut unbounded) = (0f32, 0f64, false);
+        let (mut pad, mut top, mut unbounded) = (0f32, Metres::ZERO, false);
         for tile in self.tiles.iter().flatten() {
             for (node, mesh) in &tile.meshes {
                 let Some(layer) = layer_at(*node).filter(|l| !matches!(l.paint, HitPaint::Other))
@@ -1463,7 +1465,7 @@ impl Scene<'_> {
                 Some((screen, layer.hit(id, self.generation), key))
             }
             Candidate::Label { layer, label } => {
-                let anchor = q.project(label.anchor, 0.0)?.as_dvec2();
+                let anchor = q.project(label.anchor, Metres::ZERO)?.as_dvec2();
                 // GL JS: tile units at 512 px per tile side, scaled by the
                 // perspective ratio.
                 let scale =
@@ -1476,7 +1478,7 @@ impl Scene<'_> {
                             Some(anchor)
                         } else {
                             let shifted = label.anchor + q.shift(b.translate, b.viewport);
-                            q.project(shifted, 0.0).map(|p| p.as_dvec2())
+                            q.project(shifted, Metres::ZERO).map(|p| p.as_dvec2())
                         }?;
                         let r = b.rect;
                         Some([
@@ -1671,7 +1673,7 @@ impl ScreenHit {
         q: &Query<'_>,
         period: f64,
         (radius, offset): (f64, f64),
-        extrusion: Option<(f64, f64)>,
+        extrusion: Option<(Metres, Metres)>,
         (shift, (scale_with_map, on_map)): (DVec2, (bool, bool)),
     ) -> Option<Self> {
         if feature.kind == 2 && q.camera.pitch > 0.0 && (scale_with_map || on_map) {
@@ -1698,7 +1700,8 @@ impl ScreenHit {
         let wrap = DVec2::new(f64::from(copy.wrap) * period, 0.0);
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
-        let project = |p: DVec2, height: f64| q.project_depth(transform(p) + wrap + shift, height);
+        let project =
+            |p: DVec2, height: Metres| q.project_depth(transform(p) + wrap + shift, height);
         let clip_box = feature.clip_box();
         // An extrusion's faces carry depths, its top's even when it has
         // no height, as GL JS sorts every extrusion by depth.
@@ -1841,7 +1844,7 @@ impl ScreenHit {
                     let ring = (0..SIDES)
                         .map(|i| {
                             let a = i as f64 * std::f64::consts::TAU / SIDES as f64;
-                            q.project(world + DVec2::new(a.cos(), a.sin()) * r, 0.0)
+                            q.project(world + DVec2::new(a.cos(), a.sin()) * r, Metres::ZERO)
                         })
                         .collect::<Option<Vec<_>>>()?;
                     for &v in &ring {
@@ -1851,7 +1854,7 @@ impl ScreenHit {
                     parts.push(vec![ring]);
                 } else {
                     let r = (radius * ratio) as f32;
-                    let c = q.project(world, 0.0)?;
+                    let c = q.project(world, Metres::ZERO)?;
                     min = min.min(c - r);
                     max = max.max(c + r);
                     circles.push((c, r));
