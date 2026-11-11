@@ -701,7 +701,7 @@ pub struct SceneMemory {
     pub tables: u64,
     /// Not GPU memory, so not [`allocated`](Self::allocated): what the
     /// CPU driver (WebGL 2) keeps in the heap, wasm memory on the web:
-    /// the tables its cull reads and its shadow of the compacted indices.
+    /// the tables its cull reads and its bits and lists.
     pub cpu_copies: u64,
 }
 

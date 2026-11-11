@@ -9,14 +9,16 @@
 //! word: listed nodes' visible lists, indexed nodes' compacted slots (the
 //! chunk's indices tagged with its run when it enters the view, hidden ones
 //! when it leaves) and each node's draw arguments, which its direct draws
-//! take. Slots a layout moved hold what they held (this driver moves them
-//! in its own copy of the compacted words), and a bit per compacted word
-//! says which of the two, as the GPU's cull reads it from the slot itself.
-//! The draws read one of [`COPIES`] index buffers in turn, each written in
-//! place before the frames that draw it. Bundles record those draws, so the
-//! renderer records them again when a node's arguments or the copy they
-//! read change. A test holds all of it to the GPU's cull over the same
-//! scene and frames (`Renderer::check_driver`).
+//! take. Slots a layout moved hold what they held, and a bit per compacted
+//! word says which of the two, as the GPU's cull reads it from the slot
+//! itself. The draws read one of [`COPIES`] index buffers in turn, each
+//! written in place before the frames that draw it where its words changed
+//! since its last turn. The CPU keeps no copy of the words: a turn makes
+//! them again from what the candidates' rows and bits say each slot holds,
+//! hiding every word no drawn slot covers. Bundles record
+//! those draws, so the renderer records them again when a node's arguments
+//! or the copy they read change. A test holds all of it to the GPU's cull
+//! over the same scene and frames (`Renderer::check_driver`).
 //!
 //! A commit that changes this file says why in its body: it is the one
 //! piece of logic the two drivers have twice.
@@ -28,7 +30,7 @@ use orb_shaders::layout;
 
 use crate::scene::{
     ARGS_WORDS, DRAPED, HIDDEN, MOVED, Move, NO_CHUNK, NodeDraw, SURFACE, SYMBOLS, Scene, Table,
-    UNCLIPPED,
+    Tables, UNCLIPPED,
 };
 
 use super::gpu::{HIDDEN_INDEX, Twin};
@@ -72,6 +74,10 @@ const COPY_USAGE: BufferUsages = BufferUsages::INDEX
 /// rather than starting another write: each write is a call into the
 /// browser.
 const WRITE_GAP: u32 = 512;
+
+/// The most words a turn makes before writing them: what it holds at
+/// once, however many a frame changed.
+const WRITE_PIECE: u32 = 1 << 16;
 
 /// The tables its cull reads.
 pub(crate) const MIRRORED: &[Table] = &[
@@ -122,14 +128,14 @@ pub(crate) struct CpuDriver {
     drawn: Vec<u64>,
     /// The GPU's cull beside this one, for a test to compare.
     twin: Option<Twin>,
-    /// The compacted indices as this driver wrote them, which each copy
-    /// takes on before it draws. Keeping instead only the writes each
-    /// copy lacks, a frame or two of words, peaked higher in wasm memory
-    /// on every view measured (#140).
-    shadow: Vec<u32>,
-    /// The scene's compacted buffer the shadow and copies were made for:
-    /// a new one (a resize) starts empty, every slot written again.
+    /// The scene's compacted buffer the copies were made for: a new one (a
+    /// resize) starts empty, every slot written again.
     made_for: Option<BufferId>,
+    /// Each copy's words.
+    copy_words: u32,
+    /// The candidates' slots as the last layout left them, which a turn
+    /// makes the words of again.
+    segments: Vec<Segment>,
     copies: Vec<Copy>,
     /// The copy draws read.
     current: usize,
@@ -209,21 +215,18 @@ impl CpuDriver {
             self.remake(gpu, words);
             self.made_for = Some(scene.buffers().compacted);
         }
-        // Words of the shadow this frame changed.
+        // Compacted words this frame changed.
         let mut changed: Vec<Range<u32>> = Vec::new();
         if rebuilt {
             self.listed.clear();
             self.runs.clear();
             self.drawn.resize(words.div_ceil(64), 0);
             move_bits(&mut self.drawn, scene.moves());
+            self.segments = segments(scene.tables());
             // The slots of runs that went hide, then slots move, as the
             // GPU driver's do: before this frame's writes to the slots
             // they move from.
-            for range in scene.hidden() {
-                self.shadow[range.start as usize..range.end as usize].fill(RESTART_INDEX);
-                changed.push(range.clone());
-            }
-            move_words(&mut self.shadow, scene.moves());
+            changed.extend(scene.hidden().iter().cloned());
             changed.extend((scene.moves().iter()).map(|m| m.to..m.to + m.words));
             // The twin's, on the GPU, in a submission of their own.
             if let Some(twin) = &self.twin {
@@ -264,7 +267,7 @@ impl CpuDriver {
         }
         self.args = args;
         if !changed.is_empty() {
-            self.turn(gpu, &changed);
+            self.turn(gpu, scene, &changed);
             draws_changed = true;
         }
         draws_changed
@@ -275,13 +278,15 @@ impl CpuDriver {
         self.copies.get(self.current).map(|c| c.buffer)
     }
 
-    /// Makes the shadow and copies again, `words` long and empty, for a
-    /// new compacted buffer: the next cull writes every slot laid out.
+    /// Makes the copies again, `words` long and empty, for a new
+    /// compacted buffer: the next cull writes every slot laid out.
     fn remake(&mut self, gpu: &mut dyn Gpu, words: usize) {
         for copy in self.copies.drain(..) {
             gpu.destroy_buffer(copy.buffer);
         }
-        self.shadow = vec![0; words];
+        self.copy_words = words as u32;
+        // Nothing drawn: the next layout's moves move hidden words.
+        self.drawn.clear();
         self.copies = (0..COPIES)
             .map(|_| Copy {
                 buffer: gpu.create_buffer(&BufferDesc {
@@ -297,8 +302,9 @@ impl CpuDriver {
 
     /// Moves the draws to the next copy, writing into it the words it
     /// lacks: those `changed` this frame and in the frames since it was
-    /// last written.
-    fn turn(&mut self, gpu: &mut dyn Gpu, changed: &[Range<u32>]) {
+    /// last written, made again from the candidates' rows (their
+    /// [`segments`]) a piece of at most [`WRITE_PIECE`] at a time.
+    fn turn(&mut self, gpu: &mut dyn Gpu, scene: &Scene, changed: &[Range<u32>]) {
         for copy in &mut self.copies {
             copy.stale.extend_from_slice(changed);
         }
@@ -306,36 +312,45 @@ impl CpuDriver {
         let copy = &mut self.copies[self.current];
         let mut stale = std::mem::take(&mut copy.stale);
         stale.sort_unstable_by_key(|r| r.start);
-        let mut at = 0;
-        while at < stale.len() {
-            let start = stale[at].start;
-            let mut end = stale[at].end;
-            at += 1;
-            while at < stale.len() && stale[at].start <= end.saturating_add(WRITE_GAP) {
-                end = end.max(stale[at].end);
-                at += 1;
-            }
-            let end = end.min(self.shadow.len() as u32);
-            if start < end {
-                gpu.write_buffer(
-                    copy.buffer,
-                    u64::from(start) * 4,
-                    bytemuck::cast_slice(&self.shadow[start as usize..end as usize]),
-                );
+        // Ranges that touch or lie close, as one.
+        let mut spans: Vec<Range<u32>> = Vec::new();
+        for range in stale.drain(..) {
+            let range = range.start.min(self.copy_words)..range.end.min(self.copy_words);
+            match spans.last_mut() {
+                Some(last) if range.start <= last.end.saturating_add(WRITE_GAP) => {
+                    last.end = last.end.max(range.end);
+                }
+                _ if range.start < range.end => spans.push(range),
+                _ => {}
             }
         }
-        stale.clear();
         copy.stale = stale;
+        let tables = scene.tables();
+        let mut words = Vec::new();
+        // The first segment not wholly before the piece.
+        let mut first = 0;
+        for span in &spans {
+            for at in (span.start..span.end).step_by(WRITE_PIECE as usize) {
+                let end = span.end.min(at.saturating_add(WRITE_PIECE));
+                while self.segments.get(first).is_some_and(|s| s.end <= at) {
+                    first += 1;
+                }
+                words.clear();
+                words.resize((end - at) as usize, RESTART_INDEX);
+                fill_slots(&mut words, at, &self.segments[first..], &self.drawn, tables);
+                gpu.write_buffer(copy.buffer, u64::from(at) * 4, bytemuck::cast_slice(&words));
+            }
+        }
     }
 
-    /// Bytes this driver holds of the heap: its shadow of the compacted
-    /// indices, the ranges its copies lack, and its bits and lists.
+    /// Bytes this driver holds of the heap: the ranges its copies lack,
+    /// and its bits and lists.
     pub(crate) fn heap_bytes(&self) -> u64 {
         let stale: usize = self.copies.iter().map(|c| c.stale.capacity()).sum();
         let listed: usize = self.listed.iter().map(Vec::capacity).sum();
         let runs: usize = self.runs.iter().map(Vec::capacity).sum();
-        (self.shadow.capacity() * 4
-            + stale * size_of::<Range<u32>>()
+        (stale * size_of::<Range<u32>>()
+            + self.segments.capacity() * size_of::<Segment>()
             + self.drawn.capacity() * 8
             + self.args.capacity() * 4
             + listed * 4
@@ -354,15 +369,12 @@ impl CpuDriver {
         let tables = scene.tables_mut();
         let mut candidates = std::mem::take(tables.mirror_mut(Table::Candidates).expect("copied"));
         let read = |table| tables.mirror(table).expect("copied");
-        let (tiles, chunks, node_rows, indices) = (
+        let (tiles, chunks, node_rows) = (
             read(Table::Tiles),
             read(Table::Chunks),
             read(Table::NodeCull),
-            read(Table::Indices),
         );
         let listed = (candidates.len() / CANDIDATE_WORDS) as u32;
-        // Slot rewrites, in slot order within a node: (slot, words).
-        let mut slots: Vec<(u32, Vec<u32>)> = Vec::new();
         let mut visible: Vec<(u32, Vec<u32>)> = Vec::new();
         self.runs.resize_with(args.len() / ARGS_WORDS, Vec::new);
         for (n, out) in args.chunks_mut(ARGS_WORDS).enumerate() {
@@ -429,21 +441,8 @@ impl CpuDriver {
                         // slot's is the next candidate's.
                         if n > 0 {
                             set_bit(&mut self.drawn, slot, keep);
+                            changed.push(slot..slot.saturating_add(n));
                         }
-                        let words = if keep {
-                            let tag = (candidate[c::RUN] << node[nc::RUN_SHIFT])
-                                .wrapping_add(chunk[ch::FIRST_VERTEX]);
-                            let first = chunk[ch::FIRST_INDEX];
-                            (first..first + n)
-                                .map(|i| {
-                                    let word = indices.get((i >> 1) as usize).copied().unwrap_or(0);
-                                    tag.wrapping_add((word >> ((i & 1) << 4)) & 0xffff)
-                                })
-                                .collect()
-                        } else {
-                            vec![RESTART_INDEX; n as usize]
-                        };
-                        slots.push((candidate[c::SLOT], words));
                         candidate[c::DRAWN] = u32::from(keep);
                         written = written.wrapping_add(index_count);
                     }
@@ -499,15 +498,6 @@ impl CpuDriver {
             }
         }
         *tables.mirror_mut(Table::Candidates).expect("copied") = candidates;
-        // Each rewritten slot's words, into the shadow.
-        for (start, words) in slots {
-            let end = start as usize + words.len();
-            debug_assert!(end <= self.shadow.len());
-            if let Some(shadow) = self.shadow.get_mut(start as usize..end) {
-                shadow.copy_from_slice(&words);
-                changed.push(start..end as u32);
-            }
-        }
         for (at, rows) in visible {
             tables.write_words(gpu, Table::Visible, at, &rows);
         }
@@ -659,20 +649,130 @@ fn move_bits(bits: &mut [u64], moves: &[Move]) {
     }
 }
 
-/// Makes `moves` in `words`: every one read before any is written, as
-/// the GPU's copies through a scratch buffer make them.
-fn move_words(words: &mut [u32], moves: &[Move]) {
-    let read: Vec<Vec<u32>> = (moves.iter())
-        .map(|m| {
-            let from = m.from as usize..(m.from + m.words) as usize;
-            words.get(from).unwrap_or(&[]).to_vec()
-        })
-        .collect();
-    for (m, read) in moves.iter().zip(read) {
-        if let Some(to) = words.get_mut(m.to as usize..m.to as usize + read.len()) {
-            to.copy_from_slice(&read);
+/// Consecutive candidate rows of one indexed node whose slots follow one
+/// another.
+#[derive(Clone, Copy, Debug)]
+struct Segment {
+    /// Its first row's slot, and where its last row's ends.
+    slot: u32,
+    end: u32,
+    row: u32,
+    rows: u32,
+    /// The node's `RUN_SHIFT`.
+    run_shift: u32,
+}
+
+/// Every indexed node's candidates (hidden nodes' too, whose slots keep
+/// what they held), as segments in slot order.
+fn segments(tables: &Tables) -> Vec<Segment> {
+    use layout::candidate as c;
+    use layout::chunk as ch;
+    use layout::node_cull as nc;
+    let read = |table| tables.mirror(table).expect("copied");
+    let (nodes, candidates, chunks) = (
+        read(Table::NodeCull),
+        read(Table::Candidates),
+        read(Table::Chunks),
+    );
+    let listed = (candidates.len() / CANDIDATE_WORDS) as u32;
+    let mut segments: Vec<Segment> = Vec::new();
+    for node in nodes.as_chunks::<NODE_WORDS>().0 {
+        if node[nc::DRAW] & 255 != DRAW_INDEXED {
+            continue;
+        }
+        let ours = segments.len();
+        let base = node[nc::VISIBLE_BASE].min(listed);
+        for r in base..base.saturating_add(node[nc::CANDIDATE_COUNT]).min(listed) {
+            let row = rows_at(candidates, r as usize, CANDIDATE_WORDS);
+            if row[c::CHUNK] == NO_CHUNK {
+                continue;
+            }
+            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
+            let slot = row[c::SLOT];
+            let end = slot.saturating_add(chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES));
+            match segments[ours..].last_mut() {
+                Some(s) if s.end == slot && s.row + s.rows == r => {
+                    s.end = end;
+                    s.rows += 1;
+                }
+                _ => segments.push(Segment {
+                    slot,
+                    end,
+                    row: r,
+                    rows: 1,
+                    run_shift: node[nc::RUN_SHIFT],
+                }),
+            }
         }
     }
+    segments.sort_unstable_by_key(|s| s.slot);
+    segments
+}
+
+/// Writes into `words`, the compacted words from `at`, the indices of
+/// the slots there that hold them, of `segments` (in slot order).
+fn fill_slots(words: &mut [u32], at: u32, segments: &[Segment], drawn: &[u64], tables: &Tables) {
+    use layout::candidate as c;
+    use layout::chunk as ch;
+    let end = at + words.len() as u32;
+    let read = |table| tables.mirror(table).expect("copied");
+    let (candidates, chunks) = (read(Table::Candidates), read(Table::Chunks));
+    // The pool's indices, two to a word, the first in its low half: in
+    // order, as u16s, on a little-endian target.
+    const _: () = assert!(cfg!(target_endian = "little"));
+    let indices: &[u16] = bytemuck::cast_slice(read(Table::Indices));
+    let row = |r: u32| rows_at(candidates, r as usize, CANDIDATE_WORDS);
+    for segment in segments.iter().take_while(|s| s.slot < end) {
+        let rows = segment.row..segment.row + segment.rows;
+        // From its last row whose slot starts by `at`.
+        let (mut lo, mut hi) = (rows.start, rows.end);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if row(mid)[c::SLOT] <= at {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        for r in lo.saturating_sub(1).max(rows.start)..rows.end {
+            let row = row(r);
+            let slot = row[c::SLOT];
+            if slot >= end {
+                break;
+            }
+            let shown = match row[c::DRAWN] {
+                1 => true,
+                MOVED => bit(drawn, slot),
+                _ => false,
+            };
+            if !shown {
+                continue;
+            }
+            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
+            let len = chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES);
+            let [from, to] = [slot.max(at), slot.saturating_add(len).min(end)];
+            if from >= to {
+                continue;
+            }
+            let tag = (row[c::RUN] << segment.run_shift).wrapping_add(chunk[ch::FIRST_VERTEX]);
+            let first = (chunk[ch::FIRST_INDEX] + (from - slot)) as usize;
+            let out = &mut words[(from - at) as usize..(to - at) as usize];
+            match indices.get(first..first + out.len()) {
+                Some(indices) => {
+                    for (word, &index) in out.iter_mut().zip(indices) {
+                        *word = tag.wrapping_add(u32::from(index));
+                    }
+                }
+                None => out.fill(tag),
+            }
+        }
+    }
+}
+
+/// Index `i` of the pool's packed u16 pairs, tagged.
+fn index_word(indices: &[u32], tag: u32, i: u32) -> u32 {
+    let pair = indices.get((i >> 1) as usize).copied().unwrap_or(0);
+    tag.wrapping_add((pair >> ((i & 1) << 4)) & 0xffff)
 }
 
 /// `rows`' row `i`, `words` long, zeros where it isn't written.
@@ -722,6 +822,32 @@ fn runs(count: u32, candidate: impl Fn(u32) -> [u32; CANDIDATE_WORDS], chunks: &
     runs
 }
 
+/// Per compacted word up to `words`, whether a candidate's row says what
+/// it holds: its slot's, in any indexed node, once a cull wrote it.
+fn known_words(nodes: &[u32], candidates: &[u32], chunks: &[u32], words: usize) -> Vec<bool> {
+    use layout::candidate as c;
+    use layout::chunk as ch;
+    use layout::node_cull as nc;
+    let mut known = vec![false; words];
+    for node in nodes.as_chunks::<NODE_WORDS>().0 {
+        if node[nc::DRAW] & 255 != DRAW_INDEXED {
+            continue;
+        }
+        let base = node[nc::VISIBLE_BASE] as usize;
+        for i in base..base + node[nc::CANDIDATE_COUNT] as usize {
+            let row = rows_at(candidates, i, CANDIDATE_WORDS);
+            if row[c::CHUNK] == NO_CHUNK || row[c::DRAWN] > MOVED {
+                continue;
+            }
+            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
+            let n = chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES) as usize;
+            let at = (row[c::SLOT] as usize).min(words);
+            known[at..(at + n).min(words)].fill(true);
+        }
+    }
+    known
+}
+
 /// Every word of the slots the last cull decided, as a cull writing them
 /// all would write it (hidden ones [`HIDDEN_INDEX`]): (word, index).
 fn decided_slots(
@@ -750,11 +876,7 @@ fn decided_slots(
             let tag = (row[c::RUN] << node[nc::RUN_SHIFT]).wrapping_add(chunk[ch::FIRST_VERTEX]);
             for k in 0..n {
                 let word = match row[c::DRAWN] {
-                    1 => {
-                        let i = chunk[ch::FIRST_INDEX] + k;
-                        let pair = indices.get((i >> 1) as usize).copied().unwrap_or(0);
-                        tag.wrapping_add((pair >> ((i & 1) << 4)) & 0xffff)
-                    }
+                    1 => index_word(indices, tag, chunk[ch::FIRST_INDEX] + k),
                     _ => HIDDEN_INDEX,
                 };
                 slots.push((row[c::SLOT] + k, word));
@@ -998,6 +1120,9 @@ pub struct DriverCheck {
     /// What every slot the CPU's cull decided holds, whatever moved it
     /// there: (word, index).
     slots: Vec<(u32, u32)>,
+    /// Per compacted word, whether a candidate's row says what it holds
+    /// ([`known_words`]).
+    known: Vec<bool>,
 }
 
 /// What [`DriverCheck::compare`] compared.
@@ -1025,8 +1150,16 @@ impl DriverCheck {
             tables.mirror(Table::Chunks)?,
             tables.mirror(Table::Indices)?,
         );
+        let compacted_words = scene.stats().compacted_words as usize;
+        let known = known_words(
+            node_rows,
+            tables.mirror(Table::Candidates)?,
+            tables.mirror(Table::Chunks)?,
+            compacted_words,
+        );
         Some(Self {
             slots,
+            known,
             args: [scene.buffers().args, twin.args],
             compacted: [driver.compacted()?, twin.compacted],
             visible: [tables.buffer(Table::Visible), twin.visible],
@@ -1034,7 +1167,7 @@ impl DriverCheck {
             cpu_candidates: tables.mirror(Table::Candidates)?.to_vec(),
             node_rows: tables.mirror(Table::NodeCull)?.to_vec(),
             nodes: scene.node_count() as usize,
-            compacted_words: scene.stats().compacted_words as usize,
+            compacted_words,
         })
     }
 
@@ -1073,7 +1206,12 @@ impl DriverCheck {
             .map(|w| if w == RESTART_INDEX { HIDDEN_INDEX } else { w })
             .collect();
         let n = self.compacted_words;
-        if let Some(at) = (0..n).find(|&i| cpu_compacted.get(i) != gpu_compacted.get(i)) {
+        // Words no row speaks for (free ones, or a slot not yet written)
+        // hold on the GPU whatever was there, which this driver doesn't
+        // know: it hides those it writes.
+        let free = |i: usize| !self.known[i] && cpu_compacted.get(i) == Some(&HIDDEN_INDEX);
+        if let Some(at) = (0..n).find(|&i| cpu_compacted.get(i) != gpu_compacted.get(i) && !free(i))
+        {
             return Err(format!(
                 "compacted word {at} of {n}: CPU {:?}, GPU {:?}",
                 cpu_compacted.get(at),
