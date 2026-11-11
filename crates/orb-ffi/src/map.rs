@@ -2640,33 +2640,50 @@ pub unsafe extern "C" fn mln_camera_for_tile(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
+            if logical_size.width == 0 || logical_size.width != logical_size.height {
+                return Err(Failure::argument("a tile's map is square and not empty"));
+            }
+            // A vector tile is 512 pixels wide at its zoom: a wider map
+            // shows several.
+            if logical_size.width > 512 {
+                return Err(Failure::argument(
+                    "a tile's map is at most 512 pixels wide",
+                ));
+            }
             if tile.z > 30 || u64::from(tile.x) >= 1 << tile.z || u64::from(tile.y) >= 1 << tile.z {
                 return Err(Failure::argument("no such tile"));
             }
-            if logical_size.width == 0 || logical_size.width != logical_size.height {
-                return Err(Failure::argument("a tile's map is square"));
+            // Just past the tile's zoom, so the map covers it with that
+            // tile and no other, as Native's camera does.
+            let zoom = f64::from(tile.z) + (f64::from(logical_size.width) / 512.0).log2() + 1e-4;
+            if !(0.0..=25.5).contains(&zoom) {
+                return Err(Failure::argument(
+                    "the tile's zoom on that map is outside 0 to 25.5",
+                ));
             }
+            let out = sized(out_camera, "out_camera")?;
             let n = f64::from(1u32 << tile.z);
             let lon = (f64::from(tile.x) + 0.5) / n * 360.0 - 180.0;
             let y = std::f64::consts::PI * (1.0 - 2.0 * (f64::from(tile.y) + 0.5) / n);
             let lat = y.sinh().atan().to_degrees();
-            if out_camera.is_null() {
-                return Err(Failure::argument("out_camera is null"));
-            }
-            let size = (*out_camera).size;
+            // Every field that moves the view, so the camera replaces a
+            // map's earlier one.
             let mut camera = mln_camera_options {
-                size,
+                size: out.size,
                 fields: MLN_CAMERA_OPTION_CENTER
                     | MLN_CAMERA_OPTION_ZOOM
                     | MLN_CAMERA_OPTION_BEARING
-                    | MLN_CAMERA_OPTION_PITCH,
+                    | MLN_CAMERA_OPTION_PITCH
+                    | MLN_CAMERA_OPTION_ROLL
+                    | MLN_CAMERA_OPTION_PADDING
+                    | MLN_CAMERA_OPTION_CENTER_ALTITUDE,
                 ..Default::default()
             };
             camera.center = mln_lat_lng {
                 latitude: lat,
                 longitude: lon,
             };
-            camera.zoom = f64::from(tile.z) + (f64::from(logical_size.width) / 512.0).log2();
+            camera.zoom = zoom;
             out_camera.write(camera);
             Ok(())
         })
