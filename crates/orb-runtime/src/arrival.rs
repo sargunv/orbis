@@ -481,14 +481,9 @@ impl Map {
             let fades = self.mode == RenderMode::Continuous
                 && self.events.idled
                 && !matches!(plan.source_def(source).kind, SourceKind::Image(_));
-            fade_ms = plan
-                .nodes
-                .iter()
-                .filter(|n| fades && n.source == source)
-                .map(|n| &plan.style.layers[n.layer])
-                .filter(|r| r.ty == LayerType::Raster)
-                .map(|r| f64::from(r.get(orb_style::RASTER_FADE_DURATION).evaluate(tile_zoom)))
-                .fold(0.0, f64::max);
+            if fades {
+                fade_ms = raster_fade_ms(plan, source, tile_zoom);
+            }
             image = Some((tile_image, warped));
         }
         // A tile on another plane draws through its series' patches; a
@@ -498,26 +493,11 @@ impl Map {
             .flatten();
         let patches = series.as_deref().map(series_patches);
         let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
-        let image_build = image.as_ref().map(|(tile_image, warped)| {
-            let kind = plan
-                .image_kind(source)
-                .expect("image results are for image sources");
-            orb_render::ImageBuild {
-                key,
-                kind: match kind {
-                    crate::style::ImageKind::Raster => orb_render::PageKind::Raster,
-                    crate::style::ImageKind::Dem => orb_render::PageKind::Dem,
-                },
-                size: [tile_image.width, tile_image.height],
-                pixels: tile_image
-                    .pixels
-                    .upload(kind == crate::style::ImageKind::Raster),
-                mesh: warped.as_ref().map(|w| Arc::clone(&w.mesh)),
-                patches,
-                fade_from: (fade_ms > 0.0).then_some((now - self.born.unwrap_or(now)) as f32),
-                unpack: endpoint.dem_unpack.map(|u| u.map(|v| v as f32)),
-                area: inside_texels(&endpoint.tms, tile, [tile_image.width, tile_image.height]),
-            }
+        let fade_from = (fade_ms > 0.0).then_some((now - self.born.unwrap_or(now)) as f32);
+        let image_build = image.as_ref().map(|&(tile_image, ref warped)| {
+            let mesh = warped.as_ref().map(|w| Arc::clone(&w.mesh));
+            let at = (plan, source, key, tile);
+            image_build(at, tile_image, mesh, patches, (fade_from, endpoint))
         });
         // Labels take their images' atlas rectangles as they upload: a tile
         // whose labels show images waits for the sprites' pixels (layout
@@ -654,6 +634,49 @@ impl Map {
             self.send_job(source, tile, Some(stale), false, Some(version));
         }
         None
+    }
+}
+
+/// The longest fade of `source`'s raster layers at `tile_zoom`, in
+/// milliseconds: what its tiles fade in over.
+fn raster_fade_ms(plan: &crate::style::StylePlan, source: usize, tile_zoom: f64) -> f64 {
+    (plan.nodes.iter())
+        .filter(|n| n.source == source)
+        .map(|n| &plan.style.layers[n.layer])
+        .filter(|r| r.ty == LayerType::Raster)
+        .map(|r| f64::from(r.get(orb_style::RASTER_FADE_DURATION).evaluate(tile_zoom)))
+        .fold(0.0, f64::max)
+}
+
+/// What the renderer uploads of image tile `tile` (`key`) of `plan`'s
+/// source `source`: its pixels, drawn through `mesh` (its square without)
+/// and on a globe through `patches`, and when it arrived if it fades in
+/// (`fade_from`).
+fn image_build<'a>(
+    (plan, source, key, tile): (&crate::style::StylePlan, usize, TileKey, TileIndex),
+    tile_image: &'a crate::jobs::TileImage,
+    mesh: Option<Arc<orb_render::ImageMesh>>,
+    patches: Option<(u32, &'a [f32])>,
+    (fade_from, endpoint): (Option<f32>, &TileEndpoint),
+) -> orb_render::ImageBuild<'a> {
+    let kind = plan
+        .image_kind(source)
+        .expect("image results are for image sources");
+    orb_render::ImageBuild {
+        key,
+        kind: match kind {
+            crate::style::ImageKind::Raster => orb_render::PageKind::Raster,
+            crate::style::ImageKind::Dem => orb_render::PageKind::Dem,
+        },
+        size: [tile_image.width, tile_image.height],
+        pixels: tile_image
+            .pixels
+            .upload(kind == crate::style::ImageKind::Raster),
+        mesh,
+        patches,
+        fade_from,
+        unpack: endpoint.dem_unpack.map(|u| u.map(|v| v as f32)),
+        area: inside_texels(&endpoint.tms, tile, [tile_image.width, tile_image.height]),
     }
 }
 
