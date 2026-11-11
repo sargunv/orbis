@@ -1,11 +1,10 @@
 //! GL JS's query fixtures (`fixtures/gl-js/query`): each style settles as a
 //! render test does, then `queryRenderedFeatures` runs at the test's point
 //! or box and its features are compared with `expected.json`, as GL JS's
-//! query harness compares them: without `layer`, coordinates within 1e-6
-//! degrees. A test passes when the same features come back; whether they
-//! come in GL JS's order is reported apart, and so are failures that
-//! differ only in geometry: which tile's copy of a feature answered, or
-//! how that tile clipped it.
+//! query harness compares them: in order, without `layer` unless the test
+//! sets `skipLayerDelete`, coordinates within 1e-6 degrees. Failures that
+//! differ only in order, or only in geometry (which tile's copy of a
+//! feature answered, or how that tile clipped it), are reported apart.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -54,12 +53,12 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     paths.sort();
     paths.retain(|path| crate::matches(&test_id(path, &fixtures), filter));
     let assets = assets(root);
-    let (mut ordered, mut shapes) = (0, 0);
+    let (mut unordered, mut shapes) = (0, 0);
     for path in paths {
         let id = test_id(&path, &fixtures);
         let result = run_test(&path, &id, &output, name, &assets, &mut backend)?;
-        if result["status"] == "pass" && result["in_order"] == true {
-            ordered += 1;
+        if result["same_features"] == true && result["status"] == "fail" {
+            unordered += 1;
         }
         if result["geometry_only"] == true {
             shapes += 1;
@@ -67,17 +66,14 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
         tally.add(&prefix(&id), result);
     }
     tally.print(&format!("query {name}"));
-    println!(
-        "  {ordered} of {} passes in GL JS's order",
-        tally.totals.pass
-    );
+    println!("  {unordered} failures have GL JS's features in another order");
     println!(
         "  {shapes} of {} failures differ only in geometry",
         tally.totals.fail
     );
     tally.finish(json!({
         "platform": name,
-        "in_order": ordered,
+        "out_of_order": unordered,
         "geometry_only": shapes,
     }))
 }
@@ -159,26 +155,36 @@ fn run_test(
         &std::fs::read(path.with_file_name("expected.json")).map_err(|e| format!("{id}: {e}"))?,
     )
     .map_err(|e| format!("{id}: {e}"))?;
-    for feature in actual.as_array_mut().into_iter().flatten() {
-        if let Some(f) = feature.as_object_mut() {
-            f.remove("layer");
+    // GL JS's harness keeps `layer` (its evaluated paint) only where the
+    // test asks.
+    if style.pointer("/metadata/skipLayerDelete") != Some(&json!(true)) {
+        for feature in actual.as_array_mut().into_iter().flatten() {
+            if let Some(f) = feature.as_object_mut() {
+                f.remove("layer");
+            }
         }
     }
     let (same, in_order) = compare(&actual, &expected);
-    result["status"] = json!(if same { "pass" } else { "fail" });
-    result["in_order"] = json!(in_order);
+    result["status"] = json!(if in_order { "pass" } else { "fail" });
+    result["same_features"] = json!(same);
     result["actual"] = json!(actual.as_array().map_or(0, Vec::len));
     result["expected"] = json!(expected.as_array().map_or(0, Vec::len));
     result["diagnostics"] = json!(diagnostics);
     result["seconds"] = json!(started.elapsed().as_secs_f64());
-    if !same {
-        let shapes = compare(&without_geometry(&actual), &without_geometry(&expected)).0;
+    if !in_order {
+        let shapes = !same && compare(&without_geometry(&actual), &without_geometry(&expected)).0;
         result["geometry_only"] = json!(shapes);
         eprintln!(
             "FAIL query {name} {id}: {} features, expected {}{}",
             result["actual"],
             result["expected"],
-            if shapes { " (geometry only)" } else { "" }
+            if shapes {
+                " (geometry only)"
+            } else if same {
+                " (another order)"
+            } else {
+                ""
+            }
         );
         let dir = output.join("failures").join(id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -269,7 +275,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn features_compare_without_order_and_within_tolerance() {
+    fn features_compare_with_order_and_within_tolerance() {
         let a = json!([{"id": 1, "geometry": {"coordinates": [1.0000000001, 2]}}, {"id": 2}]);
         let b = json!([{"id": 2}, {"id": 1, "geometry": {"coordinates": [1, 2]}}]);
         assert_eq!(compare(&a, &b), (true, false));

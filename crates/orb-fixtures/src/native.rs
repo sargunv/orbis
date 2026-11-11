@@ -1144,13 +1144,11 @@ fn run_query_test(
             match (rendered.failure, rendered.map) {
                 (None, Some(mut map)) if reasons.is_empty() => {
                     // Queries read the last interactive frame, which stills
-                    // don't replace: draw the settled map as one.
-                    let mut target = orb_api::Target::texture(
-                        runtime,
-                        test.width,
-                        test.height,
-                        test.pixel_ratio,
-                    );
+                    // don't replace: draw the settled map as one, the
+                    // still's size.
+                    let (width, height) = test.physical_size();
+                    let mut target =
+                        orb_api::Target::texture(runtime, width, height, test.pixel_ratio);
                     match map.render_until_idle(&mut target, orb_api::STILL_TIMEOUT) {
                         Ok(_) => Some(crate::query::query_native(&mut map, query)?),
                         Err(e) => {

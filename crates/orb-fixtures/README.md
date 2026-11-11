@@ -82,10 +82,9 @@ returns, without rewriting styles.
 `--suite query` reads `fixtures/gl-js/query`. Each style settles as a render
 test does, then `queryRenderedFeatures` runs at the test's point or box, and the
 features are compared with `expected.json` the way GL JS's query harness
-compares them: without `layer`, coordinates within 1e-6 degrees. A test passes
-when the same features come back; whether they come in GL JS's order is reported
-separately, and so are failures that differ only in geometry. It runs natively
-and in Chrome.
+compares them: in order, without `layer` unless the test sets `skipLayerDelete`,
+coordinates within 1e-6 degrees. Failures that differ only in order, or only in
+geometry, are reported apart. It runs natively and in Chrome.
 
 Those geometry-only failures are overzoomed polygons. GL JS slices an overzoomed
 tile into its children and clips each polygon to the child's buffer; then it
