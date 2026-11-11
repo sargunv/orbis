@@ -259,7 +259,10 @@ impl MapEntry {
             fully_loaded: self.style_loaded && !self.loading,
             rendering_stats_view_enabled: self.stats_view,
             gesture_in_progress: self.gesture,
-            transition_in_progress: self.map.is_moving() || self.map.transitioning(),
+            // Native's `inTransition`: an animation runs. A jump that took the
+            // last one's fields ends it at once, though the move's end
+            // waits for the runtime thread's next frame to report it.
+            transition_in_progress: self.map.is_animating() || self.map.transitioning(),
             event_mask: self.event_mask,
             latest_render_update_generation: self.render_update_generation,
             tile: mln_map_tile_settings {

@@ -127,6 +127,13 @@ impl Map {
         self.camera.is_moving() || self.input.is_active()
     }
 
+    /// Whether an animation or a glide moves the camera on its own
+    /// (MapLibre Native's `inTransition`): unlike [`is_moving`](Self::is_moving),
+    /// not input holding it, nor a move's end waiting for a frame to report it.
+    pub fn is_animating(&self) -> bool {
+        self.camera.is_animating()
+    }
+
     /// The logical pixel showing `point` now, on the terrain if there is
     /// one, or `None` behind the eye.
     pub fn project(&self, point: Geodetic) -> Option<DVec2> {

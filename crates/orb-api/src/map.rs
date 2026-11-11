@@ -272,6 +272,13 @@ impl Map {
         self.map.is_moving()
     }
 
+    /// Whether an animation or a glide moves the camera on its own: a jump
+    /// that ends the last one makes it false at once, before the frame
+    /// that reports the move's end.
+    pub fn is_animating(&self) -> bool {
+        self.map.is_animating()
+    }
+
     /// Whether drawing a frame would show something new: data arrived, the
     /// camera moves, a gesture or animation runs, or loads and fades are
     /// under way. An idle map needs no frames.
