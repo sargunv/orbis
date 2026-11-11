@@ -113,10 +113,11 @@ impl Map {
         self.input.box_zoom()
     }
 
-    /// Whether an animation, a glide or a gesture moves the camera, or
-    /// input holds it.
+    /// Whether an animation, a glide or a gesture moves the camera, input
+    /// holds it, or a move's end waits for the next frame to report it: a
+    /// map that says it rests has sent `moveend`.
     pub fn is_moving(&self) -> bool {
-        self.camera.is_animating() || self.camera.is_held() || self.input.is_active()
+        self.camera.is_moving() || self.input.is_active()
     }
 
     /// The logical pixel showing `point` now, on the terrain if there is

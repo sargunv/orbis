@@ -357,6 +357,32 @@ fn keys_step_the_camera() {
     assert!(moved.distance(DVec2::new(500.0, 300.0)) < 1e-6, "{moved}");
 }
 
+/// #181: a drag held still before its release glides nowhere, and the
+/// camera rests only once a frame has reported the move's end.
+#[test]
+fn a_released_drag_moves_until_a_frame_ends_it() {
+    let mut rig = Rig::new();
+    rig.down(1, PointerKind::Mouse, 40.0, 100.0);
+    for x in [50.0, 70.0, 100.0, 140.0] {
+        rig.now += 16.0;
+        rig.to(1, x, 100.0);
+        rig.frame();
+    }
+    rig.now += 150.0;
+    rig.frame();
+    rig.camera.take_events();
+    rig.up(1, 140.0, 100.0);
+    assert!(!rig.input.is_active() && !rig.camera.is_animating());
+    assert!(rig.camera.is_moving(), "its moveend isn't out yet");
+    rig.frame();
+    assert!(rig.camera.take_events().contains(&CameraEvent::Changed {
+        change: Change::Move,
+        phase: Phase::End,
+        user: true,
+    }));
+    assert!(!rig.camera.is_moving());
+}
+
 #[test]
 fn input_interrupts_animations() {
     let mut rig = Rig::new();

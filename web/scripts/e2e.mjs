@@ -452,17 +452,14 @@ async function scenarioOn(browser, server, thread, backend = "webgpu") {
   for (const x of [50, 70, 100, 140]) await page.mouse.move(x, 100);
   await page.waitForTimeout(150);
   await page.mouse.up();
+  // The camera moves until a frame has sent the release's `moveend`, so
+  // the map is idle only after it (#181).
   const dragged = await scenario(async (s) => {
     await s.idle();
-    const events = s.events().map((e) => e.type);
-    // The map may idle between the drag's last move and its release, whose
-    // `moveend` comes with the frame after: wait for that frame too.
-    if (events.includes("movestart") && !events.includes("moveend")) {
-      await s.map.once("moveend");
-      await s.idle();
-      events.push(...s.events().map((e) => e.type));
-    }
-    return { center: s.map.camera.current.center, events };
+    return {
+      center: s.map.camera.current.center,
+      events: s.events().map((e) => e.type),
+    };
   });
   // 100 px of a 512 px world.
   assert.ok(

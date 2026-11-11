@@ -678,6 +678,13 @@ impl Camera {
         self.held
     }
 
+    /// Whether the camera moves: animating, held, or with a change whose
+    /// end the next frame reports, as a release leaves one. From a
+    /// change's start event to its end event, as GL JS's `isMoving`.
+    pub fn is_moving(&self) -> bool {
+        self.is_animating() || self.held || self.active.contains(&true)
+    }
+
     /// Moves the ground under `from` to `to` (logical pixels).
     pub fn pan(&mut self, from: DVec2, to: DVec2) {
         let mut next = self.state;
@@ -1260,11 +1267,14 @@ mod tests {
         // Held: the move hasn't ended.
         assert!(!changes(&events).contains(&(Change::Move, Phase::End)));
         camera.release();
+        // Until the frame that reports its end, the move goes on.
+        assert!(camera.is_moving());
         camera.frame(132.0);
         assert_eq!(
             changes(&camera.take_events()),
             [(Change::Zoom, Phase::End), (Change::Move, Phase::End)]
         );
+        assert!(!camera.is_moving());
     }
 
     fn ends(events: &[CameraEvent]) -> Vec<(AnimationId, bool)> {
