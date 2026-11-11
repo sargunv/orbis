@@ -28,10 +28,11 @@ pub(crate) struct GlobeWarps {
     surface: Projection,
     /// The low-zoom plane, or `None` for the sphere.
     plane: Option<Projection>,
-    /// Each set's warp onto the surface's plane (`false`) or the low-zoom
-    /// one (`true`).
-    warps: RefCell<HashMap<(String, bool), Arc<Warp>>>,
-    tiles: RefCell<HashMap<(String, TileIndex), Tile>>,
+    /// By set id, each set's warp onto the surface's plane (`[0]`) or the
+    /// low-zoom one (`[1]`). Keyed by set first, so a lookup borrows its
+    /// id rather than allocating a key.
+    warps: RefCell<HashMap<String, [Option<Arc<Warp>>; 2]>>,
+    tiles: RefCell<HashMap<String, HashMap<TileIndex, Tile>>>,
     /// Counts frames, to drop what recent ones didn't use.
     frame: u64,
 }
@@ -88,14 +89,23 @@ impl GlobeWarps {
             false => self.surface,
         };
         let mut warps = self.warps.borrow_mut();
-        let warp = warps.entry((tms.id().to_owned(), low));
-        Arc::clone(warp.or_insert_with(|| Arc::new(Warp::new(tms.clone(), to))))
+        let set = match warps.get_mut(tms.id()) {
+            Some(set) => set,
+            None => warps.entry(tms.id().to_owned()).or_default(),
+        };
+        Arc::clone(
+            set[usize::from(low)].get_or_insert_with(|| Arc::new(Warp::new(tms.clone(), to))),
+        )
     }
 
     /// `f` of `tile`'s entry, marked used this frame.
     fn tile<R>(&self, tms: &TileMatrixSet, tile: TileIndex, f: impl FnOnce(&mut Tile) -> R) -> R {
         let mut tiles = self.tiles.borrow_mut();
-        let entry = tiles.entry((tms.id().to_owned(), tile)).or_default();
+        let set = match tiles.get_mut(tms.id()) {
+            Some(set) => set,
+            None => tiles.entry(tms.id().to_owned()).or_default(),
+        };
+        let entry = set.entry(tile).or_default();
         entry.used = self.frame;
         f(entry)
     }
@@ -187,9 +197,11 @@ impl GlobeWarps {
     /// are dropped.
     pub(crate) fn end_frame(&mut self) {
         let tiles = self.tiles.get_mut();
-        if tiles.len() > CACHED {
+        if tiles.values().map(HashMap::len).sum::<usize>() > CACHED {
             let frame = self.frame;
-            tiles.retain(|_, t| t.used == frame);
+            for set in tiles.values_mut() {
+                set.retain(|_, t| t.used == frame);
+            }
         }
         self.frame += 1;
     }
