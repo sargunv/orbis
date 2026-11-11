@@ -1571,6 +1571,9 @@ pub(crate) fn drop_session(state: &mut State, id: u64) {
         if let Some(map) = state.maps.get_mut(&entry.map) {
             map.session = None;
             map.handle_flag(false);
+            // Native's renderer takes its tile requests with it; the next
+            // session's frames ask again.
+            map.map.cancel_tile_loads();
             // The map's still image waits for its next session.
             if map.still.is_some() {
                 entry.handle.push(result(

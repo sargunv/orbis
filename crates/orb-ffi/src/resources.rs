@@ -201,16 +201,30 @@ impl Provider {
     }
 
     /// Hands `request` to the provider's callback with a handle that
-    /// answers it.
+    /// answers it. When the requester gives it up, the handle reports it
+    /// cancelled and runs its cancel callback. A call its queue drops
+    /// unrun (the queue released) fails the request.
     fn call(self: Arc<Self>, request: NetworkRequest, chain: Chain, done: NetworkDone) {
+        let abort = request.abort.clone();
         let handle = Arc::new(ResourceRequest {
-            state: Mutex::new(Some(Box::new((request.clone(), chain, done)))),
+            state: Mutex::new(RequestState {
+                parts: Some(Box::new((request.clone(), chain, done))),
+                ..RequestState::default()
+            }),
         });
-        let id = handles::insert(Object::ResourceRequest(handle));
+        let id = handles::insert(Object::ResourceRequest(Arc::clone(&handle)));
+        let given_up = Arc::downgrade(&handle);
+        abort.on_abort(move || {
+            if let Some(request) = given_up.upgrade() {
+                request.cancel(id);
+            }
+        });
         let provider = self.clone();
+        let unrun = Unrun(id);
         delivery::deliver(
             self.queue,
             Box::new(move || {
+                std::mem::forget(unrun);
                 let mut url = request.url.clone();
                 let mut resolved = request.url.clone();
                 let mut etag = request
@@ -328,26 +342,111 @@ impl Chain {
     }
 }
 
+/// A provider's or transform's call its queue dropped unrun (the queue
+/// released): the request it would have handed over fails, as one
+/// released without an answer does.
+struct Unrun(u64);
+
+impl Drop for Unrun {
+    fn drop(&mut self) {
+        match handles::remove(self.0) {
+            Some(Object::ResourceRequest(r)) => r.fail(),
+            Some(Object::TransformRequest(r)) => r.fail(),
+            _ => {}
+        }
+    }
+}
+
 /// A request a provider holds: unanswered while it has its parts.
 pub(crate) struct ResourceRequest {
-    state: Mutex<Option<Box<(NetworkRequest, Chain, NetworkDone)>>>,
+    state: Mutex<RequestState>,
+}
+
+#[derive(Default)]
+struct RequestState {
+    parts: Option<Box<(NetworkRequest, Chain, NetworkDone)>>,
+    /// The requester gave it up.
+    cancelled: bool,
+    /// The cancel callback, until it runs or the request ends.
+    handler: Option<CancelHandler>,
+    /// A cancel callback was registered: a request takes one.
+    registered: bool,
+}
+
+/// An `mln_resource_request_cancel_handler`.
+struct CancelHandler {
+    callback: unsafe extern "C" fn(*mut std::ffi::c_void, mln_resource_request),
+    user_data: UserData,
+    release_user_data: mln_user_data_release,
+    queue: u64,
+}
+
+impl CancelHandler {
+    /// Gives its user data back, as a request that ends does.
+    fn release(self) {
+        delivery::release_later(self.queue, self.release_user_data, self.user_data);
+    }
+}
+
+/// Why a request takes no answer.
+fn ended(cancelled: bool) -> Failure {
+    if cancelled {
+        Failure::state("the library cancelled the resource request")
+    } else {
+        Failure::state("the resource request was already answered")
+    }
 }
 
 impl ResourceRequest {
-    fn take(&self) -> Option<(NetworkRequest, Chain, NetworkDone)> {
+    fn state(&self) -> std::sync::MutexGuard<'_, RequestState> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .map(|parts| *parts)
+    }
+
+    /// Ends the request: its parts, if it is still unanswered, or why it
+    /// isn't. A cancel callback that never ran gives its user data back.
+    fn take(&self) -> Result<(NetworkRequest, Chain, NetworkDone)> {
+        let mut state = self.state();
+        let handler = state.handler.take();
+        let parts = state.parts.take().ok_or_else(|| ended(state.cancelled));
+        drop(state);
+        if let Some(handler) = handler {
+            handler.release();
+        }
+        parts.map(|parts| *parts)
     }
 
     /// Fails the request as a release without an answer does.
     fn fail(&self) {
-        if let Some((_, _, done)) = self.take() {
+        if let Ok((_, _, done)) = self.take() {
             done(NetworkAnswer::Failed(FetchError::Network(
                 "the resource request was released without a response".into(),
             )));
+        }
+    }
+
+    /// The requester gave the request up: it takes no answer now, and its
+    /// cancel callback runs, then gives its user data back.
+    fn cancel(&self, id: u64) {
+        let mut state = self.state();
+        if state.parts.take().is_none() {
+            return;
+        }
+        state.cancelled = true;
+        let handler = state.handler.take();
+        drop(state);
+        if let Some(handler) = handler {
+            let (callback, user_data) = (handler.callback, handler.user_data);
+            delivery::deliver(
+                handler.queue,
+                Box::new(move || {
+                    // SAFETY: the caller's registration, with the handle it
+                    // borrows.
+                    unsafe { callback(user_data.get(), mln_resource_request(id)) };
+                }),
+            );
+            handler.release();
         }
     }
 }
@@ -467,9 +566,7 @@ pub unsafe extern "C" fn mln_resource_request_complete(
             let request = request(handle)?;
             // A refused answer fails the request, as a release does.
             let answer = answer(response)?;
-            let (_, _, done) = request
-                .take()
-                .ok_or_else(|| Failure::state("the request was already answered"))?;
+            let (_, _, done) = request.take()?;
             done(answer);
             Ok(())
         })
@@ -484,9 +581,7 @@ pub unsafe extern "C" fn mln_resource_request_pass_through(
     // SAFETY: the caller's pointer.
     unsafe {
         boundary(out_diagnostic, || {
-            let (request, chain, done) = request(handle)?
-                .take()
-                .ok_or_else(|| Failure::state("the request was already answered"))?;
+            let (request, chain, done) = request(handle)?.take()?;
             chain.load(request, done);
             Ok(())
         })
@@ -502,9 +597,12 @@ pub unsafe extern "C" fn mln_resource_request_is_cancelled(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
-            handles::lookup(handle.0, Kind::ResourceRequest)?;
-            // Orbis finishes every request it starts, so none is cancelled.
-            put(out_cancelled, false, "out_cancelled")
+            let Object::ResourceRequest(r) = handles::lookup(handle.0, Kind::ResourceRequest)?
+            else {
+                unreachable!()
+            };
+            let cancelled = r.state().cancelled;
+            put(out_cancelled, cancelled, "out_cancelled")
         })
     }
 }
@@ -519,20 +617,39 @@ pub unsafe extern "C" fn mln_resource_request_set_cancel_callback(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
-            handles::lookup(handle.0, Kind::ResourceRequest)?;
+            let Object::ResourceRequest(r) = handles::lookup(handle.0, Kind::ResourceRequest)?
+            else {
+                unreachable!()
+            };
             let h = sized(handler, "handler")?;
-            if h.callback.is_none() {
+            let Some(callback) = h.callback else {
                 return Err(Failure::argument("handler.callback is null"));
-            }
+            };
             delivery::check_queue(h.queue.0, "handler.queue")?;
             if out_cancelled.is_null() {
                 return Err(Failure::argument("out_cancelled is null"));
             }
-            // Orbis never cancels a request, so the callback never runs; its
-            // user data goes back when the request ends, as Native's does.
-            put(out_cancelled, false, "out_cancelled")?;
-            delivery::release_later(h.queue.0, h.release_user_data, UserData(h.user_data));
-            Ok(())
+            let mut state = r.state();
+            if state.registered {
+                return Err(Failure::state(
+                    "the resource request already has a cancel callback",
+                ));
+            }
+            if state.cancelled {
+                // Not kept: the user data stays the caller's.
+                return put(out_cancelled, true, "out_cancelled");
+            }
+            if state.parts.is_none() {
+                return Err(ended(false));
+            }
+            state.registered = true;
+            state.handler = Some(CancelHandler {
+                callback,
+                user_data: UserData(h.user_data),
+                release_user_data: h.release_user_data,
+                queue: h.queue.0,
+            });
+            put(out_cancelled, false, "out_cancelled")
         })
     }
 }
@@ -636,10 +753,11 @@ impl Transform {
                 });
                 let id = handles::insert(Object::TransformRequest(pending));
                 let (callback, user_data) = (*callback, *user_data);
-                let keep = self.clone();
+                let (keep, unrun) = (self.clone(), Unrun(id));
                 delivery::deliver(
                     *queue,
                     Box::new(move || {
+                        std::mem::forget(unrun);
                         let _keep = keep;
                         let mut url = url;
                         let view = crate::base::lend(&mut url);
