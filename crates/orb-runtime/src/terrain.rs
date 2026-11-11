@@ -137,12 +137,9 @@ pub(crate) struct Terrain {
     /// The DEM tiles' page, made for the first.
     pub(crate) page: Option<PageId>,
     pub(crate) loading: u32,
-    /// DEM zooms below a terrain tile's.
-    delta: u8,
+    zooms: DemZooms,
     /// The DEM tiles' size in logical pixels.
     tile_px: f64,
-    min_zoom: u8,
-    max_zoom: u8,
     /// This frame's terrain tiles.
     pub(crate) tiles: Vec<CoveredTile>,
     slots: HashMap<CoveredTile, Slot>,
@@ -188,10 +185,12 @@ impl Terrain {
             pyramid: TilePyramid::new(min_zoom, max_zoom, DEM_CACHE),
             page: None,
             loading: 0,
-            delta,
+            zooms: DemZooms {
+                delta,
+                min: min_zoom,
+                max: max_zoom,
+            },
             tile_px,
-            min_zoom,
-            max_zoom,
             tiles: Vec::new(),
             slots: HashMap::new(),
             generation: 0,
@@ -213,29 +212,10 @@ impl Terrain {
         }
     }
 
-    /// The DEM zoom a tile at zoom `z` reads: GL JS's `_getSourceZoom`,
-    /// never deeper than the tile.
-    fn dem_zoom(&self, z: u8) -> Option<u8> {
-        let zd = z
-            .saturating_sub(self.delta)
-            .min(self.max_zoom)
-            .max(self.min_zoom);
-        (zd <= z).then_some(zd)
-    }
-
     /// The ready DEM tile standing for DEM tile `tile`: itself, or its
     /// nearest ready ancestor while it loads.
     fn ready(&self, tile: TileIndex) -> Option<TileIndex> {
-        let mut at = tile;
-        loop {
-            if self.pyramid.get(at).is_some() {
-                return Some(at);
-            }
-            if at.z <= self.min_zoom {
-                return None;
-            }
-            at = at.parent()?;
-        }
+        (self.zooms.ancestors(tile)).find(|&at| self.pyramid.get(at).is_some())
     }
 
     /// The DEM tiles this camera reads: each wanted tile that is ready, or
@@ -255,16 +235,9 @@ impl Terrain {
     /// [`TerrainElevation`] finds it: never one the pyramid keeps from an
     /// earlier view or for its range alone.
     fn dem_for(&self, tile: TileIndex) -> Option<(TileIndex, &DemTile)> {
-        let mut at = scaled(tile, self.dem_zoom(tile.z)?);
-        loop {
-            if self.elevation.dems.contains_key(&at) {
-                return Some((at, self.pyramid.get(at)?));
-            }
-            if at.z <= self.min_zoom {
-                return None;
-            }
-            at = at.parent()?;
-        }
+        let dem = scaled(tile, self.zooms.of(tile.z)?);
+        let at = (self.zooms.ancestors(dem)).find(|at| self.elevation.dems.contains_key(at))?;
+        Some((at, self.pyramid.get(at)?))
     }
 
     /// Covers the view with at most `budget` tiles, the drape atlas's
@@ -310,7 +283,7 @@ impl Terrain {
             .iter()
             .filter_map(|t| {
                 Some(CoveredTile {
-                    index: scaled(t.index, self.dem_zoom(t.index.z)?),
+                    index: scaled(t.index, self.zooms.of(t.index.z)?),
                     wrap: 0,
                 })
             })
@@ -322,7 +295,7 @@ impl Terrain {
             .iter()
             .map(|t| t.index.z)
             .max()
-            .and_then(|z| self.dem_zoom(z))
+            .and_then(|z| self.zooms.of(z))
         {
             wanted.extend(
                 tms.tiles_in(view.near_footprint(), z)
@@ -534,9 +507,7 @@ impl Terrain {
             let mut elevation = TerrainElevation::empty(tms.clone(), self.exaggeration);
             elevation.dems = dems;
             elevation.culling = culling;
-            elevation.delta = self.delta;
-            elevation.min_zoom = self.min_zoom;
-            elevation.max_zoom = self.max_zoom;
+            elevation.zooms = self.zooms;
             self.elevation = Arc::new(elevation);
             self.revision += 1;
         }
@@ -847,6 +818,32 @@ pub(crate) fn hash(value: impl Hash) -> u64 {
     hasher.finish()
 }
 
+/// The zooms a terrain's DEM tiles come in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DemZooms {
+    /// DEM zooms below a terrain tile's.
+    delta: u8,
+    min: u8,
+    max: u8,
+}
+
+impl DemZooms {
+    /// The DEM zoom a tile at zoom `z` reads: GL JS's `_getSourceZoom`,
+    /// never deeper than the tile.
+    fn of(self, z: u8) -> Option<u8> {
+        let zd = z.saturating_sub(self.delta).min(self.max).max(self.min);
+        (zd <= z).then_some(zd)
+    }
+
+    /// DEM tile `tile` and its ancestors down to the least zoom, nearest
+    /// first: where a tile that hasn't loaded finds one standing for it.
+    fn ancestors(self, tile: TileIndex) -> impl Iterator<Item = TileIndex> {
+        std::iter::successors(Some(tile), move |at| {
+            (at.z > self.min).then(|| at.parent()).flatten()
+        })
+    }
+}
+
 /// The terrain's elevations on the CPU: a snapshot of the ready DEM tiles
 /// the camera and queries hold while the map moves on. It
 /// follows DEM arrival and eviction, never the view.
@@ -854,9 +851,7 @@ pub(crate) fn hash(value: impl Hash) -> u64 {
 pub struct TerrainElevation {
     tms: TileMatrixSet,
     exaggeration: f64,
-    delta: u8,
-    min_zoom: u8,
-    max_zoom: u8,
+    zooms: DemZooms,
     dems: HashMap<TileIndex, Arc<Dem>>,
     /// DEM tiles the cover reads ranges from and nothing else
     /// (the terrain's `culling`).
@@ -870,9 +865,11 @@ impl TerrainElevation {
         Self {
             tms,
             exaggeration,
-            delta: 1,
-            min_zoom: 0,
-            max_zoom: 0,
+            zooms: DemZooms {
+                delta: 1,
+                min: 0,
+                max: 0,
+            },
             dems: HashMap::new(),
             culling: HashMap::new(),
             encoded: OnceLock::new(),
@@ -915,14 +912,6 @@ impl TerrainElevation {
         }
     }
 
-    fn dem_zoom(&self, z: u8) -> Option<u8> {
-        let zd = z
-            .saturating_sub(self.delta)
-            .min(self.max_zoom)
-            .max(self.min_zoom);
-        (zd <= z).then_some(zd)
-    }
-
     /// The DEM tile `tile` reads, or its nearest loaded ancestor.
     fn dem_for(&self, tile: TileIndex) -> Option<(TileIndex, &DemGrid)> {
         self.held_for(tile, false)
@@ -931,18 +920,12 @@ impl TerrainElevation {
     /// [`dem_for`](Self::dem_for) among the tiles held, with `culling`
     /// those held for their ranges too.
     fn held_for(&self, tile: TileIndex, culling: bool) -> Option<(TileIndex, &DemGrid)> {
-        let mut at = scaled(tile, self.dem_zoom(tile.z)?);
-        loop {
+        let dem = scaled(tile, self.zooms.of(tile.z)?);
+        self.zooms.ancestors(dem).find_map(|at| {
             let dem =
                 (self.dems.get(&at)).or_else(|| culling.then(|| self.culling.get(&at)).flatten());
-            if let Some(dem) = dem {
-                return Some((at, &dem.grid));
-            }
-            if at.z <= self.min_zoom {
-                return None;
-            }
-            at = at.parent()?;
-        }
+            Some((at, &*dem?.grid))
+        })
     }
 
     /// A DEM pixel, from the neighbouring tile past an edge as the GPU's
@@ -1007,9 +990,9 @@ impl TerrainElevation {
         words.extend([
             1,
             (self.exaggeration as f32).to_bits(),
-            u32::from(self.delta),
-            u32::from(self.min_zoom),
-            u32::from(self.max_zoom),
+            u32::from(self.zooms.delta),
+            u32::from(self.zooms.min),
+            u32::from(self.zooms.max),
             self.dems.len() as u32,
         ]);
         let id = self.tms.id().as_bytes();
@@ -1059,9 +1042,11 @@ impl TerrainElevation {
         let id = String::from_utf8(id).map_err(|_| bad())?;
         let tms = TileMatrixSet::by_id(&id).map_err(|e| format!("elevation pyramid: {e:?}"))?;
         let mut elevation = Self::empty(tms, exaggeration);
-        elevation.delta = delta;
-        elevation.min_zoom = min_zoom;
-        elevation.max_zoom = max_zoom;
+        elevation.zooms = DemZooms {
+            delta,
+            min: min_zoom,
+            max: max_zoom,
+        };
         let n = PYRAMID_DIM;
         for _ in 0..tiles {
             let (z, col, row) = (next()? as u8, next()?, next()?);
@@ -1100,7 +1085,7 @@ impl orb_camera::Elevation for TerrainElevation {
     fn at(&self, world: DVec2) -> Option<f64> {
         let world = self.wrapped(world);
         // The deepest DEM tile loaded, which the nearest terrain draws with.
-        (self.min_zoom..=self.max_zoom).rev().find_map(|z| {
+        (self.zooms.min..=self.zooms.max).rev().find_map(|z| {
             let (tile, uv) = self.locate(world, z)?;
             let dem = self.dems.get(&tile)?;
             Some(self.sample(tile, &dem.grid, uv) * self.exaggeration)
@@ -1195,9 +1180,9 @@ mod tests {
         let mut words: Vec<u32> = vec![
             1,
             (e.exaggeration as f32).to_bits(),
-            u32::from(e.delta),
-            u32::from(e.min_zoom),
-            u32::from(e.max_zoom),
+            u32::from(e.zooms.delta),
+            u32::from(e.zooms.min),
+            u32::from(e.zooms.max),
             e.dems.len() as u32,
         ];
         let id = e.tms.id().as_bytes();
@@ -1415,7 +1400,7 @@ mod tests {
         for dim in [128, 256, 512] {
             for exaggeration in [1.0, 2.5] {
                 let mut e = TerrainElevation::empty(tms.clone(), exaggeration);
-                e.max_zoom = 12;
+                e.zooms.max = 12;
                 for (c, r) in [(530, 360), (529, 360), (531, 360), (530, 359), (530, 361)] {
                     e.dems
                         .insert(TileIndex::new(10, c, r), hills(dim, f64::from(c * 3 + r)));
@@ -1426,7 +1411,7 @@ mod tests {
         // Smaller tiles stand alone: their edges clamp rather than read a
         // neighbour.
         let mut e = TerrainElevation::empty(tms, 1.0);
-        e.max_zoom = 12;
+        e.zooms.max = 12;
         e.dems.insert(TileIndex::new(10, 530, 360), hills(64, 0.0));
         assert_eq!(*e.pyramid(), *reference(&e));
     }
@@ -1435,8 +1420,8 @@ mod tests {
     fn elevations_follow_the_dem_pixels() {
         let tms = tms();
         let mut elevation = TerrainElevation::empty(tms.clone(), 2.0);
-        elevation.delta = 1;
-        elevation.max_zoom = 12;
+        elevation.zooms.delta = 1;
+        elevation.zooms.max = 12;
         let dem = TileIndex::new(4, 8, 8);
         elevation.dems.insert(dem, ramp());
         let bounds = tms.tile_bounds(dem);
@@ -1460,7 +1445,7 @@ mod tests {
     fn the_pyramid_keeps_elevations_within_metres() {
         let tms = tms();
         let mut full = TerrainElevation::empty(tms.clone(), 1.5);
-        full.max_zoom = 12;
+        full.zooms.max = 12;
         // A 256-pixel tile of rolling hills, 0–1000 m.
         let dim = 256u32;
         let hills: Vec<f32> = (0..dim * dim)
