@@ -108,7 +108,7 @@ impl Map {
             &style.doc,
             &new_data,
             version,
-            self.labels.ideographs.clone(),
+            self.labels.options.ideographs.clone(),
             self.surface.tiles(),
         ));
         let mut layers: Vec<u32> = patch
@@ -149,7 +149,7 @@ impl Map {
             ..StyleUpdate::base(
                 doc,
                 version,
-                self.labels.ideographs.clone(),
+                self.labels.options.ideographs.clone(),
                 self.surface.tiles(),
             )
         };
@@ -366,13 +366,13 @@ impl Map {
             &style.doc,
             &[],
             version,
-            self.labels.ideographs.clone(),
+            self.labels.options.ideographs.clone(),
             self.surface.tiles(),
         ));
         let update = StyleUpdate::base(
             &style.doc,
             version,
-            self.labels.ideographs.clone(),
+            self.labels.options.ideographs.clone(),
             self.surface.tiles(),
         );
         self.services.jobs.set_style(style.id, &update, &worker);

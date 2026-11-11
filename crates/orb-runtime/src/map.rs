@@ -756,7 +756,7 @@ impl Map {
             retired_images: Vec::new(),
             retired_ramps: Vec::new(),
             terrains: 0,
-            labels: crate::labels::Labels::new(default_lane(), &defaults),
+            labels: crate::labels::Labels::new(default_lane(), (&defaults).into()),
             label_epoch: 0,
         }
     }
@@ -779,13 +779,13 @@ impl Map {
     /// `fadeDuration`, 300 by default; 0 for still output). As in GL JS,
     /// labels don't fade until the map is first idle.
     pub fn set_fade_duration(&mut self, ms: f64) {
-        self.labels.fade_duration = ms;
+        self.labels.options.fade_duration = ms;
     }
 
     /// Whether labels of different sources collide with each other (GL JS
     /// `crossSourceCollisions`, on by default).
     pub fn set_cross_source_collisions(&mut self, collide: bool) {
-        self.labels.cross_source_collisions = collide;
+        self.labels.options.cross_source_collisions = collide;
     }
 
     /// Whether labels keep their place while the camera moves, as in
@@ -795,7 +795,7 @@ impl Map {
     /// off, it depends on the camera alone. Still and tile output places
     /// afresh either way.
     pub fn set_stable_labels(&mut self, stable: bool) {
-        self.labels.stable_labels = stable;
+        self.labels.options.stable_labels = stable;
     }
 
     /// Draws ideographs (CJK and the like) of the default font stack with
@@ -803,7 +803,7 @@ impl Map {
     /// `localIdeographFontFamily` does; `sans-serif` by default, `None` to
     /// use the PBFs. Applies to styles loaded afterwards.
     pub fn set_local_ideograph_font_family(&mut self, family: Option<&str>) {
-        self.labels.ideographs = family.map(str::to_string);
+        self.labels.options.ideographs = family.map(str::to_string);
     }
 
     /// Places labels on `lane` instead of the host's default (a thread
@@ -891,7 +891,7 @@ impl Map {
         let update = full_update(
             &style.doc,
             self.version,
-            self.labels.ideographs.clone(),
+            self.labels.options.ideographs.clone(),
             self.surface.tiles(),
         );
         Some((style.id, update, style.icons.clone()))
@@ -1146,13 +1146,7 @@ impl Map {
         self.retired_images.clear();
         self.retired_ramps.clear();
         let old = &self.labels;
-        let mut labels =
-            crate::labels::Labels::new(Arc::clone(&old.lane), &crate::MapOptions::default());
-        labels.fade_duration = old.fade_duration;
-        labels.cross_source_collisions = old.cross_source_collisions;
-        labels.ideographs = old.ideographs.clone();
-        labels.stable_labels = old.stable_labels;
-        self.labels = labels;
+        self.labels = crate::labels::Labels::new(Arc::clone(&old.lane), old.options.clone());
         self.label_epoch += 1;
         *self.picking.get_mut() = Default::default();
         if let Some(style) = self.style.take() {
@@ -1190,7 +1184,7 @@ impl Map {
             &doc,
             &[],
             self.version,
-            self.labels.ideographs.clone(),
+            self.labels.options.ideographs.clone(),
             self.surface.tiles(),
         ));
         let plan = worker.plan();
@@ -1230,7 +1224,7 @@ impl Map {
             &full_update(
                 &doc,
                 self.version,
-                self.labels.ideographs.clone(),
+                self.labels.options.ideographs.clone(),
                 self.surface.tiles(),
             ),
             &worker,

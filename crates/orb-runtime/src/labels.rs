@@ -530,6 +530,13 @@ pub(crate) struct Labels {
     held: HashMap<u64, Held>,
     /// The layers, buckets and tiles the last frame drew.
     drawn: Vec<(u32, u64, orb_symbol::TileId)>,
+    pub(crate) options: LabelOptions,
+}
+
+/// The map's label settings, which outlive its labels (a lost device
+/// makes new ones).
+#[derive(Clone, Debug)]
+pub(crate) struct LabelOptions {
     /// Milliseconds labels fade over (GL JS `fadeDuration`).
     pub(crate) fade_duration: f64,
     /// Whether labels of different sources collide (GL JS
@@ -540,6 +547,17 @@ pub(crate) struct Labels {
     /// Labels keep their place across placements, as in MapLibre Native
     /// ([`orb_symbol::Frame::stable_labels`]).
     pub(crate) stable_labels: bool,
+}
+
+impl From<&crate::MapOptions> for LabelOptions {
+    fn from(options: &crate::MapOptions) -> Self {
+        Self {
+            fade_duration: options.fade_duration,
+            cross_source_collisions: options.cross_source_collisions,
+            ideographs: options.local_ideograph_font_family.clone(),
+            stable_labels: options.stable_labels,
+        }
+    }
 }
 
 impl std::fmt::Debug for Labels {
@@ -622,7 +640,7 @@ fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_l
 
 impl Labels {
     /// Labels placed on `lane`, with `options`' label settings.
-    pub(crate) fn new(lane: Arc<dyn PlacementLane>, options: &crate::MapOptions) -> Self {
+    pub(crate) fn new(lane: Arc<dyn PlacementLane>, options: LabelOptions) -> Self {
         Self {
             lane,
             retired: Arc::default(),
@@ -638,10 +656,7 @@ impl Labels {
             committed_request: 0,
             held: HashMap::new(),
             drawn: Vec::new(),
-            fade_duration: options.fade_duration,
-            cross_source_collisions: options.cross_source_collisions,
-            ideographs: options.local_ideograph_font_family.clone(),
-            stable_labels: options.stable_labels,
+            options,
         }
     }
 
@@ -984,7 +999,7 @@ impl Labels {
             let raster = GlyphRaster::Local {
                 stack,
                 texts: texts.into_iter().map(String::from).collect(),
-                ideographs: self.ideographs.clone(),
+                ideographs: self.options.ideographs.clone(),
             };
             self.glyphs.in_flight += 1;
             jobs.raster(raster, raster_done(rows));
@@ -1397,12 +1412,12 @@ impl Labels {
             },
             layers,
             now,
-            fade_duration: self.fade_duration,
-            cross_source_collisions: self.cross_source_collisions,
+            fade_duration: self.options.fade_duration,
+            cross_source_collisions: self.options.cross_source_collisions,
             lng: camera.target.lon,
             ground: None,
             scope: orb_symbol::Scope::Viewport,
-            stable_labels: self.stable_labels,
+            stable_labels: self.options.stable_labels,
         }
     }
 
@@ -1828,7 +1843,7 @@ mod tests {
                 result,
                 labels: Labels::new(
                     Arc::new(crate::InlinePlacement::default()),
-                    &crate::MapOptions::default(),
+                    (&crate::MapOptions::default()).into(),
                 ),
             }
         }
