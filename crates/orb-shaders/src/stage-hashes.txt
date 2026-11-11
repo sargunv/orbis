@@ -36,23 +36,29 @@ terrain decal fs_terrain d8c7a37eff6a1e95
 terrain decal fs_terrain_decal edf9bab7a2b33784
 drape vs_slot e22d84da18d45c8e
 drape fs_clear 87c933f264755498
-extrusion vs_extrusion cf52b714245fbbb3
+extrusion vs_extrusion f5c512ed76ec8051
+extrusion vs_extrusion_plain 2837507b1a0b75c6
 extrusion vs_extrusion_cut aeeb29293b10cdc5
 extrusion vs_extrusion_cut_planes 2ec7b1df0627a8cc
 extrusion vs_extrusion_cut_split 50ed037f2290199d
 extrusion fs_extrusion 6ef1cdcd3327dcaf
 extrusion fs_extrusion_cut fccbe3518bb81f72
-extrusion cut vs_extrusion cf52b714245fbbb3
+extrusion fs_extrusion_plain 7580df1b5755aea6
+extrusion cut vs_extrusion f5c512ed76ec8051
+extrusion cut vs_extrusion_plain 2837507b1a0b75c6
 extrusion cut vs_extrusion_cut aeeb29293b10cdc5
 extrusion cut vs_extrusion_cut_planes 2ec7b1df0627a8cc
 extrusion cut vs_extrusion_cut_split 50ed037f2290199d
 extrusion cut fs_extrusion 6ef1cdcd3327dcaf
 extrusion cut fs_extrusion_cut fccbe3518bb81f72
-extrusion planes vs_extrusion 88c1c395ed821d1e
+extrusion cut fs_extrusion_plain 7580df1b5755aea6
+extrusion planes vs_extrusion 08dfe4f5df524c18
+extrusion planes vs_extrusion_plain e0eb75d5a6c8b5b8
 extrusion planes vs_extrusion_cut 8907fdd59ccdc21a
 extrusion planes vs_extrusion_cut_planes 652dea9d3b560eb7
 extrusion planes vs_extrusion_cut_split c410dfb59959d888
-extrusion ground vs_extrusion f8232db4604a8d46
+extrusion ground vs_extrusion 181986275a3fd626
+extrusion ground vs_extrusion_plain e267ccc685eb5329
 extrusion ground vs_extrusion_cut e183fcf1dcddf378
 extrusion ground vs_extrusion_cut_planes 05c4bf8920c8e857
 extrusion ground vs_extrusion_cut_split 728960262153f8e6

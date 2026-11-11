@@ -18,7 +18,7 @@
 //! buildings' vertices.
 use crate::TargetFormat;
 use crate::offscreen::{Apart, Composites, Mode, Offscreen, Target};
-use crate::paint::ElevationShape;
+use crate::paint::ExtrusionShape;
 use crate::pipeline::{DEPTH, Draw};
 use crate::release::Release;
 use crate::scene::SceneBuffers;
@@ -67,11 +67,11 @@ pub(crate) struct Extrusions {
     /// whole buildings; cut ones clipped per fragment, which alone discard;
     /// and where clip distances are, cut ones clipped by planes; at one
     /// sample and at four.
-    pipelines: Vec<((ElevationShape, bool), Pipelines)>,
+    pipelines: Vec<((ExtrusionShape, bool), Pipelines)>,
     /// The shapes and variants of `pipelines` made ahead of need
     /// ([`Renderer::prewarm`](crate::Renderer::prewarm)) that no node has
     /// drawn with: what draws waits for none of them.
-    warm: Vec<(ElevationShape, bool)>,
+    warm: Vec<(ExtrusionShape, bool)>,
     /// The pipelines are made in their full variants, not their plane
     /// ones ([`Draw::plane`]): the paint pipelines' plane variants aren't
     /// made. On the moto g, the plane variant's vertex stage took 40% less
@@ -190,19 +190,19 @@ impl Extrusions {
     }
 
     /// The pipelines of shapes nodes draw with.
-    fn drawing(&self) -> impl Iterator<Item = &((ElevationShape, bool), Pipelines)> {
+    fn drawing(&self) -> impl Iterator<Item = &((ExtrusionShape, bool), Pipelines)> {
         (self.pipelines.iter()).filter(|(key, _)| !self.warm.contains(key))
     }
 
     /// The whole, cut and planes pipelines for `shape` at the current
     /// sample count in the variant they draw in.
-    fn slot(&self, shape: ElevationShape) -> [Option<RenderPipelineId>; 3] {
+    fn slot(&self, shape: ExtrusionShape) -> [Option<RenderPipelineId>; 3] {
         self.slot_in(shape, self.drawn_full)
     }
 
     /// The whole, cut and planes pipelines for `shape` at the current
     /// sample count in the full variant or the plane one.
-    fn slot_in(&self, shape: ElevationShape, full: bool) -> [Option<RenderPipelineId>; 3] {
+    fn slot_in(&self, shape: ExtrusionShape, full: bool) -> [Option<RenderPipelineId>; 3] {
         let samples = usize::from(self.samples == 4);
         (self.pipelines.iter())
             .find(|(s, _)| *s == (shape, full))
@@ -212,7 +212,7 @@ impl Extrusions {
     /// Makes the pipelines for `shape` at the current sample count and
     /// variant, for the first extrusion node of that shape, or (`warm`)
     /// ahead of any.
-    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, shape: ElevationShape, warm: bool) {
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, shape: ExtrusionShape, warm: bool) {
         let samples = usize::from(self.samples == 4);
         let key = (shape, self.full);
         let index = match self.pipelines.iter().position(|(s, _)| *s == key) {
@@ -233,8 +233,13 @@ impl Extrusions {
         // placements with several clip rectangles, and the planes one draws
         // the rest with the whole pipeline's fragment stage.
         let planes = gpu.caps().clip_distances;
+        // Buildings shaded by their colour alone pass nothing else.
+        let whole_stages = match shape.plain {
+            true => ("vs_extrusion_plain", "fs_extrusion_plain"),
+            false => (whole.vertex, whole.fragment),
+        };
         let stages = [
-            Some(((&whole, whole.vertex), (&whole, whole.fragment))),
+            Some(((&whole, whole_stages.0), (&whole, whole_stages.1))),
             Some((
                 (
                     &cut,
@@ -358,7 +363,7 @@ impl Extrusions {
         gpu: &mut dyn Gpu,
         vertex: (&Shader, &str),
         fragment: (&Shader, &str),
-        shape: ElevationShape,
+        shape: ExtrusionShape,
     ) -> RenderPipelineId {
         let [vertex_constants, fragment_constants] = shape.constants();
         let target = TargetFormat {
@@ -393,7 +398,7 @@ impl Extrusions {
 
     /// What a frame waits for to draw `shape`: the pipelines in the
     /// variant they're made in.
-    pub(crate) fn pipelines(&self, shape: ElevationShape) -> Vec<PipelineId> {
+    pub(crate) fn pipelines(&self, shape: ExtrusionShape) -> Vec<PipelineId> {
         self.slot_in(shape, self.full)
             .iter()
             .flatten()
@@ -486,7 +491,7 @@ impl Extrusions {
         node: &mut NodeExtrusion,
         scene: BindGroupId,
         buffers: &SceneBuffers,
-        (streams, shape, ground): (&Streams, ElevationShape, Ground),
+        (streams, shape, ground): (&Streams, ExtrusionShape, Ground),
         first: bool,
     ) -> RenderPass {
         let ground = self.ground_made(ground.recorded());

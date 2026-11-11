@@ -48,7 +48,7 @@ layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform;
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512)
 module "extrusion"#0: wgsl
-render "extrusion"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion"#0 vs_extrusion [("plane", 1.0), ("feature_state", 0.0)]; module "extrusion"#0 fs_extrusion []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1
+render "extrusion"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion"#0 vs_extrusion_plain [("plane", 1.0), ("feature_state", 0.0)]; module "extrusion"#0 fs_extrusion_plain []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1
 group "node cut stream"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 65024 size Some(512)
 module "extrusion cut"#0: wgsl
 render "extrusion cut"#0: layouts [layout "scene"#0, layout "node"#0]; module "extrusion cut"#0 vs_extrusion_cut_split [("plane", 1.0), ("feature_state", 0.0)]; module "extrusion cut"#0 fs_extrusion_cut []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back true samples 1

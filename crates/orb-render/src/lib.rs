@@ -236,7 +236,7 @@ struct Node {
     /// state: it draws with its pipeline's variant with rows.
     rows: bool,
     /// What an extrusion node's pipelines are specialised for.
-    elevation: paint::ElevationShape,
+    elevation: paint::ExtrusionShape,
     /// What an extrusion node darkens on the ground: the frame's shadows,
     /// its paint's occlusion. Its paint asks for occlusion.
     ground: extrusion::Ground,
@@ -284,7 +284,7 @@ struct PaintShape {
     styled: bool,
     rows: bool,
     along_line: Option<bool>,
-    elevation: Option<(paint::ElevationShape, bool)>,
+    elevation: Option<(paint::ExtrusionShape, bool)>,
 }
 
 impl PaintShape {
@@ -298,7 +298,7 @@ impl PaintShape {
             },
             elevation: match paint {
                 NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
-                    Some((p.elevation_shape(), p.ground_occlusion()))
+                    Some((paint.extrusion_shape(), p.ground_occlusion()))
                 }
                 _ => None,
             },
@@ -1013,7 +1013,7 @@ impl Renderer {
                 along_line: false,
                 styled: false,
                 rows: true,
-                elevation: paint::ElevationShape::default(),
+                elevation: paint::ExtrusionShape::default(),
                 ground: extrusion::Ground::default(),
                 occlusion: false,
                 ground_drawn: extrusion::Ground::default(),
@@ -1560,7 +1560,7 @@ impl Renderer {
         }
         let entry = &mut self.nodes[node as usize];
         if let NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) = paint {
-            let shape = p.elevation_shape();
+            let shape = paint.extrusion_shape();
             if entry.elevation != shape {
                 entry.elevation = shape;
                 self.pipelines_stale |= entry.drawn;
@@ -1758,7 +1758,7 @@ impl Renderer {
                 match paint {
                     NodePaint::Symbol(p) => node.along_line = p.along_line,
                     NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
-                        node.elevation = p.elevation_shape();
+                        node.elevation = paint.extrusion_shape();
                         node.ground = extrusion::Ground {
                             occlusion: p.ground_occlusion(),
                             ..self.frame_ground

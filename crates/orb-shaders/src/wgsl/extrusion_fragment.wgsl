@@ -18,3 +18,7 @@ fn fs_extrusion_cut(in: ExtrusionOut) -> @location(0) vec4<f32> {
     }
     return extrusion_shade(in);
 }
+@fragment
+fn fs_extrusion_plain(in: ExtrusionPlainOut) -> @location(0) vec4<f32> {
+    return in.color;
+}

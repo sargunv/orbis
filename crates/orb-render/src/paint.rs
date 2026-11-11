@@ -287,19 +287,24 @@ pub struct ElevationPaint {
 
 /// What an extrusion node's pipelines are specialised for: the shape of
 /// its colour over the elevation (`extrusion.wgsl`'s overrides), none by
-/// default, and whether its paint reads no feature state
-/// ([`orb_shaders::FEATURE_STATE`]).
+/// default, whether its paint reads no feature state
+/// ([`orb_shaders::FEATURE_STATE`]), and whether its buildings shade by
+/// their colour alone.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) struct ElevationShape {
+pub(crate) struct ExtrusionShape {
     stops: u32,
     input: u32,
     curve: u32,
     /// Stops from features' rows (bit 0) or state (bit 1).
     dynamic: u32,
     pub(crate) stateless: bool,
+    /// No pattern, colour over the elevation or wall occlusion: the whole
+    /// pipeline passes its fragment stage the colour alone
+    /// (`vs_extrusion_plain`).
+    pub(crate) plain: bool,
 }
 
-impl ElevationShape {
+impl ExtrusionShape {
     /// The vertex and fragment stages' override constants.
     pub(crate) fn constants(self) -> [Vec<(&'static str, f64)>; 2] {
         if self.stops == 0 {
@@ -324,17 +329,20 @@ impl ExtrusionPaint {
         self.occlusion[2] > 0.0 && self.occlusion[3] > 0.0 && self.opacity > 0.0
     }
 
-    pub(crate) fn elevation_shape(&self) -> ElevationShape {
+    /// What its pipelines are specialised for, drawn with a pattern or not.
+    fn shape(&self, pattern: bool) -> ExtrusionShape {
         let stateless = self.state.mask == 0;
         let Some(e) = &self.elevation else {
-            return ElevationShape {
+            let walls_occluded = self.occlusion[0] > 0.0 && self.occlusion[1] > 0.0;
+            return ExtrusionShape {
                 stateless,
-                ..ElevationShape::default()
+                plain: !pattern && !walls_occluded,
+                ..ExtrusionShape::default()
             };
         };
         // Colour slots: 0, and 3 on (height and base between).
         let state = self.state.mask & !0b110 != 0;
-        ElevationShape {
+        ExtrusionShape {
             stops: e.stops as u32,
             input: (e.input[..e.ops].iter().enumerate())
                 .map(|(i, &(code, _))| (code + 1) << (5 * i))
@@ -347,6 +355,7 @@ impl ExtrusionPaint {
             },
             dynamic: u32::from(e.rows != 0) | u32::from(state) << 1,
             stateless,
+            plain: false,
         }
     }
 }
@@ -477,6 +486,16 @@ pub struct PatternPaint {
 }
 
 impl NodePaint {
+    /// What an extrusion node's pipelines are specialised for; the
+    /// default for another.
+    pub(crate) fn extrusion_shape(&self) -> ExtrusionShape {
+        match self {
+            Self::Extrusion(p) => p.shape(false),
+            Self::ExtrusionPattern(p, _) => p.shape(true),
+            _ => ExtrusionShape::default(),
+        }
+    }
+
     /// Whether what it draws into a drape slot changes with the camera's
     /// zoom beyond its uniform: sizes in pixels (line widths, translations,
     /// patterns), which the slot's texels per pixel scale, or per-feature

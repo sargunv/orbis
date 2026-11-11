@@ -102,6 +102,23 @@ struct ExtrusionOut {
 // placement holds their centroid.
 @vertex
 fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
+    return extrusion_whole(index);
+}
+// Whole buildings shaded by their colour alone (orb-render's
+// `ExtrusionShape::plain`: no pattern, colour over the elevation or wall
+// occlusion), passing the fragment stage nothing else. The varyings
+// `fs_extrusion` reads for those cost the moto g 40% of a pitched 3D
+// frame's building pass, though it read none of them (#180).
+struct ExtrusionPlainOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+@vertex
+fn vs_extrusion_plain(@builtin(vertex_index) index: u32) -> ExtrusionPlainOut {
+    let out = extrusion_whole(index);
+    return ExtrusionPlainOut(out.position, out.color);
+}
+fn extrusion_whole(index: u32) -> ExtrusionOut {
     var v: Pulled;
     if !pull_indexed(node.index, index, 4u, &v) || !extrusion_owned(v)
         || sphere_limb(tile_at(v.tile)) {
