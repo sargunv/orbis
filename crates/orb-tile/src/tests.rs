@@ -412,6 +412,24 @@ fn malformed_protobuf_and_metadata_return_errors() {
 }
 
 #[test]
+fn layers_past_the_largest_extent_are_put_in_8192() {
+    let ring: &[[i32; 2]] = &[[0, 0], [1 << 30, 0], [3, (1 << 30) + (1 << 17)]];
+    let polygon = feature(None, 3, &paths(&[ring], true), &[]);
+    let wide = [layer(&[polygon], &[], &[]), uint(5, 1 << 31)].concat();
+    let frame = mvt::decode(&message(3, &wide)).unwrap();
+    assert_eq!(frame.layers[0].extent(), 8192);
+    // GL JS rounds half up.
+    assert_eq!(
+        rings(&frame, 0),
+        vec![vec![vec![[0, 0], [4096, 0], [0, 4097]]]]
+    );
+    let polygon = feature(None, 3, &paths(&[ring], true), &[]);
+    let kept = [layer(&[polygon], &[], &[]), uint(5, 16384)].concat();
+    let frame = mvt::decode(&message(3, &kept)).unwrap();
+    assert_eq!(frame.layers[0].extent(), 16384);
+}
+
+#[test]
 fn malformed_values_and_tags_return_errors() {
     for v in [
         vec![],

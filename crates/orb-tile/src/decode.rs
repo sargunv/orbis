@@ -71,11 +71,18 @@ pub(crate) fn signed_area(points: impl Iterator<Item = [i32; 2]>) -> i128 {
     area
 }
 
-/// Finishes a decoded layer with `columns` besides the builder's.
+/// The largest extent a decoded layer keeps: layout's i16 positions hold
+/// a tile this size and a buffer as wide again on either side.
+const MAX_EXTENT: u32 = 16384;
+
+/// Finishes a decoded layer with `columns` besides the builder's. A layer
+/// past [`MAX_EXTENT`] is put in a grid of 8192, as GL JS and MapLibre
+/// Native put every layer.
 pub(crate) fn finish_layer_with(
-    builder: crate::LayerBuilder,
+    mut builder: crate::LayerBuilder,
     columns: Vec<(String, crate::Column)>,
 ) -> crate::Layer {
+    builder.fit_extent(MAX_EXTENT, 8192);
     let mut layer = builder.finish_with(columns);
     // Property order on the wire is not semantic. MLT shared dictionaries may
     // regroup columns; use one stable order for equal TileFrames across formats.

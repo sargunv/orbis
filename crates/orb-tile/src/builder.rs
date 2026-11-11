@@ -145,6 +145,19 @@ impl LayerBuilder {
         self
     }
 
+    /// Puts a layer wider than `max` units a side in a grid of `extent`,
+    /// its vertices rounded as GL JS's `loadGeometry` rounds them.
+    pub(crate) fn fit_extent(&mut self, max: u32, extent: u32) {
+        if self.extent <= max {
+            return;
+        }
+        let scale = f64::from(extent) / f64::from(self.extent);
+        for v in &mut self.vertices {
+            *v = v.map(|c| crate::js_round(f64::from(c) * scale) as i32);
+        }
+        self.extent = extent;
+    }
+
     /// The features begun so far.
     pub(crate) fn features(&self) -> usize {
         self.types.len()
