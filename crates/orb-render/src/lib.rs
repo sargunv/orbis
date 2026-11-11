@@ -438,8 +438,6 @@ pub struct Renderer {
     /// Draped families' pipelines for the drape atlas, made for the first
     /// terrain when the target's format isn't the atlas's.
     drape_pipelines: Option<DrapePipelines>,
-    /// Bound for elevated content without terrain.
-    no_dem: TextureId,
     /// The DEM texture the scene groups bind.
     dem_bound: TextureId,
     /// Bound for symbols and circles without terrain.
@@ -455,7 +453,6 @@ pub struct Renderer {
     image_bindings: ImageBindings,
     /// The image texture the scene group binds.
     images_bound: TextureId,
-    nearest: SamplerId,
 }
 
 /// Bytes reserved per node uniform; every node struct fits.
@@ -505,15 +502,7 @@ impl Renderer {
         let drape = self
             .drape_pipelines
             .map(|d| (d.paint.pipelines, d.images.0));
-        (
-            self.terrain,
-            self.drape,
-            drape,
-            self.no_dem,
-            self.no_terrain_depth,
-            self.nearest,
-        )
-            .release(gpu);
+        (self.terrain, self.drape, drape, self.no_terrain_depth).release(gpu);
     }
 
     /// What a renderer on a device of `caps` draws otherwise than on
@@ -538,13 +527,9 @@ impl Renderer {
         &self.gaps
     }
 
-    pub fn new(gpu: &mut dyn Gpu, target: TargetFormat, capacity: SceneCapacity) -> Self {
-        let images = ImageAtlas::new(gpu, 512, 4, 4096);
-        Self::with_images(gpu, target, capacity, images.bindings())
-    }
-
-    /// Uses the Runtime's shared image array and rect table.
-    pub fn with_images(
+    /// A renderer into `target`'s formats, drawing icons and patterns from
+    /// the image atlas `images` (the map's, which outlives renderers).
+    pub fn new(
         gpu: &mut dyn Gpu,
         target: TargetFormat,
         capacity: SceneCapacity,
@@ -553,7 +538,7 @@ impl Renderer {
         Self::with_color_space(gpu, target, capacity, images, false)
     }
 
-    /// [`with_images`](Self::with_images), mixing colours in linear light
+    /// [`new`](Self::new), mixing colours in linear light
     /// when `linear` (`dev.sargunv.orbis:color-space`) rather than as
     /// gamma-encoded values, as GL JS and MapLibre Native do.
     pub fn with_color_space(
@@ -611,24 +596,10 @@ impl Renderer {
             capacity.glyph_rows,
             scene.tables().writer(Table::Props),
         );
-        let nearest = gpu.create_sampler(&SamplerDesc {
-            label: "nearest",
-            filter: FilterMode::Nearest,
-            mipmap_filter: FilterMode::Nearest,
-            anisotropy: 1,
-        });
-        let no_dem = gpu.create_texture(&TextureDesc {
-            label: "no dem",
-            width: 1,
-            height: 1,
-            array_layers: 1,
-            dimension: TextureViewDimension::D2Array,
-            format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::TEXTURE_BINDING,
-            sample_count: 1,
-            mip_levels: 1,
-            view_formats: &[],
-        });
+        let image_bindings = images;
+        // Its nearest sampler and blank array serve the scene too.
+        let images = image::Images::new(gpu, target, draw_layout);
+        let (nearest, no_dem) = (images.nearest(), images.placeholder());
         // Nothing hides symbols and circles without terrain: its depth is
         // the far plane, 0 in reversed-Z.
         let no_terrain_depth = gpu.create_texture(&TextureDesc {
@@ -648,7 +619,7 @@ impl Renderer {
             draw_layout,
             scene.tables(),
             b.frame,
-            &images,
+            &image_bindings,
             (glyphs.texture(), nearest, no_dem, no_terrain_depth),
         );
 
@@ -685,8 +656,6 @@ impl Renderer {
             usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
         });
         gpu.write_buffer(quad_indices, 0, bytemuck::cast_slice(&QUAD_INDICES));
-        let image_bindings = images;
-        let images = image::Images::new(gpu, target, draw_layout);
         let downsampler = downsample::Downsampler::new(gpu);
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
@@ -758,13 +727,11 @@ impl Renderer {
             terrain_layers: Vec::new(),
             drape_stacks: [0; 2],
             drape_pipelines: None,
-            no_dem,
             dem_bound: no_dem,
             no_terrain_depth,
             terrain_depth_bound: no_terrain_depth,
             glyphs_bound: glyphs.revision(),
             buffers_bound: 0,
-            nearest,
             glyphs,
             images_bound: image_bindings.texture,
             image_bindings,
@@ -1087,7 +1054,7 @@ impl Renderer {
     /// one above. Colour stacks come first, in order, then slope stacks,
     /// which the drape keeps on a page of their own ([`DrapeLayout`]).
     fn assign_stacks(&mut self) {
-        let on = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
+        let on = self.terrain_on();
         let mut stacks = 0u8;
         let mut layers: Vec<terrain::TerrainLayer> = Vec::new();
         let mut previous: Option<Option<u32>> = None;
@@ -1177,10 +1144,8 @@ impl Renderer {
         }
         n.shaded = shaded;
         if n.terrain_layer.is_some() {
-            self.assign_stacks();
-            self.sync_cull();
             self.pipelines_stale = true;
-            self.invalidate_bundle(gpu);
+            self.restack(gpu);
         }
     }
 
@@ -1195,9 +1160,7 @@ impl Renderer {
         }
         n.by_zoom = by_zoom;
         if n.terrain_layer.is_some() {
-            self.assign_stacks();
-            self.sync_cull();
-            self.invalidate_bundle(gpu);
+            self.restack(gpu);
         }
     }
 
@@ -1219,16 +1182,15 @@ impl Renderer {
         self.drape_stacks
     }
 
-    /// Turns terrain on over a DEM page, or off. Draped nodes then draw
-    /// only drape placements: their stack's ([`PlacementTarget::Drape`]).
     /// Turns terrain on with its DEM page, or flat before it has one, or
-    /// off (`None`).
+    /// off (`None`). On terrain, draped nodes draw only drape placements:
+    /// their stack's ([`PlacementTarget::Drape`]).
     pub fn set_terrain(
         &mut self,
         gpu: &mut dyn Gpu,
         terrain: Option<(Option<PageId>, TerrainPaint)>,
     ) {
-        let was = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
+        let was = self.terrain_on();
         match terrain {
             Some((page, paint)) => {
                 let target = self.target;
@@ -1241,8 +1203,8 @@ impl Renderer {
                 };
                 let atmosphere = self.atmosphere.uniform;
                 let t = self.terrain.get_or_insert_with(|| {
-                    let shade_layout = self.images.image_layout();
-                    terrain::Terrain::new(gpu, target, atmosphere, shade_layout)
+                    let images = (self.images.image_layout(), self.images.linear());
+                    terrain::Terrain::new(gpu, target, atmosphere, images)
                 });
                 t.set_paint(gpu, paint, dem, dim);
             }
@@ -1253,12 +1215,18 @@ impl Renderer {
                 self.drape.take().release(gpu);
             }
         }
-        if was != self.terrain.as_ref().is_some_and(|t| t.paint.is_some()) {
-            self.assign_stacks();
-            self.sync_cull();
+        if was != self.terrain_on() {
             self.pipelines_stale = true;
-            self.invalidate_bundle(gpu);
+            self.restack(gpu);
         }
+    }
+
+    /// Stacks the draped nodes again, after what puts them in stacks
+    /// changed: their cull and bundles follow.
+    fn restack(&mut self, gpu: &mut dyn Gpu) {
+        self.assign_stacks();
+        self.sync_cull();
+        self.invalidate_bundle(gpu);
     }
 
     /// Whether terrain is on: draped nodes draw drape placements.
@@ -1423,10 +1391,10 @@ impl Renderer {
         if grouped(n.composite) != before {
             if n.terrain_layer.is_some() {
                 // The layer gains or loses a terrain layer of its own.
-                self.assign_stacks();
-                self.sync_cull();
+                self.restack(gpu);
+            } else {
+                self.invalidate_bundle(gpu);
             }
-            self.invalidate_bundle(gpu);
         } else if before.is_some() {
             self.layers.set_opacity(gpu, node as usize, opacity);
         }
@@ -1476,7 +1444,6 @@ impl Renderer {
         self.images.page_size(page)
     }
 
-    /// A free layer of `page` for one tile, growing the page if needed.
     /// GPU bytes of the raster and DEM pages and of the glyph pages.
     pub fn texture_bytes(&self) -> (u64, u64) {
         (self.images.bytes(), self.glyphs.bytes())
@@ -1731,6 +1698,7 @@ impl Renderer {
     /// order: the device compiles them in the order they are asked for
     /// (the cull's was first), and [`prioritize`](Self::prioritize) moves
     /// what the view shows ahead.
+    ///
     /// A still compiles what its zoom shows and no more, while the
     /// compiles still overlap the tiles' loading. A node shown for the
     /// first time records the bundles again, which left it out.
@@ -2027,7 +1995,7 @@ impl Renderer {
             .terrain
             .as_ref()
             .and_then(terrain::Terrain::dem_texture)
-            .unwrap_or(self.no_dem);
+            .unwrap_or(self.images.placeholder());
         // Symbols and circles read the terrain's depth.
         let terrain_depth = self
             .terrain
@@ -2053,7 +2021,12 @@ impl Renderer {
                 self.scene.tables(),
                 self.scene.buffers().frame,
                 &self.image_bindings,
-                (self.glyphs.texture(), self.nearest, dem, terrain_depth),
+                (
+                    self.glyphs.texture(),
+                    self.images.nearest(),
+                    dem,
+                    terrain_depth,
+                ),
             );
             self.glyphs_bound = self.glyphs.revision();
             self.dem_bound = dem;
@@ -2639,7 +2612,7 @@ impl Renderer {
                 // Draped content isn't hidden by the terrain it's on.
                 (
                     self.glyphs.texture(),
-                    self.nearest,
+                    self.images.nearest(),
                     self.dem_bound,
                     self.no_terrain_depth,
                 ),

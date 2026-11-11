@@ -75,22 +75,20 @@ struct SymbolNode {
 @group(0) @binding(16) var image_pages_nearest: texture_2d_array<f32>;
 @group(0) @binding(12) var glyph_pages: texture_2d_array<f32>;
 
-// Flags of SymbolNode.
+// Flags of SymbolNode (orb-render `NodePaint::uniform_words`).
 const IS_TEXT: u32 = 1u;
 const LINEAR_ICONS: u32 = 2u;
 const PITCH_WITH_MAP: u32 = 4u;
 const ROTATE_WITH_MAP: u32 = 8u;
-const ROTATE_IN_SHADER: u32 = 32u;
-const VARIABLE_ANCHOR: u32 = 64u;
-const IS_OFFSET: u32 = 128u;
-const KEEP_UPRIGHT: u32 = 256u;
-const TRANSLATE_VIEWPORT: u32 = 512u;
-const ICONS_IN_TEXT: u32 = 1024u;
+const ROTATE_IN_SHADER: u32 = 16u;
+const IS_OFFSET: u32 = 32u;
+const KEEP_UPRIGHT: u32 = 64u;
+const TRANSLATE_VIEWPORT: u32 = 128u;
 // `symbol-height-anchor: ground`: heights count from the terrain.
-const HEIGHT_ANCHOR_GROUND: u32 = 2048u;
+const HEIGHT_ANCHOR_GROUND: u32 = 256u;
 // The colour and the halo colour follow the daylight.
-const DAYLIGHT_FILL: u32 = 4096u;
-const DAYLIGHT_HALO: u32 = 8192u;
+const DAYLIGHT_FILL: u32 = 512u;
+const DAYLIGHT_HALO: u32 = 1024u;
 
 // Header words (orb-render `symbol_header`).
 const H_QUADS: u32 = 0u;

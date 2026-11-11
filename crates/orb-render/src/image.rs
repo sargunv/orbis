@@ -447,6 +447,16 @@ impl Images {
         self.placeholder
     }
 
+    /// The nearest-neighbour sampler, no mips.
+    pub(crate) fn nearest(&self) -> SamplerId {
+        self.nearest
+    }
+
+    /// The trilinear, anisotropic sampler.
+    pub(crate) fn linear(&self) -> SamplerId {
+        self.linear
+    }
+
     /// A DEM page's padded elevations (2-texel borders from neighbours), and
     /// the revision of its textures.
     pub(crate) fn dem_texture(&self, id: PageId) -> (TextureId, u32) {

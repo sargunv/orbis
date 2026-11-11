@@ -396,7 +396,6 @@ pub struct SymbolPaint {
     pub along_line: bool,
     /// Point labels rotated with the map but not pitched.
     pub rotate_in_shader: bool,
-    pub variable_anchor: bool,
     /// The layer sets `icon-offset` (GL JS `u_is_offset`): sizes skip the
     /// perspective ratio.
     pub is_offset: bool,
@@ -681,13 +680,10 @@ impl NodePaint {
                     p.linear_icons,
                     p.pitch_with_map,
                     p.rotate_with_map,
-                    p.along_line,
                     p.rotate_in_shader,
-                    p.variable_anchor,
                     p.is_offset,
                     p.keep_upright,
                     p.translate.viewport,
-                    false,
                     p.height_anchor_ground,
                     p.daylight[0].is_some(),
                     p.daylight[1].is_some(),

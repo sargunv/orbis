@@ -39,9 +39,9 @@ sampler "images"#0: Linear mips Nearest anisotropy 1
 texture "line SDF atlas"#0: R8Unorm D2 samples 1 views [] TextureUsages(COPY_DST | TEXTURE_BINDING)
 texture "glyphs"#0: R8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
 sampler "nearest"#0: Nearest mips Nearest anisotropy 1
-texture "no dem"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(TEXTURE_BINDING)
+texture "no tiles"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(TEXTURE_BINDING)
 texture "no terrain depth"#0: R32Float D2 samples 1 views [] TextureUsages(TEXTURE_BINDING)
-group "scene"#0: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "no dem"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
+group "scene"#0: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "no tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 0 size Some(512)
 bundle "layers"#0: [Rgba8Unorm] depth None samples 1

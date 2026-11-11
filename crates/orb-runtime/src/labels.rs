@@ -1732,8 +1732,6 @@ pub(crate) fn paint(
         !rotate
     };
     let along_line = !viewport_aligned && !point;
-    let variable = has_variable_placement(symbol);
-    let fitted = l.get(orb_style::ICON_TEXT_FIT).evaluate(zoom) != orb_style::IconTextFit::None;
 
     let mut paint = orb_render::SymbolPaint {
         color: [0.0; 4],
@@ -1769,7 +1767,6 @@ pub(crate) fn paint(
         rotate_with_map: rotate,
         along_line,
         rotate_in_shader: rotate && !pitch && !along_line,
-        variable_anchor: variable && (is_text || fitted),
         is_offset: l.get(orb_style::ICON_OFFSET).is_set(),
         keep_upright,
         height_anchor_ground: l.get(orb_style::SYMBOL_HEIGHT_ANCHOR).evaluate(zoom)
@@ -1898,7 +1895,7 @@ mod tests {
                 color: TextureFormat::Rgba8Unorm,
                 sample_count: 1,
             };
-            let mut renderer = Renderer::with_images(&mut gpu, target, capacity, images.bindings());
+            let mut renderer = Renderer::new(&mut gpu, target, capacity, images.bindings());
             let (worker, result) = crate::testing::symbol_tile();
             let families: Vec<_> = worker.plan().nodes.iter().map(|n| n.family).collect();
             renderer.set_nodes(&mut gpu, &families);

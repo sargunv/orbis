@@ -466,6 +466,8 @@ pub(crate) struct Terrain {
     layers: Vec<TerrainLayer>,
     stack_groups: Vec<BindGroupId>,
     stack_uniforms: Option<BufferId>,
+    /// Trilinear and anisotropic, as GL JS samples its render-to-texture
+    /// tiles: the raster pages' sampler, which the renderer owns.
     linear: SamplerId,
     /// The colour page, and the slope page while a hillshade is shaded.
     atlas: [Option<Atlas>; 2],
@@ -502,7 +504,7 @@ impl Terrain {
         gpu: &mut dyn Gpu,
         target: TargetFormat,
         atmosphere: BufferId,
-        shade_layout: BindGroupLayoutId,
+        (shade_layout, linear): (BindGroupLayoutId, SamplerId),
     ) -> Self {
         use BindGroupLayoutEntry as E;
         let vs = ShaderStages::VERTEX;
@@ -574,14 +576,6 @@ impl Terrain {
             label: "terrain",
             size: params::WORDS as u64 * 4,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        // Trilinear and anisotropic, as GL JS samples its render-to-texture
-        // tiles.
-        let linear = gpu.create_sampler(&SamplerDesc {
-            label: "drape",
-            filter: FilterMode::Linear,
-            mipmap_filter: FilterMode::Linear,
-            anisotropy: 16,
         });
         Self {
             target,
@@ -1569,13 +1563,7 @@ impl crate::release::Release for Terrain {
         self.tiles.destroy(gpu);
         let buffers = (self.grid_indices, self.params);
         (layouts, pipelines, buffers, self.stack_uniforms).release(gpu);
-        (
-            self.stack_groups,
-            self.linear,
-            self.targets,
-            self.mip_targets,
-        )
-            .release(gpu);
+        (self.stack_groups, self.targets, self.mip_targets).release(gpu);
     }
 }
 

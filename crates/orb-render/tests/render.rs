@@ -77,7 +77,7 @@ impl Harness {
             view_formats: &[],
         });
         let images = orb_render::ImageAtlas::new(&mut gpu, size, pages, entries);
-        let renderer = Renderer::with_images(
+        let renderer = Renderer::new(
             &mut gpu,
             TargetFormat {
                 color: TextureFormat::Rgba8Unorm,
@@ -1822,6 +1822,7 @@ fn ground_lighting_shades_the_ground_by_the_suns_elevation() {
 #[test]
 fn default_capacity_holds_a_large_basemaps_nodes() {
     let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+    let images = orb_render::ImageAtlas::new(&mut gpu, 512, 4, 4096);
     let mut renderer = Renderer::new(
         &mut gpu,
         TargetFormat {
@@ -1829,6 +1830,7 @@ fn default_capacity_holds_a_large_basemaps_nodes() {
             sample_count: 1,
         },
         SceneCapacity::default(),
+        images.bindings(),
     );
     renderer.set_nodes(&mut gpu, &[Family::Line; 400]);
 }
