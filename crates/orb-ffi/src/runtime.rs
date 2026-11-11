@@ -172,7 +172,17 @@ impl State {
         for entry in self.sessions.values() {
             entry.publish();
         }
-        let events = std::mem::take(&mut self.events);
+        let mut events = std::mem::take(&mut self.events);
+        // A map's events carry the generation of the work that raised
+        // them: a command's are queued once it applied, before it
+        // completes.
+        for event in &mut events {
+            if event.source_type == MLN_RUNTIME_EVENT_SOURCE_MAP
+                && let Some(map) = self.maps.get(&event.source)
+            {
+                event.generation = map.generation;
+            }
+        }
         if !events.is_empty()
             && let Some(handler) = &self.handler
         {
