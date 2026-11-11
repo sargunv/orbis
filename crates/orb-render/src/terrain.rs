@@ -948,10 +948,7 @@ impl Terrain {
         dem: (TextureId, u32),
         dim: u32,
     ) {
-        if self.dem != Some(dem) {
-            self.forget_group(gpu);
-            self.dem = Some(dem);
-        }
+        self.set_dem(gpu, dem);
         self.grid_step = grid_step(paint.dem_tile_px);
         let state = self.layout_state;
         let mut b = orb_shaders::Block::new(params::WORDS);
@@ -970,6 +967,15 @@ impl Terrain {
             .u(params::TILES, &[self.tile_count]);
         gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&b.0));
         self.paint = Some(paint);
+    }
+
+    /// Binds `dem` (the DEM page's padded texture and revision), forgetting
+    /// the group over the last one if it moved.
+    pub(crate) fn set_dem(&mut self, gpu: &mut dyn Gpu, dem: (TextureId, u32)) {
+        if self.dem != Some(dem) {
+            self.forget_group(gpu);
+            self.dem = Some(dem);
+        }
     }
 
     /// Sizes the terrain layers' textures to the target, `size` device

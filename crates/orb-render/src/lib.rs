@@ -430,6 +430,8 @@ pub struct Renderer {
     composites: offscreen::Composites,
     /// Made for the first terrain.
     terrain: Option<terrain::Terrain>,
+    /// The DEM page the terrain reads, as `set_terrain` last gave it.
+    terrain_page: Option<PageId>,
     /// The drape pass's paint, frames and bundles, made for the first
     /// draped paint.
     drape: Option<Drape>,
@@ -722,6 +724,7 @@ impl Renderer {
             composites,
             extrusions,
             terrain: None,
+            terrain_page: None,
             drape: None,
             terrain_layers: Vec::new(),
             drape_stacks: [0; 2],
@@ -1155,6 +1158,7 @@ impl Renderer {
         terrain: Option<(Option<PageId>, TerrainPaint)>,
     ) {
         let was = self.terrain_on();
+        self.terrain_page = terrain.and_then(|(page, _)| page);
         match terrain {
             Some((page, paint)) => {
                 let target = self.target;
@@ -1967,6 +1971,11 @@ impl Renderer {
         clock: &dyn Fn() -> f64,
     ) -> FrameStats {
         self.destroy_retired_pages(gpu);
+        // A DEM tile that arrived since `set_terrain` may have grown its
+        // page into new textures, the one it gave destroyed.
+        if let (Some(t), Some(page)) = (&mut self.terrain, self.terrain_page) {
+            t.set_dem(gpu, self.images.dem_texture(page));
+        }
         self.bind_scene(gpu);
         for nodes in self
             .nodes_dirty
