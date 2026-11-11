@@ -176,6 +176,18 @@ Advice that cost time to learn, not rules:
   readable port of it) and take the better of the two.
 - `cargo xtask check --affected` is the fast loop; run the fixtures now and
   then.
+- WebGL 2 shares the renderer, the shaders and every render pass with WebGPU;
+  only the frame driver differs (`orb-render`'s `driver/gpu.rs` and
+  `driver/cpu.rs`). Checks in `xtask check` keep it that way. A feature born in
+  compute, indirect draws or storage fails xtask's `GPU_ONLY_FILES` rule until
+  its file is listed with what stands in for it on WebGL 2, or the `Gap` it
+  reports. A shader that breaks GLSL ES 3.00, WebGL 2's limits (15 varyings, 16
+  textures, 16 KiB uniform blocks) or ANGLE's uniform layout fails
+  `orb-shaders`' dry run on your machine, as does a flat varying that isn't
+  `flat, either` (GL takes the last vertex's value). The two drivers are held
+  word for word by `orb-runtime`'s `drivers` test, so a change to
+  `driver/cpu.rs` should say in its commit why the GPU driver needs no twin of
+  it.
 - When a feature puts nontrivial work on a hot path (frames, tile arrival, first
   use), a focused bench of it on against off pays for itself; most features
   don't need one. Shadows and ambient occlusion were measured only at rest, and
