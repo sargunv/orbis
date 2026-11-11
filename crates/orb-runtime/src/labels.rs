@@ -26,6 +26,11 @@ use crate::{GlyphBitmap, GlyphRaster, Jobs};
 
 // Layout sizes glyph quads by the padding the atlas packs glyphs with.
 const _: () = assert!(orb_symbol::GLYPH_PADDING == orb_render::GLYPH_PADDING);
+// The scene reads which placed symbols show from their state words.
+const _: () = {
+    use {orb_render::symbol_state as r, orb_symbol::state as s};
+    assert!(s::OPACITY == r::OPACITY && s::PLACED == r::PLACED && s::HIDDEN == r::HIDDEN);
+};
 
 /// Buckets dropped since the last frame, with the glyph rows they held.
 type Retired = Arc<Mutex<Vec<(u64, Vec<u32>)>>>;
@@ -896,6 +901,7 @@ impl Labels {
             }
             let rows_mesh = result.meshes.iter().find(|m| m.node == key);
             let props = rows_mesh.map_or(Words::Core(&[]), |m| m.props.words(bytes));
+            let placed_quads: Vec<[u32; 2]> = placed.iter().map(|p| p.quads).collect();
             let data = SymbolMeshData {
                 quads: quads_words,
                 placed: if key == text_key {
@@ -915,6 +921,7 @@ impl Labels {
                 } else {
                     Words::Core(&[])
                 },
+                placed_quads: &placed_quads,
                 props,
                 params,
                 chunks: &chunks,

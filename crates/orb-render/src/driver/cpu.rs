@@ -27,7 +27,8 @@ use orb_hal::{BufferDesc, BufferId, BufferUsages, Gpu, Pass, PipelineId, RenderC
 use orb_shaders::layout;
 
 use crate::scene::{
-    ARGS_WORDS, DRAPED, HIDDEN, MOVED, Move, NO_CHUNK, NodeDraw, SURFACE, Scene, Table, UNCLIPPED,
+    ARGS_WORDS, DRAPED, HIDDEN, MOVED, Move, NO_CHUNK, NodeDraw, SURFACE, SYMBOLS, Scene, Table,
+    UNCLIPPED,
 };
 
 use super::gpu::{HIDDEN_INDEX, Twin};
@@ -382,6 +383,7 @@ impl CpuDriver {
                 elevation: f32::from_bits(node[nc::ELEVATION]),
                 draped: word & DRAPED != 0,
                 unclipped: word & UNCLIPPED != 0,
+                symbols: word & SYMBOLS != 0,
             };
             let candidate = |i: u32| -> [u32; CANDIDATE_WORDS] {
                 let at = (base + i) as usize * CANDIDATE_WORDS;
@@ -541,13 +543,14 @@ impl CpuDriver {
                         candidate[c::CHUNK] != NO_CHUNK && {
                             let chunk = rows_at(chunks, candidate[c::CHUNK] as usize, CHUNK_WORDS);
                             let tile = rows_at(tiles, candidate[c::TILE] as usize, TILE_WORDS);
-                            test.candidate_visible(
-                                tile,
-                                chunk[layout::chunk::BOUNDS_MIN],
-                                chunk[layout::chunk::BOUNDS_MAX],
-                                0.0,
-                                0.0,
-                            )
+                            test.symbol_shown(tile, chunk)
+                                && test.candidate_visible(
+                                    tile,
+                                    chunk[layout::chunk::BOUNDS_MIN],
+                                    chunk[layout::chunk::BOUNDS_MAX],
+                                    0.0,
+                                    0.0,
+                                )
                         }
                     },
                 );
@@ -851,6 +854,9 @@ struct Test<'a> {
     draped: bool,
     /// Its meshes draw past their clip rectangles.
     unclipped: bool,
+    /// It draws symbols, whose chunk rows say in which world copies
+    /// placement shows them.
+    symbols: bool,
 }
 
 impl Test<'_> {
@@ -861,6 +867,14 @@ impl Test<'_> {
     /// so a box wholly outside a plane holds no point inside it.
     fn run_meets(&self, tile: &[u32], [lo, hi]: [u32; 2]) -> bool {
         self.candidate_visible(tile, lo, hi, 1.0, 1.0)
+    }
+
+    /// `cull.wgsl`'s `symbol_shown`: whether placement shows any of a
+    /// symbol chunk's quads in the placement's world copy (true for other
+    /// nodes' chunks).
+    fn symbol_shown(&self, tile: &[u32], chunk: &[u32]) -> bool {
+        let copy = tile[layout::tile::WRAP] & 31;
+        !self.symbols || chunk[layout::chunk::FIRST_VERTEX] >> copy & 1 != 0
     }
 
     /// `cull.wgsl`'s `candidate_visible` of a chunk with these bounds in

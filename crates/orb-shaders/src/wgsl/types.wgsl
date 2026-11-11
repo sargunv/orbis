@@ -218,8 +218,9 @@ struct Chunk {
     index_count: u32,
     // First word of the mesh's vertices in the vertex arena.
     vertex_base: u32,
-    // The mesh's vertex that the chunk's indices count from (0 for
-    // symbol chunks, which have no indices).
+    // The mesh's vertex that the chunk's indices count from. A symbol
+    // chunk has no indices: its world copies placement shows any of its
+    // quads in, bit `wrap & 31` (orb-render's symbol meshes).
     first_vertex: u32,
     // First word of the mesh's property rows in the property arena.
     prop_base: u32,
@@ -272,6 +273,9 @@ const SURFACE: u32 = 1024u;
 // A node's draw word flag: its meshes draw past their placements' clip
 // rectangles (whole extrusions), so the cull keeps chunks by their bounds.
 const UNCLIPPED: u32 = 2048u;
+// A node's draw word flag: it draws symbols, which the cull keeps only in
+// the world copies placement shows them in (`Chunk`'s `first_vertex`).
+const SYMBOLS: u32 = 4096u;
 // A point quad's cells per side: one, or the frame's for a surface node's.
 fn point_cells(surface: bool) -> u32 {
     return select(1u, frame.surface_cells, surface);

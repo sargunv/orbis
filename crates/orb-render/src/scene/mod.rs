@@ -35,7 +35,7 @@ pub use pages::Pixels;
 pub(crate) use pages::{PageTexture, TilePage};
 pub use symbol::{
     PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS, SYMBOL_STATE_WORDS, SymbolMeshData,
-    pack_image_rect, symbol_header,
+    pack_image_rect, symbol_header, symbol_state,
 };
 
 fn state_base(range: &Range<u32>) -> u32 {
@@ -891,13 +891,8 @@ struct MeshEntry {
     row_words: u32,
     /// Per feature slot, its feature-state index, in the property arena.
     state: Range<u32>,
-    /// A symbol mesh's state words, in the property arena.
-    symbol_states: Range<u32>,
-    /// World copies the state words are kept for.
-    symbol_copies: u32,
-    /// A symbol mesh's draw-order table: its offset in the mesh's vertex
-    /// words, and its quads.
-    symbol_order: [u32; 2],
+    /// A symbol mesh's placement state.
+    symbol: Option<Box<symbol::SymbolEntry>>,
 }
 
 /// Chunk word that holds the first word of the mesh's feature-state
@@ -1073,6 +1068,7 @@ impl NodeCull {
             | if self.visible { 0 } else { HIDDEN }
             | if self.surface { SURFACE } else { 0 }
             | if self.unclipped { UNCLIPPED } else { 0 }
+            | if self.labels { SYMBOLS } else { 0 }
     }
 }
 
@@ -1098,6 +1094,10 @@ pub(crate) const SURFACE: u32 = 1 << 10;
 /// The cull's flag on a node's draw word: its meshes draw past the clip
 /// rectangles (`cull.wgsl`'s `UNCLIPPED`).
 pub(crate) const UNCLIPPED: u32 = 1 << 11;
+/// The cull's flag on a node's draw word: it draws symbols, whose chunk
+/// rows say in which world copies placement shows them (`cull.wgsl`'s
+/// `SYMBOLS`).
+pub(crate) const SYMBOLS: u32 = 1 << 12;
 
 #[derive(Debug)]
 pub(crate) struct Scene {
@@ -1885,9 +1885,7 @@ impl Scene {
             props: prop_range,
             row_words: mesh.row_words,
             state: 0..0,
-            symbol_states: 0..0,
-            symbol_copies: 0,
-            symbol_order: [0; 2],
+            symbol: None,
         };
         Ok(self.add_mesh(entry))
     }
@@ -2049,7 +2047,9 @@ impl Scene {
         }
         self.prop_arena.free(entry.props);
         self.prop_arena.free(entry.state);
-        self.prop_arena.free(entry.symbol_states);
+        if let Some(symbol) = entry.symbol {
+            self.prop_arena.free(symbol.states);
+        }
     }
 
     /// Drops a mesh's hold on a vertex (`pool` 0) or index (1) range:
@@ -2448,7 +2448,7 @@ impl Scene {
                 + m.indices.len()
                 + m.props.len()
                 + m.state.len()
-                + m.symbol_states.len()) as u64
+                + m.symbol.as_ref().map_or(0, |s| s.states.len())) as u64
                 * 4
         })
     }

@@ -150,6 +150,14 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     return outside == 0u;
 }
 
+// Whether placement shows any of a symbol chunk's quads in the
+// candidate's world copy: chunks of hidden labels leave here rather than
+// run each quad's vertices to read that it is hidden.
+fn symbol_shown(candidate: Candidate) -> bool {
+    let copy = bitcast<u32>(tiles[candidate.tile].wrap) & 31u;
+    return ((chunks[candidate.chunk].first_vertex >> copy) & 1u) != 0u;
+}
+
 const WORKGROUP: u32 = 256u;
 
 var<workgroup> scan: array<u32, WORKGROUP>;
@@ -208,7 +216,8 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
         var candidate: Candidate;
         if i < count {
             candidate = candidates[node.visible_base + i];
-            keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
+            let shown = (node.draw & SYMBOLS) == 0u || symbol_shown(candidate);
+            keep = select(0u, 1u, keep_all || (shown && candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u)));
         }
         // Inclusive Hillis–Steele scan of `keep` across the workgroup.
         scan[lane] = keep;
