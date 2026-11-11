@@ -317,7 +317,7 @@ impl Canvas {
         device.set_device_lost_callback(move |_, _| {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
             // The next frame sees the loss and the host recovers.
-            crate::wake(map);
+            crate::map::wake(map);
         });
         #[cfg(feature = "gl")]
         crate::gl_context::watch(&canvas, lost.clone(), map);
@@ -362,7 +362,7 @@ impl Canvas {
         #[cfg(feature = "gl")]
         gpu.read_formats(&adapter);
         // A map waiting only for pipelines draws when one arrives.
-        gpu.set_compile_wake(std::rc::Rc::new(move || crate::wake(map)));
+        gpu.set_compile_wake(std::rc::Rc::new(move || crate::map::wake(map)));
         Ok(Self {
             gpu,
             surface,

@@ -36,7 +36,7 @@ pub(crate) fn watch(canvas: &JsValue, lost: Arc<AtomicBool>, map: u32) {
     listen(canvas, "webglcontextlost", move |event| {
         let _ = call(&event, "preventDefault", &[]);
         lost.store(true, Ordering::Relaxed);
-        crate::wake(map);
+        crate::map::wake(map);
     });
 }
 

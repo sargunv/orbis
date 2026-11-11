@@ -2991,6 +2991,7 @@ dependencies = [
  "orb-hal-wgpu",
  "orb-host",
  "orb-runtime",
+ "orb-style",
  "orb-symbol",
  "orb-text",
  "orb-tile",
