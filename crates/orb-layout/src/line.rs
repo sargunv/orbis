@@ -283,7 +283,9 @@ fn subdivide(line: &mut ClippedLine, step: [f64; 2]) {
             None if line.closed => line.points[0],
             None => break,
         };
-        orb_tile::grid_crossings(line.points[i], next, step, &mut crossings);
+        // Clipped already: every line it crosses counts.
+        let every = [f64::NEG_INFINITY, f64::INFINITY];
+        orb_tile::grid_crossings(line.points[i], next, step, every, &mut crossings);
         points.extend_from_slice(&crossings);
     }
     line.points = points;

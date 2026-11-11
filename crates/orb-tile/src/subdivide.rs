@@ -8,7 +8,8 @@ use crate::{GeometryType, Layer, TileFrame, clip_ring};
 impl TileFrame {
     /// The frame with a vertex wherever a line or polygon-ring segment
     /// crosses a line of a grid of `cells` (across, down) over each layer's
-    /// extent (polygon rings' implicit closing segments included).
+    /// extent (polygon rings' implicit closing segments included), up to
+    /// a tile past the square, as far as line layout keeps.
     /// Polygons are first clipped to the box line layout keeps (the tile
     /// square and a sixteenth of it around), so the edges clipping makes
     /// are cut too and lie outside the tile, where no stroke of them shows.
@@ -24,6 +25,9 @@ impl TileFrame {
 fn subdivide(layer: &Layer, cells: [u32; 2]) -> Layer {
     let extent = layer.extent as i32;
     let step = cells.map(|c| f64::from(layer.extent) / f64::from(c.max(1)));
+    // The grid lines of the box line layout keeps, a tile around the
+    // square: what lies past it isn't drawn.
+    let keep = [-1.0, 2.0].map(|k| k * f64::from(layer.extent));
     let mut out = Layer {
         name: layer.name.clone(),
         extent: layer.extent,
@@ -74,7 +78,7 @@ fn subdivide(layer: &Layer, cells: [u32; 2]) -> Layer {
                     if kind == GeometryType::Point {
                         continue;
                     }
-                    grid_crossings(p, next, step, &mut crossings);
+                    grid_crossings(p, next, step, keep, &mut crossings);
                     out.vertices.extend(crossings.iter().copied());
                 }
                 out.ring_vertices.push(out.vertices.len() as u32);
@@ -91,19 +95,28 @@ fn subdivide(layer: &Layer, cells: [u32; 2]) -> Layer {
 }
 
 /// The points where segment `a`–`b` crosses grid lines `step` apart (x
-/// then y), in order from `a`, without its ends. Each crossing is computed
+/// then y), in order from `a`, without its ends: the lines from
+/// `within[0]` to `within[1]` on either axis, so that a segment reaching
+/// far past them gets no more than they hold. Each crossing is computed
 /// from the segment's ends in a fixed order, so a segment shared by two
 /// rings (or two tiles) gets the same points either way.
-pub fn grid_crossings(a: [i32; 2], b: [i32; 2], step: [f64; 2], out: &mut Vec<[i32; 2]>) {
+pub fn grid_crossings(
+    a: [i32; 2],
+    b: [i32; 2],
+    step: [f64; 2],
+    within: [f64; 2],
+    out: &mut Vec<[i32; 2]>,
+) {
     out.clear();
     let (lo, hi, flip) = if a <= b { (a, b, false) } else { (b, a, true) };
     // Per axis, the lines it crosses, each with how far along lo → hi.
     let crossings = |axis: usize| {
         let (p, q) = (f64::from(lo[axis]), f64::from(hi[axis]));
         let (min, max, step) = (p.min(q), p.max(q), step[axis]);
-        let first = (min / step).floor() + 1.0;
+        let first = ((min / step).floor() + 1.0).max((within[0] / step).ceil());
+        let at = |count: u32| (first + f64::from(count)) * step;
         let mut count = 0;
-        while p != q && (first + f64::from(count)) * step < max {
+        while p != q && at(count) < max && at(count) <= within[1] {
             count += 1;
         }
         let other = 1 - axis;
@@ -114,8 +127,8 @@ pub fn grid_crossings(a: [i32; 2], b: [i32; 2], step: [f64; 2], out: &mut Vec<[i
             let t = (line - p) / (q - p);
             let mut point = [0; 2];
             point[axis] = line.round() as i32;
-            point[other] =
-                (f64::from(lo[other]) + t * f64::from(hi[other] - lo[other])).round() as i32;
+            let (from, to) = (f64::from(lo[other]), f64::from(hi[other]));
+            point[other] = (from + t * (to - from)).round() as i32;
             (t, point)
         })
     };
@@ -189,10 +202,25 @@ mod tests {
     #[test]
     fn shared_segments_cut_alike_both_ways() {
         let (mut ab, mut ba) = (Vec::new(), Vec::new());
-        grid_crossings([3, 7], [4001, 2999], [512.0, 256.0], &mut ab);
-        grid_crossings([4001, 2999], [3, 7], [512.0, 256.0], &mut ba);
+        let within = [-4096.0, 8192.0];
+        grid_crossings([3, 7], [4001, 2999], [512.0, 256.0], within, &mut ab);
+        grid_crossings([4001, 2999], [3, 7], [512.0, 256.0], within, &mut ba);
         ba.reverse();
         assert_eq!(ab, ba);
         assert!(ab.len() > 8);
+    }
+
+    #[test]
+    fn far_segments_cut_only_within() {
+        // From i32::MIN to i32::MAX: the 25 lines from -4096 to 8192 on
+        // either axis, rather than millions, one point where both cross.
+        let (step, within) = ([512.0, 512.0], [-4096.0, 8192.0]);
+        let mut out = Vec::new();
+        let (a, b) = ([i32::MIN, i32::MIN], [i32::MAX, i32::MAX]);
+        grid_crossings(a, b, step, within, &mut out);
+        assert_eq!(out.len(), 25);
+        assert_eq!((out[0], out[24]), ([-4096, -4096], [8192, 8192]));
+        grid_crossings([-8192, 100], [16384, 100], step, within, &mut out);
+        assert_eq!(out.len(), 25);
     }
 }
