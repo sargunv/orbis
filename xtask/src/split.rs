@@ -8,11 +8,11 @@
 //! ([`key`]), which a build on another machine or after an unrelated
 //! change still matches (`+` lines are functions a run saw run, which
 //! coverage keeps so that later runs only add to them). A function that
-//! isn't listed stays in core.wasm unless only deferred functions call it
-//! ([`only_called_deferred`]), so a function renamed or added since the
-//! list was written defers when its callers do, and a stale list otherwise
-//! only defers less; the build reports how many listed functions it didn't
-//! find.
+//! isn't listed stays in core.wasm unless only deferred functions call it,
+//! directly or through others ([`only_called_deferred`]), so a function
+//! renamed or added since the list was written defers when its callers do,
+//! and a stale list otherwise only defers less; the build reports how many
+//! listed functions it didn't find.
 //!
 //! binaryen's `wasm-split` moves the listed functions out. core.wasm then
 //! imports a placeholder for each one it calls, from [`NAMESPACE`], and
@@ -129,30 +129,35 @@ pub(crate) fn read_list(root: &Path) -> Result<List, String> {
     Ok(list)
 }
 
-/// Adds to `moved` every function that only moved functions call, until
-/// there are no more. One renamed since the list was written (its old
+/// Adds to `moved` every function that only moved functions call, directly
+/// or through others. One renamed since the list was written (its old
 /// name stale in the list, its new one in neither half of it), or added
 /// since, can then only run once core-deferred.wasm has, so it goes there
-/// too. A function JS or a table can reach, one with a v128 in its
-/// signature, and one a run saw run (`seen`) stay.
+/// too. What stays is what core.wasm can call before then: the functions
+/// JS or a table can reach, those a run saw run (`seen`), and what they
+/// call through functions that stay, recursion included. Only core.wasm
+/// calls a deferred function through a placeholder, so a v128 in the
+/// signature of one this moves doesn't matter.
 fn only_called_deferred(functions: &Functions, seen: &[bool], moved: &mut [bool]) {
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (i, function) in functions.defined.iter().enumerate() {
-            if moved[i]
-                || seen[i]
-                || function.v128
-                || function.reachable
-                || function.callers.is_empty()
-            {
-                continue;
-            }
-            if function.callers.iter().all(|&c| moved[c as usize]) {
-                moved[i] = true;
-                changed = true;
+    let mut stays = vec![false; moved.len()];
+    let mut stack = Vec::new();
+    for (i, function) in functions.defined.iter().enumerate() {
+        if !moved[i] && (function.reachable || seen[i]) {
+            stays[i] = true;
+            stack.push(i);
+        }
+    }
+    while let Some(i) = stack.pop() {
+        for &callee in &functions.defined[i].callees {
+            let callee = callee as usize;
+            if !moved[callee] && !stays[callee] {
+                stays[callee] = true;
+                stack.push(callee);
             }
         }
+    }
+    for (moved, stays) in moved.iter_mut().zip(stays) {
+        *moved |= !stays;
     }
 }
 
@@ -258,20 +263,19 @@ struct Function {
     /// Whether anything but a direct call reaches it: an export, the
     /// start function, a table or a `ref.func`.
     reachable: bool,
-    /// The defined functions that call it, by their index among those.
-    callers: Vec<u32>,
+    /// The defined functions it calls, by their index among those.
+    callees: Vec<u32>,
 }
 
-/// The module's functions, and what calls them.
+/// The module's functions, and what they call.
 fn functions(wasm: &[u8]) -> Result<Functions, String> {
     let mut types = Vec::new();
     let mut imported = 0u32;
     let mut defined = Vec::new();
-    // Functions reached other than by a direct call, and (callee, caller)
-    // pairs, in the module's index space and among defined functions.
+    // Functions reached other than by a direct call, in the module's
+    // index space.
     let mut reached = Vec::new();
-    let mut calls = Vec::new();
-    let mut bodies = 0u32;
+    let mut bodies = 0;
     for payload in Parser::new(0).parse_all(wasm) {
         match payload.map_err(|e| e.to_string())? {
             Payload::TypeSection(reader) => {
@@ -301,7 +305,7 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                     defined.push(Function {
                         v128: types.get(ty as usize).copied().unwrap_or(false),
                         reachable: false,
-                        callers: Vec::new(),
+                        callees: Vec::new(),
                     });
                 }
             }
@@ -314,6 +318,18 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                 }
             }
             Payload::StartSection { func, .. } => reached.push(func),
+            Payload::GlobalSection(reader) => {
+                for global in reader {
+                    let global = global.map_err(|e| e.to_string())?;
+                    for op in global.init_expr.get_operators_reader() {
+                        if let Operator::RefFunc { function_index } =
+                            op.map_err(|e| e.to_string())?
+                        {
+                            reached.push(function_index);
+                        }
+                    }
+                }
+            }
             Payload::ElementSection(reader) => {
                 for element in reader {
                     match element.map_err(|e| e.to_string())?.items {
@@ -338,33 +354,37 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let caller = bodies;
-                bodies += 1;
+                let mut callees = Vec::new();
                 for op in body.get_operators_reader().map_err(|e| e.to_string())? {
                     match op.map_err(|e| e.to_string())? {
                         Operator::Call { function_index }
                         | Operator::ReturnCall { function_index } => {
-                            calls.push((function_index, caller));
+                            // Imports come first in the index space.
+                            if let Some(callee) = function_index.checked_sub(imported) {
+                                callees.push(callee);
+                            }
                         }
                         Operator::RefFunc { function_index } => reached.push(function_index),
                         _ => {}
                     }
                 }
+                callees.sort_unstable();
+                callees.dedup();
+                let function: &mut Function = defined
+                    .get_mut(bodies)
+                    .ok_or("more function bodies than functions")?;
+                function.callees = callees;
+                bodies += 1;
             }
             _ => {}
         }
     }
-    let local = |index: u32| index.checked_sub(imported).map(|i| i as usize);
     for index in reached {
-        if let Some(function) = local(index).and_then(|i| defined.get_mut(i)) {
-            function.reachable = true;
-        }
-    }
-    for (callee, caller) in calls {
-        if let Some(function) = local(callee).and_then(|i| defined.get_mut(i))
-            && !function.callers.contains(&caller)
+        if let Some(function) = index
+            .checked_sub(imported)
+            .and_then(|i| defined.get_mut(i as usize))
         {
-            function.callers.push(caller);
+            function.reachable = true;
         }
     }
     Ok(Functions { imported, defined })
@@ -467,34 +487,44 @@ mod tests {
 
     #[test]
     fn defers_what_only_deferred_functions_call() {
-        let function = |callers: &[u32]| Function {
+        let function = |callees: &[u32]| Function {
             v128: false,
             reachable: false,
-            callers: callers.to_vec(),
+            callees: callees.to_vec(),
         };
-        // 0 is listed; 1 and then 2 only it calls; 3 a kept function calls
-        // too; 4 was seen running; 5 is exported; 6 takes a v128.
+        // 0 is listed, and calls 1, 3, 4, 5 and 6. 1 calls 2, which calls
+        // itself, and 8, which calls 9, which calls 8 back. 3 the exported
+        // 7 calls too, 4 was seen running and calls 10, 5 is exported, and
+        // 6 takes a v128. 7 also calls 11, which calls 12, which calls 11.
         let mut defined = vec![
+            function(&[1, 3, 4, 5, 6]),
+            function(&[2, 8]),
+            function(&[2]),
             function(&[]),
-            function(&[0]),
-            function(&[1]),
-            function(&[0, 7]),
-            function(&[0]),
-            function(&[0]),
-            function(&[0]),
+            function(&[10]),
             function(&[]),
+            function(&[]),
+            function(&[3, 11]),
+            function(&[9]),
+            function(&[8]),
+            function(&[]),
+            function(&[12]),
+            function(&[11]),
         ];
         defined[5].reachable = true;
         defined[6].v128 = true;
+        defined[7].reachable = true;
         let functions = Functions {
             imported: 0,
             defined,
         };
-        let mut seen = vec![false; 8];
+        let mut seen = vec![false; 13];
         seen[4] = true;
-        let mut moved = vec![true, false, false, false, false, false, false, false];
+        let mut moved = vec![false; 13];
+        moved[0] = true;
         only_called_deferred(&functions, &seen, &mut moved);
-        assert_eq!(moved, [true, true, true, false, false, false, false, false]);
+        let moved: Vec<usize> = (0..13).filter(|&i| moved[i]).collect();
+        assert_eq!(moved, [0, 1, 2, 6, 8, 9]);
     }
 
     #[test]
