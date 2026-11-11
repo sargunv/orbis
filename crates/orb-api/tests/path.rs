@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use orb_api::{
@@ -496,15 +496,6 @@ fn lifted_content_covers_what_a_fresh_globe_does() {
     assert_same("lifted", both_ways(&style, start, end, 20));
 }
 
-/// A directory of DEM tiles, removed when the test is done with it.
-struct DemDir(PathBuf);
-
-impl Drop for DemDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Terrarium DEM tiles of `metres(lon, lat)` over `(west, south, east,
 /// north)`, zooms 0–`max_zoom`, written to a fresh directory; the source
 /// `name`'s JSON, and the directory to keep while it's read.
@@ -513,16 +504,8 @@ fn dem(
     (west, south, east, north): (f64, f64, f64, f64),
     max_zoom: u8,
     metres: impl Fn(f64, f64) -> f64,
-) -> (String, DemDir) {
-    // One directory per call: tests run in parallel, and the clock may
-    // give two of them the same time, then one's drop would delete the
-    // other's tiles under its fresh map.
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "orb-path-dem-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
+) -> (String, common::Scratch) {
+    let dir = common::Scratch::new(&format!("path-dem-{name}"));
     const SIZE: u32 = 256;
     for z in 0..=max_zoom {
         let n = f64::from(1u32 << z);
@@ -559,11 +542,11 @@ fn dem(
             "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}},"#,
         dir.display()
     );
-    (source, DemDir(dir))
+    (source, dir)
 }
 
 /// Rolling hills over central Tokyo, zooms 0–11.
-fn hills() -> (String, DemDir) {
+fn hills() -> (String, common::Scratch) {
     dem("hills", (139.2, 35.2, 140.3, 36.2), 11, |lon, lat| {
         600.0
             + 500.0 * (lon * 40.0).sin() * (lat * 55.0).cos()
@@ -575,7 +558,7 @@ fn hills() -> (String, DemDir) {
 /// hillshaded on the terrain under a sky: ridge silhouettes stand against
 /// it at a high pitch. Crests are rounded: a crease one DEM pixel wide
 /// running across the pixel grid shades as dotted lines.
-fn alps() -> (String, DemDir) {
+fn alps() -> (String, common::Scratch) {
     let (dem, dir) = dem("alps", (7.4, 45.7, 8.4, 46.3), 11, |lon, lat| {
         let ridge = |v: f64| 1.0 - (v.sin().powi(2) + 0.04).sqrt();
         700.0
@@ -713,8 +696,8 @@ fn a_draped_translate_reaches_as_far_as_the_camera_s_pixels() {
 #[test]
 fn a_terrain_that_comes_on_late_drapes_what_a_moved_map_does() {
     let (hills, dem) = hills();
-    let tilejson = dem.0.join("tiles.json");
-    let tiles = format!("file://{}/{{z}}/{{x}}/{{y}}.png", dem.0.display());
+    let tilejson = dem.join("tiles.json");
+    let tiles = format!("file://{}/{{z}}/{{x}}/{{y}}.png", dem.display());
     std::fs::write(
         &tilejson,
         format!(r#"{{"tilejson": "3.0.0", "tiles": ["{tiles}"], "maxzoom": 11}}"#),

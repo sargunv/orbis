@@ -2,6 +2,8 @@
 //! same pixels again, losses in a row back off and then stop, and a driver
 //! that hangs compiling is reported.
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use orb_api::{Error, Map, MapOptions, Runtime, RuntimeOptions, Target};
@@ -197,7 +199,7 @@ const DRAPE_CHILD: &str = "ORB_TEST_DRAPE_CHILD";
 fn a_drape_pipeline_arriving_last_still_idles() {
     if std::env::var_os(DRAPE_CHILD).is_some() {
         // One flat terrarium tile.
-        let dir = std::env::temp_dir().join(format!("orb-api-flat-dem-{}", std::process::id()));
+        let dir = common::Scratch::new("api-flat-dem");
         std::fs::create_dir_all(dir.join("0/0")).unwrap();
         let file = std::fs::File::create(dir.join("0/0/0.png")).unwrap();
         let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), 256, 256);
@@ -238,7 +240,6 @@ fn a_drape_pipeline_arriving_last_still_idles() {
                 break true;
             }
         };
-        let _ = std::fs::remove_dir_all(&dir);
         assert!(
             idled,
             "the map stopped asking for frames short of idle, after {frames}"

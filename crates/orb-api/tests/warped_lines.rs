@@ -5,6 +5,8 @@
 //! Mercator tiles. Web Mercator's whole-world tile draws on a geographic
 //! plane.
 
+mod common;
+
 use orb_api::{Map, MapOptions, Previews, Runtime, RuntimeOptions};
 
 fn varint(mut n: u64, out: &mut Vec<u8>) {
@@ -99,7 +101,7 @@ fn lines_through_a_stretching_warp_keep_their_width() {
         [[-64, north], [4160, north]],
         [[-64, equator], [4160, equator]],
     ];
-    let dir = std::env::temp_dir().join(format!("orb-warped-lines-{}", std::process::id()));
+    let dir = common::Scratch::new("warped-lines");
     std::fs::create_dir_all(dir.join("0/0")).unwrap();
     let parallels: Vec<&[[i64; 2]]> = parallels.iter().map(|line| &line[..]).collect();
     std::fs::write(dir.join("0/0/0.pbf"), tile(&parallels)).unwrap();
@@ -121,7 +123,6 @@ fn lines_through_a_stretching_warp_keep_their_width() {
         dir.display()
     );
     let pixels = snapshot(&style, SIZE);
-    std::fs::remove_dir_all(&dir).unwrap();
     let ink = |x: i64, y: i64| {
         let i = ((y * i64::from(SIZE) + x) * 4) as usize;
         f64::from(255 - pixels[i]) / 255.0
@@ -185,7 +186,7 @@ fn joins_through_a_stretching_warp_meet_on_screen() {
             [8 * x, (row * 4096.0).round() as i64]
         })
         .collect();
-    let dir = std::env::temp_dir().join(format!("orb-warped-joins-{}", std::process::id()));
+    let dir = common::Scratch::new("warped-joins");
     std::fs::create_dir_all(dir.join("g/0/0")).unwrap();
     std::fs::write(dir.join("g/0/0/1.pbf"), tile(&[&geographic])).unwrap();
     std::fs::create_dir_all(dir.join("m/3/4")).unwrap();
@@ -238,7 +239,6 @@ fn joins_through_a_stretching_warp_meet_on_screen() {
         }
         misses.push((name, miss / total, limit));
     }
-    std::fs::remove_dir_all(&dir).unwrap();
     for &(name, miss, limit) in &misses {
         assert!(
             miss < limit,
@@ -255,7 +255,7 @@ fn joins_through_a_stretching_warp_meet_on_screen() {
 /// which cover it, drew nothing.
 #[test]
 fn whole_world_mercator_tile_draws_on_a_geographic_plane() {
-    let dir = std::env::temp_dir().join(format!("orb-warped-world-{}", std::process::id()));
+    let dir = common::Scratch::new("warped-world");
     std::fs::create_dir_all(dir.join("0/0")).unwrap();
     // The equator and the prime meridian, end to end.
     let cross = tile(&[&[[0, 2048], [4096, 2048]], &[[2048, 0], [2048, 4096]]]);
@@ -312,6 +312,5 @@ fn whole_world_mercator_tile_draws_on_a_geographic_plane() {
             misses.push((zoom, drawn, seen));
         }
     }
-    std::fs::remove_dir_all(&dir).unwrap();
     assert!(misses.is_empty(), "(zoom, drawn, in view): {misses:?}");
 }

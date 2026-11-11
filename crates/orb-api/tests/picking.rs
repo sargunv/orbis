@@ -44,9 +44,10 @@ fn hits_land_where_features_draw_on_the_globe() {
 }
 
 /// Terrarium DEM tiles of a 3000 m plateau, 16 pixels a side, zooms 0–8,
-/// in a fresh directory; the source's JSON.
-fn plateau() -> String {
-    let dir = std::env::temp_dir().join(format!("orb-picking-dem-{}", std::process::id()));
+/// in a fresh directory; the source's JSON, and the directory to keep
+/// while it's read.
+fn plateau() -> (String, common::Scratch) {
+    let dir = common::Scratch::new("picking-dem");
     let v = ((3000.0f64 + 32768.0) * 256.0) as u32;
     let texel = [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255];
     let pixels: Vec<u8> = std::iter::repeat_n(texel, 16 * 16).flatten().collect();
@@ -74,15 +75,17 @@ fn plateau() -> String {
             }
         }
     }
-    format!(
+    let source = format!(
         r#"{{"type": "raster-dem", "encoding": "terrarium", "tileSize": 16, "maxzoom": 8,
             "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}}"#,
         dir.display()
-    )
+    );
+    (source, dir)
 }
 
 #[test]
 fn hits_land_where_features_draw_on_terrain() {
+    let (dem, _tiles) = plateau();
     let style = format!(
         r##"{{"version": 8, "center": [10, 5], "zoom": 7, "pitch": 60,
         "terrain": {{"source": "dem", "exaggeration": 2}},
@@ -92,7 +95,7 @@ fn hits_land_where_features_draw_on_terrain() {
           {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
           {{"id": "c", "type": "circle", "source": "p",
            "paint": {{"circle-radius": 8, "circle-color": "#ff0000"}}}}]}}"##,
-        plateau()
+        dem
     );
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, 400, 300, 1.0);

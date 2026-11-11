@@ -690,6 +690,46 @@ impl orb_host::Clock for NativeClock {
     }
 }
 
+/// A directory of a test's own under the system's temporary one, removed
+/// with what it holds when it drops, as a failing test unwinds too.
+#[cfg(test)]
+pub(crate) struct Scratch(std::path::PathBuf);
+
+#[cfg(test)]
+impl Scratch {
+    pub(crate) fn new(name: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("orb-{name}-{}-{n}", std::process::id()));
+        // What a killed run with this process id left.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl AsRef<std::path::Path> for Scratch {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,7 +781,8 @@ mod tests {
     #[test]
     fn reads_files_and_reports_missing_ones() {
         let fetch = NativeFetch::new();
-        let path = std::env::temp_dir().join(format!("orb-host-native-{}", std::process::id()));
+        let dir = Scratch::new("host-native");
+        let path = dir.join("hello");
         std::fs::write(&path, b"hello").unwrap();
         let (tx, rx) = channel();
         for url in [
@@ -759,7 +800,6 @@ mod tests {
         }
         let mut results: Vec<_> = (0..3).map(|_| rx.recv().unwrap()).collect();
         results.sort_by(|a, b| a.0.cmp(&b.0));
-        std::fs::remove_file(&path).unwrap();
         assert_eq!(results[0].1, Err(FetchError::NotFound));
         assert_eq!(results[1].1, Ok(b"hello".to_vec()));
         assert!(matches!(results[2].1, Err(FetchError::UnsupportedUrl(_))));
@@ -768,19 +808,16 @@ mod tests {
     #[test]
     fn file_urls_are_percent_decoded() {
         assert_eq!(&*percent_decode("a%20b%2fc%zz%4"), b"a b/c%zz%4");
-        let dir = std::env::temp_dir().join(format!("orb-file-url-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = Scratch::new("file-url");
         std::fs::write(dir.join("a b%.json"), b"{}").unwrap();
         let agent = ureq::Agent::new_with_defaults();
         let get = |name: &str| {
             let url = format!("file://{}/{name}", dir.display());
             NativeFetch::get_blocking(&agent, None, &plain(&url), None, true, &Abort::NEVER)
         };
-        let (escaped, bare, raw) = (get("a%20b%25.json"), get("a%20b%.json"), get("a b%.json"));
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(escaped.unwrap(), b"{}");
-        assert_eq!(bare.unwrap(), b"{}");
-        assert_eq!(raw.unwrap(), b"{}");
+        assert_eq!(get("a%20b%25.json").unwrap(), b"{}");
+        assert_eq!(get("a%20b%.json").unwrap(), b"{}");
+        assert_eq!(get("a b%.json").unwrap(), b"{}");
     }
 
     fn response(status: &str, headers: &str, body: &[u8]) -> Result<Vec<u8>, FetchError> {
@@ -844,7 +881,8 @@ mod tests {
 
     #[test]
     fn file_ranges_and_invalid_lengths() {
-        let path = std::env::temp_dir().join(format!("orb-range-{}", std::process::id()));
+        let dir = Scratch::new("range");
+        let path = dir.join("abcdef");
         std::fs::write(&path, b"abcdef").unwrap();
         let url = format!("file://{}", path.display());
         let agent = ureq::Agent::new_with_defaults();
@@ -873,13 +911,11 @@ mod tests {
                 .is_err()
             );
         }
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn concurrent_writers_publish_whole_files() {
-        let dir = std::env::temp_dir().join(format!("orb-host-write-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = Scratch::new("host-write");
         let path = dir.join("cache");
         let writers: Vec<_> = (0..8u8)
             .map(|i| {
@@ -902,7 +938,6 @@ mod tests {
             1,
             "partial files left"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Serves `replies` to one connection each, and returns the requests.
@@ -926,8 +961,7 @@ mod tests {
 
     #[test]
     fn revalidates_stale_entries_and_answers_offline() {
-        let dir = std::env::temp_dir().join(format!("orb-fetch-cache-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("fetch-cache");
         let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
         let agent = ureq::Agent::new_with_defaults();
         let close = "Connection: close\r\n";
@@ -960,8 +994,6 @@ mod tests {
         // Stale and the server gone: the stale copy.
         cache.refresh(&orb_host::cache::key(&url, None), 0);
         assert_eq!(get().unwrap(), b"tile");
-        drop(cache);
-        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn host_headers_follow_redirects_within_their_origin_alone() {
@@ -1009,8 +1041,7 @@ mod tests {
 
     #[test]
     fn transforms_rewrite_and_sign_requests_and_offline_answers_from_the_cache() {
-        let dir = std::env::temp_dir().join(format!("orb-fetch-hooks-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("fetch-hooks");
         let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
         let fetch = NativeFetch::with_cache(Some(cache));
         let (url, server) = serve(vec![
@@ -1054,8 +1085,6 @@ mod tests {
             get("tiles://other"),
             Err(FetchError::Network("offline".into()))
         );
-        drop(fetch);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// An abort answers at once, and a body being read stops: the server

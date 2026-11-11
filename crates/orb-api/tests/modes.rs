@@ -237,8 +237,7 @@ fn labels_across_edges(avoid_edges: bool) -> (usize, Vec<String>) {
 #[test]
 fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
-    let dir = std::env::temp_dir().join(format!("orbis-bad-style-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::Scratch::new("bad-style");
     let path = dir.join("style.json");
     // An array output without `literal` doesn't parse.
     std::fs::write(
@@ -251,7 +250,6 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     map.load_style_url(&format!("file://{}", path.display()));
     let started = std::time::Instant::now();
     let error = map.snapshot(64, 64, 1.0).unwrap_err();
-    std::fs::remove_dir_all(&dir).unwrap();
     assert!(
         error
             .message()
@@ -273,7 +271,7 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
 fn hillshade_tiles_shade_their_edges_from_their_neighbours() {
     const Z: u8 = 12;
     let (col, row) = (2048u32, 2048u32);
-    let dir = std::env::temp_dir().join(format!("orbis-tile-dem-{}", std::process::id()));
+    let dir = common::Scratch::new("tile-dem");
     // Terrarium tiles of the 3×3 block around the tile, rising 8 m a DEM
     // pixel (some 10 m wide) eastward and 4 m southward.
     for x in col - 1..=col + 1 {
@@ -312,7 +310,6 @@ fn hillshade_tiles_shade_their_edges_from_their_neighbours() {
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
     let pixels = render_tile(&mut map, Z, col, row);
-    std::fs::remove_dir_all(&dir).unwrap();
     let at = |x: u32, y: u32| {
         let i = ((y * TILE + x) * 4) as usize;
         [pixels[i], pixels[i + 1], pixels[i + 2]]

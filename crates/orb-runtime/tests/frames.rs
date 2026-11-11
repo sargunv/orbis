@@ -293,7 +293,7 @@ mod tests {
     /// tile-shaped gaps.
     #[test]
     fn raster_tiles_evict_unused_tiles_for_room() {
-        let dir = test_dir("orbis-raster-room");
+        let dir = crate::common::Scratch::new("raster-room");
         let tile = solid_tile(&dir);
         // A polygon that only low zooms draw, and imagery.
         let ring: Vec<String> = (0..=360)
@@ -348,7 +348,6 @@ mod tests {
             &offscreen.map.projection(),
         ));
         let (report, warnings) = settle(&mut offscreen);
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(report.tiles_drawn > 0);
     }
@@ -357,7 +356,7 @@ mod tests {
     /// nothing there, as in GL JS.
     #[test]
     fn sources_load_nothing_where_their_layers_hide() {
-        let dir = test_dir("orbis-hidden");
+        let dir = crate::common::Scratch::new("hidden");
         let tile = solid_tile(&dir);
         let path = dir.join("style.json");
         std::fs::write(
@@ -380,7 +379,6 @@ mod tests {
             (report.tiles_drawn, report.scene.meshes)
         };
         let (shown, hidden) = (drawn(6.0), drawn(10.0));
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(shown.0 > 0 && shown.1 > 0, "{shown:?}");
         assert_eq!(hidden, (0, 0));
     }
@@ -389,7 +387,7 @@ mod tests {
     /// to once fewer tiles hold layers, as the scene's pools do.
     #[test]
     fn tile_pages_shrink_with_their_tiles() {
-        let dir = test_dir("orbis-pages");
+        let dir = crate::common::Scratch::new("pages");
         let tile = solid_tile(&dir);
         let path = dir.join("style.json");
         std::fs::write(
@@ -427,7 +425,6 @@ mod tests {
         let few = pages(&mut offscreen);
         let (mut fresh, _, _) = crate::common::Offscreen::load(&options(1.0, 0.0)).unwrap();
         let fresh = pages(&mut fresh);
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(many > 4 * fresh, "{many} bytes of pages at the tilted view");
         // No more than a fresh map's, which loaded within a budget that
         // left it room to grow ahead of need at rest (#176).
@@ -984,8 +981,7 @@ mod tests {
     /// whose JSON failed never gave them.
     #[test]
     fn a_sprite_whose_image_fails_takes_its_icons_back() {
-        let dir = std::env::temp_dir().join(format!("orbis-sprite-image-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::common::Scratch::new("sprite-image");
         std::fs::write(
             dir.join("s.json"),
             r#"{"dot":{"x":0,"y":0,"width":1,"height":1}}"#,
@@ -1016,7 +1012,6 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(errors.iter().any(|e| e.starts_with("sprite")), "{errors:?}");
         assert!(!offscreen.map.has_image("dot"));
     }
@@ -1026,7 +1021,7 @@ mod tests {
     /// fade in. Frames all show one instant, so a fade would never end.
     #[test]
     fn raster_tiles_skip_fades_until_first_idle() {
-        let dir = test_dir("orbis-raster-fade");
+        let dir = crate::common::Scratch::new("raster-fade");
         let tile = solid_tile(&dir);
         let mut offscreen = null_island(&format!(
             r#"{{"version":8,
@@ -1059,7 +1054,6 @@ mod tests {
             &offscreen.map.projection(),
         ));
         let later = idles(&mut offscreen);
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(first, "the first view's tiles show at once");
         assert!(!later, "later tiles fade in");
     }
@@ -1140,13 +1134,6 @@ mod tests {
         }
         let differing = crate::common::differing_pixels(&images[0], &images[1]);
         assert_eq!(differing, 0, "MVT/MLT differing pixels");
-    }
-
-    /// A new, empty directory for a test's files.
-    fn test_dir(prefix: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     /// A 256-pixel tile of one colour, as `tile.png` in `dir`.

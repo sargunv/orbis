@@ -119,8 +119,7 @@ mod tests {
 
     #[test]
     fn reads_writes_appends_lists_and_removes() {
-        let root = std::env::temp_dir().join(format!("orb-storage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::Scratch::new("storage");
         let storage = FileStorage::new(&root);
         storage.write_now("a/b", b"hello", false).unwrap();
         storage.write_now("a/b", b" world", true).unwrap();
@@ -139,6 +138,5 @@ mod tests {
         assert!(storage.read_now("../x", None).is_err());
         storage.remove_now("a").unwrap();
         assert!(storage.list_now("a").unwrap().is_empty());
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

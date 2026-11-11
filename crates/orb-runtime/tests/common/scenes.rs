@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use super::DEMO_DATA;
+use super::{DEMO_DATA, Scratch};
 
 /// A scene: its style, camera (zoom, bearing, pitch over Tokyo), whether
 /// it takes every preview, an edit a frame of the settled map makes, and
@@ -18,6 +18,8 @@ pub(crate) struct Scene {
     pub previews: bool,
     pub edit: Option<&'static str>,
     pub antialias: bool,
+    /// Where its files are, while any of the scenes made with it lives.
+    pub dir: std::sync::Arc<Scratch>,
 }
 
 /// The Tokyo extract's style with its URLs absolute, changed by `edit`,
@@ -72,23 +74,10 @@ pub(crate) fn add_layer(style: &mut Value, layer: Value) {
     layers.insert(at, layer);
 }
 
-/// A directory of its own for a test's styles and tiles.
-pub(crate) fn scratch(name: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "orbis-scenes-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
 /// The scenes named `names`, their files in a scratch directory.
 pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
-    let dir = scratch(names.first().copied().unwrap_or("none"));
+    let first = names.first().copied().unwrap_or("none");
+    let dir = std::sync::Arc::new(Scratch::new(&format!("scenes-{first}")));
     let all = |name: &str| names.contains(&name);
     let mut out = Vec::new();
     let mut add = |name, url: &dyn Fn() -> String, at, previews, edit| {
@@ -100,6 +89,7 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
                 previews,
                 edit,
                 antialias: name == "extrusions-lit",
+                dir: dir.clone(),
             });
         }
     };

@@ -731,23 +731,6 @@ fn projection_switches_load_nothing() {
     }
 }
 
-/// A scratch directory of this test's own, removed when it drops.
-struct Scratch(std::path::PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("orb-edits-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// The Tokyo style with its URLs absolute, to write elsewhere.
 fn tokyo_json() -> String {
     let path = std::path::Path::new(crate::common::DEMO_DATA)
@@ -764,7 +747,7 @@ fn tokyo_json() -> String {
 /// sprite lacks leave, as a fresh load of the edited style shows.
 #[test]
 fn another_sprite_loads_only_the_sprite() {
-    let scratch = Scratch::new("sprite");
+    let scratch = crate::common::Scratch::new("edits-sprite");
     // Half the extract's sprite, the same sheet.
     for name in ["ofm.json", "ofm@2x.json"] {
         let path = std::path::Path::new(crate::common::DEMO_DATA)
@@ -776,7 +759,7 @@ fn another_sprite_loads_only_the_sprite() {
         let half: Vec<String> = (members.iter().take(members.len() / 2))
             .map(|m| format!("{:?}:{}", m.key, m.value))
             .collect();
-        let path = scratch.0.join(name.replace("ofm", "half"));
+        let path = scratch.join(name.replace("ofm", "half"));
         std::fs::write(path, format!("{{{}}}", half.join(","))).unwrap();
     }
     for name in ["ofm.png", "ofm@2x.png"] {
@@ -784,13 +767,13 @@ fn another_sprite_loads_only_the_sprite() {
             .join("sprites")
             .join(name);
         if from.exists() {
-            std::fs::copy(from, scratch.0.join(name.replace("ofm", "half"))).unwrap();
+            std::fs::copy(from, scratch.join(name.replace("ofm", "half"))).unwrap();
         }
     }
     let mut map = tokyo();
     edit(&mut map, r#"[["setTransition", {"duration": 0}]]"#);
     settle(&mut map);
-    let sprite = format!("file://{}/half", scratch.0.display());
+    let sprite = format!("file://{}/half", scratch.display());
     let (_, _, jobs) = measure(&mut map, &format!(r#"[["setSprite", {sprite:?}]]"#));
     assert_eq!(jobs.loads, 0, "{jobs:?}");
     assert!(jobs.relayouts > 0, "symbols lay out again: {jobs:?}");
@@ -802,10 +785,10 @@ fn another_sprite_loads_only_the_sprite() {
 /// then draws what a fresh load of the new style draws.
 #[test]
 fn a_style_url_over_a_style_diffs() {
-    let scratch = Scratch::new("url");
+    let scratch = crate::common::Scratch::new("edits-url");
     let next = tokyo_json().replace("rgb(158,189,255)", "rgb(40,60,200)");
     assert_ne!(next, tokyo_json());
-    let path = scratch.0.join("next.json");
+    let path = scratch.join("next.json");
     std::fs::write(&path, next).unwrap();
     let mut map = tokyo();
     let before = map.map.job_counts();
@@ -863,8 +846,8 @@ fn a_move_after_a_projection_edit_runs() {
 /// room drew nothing (or, warped, its quads without their patches).
 #[test]
 fn image_tiles_regrid_for_a_globe_after_leaving_a_plane() {
-    let scratch = Scratch::new("regrid");
-    let tile = scratch.0.join("tile.png");
+    let scratch = crate::common::Scratch::new("edits-regrid");
+    let tile = scratch.join("tile.png");
     let mut png = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png, 256, 256);
@@ -886,7 +869,7 @@ fn image_tiles_regrid_for_a_globe_after_leaving_a_plane() {
             tile.display()
         )
     };
-    let [plane, flat] = ["plane", "flat"].map(|name| scratch.0.join(format!("{name}.json")));
+    let [plane, flat] = ["plane", "flat"].map(|name| scratch.join(format!("{name}.json")));
     std::fs::write(
         &plane,
         style(r#""projection": {"type": "dev.sargunv.orbis:equal-earth"},"#),
@@ -958,7 +941,7 @@ fn sky_and_light_edits_ease_then_match_a_fresh_map() {
 /// them out again gives the room back.
 #[test]
 fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
-    let scratch = Scratch::new("room");
+    let scratch = crate::common::Scratch::new("edits-room");
     let full: serde_json::Value = serde_json::from_str(&tokyo_json()).unwrap();
     let kept = ["background", "water", "label_city"];
     let added = || {
@@ -973,7 +956,7 @@ fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
         .as_array_mut()
         .unwrap()
         .retain(|l| kept.contains(&l["id"].as_str().unwrap()));
-    let path = scratch.0.join("reduced.json");
+    let path = scratch.join("reduced.json");
     std::fs::write(&path, reduced.to_string()).unwrap();
     // First sizes far below what the full style needs, which only the
     // edit finds out.
@@ -1052,7 +1035,7 @@ fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
 /// that the atlas packs them in other places, draw the same bytes.
 #[test]
 fn patterns_draw_the_same_wherever_the_atlas_packs_them() {
-    let scratch = Scratch::new("pattern");
+    let scratch = crate::common::Scratch::new("edits-pattern");
     let sprites = std::path::Path::new(crate::common::DEMO_DATA).join("sprites");
     for suffix in ["", "@2x"] {
         let text = std::fs::read_to_string(sprites.join(format!("ofm{suffix}.json"))).unwrap();
@@ -1068,18 +1051,18 @@ fn patterns_draw_the_same_wherever_the_atlas_packs_them() {
                 members
             }),
         ] {
-            let path = scratch.0.join(format!("{name}{suffix}.json"));
+            let path = scratch.join(format!("{name}{suffix}.json"));
             std::fs::write(path, format!("{{{}}}", order.join(","))).unwrap();
             std::fs::copy(
                 sprites.join(format!("ofm{suffix}.png")),
-                scratch.0.join(format!("{name}{suffix}.png")),
+                scratch.join(format!("{name}{suffix}.png")),
             )
             .unwrap();
         }
     }
     let frame = |sprite: &str| {
         let mut style: serde_json::Value = serde_json::from_str(&tokyo_json()).unwrap();
-        style["sprite"] = format!("file://{}/{sprite}", scratch.0.display()).into();
+        style["sprite"] = format!("file://{}/{sprite}", scratch.display()).into();
         style["layers"]
             .as_array_mut()
             .unwrap()
@@ -1088,7 +1071,7 @@ fn patterns_draw_the_same_wherever_the_atlas_packs_them() {
                 "type": "background",
                 "paint": {"background-pattern": "airfield", "background-opacity": 0.8}
             }));
-        let path = scratch.0.join(format!("{sprite}-style.json"));
+        let path = scratch.join(format!("{sprite}-style.json"));
         std::fs::write(&path, style.to_string()).unwrap();
         let (mut map, _, _) = Offscreen::load(&Options {
             style: Some(format!("file://{}", path.display())),

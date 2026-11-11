@@ -2,6 +2,8 @@
 //! cache. Downloads from OpenFreeMap: `cargo test -p orb-api --test
 //! regions -- --ignored`.
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use orb_api::{
@@ -14,10 +16,9 @@ const LIBERTY: &str = "https://tiles.openfreemap.org/styles/liberty";
 #[test]
 #[ignore = "downloads from the network"]
 fn a_downloaded_region_opens_offline() {
-    let dir = std::env::temp_dir().join(format!("orb-regions-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::Scratch::new("regions");
     let options = RuntimeOptions {
-        state_dir: Some(dir.clone()),
+        state_dir: Some(dir.to_path_buf()),
         ..RuntimeOptions::default()
     };
     let started = Instant::now();
@@ -97,6 +98,4 @@ fn a_downloaded_region_opens_offline() {
     runtime.delete_region(id).unwrap();
     assert!(runtime.regions().unwrap().is_empty());
     assert_eq!(runtime.stats().region_bytes, 0);
-    drop(runtime);
-    std::fs::remove_dir_all(dir).unwrap();
 }

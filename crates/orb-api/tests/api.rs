@@ -374,10 +374,9 @@ fn wake_callbacks_die_with_their_map() {
 /// Window targets take this path too.
 #[test]
 fn frames_to_idle_save_the_pipeline_cache() {
-    let dir = std::env::temp_dir().join(format!("orb-api-state-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::Scratch::new("api-state");
     let runtime = Runtime::new(&RuntimeOptions {
-        state_dir: Some(dir.clone()),
+        state_dir: Some(dir.to_path_buf()),
         ..RuntimeOptions::default()
     })
     .expect("runtime");
@@ -395,7 +394,6 @@ fn frames_to_idle_save_the_pipeline_cache() {
         );
     }
     drop((map, target, runtime));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A camera given at creation is the map's, at any zoom: the style's own
@@ -1998,8 +1996,7 @@ fn a_map_draws_on_the_thread_that_made_its_runtime() {
 
 #[test]
 fn request_transforms_rewrite_what_the_map_fetches() {
-    let dir = std::env::temp_dir().join(format!("orb-api-requests-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::Scratch::new("api-requests");
     std::fs::write(dir.join("style.json"), STYLE).unwrap();
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let base = format!("file://{}/", dir.display());
@@ -2038,7 +2035,6 @@ fn request_transforms_rewrite_what_the_map_fetches() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     };
     assert!(refused.contains("refused"), "{refused}");
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -2149,7 +2145,7 @@ fn a_building<T>(
             format!(
                 r#", "dem": {{"type": "raster-dem", "encoding": "terrarium", "tileSize": 256,
                   "maxzoom": {DEM_ZOOM}, "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}}"#,
-                d.0.display()
+                d.display()
             ),
             r#""terrain": {"source": "dem"},"#.to_owned(),
         )
@@ -2183,26 +2179,11 @@ fn a_building<T>(
 /// The deepest zoom of [`equator_dem`]'s tiles.
 const DEM_ZOOM: u8 = 15;
 
-/// A directory of DEM tiles, removed when the test is done with it.
-struct DemDir(std::path::PathBuf);
-
-impl Drop for DemDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Terrarium DEM tiles, zooms 0 to [`DEM_ZOOM`], of the ground within
 /// 0.01° of the origin standing `metres(north)` high, `north` metres
 /// north of [`BUILDING`], written to a fresh directory.
-fn equator_dem(metres: &dyn Fn(f64) -> f64) -> DemDir {
-    // One directory per call: tests run in parallel.
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "orb-api-dem-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
+fn equator_dem(metres: &dyn Fn(f64) -> f64) -> common::Scratch {
+    let dir = common::Scratch::new("api-dem");
     const SIZE: u32 = 256;
     for z in 0..=DEM_ZOOM {
         let n = f64::from(1u32 << z);
@@ -2235,18 +2216,13 @@ fn equator_dem(metres: &dyn Fn(f64) -> f64) -> DemDir {
             }
         }
     }
-    DemDir(dir)
+    dir
 }
 
 /// Terrarium DEM tiles of the whole world, zooms 0 to 2, `metres` high
 /// everywhere, written to a fresh directory.
-fn level_dem(metres: f64) -> DemDir {
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "orb-api-level-dem-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
+fn level_dem(metres: f64) -> common::Scratch {
+    let dir = common::Scratch::new("api-level-dem");
     const SIZE: u32 = 256;
     let v = ((metres + 32768.0) * 256.0).round() as u32;
     let pixels: Vec<u8> = (0..SIZE * SIZE)
@@ -2268,7 +2244,7 @@ fn level_dem(metres: f64) -> DemDir {
             }
         }
     }
-    DemDir(dir)
+    dir
 }
 
 /// #165: ground below sea level runs on to the horizon, where the sky
@@ -2293,7 +2269,7 @@ fn ground_below_sea_level_reaches_the_horizon() {
                 "tileSize": 256, "maxzoom": 2, "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}}}},
               "layers": [{{"id": "background", "type": "background",
                 "paint": {{"background-color": "#40a040"}}}}]}}"##,
-            dem.0.display()
+            dem.display()
         );
         let mut map = Map::new(&runtime, MapOptions::default());
         map.set_style_json(&style).expect("style");

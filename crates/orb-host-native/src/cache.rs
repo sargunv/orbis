@@ -436,10 +436,8 @@ mod tests {
         HttpCache::open(Arc::new(crate::FileStorage::new(dir)), max_bytes).unwrap()
     }
 
-    fn dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("orb-cache-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
+    fn dir(name: &str) -> crate::Scratch {
+        crate::Scratch::new(&format!("cache-{name}"))
     }
 
     #[test]
@@ -475,7 +473,6 @@ mod tests {
         assert!(stale.last_modified.is_some());
         assert!(cache.lookup("https://a/missing").is_none());
         drop(cache);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -508,6 +505,5 @@ mod tests {
         drop(open(&dir, 400));
         // The sweep runs on the cache thread, before the drop's join.
         assert!(!dir.join("blobs/2").exists());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

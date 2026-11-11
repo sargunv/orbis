@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+mod common;
+
 use orb_api::{Map, MapOptions, MissingTiles, Runtime, RuntimeOptions};
 
 fn varint(mut n: u64, out: &mut Vec<u8>) {
@@ -95,7 +97,7 @@ fn middle(source: &str, layer: &str, missing_tiles: MissingTiles) -> [u8; 4] {
 
 #[test]
 fn a_child_tile_that_404s_draws_its_parent_or_nothing() {
-    let dir = std::env::temp_dir().join(format!("orb-missing-tiles-{}", std::process::id()));
+    let dir = common::Scratch::new("missing-tiles");
     std::fs::create_dir_all(dir.join("v/0/0")).unwrap();
     std::fs::create_dir_all(dir.join("r/0/0")).unwrap();
     std::fs::write(dir.join("v/0/0/0.pbf"), full_tile()).unwrap();
@@ -123,7 +125,6 @@ fn a_child_tile_that_404s_draws_its_parent_or_nothing() {
         middle(&raster, image, MissingTiles::Parent),
         middle(&raster, image, MissingTiles::Empty),
     ];
-    std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(results[0], red, "the vector parent stands in");
     assert_eq!(results[1], white, "the vector tile is empty");
     assert_eq!(results[2], blue, "the raster parent stands in");
