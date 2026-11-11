@@ -523,7 +523,20 @@ mod tests {
                     &Default::default(),
                 )
                 .unwrap_or_else(|e| panic!("{label} {entry}: {e}"));
-                let (one, info) = (one.into_owned(), info.into_owned());
+                let (mut one, mut info) = (one.into_owned(), info.into_owned());
+                // wgpu's GL back end splits a fragment stage's struct
+                // values into their members (`flatten_structs`): the
+                // Adreno 619 evaluates struct members at mediump there.
+                if stage == naga::ShaderStage::Fragment {
+                    one = glsl::flatten_structs(&one, &info)
+                        .unwrap_or_else(|e| panic!("{label} {entry}: {e}"));
+                    info = naga::valid::Validator::new(
+                        naga::valid::ValidationFlags::all(),
+                        naga::valid::Capabilities::all(),
+                    )
+                    .validate_resolved_overrides(&one)
+                    .unwrap_or_else(|e| panic!("{label} {entry} flattened: {e:?}"));
+                }
                 let mut fail = |what: String| failures.push(format!("{label} {entry}: {what}"));
                 if stage == naga::ShaderStage::Vertex {
                     for name in first_vertex_outputs(&one) {

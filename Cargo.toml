@@ -152,6 +152,11 @@ orb-web = { path = "crates/orb-web" }
 # reversed depth's precision far from the camera (#140). And naga's GLSL
 # leaving out `invariant gl_FragCoord` in every GLSL ES fragment shader, not
 # only WebGL 2's: native GLES (ANGLE, Android) rejected the terrain's.
+# And GLES writing a fragment shader with no struct value
+# (`naga::back::glsl::flatten_structs`): the Adreno 619 evaluates a
+# struct's members at mediump in a fragment stage, and ANGLE drops the
+# `precision highp` statements, so every input through naga's input
+# struct, and every packed word in `Tile`, lost precision there.
 # Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
