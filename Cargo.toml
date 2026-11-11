@@ -173,6 +173,11 @@ fastpfor = { git = "https://github.com/sargunv/FastPFOR-rs", branch = "scalar-un
 # faster on polygons with many holes. Upstream unpinned it after 0.33.1
 # (georust/geo#1533); drop this with the next geo release.
 geo = { git = "https://github.com/sargunv/geo", branch = "unpin-earcut-0.33.1" }
+# mlt-core 0.22.1 reading invalid UTF-8 in a string column as U+FFFD, as
+# orb-tile's MVT reader and GL JS do, instead of failing the tile; valid
+# corpora stay borrowed after one validation, as before (#35 tracks sending
+# it upstream).
+mlt-core = { git = "https://github.com/sargunv/maplibre-tile-spec", branch = "lossy-utf8" }
 
 # Several agents build at once on one disk: line tables keep backtraces
 # readable at a fraction of full debug info, and dependencies carry none.

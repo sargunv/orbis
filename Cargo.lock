@@ -2204,8 +2204,7 @@ dependencies = [
 [[package]]
 name = "mlt-core"
 version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b52f949e09b007dd7ab2f4033c63dc8cbe5b80a1c9402711a42b135d985f22"
+source = "git+https://github.com/sargunv/maplibre-tile-spec?branch=lossy-utf8#0f35cc8d930fa0f3cacfa37e941bfb4ffe3f8749"
 dependencies = [
  "bitvec",
  "bytemuck",

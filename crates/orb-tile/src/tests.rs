@@ -636,6 +636,46 @@ fn mvt_and_mlt_null_first_property_frames_are_equal() {
     );
 }
 
+/// Invalid UTF-8 in an MLT string column reads as U+FFFD, as in MVT,
+/// rather than failing the tile (mlt-core from Orbis's fork), whether the
+/// column stores each feature's string or a dictionary of them.
+#[test]
+fn mlt_invalid_utf8_strings_are_replaced() {
+    // The tile's strings with a stand-in byte, then the invalid one.
+    let invalid = |bytes: &mut Vec<u8>| {
+        for (from, to) in [(&b"caf~"[..], &b"caf\xe9"[..]), (b"r~ue", b"r\xffue")] {
+            let at = bytes.windows(4).position(|w| w == from).unwrap();
+            bytes[at..at + 4].copy_from_slice(to);
+            assert!(!bytes.windows(4).any(|w| w == from));
+        }
+    };
+    for count in [2, 12] {
+        let features: Vec<_> = (0..count)
+            .map(|i| feature(None, 1, &[9, 2 * i, 0], &[0, i % 2]))
+            .collect();
+        let mut mvt_bytes = tile(
+            &features,
+            &["name"],
+            &[message(1, b"caf~"), message(1, b"r~ue")],
+        );
+        let mut mlt_bytes: Vec<u8> = mlt_core::mvt::mvt_to_tile_layers(&mvt_bytes)
+            .unwrap()
+            .iter()
+            .flat_map(|l| {
+                l.encode(config(Tessellation::Off).with_fsst(false))
+                    .unwrap()
+            })
+            .collect();
+        invalid(&mut mvt_bytes);
+        invalid(&mut mlt_bytes);
+        let frame = mlt::decode(&mlt_bytes).unwrap();
+        assert_eq!(frame, mvt::decode(&mvt_bytes).unwrap(), "{count} features");
+        let column = frame.layers[0].property("name").unwrap();
+        assert_eq!(column.get(0), Some(ValueRef::Str("caf\u{fffd}")));
+        assert_eq!(column.get(1), Some(ValueRef::Str("r\u{fffd}ue")));
+    }
+}
+
 #[test]
 fn mlt_winding_and_implicit_closure() {
     use mlt_core::geo_types::{Geometry, LineString, Polygon};
