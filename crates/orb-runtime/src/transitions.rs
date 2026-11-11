@@ -168,7 +168,9 @@ impl Transitions {
             }
             None => prior.clone(),
         };
-        if transition.duration + transition.delay <= 0.0 || per_feature(prior.kind()) {
+        // A zero transition is kept too: the one in force at the next
+        // frame decides, and a zero one then ends it at once.
+        if per_feature(prior.kind()) {
             return;
         }
         self.running.push(Running {

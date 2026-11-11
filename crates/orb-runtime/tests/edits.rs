@@ -391,6 +391,33 @@ fn feature_state_changes_fade() {
     assert_eq!(map.pixels(), plain);
 }
 
+/// A paint change eases by the transition in force at the next frame, as
+/// GL JS and Native resolve it at their next update: one set to zero when
+/// the value changed and made longer before that frame still eases.
+#[test]
+fn a_transition_set_after_a_change_eases_it() {
+    let mut map = tokyo();
+    edit(
+        &mut map,
+        r##"[["setPaintProperty", "background", "background-color", "#000000"]]"##,
+    );
+    settle(&mut map);
+    let black = map.pixels();
+    edit(
+        &mut map,
+        r##"[["setPaintProperty", "background", "background-color-transition", {"duration": 0}],
+            ["setPaintProperty", "background", "background-color", "#ffffff"]]"##,
+    );
+    edit(
+        &mut map,
+        r##"[["setPaintProperty", "background", "background-color-transition", {"duration": 400}]]"##,
+    );
+    let frames = frames_until_idle(&mut map);
+    let white = frames.last().unwrap().clone();
+    assert_ne!(black, white);
+    assert!(some_frame_between(&black, &white, &frames));
+}
+
 /// Frames until the map idles after an edit, each frame's pixels.
 fn frames_until_idle(map: &mut Offscreen) -> Vec<Vec<u8>> {
     let started = Instant::now();
