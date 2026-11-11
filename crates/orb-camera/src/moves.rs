@@ -136,12 +136,27 @@ impl CameraState {
         }
     }
 
-    /// Keeps the style zoom within limits, keeping the target.
+    /// Keeps the style zoom within limits, keeping the target. The zoom is
+    /// read back from the resolution through the target's scale, which can
+    /// land a hair past a limit (zoom 0 reading back as -8e-16): the
+    /// resolution then steps an ulp at a time until it reads back within.
     pub(crate) fn limit_zoom(&mut self, min: f64, max: f64, projection: &Projection) {
+        let max = max.max(min);
         let zoom = self.zoom(projection);
-        let clamped = zoom.clamp(min, max.max(min));
-        if clamped != zoom {
-            self.set_zoom(projection, clamped);
+        let clamped = zoom.clamp(min, max);
+        if clamped == zoom {
+            return;
+        }
+        self.set_zoom(projection, clamped);
+        for _ in 0..8 {
+            let zoom = self.zoom(projection);
+            if zoom < min {
+                self.resolution = self.resolution.next_down();
+            } else if zoom > max {
+                self.resolution = self.resolution.next_up();
+            } else {
+                break;
+            }
         }
     }
 
@@ -354,6 +369,9 @@ impl CameraState {
             if kept != at {
                 let world_per_px = self.world_per_px(projection);
                 self.set_target_world(projection, kept, world_per_px);
+                // The scale's round trip at the new target may leave the
+                // zoom a hair past its limit.
+                self.limit_zoom(least, constraints.max_zoom, projection);
             }
             return;
         }
@@ -371,7 +389,9 @@ impl CameraState {
                 DVec2::new(viewport.width, viewport.height),
             ),
         };
-        self.keep_within(projection, extent, rect, both_axes);
+        if self.keep_within(projection, extent, rect, both_axes) {
+            self.limit_zoom(least, constraints.max_zoom, projection);
+        }
     }
 
     /// How far from the equator the target may go on the sphere, in
@@ -401,14 +421,16 @@ impl CameraState {
     }
 
     /// Keeps a viewport `size` pixels across, axis-aligned in world space,
-    /// inside `rect`.
+    /// inside `rect`. Whether it moved the target at the same scale, which
+    /// can leave the zoom a hair past its limit: the scale round-trips
+    /// through the new target's.
     fn keep_within(
         &mut self,
         projection: &Projection,
         size: DVec2,
         rect: WorldRect,
         both_axes: bool,
-    ) {
+    ) -> bool {
         let world_per_px = self.world_per_px(projection);
         let mut fit = size.y * world_per_px / rect.size().y;
         if both_axes {
@@ -436,6 +458,7 @@ impl CameraState {
         if world != center || scaled != world_per_px {
             self.set_target_world(projection, world, scaled);
         }
+        world != center && scaled == world_per_px
     }
 }
 
@@ -815,5 +838,34 @@ mod tests {
                 assert!(p.distance(at) < 0.05, "{lon},{lat}: zoom around {p}");
             }
         }
+    }
+
+    /// A camera kept to its least zoom, and to the world's edge, reads its
+    /// zoom back within the limits, though the zoom round-trips through the
+    /// scale at the target (and at the target it moves to).
+    #[test]
+    fn a_camera_kept_to_its_least_zoom_reads_it_back() {
+        let p = mercator();
+        let small = Viewport {
+            width: 64.0,
+            height: 48.0,
+        };
+        let least = Constraints {
+            min_zoom: 0.0,
+            ..Constraints::default()
+        };
+        let mut below = Vec::new();
+        for i in 0..4000 {
+            let lat = -89.0 + 178.0 * f64::from(i) / 4000.0;
+            let mut camera = CameraState::new(Geodetic::new(10.0, lat), 0.0, &p);
+            camera.set_zoom(&p, -1e-3 * f64::from(i % 5));
+            camera.constrain(&least, &Surface::from(&p), small);
+            let zoom = camera.zoom(&p);
+            assert!(zoom.abs() < 1e-9, "{lat}: {zoom}");
+            if zoom < 0.0 {
+                below.push((lat, zoom));
+            }
+        }
+        assert!(below.is_empty(), "{below:?}");
     }
 }
