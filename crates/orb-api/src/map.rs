@@ -327,15 +327,25 @@ impl Map {
 
     /// Whether drawing a frame would show something new: data arrived, the
     /// camera moves, a gesture or animation runs, loads and fades are under
-    /// way, or a pipeline the last frame waited for compiled. A host that
-    /// draws only what's new can leave the map's upkeep to its next frame,
-    /// or do the part that draws nothing with [`upkeep`](Self::upkeep).
+    /// way, a pipeline the last frame waited for compiled, or the device
+    /// was lost or replaced. A host that draws only what's new can leave
+    /// the map's upkeep to its next frame, or do the part that draws
+    /// nothing with [`upkeep`](Self::upkeep).
     pub fn has_news(&self) -> bool {
         self.dirty
             || self.busy
             || self.woken.load(Ordering::Acquire)
             || self.map.is_moving()
-            || (self.waiting && self.device_woken.load(Ordering::Acquire))
+            || self.device_news()
+    }
+
+    /// The device's wakes that are news to this map: a compile or a lost
+    /// device's replacement its last frame waited for, a loss (the
+    /// watchdog's, which a frame must find to recover from), or another
+    /// map's replacing the device its picture was on, which went with it.
+    fn device_news(&self) -> bool {
+        (self.renderer.is_some() && self.device != self.runtime.shared.generation())
+            || (self.device_woken.load(Ordering::Acquire) && (self.waiting || self.runtime.lost()))
     }
 
     /// As [`has_news`](Self::has_news), but for the camera: data arrived,
@@ -344,7 +354,7 @@ impl Map {
     pub fn needs_repaint(&self) -> bool {
         self.dirty
             || self.woken.load(Ordering::Acquire)
-            || (self.waiting && self.device_woken.load(Ordering::Acquire))
+            || self.device_news()
             || !(self.settled || self.waiting)
     }
 
@@ -1312,6 +1322,9 @@ impl Map {
                     return Ok(false);
                 }
                 Err(e) => {
+                    // No device will come: the loss is no news again.
+                    self.waiting = false;
+                    self.device_woken.store(false, Ordering::Release);
                     if !std::mem::replace(&mut self.gave_up, true) {
                         self.events.push_back(Event::Map(MapEvent::Error {
                             message: e.message().to_owned(),

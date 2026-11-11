@@ -144,6 +144,35 @@ fn a_lost_device_recovers() {
     assert!(after == before, "the same picture again");
 }
 
+/// A map at rest when another replaces the lost device drew on the old
+/// one, which went with its picture: it asks for a frame on the new one,
+/// which draws it again.
+#[test]
+fn a_map_at_rest_draws_again_on_a_replaced_device() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut maps = [0, 1].map(|_| {
+        let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(STYLE).unwrap();
+        settle(&mut map, &mut target).unwrap();
+        // And its upkeep, as a host drawing only what's new leaves none.
+        while map.needs_frame() {
+            map.render(&mut target, 0.0).unwrap();
+        }
+        (map, target)
+    });
+    let before = maps[1].1.read_pixels().unwrap();
+    runtime.lose_device();
+    let [(first, first_target), (second, second_target)] = &mut maps;
+    settle(first, first_target).unwrap();
+    assert!(second.has_news(), "the replaced device is news");
+    settle(second, second_target).unwrap();
+    assert!(
+        second_target.read_pixels().unwrap() == before,
+        "the same picture again"
+    );
+}
+
 /// A driver that loses every device it gives (Adreno X1's Vulkan, #141):
 /// each loss of a run is answered later than the one before, and past the
 /// backoff's last the runtime stops, saying why once as an error event
@@ -168,6 +197,7 @@ fn losses_in_a_row_back_off_then_stop() {
     runtime.lose_device();
     let error = map.render(&mut target, 0.0).unwrap_err();
     assert!(error.message().contains("lost 4 times"), "{error}");
+    assert!(!map.has_news(), "a stopped runtime's loss is news");
     let events: Vec<_> = std::iter::from_fn(|| map.poll_event()).collect();
     let reported = events
         .iter()
