@@ -632,6 +632,8 @@ impl Drop for Map {
     fn drop(&mut self) {
         self.style_fetch.abort();
         self.style_loads.abort();
+        // Its tiles' loads end with it, as a Native map's requests do.
+        self.cancel_tile_loads();
         let mut images = self.services.images.0.lock().expect("images poisoned");
         self.retired.hand_to(&mut images);
         if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
@@ -2974,6 +2976,11 @@ impl Map {
                 for tile in pyramid.give_up_loads() {
                     self.services.jobs.cancel(style.id, key, tile);
                 }
+            }
+        }
+        if let Some(terrain) = &mut style.terrain {
+            for tile in terrain.pyramid.give_up_loads() {
+                self.services.jobs.cancel(style.id, terrain.key, tile);
             }
         }
     }
