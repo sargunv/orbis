@@ -103,28 +103,36 @@ fn parse_glyph(bytes: &[u8]) -> Result<Option<PbfGlyph>, PbfError> {
         metrics: GlyphMetrics::default(),
         bitmap: Vec::new(),
     };
-    // The largest size or advance, and the code point.
-    let (mut largest, mut code_point) = (0, 0);
+    let mut code_point = 0;
     let mut reader = Reader::new(bytes);
     while let Some((tag, value)) = reader.field()? {
         match (tag, value) {
             (1, Value::Varint(v)) => code_point = v,
             (2, Value::Bytes(b)) => glyph.bitmap = b.to_vec(),
-            (3, Value::Varint(v)) => (glyph.metrics.width, largest) = (v as f64, largest.max(v)),
-            (4, Value::Varint(v)) => (glyph.metrics.height, largest) = (v as f64, largest.max(v)),
+            (3, Value::Varint(v)) => glyph.metrics.width = v as f64,
+            (4, Value::Varint(v)) => glyph.metrics.height = v as f64,
             (5, Value::Varint(v)) => glyph.metrics.left = zigzag(v),
             (6, Value::Varint(v)) => glyph.metrics.top = zigzag(v),
-            (7, Value::Varint(v)) => (glyph.metrics.advance, largest) = (v as f64, largest.max(v)),
+            (7, Value::Varint(v)) => glyph.metrics.advance = v as f64,
             _ => {}
         }
     }
+    let GlyphMetrics {
+        width,
+        height,
+        left,
+        top,
+        advance,
+    } = glyph.metrics;
     let offsets = -128.0..128.0;
-    let GlyphMetrics { left, top, .. } = glyph.metrics;
     match u32::try_from(code_point) {
         Ok(c) if c <= u32::from(char::MAX) => glyph.code_point = c,
         _ => return Ok(None),
     }
-    if largest >= 256 || !offsets.contains(&left) || !offsets.contains(&top) {
+    if [width, height, advance].iter().any(|&size| size >= 256.0)
+        || !offsets.contains(&left)
+        || !offsets.contains(&top)
+    {
         return Ok(None);
     }
     let [w, h] = glyph.bitmap_size();
