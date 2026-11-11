@@ -641,6 +641,19 @@ pub(crate) struct DrawnCopy {
     pub(crate) clips: Vec<[DVec2; 4]>,
 }
 
+impl DrawnCopy {
+    /// Its regions' world rectangles in the copy `wrap` world units over.
+    fn regions(&self, wrap: DVec2) -> Vec<(DVec2, DVec2)> {
+        (self.clips.iter())
+            .map(|corners| {
+                let lo = corners.iter().copied().reduce(DVec2::min).expect("four");
+                let hi = corners.iter().copied().reduce(DVec2::max).expect("four");
+                (lo + wrap, hi + wrap)
+            })
+            .collect()
+    }
+}
+
 impl DrawnTile {
     /// A tile's draws, as frames place them.
     pub(crate) fn new(
@@ -652,7 +665,18 @@ impl DrawnTile {
     ) -> Self {
         let corners = |region: TileIndex| match series {
             None => {
-                let b = tms.tile_bounds(region);
+                let mut b = tms.tile_bounds(region);
+                // East and south edges as the tiles beyond them have them,
+                // so that neighbours share each edge to the bit and a
+                // query on it reads one of them (`ScreenHit::admitted`).
+                b.max.x = tms
+                    .tile_bounds(TileIndex::new(region.z, region.col + 1, region.row))
+                    .min
+                    .x;
+                b.min.y = tms
+                    .tile_bounds(TileIndex::new(region.z, region.col, region.row + 1))
+                    .max
+                    .y;
                 [
                     b.min,
                     DVec2::new(b.max.x, b.min.y),
@@ -691,6 +715,12 @@ impl DrawnTile {
 pub(crate) struct LabelHit {
     pub(crate) node: u32,
     pub(crate) key: FeatureKey,
+    /// The world copy placement drew it in.
+    pub(crate) wrap: i32,
+    /// Where it draws among its tile's labels, upper ones higher: its
+    /// feature's first place in the drawing order where the layer draws
+    /// by viewport y (GL JS's `featureSortOrder`), else its feature index.
+    pub(crate) rank: u32,
     /// Its anchor in world space, in the copy placement drew.
     pub(crate) anchor: DVec2,
     /// Its text and icon boxes, shown ones only.
@@ -776,6 +806,17 @@ impl HitPaint {
                 alignment: l.get(CIRCLE_PITCH_ALIGNMENT).to_owned(),
                 translate: l.get(CIRCLE_TRANSLATE).to_owned(),
                 anchor: l.get(CIRCLE_TRANSLATE_ANCHOR).to_owned(),
+            },
+            // A heatmap's points pick as circles of its radius on the map,
+            // as GL JS's `HeatmapStyleLayer` picks them (Native's never
+            // answer).
+            LayerType::Heatmap => Self::Circle {
+                radius: l.get(orb_style::HEATMAP_RADIUS).to_owned(),
+                stroke: Property::constant(0.0),
+                scale: Property::constant(TranslateAnchor::Map),
+                alignment: Property::constant(TranslateAnchor::Map),
+                translate: Property::constant([0.0; 2]),
+                anchor: Property::constant(TranslateAnchor::Map),
             },
             LayerType::FillExtrusion => Self::Extrusion {
                 base: l.get(EXTRUSION_BASE).to_owned(),
@@ -927,17 +968,25 @@ fn live(p: &Property<f32>, zoom: f64, state: FeatureState<'_>, fallback: f32) ->
 }
 
 /// A feature a query may report, in the order that puts upper ones last:
-/// its layer, then tiles before labels, then its tile's rank (GL JS's
-/// tile order, [`tile_rank`]) or a label's ([`label_rank`]), then the
-/// drawing order (a label's feature index).
+/// its layer, then tiles before labels, then its tile, as GL JS and
+/// MapLibre Native answer a query tile by tile (`sortTilesIn`: zoom, row,
+/// world copy and column, each ascending), then the drawing order (a
+/// label's [`LabelHit::rank`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Order {
     layer: usize,
     label: bool,
-    tile: u64,
+    tile: std::cmp::Reverse<(u8, u32, i32, u32)>,
+    /// Ties between drawn tiles of one index.
+    drawn: u32,
     mesh: u32,
-    copy: u32,
     feature: u32,
+}
+
+impl Order {
+    fn tile(tile: TileIndex, wrap: i32) -> std::cmp::Reverse<(u8, u32, i32, u32)> {
+        std::cmp::Reverse((tile.z, tile.row, wrap, tile.col))
+    }
 }
 
 /// A layer's values at the query's camera.
@@ -961,6 +1010,21 @@ struct LayerAt {
     /// Where the translate is per feature: whether it turns with the
     /// bearing (its anchor is `viewport`).
     feature_translate: Option<bool>,
+}
+
+/// A query on the ground: the tiles it reads, as GL JS's `tilesIn`.
+struct Reach {
+    /// Its world bounds.
+    lo: DVec2,
+    hi: DVec2,
+    /// Grown to the ground under the eye, for 3D layers; `None` where
+    /// they read every tile.
+    solid: Option<(DVec2, DVec2)>,
+    /// World units per pixel of a layer's query radius.
+    per_px: f64,
+    /// On a globe, the wrap period: its one copy of each tile meets the
+    /// query across the antimeridian. 0 on a plane, which draws copies.
+    period: f64,
 }
 
 /// One query's pixels in world space, and what the camera asks of layers.
@@ -1152,6 +1216,56 @@ impl Query<'_> {
         (pad + reach, top)
     }
 
+    /// The pixel box `min..max` on the ground, as GL JS's `tilesIn` picks
+    /// the tiles a query reads; `None` where part of it sees no ground.
+    fn reach(&self, min: DVec2, max: DVec2, period: f64) -> Option<Reach> {
+        let ground = |px: DVec2| match self.elevation {
+            Some(e) => self.view.unproject_terrain(px, e).map(|(world, _)| world),
+            None => self.view.unproject_at(px, 0.0),
+        };
+        let mut corners = vec![min];
+        if min != max {
+            corners.extend([DVec2::new(max.x, min.y), max, DVec2::new(min.x, max.y)]);
+        }
+        let (mut lo, mut hi) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
+        for c in corners {
+            let world = ground(c)?;
+            lo = lo.min(world);
+            hi = hi.max(world);
+        }
+        // GL JS pads by the layers' query radius in pixels at the target,
+        // times `maxPitchScaleFactor`: how much farther than the target
+        // the ground at the view's top left lies, or the highest ground
+        // down its left edge.
+        let height = self.view.viewport().height;
+        let far = (0..8)
+            .map(|i| DVec2::new(0.0, height * f64::from(i) / 8.0))
+            .find_map(|px| self.view.unproject_at(px, 0.0))?;
+        let w = |world: DVec2| {
+            let at = world - self.view.camera_world();
+            (self.view.view_proj() * glam::DVec4::new(at.x, at.y, 0.0, 1.0)).w
+        };
+        let per_px = self.view.world_per_px() * (w(far) / self.view.camera_to_center()).max(1.0);
+        // For 3D layers, GL JS reads every tile between the eye and the
+        // query (`getCameraQueryGeometry`): the box grows to the ground
+        // under the eye. Not on a globe, whose eye stands over no plane.
+        let solid = (self.view.globe().is_none()).then(|| {
+            let eye = self.view.eye().truncate() + self.view.camera_world();
+            (lo.min(eye), hi.max(eye))
+        });
+        Some(Reach {
+            lo,
+            hi,
+            solid,
+            per_px,
+            period: if self.view.globe().is_some() {
+                period
+            } else {
+                0.0
+            },
+        })
+    }
+
     /// World bounds of everything at heights `0..=top` that projects into
     /// the pixel box `min..max` grown by `pad`; `None` when part of it
     /// sees above the horizon.
@@ -1212,6 +1326,7 @@ impl Scene<'_> {
         } else {
             q.ground(min, max, f64::from(pad) + 1.0, top)
         };
+        let turns = i32::from(q.view.globe().is_some() && self.period > 0.0);
         let mut out = Vec::new();
         for (i, (drawn, tile)) in self.drawn.iter().zip(&self.tiles).enumerate() {
             let Some(tile) = tile else {
@@ -1237,6 +1352,12 @@ impl Scene<'_> {
                     .iter()
                     .map(|c| DVec2::new(f64::from(c.wrap) * self.period, 0.0) + at.shift)
                     .collect();
+                // A globe draws one copy, which the ground under the query
+                // can meet across the antimeridian a period away.
+                let outside = |b: (DVec2, DVec2), o: DVec2| {
+                    (-turns..=turns)
+                        .all(|k| outside(b, o + DVec2::new(f64::from(k) * self.period, 0.0)))
+                };
                 if let Some(b) = mesh.mesh_bounds(&tile.mapping)
                     && offsets.iter().all(|&o| outside(b, o))
                 {
@@ -1253,9 +1374,9 @@ impl Scene<'_> {
                             Order {
                                 layer: layer.order,
                                 label: false,
-                                tile: tile_rank(drawn.tile, i),
+                                tile: Order::tile(drawn.tile, copy.wrap),
+                                drawn: i as u32,
                                 mesh: m as u32,
-                                copy: d as u32,
                                 feature: f as u32,
                             },
                             Candidate::Feature {
@@ -1280,10 +1401,10 @@ impl Scene<'_> {
                 Order {
                     layer: layer.order,
                     label: true,
-                    tile: label_rank(label.key.tile),
+                    tile: Order::tile(label.key.tile, label.wrap),
+                    drawn: 0,
                     mesh: 0,
-                    copy: 0,
-                    feature: label.key.feature,
+                    feature: label.rank,
                 },
                 Candidate::Label { layer, label },
             ));
@@ -1323,7 +1444,6 @@ impl Scene<'_> {
                 // `extrusion_drawn`).
                 let screen = ScreenHit::project(
                     &f,
-                    layer.source_layer.is_some(),
                     mapping,
                     copy,
                     q,
@@ -1438,6 +1558,7 @@ impl Scene<'_> {
             zoom,
             elevation: self.elevation,
         };
+        let reach = q.reach(min, max, self.period);
         let mut seen = std::collections::HashSet::new();
         let (mut flat, mut solid) = (Vec::new(), Vec::new());
         for (order, c) in self.candidates(&q, min, max) {
@@ -1450,7 +1571,10 @@ impl Scene<'_> {
             let Some((screen, hit, key)) = self.project(&q, &c) else {
                 continue;
             };
-            if screen.intersects(min, max) && seen.insert((order.layer, key)) {
+            if screen.intersects(min, max)
+                && screen.admitted(reach.as_ref())
+                && seen.insert((order.layer, key))
+            {
                 match screen.depth(min, max) {
                     Some(depth) => solid.push((depth, (hit, order.layer, key))),
                     None => flat.push((hit, order.layer, key)),
@@ -1513,8 +1637,9 @@ enum Candidate<'a> {
 /// A feature or label in a query's pixels, for its exact test.
 #[derive(Debug)]
 struct ScreenHit {
-    /// Whether region clips apply: features of vector tiles.
-    clipped: bool,
+    /// An extrusion, which GL JS looks for in every tile between the eye
+    /// and the query; `false` for labels, which answer from placement.
+    solid: bool,
     /// 0 polygons, 1 lines, 2 points, 3 a label's box.
     kind: u32,
     radius: f32,
@@ -1524,12 +1649,13 @@ struct ScreenHit {
     depths: Vec<Vec<f64>>,
     /// A line label's collision circles: centre and radius.
     circles: Vec<(Vec2, f32)>,
-    /// The regions its tile draws in, and how far past them in pixels a
-    /// query still finds it: GL JS queries every tile within the layer's
-    /// query radius (its translation and width) of the query, and a
-    /// tile's features run into its buffer, so a feature near a tile
-    /// edge can answer from both tiles.
-    clips: Vec<Vec<Vec2>>,
+    /// The world rectangles its tile draws in (its copy's), and how far
+    /// past them in pixels a query still finds it: GL JS queries every
+    /// tile within the layer's query radius (its translation and width)
+    /// of the query, and a tile's features run into its buffer, so a
+    /// feature near a tile edge can answer from both tiles. Empty for
+    /// labels, which answer once.
+    regions: Vec<(DVec2, DVec2)>,
     clip_pad: f32,
     min: Vec2,
     max: Vec2,
@@ -1539,7 +1665,6 @@ impl ScreenHit {
     #[allow(clippy::too_many_arguments)]
     fn project(
         feature: &FeatureRef<'_>,
-        clipped: bool,
         mapping: &TileMapping,
         copy: &DrawnCopy,
         q: &Query<'_>,
@@ -1551,7 +1676,6 @@ impl ScreenHit {
         if feature.kind == 2 && q.camera.pitch > 0.0 && (scale_with_map || on_map) {
             return Self::pitched_circles(
                 feature,
-                clipped,
                 mapping,
                 copy,
                 q,
@@ -1667,18 +1791,8 @@ impl ScreenHit {
         let radius = radius as f32;
         min -= Vec2::splat(radius);
         max += Vec2::splat(radius);
-        let clips = copy
-            .clips
-            .iter()
-            .map(|corners| {
-                corners
-                    .iter()
-                    .filter_map(|&p| q.project(p + wrap, 0.0))
-                    .collect()
-            })
-            .collect();
         Some(Self {
-            clipped,
+            solid: extrusion.is_some(),
             kind,
             radius,
             parts,
@@ -1686,7 +1800,7 @@ impl ScreenHit {
             circles: Vec::new(),
             min,
             max,
-            clips,
+            regions: copy.regions(wrap),
             clip_pad,
         })
     }
@@ -1699,7 +1813,6 @@ impl ScreenHit {
     #[allow(clippy::too_many_arguments)]
     fn pitched_circles(
         feature: &FeatureRef<'_>,
-        clipped: bool,
         mapping: &TileMapping,
         copy: &DrawnCopy,
         q: &Query<'_>,
@@ -1744,18 +1857,8 @@ impl ScreenHit {
                 }
             }
         }
-        let clips = copy
-            .clips
-            .iter()
-            .map(|corners| {
-                corners
-                    .iter()
-                    .filter_map(|&p| q.project(p + wrap, 0.0))
-                    .collect()
-            })
-            .collect();
         Some(Self {
-            clipped,
+            solid: false,
             kind: 0,
             radius: 0.0,
             parts,
@@ -1763,7 +1866,7 @@ impl ScreenHit {
             circles,
             min,
             max,
-            clips,
+            regions: copy.regions(wrap),
             clip_pad: (shift.length() / q.view.world_per_px() + radius) as f32,
         })
     }
@@ -1794,17 +1897,43 @@ impl ScreenHit {
             max = max.max(c + r);
         }
         Self {
-            clipped: false,
+            solid: false,
             kind: LABEL,
             radius: 0.0,
             parts,
             depths: Vec::new(),
             circles,
-            clips: Vec::new(),
+            regions: Vec::new(),
             clip_pad: 0.0,
             min,
             max,
         }
+    }
+
+    /// Whether a tile it's drawn from reads `reach`, as GL JS's `tilesIn`
+    /// takes tiles: within the query radius of a region, whose square is
+    /// half open, so that a point on its east or south edge is the next
+    /// tile's and a feature across both answers once. Everything answers
+    /// where the reach is unknown.
+    fn admitted(&self, reach: Option<&Reach>) -> bool {
+        let Some(r) = reach else {
+            return true;
+        };
+        let (lo, hi) = match (self.solid, r.solid) {
+            (false, _) => (r.lo, r.hi),
+            (true, Some(solid)) => solid,
+            (true, None) => return true,
+        };
+        let pad = f64::from(self.clip_pad) * r.per_px;
+        let turns = if r.period > 0.0 { -1..=1 } else { 0..=0 };
+        self.regions.is_empty()
+            || (self.regions.iter()).any(|&(a, b)| {
+                turns.clone().any(|k| {
+                    let (a, b) = (a.x + f64::from(k) * r.period, b.x + f64::from(k) * r.period);
+                    lo.x - pad < b && hi.x + pad >= a
+                }) && hi.y + pad > a.y
+                    && lo.y - pad <= b.y
+            })
     }
 
     fn contains(&self, p: DVec2) -> bool {
@@ -1812,29 +1941,23 @@ impl ScreenHit {
         if !p.is_finite() || !p.cmpge(self.min).all() || !p.cmple(self.max).all() {
             return false;
         }
-        let near = |clip: &[Vec2]| {
-            inside(p, clip)
-                || (0..clip.len())
-                    .any(|i| distance(p, clip[i], clip[(i + 1) % clip.len()]) <= self.clip_pad)
-        };
-        if self.clipped && !self.clips.is_empty() && !self.clips.iter().any(|clip| near(clip)) {
-            return false;
-        }
         if self
             .circles
             .iter()
-            .any(|&(c, r)| c.distance_squared(p) <= r * r)
+            .any(|&(c, r)| c.distance_squared(p) < r * r)
         {
             return true;
         }
+        // A point exactly a radius away misses, as GL JS's
+        // `pointIntersectsBufferedLine` tests it.
         self.parts.iter().any(|part| match self.kind {
             2 => part
                 .iter()
                 .flatten()
-                .any(|q| q.distance_squared(p) <= self.radius * self.radius),
+                .any(|q| q.distance_squared(p) < self.radius * self.radius),
             1 => part.iter().any(|ring| {
                 ring.windows(2)
-                    .any(|pair| distance(p, pair[0], pair[1]) <= self.radius)
+                    .any(|pair| distance(p, pair[0], pair[1]) < self.radius)
             }),
             LABEL => part.first().is_some_and(|outer| inside(p, outer)),
             _ => polygon_meets(part, p, p),
@@ -1849,15 +1972,6 @@ impl ScreenHit {
         }
         let (min, max) = (min.as_vec2(), max.as_vec2());
         if self.max.cmplt(min).any() || self.min.cmpgt(max).any() {
-            return false;
-        }
-        if self.clipped
-            && !self.clips.is_empty()
-            && !self.clips.iter().any(|clip| {
-                polygon_meets(std::slice::from_ref(clip), min, max)
-                    || ring_touches(clip, min, max, self.clip_pad, true)
-            })
-        {
             return false;
         }
         if self
@@ -1945,24 +2059,6 @@ fn plane_depth(p: Vec2, face: &[Vec2], depth: &[f64]) -> f64 {
         }
     }
     f64::INFINITY
-}
-
-/// A tile's rank among a layer's features, highest first: GL JS answers a
-/// query tile by tile in `compareTileId` order (lower zooms first, then
-/// rows and columns from the last), so a feature two tiles hold comes
-/// from each in that order. `drawn` breaks ties between world copies.
-fn tile_rank(tile: TileIndex, drawn: usize) -> u64 {
-    let z = u64::from(31u8.saturating_sub(tile.z));
-    (z << 58) | (u64::from(tile.row) << 30) | (u64::from(tile.col) << 2) | (drawn as u64 & 3)
-}
-
-/// A label's tile's rank among its layer's labels, highest first: GL JS
-/// answers labels bucket by bucket in `sortTilesIn` order (lower zooms
-/// first, then rows and columns from the first), each bucket's features
-/// last first.
-fn label_rank(tile: TileIndex) -> u64 {
-    let key = (u64::from(tile.z) << 58) | (u64::from(tile.row) << 29) | u64::from(tile.col);
-    u64::MAX - key
 }
 
 /// A line widened by `half` on each side, as polygons: a quadrilateral a
@@ -2280,13 +2376,13 @@ mod tests {
         let at = plane_depth(Vec2::new(5., 5.), &face, &depth);
         assert!((at - 0.5).abs() < 1e-9, "{at}");
         let hit = ScreenHit {
-            clipped: false,
+            solid: true,
             kind: 0,
             radius: 0.0,
             parts: vec![vec![face.to_vec()]],
             depths: vec![depth.to_vec()],
             circles: Vec::new(),
-            clips: Vec::new(),
+            regions: Vec::new(),
             clip_pad: 0.0,
             min: Vec2::ZERO,
             max: Vec2::splat(10.),

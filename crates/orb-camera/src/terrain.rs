@@ -33,11 +33,7 @@ impl View {
     /// metres)`, found by walking the view ray (a CPU DEM ray walk,
     /// never a GPU readback). Where no DEM data has loaded the
     /// ground is at sea level. `None` above the horizon.
-    pub(crate) fn unproject_terrain(
-        &self,
-        px: DVec2,
-        terrain: &dyn Elevation,
-    ) -> Option<(DVec2, f64)> {
+    pub fn unproject_terrain(&self, px: DVec2, terrain: &dyn Elevation) -> Option<(DVec2, f64)> {
         let (near, far) = self.ray(px, &self.view_proj);
         let ground = |p: DVec3| {
             terrain

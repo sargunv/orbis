@@ -1741,6 +1741,16 @@ fn viewport_y_order(t: &PlacementTables, angle: f64) -> Vec<usize> {
     order
 }
 
+/// GL JS's `featureSortOrder`: each instance's feature, in the order a
+/// layer drawn by viewport y (`LayerParams::draw_by_viewport_y`) draws them
+/// at a bearing of `bearing` radians, upper ones last. Queries answer a
+/// tile's labels in it, upper ones first.
+pub fn feature_sort_order(t: &PlacementTables, bearing: f64) -> Vec<u32> {
+    (viewport_y_order(t, -bearing).into_iter())
+        .map(|i| t.instances[i].feature)
+        .collect()
+}
+
 /// GL JS `sortFeatures`: quads in their instances' [`viewport_y_order`].
 fn draw_order(t: &PlacementTables, angle: f64) -> (Vec<u32>, Vec<u32>) {
     let order = viewport_y_order(t, angle);

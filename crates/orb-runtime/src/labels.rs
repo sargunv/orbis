@@ -1511,6 +1511,19 @@ impl Labels {
                     continue;
                 };
                 let shift = glam::DVec2::new(f64::from(id.wrap) * period, 0.0);
+                // Where each feature's first instance draws, when the
+                // layer draws by viewport y; else by feature index.
+                let sorted: HashMap<u32, u32> = if layer.params.draw_by_viewport_y {
+                    let order =
+                        orb_symbol::feature_sort_order(&meshes.tables, frame.camera.bearing);
+                    let mut at = HashMap::new();
+                    for (i, feature) in order.into_iter().enumerate() {
+                        at.entry(feature).or_insert(i as u32);
+                    }
+                    at
+                } else {
+                    HashMap::new()
+                };
                 for (index, instance) in meshes.tables.instances.iter().enumerate() {
                     let text = instance.text.iter().find(|&&p| shown(&states.text, p));
                     let icon = instance.icon.iter().find(|&&p| shown(&states.icon, p));
@@ -1569,6 +1582,11 @@ impl Labels {
                             tile: orb_crs::TileIndex::new(id.z, id.x, id.y),
                             feature: instance.feature,
                         },
+                        wrap: id.wrap,
+                        rank: sorted
+                            .get(&instance.feature)
+                            .copied()
+                            .unwrap_or(instance.feature),
                         anchor: to_world.transform_point2(glam::DVec2::new(ax, ay)) + shift,
                         boxes,
                         circles,

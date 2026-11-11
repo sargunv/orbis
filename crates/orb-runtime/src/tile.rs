@@ -1054,7 +1054,7 @@ pub(crate) fn build(
             let kind = match node.family {
                 Family::Fill | Family::FillExtrusion => Some(0),
                 Family::Line => Some(1),
-                Family::Circle => Some(2),
+                Family::Circle | Family::Heatmap => Some(2),
                 Family::SymbolIcon | Family::SymbolText => Some(crate::query::LABEL),
                 _ => None,
             };
@@ -1080,6 +1080,7 @@ pub(crate) fn build(
             // What a hit test reads of each feature's paint.
             let dimensions: &[_] = match style_layer.ty {
                 LayerType::Circle => &[orb_style::CIRCLE_RADIUS, orb_style::CIRCLE_STROKE_WIDTH],
+                LayerType::Heatmap => &[orb_style::HEATMAP_RADIUS],
                 LayerType::Line => &[
                     orb_style::LINE_WIDTH,
                     orb_style::LINE_GAP_WIDTH,
@@ -1113,6 +1114,7 @@ pub(crate) fn build(
                 let at = |d: usize| dimensions[d].evaluate(zoom, i);
                 let dimensions = match style_layer.ty {
                     LayerType::Circle => [at(0), at(1), 0.0, 0.0],
+                    LayerType::Heatmap => [at(0), 0.0, 0.0, 0.0],
                     LayerType::Line => {
                         let offset = at(2);
                         [at(0) / 2.0, at(1), offset.abs(), offset]
