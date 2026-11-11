@@ -70,8 +70,9 @@ the web package's `edit` uses. Warnings an edit raises skip the test as the
 initial style's would. GL JS's harness draws once when a wait's timer fires and
 reads that frame, so a fading or transitioning test's closing frames keep the
 last frame's time: a transition is read where its waits leave it however long
-frames take. The Chrome runner waits on the wall clock, as GL JS's harness does,
-so a slow frame there can still move a transition along.
+frames take. The Chrome runner (`web/demo/fixture.html`) times its frames the
+same way through the map's `setFrameClock`, so both draw a transition at the
+same point.
 
 **Assets.** A fetch wrapper maps `local://` and GL JS's test-server origin
 `http://localhost:2900/` to the mirror's `assets/`, including URLs that TileJSON
