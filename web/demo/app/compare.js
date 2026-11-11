@@ -7,7 +7,7 @@
 // other maps take Orbis's style as it stands (the entry's projection and
 // sky applied, less Orbis's preview properties, for which GL JS's
 // validation refuses the whole style) and follow its edits, the map
-// options'.
+// options'. With those off, as they start, every side loads the same style.
 //
 // An engine loads only when a side picks it. Each is a module with a
 // `label` and `open(container, { style, camera, constraints })`, which
@@ -17,6 +17,7 @@
 // that it needs a cross-origin isolated page (isolation.js).
 import { h } from "./dom.js";
 import { isolate, isolated } from "./isolation.js";
+import { byDay } from "./options.js";
 
 const ENGINES = {
   orbis: { name: "Orbis", load: () => import("./orbis.js") },
@@ -43,23 +44,6 @@ const ENGINES = {
  * (`byDay`).
  */
 const ORBIS = "dev.sargunv.orbis:";
-/**
- * `value` as the day side draws it: each `step` or `interpolate` over
- * Orbis's `["dev.sargunv.orbis:daylight"]` (its preview) replaced by its
- * last output, which is its value at full daylight.
- */
-function byDay(value) {
-  if (!Array.isArray(value)) return value;
-  const [op, ...args] = value;
-  const input = op === "step" ? args[0] : args[1];
-  if (
-    (op === "step" || op.startsWith?.("interpolate")) &&
-    Array.isArray(input) &&
-    input[0] === "dev.sargunv.orbis:daylight"
-  )
-    return byDay(value.at(-1));
-  return value.map(byDay);
-}
 /** `paint` with its colours over the daylight as the day side draws them. */
 const daytime = (paint) =>
   paint &&

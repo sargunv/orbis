@@ -426,6 +426,13 @@ h3 {
     linear-gradient(32deg, transparent 47%, var(--c) 47% 56%, transparent 56%),
     linear-gradient(130deg, var(--a) 0 58%, var(--b) 58% 100%);
 }
+.scene-flags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 4px;
+  white-space: nowrap;
+}
 .dark-flag {
   font-size: var(--text-xs);
   color: var(--ink-muted);

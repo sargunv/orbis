@@ -11,7 +11,7 @@
         {
           "key": "globe",
           "name": "Globe",
-          "detail": "Protomaps tiles in a palette of its own on the globe in 3D: sea depths, hillshade, buildings, day and night, and Mapterhorn terrain",
+          "detail": "Protomaps tiles in a palette of its own on the globe in 3D: sea depths, hillshade, buildings and Mapterhorn terrain",
           "url": "https://api.protomaps.com/styles/v5/light/en.json?key=73c45a97eddd43fb",
           "projection": {
             "type": "globe"
@@ -28,11 +28,11 @@
               ["linear"],
               ["zoom"],
               0,
-              0.45,
+              0.2,
               2,
-              0.4,
+              0.16,
               4,
-              0.25,
+              0.1,
               8,
               0
             ],
@@ -68,6 +68,7 @@
           "key": "equal-earth",
           "name": "Equal Earth",
           "detail": "The whole world equal-area, handing over to Web Mercator by zoom 7",
+          "orbisOnly": true,
           "url": "https://tiles.openfreemap.org/styles/liberty",
           "projection": {
             "type": "dev.sargunv.orbis:equal-earth"
@@ -86,6 +87,7 @@
           "key": "arctic",
           "name": "Arctic",
           "detail": "A polar stereographic CRS, EPSG:3413",
+          "orbisOnly": true,
           "url": "crs/arctic.json",
           "dark": true,
           "swatch": ["#24476b", "#e9eef2", "#9aa6ad"],

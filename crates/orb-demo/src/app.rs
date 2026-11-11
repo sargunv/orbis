@@ -62,6 +62,8 @@ pub(crate) struct Demo {
     stopped: bool,
     idle_at: Option<(Instant, u32)>,
     count_frames: Option<f64>,
+    /// The page colour the map draws on, once set.
+    page: Option<Color32>,
 }
 
 #[derive(Default)]
@@ -91,7 +93,8 @@ impl Demo {
             &runtime,
             MapOptions {
                 camera,
-                // The opaque window has no page behind transparent pixels.
+                // The opaque window has no page behind transparent pixels:
+                // the web page's colour stands in, from the first frame.
                 clear_color: [1.0; 4],
                 // The demo shows what Orbis can do beyond the spec too.
                 previews: Previews::ALL,
@@ -125,6 +128,7 @@ impl Demo {
             stopped: false,
             idle_at: None,
             count_frames: launch.count_frames,
+            page: None,
         };
         demo.load(launch.scene);
         demo
@@ -599,6 +603,13 @@ impl Demo {
         let palette =
             Palette::new(self.scene.dark || ctx.system_theme() == Some(egui::Theme::Dark));
         palette.apply(&ctx);
+        // Where the style draws nothing (the space around a globe), the
+        // map shows the page behind it, as on the web.
+        if self.page != Some(palette.page) {
+            self.page = Some(palette.page);
+            let [r, g, b, a] = palette.page.to_normalized_gamma_f32();
+            self.map.set_clear_color([r, g, b, a].map(f64::from));
+        }
         self.forward_input(&ctx);
         let rect = ui.max_rect();
         self.draw_map(rect, ctx.pixels_per_point(), device, renderer);
@@ -650,6 +661,8 @@ const SHEET_WIDTH: f32 = 340.0;
 /// The web demo's colour tokens, light or dark.
 struct Palette {
     dark: bool,
+    /// The page behind the map.
+    page: Color32,
     surface: Color32,
     well: Color32,
     ink: Color32,
@@ -667,6 +680,7 @@ impl Palette {
         if dark {
             Self {
                 dark,
+                page: hex("#05070b"),
                 surface: hex("#1d232af0"),
                 well: hex("#2a323b"),
                 ink: hex("#eef1f4"),
@@ -680,6 +694,7 @@ impl Palette {
         } else {
             Self {
                 dark,
+                page: hex("#dfe3e6"),
                 surface: hex("#fffffff0"),
                 well: hex("#eef1f4"),
                 ink: hex("#17202a"),
@@ -1155,6 +1170,16 @@ fn scene_row(ui: &mut Ui, palette: &Palette, scene: &Scene, current: bool) -> Re
                     ui.spacing_mut().item_spacing.y = 1.0;
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(&scene.name).size(15.0));
+                        if scene.orbis_only {
+                            tag(
+                                ui,
+                                palette,
+                                "Orbis only",
+                                Some(
+                                    "Shows an Orbis extension beyond the style spec: GL JS and MapLibre Native can't draw it",
+                                ),
+                            );
+                        }
                         if scene.dark {
                             tag(ui, palette, "Dark", None);
                         }

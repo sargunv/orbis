@@ -330,6 +330,14 @@ impl Map {
         self.map.set_plays_video(plays);
     }
 
+    /// Sets the colour (premultiplied RGBA) the map draws on, which shows
+    /// where nothing in the style covers it, as [`MapOptions::clear_color`]
+    /// set it; the next frame draws on it.
+    pub fn set_clear_color(&mut self, color: [f64; 4]) {
+        self.map.set_clear_color(color);
+        self.dirty = true;
+    }
+
     /// Sets how tiles coarsen with distance in pitched views (MapLibre
     /// Native's tile level of detail, as maplibre-native-ffi's
     /// `mln_map_set_tile_options` takes it); the next frame covers with it.

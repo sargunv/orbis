@@ -5,18 +5,71 @@
 // so nothing reloads, and a comparison's other maps follow it as they
 // follow every edit (compare.js), ignoring what they can't draw. A choice
 // other than the entry's own stays in the URL (`&terrain=1`, `&light=map`,
-// `&shadows=0`, …), so a link reproduces the view; the style as the entry
+// `&shadows=1`, …), so a link reproduces the view; the style as the entry
 // designs it, before the URL's choices, is what each option's default and
-// its "on" read from.
+// its "on" read from. An Orbis-only option starts off whatever the entry
+// designs, its keys out of the style, so that by default every entry draws
+// what GL JS and MapLibre Native could from the same style, Orbis's
+// previews a switch away.
 import { h } from "./dom.js";
 
 const COLOR_SPACE = "dev.sargunv.orbis:color-space";
 const GROUND_LIGHTING = "dev.sargunv.orbis:ground-lighting";
+/**
+ * The light's keys that go with the night side: the ground lighting, the
+ * dusk it passes through, and the ambient light the night side keeps, which
+ * lights the extrusions' faces the sun doesn't reach too.
+ */
+const NIGHT = [
+  GROUND_LIGHTING,
+  "dev.sargunv.orbis:twilight",
+  "dev.sargunv.orbis:ambient-color",
+  "dev.sargunv.orbis:ambient-intensity",
+];
+const DAYLIGHT = "dev.sargunv.orbis:daylight";
 const DATETIME = "dev.sargunv.orbis:datetime";
+const SHADOWS = "dev.sargunv.orbis:shadow-intensity";
+const ROUNDED = "dev.sargunv.orbis:fill-rounded-corner-distance";
+/** The stars, and the backdrop they shine on. */
+const STARRY = [
+  "dev.sargunv.orbis:star-opacity",
+  "dev.sargunv.orbis:backdrop-color",
+];
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
 const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map(
   (p) => `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-${p}`,
 );
+
+/**
+ * `value` as the day side draws it: each `step` or `interpolate` over
+ * Orbis's `["dev.sargunv.orbis:daylight"]` (its preview) replaced by its
+ * last output, which is its value at full daylight.
+ */
+export function byDay(value) {
+  if (!Array.isArray(value)) return value;
+  const [op, ...args] = value;
+  const input = op === "step" ? args[0] : args[1];
+  if (
+    (op === "step" || op.startsWith?.("interpolate")) &&
+    Array.isArray(input) &&
+    input[0] === DAYLIGHT
+  )
+    return byDay(value.at(-1));
+  return value.map(byDay);
+}
+/** Whether a property's value reads the daylight. */
+const readsDaylight = (value) =>
+  Array.isArray(value) && (value[0] === DAYLIGHT || value.some(readsDaylight));
+
+/** `object` with `keys` as `from` has them when `on`, else without them. */
+function withKeys(object, keys, on, from) {
+  const next = { ...object };
+  for (const key of keys) {
+    if (on && from?.[key] !== undefined) next[key] = from[key];
+    else delete next[key];
+  }
+  return next;
+}
 
 const ofType = (style, type) => style.layers.filter((l) => l.type === type);
 const visible = (layer) => layer.layout?.visibility !== "none";
@@ -74,6 +127,9 @@ const occluded = (style) =>
   ofType(style, "fill-extrusion").filter((l) =>
     AMBIENT_OCCLUSION.some((p) => nonzero(l.paint?.[p], 0)),
   );
+/** The fill layers whose footprints the style rounds. */
+const rounded = (style) =>
+  ofType(style, "fill").filter((l) => nonzero(l.layout?.[ROUNDED], 0));
 
 /**
  * The options, in the panel's order. Each has a `key` (its URL parameter
@@ -84,8 +140,9 @@ const occluded = (style) =>
  * entry's default when not as the style was designed (terrain the switch
  * puts in). An entry's `off` lists switches its style designs that start
  * off (styles.js). `needs` names an option, and its value, without which this
- * one draws nothing, and says so: it's disabled then. `orbisOnly` marks a preview GL JS
- * and MapLibre Native don't draw.
+ * one draws nothing, and says so: it's disabled then. `orbisOnly` marks a
+ * preview GL JS and MapLibre Native don't draw: off by default (a choice's
+ * `initial` is the spec's), and off takes its keys out of the style.
  */
 export const OPTIONS = [
   {
@@ -132,16 +189,23 @@ export const OPTIONS = [
     key: "night",
     group: "Terrain and light",
     label: "Night side",
-    note: "The ground darkened where the sun is down",
+    note: "The ground darkened where the sun is down, labels lit against it",
     kind: "switch",
     orbisOnly: true,
     supported: ({ designed }) => nonzero(designed.light?.[GROUND_LIGHTING], 0),
     read: (style) => nonzero(style.light?.[GROUND_LIGHTING], 0),
-    apply: (tx, on, { style, designed }) =>
-      tx.setLight({
-        ...style.light,
-        [GROUND_LIGHTING]: on ? designed.light[GROUND_LIGHTING] : 0,
-      }),
+    // The ambient light and the dusk with it, and the labels' colours that
+    // follow the daylight, or their day side's without it.
+    apply(tx, on, { style, designed }) {
+      tx.setLight(withKeys(style.light, NIGHT, on, designed.light));
+      const present = new Set(style.layers.map((l) => l.id));
+      for (const layer of ofType(designed, "symbol")) {
+        if (!present.has(layer.id)) continue;
+        for (const [name, value] of Object.entries(layer.paint ?? {}))
+          if (readsDaylight(value))
+            tx.setPaintProperty(layer.id, name, on ? value : byDay(value));
+      }
+    },
   },
   {
     key: "now",
@@ -179,17 +243,11 @@ export const OPTIONS = [
     orbisOnly: true,
     needs: ["buildings", true, "With 3D buildings on"],
     supported: ({ designed }) =>
-      nonzero(designed.light?.["dev.sargunv.orbis:shadow-intensity"], 0) &&
+      nonzero(designed.light?.[SHADOWS], 0) &&
       ofType(designed, "fill-extrusion").length > 0,
-    read: (style) =>
-      nonzero(style.light?.["dev.sargunv.orbis:shadow-intensity"], 0),
+    read: (style) => nonzero(style.light?.[SHADOWS], 0),
     apply: (tx, on, { style, designed }) =>
-      tx.setLight({
-        ...style.light,
-        "dev.sargunv.orbis:shadow-intensity": on
-          ? designed.light["dev.sargunv.orbis:shadow-intensity"]
-          : 0,
-      }),
+      tx.setLight(withKeys(style.light, [SHADOWS], on, designed.light)),
   },
   {
     key: "ao",
@@ -205,9 +263,29 @@ export const OPTIONS = [
       for (const layer of occluded(designed).filter((l) => present.has(l.id))) {
         for (const name of AMBIENT_OCCLUSION) {
           if (layer.paint[name] !== undefined)
-            tx.setPaintProperty(layer.id, name, on ? layer.paint[name] : 0);
+            tx.setPaintProperty(layer.id, name, on ? layer.paint[name] : null);
         }
       }
+    },
+  },
+  {
+    key: "rounded",
+    group: "Buildings",
+    label: "Rounded footprints",
+    note: "Flat footprints rounded as the 3D buildings are",
+    kind: "switch",
+    orbisOnly: true,
+    supported: ({ designed }) => rounded(designed).length > 0,
+    read: (style) => rounded(style).length > 0,
+    apply(tx, on, { style, designed }) {
+      const present = new Set(style.layers.map((l) => l.id));
+      for (const layer of rounded(designed))
+        if (present.has(layer.id))
+          tx.setLayoutProperty(
+            layer.id,
+            ROUNDED,
+            on ? layer.layout[ROUNDED] : null,
+          );
     },
   },
   {
@@ -248,9 +326,13 @@ export const OPTIONS = [
     group: "Globe and sky",
     label: "Stars",
     kind: "switch",
+    note: "On a night-sky backdrop",
     orbisOnly: true,
     needs: ["projection", "globe", "On the globe"],
-    ...skyNumber("dev.sargunv.orbis:star-opacity", 0, 0),
+    supported: ({ designed }) => nonzero(designed.sky?.[STARRY[0]], 0),
+    read: (style) => nonzero(style.sky?.[STARRY[0]], 0),
+    apply: (tx, on, { style, designed }) =>
+      tx.setSky(withKeys(style.sky, STARRY, on, designed.sky)),
   },
   {
     key: "labels",
@@ -273,11 +355,15 @@ export const OPTIONS = [
       ["linear", "srgb"].includes(designed.metadata?.[COLOR_SPACE]),
     read: (style) =>
       style.metadata?.[COLOR_SPACE] === "linear" ? "linear" : "srgb",
+    // sRGB is the spec's, without the key.
+    initial: () => "srgb",
     // The metadata isn't an edit of its own: the style, diffed, with it changed.
     apply: (tx, space, { style }) =>
       tx.setStyle({
         ...style,
-        metadata: { ...style.metadata, [COLOR_SPACE]: space },
+        metadata: withKeys(style.metadata, [COLOR_SPACE], space !== "srgb", {
+          [COLOR_SPACE]: space,
+        }),
       }),
   },
 ];
@@ -288,6 +374,60 @@ function decode(option, text) {
   if (option.kind === "switch")
     return text === "1" ? true : text === "0" ? false : undefined;
   return option.choices.some(([value]) => value === text) ? text : undefined;
+}
+
+/** The entry's default: off where it says so or for an Orbis-only switch, else the option's own, else as designed. */
+function initialOf(option, context) {
+  if (context.scene.off?.includes(option.key)) return false;
+  if (option.initial) return option.initial(context);
+  if (option.orbisOnly) return false;
+  return option.read(context.designed);
+}
+/** The value `query` asks of `option`, else its default. */
+const wantedOf = (option, context, query) =>
+  decode(option, query.get(option.key)) ?? initialOf(option, context);
+
+/** The edits a transaction makes, made on a copy of `style` as JSON: `tx.style` is the result. */
+function draft(style) {
+  const tx = { style: structuredClone(style) };
+  const put = (object, name, value) => {
+    if (value === null || value === undefined) delete object[name];
+    else object[name] = value;
+  };
+  const edit = (id, part, name, value) => {
+    const layer = tx.style.layers.find((l) => l.id === id);
+    layer[part] = { ...layer[part] };
+    put(layer[part], name, value);
+  };
+  Object.assign(tx, {
+    setPaintProperty: (id, name, value) => edit(id, "paint", name, value),
+    setLayoutProperty: (id, name, value) => edit(id, "layout", name, value),
+    setLight: (light) => put(tx.style, "light", light),
+    setSky: (sky) => put(tx.style, "sky", sky),
+    setTerrain: (terrain) => put(tx.style, "terrain", terrain),
+    setProjection: (projection) => put(tx.style, "projection", projection),
+    setStyle: (next) => {
+      tx.style = structuredClone(next);
+    },
+  });
+  return tx;
+}
+
+/**
+ * `designed`, a style the demo builds for `scene` (a restyle), with the
+ * options `query` asks for and the entry's defaults for the rest: what the
+ * map loads, so that it opens as it draws, without an Orbis-only preview
+ * switched on and then off. `terrain` is the terrain its switch puts in.
+ */
+export function opening(designed, { scene, terrain }, query) {
+  const context = { scene, designed, terrain };
+  const tx = draft(designed);
+  for (const option of OPTIONS.filter((o) => o.supported(context))) {
+    const value = wantedOf(option, context, query);
+    if (option.read(tx.style) !== value)
+      option.apply(tx, value, { ...context, style: tx.style });
+  }
+  return tx.style;
 }
 
 /** The renderer's choices: `?backend=` (the package's `backend` option), Auto by default. */
@@ -350,14 +490,8 @@ export function mapOptions({ params, setParam, onBackend }) {
   });
 
   /** The entry's default: off where it says so, else the option's own, else as designed. */
-  const initial = (option) => {
-    if (context.scene.off?.includes(option.key)) return false;
-    return option.initial
-      ? option.initial(context)
-      : option.read(context.designed);
-  };
-  const wanted = (option) =>
-    decode(option, params().get(option.key)) ?? initial(option);
+  const initial = (option) => initialOf(option, context);
+  const wanted = (option) => wantedOf(option, context, params());
   const disabled = (option) => {
     if (!ready) return true;
     const [key, value] = option.needs ?? [];

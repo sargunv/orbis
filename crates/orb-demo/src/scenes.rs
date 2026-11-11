@@ -41,6 +41,10 @@ pub(crate) struct Scene {
     pub(crate) swatch: [String; 3],
     #[serde(default)]
     pub(crate) dark: bool,
+    /// Whether the scene exists to show an Orbis extension (a projection
+    /// or CRS beyond the spec), which the picker tags.
+    #[serde(default)]
+    pub(crate) orbis_only: bool,
     #[serde(default)]
     pub(crate) basemap: bool,
     pub(crate) camera: Option<Camera>,
@@ -122,6 +126,7 @@ impl Catalogue {
             provider: "Custom style".into(),
             swatch: ["#e8e8e8", "#c8c8c8", "#9a9a9a"].map(Into::into),
             dark: false,
+            orbis_only: false,
             basemap: true,
             camera: None,
             constraints: None,
@@ -274,9 +279,10 @@ impl Flight {
 /// part is as it is): the palette over each layer's paint by id, the ocean
 /// left to the background with the sea's depth and relief over it and
 /// under the land, a hillshade over the land and lakes, the buildings
-/// extruded under the labels with rounded footprints, the DEM sources, and
-/// a light that shades the ground. Each addition is placed by the layers
-/// it finds.
+/// extruded under the labels, the DEM sources, and Orbis's previews for the
+/// options to switch on (rounded footprints, a light that shades the
+/// ground, shadows), each off by default. Each addition is placed by the
+/// layers it finds.
 fn globe(style: &Value) -> Value {
     let globe: Value = serde_json::from_str(include_str!("../../../web/demo/data/globe.json"))
         .expect("web/demo/data/globe.json");

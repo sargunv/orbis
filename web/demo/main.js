@@ -10,7 +10,7 @@
 // `&debug`, `&compare[=<left>,<right>]` (two engines' maps of
 // the style side by side, Orbis and GL JS by default, app/compare.js),
 // the map options that differ from the entry's own (`&terrain=1`,
-// `&light=map`, `&shadows=0`, `&projection=mercator`, …, app/options.js),
+// `&light=map`, `&shadows=1`, `&projection=mercator`, …, app/options.js),
 // `&backend=webgpu|webgl2` (the renderer, Auto by default, app/options.js),
 // `&lose=<ms>` (lose the GPU that long after
 // loading, to show recovery), and the camera as
@@ -21,7 +21,12 @@ import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
 import { hud as createHud } from "./app/hud.js";
 import { offline as createOffline } from "./app/offline.js";
-import { mapOptions, OPTION_PARAMS, wantedBackend } from "./app/options.js";
+import {
+  mapOptions,
+  opening,
+  OPTION_PARAMS,
+  wantedBackend,
+} from "./app/options.js";
 import { picker as createPicker } from "./app/picker.js";
 import { expose, hashCamera } from "./expose.js";
 import {
@@ -72,6 +77,8 @@ let styleLoading = false;
 let styleSky = null;
 /** The loaded style as its entry designs it, and the terrain its switch turns on: the options' baseline. */
 let designed;
+/** The last style the demo built for an entry (`styleFor`), as designed: `{ scene, style }`. */
+let design;
 
 // Chrome tone: dark maps and a dark system preference turn it dark.
 const prefersDark = matchMedia("(prefers-color-scheme: dark)");
@@ -175,10 +182,19 @@ const options = mapOptions({
     location.reload();
   },
 });
-/** Whether `&terrain` asks for terrain: true, false, or null for the entry's default. */
-function wantedTerrain() {
-  const value = params().get("terrain");
-  return value === "1" ? true : value === "0" ? false : null;
+/**
+ * What the map loads for `next`: its URL, or for an entry the demo builds
+ * (a restyle), that style with the URL's map options and the entry's
+ * defaults in it, which then keeps the style as designed in `design` for
+ * the options to read.
+ */
+async function styleFor(next) {
+  const style = await sceneStyle(next.scene, next.format);
+  if (typeof style === "string") return style;
+  const { scene } = next;
+  const terrain = scene.terrain === true ? style.terrain : scene.terrain;
+  design = { scene, style };
+  return opening(style, { scene, terrain: terrain ?? null }, params());
 }
 
 const debugToggle = document.getElementById("debug-toggle");
@@ -384,9 +400,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
   // The style's `styleload` applies the entry's projection and sky, unless
   // it restyles, which puts them in the style. The style's own camera is a
   // fresh page's (load), never a switch's.
-  sceneStyle(next.scene, next.format, {
-    terrain: wantedTerrain() === true,
-  }).then(
+  styleFor(next).then(
     (style) => {
       if (switched === switches) map.setStyle(style);
     },
@@ -435,9 +449,7 @@ async function load(next, { camera }) {
   try {
     created = await createMap({
       container,
-      style: await sceneStyle(next.scene, next.format, {
-        terrain: wantedTerrain() === true,
-      }),
+      style: await styleFor(next),
       camera,
       constraints: next.scene.constraints,
       // The demo shows what Orbis can do beyond the spec too.
@@ -482,17 +494,18 @@ async function load(next, { camera }) {
     }
     // The options read the style as the entry designs it, then apply the
     // URL's: the terrain the switch turns on is the entry's own, or the
-    // style's as it loaded (`&terrain=1` put the entry's in the style).
+    // style's as it loaded. A style the demo built is designed as built,
+    // before the options' edits it loaded with.
+    const own = design?.scene === scene ? design.style : undefined;
     designed = {
-      designed: {
+      designed: own ?? {
         ...loaded,
-        ...(!scene.restyle &&
-          scene.projection && { projection: scene.projection }),
-        ...(!scene.restyle && scene.sky && { sky: scene.sky }),
+        ...(scene.projection && { projection: scene.projection }),
+        ...(scene.sky && { sky: scene.sky }),
       },
       terrain:
         scene.terrain === true
-          ? (loaded.terrain ?? null)
+          ? ((own ?? loaded).terrain ?? null)
           : (scene.terrain ?? null),
     };
     await options.attach(map, { ...designed, scene });

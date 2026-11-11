@@ -27,7 +27,22 @@ export function picker(groups, { onPick }) {
         scene.detail &&
           h("span", { class: "scene-option-detail" }, scene.detail),
       ),
-      scene.dark && h("span", { class: "dark-flag" }, "Dark"),
+      (scene.orbisOnly || scene.dark) &&
+        h(
+          "span",
+          { class: "scene-flags" },
+          scene.orbisOnly &&
+            h(
+              "span",
+              {
+                class: "option-tag",
+                title:
+                  "Shows an Orbis extension beyond the style spec: GL JS and MapLibre Native can't draw it",
+              },
+              "Orbis only",
+            ),
+          scene.dark && h("span", { class: "dark-flag" }, "Dark"),
+        ),
     );
     const chip = row.querySelector(".chip");
     chip.style.setProperty("--a", scene.swatch[0]);
