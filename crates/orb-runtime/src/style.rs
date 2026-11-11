@@ -259,6 +259,9 @@ impl StylePlan {
             };
             let source = layer.source.as_deref().expect("drawn layers have sources");
             match style.source(source).map(|s| &s.kind) {
+                // A source not added yet: the layer draws once it is
+                // (`orb_style` warned).
+                None => continue,
                 // An app's tiles hold GeoJSON for a layer naming no source
                 // layer (`orb_style::TileSet::host`).
                 Some(SourceKind::Vector(v)) => {
@@ -276,13 +279,6 @@ impl StylePlan {
                     | SourceKind::RasterDem(_)
                     | SourceKind::Image(_),
                 ) => {}
-                _ => {
-                    warn(
-                        index,
-                        "only vector, GeoJSON, raster, raster-dem and image sources are drawn yet",
-                    );
-                    continue;
-                }
             }
             if layer.ty == LayerType::Hillshade {
                 let lights = [

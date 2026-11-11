@@ -3,7 +3,7 @@
 
 use crate::*;
 
-use orb_expr::json::{Json, JsonValue, Member};
+use orb_expr::json::{Json, JsonValue, Member, Span};
 use orb_expr::{Filter, Kind, PropertyExpression, Value};
 
 use crate::v8::Cx;
@@ -301,11 +301,7 @@ fn selection(
     if let Some(source) = &source {
         let span = json.get("source").expect("present").span;
         match sources.iter().find(|s| s.id == *source).map(|s| &**s) {
-            None => cx.error(
-                format!("{path}.source"),
-                span,
-                format!("source \"{source}\" not found"),
-            ),
+            None => missing_source(cx, path, span, source),
             Some(Source {
                 kind: SourceKind::Vector(v),
                 ..
@@ -342,6 +338,19 @@ fn selection(
         .then(|| (source.expect("no errors"), source_layer, filter))
 }
 
+/// A layer names a source the style doesn't have (yet): it draws nothing
+/// until one by that name is added, as in MapLibre Native. GL JS refuses
+/// the style.
+fn missing_source(cx: &mut Cx, path: &str, span: Span, source: &str) {
+    cx.warn(
+        format!("{path}.source"),
+        span,
+        format!(
+            "source \"{source}\" not found; the layer draws once it is added, which GL JS refuses"
+        ),
+    );
+}
+
 /// The source of a raster, hillshade or color-relief layer, which must be
 /// a `raster` (`dem: false`) or `raster-dem` source.
 fn image_source(
@@ -359,12 +368,8 @@ fn image_source(
     let source = cx.string(value, &format!("{path}.source"))?;
     let fits = match sources.iter().find(|s| s.id == source).map(|s| &s.kind) {
         None => {
-            cx.error(
-                format!("{path}.source"),
-                value.span,
-                format!("source \"{source}\" not found"),
-            );
-            return None;
+            missing_source(cx, path, value.span, &source);
+            return Some(source);
         }
         Some(SourceKind::Raster(_) | SourceKind::Image(_)) => !dem,
         Some(SourceKind::RasterDem(_)) => dem,

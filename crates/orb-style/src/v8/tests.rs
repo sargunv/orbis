@@ -234,7 +234,7 @@ fn errors_carry_json_paths() {
     );
 
     let e = errors(
-        r#"[{"id": "a", "type": "fill", "source": "nowhere", "source-layer": "x"},
+        r#"[{"id": "a", "type": "fill", "source": "v", "source-layer": "x"},
             {"id": "a", "type": "line", "source": "v"},
             {"id": "c", "type": "fill", "source": "r"},
             {"id": "d", "type": "bogus"},
@@ -243,7 +243,6 @@ fn errors_carry_json_paths() {
     assert_eq!(
         e,
         [
-            "layers[0].source: source \"nowhere\" not found",
             "layers[1].id: duplicate layer id \"a\"",
             "layers[1]: layer \"a\" must specify a \"source-layer\"",
             "layers[2].source: layer \"c\" requires a vector source",
@@ -280,6 +279,21 @@ fn warnings_for_what_is_not_supported() {
     // GL JS reads a `maxzoom` of 0 as unset.
     assert!(s.layers[1].is_visible_at(23.0));
     assert!(!s.layers[1].is_visible_at(2.0));
+}
+
+/// A layer may name a source not added yet, which it draws once it is,
+/// as in MapLibre Native; GL JS refuses such a style, so it warns.
+#[test]
+fn layers_may_name_a_source_not_added_yet() {
+    let s = style(
+        r#"[{"id": "a", "type": "fill", "source": "later", "source-layer": "x"},
+            {"id": "b", "type": "hillshade", "source": "dem"}]"#,
+    )
+    .unwrap();
+    let warnings: Vec<String> = s.warnings.iter().map(|w| w.to_string()).collect();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings[0].starts_with("layers[0].source: source \"later\" not found"));
+    assert_eq!(s.layers[1].source.as_deref(), Some("dem"));
 }
 
 #[test]
