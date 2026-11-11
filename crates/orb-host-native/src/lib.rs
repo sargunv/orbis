@@ -507,18 +507,36 @@ fn encode_url(url: &str) -> std::borrow::Cow<'_, str> {
     out.into()
 }
 
-/// A request for `url` alone.
-#[cfg(test)]
-fn plain(url: &str) -> Request {
-    Request {
-        url: url.into(),
-        headers: Vec::new(),
+/// A monotonic animation clock, local to a runtime.
+#[derive(Debug)]
+pub struct NativeClock(std::time::Instant);
+
+impl Default for NativeClock {
+    fn default() -> Self {
+        Self(std::time::Instant::now())
+    }
+}
+
+impl orb_host::Clock for NativeClock {
+    fn now(&self) -> f64 {
+        self.0.elapsed().as_secs_f64() * 1000.0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc::channel;
+
+    /// A request for `url` alone.
+    fn plain(url: &str) -> Request {
+        Request {
+            url: url.into(),
+            headers: Vec::new(),
+        }
+    }
 
     #[test]
     fn urls_are_encoded_as_browsers_do() {
@@ -552,7 +570,6 @@ mod tests {
         );
         assert!(rx.recv().unwrap().is_err());
     }
-    use std::sync::mpsc::channel;
 
     #[test]
     fn reads_files_and_reports_missing_ones() {
@@ -579,13 +596,6 @@ mod tests {
         assert_eq!(results[1].1, Ok(b"hello".to_vec()));
         assert!(matches!(results[2].1, Err(FetchError::UnsupportedUrl(_))));
     }
-}
-
-#[cfg(test)]
-mod range_tests {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
 
     fn response(status: &str, headers: &str, body: &[u8]) -> Result<Vec<u8>, FetchError> {
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -662,26 +672,7 @@ mod range_tests {
         }
         std::fs::remove_file(path).unwrap();
     }
-}
 
-/// A monotonic animation clock, local to a runtime.
-#[derive(Debug)]
-pub struct NativeClock(std::time::Instant);
-
-impl Default for NativeClock {
-    fn default() -> Self {
-        Self(std::time::Instant::now())
-    }
-}
-
-impl orb_host::Clock for NativeClock {
-    fn now(&self) -> f64 {
-        self.0.elapsed().as_secs_f64() * 1000.0
-    }
-}
-
-#[cfg(test)]
-mod write_tests {
     #[test]
     fn concurrent_writers_publish_whole_files() {
         let dir = std::env::temp_dir().join(format!("orb-host-write-{}", std::process::id()));
@@ -710,13 +701,6 @@ mod write_tests {
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
-}
-
-#[cfg(test)]
-mod cache_tests {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
 
     /// Serves `replies` to one connection each, and returns the requests.
     fn serve(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
