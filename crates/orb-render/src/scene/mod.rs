@@ -8,17 +8,17 @@
 mod arena;
 mod candidates;
 mod glyph;
-mod image;
 mod line;
 mod pages;
 mod shelf;
+mod sprites;
 mod symbol;
 mod tables;
 pub(crate) use candidates::Move;
 #[cfg(cpu_driven)]
 pub(crate) use candidates::{MOVED, NO_CHUNK};
 pub use glyph::{GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
-pub use image::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
+pub use sprites::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
 #[cfg(cpu_driven)]
 pub(crate) use tables::data_width;
 pub(crate) use tables::{Backing, DataTable, Table, TableWriter, Tables};
@@ -736,7 +736,7 @@ pub(crate) struct SceneBuffers {
 }
 
 /// A stream of u32 words to upload: in core memory, or held by the host
-/// (payloads reach the GPU without entering the render worker's wasm
+/// (payloads reach the GPU without entering the map worker's wasm
 /// memory).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Words<'a> {
