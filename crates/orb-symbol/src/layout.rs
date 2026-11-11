@@ -204,8 +204,8 @@ pub struct FeatureLayout {
     pub text_line_height: f64,
     /// `text-variable-anchor`.
     pub text_variable_anchor: Option<Vec<Anchor>>,
-    /// Its own overlap, optional and ignore-placement settings, where the
-    /// layer reads them per feature; `None` for the layer's.
+    /// Its own overlap, optional, ignore-placement and avoid-edges settings,
+    /// where the layer reads them per feature; `None` for the layer's.
     pub placement: Option<crate::placement::SymbolFlags>,
 }
 

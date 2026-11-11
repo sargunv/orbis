@@ -45,8 +45,8 @@ pub mod instance_flags {
     /// Line labels collide as circles along the line, sized by
     /// [`super::SymbolInstance::collision_circle_diameter`].
     pub(crate) const RUNTIME_COLLISION_CIRCLES: u32 = 1 << 4;
-    /// The instance collides by its feature's own overlap, optional and
-    /// ignore-placement settings, in the bits after this
+    /// The instance collides by its feature's own overlap, optional,
+    /// ignore-placement and avoid-edges settings, in the bits after this
     /// ([`crate::SymbolFlags`]).
     pub(crate) const OWN_PLACEMENT: u32 = 1 << 8;
 }

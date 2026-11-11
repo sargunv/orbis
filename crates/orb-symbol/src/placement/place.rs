@@ -77,8 +77,8 @@ pub struct LayerParams {
     /// Placed at zooms `[minzoom, maxzoom)`; 0 sets no bound.
     pub minzoom: f64,
     pub maxzoom: f64,
-    /// The overlap, optional and ignore-placement settings; a symbol's
-    /// own where its feature gives them ([`LayerParams::flags_of`]).
+    /// The overlap, optional, ignore-placement and avoid-edges settings; a
+    /// symbol's own where its feature gives them ([`LayerParams::flags_of`]).
     pub flags: SymbolFlags,
     /// Which of `flags` each symbol carries its own of, read per feature
     /// beyond the spec ([`SymbolFlags::TEXT_OVERLAP`] and the rest); the
@@ -210,8 +210,9 @@ impl SymbolFlags {
 }
 
 impl LayerParams {
-    /// A symbol's overlap, optional and ignore-placement settings: its own
-    /// of those the layer reads per feature, the layer's for the rest.
+    /// A symbol's overlap, optional, ignore-placement and avoid-edges
+    /// settings: its own of those the layer reads per feature, the layer's
+    /// for the rest.
     pub fn flags_of(&self, instance: &SymbolInstance) -> SymbolFlags {
         self.flags.of(self.own_flags, instance)
     }
