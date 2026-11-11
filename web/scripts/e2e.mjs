@@ -968,8 +968,17 @@ async function edits(browser, server) {
       };
     };
     const before = await shown();
+    // Calls made while the map gets its new device land as at any other
+    // time: none fails as a call into a map already in use.
+    const lost = map.once("lost");
     const restored = map.once("restored");
+    let recovering = true;
+    void restored.then(() => (recovering = false));
     map.loseDevice();
+    await lost;
+    const during = [];
+    while (recovering)
+      during.push(await map.getLayersOrder().then(() => null, String));
     await restored;
     await map.once("idle");
     const at = await map.project([139.735 + 7 * 0.0004, 35.682]);
@@ -982,17 +991,21 @@ async function edits(browser, server) {
       state: feature?.state,
       before,
       after,
+      failed: during.filter((e) => e !== null),
+      calls: during.length,
     };
   });
+  const { calls, failed, ...kept } = recovered;
+  assert.deepEqual(failed, [], `calls while recovering: ${failed}`);
   const sources = { geo: { name: "b" }, remote: {} };
   assert.deepEqual(recovered.before, sources, JSON.stringify(recovered));
   assert.deepEqual(
-    recovered,
+    kept,
     { image: true, state: { hover: true }, before: sources, after: sources },
     JSON.stringify(recovered),
   );
   console.log(
-    "edits: lost the GPU, recovered with the app's state and sources",
+    `edits: lost the GPU, recovered with the app's state and sources, ${calls} calls landing meanwhile`,
   );
 
   const cost = await page.evaluate(async (writes) => {
@@ -1373,6 +1386,12 @@ async function switching(browser, server) {
       else route.abort("internetdisconnected");
     },
   );
+  // A map that stops fails the pick at once, saying why, rather than
+  // leaving it loading.
+  const stopped = new Promise((_, reject) =>
+    picking.on("pageerror", (e) => reject(e)),
+  );
+  stopped.catch(() => {});
   await picking.goto(`${server.url}#15/35.687/139.74/20/30`);
   await picking.waitForFunction(
     () => document.getElementById("app").dataset.map === "idle",
@@ -1392,11 +1411,14 @@ async function switching(browser, server) {
   const pick = async (key) => {
     await picking.click("#scene-button");
     await picking.click(`[data-scene="${key}"]`);
-    await picking.waitForFunction(
-      () => document.getElementById("app").dataset.map !== "loading",
-      null,
-      { timeout: 20_000 },
-    );
+    await Promise.race([
+      picking.waitForFunction(
+        () => document.getElementById("app").dataset.map !== "loading",
+        null,
+        { timeout: 20_000 },
+      ),
+      stopped,
+    ]);
     // Past the style's load, where a style's camera or a flight would move it.
     await picking.waitForTimeout(500);
     return camera();
