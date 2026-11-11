@@ -265,12 +265,11 @@ struct Extras {
 impl Extras {
     /// The words of `extras` ([`HitExtras`]), in their order.
     fn read(extras: u32, words: &[u32]) -> Self {
-        let mut words = words.iter().copied();
-        let mut take = |bit, n: usize| -> Option<Vec<u32>> {
-            let w: Vec<u32> = (extras & bit != 0)
-                .then(|| words.by_ref().take(n).collect())
-                .unwrap_or_default();
-            (w.len() == n).then_some(w)
+        let mut at = 0;
+        let mut take = |bit, n: usize| {
+            let w = (extras & bit != 0).then(|| words.get(at..at + n)).flatten();
+            at += n * usize::from(extras & bit != 0);
+            w
         };
         let translate = take(HitExtras::TRANSLATE, 1).map(|w| unpack_translate(w[0]));
         let pitch = take(HitExtras::PITCH, 1).map(|w| (w[0] & 2 != 0, w[0] & 4 != 0));
