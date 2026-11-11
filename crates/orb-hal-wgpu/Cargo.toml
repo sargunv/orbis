@@ -13,8 +13,9 @@ version.workspace = true
 webgpu = ["wgpu/webgpu"]
 gl = ["wgpu/webgl", "wgpu/gles"]
 # Vulkan beside Metal on Apple platforms (MoltenVK), for checking the Vulkan
-# path under the validation layer there; Linux and Android always have it.
-vulkan = ["wgpu/vulkan-portability"]
+# path under the validation layer there, and beside D3D12 on Windows, for
+# checking a vendor's Vulkan driver; Linux and Android always have it.
+vulkan = ["wgpu/vulkan-portability", "wgpu/vulkan"]
 # Natively on macOS, GLES through ANGLE (`libEGL.dylib`, `libGLESv2.dylib`, which
 # Chromium ships): WebGL 2's back end run outside a browser, `ORB_BACKEND=gl`.
 angle = ["gl", "wgpu/angle"]
@@ -69,6 +70,12 @@ libloading.workspace = true
 pollster.workspace = true
 # tests/leaks.rs hears the validation layer through wgpu-hal's log.
 log.workspace = true
+
+# examples/pipeline_probe.rs writes naga's SPIR-V as wgpu-hal does, from
+# the device's robustness as wgpu-hal reads it.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+ash.workspace = true
+naga = { workspace = true, features = ["spv-out"] }
 
 [lints]
 workspace = true

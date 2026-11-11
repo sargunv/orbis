@@ -214,6 +214,8 @@ impl Job {
 
     /// Makes the pipeline with wgpu.
     fn build(&self, device: &wgpu::Device) -> Built {
+        #[cfg(not(target_arch = "wasm32"))]
+        dump::job(self);
         match self {
             Self::Render(slot, job) => Built::Render(*slot, job.build(device)),
             Self::Compute(slot, job) => {
@@ -1288,6 +1290,8 @@ compile_error!("orb-hal-wgpu on the web needs one of the `webgpu` and `gl` featu
 #[cfg(all(webgpu, webgl))]
 compile_error!("orb-hal-wgpu on the web takes one of the `webgpu` and `gl` features, not both");
 
+#[cfg(not(target_arch = "wasm32"))]
+mod dump;
 #[cfg(webgl)]
 mod webgl;
 #[cfg(webgl)]
