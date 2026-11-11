@@ -75,6 +75,23 @@ pub(crate) struct Resident {
     pub(crate) maxima: Vec<f32>,
 }
 
+impl Resident {
+    /// Result mesh `mesh` of a tile laid out at `revision`, uploaded as
+    /// `id` with its resolved `rows`.
+    fn new(mesh: &ResultMesh, id: MeshId, rows: ResolvedRows, revision: u64) -> Self {
+        Self {
+            hits: mesh.hits.clone(),
+            node: mesh.node,
+            mesh: id,
+            layout_rev: revision,
+            rows_rev: revision,
+            ramps: rows.ramps,
+            states: rows.states,
+            maxima: mesh.maxima.clone(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum SourceState {
     Resolving,
@@ -309,16 +326,7 @@ pub(crate) fn upload_mesh(
             return Err(e);
         }
     };
-    resident.meshes.push(Resident {
-        hits: mesh.hits.clone(),
-        node: mesh.node,
-        mesh: id,
-        layout_rev: result.revision,
-        rows_rev: result.revision,
-        ramps: rows.ramps,
-        states: rows.states,
-        maxima: mesh.maxima.clone(),
-    });
+    (resident.meshes).push(Resident::new(mesh, id, rows, result.revision));
     Ok(())
 }
 
@@ -382,16 +390,7 @@ pub(crate) fn upload(
         .iter()
         .zip(rows)
         .zip(ids)
-        .map(|((m, rows), mesh)| Resident {
-            hits: m.hits.clone(),
-            node: m.node,
-            mesh,
-            layout_rev: result.revision,
-            rows_rev: result.revision,
-            ramps: rows.ramps,
-            states: rows.states,
-            maxima: m.maxima.clone(),
-        })
+        .map(|((m, rows), id)| Resident::new(m, id, rows, result.revision))
         .collect();
     if let Err(e) = labels.upload(
         gpu,
