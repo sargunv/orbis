@@ -69,6 +69,8 @@ struct Entry {
     refs: u32,
     /// Its row on the GPU, while it holds anything.
     row: Option<Row>,
+    /// Listed in `dirty`, to write at the next prepare.
+    dirty: bool,
 }
 
 /// A state row as last written.
@@ -99,6 +101,7 @@ pub(crate) struct FeatureStates {
     ids: HashMap<StateKey, u32>,
     entries: Vec<Entry>,
     free: Vec<u32>,
+    /// Entries to write at the next prepare, each once: see `Entry::dirty`.
     dirty: Vec<u32>,
     all_dirty: bool,
     /// The plan revision the layout is compiled for.
@@ -149,12 +152,14 @@ impl FeatureStates {
         if let Some(&index) = self.ids.get(&key) {
             return index;
         }
-        let entry = Entry {
+        let mut entry = Entry {
             key: Some(key.clone()),
             ..Entry::default()
         };
         let index = match self.free.pop() {
             Some(index) => {
+                // A freed entry can still be listed in `dirty`.
+                entry.dirty = self.entries[index as usize].dirty;
                 self.entries[index as usize] = entry;
                 index
             }
@@ -224,9 +229,20 @@ impl FeatureStates {
     }
 
     fn touch(&mut self, index: u32) {
-        if !self.dirty.contains(&index) {
+        let entry = &mut self.entries[index as usize];
+        if !entry.dirty {
+            entry.dirty = true;
             self.dirty.push(index);
         }
+    }
+
+    /// Takes the dirty list, clearing each entry's flag.
+    fn take_dirty(&mut self) -> Vec<u32> {
+        let dirty = std::mem::take(&mut self.dirty);
+        for &index in &dirty {
+            self.entries[index as usize].dirty = false;
+        }
+        dirty
     }
 
     /// Counts state writes, so what feature state draws can be redrawn;
@@ -444,7 +460,7 @@ impl FeatureStates {
             self.all_dirty |= self.zoom_dependent;
         }
         if self.stride == 0 {
-            self.dirty.clear();
+            self.take_dirty();
             self.zero.clear();
             return lookups_changed;
         }
@@ -481,15 +497,16 @@ impl FeatureStates {
         let indices: Vec<u32> = if std::mem::take(&mut self.all_dirty) {
             // Rows with state or a fade, and those whose state was just
             // removed.
-            let dirty = std::mem::take(&mut self.dirty);
-            (1..self.entries.len() as u32)
+            let indices = (1..self.entries.len() as u32)
                 .filter(|&i| {
                     let entry = &self.entries[i as usize];
-                    !entry.state.is_empty() || entry.row.is_some() || dirty.contains(&i)
+                    !entry.state.is_empty() || entry.row.is_some() || entry.dirty
                 })
-                .collect()
+                .collect();
+            self.take_dirty();
+            indices
         } else {
-            std::mem::take(&mut self.dirty)
+            self.take_dirty()
         };
         let mut row = vec![0u32; self.stride as usize];
         let at = Moment { zoom, time, shift };
@@ -684,6 +701,36 @@ mod tests {
         assert_eq!(mix_word(true, red, blue, 1.0), blue);
     }
     use orb_style::SourceKey;
+
+    #[test]
+    fn a_feature_is_listed_dirty_once_however_often_it_changes() {
+        let mut states = FeatureStates::default();
+        let set = |id: &str| FeatureStateOp::Set {
+            source: SourceKey(1),
+            source_layer: None,
+            id: id.into(),
+            state: vec![("hover".into(), Value::Bool(true))],
+        };
+        let a = states.intern(1, None, "a", None);
+        states.apply(&set("a"));
+        states.apply(&set("a"));
+        states.apply(&FeatureStateOp::Remove {
+            source: SourceKey(1),
+            source_layer: None,
+            id: None,
+            key: None,
+        });
+        assert_eq!(states.dirty, [a]);
+        // Freed while listed, then taken by another feature: still once.
+        states.release(a);
+        let b = states.intern(1, None, "b", None);
+        assert_eq!(b, a, "the index is reused");
+        states.apply(&set("b"));
+        assert_eq!(states.dirty, [b]);
+        assert_eq!(states.take_dirty(), [b]);
+        states.apply(&set("b"));
+        assert_eq!(states.dirty, [b], "listed again after it was taken");
+    }
 
     #[test]
     fn indices_are_counted_and_states_survive_unloads() {
