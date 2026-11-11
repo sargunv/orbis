@@ -1,14 +1,22 @@
-//! Release velocities, as maplibre-native-ffi's browser demo and GL JS's
-//! `HandlerInertia` estimate them: the motion since the last 100 ms began,
-//! over the time since then. An average can't point against the motion it
-//! averages, nor read a flick as faster than it moved, both of which a
-//! least-squares fit's final slope (Compose's `VelocityTracker1D`) does
-//! when the pointer brakes or speeds up just before it lifts.
+//! Release velocities, as GL JS's `HandlerInertia` estimates them: the
+//! motion over the last 100 ms of samples, over the time it took. An
+//! average can't point against the motion it averages, nor read a flick as
+//! faster than it moved, both of which a least-squares fit's final slope
+//! (Compose's `VelocityTracker1D`) does when the pointer brakes or speeds
+//! up just before it lifts.
+//!
+//! The window ends at the newest sample, not at the release, as GL JS's
+//! does, and Android's and Compose's trackers (which MapLibre Native's
+//! Android gestures and mln-ffi's Compose example read). A release adds no
+//! sample, and a browser hands moves over once a frame but a release at
+//! once, so the time between the two is the input's sampling, not a
+//! pause: counting it slowed a steady 60 Hz fling by up to a seventh, at
+//! random.
 //!
 //! As Compose's and Android's trackers do, a gap longer than 40 ms between
 //! samples means the pointer stopped, so the motion before it doesn't
 //! count, and a release more than 40 ms after the last move has no
-//! velocity. A release adds no sample.
+//! velocity.
 
 /// How far back the motion counts, in milliseconds.
 const HORIZON: f64 = 100.0;
@@ -19,7 +27,8 @@ const STOPPED: f64 = 40.0;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct VelocityTracker {
     /// (time in milliseconds, value), oldest first: the samples of the
-    /// last [`HORIZON`] and the one before them, where the window starts.
+    /// [`HORIZON`] before the newest and the one before them, where the
+    /// window starts.
     samples: Vec<(f64, f64)>,
 }
 
@@ -44,8 +53,6 @@ impl VelocityTracker {
             _ => {}
         }
         self.samples.push((time, value));
-        // A release comes at or after the newest sample, so its window
-        // starts no earlier than this one's.
         let keep = self
             .samples
             .iter()
@@ -55,9 +62,9 @@ impl VelocityTracker {
     }
 
     /// The value's rate of change per second at a release at `now`: its
-    /// change since the window ending at `now` began, or since the
-    /// pointer last stopped, over the time since then. A pause before the
-    /// release slows it.
+    /// change over the window ending at the newest sample, or since the
+    /// pointer last stopped, over the time that took. None when the
+    /// pointer stopped before the release.
     pub(crate) fn velocity(&self, now: f64) -> f64 {
         let Some(&(newest, end)) = self.samples.last() else {
             return 0.0;
@@ -71,11 +78,11 @@ impl VelocityTracker {
                 break;
             }
             start = sample;
-            if sample.0 <= now - HORIZON {
+            if sample.0 <= newest - HORIZON {
                 break;
             }
         }
-        let seconds = (now - start.0) / 1000.0;
+        let seconds = (newest - start.0) / 1000.0;
         if seconds > 0.0 {
             (end - start.1) / seconds
         } else {
@@ -114,6 +121,16 @@ mod tests {
             .map(|i| (f64::from(i) * 8.0, f64::from(i) * 2.0))
             .collect();
         assert!((tracker(&samples).velocity(samples.last().unwrap().0) - 250.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_release_a_frame_after_the_last_move_keeps_its_speed() {
+        // 10 px per 16 ms, released 16 ms after the last move, as a
+        // browser's frame-aligned moves and immediate release arrive.
+        let samples: Vec<_> = (0..=8)
+            .map(|i| (f64::from(i) * 16.0, f64::from(i) * 10.0))
+            .collect();
+        assert!((tracker(&samples).velocity(144.0) - 625.0).abs() < 1e-6);
     }
 
     #[test]
@@ -164,8 +181,8 @@ mod tests {
             .collect();
         samples.extend([(122.0, 180.0), (130.0, 181.0), (138.0, 182.0)]);
         assert!((tracker(&samples).velocity(138.0) - 125.0).abs() < 1e-6);
-        // A shorter pause before the release slows it: 2 px in 32 ms.
-        assert!((tracker(&samples).velocity(154.0) - 62.5).abs() < 1e-6);
+        // A release within 40 ms of the last move keeps its speed.
+        assert!((tracker(&samples).velocity(170.0) - 125.0).abs() < 1e-6);
         // Released 50 ms after the last move.
         assert_eq!(tracker(&samples).velocity(188.0), 0.0);
     }

@@ -2537,43 +2537,21 @@ async function compare(browser, server) {
   );
 }
 
-/** The slope at the newest sample of the least-squares quadratic through
- * the samples of the last 100 ms back to the first gap over 40 ms, per
- * second, and zero for a release more than 40 ms after it: Compose's
- * `VelocityTracker1D`, written apart from the core's for a check. */
+/** The motion over the 100 ms before the newest sample (from the sample
+ * at or before their start, and back no further than a gap over 40 ms),
+ * per second of it, and zero for a release more than 40 ms after the
+ * newest: the core's release velocity, written apart from it for a check. */
 function releaseVelocity(samples, release) {
-  const [newest] = samples.at(-1);
+  const [newest, end] = samples.at(-1);
   if (release - newest > 40) return 0;
-  const points = [];
-  let previous = newest;
-  for (const [t, v] of [...samples].reverse()) {
-    if (newest - t > 100 || previous - t > 40) break;
-    previous = t;
-    points.push([t - newest, v]);
+  let start = samples.at(-1);
+  for (const sample of samples.slice(0, -1).reverse()) {
+    if (start[0] - sample[0] > 40) break;
+    start = sample;
+    if (sample[0] <= newest - 100) break;
   }
-  if (points.length < 3) return 0;
-  // Normal equations for y = a + b x + c x², solved by elimination.
-  const m = [
-    [0, 0, 0, 0],
-    [0, 0, 0, 0],
-    [0, 0, 0, 0],
-  ];
-  for (const [x, y] of points) {
-    const p = [1, x, x * x];
-    for (let i = 0; i < 3; i++) {
-      for (let j = 0; j < 3; j++) m[i][j] += p[i] * p[j];
-      m[i][3] += p[i] * y;
-    }
-  }
-  for (let i = 0; i < 3; i++) {
-    for (let k = i + 1; k < 3; k++) {
-      const f = m[k][i] / m[i][i];
-      for (let j = i; j < 4; j++) m[k][j] -= f * m[i][j];
-    }
-  }
-  const c = m[2][3] / m[2][2];
-  const b = (m[1][3] - m[1][2] * c) / m[1][1];
-  return b * 1000;
+  const seconds = (newest - start[0]) / 1000;
+  return seconds > 0 ? (end - start[1]) / seconds : 0;
 }
 
 /** mln-ffi's (and MapLibre Compose's) pan momentum: friction halving the
@@ -2812,11 +2790,13 @@ async function gestures(browser, server) {
       [90 - 8 * i, 100],
       [110 + 8 * i, 100],
     ]);
-  const pinched = await scenario((s) => s.map.camera.current.zoom);
+  // Where the pinch itself leaves the zoom, from its span: reading the
+  // camera here can miss the last move's frame.
+  const pinched = 4 + Math.log2(148 / 20);
   await touch("touchEnd", []);
   const pinchEnd = (await camera()).zoom;
   assert.ok(
-    pinchEnd - pinched > 0.1 && pinchEnd - pinched <= 2.5,
+    pinchEnd - pinched > 0.1 && pinchEnd - pinched <= 2.5 + 1e-9,
     `pinch glide: ${pinched} → ${pinchEnd}`,
   );
 

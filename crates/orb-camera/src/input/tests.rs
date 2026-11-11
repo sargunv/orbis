@@ -120,16 +120,16 @@ fn dragging_pans_and_glides_on() {
     rig.up(1, 500.0, 300.0);
     let frames = rig.settle();
     // 10 px every 32 ms, released 16 ms after the last move: the 100 ms
-    // before the release start at the move 96 ms before the last, so 30 px
-    // in 112 ms, 267.9 px/s. mln-ffi's pan friction (half-life 140 ms,
-    // stopping at 10 px/s) glides (267.9 − 10) / (ln 2 / 0.14 s) = 52.1 px
-    // over ln(26.79) / (ln 2 / 0.14 s) = 664 ms.
+    // before the last move start at the move 96 ms before it, so 30 px in
+    // 96 ms, 312.5 px/s. mln-ffi's pan friction (half-life 140 ms,
+    // stopping at 10 px/s) glides (312.5 − 10) / (ln 2 / 0.14 s) = 61.1 px
+    // over ln(31.25) / (ln 2 / 0.14 s) = 695 ms.
     assert!(
         (40..=43).contains(&frames),
         "momentum runs for a while: {frames}"
     );
     let after = rig.camera.project(ground).unwrap();
-    let glide = (30.0 / 0.112 - 10.0) / (std::f64::consts::LN_2 / 0.14);
+    let glide = (30.0 / 0.096 - 10.0) / (std::f64::consts::LN_2 / 0.14);
     assert!(
         (after.x - 500.0 - glide).abs() < 0.01,
         "and carries on in the same direction: {after}"
