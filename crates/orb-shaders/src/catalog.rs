@@ -8,6 +8,7 @@ const DRAW: &str = concat!(
     wgsl!("builtins"),
     wgsl!("color"),
     wgsl!("bezier"),
+    wgsl!("dem"),
     wgsl!("draw"),
     wgsl!("project"),
     wgsl!("fetch")
@@ -382,7 +383,7 @@ pub const HILLSHADE_SLOPES_SHADER: Shader = Shader {
 
 pub const COLOR_RELIEF_SHADER: Shader = Shader {
     label: "color relief",
-    parts: &[TYPES, DRAW, IMAGE, DEM, COLOR_RELIEF],
+    parts: &[TYPES, DRAW, IMAGE, COLOR_RELIEF],
     vertex: "vs_color_relief",
     fragment: "fs_color_relief",
     compute: "",
