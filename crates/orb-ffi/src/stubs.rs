@@ -10,146 +10,6 @@
 
 use crate::sys::*;
 
-/// `mln_acquired_frame_discard`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_discard(
-    frame: mln_acquired_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_discard") }
-}
-
-/// `mln_acquired_frame_get_android_hardware_buffer`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_android_hardware_buffer(
-    frame: mln_acquired_frame,
-    out_frame: *mut mln_android_hardware_buffer_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_acquired_frame_get_android_hardware_buffer",
-        )
-    }
-}
-
-/// `mln_acquired_frame_get_dma_buf`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_dma_buf(
-    frame: mln_acquired_frame,
-    out_frame: *mut mln_dma_buf_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_dma_buf") }
-}
-
-/// `mln_acquired_frame_get_dxgi_shared_texture`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_dxgi_shared_texture(
-    frame: mln_acquired_frame,
-    out_frame: *mut mln_dxgi_shared_texture_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_dxgi_shared_texture")
-    }
-}
-
-/// `mln_acquired_frame_get_io_surface`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_io_surface(
-    frame: mln_acquired_frame,
-    out_frame: *mut mln_io_surface_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_io_surface") }
-}
-
-/// `mln_acquired_frame_get_metal_texture`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_metal_texture(
-    frame: mln_acquired_frame,
-    out_frame: *mut mln_metal_texture_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_metal_texture") }
-}
-
-/// `mln_acquired_frame_get_open_gl_texture`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_open_gl_texture(
-    frame: mln_acquired_frame,
-    out_frame: *mut mln_open_gl_texture_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_open_gl_texture") }
-}
-
-/// `mln_acquired_frame_get_producer_sync`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_producer_sync(
-    frame: mln_acquired_frame,
-    out_sync: *mut mln_gpu_sync,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_producer_sync") }
-}
-
-/// `mln_acquired_frame_get_result`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_result(
-    frame: mln_acquired_frame,
-    out_result: *mut mln_render_frame_result,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_result") }
-}
-
-/// `mln_acquired_frame_get_vulkan_texture`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_vulkan_texture(
-    frame: mln_acquired_frame,
-    out_frame: *mut mln_vulkan_texture_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_vulkan_texture") }
-}
-
-/// `mln_acquired_frame_get_web_gpu_texture`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_get_web_gpu_texture(
-    frame: mln_acquired_frame,
-    out_frame: *mut mln_web_gpu_texture_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_web_gpu_texture") }
-}
-
-/// `mln_acquired_frame_release`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_release(
-    frame: mln_acquired_frame,
-    consumer_completion: *const mln_gpu_sync,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_release") }
-}
-
-/// `mln_acquired_frame_view_begin`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_view_begin(
-    frame: mln_acquired_frame,
-    out_scope: *mut *mut std::ffi::c_void,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_view_begin") }
-}
-
-/// `mln_acquired_frame_view_end`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_acquired_frame_view_end(scope: *mut std::ffi::c_void) {}
-
 /// `mln_android_frame_pacer_create`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_android_frame_pacer_create(
@@ -194,18 +54,6 @@ pub unsafe extern "C" fn mln_binding_owner_token_create(handle: u64) -> *mut std
 /// `mln_binding_owner_token_destroy`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_binding_owner_token_destroy(token: *mut std::ffi::c_void) {}
-
-/// `mln_binding_render_session_abandon_at_exit`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_binding_render_session_abandon_at_exit(
-    session: mln_render_session,
-    out_result: *mut mln_render_abandon_result,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(out_diagnostic, "mln_binding_render_session_abandon_at_exit")
-    }
-}
 
 /// `mln_map_add_image_source_image`: not implemented.
 #[unsafe(no_mangle)]
@@ -293,19 +141,6 @@ pub unsafe extern "C" fn mln_map_attach_io_surface_ring(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_io_surface_ring") }
-}
-
-/// `mln_map_attach_metal_borrowed_texture`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_metal_borrowed_texture(
-    map: mln_map,
-    descriptor: *const mln_metal_borrowed_texture_descriptor,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_metal_borrowed_texture") }
 }
 
 /// `mln_map_attach_ohos_surface`: not implemented.
@@ -456,35 +291,6 @@ pub unsafe extern "C" fn mln_plugin_get_register_function_v1() -> mln_plugin_reg
     Default::default()
 }
 
-/// `mln_render_session_abandon`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_abandon(
-    session: mln_render_session,
-    out_result: *mut mln_render_abandon_result,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_abandon") }
-}
-
-/// `mln_render_session_acquire_frame`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_acquire_frame(
-    session: mln_render_session,
-    out_frame: *mut mln_acquired_frame,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_acquire_frame") }
-}
-
-/// `mln_render_session_service_driver_work`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_service_driver_work(
-    session: mln_render_session,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_render_session_service_driver_work") }
-}
-
 /// `mln_render_session_set_android_surface_target`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_render_session_set_android_surface_target(
@@ -497,22 +303,6 @@ pub unsafe extern "C" fn mln_render_session_set_android_surface_target(
         crate::base::unsupported(
             out_diagnostic,
             "mln_render_session_set_android_surface_target",
-        )
-    }
-}
-
-/// `mln_render_session_set_metal_borrowed_texture_target`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_metal_borrowed_texture_target(
-    session: mln_render_session,
-    replacement: *const mln_metal_borrowed_texture_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_render_session_set_metal_borrowed_texture_target",
         )
     }
 }
@@ -806,8 +596,68 @@ pub unsafe extern "C" fn mln_vulkan_device_release(device: mln_vulkan_device) {}
 // hand-written export differs from the header's declaration.
 const _: () = {
     let _ = [
+        crate::sys::mln_acquired_frame_discard,
+        crate::frames::mln_acquired_frame_discard,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_android_hardware_buffer,
+        crate::frames::mln_acquired_frame_get_android_hardware_buffer,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_dma_buf,
+        crate::frames::mln_acquired_frame_get_dma_buf,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_dxgi_shared_texture,
+        crate::frames::mln_acquired_frame_get_dxgi_shared_texture,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_io_surface,
+        crate::frames::mln_acquired_frame_get_io_surface,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_metal_texture,
+        crate::frames::mln_acquired_frame_get_metal_texture,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_open_gl_texture,
+        crate::frames::mln_acquired_frame_get_open_gl_texture,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_producer_sync,
+        crate::frames::mln_acquired_frame_get_producer_sync,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_result,
+        crate::frames::mln_acquired_frame_get_result,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_vulkan_texture,
+        crate::frames::mln_acquired_frame_get_vulkan_texture,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_get_web_gpu_texture,
+        crate::frames::mln_acquired_frame_get_web_gpu_texture,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_release,
+        crate::frames::mln_acquired_frame_release,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_view_begin,
+        crate::frames::mln_acquired_frame_view_begin,
+    ];
+    let _ = [
+        crate::sys::mln_acquired_frame_view_end,
+        crate::frames::mln_acquired_frame_view_end,
+    ];
+    let _ = [
         crate::sys::mln_apple_frame_pacer_create,
-        crate::session::mln_apple_frame_pacer_create,
+        crate::pacer::mln_apple_frame_pacer_create,
+    ];
+    let _ = [
+        crate::sys::mln_binding_render_session_abandon_at_exit,
+        crate::session::mln_binding_render_session_abandon_at_exit,
     ];
     let _ = [crate::sys::mln_c_version, crate::base::mln_c_version];
     let _ = [
@@ -828,7 +678,7 @@ const _: () = {
     ];
     let _ = [
         crate::sys::mln_frame_pacer_release,
-        crate::session::mln_frame_pacer_release,
+        crate::pacer::mln_frame_pacer_release,
     ];
     let _ = [
         crate::sys::mln_http_header_transform_response_set_header,
@@ -877,6 +727,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_map_apply_camera_delta,
         crate::map::mln_map_apply_camera_delta,
+    ];
+    let _ = [
+        crate::sys::mln_map_attach_metal_borrowed_texture,
+        crate::frames::mln_map_attach_metal_borrowed_texture,
     ];
     let _ = [
         crate::sys::mln_map_attach_metal_surface,
@@ -1230,6 +1084,14 @@ const _: () = {
         crate::session::mln_render_frame_batch_release,
     ];
     let _ = [
+        crate::sys::mln_render_session_abandon,
+        crate::session::mln_render_session_abandon,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_acquire_frame,
+        crate::frames::mln_render_session_acquire_frame,
+    ];
+    let _ = [
         crate::sys::mln_render_session_barrier,
         crate::session::mln_render_session_barrier,
     ];
@@ -1310,8 +1172,16 @@ const _: () = {
         crate::session::mln_render_session_resize,
     ];
     let _ = [
+        crate::sys::mln_render_session_service_driver_work,
+        crate::session::mln_render_session_service_driver_work,
+    ];
+    let _ = [
         crate::sys::mln_render_session_set_frame_pacer,
         crate::session::mln_render_session_set_frame_pacer,
+    ];
+    let _ = [
+        crate::sys::mln_render_session_set_metal_borrowed_texture_target,
+        crate::frames::mln_render_session_set_metal_borrowed_texture_target,
     ];
     let _ = [
         crate::sys::mln_render_session_set_metal_surface_target,

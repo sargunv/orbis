@@ -282,7 +282,9 @@ pub unsafe extern "C" fn mln_logical_extent_physical_size(
 /// at least one in each dimension.
 pub(crate) fn physical(extent: mln_logical_extent) -> Result<(u32, u32)> {
     if extent.width == 0 || extent.height == 0 {
-        return Err(Failure::argument("the extent is empty"));
+        return Err(Failure::argument(
+            "the logical size's width and height must be positive",
+        ));
     }
     if !(extent.scale_factor.is_finite() && extent.scale_factor > 0.0) {
         return Err(Failure::argument("the scale factor isn't positive"));
@@ -291,7 +293,7 @@ pub(crate) fn physical(extent: mln_logical_extent) -> Result<(u32, u32)> {
         let pixels = (f64::from(v) * extent.scale_factor).ceil().max(1.0);
         if pixels > f64::from(u32::MAX) {
             return Err(Failure::argument(format!(
-                "{v} at scale {} is more pixels than 32 bits hold",
+                "the logical size is too large: {v} at scale {} is more pixels than 32 bits hold",
                 extent.scale_factor
             )));
         }

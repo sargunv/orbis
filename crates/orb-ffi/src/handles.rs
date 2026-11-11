@@ -7,11 +7,13 @@ use std::sync::{Arc, Mutex};
 use crate::base::{Failure, Result};
 use crate::delivery::DeliveryQueue;
 use crate::expression::ExpressionHandle;
+use crate::frames::FrameHandle;
 use crate::map::MapHandle;
+use crate::pacer::FramePacer;
 use crate::projection::ProjectionHandle;
 use crate::resources::{ResourceRequest, TransformRequest};
 use crate::runtime::RuntimeHandle;
-use crate::session::{FramePacer, SessionHandle};
+use crate::session::SessionHandle;
 use crate::sys::mln_render_frame_result;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -24,6 +26,7 @@ pub(crate) enum Kind {
     ResourceRequest = 10,
     TransformRequest = 11,
     Expression = 12,
+    Frame = 13,
     Batch = 21,
     Queue = 23,
     OffscreenDevice = 26,
@@ -40,6 +43,7 @@ impl Kind {
             Kind::ResourceRequest => "mln_resource_request",
             Kind::TransformRequest => "mln_resource_transform_request",
             Kind::Expression => "mln_style_expression",
+            Kind::Frame => "mln_acquired_frame",
             Kind::Batch => "mln_render_frame_batch",
             Kind::Queue => "mln_delivery_queue",
             Kind::OffscreenDevice => "mln_offscreen_device",
@@ -57,6 +61,7 @@ pub(crate) enum Object {
     ResourceRequest(Arc<ResourceRequest>),
     TransformRequest(Arc<TransformRequest>),
     Expression(Arc<ExpressionHandle>),
+    Frame(Arc<FrameHandle>),
     /// Holds the results a drained batch's view points at.
     Batch(#[allow(dead_code)] Arc<Vec<mln_render_frame_result>>),
     Queue(Arc<DeliveryQueue>),
@@ -80,6 +85,7 @@ impl Object {
             Object::ResourceRequest(_) => Kind::ResourceRequest,
             Object::TransformRequest(_) => Kind::TransformRequest,
             Object::Expression(_) => Kind::Expression,
+            Object::Frame(_) => Kind::Frame,
             Object::Batch(_) => Kind::Batch,
             Object::Queue(_) => Kind::Queue,
             Object::OffscreenDevice => Kind::OffscreenDevice,
@@ -168,6 +174,7 @@ fn kind_of(byte: u8) -> Option<Kind> {
         Kind::ResourceRequest,
         Kind::TransformRequest,
         Kind::Expression,
+        Kind::Frame,
         Kind::Batch,
         Kind::Queue,
         Kind::OffscreenDevice,
@@ -228,6 +235,13 @@ pub(crate) fn map(handle: u64) -> Result<Arc<MapHandle>> {
 pub(crate) fn session(handle: u64) -> Result<Arc<SessionHandle>> {
     match lookup(handle, Kind::Session)? {
         Object::Session(s) => Ok(s),
+        _ => unreachable!(),
+    }
+}
+
+pub(crate) fn frame(handle: u64) -> Result<Arc<FrameHandle>> {
+    match lookup(handle, Kind::Frame)? {
+        Object::Frame(f) => Ok(f),
         _ => unreachable!(),
     }
 }

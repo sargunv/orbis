@@ -53,8 +53,8 @@ pub(crate) struct RuntimeHandle {
     tx: Mutex<Sender<Msg>>,
     thread: ThreadId,
     join: Mutex<Option<JoinHandle<()>>>,
-    /// Maps alive on the runtime, counted on the caller's side so a
-    /// release can refuse at once.
+    /// Maps and render sessions alive on the runtime, counted on the
+    /// caller's side so a release can refuse at once.
     pub(crate) maps: std::sync::atomic::AtomicUsize,
     /// The resource provider and transforms, where the runtime's fetches
     /// would reach the network.
@@ -102,6 +102,14 @@ impl RuntimeHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// A map or session of the runtime went: a disposed runtime stops
+    /// after the last.
+    pub(crate) fn child_released(&self) {
+        if self.maps.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
+            self.last_map_released();
+        }
     }
 
     pub(crate) fn on_thread(&self) -> bool {
@@ -492,7 +500,7 @@ fn stop(runtime: mln_runtime, completion: Option<Completion>, wait: bool) -> Res
     if handle.maps.load(std::sync::atomic::Ordering::Acquire) > 0 {
         if completion.is_some() {
             return Err(Failure::state(
-                "the runtime still has maps: release them first",
+                "the runtime still has maps or render sessions: release them first",
             ));
         }
         // A disposal finishes once the last map is released.

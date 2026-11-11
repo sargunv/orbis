@@ -768,16 +768,12 @@ fn check_mask(mask: u64) -> Result {
 fn release(map: mln_map, completion: Option<Completion>, force: bool) -> Result {
     let handle = handles::map(map.0)?;
     if !force && handle.has_session.load(Ordering::Acquire) {
-        return Err(Failure::state(
-            "the map still has a render session: release it first",
-        ));
+        return Err(Failure::state("map still has an attached render session"));
     }
     handles::remove(map.0);
     // The runtime's release can follow at once: the map's teardown runs
     // before it on the runtime thread.
-    if handle.runtime.maps.fetch_sub(1, Ordering::AcqRel) == 1 {
-        handle.runtime.last_map_released();
-    }
+    handle.runtime.child_released();
     let id = handle.id();
     let runtime = handle.runtime.clone();
     runtime.post(move |state| {
@@ -866,6 +862,9 @@ macro_rules! command {
             // SAFETY: the caller's pointers.
             unsafe {
                 boundary(out_diagnostic, || {
+                    // The body reads the map's handle by the name `$state`.
+                    #[allow(unused_variables)]
+                    let $state = map;
                     $body
                     // The body returns a job for `post`.
                     .and_then(|job| post(map, completion, $required, $changes, job))
@@ -955,9 +954,14 @@ command!(
     mln_map_resize(size: mln_logical_size),
     false,
     true,
-    |state, id| {
+    |map, id| {
         if size.width == 0 || size.height == 0 {
             return Err(Failure::argument("the size is empty"));
+        }
+        if handles::map(map.0)?.has_session.load(Ordering::Acquire) {
+            return Err(Failure::state(
+                "the map has an attached render session: resize the session instead",
+            ));
         }
         Ok(job(move |entry| {
             entry.unchanged =
