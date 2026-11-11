@@ -1,5 +1,5 @@
-//! What a map draws into: a window surface, or a texture the
-//! runtime owns and the host reads back or composites.
+//! What a map draws into: a window surface, a texture the runtime owns
+//! and the host reads back or composites, or a texture the host owns.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +35,8 @@ const IN_FLIGHT: usize = 2;
 enum Kind {
     Surface(Box<Surface>),
     Texture(TextureId),
+    /// A texture the host made on the runtime's device, and its format.
+    Borrowed(TextureId, TextureFormat),
     /// Its resources are gone ([`Target::release`]).
     Released,
 }
@@ -72,6 +74,33 @@ impl Target {
         }
     }
 
+    /// Draws into a texture the host made on the runtime's device (as
+    /// `WgpuGpu::import_metal_texture` makes them), in an 8-bit RGBA or
+    /// BGRA format. Each frame is done on the GPU when its render returns,
+    /// so the host can read it then.
+    pub fn borrowed(
+        runtime: &Runtime,
+        texture: &orb_hal_wgpu::wgpu::Texture,
+        scale: f64,
+    ) -> Result<Self, Error> {
+        let format = orb_hal_wgpu::from_texture_format(texture.format())
+            .filter(|f| matches!(f, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
+            .ok_or_else(|| {
+                Error::Unsupported(format!("Orbis can't draw into {:?}", texture.format()))
+            })?;
+        let view = texture.create_view(&Default::default());
+        let id = runtime.shared.gpu().register_view(view);
+        Ok(Self {
+            shared: runtime.shared.clone(),
+            kind: Kind::Borrowed(id, format),
+            width: texture.width(),
+            height: texture.height(),
+            scale: sane_scale(scale),
+            generation: runtime.shared.generation(),
+            read_back: Default::default(),
+        })
+    }
+
     /// Width and height in physical pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
@@ -99,7 +128,8 @@ impl Target {
         let mut device = self.shared.gpu();
         match &mut self.kind {
             Kind::Surface(surface) => device.resize_surface(surface, width, height),
-            Kind::Released => {}
+            // The host gives it new textures instead.
+            Kind::Released | Kind::Borrowed(..) => {}
             Kind::Texture(id) => {
                 // A texture of a replaced device went with it.
                 if self.generation == self.shared.generation() {
@@ -139,8 +169,8 @@ impl Target {
                 self.read_back.store(true, Ordering::Relaxed);
                 Ok(pollster::block_on(self.shared.gpu().read_texture(id)))
             }
-            Kind::Surface(_) => Err(Error::Unsupported(
-                "surface targets can't be read back".into(),
+            Kind::Surface(_) | Kind::Borrowed(..) => Err(Error::Unsupported(
+                "surface and borrowed targets can't be read back".into(),
             )),
             Kind::Released => Err(Error::TargetLost("the GPU was replaced".into())),
         }
@@ -150,6 +180,7 @@ impl Target {
         TargetFormat {
             color: match &self.kind {
                 Kind::Surface(surface) => surface.format(),
+                Kind::Borrowed(_, format) => *format,
                 Kind::Texture(_) | Kind::Released => TEXTURE_FORMAT,
             },
             sample_count: 1,
@@ -175,7 +206,7 @@ impl Target {
                     *id = create_texture(device, self.width, self.height);
                     self.generation = self.shared.generation();
                 }
-                Kind::Surface(_) | Kind::Released => {
+                Kind::Surface(_) | Kind::Borrowed(..) | Kind::Released => {
                     return Err(Error::TargetLost("the GPU was replaced".into()));
                 }
             }
@@ -188,6 +219,7 @@ impl Target {
                 }
                 Ok(Some(*id))
             }
+            Kind::Borrowed(id, _) => Ok(Some(*id)),
             Kind::Released => Err(Error::TargetLost("the GPU was replaced".into())),
             Kind::Surface(surface) => match device.acquire(surface) {
                 Ok(id) => Ok(Some(id)),
@@ -201,6 +233,8 @@ impl Target {
     pub(crate) fn end(&mut self, device: &mut WgpuGpu) {
         match &mut self.kind {
             Kind::Surface(surface) => device.present(surface),
+            // The host reads it once the render returns.
+            Kind::Borrowed(..) => device.end_frame(0),
             _ => device.end_frame(IN_FLIGHT),
         }
     }
@@ -218,7 +252,7 @@ impl Target {
         }
         match kind {
             Kind::Released => {}
-            Kind::Texture(id) => device.destroy_texture(id),
+            Kind::Texture(id) | Kind::Borrowed(id, _) => device.destroy_texture(id),
             Kind::Surface(mut surface) => device.retire_surface(&mut surface),
         }
     }

@@ -32,6 +32,8 @@ pub use orb_camera::{
     TileLodMode,
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use orb_hal_wgpu::{MetalTexture, metal_texture};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
 pub use orb_host::abort::Listening;
 pub use orb_host::{

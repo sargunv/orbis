@@ -6,8 +6,9 @@
 //! register their own targets (a surface frame, an offscreen texture) with
 //! [`WgpuGpu::register_view`].
 
-// `unsafe` only where a surface is made from a raw platform handle, and
-// where D3D12's compiler or the Vulkan loader is loaded.
+// `unsafe` only where a surface or a host's texture is made from a raw
+// platform handle, and where D3D12's compiler or the Vulkan loader is
+// loaded.
 #![deny(unsafe_code)]
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -16,6 +17,8 @@ mod compile;
 mod convert;
 #[cfg(windows)]
 mod dx12;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod metal;
 mod offscreen;
 mod slots;
 #[cfg(not(target_arch = "wasm32"))]
@@ -25,6 +28,8 @@ mod timing;
 mod writes;
 
 pub use convert::from_texture_format;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use metal::{MetalTexture, metal_texture};
 use orb_hal::*;
 use slots::Slots;
 #[cfg(not(target_arch = "wasm32"))]

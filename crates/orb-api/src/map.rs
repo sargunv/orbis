@@ -893,8 +893,8 @@ impl Map {
     /// host with nothing to draw into yet (a map before its first target)
     /// still gets its style in and its events ([`MapEvent::StyleLoad`]),
     /// and the requests the style starts go out. Hosts that draw frames
-    /// needn't call it. Frames into targets of another format than still
-    /// output's (an RGBA8 texture) fail after it, as after
+    /// needn't call it. A frame into a target of another format than still
+    /// output's (an RGBA8 texture) then lays the tiles out again, as after
     /// [`snapshot`](Self::snapshot).
     pub fn apply_arrivals(&mut self) -> Result<(), Error> {
         let mut target = self.offscreen(1, 1, 1.0);
@@ -1215,15 +1215,17 @@ impl Map {
             self.renderer = None;
             self.dirty = true;
         }
-        let format = target.format();
-        if let Some(renderer) = &self.renderer
-            && renderer.format() != format
+        // A target of another format than the map drew last (a BGRA8
+        // window after an RGBA8 still, say) takes a renderer of its own,
+        // which lays the tiles out again.
+        if self
+            .renderer
+            .as_ref()
+            .is_some_and(|r| r.format() != target.format())
+            && let Some(renderer) = self.renderer.take()
         {
-            return Err(Error::InvalidArgument(format!(
-                "this map draws {:?} targets, not {:?}",
-                renderer.format().color,
-                format.color
-            )));
+            renderer.destroy(&mut *self.runtime.shared.gpu());
+            self.dirty = true;
         }
         Ok(true)
     }
