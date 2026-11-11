@@ -2206,24 +2206,20 @@ impl Scene {
         self.headroom().any(|(_, bytes)| bytes <= room)
     }
 
-    /// Doubles each pool, and the chunk table, that holds more than three
-    /// quarters of its size, within its ceiling and the `room` bytes left,
-    /// which it takes from: room a map at rest makes for the next view, so
-    /// that it grows into new memory there rather than in a frame of a
-    /// gesture. Returns whether any grew.
-    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: &mut u64) -> bool {
-        let mut grew = false;
-        for (growth, bytes) in self.headroom().collect::<Vec<_>>() {
-            if bytes > *room {
-                continue;
-            }
-            *room -= bytes;
-            grew |= match growth {
-                Some(pool) => self.grow_pool(gpu, pool),
-                None => self.grow_chunks(gpu, u64::from(self.capacity.chunks) + 1),
-            };
+    /// Doubles the first pool, or else the chunk table, that holds more
+    /// than three quarters of its size, within its ceiling and `room`
+    /// bytes: room a map at rest makes for the next view, so that it grows
+    /// into new memory there rather than in a frame of a gesture. One a
+    /// frame, so that a frame pays for at most one new allocation. Returns
+    /// whether it grew one.
+    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: u64) -> bool {
+        let Some((growth, _)) = self.headroom().find(|&(_, bytes)| bytes <= room) else {
+            return false;
+        };
+        match growth {
+            Some(pool) => self.grow_pool(gpu, pool),
+            None => self.grow_chunks(gpu, u64::from(self.capacity.chunks) + 1),
         }
-        grew
     }
 
     /// The pools (`Some`) and chunk table (`None`) more than three quarters

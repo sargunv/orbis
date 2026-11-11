@@ -518,17 +518,12 @@ impl Images {
         (self.pages.iter().flatten()).any(|page| page.page.headroom().is_some_and(|b| b <= room))
     }
 
-    /// Grows each page holding more than three quarters of its layers,
-    /// within the `room` bytes left, which it takes from; whether any grew.
-    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: &mut u64) -> bool {
-        let mut grew = false;
-        for page in self.pages.iter_mut().flatten() {
-            if let Some(bytes) = page.page.headroom().filter(|&b| b <= *room) {
-                *room -= bytes;
-                grew |= page.page.grow(gpu).is_ok();
-            }
-        }
-        grew
+    /// Grows the first page holding more than three quarters of its
+    /// layers, within `room` bytes; whether one grew.
+    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: u64) -> bool {
+        (self.pages.iter_mut().flatten())
+            .find(|page| page.page.headroom().is_some_and(|b| b <= room))
+            .is_some_and(|page| page.page.grow(gpu).is_ok())
     }
 
     /// A layer the page already has, without growing it.

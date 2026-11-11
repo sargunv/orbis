@@ -393,7 +393,7 @@ pub(crate) struct SpriteState {
 }
 
 /// The most resize frames a rest takes (`Map::resizes`).
-const RESIZES: u8 = 4;
+const RESIZES: u8 = 8;
 
 /// What tiles and styles let go of between frames, released at the next:
 /// from the renderer, or from the runtime's image atlas.
@@ -516,9 +516,15 @@ pub struct Map {
     prewarm_due: bool,
     /// A frame at rest found pools, pages or the drape atlas to resize for
     /// the view (more than three quarters full, or at most a quarter), for
-    /// the next to resize: its arrivals step, drape plan and placement read
-    /// it, and it settles it again. A continuous map resizes only then.
+    /// the next to resize, which settles it again. A continuous map
+    /// resizes only then.
     pub(crate) resize_due: bool,
+    /// This frame resizes: `resize_due`, and the camera hasn't moved since
+    /// nor input started. Its growth, drape plan and placement read it.
+    pub(crate) resize_now: bool,
+    /// This frame's resize grew a pool or page: the drape pages wait for
+    /// the next, so that a frame makes one new allocation at most.
+    pub(crate) resize_grew: bool,
     /// This rest's resize frames so far: a few at most, so that a resize
     /// that changes nothing doesn't keep the map from idling. A view
     /// emptied between frames gives its meshes back over more than one.
@@ -748,6 +754,8 @@ impl Map {
             candidates_dropped: 0,
             prewarm_due: false,
             resize_due: false,
+            resize_now: false,
+            resize_grew: false,
             resizes: 0,
             services,
             videos: Default::default(),
@@ -1515,18 +1523,13 @@ impl Map {
         let started = clock.now();
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
         self.take_arrivals(gpu, renderer, pixel_ratio);
-        // Room a frame at rest asked for, made where arrivals grow what they
-        // fill, before anything this frame reads it; the drape pages resize
-        // in its plan.
-        if self.resize_due {
-            renderer.grow_headroom(gpu, self.headroom_room(renderer));
-        }
         let mut times = FrameTimes {
             // Uploads and label commits are stages of their own.
             arrivals: micros(started + self.upload_ms + self.placement_ms, clock.now()),
             ..FrameTimes::default()
         };
         // The camera moves for this frame on what has arrived.
+        let seen = self.camera_seen;
         let moving = match target {
             Some(_) => {
                 self.apply_videos(gpu, renderer);
@@ -1534,6 +1537,16 @@ impl Map {
             }
             None => false,
         };
+        // Room a frame at rest asked for, made before anything this frame
+        // reads it: one pool or page a frame, or else the drape pages in its
+        // plan; each frame looks again. A camera that moved since, or input,
+        // ends it, so a gesture's first frame doesn't pay for it.
+        let held = self.camera.is_held() || self.input.is_active();
+        self.resize_now = self.resize_due && !moving && !held && self.camera_seen == seen;
+        let growing = clock.now();
+        self.resize_grew =
+            self.resize_now && renderer.grow_headroom(gpu, self.headroom_room(renderer));
+        self.upload_ms += clock.now() - growing;
 
         // Tiles' patches are on the low-zoom surface the style draws on.
         let plane = self.surface.globe().and_then(|g| g.plane);
@@ -1794,7 +1807,7 @@ impl Map {
         self.trim_cache(renderer);
         // A moving view only grows what it fills: shrinking as soon as its
         // tiles dipped made the next ones grow it again, into new memory.
-        if self.resize_due || self.mode != RenderMode::Continuous {
+        if self.resize_now || self.mode != RenderMode::Continuous {
             renderer.shrink(gpu);
         } else {
             renderer.forget_refusals();
@@ -1875,7 +1888,11 @@ impl Map {
         // its clearing (on RADV 43 µs a MiB, holding up the frame's
         // submissions too; #176): unseen at rest, and then not in a
         // gesture's first frames.
-        let rest = report.idle && !moving && !held && self.mode == RenderMode::Continuous;
+        // Not while tiles are held for their labels: their release frees
+        // what the pools hold, so they'd grow ahead of nothing.
+        let holding = (self.style.as_ref()).is_some_and(|s| s.held.iter().any(|h| !h.is_empty()));
+        let rest =
+            report.idle && !moving && !held && !holding && self.mode == RenderMode::Continuous;
         self.resizes = match rest {
             true => self.resizes + u8::from(std::mem::take(&mut self.resize_due)),
             false => 0,

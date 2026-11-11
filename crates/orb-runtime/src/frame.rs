@@ -590,11 +590,10 @@ impl Map {
         let kept = terrain.kept_slots();
         let tiles = terrain.tiles.len() as u32;
         // At rest the pages fit the view: room for more tiles than it has,
-        // or shrunk to them (`resize_due`).
-        let at_rest = self.resize_due || self.mode != RenderMode::Continuous;
-        let wanted = (self.resize_due)
-            .then(|| renderer.drape_at_rest(gpu, tiles))
-            .flatten();
+        // or shrunk to them (`resize_now`).
+        let resize = self.resize_now && !self.resize_grew;
+        let at_rest = resize || self.mode != RenderMode::Continuous;
+        let wanted = resize.then(|| renderer.drape_at_rest(gpu, tiles)).flatten();
         let slots = (wanted.unwrap_or(tiles).max(tiles), &kept[..]);
         let (layout, moves) = match renderer.reserve_drape(gpu, slots, at_rest) {
             Ok(reserved) => reserved,

@@ -654,17 +654,20 @@ impl Renderer {
         self.scene.wants_headroom(room) || self.images.wants_headroom(room)
     }
 
-    /// Grows what is more than three quarters full, within its ceiling and
-    /// `room` bytes in all: a map at rest makes room ahead of the next
+    /// Grows one of what is more than three quarters full, within its
+    /// ceiling and `room` bytes: a map at rest makes room ahead of the next
     /// view, so that a gesture from rest needn't grow them. New memory
     /// costs its clearing, and a device may hold up other work while it
-    /// clears (#176: on RADV 43 µs a MiB, holding up submissions). Whether
-    /// any grew.
-    pub fn grow_headroom(&mut self, gpu: &mut dyn Gpu, mut room: u64) -> bool {
-        let grew = self.scene.grow_headroom(gpu, &mut room);
-        self.glyphs
-            .set_table(self.scene.tables().writer(Table::Props));
-        self.images.grow_headroom(gpu, &mut room) | grew
+    /// clears (#176: on RADV 43 µs a MiB, holding up submissions; a new
+    /// 256 MiB block of wgpu's allocator 10-12 ms), so a frame grows one,
+    /// and a gesture that starts waits for one at most. Whether one grew.
+    pub fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: u64) -> bool {
+        if self.scene.grow_headroom(gpu, room) {
+            self.glyphs
+                .set_table(self.scene.tables().writer(Table::Props));
+            return true;
+        }
+        self.images.grow_headroom(gpu, room)
     }
 
     /// Grows the pools once, within their limits; whether they grew.
