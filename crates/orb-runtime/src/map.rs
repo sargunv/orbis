@@ -596,6 +596,8 @@ pub struct Map {
     /// The next frame lets go of every cached tile out of view
     /// ([`Map::release_cached_tiles`]).
     pub(crate) release_cached: bool,
+    /// Tiles out of view stay cached ([`Map::set_tile_cache`]).
+    pub(crate) tile_cache: bool,
     /// The last style id given to the jobs.
     pub(crate) style_id: u64,
     /// Counts style revisions: every new style and every edit.
@@ -791,6 +793,7 @@ impl Map {
             capacity: SceneCapacity::default(),
             budget: orb_render::DESKTOP_BUDGET,
             release_cached: false,
+            tile_cache: true,
             style_id: 0,
             version: 0,
             pending: BTreeMap::new(),
@@ -960,6 +963,13 @@ impl Map {
             terrain.pyramid.retry_failed(f64::INFINITY);
         }
         (self.services.wake)();
+    }
+
+    /// Whether tiles that leave the view stay cached for a view that
+    /// returns to them (the default), or go at the next frame, as with
+    /// Native's `tileCacheEnabled` off.
+    pub fn set_tile_cache(&mut self, enabled: bool) {
+        self.tile_cache = enabled;
     }
 
     /// Lets go of the tiles kept out of view at the next frame, as a

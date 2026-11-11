@@ -294,6 +294,13 @@ impl Map {
         self.dirty = true;
     }
 
+    /// Whether tiles that leave the view stay cached (the default) or go
+    /// at the next frame ([`orb_runtime::Map::set_tile_cache`]).
+    pub fn set_tile_cache(&mut self, enabled: bool) {
+        self.map.set_tile_cache(enabled);
+        self.dirty = true;
+    }
+
     /// Lets go of the tiles cached out of view at the next frame; they
     /// load again when the view needs them. For low-memory warnings.
     pub fn release_cached_tiles(&mut self) {

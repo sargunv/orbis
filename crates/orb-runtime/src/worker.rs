@@ -561,6 +561,20 @@ impl TileWorker {
         }
     }
 
+    /// Drops `tile`'s decoded frames of source `source`, whatever revision
+    /// they began at: its next build fetches it again
+    /// ([`Jobs::forget`](crate::Jobs::forget)).
+    pub(crate) fn forget(&self, source: u32, tile: TileIndex) {
+        let mut frames = self.data.frames.lock().expect("frames poisoned");
+        let keys: Vec<FrameKey> = (frames.tiles.keys())
+            .filter(|(s, _, t)| *s == source && *t == tile)
+            .copied()
+            .collect();
+        for key in keys {
+            frames.remove(key);
+        }
+    }
+
     /// Whether `request` can build without fetching bytes: its tile is
     /// cached, or its source is inline or already indexed GeoJSON. Job
     /// hosts use this to avoid fetching again; `build` ignores bytes then.

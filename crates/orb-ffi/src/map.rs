@@ -641,6 +641,9 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                 // -2 to 22, pitch to 85°), which a map whose bounds were
                 // never set would otherwise keep.
                 map.set_constraints(constraints(&default_bounds()));
+                if options.fields & MLN_MAP_OPTION_TILE_CACHE_ENABLED != 0 {
+                    map.set_tile_cache(options.tile_cache_enabled);
+                }
                 let woken = Arc::new(AtomicBool::new(false));
                 let flag = woken.clone();
                 map.set_wake(move || {

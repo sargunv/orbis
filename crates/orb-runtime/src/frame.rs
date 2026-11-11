@@ -519,14 +519,15 @@ impl Map {
     }
 
     /// Keeps the tiles out of view within the cache budget, a quarter of the
-    /// memory budget: the least recently used go first, from any source.
+    /// memory budget (none with the tile cache off): the least recently used
+    /// go first, from any source.
     /// The scene's pools then hold the tiles in view and what's left of the
     /// cache, and arrivals that need room evict more (`evict_unused`).
     pub(crate) fn trim_cache(&mut self, renderer: &mut Renderer) {
         let Some(style) = &mut self.style else {
             return;
         };
-        let budget = if std::mem::take(&mut self.release_cached) {
+        let budget = if std::mem::take(&mut self.release_cached) || !self.tile_cache {
             0
         } else {
             self.budget / 4
@@ -556,6 +557,11 @@ impl Map {
             };
             if let Some(resident) = pyramid.evict_unused(tile) {
                 total -= cost;
+                // Without a tile cache, nothing of it stays to load from.
+                if !self.tile_cache {
+                    let key = style.worker.plan().sources[index].key;
+                    self.services.jobs.forget(style.id, key, tile);
+                }
                 self.retired
                     .ramps
                     .extend(remove_resident(renderer, resident, &mut style.states));

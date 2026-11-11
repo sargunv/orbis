@@ -158,6 +158,10 @@ pub trait Jobs: Send + Sync {
     /// whose fetch hasn't started never does and answers
     /// [`TileResult::cancelled`]; others complete as usual.
     fn cancel(&self, _style: u64, _source: u32, _tile: orb_crs::TileIndex) {}
+    /// Lets go of what the jobs keep of `tile` of style `style`'s source
+    /// `source` (its decoded frame), so that a later load fetches it again:
+    /// a map without a tile cache keeps nothing of tiles out of view.
+    fn forget(&self, _style: u64, _source: u32, _tile: orb_crs::TileIndex) {}
     /// Starts fetching glyph ranges style `id`'s tiles are about to need,
     /// so that their layout finds them in.
     fn prefetch_glyphs(&self, _id: u64, _urls: Vec<String>) {}
@@ -246,6 +250,10 @@ impl Jobs for PoolJobs {
 
     fn cancel(&self, style: u64, source: u32, tile: orb_crs::TileIndex) {
         self.host.cancel(style, source, tile);
+    }
+
+    fn forget(&self, style: u64, source: u32, tile: orb_crs::TileIndex) {
+        self.host.forget(style, source, tile);
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {

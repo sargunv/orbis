@@ -580,6 +580,13 @@ impl JobHost {
     /// its fetch hasn't started, it never does; if it has, it is aborted
     /// (a fetch other loads share goes on for them). Either way the load
     /// answers [`Loaded::Cancelled`], unless its bytes already came.
+    pub fn forget(&self, style: u64, source: u32, tile: TileIndex) {
+        let styles = self.styles.lock().expect("styles poisoned");
+        if let Some((_, worker)) = styles.iter().find(|(id, _)| *id == style) {
+            worker.forget(source, tile);
+        }
+    }
+
     pub fn cancel(&self, style: u64, source: u32, tile: TileIndex) {
         let key = Some((style, source, tile));
         let (given_up, running): (Vec<Waiting>, Vec<Abort>) = {
