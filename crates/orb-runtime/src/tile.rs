@@ -1059,10 +1059,10 @@ pub(crate) fn build(
                 _ => None,
             };
             let geometry = &mut build.hits[hit_layer].1;
-            // Beyond the spec, a feature's own translate and circle pitch.
+            // Beyond the spec, a feature's own translate and circle pitch;
+            // labels answer from where placement put them instead.
             use crate::query::HitExtras;
-            let translate = plan
-                .translate_rows(node)
+            let translate = (plan.translate_rows(node) && !node.family.is_symbol())
                 .then(|| plan.translate(node).expect("translated").0.bind(layer));
             let pitch = plan.circle_pitch_rows(node).then(|| {
                 let map = |key| style_layer.get(key).bind(layer);

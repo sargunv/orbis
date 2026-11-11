@@ -47,7 +47,7 @@ pub use layout::{
 pub use placement::{
     BucketStates, Camera, Committed, Frame, Ground, GroundRef, LayerFrame, LayerParams, Mat4,
     Overlap, PlacedTile, PlacementTables, Placer, Scope, ScopeTile, SymbolFlags, TileGlobe, TileId,
-    TileView, ZoomSize, label_circles, state,
+    TileView, ZoomSize, label_circles, label_translates, state,
 };
 pub use quads::GLYPH_PADDING;
 

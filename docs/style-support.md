@@ -201,14 +201,14 @@ pass.
 | `icon-halo-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable); `daylight` with preview `dev.sargunv.orbis:daylight` | — | 7/7 | — | 7/7 |
 | `icon-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
 | `icon-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
-| `icon-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 3/3 | — | 3/3 |
+| `icon-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | 3/3 | — | 3/3 |
 | `icon-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 2/2 | — | 2/2 |
 | `text-opacity` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
 | `text-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable); `daylight` with preview `dev.sargunv.orbis:daylight` | — | 7/8 | — | 7/9 |
 | `text-halo-color` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable); `daylight` with preview `dev.sargunv.orbis:daylight` | — | 4/4 | — | 4/4 |
 | `text-halo-width` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
 | `text-halo-blur` | paint | frame | zoom, data, state | 0.10.0; data 0.33.0 | 2.0.1; data 5.0.0 | zoom, data, state; camera accepted (not portable) | — | 4/4 | — | 4/4 |
-| `text-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 3/3 | — | 3/3 |
+| `text-translate` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | 3/3 | — | 3/3 |
 | `text-translate-anchor` | paint | frame | zoom | 0.10.0 | 2.0.1 | zoom | — | 10/10 | — | 2/2 |
 
 ### circle

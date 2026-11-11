@@ -40,6 +40,21 @@ pub struct PlacementTables {
     /// and MapLibre Native `justReloaded`). A tile's first load fades its
     /// new symbols in.
     pub reloaded: bool,
+    /// Beyond the spec, each instance's own `text-translate` and
+    /// `icon-translate` where the layer reads them per feature: pixels at
+    /// the tile's zoom and the next, blended by
+    /// [`PlacedTile::translate_t`]. Empty where the layer's apply.
+    pub translates: [Vec<[[f32; 2]; 2]>; 2],
+}
+
+impl PlacementTables {
+    /// Instance `i`'s own text (`part` 0) or icon (1) translate in pixels,
+    /// `t` of the way to the next zoom's, if the layer reads it per
+    /// feature.
+    fn own_translate(&self, part: usize, i: usize, t: f64) -> Option<[f64; 2]> {
+        let [a, b] = self.translates[part].get(i)?.map(|v| v.map(f64::from));
+        Some([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+    }
 }
 
 /// A layer's placement settings, from its evaluated layout and paint.
@@ -213,6 +228,10 @@ pub struct PlacedTile {
     pub bucket: u64,
     pub view: TileView,
     pub text_size: ZoomSize,
+    /// How far between the tile's zoom and the next the camera's zoom
+    /// blends per-feature text and icon translates
+    /// ([`PlacementTables::translates`]).
+    pub translate_t: [f64; 2],
 }
 
 /// One layer of a placement, its drawn tiles in any order.
@@ -552,8 +571,9 @@ pub fn label_circles(
     params: &LayerParams,
     tile: &PlacedTile,
     tables: &PlacementTables,
-    instance: &SymbolInstance,
+    index: usize,
 ) -> Vec<[f64; 3]> {
+    let instance = &tables.instances[index];
     let center = instance.text[justification::CENTER];
     if instance.flags & instance_flags::RUNTIME_COLLISION_CIRCLES == 0 || center == NONE {
         return Vec::new();
@@ -568,7 +588,11 @@ pub fn label_circles(
         pixel_ratio: 512.0 / EXTENT,
         pitch_with_map: params.pitch_with_map,
         rotate_with_map: params.rotate_with_map,
-        translation: translation(&frame.camera, &tile.view, params.text_translate),
+        translation: translation(
+            &frame.camera,
+            &tile.view,
+            label_translates(params, tile, tables, index)[0],
+        ),
         group: None,
         height_offset: f64::from(instance.height_offset),
         height_anchor_ground: params.height_anchor_ground,
@@ -609,6 +633,23 @@ fn quads(placed: &[PlacedSymbol], index: u32) -> u32 {
     } else {
         placed[index as usize].quads[1]
     }
+}
+
+/// The text's and icon's `*-translate` of instance `index` of a tile's
+/// tables: pixels, and whether each turns with the viewport. The layer's,
+/// or beyond the spec the instance's own.
+pub fn label_translates(
+    params: &LayerParams,
+    tile: &PlacedTile,
+    tables: &PlacementTables,
+    index: usize,
+) -> [([f64; 2], bool); 2] {
+    let layer = [params.text_translate, params.icon_translate];
+    [0, 1].map(|part| {
+        let (px, viewport) = layer[part];
+        let own = tables.own_translate(part, index, tile.translate_t[part]);
+        (own.unwrap_or(px), viewport)
+    })
 }
 
 /// GL JS `translatePosition`: a pixel translation in tile units.
@@ -1054,6 +1095,7 @@ impl<'a> Pass<'a> {
         let has_icon_data = !t.icon_placed.is_empty();
         let text_translation = translation(self.camera, &tile.view, p.text_translate);
         let icon_translation = translation(self.camera, &tile.view, p.icon_translate);
+        let own_translates = t.translates.iter().any(|t| !t.is_empty());
         for i in self.order(p, b, range) {
             let instance = &t.instances[i];
             let id = b.ids[i];
@@ -1075,6 +1117,17 @@ impl<'a> Pass<'a> {
                 text_translation,
                 icon_translation,
                 ground: self.ground,
+            };
+            // Beyond the spec, translated each its own way.
+            let c = if own_translates {
+                let [text, icon] = label_translates(p, tile, t, i);
+                Candidate {
+                    text_translation: translation(self.camera, &tile.view, text),
+                    icon_translation: translation(self.camera, &tile.view, icon),
+                    ..c
+                }
+            } else {
+                c
             };
             let text = self.place_text(&c);
             let mut place_text = text.placeable();
@@ -1824,6 +1877,7 @@ mod tests {
             bucket,
             view: view(wrap),
             text_size: ZoomSize { size: 16.0, t: 0.0 },
+            translate_t: [0.0; 2],
         }
     }
 
@@ -1886,6 +1940,39 @@ mod tests {
         let by_wrap = |w: i32| &c.changed.iter().find(|(_, wrap, _)| *wrap == w).unwrap().2;
         assert!(shown(word(by_wrap(0), 0)));
         assert!(!shown(word(by_wrap(-3), 0)));
+    }
+
+    /// Beyond the spec, a label translated its own way collides where it
+    /// draws: two labels at one anchor collide, until the second's own
+    /// translate, blended toward the next zoom's, carries it clear.
+    #[test]
+    fn labels_translated_each_their_own_way_collide_where_they_draw() {
+        let mut placer = Placer::default();
+        let mut t = labels(&[(1, [4096, 4096]), (2, [4096, 4096])]);
+        placer.ingest(1, t.clone());
+        let place = |placer: &mut Placer, t: f64, now: f64| {
+            let c = placer.place(&frame(
+                vec![LayerFrame {
+                    params: params(7),
+                    tiles: vec![PlacedTile {
+                        translate_t: [t, 0.0],
+                        ..tile(1, 0)
+                    }],
+                }],
+                now,
+                0.0,
+            ));
+            let states = &c.changed[0].2;
+            [0, 1].map(|i| shown(word(states, i)))
+        };
+        assert_eq!(place(&mut placer, 0.0, 0.0), [true, false]);
+        // The second moves 0 px at the tile's zoom and 8 px down at the
+        // next: its 1 px tall box clears the first's halfway there, not
+        // at the tile's zoom.
+        t.translates[0] = vec![[[0.0; 2]; 2], [[0.0; 2], [0.0, 8.0]]];
+        placer.ingest(1, t);
+        assert_eq!(place(&mut placer, 0.0, 10.0), [true, false]);
+        assert_eq!(place(&mut placer, 0.5, 20.0), [true, true]);
     }
 
     #[test]

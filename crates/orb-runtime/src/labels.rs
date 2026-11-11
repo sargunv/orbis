@@ -313,7 +313,7 @@ fn layer_params(
         Vec::new()
     };
     let translate = |p: orb_style::SymbolPart| {
-        let t = l.get(p.translate).evaluate(zoom);
+        let t = l.get(p.translate).evaluate_camera(zoom, camera);
         (
             [f64::from(t[0]), f64::from(t[1])],
             l.get(p.translate_anchor).evaluate(zoom) == orb_style::TranslateAnchor::Viewport,
@@ -497,6 +497,23 @@ fn zoom_size(
                 .clamp(0.0, 1.0),
         },
         SizeKind::Source => orb_symbol::ZoomSize::default(),
+    }
+}
+
+/// How far `zoom` blends a per-feature `*-translate`'s values at a tile's
+/// zoom and the next, as the symbol shader's `curve_t` does.
+fn translate_t(
+    symbol: &orb_style::Layer,
+    part: orb_style::SymbolPart,
+    tile_zoom: f64,
+    zoom: f64,
+) -> f64 {
+    let translate = symbol.get(part.translate);
+    match translate.as_expression() {
+        Some(e) if e.kind() == orb_style::Kind::Composite => e
+            .interpolation_factor(zoom, tile_zoom, tile_zoom + 1.0)
+            .clamp(0.0, 1.0),
+        _ => 0.0,
     }
 }
 
@@ -940,6 +957,31 @@ impl Labels {
             }
         }
 
+        // Beyond the spec, each symbol's own translates, which end its
+        // feature's rows.
+        let translates = [text_key, icon_key].map(|key| {
+            let Some(node) = plan.node(key).map(|i| &plan.nodes[i]) else {
+                return Vec::new();
+            };
+            let mesh = result.meshes.iter().find(|m| m.node == key);
+            let Some(mesh) = mesh.filter(|_| plan.translate_rows(node)) else {
+                return Vec::new();
+            };
+            let props = mesh.props.core_words(gpu, bytes);
+            let row_words = plan.row_words(node);
+            let instance_rows = s.table(SymbolTable::InstanceRows).core_words(gpu, bytes);
+            let unpack = |at: usize| {
+                let word = |i| props.get(at + i).copied().unwrap_or(0);
+                [0, 1].map(|i| crate::query::unpack_translate(word(i)))
+            };
+            (instance_rows.as_chunks::<2>().0.iter())
+                .map(|&[slot, _]| {
+                    unpack(
+                        (slot as usize + 1) * row_words - orb_shaders::layout::TRANSLATE_ROW_WORDS,
+                    )
+                })
+                .collect()
+        });
         let bucket = owner.bucket;
         meshes.text_size = meta.text_size;
         meshes.tile_zoom = tile_zoom;
@@ -954,6 +996,7 @@ impl Labels {
             text_size: meta.text_size,
             allow_vertical_placement: meta.allow_vertical_placement,
             reloaded,
+            translates,
         });
         meshes.names = names;
         self.lane.ingest(bucket, Arc::clone(&meshes.tables));
@@ -1391,6 +1434,8 @@ impl Labels {
                                 b.tile_zoom,
                                 zoom,
                             ),
+                            translate_t: [orb_style::TEXT_PART, orb_style::ICON_PART]
+                                .map(|part| translate_t(symbol, part, b.tile_zoom, zoom)),
                         })
                     })
                     .collect();
@@ -1466,7 +1511,7 @@ impl Labels {
                     continue;
                 };
                 let shift = glam::DVec2::new(f64::from(id.wrap) * period, 0.0);
-                for instance in &meshes.tables.instances {
+                for (index, instance) in meshes.tables.instances.iter().enumerate() {
                     let text = instance.text.iter().find(|&&p| shown(&states.text, p));
                     let icon = instance.icon.iter().find(|&&p| shown(&states.icon, p));
                     if text.is_none() && icon.is_none() {
@@ -1482,30 +1527,34 @@ impl Labels {
                             [1, 2].map(|i| f64::from(f32::from_bits(words[at + i])) * scale)
                         })
                     };
-                    let boxes: Vec<[f64; 4]> = [
-                        (text.map(|&p| anchor_shift(&states.text, p)), 0),
-                        (icon.map(|&p| anchor_shift(&states.icon, p)), 2),
+                    // Each part where its translate draws it.
+                    let [text_translate, icon_translate] =
+                        orb_symbol::label_translates(&layer.params, tile, &meshes.tables, index);
+                    let boxes: Vec<crate::query::LabelBox> = [
+                        (
+                            text.map(|&p| anchor_shift(&states.text, p)),
+                            0,
+                            text_translate,
+                        ),
+                        (
+                            icon.map(|&p| anchor_shift(&states.icon, p)),
+                            2,
+                            icon_translate,
+                        ),
                     ]
                     .into_iter()
-                    .filter_map(|(shown, i)| {
+                    .filter_map(|(shown, i, (translate, viewport))| {
                         let [dx, dy] = shown?.unwrap_or([0.0; 2]);
                         let b = instance.boxes[i].map(f64::from);
-                        (!(b[0] == b[2] && b[1] == b[3])).then_some([
-                            b[0] + dx,
-                            b[1] + dy,
-                            b[2] + dx,
-                            b[3] + dy,
-                        ])
+                        (!(b[0] == b[2] && b[1] == b[3])).then_some(crate::query::LabelBox {
+                            rect: [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy],
+                            translate: translate.map(|v| v as f32),
+                            viewport,
+                        })
                     })
                     .collect();
                     let circles = if text.is_some() {
-                        orb_symbol::label_circles(
-                            frame,
-                            &layer.params,
-                            tile,
-                            &meshes.tables,
-                            instance,
-                        )
+                        orb_symbol::label_circles(frame, &layer.params, tile, &meshes.tables, index)
                     } else {
                         Vec::new()
                     };
@@ -1680,12 +1729,14 @@ pub(crate) fn paint(
         night_halo_color: [0.0; 4],
         daylight: node.daylight.as_ref().map_or([None; 2], |d| d.curves()),
         row_words: plan.row_words(node) as u32,
-        translate: orb_render::Translate {
-            rows: None,
-            px: l.get(part.translate).evaluate(zoom),
-            viewport: l.get(part.translate_anchor).evaluate(zoom)
-                == orb_style::TranslateAnchor::Viewport,
-        },
+        // Per feature (beyond the spec), the farthest any feature's goes
+        // follows the slots' maxima.
+        translate: crate::paint::translate(
+            plan,
+            node,
+            zoom,
+            maxima.get(plan.paint_properties(node).len()),
+        ),
         size: size_paint(
             &l.get(if is_text {
                 orb_style::TEXT_SIZE
@@ -1894,6 +1945,7 @@ mod tests {
                     globe: None,
                 },
                 text_size: orb_symbol::ZoomSize::default(),
+                translate_t: [0.0; 2],
             };
             let camera = orb_style::CameraInputs {
                 pitch: 0.0,

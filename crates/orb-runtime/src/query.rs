@@ -319,7 +319,7 @@ fn clip_ring(ring: &[[f64; 2]], lo: f64, hi: f64) -> Vec<DVec2> {
 }
 
 /// A translate row word's pixels (`types.wgsl`'s `TRANSLATE_ROW_UNITS`).
-fn unpack_translate(word: u32) -> [f32; 2] {
+pub(crate) fn unpack_translate(word: u32) -> [f32; 2] {
     let units = orb_shaders::layout::TRANSLATE_ROW_UNITS as f32;
     [word as u16 as i16, (word >> 16) as u16 as i16].map(|v| f32::from(v) / units)
 }
@@ -693,12 +693,23 @@ pub(crate) struct LabelHit {
     pub(crate) key: FeatureKey,
     /// Its anchor in world space, in the copy placement drew.
     pub(crate) anchor: DVec2,
-    /// Its text and icon boxes `[x1, y1, x2, y2]`, shown ones only, in
-    /// tile units at 512 pixels a tile side from its anchor.
-    pub(crate) boxes: Vec<[f64; 4]>,
+    /// Its text and icon boxes, shown ones only.
+    pub(crate) boxes: Vec<LabelBox>,
     /// A line label's collision circles along its line, `[dx, dy, radius]`
     /// in pixels from its anchor, as placement placed them.
     pub(crate) circles: Vec<[f64; 3]>,
+}
+
+/// A label's text or icon box.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LabelBox {
+    /// `[x1, y1, x2, y2]` in tile units at 512 pixels a tile side from its
+    /// anchor.
+    pub(crate) rect: [f64; 4],
+    /// Its part's `*-translate` in pixels, and whether that turns with the
+    /// viewport: the box sits where the translate draws it.
+    pub(crate) translate: [f32; 2],
+    pub(crate) viewport: bool,
 }
 
 /// What a node's features take from its layer's paint to pick.
@@ -1336,18 +1347,25 @@ impl Scene<'_> {
                 // perspective ratio.
                 let scale =
                     512.0 / orb_symbol::EXTENT * (0.5 + 0.5 * q.local_scale(label.anchor)?);
-                let boxes = label
-                    .boxes
-                    .iter()
+                let boxes = (label.boxes.iter())
                     .map(|b| {
-                        [
-                            anchor.x + b[0] * scale,
-                            anchor.y + b[1] * scale,
-                            anchor.x + b[2] * scale,
-                            anchor.y + b[3] * scale,
-                        ]
+                        // A translated part's anchor moves on the ground,
+                        // as GL JS's `translatePosition` moves it.
+                        let anchor = if b.translate == [0.0; 2] {
+                            Some(anchor)
+                        } else {
+                            let shifted = label.anchor + q.shift(b.translate, b.viewport);
+                            q.project(shifted, 0.0).map(|p| p.as_dvec2())
+                        }?;
+                        let r = b.rect;
+                        Some([
+                            anchor.x + r[0] * scale,
+                            anchor.y + r[1] * scale,
+                            anchor.x + r[2] * scale,
+                            anchor.y + r[3] * scale,
+                        ])
                     })
-                    .collect();
+                    .collect::<Option<Vec<_>>>()?;
                 let circles = label
                     .circles
                     .iter()

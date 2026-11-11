@@ -43,7 +43,8 @@ struct SymbolNode {
     flags: u32,
     // Texels on a side of a glyph page and of an image page.
     glyph_page: f32,
-    // `*-translate` in pixels.
+    // `*-translate` in pixels; with per-feature translates, the farthest
+    // any feature's reaches.
     translate: vec2<f32>,
     image_page: f32,
     // Words per feature of its property rows.
@@ -60,6 +61,9 @@ struct SymbolNode {
     night_halo: vec4<f32>,
     daylight_fill: vec4<f32>,
     daylight_halo: vec4<f32>,
+    // With `TRANSLATE_ROW_MASK` in `table_mask`, each feature's
+    // `*-translate` ends its row (beyond the spec), blended by this curve.
+    translate_curve: Curve,
 };
 @group(1) @binding(0) var<uniform> node: SymbolNode;
 
@@ -444,8 +448,8 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     var size = feature_size(node.size, placed.size, bitcast<f32>(vertex_at(base + H_LAYOUT_SIZE)),
         bitcast<f32>(vertex_at(base + H_ZOOM_LO)), bitcast<f32>(vertex_at(base + H_ZOOM_HI)));
 
-    // `*-translate`, in tile units.
-    var t = node.translate;
+    // `*-translate`, in tile units: the node's, or the feature's.
+    var t = node_translate(node.translate, node.table_mask, row, node.row_words, node.translate_curve, tile.zoom);
     if (node.flags & TRANSLATE_VIEWPORT) != 0u {
         let s = sin(frame.bearing);
         let c = cos(frame.bearing);

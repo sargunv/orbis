@@ -179,6 +179,11 @@ fn buildings_pick_wherever_they_draw() {
 
 /// A symbol layer of points `[id, lon, lat]` with `layout`, 20 px labels from the demo's glyphs, drawn into a 400 × 300 map at zoom 3.
 fn labels(points: &[(u32, f64, f64)], layout: &str) -> (Map, Target) {
+    painted_labels(points, layout, "")
+}
+
+/// [`labels`] with `paint`.
+fn painted_labels(points: &[(u32, f64, f64)], layout: &str, paint: &str) -> (Map, Target) {
     let glyphs = common::data().join("glyphs");
     let features: Vec<String> = points
         .iter()
@@ -195,7 +200,7 @@ fn labels(points: &[(u32, f64, f64)], layout: &str) -> (Map, Target) {
         "sources": {{"p": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": [{}]}}}}}},
         "layers": [
           {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
-          {{"id": "t", "type": "symbol", "source": "p",
+          {{"id": "t", "type": "symbol", "source": "p", "paint": {{{paint}}},
            "layout": {{"text-font": ["Noto Sans Regular"], "text-size": 20, {layout}}}}}]}}"##,
         glyphs.display(),
         features.join(","),
@@ -299,4 +304,55 @@ fn label_overlap_follows_the_camera() {
         tilt(&mut map, &mut target, 0.0);
         assert_eq!(shown(&mut map), 1, "level again: {layout}");
     }
+}
+
+/// Labels pick where their `text-translate` draws them, and beyond the
+/// spec each takes its own: of two labels at one point, the one moved
+/// 40 px down shows beside the other rather than hiding, and draws and
+/// picks there.
+#[test]
+fn labels_take_their_own_translate() {
+    let field = r#""text-field": "WWWW""#;
+    let ids = |map: &mut Map| {
+        (100..240)
+            .step_by(4)
+            .filter_map(|y| label_at(map, 200.0, f64::from(y)).map(|id| (id, y)))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    // Dark pixels in `rows` near the middle.
+    let ink = |target: &Target, rows: std::ops::Range<usize>| {
+        let pixels = target.read_pixels().unwrap();
+        let width = target.size().0 as usize;
+        rows.flat_map(|y| (160..240).map(move |x| (y * width + x) * 4))
+            .filter(|&i| pixels[i] < 128)
+            .count()
+    };
+    let (mut map, _target) = labels(&[(1, 0.0, 0.0), (2, 0.0, 0.0)], field);
+    assert_eq!(ids(&mut map).len(), 1, "at one point, one hides the other");
+
+    let layer = r#""text-translate": [0, 40]"#;
+    let (mut map, target) = painted_labels(&[(1, 0.0, 0.0)], field, layer);
+    assert_eq!(label_at(&mut map, 200.0, 190.0).as_deref(), Some("1"));
+    assert_eq!(label_at(&mut map, 200.0, 150.0), None);
+    assert!(ink(&target, 180..200) > 20 && ink(&target, 140..160) == 0);
+
+    let own = r#"["match", ["get", "k"], 2, ["literal", [0, 40]], ["literal", [0, 0]]]"#;
+    let paint = format!(r#""text-translate": {own}"#);
+    let (mut map, target) = painted_labels(&[(1, 0.0, 0.0), (2, 0.0, 0.0)], field, &paint);
+    assert_eq!(label_at(&mut map, 200.0, 150.0).as_deref(), Some("1"));
+    assert_eq!(label_at(&mut map, 200.0, 190.0).as_deref(), Some("2"));
+    assert!(ink(&target, 180..200) > 20 && ink(&target, 140..160) > 20);
+
+    // An edit to and from per-feature translates places the labels again.
+    let (mut map, mut target) = labels(&[(1, 0.0, 0.0), (2, 0.0, 0.0)], field);
+    let set = |map: &mut Map, target: &mut Target, value: &str| {
+        let tx = format!(r#"[["setPaintProperty", "t", "text-translate", {value}]]"#);
+        map.edit(&orb_api::Transaction::from_commands(&tx).unwrap())
+            .unwrap();
+        common::settle(map, target);
+    };
+    set(&mut map, &mut target, own);
+    assert_eq!(ids(&mut map).len(), 2, "each its own way, both show");
+    set(&mut map, &mut target, "[0, 0]");
+    assert_eq!(ids(&mut map).len(), 1, "together again, one hides");
 }

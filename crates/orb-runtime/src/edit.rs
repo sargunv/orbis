@@ -35,7 +35,8 @@ use crate::worker::StyleUpdate;
 
 /// The class a paint change costs this renderer for one node:
 /// `orb-style`'s, raised where property rows hold more than the property
-/// (line dash and gradient textures, and the width that scales dashes).
+/// (line dash and gradient textures, and the width that scales dashes) or
+/// placement reads them (a symbol's own translate).
 fn paint_class(layer: &orb_style::Layer, id: PropertyId, from: Binding, to: Binding) -> Class {
     let class = Change::Paint {
         layer: LayerKey(0),
@@ -45,6 +46,14 @@ fn paint_class(layer: &orb_style::Layer, id: PropertyId, from: Binding, to: Bind
     }
     .class();
     let line_rows = crate::line::has_textures(layer);
+    // Placement reads a symbol's own translate from the tables its bucket
+    // builds with the rows.
+    let per_feature = |b: Binding| matches!(b, Binding::Source | Binding::Composite);
+    let symbol_translate =
+        id == orb_style::TEXT_TRANSLATE.id() || id == orb_style::ICON_TRANSLATE.id();
+    if symbol_translate && (per_feature(from) || per_feature(to)) {
+        return Class::Relayout;
+    }
     if id == orb_style::LINE_DASHARRAY.id()
         || id == orb_style::LINE_GRADIENT.id()
         || (id == orb_style::LINE_WIDTH.id() && line_rows)

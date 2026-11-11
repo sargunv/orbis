@@ -428,8 +428,8 @@ impl StylePlan {
         family + pitch + translate
     }
 
-    /// A fill, line, extrusion or circle node's `*-translate` and its
-    /// anchor.
+    /// A fill, line, extrusion, circle or symbol node's `*-translate` and
+    /// its anchor.
     pub(crate) fn translate<'a>(
         &'a self,
         node: &NodePlan,
@@ -438,7 +438,7 @@ impl StylePlan {
         PropertyRef<'a, orb_style::TranslateAnchor>,
     )> {
         let l = &self.style.layers[node.layer];
-        let (px, anchor) = translate_keys(l.ty)?;
+        let (px, anchor) = translate_keys(l.ty, node.family)?;
         Some((l.get(px), l.get(anchor)))
     }
 
@@ -680,9 +680,11 @@ impl StylePlan {
 }
 
 /// A layer type's `*-translate` and anchor properties, for those that can
-/// have one per feature: fills, lines, extrusions and circles.
+/// have one per feature: fills, lines, extrusions, circles, and a symbol
+/// layer's text or icon `family`.
 pub(crate) fn translate_keys(
     ty: LayerType,
+    family: Family,
 ) -> Option<(
     orb_style::Key<[f32; 2]>,
     orb_style::Key<orb_style::TranslateAnchor>,
@@ -693,6 +695,10 @@ pub(crate) fn translate_keys(
         LayerType::Line => (LINE_TRANSLATE, LINE_TRANSLATE_ANCHOR),
         LayerType::FillExtrusion => (EXTRUSION_TRANSLATE, EXTRUSION_TRANSLATE_ANCHOR),
         LayerType::Circle => (CIRCLE_TRANSLATE, CIRCLE_TRANSLATE_ANCHOR),
+        LayerType::Symbol if family == Family::SymbolText => {
+            (TEXT_TRANSLATE, TEXT_TRANSLATE_ANCHOR)
+        }
+        LayerType::Symbol => (ICON_TRANSLATE, ICON_TRANSLATE_ANCHOR),
         _ => return None,
     })
 }

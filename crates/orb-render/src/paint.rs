@@ -78,8 +78,8 @@ pub struct Translate {
     /// Turn with the map's bearing (`translate-anchor: viewport`).
     pub viewport: bool,
     /// Each feature's offset ends its property row, blended by `curve`
-    /// (`types.wgsl`'s `TRANSLATE_ROW_MASK`); fill, line, extrusion and
-    /// circle nodes only.
+    /// (`types.wgsl`'s `TRANSLATE_ROW_MASK`); fill, line, extrusion,
+    /// circle and symbol nodes only.
     pub rows: Option<Curve>,
 }
 
@@ -697,10 +697,11 @@ impl NodePaint {
                 b.f(n::OPACITY, &[p.opacity])
                     .f(n::HALO_WIDTH, &[p.halo_width]);
                 b.f(n::HALO_BLUR, &[p.halo_blur]).u(n::INDEX, &[node]);
-                b.u(n::TABLE_MASK, &[p.table_mask])
+                b.u(n::TABLE_MASK, &[p.table_mask | p.translate.mask()])
                     .u(n::FLAGS, &[bits(&flags)]);
                 // The glyph table and page sizes are the renderer's.
                 b.f(n::TRANSLATE, &p.translate.px);
+                b.curves(n::TRANSLATE_CURVE, &[p.translate.rows.unwrap_or_default()]);
                 p.size.put(&mut b, n::SIZE);
                 p.text_size.put(&mut b, n::TEXT_SIZE);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
