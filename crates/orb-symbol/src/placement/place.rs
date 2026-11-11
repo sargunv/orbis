@@ -110,7 +110,8 @@ pub struct LayerParams {
 }
 
 /// How a symbol collides: `text-overlap`, `icon-overlap` (after the
-/// `*-allow-overlap`s), and the optional and ignore-placement flags.
+/// `*-allow-overlap`s), the optional and ignore-placement flags, and
+/// `symbol-avoid-edges`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SymbolFlags {
     pub text_overlap: Overlap,
@@ -119,6 +120,10 @@ pub struct SymbolFlags {
     pub icon_optional: bool,
     pub text_ignore_placement: bool,
     pub icon_ignore_placement: bool,
+    /// In tile scope, the symbol is placed only if it stays inside its
+    /// tile, as MapLibre Native's Tile mode keeps it; GL JS and continuous
+    /// maps collide across tiles and ignore it.
+    pub avoid_edges: bool,
 }
 
 impl SymbolFlags {
@@ -133,6 +138,7 @@ impl SymbolFlags {
     pub const ICON_OPTIONAL: u8 = 8;
     pub const TEXT_IGNORE_PLACEMENT: u8 = 16;
     pub const ICON_IGNORE_PLACEMENT: u8 = 32;
+    pub const AVOID_EDGES: u8 = 64;
 
     /// These, but for those of `own` the instance's, where its feature
     /// gives them (beyond the spec: GL JS and Native read them per layer).
@@ -170,6 +176,7 @@ impl SymbolFlags {
                 128,
                 self.icon_ignore_placement,
             ),
+            avoid_edges: flag(Self::AVOID_EDGES, 256, self.avoid_edges),
         }
     }
 
@@ -185,7 +192,8 @@ impl SymbolFlags {
             | u32::from(self.text_optional) << 4
             | u32::from(self.icon_optional) << 5
             | u32::from(self.text_ignore_placement) << 6
-            | u32::from(self.icon_ignore_placement) << 7;
+            | u32::from(self.icon_ignore_placement) << 7
+            | u32::from(self.avoid_edges) << 8;
         instance_flags::OWN_PLACEMENT | bits << Self::SHIFT
     }
 
@@ -601,6 +609,7 @@ pub fn label_circles(
         height_offset: f64::from(instance.height_offset),
         height_anchor_ground: params.height_anchor_ground,
         ground,
+        within_view: false,
     };
     let label = LineLabel {
         symbol,
@@ -1180,6 +1189,7 @@ impl<'a> Pass<'a> {
                 text_translation,
                 icon_translation,
                 ground: self.ground,
+                tile_scope: self.record.is_some(),
             };
             // Beyond the spec, translated each its own way.
             let c = if own_translates {
@@ -1510,6 +1520,8 @@ struct Candidate<'b> {
     text_translation: [f64; 2],
     icon_translation: [f64; 2],
     ground: Option<&'b dyn super::Ground>,
+    /// Placed in tile scope, where the view is the tile.
+    tile_scope: bool,
 }
 
 impl<'b> Candidate<'b> {
@@ -1526,6 +1538,7 @@ impl<'b> Candidate<'b> {
             height_offset: f64::from(self.instance.height_offset),
             height_anchor_ground: self.p.height_anchor_ground,
             ground: self.ground,
+            within_view: self.tile_scope && self.f.avoid_edges,
         }
     }
 
@@ -2433,6 +2446,61 @@ mod tests {
         );
         // A label no listed tile holds isn't placed.
         assert!(!placed(&left)[2]);
+    }
+
+    /// `symbol-avoid-edges` keeps a tile scope's labels inside their tile,
+    /// layer-wide or per symbol; continuous placement ignores it.
+    #[test]
+    fn avoid_edges_keeps_tile_labels_inside_their_tile() {
+        let mut placer = Placer::default();
+        // Label 1 crosses the edge between quadrants (0, 0) and (1, 0);
+        // label 2 lies inside (1, 1).
+        placer.ingest(1, labels(&[(1, [4090, 2000]), (2, [6000, 6000])]));
+        let placed = |placer: &mut Placer, p: LayerParams| {
+            let layers = [(p.clone(), 1)];
+            let mut f = frame(
+                vec![LayerFrame {
+                    params: p,
+                    tiles: vec![tile(1, 0)],
+                }],
+                0.0,
+                0.0,
+            );
+            f.scope = Scope::Tiles(
+                [(0, 0), (1, 0), (0, 1), (1, 1)]
+                    .iter()
+                    .map(|&(c, r)| quadrant(c, r, &layers))
+                    .collect(),
+            );
+            let states = placer.place(&f).changed.remove(0).2;
+            (0..2).map(|i| shown(word(&states, i))).collect::<Vec<_>>()
+        };
+        let mut p = params(7);
+        assert_eq!(placed(&mut placer, p.clone()), [true, true]);
+        p.flags.avoid_edges = true;
+        assert_eq!(placed(&mut placer, p.clone()), [false, true]);
+        // Per symbol: only label 1 avoids edges, which drops it alone.
+        let mut own = labels(&[(1, [4090, 2000]), (2, [6000, 6000])]);
+        own.instances[0].flags |= SymbolFlags {
+            avoid_edges: true,
+            ..SymbolFlags::default()
+        }
+        .instance_bits();
+        placer.ingest(1, own);
+        p.flags.avoid_edges = false;
+        p.own_flags = SymbolFlags::AVOID_EDGES;
+        assert_eq!(placed(&mut placer, p.clone()), [false, true]);
+        // A continuous map collides across tiles and ignores it.
+        let continuous = vec![LayerFrame {
+            params: p,
+            tiles: vec![tile(1, 0)],
+        }];
+        let states = placer
+            .place(&frame(continuous, 10.0, 0.0))
+            .changed
+            .remove(0)
+            .2;
+        assert!(shown(word(&states, 0)));
     }
 
     /// Overzoom slices laid out in one ancestor place merged in its order,

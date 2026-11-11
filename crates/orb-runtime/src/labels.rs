@@ -352,6 +352,9 @@ fn layer_params(
             icon_ignore_placement: l
                 .get(orb_style::ICON_IGNORE_PLACEMENT)
                 .evaluate_camera(zoom, camera),
+            avoid_edges: l
+                .get(orb_style::SYMBOL_AVOID_EDGES)
+                .evaluate_camera(zoom, camera),
         },
         own_flags: own_symbol_flags(symbol),
         rotate_with_map: text_rotates_with_map(symbol, zoom),
@@ -409,14 +412,15 @@ fn draws_by_viewport_y(symbol: &orb_style::Layer, zoom: f64) -> bool {
     by_y && can_overlap
 }
 
-/// The overlap, optional and ignore-placement settings the layer reads
-/// per feature, beyond the spec, as [`orb_symbol::LayerParams::own_flags`]:
+/// The overlap, optional, ignore-placement and avoid-edges settings the
+/// layer reads per feature, beyond the spec, as
+/// [`orb_symbol::LayerParams::own_flags`]:
 /// each symbol collides by its own of those, and by the layer's (which
 /// may follow the camera) for the rest.
 pub(crate) fn own_symbol_flags(symbol: &orb_style::Layer) -> u8 {
     use orb_style::{
-        ICON_ALLOW_OVERLAP, ICON_IGNORE_PLACEMENT, ICON_OPTIONAL, ICON_OVERLAP, TEXT_ALLOW_OVERLAP,
-        TEXT_IGNORE_PLACEMENT, TEXT_OPTIONAL, TEXT_OVERLAP,
+        ICON_ALLOW_OVERLAP, ICON_IGNORE_PLACEMENT, ICON_OPTIONAL, ICON_OVERLAP, SYMBOL_AVOID_EDGES,
+        TEXT_ALLOW_OVERLAP, TEXT_IGNORE_PLACEMENT, TEXT_OPTIONAL, TEXT_OVERLAP,
     };
     use orb_symbol::SymbolFlags as F;
     let per_feature = |kind| matches!(kind, orb_style::Kind::Source | orb_style::Kind::Composite);
@@ -436,6 +440,7 @@ pub(crate) fn own_symbol_flags(symbol: &orb_style::Layer) -> u8 {
         (flag(ICON_OPTIONAL), F::ICON_OPTIONAL),
         (flag(TEXT_IGNORE_PLACEMENT), F::TEXT_IGNORE_PLACEMENT),
         (flag(ICON_IGNORE_PLACEMENT), F::ICON_IGNORE_PLACEMENT),
+        (flag(SYMBOL_AVOID_EDGES), F::AVOID_EDGES),
     ]
     .into_iter()
     .filter(|&(own, _)| own)

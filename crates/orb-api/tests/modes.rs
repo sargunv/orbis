@@ -14,8 +14,9 @@ type Anchor = (String, f64, f64);
 /// Labels a few pixels apart over a few tiles at zoom 10, each longer than
 /// the gap: a random field, and a row in which each overlaps the next, so
 /// that which ones show along it runs in one chain of collisions from its
-/// west end. Returns the style and each label's anchor.
-fn crowd() -> (String, Vec<Anchor>) {
+/// west end. Returns the style and each label's anchor. With `avoid_edges`
+/// the labels keep inside their tiles (`symbol-avoid-edges`).
+fn crowd(avoid_edges: bool) -> (String, Vec<Anchor>) {
     let mut anchors = Vec::new();
     // 41 pixels apart at zoom 10, west to east: placed against the view, the
     // row shows another label at an edge when its west end is out of view.
@@ -46,7 +47,8 @@ fn crowd() -> (String, Vec<Anchor>) {
             "layers":[
               {{"id":"bg","type":"background","paint":{{"background-color":"white"}}}},
               {{"id":"names","type":"symbol","source":"crowd",
-                "layout":{{"text-field":["get","name"],"text-font":["Noto Sans Regular"],"text-size":14}}}}
+                "layout":{{"text-field":["get","name"],"text-font":["Noto Sans Regular"],"text-size":14,
+                  "symbol-avoid-edges":{avoid_edges}}}}}
             ]}}"#,
         common::data().display(),
         features.join(",")
@@ -152,8 +154,27 @@ fn a_tile_drawn_after_its_neighbour_matches_a_fresh_one() {
 /// it, which crosses it: both show it or neither does.
 #[test]
 fn tiles_agree_on_labels_across_edges() {
+    let (agree, differ) = labels_across_edges(false);
+    eprintln!("{agree} labels agree across edges, {} differ", differ.len());
+    assert!(agree > 0, "no labels crossed the edges");
+    assert!(differ.is_empty(), "labels differ across edges: {differ:?}");
+}
+
+/// With `symbol-avoid-edges`, as MapLibre Native's Tile mode keeps it, no
+/// tile shows a label that crosses its edges.
+#[test]
+fn tiles_keep_labels_that_avoid_edges_inside() {
+    let (agree, differ) = labels_across_edges(true);
+    assert_eq!(agree, 0, "labels crossed the edges");
+    assert!(differ.is_empty(), "labels differ across edges: {differ:?}");
+}
+
+/// Over a 3 × 3 block of tiles of [`crowd`], the labels anchored within a
+/// few pixels of an edge between two of them that both tiles show, and
+/// those only one shows.
+fn labels_across_edges(avoid_edges: bool) -> (usize, Vec<String>) {
     const Z: u8 = 10;
-    let (style, anchors) = crowd();
+    let (style, anchors) = crowd(avoid_edges);
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
@@ -210,9 +231,7 @@ fn tiles_agree_on_labels_across_edges() {
             }
         }
     }
-    eprintln!("{agree} labels agree across edges, {} differ", differ.len());
-    assert!(agree > 0, "no labels crossed the edges");
-    assert!(differ.is_empty(), "labels differ across edges: {differ:?}");
+    (agree, differ)
 }
 
 #[test]

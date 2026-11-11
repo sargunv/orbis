@@ -349,6 +349,7 @@ pub(crate) fn prepare(
                 orb_style::ICON_IGNORE_PLACEMENT,
             ]
             .map(flag),
+            flag(orb_style::SYMBOL_AVOID_EDGES),
         )
     });
     let spacing = l.get(orb_style::SYMBOL_SPACING).bind(layer).with_tile(tile);
@@ -452,7 +453,7 @@ pub(crate) fn prepare(
                 .map(|a| a.into_iter().map(anchor).collect()),
             placement: own_flags
                 .as_ref()
-                .map(|(allow, overlap, optional, ignore)| {
+                .map(|(allow, overlap, optional, ignore, avoid_edges)| {
                     let at = |[text, icon]: &[orb_style::BoundProperty<'_, bool>; 2]| {
                         [text.evaluate(zoom, row), icon.evaluate(zoom, row)]
                     };
@@ -466,6 +467,7 @@ pub(crate) fn prepare(
                         icon_optional: optional[1],
                         text_ignore_placement: ignore[0],
                         icon_ignore_placement: ignore[1],
+                        avoid_edges: avoid_edges.evaluate(zoom, row),
                     }
                 }),
         };

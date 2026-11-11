@@ -706,7 +706,7 @@ properties! {
     Symbol {
         layout SYMBOL_PLACEMENT: SymbolPlacement = prop("symbol-placement", enumeration::<SymbolPlacement>(), Some("\"point\""));
         layout SYMBOL_SPACING: f64 = prop("symbol-spacing", NUMBER, Some("250")).interpolated().range(1.0, None).extends(Inputs::DATA);
-        layout SYMBOL_AVOID_EDGES: bool = prop("symbol-avoid-edges", PropertyType::Boolean, Some("false"));
+        layout SYMBOL_AVOID_EDGES: bool = prop("symbol-avoid-edges", PropertyType::Boolean, Some("false")).in_phase(Phase::Placement).extends(Inputs::DATA).extends(Inputs::CAMERA);
         layout SYMBOL_SORT_KEY: Option<f64> = prop("symbol-sort-key", NUMBER, None).data_driven();
         layout SYMBOL_Z_ORDER: SymbolZOrder = prop("symbol-z-order", enumeration::<SymbolZOrder>(), Some("\"auto\"")).in_phase(Phase::Placement);
         layout ICON_ALLOW_OVERLAP: bool = prop("icon-allow-overlap", PropertyType::Boolean, Some("false")).in_phase(Phase::Placement).extends(Inputs::DATA).extends(Inputs::CAMERA);

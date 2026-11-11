@@ -61,6 +61,9 @@ pub(crate) struct BoxPlacement<'a> {
     pub(crate) height_offset: f64,
     pub(crate) height_anchor_ground: bool,
     pub(crate) ground: Option<&'a dyn Ground>,
+    /// Every shape must lie inside the viewport, unpadded: a tile scope's
+    /// tile, for `symbol-avoid-edges` (MapLibre Native's `avoidEdges`).
+    pub(crate) within_view: bool,
 }
 
 struct Projected {
@@ -241,6 +244,15 @@ impl Viewport {
         x2 >= 0.0 && x1 < self.grid_right && y2 >= 0.0 && y1 < self.grid_bottom
     }
 
+    /// Whether bounds lie wholly inside the unpadded viewport (Native's
+    /// `isInsideTile`).
+    fn is_inside_view(&self, x1: f64, y1: f64, x2: f64, y2: f64) -> bool {
+        x1 >= VIEWPORT_PADDING
+            && y1 >= VIEWPORT_PADDING
+            && x2 < self.camera.width + VIEWPORT_PADDING
+            && y2 < self.camera.height + VIEWPORT_PADDING
+    }
+
     /// Where a box lands and whether it may be placed, before collisions
     /// (see [`CollisionIndex::place_box`]).
     fn place_box(&self, b: &CollisionBox, p: &BoxPlacement<'_>, shift: Option<Point>) -> PlacedBox {
@@ -264,7 +276,8 @@ impl Viewport {
         };
         let [x1, y1, x2, y2] = bounds;
         let unplaceable = projected.perspective_ratio < PERSPECTIVE_RATIO_CUTOFF
-            || !self.is_inside_grid(x1, y1, x2, y2);
+            || !self.is_inside_grid(x1, y1, x2, y2)
+            || (p.within_view && !self.is_inside_view(x1, y1, x2, y2));
         let placeable = !unplaceable;
         PlacedBox {
             bounds,
@@ -485,7 +498,9 @@ impl Viewport {
                     let (x1, y1, x2, y2) = (x - radius, y - radius, x + radius, y + radius);
                     entirely_offscreen &= self.is_offscreen(x1, y1, x2, y2);
                     in_grid |= self.is_inside_grid(x1, y1, x2, y2);
-                    if p.overlap != Overlap::Always && hits(x, y, radius) {
+                    if (p.within_view && !self.is_inside_view(x1, y1, x2, y2))
+                        || (p.overlap != Overlap::Always && hits(x, y, radius))
+                    {
                         return PlacedCircles {
                             circles: Vec::new(),
                             offscreen: false,

@@ -152,7 +152,7 @@ pass.
 |---|---|---|---|---|---|---|---|---|---|---|
 | `symbol-placement` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom | — | 9/9, 2 skipped | — | 3/5, 3 skipped |
 | `symbol-spacing` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom; data accepted (not portable) | — | 5/5 | — | 4/5 |
-| `symbol-avoid-edges` | layout | tile | zoom | 0.10.0 | 2.0.1 | zoom | — | — | — | — |
+| `symbol-avoid-edges` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
 | `symbol-sort-key` | layout | tile | zoom, data | 0.53.0; data 0.53.0 | 7.4.0; data 7.4.0 | zoom, data | — | 5/5 | — | 5/6 |
 | `symbol-z-order` | layout | placement | zoom | 0.49.0 | 6.6.0 | zoom | — | 5/5 | — | 5/5 |
 | `icon-allow-overlap` | layout | placement | zoom | 0.10.0 | 2.0.1 | zoom; camera, data accepted (not portable) | — | — | — | — |
