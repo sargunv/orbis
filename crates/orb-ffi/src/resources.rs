@@ -946,7 +946,7 @@ fn configure(
 /// messages. Each steps to the next by its own size, so a caller built
 /// against a later header passes larger ones, whose members past this
 /// header's struct are skipped.
-unsafe fn patterns<T>(
+unsafe fn patterns<T: Copy>(
     items: *const T,
     count: usize,
     what: &str,
@@ -969,10 +969,12 @@ unsafe fn patterns<T>(
             if size < std::mem::size_of::<T>() {
                 return Err(Failure::argument(format!("{label} has an invalid size")));
             }
-            // SAFETY: as above; `size` bytes are the item's.
-            let item = unsafe { &*at.cast::<T>() };
+            // SAFETY: as above; `size` bytes are the item's. A size that
+            // isn't a multiple of the struct's alignment leaves the next
+            // one unaligned, so each is copied out.
+            let item = unsafe { at.cast::<T>().read_unaligned() };
             at = at.wrapping_add(size);
-            each(item, &label)
+            each(&item, &label)
         })
         .collect()
 }
