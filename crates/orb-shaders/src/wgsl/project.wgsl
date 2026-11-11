@@ -440,8 +440,8 @@ fn ground_clip_reversed(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
 }
 
 // `ground_clip_reversed`, where what the sphere hides goes past the far
-// plane only if `hide`: content that hides behind a whole globe per
-// fragment (`sphere_whole`) keeps its own depth.
+// plane only if `hide`: content that hides behind the sphere per
+// fragment (`sphere_limb`) keeps its own depth.
 fn ground_clip_reversed_hiding(g: Ground, offset: vec2<f32>, z: f32, hide: bool) -> vec4<f32> {
     var clip = ground_clip_hiding(g, offset, z, true, hide);
     clip.z = select(clip.w - clip.z, plane_depth(g.flat + offset, z), !on_globe());
@@ -478,10 +478,31 @@ fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<
     return ground_clip_hiding(g, offset, z, solid, solid);
 }
 
-// A whole globe, not handing over to the plane: 3D content can hide
-// behind its sphere per fragment.
-fn sphere_whole() -> bool {
-    return on_globe() && frame.globe_plane == 0u && frame.globe_amount >= 1.0;
+// Whether 3D content of `tile` may reach behind a whole globe's horizon
+// plane (not handing over to the plane), to hide behind the sphere per
+// fragment. Its geometry reaches at most a tile's width past its square
+// (an overzoom slice's), so none lies `reach`, three widths in metres no
+// longer than the equator's, from its anchor. Along the sphere the
+// plane's value falls by at most its gradient times the sine of the
+// angle from under the eye per metre, and the anchor's chord sags under
+// it by less than reach²/R; ground below sea level falls by its depth,
+// and raised off the sphere where it faces the eye, a point only rises.
+// Elsewhere the sphere hides none of it, and the GPU's hidden-surface
+// removal stays on.
+fn sphere_limb(tile: Tile) -> bool {
+    if !on_globe() || frame.globe_plane != 0u || frame.globe_amount < 1.0 {
+        return false;
+    }
+    let t = frame.globe_target;
+    let per_unit = frame.globe_metres * length(t) / max(length(t.xy), 1.0);
+    let reach = 3.0 * tile.extent * tile.scale * per_unit;
+    let n = frame.globe_horizon;
+    let anchor = tile_globe_origin(tile);
+    // The sine of the anchor's angle from under the eye.
+    let off_axis = length(cross(normalize(n.xyz), anchor - frame.globe_eye)) / SPHERE_RADIUS;
+    let depth = max(-frame.terrain_lowest * frame.extrusion_scale * frame.globe_metres, 0.0);
+    let fall = reach * (off_axis + 2.0 * reach / SPHERE_RADIUS) + depth;
+    return dot(n.xyz, anchor) + n.w < length(n.xyz) * fall;
 }
 
 // `ground_clip_depth`; a solid point the sphere hides goes past the far
