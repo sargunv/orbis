@@ -2,7 +2,7 @@
 //!
 //! Each point is two words (packed i16 position, feature slot). One index per
 //! point addresses the record; the shader synthesizes six quad vertices per
-//! instance. Chunks hold at most 256 point instances. No radius or paint is baked into geometry.
+//! instance. Chunks hold at most `MAX_CHUNK_INSTANCES` point instances. No radius or paint is baked into geometry.
 
 use crate::{Mesh, MeshBuilder};
 use orb_tile::{GeometryType, Layer};

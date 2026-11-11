@@ -749,7 +749,12 @@ impl NodePaint {
                 } else {
                     p.width / 2.0
                 };
-                outset + p.offset.abs() + p.blur + p.translate.length() + 1.0
+                // A join's miter or a square cap reaches past the outset
+                // and offset, up to what their bytes hold.
+                (outset + p.offset.abs()) * orb_layout::line::MAX_EXTRUDE
+                    + p.blur
+                    + p.translate.length()
+                    + 1.0
             }
             Self::Raster(_) | Self::Hillshade(_) | Self::ColorRelief(_) => 0.0,
             Self::Symbol(p) => p.reach_px + p.translate.length(),

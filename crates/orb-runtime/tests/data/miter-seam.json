@@ -1,0 +1,26 @@
+{
+  "version": 8,
+  "sources": {
+    "v": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "LineString",
+          "coordinates": [[-28.44, 11.55], [-8.44, 0], [-28.44, -11.55]]
+        }
+      }
+    }
+  },
+  "layers": [
+    {"id": "background", "type": "background", "paint": {"background-color": "white"}},
+    {
+      "id": "v",
+      "type": "line",
+      "source": "v",
+      "layout": {"line-join": "miter", "line-miter-limit": 3},
+      "paint": {"line-color": "red", "line-width": 80}
+    }
+  ]
+}

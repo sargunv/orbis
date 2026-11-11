@@ -15,3 +15,6 @@
 - `extrusion.json`: a style of three GeoJSON blocks around the origin with
   `fill-extrusion` heights, for the frame tests' camera-only uploads
   (`tests/frames.rs`).
+- `miter-seam.json`: a wide GeoJSON line whose sharp miter, at a vertex
+  48 px west of the zoom-2 tile seam on the meridian, reaches past it, for
+  the cull's line margin (`tests/cull.rs`).

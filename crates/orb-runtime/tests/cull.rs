@@ -1,6 +1,7 @@
 //! The cull drops only what draws nothing: with it keeping every
 //! candidate (`cull.wgsl`'s `keep_all`, as a driver without the cull
-//! draws), the Tokyo extract's views draw the same pixels.
+//! draws), the Tokyo extract's views draw the same pixels, as does a style
+//! at the edge of a margin.
 
 mod common;
 
@@ -23,12 +24,19 @@ fn settle(offscreen: &mut Offscreen) {
 
 fn culled_and_kept(at: (f64, f64, f64), edit: Option<&str>) {
     let (zoom, bearing, pitch) = at;
-    let options = Options {
-        style: None,
-        encoding: "mvt".into(),
-        at: Some((Geodetic::new(139.74, 35.685), zoom, bearing, pitch)),
-    };
-    let (mut offscreen, _, _) = Offscreen::load(&options).unwrap();
+    culled_and_kept_in(
+        &Options {
+            style: None,
+            encoding: "mvt".into(),
+            at: Some((Geodetic::new(139.74, 35.685), zoom, bearing, pitch)),
+        },
+        edit,
+    );
+}
+
+fn culled_and_kept_in(options: &Options, edit: Option<&str>) {
+    let (_, zoom, bearing, pitch) = options.at.unwrap();
+    let (mut offscreen, _, _) = Offscreen::load(options).unwrap();
     if let Some(edit) = edit {
         let tx = orb_runtime::Transaction::from_commands(edit).unwrap();
         offscreen.map.edit(&tx).unwrap();
@@ -57,4 +65,22 @@ fn keeping_every_candidate_draws_the_same_pixels() {
 fn keeping_every_extrusion_draws_the_same_pixels() {
     let buildings = r#"[["addLayer", {"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles", "source-layer": "building", "minzoom": 14, "paint": {"fill-extrusion-color": "hsl(35,8%,85%)", "fill-extrusion-height": ["get", "render_height"], "fill-extrusion-base": ["get", "render_min_height"]}}]]"#;
     culled_and_kept((16.0, -20.0, 60.0), Some(buildings));
+}
+
+/// A line's miter reaches past its half width, as far as the extrusion's
+/// bytes hold: here into the next tile from a vertex in its buffer more
+/// than the half width away, where only that tile draws it.
+#[test]
+fn keeping_every_line_draws_the_same_miter_across_a_tile_seam() {
+    culled_and_kept_in(
+        &Options {
+            style: Some(format!(
+                "file://{}/tests/data/miter-seam.json",
+                env!("CARGO_MANIFEST_DIR")
+            )),
+            encoding: "mvt".into(),
+            at: Some((Geodetic::new(0.0, 0.0), 2.0, 0.0, 0.0)),
+        },
+        None,
+    );
 }

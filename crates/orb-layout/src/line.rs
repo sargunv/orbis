@@ -47,6 +47,11 @@ pub const METRICS_STRIDE: usize = 5;
 /// Half the line distance, in word 2's bits 2–31.
 const DISTANCE_MASK: u32 = u32::MAX >> 2;
 const EXTRUDE_SCALE: f64 = 63.0;
+/// The farthest a vertex's extrusion or offset normal reaches along either
+/// axis, in half widths (or offsets): a saturated byte over
+/// [`EXTRUDE_SCALE`]. Miters and caps reach past the half width, so a
+/// cull's margin for a line is this many outsets.
+pub const MAX_EXTRUDE: f32 = i8::MAX as f32 / EXTRUDE_SCALE as f32;
 const COS_HALF_SHARP_CORNER: f64 = 0.7933533402912352; // cos(75° / 2)
 // Offset normals use the same signed bytes as extrusion. Near hairpins,
 // ease away from the bisector so offsets do not run past neighbouring points.
