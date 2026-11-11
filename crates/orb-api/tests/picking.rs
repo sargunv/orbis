@@ -356,3 +356,93 @@ fn labels_take_their_own_translate() {
     set(&mut map, &mut target, "[0, 0]");
     assert_eq!(ids(&mut map).len(), 1, "together again, one hides");
 }
+
+/// The centre of the pixels where a label picks, sampled every 2 px, and
+/// of its dark pixels.
+fn picked_and_drawn(map: &mut Map, target: &Target) -> (DVec2, DVec2) {
+    let (mut picked, mut n) = (DVec2::ZERO, 0.0);
+    for y in (0..300).step_by(2) {
+        for x in (0..400).step_by(2) {
+            let at = DVec2::new(f64::from(x), f64::from(y));
+            if label_at(map, at.x, at.y).is_some() {
+                picked += at;
+                n += 1.0;
+            }
+        }
+    }
+    let pixels = target.read_pixels().unwrap();
+    let (mut drawn, mut m) = (DVec2::ZERO, 0.0);
+    for (i, p) in pixels.chunks(4).enumerate() {
+        if p[0] < 128 {
+            drawn += DVec2::new((i % 400) as f64 + 0.5, (i / 400) as f64 + 0.5);
+            m += 1.0;
+        }
+    }
+    assert!(n > 0.0 && m > 0.0, "{n} picked, {m} drawn");
+    (picked / n, drawn / m)
+}
+
+/// Beyond the spec, a label's own translate blends between zooms and
+/// turns with the map: at zoom 3.5, halfway to 200 px south, it draws and
+/// picks 100 px from its point whatever the bearing and pitch.
+#[test]
+fn labels_own_translates_blend_by_zoom_and_turn_with_the_map() {
+    let own = r#"["interpolate", ["linear"], ["zoom"], 3, ["literal", [0, 0]],
+        4, ["match", ["get", "k"], 1, ["literal", [0, 200]], ["literal", [0, 0]]]]"#;
+    let paint = format!(r#""text-translate": {own}"#);
+    let (mut map, mut target) = painted_labels(&[(1, 0.0, 0.0)], r#""text-field": "WWWW""#, &paint);
+    for (bearing, pitch) in [(0.0, 0.0), (45.0, 0.0), (45.0, 50.0), (300.0, 30.0)] {
+        map.jump_to(&orb_api::CameraTarget {
+            zoom: Some(3.5),
+            bearing: Some(bearing),
+            pitch: Some(pitch),
+            ..orb_api::CameraTarget::default()
+        });
+        common::settle(&mut map, &mut target);
+        let (picked, drawn) = picked_and_drawn(&mut map, &target);
+        let at = format!("bearing {bearing}, pitch {pitch}");
+        assert!(
+            picked.distance(drawn) < 3.0,
+            "{at}: picks at {picked}, draws at {drawn}"
+        );
+        if pitch == 0.0 {
+            let away = drawn.distance(DVec2::new(200.0, 150.0));
+            assert!((away - 100.0).abs() < 3.0, "{at}: {away} px from its point");
+        }
+    }
+}
+
+/// A label at the centre of a tilted map draws the same whatever the
+/// bearing, and picks across the same width: the perspective ratio its
+/// boxes scale by isn't foreshortened as a step east is once the bearing
+/// turns east up the screen.
+#[test]
+fn tilted_labels_pick_across_their_width_at_any_bearing() {
+    let (mut map, mut target) = labels(&[(1, 0.0, 0.0)], r#""text-field": "WWWW""#);
+    let mut spans = Vec::new();
+    for bearing in [0.0, 90.0, 135.0] {
+        map.jump_to(&orb_api::CameraTarget {
+            bearing: Some(bearing),
+            pitch: Some(60.0),
+            ..orb_api::CameraTarget::default()
+        });
+        common::settle(&mut map, &mut target);
+        let pixels = target.read_pixels().unwrap();
+        let dark: Vec<usize> = (0..400)
+            .filter(|&x| (140..160).any(|y| pixels[(y * 400 + x) * 4] < 128))
+            .collect();
+        let picked: Vec<usize> = (0..400)
+            .filter(|&x| label_at(&mut map, x as f64, 150.0).is_some())
+            .collect();
+        let span = |v: &[usize]| [v[0], v[v.len() - 1]];
+        spans.push((bearing, span(&dark), span(&picked)));
+    }
+    let (_, drawn, picked) = spans[0];
+    for &(bearing, d, p) in &spans[1..] {
+        assert_eq!(d, drawn, "bearing {bearing} draws as bearing 0 does");
+        assert!(
+            (0..2).all(|i| p[i].abs_diff(picked[i]) <= 1),
+            "bearing {bearing} picks across {p:?}, bearing 0 across {picked:?}"
+        );
+    }
+}

@@ -1058,11 +1058,10 @@ impl Query<'_> {
     /// Pixels per pixel at the view's centre, at a world position: the
     /// perspective ratio GL JS scales labels by.
     fn local_scale(&self, world: DVec2) -> Option<f64> {
-        let step = self.view.world_per_px();
-        let (a, b) = (
-            self.project(world, 0.0)?,
-            self.project(world + DVec2::new(step, 0.0), 0.0)?,
-        );
+        // A pixel along the screen's horizontal, which a pitch doesn't
+        // foreshorten: east is that only at bearing 0.
+        let step = self.shift([1.0, 0.0], true);
+        let (a, b) = (self.project(world, 0.0)?, self.project(world + step, 0.0)?);
         Some(f64::from(a.distance(b)))
     }
 
