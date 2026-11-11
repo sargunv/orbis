@@ -129,3 +129,50 @@ fn a_child_tile_that_404s_draws_its_parent_or_nothing() {
     assert_eq!(results[2], blue, "the raster parent stands in");
     assert_eq!(results[3], blue, "the raster parent stands in either way");
 }
+
+/// Fails each URL's first request, as a network that dropped out does,
+/// and serves `full_tile` after.
+struct FlakyNetwork(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl orb_api::NetworkHook for FlakyNetwork {
+    fn request(&self, request: orb_api::NetworkRequest, done: orb_api::NetworkDone) {
+        let failed_before = !self.0.lock().unwrap().insert(request.url);
+        done(if failed_before {
+            orb_api::NetworkAnswer::Body {
+                bytes: full_tile(),
+                fresh_until: None,
+                etag: None,
+                modified: None,
+            }
+        } else {
+            orb_api::NetworkAnswer::Failed(orb_api::FetchError::Network("dropped".into()))
+        });
+    }
+}
+
+#[test]
+fn a_still_requests_tiles_that_failed_before_again() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    runtime.set_network_hook(Some(std::sync::Arc::new(FlakyNetwork(Default::default()))));
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_viewport(64.0, 64.0);
+    map.set_style_json(
+        r##"{"version": 8, "center": [10, 10], "zoom": 0,
+            "sources": {"s": {"type": "vector", "maxzoom": 0,
+                "tiles": ["https://tiles.invalid/{z}/{x}/{y}.pbf"]}},
+            "layers": [
+              {"id": "bg", "type": "background", "paint": {"background-color": "#ffffff"}},
+              {"id": "f", "type": "fill", "source": "s", "source-layer": "l",
+                "paint": {"fill-color": "#ff0000"}}]}"##,
+    )
+    .unwrap();
+    let middle = |map: &mut Map| -> [u8; 4] {
+        let image = map.snapshot(64, 64, 1.0).unwrap();
+        let i = (32 * 64 + 32) * 4;
+        image.pixels[i..i + 4].try_into().unwrap()
+    };
+    // The tile's request fails: the still finishes without it.
+    assert_eq!(middle(&mut map), [255, 255, 255, 255]);
+    // The next still asks again rather than waiting out the backoff.
+    assert_eq!(middle(&mut map), [255, 0, 0, 255]);
+}

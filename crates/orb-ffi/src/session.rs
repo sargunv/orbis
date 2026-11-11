@@ -1177,8 +1177,10 @@ pub unsafe extern "C" fn mln_map_request_still_image(
                     Some(map) if map.groups > 0 => {
                         Failure::state("a still image can't be drawn inside a command group")
                     }
-                    // The map's session draws it from its next step on.
+                    // The map's session draws it from its next step on,
+                    // with the tiles that failed before requested again.
                     Some(map) => {
+                        map.map.retry_failed_tiles();
                         map.still = Some(completion);
                         return;
                     }

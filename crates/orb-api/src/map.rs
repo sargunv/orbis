@@ -770,8 +770,11 @@ impl Map {
     /// place as if nothing had been placed before, so the same style, data
     /// and camera always draw the same bytes. Renders as many frames as that
     /// takes, waiting for data in between; an error after [`STILL_TIMEOUT`].
+    /// Tiles that failed before are requested again first; one that fails
+    /// again has its ancestors stand in.
     pub fn snapshot(&mut self, width: u32, height: u32, scale: f64) -> Result<Image, Error> {
         let deadline = Instant::now() + STILL_TIMEOUT;
+        self.retry_failed_tiles();
         loop {
             if let Some(image) = self.snapshot_step(width, height, scale)? {
                 return Ok(image);
@@ -815,10 +818,12 @@ impl Map {
     /// ([`RenderMode::Tile`]): tiles drawn apart agree on the labels that
     /// cross their edges, those smaller than half a tile at least, and the
     /// same tile always draws the same bytes. The map's camera is left as it
-    /// was. An error after [`STILL_TIMEOUT`].
+    /// was. An error after [`STILL_TIMEOUT`]. Failed tiles are retried
+    /// first, as for [`snapshot`](Self::snapshot).
     pub fn render_tile(&mut self, tile: &TileRequest) -> Result<Image, Error> {
         let deadline = Instant::now() + STILL_TIMEOUT;
         let (index, px) = Self::tile_pixels(tile)?;
+        self.retry_failed_tiles();
         let mut target = self.offscreen(px, px, tile.scale);
         let drawn = self.draw_tile(&mut target, tile, index, deadline);
         let pixels = drawn.and_then(|()| target.read_pixels());

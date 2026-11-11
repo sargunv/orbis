@@ -45,6 +45,9 @@ impl OrbisMap {
             view_formats: &[],
         });
         self.map.set_mode(RenderMode::Still);
+        // Tiles that failed before are requested again rather than left to
+        // their backoff; one that fails again has its ancestors stand in.
+        self.map.retry_failed_tiles();
         self.snapshot = Some(Snapshot {
             texture,
             viewport: Viewport {
