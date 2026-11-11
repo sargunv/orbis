@@ -51,7 +51,7 @@ mod pixelmatch;
 
 const UPSTREAM: &str = "https://tiles.openfreemap.org";
 /// The mln-rs commit `xtask/h2h/Cargo.toml` pins.
-const MLN_RS: &str = "louwers/mln-rs@b582dfec";
+const MLN_RS: &str = "louwers/mln-rs@bdf81771";
 
 const HELP: &str = "\
 cargo xtask h2h <stills|tiles|frames|size|all|web|mirror> [options]
