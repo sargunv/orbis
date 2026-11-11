@@ -109,6 +109,17 @@ pub struct FrameReport {
     /// host whose GPU wakes it when a pipeline compiles needs no frames
     /// until then.
     pub compiling: bool,
+    /// The map shows all it has, and asks for one more frame (or, for
+    /// prewarming alone, a [`Map::prepare`]) for its own upkeep: resizing
+    /// pools and pages to the view (which keeps `idle` false until it's
+    /// done), or making pipelines later views may need. That frame shows
+    /// nothing new, and nothing wakes the host for it: a host that draws
+    /// only what's new can leave it to its next frame.
+    pub upkeep: bool,
+    /// As `idle` but for the camera: nothing the map draws changes in
+    /// frames to come unless the camera moves (MapLibre Native's
+    /// `needsRepaint` unset). Upkeep doesn't count.
+    pub settled: bool,
 }
 
 /// Where a frame's CPU time went on this thread, in microseconds of the
@@ -2002,14 +2013,16 @@ impl Map {
         {
             self.resize_due = true;
             report.idle = false;
-            (self.services.wake)();
+            report.upkeep = true;
         }
+        // A resize shows nothing new: the map is idle for its events.
+        report.settled = report.idle || report.upkeep;
         self.events
-            .frame(report.loaded, report.idle && !moving && !held);
+            .frame(report.loaded, report.settled && !moving && !held);
         report.idle &= !moving;
         // At rest, the pipelines later views may need compile ahead of
         // them: asked for by the next frame or prepare, which this one
-        // wakes the host for, so the idle it reports isn't held up.
+        // reports as upkeep, so the idle it reports isn't held up.
         if report.idle
             && !held
             && self.mode == RenderMode::Continuous
@@ -2017,7 +2030,7 @@ impl Map {
             && (self.style.as_ref()).is_some_and(|s| crate::paint::prewarm_needed(renderer, s))
         {
             self.prewarm_due = true;
-            (self.services.wake)();
+            report.upkeep = true;
         }
         self.globe_warps.end_frame();
         report.scene = renderer.stats();

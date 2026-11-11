@@ -335,8 +335,10 @@ fn hidden_layers_compile_ahead_of_need() {
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(style).unwrap();
     rest(&mut map, &mut target);
-    // The frame at rest asks for one more, which asks for them.
+    // The frame at rest asks for one more, which asks for them: upkeep,
+    // which shows nothing new.
     assert!(map.needs_frame());
+    assert!(!map.has_news(), "upkeep is news");
     rest(&mut map, &mut target);
     // Long enough for the slowed compile to end on a loaded machine (a
     // full test run, other builds), where twice its time fell short and

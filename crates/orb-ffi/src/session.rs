@@ -882,6 +882,20 @@ fn render_whole(
     }
 }
 
+/// A frame's `needs_repaint`, as MapLibre Native reports it: the map's
+/// loads, fades and transitions go on. A moving camera places labels
+/// again, whose placement fades over the style's transition while placement
+/// transitions are on, so it counts too, unless they're instant.
+fn needs_repaint(map: &crate::map::MapEntry) -> bool {
+    map.map.needs_repaint()
+        || (map.map.is_moving()
+            && map.style.placement_transitions != Some(false)
+            && map
+                .map
+                .style()
+                .is_none_or(|doc| doc.style().transition.duration > 0.0))
+}
+
 /// Draws the frames that the sessions' demands and pacers ask for, and
 /// reports them; then takes the maps' events.
 pub(crate) fn pump(state: &mut State) {
@@ -944,7 +958,7 @@ fn step(
     let continuous = map.mode == MLN_MAP_MODE_CONTINUOUS;
     if continuous
         && !held
-        && map.map.needs_frame()
+        && map.map.has_news()
         && map.render_update_generation <= entry.drawn_update
     {
         map.render_update_generation = entry.drawn_update + 1;
@@ -952,7 +966,7 @@ fn step(
     if entry.handle.tick.swap(false, Ordering::AcqRel)
         && entry.demands.is_empty()
         && !held
-        && map.map.needs_frame()
+        && map.map.has_news()
     {
         entry.demands.push_back(mln_frame_demand {
             size: 0,
@@ -1079,7 +1093,7 @@ fn step(
                 MLN_RENDER_RESULT_FAILED
             }
         };
-        let needs_repaint = map.map.needs_frame();
+        let needs_repaint = needs_repaint(map);
         let shown = (disposition == MLN_RENDER_RESULT_RENDERED).then(|| Shown {
             view: map.view(),
             generation: entry.generation,
@@ -1114,11 +1128,16 @@ fn step(
         && entry.demands.is_empty()
         && !entry.redraw_signaled
         && !held
-        && map.map.needs_frame()
+        && map.map.has_news()
         && let Some(wake) = &entry.redraw_wake
     {
         entry.redraw_signaled = true;
         wake.signal();
+    }
+    // Upkeep shows nothing new, so it publishes no update: what of it
+    // draws nothing runs now, and a resize waits for the next frame.
+    if continuous && !held && !map.map.has_news() {
+        map.map.upkeep();
     }
     (drawn, still)
 }

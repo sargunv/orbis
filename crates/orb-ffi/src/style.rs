@@ -29,7 +29,7 @@ pub(crate) struct StyleState {
     /// Sources marked volatile.
     volatile: HashSet<String>,
     /// Whether symbols fade as they're placed; `None` is the default, on.
-    placement_transitions: Option<bool>,
+    pub(crate) placement_transitions: Option<bool>,
     /// The feature state the map keeps, set through the API, whether or
     /// not the style has the source yet.
     feature_states: std::collections::BTreeMap<FeatureKey, FeatureState>,

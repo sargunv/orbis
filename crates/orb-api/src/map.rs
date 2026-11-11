@@ -90,6 +90,22 @@ pub struct Map {
     map: orb_runtime::Map,
     /// Set from any thread when data arrived.
     woken: Arc<AtomicBool>,
+    /// Set from any thread when the device woke the maps: a pipeline
+    /// compiled, or a lost device's replacement is due. News only to a
+    /// map whose last frame waited for that.
+    device_woken: Arc<AtomicBool>,
+    /// Calls the hook for the device's wakes: the runtime holds it weakly.
+    _device_wake: Arc<dyn Fn() + Send + Sync>,
+    /// The last frame waited for a compile, or the device's replacement.
+    waiting: bool,
+    /// The last frame asked for a frame for the map's upkeep alone
+    /// ([`orb_runtime::FrameReport::upkeep`]).
+    upkeep: bool,
+    /// The last frame left nothing to change but by the camera
+    /// ([`orb_runtime::FrameReport::settled`]).
+    settled: bool,
+    /// The scale of the target the map last drew into.
+    scale: f64,
     /// Notified with `woken`, for still output to wait on.
     signal: Arc<(Mutex<()>, Condvar)>,
     /// What still output last drew into: a snapshot or a tile.
@@ -171,7 +187,23 @@ impl Map {
                 }
             })
         };
-        runtime.add_wake(&wake);
+        let device_woken = Arc::new(AtomicBool::new(false));
+        let device_wake: Arc<dyn Fn() + Send + Sync> = {
+            let woken = device_woken.clone();
+            let signal = signal.clone();
+            let hook = hook.clone();
+            Arc::new(move || {
+                woken.store(true, Ordering::Release);
+                {
+                    let _waiting = signal.0.lock().expect("signal poisoned");
+                    signal.1.notify_all();
+                }
+                if let Some(hook) = hook.lock().expect("wake hook poisoned").as_ref() {
+                    hook();
+                }
+            })
+        };
+        runtime.add_wake(&device_wake);
         let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
         // Phones and tablets hold less than desktops.
         if cfg!(any(target_os = "android", target_os = "ios")) {
@@ -185,6 +217,12 @@ impl Map {
             runtime: runtime.clone(),
             map,
             woken,
+            device_woken,
+            _device_wake: device_wake,
+            waiting: false,
+            upkeep: false,
+            settled: false,
+            scale: 1.0,
             signal,
             offscreen: None,
             hook,
@@ -279,11 +317,55 @@ impl Map {
         self.map.is_animating()
     }
 
-    /// Whether drawing a frame would show something new: data arrived, the
-    /// camera moves, a gesture or animation runs, or loads and fades are
-    /// under way. An idle map needs no frames.
+    /// Whether the map wants a frame: one that shows something new
+    /// ([`has_news`](Self::has_news)), or one for its own upkeep at rest
+    /// (resizing its memory to the view, prewarming pipelines). An idle map
+    /// needs no frames.
     pub fn needs_frame(&self) -> bool {
-        self.dirty || self.busy || self.woken.load(Ordering::Acquire) || self.map.is_moving()
+        self.has_news() || self.upkeep
+    }
+
+    /// Whether drawing a frame would show something new: data arrived, the
+    /// camera moves, a gesture or animation runs, loads and fades are under
+    /// way, or a pipeline the last frame waited for compiled. A host that
+    /// draws only what's new can leave the map's upkeep to its next frame,
+    /// or do the part that draws nothing with [`upkeep`](Self::upkeep).
+    pub fn has_news(&self) -> bool {
+        self.dirty
+            || self.busy
+            || self.woken.load(Ordering::Acquire)
+            || self.map.is_moving()
+            || (self.waiting && self.device_woken.load(Ordering::Acquire))
+    }
+
+    /// As [`has_news`](Self::has_news), but for the camera: data arrived,
+    /// or loads, fades or style transitions go on (MapLibre Native's
+    /// `needsRepaint`). A moving camera alone leaves it false.
+    pub fn needs_repaint(&self) -> bool {
+        self.dirty
+            || self.woken.load(Ordering::Acquire)
+            || (self.waiting && self.device_woken.load(Ordering::Acquire))
+            || !(self.settled || self.waiting)
+    }
+
+    /// Does the upkeep the last frame asked for that draws nothing (asking
+    /// for the pipelines later views may need), without drawing a frame:
+    /// for a host that draws only when there's something new. A resize
+    /// waits for the next frame.
+    pub fn upkeep(&mut self) {
+        if !std::mem::take(&mut self.upkeep) || self.device != self.runtime.shared.generation() {
+            return;
+        }
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
+        let viewport = self.map.viewport();
+        let mut device = self.runtime.shared.gpu();
+        self.map
+            .prepare(&mut *device, renderer, viewport, self.scale as f32);
+        drop(device);
+        self.events
+            .extend(self.map.take_events().into_iter().map(Event::Map));
     }
 
     /// Requests the tiles that failed again now: call it when the network
@@ -1102,7 +1184,7 @@ impl Map {
     pub fn wait_woken(&self, timeout: Duration) {
         let (lock, condvar) = &*self.signal;
         let guard = lock.lock().expect("signal poisoned");
-        if !self.woken.load(Ordering::Acquire) {
+        if !self.woken.load(Ordering::Acquire) && !self.device_woken.load(Ordering::Acquire) {
             drop(
                 condvar
                     .wait_timeout(guard, timeout)
@@ -1149,6 +1231,7 @@ impl Map {
             };
             device.start_frame();
             self.woken.store(false, Ordering::Release);
+            self.device_woken.store(false, Ordering::Release);
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
             let map = &mut self.map;
             let renderer = self
@@ -1173,8 +1256,11 @@ impl Map {
             .extend(self.map.take_events().into_iter().map(Event::Map));
         self.dirty = lost;
         // A map waiting only for pipelines draws again when one compiles.
-        let waiting = report.compiling;
-        self.busy = !report.idle && !waiting;
+        self.waiting = report.compiling;
+        self.upkeep = report.upkeep;
+        self.settled = report.settled;
+        self.scale = target.scale();
+        self.busy = !report.idle && !report.compiling && !report.upkeep;
         if report.idle {
             // A failed write costs the next run its warm start, nothing else.
             let _ = self.runtime.save_pipeline_cache();
@@ -1213,7 +1299,9 @@ impl Map {
                     // map: a host asking `needs_frame` doesn't spin.
                     self.dirty = false;
                     self.busy = false;
+                    self.waiting = true;
                     self.woken.store(false, Ordering::Release);
+                    self.device_woken.store(false, Ordering::Release);
                     return Ok(false);
                 }
                 Err(e) => {
