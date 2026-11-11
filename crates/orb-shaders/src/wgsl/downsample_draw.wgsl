@@ -5,7 +5,7 @@
 
 struct RegionOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) region: vec4<u32>,
+    @location(0) @interpolate(flat, either) region: vec4<u32>,
 };
 
 // Region `instance`'s square at the level being written, over a target of

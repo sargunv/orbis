@@ -23,11 +23,11 @@ struct CircleNode {
 
 struct CircleOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) color: vec4<f32>,
-    @location(1) @interpolate(flat) stroke_color: vec4<f32>,
+    @location(0) @interpolate(flat, either) color: vec4<f32>,
+    @location(1) @interpolate(flat, either) stroke_color: vec4<f32>,
     @location(2) data: vec3<f32>,
-    @location(3) @interpolate(flat) radius_ratio: f32,
-    @location(4) @interpolate(flat) stroke_width: f32,
+    @location(3) @interpolate(flat, either) radius_ratio: f32,
+    @location(4) @interpolate(flat, either) stroke_width: f32,
 };
 
 

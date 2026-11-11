@@ -419,11 +419,40 @@ mod tests {
         "ldexp(",
     ];
 
+    /// A vertex entry point's flat outputs that take the first vertex's
+    /// value: WGSL's `flat` alone, or `flat, first`.
+    fn first_vertex_outputs(module: &naga::Module) -> Vec<String> {
+        let entry = &module.entry_points[0];
+        let Some(result) = &entry.function.result else {
+            return Vec::new();
+        };
+        let first = |binding: &Option<naga::Binding>| {
+            matches!(
+                binding,
+                Some(naga::Binding::Location {
+                    interpolation: Some(naga::Interpolation::Flat),
+                    sampling,
+                    ..
+                }) if *sampling != Some(naga::Sampling::Either)
+            )
+        };
+        match &module.types[result.ty].inner {
+            naga::TypeInner::Struct { members, .. } => (members.iter())
+                .filter(|m| first(&m.binding))
+                .map(|m| m.name.clone().unwrap_or_default())
+                .collect(),
+            _ if first(&result.binding) => vec![entry.name.clone()],
+            _ => Vec::new(),
+        }
+    }
+
     /// The WebGL 2 dry run (#140): every pipeline's GL variant
     /// (`Shader::gl_source`) written as GLSL ES 3.00 by naga, one entry
     /// point at a time as wgpu's GL back end compiles them, within
-    /// WebGL 2's guaranteed limits. A shader change that breaks the GL
-    /// path fails here, on the author's machine, in the same commit.
+    /// WebGL 2's guaranteed limits, with no flat varying that needs the
+    /// first vertex's value (GL's provoking vertex is the last). A shader
+    /// change that breaks the GL path fails here, on the author's machine,
+    /// in the same commit.
     #[test]
     fn gl_variants_fit_webgl2() {
         use naga::back::glsl;
@@ -482,6 +511,15 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{label} {entry}: {e}"));
                 let (one, info) = (one.into_owned(), info.into_owned());
                 let mut fail = |what: String| failures.push(format!("{label} {entry}: {what}"));
+                if stage == naga::ShaderStage::Vertex {
+                    for name in first_vertex_outputs(&one) {
+                        fail(format!(
+                            "`{name}` is flat from the first vertex, which GL can't give (it \
+                             takes the last): once it is the same at every vertex of a \
+                             primitive, it's `@interpolate(flat, either)`"
+                        ));
+                    }
+                }
                 for (_, var) in one.global_variables.iter() {
                     if let naga::AddressSpace::Storage { .. } = var.space {
                         fail(format!(

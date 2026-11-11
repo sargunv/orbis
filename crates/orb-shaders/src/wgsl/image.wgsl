@@ -34,15 +34,15 @@ struct ImageOut {
     @location(4) weight: f32,
     // The tile units placement clips in.
     @location(5) clip_pos: vec2<f32>,
-    @location(1) @interpolate(flat) tile: u32,
+    @location(1) @interpolate(flat, either) tile: u32,
     // The tile's texture layer.
-    @location(2) @interpolate(flat) layer: u32,
+    @location(2) @interpolate(flat, either) layer: u32,
     // Latitudes of the tile's top and bottom edges, in degrees.
-    @location(3) @interpolate(flat) latitudes: vec2<f32>,
+    @location(3) @interpolate(flat, either) latitudes: vec2<f32>,
     // Its fade's three row words.
-    @location(6) @interpolate(flat) fade: vec3<u32>,
+    @location(6) @interpolate(flat, either) fade: vec3<u32>,
     // The placement's clip as fragments test it (`fragment_clip`).
-    @location(7) @interpolate(flat) clip: vec2<u32>,
+    @location(7) @interpolate(flat, either) clip: vec2<u32>,
 };
 
 const NO_ANCESTOR: u32 = 0xffffffffu;

@@ -51,25 +51,25 @@ const EXTRUDE_SCALE: f32 = 1.0 / 63.0;
 // A dashed, patterned or gradient line's varyings (`vs_line_styled`).
 struct StyledLineOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) color: vec4<f32>,
+    @location(0) @interpolate(flat, either) color: vec4<f32>,
     @location(1) normal: vec2<f32>,
     // (outset, inset) in pixels.
-    @location(2) @interpolate(flat) width2: vec2<f32>,
+    @location(2) @interpolate(flat, either) width2: vec2<f32>,
     @location(3) gamma_scale: f32,
-    @location(4) @interpolate(flat) blur: f32,
+    @location(4) @interpolate(flat, either) blur: f32,
     @location(5) tile_pos: vec2<f32>,
-    @location(6) @interpolate(flat) tile: u32,
+    @location(6) @interpolate(flat, either) tile: u32,
     // Where the placement owns the line: where it lands, but where it was
     // in a drape slot, so a translated line moves whole into it, bounded
     // by the slot where it lands (`tile_pos`).
     @location(7) owner_pos: vec2<f32>,
-    @location(8) @interpolate(flat) clip: vec2<u32>,
+    @location(8) @interpolate(flat, either) clip: vec2<u32>,
     @location(9) linesofar: f32,
-    @location(10) @interpolate(flat) floorwidth: f32,
-    @location(11) @interpolate(flat) images: vec2<u32>,
-    @location(12) @interpolate(flat) opacity: f32,
+    @location(10) @interpolate(flat, either) floorwidth: f32,
+    @location(11) @interpolate(flat, either) images: vec2<u32>,
+    @location(12) @interpolate(flat, either) opacity: f32,
     @location(13) progress: f32,
-    @location(14) @interpolate(flat) ramp: u32,
+    @location(14) @interpolate(flat, either) ramp: u32,
 };
 
 // A plain line's (`vs_line`): the styled line's first nine. Every vertex
@@ -80,15 +80,15 @@ struct StyledLineOut {
 // across views (#180).
 struct LineOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) color: vec4<f32>,
+    @location(0) @interpolate(flat, either) color: vec4<f32>,
     @location(1) normal: vec2<f32>,
-    @location(2) @interpolate(flat) width2: vec2<f32>,
+    @location(2) @interpolate(flat, either) width2: vec2<f32>,
     @location(3) gamma_scale: f32,
-    @location(4) @interpolate(flat) blur: f32,
+    @location(4) @interpolate(flat, either) blur: f32,
     @location(5) tile_pos: vec2<f32>,
-    @location(6) @interpolate(flat) tile: u32,
+    @location(6) @interpolate(flat, either) tile: u32,
     @location(7) owner_pos: vec2<f32>,
-    @location(8) @interpolate(flat) clip: vec2<u32>,
+    @location(8) @interpolate(flat, either) clip: vec2<u32>,
 };
 
 fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {

@@ -624,6 +624,9 @@ mod native {
                 };
                 let lower = |d: &dyn std::fmt::Debug| format!("{d:?}").to_lowercase();
                 let interpolate = match (interpolation, sampling) {
+                    (Some(naga::Interpolation::Flat), Some(naga::Sampling::Either)) => {
+                        "@interpolate(flat, either) ".to_string()
+                    }
                     (Some(naga::Interpolation::Flat), _) => "@interpolate(flat) ".to_string(),
                     (Some(i), Some(s)) => format!("@interpolate({}, {}) ", lower(i), lower(s)),
                     (Some(i), None) => format!("@interpolate({}) ", lower(i)),

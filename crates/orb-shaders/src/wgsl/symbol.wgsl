@@ -377,16 +377,16 @@ struct SymbolOut {
     @builtin(position) position: vec4<f32>,
     // The page layer, the bitmap's padded rectangle's origin on it, and
     // the quad's texels from there (see `atlas_uv`).
-    @location(0) @interpolate(flat) layer: u32,
+    @location(0) @interpolate(flat, either) layer: u32,
     @location(1) tex: vec2<f32>,
-    @location(7) @interpolate(flat) origin: vec2<f32>,
+    @location(7) @interpolate(flat, either) origin: vec2<f32>,
     // Gamma scale, size and total opacity.
     @location(2) data: vec3<f32>,
-    @location(3) @interpolate(flat) fill: vec4<f32>,
-    @location(4) @interpolate(flat) halo: vec4<f32>,
+    @location(3) @interpolate(flat, either) fill: vec4<f32>,
+    @location(4) @interpolate(flat, either) halo: vec4<f32>,
     // Halo width, halo blur; whether the quad is an SDF, an image.
-    @location(5) @interpolate(flat) halo_params: vec2<f32>,
-    @location(6) @interpolate(flat) kind: u32,
+    @location(5) @interpolate(flat, either) halo_params: vec2<f32>,
+    @location(6) @interpolate(flat, either) kind: u32,
 };
 
 @vertex

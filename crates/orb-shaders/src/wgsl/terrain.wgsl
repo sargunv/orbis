@@ -117,7 +117,7 @@ struct TerrainOut {
     // Tile uv, y down.
     @location(0) uv: vec2<f32>,
     // The tile's index and its block of drape slots.
-    @location(1) @interpolate(flat) tile: vec2<u32>,
+    @location(1) @interpolate(flat, either) tile: vec2<u32>,
     @location(2) fog_depth: f32,
     // Mercator's slope stretch for a hillshade the layer shades
     // (`terrain_shade.wgsl`): per vertex rather than per fragment, which

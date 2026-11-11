@@ -68,19 +68,20 @@ struct ExtrusionOut {
     //planes @builtin(clip_distances) clip: array<f32, 4>,
     @location(0) color: vec4<f32>,
     @location(1) @interpolate(perspective, centroid) tile_pos: vec2<f32>,
-    @location(2) @interpolate(flat) tile: u32,
+    @location(2) @interpolate(flat, either) tile: u32,
     @location(3) pattern_pos: vec2<f32>,
-    @location(4) @interpolate(flat) images: vec2<u32>,
+    @location(4) @interpolate(flat, either) images: vec2<u32>,
     // A wall's height above the ground, metres, for its ambient occlusion;
     // EXTRUSION_ROOF_ABOVE on roofs, which it leaves alone. On terrain, its
     // elevation, less the DEM's at the fragment (`dem` and `dem_layer`,
     // `ground_dem_at`'s; NO_GROUND_DEM off terrain).
     @location(5) above: f32,
     @location(6) dem: vec2<f32>,
-    @location(7) @interpolate(flat) dem_layer: u32,
+    @location(7) @interpolate(flat, either) dem_layer: u32,
     // A wall's share of its light that is ambient, which its ambient
-    // occlusion dims (`light_ambient_share`).
-    @location(8) @interpolate(flat) ambient: f32,
+    // occlusion dims (`light_ambient_share`): its face's, though on a
+    // globe the local up turns across a wall by some 1e-5 radians.
+    @location(8) @interpolate(flat, either) ambient: f32,
     // Where its tile may stand across a globe's horizon (`sphere_limb`),
     // the point's direction from the sphere's centre (camera-relative
     // globe space plus the target) and its distance from it: between
@@ -88,7 +89,7 @@ struct ExtrusionOut {
     // which the sphere hides or not per fragment. Whether it does: 0 not,
     // else 1, plus 2 where the building is drawn whole, past its clip.
     @location(9) sphere: vec4<f32>,
-    @location(10) @interpolate(flat) limb: u32,
+    @location(10) @interpolate(flat, either) limb: u32,
 };
 // Extrusions draw in two pipelines: whole buildings, and buildings cut at
 // the source's buffer, clipped per fragment to the placement. Only the
