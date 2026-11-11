@@ -59,7 +59,9 @@ export function guard<Core extends object>(
 export function trapError(e: unknown): Error {
   const why = e instanceof Error ? e.message : String(e);
   return new Error(
-    `the map stopped: its wasm trapped (${why}), a bug in Orbis`,
+    e instanceof DeferredLoadError
+      ? `the map stopped: ${why}`
+      : `the map stopped: its wasm trapped (${why}), a bug in Orbis`,
     { cause: e },
   );
 }
@@ -71,4 +73,18 @@ export function isTrap(e: unknown): boolean {
     e instanceof WebAssembly.RuntimeError ||
     (e instanceof Error && e.cause instanceof WebAssembly.RuntimeError)
   );
+}
+
+/** A placeholder's call that couldn't load the deferred half: the
+ * network failed, or the worker making the call is being stopped with its
+ * map. The call can't go on, and the Rust frames under it can't unwind,
+ * so the instance is as unusable as after a trap, and is one: a helper
+ * worker reports itself lost and closes, and a map stops. */
+export class DeferredLoadError extends WebAssembly.RuntimeError {
+  constructor(url: URL, cause: unknown) {
+    const why = cause instanceof Error ? cause.message : String(cause);
+    super(`${url.pathname.split("/").pop()} didn't load: ${why}`);
+    this.name = "DeferredLoadError";
+    this.cause = cause;
+  }
 }

@@ -11,6 +11,8 @@
 // core-deferred.wasm on the spot, which writes the real functions into
 // core.wasm's table, and goes on.
 
+import { DeferredLoadError } from "./trap.ts";
+
 /** The GPU API a map draws with. */
 export type Backend = "webgpu" | "webgl2";
 
@@ -167,7 +169,11 @@ export function takeDeferred(module: WebAssembly.Module): void {
 function link(): void {
   if (!waiting) return;
   const { instance, url } = waiting;
-  deferred ??= new WebAssembly.Module(fetchNow(url));
+  try {
+    deferred ??= new WebAssembly.Module(fetchNow(url));
+  } catch (e) {
+    throw new DeferredLoadError(url, e);
+  }
   new WebAssembly.Instance(deferred, { primary: instance.exports });
   waiting = undefined;
 }
