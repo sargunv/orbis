@@ -31,6 +31,7 @@ impl<'a> FeatureGeometry<'a> {
 
     /// The parts in `range`, counted from this geometry's first, as a
     /// geometry of their own.
+    #[must_use]
     pub fn slice(&self, range: Range<usize>) -> Self {
         let parts = self.parts.start + range.start..self.parts.start + range.end;
         assert!(

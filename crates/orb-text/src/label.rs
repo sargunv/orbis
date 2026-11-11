@@ -65,6 +65,7 @@ impl Section {
         }
     }
 
+    #[must_use]
     pub fn with_vertical_align(mut self, align: VerticalAlign) -> Self {
         self.vertical_align = align;
         self

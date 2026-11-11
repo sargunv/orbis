@@ -92,7 +92,11 @@ impl ImageAtlas {
     pub fn new(gpu: &mut dyn Gpu, size: u32, max_pages: u32, capacity: u32) -> Self {
         assert!(size > 2 && max_pages > 0 && capacity > 0);
         let texture = page_texture(gpu, size, 1);
-        let table = DataTable::new(gpu, "image rects", u64::from(capacity) * RECT_WORDS as u64);
+        let table = DataTable::new(
+            gpu,
+            "image rects",
+            u64::from(capacity) * u64::from(RECT_WORDS),
+        );
         let sampler = gpu.create_sampler(&SamplerDesc {
             label: "images",
             filter: FilterMode::Linear,

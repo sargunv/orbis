@@ -486,7 +486,7 @@ fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> crate::Cluster
     if let Some(zoom) = number(cx, "clusterMaxZoom", 24.0, true) {
         options.max_zoom = zoom as u8;
     }
-    if let Some(points) = number(cx, "clusterMinPoints", u32::MAX as f64, true) {
+    if let Some(points) = number(cx, "clusterMinPoints", f64::from(u32::MAX), true) {
         options.min_points = (points as usize).max(2);
     }
     let mut properties = Vec::new();

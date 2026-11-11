@@ -105,7 +105,7 @@ fn outranks(ta: &ScopeTile, a: &RecordedLabel, tb: &ScopeTile, b: &RecordedLabel
 /// Whether `query` would have been blocked by `placed`, which lies
 /// `offset` pixels away in the query's view.
 fn collides(query: &RecordedShape, placed: &RecordedShape, offset: [f64; 2]) -> bool {
-    if !in_group(query.group, &placed.key) || overlap_allowed(query.overlap, placed.key.overlap) {
+    if !in_group(query.group, placed.key) || overlap_allowed(query.overlap, placed.key.overlap) {
         return false;
     }
     let [dx, dy] = offset;

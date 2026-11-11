@@ -208,7 +208,7 @@ impl Demo {
     fn set_style(&mut self) {
         let commands = json!([["setStyle", self.style]]).to_string();
         let result = Transaction::from_commands(&commands)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.clone())
             .and_then(|tx| self.map.edit(&tx).map_err(|e| e.to_string()));
         if let Err(e) = result {
             self.say(format!("The style edit failed: {e}"), true);

@@ -329,7 +329,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             .get(&l.key)
             .is_none_or(|&(i, _)| dirty(&l.key) || same(doc.layer_json(i), &l.json))
     }));
-    style.warnings = warnings.clone();
+    style.warnings.clone_from(&warnings);
     Ok((
         style,
         Patch {

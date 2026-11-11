@@ -42,6 +42,7 @@ impl Geodetic {
     }
 
     /// The same position with longitude wrapped into `[-180, 180)`.
+    #[must_use]
     pub fn wrapped(self) -> Self {
         Self {
             lon: (self.lon + 180.0).rem_euclid(360.0) - 180.0,

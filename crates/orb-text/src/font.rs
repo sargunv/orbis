@@ -220,12 +220,12 @@ impl Drawn {
         // The coverage's top-left pixel, in box pixels.
         let ox = (-self.metrics.left) as i64 - i64::from(ink.glyph_left);
         let oy = i64::from(ink.glyph_top) - self.metrics.ascent as i64;
-        for y in 0..self.height as i64 {
+        for y in 0..i64::from(self.height) {
             let by = y + oy;
             if by < 0 || by >= bh as i64 {
                 continue;
             }
-            for x in 0..self.width as i64 {
+            for x in 0..i64::from(self.width) {
                 let bx = x + ox;
                 if bx < 0 || bx >= bw as i64 {
                     continue;

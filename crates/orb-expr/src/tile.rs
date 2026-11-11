@@ -39,6 +39,7 @@ impl<'a> Bound<'a> {
     /// The canonical tile the layer's geometry is in, which `within` and
     /// `distance` read when evaluated with [`evaluate`](Self::evaluate);
     /// without one they find no geometry, as in a filter.
+    #[must_use]
     pub fn with_tile(mut self, tile: Option<crate::CanonicalTile>) -> Self {
         self.tile = tile;
         self
@@ -46,6 +47,7 @@ impl<'a> Bound<'a> {
 
     /// The images `image` expressions find available when evaluated with
     /// [`evaluate`](Self::evaluate); none by default.
+    #[must_use]
     pub fn with_images(mut self, images: &'a [String]) -> Self {
         self.images = images;
         self

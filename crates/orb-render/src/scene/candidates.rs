@@ -1177,7 +1177,7 @@ mod tests {
         };
         // One with no room between the runs around it can't come this way
         // while their slots wait for a cull.
-        let mut more = runs.to_vec();
+        let mut more = runs.clone();
         more.insert(0, run(6, 1));
         assert!(!fits(&more));
         // Once written, those after it slide along into the next hole,
@@ -1206,7 +1206,7 @@ mod tests {
         // Unless they'd slide past the slice.
         let mut tight = written.clone();
         tight.words.cap = tight.words.end;
-        let mut first = more.to_vec();
+        let mut first = more.clone();
         first.insert(0, run(9, 1));
         assert!(!tight.lay_out_changes(&first, &limits, &mut Writes::default()));
         assert_eq!(slots(&tight, 1), 3..9, "a run that couldn't slide stays");

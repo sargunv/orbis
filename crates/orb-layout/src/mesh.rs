@@ -32,7 +32,7 @@ impl TileBox {
         self
     }
 
-    fn meets(&self, other: &Self) -> bool {
+    fn meets(self, other: Self) -> bool {
         (0..2).all(|i| self.min[i] <= other.max[i] && other.min[i] <= self.max[i])
     }
 }
@@ -192,10 +192,10 @@ impl MeshBuilder {
             vertices
                 .iter()
                 .for_each(|&i| bounds.include(self.positions[i as usize]));
-            let meets = bounds.meets(&focus);
+            let meets = bounds.meets(focus);
             let open = self.open != TileBox::EMPTY;
             if open
-                && (meets != self.open_meets || (!meets && self.open.union(bounds).meets(&focus)))
+                && (meets != self.open_meets || (!meets && self.open.union(bounds).meets(focus)))
             {
                 self.close_chunk();
             }
@@ -223,7 +223,7 @@ impl MeshBuilder {
             let (lo, hi) = run
                 .iter()
                 .fold((u32::MAX, 0), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-            if hi - lo <= u32::from(u16::MAX) {
+            if u16::try_from(hi - lo).is_ok() {
                 chunk.first_vertex = lo;
                 relative.extend(run.iter().map(|&v| (v - lo) as u16));
                 continue;

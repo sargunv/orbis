@@ -85,6 +85,7 @@ impl GlyphRange {
 
     /// Drops the bitmaps, keeping what shaping needs: a job worker that
     /// doesn't rasterize this range keeps only its metrics.
+    #[must_use]
     pub fn without_bitmaps(mut self) -> Self {
         for glyph in &mut self.glyphs {
             glyph.bitmap = Vec::new();

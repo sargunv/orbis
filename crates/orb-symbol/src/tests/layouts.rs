@@ -381,7 +381,7 @@ impl Case<'_> {
                 "{what} anchor"
             );
             assert_eq!(
-                got.feature as f64,
+                f64::from(got.feature),
                 num(&want["featureIndex"]),
                 "{what} feature"
             );
@@ -500,12 +500,12 @@ impl Case<'_> {
         for (g, w) in b.sort_key_ranges.iter().zip(ranges) {
             assert_same(g.sort_key, num(&w["sortKey"]), &format!("{name} sort key"));
             assert_eq!(
-                g.start as f64,
+                f64::from(g.start),
                 num(&w["symbolInstanceStart"]),
                 "{name} sort range start"
             );
             assert_eq!(
-                g.end as f64,
+                f64::from(g.end),
                 num(&w["symbolInstanceEnd"]),
                 "{name} sort range end"
             );

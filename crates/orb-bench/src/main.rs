@@ -70,12 +70,12 @@ fn run() -> Result<(), String> {
             }
         } else if arg == "alps" {
             style = file("alps.json");
-            about_data = style.clone();
+            about_data.clone_from(&style);
         } else if arg == "stutter" {
             settings.experiment = orb_bench::Experiment::Stutter;
         } else {
             style = arg;
-            about_data = style.clone();
+            about_data.clone_from(&style);
             style_given = true;
         }
     }

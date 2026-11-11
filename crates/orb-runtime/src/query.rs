@@ -324,7 +324,7 @@ pub(crate) fn unpack_translate(word: u32) -> [f32; 2] {
     [word as u16 as i16, (word >> 16) as u16 as i16].map(|v| f32::from(v) / units)
 }
 
-fn point(words: &[u32; 2]) -> [i32; 2] {
+fn point(words: [u32; 2]) -> [i32; 2] {
     [words[0] as i32, words[1] as i32]
 }
 
@@ -493,7 +493,9 @@ impl MeshHits {
                     .map(|rings| {
                         rings
                             .into_iter()
-                            .map(|ring| ring.as_chunks::<2>().0.iter().map(point).collect())
+                            .map(|ring| {
+                                ring.as_chunks::<2>().0.iter().copied().map(point).collect()
+                            })
                             .collect()
                     })
                     .collect();
@@ -529,7 +531,7 @@ impl MeshHits {
                         let (mut min, mut max) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
                         for ring in f.parts().unwrap_or_default().into_iter().flatten() {
                             for p in ring.as_chunks::<2>().0 {
-                                let [x, y] = point(p);
+                                let [x, y] = point(*p);
                                 let world = transform(DVec2::new(f64::from(x), f64::from(y)));
                                 min = min.min(world);
                                 max = max.max(world);
@@ -1828,7 +1830,7 @@ impl ScreenHit {
         let mut max = Vec2::splat(f32::NEG_INFINITY);
         for ring in feature.parts().ok()?.into_iter().flatten() {
             for p in ring.as_chunks::<2>().0 {
-                let [x, y] = point(p);
+                let [x, y] = point(*p);
                 let world = transform(DVec2::new(f64::from(x), f64::from(y))) + wrap + shift;
                 let ratio = q.local_scale(world)?;
                 if on_map {

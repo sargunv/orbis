@@ -31,7 +31,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--arch" => {
-                arch = args.next().ok_or("dxc: --arch takes arm64 or x64")?.clone();
+                arch.clone_from(args.next().ok_or("dxc: --arch takes arm64 or x64")?);
                 if !["arm64", "x64"].contains(&arch.as_str()) {
                     return Err(format!("dxc: unknown arch {arch}\n\n{HELP}"));
                 }

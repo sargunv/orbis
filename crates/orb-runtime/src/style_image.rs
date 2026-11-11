@@ -134,7 +134,7 @@ impl Map {
             return Err(format!("a {width}x{height} image needs its RGBA bytes"));
         }
         if let Some(added) = style.added_images.get_mut(name) {
-            Arc::make_mut(added).pixels = pixels.clone();
+            Arc::make_mut(added).pixels.clone_from(&pixels);
         }
         style
             .image_edits

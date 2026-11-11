@@ -287,7 +287,7 @@ mod tests {
             .map(|i| {
                 format!(
                     r#"{{"type":"Feature","id":{i},"properties":{{"n":{i}}},"geometry":{{"type":"Point","coordinates":[{},0]}}}}"#,
-                    i as f64 * 0.001
+                    f64::from(i) * 0.001
                 )
             })
             .collect();

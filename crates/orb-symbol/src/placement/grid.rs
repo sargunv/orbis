@@ -28,7 +28,7 @@ pub(crate) fn overlap_allowed(a: Overlap, b: Overlap) -> bool {
 /// predicate): `None` hits every group.
 pub(crate) type Group = Option<u32>;
 
-pub(crate) fn in_group(group: Group, key: &GridKey) -> bool {
+pub(crate) fn in_group(group: Group, key: GridKey) -> bool {
     group.is_none_or(|g| key.group == g)
 }
 
@@ -165,7 +165,8 @@ impl GridIndex {
             return false;
         }
         let query = self.next_query();
-        let blocks = |key: &GridKey| in_group(group, key) && !overlap_allowed(overlap, key.overlap);
+        let blocks =
+            |key: &GridKey| in_group(group, *key) && !overlap_allowed(overlap, key.overlap);
         for cell in self.cells(x1, y1, x2, y2) {
             for &uid in &self.box_cells[cell] {
                 let uid = uid as usize;

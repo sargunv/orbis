@@ -286,7 +286,7 @@ impl RenderJob {
         let targets: Vec<_> = self
             .targets
             .iter()
-            .map(|t| Some(convert::color_target(t)))
+            .map(|&t| Some(convert::color_target(t)))
             .collect();
         let vertex_constants = self.vertex.constants();
         let fragment_constants = self.fragment.constants();

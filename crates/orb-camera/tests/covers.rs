@@ -55,7 +55,7 @@ fn covers_match_pinned_gl_js() {
                 ]
             })
             .collect();
-        actual.sort();
+        actual.sort_unstable();
         let expected: Vec<[i64; 4]> = serde_json::from_value(case["tiles"].clone()).unwrap();
         if n("pitch") > 60.0 {
             if actual.len() > 4 * expected.len().max(32) {

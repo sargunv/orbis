@@ -432,6 +432,7 @@ impl View {
 
     /// This view with its covers' tiles coarsening by `lod`
     /// ([`TileLod::default`] until set), its low-zoom surface's too.
+    #[must_use]
     pub fn with_tile_lod(mut self, lod: TileLod) -> Self {
         self.lod = lod.sanitized();
         if let Some(low) = self.globe.as_mut().and_then(|g| g.plane.as_mut()) {

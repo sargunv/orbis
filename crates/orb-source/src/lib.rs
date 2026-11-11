@@ -805,7 +805,7 @@ mod tests {
             }]
         );
         let mut evicted = p.evict();
-        evicted.sort();
+        evicted.sort_unstable();
         assert_eq!(evicted, ["first child", "second child"]);
         assert_eq!(p.get(ideal), Some(&"ideal"));
     }
@@ -967,7 +967,7 @@ mod tests {
         p.update(&cover(&[(2, 3, 0)]));
         // Three unused ready tiles, cache of one: the two oldest go.
         let mut evicted = p.evict();
-        evicted.sort();
+        evicted.sort_unstable();
         assert_eq!(evicted, [0, 1]);
         assert!(p.get(t(2, 2, 0)).is_some());
         assert!(p.is_loading(t(2, 3, 0)));

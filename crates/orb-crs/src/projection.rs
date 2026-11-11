@@ -279,6 +279,7 @@ impl Projection {
 
     /// The same projection with another world extent, such as the area of
     /// a tile matrix set.
+    #[must_use]
     pub fn with_extent(mut self, extent: WorldRect) -> Self {
         self.extent = extent;
         self

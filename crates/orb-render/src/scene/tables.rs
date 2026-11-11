@@ -349,7 +349,7 @@ impl DataTable {
     }
 
     /// Queues core `words` into the table from word `at`.
-    pub(crate) fn write(&self, gpu: &mut dyn Gpu, at: u32, words: &[u32]) {
+    pub(crate) fn write(self, gpu: &mut dyn Gpu, at: u32, words: &[u32]) {
         match self.place {
             TablePlace::Buffer(buffer) => {
                 gpu.write_buffer(buffer, u64::from(at) * 4, bytemuck::cast_slice(words));
@@ -377,7 +377,7 @@ impl DataTable {
     }
 
     /// Its binding in a group.
-    pub(crate) fn entry(&self, binding: u32) -> BindGroupEntry {
+    pub(crate) fn entry(self, binding: u32) -> BindGroupEntry {
         match self.place {
             TablePlace::Buffer(buffer) => BindGroupEntry::buffer(binding, buffer),
             #[cfg(cpu_driven)]
@@ -405,7 +405,7 @@ pub(crate) struct TableWriter {
 
 impl TableWriter {
     /// Queues `words` into the table from word `at`.
-    pub(crate) fn write(&self, gpu: &mut dyn Gpu, at: u32, words: Words<'_>) {
+    pub(crate) fn write(self, gpu: &mut dyn Gpu, at: u32, words: Words<'_>) {
         self.place.write(
             gpu,
             at,
@@ -416,7 +416,7 @@ impl TableWriter {
     }
 
     /// Queues core `words` into the table from word `at`.
-    pub(crate) fn write_words(&self, gpu: &mut dyn Gpu, at: u32, words: &[u32]) {
+    pub(crate) fn write_words(self, gpu: &mut dyn Gpu, at: u32, words: &[u32]) {
         self.write(gpu, at, Words::Core(words));
     }
 }

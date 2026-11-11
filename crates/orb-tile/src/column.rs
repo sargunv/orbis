@@ -139,6 +139,7 @@ impl Column {
     /// The column of rows `rows` (in any order, repeats allowed), as a
     /// layer of those features has it: a string column keeps only the
     /// dictionary entries they use.
+    #[must_use]
     pub fn select(&self, rows: &[u32]) -> Self {
         let ranks: Vec<Option<usize>> = rows.iter().map(|&r| self.rank(r as usize)).collect();
         let present = Bitmap::from_rows(

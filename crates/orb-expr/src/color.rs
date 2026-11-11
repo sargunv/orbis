@@ -46,6 +46,7 @@ impl Color {
     /// `rgb` space and paint transitions, as GL JS blends both. A
     /// transparent colour's hue steers the blend, which premultiplied
     /// components (MapLibre Native's) would lose.
+    #[must_use]
     pub fn mix(&self, other: &Self, t: f64) -> Self {
         let [r, g, b, a] = std::array::from_fn(|i| {
             let (x, y) = (f64::from(self.straight[i]), f64::from(other.straight[i]));

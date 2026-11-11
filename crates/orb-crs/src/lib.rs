@@ -58,6 +58,7 @@ impl WorldRect {
         (self.min + self.max) * 0.5
     }
 
+    #[must_use]
     pub fn translated(&self, offset: DVec2) -> Self {
         Self {
             min: self.min + offset,

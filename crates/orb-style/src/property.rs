@@ -701,12 +701,14 @@ pub struct BoundProperty<'a, T> {
 impl<'a, T> BoundProperty<'a, T> {
     /// The canonical tile the layer is in, for expressions that read a
     /// feature's geometry (`within`, `distance`).
+    #[must_use]
     pub fn with_tile(mut self, tile: Option<orb_expr::CanonicalTile>) -> Self {
         self.bound = self.bound.map(|b| b.with_tile(tile));
         self
     }
 
     /// The style's images, which `image` expressions find available.
+    #[must_use]
     pub fn with_images(mut self, images: &'a [String]) -> Self {
         self.bound = self.bound.map(|b| b.with_images(images));
         self

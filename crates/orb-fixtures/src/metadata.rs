@@ -79,7 +79,7 @@ impl Metadata {
                         "operations" => match v.as_array() {
                             Some(ops) => {
                                 skips.extend(ops.iter().filter_map(operation_skip));
-                                operations = ops.clone();
+                                operations.clone_from(ops);
                                 true
                             }
                             None => false,
@@ -123,7 +123,7 @@ impl Metadata {
         let pixel_ratio = number("pixelRatio", 1.0, f64::MIN_POSITIVE, 8192.0, false);
         let allowed = number("allowed", 0.00025, 0.0, 1.0, false);
         let threshold = number("threshold", 0.1285, 0.0, 1.0, false);
-        let timeout_ms = number("timeout", 60000.0, 1.0, u32::MAX as f64, true) as u64;
+        let timeout_ms = number("timeout", 60000.0, 1.0, f64::from(u32::MAX), true) as u64;
         let fade_duration = value["fadeDuration"].as_f64().unwrap_or(0.0);
         let max_pitch = value["maxPitch"].as_f64().unwrap_or(60.0);
         let terrain_skirts = value["terrainSkirtLength"] != "none";

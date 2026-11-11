@@ -124,9 +124,9 @@ pub(crate) fn format_number(number: f64, o: NumberFormat<'_>) -> Result<String, 
     } else {
         0
     };
-    let min = o.min_fraction_digits.unwrap_or(default_min as f64);
+    let min = o.min_fraction_digits.unwrap_or(f64::from(default_min));
     let max = o.max_fraction_digits.unwrap_or(if o.currency.is_some() {
-        (currency_digits as f64).max(min)
+        f64::from(currency_digits).max(min)
     } else {
         3.0f64.max(min)
     });

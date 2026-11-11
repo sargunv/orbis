@@ -121,7 +121,7 @@ mod tests {
             10,
             &mut out,
         );
-        out.sort();
+        out.sort_unstable();
         assert_eq!(out, [[0, 0], [0, 10], [10, 0], [10, 10]]);
         clip_ring(&[[20, 20], [30, 20], [30, 30]], 0, 10, &mut out);
         assert!(out.is_empty());

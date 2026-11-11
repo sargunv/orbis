@@ -52,7 +52,7 @@ pub(crate) fn parse_geojson(json: &Json) -> Option<Vec<Geometry>> {
     })
 }
 fn world(p: Point, z: u8) -> Point {
-    let scale = 8192.0 * 2.0f64.powi(z as i32);
+    let scale = 8192.0 * 2.0f64.powi(i32::from(z));
     let x = (180.0 + p[0]) / 360.0;
     let y = (180.0
         - 180.0 / std::f64::consts::PI
@@ -63,9 +63,9 @@ fn world(p: Point, z: u8) -> Point {
     [(x * scale + 0.5).floor(), (y * scale + 0.5).floor()]
 }
 fn lng_lat(p: Point, tile: CanonicalTile, extent: f64) -> Point {
-    let scale = 2.0f64.powi(tile.z as i32);
-    let x = (p[0] / extent + tile.x as f64) / scale;
-    let y = (p[1] / extent + tile.y as f64) / scale;
+    let scale = 2.0f64.powi(i32::from(tile.z));
+    let x = (p[0] / extent + f64::from(tile.x)) / scale;
+    let y = (p[1] / extent + f64::from(tile.y)) / scale;
     [
         x * 360.0 - 180.0,
         360.0 / std::f64::consts::PI
@@ -95,7 +95,10 @@ pub(crate) fn fixture_geometry(json: &Json, tile: CanonicalTile) -> Option<Featu
     }
     for p in parts.iter_mut().flatten() {
         let w = world(*p, tile.z);
-        *p = [w[0] - tile.x as f64 * 8192.0, w[1] - tile.y as f64 * 8192.0];
+        *p = [
+            w[0] - f64::from(tile.x) * 8192.0,
+            w[1] - f64::from(tile.y) * 8192.0,
+        ];
     }
     Some(FeatureGeometry {
         kind,
@@ -183,14 +186,14 @@ pub(crate) fn within(feature: &FeatureGeometry, geometries: &[Geometry]) -> bool
             part.iter()
                 .map(|p| {
                     [
-                        p[0] * 8192.0 / feature.extent + feature.tile.x as f64 * 8192.0,
-                        p[1] * 8192.0 / feature.extent + feature.tile.y as f64 * 8192.0,
+                        p[0] * 8192.0 / feature.extent + f64::from(feature.tile.x) * 8192.0,
+                        p[1] * 8192.0 / feature.extent + f64::from(feature.tile.y) * 8192.0,
                     ]
                 })
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let world_size = 2.0f64.powi(feature.tile.z as i32) * 8192.0;
+    let world_size = 2.0f64.powi(i32::from(feature.tile.z)) * 8192.0;
     let b = bbox(parts.iter().flatten().copied());
     if feature.kind == GeometryType::Point || b[2] - b[0] <= world_size / 2.0 {
         for p in parts.iter_mut().flatten() {

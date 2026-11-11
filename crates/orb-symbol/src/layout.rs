@@ -58,6 +58,7 @@ pub enum Alignment {
 impl Alignment {
     /// `auto` resolved for the placement (GL JS
     /// `SymbolStyleLayer.recalculate`).
+    #[must_use]
     pub fn resolve(self, placement: Placement) -> Self {
         match self {
             Self::Auto if placement == Placement::Point => Self::Viewport,

@@ -86,7 +86,7 @@ mod tests {
         }
         drop(tx);
         let mut got: Vec<i32> = rx.iter().collect();
-        got.sort();
+        got.sort_unstable();
         assert_eq!(got, (0..100).collect::<Vec<_>>());
     }
 }

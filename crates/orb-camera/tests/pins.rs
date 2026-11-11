@@ -84,7 +84,7 @@ fn cameras_match_pinned_gl_js() {
                     ]
                 })
                 .collect();
-            actual.sort();
+            actual.sort_unstable();
             let expected: Vec<[i64; 4]> = serde_json::from_value(tiles.clone()).unwrap();
             if actual != expected {
                 let extra = actual.iter().filter(|t| !expected.contains(t)).count();

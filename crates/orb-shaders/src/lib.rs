@@ -502,7 +502,7 @@ mod tests {
                 };
                 let pipeline = glsl::PipelineOptions {
                     shader_stage: stage,
-                    entry_point: entry.to_string(),
+                    entry_point: entry.clone(),
                     multiview: None,
                 };
                 let mut glsl = String::new();

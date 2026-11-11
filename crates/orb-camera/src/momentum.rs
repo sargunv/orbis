@@ -219,10 +219,12 @@ impl AnchoredMomentum {
         Self::new(velocity, MomentumDecay::PITCH)
     }
 
+    #[must_use]
     pub fn with_anchor(self, anchor: Option<DVec2>) -> Self {
         Self { anchor, ..self }
     }
 
+    #[must_use]
     pub fn with_snap(self, snap: Option<MomentumSnap>) -> Self {
         Self { snap, ..self }
     }

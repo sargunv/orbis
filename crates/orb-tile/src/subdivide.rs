@@ -13,6 +13,7 @@ impl TileFrame {
     /// square and a sixteenth of it around), so the edges clipping makes
     /// are cut too and lie outside the tile, where no stroke of them shows.
     /// Points, ids and properties are unchanged.
+    #[must_use]
     pub fn subdivided(&self, cells: [u32; 2]) -> Self {
         Self {
             layers: self.layers.iter().map(|l| subdivide(l, cells)).collect(),

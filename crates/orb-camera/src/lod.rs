@@ -57,6 +57,7 @@ impl TileLod {
     /// These settings with values out of range brought into it: a radius of
     /// at least 1, a positive scale, and finite numbers (Native's defaults
     /// where not).
+    #[must_use]
     pub fn sanitized(self) -> Self {
         let default = Self::default();
         let finite = |v: f64, d: f64| if v.is_finite() { v } else { d };

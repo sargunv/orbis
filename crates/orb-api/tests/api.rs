@@ -2212,7 +2212,7 @@ fn shadows_fall_away_from_the_light() {
         &at,
     );
     for p in &on[..2] {
-        assert!((p[0] as i32 - 102).abs() <= 2, "shadowed: {on:?}");
+        assert!((i32::from(p[0]) - 102).abs() <= 2, "shadowed: {on:?}");
     }
     assert_eq!(on[2][0], 255, "past the shadow: {on:?}");
     assert_eq!(on[3][0], 255, "on the lit side: {on:?}");
@@ -2235,7 +2235,7 @@ fn a_raised_part_shadows_beneath_its_lit_side() {
         &at,
     );
     for p in &on[..3] {
-        assert!((p[0] as i32 - 102).abs() <= 2, "shadowed: {on:?}");
+        assert!((i32::from(p[0]) - 102).abs() <= 2, "shadowed: {on:?}");
     }
     assert_eq!(on[3][0], 255, "on the lit side: {on:?}");
 }
@@ -2267,14 +2267,14 @@ fn shadows_fall_on_the_terrain() {
     let at = [32.0, 47.0, 62.0, -32.0];
     let plateau = beside_a_building_on(Some(&|_| 300.0), 30.0, light, "", &at);
     for p in &plateau[..2] {
-        assert!((p[0] as i32 - 102).abs() <= 2, "shadowed: {plateau:?}");
+        assert!((i32::from(p[0]) - 102).abs() <= 2, "shadowed: {plateau:?}");
     }
     assert_eq!(plateau[2][0], 255, "past the shadow: {plateau:?}");
     assert_eq!(plateau[3][0], 255, "on the lit side: {plateau:?}");
     let at = [30.0, 40.0, 47.0];
     let rising = beside_a_building_on(Some(&|north| 300.0 + north / 2.0), 30.0, light, "", &at);
     assert!(
-        (rising[0][0] as i32 - 102).abs() <= 2,
+        (i32::from(rising[0][0]) - 102).abs() <= 2,
         "shadowed: {rising:?}"
     );
     assert_eq!(rising[1][0], 255, "past the shadow: {rising:?}");
@@ -2291,7 +2291,7 @@ fn shadows_down_a_steep_slope_reach_twice_as_far() {
     let at = [75.0, 90.0];
     let falling = beside_a_building_on(Some(&|north| 300.0 - north), 30.0, light, "", &at);
     assert!(
-        (falling[0][0] as i32 - 102).abs() <= 2,
+        (i32::from(falling[0][0]) - 102).abs() <= 2,
         "shadowed: {falling:?}"
     );
     assert_eq!(falling[1][0], 255, "past the shadow: {falling:?}");

@@ -212,13 +212,7 @@ fn check(args: &[String]) -> Result<(), String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--affected" => affected = true,
-            "--base" => {
-                base = Some(
-                    args.next()
-                        .ok_or("check: --base takes a revision")?
-                        .to_string(),
-                )
-            }
+            "--base" => base = Some(args.next().ok_or("check: --base takes a revision")?.clone()),
             other => return Err(format!("check: unknown argument `{other}`")),
         }
     }

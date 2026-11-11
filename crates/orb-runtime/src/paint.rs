@@ -194,7 +194,7 @@ pub(crate) fn frame(
         // Draped paint eases alike: it is draped again.
         style.paint.drape.painted = None;
     }
-    style.paint.overlay = overlay.clone();
+    style.paint.overlay.clone_from(&overlay);
     let plan = overlay.as_deref().unwrap_or(plan);
     let missing = write_paint(
         gpu,

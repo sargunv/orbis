@@ -2281,7 +2281,7 @@ impl Renderer {
             for i in self.layers.groups[g].nodes.clone() {
                 let groups = (self.draw_group, self.nodes[i].group);
                 let before = group.len();
-                if !self.node_commands(gpu, &ready, i, groups, &mut group) {
+                if !self.node_commands(gpu, ready, i, groups, &mut group) {
                     self.waiting += 1;
                 }
                 self.recorded += u32::from(group.len() > before);
@@ -2338,7 +2338,7 @@ impl Renderer {
             }
             let groups = (self.draw_group, self.nodes[i].group);
             let before = commands.len();
-            if !member && !self.node_commands(gpu, &ready, i, groups, &mut commands) {
+            if !member && !self.node_commands(gpu, ready, i, groups, &mut commands) {
                 self.waiting += 1;
             }
             self.recorded += u32::from(commands.len() > before);
@@ -2687,7 +2687,7 @@ impl Renderer {
                 }),
             };
             groups.push(group);
-            if !self.node_commands(gpu, &ready, i, (scene, group), &mut commands) {
+            if !self.node_commands(gpu, ready, i, (scene, group), &mut commands) {
                 self.drape_waiting = true;
             }
         }
@@ -2718,7 +2718,7 @@ impl Renderer {
     fn node_commands(
         &self,
         gpu: &mut dyn Gpu,
-        ready: &Ready,
+        ready: Ready,
         i: usize,
         (scene, group): (BindGroupId, BindGroupId),
         commands: &mut Vec<RenderCommand>,

@@ -98,6 +98,7 @@ impl PropertyExpression {
     }
 
     /// The value where the daylight is `daylight` (1 the day side's).
+    #[must_use]
     pub fn at_daylight(&self, daylight: f64) -> Self {
         let mut ir = self.expression().ir.clone();
         for node in &mut ir.nodes {

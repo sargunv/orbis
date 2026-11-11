@@ -127,6 +127,7 @@ pub struct TextureDesc<'a> {
 impl TextureFormat {
     /// The format with sRGB encoding on writes and decoding on reads, for
     /// 8-bit colour; others are their own.
+    #[must_use]
     pub fn srgb(self) -> Self {
         match self {
             Self::Rgba8Unorm => Self::Rgba8UnormSrgb,

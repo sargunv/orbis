@@ -144,7 +144,7 @@ impl Warped {
 
     fn of(mesh: orb_crs::WarpMesh, weights: Option<&[f32]>) -> Self {
         let quad = weights.is_some();
-        let units = |v: f64| (v * f64::from(IMAGE_EXTENT)).round() as i16 as u16 as u32;
+        let units = |v: f64| u32::from((v * f64::from(IMAGE_EXTENT)).round() as i16 as u16);
         let position = |v: f64| ((v * f64::from(IMAGE_EXTENT)) as f32).to_bits();
         let vertices = mesh
             .positions
