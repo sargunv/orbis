@@ -76,7 +76,9 @@ pub(crate) fn run(
                 let time = (clock::now() - epoch).as_secs_f64() * 1000.0;
                 frame(map, target, time)?;
             }
-            let times = runtime.gpu_timings();
+            let times: Vec<_> = (runtime.gpu_timings().into_iter())
+                .filter(|t| t.draws)
+                .collect();
             runtime.set_gpu_timing(false);
             let (mut gpu, mut main): (Vec<Duration>, Vec<Duration>) = (Vec::new(), Vec::new());
             for t in times.iter().skip(settings.warmup) {

@@ -25,6 +25,9 @@ pub struct SubmitTimes {
     pub span: Duration,
     /// Encoding the passes for wgpu and submitting them.
     pub cpu: Duration,
+    /// Whether it ran a render or compute pass, as a frame does, rather
+    /// than only copies (a table or page growing between frames).
+    pub draws: bool,
 }
 
 impl SubmitTimes {
@@ -47,12 +50,17 @@ impl SubmitTimes {
 pub(crate) struct Timing {
     /// The queries the submissions write, without timestamp queries none.
     queries: Option<Queries>,
-    /// Each submission's passes with their first query, and its CPU time.
-    submissions: Vec<(Vec<(String, u32)>, Duration)>,
+    /// Each submission's passes with their first query, its CPU time, and
+    /// whether it draws.
+    submissions: Vec<Submission>,
     /// The greatest common divisor of the timestamp steps seen, in ticks:
     /// the timer's resolution, once enough passes are timed.
     step: Arc<AtomicU64>,
 }
+
+/// A submission's labelled passes and their first queries, its CPU time,
+/// and whether it draws.
+type Submission = (Vec<(String, u32)>, Duration, bool);
 
 #[derive(Debug)]
 struct Queries {
@@ -92,8 +100,10 @@ impl Timing {
         labels: impl Iterator<Item = Option<&'a str>>,
     ) -> Vec<Option<u32>> {
         let mut passes = Vec::new();
+        let mut draws = false;
         let firsts = labels
             .map(|label| {
+                draws |= label.is_some();
                 let (label, queries) = (label?, self.queries.as_mut()?);
                 assert!(queries.next + 2 <= QUERIES, "take_timings more often");
                 let first = queries.next;
@@ -102,7 +112,7 @@ impl Timing {
                 Some(first)
             })
             .collect();
-        self.submissions.push((passes, Duration::ZERO));
+        self.submissions.push((passes, Duration::ZERO, draws));
         firsts
     }
 
@@ -202,7 +212,7 @@ impl WgpuGpu {
             }
             submissions
                 .into_iter()
-                .map(|(passes, cpu)| {
+                .map(|(passes, cpu, draws)| {
                     let ns = |ticks: u64| Duration::from_nanos((ticks as f64 * period) as u64);
                     let (mut start, mut end) = (u64::MAX, 0);
                     let passes = passes
@@ -219,6 +229,7 @@ impl WgpuGpu {
                         passes,
                         span: ns(end.saturating_sub(start)),
                         cpu,
+                        draws,
                     }
                 })
                 .collect()

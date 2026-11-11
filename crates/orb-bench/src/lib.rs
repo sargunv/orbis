@@ -558,7 +558,11 @@ pub fn run(
                 s.report = report;
                 cpu.push(time);
             }
-            let times = runtime.gpu_timings();
+            // A frame's submission each: one that only copies (a table
+            // or page growing as something arrives) is no frame's.
+            let times: Vec<_> = (runtime.gpu_timings().into_iter())
+                .filter(|t| t.draws)
+                .collect();
             if times.len() != count {
                 return Err(format!("{} submissions for {count} frames", times.len()));
             }
