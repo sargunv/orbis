@@ -75,9 +75,9 @@ impl Map {
                     if let Some(style) = self
                         .style
                         .as_mut()
-                        .filter(|s| generation == self.generation && epoch == s.sprite_epoch)
+                        .filter(|s| generation == self.generation && epoch == s.sprites.epoch)
                     {
-                        style.sprites_loading -= 1;
+                        style.sprites.loading -= 1;
                         match result {
                             Err(e) => {
                                 let message = format!("sprite: {e}");
@@ -85,17 +85,17 @@ impl Map {
                             }
                             Ok(icons) => {
                                 for icon in icons {
-                                    style.sprite_names.insert(icon.name.clone());
+                                    style.sprites.names.insert(icon.name.clone());
                                     style.icons.add(
                                         &icon.name,
                                         [icon.width, icon.height],
                                         &icon.metadata,
                                     );
-                                    style.sprite_icon_names[index].push(icon.name);
+                                    style.sprites.icon_names[index].push(icon.name);
                                 }
                             }
                         }
-                        done = style.sprites_loading == 0;
+                        done = style.sprites.loading == 0;
                     }
                     if done {
                         self.sprites_done(gpu);
@@ -215,25 +215,25 @@ impl Map {
         let Some(style) = self
             .style
             .as_mut()
-            .filter(|s| generation == self.generation && epoch == s.sprite_epoch)
+            .filter(|s| generation == self.generation && epoch == s.sprites.epoch)
         else {
             return;
         };
-        style.sprite_pixels_loading -= 1;
+        style.sprites.pixels_loading -= 1;
         let mut relayout = false;
         match result {
             Err(e) => {
                 let message = format!("sprite: {e}");
                 self.events.push(MapEvent::Error { message });
                 let mut withdrawn = false;
-                for name in std::mem::take(&mut style.sprite_icon_names[index]) {
+                for name in std::mem::take(&mut style.sprites.icon_names[index]) {
                     if !style.added_images.contains_key(&name) {
-                        style.sprite_names.remove(&name);
+                        style.sprites.names.remove(&name);
                         withdrawn |= style.icons.remove(&name);
                     }
                 }
                 // While other sprites' JSON loads, the set goes with theirs.
-                if withdrawn && style.sprites_loading == 0 {
+                if withdrawn && style.sprites.loading == 0 {
                     style.icons.epoch += 1;
                     let icons = Arc::new(style.icons.clone());
                     self.services
@@ -278,8 +278,8 @@ impl Map {
                 }
             }
         }
-        if style.sprite_pixels_loading == 0 {
-            relayout |= std::mem::take(&mut style.relayout_after_pixels);
+        if style.sprites.pixels_loading == 0 {
+            relayout |= std::mem::take(&mut style.sprites.relayout_after_pixels);
         }
         if relayout {
             self.relayout_symbols();
@@ -352,7 +352,7 @@ impl Map {
             loading,
             self.style
                 .as_ref()
-                .map_or(0, |s| u64::from(s.sprite_pixels_loading)),
+                .map_or(0, |s| u64::from(s.sprites.pixels_loading)),
         ]
     }
 
@@ -414,7 +414,7 @@ impl Map {
         crate::style_image::report_missing(
             &mut style.reported_missing,
             &style.icons,
-            style.sprites_loading,
+            style.sprites.loading,
             &build,
             &mut self.events,
         );

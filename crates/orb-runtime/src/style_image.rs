@@ -166,7 +166,7 @@ impl Map {
     /// (their arrival hands the jobs every image until then).
     fn icons_changed(&mut self) {
         let style = self.style.as_mut().expect("checked by the caller");
-        if style.sprites_loading > 0 {
+        if style.sprites.loading > 0 {
             return;
         }
         style.icons.epoch += 1;

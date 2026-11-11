@@ -320,10 +320,11 @@ impl Map {
         }
         // Another sprite loads over the old one, next frame.
         if patch.changes.contains(&Change::Sprite) {
-            style.sprites_started = false;
-            let names = std::mem::take(&mut style.sprite_names);
+            style.sprites.started = false;
+            let names = std::mem::take(&mut style.sprites.names);
             style
-                .stale_sprites
+                .sprites
+                .stale
                 .get_or_insert_with(Default::default)
                 .extend(names);
         }
@@ -444,11 +445,11 @@ impl Map {
         crate::style_image::report_missing(
             &mut style.reported_missing,
             &style.icons,
-            style.sprites_loading,
+            style.sprites.loading,
             &build,
             &mut self.events,
         );
-        style.relayout_after_pixels |= style.awaits_sprite_pixels(&build);
+        style.sprites.relayout_after_pixels |= style.awaits_sprite_pixels(&build);
         let SourceState::Ready { pyramid, .. } = &style.sources[index] else {
             return;
         };

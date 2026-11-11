@@ -238,7 +238,7 @@ pub(crate) enum Message {
     /// A sprite's JSON: the images icon layout needs.
     SpriteIcons {
         generation: u64,
-        /// The style's sprite load it answers ([`LoadedStyle::sprite_epoch`]).
+        /// The style's sprite load it answers ([`SpriteState::epoch`]).
         epoch: u64,
         /// The sprite's index in the style's.
         index: usize,
@@ -321,27 +321,7 @@ pub(crate) struct LoadedStyle {
     pub(crate) drawn: Vec<u32>,
     pub(crate) paint: crate::paint::PaintState,
     pub(crate) image_namespace: Option<u64>,
-    pub(crate) sprites_started: bool,
-    /// Sprites whose JSON hasn't arrived: icon layout waits for them.
-    pub(crate) sprites_loading: u32,
-    /// Sprites whose pixels haven't arrived: the map isn't loaded until
-    /// they have.
-    pub(crate) sprite_pixels_loading: u32,
-    /// Each sprite's image names, by its index in the style's, to take
-    /// back if its pixels fail.
-    pub(crate) sprite_icon_names: Vec<Vec<String>>,
-    /// Whether labels laid out again (an edit's) took their icons' atlas
-    /// rectangles before the sprites' pixels were in: they lay out once
-    /// more when the pixels are.
-    pub(crate) relayout_after_pixels: bool,
-    /// Counts the style's sprite loads: replies to an earlier one, which
-    /// a new `sprite` superseded, are dropped.
-    pub(crate) sprite_epoch: u64,
-    /// The names the style's sprites gave images.
-    pub(crate) sprite_names: HashSet<String>,
-    /// While another sprite loads in place of the old one, the old one's
-    /// names: those the new one lacks leave once it is in.
-    pub(crate) stale_sprites: Option<HashSet<String>>,
+    pub(crate) sprites: SpriteState,
     /// Whether the glyphs labels start with were asked for
     /// ([`TileWorker::first_glyphs`]).
     pub(crate) glyphs_fetched: bool,
@@ -382,8 +362,34 @@ impl LoadedStyle {
     /// before the sprites' pixels are in it. Labels of text alone take
     /// none, so they don't wait.
     pub(crate) fn awaits_sprite_pixels(&self, build: &crate::jobs::TileResult) -> bool {
-        self.sprite_pixels_loading > 0 && build.symbols.iter().any(|s| !s.images.is_empty())
+        self.sprites.pixels_loading > 0 && build.symbols.iter().any(|s| !s.images.is_empty())
     }
+}
+
+/// Where a style's sprites are in loading.
+#[derive(Debug, Default)]
+pub(crate) struct SpriteState {
+    pub(crate) started: bool,
+    /// Sprites whose JSON hasn't arrived: icon layout waits for them.
+    pub(crate) loading: u32,
+    /// Sprites whose pixels haven't arrived: the map isn't loaded until
+    /// they have.
+    pub(crate) pixels_loading: u32,
+    /// Each sprite's image names, by its index in the style's, to take
+    /// back if its pixels fail.
+    pub(crate) icon_names: Vec<Vec<String>>,
+    /// Whether labels laid out again (an edit's) took their icons' atlas
+    /// rectangles before the sprites' pixels were in: they lay out once
+    /// more when the pixels are.
+    pub(crate) relayout_after_pixels: bool,
+    /// Counts the style's sprite loads: replies to an earlier one, which
+    /// a new `sprite` superseded, are dropped.
+    pub(crate) epoch: u64,
+    /// The names the style's sprites gave images.
+    pub(crate) names: HashSet<String>,
+    /// While another sprite loads in place of the old one, the old one's
+    /// names: those the new one lacks leave once it is in.
+    pub(crate) stale: Option<HashSet<String>>,
 }
 
 /// What tiles and styles let go of between frames, released at the next:
@@ -1068,8 +1074,8 @@ impl Map {
     fn style_loaded(&self) -> bool {
         !self.style_fetching
             && self.style.as_ref().is_some_and(|s| {
-                s.sprites_loading == 0
-                    && s.sprite_pixels_loading == 0
+                s.sprites.loading == 0
+                    && s.sprites.pixels_loading == 0
                     && s.sources
                         .iter()
                         .all(|source| !matches!(source, SourceState::Resolving))
@@ -1267,14 +1273,7 @@ impl Map {
             retired: Vec::new(),
             paint: Default::default(),
             image_namespace: None,
-            sprites_started: false,
-            sprites_loading: 0,
-            sprite_pixels_loading: 0,
-            sprite_icon_names: Vec::new(),
-            relayout_after_pixels: false,
-            sprite_epoch: 0,
-            sprite_names: Default::default(),
-            stale_sprites: None,
+            sprites: SpriteState::default(),
             glyphs_fetched: false,
             icons: crate::SpriteIcons::default(),
             image_edits: Vec::new(),
@@ -1910,23 +1909,23 @@ impl Map {
             images.release(gpu, namespace);
         }
         let Some(style) = &mut self.style else { return };
-        if style.sprites_started {
+        if style.sprites.started {
             return;
         }
         // Another sprite loads into the same namespace, over the old one.
         style
             .image_namespace
             .get_or_insert_with(|| images.namespace());
-        style.sprites_started = true;
-        style.sprite_epoch += 1;
-        let epoch = style.sprite_epoch;
+        style.sprites.started = true;
+        style.sprites.epoch += 1;
+        let epoch = style.sprites.epoch;
         let worker = Arc::clone(&style.worker);
         let sprites = &worker.plan().style.sprites;
-        style.sprites_loading = sprites.len() as u32;
-        style.sprite_pixels_loading = sprites.len() as u32;
-        style.sprite_icon_names = vec![Vec::new(); sprites.len()];
+        style.sprites.loading = sprites.len() as u32;
+        style.sprites.pixels_loading = sprites.len() as u32;
+        style.sprites.icon_names = vec![Vec::new(); sprites.len()];
         style.icons.pixel_ratio = f64::from(pixel_ratio);
-        if sprites.is_empty() && style.stale_sprites.is_some() {
+        if sprites.is_empty() && style.sprites.stale.is_some() {
             drop(guard);
             self.sprites_done(gpu);
             return;
@@ -1958,13 +1957,13 @@ impl Map {
     /// images it lacks go, and symbol layers lay out again.
     pub(crate) fn sprites_done(&mut self, gpu: &mut dyn Gpu) {
         let Some(style) = &mut self.style else { return };
-        let reload = style.stale_sprites.take();
+        let reload = style.sprites.stale.take();
         if let Some(stale) = &reload {
             let namespace = style.image_namespace.expect("sprite namespace");
             let mut images = self.services.images.0.lock().expect("images poisoned");
             let atlas = images.atlas.as_mut().expect("initialized");
             for name in stale {
-                if !style.sprite_names.contains(name) && !style.added_images.contains_key(name) {
+                if !style.sprites.names.contains(name) && !style.added_images.contains_key(name) {
                     style.icons.remove(name);
                     atlas.clear(gpu, namespace, name);
                 }
@@ -2078,7 +2077,7 @@ impl Map {
         // Symbol layout needs the sprites' metadata: while the sprites load,
         // a source with symbol layers lays out once they're in (GL JS's
         // worker awaits `getImages` alike), and its tiles load meanwhile.
-        if style.sprites_loading > 0
+        if style.sprites.loading > 0
             && (style.worker.plan().nodes.iter())
                 .any(|n| n.source == index && n.family == orb_layout::Family::SymbolIcon)
         {

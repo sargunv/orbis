@@ -629,7 +629,7 @@ fn write_paint(
             .pattern(node)
             .filter(|p| !matches!(p.kind(), orb_expr::Kind::Source | orb_expr::Kind::Composite))
             && visible
-            && style.sprites_loading == 0
+            && style.sprites.loading == 0
             && let Some(name) = pattern.evaluate(zoom.floor())
             && !name.is_empty()
             && !style.icons.contains(&name)
