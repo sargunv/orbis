@@ -10,8 +10,9 @@
 //! trackpad zoom; double-click or double-tap to zoom in, Shift-double-click
 //! or a two-finger tap to zoom out; double-tap-and-drag to zoom; two-finger
 //! pinch, twist and vertical tilt; the arrow, `+`/`=` and `-` keys. Each
-//! gesture's rates and thresholds are GL JS's. Releases are Compose's: the
-//! velocity of the last 100 ms ([`velocity`]), a glide with mln-ffi's
+//! gesture's rates and thresholds are GL JS's. A release goes on at the
+//! average velocity of its last 100 ms ([`velocity`]), as mln-ffi's demo
+//! and GL JS take it; the rest of it is Compose's: a glide with mln-ffi's
 //! default decays, a glide the gesture caught added to one going the same
 //! way, and the bearing settling on north within 7°. A touch held still
 //! is a long click, as a right click is. Hosts whose platform recognizes
