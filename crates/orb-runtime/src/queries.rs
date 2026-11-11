@@ -50,12 +50,14 @@ struct Pending {
 impl crate::Map {
     /// GL JS `queryRenderedFeatures`: the features drawn in the box
     /// `min..max` (logical pixels; a point when they are equal) in the last
-    /// frame, topmost first, of `layers` or of every layer.
+    /// frame, topmost first, of `layers` or of every layer, that a v8
+    /// `filter` (JSON) selects, evaluated at each feature's tile's zoom.
     pub fn query_rendered(
         &self,
         min: DVec2,
         max: DVec2,
         layers: Option<&[String]>,
+        filter: Option<&str>,
         done: QueryDone,
     ) {
         let Some(style) = &self.style else {
@@ -146,6 +148,7 @@ impl crate::Map {
                             layer,
                             features,
                             camera,
+                            filter: filter.map(str::to_string),
                         },
                     },
                 ))

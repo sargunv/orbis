@@ -96,16 +96,27 @@ impl Filter {
     /// `tile` locates the layer's geometry for filters that read it
     /// (`within`, `distance`); without it they select nothing.
     pub fn select(&self, layer: &Layer, zoom: f64, tile: Option<CanonicalTile>) -> Vec<u32> {
+        self.select_rows(layer, zoom, tile, 0..layer.len() as u32)
+    }
+
+    /// [`select`](Self::select) over `rows` of `layer` alone, in their order.
+    pub fn select_rows(
+        &self,
+        layer: &Layer,
+        zoom: f64,
+        tile: Option<CanonicalTile>,
+        rows: impl IntoIterator<Item = u32>,
+    ) -> Vec<u32> {
+        let rows = rows.into_iter().filter(|&row| (row as usize) < layer.len());
         if let Some(constant) = self.expression.constant() {
             return if *constant == Value::Bool(true) {
-                (0..layer.len() as u32).collect()
+                rows.collect()
             } else {
                 Vec::new()
             };
         }
         let bound = self.expression.bind(layer).with_tile(tile);
-        (0..layer.len() as u32)
-            .filter(|&row| matches!(bound.evaluate(zoom, row as usize), Ok(Value::Bool(true))))
+        rows.filter(|&row| matches!(bound.evaluate(zoom, row as usize), Ok(Value::Bool(true))))
             .collect()
     }
 

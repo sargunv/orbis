@@ -508,6 +508,7 @@ impl OrbisMap {
             DVec2::new(x1, y1),
             DVec2::new(x2, y2),
             layers.as_deref(),
+            None,
             Box::new(move |result| {
                 let _ = sender.send(result);
             }),

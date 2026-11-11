@@ -647,15 +647,23 @@ impl Map {
     /// returned id; the map wakes when they do.
     pub fn query_rendered(&mut self, min: DVec2, max: DVec2) -> u64 {
         let done = self.query_done();
-        self.map.query_rendered(min, max, None, done.1);
+        self.map.query_rendered(min, max, None, None, done.1);
         done.0
     }
 
     /// [`query_rendered`](Self::query_rendered) in `layers` alone (GL JS's
-    /// `layers` option), or in every layer.
-    pub fn query_rendered_in(&mut self, min: DVec2, max: DVec2, layers: Option<&[String]>) -> u64 {
+    /// `layers` option), or in every layer, of the features a v8 `filter`
+    /// as JSON selects (GL JS's `filter` option), evaluated at each
+    /// feature's tile's zoom as GL JS and MapLibre Native evaluate it.
+    pub fn query_rendered_in(
+        &mut self,
+        min: DVec2,
+        max: DVec2,
+        layers: Option<&[String]>,
+        filter: Option<&str>,
+    ) -> u64 {
         let done = self.query_done();
-        self.map.query_rendered(min, max, layers, done.1);
+        self.map.query_rendered(min, max, layers, filter, done.1);
         done.0
     }
 

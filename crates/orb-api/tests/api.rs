@@ -1590,6 +1590,38 @@ fn queried_layers_are_evaluated_for_their_feature() {
     );
 }
 
+/// A rendered query's filter is evaluated at the feature's tile's zoom,
+/// with its properties and geometry, as GL JS and MapLibre Native do.
+#[test]
+fn rendered_query_filters_evaluate_at_the_tiles_zoom() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(
+        r##"{"version": 8, "center": [0, 0], "zoom": 12,
+            "sources": {"box": {"type": "geojson", "data": {"type": "Feature", "id": 7,
+                "properties": {"kind": "park"}, "geometry": {"type": "Polygon",
+                "coordinates": [[[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]]]}}}},
+            "layers": [{"id": "box", "type": "fill", "source": "box",
+                "paint": {"fill-color": "#0000ff"}}]}"##,
+    )
+    .expect("style");
+    settle(&mut map, &mut target);
+    let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
+    let mut query = |filter: &str| {
+        let id = map.query_rendered_in(center, center, None, Some(filter));
+        query_answer(&mut map, &mut target, id)
+    };
+    let kept = r#"["all", [">=", ["zoom"], 10], ["==", ["geometry-type"], "Polygon"],
+        ["==", ["get", "kind"], "park"]]"#;
+    let features = query(kept);
+    assert!(features.contains(r#""id":7"#), "{features}");
+    assert_eq!(query(r#"["<", ["zoom"], 10]"#), "[]");
+    // Legacy syntax, as a layer's filter takes it.
+    assert!(query(r#"["==", "kind", "park"]"#).contains(r#""id":7"#));
+    assert_eq!(query(r#"["!=", "kind", "park"]"#), "[]");
+}
+
 /// The answer to query `id`, waiting for it.
 fn answer(map: &mut Map, id: u64) -> String {
     let started = std::time::Instant::now();

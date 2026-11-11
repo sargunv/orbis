@@ -5,7 +5,6 @@
 use glam::DVec2;
 use orb_api::ClusterQuery;
 use orb_expr::json::{self, Json, JsonValue};
-use orb_expr::{EvaluationContext, Expression, Type, Value as ExprValue};
 
 use crate::base::{Failure, Result, boundary, sized, text};
 use crate::delivery::{Completion, Value};
@@ -15,14 +14,13 @@ use crate::sys::*;
 
 /// What a pending query reports when its answer arrives.
 pub(crate) enum Pending {
-    /// Rendered features, of these layers, that this filter keeps.
-    Rendered(Option<Expression>),
+    /// Rendered features, filtered as the map read them.
+    Rendered,
     /// A source's features: the answers of one query per source layer,
     /// merged once the last arrives.
     Source {
         remaining: usize,
         features: Vec<Json>,
-        filter: Option<Expression>,
         error: Option<String>,
     },
     /// A cluster's children or leaves, as a feature collection.
@@ -70,17 +68,6 @@ fn bare_feature(feature: &Json) -> String {
     Json::new(JsonValue::Object(members), json::Span::default()).to_string()
 }
 
-fn keeps(filter: Option<&Expression>, feature: &Json) -> bool {
-    let Some(filter) = filter else {
-        return true;
-    };
-    let context = EvaluationContext::default();
-    matches!(
-        filter.evaluate_geojson(&context, feature),
-        Ok(ExprValue::Bool(true))
-    )
-}
-
 /// Completes a query whose answer arrived. A source query waits for its
 /// other source layers' answers: it returns it then.
 pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) -> Option<Query> {
@@ -90,13 +77,10 @@ pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) 
     } = query;
     let parsed = result.and_then(|text| json::parse(&text).map_err(|e| e.to_string()));
     let outcome = match pending {
-        Pending::Rendered(filter) => parsed.map(|features| {
+        Pending::Rendered => parsed.map(|features| {
             let mut lent = Lent::default();
             let mut out = Vec::new();
             for f in features.as_array().unwrap_or_default() {
-                if !keeps(filter.as_ref(), f) {
-                    continue;
-                }
                 let get = |k: &str| {
                     f.get(k)
                         .and_then(Json::as_str)
@@ -125,7 +109,6 @@ pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) 
         Pending::Source {
             remaining,
             mut features,
-            filter,
             mut error,
         } => {
             match parsed {
@@ -138,7 +121,6 @@ pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) 
                     pending: Pending::Source {
                         remaining: remaining - 1,
                         features,
-                        filter,
                         error,
                     },
                 });
@@ -149,7 +131,6 @@ pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) 
                     let mut lent = Lent::default();
                     let out: Vec<mln_source_feature> = features
                         .iter()
-                        .filter(|f| keeps(filter.as_ref(), f))
                         .map(|f| mln_source_feature {
                             feature: lent.text(bare_feature(f)),
                             source_layer_id: lent.text(source_layer(f)),
@@ -225,7 +206,9 @@ fn submit(
 }
 
 /// A filter expression from the caller's JSON, or none when empty.
-unsafe fn filter(view: mln_buffer_view) -> Result<Option<(String, Expression)>> {
+/// A query's filter, as JSON, checked as the map will read it: a v8 filter,
+/// in expression or legacy syntax.
+unsafe fn filter(view: mln_buffer_view) -> Result<Option<String>> {
     if view.data.is_null() && view.size != 0 {
         return Err(Failure::argument("filter is null"));
     }
@@ -236,11 +219,11 @@ unsafe fn filter(view: mln_buffer_view) -> Result<Option<(String, Expression)>> 
     }
     let json = json::parse(&source)
         .map_err(|e| Failure::argument(format!("the filter is not valid JSON: {e}")))?;
-    let expression = Expression::parse_value(&json, Some(&Type::Boolean)).map_err(|errors| {
+    orb_expr::Filter::parse(&json, &mut Vec::new()).map_err(|errors| {
         let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
         Failure::argument(format!("the filter is invalid: {}", messages.join("; ")))
     })?;
-    Ok(Some((source, expression)))
+    Ok(Some(source))
 }
 
 unsafe fn ids(views: *const mln_buffer_view, count: usize, what: &str) -> Result<Vec<String>> {
@@ -320,7 +303,7 @@ pub unsafe extern "C" fn mln_render_session_query_rendered_features(
                 _ => return Err(Failure::argument("the query geometry type is invalid")),
             };
             let mut layers = None;
-            let mut filter_expression = None;
+            let mut filter_text = None;
             if !options.is_null() {
                 let o = sized(options, "options")?;
                 if o.fields & !MLN_RENDERED_FEATURE_QUERY_OPTION_LAYER_IDS != 0 {
@@ -329,11 +312,11 @@ pub unsafe extern "C" fn mln_render_session_query_rendered_features(
                 if o.fields & MLN_RENDERED_FEATURE_QUERY_OPTION_LAYER_IDS != 0 {
                     layers = Some(ids(o.layer_ids, o.layer_id_count, "options.layer_ids")?);
                 }
-                filter_expression = filter(o.filter)?.map(|(_, e)| e);
+                filter_text = filter(o.filter)?;
             }
             submit(session, completion, move |map| {
-                let id = map.query_rendered_in(min, max, layers.as_deref());
-                Ok((vec![id], Pending::Rendered(filter_expression)))
+                let id = map.query_rendered_in(min, max, layers.as_deref(), filter_text.as_deref());
+                Ok((vec![id], Pending::Rendered))
             })
         })
     }
@@ -353,7 +336,7 @@ pub unsafe extern "C" fn mln_render_session_query_source_features(
             handles::session(session.0)?;
             let source = source_id_of(source_id)?;
             let mut layers = Vec::new();
-            let mut filter_expression = None;
+            let mut filter_text = None;
             if !options.is_null() {
                 let o = sized(options, "options")?;
                 if o.fields & !MLN_SOURCE_FEATURE_QUERY_OPTION_SOURCE_LAYER_IDS != 0 {
@@ -366,10 +349,9 @@ pub unsafe extern "C" fn mln_render_session_query_source_features(
                         "options.source_layer_ids",
                     )?;
                 }
-                filter_expression = filter(o.filter)?;
+                filter_text = filter(o.filter)?;
             }
             submit(session, completion, move |map| {
-                let filter_text = filter_expression.as_ref().map(|(t, _)| t.clone());
                 let ids: Vec<u64> = if layers.is_empty() {
                     vec![map.query_source(&source, None, filter_text.as_deref())]
                 } else {
@@ -384,8 +366,6 @@ pub unsafe extern "C" fn mln_render_session_query_source_features(
                     Pending::Source {
                         remaining,
                         features: Vec::new(),
-                        // Orbis applied the filter.
-                        filter: None,
                         error: None,
                     },
                 ))

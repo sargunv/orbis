@@ -12,11 +12,13 @@ use crate::worker::{TileRequest, TileWorker};
 pub enum FeatureSelect {
     /// These features of a source layer, by index, each with the style
     /// layer that drew it, whose `paint` and `layout` the answer gives as
-    /// evaluated for it (GL JS's `evaluateProperties`).
+    /// evaluated for it (GL JS's `evaluateProperties`), those a v8 filter,
+    /// as JSON, selects when there is one.
     Indices {
         layer: String,
         features: Vec<Drawn>,
         camera: QueryCamera,
+        filter: Option<String>,
     },
     /// Every feature of a source layer (every layer if `None`) that a v8
     /// filter, as JSON, selects (all of them without one).
@@ -132,14 +134,20 @@ impl TileWorker {
                 layer,
                 features,
                 camera,
+                filter,
             } => match frame.layer(layer) {
                 Some(l) => {
                     let mut indices: Vec<u32> = features.iter().map(|d| d.feature).collect();
                     indices.sort_unstable();
                     indices.dedup();
+                    let canonical = self.canonical(index, tile);
+                    // At the tile's zoom, as GL JS and Native filter a
+                    // rendered query, not the camera's.
+                    if let Some(filter) = filter.as_deref().map(parse_filter).transpose()? {
+                        indices = filter.select_rows(l, request.tile.zoom, canonical, indices);
+                    }
                     let mut read = read(l, &mut indices.into_iter());
                     let icons = self.icons();
-                    let canonical = self.canonical(index, tile);
                     let plan = self.plan();
                     for drawn in features {
                         let Ok(at) = read.binary_search_by_key(&drawn.feature, |f| f.index) else {
@@ -177,19 +185,7 @@ impl TileWorker {
                 None => Vec::new(),
             },
             FeatureSelect::Filter { layer, filter } => {
-                let filter = match filter {
-                    Some(json) => {
-                        let json = orb_expr::json::parse(json).map_err(|e| e.to_string())?;
-                        let mut warnings = Vec::new();
-                        Some(orb_expr::Filter::parse(&json, &mut warnings).map_err(|e| {
-                            e.iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        })?)
-                    }
-                    None => None,
-                };
+                let filter = filter.as_deref().map(parse_filter).transpose()?;
                 let zoom = request.tile.zoom;
                 let canonical = self.canonical(index, tile);
                 frame
@@ -207,6 +203,17 @@ impl TileWorker {
             }
         })
     }
+}
+
+/// A query's v8 filter, from its JSON.
+fn parse_filter(json: &str) -> Result<orb_expr::Filter, String> {
+    let json = orb_expr::json::parse(json).map_err(|e| e.to_string())?;
+    orb_expr::Filter::parse(&json, &mut Vec::new()).map_err(|e| {
+        e.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
 }
 
 /// A feature state's JSON object, as values.
