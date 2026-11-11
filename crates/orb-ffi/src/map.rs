@@ -165,6 +165,11 @@ pub(crate) struct MapEntry {
     momentum: Option<AnimationId>,
     /// How the camera's latest change was made, for its camera events.
     change: (mln_camera_change_mode, mln_camera_change_source),
+    /// An immediate move raised its camera events with its command, so
+    /// the frame that shows it reports none: Orbis's report of it is
+    /// dropped up to its end. Changes the map makes on its own (a style's
+    /// camera, constraints) report as they show.
+    jumped: bool,
     /// Transitions a command ended, whose handlers run after its change
     /// is published, with its generation.
     ended: Vec<(EndHandler, mln_camera_transition_outcome)>,
@@ -327,6 +332,8 @@ pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> 
             return Vec::new();
         };
         let mut camera_phases = [false; 3];
+        // The report of an immediate move ends with its end phases.
+        let mut jump_ended = false;
         // The camera events of immediate moves, raised by their commands,
         // and the transitions they ended.
         out.append(&mut entry.camera_events);
@@ -403,9 +410,15 @@ pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> 
                 E::Warning { message } => crate::logging::log(MLN_LOG_SEVERITY_WARNING, &message),
                 // An immediate move raised its events with its command; Orbis
                 // reports it again with the frame that shows it.
-                E::Camera(orb_api::CameraEvent::Changed { .. })
-                    if entry.change.0 == MLN_CAMERA_CHANGE_MODE_IMMEDIATE => {}
+                E::Camera(orb_api::CameraEvent::Changed { phase, .. })
+                    if entry.jumped && !(jump_ended && phase != Phase::End) =>
+                {
+                    jump_ended |= phase == Phase::End;
+                }
                 E::Camera(orb_api::CameraEvent::Changed { phase, .. }) => {
+                    if std::mem::take(&mut jump_ended) {
+                        entry.jumped = false;
+                    }
                     let (kind, i) = match phase {
                         Phase::Start => (MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE, 0),
                         Phase::Progress => (MLN_RUNTIME_EVENT_MAP_CAMERA_IS_CHANGING, 1),
@@ -447,6 +460,9 @@ pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> 
                 }
                 _ => {}
             }
+        }
+        if jump_ended {
+            entry.jumped = false;
         }
         // Transitions whose animation never started (a zero duration) end
         // with the camera at rest.
@@ -645,6 +661,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                             MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
                             MLN_CAMERA_CHANGE_SOURCE_COMMAND,
                         ),
+                        jumped: false,
                         idle: None,
                         style: Default::default(),
                         queries: Default::default(),
@@ -1460,9 +1477,14 @@ fn update_camera(
     }
     // The transitions running now end replaced.
     entry.ending = MLN_CAMERA_TRANSITION_OUTCOME_REPLACED;
+    // An animation reports its own changes, and an earlier jump's with
+    // them.
+    entry.jumped &= immediate;
     let animation_id = match mode {
         MLN_CAMERA_UPDATE_MODE_JUMP => {
+            let before = entry.map.camera();
             entry.map.jump_to(t);
+            entry.jumped |= entry.map.camera() != before;
             None
         }
         MLN_CAMERA_UPDATE_MODE_EASE => {
@@ -1834,6 +1856,7 @@ fn release_gesture(entry: &mut MapEntry, d: &Delta, glide: &orb_api::GestureMome
     entry.momentum = started;
     entry.gesture = started.is_some();
     if started.is_some() {
+        entry.jumped = false;
         entry.change = (
             MLN_CAMERA_CHANGE_MODE_ANIMATED,
             MLN_CAMERA_CHANGE_SOURCE_MOMENTUM,
