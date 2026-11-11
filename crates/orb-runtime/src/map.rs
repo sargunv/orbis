@@ -7,7 +7,7 @@ use orb_crs::{TileIndex, TileMatrixSet};
 
 use crate::surface::Surface;
 use orb_hal::{Gpu, TextureId};
-use orb_host::{Fetch, FetchError, ImageDecode, ResourceKind};
+use orb_host::{Abort, Fetch, FetchError, ImageDecode, ResourceKind};
 use orb_render::GpuTile;
 use orb_render::ImageAtlas;
 use orb_render::{
@@ -568,6 +568,11 @@ pub struct Map {
     /// Why the latest style request failed: nothing will load until
     /// another style replaces it.
     pub(crate) style_error: Option<String>,
+    /// Gives up the style URL loading, once another style replaces it.
+    pub(crate) style_fetch: Abort,
+    /// Gives up what the style generation fetches (TileJSON, archive
+    /// heads, sprites) once the next one starts.
+    pub(crate) style_loads: Abort,
     pub(crate) generation: u64,
     pub(crate) tile_generation: u64,
     pub(crate) style: Option<LoadedStyle>,
@@ -619,6 +624,8 @@ impl std::fmt::Debug for Map {
 
 impl Drop for Map {
     fn drop(&mut self) {
+        self.style_fetch.abort();
+        self.style_loads.abort();
         let mut images = self.services.images.0.lock().expect("images poisoned");
         self.retired.hand_to(&mut images);
         if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
@@ -757,6 +764,8 @@ impl Map {
             style_request: 0,
             style_fetching: false,
             style_error: None,
+            style_fetch: Abort::NEVER,
+            style_loads: Abort::new(),
             generation: 0,
             tile_generation: 0,
             style: None,
@@ -1073,10 +1082,14 @@ impl Map {
         self.style_fetching = true;
         let request = self.style_request;
         let owned = url.to_string();
-        self.fetch_text(ResourceKind::Style, url, move |result| Message::Style {
-            request,
-            url: owned,
-            result,
+        let abort = Abort::new();
+        std::mem::replace(&mut self.style_fetch, abort.clone()).abort();
+        self.fetch_text(ResourceKind::Style, url, &abort, move |result| {
+            Message::Style {
+                request,
+                url: owned,
+                result,
+            }
         });
     }
 
@@ -1118,6 +1131,7 @@ impl Map {
         // A style URL still loading is superseded, and the old style's
         // paint transitions with it.
         self.style_request += 1;
+        std::mem::replace(&mut self.style_fetch, Abort::NEVER).abort();
         self.style_fetching = false;
         self.style_error = None;
         self.transitions = Default::default();
@@ -1193,8 +1207,9 @@ impl Map {
         self.labels = crate::labels::Labels::new(Arc::clone(&old.lane), old.options.clone());
         self.label_epoch += 1;
         *self.picking.get_mut() = Default::default();
+        self.cancel_tile_loads();
         if let Some(style) = self.style.take() {
-            self.generation += 1;
+            self.next_generation();
             // What the host set at run time comes back with it.
             let states = style.states.carried();
             self.install_revision(style.doc, Some((style.id, &style.worker)));
@@ -1346,9 +1361,11 @@ impl Map {
                                 head,
                             }
                         });
-                        crate::loader::read_head(&self.services.fetch, archive, done);
+                        let abort = &self.style_loads;
+                        crate::loader::read_head(&self.services.fetch, archive, abort, done);
                     } else {
-                        self.fetch_text(ResourceKind::Source, url, move |result| {
+                        let abort = self.style_loads.clone();
+                        self.fetch_text(ResourceKind::Source, url, &abort, move |result| {
                             Message::TileJson {
                                 generation,
                                 source: key,
@@ -2085,7 +2102,8 @@ impl Map {
                 self.services.fetch.as_ref(),
                 self.services.image_decode.clone(),
             );
-            crate::sprite::load(fetch, decode, sprite, pixel_ratio, icons, done);
+            let abort = &self.style_loads;
+            crate::sprite::load(fetch, decode, sprite, pixel_ratio, abort, icons, done);
         }
     }
 
@@ -2858,12 +2876,20 @@ impl Map {
         &self,
         kind: ResourceKind,
         url: &str,
+        abort: &Abort,
         message: impl FnOnce(Result<String, FetchError>) -> Message + Send + 'static,
     ) {
         let done = self.reply(move |result: Result<Vec<u8>, FetchError>| {
             message(result.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
         });
-        self.services.fetch.get(kind, url, done);
+        self.services.fetch.get(kind, url, abort, done);
+    }
+
+    /// Starts the next style generation: what the last one still fetches
+    /// is given up, since its answers would be dropped.
+    fn next_generation(&mut self) {
+        self.generation += 1;
+        std::mem::replace(&mut self.style_loads, Abort::new()).abort();
     }
 
     /// A callback that sends `message(result)` to the map's next frame and
@@ -2886,7 +2912,7 @@ impl Map {
         if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
             self.retired.images.push(namespace);
         }
-        self.generation += 1;
+        self.next_generation();
         self.clear_style_tiles();
         if let Some(style) = &mut self.style {
             let background = style.background.take();
@@ -2917,8 +2943,27 @@ impl Map {
         }
     }
 
+    /// Gives up the loads of the style's tiles still in flight, which
+    /// answer cancelled: the next frame that wants them asks again. For a
+    /// map that stops drawing (its host detached it), so that its loads
+    /// stop using the network, and before the scene they would land in
+    /// goes.
+    pub fn cancel_tile_loads(&mut self) {
+        let Some(style) = &mut self.style else { return };
+        let plan = style.worker.plan();
+        for (index, source) in style.sources.iter_mut().enumerate() {
+            if let SourceState::Ready { pyramid, .. } = source {
+                let key = plan.sources[index].key;
+                for tile in pyramid.give_up_loads() {
+                    self.services.jobs.cancel(style.id, key, tile);
+                }
+            }
+        }
+    }
+
     /// Removes the style's tiles from the scene; they reload as needed.
     fn clear_style_tiles(&mut self) {
+        self.cancel_tile_loads();
         let Some(style) = &mut self.style else { return };
         for source in style.sources.iter_mut().chain(&mut style.retired) {
             if let SourceState::Ready {
@@ -2975,6 +3020,8 @@ mod tests {
         let mut map = Map::new(services, None);
         map.load_style_url("https://example.com/a.json");
         map.set_style_json(&style("b")).unwrap();
+        // Its fetch is given up; an answer that comes anyway is dropped.
+        assert!(fetch.aborts.lock().unwrap()[0].is_aborted());
         let (_, done) = fetch.pending.lock().unwrap().pop().unwrap();
         done(Ok(style("a").into_bytes()));
         while let Ok(Message::Style {
@@ -2987,6 +3034,20 @@ mod tests {
         }
         let name = map.style.as_ref().unwrap().worker.plan().style.name.clone();
         assert_eq!(name.as_deref(), Some("b"));
+    }
+
+    /// A map dropped gives up its style URL's fetch, and a style URL
+    /// another replaces gives up the first.
+    #[test]
+    fn style_fetches_end_with_their_map_or_the_next_url() {
+        let fetch = Arc::new(crate::testing::HeldFetch::default());
+        let mut map = Map::new(crate::testing::services(fetch.clone()), None);
+        map.load_style_url("https://example.com/a.json");
+        map.load_style_url("https://example.com/b.json");
+        let aborted = |i: usize| fetch.aborts.lock().unwrap()[i].is_aborted();
+        assert!(aborted(0) && !aborted(1));
+        drop(map);
+        assert!(aborted(1));
     }
 
     /// A style URL loading to replace a loaded style keeps the map from

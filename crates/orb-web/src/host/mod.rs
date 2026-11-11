@@ -7,7 +7,7 @@ mod storage;
 pub(crate) use storage::OpfsStorage;
 
 use js_sys::{Reflect, Uint8Array};
-use orb_host::{DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
+use orb_host::{Abort, DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
@@ -226,9 +226,8 @@ pub(crate) async fn decode_bitmap(
 }
 
 impl Fetch for WebFetch {
-    fn get(&self, _: orb_host::ResourceKind, url: &str, done: FetchDone) {
-        let url = url.to_string();
-        wasm_bindgen_futures::spawn_local(async move { done(fetch(&url).await) });
+    fn get(&self, _: orb_host::ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
+        start(url, None, abort, done);
     }
 
     fn get_range(
@@ -237,17 +236,41 @@ impl Fetch for WebFetch {
         url: &str,
         offset: u64,
         length: u64,
+        abort: &Abort,
         done: FetchDone,
     ) {
-        let url = url.to_string();
-        wasm_bindgen_futures::spawn_local(async move {
-            done(fetch_body(&url, Some((offset, length))).await)
-        });
+        start(url, Some((offset, length)), abort, done);
     }
 }
 
-pub(crate) async fn fetch(url: &str) -> Result<Vec<u8>, FetchError> {
-    fetch_body(url, None).await
+/// Fetches `url` (its `range`) until it ends or `abort` fires, which
+/// aborts the browser's request through an `AbortController`.
+fn start(url: &str, range: Option<(u64, u64)>, abort: &Abort, done: FetchDone) {
+    let done = abort.answer(done);
+    if abort.is_aborted() {
+        return;
+    }
+    let (url, abort) = (url.to_string(), abort.clone());
+    wasm_bindgen_futures::spawn_local(async move {
+        use std::task::Poll;
+        let controller = web_sys::AbortController::new().ok();
+        let signal = controller.as_ref().map(web_sys::AbortController::signal);
+        let mut fetched = std::pin::pin!(fetch_body(&url, range, signal.as_ref()));
+        let mut aborted = std::pin::pin!(abort.aborted());
+        let first = std::future::poll_fn(|cx| match fetched.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready(Some(result)),
+            Poll::Pending => aborted.as_mut().poll(cx).map(|()| None),
+        });
+        match first.await {
+            Some(result) => done(result),
+            // `done` has its answer.
+            None => {
+                if let Some(controller) = controller {
+                    controller.abort();
+                }
+            }
+        }
+    });
 }
 
 thread_local! {
@@ -284,20 +307,29 @@ pub(crate) fn set_request_hook(hook: Option<js_sys::Function>) {
     REQUEST_HOOK.with(|h| *h.borrow_mut() = hook);
 }
 
-async fn fetch_body(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
+async fn fetch_body(
+    url: &str,
+    range: Option<(u64, u64)>,
+    signal: Option<&web_sys::AbortSignal>,
+) -> Result<Vec<u8>, FetchError> {
     let early = match range {
         None => preloaded(url).await,
         Some(_) => None,
     };
     let response = match early {
         Some(response) => response,
-        None => request(url, range).await?,
+        None => request(url, range, signal).await?,
     };
     read(response, range).await
 }
 
-/// Fetches `url` (its `range`), through the request hook.
-async fn request(url: &str, range: Option<(u64, u64)>) -> Result<web_sys::Response, FetchError> {
+/// Fetches `url` (its `range`), through the request hook, until `signal`
+/// aborts it.
+async fn request(
+    url: &str,
+    range: Option<(u64, u64)>,
+    signal: Option<&web_sys::AbortSignal>,
+) -> Result<web_sys::Response, FetchError> {
     let network = |e: JsValue| FetchError::Network(format!("{e:?}"));
     let global = js_sys::global();
     let fetch = Reflect::get(&global, &"fetch".into())
@@ -338,6 +370,7 @@ async fn request(url: &str, range: Option<(u64, u64)>) -> Result<web_sys::Respon
             .map_err(network)?;
     }
     init.set_headers(&headers);
+    init.set_signal(signal);
     let promise = fetch
         .call2(&global, &url, &init)
         .map_err(network)?

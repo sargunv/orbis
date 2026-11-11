@@ -1073,12 +1073,19 @@ pub(crate) mod tests {
             _: &str,
             _: u64,
             _: u64,
+            _: &orb_host::Abort,
             _: orb_host::FetchDone,
         ) {
             panic!("GeoJSON must fetch its whole document");
         }
 
-        fn get(&self, _: orb_host::ResourceKind, url: &str, done: orb_host::FetchDone) {
+        fn get(
+            &self,
+            _: orb_host::ResourceKind,
+            url: &str,
+            _: &orb_host::Abort,
+            done: orb_host::FetchDone,
+        ) {
             assert_eq!(url, "test://data.json");
             self.callbacks.lock().unwrap().push(done);
         }
@@ -1335,12 +1342,19 @@ pub(crate) mod tests {
             _: &str,
             _: u64,
             _: u64,
+            _: &orb_host::Abort,
             _: orb_host::FetchDone,
         ) {
             unreachable!("no archives")
         }
 
-        fn get(&self, _: orb_host::ResourceKind, url: &str, done: orb_host::FetchDone) {
+        fn get(
+            &self,
+            _: orb_host::ResourceKind,
+            url: &str,
+            _: &orb_host::Abort,
+            done: orb_host::FetchDone,
+        ) {
             self.gets.lock().unwrap().push(url.to_string());
             let path = format!("{ASSETS}/{}", url.strip_prefix("local://").unwrap());
             if url.contains("/glyphs/") {
@@ -1512,9 +1526,9 @@ pub(crate) mod tests {
         assert_eq!(tiles, 1, "{gets:?}");
     }
 
-    /// Holds every tile fetch until the test answers it.
+    /// Holds every tile fetch until the test answers it, with its abort.
     #[derive(Default)]
-    struct HeldTiles(Mutex<Vec<orb_host::FetchDone>>);
+    struct HeldTiles(Mutex<Vec<(orb_host::FetchDone, orb_host::Abort)>>);
 
     impl Fetch for HeldTiles {
         fn get_range(
@@ -1523,22 +1537,32 @@ pub(crate) mod tests {
             _: &str,
             _: u64,
             _: u64,
+            _: &orb_host::Abort,
             _: orb_host::FetchDone,
         ) {
             unreachable!("no archives")
         }
 
-        fn get(&self, _: orb_host::ResourceKind, _: &str, done: orb_host::FetchDone) {
-            self.0.lock().unwrap().push(done);
+        fn get(
+            &self,
+            _: orb_host::ResourceKind,
+            _: &str,
+            abort: &orb_host::Abort,
+            done: orb_host::FetchDone,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((abort.answer(done), abort.clone()));
         }
     }
 
     /// Tile fetches take turns: those past [`crate::job_host::FETCHES`]
-    /// wait, and one given up while it waits never starts and answers
-    /// cancelled at once. One already fetching completes as usual, and
-    /// each that ends starts the next.
+    /// wait. One given up while it waits never starts, and one given up
+    /// while it fetches is aborted; either answers cancelled at once. Each
+    /// that ends starts the next.
     #[test]
-    fn loads_given_up_before_their_turn_never_fetch() {
+    fn loads_given_up_never_fetch_or_stop_fetching() {
         let fetch = Arc::new(HeldTiles::default());
         let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
         host.set_style(1, Arc::new(TileWorker::new(SYMBOLS).unwrap()));
@@ -1554,22 +1578,32 @@ pub(crate) mod tests {
             host.load(request, Box::new(move |r| tx.send((col, r)).unwrap()));
         }
         assert_eq!(fetch.0.lock().unwrap().len(), n as usize);
-        // The first waits its turn: cancelled. The second fetches already.
+        // The first waits its turn: cancelled. The second fetches already:
+        // aborted, and its turn starts the last waiting one.
         host.cancel(1, 1, TileIndex::new(14, n, 0));
         host.cancel(1, 1, TileIndex::new(14, 0, 0));
         let answered: Vec<_> = rx.try_iter().collect();
         assert!(
-            matches!(answered[..], [(col, Ok(crate::Loaded::Cancelled))] if col == n),
+            matches!(
+                answered[..],
+                [(a, Ok(crate::Loaded::Cancelled)), (0, Ok(crate::Loaded::Cancelled))] if a == n
+            ),
             "{answered:?}"
         );
-        // A fetch ends: the last waiting one starts.
-        let first = fetch.0.lock().unwrap().remove(0);
-        first(Err(orb_host::FetchError::NotFound));
-        assert!(matches!(
-            rx.try_iter().next(),
-            Some((0, Ok(crate::Loaded::Missing)))
-        ));
-        assert_eq!(fetch.0.lock().unwrap().len(), n as usize);
+        let held = std::mem::take(&mut *fetch.0.lock().unwrap());
+        assert_eq!(held.len(), n as usize + 1);
+        assert!(held[0].1.is_aborted() && !held[1].1.is_aborted());
+        // A fetch ends; the aborted one's late answer goes nowhere.
+        let mut held = held.into_iter();
+        let (aborted, _) = held.next().unwrap();
+        aborted(Err(orb_host::FetchError::NotFound));
+        let (second, _) = held.next().unwrap();
+        second(Err(orb_host::FetchError::NotFound));
+        let answered: Vec<_> = rx.try_iter().collect();
+        assert!(
+            matches!(answered[..], [(1, Ok(crate::Loaded::Missing))]),
+            "{answered:?}"
+        );
     }
 
     /// A glyph range another context fetches for the job hosts: a tile
@@ -1601,7 +1635,13 @@ pub(crate) mod tests {
     fn loads_of_a_replaced_style_are_not_built() {
         struct Held(Mutex<Vec<orb_host::FetchDone>>);
         impl Fetch for Held {
-            fn get(&self, _: orb_host::ResourceKind, _: &str, done: orb_host::FetchDone) {
+            fn get(
+                &self,
+                _: orb_host::ResourceKind,
+                _: &str,
+                _: &orb_host::Abort,
+                done: orb_host::FetchDone,
+            ) {
                 self.0.lock().unwrap().push(done);
             }
             fn get_range(
@@ -1610,6 +1650,7 @@ pub(crate) mod tests {
                 _: &str,
                 _: u64,
                 _: u64,
+                _: &orb_host::Abort,
                 _: orb_host::FetchDone,
             ) {
                 unreachable!("no archives")

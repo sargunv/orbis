@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::{self, Json, JsonValue};
-use orb_host::{Fetch, FetchDone, FetchError, ResourceKind, Storage, StorageDone};
+use orb_host::{Abort, Fetch, FetchDone, FetchError, ResourceKind, Storage, StorageDone};
 use orb_source::endpoint::TileEndpoint;
 use orb_source::pmtiles::{self, Contents, Entry, Lookup, Reader};
 use orb_style::{GeoJsonData, Scheme, SourceKind};
@@ -112,6 +112,7 @@ pub fn download(
                 definition,
                 events,
                 state: Mutex::new(State::default()),
+                abort: Abort::new(),
             });
             let download = Download(job.clone());
             // The manifest goes first, so an interrupted download is listed
@@ -153,9 +154,11 @@ impl Download {
         self.0.id
     }
 
-    /// Stops the download; its region stays incomplete until deleted.
+    /// Stops the download, aborting its fetches; its region stays
+    /// incomplete until deleted.
     pub fn cancel(&self) {
         self.0.lock().cancelled = true;
+        self.0.abort.abort();
     }
 }
 
@@ -329,6 +332,8 @@ struct Job {
     definition: RegionDefinition,
     events: RegionEvents,
     state: Mutex<State>,
+    /// Fires when the download is cancelled: its fetches stop.
+    abort: Abort,
 }
 
 impl Job {
@@ -402,9 +407,9 @@ impl Job {
                 let done: FetchDone = Box::new(move |result| job.arrived(task, tries, result));
                 match range {
                     Some((offset, length)) => {
-                        self.fetch.get_range(kind, &url, offset, length, done);
+                        (self.fetch).get_range(kind, &url, offset, length, &self.abort, done);
                     }
-                    None => self.fetch.get(kind, &url, done),
+                    None => self.fetch.get(kind, &url, &self.abort, done),
                 }
             }
             Task::Tile { url, .. } => {
@@ -412,6 +417,7 @@ impl Job {
                 self.fetch.get(
                     ResourceKind::Tile,
                     &url,
+                    &self.abort,
                     Box::new(move |result| job.arrived(task, tries, result)),
                 );
             }
@@ -427,6 +433,7 @@ impl Job {
                             &url,
                             range.offset,
                             range.length,
+                            &self.abort,
                             Box::new(move |result| match result {
                                 Ok(bytes) => {
                                     let inserted = reader
@@ -484,7 +491,8 @@ impl Job {
                 Task::ArchiveTile { .. } => unreachable!("archive tiles arrive as resources"),
             },
             // Not in the tileset, or no such glyph range: nothing to keep.
-            Err(FetchError::NotFound) => {}
+            // Aborted, the download is stopping.
+            Err(FetchError::NotFound | FetchError::Aborted) => {}
             Err(FetchError::Network(_) | FetchError::Status(500..)) if tries < RETRIES => {
                 return self.start(task, tries + 1);
             }
@@ -621,6 +629,7 @@ impl Job {
         if !state.cancelled {
             state.cancelled = true;
             drop(state);
+            self.abort.abort();
             (self.events)(RegionEvent::Failed {
                 id: self.id,
                 message,
@@ -1068,7 +1077,7 @@ impl std::fmt::Debug for RegionFetch {
 }
 
 /// A fetch waiting for the regions to be read.
-type Pending = (ResourceKind, String, Option<(u64, u64)>, FetchDone);
+type Pending = (ResourceKind, String, Option<(u64, u64)>, Abort, FetchDone);
 
 enum Served {
     Loading(Vec<Pending>),
@@ -1128,19 +1137,27 @@ impl RegionFetch {
                         Served::Ready(_) => Vec::new(),
                     }
                 };
-                for (kind, url, range, done) in pending {
-                    this.serve(kind, &url, range, done);
+                for (kind, url, range, abort, done) in pending {
+                    this.serve(kind, &url, range, &abort, done);
                 }
             }),
         );
     }
 
-    fn serve(&self, kind: ResourceKind, url: &str, range: Option<(u64, u64)>, done: FetchDone) {
+    fn serve(
+        &self,
+        kind: ResourceKind,
+        url: &str,
+        range: Option<(u64, u64)>,
+        abort: &Abort,
+        done: FetchDone,
+    ) {
         let regions = {
             let mut served = self.served.lock().expect("regions poisoned");
             match &mut *served {
                 Served::Loading(pending) => {
-                    return pending.push((kind, url.to_string(), range, done));
+                    let pending_abort = abort.clone();
+                    return pending.push((kind, url.to_string(), range, pending_abort, done));
                 }
                 Served::Ready(regions) => regions.clone(),
             }
@@ -1148,13 +1165,13 @@ impl RegionFetch {
         let key = orb_host::cache::key(url, range);
         for region in regions.iter() {
             if let Some(&(at, length)) = region.resources.get(&key) {
-                let (inner, url) = (self.inner.clone(), url.to_string());
+                let (inner, url, abort) = (self.inner.clone(), url.to_string(), abort.clone());
                 return self.storage.read(
                     &format!("{}/resources", region.dir),
                     Some((at, length)),
                     Box::new(move |read| match read {
                         Ok(Some(bytes)) => done(Ok(bytes)),
-                        _ => pass(&*inner, kind, &url, range, done),
+                        _ => pass(&*inner, kind, &url, range, &abort, done),
                     }),
                 );
             }
@@ -1170,13 +1187,14 @@ impl RegionFetch {
                             reader: archive.reader.clone(),
                             url: url.to_string(),
                             kind,
+                            abort: abort.clone(),
                         };
                         return served.read(tile, 0, done);
                     }
                 }
             }
         }
-        pass(&*self.inner, kind, url, range, done);
+        pass(&*self.inner, kind, url, range, abort, done);
     }
 }
 
@@ -1185,20 +1203,29 @@ fn pass(
     kind: ResourceKind,
     url: &str,
     range: Option<(u64, u64)>,
+    abort: &Abort,
     done: FetchDone,
 ) {
     match range {
-        Some((offset, length)) => inner.get_range(kind, url, offset, length, done),
-        None => inner.get(kind, url, done),
+        Some((offset, length)) => inner.get_range(kind, url, offset, length, abort, done),
+        None => inner.get(kind, url, abort, done),
     }
 }
 
 impl Fetch for RegionFetch {
-    fn get(&self, kind: ResourceKind, url: &str, done: FetchDone) {
-        self.serve(kind, url, None, done);
+    fn get(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
+        self.serve(kind, url, None, abort, done);
     }
-    fn get_range(&self, kind: ResourceKind, url: &str, offset: u64, length: u64, done: FetchDone) {
-        self.serve(kind, url, Some((offset, length)), done);
+    fn get_range(
+        &self,
+        kind: ResourceKind,
+        url: &str,
+        offset: u64,
+        length: u64,
+        abort: &Abort,
+        done: FetchDone,
+    ) {
+        self.serve(kind, url, Some((offset, length)), abort, done);
     }
 }
 
@@ -1210,6 +1237,7 @@ struct Tile {
     reader: Arc<Mutex<Reader>>,
     url: String,
     kind: ResourceKind,
+    abort: Abort,
 }
 
 impl Tile {
@@ -1234,7 +1262,7 @@ impl Tile {
                         if again {
                             self.read(tile, reads + 1, done);
                         } else {
-                            pass(&*self.inner, self.kind, &self.url, None, done);
+                            pass(&*self.inner, self.kind, &self.url, None, &self.abort, done);
                         }
                     }),
                 );
@@ -1246,12 +1274,12 @@ impl Tile {
                     Some((range.offset, range.length)),
                     Box::new(move |read| match read {
                         Ok(Some(bytes)) => done(Ok(bytes)),
-                        _ => pass(&*self.inner, self.kind, &self.url, None, done),
+                        _ => pass(&*self.inner, self.kind, &self.url, None, &self.abort, done),
                     }),
                 );
             }
             // Not in the region: the network.
-            _ => pass(&*self.inner, self.kind, &self.url, None, done),
+            _ => pass(&*self.inner, self.kind, &self.url, None, &self.abort, done),
         }
     }
 }
@@ -1386,7 +1414,7 @@ mod tests {
                     "layout": {"text-field": "a", "text-font": ["literal", ["Sans Bold"]]}}]}"#;
 
     impl Fetch for Server {
-        fn get(&self, _: orb_host::ResourceKind, url: &str, done: FetchDone) {
+        fn get(&self, _: orb_host::ResourceKind, url: &str, _: &Abort, done: FetchDone) {
             self.requests.lock().unwrap().push(url.to_string());
             if self.offline {
                 return done(Err(FetchError::Network("offline".into())));
@@ -1404,7 +1432,15 @@ mod tests {
                 _ => Err(FetchError::NotFound),
             })
         }
-        fn get_range(&self, _: orb_host::ResourceKind, _: &str, _: u64, _: u64, done: FetchDone) {
+        fn get_range(
+            &self,
+            _: orb_host::ResourceKind,
+            _: &str,
+            _: u64,
+            _: u64,
+            _: &Abort,
+            done: FetchDone,
+        ) {
             done(Err(FetchError::NotFound));
         }
     }
@@ -1414,6 +1450,7 @@ mod tests {
         fetch.get(
             ResourceKind::Unknown,
             url,
+            &Abort::NEVER,
             Box::new(move |r| tx.send(r).unwrap()),
         );
         rx.recv().unwrap()

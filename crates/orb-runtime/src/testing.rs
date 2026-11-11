@@ -61,15 +61,26 @@ pub(crate) fn services(fetch: Arc<dyn Fetch>) -> Services {
 #[derive(Default)]
 pub(crate) struct HeldFetch {
     pub(crate) pending: Mutex<Vec<(String, FetchDone)>>,
+    /// Each request's abort, in request order.
+    pub(crate) aborts: Mutex<Vec<orb_host::Abort>>,
 }
 
 impl Fetch for HeldFetch {
-    fn get(&self, _: ResourceKind, url: &str, done: FetchDone) {
+    fn get(&self, _: ResourceKind, url: &str, abort: &orb_host::Abort, done: FetchDone) {
+        self.aborts.lock().unwrap().push(abort.clone());
         self.pending.lock().unwrap().push((url.to_string(), done));
     }
 
-    fn get_range(&self, _: ResourceKind, url: &str, _: u64, _: u64, done: FetchDone) {
-        self.get(ResourceKind::Unknown, url, done);
+    fn get_range(
+        &self,
+        _: ResourceKind,
+        url: &str,
+        _: u64,
+        _: u64,
+        _: &orb_host::Abort,
+        done: FetchDone,
+    ) {
+        self.get(ResourceKind::Unknown, url, &orb_host::Abort::NEVER, done);
     }
 }
 
@@ -77,11 +88,19 @@ impl Fetch for HeldFetch {
 pub(crate) struct NoFetch;
 
 impl Fetch for NoFetch {
-    fn get(&self, _: ResourceKind, url: &str, _: FetchDone) {
+    fn get(&self, _: ResourceKind, url: &str, _: &orb_host::Abort, _: FetchDone) {
         panic!("unexpected fetch of {url}");
     }
 
-    fn get_range(&self, _: ResourceKind, url: &str, _: u64, _: u64, _: FetchDone) {
+    fn get_range(
+        &self,
+        _: ResourceKind,
+        url: &str,
+        _: u64,
+        _: u64,
+        _: &orb_host::Abort,
+        _: FetchDone,
+    ) {
         panic!("unexpected fetch of {url}");
     }
 }

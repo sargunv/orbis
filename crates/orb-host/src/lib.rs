@@ -4,10 +4,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod abort;
 pub mod cache;
 pub mod jobs;
 
 use std::fmt;
+
+pub use abort::Abort;
 
 /// Called once with the outcome of a fetch, on any thread.
 pub type FetchDone = Box<dyn FnOnce(Result<Vec<u8>, FetchError>) + Send + 'static>;
@@ -32,14 +35,25 @@ pub enum ResourceKind {
     Image,
 }
 
-/// Loads resources by URL.
+/// Loads resources by URL. Each load ends when `abort` fires, if it
+/// hasn't: one waiting to start never does, one in flight stops as far as
+/// the host can stop it, and `done` gets [`FetchError::Aborted`] at once
+/// ([`Abort::answer`] does this part).
 pub trait Fetch: Send + Sync {
     /// Starts loading `url`, a `kind` of resource; `done` gets the body.
-    fn get(&self, kind: ResourceKind, url: &str, done: FetchDone);
+    fn get(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone);
     /// Reads exactly `length` bytes at `offset` (at most 64 MiB). HTTP must
     /// answer 206 with a matching Content-Range. Reject 200 before reading
     /// its body, and bound streaming reads even without Content-Length.
-    fn get_range(&self, kind: ResourceKind, url: &str, offset: u64, length: u64, done: FetchDone);
+    fn get_range(
+        &self,
+        kind: ResourceKind,
+        url: &str,
+        offset: u64,
+        length: u64,
+        abort: &Abort,
+        done: FetchDone,
+    );
 }
 
 /// A request a [`NetworkHook`] can serve where the network would: one the
@@ -57,6 +71,9 @@ pub struct NetworkRequest {
     /// The cached copy a new answer would replace, which a
     /// [`NetworkAnswer::NotModified`] keeps.
     pub prior: Option<Prior>,
+    /// Fires when the requester gives the request up: the hook can stop
+    /// serving it, and its answer goes nowhere.
+    pub abort: Abort,
 }
 
 /// A cached copy of a resource.
@@ -126,6 +143,8 @@ pub enum FetchError {
     Network(String),
     /// The URL scheme isn't supported by this host.
     UnsupportedUrl(String),
+    /// The requester gave the load up ([`Abort`]).
+    Aborted,
 }
 
 impl fmt::Display for FetchError {
@@ -136,6 +155,7 @@ impl fmt::Display for FetchError {
             Self::Status(code) => write!(f, "HTTP {code}"),
             Self::Network(message) => write!(f, "network error: {message}"),
             Self::UnsupportedUrl(url) => write!(f, "unsupported URL: {url}"),
+            Self::Aborted => f.write_str("aborted"),
         }
     }
 }

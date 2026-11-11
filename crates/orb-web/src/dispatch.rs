@@ -433,7 +433,8 @@ impl Jobs for WorkerJobs {
                 let bytes = fetched.map_err(|e| format!("glyphs {url}: {e}"));
                 jobs.broadcast(&JobRequest::GlyphRange { style, url, bytes });
             });
-            (self.fetch).get(orb_host::ResourceKind::Glyphs, &fetching, done);
+            let never = &orb_host::Abort::NEVER;
+            (self.fetch).get(orb_host::ResourceKind::Glyphs, &fetching, never, done);
         }
     }
 

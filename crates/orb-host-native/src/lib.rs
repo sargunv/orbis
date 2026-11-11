@@ -16,13 +16,15 @@ pub use storage::{FileStorage, wait};
 
 use orb_host::jobs::{Executor, ThreadPool};
 use orb_host::{
-    DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone, NetworkAnswer, NetworkHook,
-    NetworkRequest, Prior, Request, RequestTransform, ResourceKind,
+    Abort, DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone, NetworkAnswer,
+    NetworkHook, NetworkRequest, Prior, Request, RequestTransform, ResourceKind,
 };
 
 /// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
 /// small pool of I/O threads, through an [`HttpCache`] when it has one. A
-/// [`NetworkHook`] can serve requests where the network would.
+/// [`NetworkHook`] can serve requests where the network would. An aborted
+/// request still waiting for a thread never starts, and one reading its
+/// body stops reading and drops its connection.
 pub struct NativeFetch {
     agent: ureq::Agent,
     pool: Arc<ThreadPool>,
@@ -122,6 +124,7 @@ impl NativeFetch {
         request: &Request,
         range: Option<(u64, u64)>,
         online: bool,
+        abort: &Abort,
     ) -> Result<Vec<u8>, FetchError> {
         let (key, cached) = match Self::prepare(cache, &request.url, range, online, false) {
             Ok(answer) => return answer,
@@ -130,7 +133,7 @@ impl NativeFetch {
         let validators = cached
             .as_ref()
             .map(|c| (c.etag.as_deref(), c.last_modified.as_deref()));
-        let response = http(agent, request, range, validators);
+        let response = http(agent, request, range, validators, abort);
         Self::finish(cache, key, cached, response)
     }
 
@@ -206,6 +209,8 @@ impl NativeFetch {
                 Ok(cached.bytes)
             }
             (Ok(Response::NotModified { .. }), None) => Err(FetchError::Status(304)),
+            // Given up: the entry stays as it was.
+            (Err(FetchError::Aborted), _) => Err(FetchError::Aborted),
             // Offline, or the server failing: the stale copy.
             (Err(FetchError::Network(_) | FetchError::Status(500..)), Some(cached)) => {
                 Ok(cached.bytes)
@@ -245,12 +250,14 @@ fn read_file(path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchErro
     Ok(bytes)
 }
 
-/// One HTTP GET, conditional on `validators` (ETag, Last-Modified).
+/// One HTTP GET, conditional on `validators` (ETag, Last-Modified). An
+/// abort stops it between the body's reads.
 fn http(
     agent: &ureq::Agent,
     req: &Request,
     range: Option<(u64, u64)>,
     validators: Option<(Option<&str>, Option<&str>)>,
+    abort: &Abort,
 ) -> Result<Response, FetchError> {
     let mut request = agent.get(encode_url(&req.url).as_ref());
     for (name, value) in &req.headers {
@@ -315,12 +322,7 @@ fn http(
             length,
         )?;
     }
-    let bytes = response
-        .body_mut()
-        .with_config()
-        .limit(range.map_or(MAX_BODY, |(_, length)| length + 1))
-        .read_to_vec()
-        .map_err(|e| FetchError::Network(e.to_string()))?;
+    let bytes = read_body(response.body_mut(), range, abort)?;
     if range.is_some_and(|(_, length)| bytes.len() as u64 != length) {
         return Err(FetchError::Range("short range body".into()));
     }
@@ -332,12 +334,48 @@ fn http(
     })
 }
 
-impl Fetch for NativeFetch {
-    fn get(&self, kind: ResourceKind, url: &str, done: FetchDone) {
-        self.get_range_opt(kind, url, None, done);
+/// A response's body, at most a range's `length` or [`MAX_BODY`], read a
+/// chunk at a time until it ends or `abort` fires.
+fn read_body(
+    body: &mut ureq::Body,
+    range: Option<(u64, u64)>,
+    abort: &Abort,
+) -> Result<Vec<u8>, FetchError> {
+    use std::io::Read;
+    let limit = range.map_or(MAX_BODY, |(_, length)| length + 1);
+    let capacity = range.map_or_else(
+        || body.content_length().unwrap_or(0).min(limit),
+        |(_, length)| length,
+    );
+    let mut reader = body.with_config().limit(limit).reader();
+    let mut bytes = Vec::with_capacity(capacity as usize);
+    loop {
+        if abort.is_aborted() {
+            return Err(FetchError::Aborted);
+        }
+        // Straight into the body, 64 KiB at most between the checks.
+        match (&mut reader).take(64 << 10).read_to_end(&mut bytes) {
+            Ok(0) => return Ok(bytes),
+            Ok(_) => {}
+            Err(e) => return Err(FetchError::Network(e.to_string())),
+        }
     }
-    fn get_range(&self, kind: ResourceKind, url: &str, offset: u64, length: u64, done: FetchDone) {
-        self.get_range_opt(kind, url, Some((offset, length)), done);
+}
+
+impl Fetch for NativeFetch {
+    fn get(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
+        self.get_range_opt(kind, url, None, abort, done);
+    }
+    fn get_range(
+        &self,
+        kind: ResourceKind,
+        url: &str,
+        offset: u64,
+        length: u64,
+        abort: &Abort,
+        done: FetchDone,
+    ) {
+        self.get_range_opt(kind, url, Some((offset, length)), abort, done);
     }
 }
 
@@ -347,8 +385,14 @@ impl NativeFetch {
         kind: ResourceKind,
         url: &str,
         range: Option<(u64, u64)>,
+        abort: &Abort,
         done: FetchDone,
     ) {
+        let done = abort.answer(done);
+        if abort.is_aborted() {
+            return;
+        }
+        let abort = abort.clone();
         let transform = self.transform.read().expect("transform poisoned").clone();
         let request = match transform {
             Some(transform) => match transform(url) {
@@ -364,6 +408,10 @@ impl NativeFetch {
         let (agent, cache, online) = (self.agent.clone(), self.cache.clone(), self.online());
         let (pool, url) = (self.pool.clone(), url.to_string());
         self.pool.spawn(Box::new(move || {
+            // Given up while it waited for a thread: `done` has its answer.
+            if abort.is_aborted() {
+                return;
+            }
             let Some(hook) = hook else {
                 return done(Self::get_blocking(
                     &agent,
@@ -371,6 +419,7 @@ impl NativeFetch {
                     &request,
                     range,
                     online,
+                    &abort,
                 ));
             };
             let (key, cached) =
@@ -392,6 +441,7 @@ impl NativeFetch {
                 request,
                 range,
                 prior,
+                abort: abort.clone(),
             };
             hook.request(
                 network,
@@ -415,6 +465,9 @@ impl NativeFetch {
                         // The host's network, on its own threads.
                         NetworkAnswer::Network(request) => {
                             return pool.clone().spawn(Box::new(move || {
+                                if abort.is_aborted() {
+                                    return;
+                                }
                                 let response =
                                     if let Some(path) = request.url.strip_prefix("file://") {
                                         read_file(path, range).map(|bytes| Response::Body {
@@ -427,7 +480,7 @@ impl NativeFetch {
                                         let validators = cached.as_ref().map(|c| {
                                             (c.etag.as_deref(), c.last_modified.as_deref())
                                         });
-                                        http(&agent, &request, range, validators)
+                                        http(&agent, &request, range, validators, &abort)
                                     } else {
                                         Err(FetchError::UnsupportedUrl(request.url.clone()))
                                     };
@@ -586,6 +639,7 @@ mod tests {
             fetch.get(
                 ResourceKind::Unknown,
                 &url.clone(),
+                &Abort::NEVER,
                 Box::new(move |r| tx.send((url, r)).unwrap()),
             );
         }
@@ -620,6 +674,7 @@ mod tests {
             &plain(&url),
             Some((2, 3)),
             true,
+            &Abort::NEVER,
         );
         thread.join().unwrap();
         result
@@ -662,12 +717,28 @@ mod tests {
         let url = format!("file://{}", path.display());
         let agent = ureq::Agent::new_with_defaults();
         assert_eq!(
-            NativeFetch::get_blocking(&agent, None, &plain(&url), Some((2, 3)), true).unwrap(),
+            NativeFetch::get_blocking(
+                &agent,
+                None,
+                &plain(&url),
+                Some((2, 3)),
+                true,
+                &Abort::NEVER
+            )
+            .unwrap(),
             b"cde"
         );
         for range in [(4, 3), (0, 0), (0, MAX_BODY + 1), (u64::MAX, 2)] {
             assert!(
-                NativeFetch::get_blocking(&agent, None, &plain(&url), Some(range), true).is_err()
+                NativeFetch::get_blocking(
+                    &agent,
+                    None,
+                    &plain(&url),
+                    Some(range),
+                    true,
+                    &Abort::NEVER
+                )
+                .is_err()
             );
         }
         std::fs::remove_file(path).unwrap();
@@ -734,7 +805,16 @@ mod tests {
             ),
             format!("HTTP/1.1 304 Not Modified\r\n{close}Cache-Control: max-age=60\r\n\r\n"),
         ]);
-        let get = || NativeFetch::get_blocking(&agent, Some(&cache), &plain(&url), None, true);
+        let get = || {
+            NativeFetch::get_blocking(
+                &agent,
+                Some(&cache),
+                &plain(&url),
+                None,
+                true,
+                &Abort::NEVER,
+            )
+        };
         assert_eq!(get().unwrap(), b"tile");
         assert_eq!(get().unwrap(), b"tile");
         // Fresh after the 304: no request.
@@ -774,6 +854,7 @@ mod tests {
             fetch.get(
                 ResourceKind::Unknown,
                 url,
+                &Abort::NEVER,
                 Box::new(move |r| send.send(r).unwrap()),
             );
             receive.recv().unwrap()
@@ -799,5 +880,59 @@ mod tests {
         );
         drop(fetch);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An abort answers at once, and a body being read stops: the server
+    /// sees the connection close long before it sends the whole body.
+    #[test]
+    fn an_abort_stops_reading_the_body() {
+        const LENGTH: usize = 64 << 20;
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/big", server.local_addr().unwrap());
+        let (started, started_rx) = channel();
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            let mut request = [0; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {LENGTH}\r\n\r\n");
+            stream.write_all(head.as_bytes()).unwrap();
+            let chunk = vec![0; 64 << 10];
+            let mut sent = 0;
+            while sent < LENGTH {
+                if stream.write_all(&chunk).is_err() {
+                    break;
+                }
+                sent += chunk.len();
+                if sent == chunk.len() {
+                    started.send(()).unwrap();
+                }
+            }
+            sent
+        });
+        let fetch = NativeFetch::new();
+        let abort = Abort::new();
+        let (tx, rx) = channel();
+        fetch.get(
+            ResourceKind::Tile,
+            &url,
+            &abort,
+            Box::new(move |r| tx.send(r).unwrap()),
+        );
+        started_rx.recv().unwrap();
+        abort.abort();
+        assert_eq!(rx.recv().unwrap(), Err(FetchError::Aborted));
+        let sent = thread.join().unwrap();
+        assert!(sent < LENGTH, "sent the whole body");
+        // Given up before it starts, a request never reaches the network.
+        let (tx, rx) = channel();
+        let abort = Abort::new();
+        abort.abort();
+        fetch.get(
+            ResourceKind::Tile,
+            "http://127.0.0.1:9/never",
+            &abort,
+            Box::new(move |r| tx.send(r).unwrap()),
+        );
+        assert_eq!(rx.recv().unwrap(), Err(FetchError::Aborted));
     }
 }

@@ -38,6 +38,8 @@ orb-tile.workspace = true
 wasm-bindgen = { workspace = true, features = ["enable-interning"] }
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = [
+  "AbortController",
+  "AbortSignal",
   "Blob",
   "console",
   "File",

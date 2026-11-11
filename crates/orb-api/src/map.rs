@@ -300,6 +300,13 @@ impl Map {
         self.dirty = true;
     }
 
+    /// Gives up the tiles still loading, aborting their fetches: the next
+    /// frame that wants them loads them again. For a map that stops
+    /// drawing for now, so that it stops using the network.
+    pub fn cancel_tile_loads(&mut self) {
+        self.map.cancel_tile_loads();
+    }
+
     /// Loads a style from a URL (`http(s)://`, `file://`, `pmtiles://`).
     pub fn load_style_url(&mut self, url: &str) {
         self.map.load_style_url(url);

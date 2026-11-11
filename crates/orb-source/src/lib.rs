@@ -313,6 +313,19 @@ impl<T> TilePyramid<T> {
             .collect()
     }
 
+    /// Every loading tile not yet given up, each once, as
+    /// [`unwanted_loads`](Self::unwanted_loads) gives up those out of
+    /// view: for a caller that drops the pyramid, or stops drawing.
+    pub fn give_up_loads(&mut self) -> Vec<TileIndex> {
+        (self.tiles.iter_mut())
+            .filter(|(_, e)| matches!(e.state, State::Loading) && !e.given_up)
+            .map(|(&tile, e)| {
+                e.given_up = true;
+                tile
+            })
+            .collect()
+    }
+
     /// Counts `tile` as used by the last update, as if its plan had used
     /// it: no eviction takes it before the next.
     pub fn keep(&mut self, tile: TileIndex) {

@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use orb_expr::json::{self, Json};
-use orb_host::{DecodedImage, Fetch, ImageDecode, ResourceKind};
+use orb_host::{Abort, DecodedImage, Fetch, ImageDecode, ResourceKind};
 use orb_render::ImageMetadata;
 use orb_style::Sprite;
 
@@ -48,6 +48,7 @@ pub(crate) fn load(
     decode: Arc<dyn ImageDecode>,
     sprite: &Sprite,
     pixel_ratio: f32,
+    abort: &Abort,
     icons: Icons,
     done: Done,
 ) {
@@ -71,6 +72,7 @@ pub(crate) fn load(
         fetch.get(
             kind,
             &url,
+            abort,
             Box::new(move |result| {
                 let result = result.map_err(|e| e.to_string());
                 let ready = {
@@ -280,10 +282,24 @@ mod tests {
         use orb_host::{FetchDone, ImageDone};
         struct Answers(Mutex<Vec<(String, FetchDone)>>);
         impl Fetch for Answers {
-            fn get(&self, _: orb_host::ResourceKind, url: &str, done: FetchDone) {
+            fn get(
+                &self,
+                _: orb_host::ResourceKind,
+                url: &str,
+                _: &orb_host::Abort,
+                done: FetchDone,
+            ) {
                 self.0.lock().unwrap().push((url.to_string(), done));
             }
-            fn get_range(&self, _: orb_host::ResourceKind, _: &str, _: u64, _: u64, _: FetchDone) {
+            fn get_range(
+                &self,
+                _: orb_host::ResourceKind,
+                _: &str,
+                _: u64,
+                _: u64,
+                _: &orb_host::Abort,
+                _: FetchDone,
+            ) {
                 unreachable!("sprites are read whole")
             }
         }
@@ -309,6 +325,7 @@ mod tests {
             Arc::new(Decode),
             &sprite,
             1.0,
+            &Abort::NEVER,
             Box::new(move |r| {
                 icons
                     .lock()

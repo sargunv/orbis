@@ -9,8 +9,17 @@ use super::*;
 struct NoFetch;
 
 impl Fetch for NoFetch {
-    fn get(&self, _: ResourceKind, _: &str, _: FetchDone) {}
-    fn get_range(&self, _: ResourceKind, _: &str, _: u64, _: u64, _: FetchDone) {}
+    fn get(&self, _: ResourceKind, _: &str, _: &orb_host::Abort, _: FetchDone) {}
+    fn get_range(
+        &self,
+        _: ResourceKind,
+        _: &str,
+        _: u64,
+        _: u64,
+        _: &orb_host::Abort,
+        _: FetchDone,
+    ) {
+    }
 }
 
 /// The requests posted, with the worker each went to.
