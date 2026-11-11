@@ -51,12 +51,12 @@ const EXTRUDE_SCALE: f32 = 1.0 / 63.0;
 // A dashed, patterned or gradient line's varyings (`vs_line_styled`).
 struct StyledLineOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) @interpolate(flat) color: vec4<f32>,
     @location(1) normal: vec2<f32>,
     // (outset, inset) in pixels.
-    @location(2) width2: vec2<f32>,
+    @location(2) @interpolate(flat) width2: vec2<f32>,
     @location(3) gamma_scale: f32,
-    @location(4) blur: f32,
+    @location(4) @interpolate(flat) blur: f32,
     @location(5) tile_pos: vec2<f32>,
     @location(6) @interpolate(flat) tile: u32,
     // Where the placement owns the line: where it lands, but where it was
@@ -65,9 +65,9 @@ struct StyledLineOut {
     @location(7) owner_pos: vec2<f32>,
     @location(8) @interpolate(flat) clip: vec2<u32>,
     @location(9) linesofar: f32,
-    @location(10) floorwidth: f32,
+    @location(10) @interpolate(flat) floorwidth: f32,
     @location(11) @interpolate(flat) images: vec2<u32>,
-    @location(12) opacity: f32,
+    @location(12) @interpolate(flat) opacity: f32,
     @location(13) progress: f32,
     @location(14) @interpolate(flat) ramp: u32,
 };
@@ -75,13 +75,16 @@ struct StyledLineOut {
 // A plain line's (`vs_line`): the styled line's first nine. Every vertex
 // output is stored and every fragment interpolates it: on a pitched city
 // view the styled ones cost plain lines a tenth of their main pass.
+// What a feature holds constant (colour, widths, blur) rides flat, which
+// fragments read without interpolating: 4% of the moto g's main pass
+// across views (#180).
 struct LineOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) @interpolate(flat) color: vec4<f32>,
     @location(1) normal: vec2<f32>,
-    @location(2) width2: vec2<f32>,
+    @location(2) @interpolate(flat) width2: vec2<f32>,
     @location(3) gamma_scale: f32,
-    @location(4) blur: f32,
+    @location(4) @interpolate(flat) blur: f32,
     @location(5) tile_pos: vec2<f32>,
     @location(6) @interpolate(flat) tile: u32,
     @location(7) owner_pos: vec2<f32>,

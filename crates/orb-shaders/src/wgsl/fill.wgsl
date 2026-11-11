@@ -28,13 +28,13 @@ const FILL_STRIDE: u32 = 2u;
 
 struct FillOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) @interpolate(flat) color: vec4<f32>,
     @location(1) tile_pos: vec2<f32>,
     @location(2) @interpolate(flat) tile: u32,
     // The vertex in framebuffer pixels less `screen_origin`, for outline
     // coverage.
     @location(3) screen: vec2<f32>,
-    @location(4) opacity: f32,
+    @location(4) @interpolate(flat) opacity: f32,
     @location(5) pattern_pos: vec2<f32>,
     @location(6) @interpolate(flat) images: vec2<u32>,
     // Where the placement owns the fill: where it lands on the map's plane,
