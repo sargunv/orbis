@@ -942,7 +942,7 @@ pub enum NodeDraw {
     /// the image's own tile units (a warped tile's mesh is in other units),
     /// so the cull doesn't narrow their bounds to the clip rectangles.
     Images,
-    /// Point families: 256 instances per visible chunk, each a quad of six
+    /// Point families: 64 instances per visible chunk, each a quad of six
     /// vertices (or a grid of such cells for a [`NodeCull::surface`] node on
     /// a globe; symbols draw the six as indices over four corners). Anchors
     /// are clipped, then the full footprints expanded.
@@ -2388,16 +2388,28 @@ mod tests {
         assert!((light(0.5, 0.5).shadow().1 - 0.6).abs() < 1e-6);
     }
 
-    /// The cull shader's most indices a chunk has, which bounds its copy
-    /// loop, is the layout's.
+    /// The shaders' chunk sizes are the layout's: the most indices a chunk
+    /// has, which bounds the cull's copy loop, and the instances a point
+    /// chunk reserves.
     #[test]
-    fn the_cull_shares_the_chunk_size() {
-        let source = orb_shaders::CULL_SHADER.source();
-        let value = orb_layout::CHUNK_INDICES;
-        assert!(
-            source.contains(&format!("const CHUNK_INDICES: u32 = {value}u;")),
-            "cull.wgsl's CHUNK_INDICES isn't {value}"
-        );
+    fn the_shaders_share_the_chunk_sizes() {
+        use orb_shaders::{CIRCLE_SHADER, CULL_SHADER, SYMBOL_SHADERS};
+        let points = orb_layout::MAX_CHUNK_INSTANCES;
+        for (source, name, value) in [
+            (
+                CULL_SHADER.source(),
+                "CHUNK_INDICES",
+                orb_layout::CHUNK_INDICES,
+            ),
+            (CULL_SHADER.source(), "CHUNK_POINTS", points),
+            (CIRCLE_SHADER.source(), "CHUNK_POINTS", points),
+            (SYMBOL_SHADERS[0].source(), "CHUNK_QUADS", points),
+        ] {
+            assert!(
+                source.contains(&format!("const {name}: u32 = {value}u;")),
+                "a shader's {name} isn't {value}"
+            );
+        }
     }
 
     #[test]

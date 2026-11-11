@@ -581,7 +581,12 @@ impl CpuDriver {
                     (_, true) => 6 * cells * cells,
                     (_, false) => CHUNK_VERTICES,
                 };
-                let instances = written * if points { 256 } else { 1 };
+                let instances = written
+                    * if points {
+                        orb_layout::MAX_CHUNK_INSTANCES
+                    } else {
+                        1
+                    };
                 out.copy_from_slice(&[
                     vertices,
                     instances,

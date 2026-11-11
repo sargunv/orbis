@@ -606,7 +606,7 @@ fn layout_size(property: &orb_style::PropertyRef<'_, f64>, tile_zoom: f64) -> f3
     property.evaluate(tile_zoom + 1.0) as f32
 }
 
-/// Chunks of up to 256 quads, in quad order. With `symbol-sort-key` a
+/// Chunks of up to `MAX_CHUNK_INSTANCES` quads, in quad order. With `symbol-sort-key` a
 /// chunk holds one key, which the scene orders candidates by across tiles
 /// (GL JS draws sort-key segments across tiles in key order).
 fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_layout::Chunk> {
@@ -638,7 +638,9 @@ fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_l
         };
         let q = q as u32;
         let fits = chunks.last().is_some_and(|c| {
-            c.index_count < 256 && c.sort_key == key && c.first_index + c.index_count == q
+            c.index_count < orb_layout::MAX_CHUNK_INSTANCES
+                && c.sort_key == key
+                && c.first_index + c.index_count == q
         });
         if !fits {
             chunks.push(orb_layout::Chunk {

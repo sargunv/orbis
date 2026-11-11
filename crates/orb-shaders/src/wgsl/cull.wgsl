@@ -64,6 +64,8 @@ const MOVED: u32 = 2u;
 override keep_all: bool = false;
 // Indices per chunk at most (orb-layout's CHUNK_INDICES).
 const CHUNK_INDICES: u32 = 768u;
+// Instances per point chunk (orb-layout's MAX_CHUNK_INSTANCES).
+const CHUNK_POINTS: u32 = 64u;
 // The view-volume planes a clip-space corner lies outside, a bit each:
 // right, left, top, bottom (widened by `margin`, in NDC per unit w), far
 // and near.
@@ -232,7 +234,7 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
         let at = index * ARGS_WORDS;
         let cells = point_cells((node.draw & SURFACE) != 0u);
         let vertices = select(0u, select(CHUNK_VERTICES, 6u * cells * cells, points), written > 0u);
-        let instances = written * select(1u, 256u, points);
+        let instances = written * select(1u, CHUNK_POINTS, points);
         atomicStore(&args[at], vertices);
         atomicStore(&args[at + 1u], instances);
         atomicStore(&args[at + 2u], 0u);

@@ -4,7 +4,7 @@
 // vertex stage: each vertex places its glyph along the projected line, or
 // shifts its label to the variable anchor placement chose.
 //
-// One instance per quad: visible chunks of at most 256 quads (orb-render's
+// One instance per quad: visible chunks of at most 64 quads (orb-render's
 // symbol meshes), four vertices each (six indices). A mesh's tables sit behind a header in
 // the vertex arena; its state words, paint rows and the glyph row table in
 // the property arena.
@@ -131,7 +131,7 @@ const PLACED_WORDS: u32 = 11u;
 const STATE_WORDS: u32 = 3u;
 const EXTENT: f32 = 8192.0;
 const PI: f32 = 3.14159265358979;
-const CHUNK_QUADS: u32 = 256u;
+const CHUNK_QUADS: u32 = 64u;
 
 // 0: halo and fill in one pass; 1: halo only; 2: fill only (GL JS draws
 // them apart when glyphs overlap). A uniform rather than an override: one

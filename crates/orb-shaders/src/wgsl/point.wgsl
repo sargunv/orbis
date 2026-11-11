@@ -1,6 +1,8 @@
 // Point quads share one position and feature record per instance. Each
-// visible chunk reserves 256 instances; padding exits before shading.
-const CHUNK_POINTS: u32 = 256u;
+// visible chunk reserves 64 instances; padding exits before shading. With
+// 256, padding was a fifth of a dense 3D view's symbol vertex work on the
+// moto g (#180).
+const CHUNK_POINTS: u32 = 64u;
 fn pull_point(node_index: u32, instance: u32, out: ptr<function, Pulled>) -> bool {
     let entry = visible_at(node_cull_at(node_index).visible_base + instance / CHUNK_POINTS);
     let chunk = chunk_at(entry.chunk);

@@ -6,7 +6,7 @@ pub const CHUNK_INDICES: u32 = 768;
 pub const MAX_CHUNK_TRIANGLES: u32 = CHUNK_INDICES / 3;
 
 /// Maximum point instances per chunk.
-pub const MAX_CHUNK_INSTANCES: u32 = 256;
+pub const MAX_CHUNK_INSTANCES: u32 = 64;
 
 /// A rectangle in tile data units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

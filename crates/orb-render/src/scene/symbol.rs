@@ -2,7 +2,7 @@
 //! tables back to back in the vertex arena behind a header, and the state
 //! words placement writes, in the property arena.
 //!
-//! The layout matches `symbol.wgsl`. Chunks are runs of at most 256 quads;
+//! The layout matches `symbol.wgsl`. Chunks are runs of at most 64 quads;
 //! their first index and count are quads, not indices.
 
 use super::Table;
