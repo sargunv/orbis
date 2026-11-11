@@ -253,7 +253,9 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     let error = map.snapshot(64, 64, 1.0).unwrap_err();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        error.message().starts_with("style: "),
+        error
+            .message()
+            .starts_with(&format!("style file://{}: ", path.display())),
         "{}",
         error.message()
     );

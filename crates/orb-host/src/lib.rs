@@ -162,6 +162,20 @@ impl fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
+/// `url` without its credentials, query and fragment, for messages: a
+/// host's logs mustn't carry its users' tokens.
+pub fn redacted_url(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            let host = authority.rsplit('@').next().unwrap_or_default();
+            format!("{scheme}://{host}{path}")
+        }
+        None => url.to_string(),
+    }
+}
+
 /// Validates a finite byte range before starting I/O.
 pub fn range_end(offset: u64, length: u64) -> Result<u64, FetchError> {
     if length == 0 || length > 64 << 20 {

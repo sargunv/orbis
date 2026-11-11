@@ -2759,7 +2759,7 @@ impl Map {
             }
         });
         if let Err(e) = installed {
-            let message = format!("style: {e}");
+            let message = format!("style {}: {e}", orb_host::redacted_url(url));
             self.style_error = Some(message.clone());
             self.fail(message);
         }

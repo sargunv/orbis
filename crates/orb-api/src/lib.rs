@@ -35,7 +35,7 @@ pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
 pub use orb_host::{
     FetchError, NetworkAnswer, NetworkDone, NetworkHook, NetworkRequest, Prior, Request,
-    RequestTransform, ResourceKind,
+    RequestTransform, ResourceKind, redacted_url,
 };
 pub use orb_runtime::{
     CameraState, ClusterQuery, FeatureTarget, FrameReport, FrameTimes, HOST_TILES, Hit, HostTile,

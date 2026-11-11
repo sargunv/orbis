@@ -273,19 +273,6 @@ struct Chain {
     declined: bool,
 }
 
-/// `url` without its credentials, query and fragment, for messages.
-fn redacted(url: &str) -> String {
-    let url = url.split(['?', '#']).next().unwrap_or_default();
-    match url.split_once("://") {
-        Some((scheme, rest)) => {
-            let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-            let host = authority.rsplit('@').next().unwrap_or_default();
-            format!("{scheme}://{host}{path}")
-        }
-        None => url.to_string(),
-    }
-}
-
 impl Chain {
     /// Loads `request` as the library does: transformed, then through
     /// Orbis's network.
@@ -297,7 +284,7 @@ impl Chain {
             .unwrap_or_default()
             .to_ascii_lowercase();
         if !matches!(scheme.as_str(), "http" | "https" | "file") {
-            let url = redacted(&request.url);
+            let url = orb_api::redacted_url(&request.url);
             let message = if self.declined {
                 format!(
                     "the registered resource provider declined {url}, and the library can't load \
@@ -1464,7 +1451,9 @@ mod tests {
     #[test]
     fn redaction_keeps_scheme_host_and_path() {
         assert_eq!(
-            redacted("jar://user:password@archive/packaged/style.json?access_token=secret#token"),
+            orb_api::redacted_url(
+                "jar://user:password@archive/packaged/style.json?access_token=secret#token"
+            ),
             "jar://archive/packaged/style.json"
         );
     }
