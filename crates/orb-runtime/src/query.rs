@@ -227,18 +227,62 @@ struct Bounds {
 const MESH_HEADER: usize = 11;
 const NODE_RECORD: usize = 7;
 
-/// What a node's records carry beyond their dimensions, read per feature
-/// beyond the spec: bits of [`MeshHits`]' header, and a word each, in this
-/// order.
+/// What a node's records carry beyond their dimensions: bits of
+/// [`MeshHits`]' header, and their words, in this order.
 pub(crate) struct HitExtras;
 
 impl HitExtras {
-    /// The feature's translate in pixels at the tile's zoom, as its row
-    /// holds it (`types.wgsl`'s `TRANSLATE_ROW_UNITS`).
+    /// One word: the feature's translate in pixels at the tile's zoom, as
+    /// its row holds it (`types.wgsl`'s `TRANSLATE_ROW_UNITS`), beyond the
+    /// spec.
     pub(crate) const TRANSLATE: u32 = 1;
-    /// A circle's pitch flags, as its row holds them: bit 1 map pitch
-    /// scale, bit 2 map alignment.
+    /// One word: a circle's pitch flags, as its row holds them, beyond the
+    /// spec: bit 1 map pitch scale, bit 2 map alignment.
     pub(crate) const PITCH: u32 = 2;
+    /// Four words: the dimensions at the tile's zoom + 1, where one is
+    /// zoom-and-data, which the draw blends with the tile's zoom's.
+    pub(crate) const NEXT: u32 = 4;
+    /// One word: [`TRANSLATE`](Self::TRANSLATE)'s at the tile's zoom + 1,
+    /// where it is zoom-and-data.
+    pub(crate) const TRANSLATE_NEXT: u32 = 8;
+
+    /// Words a record carries for `extras`.
+    fn words(extras: u32) -> usize {
+        let has = |bit| usize::from(extras & bit != 0);
+        has(Self::TRANSLATE) + has(Self::PITCH) + 4 * has(Self::NEXT) + has(Self::TRANSLATE_NEXT)
+    }
+}
+
+/// A record's extras, unpacked.
+#[derive(Clone, Copy, Debug, Default)]
+struct Extras {
+    translate: Option<[f32; 2]>,
+    pitch: Option<(bool, bool)>,
+    next: Option<[f32; 4]>,
+    translate_next: Option<[f32; 2]>,
+}
+
+impl Extras {
+    /// The words of `extras` ([`HitExtras`]), in their order.
+    fn read(extras: u32, words: &[u32]) -> Self {
+        let mut words = words.iter().copied();
+        let mut take = |bit, n: usize| -> Option<Vec<u32>> {
+            let w: Vec<u32> = (extras & bit != 0)
+                .then(|| words.by_ref().take(n).collect())
+                .unwrap_or_default();
+            (w.len() == n).then_some(w)
+        };
+        let translate = take(HitExtras::TRANSLATE, 1).map(|w| unpack_translate(w[0]));
+        let pitch = take(HitExtras::PITCH, 1).map(|w| (w[0] & 2 != 0, w[0] & 4 != 0));
+        let next = take(HitExtras::NEXT, 4).map(|w| [0, 1, 2, 3].map(|i| f32::from_bits(w[i])));
+        let translate_next = take(HitExtras::TRANSLATE_NEXT, 1).map(|w| unpack_translate(w[0]));
+        Self {
+            translate,
+            pitch,
+            next,
+            translate_next,
+        }
+    }
 }
 
 /// One feature of a [`MeshHits`], unpacked but for its geometry.
@@ -261,10 +305,48 @@ struct FeatureRef<'a> {
     /// A circle's own pitch scale and alignment on the map, where the
     /// node's are per feature.
     pitch: Option<(bool, bool)>,
+    /// Its dimensions and translate at the tile's zoom + 1, where they
+    /// are zoom-and-data.
+    next: Option<[f32; 4]>,
+    translate_next: Option<[f32; 2]>,
     geometry: &'a [u32],
 }
 
 impl FeatureRef<'_> {
+    /// It at `zoom`, on a tile laid out at `tile_zoom`: zoom-and-data
+    /// dimensions and translate blend their values at the tile's zoom and
+    /// the next as the draw does (`draw.wgsl`'s `curve_t`), so a feature
+    /// answers at the size it draws at between whole zooms.
+    fn at_zoom(mut self, paint: &HitPaint, zoom: f64, tile_zoom: f64) -> Self {
+        let t = |p: &Property<f32>| composite_t(p.as_expression(), zoom, tile_zoom);
+        if let Some(next) = self.next {
+            let slots = match paint {
+                HitPaint::Circle { radius, stroke, .. } => [Some(radius), Some(stroke), None, None],
+                HitPaint::Line {
+                    width, gap, offset, ..
+                } => [Some(width), Some(gap), Some(offset), Some(offset)],
+                HitPaint::Extrusion { base, height, .. } => [None, None, Some(height), Some(base)],
+                _ => [None; 4],
+            };
+            let values = [
+                &mut self.radius,
+                &mut self.stroke,
+                &mut self.height,
+                &mut self.base,
+            ];
+            for ((value, next), p) in values.into_iter().zip(next).zip(slots) {
+                *value += (next - *value) * p.map_or(0.0, t);
+            }
+        }
+        if let (Some(a), Some(b), Some((translate, _))) =
+            (self.translate, self.translate_next, paint.translate())
+        {
+            let t = composite_t(translate.as_expression(), zoom, tile_zoom);
+            self.translate = Some([0, 1].map(|i| a[i] + (b[i] - a[i]) * t));
+        }
+        self
+    }
+
     /// The box, in data units, a polygon of it answers within when it
     /// reaches past it: the square and its layer's clip buffer.
     fn clip_box(&self) -> Option<(f64, f64)> {
@@ -319,6 +401,17 @@ fn clip_ring(ring: &[[f64; 2]], lo: f64, hi: f64) -> Vec<DVec2> {
     out.into_iter().map(DVec2::from).collect()
 }
 
+/// How far `zoom` blends a zoom-and-data value's rows at `tile_zoom` and
+/// the next, as `draw.wgsl`'s `curve_t`: 0 at or below the tile's zoom, 1
+/// a zoom above it; 0 for other values, whose rows hold one.
+fn composite_t(e: Option<&orb_expr::PropertyExpression>, zoom: f64, tile_zoom: f64) -> f32 {
+    let Some(e) = e.filter(|e| e.kind() == Kind::Composite) else {
+        return 0.0;
+    };
+    let zoom = zoom.clamp(tile_zoom, tile_zoom + 1.0);
+    (e.interpolation_factor(zoom, tile_zoom, tile_zoom + 1.0)).clamp(0.0, 1.0) as f32
+}
+
 /// A translate row word's pixels (`types.wgsl`'s `TRANSLATE_ROW_UNITS`).
 pub(crate) fn unpack_translate(word: u32) -> [f32; 2] {
     let units = orb_shaders::layout::TRANSLATE_ROW_UNITS as f32;
@@ -347,7 +440,7 @@ impl MeshHits {
 
     /// Words per feature record.
     fn stride(&self) -> usize {
-        NODE_RECORD + self.extras().count_ones() as usize
+        NODE_RECORD + HitExtras::words(self.extras())
     }
 
     /// Adds feature `feature` of its source layer, its record at `at` in
@@ -356,7 +449,8 @@ impl MeshHits {
     /// node's `[radius, stroke, height, base]` of it: a circle's radius
     /// and stroke width; half a line's width, its gap width, and its
     /// offset's size and offset; an extrusion's height and base; and the
-    /// words of the node's extras.
+    /// words of the node's extras. The header's largest and farthest
+    /// cover the values at the tile's zoom + 1 too.
     pub(crate) fn push(
         &mut self,
         geometry: &HitGeometry,
@@ -367,16 +461,18 @@ impl MeshHits {
         extras: &[u32],
     ) {
         debug_assert_eq!(extras.len(), self.stride() - NODE_RECORD);
-        if self.extras() & HitExtras::TRANSLATE != 0 {
-            let [x, y] = unpack_translate(extras[0]);
-            let reach = x.hypot(y).max(self.header(10));
-            self.words[10] = reach.to_bits();
-        }
+        let read = Extras::read(self.extras(), extras);
+        let reach = [read.translate, read.translate_next]
+            .into_iter()
+            .flatten()
+            .fold(self.header(10), |reach, [x, y]| reach.max(x.hypot(y)));
         let w = &mut self.words;
+        w[10] = reach.to_bits();
         w[0] += 1;
-        let [radius, stroke, height, base] = dimensions;
-        for (i, v) in [radius, stroke, height.max(base)].into_iter().enumerate() {
-            w[1 + i] = f32::from_bits(w[1 + i]).max(v).to_bits();
+        for [radius, stroke, height, base] in [Some(dimensions), read.next].into_iter().flatten() {
+            for (i, v) in [radius, stroke, height.max(base)].into_iter().enumerate() {
+                w[1 + i] = f32::from_bits(w[1 + i]).max(v).to_bits();
+            }
         }
         w[4] = geometry.extent;
         if let Ok(record) = geometry.record(at) {
@@ -448,17 +544,12 @@ impl MeshHits {
             None
         };
         let f = |i: usize| f32::from_bits(node[i]);
-        let mut extras = node[NODE_RECORD..].iter();
-        let extra = |bit| self.extras() & bit != 0;
-        let translate = extra(HitExtras::TRANSLATE)
-            .then(|| extras.next().map(|&w| unpack_translate(w)))
-            .flatten();
-        let pitch = extra(HitExtras::PITCH)
-            .then(|| extras.next().map(|&w| (w & 2 != 0, w & 4 != 0)))
-            .flatten();
+        let extras = Extras::read(self.extras(), &node[NODE_RECORD..]);
         Ok(FeatureRef {
-            translate,
-            pitch,
+            translate: extras.translate,
+            pitch: extras.pitch,
+            next: extras.next,
+            translate_next: extras.translate_next,
             bounds,
             id,
             feature: node[1],
@@ -621,6 +712,8 @@ pub(crate) type Meshes = Vec<(u32, Arc<MeshHits>)>;
 #[derive(Clone, Debug)]
 pub(crate) struct TileHits {
     pub(crate) mapping: TileMapping,
+    /// The style zoom it laid out at.
+    pub(crate) zoom: f64,
     /// Per node key, its features.
     pub(crate) meshes: Meshes,
 }
@@ -1413,7 +1506,7 @@ impl Scene<'_> {
                                 layer,
                                 drawn,
                                 copy,
-                                mapping: &tile.mapping,
+                                tile,
                                 mesh,
                                 record: b.record,
                                 at,
@@ -1450,12 +1543,12 @@ impl Scene<'_> {
                 layer,
                 drawn,
                 copy,
-                mapping,
+                tile,
                 mesh,
                 record,
                 at,
             } => {
-                let f = mesh.feature(record).ok()?;
+                let f = (mesh.feature(record).ok()?).at_zoom(&layer.paint, q.zoom, tile.zoom);
                 if !f.meets_square() {
                     return None;
                 }
@@ -1474,7 +1567,7 @@ impl Scene<'_> {
                 // `extrusion_drawn`).
                 let screen = ScreenHit::project(
                     &f,
-                    mapping,
+                    &tile.mapping,
                     copy,
                     q,
                     self.period,
@@ -1653,7 +1746,7 @@ enum Candidate<'a> {
         layer: &'a HitLayer,
         drawn: &'a DrawnTile,
         copy: &'a DrawnCopy,
-        mapping: &'a TileMapping,
+        tile: &'a TileHits,
         mesh: &'a MeshHits,
         record: u32,
         at: LayerAt,
@@ -2297,6 +2390,7 @@ impl crate::Map {
             .collect();
         (!meshes.is_empty()).then(|| TileHits {
             mapping: TileMapping::of(&endpoint.tms, tile, resident.series.as_ref()),
+            zoom: resident.zoom,
             meshes,
         })
     }
@@ -2477,5 +2571,41 @@ mod tests {
         assert_eq!(copy.decode(), decoded);
         copy.words.truncate(MESH_HEADER + NODE_RECORD + 3);
         assert_eq!(copy.decode().len(), 1, "a malformed record is skipped");
+    }
+
+    /// Records of zoom-and-data sizes carry the next zoom's, which bound
+    /// the mesh too and blend by the query's zoom as the draw's rows do.
+    #[test]
+    fn next_zoom_sizes_bound_and_blend() {
+        let mut b = orb_tile::LayerBuilder::new("l", 4096);
+        b.begin_feature(None, orb_tile::GeometryType::Point);
+        b.begin_part();
+        b.begin_ring();
+        b.push_vertex([1, 2]);
+        let layer = b.finish();
+        let mut geometry = HitGeometry::default();
+        let point = geometry.add(&layer, 0, None, true);
+        let extras = HitExtras::TRANSLATE | HitExtras::NEXT | HitExtras::TRANSLATE_NEXT;
+        let mut hits = MeshHits::new(0, extras);
+        let units = orb_shaders::layout::TRANSLATE_ROW_UNITS as f32;
+        let translate = |x: f32| u32::from((x * units) as i16 as u16);
+        let next = [20.0f32, 6.0, 0.0, 0.0].map(f32::to_bits);
+        let words = [&[translate(1.0)][..], &next, &[translate(3.0)]].concat();
+        hits.push(&geometry, point, 0, 2, [4.0, 2.0, 0.0, 0.0], &words);
+        hits.link(&[Arc::new(geometry)]);
+        assert_eq!((hits.header(1), hits.header(2)), (20.0, 6.0));
+        assert_eq!(hits.header(10), 3.0);
+        let style = r#"{"version": 8, "sources": {}, "layers": [{"id": "c", "type": "circle",
+            "source": "s", "paint": {
+              "circle-radius": ["interpolate", ["linear"], ["zoom"], 14, ["get", "a"], 15, ["get", "b"]],
+              "circle-translate": [1, 0]}}]}"#;
+        let style = orb_style::v8::parse(style).unwrap();
+        let paint = HitPaint::of(&style.layers[0]);
+        let (_, f) = hits.features().next().unwrap();
+        let f = f.at_zoom(&paint, 14.25, 14.0);
+        // The radius blends; the stroke and translate, not zoom-and-data,
+        // keep the tile's zoom's.
+        assert_eq!((f.radius, f.stroke), (8.0, 2.0));
+        assert_eq!(f.translate, Some([1.0, 0.0]));
     }
 }

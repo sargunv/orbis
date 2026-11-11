@@ -449,3 +449,62 @@ fn tilted_labels_pick_across_their_width_at_any_bearing() {
         );
     }
 }
+
+/// Zoom-and-data sizes pick at the size they draw at between whole zooms,
+/// below and above a GeoJSON source's maxzoom, as MapLibre Native's
+/// `Query.QueryRenderedFeaturesCompositePaintZoom` (maplibre-native#4703)
+/// asks: the size is 22 pixels at the camera's zoom and 4 at the tile's.
+#[test]
+fn composite_sizes_pick_at_the_cameras_zoom() {
+    // (property, pixels below the feature that pick, and that don't)
+    let cases = [
+        ("line-width", 8.0, 14.0),
+        ("line-gap-width", 14.0, 20.0),
+        ("circle-radius", 15.0, 26.0),
+        ("circle-stroke-width", 24.0, 32.0),
+    ];
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    for zoom in [16.5f64, 20.5] {
+        for (property, inside, outside) in cases {
+            let trace = format!("{property} at zoom {zoom}");
+            let circle = property.starts_with("circle-");
+            let geometry = if circle {
+                r#"{"type": "Point", "coordinates": [1.003, 1]}"#
+            } else {
+                r#"{"type": "LineString", "coordinates": [[0.993, 1], [1.013, 1]]}"#
+            };
+            let paint = match property {
+                "circle-stroke-width" => r#""circle-radius": 6,"#,
+                "line-gap-width" => r#""line-width": 6,"#,
+                _ => "",
+            };
+            let (lower, upper) = (zoom.floor(), zoom.floor() + 1.0);
+            let style = format!(
+                r#"{{"version": 8, "center": [1.003, 1], "zoom": {zoom},
+                "sources": {{"s": {{"type": "geojson", "data": {{"type": "Feature",
+                    "properties": {{"small": 4, "large": 40}}, "geometry": {geometry}}}}}}},
+                "layers": [{{"id": "l", "type": "{}", "source": "s", "paint": {{{paint}
+                    "{property}": ["interpolate", ["linear"], ["zoom"],
+                        {lower}, ["get", "small"], {upper}, ["get", "large"]]}}}}]}}"#,
+                if circle { "circle" } else { "line" },
+            );
+            let mut target = Target::texture(&runtime, 256, 256, 1.0);
+            let mut map = Map::new(&runtime, MapOptions::default());
+            map.set_style_json(&style).unwrap();
+            common::settle(&mut map, &mut target);
+            let centre = map
+                .project(orb_api::Geodetic::new(1.003, 1.0))
+                .expect("the feature in view");
+            let pixels = target.read_pixels().unwrap();
+            let alpha = |p: DVec2| pixels[4 * (p.y as usize * 256 + p.x as usize) + 3];
+            let (inside, outside) = (
+                centre + DVec2::new(0.0, inside),
+                centre + DVec2::new(0.0, outside),
+            );
+            assert!(alpha(inside) > 0, "{trace}: drawn");
+            assert_eq!(alpha(outside), 0, "{trace}: not drawn");
+            assert!(map.hit_test(inside).is_some(), "{trace}: picks");
+            assert!(map.hit_test(outside).is_none(), "{trace}: doesn't pick");
+        }
+    }
+}

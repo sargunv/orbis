@@ -1185,14 +1185,8 @@ impl NodeLayout<'_> {
                 map(orb_style::CIRCLE_PITCH_ALIGNMENT),
             )
         });
-        let extras = if translate.is_some() {
-            HitExtras::TRANSLATE
-        } else {
-            0
-        } | if pitch.is_some() { HitExtras::PITCH } else { 0 };
-        let mut hits = crate::query::MeshHits::new(hit_layer as u32, extras);
         // What a hit test reads of each feature's paint.
-        let dimensions: &[_] = match style_layer.ty {
+        let keys: &[_] = match style_layer.ty {
             LayerType::Circle => &[orb_style::CIRCLE_RADIUS, orb_style::CIRCLE_STROKE_WIDTH],
             LayerType::Heatmap => &[orb_style::HEATMAP_RADIUS],
             LayerType::Line => &[
@@ -1203,9 +1197,25 @@ impl NodeLayout<'_> {
             LayerType::FillExtrusion => &[orb_style::EXTRUSION_HEIGHT, orb_style::EXTRUSION_BASE],
             _ => &[],
         };
-        let dimensions: Vec<_> = (dimensions.iter())
+        let dimensions: Vec<_> = (keys.iter())
             .map(|&key| style_layer.get(key).bind(layer))
             .collect();
+        // Zoom-and-data values record the tile's zoom + 1's too, which the
+        // draw blends towards.
+        let composite = |kind| kind == Kind::Composite;
+        let next = keys
+            .iter()
+            .any(|&key| composite(style_layer.get(key).kind()));
+        let translate_next = translate.is_some()
+            && plan
+                .translate(node)
+                .is_some_and(|(t, _)| composite(t.kind()));
+        let bit = |on, bit| if on { bit } else { 0 };
+        let extras = bit(translate.is_some(), HitExtras::TRANSLATE)
+            | bit(pitch.is_some(), HitExtras::PITCH)
+            | bit(next, HitExtras::NEXT)
+            | bit(translate_next, HitExtras::TRANSLATE_NEXT);
+        let mut hits = crate::query::MeshHits::new(hit_layer as u32, extras);
         for &f in features.iter().filter(|_| kind.is_some()) {
             let i = f as usize;
             let shape = layer.geometry_type(i);
@@ -1223,22 +1233,29 @@ impl NodeLayout<'_> {
             let id = tile_promote
                 .unwrap_or(tile_layer.ids())
                 .get(feature as usize);
-            let at = |d: usize| dimensions[d].evaluate(zoom, i);
-            let dimensions = match style_layer.ty {
-                LayerType::Circle => [at(0), at(1), 0.0, 0.0],
-                LayerType::Heatmap => [at(0), 0.0, 0.0, 0.0],
-                LayerType::Line => {
-                    let offset = at(2);
-                    [at(0) / 2.0, at(1), offset.abs(), offset]
+            let dimensions_at = |zoom| {
+                let at = |d: usize| dimensions[d].evaluate(zoom, i);
+                match style_layer.ty {
+                    LayerType::Circle => [at(0), at(1), 0.0, 0.0],
+                    LayerType::Heatmap => [at(0), 0.0, 0.0, 0.0],
+                    LayerType::Line => {
+                        let offset = at(2);
+                        [at(0) / 2.0, at(1), offset.abs(), offset]
+                    }
+                    LayerType::FillExtrusion => [0.0, 0.0, at(0), at(1)],
+                    _ => [0.0; 4],
                 }
-                LayerType::FillExtrusion => [0.0, 0.0, at(0), at(1)],
-                _ => [0.0; 4],
             };
             let parts = kind != crate::query::LABEL;
             let record = geometry.add(tile_layer, feature, id, parts);
+            // The extras' words, in `HitExtras`' order.
             let mut words = Vec::new();
-            if let Some(translate) = &translate {
-                words.push(pack_translate(translate.evaluate(zoom, i)).0);
+            let translate_at = |zoom| {
+                let translate = translate.as_ref().expect("a translated node");
+                pack_translate(translate.evaluate(zoom, i)).0
+            };
+            if translate.is_some() {
+                words.push(translate_at(zoom));
             }
             if let Some((scale, alignment)) = &pitch {
                 let map = |p: &orb_style::BoundProperty<'_, TranslateAnchor>| {
@@ -1246,7 +1263,13 @@ impl NodeLayout<'_> {
                 };
                 words.push(map(scale) << 1 | map(alignment) << 2);
             }
-            hits.push(geometry, record, feature, kind, dimensions, &words);
+            if next {
+                words.extend(dimensions_at(zoom + 1.0).map(f32::to_bits));
+            }
+            if translate_next {
+                words.push(translate_at(zoom + 1.0));
+            }
+            hits.push(geometry, record, feature, kind, dimensions_at(zoom), &words);
         }
         hits
     }
