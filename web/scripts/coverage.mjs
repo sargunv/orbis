@@ -5,9 +5,9 @@
 //
 //   cargo xtask web --names
 //   pnpm coverage [--scenes=liberty,paris,globe,terrain,raster,tokyo,
-//     tokyo-mlt,protomaps,versatiles,app,app-tokyo,app-offline,chicago,
-//     nepal,norway,sanfrancisco,uruguay] [--tour] [--out=<dir>] [--reuse]
-//     [--write]
+//     tokyo-mlt,protomaps,versatiles,world,world-warm,berlin,app,app-tokyo,
+//     app-offline,chicago,nepal,norway,sanfrancisco,uruguay] [--tour]
+//     [--out=<dir>] [--reuse] [--write]
 //
 // The last five are MapLibre Native's real-world render tests, offline
 // from the render-test cache `cargo xtask h2h` checks out, when it has.
@@ -17,7 +17,8 @@
 // --instrument` adds a first-call stamp to each function of it, and each
 // scene loads demo/load.html in headless Chromium with that module in
 // place of core.wasm, once to its first idle (so the map's style, tiles,
-// layout, placement and first frames ran, in the page and every worker);
+// layout, placement and first frames ran, in the page and every worker;
+// a warm scene loads again from the HTTP cache, and that load is profiled);
 // with `--tour`, through load.js's gesture tour after that too (pan, zoom,
 // turn and tilt, until idle again), then a user's first drags, wheel
 // zooms, double click and keys. Every instance then writes its profile,
@@ -83,6 +84,12 @@ const SCENES = {
   // Other schemas and styles than OpenFreeMap's.
   protomaps: { style: "protomaps-light", at: VIEWS.liberty.ams13 },
   versatiles: { style: "versatiles-colorful", at: VIEWS.liberty.ams13 },
+  // The flat world whole at zoom 0, its copies beside it, loaded cold and
+  // warm, and labels in a script whose case maps one letter to several
+  // (Berlin's `ß`).
+  world: { style: "liberty", at: "0,0,0,0,0" },
+  "world-warm": { style: "liberty", at: "0,0,0,0,0", warm: true },
+  berlin: { style: "liberty", at: "13.405,52.52,13,0,0" },
 };
 // The map app itself, as the site opens it (its default entry, the Globe)
 // and on the Tokyo extract: its panels and options call into the map
@@ -442,29 +449,40 @@ async function run() {
         const page = await context.newPage();
         const evaluate = await sessions(context, page);
         if (SCENES[scene].offline) await failOffServer(page, server);
-        await page.goto(url(scene, server));
         const app = SCENES[scene].app !== undefined;
-        if (app) {
-          await page.waitForFunction(
-            () =>
-              ["idle", "error"].includes(
-                document.getElementById("app")?.dataset.map,
-              ),
-            null,
-            { timeout: 120_000 },
-          );
-          const state = await page.evaluate(
-            () => document.getElementById("app").dataset.map,
-          );
-          if (state !== "idle") throw new Error(`${scene}: ${state}`);
-        } else {
-          await page.waitForFunction(
-            () => /^(done|error)/.test(document.title),
-            null,
-            { timeout: 120_000 },
-          );
-          const title = await page.title();
-          if (!title.startsWith("done")) throw new Error(`${scene}: ${title}`);
+        const loaded = async () => {
+          if (app) {
+            await page.waitForFunction(
+              () =>
+                ["idle", "error"].includes(
+                  document.getElementById("app")?.dataset.map,
+                ),
+              null,
+              { timeout: 120_000 },
+            );
+            const state = await page.evaluate(
+              () => document.getElementById("app").dataset.map,
+            );
+            if (state !== "idle") throw new Error(`${scene}: ${state}`);
+          } else {
+            await page.waitForFunction(
+              () => /^(done|error)/.test(document.title),
+              null,
+              { timeout: 120_000 },
+            );
+            const title = await page.title();
+            if (!title.startsWith("done"))
+              throw new Error(`${scene}: ${title}`);
+          }
+        };
+        await page.goto(url(scene, server));
+        await loaded();
+        // A warm scene is profiled loading again, from the HTTP cache: its
+        // tiles arrive at once, which takes paths a cold load's pace
+        // doesn't (a returning visitor's).
+        if (SCENES[scene].warm) {
+          await page.reload();
+          await loaded();
         }
         if (tour) {
           // The app has no scripted tour; a user's input stands in.
@@ -592,14 +610,6 @@ if (scenes.length > 1) {
   );
 }
 
-// Code a scene runs or not by how much data it has rather than by which
-// features it uses: sorts' merge paths, hash tables', vectors' and
-// trees' growth, number formatting and parsing, the allocator's rarer
-// paths. What no scene ran of these stays in core.wasm, so a bigger tile
-// or style doesn't wait on core-deferred.wasm.
-const DATA_DEPENDENT =
-  /^<*(core(\[[0-9a-f]+\])?::(slice::sort|num|fmt::float|fmt::num|str::pattern)::|alloc(\[[0-9a-f]+\])?::(raw_vec|collections)::|(hashbrown|dlmalloc|compiler_builtins)(\[[0-9a-f]+\])?::)/;
-
 // web/deferred.txt, the functions `cargo xtask web` moves into
 // core-deferred.wasm: what it lists that ran here would load that module
 // before the scene's first idle. `--write` rewrites it from what no scene
@@ -637,10 +647,7 @@ const DATA_DEPENDENT =
     // What runs can turn on timing (which pipelines a frame prepares
     // together): what any run saw run stays, so runs only add to it.
     for (const [i, k] of keys.entries()) if (k && anyRan(i)) seen.add(k);
-    const keep = new Set(seen);
-    for (const [i, k] of keys.entries())
-      if (k && DATA_DEPENDENT.test(funcs[i].name)) keep.add(k);
-    const deferred = [...new Set(keys.filter((k) => k && !keep.has(k)))];
+    const deferred = [...new Set(keys.filter((k) => k && !seen.has(k)))];
     writeFileSync(
       DEFERRED,
       [
