@@ -15,10 +15,11 @@
 //! written in place before the frames that draw it where its words changed
 //! since its last turn. The CPU keeps no copy of the words: a turn makes
 //! them again from what the candidates' rows and bits say each slot holds,
-//! hiding every word no drawn slot covers. Bundles record
-//! those draws, so the renderer records them again when a node's arguments
-//! or the copy they read change. A test holds all of it to the GPU's cull
-//! over the same scene and frames (`Renderer::check_driver`).
+//! and hides the words no row speaks for (free ones, which on the GPU keep
+//! whatever was there). Bundles record those draws, so the renderer
+//! records them again when a node's arguments or the copy they read
+//! change. A test holds all of it to the GPU's cull over the same scene and
+//! frames (`Renderer::check_driver`).
 //!
 //! A commit that changes this file says why in its body: it is the one
 //! piece of logic the two drivers have twice.
