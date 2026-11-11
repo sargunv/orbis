@@ -8,7 +8,7 @@ use crate::v8::{Diagnostic, Diagnostics};
 use orb_expr::json::{Json, JsonValue, Member, Span};
 
 use crate::v8::diff;
-use crate::v8::tx::{FeatureTarget, Op, Transaction};
+use crate::v8::tx::{Op, Transaction};
 
 #[derive(Clone, Debug)]
 pub(crate) struct LayerEntry {
@@ -55,6 +55,41 @@ pub(crate) struct Draft {
     pub(crate) new_root: bool,
     pub(crate) feature_state: Vec<FeatureStateOp>,
     next_key: u32,
+}
+
+/// A feature-state op resolved against `sources`.
+fn feature_state_op(sources: &[SourceEntry], op: &Op) -> Result<FeatureStateOp, String> {
+    let (Op::SetFeatureState { target, .. } | Op::RemoveFeatureState { target, .. }) = op else {
+        unreachable!("not a feature-state op: {op:?}");
+    };
+    let source = (sources.iter())
+        .find(|s| s.id == target.source)
+        .ok_or_else(|| format!("the source \"{}\" does not exist", target.source))?;
+    let vector = source.json.get("type").and_then(Json::as_str) == Some("vector");
+    if vector && target.source_layer.is_none() {
+        return Err("the sourceLayer parameter must be provided for vector source types".into());
+    }
+    let (source, source_layer) = (source.key, target.source_layer.clone());
+    Ok(match op {
+        Op::SetFeatureState { state, .. } => FeatureStateOp::Set {
+            source,
+            source_layer,
+            id: target.id.clone().ok_or("the feature id is required")?,
+            state: state.clone(),
+        },
+        Op::RemoveFeatureState { key, .. } => {
+            if key.is_some() && target.id.is_none() {
+                return Err("a state key can only be removed from one feature".into());
+            }
+            FeatureStateOp::Remove {
+                source,
+                source_layer,
+                id: target.id.clone(),
+                key: key.clone(),
+            }
+        }
+        _ => unreachable!(),
+    })
 }
 
 pub(crate) fn error(message: impl Into<String>) -> Diagnostics {
@@ -278,6 +313,19 @@ impl StyleDoc {
     /// Applies a transaction: every edit or, on the first error, none.
     /// Returns what changed, classified for the renderer.
     pub fn apply(&mut self, tx: &Transaction) -> Result<Patch, Diagnostics> {
+        // State edits change no snapshot: resolve them without a draft,
+        // whose copy of every source and layer entry a burst of per-feature
+        // calls would pay each time.
+        if tx.only_feature_state() {
+            let feature_state = (tx.ops.iter())
+                .map(|op| feature_state_op(&self.sources, op).map_err(error))
+                .collect::<Result<_, _>>()?;
+            return Ok(Patch {
+                version: self.version,
+                feature_state,
+                ..Patch::default()
+            });
+        }
         let mut draft = Draft {
             root: Arc::clone(&self.root),
             sources: self.sources.clone(),
@@ -292,13 +340,6 @@ impl StyleDoc {
         };
         for op in &tx.ops {
             draft.apply(op).map_err(error)?;
-        }
-        if tx.only_feature_state() {
-            return Ok(Patch {
-                version: self.version,
-                feature_state: draft.feature_state,
-                ..Patch::default()
-            });
         }
         let (style, mut patch) = diff::diff(self, &draft)?;
         self.version += 1;
@@ -385,20 +426,6 @@ impl Draft {
             let object = (!properties.is_empty()).then(|| synthetic(JsonValue::Object(properties)));
             set_member(members, section, object);
         })
-    }
-
-    fn feature_target(
-        &self,
-        target: &FeatureTarget,
-    ) -> Result<(crate::v8::SourceKey, Option<String>), String> {
-        let source = self.source(&target.source)?;
-        let vector = source.json.get("type").and_then(Json::as_str) == Some("vector");
-        if vector && target.source_layer.is_none() {
-            return Err(
-                "the sourceLayer parameter must be provided for vector source types".into(),
-            );
-        }
-        Ok((source.key, target.source_layer.clone()))
     }
 
     pub(crate) fn apply(&mut self, op: &Op) -> Result<(), String> {
@@ -541,27 +568,9 @@ impl Draft {
                 }
                 Ok(())
             }
-            Op::SetFeatureState { target, state } => {
-                let (source, source_layer) = self.feature_target(target)?;
-                self.feature_state.push(FeatureStateOp::Set {
-                    source,
-                    source_layer,
-                    id: target.id.clone().ok_or("the feature id is required")?,
-                    state: state.clone(),
-                });
-                Ok(())
-            }
-            Op::RemoveFeatureState { target, key } => {
-                let (source, source_layer) = self.feature_target(target)?;
-                if key.is_some() && target.id.is_none() {
-                    return Err("a state key can only be removed from one feature".into());
-                }
-                self.feature_state.push(FeatureStateOp::Remove {
-                    source,
-                    source_layer,
-                    id: target.id.clone(),
-                    key: key.clone(),
-                });
+            Op::SetFeatureState { .. } | Op::RemoveFeatureState { .. } => {
+                let op = feature_state_op(&self.sources, op)?;
+                self.feature_state.push(op);
                 Ok(())
             }
             Op::SetStyle { style } => self.replace(style),
