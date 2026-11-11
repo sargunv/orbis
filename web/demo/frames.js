@@ -39,6 +39,8 @@ const BUILDINGS_3D = {
   },
 };
 const LOAD_TIMEOUT = 120_000;
+/** How long without a frame `settle` takes to mean none is due. */
+const QUIET_MS = 250;
 
 /** The median, p90 and mean of `xs`, or null without any. */
 function summary(xs) {
@@ -65,6 +67,42 @@ function idle(map, label) {
       resolve();
     });
   });
+}
+
+/**
+ * Waits until no Orbis frame is drawing or due: `QUIET_MS` without one
+ * after a repaint, with no pipeline compiling. At rest the map compiles
+ * the style's other pipelines ahead of need and wakes for a frame as each
+ * arrives (on a phone, through the first view's rounds). A frame drawn
+ * before a repaint asked for one answers it, every later repaint then
+ * takes its predecessor's frame, and the submissions, one per frame,
+ * miscount the repaints by one.
+ */
+async function settle(map, repaint) {
+  const until = performance.now() + LOAD_TIMEOUT;
+  for (;;) {
+    let last = await repaint();
+    await new Promise((resolve) => {
+      let timer;
+      const quiet = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          map.off("render", drawn);
+          resolve();
+        }, QUIET_MS);
+      };
+      const drawn = (stats) => {
+        last = stats;
+        quiet();
+      };
+      map.on("render", drawn);
+      quiet();
+    });
+    if (last.pipelinesPending === 0) return;
+    if (performance.now() > until) {
+      throw new Error(`still compiling after ${LOAD_TIMEOUT / 1000} s`);
+    }
+  }
 }
 
 /** Whether a style draws as it is at a view that asks for 3D buildings: one with extrusions of its own (the Globe entry's), or without OpenMapTiles' buildings. */
@@ -139,16 +177,16 @@ async function orbisEngine(
     async measure(counts, show) {
       const s = { gpu: [], cull: [], main: [], extrusion: [], submit: [] };
       let stats = null;
+      const repaint = async () => {
+        const drawn = map.once("render");
+        map.triggerRepaint();
+        return (stats = await drawn);
+      };
       map.setGpuTiming(true);
-      const timed = await repaints(
-        async () => {
-          const drawn = map.once("render");
-          map.triggerRepaint();
-          return (stats = await drawn);
-        },
-        counts,
-        show,
-      );
+      await settle(map, repaint);
+      // What timing caught while settling.
+      await map.gpuTimings();
+      const timed = await repaints(repaint, counts, show);
       // A backend without timestamp queries gives no submissions.
       const submissions = await map.gpuTimings();
       map.setGpuTiming(false);
