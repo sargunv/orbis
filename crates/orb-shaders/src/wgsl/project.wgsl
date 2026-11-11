@@ -436,7 +436,14 @@ fn ground_clip_3d(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
 // z are nearly equal there, and subtracting them in f32 would leave a
 // relative error of up to 10^-5, enough for coplanar faces to fight.
 fn ground_clip_reversed(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
-    var clip = ground_clip_3d(g, offset, z);
+    return ground_clip_reversed_hiding(g, offset, z, true);
+}
+
+// `ground_clip_reversed`, where what the sphere hides goes past the far
+// plane only if `hide`: content that hides behind a whole globe per
+// fragment (`sphere_whole`) keeps its own depth.
+fn ground_clip_reversed_hiding(g: Ground, offset: vec2<f32>, z: f32, hide: bool) -> vec4<f32> {
+    var clip = ground_clip_hiding(g, offset, z, true, hide);
     clip.z = select(clip.w - clip.z, plane_depth(g.flat + offset, z), !on_globe());
     return clip;
 }
@@ -468,6 +475,18 @@ fn ground_mask_clip(p: vec2<f32>) -> vec4<f32> {
 }
 
 fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<f32> {
+    return ground_clip_hiding(g, offset, z, solid, solid);
+}
+
+// A whole globe, not handing over to the plane: 3D content can hide
+// behind its sphere per fragment.
+fn sphere_whole() -> bool {
+    return on_globe() && frame.globe_plane == 0u && frame.globe_amount >= 1.0;
+}
+
+// `ground_clip_depth`; a solid point the sphere hides goes past the far
+// plane only if `hide`.
+fn ground_clip_hiding(g: Ground, offset: vec2<f32>, z: f32, solid: bool, hide: bool) -> vec4<f32> {
     let flat = frame.view_proj * vec4<f32>(g.flat + offset, z, 1.0);
     if !on_globe() {
         return flat;
@@ -504,7 +523,7 @@ fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<
         // after the 3D passes reverse the depth, so a triangle the sphere
         // partly hides (a skirt hanging into it) runs away from the eye
         // there rather than in front of the surface.
-        if sphere_hides(p, true) {
+        if hide && sphere_hides(p, true) {
             clip.z = 2.0 * clip.w;
         }
         if !g.on_plane {

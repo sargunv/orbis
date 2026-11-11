@@ -81,45 +81,64 @@ struct ExtrusionOut {
     // A wall's share of its light that is ambient, which its ambient
     // occlusion dims (`light_ambient_share`).
     @location(8) @interpolate(flat) ambient: f32,
+    // On a whole globe (`sphere_whole`), the point's direction from the
+    // sphere's centre (camera-relative globe space plus the target) and
+    // its distance from it: between vertices, the point on the building
+    // the mesh's chord stands for, which the sphere hides or not per
+    // fragment. Whether the building is drawn whole, past its clip.
+    @location(9) sphere: vec4<f32>,
+    @location(10) @interpolate(flat) whole: u32,
 };
 // Extrusions draw in two pipelines: whole buildings, and buildings cut at
 // the source's buffer, clipped per fragment to the placement. Only the
 // second discards, which would turn off the GPU's hidden-surface removal
-// for every building it drew: a quarter of a dense 3D frame.
+// for every building it drew: a quarter of a dense 3D frame. On a whole
+// globe the second draws them all, hidden behind the sphere per fragment.
 @vertex
 fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
-    return extrusion_part(index, 1u << EXTRUSION_WHOLE);
+    return extrusion_part(index, select(1u << EXTRUSION_WHOLE, 0u, sphere_whole()));
 }
 // Every cut building, clipped per fragment: where clip distances aren't.
 @vertex
 fn vs_extrusion_cut(@builtin(vertex_index) index: u32) -> ExtrusionOut {
-    return extrusion_part(index, (1u << EXTRUSION_CUT) | (1u << EXTRUSION_CUT_SPLIT));
+    return extrusion_part(index, select((1u << EXTRUSION_CUT) | (1u << EXTRUSION_CUT_SPLIT), EXTRUSION_ALL, sphere_whole()));
 }
 // Where they are (`CLIP_PLANES`): cut buildings of a placement with one clip
 // rectangle, clipped by its four planes, which needs no discard...
 @vertex
 fn vs_extrusion_cut_planes(@builtin(vertex_index) index: u32) -> ExtrusionOut {
-    return extrusion_part(index, 1u << EXTRUSION_CUT);
+    return extrusion_part(index, select(1u << EXTRUSION_CUT, 0u, sphere_whole()));
 }
 // ...and those of a placement with several, clipped per fragment.
 @vertex
 fn vs_extrusion_cut_split(@builtin(vertex_index) index: u32) -> ExtrusionOut {
-    return extrusion_part(index, 1u << EXTRUSION_CUT_SPLIT);
+    return extrusion_part(index, select(1u << EXTRUSION_CUT_SPLIT, EXTRUSION_ALL, sphere_whole()));
 }
 const EXTRUSION_WHOLE: u32 = 1u;
 const EXTRUSION_CUT: u32 = 2u;
 const EXTRUSION_CUT_SPLIT: u32 = 3u;
+const EXTRUSION_ALL: u32 = 14u;
 // Vertex `index` if its building is drawn here as one of `parts` (bits).
 fn extrusion_part(index: u32, parts: u32) -> ExtrusionOut {
     var v: Pulled;
-    if !pull_indexed(node.index, index, 4u, &v) || (parts & (1u << extrusion_drawn(v))) == 0u {
+    let drawn = extrusion_drawn_pulled(index, &v);
+    if (parts & (1u << drawn)) == 0u {
         var out: ExtrusionOut;
         out.position = discarded_vertex();
         return out;
     }
     var out = extrusion_vertex(v);
+    out.whole = u32(drawn == EXTRUSION_WHOLE);
     //planes out.clip = extrusion_planes(tile_at(v.tile), out.tile_pos);
     return out;
+}
+// How vertex `index`'s building draws (`extrusion_drawn`), 0 for none,
+// with the vertex pulled into `v`.
+fn extrusion_drawn_pulled(index: u32, v: ptr<function, Pulled>) -> u32 {
+    if !pull_indexed(node.index, index, 4u, v) {
+        return 0u;
+    }
+    return extrusion_drawn(*v);
 }
 // The distances inside a placement's one clip rectangle from position `p`,
 // for clip planes: both bounds count, as `extrusion_inside`'s do.
@@ -273,7 +292,12 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let shift = translate_world(px, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     let lit_normal = light_normal(normal, ground);
-    out.position = ground_clip_reversed(ground, vec2<f32>(0.0), elevation * frame.extrusion_scale);
+    let whole_globe = sphere_whole();
+    out.position = ground_clip_reversed_hiding(ground, vec2<f32>(0.0), elevation * frame.extrusion_scale, !whole_globe);
+    if whole_globe {
+        let center = ground.globe + frame.globe_target;
+        out.sphere = vec4<f32>(center, length(center) + elevation * frame.extrusion_scale * frame.globe_metres);
+    }
     out.position.z *= extrusion_depth_scale(gradient_height, feature);
     out.tile_pos = pos;
     out.tile = v.tile;
