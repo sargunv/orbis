@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use rustc_hash::FxHashMap;
 
 use crate::{Bitmap, Column, ColumnData, GeometryType, Layer, Value, ValueRef};
@@ -333,7 +335,7 @@ fn borrowed(values: &[(u32, Value)]) -> Vec<(u32, ValueRef<'_>)> {
 /// without hashing keys or copying values, and typed once the layer is
 /// done, as [`LayerBuilder::set_property`]'s columns are.
 pub(crate) struct CodedColumns<'a> {
-    keys: &'a [&'a str],
+    keys: &'a [Cow<'a, str>],
     values: &'a [Value],
     /// Per key, the first key equal to it: a layer may name a key twice.
     key_of: Vec<u32>,
@@ -342,10 +344,10 @@ pub(crate) struct CodedColumns<'a> {
 }
 
 impl<'a> CodedColumns<'a> {
-    pub(crate) fn new(keys: &'a [&'a str], values: &'a [Value]) -> Self {
+    pub(crate) fn new(keys: &'a [Cow<'a, str>], values: &'a [Value]) -> Self {
         let mut first: FxHashMap<&str, u32> = FxHashMap::default();
         let key_of = (keys.iter().enumerate())
-            .map(|(i, k)| *first.entry(k).or_insert(len_u32(i)))
+            .map(|(i, k)| *first.entry(&**k).or_insert(len_u32(i)))
             .collect();
         Self {
             keys,

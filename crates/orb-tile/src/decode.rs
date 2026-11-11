@@ -6,7 +6,6 @@ pub enum DecodeError {
     UnexpectedEnd,
     InvalidVarint,
     InvalidProtobuf(&'static str),
-    InvalidUtf8(std::str::Utf8Error),
     MissingField(&'static str),
     UnsupportedVersion(u32),
     InvalidValue(&'static str),
@@ -23,7 +22,6 @@ impl fmt::Display for DecodeError {
             Self::UnexpectedEnd => f.write_str("unexpected end of tile"),
             Self::InvalidVarint => f.write_str("invalid protobuf varint"),
             Self::InvalidProtobuf(reason) => write!(f, "invalid protobuf: {reason}"),
-            Self::InvalidUtf8(error) => write!(f, "invalid tile string: {error}"),
             Self::MissingField(field) => write!(f, "missing required field: {field}"),
             Self::UnsupportedVersion(version) => write!(f, "unsupported MVT version: {version}"),
             Self::InvalidValue(reason) => write!(f, "invalid tile value: {reason}"),
@@ -41,7 +39,6 @@ impl fmt::Display for DecodeError {
 impl Error for DecodeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidUtf8(error) => Some(error),
             Self::Mlt(error) => Some(error),
             _ => None,
         }

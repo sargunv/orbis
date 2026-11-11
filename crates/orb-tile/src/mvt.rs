@@ -1,5 +1,7 @@
 //! Mapbox Vector Tile 2.1 decoding from uncompressed protobuf bytes.
 
+use std::borrow::Cow;
+
 use crate::builder::CodedColumns;
 use crate::decode::{finish_layer_with, signed_area};
 use crate::{DecodeError, GeometryType, Layer, LayerBuilder, TileFrame, Value};
@@ -38,8 +40,8 @@ fn layer(bytes: &[u8]) -> Result<Layer, DecodeError> {
     let mut values = Vec::new();
     while let Some((field, wire)) = reader.field()? {
         match field {
-            1 => name = Some(string(reader.message(wire)?)?),
-            3 => keys.push(string(reader.message(wire)?)?),
+            1 => name = Some(string(reader.message(wire)?)),
+            3 => keys.push(string(reader.message(wire)?)),
             4 => values.push(value(reader.message(wire)?)?),
             5 => extent = reader.uint32(wire)?,
             15 => version = Some(reader.uint32(wire)?),
@@ -256,7 +258,7 @@ fn value(bytes: &[u8]) -> Result<Value, DecodeError> {
     let mut value = None;
     while let Some((field, wire)) = reader.field()? {
         let item = match field {
-            1 => Value::Str(string(reader.message(wire)?)?.to_owned()),
+            1 => Value::Str(string(reader.message(wire)?).into_owned()),
             2 => {
                 reader.expect_wire(wire, 5)?;
                 Value::F64(f64::from(f32::from_le_bytes(reader.fixed()?)))
@@ -284,8 +286,10 @@ fn value(bytes: &[u8]) -> Result<Value, DecodeError> {
     value.ok_or(DecodeError::InvalidValue("empty MVT Value"))
 }
 
-fn string(bytes: &[u8]) -> Result<&str, DecodeError> {
-    std::str::from_utf8(bytes).map_err(DecodeError::InvalidUtf8)
+/// A tile string, invalid UTF-8 replaced with U+FFFD as GL JS's pbf
+/// decodes it: a stray byte in one name shouldn't lose the tile.
+fn string(bytes: &[u8]) -> Cow<'_, str> {
+    String::from_utf8_lossy(bytes)
 }
 
 /// Borrowed protobuf reader. All lengths, wire types and varint widths are

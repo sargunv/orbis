@@ -392,7 +392,6 @@ fn malformed_protobuf_and_metadata_return_errors() {
         uint(15, 2),
         [message(1, b"x"), uint(15, 3)].concat(),
         [message(1, b"x"), uint(15, 2), uint(5, 0)].concat(),
-        [message(1, &[255]), uint(15, 2)].concat(),
         [layer(&[], &[], &[]), uint(5, 1 << 32)].concat(),
         [layer(&[], &[], &[]), varint((100 << 3) | 3)].concat(),
         [layer(&[], &[], &[]), varint((100 << 3) | 4)].concat(),
@@ -429,11 +428,33 @@ fn layers_past_the_largest_extent_are_put_in_8192() {
     assert_eq!(frame.layers[0].extent(), 16384);
 }
 
+/// Invalid UTF-8 in a layer's name, keys or string values reads as
+/// U+FFFD, as GL JS's pbf decodes it, rather than failing the tile
+/// (Native's InvalidUTF8InTile test loads such a map).
+#[test]
+fn invalid_utf8_strings_are_replaced() {
+    let bytes = message(
+        3,
+        &[
+            message(2, &feature(None, 1, &[9, 0, 0], &[0, 0])),
+            message(3, b"k\xff"),
+            message(4, &message(1, b"caf\xe9")),
+            message(1, b"r\xffoad"),
+            uint(15, 2),
+        ]
+        .concat(),
+    );
+    let frame = mvt::decode(&bytes).unwrap();
+    let layer = &frame.layers[0];
+    assert_eq!(layer.name(), "r\u{fffd}oad");
+    let column = layer.property("k\u{fffd}").unwrap();
+    assert_eq!(column.get(0), Some(ValueRef::Str("caf\u{fffd}")));
+}
+
 #[test]
 fn malformed_values_and_tags_return_errors() {
     for v in [
         vec![],
-        message(1, &[255]),
         vec![0x15, 0],
         vec![0x19, 0],
         [uint(7, 1), uint(5, 2)].concat(),
