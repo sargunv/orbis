@@ -253,8 +253,8 @@ pub struct FrameMemory {
     pub compacted_used: f64,
     #[wasm_bindgen(readonly, js_name = compactedAllocated)]
     pub compacted_allocated: f64,
-    /// Not GPU memory: what WebGL 2's CPU driver keeps in wasm memory of
-    /// the tables its cull reads and the index writes waiting for a copy.
+    /// Not GPU memory: what WebGL 2's CPU driver keeps in wasm memory, the
+    /// tables its cull reads and its shadow of the compacted indices.
     #[wasm_bindgen(readonly, js_name = cpuCopies)]
     pub cpu_copies: f64,
     /// Tile pages, glyph pages and the icon and pattern atlas.

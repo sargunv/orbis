@@ -9,9 +9,9 @@
 //! word: listed nodes' visible lists, indexed nodes' compacted slots (the
 //! chunk's indices tagged with its run when it enters the view, hidden ones
 //! when it leaves) and each node's draw arguments, which its direct draws
-//! take. Slots a layout moved hold what they held (this driver writes
-//! them again from their candidates), and a bit per compacted word says
-//! which of the two, as the GPU's cull reads it from the slot itself.
+//! take. Slots a layout moved hold what they held (this driver moves them
+//! in its own copy of the compacted words), and a bit per compacted word
+//! says which of the two, as the GPU's cull reads it from the slot itself.
 //! The draws read one of [`COPIES`] index buffers in turn, each written in
 //! place before the frames that draw it. Bundles record those draws, so the
 //! renderer records them again when a node's arguments or the copy they
@@ -59,11 +59,6 @@ pub(crate) const COMPACTED_USAGE: BufferUsages = BufferUsages::INDEX
 /// from it: a frame lies between a copy's last draw and its next write.
 /// A third copy measured no better on the Globe entry at 2x in Chromium
 /// (#140), and a copy is the scene's compacted capacity long.
-///
-/// The CPU keeps no copy of the words: each copy keeps the writes it
-/// hasn't had (the last changed frame's), and a slot a layout moved is
-/// written again with what it held, which its candidate and its drawn bit
-/// give, as `decided_slots` checks.
 pub(crate) const COPIES: usize = 2;
 
 /// A copy's usage: written in place, read back by tests.
@@ -71,6 +66,11 @@ const COPY_USAGE: BufferUsages = BufferUsages::INDEX
     .union(BufferUsages::COPY_DST)
     .union(BufferUsages::COPY_SRC)
     .union(BufferUsages::IDLE_WRITES);
+
+/// Unchanged words between two changed runs that are written with them
+/// rather than starting another write: each write is a call into the
+/// browser.
+const WRITE_GAP: u32 = 512;
 
 /// The tables its cull reads.
 pub(crate) const MIRRORED: &[Table] = &[
@@ -121,12 +121,15 @@ pub(crate) struct CpuDriver {
     drawn: Vec<u64>,
     /// The GPU's cull beside this one, for a test to compare.
     twin: Option<Twin>,
-    /// The scene's compacted buffer the copies were made for: a new one
-    /// (a resize) starts empty, every slot written again.
+    /// The compacted indices as this driver wrote them, which each copy
+    /// takes on before it draws. Keeping instead only the writes each
+    /// copy lacks, a frame or two of words, peaked higher in wasm memory
+    /// on every view measured (#140).
+    shadow: Vec<u32>,
+    /// The scene's compacted buffer the shadow and copies were made for:
+    /// a new one (a resize) starts empty, every slot written again.
     made_for: Option<BufferId>,
     copies: Vec<Copy>,
-    /// Each copy's words.
-    copy_words: u32,
     /// The copy draws read.
     current: usize,
 }
@@ -135,114 +138,8 @@ pub(crate) struct CpuDriver {
 #[derive(Debug)]
 struct Copy {
     buffer: BufferId,
-    /// What frames wrote since it was last written.
-    pending: Writes,
-    /// Whether a frame drew from it since it was made.
-    drawn: bool,
-}
-
-/// Writes to the compacted indices, in the order they were made: where
-/// two overlap, the later one's words win.
-#[derive(Clone, Debug, Default)]
-struct Writes {
-    spans: Vec<Span>,
-    words: Vec<u32>,
-}
-
-/// One of [`Writes`]: `len` words from word `start`, at `at` in its words.
-#[derive(Clone, Copy, Debug)]
-struct Span {
-    start: u32,
-    len: u32,
-    at: u32,
-}
-
-impl Writes {
-    fn is_empty(&self) -> bool {
-        self.spans.is_empty()
-    }
-
-    /// `words` from word `start`.
-    fn put(&mut self, start: u32, words: impl IntoIterator<Item = u32>) {
-        let at = self.words.len();
-        self.words.extend(words);
-        let len = (self.words.len() - at) as u32;
-        if len > 0 {
-            let at = at as u32;
-            self.spans.push(Span { start, len, at });
-        }
-    }
-
-    /// Takes on `later`'s writes after its own.
-    fn append(&mut self, later: Self) {
-        if self.is_empty() {
-            *self = later;
-            return;
-        }
-        let base = self.words.len() as u32;
-        (self.spans).extend(later.spans.iter().map(|s| Span {
-            at: s.at + base,
-            ..*s
-        }));
-        self.words.extend_from_slice(&later.words);
-    }
-
-    /// Bytes held.
-    fn bytes(&self) -> u64 {
-        (self.spans.capacity() * size_of::<Span>() + self.words.capacity() * 4) as u64
-    }
-}
-
-/// Writes `sets`, earliest first, into `buffer` of `len` words: writes
-/// that touch or overlap as one call into the browser each, the later
-/// words over the earlier.
-fn flush(sets: &[&Writes], gpu: &mut dyn Gpu, buffer: BufferId, len: u32) {
-    let mut order: Vec<(usize, Span)> = (sets.iter().enumerate())
-        .flat_map(|(k, w)| w.spans.iter().map(move |s| (k, *s)))
-        .collect();
-    order.sort_by_key(|(_, s)| s.start);
-    let mut joined = Vec::new();
-    let mut first = 0;
-    while first < order.len() {
-        let start = order[first].1.start;
-        let mut end = start;
-        let mut last = first;
-        while let Some((_, s)) = order.get(last).filter(|(_, s)| s.start <= end) {
-            end = end.max(s.start + s.len);
-            last += 1;
-        }
-        let group = &mut order[first..last];
-        first = last;
-        let end = end.min(len);
-        if start >= end {
-            continue;
-        }
-        let n = (end - start) as usize;
-        // Made one after another, end to end: their words already are.
-        let made_so = group.windows(2).all(|p| {
-            let ((k, a), (l, b)) = (p[0], p[1]);
-            k == l && b.at == a.at + a.len && b.start == a.start + a.len
-        });
-        let words: &[u32] = if made_so {
-            let (k, s) = group[0];
-            &sets[k].words[s.at as usize..s.at as usize + n]
-        } else {
-            // One run of words, as each starts within those before it.
-            joined.clear();
-            joined.resize(n, 0);
-            group.sort_unstable_by_key(|(k, s)| (*k, s.at));
-            for &(k, s) in &*group {
-                let from = (s.start - start) as usize;
-                let to = (from + s.len as usize).min(n);
-                if from < to {
-                    let at = s.at as usize;
-                    joined[from..to].copy_from_slice(&sets[k].words[at..at + to - from]);
-                }
-            }
-            &joined
-        };
-        gpu.write_buffer(buffer, u64::from(start) * 4, bytemuck::cast_slice(words));
-    }
+    /// Words changed since it was last written.
+    stale: Vec<Range<u32>>,
 }
 
 /// Consecutive candidates of one mesh in one placement.
@@ -308,13 +205,11 @@ impl CpuDriver {
         let words = scene.capacity().compacted_words as usize;
         let remade = self.made_for != Some(scene.buffers().compacted);
         if remade {
-            self.remake(gpu, words as u32);
+            self.remake(gpu, words);
             self.made_for = Some(scene.buffers().compacted);
         }
-        // What this frame writes to the compacted words.
-        let mut writes = Writes::default();
-        // The slots this frame's moves wrote, in order.
-        let mut moved: Vec<Range<u32>> = Vec::new();
+        // Words of the shadow this frame changed.
+        let mut changed: Vec<Range<u32>> = Vec::new();
         if rebuilt {
             self.listed.clear();
             self.runs.clear();
@@ -322,14 +217,13 @@ impl CpuDriver {
             move_bits(&mut self.drawn, scene.moves());
             // The slots of runs that went hide, then slots move, as the
             // GPU driver's do: before this frame's writes to the slots
-            // they move from. A moved slot is written again with what it
-            // held (`cull_nodes`).
+            // they move from.
             for range in scene.hidden() {
-                let n = (range.end - range.start) as usize;
-                writes.put(range.start, std::iter::repeat_n(RESTART_INDEX, n));
+                self.shadow[range.start as usize..range.end as usize].fill(RESTART_INDEX);
+                changed.push(range.clone());
             }
-            moved.extend((scene.moves().iter()).map(|m| m.to..m.to + m.words));
-            moved.sort_unstable_by_key(|r| r.start);
+            move_words(&mut self.shadow, scene.moves());
+            changed.extend((scene.moves().iter()).map(|m| m.to..m.to + m.words));
             // The twin's, on the GPU, in a submission of their own.
             if let Some(twin) = &self.twin {
                 let moves = scene.move_passes(gpu, twin.compacted);
@@ -355,7 +249,7 @@ impl CpuDriver {
                 node[6] = 0;
             }
         } else {
-            self.cull_nodes(gpu, scene, &frame, &mut args, &moved, &mut writes);
+            self.cull_nodes(gpu, scene, &frame, &mut args, &mut changed);
         }
         self.seen = Some(seen);
         let draws = |args: &[u32]| -> Vec<[u32; 5]> {
@@ -368,12 +262,10 @@ impl CpuDriver {
             gpu.write_buffer(scene.buffers().args, 0, bytemuck::cast_slice(&args));
         }
         self.args = args;
-        if !writes.is_empty() {
-            self.turn(gpu, writes);
+        if !changed.is_empty() {
+            self.turn(gpu, &changed);
             draws_changed = true;
         }
-        // This frame draws from it.
-        self.copies[self.current].drawn = true;
         draws_changed
     }
 
@@ -382,58 +274,71 @@ impl CpuDriver {
         self.copies.get(self.current).map(|c| c.buffer)
     }
 
-    /// Makes the copies again, `words` long and empty, for a new
-    /// compacted buffer: the next cull writes every slot laid out.
-    fn remake(&mut self, gpu: &mut dyn Gpu, words: u32) {
+    /// Makes the shadow and copies again, `words` long and empty, for a
+    /// new compacted buffer: the next cull writes every slot laid out.
+    fn remake(&mut self, gpu: &mut dyn Gpu, words: usize) {
         for copy in self.copies.drain(..) {
             gpu.destroy_buffer(copy.buffer);
         }
+        self.shadow = vec![0; words];
         self.copies = (0..COPIES)
             .map(|_| Copy {
                 buffer: gpu.create_buffer(&BufferDesc {
                     label: "compacted indices",
-                    size: (u64::from(words) * 4).max(16),
+                    size: (words as u64 * 4).max(16),
                     usage: COPY_USAGE,
                 }),
-                pending: Writes::default(),
-                drawn: false,
+                stale: Vec::new(),
             })
             .collect();
-        self.copy_words = words;
         self.current = 0;
     }
 
     /// Moves the draws to the next copy, writing into it the words it
-    /// lacks: those of the frames since it was last written, then
-    /// `writes`. A copy no frame drew yet takes them at once; the others
-    /// keep them for their turn.
-    fn turn(&mut self, gpu: &mut dyn Gpu, writes: Writes) {
+    /// lacks: those `changed` this frame and in the frames since it was
+    /// last written.
+    fn turn(&mut self, gpu: &mut dyn Gpu, changed: &[Range<u32>]) {
+        for copy in &mut self.copies {
+            copy.stale.extend_from_slice(changed);
+        }
         self.current = (self.current + 1) % self.copies.len();
-        let current = self.current;
-        let mut keep: Vec<&mut Copy> = Vec::new();
-        for (i, copy) in self.copies.iter_mut().enumerate() {
-            if i == current || !copy.drawn {
-                let pending = std::mem::take(&mut copy.pending);
-                flush(&[&pending, &writes], gpu, copy.buffer, self.copy_words);
-            } else {
-                keep.push(copy);
+        let copy = &mut self.copies[self.current];
+        let mut stale = std::mem::take(&mut copy.stale);
+        stale.sort_unstable_by_key(|r| r.start);
+        let mut at = 0;
+        while at < stale.len() {
+            let start = stale[at].start;
+            let mut end = stale[at].end;
+            at += 1;
+            while at < stale.len() && stale[at].start <= end.saturating_add(WRITE_GAP) {
+                end = end.max(stale[at].end);
+                at += 1;
+            }
+            let end = end.min(self.shadow.len() as u32);
+            if start < end {
+                gpu.write_buffer(
+                    copy.buffer,
+                    u64::from(start) * 4,
+                    bytemuck::cast_slice(&self.shadow[start as usize..end as usize]),
+                );
             }
         }
-        if let Some((last, others)) = keep.split_last_mut() {
-            for copy in others {
-                copy.pending.append(writes.clone());
-            }
-            last.pending.append(writes);
-        }
+        stale.clear();
+        copy.stale = stale;
     }
 
-    /// Bytes this driver holds of the heap: what its copies wait to be
-    /// written, and its bits and lists.
+    /// Bytes this driver holds of the heap: its shadow of the compacted
+    /// indices, the ranges its copies lack, and its bits and lists.
     pub(crate) fn heap_bytes(&self) -> u64 {
-        let pending: u64 = self.copies.iter().map(|c| c.pending.bytes()).sum();
-        let listed: usize = self.listed.iter().map(Vec::capacity).sum::<usize>() * 4;
-        let runs: usize = self.runs.iter().map(Vec::capacity).sum::<usize>() * size_of::<Run>();
-        pending + (self.drawn.capacity() * 8 + self.args.capacity() * 4 + listed + runs) as u64
+        let stale: usize = self.copies.iter().map(|c| c.stale.capacity()).sum();
+        let listed: usize = self.listed.iter().map(Vec::capacity).sum();
+        let runs: usize = self.runs.iter().map(Vec::capacity).sum();
+        (self.shadow.capacity() * 4
+            + stale * size_of::<Range<u32>>()
+            + self.drawn.capacity() * 8
+            + self.args.capacity() * 4
+            + listed * 4
+            + runs * size_of::<Run>()) as u64
     }
 
     /// The cull of every node, into `args`.
@@ -443,8 +348,7 @@ impl CpuDriver {
         scene: &mut Scene,
         frame: &Frame,
         args: &mut [u32],
-        moved: &[Range<u32>],
-        writes: &mut Writes,
+        changed: &mut Vec<Range<u32>>,
     ) {
         let tables = scene.tables_mut();
         let mut candidates = std::mem::take(tables.mirror_mut(Table::Candidates).expect("copied"));
@@ -456,6 +360,8 @@ impl CpuDriver {
             read(Table::Indices),
         );
         let listed = (candidates.len() / CANDIDATE_WORDS) as u32;
+        // Slot rewrites, in slot order within a node: (slot, words).
+        let mut slots: Vec<(u32, Vec<u32>)> = Vec::new();
         let mut visible: Vec<(u32, Vec<u32>)> = Vec::new();
         self.runs.resize_with(args.len() / ARGS_WORDS, Vec::new);
         for (n, out) in args.chunks_mut(ARGS_WORDS).enumerate() {
@@ -467,23 +373,6 @@ impl CpuDriver {
             let draw = word & 255;
             if word & HIDDEN != 0 {
                 out.fill(0);
-                // Its slots that moved, written again with what they held.
-                if draw == DRAW_INDEXED && !moved.is_empty() {
-                    use layout::candidate as c;
-                    for i in base..base + count {
-                        let row = rows_at(&candidates, i as usize, CANDIDATE_WORDS);
-                        let slot = row[c::SLOT];
-                        let at = moved.partition_point(|r| r.end <= slot);
-                        if row[c::CHUNK] != NO_CHUNK
-                            && row[c::DRAWN] == MOVED
-                            && moved.get(at).is_some_and(|r| r.start <= slot)
-                        {
-                            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
-                            let drawn = bit(&self.drawn, slot);
-                            writes.put(slot, slot_words(node, row, chunk, indices, drawn));
-                        }
-                    }
-                }
                 continue;
             }
             let test = Test {
@@ -528,23 +417,31 @@ impl CpuDriver {
                         drawn = drawn.wrapping_add(index_count);
                     }
                     let slot = candidate[c::SLOT];
-                    let moved = candidate[c::DRAWN] == MOVED;
-                    if moved {
+                    if candidate[c::DRAWN] == MOVED {
                         let drawn = index_count > 0 && bit(&self.drawn, slot);
                         candidate[c::DRAWN] = u32::from(drawn);
                     }
-                    let changed = candidate[c::DRAWN] != u32::from(keep);
-                    // A slot that moved holds what it held, which the
-                    // copies take as the GPU's copied it.
-                    if changed || moved {
-                        writes.put(slot, slot_words(node, candidate, chunk, indices, keep));
-                    }
-                    if changed {
+                    if candidate[c::DRAWN] != u32::from(keep) {
+                        let n = index_count.min(orb_layout::CHUNK_INDICES);
                         // A chunk without indices has no first word: its
                         // slot's is the next candidate's.
-                        if index_count > 0 {
+                        if n > 0 {
                             set_bit(&mut self.drawn, slot, keep);
                         }
+                        let words = if keep {
+                            let tag = (candidate[c::RUN] << node[nc::RUN_SHIFT])
+                                .wrapping_add(chunk[ch::FIRST_VERTEX]);
+                            let first = chunk[ch::FIRST_INDEX];
+                            (first..first + n)
+                                .map(|i| {
+                                    let word = indices.get((i >> 1) as usize).copied().unwrap_or(0);
+                                    tag.wrapping_add((word >> ((i & 1) << 4)) & 0xffff)
+                                })
+                                .collect()
+                        } else {
+                            vec![RESTART_INDEX; n as usize]
+                        };
+                        slots.push((candidate[c::SLOT], words));
                         candidate[c::DRAWN] = u32::from(keep);
                         written = written.wrapping_add(index_count);
                     }
@@ -600,6 +497,15 @@ impl CpuDriver {
             }
         }
         *tables.mirror_mut(Table::Candidates).expect("copied") = candidates;
+        // Each rewritten slot's words, into the shadow.
+        for (start, words) in slots {
+            let end = start as usize + words.len();
+            debug_assert!(end <= self.shadow.len());
+            if let Some(shadow) = self.shadow.get_mut(start as usize..end) {
+                shadow.copy_from_slice(&words);
+                changed.push(start..end as u32);
+            }
+        }
         for (at, rows) in visible {
             tables.write_words(gpu, Table::Visible, at, &rows);
         }
@@ -750,29 +656,20 @@ fn move_bits(bits: &mut [u64], moves: &[Move]) {
     }
 }
 
-/// The words a candidate's slot holds: its chunk's indices tagged with
-/// its run where it's `drawn` (`node`'s run shift), else hidden.
-fn slot_words<'a>(
-    node: &[u32],
-    candidate: &[u32],
-    chunk: &[u32],
-    indices: &'a [u32],
-    drawn: bool,
-) -> impl Iterator<Item = u32> + 'a {
-    use layout::candidate as c;
-    use layout::chunk as ch;
-    let n = chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES);
-    let tag = (candidate[c::RUN] << node[layout::node_cull::RUN_SHIFT])
-        .wrapping_add(chunk[ch::FIRST_VERTEX]);
-    let first = chunk[ch::FIRST_INDEX];
-    (first..first + n).map(move |i| {
-        if drawn {
-            let word = indices.get((i >> 1) as usize).copied().unwrap_or(0);
-            tag.wrapping_add((word >> ((i & 1) << 4)) & 0xffff)
-        } else {
-            RESTART_INDEX
+/// Makes `moves` in `words`: every one read before any is written, as
+/// the GPU's copies through a scratch buffer make them.
+fn move_words(words: &mut [u32], moves: &[Move]) {
+    let read: Vec<Vec<u32>> = (moves.iter())
+        .map(|m| {
+            let from = m.from as usize..(m.from + m.words) as usize;
+            words.get(from).unwrap_or(&[]).to_vec()
+        })
+        .collect();
+    for (m, read) in moves.iter().zip(read) {
+        if let Some(to) = words.get_mut(m.to as usize..m.to as usize + read.len()) {
+            to.copy_from_slice(&read);
         }
-    })
+    }
 }
 
 /// `rows`' row `i`, `words` long, zeros where it isn't written.
