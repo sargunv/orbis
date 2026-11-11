@@ -250,8 +250,16 @@ fn read_file(path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchErro
     Ok(bytes)
 }
 
+/// Redirects a request carrying the host's headers follows: ureq's default.
+const MAX_REDIRECTS: usize = 10;
+
 /// One HTTP GET, conditional on `validators` (ETag, Last-Modified). An
 /// abort stops it between the body's reads.
+///
+/// A request carrying the host's headers follows its redirects itself and
+/// drops those headers once a redirect leaves the URL's origin: ureq strips
+/// only `Authorization` and `Cookie`, so a key in a header of the host's
+/// own (`X-Api-Key`) would reach whatever origin a redirect names.
 fn http(
     agent: &ureq::Agent,
     req: &Request,
@@ -259,29 +267,56 @@ fn http(
     validators: Option<(Option<&str>, Option<&str>)>,
     abort: &Abort,
 ) -> Result<Response, FetchError> {
-    let mut request = agent.get(encode_url(&req.url).as_ref());
-    for (name, value) in &req.headers {
-        request = request.header(name, value);
-    }
-    if let Some((offset, length)) = range {
-        let end = orb_host::range_end(offset, length)?;
-        request = request
-            .header("Range", format!("bytes={offset}-{end}"))
-            .header("Accept-Encoding", "identity");
-    }
-    if let Some((etag, last_modified)) = validators {
-        if let Some(etag) = etag {
-            request = request.header("If-None-Match", etag);
+    let manual = !req.headers.is_empty();
+    let mut url = encode_url(&req.url).into_owned();
+    let mut headers = req.headers.as_slice();
+    let mut redirects = 0;
+    let mut response = loop {
+        let mut request = agent.get(&url);
+        if manual {
+            request = request.config().max_redirects(0).build();
         }
-        if let Some(last_modified) = last_modified {
-            request = request.header("If-Modified-Since", last_modified);
+        for (name, value) in headers {
+            request = request.header(name, value);
         }
-    }
-    let mut response = request.call().map_err(|e| match e {
-        ureq::Error::StatusCode(404) => FetchError::NotFound,
-        ureq::Error::StatusCode(code) => FetchError::Status(code),
-        e => FetchError::Network(e.to_string()),
-    })?;
+        if let Some((offset, length)) = range {
+            let end = orb_host::range_end(offset, length)?;
+            request = request
+                .header("Range", format!("bytes={offset}-{end}"))
+                .header("Accept-Encoding", "identity");
+        }
+        if let Some((etag, last_modified)) = validators {
+            if let Some(etag) = etag {
+                request = request.header("If-None-Match", etag);
+            }
+            if let Some(last_modified) = last_modified {
+                request = request.header("If-Modified-Since", last_modified);
+            }
+        }
+        let response = request.call().map_err(|e| match e {
+            ureq::Error::StatusCode(404) => FetchError::NotFound,
+            ureq::Error::StatusCode(code) => FetchError::Status(code),
+            e => FetchError::Network(e.to_string()),
+        })?;
+        let status = response.status().as_u16();
+        if !manual || !matches!(status, 301 | 302 | 303 | 307 | 308) {
+            break response;
+        }
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|h| h.to_str().ok())
+            .ok_or(FetchError::Status(status))?;
+        redirects += 1;
+        if redirects > MAX_REDIRECTS {
+            return Err(FetchError::Network("too many redirects".into()));
+        }
+        let next = encode_url(&redirect_target(&url, location)).into_owned();
+        if !origin(&next).is_some_and(|next| origin(&url) == Some(next)) {
+            headers = &[];
+        }
+        url = next;
+    };
     let header = |name: &str| {
         response
             .headers()
@@ -360,6 +395,42 @@ fn read_body(
             Err(e) => return Err(FetchError::Network(e.to_string())),
         }
     }
+}
+
+/// `location` resolved against `base`, the URL that answered with it.
+fn redirect_target(base: &str, location: &str) -> String {
+    if location.contains("://") {
+        return location.to_string();
+    }
+    let scheme_end = base.find("://").map_or(0, |i| i + 3);
+    if let Some(authority) = location.strip_prefix("//") {
+        return format!("{}{authority}", &base[..scheme_end]);
+    }
+    let path = base.split(['?', '#']).next().unwrap_or(base);
+    let origin_end = path[scheme_end..]
+        .find('/')
+        .map_or(path.len(), |i| scheme_end + i);
+    if location.starts_with('/') {
+        return format!("{}{location}", &path[..origin_end]);
+    }
+    // Beside the base's last segment, `./` and `../` left to the server.
+    let dir_end = path[origin_end..]
+        .rfind('/')
+        .map_or(origin_end, |i| origin_end + i);
+    format!("{}/{location}", &path[..dir_end])
+}
+
+/// A URL's scheme, host and port, the port spelled out where the scheme
+/// implies it.
+fn origin(url: &str) -> Option<(String, String, u16)> {
+    let uri: ureq::http::Uri = url.parse().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let port = uri.port_u16().or(match scheme.as_str() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })?;
+    Some((scheme, uri.host()?.to_ascii_lowercase(), port))
 }
 
 impl Fetch for NativeFetch {
@@ -831,6 +902,50 @@ mod tests {
         drop(cache);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn host_headers_follow_redirects_within_their_origin_alone() {
+        let (other, elsewhere) = serve(vec![
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4\r\n\r\ntile".into(),
+        ]);
+        let close = "Connection: close\r\n";
+        let (url, origin) = serve(vec![
+            format!("HTTP/1.1 302 Found\r\n{close}Location: /moved\r\nContent-Length: 0\r\n\r\n"),
+            format!(
+                "HTTP/1.1 307 Temporary Redirect\r\n{close}Location: {other}\r\nContent-Length: 0\r\n\r\n"
+            ),
+        ]);
+        let request = Request {
+            url,
+            headers: vec![("X-Api-Key".into(), "secret".into())],
+        };
+        let agent = ureq::Agent::new_with_defaults();
+        assert_eq!(
+            NativeFetch::get_blocking(&agent, None, &request, None, true, &Abort::NEVER).unwrap(),
+            b"tile"
+        );
+        let (origin, elsewhere) = (origin.join().unwrap(), elsewhere.join().unwrap());
+        assert!(origin[0].contains("x-api-key: secret"), "{}", origin[0]);
+        assert!(origin[1].starts_with("get /moved "), "{}", origin[1]);
+        assert!(origin[1].contains("x-api-key: secret"), "{}", origin[1]);
+        assert!(!elsewhere[0].contains("x-api-key"), "{}", elsewhere[0]);
+    }
+
+    #[test]
+    fn redirects_resolve_against_the_url_that_sent_them() {
+        let base = "http://a.org:8080/dir/tile.pbf?k=v";
+        for (location, target) in [
+            ("https://b.org/x", "https://b.org/x"),
+            ("//b.org/x", "http://b.org/x"),
+            ("/x?y", "http://a.org:8080/x?y"),
+            ("x", "http://a.org:8080/dir/x"),
+        ] {
+            assert_eq!(redirect_target(base, location), target);
+        }
+        assert_eq!(redirect_target("http://a.org", "x"), "http://a.org/x");
+        assert_eq!(origin("HTTP://A.org/x"), origin("http://a.org:80/y"));
+        assert_ne!(origin("http://a.org/"), origin("https://a.org/"));
+    }
+
     #[test]
     fn transforms_rewrite_and_sign_requests_and_offline_answers_from_the_cache() {
         let dir = std::env::temp_dir().join(format!("orb-fetch-hooks-{}", std::process::id()));
