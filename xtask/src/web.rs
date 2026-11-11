@@ -191,7 +191,9 @@ fn module(
     // and that formatting, with the `Debug` impls and source locations it
     // reaches, was 5% of core.wasm. It takes std rebuilt with the module
     // and a flag stable Rust keeps unstable, so this build alone sets
-    // RUSTC_BOOTSTRAP.
+    // RUSTC_BOOTSTRAP. Nothing reads a panic's location either: without
+    // its file, line and column the modules carry no source paths of the
+    // machine that built them.
     let mut args = vec![
         "build",
         "--quiet",
@@ -209,7 +211,7 @@ fn module(
     } else {
         args.extend([
             "--config",
-            r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort"]"#,
+            r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort", "-Zlocation-detail=none"]"#,
         ]);
     }
     args.extend(features);
