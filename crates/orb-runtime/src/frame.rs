@@ -389,50 +389,17 @@ impl Map {
                 ));
             }
         }
-        // Each drawn image tile's mesh is the one for this frame's surface
-        // and, for a warped tile, the finest drawn tile beside each side,
-        // whose vertices it takes so the two meet without cracks.
         let globe = self.surface.globe().is_some();
-        for &tile in rows.keys() {
-            let edges = match *warped && !globe {
-                true => edge_refinement(tile, |t| rows.contains_key(&t)),
-                false => [0; 4],
-            };
-            let resident = pyramid.get_mut(tile).expect("drawn tiles are ready");
-            let Some(image) = resident.image.as_mut() else {
-                continue;
-            };
-            if image.globe == Some(globe)
-                && image.warped.as_ref().map_or([0; 4], |w| w.edges) == edges
-            {
-                continue;
-            }
-            let Ok(mesh) = image_mesh(
-                &mut self.globe_warps,
-                globe,
-                *warped,
-                &endpoint,
-                tile,
-                (&mut image.grid, edges),
-            ) else {
-                continue;
-            };
-            image.warped = mesh;
-            // A warped image draws through planar patches only on a globe
-            // surface; elsewhere through its warp's mesh.
-            resident.series = (*warped && globe)
-                .then(|| self.globe_warps.surface_series(tms, tile))
-                .flatten();
-            let patches = resident.series.as_deref().map(series_patches);
-            let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
-            let mesh = image.warped.as_ref().map(|w| Arc::clone(&w.mesh));
-            let set = renderer.set_image_mesh(gpu, resident.gpu, mesh, patches);
-            image.globe = set.is_ok().then_some(globe);
-            if set.is_err() {
-                self.warnings
-                    .push("out of scene memory; an image layer misses tiles".into());
-            }
-        }
+        let images = (&mut self.globe_warps, &mut self.warnings);
+        refresh_image_meshes(
+            gpu,
+            renderer,
+            images,
+            (globe, *warped),
+            &endpoint,
+            pyramid,
+            &rows,
+        );
         let period = self.surface.period();
         let whole = whole_draws(tms, &draws);
         let placed = &mut style.placed[index];
@@ -519,70 +486,20 @@ impl Map {
                 }
             }
         }
-        // Tiles held for their labels: drawn again, gone, or done.
         let held = &mut style.held[index];
         let now = self.services.clock.now();
-        held.retain(|tile| {
-            let resident = pyramid.get(*tile);
-            let buckets = || {
-                resident
-                    .into_iter()
-                    .flat_map(|r| &r.symbols)
-                    .map(|s| s.bucket)
-            };
-            let done = rows.contains_key(tile)
-                || resident.is_none()
-                || buckets().all(|b| self.labels.released(b, now));
-            if done {
-                for bucket in buckets() {
-                    self.labels.unhold(bucket);
-                }
-                if let Some(r) = resident.filter(|_| !rows.contains_key(tile)) {
-                    renderer.unplace(r.gpu);
-                }
-            }
-            !done
-        });
-        // Tiles leaving the draw list: those with labels keep drawing them
-        // until a placement covers what replaced them. Still output waits
-        // for placement anyway, and fades nothing.
         let holds = self.mode == RenderMode::Continuous;
-        for tile in placed.iter().filter(|t| !rows.contains_key(t)) {
-            if let Some(resident) = pyramid.get(*tile) {
-                if resident.symbols.is_empty() || !holds {
-                    renderer.unplace(resident.gpu);
-                } else {
-                    for s in &resident.symbols {
-                        self.labels.hold(s.bucket);
-                    }
-                    held.push(*tile);
-                }
-            }
-        }
-        for &tile in held.iter() {
-            // Evicted sooner, held labels would vanish for the frames until
-            // that placement commits: arrivals that need room take other
-            // tiles.
-            pyramid.keep(tile);
-            // Held labels stand where they are in the world on this frame's
-            // surface, as the drawn tiles do: rows placed before the globe
-            // came in (or went) would mix toward the camera's target as it
-            // hands over, and older patches or DEM layers may have gone.
-            let resident = pyramid.get(tile).expect("held tiles are resident");
-            let on_plane = on_plane(&self.surface, *warped, resident);
-            match surface_place(&self.globe_warps, gpu, renderer, view, tms, tile, on_plane) {
-                Some(globe) => renderer.hold_symbols(
-                    resident.gpu,
-                    globe.map(|(warp, anchor)| orb_render::RowGlobe {
-                        warp,
-                        origin: anchor.to_array(),
-                        on_plane,
-                    }),
-                    terrain.map_or((DemRef::NONE, [0.0; 2]), |t| t.ground(tile)),
-                ),
-                None => renderer.unplace(resident.gpu),
-            }
-        }
+        update_holds(
+            &mut self.labels,
+            (now, holds),
+            renderer,
+            pyramid,
+            (&mut *held, &placed[..]),
+            &rows,
+        );
+        let surface = (&self.globe_warps, &self.surface);
+        let place = (view, tms, *warped, terrain);
+        place_held(gpu, renderer, surface, place, pyramid, held);
         let mut ordered = Vec::new();
         for draw in &draws {
             // Multiple wraps of a tile share its meshes and placements.
@@ -1068,6 +985,152 @@ pub(crate) struct Placement<'a> {
     on_plane: bool,
     /// The style zoom the tile laid out at.
     tile_zoom: f64,
+}
+/// Gives each drawn image tile (`rows`' tiles) the mesh for this frame's
+/// surface (on a `globe`, or not) and, for a `warped` tile, the finest
+/// drawn tile beside each side, whose vertices it takes so the two meet
+/// without cracks.
+fn refresh_image_meshes(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    (globe_warps, warnings): (&mut crate::globe::GlobeWarps, &mut Vec<String>),
+    (globe, warped): (bool, bool),
+    endpoint: &orb_source::endpoint::TileEndpoint,
+    pyramid: &mut orb_source::TilePyramid<ResidentTile>,
+    rows: &HashMap<TileIndex, Vec<&Draw>>,
+) {
+    let tms = &endpoint.tms;
+    for &tile in rows.keys() {
+        let edges = match warped && !globe {
+            true => edge_refinement(tile, |t| rows.contains_key(&t)),
+            false => [0; 4],
+        };
+        let resident = pyramid.get_mut(tile).expect("drawn tiles are ready");
+        let Some(image) = resident.image.as_mut() else {
+            continue;
+        };
+        if image.globe == Some(globe) && image.warped.as_ref().map_or([0; 4], |w| w.edges) == edges
+        {
+            continue;
+        }
+        let Ok(mesh) = image_mesh(
+            globe_warps,
+            globe,
+            warped,
+            endpoint,
+            tile,
+            (&mut image.grid, edges),
+        ) else {
+            continue;
+        };
+        image.warped = mesh;
+        // A warped image draws through planar patches only on a globe
+        // surface; elsewhere through its warp's mesh.
+        resident.series = (warped && globe)
+            .then(|| globe_warps.surface_series(tms, tile))
+            .flatten();
+        let patches = resident.series.as_deref().map(series_patches);
+        let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
+        let mesh = image.warped.as_ref().map(|w| Arc::clone(&w.mesh));
+        let set = renderer.set_image_mesh(gpu, resident.gpu, mesh, patches);
+        image.globe = set.is_ok().then_some(globe);
+        if set.is_err() {
+            warnings.push("out of scene memory; an image layer misses tiles".into());
+        }
+    }
+}
+
+/// Settles the tiles `held` for their labels at frame time `now`: those
+/// drawn again, gone, or whose labels faded out let go, and those of the
+/// tiles `placed` last frame that `rows` no longer draws hold their labels
+/// until a placement covers what replaced them (with `holds`; still
+/// output waits for placement anyway, and fades nothing).
+fn update_holds(
+    labels: &mut crate::labels::Labels,
+    (now, holds): (f64, bool),
+    renderer: &mut Renderer,
+    pyramid: &orb_source::TilePyramid<ResidentTile>,
+    (held, placed): (&mut Vec<TileIndex>, &[TileIndex]),
+    rows: &HashMap<TileIndex, Vec<&Draw>>,
+) {
+    held.retain(|tile| {
+        let resident = pyramid.get(*tile);
+        let buckets = || {
+            resident
+                .into_iter()
+                .flat_map(|r| &r.symbols)
+                .map(|s| s.bucket)
+        };
+        let done = rows.contains_key(tile)
+            || resident.is_none()
+            || buckets().all(|b| labels.released(b, now));
+        if done {
+            for bucket in buckets() {
+                labels.unhold(bucket);
+            }
+            if let Some(r) = resident.filter(|_| !rows.contains_key(tile)) {
+                renderer.unplace(r.gpu);
+            }
+        }
+        !done
+    });
+    for tile in placed.iter().filter(|t| !rows.contains_key(t)) {
+        if let Some(resident) = pyramid.get(*tile) {
+            if resident.symbols.is_empty() || !holds {
+                renderer.unplace(resident.gpu);
+            } else {
+                for s in &resident.symbols {
+                    labels.hold(s.bucket);
+                }
+                held.push(*tile);
+            }
+        }
+    }
+}
+
+/// Places the tiles `held` for their labels on this frame's surface, as
+/// the drawn tiles are: rows placed before the globe came in (or went)
+/// would mix toward the camera's target as it hands over, and older
+/// patches or DEM layers may have gone. They stay resident meanwhile:
+/// evicted sooner, held labels would vanish for the frames until that
+/// placement commits.
+fn place_held(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    (globe_warps, surface): (&crate::globe::GlobeWarps, &crate::surface::Surface),
+    (view, tms, warped, terrain): (
+        &View,
+        &TileMatrixSet,
+        bool,
+        Option<&crate::terrain::Terrain>,
+    ),
+    pyramid: &mut orb_source::TilePyramid<ResidentTile>,
+    held: &[TileIndex],
+) {
+    for &tile in held {
+        // Evicted sooner, held labels would vanish for the frames until
+        // that placement commits: arrivals that need room take other
+        // tiles.
+        pyramid.keep(tile);
+        // Held labels stand where they are in the world on this frame's
+        // surface, as the drawn tiles do: rows placed before the globe
+        // came in (or went) would mix toward the camera's target as it
+        // hands over, and older patches or DEM layers may have gone.
+        let resident = pyramid.get(tile).expect("held tiles are resident");
+        let on_plane = on_plane(surface, warped, resident);
+        match surface_place(globe_warps, gpu, renderer, view, tms, tile, on_plane) {
+            Some(globe) => renderer.hold_symbols(
+                resident.gpu,
+                globe.map(|(warp, anchor)| orb_render::RowGlobe {
+                    warp,
+                    origin: anchor.to_array(),
+                    on_plane,
+                }),
+                terrain.map_or((DemRef::NONE, [0.0; 2]), |t| t.ground(tile)),
+            ),
+            None => renderer.unplace(resident.gpu),
+        }
+    }
 }
 
 /// Whether a tile has a place on the plane: on a globe surface, a tile of
