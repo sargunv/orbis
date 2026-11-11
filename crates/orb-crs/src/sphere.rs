@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn mercator_tiles_wrap_the_sphere_within_the_tolerance() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         for tile in [
             TileIndex::new(0, 0, 0),
             TileIndex::new(1, 1, 0),
@@ -110,7 +110,7 @@ mod tests {
             TileIndex::new(6, 40, 20),
             TileIndex::new(14, 9000, 6000),
         ] {
-            let series = series(&tms, tile, 1.0 / 2048.0).unwrap();
+            let series = series(tms, tile, 1.0 / 2048.0).unwrap();
             let limit = series.scale / 2048.0;
             let b = tms.tile_bounds(tile);
             for k in 0..=24 {
@@ -126,7 +126,7 @@ mod tests {
             assert!(series.max_cell.cmpgt(DVec2::ZERO).all());
         }
         // The whole world in one tile still fits.
-        let world = series(&tms, TileIndex::new(0, 0, 0), 1.0 / 2048.0).unwrap();
+        let world = series(tms, TileIndex::new(0, 0, 0), 1.0 / 2048.0).unwrap();
         assert!(
             world.cells[0] * world.cells[1] <= 256 && world.grid().iter().all(|&c| c > 1),
             "{:?} cells",

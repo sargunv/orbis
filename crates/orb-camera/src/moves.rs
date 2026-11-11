@@ -456,9 +456,7 @@ mod tests {
     use orb_crs::TileMatrixSet;
 
     fn mercator() -> Projection {
-        *TileMatrixSet::by_id("WebMercatorQuad")
-            .unwrap()
-            .projection()
+        *TileMatrixSet::web_mercator().projection()
     }
 
     const VIEWPORT: Viewport = Viewport {
@@ -711,7 +709,7 @@ mod tests {
     #[test]
     fn small_globes_reach_the_poles() {
         let surface = globe_surface();
-        let edge = 85.051_128_779_806_59;
+        let edge = orb_crs::MERCATOR_MAX_LATITUDE;
         let reach = |zoom: f64| {
             let mut camera = CameraState::new(Geodetic::new(30.0, 90.0), zoom, &mercator());
             camera.constrain(&Constraints::default(), &surface, VIEWPORT);
@@ -731,8 +729,8 @@ mod tests {
         // A pole-centred view keeps its pole and draws.
         let camera = CameraState::new(Geodetic::new(0.0, -90.0), 1.0, &mercator());
         let view = View::new(&camera, VIEWPORT, &surface);
-        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
-        assert!(!view.cover(&tms, 512.0, 22).is_empty());
+        let tms = orb_crs::TileMatrixSet::web_mercator();
+        assert!(!view.cover(tms, 512.0, 22).is_empty());
         assert!(view.unproject(DVec2::new(400.0, 300.0)).is_some());
     }
 

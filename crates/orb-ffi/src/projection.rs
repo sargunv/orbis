@@ -6,11 +6,13 @@
 // them), so a projection is the flat Web Mercator view of its camera, as
 // Native's is.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use glam::DVec2;
 use orb_camera::{CameraState, Padding, View, Viewport};
-use orb_crs::{Geodetic, Projection, Surface};
+use orb_crs::{
+    Geodetic, MERCATOR_MAX_LATITUDE as MAX_LATITUDE, Projection, Surface, TileMatrixSet,
+};
 
 use crate::base::{Failure, Result, boundary, fresh_out, put, sized};
 use crate::handles::{self, Object};
@@ -18,16 +20,13 @@ use crate::sys::*;
 
 /// Native's zoom limit.
 const MAX_ZOOM: f64 = 25.5;
-/// Native's Mercator latitude limit.
-const MAX_LATITUDE: f64 = 85.051_128_779_806_59;
 /// Native's tile size, which its zoom is defined on.
 const TILE_SIZE: f64 = 512.0;
 /// MapLibre's earth radius, Web Mercator's.
 const EARTH_RADIUS_M: f64 = 6_378_137.0;
 
 fn mercator() -> &'static Projection {
-    static MERCATOR: OnceLock<Projection> = OnceLock::new();
-    MERCATOR.get_or_init(|| Projection::from_descriptor("web-mercator").expect("Web Mercator"))
+    TileMatrixSet::web_mercator().projection()
 }
 
 /// A projection's view, behind its handle.

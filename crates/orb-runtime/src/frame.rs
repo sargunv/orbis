@@ -1262,9 +1262,7 @@ fn neighbours(
 
 /// Web Mercator, which a globe's sphere wraps.
 pub(crate) fn mercator_projection() -> orb_crs::Projection {
-    *TileMatrixSet::by_id("WebMercatorQuad")
-        .expect("built-in tile matrix set")
-        .projection()
+    *TileMatrixSet::web_mercator().projection()
 }
 
 /// A globe view's frame terms: its matrix, the target, and the horizon
@@ -1307,7 +1305,7 @@ mod tests {
 
     #[test]
     fn fallback_placements_keep_more_than_four_regions_exact() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         let draw = Draw {
             tile: TileIndex::new(0, 0, 0),
             wrap: 1,
@@ -1323,7 +1321,7 @@ mod tests {
             on_plane: true,
             tile_zoom: 0.0,
         };
-        let rows: Vec<_> = placements(&tms, &draw, at).collect();
+        let rows: Vec<_> = placements(tms, &draw, at).collect();
         assert_eq!(rows.len(), 2);
         for (col, clip) in rows.iter().flat_map(|row| row.clips).enumerate() {
             assert_eq!(
@@ -1342,7 +1340,7 @@ mod tests {
     /// neighbour is the next world copy's.
     #[test]
     fn whole_buildings_are_left_only_to_neighbours_drawn_whole() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         let draw = |z, col, row, wrap| Draw {
             tile: TileIndex::new(z, col, row),
             wrap,
@@ -1366,13 +1364,13 @@ mod tests {
             draw(3, 7, 1, -1),
             draw(3, 7, 2, 0),
         ];
-        let whole = whole_draws(&tms, &draws);
-        let bits = |d: &Draw| neighbours(&tms, d, &whole, true);
+        let whole = whole_draws(tms, &draws);
+        let bits = |d: &Draw| neighbours(tms, d, &whole, true);
         // East (dx 1, dy 0) is bit 5, south-west (dx -1, dy 1) bit 6.
         assert_eq!(bits(&draws[0]), 1 << 5 | 1 << 6);
         // West (bit 3) is the copy west of it; south-west (bit 6) isn't.
         assert_eq!(bits(&draws[6]), 1 << 3);
-        assert_eq!(neighbours(&tms, &draws[6], &whole, false), 0);
+        assert_eq!(neighbours(tms, &draws[6], &whole, false), 0);
     }
 
     #[test]

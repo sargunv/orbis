@@ -248,7 +248,7 @@ mod tests {
             )
             .unwrap()
         };
-        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = orb_crs::TileMatrixSet::web_mercator();
         let camera =
             |lon| orb_camera::CameraState::new(Geodetic::new(lon, 0.0), 2.0, tms.projection());
         let light =
@@ -278,7 +278,7 @@ mod tests {
         // v8's default light: intensity 0.5 at [1.15, 210, 30], turning
         // with the map.
         let light = LightValues::of(&orb_style::v8::default_light(), 0.0);
-        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = orb_crs::TileMatrixSet::web_mercator();
         let mut camera =
             orb_camera::CameraState::new(Geodetic::new(0.0, 0.0), 2.0, tms.projection());
         let still = frame_light(&light, &camera);
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn fog_fades_in_through_the_globe_handover() {
         let light = LightValues::of(&orb_style::v8::default_light(), 0.0);
-        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = orb_crs::TileMatrixSet::web_mercator();
         let mercator = *tms.projection();
         let surface = orb_crs::Surface {
             projection: mercator,
@@ -324,7 +324,7 @@ mod tests {
     /// the ground, so easing ground lighting in moves nothing.
     #[test]
     fn the_haze_and_the_ground_share_one_sun() {
-        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = orb_crs::TileMatrixSet::web_mercator();
         let mercator = *tms.projection();
         let surface = orb_crs::Surface {
             projection: mercator,

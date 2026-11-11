@@ -868,7 +868,7 @@ mod tests {
     }
 
     fn mercator() -> TileMatrixSet {
-        TileMatrixSet::by_id("WebMercatorQuad").unwrap()
+        TileMatrixSet::web_mercator().clone()
     }
 
     /// Every mesh vertex lands where the projections put its source point.
@@ -1176,7 +1176,10 @@ mod tests {
         let top = crs84
             .projection()
             .inverse(crs84.tile_point(TileIndex::new(2, 5, 0), series.window[0]));
-        assert!((top.lat - 85.051_128_779_806_59).abs() < 1e-6, "{top:?}");
+        assert!(
+            (top.lat - crate::MERCATOR_MAX_LATITUDE).abs() < 1e-6,
+            "{top:?}"
+        );
     }
 
     /// Where Web Mercator's clamp ends along a curve across a tile (a

@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn mercator_world_is_square() {
         let p = Projection::from_descriptor("web-mercator").unwrap();
-        let corner = p.forward(Geodetic::new(180.0, 85.051_128_779_806_59));
+        let corner = p.forward(Geodetic::new(180.0, crate::MERCATOR_MAX_LATITUDE));
         let bounds = p.world_bounds();
         assert!((corner.x - bounds.max.x).abs() < 1e-6);
         assert!((corner.y - bounds.max.y).abs() < 1e-6);

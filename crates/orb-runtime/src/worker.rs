@@ -438,20 +438,11 @@ impl TileWorker {
             .collect()
     }
 
-    /// The plane GeoJSON tiles in and sources' tile matrix sets.
     /// Layout grid units (8192 a tile side) per ground metre at a tile's
     /// centre, in its source's tile matrix set: GL JS's
     /// `getTileUnitsForMeters`.
     fn units_per_metre(&self, source: usize, tile: TileIndex) -> f64 {
-        let id = &self.plan.style.sources[source].id;
-        let web_mercator;
-        let tms = match self.surface.sources.iter().find(|(s, _)| s == id) {
-            Some((_, tms)) => tms,
-            None => {
-                web_mercator = TileMatrixSet::by_id("WebMercatorQuad").expect("registered");
-                &web_mercator
-            }
-        };
+        let tms = self.surface.source_tms(&self.plan.style.sources[source].id);
         let projection = tms.projection();
         let center = projection.inverse(tms.tile_bounds(tile).center());
         8192.0 * projection.scale_factor(center) / tms.tile_span(tile.z)
@@ -465,12 +456,8 @@ impl TileWorker {
         source: usize,
         tile: TileIndex,
     ) -> Option<orb_expr::CanonicalTile> {
-        let id = &self.plan.style.sources[source].id;
-        let mercator = match self.surface.sources.iter().find(|(s, _)| s == id) {
-            Some((_, tms)) => tms.id() == "WebMercatorQuad",
-            None => true,
-        };
-        mercator.then_some(orb_expr::CanonicalTile {
+        let tms = self.surface.source_tms(&self.plan.style.sources[source].id);
+        (tms.id() == "WebMercatorQuad").then_some(orb_expr::CanonicalTile {
             z: tile.z,
             x: tile.col,
             y: tile.row,
@@ -486,18 +473,10 @@ impl TileWorker {
     /// if no part of it reaches the plane.
     pub(crate) fn warp_grid(&self, key: u32, tile: TileIndex) -> Option<orb_crs::WarpGrid> {
         let at = self.plan.source_keys.iter().position(|&k| k == key)?;
-        let mercator = || TileMatrixSet::by_id("WebMercatorQuad").expect("registered");
-        let id = &self.plan.style.sources[at].id;
-        let tms = self
-            .surface
-            .source(id, false)
-            .cloned()
-            .unwrap_or_else(mercator);
-        let plane = match &self.surface.plane {
-            Some(plane) => *plane.projection(),
-            None => *mercator().projection(),
-        };
-        crate::image::warp_grid(&orb_crs::Warp::new(tms, plane), tile)
+        let tms = (self.surface).source_tms(&self.plan.style.sources[at].id);
+        let plane = self.surface.plane.as_ref();
+        let plane = *plane.unwrap_or(TileMatrixSet::web_mercator()).projection();
+        crate::image::warp_grid(&orb_crs::Warp::new(tms.clone(), plane), tile)
     }
 
     /// The style revision this worker lays out.
@@ -1204,8 +1183,8 @@ pub(crate) mod tests {
             surface: crate::wire::decode(&crate::wire::encode(&surface)).unwrap(),
             ..TileWorker::new(style).unwrap()
         };
-        let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
-        let warp = orb_crs::Warp::new(mercator, *polar_plane().projection());
+        let mercator = TileMatrixSet::web_mercator();
+        let warp = orb_crs::Warp::new(mercator.clone(), *polar_plane().projection());
         for tile in [TileIndex::new(1, 1, 0), TileIndex::new(4, 9, 3)] {
             let grid = crate::image::warp_grid(&warp, tile);
             assert!(grid.is_some());

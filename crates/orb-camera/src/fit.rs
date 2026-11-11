@@ -179,9 +179,7 @@ fn fit_pitched(
 #[cfg(test)]
 mod tests {
     fn mercator() -> orb_crs::Projection {
-        *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
-            .unwrap()
-            .projection()
+        *orb_crs::TileMatrixSet::web_mercator().projection()
     }
 
     use super::*;
@@ -204,9 +202,7 @@ mod tests {
 
     #[test]
     fn fits_a_box_inside_the_padding() {
-        let projection = *TileMatrixSet::by_id("WebMercatorQuad")
-            .unwrap()
-            .projection();
+        let projection = *TileMatrixSet::web_mercator().projection();
         let bounds = Bounds {
             west: 139.6,
             south: 35.6,

@@ -16,7 +16,7 @@ const FRACTIONS: [[f64; 2]; 5] = [[0.5, 0.5], [0.1, 0.9], [0.9, 0.95], [0.25, 0.
 #[test]
 fn cameras_match_pinned_gl_js() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("data/pins.json")).unwrap();
-    let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+    let tms = TileMatrixSet::web_mercator();
     let projection = tms.projection();
     let cameras = golden["cameras"].as_array().unwrap();
     assert_eq!(cameras.len(), 4000);
@@ -73,7 +73,7 @@ fn cameras_match_pinned_gl_js() {
         if let Some(tiles) = case.get("tiles").filter(|_| camera.pitch <= threshold) {
             covers += 1;
             let mut actual: Vec<[i64; 4]> = view
-                .cover(&tms, 512.0, 22)
+                .cover(tms, 512.0, 22)
                 .iter()
                 .map(|t| {
                     [

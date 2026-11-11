@@ -55,7 +55,7 @@ fn crowd() -> (String, Vec<Anchor>) {
 }
 
 fn mercator() -> TileMatrixSet {
-    TileMatrixSet::by_id("WebMercatorQuad").unwrap()
+    TileMatrixSet::web_mercator().clone()
 }
 
 /// The tile of `z` that holds `at`.

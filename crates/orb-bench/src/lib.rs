@@ -693,9 +693,7 @@ fn view_result(name: &str, size: (u32, u32), mut s: Samples) -> ViewResult {
 
 /// The default surface's projection, which the benchmarks draw on.
 pub(crate) fn web_mercator() -> orb_api::Projection {
-    *orb_api::TileMatrixSet::by_id("WebMercatorQuad")
-        .expect("built-in tile matrix set")
-        .projection()
+    *orb_api::TileMatrixSet::web_mercator().projection()
 }
 
 /// The warnings and errors since the last call.

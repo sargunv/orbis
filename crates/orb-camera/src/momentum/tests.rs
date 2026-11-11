@@ -5,9 +5,7 @@ use crate::{Camera, CameraEvent, CameraTarget};
 use orb_crs::{Geodetic, TileMatrixSet};
 
 fn camera(target: CameraTarget) -> Camera {
-    let projection = *TileMatrixSet::by_id("WebMercatorQuad")
-        .unwrap()
-        .projection();
+    let projection = *TileMatrixSet::web_mercator().projection();
     let mut camera = Camera::new(
         CameraState::new(Geodetic::new(20.0, 10.0), 8.0, &projection),
         projection.into(),

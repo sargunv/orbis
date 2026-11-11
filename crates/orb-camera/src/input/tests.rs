@@ -7,9 +7,7 @@ use super::*;
 use crate::MomentumSnap;
 
 fn camera() -> Camera {
-    let projection = *TileMatrixSet::by_id("WebMercatorQuad")
-        .unwrap()
-        .projection();
+    let projection = *TileMatrixSet::web_mercator().projection();
     Camera::new(
         CameraState::new(Geodetic::new(139.7, 35.68), 12.0, &projection),
         projection.into(),

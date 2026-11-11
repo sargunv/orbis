@@ -20,7 +20,7 @@ mod tms;
 mod warp;
 
 pub use cover::{CoverDecision, CoveredTile};
-pub use geo::{Geodetic, style_parallel, wgs84};
+pub use geo::{Geodetic, MERCATOR_MAX_LATITUDE, style_parallel, wgs84};
 pub use projection::{Descriptor, Projection, UnknownProjection};
 pub use quad::ImageQuad;
 pub use surface::{Globe, Surface};

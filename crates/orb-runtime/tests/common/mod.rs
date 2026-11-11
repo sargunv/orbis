@@ -84,9 +84,7 @@ pub(crate) fn load_style(map: &mut Map, options: &Options) -> Result<(), String>
 
 /// The default surface's projection.
 pub(crate) fn web_mercator() -> orb_crs::Projection {
-    *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
-        .expect("built-in tile matrix set")
-        .projection()
+    *orb_crs::TileMatrixSet::web_mercator().projection()
 }
 
 /// The camera of `at`, or `None` to use the style's. Its zoom is on

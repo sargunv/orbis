@@ -405,9 +405,7 @@ fn frames_to_idle_save_the_pipeline_cache() {
 #[test]
 fn a_camera_given_keeps_its_pitch_and_bearing() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
-    let mercator = *orb_api::TileMatrixSet::by_id("WebMercatorQuad")
-        .unwrap()
-        .projection();
+    let mercator = *orb_api::TileMatrixSet::web_mercator().projection();
     let (lon, lat) = (139.76_f64, 35.68_f64);
     for zoom in [5.0, 9.0, 15.5] {
         // Eight pixels of ground at this zoom, flat.
@@ -488,9 +486,7 @@ fn paint_reads_the_camera() {
         ..orb_api::CameraState::new(
             orb_api::Geodetic::new(0.0, 0.0),
             2.0,
-            orb_api::TileMatrixSet::by_id("WebMercatorQuad")
-                .unwrap()
-                .projection(),
+            orb_api::TileMatrixSet::web_mercator().projection(),
         )
     };
     let map = || {

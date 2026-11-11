@@ -744,9 +744,7 @@ fn merge<T: std::ops::AddAssign>(a: &mut Option<Track<T>>, b: Option<Track<T>>) 
 #[cfg(test)]
 mod tests {
     fn mercator() -> orb_crs::Projection {
-        *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
-            .unwrap()
-            .projection()
+        *orb_crs::TileMatrixSet::web_mercator().projection()
     }
 
     use super::*;
@@ -754,9 +752,7 @@ mod tests {
     use orb_crs::TileMatrixSet;
 
     fn camera() -> Camera {
-        let projection = *TileMatrixSet::by_id("WebMercatorQuad")
-            .unwrap()
-            .projection();
+        let projection = *TileMatrixSet::web_mercator().projection();
         Camera::new(
             CameraState::new(Geodetic::new(139.7, 35.68), 10.0, &mercator()),
             Surface::from(projection),

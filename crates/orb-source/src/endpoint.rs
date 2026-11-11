@@ -275,7 +275,10 @@ impl TileEndpoint {
         let zoom = |z: f64| ((z + offset).floor().max(0.0) as u8).clamp(self.minzoom, self.maxzoom);
         let [west, south, east, north] = bounds;
         let corner = |lon: f64, lat: f64| {
-            let lat = lat.clamp(-85.051_128_78, 85.051_128_78);
+            let lat = lat.clamp(
+                -orb_crs::MERCATOR_MAX_LATITUDE,
+                orb_crs::MERCATOR_MAX_LATITUDE,
+            );
             self.tms
                 .projection()
                 .forward(orb_crs::Geodetic::new(lon, lat))
@@ -435,7 +438,7 @@ mod tests {
     use super::*;
 
     fn mercator() -> TileMatrixSet {
-        TileMatrixSet::by_id("WebMercatorQuad").unwrap()
+        TileMatrixSet::web_mercator().clone()
     }
 
     #[test]

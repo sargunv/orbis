@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn covers_a_region_at_uniform_zoom() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         // The north-east quadrant of the primary world at zoom 2.
         let region = WorldRect {
             min: DVec2::splat(1.0),
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn refine_stops_at_max_zoom() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         let tiles = tms.cover(0..=0, 1, |_, _| CoverDecision::Refine);
         assert_eq!(tiles.len(), 4);
         assert!(tiles.iter().all(|t| t.index.z == 1));

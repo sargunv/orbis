@@ -745,7 +745,7 @@ impl Job {
         let Some(def) = style.sources.iter().find(|s| s.id == source) else {
             return;
         };
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").expect("registered");
+        let tms = TileMatrixSet::web_mercator().clone();
         // A source without tiles (bad TileJSON) leaves them out.
         let Ok(endpoint) = TileEndpoint::resolve(&def.kind, tilejson, tms) else {
             self.lock().failed += 1;

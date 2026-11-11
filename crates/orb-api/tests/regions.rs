@@ -65,7 +65,7 @@ fn a_downloaded_region_opens_offline() {
         std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:9");
     }
     let runtime = Runtime::new(&options).unwrap();
-    let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+    let mercator = TileMatrixSet::web_mercator();
     let mut map = Map::new(
         &runtime,
         MapOptions {

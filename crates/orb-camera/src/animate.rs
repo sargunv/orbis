@@ -311,7 +311,7 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 fn over_sphere(from: Geodetic, to: Geodetic, t: f64) -> Geodetic {
     let d_lon = nearest_bearing(from.lon, to.lon) - from.lon;
     let lat = lerp(from.lat, to.lat, t).clamp(-90.0, 90.0);
-    let edge = 85.051_129;
+    let edge = orb_crs::MERCATOR_MAX_LATITUDE;
     let (start, end) = (from.lat.clamp(-edge, edge), to.lat.clamp(-edge, edge));
     let k = if (end - start).abs() > 1.0 {
         // ∫ sec x dx, sampled across the equator with the start mirrored.

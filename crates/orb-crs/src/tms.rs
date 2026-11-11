@@ -223,6 +223,14 @@ fn builtin(id: &str) -> Option<Builtin> {
 }
 
 impl TileMatrixSet {
+    /// `WebMercatorQuad`, made once.
+    pub fn web_mercator() -> &'static Self {
+        static SET: std::sync::LazyLock<TileMatrixSet> = std::sync::LazyLock::new(|| {
+            TileMatrixSet::by_id("WebMercatorQuad").expect("built-in tile matrix set")
+        });
+        &SET
+    }
+
     /// A registered tile matrix set by its OGC identifier.
     pub fn by_id(id: &str) -> Result<Self, UnknownTileMatrixSet> {
         if id == "WebMercatorQuad" {
@@ -932,7 +940,7 @@ mod tests {
         }
         let b = mercator.geodetic_bounds(TileIndex::new(1, 1, 0));
         assert!((b[0] - 0.0).abs() < 1e-9 && (b[2] - 180.0).abs() < 1e-9);
-        assert!((b[1] - 0.0).abs() < 1e-9 && (b[3] - 85.051_128_779_806_59).abs() < 1e-9);
+        assert!((b[1] - 0.0).abs() < 1e-9 && (b[3] - crate::MERCATOR_MAX_LATITUDE).abs() < 1e-9);
         let nztm = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
         let p = nztm
             .projection()

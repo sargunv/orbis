@@ -14,7 +14,7 @@ use orb_crs::TileMatrixSet;
 #[test]
 fn covers_match_pinned_gl_js() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("data/covers.json")).unwrap();
-    let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+    let tms = TileMatrixSet::web_mercator();
     let period = tms.tile_span(0);
     let mut failures = Vec::new();
     for case in golden["cases"].as_array().unwrap() {
@@ -37,7 +37,7 @@ fn covers_match_pinned_gl_js() {
         );
         let mut actual: Vec<_> = view
             .cover_volume(
-                &tms,
+                tms,
                 n("tileSize"),
                 n("maxzoom") as u8,
                 n("maxContentElevation") * tms.projection().style_height_scale(camera.target),
@@ -130,7 +130,7 @@ fn covers_match_pinned_gl_js() {
 #[test]
 fn globe_covers_match_pinned_gl_js() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("data/covers.json")).unwrap();
-    let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+    let tms = TileMatrixSet::web_mercator();
     let surface = Surface {
         projection: *tms.projection(),
         globe: Some(orb_crs::Globe::V8),
@@ -159,7 +159,7 @@ fn globe_covers_match_pinned_gl_js() {
         // The globe has one world: GL JS's wraps only name the copy
         // nearest its centre.
         let mut actual: Vec<TileIndex> = view
-            .cover(&tms, tile_px, n("maxzoom") as u8)
+            .cover(tms, tile_px, n("maxzoom") as u8)
             .iter()
             .map(|t| t.index)
             .filter(|t| t.z >= n("minzoom") as u8)
@@ -234,7 +234,7 @@ fn globe_covers_match_pinned_gl_js() {
 /// with `--release -- --nocapture`.
 #[test]
 fn globe_cover_cost() {
-    let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+    let tms = TileMatrixSet::web_mercator();
     let projection = *tms.projection();
     let viewport = Viewport {
         width: 1024.0,
@@ -252,7 +252,7 @@ fn globe_cover_cost() {
                 let start = std::time::Instant::now();
                 let mut tiles = 0;
                 for _ in 0..50 {
-                    tiles = view.cover(&tms, 512.0, 22).len();
+                    tiles = view.cover(tms, 512.0, 22).len();
                 }
                 (tiles, start.elapsed().as_secs_f64() * 1e3 / 50.0)
             };

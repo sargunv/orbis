@@ -211,9 +211,7 @@ impl Scene {
 
 impl Camera {
     pub(crate) fn state(&self) -> CameraState {
-        let mercator = *TileMatrixSet::by_id("WebMercatorQuad")
-            .expect("built in")
-            .projection();
+        let mercator = *TileMatrixSet::web_mercator().projection();
         CameraState {
             bearing: self.bearing,
             pitch: self.pitch,

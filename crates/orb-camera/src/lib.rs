@@ -1442,7 +1442,7 @@ fn tile_zoom(desired: f64) -> f64 {
 mod tests {
     #[test]
     fn whole_zooms_cover_with_their_own_tiles_at_any_latitude() {
-        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = orb_crs::TileMatrixSet::web_mercator();
         for lat in [0.0, 57.0, 80.0] {
             let camera = CameraState::new(Geodetic::new(0.0, lat), 2.0, &mercator());
             let surface = Surface {
@@ -1455,7 +1455,7 @@ mod tests {
             };
             let view = View::new(&camera, viewport, &surface);
             let zooms: Vec<u8> = view
-                .cover(&tms, 512.0, 18)
+                .cover(tms, 512.0, 18)
                 .iter()
                 .map(|c| c.index.z)
                 .collect();
@@ -1467,9 +1467,7 @@ mod tests {
     use orb_crs::Globe;
 
     fn mercator() -> Projection {
-        *TileMatrixSet::by_id("WebMercatorQuad")
-            .unwrap()
-            .projection()
+        *TileMatrixSet::web_mercator().projection()
     }
     use orb_crs::TileIndex;
 
@@ -1477,7 +1475,7 @@ mod tests {
     /// every pixel: not past the horizon, nor past the world's edge.
     #[test]
     fn the_plane_fills_the_view_short_of_the_horizon_and_the_world_edge() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         let world = tms.full_area().unwrap();
         let viewport = Viewport {
             width: 1024.0,
@@ -1538,7 +1536,7 @@ mod tests {
 
     #[test]
     fn mercator_cameras_keep_to_the_world_vertically() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         let p = tms.projection();
         let world = Constraints::WORLD;
         let viewport = Viewport {
@@ -1568,7 +1566,7 @@ mod tests {
     }
 
     fn setup(zoom: f64, pitch: f64) -> (View, TileMatrixSet) {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), zoom, &mercator());
         camera.pitch = pitch;
         let viewport = Viewport {
@@ -1577,7 +1575,7 @@ mod tests {
         };
         (
             View::new(&camera, viewport, &Surface::from(tms.projection())),
-            tms,
+            tms.clone(),
         )
     }
 
@@ -1756,7 +1754,7 @@ mod tests {
 
     #[test]
     fn high_pitch_views_have_finite_frames_and_bounded_covers() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         for zoom in [0.0, 14.48, 24.0] {
             for pitch in [60.0, 80.0, 85.0] {
                 let mut camera =
@@ -1775,7 +1773,7 @@ mod tests {
                 assert!(view.far_px > view.eye_distance_px);
                 assert!(view.ground_horizon().is_finite());
                 assert!(view.sky_horizon().is_finite());
-                let cover = view.cover(&tms, 512.0, 24);
+                let cover = view.cover(tms, 512.0, 24);
                 assert!(!cover.is_empty());
                 assert!(
                     cover.len() < 512,
@@ -1970,7 +1968,7 @@ mod tests {
             assert!(middle.distance(DVec2::new(512.0, 384.0)) < 1e-6);
             assert!(
                 !view
-                    .cover(&TileMatrixSet::by_id("WebMercatorQuad").unwrap(), 512.0, 14)
+                    .cover(TileMatrixSet::web_mercator(), 512.0, 14)
                     .is_empty()
             );
         }
@@ -2050,12 +2048,12 @@ mod tests {
     /// keeps tiles past the ground's horizon covered, as it shows over it.
     #[test]
     fn globe_cover_keeps_tiles_under_lifted_content() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         let view = globe_view(Geodetic::new(0.0, 0.0), 4.5, 80.0, 0.0);
         let globe = view.globe().unwrap();
         let lift = 500e3 * view.world_per_px() / globe.metres_per_px;
-        let plain = view.cover_volume(&tms, 512.0, 22, 0.0, None, 0.0);
-        let lifted = view.cover_volume(&tms, 512.0, 22, lift, None, 0.0);
+        let plain = view.cover_volume(tms, 512.0, 22, 0.0, None, 0.0);
+        let lifted = view.cover_volume(tms, 512.0, 22, lift, None, 0.0);
         assert!(plain.iter().all(|t| lifted.contains(t)));
         let eye = (globe.target + globe.eye).normalize();
         let past: Vec<_> = (lifted.iter())
@@ -2090,7 +2088,7 @@ mod tests {
     /// that the farther tiles' skirts showed through as walls (#149).
     #[test]
     fn globe_terrain_cover_holds_raised_ground() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         for (zoom, pitch) in [(11.6, 72.0), (11.2, 60.0), (11.9, 85.0), (14.0, 70.0)] {
             let mut camera = CameraState::new(Geodetic::new(7.7491, 46.0207), zoom, &mercator());
             (camera.pitch, camera.bearing, camera.elevation) = (pitch, -32.0, 4000.0);
@@ -2104,7 +2102,7 @@ mod tests {
             };
             let view = View::new(&camera, viewport, &surface);
             let globe = view.globe().unwrap();
-            let cover = view.cover_terrain(&tms, 512.0, 22, &Plateau);
+            let cover = view.cover_terrain(tms, 512.0, 22, &Plateau);
             let inverse = globe.view_proj.inverse();
             let shell = sphere::RADIUS + 4000.0;
             let mut seen = 0;
@@ -2140,7 +2138,7 @@ mod tests {
 
     #[test]
     fn globe_covers_every_visible_point() {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = TileMatrixSet::web_mercator();
         for (target, zoom, pitch) in [
             (Geodetic::new(0.0, 0.0), 0.5, 0.0),
             (Geodetic::new(10.0, 50.0), 2.5, 50.0),
@@ -2149,7 +2147,7 @@ mod tests {
             (Geodetic::new(5.0, 5.0), 11.5, 60.0),
         ] {
             let view = globe_view(target, zoom, pitch, 25.0);
-            let cover = view.cover(&tms, 512.0, 22);
+            let cover = view.cover(tms, 512.0, 22);
             assert!(
                 !cover.is_empty() && cover.len() < 400,
                 "{} tiles",

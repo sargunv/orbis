@@ -30,7 +30,7 @@ fn query(map: &mut Map, at: DVec2) -> String {
 #[test]
 fn snapshots_leave_the_live_view_as_it_was() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
-    let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+    let mercator = TileMatrixSet::web_mercator();
     let mut map = Map::new(
         &runtime,
         MapOptions {

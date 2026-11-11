@@ -531,7 +531,7 @@ fn tiles(map: &mut Map, test: &Test, diagnostics: &mut Vec<String>) -> Option<Im
         diagnostics.push(format!("render: {e}"));
         return None;
     }
-    let tms = TileMatrixSet::by_id("WebMercatorQuad").expect("built in");
+    let tms = TileMatrixSet::web_mercator();
     let z = map.zoom().max(0.0) as u8;
     // A view centred on a tile covers that tile alone, give or take the
     // rounding of its centre's coordinates.

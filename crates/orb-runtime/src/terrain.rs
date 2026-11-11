@@ -1157,7 +1157,7 @@ mod tests {
     use orb_render::DRAPE_SLOT_PX;
 
     fn tms() -> TileMatrixSet {
-        TileMatrixSet::by_id("WebMercatorQuad").unwrap()
+        TileMatrixSet::web_mercator().clone()
     }
 
     /// A 4×4 DEM tile rising eastward by 10 m a pixel from 100 m.

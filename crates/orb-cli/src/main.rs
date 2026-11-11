@@ -193,9 +193,7 @@ fn render(
     let camera = match args.numbers("--at", ',')?.as_deref() {
         None => None,
         Some(&[lon, lat, zoom, ref rest @ ..]) if rest.len() <= 2 => {
-            let mercator = *TileMatrixSet::by_id("WebMercatorQuad")
-                .expect("built in")
-                .projection();
+            let mercator = *TileMatrixSet::web_mercator().projection();
             Some(CameraState {
                 bearing: rest.first().copied().unwrap_or(0.0),
                 pitch: rest.get(1).copied().unwrap_or(0.0),

@@ -94,9 +94,7 @@ mod tests {
 
     #[test]
     fn a_free_camera_round_trips() {
-        let mercator = *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
-            .unwrap()
-            .projection();
+        let mercator = *orb_crs::TileMatrixSet::web_mercator().projection();
         let surface = Surface::plane(mercator);
         let viewport = Viewport {
             width: 800.0,

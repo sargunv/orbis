@@ -906,8 +906,7 @@ fn tile_of(camera: &mln_camera, logical: mln_logical_size) -> Result<orb_api::Ti
     let lat = camera.center.latitude.to_radians();
     let y = ((1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0 * n).floor();
     Ok(orb_api::TileRequest {
-        tile_matrix_set: orb_api::TileMatrixSet::by_id("WebMercatorQuad")
-            .map_err(|e| Failure::native(e.to_string()))?,
+        tile_matrix_set: orb_api::TileMatrixSet::web_mercator().clone(),
         z: z as u8,
         col: x.clamp(0.0, n - 1.0) as u32,
         row: y.clamp(0.0, n - 1.0) as u32,

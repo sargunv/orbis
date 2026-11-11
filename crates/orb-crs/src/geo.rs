@@ -13,14 +13,18 @@ pub mod wgs84 {
     pub(crate) const MEAN_RADIUS_M: f64 = 6_371_008.8;
 }
 
+/// The latitude where Web Mercator's square world ends, in degrees.
+pub const MERCATOR_MAX_LATITUDE: f64 = 85.051_128_779_806_59;
+
 /// The parallel's length per unit of style zoom's scale at a latitude, in
 /// degrees: cos φ. Style zoom measures ground resolution along
 /// the parallel, as Web Mercator tiles do; past the latitude where those
-/// tiles end (±85.0511°) it keeps that latitude's scale, so zoom stays
-/// finite at the poles of other planes.
+/// tiles end ([`MERCATOR_MAX_LATITUDE`]) it keeps that latitude's scale,
+/// so zoom stays finite at the poles of other planes.
 pub fn style_parallel(lat: f64) -> f64 {
-    const LIMIT: f64 = 85.051_128_779_806_59;
-    lat.clamp(-LIMIT, LIMIT).to_radians().cos()
+    lat.clamp(-MERCATOR_MAX_LATITUDE, MERCATOR_MAX_LATITUDE)
+        .to_radians()
+        .cos()
 }
 
 /// A geodetic position in degrees on the WGS84 datum.

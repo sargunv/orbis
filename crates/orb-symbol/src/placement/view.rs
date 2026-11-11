@@ -132,11 +132,7 @@ impl TileView {
 /// Web Mercator, which the sphere's tiles are on.
 fn mercator() -> &'static orb_crs::Projection {
     static MERCATOR: std::sync::OnceLock<orb_crs::Projection> = std::sync::OnceLock::new();
-    MERCATOR.get_or_init(|| {
-        *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
-            .expect("built-in tile matrix set")
-            .projection()
-    })
+    MERCATOR.get_or_init(|| *orb_crs::TileMatrixSet::web_mercator().projection())
 }
 
 /// Whether the sphere stands between `eye` and `p` (ECEF). A point in
@@ -256,9 +252,9 @@ mod tests {
 
     #[test]
     fn points_past_a_globe_tile_go_on_exactly_from_its_edge() {
-        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tms = orb_crs::TileMatrixSet::web_mercator();
         let tile = orb_crs::TileIndex::new(1, 1, 0);
-        let series = orb_crs::sphere::series(&tms, tile, 1.0 / 2048.0).unwrap();
+        let series = orb_crs::sphere::series(tms, tile, 1.0 / 2048.0).unwrap();
         let to_world = tms.data_to_world(tile, EXTENT as u32);
         // Identity view: clip x, y are ECEF x, y; the eye far above the tile.
         let centre = series.position(glam::DVec2::splat(0.5));

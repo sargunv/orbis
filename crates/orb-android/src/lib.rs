@@ -121,9 +121,7 @@ fn android_gestures(config: Option<ViewConfiguration>, scale: f64) -> GestureOpt
 }
 
 fn mercator() -> orb_api::Projection {
-    *TileMatrixSet::by_id("WebMercatorQuad")
-        .expect("built in")
-        .projection()
+    *TileMatrixSet::web_mercator().projection()
 }
 
 /// Runs the app on `event_loop` until the activity finishes. `started` is

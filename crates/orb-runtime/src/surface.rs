@@ -94,12 +94,18 @@ impl SurfaceTiles {
             None => None,
         }
     }
+
+    /// A tiled source's set: its own, or `WebMercatorQuad`.
+    pub fn source_tms(&self, id: &str) -> &TileMatrixSet {
+        self.source(id, false)
+            .unwrap_or_else(|| TileMatrixSet::web_mercator())
+    }
 }
 
 impl Default for Surface {
     /// Web Mercator, every source in `WebMercatorQuad`.
     fn default() -> Self {
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").expect("built-in tile matrix set");
+        let tms = TileMatrixSet::web_mercator().clone();
         Self {
             projection: *tms.projection(),
             tms,
@@ -274,11 +280,11 @@ mod tests {
             Ok(true)
         ));
         assert_eq!(surface.plan(&nztm, None), Ok(false));
-        let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
-        assert!(matches!(surface.plan(&mercator, None), Ok(true)));
-        assert!(surface.plan(&mercator, Some(ImageKind::Dem)).is_err());
+        let mercator = TileMatrixSet::web_mercator();
+        assert!(matches!(surface.plan(mercator, None), Ok(true)));
+        assert!(surface.plan(mercator, Some(ImageKind::Dem)).is_err());
         assert!(matches!(
-            surface.plan(&mercator, Some(ImageKind::Raster)),
+            surface.plan(mercator, Some(ImageKind::Raster)),
             Ok(true)
         ));
         assert_eq!(surface.source_tms("other", true), *surface.tms());

@@ -244,9 +244,7 @@ mod tests {
     }
 
     fn setup() -> (Projection, Viewport, CameraState) {
-        let projection = *TileMatrixSet::by_id("WebMercatorQuad")
-            .unwrap()
-            .projection();
+        let projection = *TileMatrixSet::web_mercator().projection();
         let viewport = Viewport {
             width: 800.0,
             height: 600.0,
