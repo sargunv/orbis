@@ -9,7 +9,7 @@
 // too. `--android` draws them in Chrome on the phone assigned to this
 // worktree (`devices-cli assign`), its WebGPU or with `--webgl2` its
 // WebGL 2.
-import { writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,55 @@ try {
     if (["error", "warning"].includes(m.type())) console.error(m.text());
   });
   page.on("pageerror", (e) => console.error(e));
+  // `ORB_GLSL` names a JSON file of rewrites applied to every GLSL source
+  // the page's maps compile, on the page's thread (the map leaves its
+  // worker): `{"rewrites": [{"match": regex, "replace": text, "stage":
+  // "vertex"|"fragment", "shader": a substring the source must hold}],
+  // "dump": dir}`, `dump` writing each fixture's sources to a directory
+  // numbered in request order, for bisecting a driver's miscompile without
+  // rebuilding the core.
+  const glsl = process.env.ORB_GLSL
+    ? JSON.parse(await readFile(process.env.ORB_GLSL, "utf8"))
+    : undefined;
+  let dumped = 0;
+  if (glsl)
+    await page.addInitScript((config) => {
+      delete HTMLElement.prototype.onpointerrawupdate;
+      const sources = (globalThis.__glsl = []);
+      const stages = new WeakMap();
+      const gl = WebGL2RenderingContext.prototype;
+      const create = gl.createShader;
+      gl.createShader = function (type) {
+        const shader = create.call(this, type);
+        if (shader)
+          stages.set(
+            shader,
+            type === this.VERTEX_SHADER ? "vertex" : "fragment",
+          );
+        return shader;
+      };
+      const source = gl.shaderSource;
+      gl.shaderSource = function (shader, text) {
+        const stage = stages.get(shader);
+        for (const r of config.rewrites ?? []) {
+          if (r.stage && r.stage !== stage) continue;
+          if (r.shader && !text.includes(r.shader)) continue;
+          text = text.replace(new RegExp(r.match, "g"), r.replace);
+        }
+        if (config.dump) sources.push({ stage, text, shader });
+        return source.call(this, shader, text);
+      };
+      // With `dump`, ANGLE's translation for the driver beside each
+      // source (`WEBGL_debug_shaders`), read once it compiles.
+      const compile = gl.compileShader;
+      gl.compileShader = function (shader) {
+        compile.call(this, shader);
+        const entry = sources.findLast((s) => s.shader === shader);
+        const debug = config.dump && this.getExtension("WEBGL_debug_shaders");
+        if (entry && debug)
+          entry.translated = debug.getTranslatedShaderSource(shader);
+      };
+    }, glsl);
   const open = () =>
     page
       .goto(`${server.url}fixture.html${webgl2 ? "?backend=webgl2" : ""}`)
@@ -76,6 +125,25 @@ try {
           ),
         ),
       ]);
+      if (glsl?.dump) {
+        const dir = resolve(glsl.dump, String(dumped++).padStart(4, "0"));
+        await mkdir(dir, { recursive: true });
+        const sources = await page.evaluate(() =>
+          globalThis.__glsl.splice(0).map(({ stage, text, translated }) => ({
+            stage,
+            text,
+            translated,
+          })),
+        );
+        for (const [i, { stage, text, translated }] of sources.entries()) {
+          await writeFile(resolve(dir, `${i}.${stage}.glsl`), text);
+          if (translated)
+            await writeFile(
+              resolve(dir, `${i}.${stage}.angle.glsl`),
+              translated,
+            );
+        }
+      }
       if (request.query) {
         reply({ features: result });
       } else {

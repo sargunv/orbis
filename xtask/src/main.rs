@@ -46,8 +46,9 @@ cargo xtask <task>
                core-gl.wasm (WebGL 2) into web/pkg, and report sizes;
                --names also writes core.wasm whole, with its function
                names, to target/web/core-names.wasm (for `pnpm -C web coverage`);
-               --panics builds both to say on the console why they panic
-               (bigger: for debugging, never to ship); --gl builds
+               --panics builds both to say on the console why they panic,
+               core-gl.wasm with its function names in the stacks (bigger:
+               for debugging, never to ship); --gl builds
                core-gl.wasm alone
   deferred <profile>  rewrite web/deferred.txt from wasm-split's profile
                of target/web/core-names.wasm (`pnpm -C web coverage --tour

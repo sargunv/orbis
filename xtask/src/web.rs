@@ -250,7 +250,13 @@ fn module(
     let wasm = out.join(format!("{name}_bg.wasm"));
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let Some(names) = split else {
-        run(&mut wasm_opt(&wasm, &wasm))?;
+        // A module built to say why it panics names its functions in the
+        // stacks it logs too (`-g`): it's never shipped.
+        let mut opt = wasm_opt(&wasm, &wasm);
+        if panics {
+            opt.arg("-g");
+        }
+        run(&mut opt)?;
         let bytes = read(&wasm)?;
         return Ok(Sizes {
             raw: bytes.len(),
