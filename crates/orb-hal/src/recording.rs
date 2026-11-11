@@ -127,6 +127,15 @@ impl<G: Gpu> Recording<G> {
         out
     }
 
+    fn texture_made(&mut self, desc: &TextureDesc<'_>, id: TextureId) {
+        let text = format!(
+            "{:?} {:?} samples {} views {:?} {:?}",
+            desc.format, desc.dimension, desc.sample_count, desc.view_formats, desc.usage
+        );
+        let label = desc.label.to_string();
+        self.def(Ref::Texture(id.0), Def::Plain { label, text });
+    }
+
     fn def(&mut self, id: Ref, def: Def) {
         self.defs.insert(id, def);
     }
@@ -411,14 +420,19 @@ impl<G: Gpu> Gpu for Recording<G> {
         self.inner.release_host_bytes(bytes);
     }
 
+    fn texture_fits(&self, desc: &TextureDesc<'_>) -> bool {
+        self.inner.texture_fits(desc)
+    }
+
+    fn try_create_texture(&mut self, desc: &TextureDesc<'_>) -> Option<TextureId> {
+        let id = self.inner.try_create_texture(desc)?;
+        self.texture_made(desc, id);
+        Some(id)
+    }
+
     fn create_texture(&mut self, desc: &TextureDesc<'_>) -> TextureId {
         let id = self.inner.create_texture(desc);
-        let text = format!(
-            "{:?} {:?} samples {} views {:?} {:?}",
-            desc.format, desc.dimension, desc.sample_count, desc.view_formats, desc.usage
-        );
-        let label = desc.label.to_string();
-        self.def(Ref::Texture(id.0), Def::Plain { label, text });
+        self.texture_made(desc, id);
         id
     }
 

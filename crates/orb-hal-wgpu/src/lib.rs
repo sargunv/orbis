@@ -41,6 +41,18 @@ pub use wgpu;
 /// The largest buffer, and storage binding, Orbis asks a device for.
 const LARGEST_BUFFER: u64 = 1 << 30;
 
+/// The bytes of a texture's first level GL takes
+/// ([`Limits::max_texture_bytes`]), over the layers wgpu makes it with
+/// ([`gl_array_layers`]): below what Chrome's ANGLE allocates on Metal
+/// (1.25 GiB on an M6) and on GL (2 GiB).
+const GL_TEXTURE_BYTES: u64 = 1 << 30;
+
+/// Textures from this many bytes up are ones GL is asked about after it
+/// makes them ([`Gpu::try_create_texture`]): large enough that a driver
+/// may refuse one, and few, so the synchronous query (a round trip to
+/// Chrome's GPU process) is rare.
+const CHECKED_TEXTURE_BYTES: u64 = 64 << 20;
+
 /// The frame driver a native device's renderers take: `gpu` (the default
 /// where the device has it), or `cpu` and `cpu-tex`
 /// ([`WgpuGpu::force_cpu_driver`]).
@@ -111,6 +123,10 @@ pub struct WgpuGpu {
     caps: Caps,
     /// The device is wgpu's GL back end (WebGL 2, GLES).
     gl: bool,
+    /// Array textures count the layers GL makes them with
+    /// ([`gl_array_layers`]) against [`Limits::max_texture_bytes`]: on GL,
+    /// and under [`force_webgl2`](Self::force_webgl2), which stands in for it.
+    gl_layers: bool,
     /// The device is a GL one that takes GLSL ES (WebGL 2, OpenGL ES):
     /// pipelines compile the build's GLSL there (`ShaderModuleDesc::glsl`).
     glsl_es: bool,
@@ -355,6 +371,33 @@ fn gl_takes_glsl_es(device: &wgpu::Device) -> bool {
     false
 }
 
+/// Whether GL raised an error since it was last asked, clearing it: after
+/// a texture is made, whether the driver refused it. Never on other back
+/// ends.
+#[allow(unsafe_code)]
+#[cfg_attr(
+    not(any(feature = "gl", target_os = "android")),
+    allow(unused_variables)
+)]
+fn gl_error(device: &wgpu::Device) -> bool {
+    #[cfg(any(feature = "gl", target_os = "android"))]
+    {
+        use glow::HasContext;
+        // SAFETY: only reads and clears GL's error flags.
+        let Some(device) = (unsafe { device.as_hal::<wgpu::hal::api::Gles>() }) else {
+            return false;
+        };
+        let gl = device.context().lock();
+        // A context holds a flag per kind of error at most.
+        (0..8)
+            .take_while(|_| unsafe { gl.get_error() } != glow::NO_ERROR)
+            .count()
+            > 0
+    }
+    #[cfg(not(any(feature = "gl", target_os = "android")))]
+    false
+}
+
 /// Whether `device`, a GL one, clips depth from 0 to 1 as the shaders
 /// write it (`EXT_clip_control`; Chrome, Safari and ANGLE have it, Firefox
 /// doesn't), rather than wgpu remapping it into GL's -1 to 1.
@@ -413,6 +456,7 @@ impl WgpuGpu {
                     .min(wgpu::Limits::default().max_texture_dimension_2d),
                 largest_texture_dimension_2d: limits.max_texture_dimension_2d,
                 max_texture_array_layers: limits.max_texture_array_layers,
+                max_texture_bytes: if gl { GL_TEXTURE_BYTES } else { u64::MAX },
                 min_storage_buffer_offset_alignment: limits.min_storage_buffer_offset_alignment,
                 min_uniform_buffer_offset_alignment: limits.min_uniform_buffer_offset_alignment,
             },
@@ -445,6 +489,7 @@ impl WgpuGpu {
             pipeline_cache_kept: None,
             caps,
             gl,
+            gl_layers: gl,
             glsl_es,
             texture_usages: platform_texture_usages(),
             buffers: Slots::default(),
@@ -522,6 +567,8 @@ impl WgpuGpu {
         let limits = &mut self.caps.limits;
         limits.max_texture_dimension_2d = limits.max_texture_dimension_2d.min(8192);
         limits.max_texture_array_layers = limits.max_texture_array_layers.min(256);
+        limits.max_texture_bytes = limits.max_texture_bytes.min(GL_TEXTURE_BYTES);
+        self.gl_layers = true;
         limits.min_uniform_buffer_offset_alignment =
             limits.min_uniform_buffer_offset_alignment.max(256);
     }
@@ -1326,6 +1373,37 @@ impl Gpu for WgpuGpu {
 
     fn release_host_bytes(&mut self, bytes: HostBytesId) {
         self.host_bytes.remove(bytes.0);
+    }
+
+    fn texture_fits(&self, desc: &TextureDesc<'_>) -> bool {
+        let layers = if self.gl_layers && desc.dimension == TextureViewDimension::D2Array {
+            gl_array_layers(desc)
+        } else {
+            desc.array_layers
+        };
+        orb_hal::level_bytes(desc, layers) <= self.caps.limits.max_texture_bytes
+    }
+
+    fn try_create_texture(&mut self, desc: &TextureDesc<'_>) -> Option<TextureId> {
+        let layers = if self.gl && desc.dimension == TextureViewDimension::D2Array {
+            gl_array_layers(desc)
+        } else {
+            desc.array_layers
+        };
+        let bytes = orb_hal::level_bytes(desc, layers);
+        let checked = self.gl && bytes >= CHECKED_TEXTURE_BYTES;
+        // An error raised before it isn't the texture's.
+        if checked {
+            gl_error(&self.device);
+        }
+        let texture = self.create_texture(desc);
+        if !(checked && gl_error(&self.device)) {
+            return Some(texture);
+        }
+        self.destroy_texture(texture);
+        let limits = &mut self.caps.limits;
+        limits.max_texture_bytes = limits.max_texture_bytes.min(bytes / 2);
+        None
     }
 
     fn create_texture(&mut self, desc: &TextureDesc<'_>) -> TextureId {

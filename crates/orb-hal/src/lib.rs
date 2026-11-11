@@ -52,6 +52,21 @@ pub trait Gpu {
     fn release_host_bytes(&mut self, bytes: HostBytesId);
 
     fn create_texture(&mut self, desc: &TextureDesc<'_>) -> TextureId;
+    /// Whether the device allocates a texture of `desc`: its first mip
+    /// level, over the layers the device makes it with, within
+    /// [`Limits::max_texture_bytes`]. Sides and layers within the other
+    /// limits are the caller's to keep.
+    fn texture_fits(&self, desc: &TextureDesc<'_>) -> bool {
+        level_bytes(desc, desc.array_layers) <= self.caps().limits.max_texture_bytes
+    }
+    /// [`create_texture`](Self::create_texture), or `None` where the
+    /// device says at once that it couldn't allocate it (GL's driver
+    /// refusing a large one), for textures large enough that it might:
+    /// the device then lowers its [`Limits::max_texture_bytes`] below
+    /// it, so that the caller can ask for less.
+    fn try_create_texture(&mut self, desc: &TextureDesc<'_>) -> Option<TextureId> {
+        Some(self.create_texture(desc))
+    }
     /// A view of some of a texture's mip levels, to render into or sample
     /// apart from the others (WebGPU's `createView`). Destroying it with
     /// [`destroy_texture`](Self::destroy_texture) leaves the texture.
@@ -224,6 +239,15 @@ impl Caps {
     }
 }
 
+/// Bytes of `desc`'s first mip level with `layers` layers.
+pub fn level_bytes(desc: &TextureDesc<'_>, layers: u32) -> u64 {
+    u64::from(desc.width)
+        * u64::from(desc.height)
+        * u64::from(layers)
+        * u64::from(desc.format.texel_bytes())
+        * u64::from(desc.sample_count.max(1))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub max_buffer_size: u64,
@@ -238,6 +262,13 @@ pub struct Limits {
     /// terrain drape's pages, whose stacks then share a layer).
     pub largest_texture_dimension_2d: u32,
     pub max_texture_array_layers: u32,
+    /// The most bytes a texture's first mip level may take over its
+    /// layers ([`Gpu::texture_fits`]): unbounded on WebGPU and the native
+    /// back ends, whose limit is memory. GL has a limit it doesn't report:
+    /// Chrome's ANGLE refuses past 2 GiB on GL and 1.25 GiB on Metal (an
+    /// M6 with 32 GiB), so GL takes 1 GiB, lowered where the driver
+    /// refuses less ([`Gpu::try_create_texture`]).
+    pub max_texture_bytes: u64,
     pub min_storage_buffer_offset_alignment: u32,
     pub min_uniform_buffer_offset_alignment: u32,
 }

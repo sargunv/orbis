@@ -12,7 +12,7 @@ version.workspace = true
 # `wgpu/wgsl`). Natively, `gl` adds GLES over EGL beside the platform's own
 # backend (Android always has it).
 webgpu = ["wgpu/webgpu", "wgpu/wgsl"]
-gl = ["wgpu/webgl", "wgpu/gles"]
+gl = ["wgpu/webgl", "wgpu/gles", "dep:glow"]
 # Vulkan beside Metal on Apple platforms (MoltenVK), for checking the Vulkan
 # path under the validation layer there, and beside D3D12 on Windows, for
 # checking a vendor's Vulkan driver; Linux and Android always have it.
@@ -23,6 +23,8 @@ angle = ["gl", "wgpu/angle"]
 
 [dependencies]
 futures-channel.workspace = true
+# GL's error flag after a large texture (`try_create_texture`).
+glow = { workspace = true, optional = true }
 orb-hal.workspace = true
 wgpu.workspace = true
 
@@ -69,6 +71,7 @@ ash.workspace = true
 # GLES for Android 11 and below, whose Vulkan Orbis can't use.
 [target.'cfg(target_os = "android")'.dependencies]
 wgpu = { workspace = true, features = ["vulkan", "gles"] }
+glow.workspace = true
 
 # D3D12 is on every Windows 10+ machine (VMs, Remote Desktop and WARP too);
 # Vulkan there depends on the vendor's driver.

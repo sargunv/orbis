@@ -9,7 +9,9 @@ use glam::DVec2;
 use orb_camera::View;
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_hal::Gpu;
-use orb_render::{ClipRect, DemRef, Family, PlacementTarget, Renderer, TileRow, TileWarp};
+use orb_render::{
+    ClipRect, DemRef, DrapeFull, Family, PlacementTarget, Renderer, TileRow, TileWarp,
+};
 use orb_source::Draw;
 
 use crate::map::*;
@@ -603,11 +605,19 @@ impl Map {
         let slots = (wanted.unwrap_or(tiles).max(tiles), &kept[..]);
         let (layout, moves) = match renderer.reserve_drape(gpu, slots, at_rest) {
             Ok(reserved) => reserved,
-            Err(_) => {
+            Err(full) => {
                 // The cover fits the atlas's room (`Terrain::update`)
-                // unless its stacks leave none for the view's tiles.
-                self.warnings
-                    .push("too many drape stacks for the drape atlas; terrain is flat".into());
+                // unless its stacks leave none for the view's tiles, or the
+                // device refused the pages, which then fit in less.
+                self.warnings.push(match full {
+                    DrapeFull::Room => {
+                        "too many drape stacks for the drape atlas; terrain is flat".into()
+                    }
+                    DrapeFull::Refused(bytes) => format!(
+                        "the GPU refused the drape atlas's {} MiB; terrain is flat until it fits in less",
+                        bytes >> 20
+                    ),
+                });
                 renderer.set_terrain(gpu, None);
                 return None;
             }

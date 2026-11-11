@@ -85,7 +85,7 @@ impl TilePage {
         Self {
             textures: textures
                 .iter()
-                .map(|&t| (t, create(gpu, &t, capacity)))
+                .map(|&t| (t, gpu.create_texture(&desc(&t, capacity))))
                 .collect(),
             capacity,
             max_layers,
@@ -170,12 +170,19 @@ impl TilePage {
 
     /// Grows the arrays by half (at least [`GROWTH`] layers): pages of
     /// large tiles overshoot less than by doubling.
+    /// Fails at the device's most layers, or past the bytes it allocates
+    /// a texture ([`Gpu::texture_fits`], [`Gpu::try_create_texture`]),
+    /// which then are the page's most.
     pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu) -> Result<(), OutOfSpace> {
-        if self.capacity >= self.max_layers {
+        let capacity = self.grown_capacity();
+        if capacity <= self.capacity {
             return Err(OutOfSpace);
         }
-        let capacity = self.grown_capacity();
-        self.resize(gpu, capacity);
+        let fits = (self.textures.iter()).all(|(t, _)| gpu.texture_fits(&desc(t, capacity)));
+        if !fits || self.resize(gpu, capacity).is_err() {
+            self.max_layers = self.capacity;
+            return Err(OutOfSpace);
+        }
         self.layers.grow(capacity);
         Ok(())
     }
@@ -205,8 +212,10 @@ impl TilePage {
         if capacity == self.capacity {
             return false;
         }
+        if self.resize(gpu, capacity).is_err() {
+            return false;
+        }
         self.layers.shrink(capacity);
-        self.resize(gpu, capacity);
         true
     }
 
@@ -222,12 +231,24 @@ impl TilePage {
 
     /// Moves the arrays into ones of `capacity` layers, the layers held
     /// copied over. The copy is submitted at once, so writes queued before
-    /// it land in the old arrays first and later ones after it.
-    fn resize(&mut self, gpu: &mut dyn Gpu, capacity: u32) {
+    /// it land in the old arrays first and later ones after it. Fails,
+    /// keeping the arrays, where the device refuses one.
+    fn resize(&mut self, gpu: &mut dyn Gpu, capacity: u32) -> Result<(), OutOfSpace> {
+        let mut made = Vec::with_capacity(self.textures.len());
+        for (t, _) in &self.textures {
+            match gpu.try_create_texture(&desc(t, capacity)) {
+                Some(texture) => made.push(texture),
+                None => {
+                    for texture in made {
+                        gpu.destroy_texture(texture);
+                    }
+                    return Err(OutOfSpace);
+                }
+            }
+        }
         let kept = self.layers.held_below().min(capacity);
         let mut copies = Vec::with_capacity(self.textures.len());
-        for (desc, texture) in &mut self.textures {
-            let moved = create(gpu, desc, capacity);
+        for ((desc, texture), moved) in self.textures.iter_mut().zip(made) {
             copies.push(Pass::CopyTexture {
                 source: *texture,
                 destination: moved,
@@ -250,6 +271,7 @@ impl TilePage {
         }
         self.capacity = capacity;
         self.revision += 1;
+        Ok(())
     }
 }
 
@@ -263,8 +285,8 @@ fn texture_bytes(desc: &PageTexture, layers: u32) -> u64 {
     bytes * u64::from(layers)
 }
 
-fn create(gpu: &mut dyn Gpu, desc: &PageTexture, layers: u32) -> TextureId {
-    gpu.create_texture(&TextureDesc {
+fn desc(desc: &PageTexture, layers: u32) -> TextureDesc<'static> {
+    TextureDesc {
         label: desc.label,
         width: desc.width,
         height: desc.height,
@@ -275,5 +297,5 @@ fn create(gpu: &mut dyn Gpu, desc: &PageTexture, layers: u32) -> TextureId {
         sample_count: 1,
         mip_levels: desc.mip_levels,
         view_formats: &[],
-    })
+    }
 }

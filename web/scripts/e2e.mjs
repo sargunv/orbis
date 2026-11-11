@@ -79,8 +79,10 @@
 //   synchronously: web/deferred.txt defers something first frames run,
 //   and `pnpm coverage --tour --write` refreshes it), then fetch it.
 // - `webgl2`: in a Chromium without WebGPU (#140), the scenario in the
-//   worker and on the page; the Tokyo extract at two views and pitched
-//   terrain, each within 1% of pixels of WebGPU's; extrusions report
+//   worker and on the page; the Tokyo extract at two views, pitched
+//   terrain, and the extract on the globe over terrain pitched 79° at
+//   z15.5, its drape pages within what WebGL 2 allocates, each within 1% of
+//   pixels of WebGPU's and the last with no GL error in the browser's log; extrusions report
 //   `depth-precision` (`degraded`) exactly where `EXT_clip_control` is
 //   missing; and a lost GPU recovers on WebGL 2.
 // - `offline` (only when asked for: it needs the network): downloads the
@@ -3231,6 +3233,8 @@ async function webgl2(webgpuBrowser, server) {
       `webgl2: terrain as on WebGPU (${(share * 100).toFixed(2)}% of pixels differ)`,
     );
 
+    await pitchedCity(webgpuBrowser, browser, server);
+
     // Extrusions say their depth is GL's only where the context has no
     // clip control (Firefox); a GPU lost recovers on WebGL 2 and draws
     // again.
@@ -3284,6 +3288,82 @@ async function webgl2(webgpuBrowser, server) {
     await browser.close();
   }
   await firefoxAttributeZero(server);
+}
+
+/**
+ * The Tokyo extract on the globe over terrain, pitched 79° at z15.5 in a
+ * 1440x900 window at a pixel ratio of 2: dozens of terrain tiles under
+ * several drape stacks, whose drape pages Chrome's WebGL 2 refused when
+ * they took a 16384-texel layer (2 GiB with the layer GL adds), drawing
+ * the ground black. WebGL 2 draws it as WebGPU does, with no GL error in
+ * the browser's log (which the page's console doesn't hear).
+ */
+async function pitchedCity(webgpuBrowser, browser, server) {
+  const style = JSON.parse(
+    await readFile(join(DATA, "tokyo-mvt.json"), "utf8"),
+  );
+  const data = `${server.url}e2e/data/`;
+  style.sources.openmaptiles.url = `pmtiles://${data}tokyo-mvt.pmtiles`;
+  style.glyphs = `${data}glyphs/{fontstack}/{range}.pbf`;
+  style.sprite = `${data}sprites/ofm`;
+  style.sources.dem = await hills(server);
+  style.terrain = { source: "dem", exaggeration: 1.5 };
+  style.projection = { type: "globe" };
+  await writeFile(join(server.styles, "city.json"), JSON.stringify(style));
+  const view = "#15.5/35.676/139.745/-67/79";
+  const shot = async (browser, backend) => {
+    const page = await browser.newPage({
+      viewport: { width: 1440, height: 900 },
+      deviceScaleFactor: 2,
+    });
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    // GL errors reach the browser's log, from the map's worker too, and
+    // never the console.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Log.enable");
+    cdp.on("Log.entryAdded", ({ entry }) => {
+      if (entry.level === "error" || /GL_|WebGL/.test(entry.text))
+        errors.push(entry.text);
+    });
+    const url = `${server.url}e2e/styles/city.json`;
+    await page.goto(`${server.url}?style=${url}&backend=${backend}${view}`);
+    await page.waitForFunction(
+      () => document.getElementById("app")?.dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
+    assert.equal(await page.evaluate(() => app.map.backend), backend);
+    await page
+      .locator(".corner, .attribution, .toast")
+      .evaluateAll((elements) => {
+        for (const element of elements) element.style.visibility = "hidden";
+      });
+    const image = decodePng(await page.locator("#map").screenshot());
+    await page.close();
+    assert.deepEqual(
+      [...new Set(errors.map((e) => e.replace(/^\[\.WebGL-\w+\] /, "")))],
+      [],
+      `${backend}: errors`,
+    );
+    return image;
+  };
+  const [gpu, gl] = [
+    await shot(webgpuBrowser, "webgpu"),
+    await shot(browser, "webgl2"),
+  ];
+  let differ = 0;
+  for (let i = 0; i < gpu.pixels.length; i += gpu.channels) {
+    const d = [0, 1, 2].map((c) =>
+      Math.abs(gpu.pixels[i + c] - gl.pixels[i + c]),
+    );
+    if (Math.max(...d) > 24) differ++;
+  }
+  const share = differ / (gpu.width * gpu.height);
+  assert.ok(share < 0.01, `pitched city: ${(share * 100).toFixed(2)}% differ`);
+  console.log(
+    `webgl2: a city pitched 79° on the globe over terrain as on WebGPU, without GL errors (${(share * 100).toFixed(2)}% of pixels differ)`,
+  );
 }
 
 /**

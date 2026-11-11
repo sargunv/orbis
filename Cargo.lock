@@ -2852,6 +2852,7 @@ version = "0.0.0"
 dependencies = [
  "ash",
  "futures-channel",
+ "glow",
  "js-sys",
  "libloading",
  "log",

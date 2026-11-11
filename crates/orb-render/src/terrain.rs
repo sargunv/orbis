@@ -91,26 +91,84 @@ fn atlas_grid(
     Some((per_layer, 1 << k.div_ceil(2), 1 << (k / 2)))
 }
 
+/// The grid of a layer a stack for `tiles` tile slots, rounded up to a
+/// power of two: the fewest texels a page of them can take.
+fn tight_grid(tiles: u32) -> Grid {
+    let k = tiles.max(1).next_power_of_two().ilog2();
+    (1, 1 << k.div_ceil(2), 1 << (k / 2))
+}
+
+/// Whether the device allocates page `page` in `grid` for `stacks` stacks
+/// ([`Gpu::texture_fits`]).
+fn fits(gpu: &dyn Gpu, page: usize, (per_layer, columns, rows): Grid, stacks: u32) -> bool {
+    let px = PAGE_PX[page];
+    let size = [columns * px, rows * px];
+    gpu.texture_fits(&atlas_desc(size, stacks.div_ceil(per_layer), px, false))
+}
+
 /// The terrain tiles the drape pages hold, with `stacks` colour and slope
 /// stacks: the slots of a layer of WebGPU's default texture side (64
 /// colour slots), however many stacks there are, and on every device that
 /// has it, so that a view's terrain doesn't depend on either. A layer of
-/// the device's largest side holds more of the stacks.
+/// the device's largest side holds more of the stacks. Where a page of a
+/// layer a stack of them takes more bytes than the device allocates a
+/// texture (GL's [`Limits::max_texture_bytes`]), it holds half as many,
+/// and so on until such a page fits.
 pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
     let alloc = allocated(stacks);
     let limits = gpu.caps().limits;
     (0..2)
         .filter(|&p| alloc[p] > 0)
         .map(|p| {
-            let side = atlas_side(limits.max_texture_dimension_2d, PAGE_PX[p]);
-            if alloc[p] <= limits.max_texture_array_layers {
-                side * side
-            } else {
-                0
+            if alloc[p] > limits.max_texture_array_layers {
+                return 0;
             }
+            let side = atlas_side(limits.max_texture_dimension_2d, PAGE_PX[p]);
+            let mut tiles = side * side;
+            while tiles > 0 && !fits(gpu, p, tight_grid(tiles), alloc[p]) {
+                tiles /= 2;
+            }
+            tiles
         })
         .min()
         .expect("a colour page")
+}
+
+/// Page `page`'s grid for `tiles` tile slots of `stacks` stacks
+/// ([`atlas_grid`]), or `None` to keep `held`: at the device's largest
+/// side, or a smaller one where that page takes more bytes than the device
+/// allocates, or else a layer a stack ([`tight_grid`]), which a cover
+/// within the [`room`] fits.
+fn page_grid(
+    gpu: &dyn Gpu,
+    page: usize,
+    tiles: u32,
+    held: Option<Grid>,
+    stacks: u32,
+) -> Option<Grid> {
+    let limits = gpu.caps().limits;
+    let base = atlas_side(limits.max_texture_dimension_2d, PAGE_PX[page]);
+    let mut side = atlas_side(limits.largest_texture_dimension_2d, PAGE_PX[page]);
+    loop {
+        let grid = atlas_grid(tiles, held, stacks, side)?;
+        if fits(gpu, page, grid, stacks) {
+            return Some(grid);
+        }
+        if side <= base {
+            return Some(tight_grid(tiles));
+        }
+        side /= 2;
+    }
+}
+
+/// Why the drape pages can't hold a view's terrain tiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrapeFull {
+    /// The style's drape stacks leave no room for them ([`room`]).
+    Room,
+    /// The device refused a page of this many bytes; pages take fewer from
+    /// then on ([`Gpu::try_create_texture`]).
+    Refused(u64),
 }
 
 /// The stacks each page holds: the colour page at least one, so that it
@@ -308,6 +366,31 @@ fn slot_runs(slots: &[u32], columns: u32) -> Vec<[u32; 4]> {
     rects
 }
 
+/// A drape page's texture: `layers` layers of `size` texels, mipmapped
+/// down from slots of `slot_px`.
+fn atlas_desc(size: [u32; 2], layers: u32, slot_px: u32, linear: bool) -> TextureDesc<'static> {
+    TextureDesc {
+        label: "drape atlas",
+        width: size[0],
+        height: size[1],
+        array_layers: layers,
+        dimension: TextureViewDimension::D2Array,
+        format: DRAPE_FORMAT,
+        usage: TextureUsages::RENDER_ATTACHMENT
+            | TextureUsages::TEXTURE_BINDING
+            | TextureUsages::STORAGE_BINDING
+            | TextureUsages::COPY_SRC
+            | TextureUsages::COPY_DST,
+        sample_count: 1,
+        mip_levels: slot_px.ilog2() + 1,
+        view_formats: if linear {
+            &[TextureFormat::Rgba8UnormSrgb]
+        } else {
+            &[]
+        },
+    }
+}
+
 #[derive(Debug)]
 struct Atlas {
     /// Layers of [`DrapeLayout::per_layer`] stacks, mipmapped.
@@ -334,7 +417,7 @@ struct Atlas {
 
 impl Atlas {
     /// A page of `layers` layers of `columns × rows` slots of `slot_px`
-    /// texels.
+    /// texels, or the bytes of one the device refused.
     fn new(
         gpu: &mut dyn Gpu,
         (columns, rows, layers): (u32, u32, u32),
@@ -342,29 +425,13 @@ impl Atlas {
         clear_layout: BindGroupLayoutId,
         downsampler: &mut crate::downsample::Downsampler,
         linear: bool,
-    ) -> Self {
+    ) -> Result<Self, u64> {
         let size = [columns, rows].map(|n| n * slot_px);
         let levels = slot_px.ilog2() + 1;
-        let texture = gpu.create_texture(&TextureDesc {
-            label: "drape atlas",
-            width: size[0],
-            height: size[1],
-            array_layers: layers,
-            dimension: TextureViewDimension::D2Array,
-            format: DRAPE_FORMAT,
-            usage: TextureUsages::RENDER_ATTACHMENT
-                | TextureUsages::TEXTURE_BINDING
-                | TextureUsages::STORAGE_BINDING
-                | TextureUsages::COPY_SRC
-                | TextureUsages::COPY_DST,
-            sample_count: 1,
-            mip_levels: levels,
-            view_formats: if linear {
-                &[TextureFormat::Rgba8UnormSrgb]
-            } else {
-                &[]
-            },
-        });
+        let desc = atlas_desc(size, layers, slot_px, linear);
+        let texture = gpu
+            .try_create_texture(&desc)
+            .ok_or_else(|| level_bytes(&desc, layers) * 4 / 3)?;
         let views: Vec<TextureId> = (0..levels)
             .map(|l| gpu.create_texture_view(texture, l..l + 1))
             .collect();
@@ -394,7 +461,7 @@ impl Atlas {
                 mips.regions.entry(1),
             ],
         });
-        Self {
+        Ok(Self {
             texture,
             size,
             layers,
@@ -405,7 +472,7 @@ impl Atlas {
             size_uniform,
             clear,
             mips,
-        }
+        })
     }
 
     /// A layer's slots: columns and rows.
@@ -725,16 +792,8 @@ impl Terrain {
                 .map(|a| (state.per_layer[page], a.grid()))
                 .map(|(per_layer, (columns, rows))| (per_layer, columns, rows));
             let holds = held.is_some_and(|(k, c, r)| tile_slots <= c * r / k);
-            let largest = gpu.caps().limits.largest_texture_dimension_2d;
             let grid = (may_shrink || !holds)
-                .then(|| {
-                    atlas_grid(
-                        tile_slots,
-                        held,
-                        alloc[page],
-                        atlas_side(largest, PAGE_PX[page]),
-                    )
-                })
+                .then(|| page_grid(gpu, page, tile_slots, held, alloc[page]))
                 .flatten();
             changed |= grid.is_some();
             grids[page] = grid.or(held);
@@ -749,17 +808,19 @@ impl Terrain {
     /// or `None` when the pages stay. A change of stacks blanks every slot
     /// (a new [`DrapeLayout::generation`]). Pages that hold the slots
     /// stay unless `may_shrink`, which a map at rest passes. Fails when
-    /// the slots exceed the device's texture size ([`room`]).
+    /// the slots exceed the device's texture size ([`room`]), or when the
+    /// device refuses a page, which leaves none: the next reserve makes
+    /// them anew, smaller.
     pub(crate) fn reserve(
         &mut self,
         gpu: &mut dyn Gpu,
         (tile_slots, kept): (u32, &[u32]),
         (stacks, may_shrink): ([u32; 2], bool),
         downsampler: &mut crate::downsample::Downsampler,
-    ) -> Result<Option<Vec<(u32, u32)>>, crate::OutOfSpace> {
+    ) -> Result<Option<Vec<(u32, u32)>>, DrapeFull> {
         let state = self.layout_state;
         if tile_slots > room(gpu, stacks) {
-            return Err(crate::OutOfSpace);
+            return Err(DrapeFull::Room);
         }
         let alloc = allocated(stacks);
         let same = self.atlas[0].is_some() && state.stacks == stacks;
@@ -808,7 +869,7 @@ impl Terrain {
             };
             let linear = page == 0 && self.target.color.is_srgb();
             let (per_layer, columns, rows) = grid;
-            let atlas = Atlas::new(
+            let made = Atlas::new(
                 gpu,
                 (columns, rows, alloc[page].div_ceil(per_layer)),
                 PAGE_PX[page],
@@ -816,6 +877,16 @@ impl Terrain {
                 downsampler,
                 linear,
             );
+            let atlas = match made {
+                Ok(atlas) => atlas,
+                Err(bytes) => {
+                    old.release(gpu);
+                    self.release_atlas(gpu);
+                    self.pending.clear();
+                    self.forget_group(gpu);
+                    return Err(DrapeFull::Refused(bytes));
+                }
+            };
             if let Some(old) = old {
                 let px = PAGE_PX[page];
                 let first = if page == 0 { 0 } else { stacks[0] };

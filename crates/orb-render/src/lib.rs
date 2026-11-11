@@ -37,7 +37,7 @@ mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky, GroundLight};
 pub use layer_composite::Blend;
 pub use terrain::{
-    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
+    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
     TerrainGlobe, TerrainPaint, TerrainTile,
 };
 
@@ -1360,14 +1360,15 @@ impl Renderer {
     /// drape stack, keeping the texels of the tile slots in `kept`. Returns
     /// the layout and the kept slots that moved (from, to). A new layout
     /// generation means every slot is blank. Fails past the
-    /// [`drape_room`](Self::drape_room). Pages that hold the slots stay
+    /// [`drape_room`](Self::drape_room), or where the device refuses a
+    /// page, which the next call makes smaller. Pages that hold the slots stay
     /// unless `may_shrink`: a continuous map shrinks them at rest.
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,
         (tile_slots, kept): (u32, &[u32]),
         may_shrink: bool,
-    ) -> Result<(DrapeLayout, Vec<(u32, u32)>), OutOfSpace> {
+    ) -> Result<(DrapeLayout, Vec<(u32, u32)>), DrapeFull> {
         let stacks = self.drape_stacks();
         let terrain = self.terrain.as_mut().expect("terrain is on");
         let made = terrain.reserve(
