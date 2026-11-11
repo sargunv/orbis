@@ -209,6 +209,74 @@ fn packed_writes_in_one_submission_all_land() {
     }
 }
 
+/// An array copied into a larger one, as a page grows: every layer lands
+/// in its own. On the Adreno 619's GLES (Chrome's WebGL 2), copying from a
+/// layer attached to the read framebuffer copied layer 0 into all of them,
+/// and labels drew other glyphs' texels once the glyph page grew.
+#[test]
+fn grown_arrays_keep_every_layer() {
+    // `read_layers` reads rows of 256 bytes.
+    const SIZE: u32 = 256;
+    const LAYERS: u32 = 8;
+    let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+    let array = |gpu: &mut WgpuGpu, layers| {
+        gpu.create_texture(&TextureDesc {
+            label: "page",
+            width: SIZE,
+            height: SIZE,
+            array_layers: layers,
+            dimension: D2Array,
+            format: TextureFormat::R8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::COPY_SRC,
+            sample_count: 1,
+            mip_levels: 1,
+            view_formats: &[],
+        })
+    };
+    let page = array(&mut gpu, LAYERS);
+    // Each layer its own texels: a row-varying value offset by the layer.
+    let texels = |layer: u32| -> Vec<u8> {
+        (0..SIZE * SIZE)
+            .map(|i| (layer * 29 + i / SIZE + 1) as u8)
+            .collect()
+    };
+    for layer in 0..LAYERS {
+        gpu.write_texture(
+            &TextureRegion {
+                texture: page,
+                x: 0,
+                y: 0,
+                layer,
+                width: SIZE,
+                height: SIZE,
+                level: 0,
+            },
+            &texels(layer),
+        );
+    }
+    let grown = array(&mut gpu, LAYERS + 4);
+    gpu.submit(&[Pass::CopyTexture {
+        source: page,
+        destination: grown,
+        copies: vec![TextureCopy {
+            from: [0; 3],
+            to: [0; 3],
+            size: [SIZE, SIZE, LAYERS],
+        }],
+    }]);
+    let read = read_layers(&gpu, grown);
+    let layer_texels = (SIZE * SIZE) as usize;
+    for layer in 0..LAYERS {
+        let at = layer as usize * layer_texels;
+        assert!(
+            read[at..at + layer_texels] == texels(layer)[..],
+            "layer {layer} holds another layer's texels"
+        );
+    }
+}
+
 /// Every layer of an R8 array texture, read back.
 fn read_layers(gpu: &WgpuGpu, id: TextureId) -> Vec<u8> {
     let texture = gpu.texture(id).clone();

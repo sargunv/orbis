@@ -4,7 +4,7 @@
 //!
 //! A page is one or more texture arrays that share layer numbers: a DEM
 //! tile has its raw elevations, a padded copy and its slopes in the same
-//! layer of three arrays. Pages start small and double when full, copying
+//! layer of three arrays. Pages start at one layer and grow when full, copying
 //! their layers into the larger arrays; [`TilePage::revision`] changes so
 //! bind groups over the old arrays are rebuilt.
 
@@ -16,8 +16,15 @@ use orb_hal::{
 
 use crate::scene::OutOfSpace;
 
-/// Layers a page holds before it first grows.
-const INITIAL_LAYERS: u32 = 8;
+/// Layers a page holds before it first grows: one, so any page that holds
+/// more has grown, and its copy (`resize`) runs wherever a second tile or
+/// glyph page arrives, every fixture with either testing it. Starting at
+/// eight, the copy ran only past an eighth glyph page, and nothing caught
+/// the Adreno 619's WebGL 2 copying layer 0 into every layer, which drew
+/// labels with other glyphs' texels.
+const FIRST_LAYERS: u32 = 1;
+/// Layers a page grows by at least.
+const GROWTH: u32 = 8;
 
 /// One of a page's texture arrays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,7 +81,7 @@ impl TilePage {
     /// A page of texture arrays whose layers are allocated together.
     pub(crate) fn new(gpu: &mut dyn Gpu, textures: &[PageTexture]) -> Self {
         let max_layers = gpu.caps().limits.max_texture_array_layers;
-        let capacity = INITIAL_LAYERS.min(max_layers);
+        let capacity = FIRST_LAYERS.min(max_layers);
         Self {
             textures: textures
                 .iter()
@@ -161,8 +168,8 @@ impl TilePage {
         }
     }
 
-    /// Grows the arrays by half (at least 8 layers): pages of large tiles
-    /// overshoot less than by doubling.
+    /// Grows the arrays by half (at least [`GROWTH`] layers): pages of
+    /// large tiles overshoot less than by doubling.
     pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu) -> Result<(), OutOfSpace> {
         if self.capacity >= self.max_layers {
             return Err(OutOfSpace);
@@ -186,7 +193,7 @@ impl TilePage {
     }
 
     fn grown_capacity(&self) -> u32 {
-        (self.capacity + (self.capacity / 2).max(INITIAL_LAYERS)).min(self.max_layers)
+        (self.capacity + (self.capacity / 2).max(GROWTH)).min(self.max_layers)
     }
 
     /// Halves the arrays while every held layer lies in their lowest
@@ -209,7 +216,7 @@ impl TilePage {
     }
 
     fn shrunk_capacity(&self) -> u32 {
-        let first = INITIAL_LAYERS.min(self.max_layers);
+        let first = FIRST_LAYERS.min(self.max_layers);
         super::shrunk(self.capacity, self.layers.held_below(), first)
     }
 
