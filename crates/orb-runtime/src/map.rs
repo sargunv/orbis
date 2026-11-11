@@ -1479,17 +1479,7 @@ impl Map {
         let clock = Arc::clone(&self.services.clock);
         let started = clock.now();
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
-        self.fit_color_space(gpu, renderer);
-        renderer.set_antialias_3d(gpu, self.antialias_3d);
-        renderer.set_keep_all(gpu, self.keep_all_cull);
-        self.apply_arrivals(gpu, renderer, pixel_ratio);
-        self.prewarm(gpu, renderer);
-        // A style that arrived may mix colours in another space.
-        if self.fit_color_space(gpu, renderer) {
-            renderer.set_antialias_3d(gpu, self.antialias_3d);
-            renderer.set_keep_all(gpu, self.keep_all_cull);
-            self.apply_arrivals(gpu, renderer, pixel_ratio);
-        }
+        self.take_arrivals(gpu, renderer, pixel_ratio);
         let mut times = FrameTimes {
             // Uploads and label commits are stages of their own.
             arrivals: micros(started + self.upload_ms + self.placement_ms, clock.now()),
@@ -1540,28 +1530,9 @@ impl Map {
 
         let now = frame_time;
         let time = self.shader_time();
-        let mut fading = false;
         // A prepared frame leaves paint to the frame that draws: it asks
         // for tiles sooner.
-        if let Some(style) = &mut self.style
-            && target.is_some()
-        {
-            let mut images = self.services.images.0.lock().expect("images poisoned");
-            let missing;
-            (fading, missing) = crate::paint::frame(
-                gpu,
-                renderer,
-                style,
-                &mut self.transitions,
-                (zoom, crate::paint::camera_inputs(self.camera.state())),
-                (now, time),
-                images.atlas.as_mut().expect("initialized"),
-            );
-            drop(images);
-            for name in missing {
-                self.events.push(MapEvent::StyleImageMissing { name });
-            }
-        }
+        let fading = target.is_some() && self.paint_frame(gpu, renderer, zoom, (now, time));
         if let Some(style) = &mut self.style {
             style.symbol_tiles.clear();
         }
@@ -1570,7 +1541,6 @@ impl Map {
             ground: at.ground,
             ..crate::light::frame_light(&root.light, self.camera.state())
         };
-        let mut frame_terrain = None;
         if let Some(style) = &mut self.style
             && !std::mem::replace(&mut style.glyphs_fetched, true)
         {
@@ -1586,62 +1556,13 @@ impl Map {
         // redraws are the drawn frame's, to the next one.
         let drawing = target.is_some();
         // Slots redrawn: the next frame drops their drape placements.
-        let mut redrew = false;
-        if self.style.is_some() {
-            // Terrain's DEM and cover first: the sources cover over its
-            // elevations, and drape over its tiles.
-            let at = clock.now();
-            if drawing {
-                frame_terrain = self.update_terrain(gpu, renderer, &view, &mut report);
+        let (frame_terrain, redrew) = match self.style.is_some() {
+            true => {
+                let stages = (&mut report, &mut times, &mut drawn);
+                self.update_scene(gpu, renderer, &view, drawing, stages)
             }
-            let planning = clock.now();
-            times.terrain = micros(at, planning);
-            let elevation = self.terrain_elevation();
-            // Failed tiles due for a retry go, so the plan asks for them.
-            let now = self.services.clock.now();
-            for source in self.style.iter_mut().flat_map(|s| &mut s.sources) {
-                if let SourceState::Ready { pyramid, .. } = source {
-                    pyramid.retry_failed(now);
-                }
-            }
-            let plan = self.plan_frame(renderer, &view, elevation.as_deref());
-            for (index, update) in plan.into_iter().enumerate() {
-                self.apply_source(renderer, index, update, &mut report);
-            }
-            let draping = clock.now();
-            times.plan = micros(planning, draping);
-            let drape = match drawing {
-                true => self.plan_drape(gpu, renderer, &view),
-                false => None,
-            };
-            let placing = clock.now();
-            times.drape = micros(draping, placing);
-            redrew = drape.as_ref().is_some_and(|d| !d.redraw.is_empty());
-            if drawing {
-                self.place_background(
-                    gpu,
-                    renderer,
-                    &view,
-                    elevation.as_deref(),
-                    drape.as_ref(),
-                    &mut report,
-                );
-            }
-            for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
-                self.place_source(
-                    gpu,
-                    renderer,
-                    &view,
-                    index,
-                    drape.as_ref(),
-                    &mut report,
-                    &mut drawn,
-                );
-            }
-            self.trim_cache(renderer);
-            renderer.shrink(gpu);
-            times.place = micros(placing, clock.now());
-        }
+            false => (None, false),
+        };
         // Everything the frame shows has arrived, labels aside.
         let data_loaded = self.style_loaded()
             && report.tiles_loading == 0
@@ -1692,8 +1613,161 @@ impl Map {
             && now >= self.image_fades_until;
         self.source_events();
 
-        let globe = view.globe().map(|globe| frame_globe(globe, &view));
-        let frame = FrameBlock {
+        let frame = self.frame_block(
+            &view,
+            (viewport, pixel_ratio),
+            zoom,
+            (frame_terrain, frame_light),
+        );
+        // The shared atlas grows pages as images arrive.
+        if let Some(atlas) = &self
+            .services
+            .images
+            .0
+            .lock()
+            .expect("images poisoned")
+            .atlas
+        {
+            renderer.set_images(atlas.bindings());
+        }
+        report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
+        times.render = report.frame.times;
+        // A frame that left something out for a compiling pipeline isn't
+        // complete. Only a compile still pending wakes the host when it
+        // finishes: a frame that waited with none pending (a pipeline's
+        // arrival blanked the drape slots, to draw from the next frame)
+        // asks for that frame itself.
+        self.settle_report(renderer, &mut report, moving);
+        times.total = micros(started, clock.now());
+        report.times = times;
+        report
+    }
+
+    /// Takes in what arrived, and the device's state the map sets: in a
+    /// style that arrived, colours may mix in another space, and what
+    /// arrived is taken in again for the renderer made for it.
+    fn take_arrivals(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, pixel_ratio: f32) {
+        self.fit_color_space(gpu, renderer);
+        renderer.set_antialias_3d(gpu, self.antialias_3d);
+        renderer.set_keep_all(gpu, self.keep_all_cull);
+        self.apply_arrivals(gpu, renderer, pixel_ratio);
+        self.prewarm(gpu, renderer);
+        // A style that arrived may mix colours in another space.
+        if self.fit_color_space(gpu, renderer) {
+            renderer.set_antialias_3d(gpu, self.antialias_3d);
+            renderer.set_keep_all(gpu, self.keep_all_cull);
+            self.apply_arrivals(gpu, renderer, pixel_ratio);
+        }
+    }
+
+    /// Writes the frame's paint at `zoom` and frame time `now` (`time` the
+    /// shaders'); whether a pattern or dash cross-fade still fades.
+    fn paint_frame(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        zoom: f64,
+        (now, time): (f64, f64),
+    ) -> bool {
+        let Some(style) = &mut self.style else {
+            return false;
+        };
+        let mut images = self.services.images.0.lock().expect("images poisoned");
+        let (fading, missing) = crate::paint::frame(
+            gpu,
+            renderer,
+            style,
+            &mut self.transitions,
+            (zoom, crate::paint::camera_inputs(self.camera.state())),
+            (now, time),
+            images.atlas.as_mut().expect("initialized"),
+        );
+        drop(images);
+        for name in missing {
+            self.events.push(MapEvent::StyleImageMissing { name });
+        }
+        fading
+    }
+
+    /// Brings the style's terrain, sources and drape to the view and places
+    /// their tiles, timing each stage into `times`, the tiles drawn for
+    /// picking into `drawn`; with `drawing`, a frame drawn and not only
+    /// prepared. Returns the frame's terrain and whether drape slots were
+    /// redrawn.
+    fn update_scene(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        view: &View,
+        drawing: bool,
+        (report, times, drawn): (
+            &mut FrameReport,
+            &mut FrameTimes,
+            &mut Vec<crate::query::DrawnTile>,
+        ),
+    ) -> (Option<orb_render::FrameTerrain>, bool) {
+        let clock = Arc::clone(&self.services.clock);
+        let mut frame_terrain = None;
+        // Terrain's DEM and cover first: the sources cover over its
+        // elevations, and drape over its tiles.
+        let at = clock.now();
+        if drawing {
+            frame_terrain = self.update_terrain(gpu, renderer, view, report);
+        }
+        let planning = clock.now();
+        times.terrain = micros(at, planning);
+        let elevation = self.terrain_elevation();
+        // Failed tiles due for a retry go, so the plan asks for them.
+        let now = self.services.clock.now();
+        for source in self.style.iter_mut().flat_map(|s| &mut s.sources) {
+            if let SourceState::Ready { pyramid, .. } = source {
+                pyramid.retry_failed(now);
+            }
+        }
+        let plan = self.plan_frame(renderer, view, elevation.as_deref());
+        for (index, update) in plan.into_iter().enumerate() {
+            self.apply_source(renderer, index, update, report);
+        }
+        let draping = clock.now();
+        times.plan = micros(planning, draping);
+        let drape = match drawing {
+            true => self.plan_drape(gpu, renderer, view),
+            false => None,
+        };
+        let placing = clock.now();
+        times.drape = micros(draping, placing);
+        let redrew = drape.as_ref().is_some_and(|d| !d.redraw.is_empty());
+        if drawing {
+            self.place_background(
+                gpu,
+                renderer,
+                view,
+                elevation.as_deref(),
+                drape.as_ref(),
+                report,
+            );
+        }
+        for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
+            self.place_source(gpu, renderer, view, index, drape.as_ref(), report, drawn);
+        }
+        self.trim_cache(renderer);
+        renderer.shrink(gpu);
+        times.place = micros(placing, clock.now());
+        (frame_terrain, redrew)
+    }
+
+    /// The frame block of `view` drawn at `zoom` into a `viewport` of
+    /// `pixel_ratio`, with its terrain and light.
+    fn frame_block(
+        &self,
+        view: &View,
+        (viewport, pixel_ratio): (Viewport, f32),
+        zoom: f64,
+        (frame_terrain, frame_light): (Option<orb_render::FrameTerrain>, orb_render::FrameLight),
+    ) -> FrameBlock {
+        let now = self.frame_time;
+        let globe = view.globe().map(|globe| frame_globe(globe, view));
+        FrameBlock {
             camera: view.camera_world().to_array(),
             world_span: self
                 .surface
@@ -1716,11 +1790,9 @@ impl Map {
             camera_to_center: view.camera_to_center() as f32,
             align: match globe {
                 Some(_) => [0.0; 2],
-                None => pixel_alignment(
-                    &view,
-                    self.surface.projection(),
-                    self.camera.state().bearing,
-                ),
+                None => {
+                    pixel_alignment(view, self.surface.projection(), self.camera.state().bearing)
+                }
             },
             terrain: frame_terrain.map(|t| orb_render::FrameTerrain {
                 ground: self.camera.state().elevation as f32,
@@ -1728,25 +1800,14 @@ impl Map {
             }),
             light: frame_light,
             globe,
-        };
-        // The shared atlas grows pages as images arrive.
-        if let Some(atlas) = &self
-            .services
-            .images
-            .0
-            .lock()
-            .expect("images poisoned")
-            .atlas
-        {
-            renderer.set_images(atlas.bindings());
         }
-        report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
-        times.render = report.frame.times;
-        // A frame that left something out for a compiling pipeline isn't
-        // complete. Only a compile still pending wakes the host when it
-        // finishes: a frame that waited with none pending (a pipeline's
-        // arrival blanked the drape slots, to draw from the next frame)
-        // asks for that frame itself.
+    }
+
+    /// Settles a drawn frame's report on what the renderer did: whether it
+    /// waited for a compile, whether the camera rests (`moving` it moved
+    /// this frame), its scene and memory; asks for the pipelines later
+    /// views may need once at rest.
+    fn settle_report(&mut self, renderer: &Renderer, report: &mut FrameReport, moving: bool) {
         report.compiling = report.idle && report.frame.waited && report.frame.pipelines_pending > 0;
         report.loaded &= !report.frame.waited;
         report.idle &= !report.frame.waited;
@@ -1783,9 +1844,6 @@ impl Map {
             self.events.push(MapEvent::Error { message });
         }
         self.candidates_dropped = dropped;
-        times.total = micros(started, clock.now());
-        report.times = times;
-        report
     }
 
     /// Asks for the style's pipelines ahead of need, if a frame at rest
