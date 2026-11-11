@@ -428,30 +428,6 @@ pub unsafe extern "C" fn mln_map_attach_win32_window(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_win32_window") }
 }
 
-/// `mln_map_camera_for_geometry`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_camera_for_geometry(
-    map: mln_map,
-    geometry: mln_buffer_view,
-    fit_options: *const mln_camera_fit_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_camera_for_geometry") }
-}
-
-/// `mln_map_fit_camera_to_geometry`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_fit_camera_to_geometry(
-    map: mln_map,
-    geometry: mln_buffer_view,
-    update: *const mln_camera_fit_update,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_fit_camera_to_geometry") }
-}
-
 /// `mln_map_set_free_camera_options`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_set_free_camera_options(
@@ -937,6 +913,10 @@ const _: () = {
         crate::map::mln_map_begin_command_group,
     ];
     let _ = [
+        crate::sys::mln_map_camera_for_geometry,
+        crate::map::mln_map_camera_for_geometry,
+    ];
+    let _ = [
         crate::sys::mln_map_camera_for_lat_lng_bounds,
         crate::map::mln_map_camera_for_lat_lng_bounds,
     ];
@@ -960,6 +940,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_map_end_command_group,
         crate::map::mln_map_end_command_group,
+    ];
+    let _ = [
+        crate::sys::mln_map_fit_camera_to_geometry,
+        crate::map::mln_map_fit_camera_to_geometry,
     ];
     let _ = [
         crate::sys::mln_map_fit_camera_to_lat_lng_bounds,

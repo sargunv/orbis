@@ -187,7 +187,7 @@ pub(crate) unsafe fn sized<'a, T>(pointer: *const T, what: &str) -> Result<&'a T
     let size = unsafe { *pointer.cast::<u32>() } as usize;
     if size < std::mem::size_of::<T>() {
         return Err(Failure::argument(format!(
-            "{what}.size is {size}, smaller than {}",
+            "{what} needs a valid size: {what}.size is too small ({size} < {})",
             std::mem::size_of::<T>()
         )));
     }
