@@ -21,7 +21,7 @@ mod moves;
 mod store;
 mod terrain;
 
-pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions};
+pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions, MAX_DURATION_MS};
 pub use fit::{FitOptions, Padding};
 pub use free::FreeCamera;
 pub use lod::{LOD_EASE, TileLod, TileLodMode};

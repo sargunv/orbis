@@ -1461,6 +1461,40 @@ mod tests {
     }
 
     #[test]
+    fn flights_that_would_never_end_jump() {
+        let to = Geodetic::new(-74.0, 40.7);
+        let target = CameraTarget {
+            center: Some(to),
+            zoom: Some(10.0),
+            ..CameraTarget::default()
+        };
+        let speeds = [0.0, f64::NAN, 1e-300, -1.0];
+        let options = speeds
+            .map(|speed| FlyOptions {
+                speed,
+                ..FlyOptions::default()
+            })
+            .into_iter()
+            .chain([
+                FlyOptions {
+                    screen_speed: Some(0.0),
+                    ..FlyOptions::default()
+                },
+                FlyOptions {
+                    duration: Some(f64::INFINITY),
+                    ..FlyOptions::default()
+                },
+            ]);
+        for options in options {
+            let mut camera = camera();
+            camera.fly_to(&target, &options, Some(0.0));
+            assert!(!camera.frame(0.0), "{options:?} lands at once");
+            assert!((camera.state().target.lon - to.lon).abs() < 1e-9);
+            assert!((camera.state().zoom(&mercator()) - 10.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
     fn glides_continue_and_compose() {
         let mut camera = camera();
         let start = camera.state().zoom(&mercator());

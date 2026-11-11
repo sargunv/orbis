@@ -121,12 +121,18 @@ impl Default for EaseOptions {
     }
 }
 
+/// The longest a flight runs, in milliseconds, and the longest duration
+/// mln-ffi's C API takes: MapLibre Native's clock's span (nanoseconds in
+/// 64 bits, 292 years).
+pub const MAX_DURATION_MS: f64 = i64::MAX as f64 / 1e6;
+
 /// GL JS's `flyTo` options.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlyOptions {
     /// How far the flight zooms out: ρ in van Wijk and Nuij's curve.
     pub curve: f64,
-    /// Average speed along the curve, in ρ-screenfuls per second.
+    /// Average speed along the curve, in ρ-screenfuls per second. One that
+    /// gives no finite duration within [`MAX_DURATION_MS`] jumps.
     pub speed: f64,
     /// Average speed in screenfuls per second, overriding `speed`.
     pub screen_speed: Option<f64>,
@@ -483,9 +489,15 @@ impl Motion {
                 .map_or(options.speed, |screens| screens / curve.rho);
             1000.0 * curve.s / speed
         });
-        let duration = match options.max_duration {
-            Some(max) if duration > max => 0.0,
-            _ => duration,
+        // A flight longer than its maximum jumps instead, as GL JS's does,
+        // and so does one that would never end: no speed, a NaN, or longer
+        // than Native's clock holds.
+        let limit = options
+            .max_duration
+            .map_or(MAX_DURATION_MS, |max| max.min(MAX_DURATION_MS));
+        let duration = match (0.0..=limit).contains(&duration) {
+            true => duration,
+            false => 0.0,
         };
         Self::Fly {
             from,

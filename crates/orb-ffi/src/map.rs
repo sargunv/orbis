@@ -1481,9 +1481,6 @@ fn check_point(p: &mln_screen_point) -> Result {
     Ok(())
 }
 
-/// The longest duration Native's clock holds: nanoseconds in 64 bits.
-const NATIVE_DURATION_MS: f64 = i64::MAX as f64 / 1e6;
-
 /// An Orbis camera move from the options' fields.
 fn target(entry: &MapEntry, camera: &mln_camera_options) -> Result<CameraTarget> {
     let f = camera.fields;
@@ -1570,7 +1567,7 @@ impl Animation {
         if has(MLN_ANIMATION_OPTION_DURATION)
             && !(a.duration_ms.is_finite()
                 && a.duration_ms >= 0.0
-                && a.duration_ms <= NATIVE_DURATION_MS)
+                && a.duration_ms <= orb_camera::MAX_DURATION_MS)
         {
             return Err(Failure::argument(
                 "duration_ms must be a non-negative duration within the native duration range",
