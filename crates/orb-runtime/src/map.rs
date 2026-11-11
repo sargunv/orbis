@@ -3,7 +3,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use orb_camera::{CameraState, View, Viewport};
-use orb_crs::{TileIndex, TileMatrixSet};
+use orb_crs::{Metres, TileIndex, TileMatrixSet};
 
 use crate::surface::Surface;
 use orb_hal::{Gpu, TextureId};
@@ -2600,10 +2600,10 @@ impl Map {
         // GL JS's `getSkirtLength`: a fifth of a tile's width at the
         // camera's zoom, in metres at the equator.
         let zoom = self.camera.state().zoom(self.surface.projection());
-        let skirt = match self.terrain_skirts {
+        let skirt = Metres(match self.terrain_skirts {
             true => 2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0,
             false => 0.0,
-        };
+        });
         // Viewport-anchored hillshades turn with the map: they drape their
         // slopes into a stack of their own, which the cover's room counts,
         // and the terrain pass lights them.
@@ -2632,8 +2632,7 @@ impl Map {
             }
         }
         let at = (view, self.surface.tms());
-        let (frame, requests) =
-            terrain.upkeep(gpu, renderer, at, unpack, skirt * view.height_scale());
+        let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, view.world_z(skirt));
         let mut loads = Vec::new();
         for tile in requests {
             if !endpoint.contains(tile) {

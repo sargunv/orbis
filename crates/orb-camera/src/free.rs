@@ -36,7 +36,7 @@ impl CameraState {
                 .projection
                 .inverse(view.camera_world() + eye.truncate())
                 .wrapped(),
-            altitude: eye.z / view.height_scale(),
+            altitude: view.height_of(eye.z).0,
             bearing: self.bearing,
             pitch: self.pitch,
             roll: self.roll,
