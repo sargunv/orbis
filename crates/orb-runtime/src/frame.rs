@@ -821,6 +821,7 @@ impl Map {
         drape: Option<&DrapePlan>,
         report: &mut FrameReport,
     ) {
+        renderer.set_background_fills(false);
         let Some(style) = &mut self.style else {
             return;
         };
@@ -922,7 +923,14 @@ impl Map {
         if placed.and(renderer.place(tile, 8192, &rows)).is_err() {
             self.warnings
                 .push("out of tile placements; the background is not drawn".into());
+            return;
         }
+        // Flat on the plane, its tiles cover every pixel when the plane
+        // fills the view.
+        let fills = elevation.is_none()
+            && drape.is_none()
+            && tms.full_area().is_some_and(|world| view.plane_fills(world));
+        renderer.set_background_fills(fills);
     }
 }
 

@@ -586,6 +586,23 @@ impl TileMatrixSet {
         (0..rows).flat_map(move |row| (0..cols).map(move |col| TileIndex::new(z, col, row)))
     }
 
+    /// The area every level's tiles cover without a gap, when each matrix
+    /// holds its whole quadtree level under the first's tiles: a cover of
+    /// a region inside it leaves no hole. `None` for a set whose matrices
+    /// hold only part of a level.
+    pub fn full_area(&self) -> Option<WorldRect> {
+        let first = self.matrices[0];
+        let whole = (first.col, first.row) == (0, 0)
+            && (self.matrices.iter().enumerate()).all(|(k, &m)| m == first.deeper(k as u32));
+        whole.then(|| {
+            let areas = self.roots().map(|t| self.tile_area(t));
+            areas.reduce(|a, b| WorldRect {
+                min: a.min.min(b.min),
+                max: a.max.max(b.max),
+            })
+        })?
+    }
+
     /// The world rectangle a tile covers.
     pub fn tile_bounds(&self, tile: TileIndex) -> WorldRect {
         let span = self.tile_span(tile.z);

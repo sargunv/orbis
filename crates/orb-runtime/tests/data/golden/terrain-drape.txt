@@ -114,6 +114,7 @@ submit 0
   render pass "main"
     colour texture "target"#0 resolve None Clear([1.0, 1.0, 1.0, 1.0]) Store
     bundles [bundle "layers"#0]
+    bundles [bundle "layers"#1]
   pop
 
 buffer "draw args"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE | INDIRECT)
@@ -558,6 +559,10 @@ buffer "composite"#0: BufferUsages(COPY_DST | UNIFORM)
 texture "composite blank"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING)
 sampler "composite"#0: Linear mips Nearest anisotropy 1
 group "composite"#0: layout layout "composite"#0; 0 buffer "composite"#0 at 0 size None; 1 texture "terrain layer"#0 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
+bundle "layers"#0: [Rgba8Unorm] depth None samples 1
+    pipeline render "composite over"#0
+    group 0 group "composite"#0
+    draw 0..3 0..1
 buffer "composite"#1: BufferUsages(COPY_DST | UNIFORM)
 group "composite"#1: layout layout "composite"#0; 0 buffer "composite"#1 at 0 size None; 1 texture "terrain layer"#1 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
 layout "symbol pass"#0: 0 ShaderStages(FRAGMENT) Uniform; 
@@ -577,10 +582,7 @@ group "node"#2: layout layout "node"#0; 0 buffer "node uniforms"#0 at 51712 size
 group "node"#3: layout layout "node"#0; 0 buffer "node uniforms"#0 at 52224 size Some(512)
 group "node"#4: layout layout "node"#0; 0 buffer "node uniforms"#0 at 60416 size Some(512)
 group "node"#5: layout layout "node"#0; 0 buffer "node uniforms"#0 at 61440 size Some(512)
-bundle "layers"#0: [Rgba8Unorm] depth None samples 1
-    pipeline render "composite over"#0
-    group 0 group "composite"#0
-    draw 0..3 0..1
+bundle "layers"#1: [Rgba8Unorm] depth None samples 1
     pipeline render "composite over"#0
     group 0 group "composite"#1
     draw 0..3 0..1

@@ -593,6 +593,41 @@ impl View {
             .then(|| (near + (far - near) * t).truncate() + self.camera_world)
     }
 
+    /// Whether the datum's plane fills the viewport inside `world` (a
+    /// gapless area, [`TileMatrixSet::full_area`]), so that a cover of the
+    /// view leaves no pixel out: each corner's ray meets the plane between
+    /// the near and far planes, within the world's rows and, on a wrapping
+    /// one, the copies a cover takes. The plane's part on screen is the
+    /// corners' convex hull, which then lies in `world`. Never on a globe.
+    pub fn plane_fills(&self, world: WorldRect) -> bool {
+        if self.globe.is_some() {
+            return false;
+        }
+        // As `cover_tiles` takes its copies.
+        let reach = (self.far_px * self.world_per_px).max(self.viewport.width * self.world_per_px);
+        let (lo, hi) = match self.projection.wrap_period() {
+            Some(period) => {
+                let copies = (reach / period).ceil().min(3.0) * period;
+                (world.min.x - copies, world.max.x + copies)
+            }
+            None => (world.min.x, world.max.x),
+        };
+        let (w, h) = (self.viewport.width, self.viewport.height);
+        [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)]
+            .into_iter()
+            .all(|(x, y)| {
+                let (near, far) = self.ray(DVec2::new(x, y), &self.view_proj);
+                let t = near.z / (near.z - far.z);
+                let p = (near + (far - near) * t).truncate() + self.camera_world;
+                far.z < near.z
+                    && (0.0..1.0).contains(&t)
+                    && p.x > lo
+                    && p.x < hi
+                    && p.y > world.min.y
+                    && p.y < world.max.y
+            })
+    }
+
     /// On a low-zoom surface, the point under a point in logical pixels on
     /// it, `z` world units up, or `None` where the view ray misses it.
     pub(crate) fn low_ground(&self, px: DVec2, z: f64) -> Option<Geodetic> {
@@ -1437,6 +1472,30 @@ mod tests {
             .projection()
     }
     use orb_crs::TileIndex;
+
+    /// A background may stand in for the clear only where its tiles meet
+    /// every pixel: not past the horizon, nor past the world's edge.
+    #[test]
+    fn the_plane_fills_the_view_short_of_the_horizon_and_the_world_edge() {
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let world = tms.full_area().unwrap();
+        let viewport = Viewport {
+            width: 1024.0,
+            height: 768.0,
+        };
+        let fills = |zoom: f64, pitch: f64| {
+            let camera = CameraState {
+                pitch,
+                ..CameraState::new(Geodetic::new(139.7, 35.7), zoom, &mercator())
+            };
+            View::new(&camera, viewport, &Surface::plane(mercator())).plane_fills(world)
+        };
+        assert!(fills(12.0, 0.0));
+        assert!(fills(15.0, 60.0));
+        assert!(!fills(15.0, 85.0));
+        assert!(!fills(0.0, 0.0));
+        assert!(fills(2.0, 0.0));
+    }
 
     #[test]
     fn padding_moves_the_target_and_the_horizon_to_the_padded_middle() {

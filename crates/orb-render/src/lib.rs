@@ -257,6 +257,10 @@ struct Node {
     /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
     /// other than normally, the layer composites once.
     composite: Option<(u32, f32, Blend)>,
+    /// A background's colour where it is solid (opaque, no pattern), as
+    /// its fragments write it: what the main pass can clear to in place
+    /// of drawing it ([`Renderer::set_background_fills`]).
+    solid: Option<[f32; 4]>,
     /// It has been shown since it was made: its pipelines were asked for,
     /// and the bundles record it. Until then it costs nothing, neither
     /// pipelines nor targets nor passes.
@@ -335,6 +339,13 @@ pub struct Renderer {
     symbol_pass_layout: BindGroupLayoutId,
     /// [`QUAD_INDICES`], the index buffer symbol quads draw with.
     quad_indices: BufferId,
+    /// The frame's backgrounds cover every pixel
+    /// ([`set_background_fills`](Self::set_background_fills)).
+    background_fills: bool,
+    /// The solid background node the first of `bundles` ends with, as
+    /// they were recorded: the bundle a frame the backgrounds fill leaves
+    /// out, clearing to its colour.
+    beneath: Option<usize>,
     /// Nodes changed since pipelines were last made for them, or one
     /// was shown.
     pipelines_stale: bool,
@@ -680,6 +691,8 @@ impl Renderer {
             symbol_pass_buffer: pass_buffer,
             symbol_pass_layout,
             quad_indices,
+            background_fills: false,
+            beneath: None,
             pipelines_stale: false,
             made_seen: 0,
             ground_lit: false,
@@ -997,6 +1010,7 @@ impl Renderer {
                 shaded,
                 by_zoom,
                 composite: None,
+                solid: None,
                 drawn: false,
                 left_out: Default::default(),
             });
@@ -1519,6 +1533,14 @@ impl Renderer {
             "paint family mismatch for node {node}"
         );
         let mut words = paint.uniform_words(node, self.linear.is_some());
+        entry.solid = match paint {
+            NodePaint::Background(p)
+                if p.table_mask == 0 && p.state.mask == 0 && p.color[3] * p.opacity == 1.0 =>
+            {
+                Some(color_in(p.color, self.linear.is_some()).map(|c| c * p.opacity))
+            }
+            _ => None,
+        };
         if let NodePaint::Symbol(p) = paint {
             use orb_shaders::layout::symbol_node as n;
             words[n::GLYPH_PAGE] = (GLYPH_PAGE as f32).to_bits();
@@ -1608,6 +1630,31 @@ impl Renderer {
             self.pipelines_stale |= visible && !entry.drawn;
             self.scene.set_node(node, entry.scene_cull());
         }
+    }
+
+    /// Sets whether the frame's backgrounds cover every pixel: drawn flat
+    /// on tiles that fill the view. Then the main pass clears to the
+    /// topmost solid one's colour, as MapLibre Native's
+    /// `backgroundLayerAsColor` does, rather than shade it and the layers
+    /// it hides: on the moto g a full-screen background cost 2 ms of the
+    /// main pass at every view (#180). Pixels stay as they were: an opaque
+    /// colour blends to itself over anything.
+    pub fn set_background_fills(&mut self, fills: bool) {
+        self.background_fills = fills;
+    }
+
+    /// The node the main pass can clear to in place of drawing it and
+    /// what lies beneath it (`beneath`): the topmost solid background,
+    /// when nothing beneath it composites apart, which could split the
+    /// pass. Only paint chooses it, so neither a camera move nor showing
+    /// or hiding a layer records the bundles again.
+    fn solid_beneath(&self) -> Option<usize> {
+        let i = (self.nodes.iter()).rposition(|n| {
+            n.solid.is_some() && n.drawn && composite_group(n.composite).is_none()
+        })?;
+        (self.nodes[..i].iter())
+            .all(|n| composite_group(n.composite).is_none())
+            .then_some(i)
     }
 
     fn sync_cull(&mut self) {
@@ -2070,6 +2117,11 @@ impl Renderer {
         // compacted index buffer. Bound before, the frame's bundles would
         // sample the destroyed depth and the submit fail.
         self.bind_scene(gpu);
+        let beneath = self.solid_beneath();
+        if beneath != self.beneath {
+            self.beneath = beneath;
+            self.invalidate_bundle(gpu);
+        }
         let bundle_recorded = self.bundles.is_empty();
         let recording = clock();
         if bundle_recorded {
@@ -2148,6 +2200,13 @@ impl Renderer {
                 .position(|n| n.family.is_symbol())
                 .unwrap_or(self.nodes.len());
             for i in 0..=self.nodes.len() {
+                // The solid background and what it hides go in a bundle
+                // of their own, which the clear can stand for.
+                if self.beneath.is_some_and(|b| i == b + 1) {
+                    let segment = bound_once(std::mem::take(&mut commands));
+                    self.bundles
+                        .push(gpu.create_render_bundle(&layers, &segment));
+                }
                 if i == lit_before && self.ground_lit {
                     commands.extend(self.atmosphere.commands_ground(gpu));
                 }
@@ -2371,21 +2430,36 @@ impl Renderer {
         Pass::group(&mut passes, start, "layers apart");
         // In linear light the map draws into its own texture, cleared to the
         // colour decoded, then encodes into the host's target.
-        let (into, into_clear) = match &mut self.linear {
+        let (into, mut into_clear) = match &mut self.linear {
             Some(linear) => (
                 linear.texture(gpu, &self.composites, size),
                 color_in(clear.map(|c| c as f32), true).map(f64::from),
             ),
             None => (target, clear),
         };
+        // A solid background filling the frame is the clear: its bundle
+        // and the sky drawn before it, which it hides, are left out.
+        let (mut first, mut segments) = (Vec::new(), &self.bundles[..]);
+        if let Some(b) = self.beneath {
+            let (below, above) = segments.split_first().expect("recorded above");
+            segments = above;
+            let shown = self.nodes[b].cull.visible && self.scene.node_candidates(b as u32) > 0;
+            match self.nodes[b].solid {
+                Some(color) if shown && self.background_fills && !terrain_on => {
+                    into_clear = color.map(f64::from);
+                }
+                _ => {
+                    first = self.atmosphere.commands(gpu);
+                    first.push(RenderCommand::ExecuteBundles(vec![*below]));
+                }
+            }
+        } else {
+            first = self.atmosphere.commands(gpu);
+        }
         let start = passes.len();
         passes.extend(self.layers.main_passes(
             &self.composites,
-            (
-                self.atmosphere.commands(gpu),
-                &self.bundles,
-                self.atmosphere.commands_after(gpu),
-            ),
+            (first, segments, self.atmosphere.commands_after(gpu)),
             into,
             into_clear,
         ));

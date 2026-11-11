@@ -10,6 +10,7 @@ submit 0
   render pass "main"
     colour texture "target"#0 resolve None Clear([1.0, 1.0, 1.0, 1.0]) Store
     bundles [bundle "layers"#0]
+    bundles [bundle "layers"#1]
   pop
 
 buffer "draw args"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE | INDIRECT)
@@ -43,6 +44,12 @@ texture "no terrain depth"#0: R32Float D2 samples 1 views [] TextureUsages(TEXTU
 group "scene"#0: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "no dem"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM)
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 0 size Some(512)
+bundle "layers"#0: [Rgba8Unorm] depth None samples 1
+    pipeline render "fill"#0
+    group 0 group "scene"#0
+    group 1 group "node"#0
+    index buffer "compacted indices"#0 at 0
+    draw indexed indirect buffer "draw args"#0 at 0
 group "node"#1: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10240 size Some(512)
 module "fill outline"#0: wgsl
 render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline [("feature_rows", 0.0)]; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
@@ -61,15 +68,11 @@ group "node"#5: layout layout "node"#0; 0 buffer "node uniforms"#0 at 59904 size
 group "node"#6: layout layout "node"#0; 0 buffer "node uniforms"#0 at 60416 size Some(512)
 group "node"#7: layout layout "node"#0; 0 buffer "node uniforms"#0 at 60928 size Some(512)
 group "node"#8: layout layout "node"#0; 0 buffer "node uniforms"#0 at 64000 size Some(512)
-bundle "layers"#0: [Rgba8Unorm] depth None samples 1
-    pipeline render "fill"#0
-    group 0 group "scene"#0
-    group 1 group "node"#0
-    index buffer "compacted indices"#0 at 0
-    draw indexed indirect buffer "draw args"#0 at 0
+bundle "layers"#1: [Rgba8Unorm] depth None samples 1
     pipeline render "fill"#0
     group 0 group "scene"#0
     group 1 group "node"#1
+    index buffer "compacted indices"#0 at 0
     draw indexed indirect buffer "draw args"#0 at 640
     pipeline render "fill outline"#0
     group 0 group "scene"#0
