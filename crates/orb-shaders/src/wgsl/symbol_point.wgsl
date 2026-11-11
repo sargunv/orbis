@@ -1,4 +1,4 @@
-// Point labels' variant of the symbol shader: no line placement.
+// Point labels' variant of the symbol placement pass: no line placement.
 
 const LINE_LABELS: bool = false;
 

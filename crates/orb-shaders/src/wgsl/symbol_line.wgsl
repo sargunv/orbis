@@ -1,5 +1,5 @@
-// Line labels' variant of the symbol shader: each glyph placed along its
-// projected line in the vertex stage. Point labels compose
+// Line labels' variant of the symbol placement pass: each glyph placed along
+// its projected line. Point labels compose
 // `symbol_point.wgsl` instead, so their pipeline doesn't compile this:
 // Adreno compilers inline every call.
 
@@ -217,7 +217,7 @@ fn glyph_offset(base: u32, quad: u32) -> f32 {
 fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32, anchor_clip: vec4<f32>) -> LineGlyph {
     var fail: LineGlyph;
     fail.ok = false;
-    // The anchor in the label plane: on the screen, from `vs_symbol`'s
+    // The anchor in the label plane: on the screen, from `vs_place`'s
     // projection of it (`anchor_clip`).
     var anchor = clip_to_px(anchor_clip);
     if (halves[half].flags & PITCH_WITH_MAP) != 0u {

@@ -23,6 +23,15 @@ const LINE: &str = wgsl!("line");
 const POINT: &str = wgsl!("point");
 const CIRCLE: &str = wgsl!("circle");
 const SYMBOL: &str = wgsl!("symbol");
+const SYMBOL_DRAW: &str = wgsl!("symbol_draw");
+const SYMBOL_HALVES: &str = wgsl!("symbol_halves");
+const SYMBOL_NODES: &str = wgsl!("symbol_nodes");
+const SYMBOL_PLACE: &str = wgsl!("symbol_place");
+/// The symbol draw reading the placement dispatch's target: no WebGL 2
+/// stage composes it (`gl_source`).
+pub(crate) const SYMBOL_PLACED: &str = wgsl!("symbol_placed");
+const SYMBOL_PLACE_INLINE: &str = wgsl!("symbol_place_inline");
+const SYMBOL_PLACE_COMPUTE: &str = wgsl!("symbol_place_compute");
 const SYMBOL_POINT: &str = wgsl!("symbol_point");
 const SYMBOL_LINE: &str = wgsl!("symbol_line");
 const HEATMAP: &str = wgsl!("heatmap");
@@ -219,21 +228,94 @@ pub const CIRCLE_SHADER: Shader = Shader {
     fragment: "fs_circle",
     compute: "",
 };
-/// Symbol quads: glyphs and icons, with their halos, of
-/// point labels and of line labels (`symbol-placement: line` and
-/// `line-center`): two variants, so point labels' pipeline doesn't compile
-/// line placement.
-pub const SYMBOL_SHADERS: [Shader; 2] = [
+/// Symbol quads: glyphs and icons, with their halos, each corner where
+/// the placement dispatch put its quad ([`SYMBOL_PLACE_SHADERS`]).
+pub const SYMBOL_SHADER: Shader = Shader {
+    label: "symbol",
+    parts: &[
+        TYPES,
+        DRAW,
+        SYMBOL_HALVES,
+        SYMBOL,
+        SYMBOL_PLACED,
+        SYMBOL_DRAW,
+    ],
+    vertex: "vs_symbol",
+    fragment: "fs_symbol",
+    compute: "",
+};
+/// The symbol placements: each quad of point labels and of line labels
+/// (`symbol-placement: line` and `line-center`) placed once a frame into
+/// the placement target, by one dispatch for every symbol layer. Two
+/// variants, so point labels' pipeline doesn't compile line placement.
+pub const SYMBOL_PLACE_SHADERS: [Shader; 2] = [
     Shader {
-        label: "symbol",
-        parts: &[TYPES, DRAW, POINT, SYMBOL, SYMBOL_POINT],
+        label: "symbol placement",
+        parts: &[
+            TYPES,
+            DRAW,
+            POINT,
+            SYMBOL_NODES,
+            SYMBOL,
+            SYMBOL_PLACE,
+            SYMBOL_PLACE_COMPUTE,
+            SYMBOL_POINT,
+        ],
+        vertex: "",
+        fragment: "",
+        compute: "cs_place",
+    },
+    Shader {
+        label: "symbol line placement",
+        parts: &[
+            TYPES,
+            DRAW,
+            POINT,
+            SYMBOL_NODES,
+            SYMBOL,
+            SYMBOL_PLACE,
+            SYMBOL_PLACE_COMPUTE,
+            SYMBOL_LINE,
+        ],
+        vertex: "",
+        fragment: "",
+        compute: "cs_place",
+    },
+];
+/// [`SYMBOL_SHADER`] for a device without compute (WebGL 2), each corner
+/// placing its quad itself: of point labels and of line labels, so point
+/// labels' pipeline doesn't compile line placement.
+pub const SYMBOL_INLINE_SHADERS: [Shader; 2] = [
+    Shader {
+        label: "symbol inline",
+        parts: &[
+            TYPES,
+            DRAW,
+            POINT,
+            SYMBOL_HALVES,
+            SYMBOL,
+            SYMBOL_PLACE,
+            SYMBOL_PLACE_INLINE,
+            SYMBOL_POINT,
+            SYMBOL_DRAW,
+        ],
         vertex: "vs_symbol",
         fragment: "fs_symbol",
         compute: "",
     },
     Shader {
-        label: "symbol line",
-        parts: &[TYPES, DRAW, POINT, SYMBOL, SYMBOL_LINE],
+        label: "symbol line inline",
+        parts: &[
+            TYPES,
+            DRAW,
+            POINT,
+            SYMBOL_HALVES,
+            SYMBOL,
+            SYMBOL_PLACE,
+            SYMBOL_PLACE_INLINE,
+            SYMBOL_LINE,
+            SYMBOL_DRAW,
+        ],
         vertex: "vs_symbol",
         fragment: "fs_symbol",
         compute: "",
@@ -429,8 +511,11 @@ pub const SHADERS: &[Shader] = &[
     LINE_SHADER,
     LINE_STYLED_SHADER,
     CIRCLE_SHADER,
-    SYMBOL_SHADERS[0],
-    SYMBOL_SHADERS[1],
+    SYMBOL_SHADER,
+    SYMBOL_PLACE_SHADERS[0],
+    SYMBOL_PLACE_SHADERS[1],
+    SYMBOL_INLINE_SHADERS[0],
+    SYMBOL_INLINE_SHADERS[1],
     HEATMAP_SHADER,
     RASTER_SHADER,
     HILLSHADE_SHADER,

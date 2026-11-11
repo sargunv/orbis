@@ -130,6 +130,11 @@ struct Frame {
     // orb-render's `surface_cells` of the view, so the cull, the point
     // shaders and a driver that draws without the cull count them alike.
     surface_cells: u32,
+    // The symbol placements' target's rows (`symbol.wgsl`'s
+    // `PLACED_WIDTH` texels each), and the render nodes whose symbols they
+    // place (the cull's node rows).
+    placed_rows: u32,
+    placed_nodes: u32,
     // Ground lighting (`dev.sargunv.orbis:ground-lighting`), which labels'
     // `["dev.sargunv.orbis:daylight"]` follows (`symbol.wgsl`): toward the
     // sun with half the twilight in degrees, and the target's up with how
@@ -295,6 +300,10 @@ struct NodeCull {
     index_base: u32,
     index_count: u32,
     run_shift: u32,
+    // A symbol node's quads' first texel in the placement target
+    // (`symbol.wgsl`'s), 64 for each of its candidate rows; any other
+    // node's is where the next symbol node's would be.
+    quad_base: u32,
 };
 
 // A compacted index that draws nothing; no run reaches it. The CPU driver

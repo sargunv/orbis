@@ -7,8 +7,9 @@
 //!
 //! A chunk's row also says in which world copies placement shows any of
 //! its quads, so that the cull drops the rest: in a dense view most labels
-//! are hidden, and each of their quads would otherwise run its vertices
-//! only to read that it is.
+//! are hidden, and each of their quads would otherwise be placed and run
+//! its vertices only to read that it is. Labels fading out count as shown
+//! until their fade has run, when they leave too.
 
 use std::ops::Range;
 
@@ -92,13 +93,23 @@ fn shows(word: u32) -> bool {
     word & HIDDEN == 0 && word & (OPACITY | PLACED) != 0
 }
 
-/// Per placed symbol of state `words`, a bit of `shown`: whether it
-/// [`shows`].
-fn shown_bits(words: &[u32], shown: &mut [u64]) {
+/// Whether a placed symbol whose first state word is `word` still draws
+/// once the fades since the last placement have run: not hidden, and
+/// placed (one fading out has then faded).
+fn stays(word: u32) -> bool {
+    use symbol_state::*;
+    word & HIDDEN == 0 && word & PLACED != 0
+}
+
+/// Per placed symbol of state `words`, a bit of `shown`, whether it
+/// [`shows`], and of `stayed`, whether it [`stays`].
+fn shown_bits(words: &[u32], shown: &mut [u64], stayed: &mut [u64]) {
     let states = words.as_chunks::<{ SYMBOL_STATE_WORDS as usize }>().0;
-    for (bits, states) in shown.iter_mut().zip(states.chunks(64)) {
-        *bits = (states.iter().enumerate())
-            .fold(0, |bits, (p, state)| bits | u64::from(shows(state[0])) << p);
+    for ((shown, stayed), states) in shown.iter_mut().zip(stayed).zip(states.chunks(64)) {
+        (*shown, *stayed) = (states.iter().enumerate()).fold((0, 0), |(a, b), (p, state)| {
+            let [shows, stays] = [shows(state[0]), stays(state[0])].map(u64::from);
+            (a | shows << p, b | stays << p)
+        });
     }
 }
 
@@ -109,6 +120,10 @@ const SHOWN_WORD: u64 = orb_shaders::layout::chunk::FIRST_VERTEX as u64;
 /// Words per quad and per placed symbol in the tables.
 pub const QUAD_WORDS: u32 = 12;
 pub const PLACED_WORDS: u32 = 11;
+
+/// Texels a row of the symbol placement target (`symbol.wgsl`'s
+/// `PLACED_WIDTH`): within GLSL ES 3.00's smallest texture side.
+pub(crate) const PLACED_WIDTH: u32 = 2048;
 
 /// A symbol mesh's placement state: its state words, and in which world
 /// copies its chunks show anything.
@@ -132,8 +147,10 @@ pub(super) struct SymbolEntry {
     /// per quad.
     runs: Vec<[u32; 2]>,
     run_ends: Vec<u32>,
-    /// Per block, a bit per placed symbol: whether it [`shows`].
+    /// Per block, a bit per placed symbol: whether it [`shows`], and
+    /// whether it [`stays`].
     shown: Vec<u64>,
+    stayed: Vec<u64>,
     /// Each chunk's row word of copies it shows in, as last written.
     masks: Vec<u32>,
 }
@@ -160,6 +177,7 @@ impl SymbolEntry {
             runs: Vec::new(),
             run_ends: Vec::new(),
             shown: vec![0; placed_quads.len().div_ceil(64)],
+            stayed: vec![0; placed_quads.len().div_ceil(64)],
             masks: vec![0; chunks.len()],
         };
         entry.lay_runs(chunks);
@@ -194,12 +212,19 @@ impl SymbolEntry {
     }
 
     /// Sets each chunk's copies, by `wrap & 31` as the cull tests them:
-    /// those whose block shows any of its quads, testing block `block`
-    /// again and keeping the others' bits (every block for `None`), and
-    /// calls `changed` with each chunk whose mask changed. Past 32 blocks
-    /// a bit stands for several, and every chunk keeps them all.
-    fn update_masks(&mut self, block: Option<u32>, mut changed: impl FnMut(usize, u32)) {
+    /// those whose block shows any of its quads (that [`stays`] once the
+    /// fades have run, `faded`), testing block `block` again and keeping
+    /// the others' bits (every block for `None`), and calls `changed` with
+    /// each chunk whose mask changed. Past 32 blocks a bit stands for
+    /// several, and every chunk keeps them all.
+    fn update_masks(
+        &mut self,
+        block: Option<u32>,
+        faded: bool,
+        mut changed: impl FnMut(usize, u32),
+    ) {
         let (copies, words) = (self.copies, self.block_words());
+        let bits = if faded { &self.stayed } else { &self.shown };
         // The bits standing for block `b` are this shifted by `b`: `b`,
         // `b + copies`, and so on.
         let first = (0..32)
@@ -216,7 +241,7 @@ impl SymbolEntry {
                 let kept = block.map_or(0, |b| *old & !(first << b));
                 (blocks.clone())
                     .filter(|&b| {
-                        let shown = &self.shown[b as usize * words..][..words];
+                        let shown = &bits[b as usize * words..][..words];
                         runs.iter().any(|&run| any_bit(shown, run))
                     })
                     .fold(kept, |mask, b| mask | first << b)
@@ -384,9 +409,27 @@ impl Scene {
         let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
         let symbol = entry.symbol.as_deref_mut().expect("a symbol mesh");
         let tables = &mut self.tables;
-        symbol.update_masks(block, |k, mask| {
+        symbol.update_masks(block, self.labels_faded, |k, mask| {
             write_chunk_word(gpu, tables, entry.chunk_slots[k], SHOWN_WORD, mask);
         });
+    }
+
+    /// Follows the frame's label fades (`symbol_fade_change`): once
+    /// they have run, labels fading out show nothing, and their chunks
+    /// leave the cull at once rather than at the next placement; a
+    /// placement starts fades again.
+    pub(super) fn follow_label_fades(&mut self, gpu: &mut dyn Gpu, fade_change: f32) {
+        let faded = fade_change >= 1.0;
+        if faded == self.labels_faded {
+            return;
+        }
+        self.labels_faded = faded;
+        let meshes = (self.meshes.iter().enumerate())
+            .filter(|(_, m)| m.as_ref().is_some_and(|m| m.symbol.is_some()))
+            .map(|(i, _)| MeshId(i as u32));
+        for mesh in meshes.collect::<Vec<_>>() {
+            self.write_symbol_masks(gpu, mesh, None);
+        }
     }
 
     /// Sets the order a symbol mesh's quads draw in: every quad once.
@@ -430,6 +473,7 @@ impl Scene {
         let old = std::mem::replace(&mut symbol.states, states.clone());
         symbol.copies = copies;
         symbol.shown = vec![0; copies as usize * symbol.block_words()];
+        symbol.stayed = symbol.shown.clone();
         let header = entry.vertices.start + symbol_header::STATES as u32;
         self.prop_arena.free(old);
         self.tables.write(
@@ -458,7 +502,12 @@ impl Scene {
         let copy = wrap.rem_euclid(symbol.copies as i32) as u32;
         let at = symbol.states.start + copy * block;
         let bits = symbol.block_words();
-        shown_bits(words, &mut symbol.shown[copy as usize * bits..][..bits]);
+        let own = copy as usize * bits..(copy as usize + 1) * bits;
+        shown_bits(
+            words,
+            &mut symbol.shown[own.clone()],
+            &mut symbol.stayed[own],
+        );
         self.tables.write(gpu, Table::Props, at, Words::Core(words));
         self.write_symbol_masks(gpu, mesh, Some(copy));
     }
@@ -471,7 +520,7 @@ mod tests {
 
     /// The masks against a read of every quad, over placed symbols of one
     /// to three quads, chunks across them, a reversed draw order, one to
-    /// 64 copies and states written copy by copy.
+    /// 64 copies, states written copy by copy, and fades running or run.
     #[test]
     fn chunk_masks_match_every_quad() {
         let placed: Vec<[u32; 2]> = (0..150)
@@ -495,13 +544,17 @@ mod tests {
                 owner: Owner::Every,
             })
             .collect();
-        for copies in [1, 2, 8, 64] {
+        for (copies, faded) in [1, 2, 8, 64]
+            .into_iter()
+            .flat_map(|c| [(c, false), (c, true)])
+        {
             for reversed in [false, true] {
                 let words = placed.len() as u32 * SYMBOL_STATE_WORDS;
                 let mut e = SymbolEntry::new(0..words, 0, &placed, quads, &chunks);
                 e.states = 0..words * copies;
                 e.copies = copies;
                 e.shown = vec![0; copies as usize * e.block_words()];
+                e.stayed = e.shown.clone();
                 if reversed {
                     e.order = (0..quads).rev().collect();
                     e.lay_runs(&chunks);
@@ -521,22 +574,24 @@ mod tests {
                         .flat_map(|&s| [s, 0, 0])
                         .collect();
                     let bits = e.block_words();
-                    shown_bits(&words, &mut e.shown[copy as usize * bits..][..bits]);
-                    e.update_masks(Some(copy), |_, _| {});
+                    let own = copy as usize * bits..(copy as usize + 1) * bits;
+                    shown_bits(&words, &mut e.shown[own.clone()], &mut e.stayed[own]);
+                    e.update_masks(Some(copy), faded, |_, _| {});
                     let kept = e.masks.clone();
-                    e.update_masks(None, |k, _| panic!("chunk {k} changed"));
+                    e.update_masks(None, faded, |k, _| panic!("chunk {k} changed"));
                     assert_eq!(e.masks, kept);
                     for (k, c) in chunks.iter().enumerate() {
                         let want = (0..32u32).fold(0, |m, bit| {
                             let block = (bit & (copies - 1)) as usize;
                             let shows_any = (c.first_index..c.first_index + c.index_count)
                                 .map(|at| e.order.get(at as usize).copied().unwrap_or(at))
-                                .any(|q| shows(states[block][e.quad_placed[q as usize] as usize]));
+                                .map(|q| states[block][e.quad_placed[q as usize] as usize])
+                                .any(|s| if faded { stays(s) } else { shows(s) });
                             m | u32::from(shows_any || copies > 32) << bit
                         });
                         assert_eq!(
                             e.masks[k], want,
-                            "chunk {k}, {copies} copies, reversed {reversed}"
+                            "chunk {k}, {copies} copies, reversed {reversed}, faded {faded}"
                         );
                     }
                 }

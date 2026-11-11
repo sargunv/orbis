@@ -79,6 +79,9 @@ pub enum TextureFormat {
     /// Unsigned words: tables in data textures, where the vertex stage
     /// has no storage buffers (WebGL 2).
     R32Uint,
+    /// Four unsigned words: what a pass works out for later passes to
+    /// read texel by texel (the symbol placements).
+    Rgba32Uint,
     /// Filterable, blendable half-float density targets.
     Rgba16Float,
     Rgba8Unorm,
@@ -94,6 +97,7 @@ impl TextureFormat {
         match self {
             Self::R8Unorm => 1,
             Self::Rgba16Float => 8,
+            Self::Rgba32Uint => 16,
             Self::R32Float
             | Self::R32Uint
             | Self::Rgba8Unorm
@@ -268,10 +272,19 @@ impl BindGroupLayoutEntry {
     /// An [`R32Uint`](TextureFormat::R32Uint) 2D texture shaders read
     /// words from: a table in a data texture.
     pub const fn data_texture(binding: u32, visibility: ShaderStages) -> Self {
+        Self::uint_texture(binding, visibility, TextureViewDimension::D2)
+    }
+
+    /// An unsigned-integer texture shaders read texel by texel.
+    pub const fn uint_texture(
+        binding: u32,
+        visibility: ShaderStages,
+        dimension: TextureViewDimension,
+    ) -> Self {
         Self {
             binding,
             visibility,
-            ty: BindingType::DataTexture,
+            ty: BindingType::UintTexture { dimension },
         }
     }
 }
@@ -290,9 +303,11 @@ pub enum BindingType {
     Sampler {
         filtering: bool,
     },
-    /// An unsigned-integer 2D texture, read texel by texel: a table in a
-    /// data texture.
-    DataTexture,
+    /// An unsigned-integer texture, read texel by texel: a table in a
+    /// data texture, or the symbol placements.
+    UintTexture {
+        dimension: TextureViewDimension,
+    },
     /// A write-only storage texture.
     StorageTexture {
         format: TextureFormat,

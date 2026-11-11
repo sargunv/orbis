@@ -2,7 +2,7 @@
 // the build script; WebGL 2's web build (`glsl_only`) leaves it out, since
 // its pipelines compile the build's GLSL.
 
-use crate::catalog::{ATTRIBUTE_ZERO, CLIP_PLANES, Shader};
+use crate::catalog::{ATTRIBUTE_ZERO, CLIP_PLANES, SYMBOL_PLACED, Shader};
 
 /// The modules a WebGL 2 build swaps (#140), modern first, then each's
 /// GL counterpart: built-ins written out, and tables read from data
@@ -45,10 +45,14 @@ impl Shader {
     }
 
     /// Its source for WebGL 2 (#140), its swapped modules (`GL_SWAPS`)
-    /// replaced; `None` for what WebGL 2 can't run: compute, and clip
-    /// distances, which a device without them draws another way.
+    /// replaced; `None` for what WebGL 2 can't run: compute, what reads
+    /// compute's results (`SYMBOL_PLACED`), and clip distances, which a
+    /// device without them draws another way.
     pub fn gl_source(&self) -> Option<String> {
-        if !self.compute.is_empty() || self.parts.contains(&CLIP_PLANES) {
+        if !self.compute.is_empty()
+            || self.parts.contains(&CLIP_PLANES)
+            || self.parts.contains(&SYMBOL_PLACED)
+        {
             return None;
         }
         Some(with_attribute_zero(&self.swapped(GL_SWAPS)))

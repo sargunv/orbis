@@ -174,6 +174,20 @@ const GPU_ONLY_FILES: &[(&str, Allows, &str)] = &[
         Allows::Only(&["BufferUsages::STORAGE", "BindingType::Storage"]),
         "the tables' storage backing: their texture backing",
     ),
+    (
+        "orb-render/src/symbol.rs",
+        Allows::Only(&[
+            "Pass::Compute",
+            "ComputePass",
+            "ComputeCommand",
+            "BufferUsages::STORAGE",
+            "E::storage(",
+            "BindingType::Storage",
+            "StorageTexture",
+            "STORAGE_BINDING",
+        ]),
+        "symbol placements in one dispatch into a storage texture, which reads every node's uniform and the draw arguments from storage: each corner placing its quad itself (symbol_place_inline.wgsl)",
+    ),
 ];
 
 /// [`GPU_ONLY`] API outside what [`GPU_ONLY_FILES`] allows, in every

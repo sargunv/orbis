@@ -1,11 +1,19 @@
 // Port of MapLibre GL JS's symbol shaders at the fixture pin
 // (symbol_sdf, symbol_icon, symbol_text_and_icon; BSD-3-Clause), with the
-// CPU work of `updateLineLabels` and `updateVariableAnchors` moved into the
-// vertex stage: each vertex places its glyph along the projected line, or
-// shifts its label to the variable anchor placement chose.
+// CPU work of `updateLineLabels` and `updateVariableAnchors` moved to the
+// GPU: each quad's glyph is placed along the projected line, or its label
+// shifted to the variable anchor placement chose.
+//
+// Where the device has compute, a dispatch does that once a frame for
+// every quad (`symbol_place.wgsl`), writing where it lands, turned and
+// scaled, and its paint into two texels of the placement target, and the
+// symbol draw (`symbol_draw.wgsl`) puts each of its four corners there.
+// Run in every corner of every pass, as it still is on WebGL 2, the
+// placement was most of the symbols' time on the moto g (#192).
 //
 // One instance per quad: visible chunks of at most 64 quads (orb-render's
-// symbol meshes), four vertices each (six indices). A mesh's tables sit behind a header in
+// symbol meshes), four vertices each (six indices) in the draw and one
+// invocation in the dispatch. A mesh's tables sit behind a header in
 // the vertex arena; its state words, paint rows and the glyph row table in
 // the property arena.
 //
@@ -71,19 +79,12 @@ struct SymbolNode {
 };
 // A symbol layer draws its icons and its text in one list, in the order
 // they stack: by sort key, a key's icons then its text (MapLibre Native's),
-// or all its icons, then all its text. Its icon node binds its text node's
-// uniform after its own, and each quad reads the half its mesh is of.
-@group(1) @binding(0) var<uniform> halves: array<SymbolNode, 2>;
-// The drawn quad's half: 0 for icons, 1 for text (its mesh's `H_TEXT`).
+// or all its icons, then all its text. Its icon node's uniform is followed
+// by its text node's, `halves` (`symbol_halves.wgsl`, or every node's in
+// `symbol_nodes.wgsl`), and each quad reads the half its mesh is of: that
+// of `halves` at `half`, the layer's first plus 1 for text (its mesh's
+// `H_TEXT`).
 var<private> half: u32;
-
-@group(0) @binding(9) var image_pages: texture_2d_array<f32>;
-@group(0) @binding(10) var atlas_sampler: sampler;
-@group(0) @binding(13) var nearest_sampler: sampler;
-// The image pages again, for the nearest sampler: each texture binding
-// takes one sampler, as a texture unit does on WebGL 2.
-@group(0) @binding(16) var image_pages_nearest: texture_2d_array<f32>;
-@group(0) @binding(12) var glyph_pages: texture_2d_array<f32>;
 
 // Flags of SymbolNode (orb-render `NodePaint::uniform_words`).
 const IS_TEXT: u32 = 1u;
@@ -148,21 +149,31 @@ const EXTENT: f32 = 8192.0;
 const PI: f32 = 3.14159265358979;
 const CHUNK_QUADS: u32 = 64u;
 
-// What the pass draws of the icons (x) and of the text (y): halo and fill
-// together, the halo, the fill (GL JS draws them apart when glyphs
-// overlap), or nothing (orb-render's `SymbolPass`). A uniform rather than
-// an override: one pipeline draws every pass, so the largest shader
-// compiles once.
-@group(2) @binding(0) var<uniform> symbol_pass: vec4<u32>;
-const PASS_WHOLE: u32 = 0u;
-const PASS_HALO: u32 = 1u;
-const PASS_FILL: u32 = 2u;
-const PASS_SKIP: u32 = 3u;
+// The placement target: two layers of PLACED_WIDTH × `frame.placed_rows`
+// texels, a symbol node's quads from its `quad_base` on, a quad's texel in
+// each (orb-render's symbol placements):
+//
+// 0: where it lands in the label plane (x, y), and its rotation scaled by
+//    a pitched label's correction on a globe (cos, sin), as f32 bits;
+// 1: its size and its opacity as f32 bits, then its colour and halo
+//    colour packed as four unorm8s, before `color_in`. A quad with zero
+//    opacity draws nothing.
+//
+// Colours are kept as 8 bits a channel, as GL JS packs its data-driven
+// ones, so that a quad takes two texels.
+const PLACED_WIDTH: u32 = 2048u;
 
-// The quad's half places its glyphs along its line.
-fn along_line() -> bool {
-    return LINE_LABELS && (halves[half].flags & ALONG_LINE) != 0u;
+fn placed_texel_at(slot: u32) -> vec2<u32> {
+    return vec2<u32>(slot % PLACED_WIDTH, slot / PLACED_WIDTH);
 }
+
+// A quad placed: its two texels, and whether its chunk has it (the texels
+// of one that doesn't are never read).
+struct PlacedQuad {
+    at: vec4<u32>,
+    paint: vec4<u32>,
+    written: bool,
+};
 
 struct Placed {
     anchor: vec2<f32>,
@@ -193,6 +204,13 @@ fn read_placed(base: u32, index: u32) -> Placed {
     p.line_offset = vec2<f32>(bitcast<f32>(vertex_at(at + 7u)), bitcast<f32>(vertex_at(at + 8u)));
     p.instance = vertex_at(at + 9u);
     return p;
+}
+
+// The instance row of placed symbol `index`: its feature's property-row
+// slot, then its height offset.
+fn symbol_instance_row(base: u32, index: u32) -> u32 {
+    let instance = vertex_at(base + vertex_at(base + H_PLACED) + index * PLACED_WORDS + 9u);
+    return base + vertex_at(base + H_INSTANCE_ROWS) + instance * 2u;
 }
 
 // GL JS `Interpolate.interpolationFactor`, clamped to [0, 1].
@@ -399,363 +417,3 @@ struct LineGlyph {
     ok: bool,
 };
 
-struct SymbolOut {
-    @builtin(position) position: vec4<f32>,
-    // The page layer, the bitmap's padded rectangle's origin on it, and
-    // the quad's texels from there (see `atlas_uv`).
-    @location(0) @interpolate(flat, either) layer: u32,
-    @location(1) tex: vec2<f32>,
-    @location(7) @interpolate(flat, either) origin: vec2<f32>,
-    // Gamma scale, size and total opacity.
-    @location(2) data: vec3<f32>,
-    @location(3) @interpolate(flat, either) fill: vec4<f32>,
-    @location(4) @interpolate(flat, either) halo: vec4<f32>,
-    // Halo width, halo blur; whether the quad is an SDF (1), an image (2),
-    // sampled linearly (4), text (`K_TEXT`) and pitched with the map
-    // (`K_PITCH`).
-    @location(5) @interpolate(flat, either) halo_params: vec2<f32>,
-    @location(6) @interpolate(flat, either) kind: u32,
-};
-const K_TEXT: u32 = 8u;
-const K_PITCH: u32 = 16u;
-
-@vertex
-fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> SymbolOut {
-    var out: SymbolOut;
-    out.position = discarded_vertex();
-    // The draw is the icon node's.
-    let entry = visible_at(node_cull_at(halves[0].index).visible_base + instance / CHUNK_QUADS);
-    let chunk = chunk_at(entry.chunk);
-    let local = instance % CHUNK_QUADS;
-    if local >= chunk.index_count { return out; }
-    let base = chunk.vertex_base;
-    let mesh_flags = vertex_at(base + H_FLAGS);
-    half = select(0u, 1u, (mesh_flags & H_TEXT) != 0u);
-    let mode = select(symbol_pass.x, symbol_pass.y, half == 1u);
-    if mode == PASS_SKIP { return out; }
-    let tile = tile_at(entry.tile);
-    let quad_index = vertex_at(base + vertex_at(base + H_ORDER) + chunk.first_index + local);
-    let qa = base + vertex_at(base + H_QUADS) + quad_index * QUAD_WORDS;
-    let placed_index = vertex_at(qa + 10u);
-    // The placement's state first: most quads of a dense view are hidden,
-    // and leave after the fewest reads. The block of the placement's world
-    // copy; the placed table runs up to the glyph offsets.
-    let placed_count = (vertex_at(base + H_GLYPH_OFFSETS) - vertex_at(base + H_PLACED)) / PLACED_WORDS;
-    let copy = bitcast<u32>(tile.wrap) & (vertex_at(base + H_COPIES) - 1u);
-    let state_at = vertex_at(base + H_STATES) + (copy * placed_count + placed_index) * STATE_WORDS;
-    let state = prop_at(state_at);
-    if (state & S_HIDDEN) != 0u { return out; }
-    let placed = read_placed(base, placed_index);
-    let flags = vertex_at(qa + 11u) >> 16u;
-    let image = (flags & Q_IMAGE) != 0u;
-    // The quad's bitmap in the atlas, read with the quad: an image's rect,
-    // or a glyph's row in the glyph row table (the property arena's first
-    // block; row 0, unused, for an image). Read after the full variants'
-    // projections, these returned another glyph's row on an Adreno 619
-    // (native Vulkan, naga's SPIR-V; Tint's of the same source didn't),
-    // and labels sampled empty texels (#173, #178).
-    let atlas = vertex_at(base + vertex_at(base + select(H_GLYPHS, H_IMAGES, image)) + vertex_at(qa + 9u));
-    let glyph_row = select(atlas, 0u, image) * 4u;
-    let glyph_origin = prop_at(glyph_row);
-    let glyph_ready = prop_at(glyph_row + 1u);
-    let glyph_layer = prop_at(glyph_row + 2u);
-    if !point_owned(tile, placed.anchor) { return out; }
-    let fade_from = f32(state & S_OPACITY) / 127.0;
-    let fade_change = select(-frame.symbol_fade_change, frame.symbol_fade_change, (state & S_PLACED) != 0u);
-    let fade = clamp(fade_from + fade_change, 0.0, 1.0);
-
-    // Instance rows: the feature's property-row slot, its height offset.
-    let instance_row = base + vertex_at(base + H_INSTANCE_ROWS) + placed.instance * 2u;
-    let slot = vertex_at(instance_row);
-    symbol_height = bitcast<f32>(vertex_at(instance_row + 1u));
-    let row = chunk.prop_base + slot * halves[half].row_words;
-    var pulled: Pulled;
-    pulled.state_base = chunk.state_base;
-    let state_at_slot = state_block(pulled, slot, halves[half].state);
-    let opacity = paint_number(row, state_at_slot, 0u, halves[half].opacity, tile.zoom);
-    let total_opacity = opacity * fade;
-    if total_opacity < 0.1 { return out; }
-
-    let is_text = (halves[half].flags & IS_TEXT) != 0u;
-    let pitch = (halves[half].flags & PITCH_WITH_MAP) != 0u;
-    var size = feature_size(halves[half].size, placed.size, bitcast<f32>(vertex_at(base + H_LAYOUT_SIZE)),
-        bitcast<f32>(vertex_at(base + H_ZOOM_LO)), bitcast<f32>(vertex_at(base + H_ZOOM_HI)));
-
-    // `*-translate`, in tile units: the node's, or the feature's.
-    var t = node_translate(halves[half].translate, halves[half].table_mask, row, halves[half].row_words, halves[half].translate_curve, tile.zoom);
-    if (halves[half].flags & TRANSLATE_VIEWPORT) != 0u {
-        let s = sin(frame.bearing);
-        let c = cos(frame.bearing);
-        t = vec2<f32>(t.x * c - t.y * s, t.x * s + t.y * c);
-    }
-    let translation = t * tile_units_per_px(tile);
-    let anchor = placed.anchor + translation;
-    let line_label = along_line();
-    // The anchor's east neighbour, which map-rotated shifted labels and
-    // in-shader rotation read. Variable anchors are point placement's: the
-    // line variant leaves their code out, as it did before it drew a
-    // layer's other half too (Adreno's compilers take seconds over each
-    // part).
-    let rotate_shifted = !LINE_LABELS && (state & S_SHIFTED) != 0u && !pitch
-        && (halves[half].flags & ROTATE_WITH_MAP) != 0u;
-    let east = rotate_shifted || (halves[half].flags & ROTATE_IN_SHADER) != 0u;
-    // A line label's untranslated anchor, where its glyphs follow the line
-    // from, on a screen label plane.
-    let line_anchor = line_label && !pitch && any(translation != vec2<f32>(0.0));
-    // The anchor on the ground and in clip space, then the east neighbour
-    // and the line's anchor, through one projection: Adreno's compilers
-    // inline every call, and each projection's globe, warp and terrain
-    // terms took seconds to compile on an Adreno 619.
-    var anchor_ground: Ground;
-    var anchor_metres = 0.0;
-    var projected_point = vec4<f32>(0.0);
-    var east_clip = vec4<f32>(0.0);
-    var line_anchor_clip = vec4<f32>(0.0);
-    for (var k = 0u; k < 3u; k++) {
-        if (k == 1u && !east) || (k == 2u && !line_anchor) {
-            continue;
-        }
-        let p = select(select(placed.anchor, anchor + vec2<f32>(1.0, 0.0), k == 1u), anchor, k == 0u);
-        let ground = tile_ground(tile, p);
-        let metres = symbol_metres(tile, p);
-        let clip = ground_clip(ground, vec2<f32>(0.0), metres * frame.extrusion_scale);
-        if k == 0u {
-            anchor_ground = ground;
-            anchor_metres = metres;
-            projected_point = clip;
-        } else if k == 1u {
-            east_clip = clip;
-        } else {
-            line_anchor_clip = clip;
-        }
-    }
-    if !east {
-        east_clip = projected_point;
-    }
-    if !line_anchor {
-        line_anchor_clip = projected_point;
-    }
-    // Terrain in front of the anchor hides it (GL JS `calculate_visibility`).
-    let visible_opacity = total_opacity * terrain_visibility(
-        terrain_seen(projected_point, anchor_ground, anchor_metres * frame.extrusion_scale));
-    if visible_opacity < 0.1 { return out; }
-    if globe_hides_anchor(anchor_ground, anchor_metres) { return out; }
-    let ctcd = frame.camera_to_center;
-    let distance_ratio = select(ctcd / projected_point.w, projected_point.w / ctcd, pitch);
-    let perspective_ratio = clamp(0.5 + 0.5 * distance_ratio, 0.0, 4.0);
-
-    // The label plane position and angle: GL JS's dynamic `a_projected_pos`.
-    var plane_pos: vec2<f32>;
-    var segment_angle = select(0.0, -PI / 2.0, placed.writing_mode == 2u);
-    var in_plane = false;
-    if line_label {
-        // Only labels whose anchor is near the viewport are placed.
-        let clip = projected_point.xy / projected_point.w;
-        let buffer = vec2<f32>(256.0) / frame.viewport * 2.0 + 1.0;
-        if any(abs(clip) > buffer) { return out; }
-        // GL JS `updateLineLabels`: the unclamped ratio, sizes over 24.
-        let line_ratio = 0.5 + 0.5 * ctcd / projected_point.w;
-        let plane_size = select(size * line_ratio, size / line_ratio, pitch);
-        let glyph = line_glyph(tile, base, placed, quad_index, plane_size / 24.0, line_anchor_clip);
-        if !glyph.ok { return out; }
-        plane_pos = glyph.p;
-        segment_angle = -glyph.angle;
-        in_plane = true;
-    } else if !LINE_LABELS && (state & S_SHIFTED) != 0u {
-        // GL JS `updateVariableAnchorsForBucket` and `getShiftedAnchor`.
-        var shift_size = size;
-        if !is_text {
-            let text_packed = vertex_at(base + vertex_at(base + H_TEXT_SIZES) + placed_index);
-            shift_size = feature_size(halves[half].text_size,
-                vec2<f32>(f32(text_packed & 0xffffu), f32(text_packed >> 16u)) / 128.0,
-                bitcast<f32>(vertex_at(base + H_TEXT_LAYOUT_SIZE)),
-                bitcast<f32>(vertex_at(base + H_TEXT_ZOOM_LO)), bitcast<f32>(vertex_at(base + H_TEXT_ZOOM_HI)));
-        }
-        var render_size = shift_size * (0.5 + 0.5 * ctcd / projected_point.w) / 24.0;
-        if pitch {
-            render_size *= tile_units_per_px(tile);
-        }
-        let shift = vec2<f32>(bitcast<f32>(prop_at(state_at + 1u)), bitcast<f32>(prop_at(state_at + 2u))) * render_size;
-        if pitch {
-            var adjusted = shift;
-            if (halves[half].flags & ROTATE_WITH_MAP) == 0u {
-                let s = sin(frame.bearing);
-                let c = cos(frame.bearing);
-                adjusted = vec2<f32>(shift.x * c - shift.y * s, shift.x * s + shift.y * c);
-            }
-            plane_pos = to_pitched_plane(tile, anchor + adjusted);
-        } else {
-            // Not pitched: the label plane is the screen.
-            let projected = clip_to_px(projected_point);
-            if (halves[half].flags & ROTATE_WITH_MAP) != 0u {
-                let east = clip_to_px(east_clip) - projected;
-                let a = atan(east.y / east.x) + select(0.0, PI, east.x < 0.0);
-                let s = sin(a);
-                let c = cos(a);
-                plane_pos = projected + vec2<f32>(shift.x * c - shift.y * s, shift.x * s + shift.y * c);
-            } else {
-                plane_pos = projected + shift;
-            }
-        }
-        let quarter = (is_text && placed.writing_mode == 2u) || (!is_text && (state & S_QUARTER_TURN) != 0u);
-        segment_angle = select(0.0, -PI / 2.0, quarter);
-        in_plane = true;
-    }
-
-    if (halves[half].flags & IS_OFFSET) == 0u {
-        size *= perspective_ratio;
-    }
-    let font_scale = select(size, size / 24.0, is_text);
-
-    var symbol_rotation = 0.0;
-    if (halves[half].flags & ROTATE_IN_SHADER) != 0u {
-        let a = projected_point.xy / projected_point.w;
-        let b = east_clip.xy / east_clip.w;
-        symbol_rotation = atan2((b.y - a.y) / (frame.viewport.x / frame.viewport.y), b.x - a.x);
-    }
-    let angle_sin = sin(segment_angle + symbol_rotation);
-    let angle_cos = cos(segment_angle + symbol_rotation);
-    let rotation = mat2x2<f32>(vec2<f32>(angle_cos, -angle_sin), vec2<f32>(angle_sin, angle_cos));
-
-    if !in_plane {
-        if pitch {
-            plane_pos = to_pitched_plane(tile, anchor);
-        } else {
-            plane_pos = clip_to_px(projected_point);
-        }
-    }
-
-    // Corners tl, tr, bl, br, indexed into two triangles (orb-render's
-    // `QUAD_INDICES`).
-    let corner = index & 3u;
-    let offset = unpack_i16x2(vertex_at(qa + corner));
-    let tex_words = vec2<u32>(vertex_at(qa + 4u), vertex_at(qa + 5u));
-    let x0 = f32(tex_words.x & 0xffffu);
-    let y0 = f32(tex_words.x >> 16u);
-    let x1 = f32(tex_words.y & 0xffffu);
-    let y1 = f32(tex_words.y >> 16u);
-    let px = vec2<f32>(unpack_i16x2(vertex_at(qa + 6u)));
-    let px_br = vec2<f32>(unpack_i16x2(vertex_at(qa + 7u)));
-    let min_font_scale = unpack_i16x2(vertex_at(qa + 8u)) / 256.0;
-    let right = corner == 1u || corner == 3u;
-    let bottom = corner >= 2u;
-    let pixel_offset = vec2<f32>(select(px.x, px_br.x, right), select(px.y, px_br.y, bottom)) / 16.0;
-    let corner_tex = vec2<f32>(select(x0, x1, right), select(y0, y1, bottom));
-
-    let glyph_offset_px = rotation * (offset / 32.0 * max(min_font_scale, vec2<f32>(font_scale)) + pixel_offset);
-    var final_pos: vec4<f32>;
-    if pitch {
-        let p = plane_pos + glyph_offset_px * pitched_correction(anchor_ground);
-        final_pos = tile_clip(tile, from_pitched_plane(tile, p));
-    } else {
-        final_pos = vec4<f32>(px_to_clip(plane_pos + glyph_offset_px), 0.0, 1.0);
-    }
-    out.position = final_pos;
-    out.tex = corner_tex;
-
-    // Texels: the padded rectangle's origin plus the quad's texels.
-    if image {
-        if atlas == 0xffffffffu {
-            return out;
-        }
-        out.layer = atlas >> 24u;
-        out.origin = vec2<f32>(f32(atlas & 0xfffu), f32((atlas >> 12u) & 0xfffu));
-    } else {
-        out.layer = glyph_layer;
-        out.origin = vec2<f32>(f32(glyph_origin & 0xffffu), f32(glyph_origin >> 16u));
-        if glyph_ready == 0u {
-            // Not rasterized yet: nothing to draw.
-            out.position = discarded_vertex();
-        }
-    }
-    out.data = vec3<f32>(final_pos.w, size, visible_opacity);
-    // Over the daylight, between the colours' night and day stops.
-    var fill = paint_color(row, state_at_slot, 1u, halves[half].fill_color, tile.zoom);
-    var halo = paint_color(row, state_at_slot, 2u, halves[half].halo_color, tile.zoom);
-    if (halves[half].flags & (DAYLIGHT_FILL | DAYLIGHT_HALO)) != 0u {
-        let daylight = label_daylight(anchor_ground);
-        if (halves[half].flags & DAYLIGHT_FILL) != 0u {
-            let night = paint_color(row, state_at_slot, 5u, halves[half].night_fill, tile.zoom);
-            fill = mix(night, fill, daylight_t(halves[half].daylight_fill, daylight));
-        }
-        if (halves[half].flags & DAYLIGHT_HALO) != 0u {
-            let night = paint_color(row, state_at_slot, 6u, halves[half].night_halo, tile.zoom);
-            halo = mix(night, halo, daylight_t(halves[half].daylight_halo, daylight));
-        }
-    }
-    if (flags & Q_COLOR) != 0u {
-        out.fill = color_in(unpack4x8unorm(vertex_at(base + vertex_at(base + H_COLORS) + quad_index)));
-    } else {
-        out.fill = color_in(fill);
-    }
-    out.halo = color_in(halo);
-    out.halo_params = vec2<f32>(paint_number(row, state_at_slot, 3u, halves[half].halo_width, tile.zoom), paint_number(row, state_at_slot, 4u, halves[half].halo_blur, tile.zoom));
-    let linear = (halves[half].flags & LINEAR_ICONS) != 0u || (mesh_flags & H_LINEAR_IMAGES) != 0u
-        || abs(frame.pitch) > 0.0;
-    out.kind = select(0u, 1u, (flags & Q_SDF) != 0u) | select(0u, 2u, image)
-        | select(0u, 4u, linear) | select(0u, K_TEXT, is_text) | select(0u, K_PITCH, pitch);
-    return out;
-}
-
-const SDF_PX: f32 = 8.0;
-
-// Where a fragment samples its page. The quad's texels round to 1/1024
-// texel, so adding the rectangle's whole-texel origin is exact in f32 and
-// the sampler's filter weights don't depend on where the atlas packed the
-// bitmap, which the order glyphs and images arrived in decides.
-fn atlas_uv(in: SymbolOut, page: f32) -> vec2<f32> {
-    return (in.origin + round(in.tex * 1024.0) / 1024.0) / page;
-}
-
-@fragment
-fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
-    let image = (in.kind & 2u) != 0u;
-    let sdf = (in.kind & 1u) != 0u;
-    let total_opacity = in.data.z;
-    let is_text = (in.kind & K_TEXT) != 0u;
-    // The pages' sizes, as the quad's half has them.
-    let h = select(0u, 1u, is_text);
-    let uv = atlas_uv(in, select(halves[h].glyph_page, halves[h].image_page, image));
-    if image && !sdf {
-        if (in.kind & 4u) != 0u {
-            return color_in(textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0)) * total_opacity;
-        }
-        return color_in(textureSampleLevel(image_pages_nearest, nearest_sampler, uv, in.layer, 0.0)) * total_opacity;
-    }
-    var dist: f32;
-    if image {
-        dist = textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0).a;
-    } else {
-        dist = textureSampleLevel(glyph_pages, atlas_sampler, uv, in.layer, 0.0).r;
-    }
-    let mode = select(symbol_pass.x, symbol_pass.y, is_text);
-    let size = in.data.y;
-    let gamma_scale = in.data.x;
-    let font_scale = select(size, size / 24.0, is_text);
-    let edge_gamma = 0.105 / frame.pixel_ratio;
-    let u_gamma_scale = select(1.0, cos(frame.pitch) * frame.camera_to_center, (in.kind & K_PITCH) != 0u);
-    let gamma = edge_gamma / (font_scale * u_gamma_scale);
-    let inner_edge = (256.0 - 64.0) / 256.0;
-
-    var text = vec4<f32>(0.0);
-    var halo = vec4<f32>(0.0);
-    let halo_width = in.halo_params.x;
-    let halo_blur = in.halo_params.y;
-    if mode != PASS_HALO {
-        let g = gamma * gamma_scale;
-        text = total_opacity * smoothstep(inner_edge - g, inner_edge + g, dist) * in.fill;
-    }
-    let has_halo = halo_width != 0.0 && dot(in.halo, in.halo) != 0.0;
-    if mode != PASS_FILL && has_halo {
-        let gamma_halo = (halo_blur * 1.19 / SDF_PX + edge_gamma) / (font_scale * u_gamma_scale);
-        let inner_edge_halo = inner_edge + gamma_halo * gamma_scale;
-        let g = gamma_halo * gamma_scale;
-        var alpha = smoothstep(inner_edge_halo - g, inner_edge_halo + g, dist);
-        let halo_edge = (6.0 - halo_width / font_scale) / SDF_PX;
-        alpha = min(smoothstep(halo_edge - g, halo_edge + g, dist), 1.0 - alpha);
-        halo = total_opacity * alpha * in.halo;
-    }
-    let color = text + (1.0 - text.a) * halo;
-    if color.a <= 0.0 { discard; }
-    return color;
-}

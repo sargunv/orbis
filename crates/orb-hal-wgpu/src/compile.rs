@@ -1253,6 +1253,7 @@ mod webgpu {
             TextureFormat::Bgra8UnormSrgb => "bgra8unorm-srgb",
             TextureFormat::R32Float => "r32float",
             TextureFormat::R32Uint => "r32uint",
+            TextureFormat::Rgba32Uint => "rgba32uint",
             TextureFormat::Depth32Float => "depth32float",
         }
     }
@@ -1311,11 +1312,11 @@ mod webgpu {
                             .into(),
                         )]),
                     ),
-                    BindingType::DataTexture => (
+                    BindingType::UintTexture { dimension: d } => (
                         "texture",
                         dict(&[
                             ("sampleType", "uint".into()),
-                            ("viewDimension", "2d".into()),
+                            ("viewDimension", dimension(d).into()),
                         ]),
                     ),
                     BindingType::StorageTexture {

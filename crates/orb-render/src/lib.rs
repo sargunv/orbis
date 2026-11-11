@@ -32,6 +32,7 @@ mod paint;
 mod pipeline;
 mod release;
 mod scene;
+mod symbol;
 mod terrain;
 mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky, GroundLight};
@@ -76,7 +77,6 @@ pub use driver::cpu::{Compared, DriverCheck};
 use orb_hal::*;
 use orb_shaders::{
     CIRCLE_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, LINE_STYLED_SHADER,
-    SYMBOL_SHADERS,
 };
 #[cfg(cpu_driven)]
 use scene::Backing;
@@ -388,10 +388,8 @@ pub struct Renderer {
     /// The vector families' pipelines, each made for the family's first
     /// node.
     paint: PaintPipelines,
-    /// Point and line labels' symbol pipelines, each made for the first
-    /// symbol layer that draws with it.
-    /// By [`Renderer::symbol_kind`].
-    symbol_pipelines: [Variants; 4],
+    /// Symbol layers' pipelines, placement target and passes.
+    symbols: symbol::Symbols,
     /// Whether the map's views may need the full projection
     /// ([`set_full_projection`](Self::set_full_projection)).
     full_projection: bool,
@@ -399,13 +397,6 @@ pub struct Renderer {
     /// variants, not their plane ones (`Variants`): its bundles drew with
     /// them.
     full: bool,
-    /// The symbol shader's passes (group 2), one per [`SYMBOL_PASSES`]
-    /// entry.
-    symbol_passes: [BindGroupId; SYMBOL_PASSES.len()],
-    symbol_pass_buffer: BufferId,
-    symbol_pass_layout: BindGroupLayoutId,
-    /// [`QUAD_INDICES`], the index buffer symbol quads draw with.
-    quad_indices: BufferId,
     /// The frame's backgrounds cover every pixel
     /// ([`set_background_fills`](Self::set_background_fills)).
     background_fills: bool,
@@ -496,50 +487,10 @@ pub struct Renderer {
 const NODE_UNIFORM_SIZE: u64 = 512;
 const _: () = assert!(orb_shaders::layout::symbol_node::WORDS as u64 * 4 == NODE_UNIFORM_SIZE);
 
-/// What a symbol pass draws of a layer's icons or of its text
-/// (`symbol.wgsl`'s `PASS_*`): halo and fill, the halo, the fill, or
-/// nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SymbolPass {
-    Whole = 0,
-    Halo = 1,
-    Fill = 2,
-    Skip = 3,
+/// The node uniforms' usage: the symbol placements read them all at once.
+fn node_uniform_usage(caps: &Caps) -> BufferUsages {
+    BufferUsages::UNIFORM | BufferUsages::COPY_DST | symbol::read_usage(caps)
 }
-
-/// The symbol passes there are, each `[icons, text]`. A symbol layer draws
-/// its icons, then its text, each halo and fill together or, where glyphs
-/// overlap (`separate_halo`), every halo, then every fill: one or more of
-/// these over the one list ([`symbol_passes`]).
-const SYMBOL_PASSES: [[SymbolPass; 2]; 6] = {
-    use SymbolPass::*;
-    [
-        [Whole, Whole],
-        [Halo, Skip],
-        [Fill, Whole],
-        [Whole, Halo],
-        [Skip, Fill],
-        [Fill, Halo],
-    ]
-};
-
-/// The passes of [`SYMBOL_PASSES`] a symbol layer draws, in order, by
-/// whether its icons and its text draw their halos apart.
-fn symbol_passes(icons_apart: bool, text_apart: bool) -> &'static [usize] {
-    match (icons_apart, text_apart) {
-        (false, false) => &[0],
-        (true, false) => &[1, 2],
-        (false, true) => &[3, 4],
-        (true, true) => &[1, 5, 4],
-    }
-}
-
-/// A symbol quad's two triangles over its corners (tl, tr, bl, br;
-/// `symbol.wgsl`'s `vs_symbol`). Drawn indexed, each corner runs the
-/// vertex stage once rather than once per triangle: a label's whole
-/// placement runs in every vertex, and 6 runs a quad cost the moto g's
-/// labels a third of their vertex time (#180).
-const QUAD_INDICES: [u32; 6] = [0, 1, 2, 1, 2, 3];
 
 impl Renderer {
     /// Frees everything the renderer holds on `gpu`, the device it was
@@ -549,14 +500,10 @@ impl Renderer {
         use release::Release;
         self.scene.destroy(gpu);
         self.glyphs.destroy(gpu);
-        let layouts = (self.draw_layout, self.node_layout, self.symbol_pass_layout);
+        let layouts = (self.draw_layout, self.node_layout);
         self.driver.destroy(gpu);
-        let groups = (
-            self.draw_group,
-            self.symbol_passes,
-            (self.symbol_pass_buffer, self.quad_indices),
-        );
-        let pipelines = (self.paint.pipelines, self.symbol_pipelines);
+        let groups = self.draw_group;
+        let pipelines = (self.paint.pipelines, self.symbols);
         (
             layouts,
             groups,
@@ -696,32 +643,7 @@ impl Renderer {
             (glyphs.texture(), nearest, no_dem, no_terrain_depth),
         );
 
-        let symbol_pass_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "symbol pass",
-            entries: &[E::uniform(0, vf)],
-        });
-        let pass_stride = u64::from(gpu.caps().limits.min_uniform_buffer_offset_alignment).max(16);
-        let pass_buffer = gpu.create_buffer(&BufferDesc {
-            label: "symbol passes",
-            size: SYMBOL_PASSES.len() as u64 * pass_stride,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        let symbol_passes = std::array::from_fn(|i| {
-            let at = i as u64 * pass_stride;
-            let [icons, text] = SYMBOL_PASSES[i].map(|p| p as u32);
-            gpu.write_buffer(pass_buffer, at, bytemuck::cast_slice(&[icons, text, 0, 0]));
-            gpu.create_bind_group(&BindGroupDesc {
-                label: "symbol pass",
-                layout: symbol_pass_layout,
-                entries: &[BindGroupEntry::slice(0, pass_buffer, at, 16)],
-            })
-        });
-        let quad_indices = gpu.create_buffer(&BufferDesc {
-            label: "quad indices",
-            size: std::mem::size_of_val(&QUAD_INDICES) as u64,
-            usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
-        });
-        gpu.write_buffer(quad_indices, 0, bytemuck::cast_slice(&QUAD_INDICES));
+        let symbols = symbol::Symbols::new(gpu, backing);
         let downsampler = downsample::Downsampler::new(gpu);
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
@@ -743,7 +665,7 @@ impl Renderer {
         let node_uniforms = gpu.create_buffer(&BufferDesc {
             label: "node uniforms",
             size: NODE_UNIFORM_SIZE * u64::from(capacity.nodes),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            usage: node_uniform_usage(gpu.caps()),
         });
 
         let atmosphere = atmosphere::Atmosphere::new(gpu);
@@ -761,13 +683,9 @@ impl Renderer {
             draw_layout,
             node_layout,
             paint: PaintPipelines::default(),
-            symbol_pipelines: Default::default(),
+            symbols,
             full_projection: false,
             full: false,
-            symbol_passes,
-            symbol_pass_buffer: pass_buffer,
-            symbol_pass_layout,
-            quad_indices,
             background_fills: false,
             beneath: None,
             pipelines_stale: false,
@@ -1003,7 +921,7 @@ impl Renderer {
             let uniforms = gpu.create_buffer(&BufferDesc {
                 label: "node uniforms",
                 size: NODE_UNIFORM_SIZE * u64::from(self.scene.capacity().nodes),
-                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                usage: node_uniform_usage(gpu.caps()),
             });
             retired_uniforms = Some(std::mem::replace(&mut self.node_uniforms, uniforms));
             // The uniforms' CPU copy grows with them.
@@ -1802,6 +1720,19 @@ impl Renderer {
         2 * usize::from(icons.along_line || text.along_line) + usize::from(icons.rows || text.rows)
     }
 
+    /// Icon node `i`'s [`symbol_kind`](Self::symbol_kind), and every
+    /// symbol layer's together, which the one placement dispatch for all
+    /// of them places with.
+    fn symbol_kinds(&self, i: usize) -> (usize, usize) {
+        (self.symbol_kind(i), self.symbols_kind())
+    }
+
+    fn symbols_kind(&self) -> usize {
+        (self.nodes.iter().enumerate())
+            .filter(|(_, n)| n.family == Family::SymbolIcon)
+            .fold(0, |kind, (i, _)| kind | self.symbol_kind(i))
+    }
+
     /// Sets whether the frame's backgrounds cover every pixel: drawn flat
     /// on tiles that fill the view. Then the main pass clears to the
     /// topmost solid one's colour, as MapLibre Native's
@@ -1998,15 +1929,9 @@ impl Renderer {
                 self.paint.make(gpu, self.target, &layouts, kind, variants);
             }
             Family::SymbolIcon | Family::SymbolText => {
-                let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
-                let kind = self.symbol_kind(self.drawer(i));
-                let blend = Some(BlendState::PremultipliedAlpha);
-                let shader = &SYMBOL_SHADERS[kind / 2];
-                let draw = Draw {
-                    rows: kind % 2 == 1,
-                    ..Draw::new(shader, &layouts, self.target, blend)
-                };
-                self.symbol_pipelines[kind].make(gpu, variants, draw);
+                let kinds = self.symbol_kinds(self.drawer(i));
+                let layouts = (self.draw_layout, self.node_layout);
+                (self.symbols).make(gpu, layouts, self.target, kinds, variants);
             }
             Family::Raster | Family::Hillshade | Family::ColorRelief => {
                 self.images.make(gpu, family);
@@ -2079,10 +2004,8 @@ impl Renderer {
                 }
             }
             Family::SymbolIcon | Family::SymbolText => {
-                out.extend(
-                    (self.symbol_pipelines[self.symbol_kind(self.drawer(i))].wanted(self.full))
-                        .map(PipelineId::from),
-                );
+                let kinds = self.symbol_kinds(self.drawer(i));
+                out.extend(self.symbols.wanted(kinds, self.full));
             }
             family if family.is_image() => {
                 out.extend(self.images.pipeline(family).map(PipelineId::from));
@@ -2214,6 +2137,23 @@ impl Renderer {
         }
     }
 
+    /// What the symbol placements bind of the scene, as
+    /// `symbol::compute_layout` has it: the frame, the tables but the
+    /// indices, the terrain as the scene group binds it, the node
+    /// uniforms and the draw arguments.
+    fn symbol_scene(&self) -> Vec<BindGroupEntry> {
+        use TextureViewDimension::{D2, D2Array};
+        let mut entries = vec![BindGroupEntry::buffer(0, self.scene.buffers().frame)];
+        entries.extend((self.scene.tables().entries().into_iter()).filter(|e| e.binding != 5));
+        entries.extend([
+            BindGroupEntry::texture(14, self.dem_bound, D2Array),
+            BindGroupEntry::texture(15, self.terrain_depth_bound, D2),
+            BindGroupEntry::buffer(17, self.node_uniforms),
+            BindGroupEntry::buffer(18, self.scene.buffers().args),
+        ]);
+        entries
+    }
+
     fn record(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -2250,6 +2190,11 @@ impl Renderer {
             self.beneath = beneath;
             self.invalidate_bundle(gpu);
         }
+        // The symbol draws bind the placement target.
+        if self.symbols.fit(gpu, self.scene.placed_rows()) {
+            self.invalidate_bundle(gpu);
+        }
+        self.symbols.bind(gpu, self.symbol_scene());
         let bundle_recorded = self.bundles.is_empty();
         let recording = clock();
         if bundle_recorded {
@@ -2293,6 +2238,8 @@ impl Renderer {
             }
             false => (Vec::new(), false),
         };
+        let kind = (self.symbols_kind(), self.full);
+        passes.extend(self.symbols.pass(gpu, kind, self.scene.placed_quads()));
         stats.draws += self.extrusion_passes(
             gpu,
             size,
@@ -2955,8 +2902,8 @@ impl Renderer {
 
     /// Node `i`'s commands as a bundle records them, over the scene group
     /// `scene`: the map's, or the drape's for draped nodes on terrain. In
-    /// the map, a terrain layer composites in its first node's place. `false` when the node waits for a pipeline and records
-    /// nothing.
+    /// the map, a terrain layer composites in its first node's place.
+    /// `false` when the node waits for a pipeline and records nothing.
     fn node_commands(
         &self,
         gpu: &mut dyn Gpu,
@@ -3024,37 +2971,21 @@ impl Renderer {
             return true;
         }
         if node.family.is_symbol() {
-            // Its icons and its text, in one list.
-            let Some(pipeline) = self.symbol_pipelines[self.symbol_kind(i)].drawn(gpu, self.full)
-            else {
-                return false;
-            };
-            let passes = symbol_passes(node.separate_halo, self.nodes[i + 1].separate_halo)
-                .iter()
-                .map(|&p| self.symbol_passes[p]);
-            // The cull's point arguments read as indexed ones: 6 indices
-            // into [`QUAD_INDICES`], and the first index, base vertex and
-            // first instance all 0, as points always have them.
+            // Its icons and its text, in one list. The cull's point
+            // arguments read as indexed ones too: 6 indices into the quad
+            // indices, and the first index, base vertex and first instance
+            // all 0, as points always have them.
             let quads = (self.driver).draw(self.scene.buffers(), i as u32, NodeDraw::Indexed);
-            commands.extend([
-                RenderCommand::SetPipeline(pipeline),
-                RenderCommand::SetBindGroup {
-                    index: 0,
-                    group: scene,
-                },
-                RenderCommand::SetBindGroup { index: 1, group },
-                RenderCommand::SetIndexBuffer {
-                    buffer: self.quad_indices,
-                    offset: 0,
-                },
-            ]);
-            for group in passes {
-                commands.extend([
-                    RenderCommand::SetBindGroup { index: 2, group },
-                    quads.clone(),
-                ]);
-            }
-            return true;
+            let apart = [node.separate_halo, self.nodes[i + 1].separate_halo];
+            let (kind, union) = self.symbol_kinds(i);
+            return self.symbols.commands(
+                gpu,
+                (kind, union, self.full),
+                (scene, group),
+                apart,
+                quads,
+                commands,
+            );
         }
         if matches!(node.family, Family::Hillshade | Family::ColorRelief) && !ready.prepare {
             return false;

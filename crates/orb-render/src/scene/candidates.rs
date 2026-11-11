@@ -546,9 +546,18 @@ impl Scene {
             self.tables.write_words(gpu, Table::Visible, *at, words);
         }
         let mut live = 0u32;
+        // Symbol nodes' quads in the placement target, 64 for each of
+        // their candidate rows (as many as their visible lists can hold);
+        // every other node's base is where the next symbol node's would
+        // be, so that the bases rise with the node.
+        let mut quads = 0u32;
         for (n, (node, laid)) in self.nodes.iter().zip(&laid).enumerate() {
             use layout::node_cull as nc;
             let row = &mut self.node_rows[n * NODE_CULL_WORDS..(n + 1) * NODE_CULL_WORDS];
+            row[nc::QUAD_BASE] = quads;
+            if node.cull.labels {
+                quads += laid.rows.end * orb_layout::MAX_CHUNK_INSTANCES;
+            }
             row[nc::VISIBLE_BASE] = laid.row_base;
             row[nc::CANDIDATE_COUNT] = laid.rows.end;
             row[nc::INDEX_BASE] = laid.word_base;
@@ -562,6 +571,7 @@ impl Scene {
         self.tables
             .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
         self.params_dirty = false;
+        self.placed_quads = quads;
         self.candidate_count = live;
         self.rows_end = rows_end;
         self.compacted_words = words_end;

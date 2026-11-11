@@ -33,6 +33,7 @@ use orb_layout::{Chunk, Owner};
 use orb_shaders::layout;
 pub use pages::Pixels;
 pub(crate) use pages::{PageTexture, TilePage};
+pub(crate) use symbol::PLACED_WIDTH;
 pub use symbol::{
     PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS, SYMBOL_STATE_WORDS, SymbolMeshData,
     pack_image_rect, symbol_header, symbol_state,
@@ -1156,6 +1157,11 @@ pub(crate) struct Scene {
     /// Candidates laid out, holes aside.
     candidate_count: u32,
     candidates_dropped: u32,
+    /// Texels of the symbol placement target that symbol nodes' quads
+    /// take: 64 for each candidate row (`NodeCull`'s `quad_base`).
+    placed_quads: u32,
+    /// The last frame's label fades had run (`follow_label_fades`).
+    labels_faded: bool,
     /// The ends of the node slices of the candidate lists and the
     /// compacted buffer.
     rows_end: u32,
@@ -1244,6 +1250,8 @@ impl Scene {
             let width = tables::data_width(limits);
             fit_row_texture(&mut capacity, limits.max_texture_dimension_2d, width);
         }
+        // The symbol placements read the draw arguments.
+        let args_usage = driver.args_usage() | crate::symbol::read_usage(gpu.caps());
         let mut buffer = |label: &str, words: u64, usage: BufferUsages| {
             gpu.create_buffer(&BufferDesc {
                 label,
@@ -1259,7 +1267,7 @@ impl Scene {
                 FRAME_WORDS as u64,
                 BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             ),
-            args: buffer("draw args", words(c.nodes, ARGS_WORDS), driver.args_usage()),
+            args: buffer("draw args", words(c.nodes, ARGS_WORDS), args_usage),
             compacted: buffer(
                 "compacted indices",
                 driver.scene_compacted_words(c.compacted_words),
@@ -1309,6 +1317,8 @@ impl Scene {
             params_dirty: false,
             candidate_count: 0,
             candidates_dropped: 0,
+            placed_quads: 0,
+            labels_faded: false,
             rows_end: 0,
             compacted_words: 0,
             laid: Vec::new(),
@@ -1400,6 +1410,19 @@ impl Scene {
         self.laid.clear();
     }
 
+    /// Rows of the symbol placement target its symbol nodes' quads take,
+    /// [`PLACED_WIDTH`] texels each: a power of two, so that it is made
+    /// again only as they double or halve.
+    pub(crate) fn placed_rows(&self) -> u32 {
+        self.placed_quads.div_ceil(PLACED_WIDTH).next_power_of_two()
+    }
+
+    /// The symbol nodes' quads in the placement target: 64 for each of
+    /// their candidate rows.
+    pub(crate) fn placed_quads(&self) -> u32 {
+        self.placed_quads
+    }
+
     pub(crate) fn capacity(&self) -> &SceneCapacity {
         &self.capacity
     }
@@ -1463,7 +1486,7 @@ impl Scene {
         let desc = BufferDesc {
             label: "draw args",
             size: (words(ARGS_WORDS) * 4).max(16),
-            usage: self.driver.args_usage(),
+            usage: self.driver.args_usage() | crate::symbol::read_usage(gpu.caps()),
         };
         move_buffer(gpu, &mut self.buffers.args, &desc, 0);
         self.capacity.nodes = new;
@@ -2096,6 +2119,7 @@ impl Scene {
         linear: bool,
     ) -> (u32, bool) {
         self.write_rows(gpu, quantum(frame.world_span));
+        self.follow_label_fades(gpu, frame.symbol_fade_change);
         self.moves.clear();
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
@@ -2122,7 +2146,9 @@ impl Scene {
                 .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
         }
 
-        let words = frame_words(frame, linear);
+        let mut words = frame_words(frame, linear);
+        words[layout::frame::PLACED_ROWS] = self.placed_rows();
+        words[layout::frame::PLACED_NODES] = self.nodes.len() as u32;
         gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
         #[cfg(cpu_driven)]
         {
@@ -2618,7 +2644,7 @@ mod tests {
     /// chunk reserves.
     #[test]
     fn the_shaders_share_the_chunk_sizes() {
-        use orb_shaders::{CIRCLE_SHADER, CULL_SHADER, SYMBOL_SHADERS};
+        use orb_shaders::{CIRCLE_SHADER, CULL_SHADER, SYMBOL_PLACE_SHADERS, SYMBOL_SHADER};
         let points = orb_layout::MAX_CHUNK_INSTANCES;
         for (source, name, value) in [
             (
@@ -2628,7 +2654,9 @@ mod tests {
             ),
             (CULL_SHADER.source(), "CHUNK_POINTS", points),
             (CIRCLE_SHADER.source(), "CHUNK_POINTS", points),
-            (SYMBOL_SHADERS[0].source(), "CHUNK_QUADS", points),
+            (SYMBOL_SHADER.source(), "CHUNK_QUADS", points),
+            (SYMBOL_PLACE_SHADERS[0].source(), "CHUNK_QUADS", points),
+            (SYMBOL_SHADER.source(), "PLACED_WIDTH", super::PLACED_WIDTH),
         ] {
             assert!(
                 source.contains(&format!("const {name}: u32 = {value}u;")),

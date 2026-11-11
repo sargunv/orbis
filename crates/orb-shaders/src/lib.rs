@@ -686,9 +686,9 @@ mod tests {
         assert!(written > 90, "only {written} stages written");
     }
 
-    /// The draw pipelines that compile a plane variant (orb-render's
-    /// paint, symbol and extrusion pipelines) take [`PLANE`] in their
-    /// vertex stage, the paint and symbol ones [`FEATURE_ROWS`] too, the
+    /// The pipelines that compile a plane variant (orb-render's paint,
+    /// symbol and extrusion pipelines) take [`PLANE`] in their vertex (or
+    /// compute) stage, the paint and symbol ones [`FEATURE_ROWS`] too, the
     /// extrusions (whose variants keep rows) [`FEATURE_STATE`], and every
     /// stage that takes either validates and writes as Metal with each set
     /// as its variants set it, alone and together.
@@ -700,8 +700,11 @@ mod tests {
             &LINE_SHADER,
             &LINE_STYLED_SHADER,
             &CIRCLE_SHADER,
-            &SYMBOL_SHADERS[0],
-            &SYMBOL_SHADERS[1],
+            &SYMBOL_SHADER,
+            &SYMBOL_PLACE_SHADERS[0],
+            &SYMBOL_PLACE_SHADERS[1],
+            &SYMBOL_INLINE_SHADERS[0],
+            &SYMBOL_INLINE_SHADERS[1],
         ];
         let planes = [
             &EXTRUSION_SHADER,
@@ -711,8 +714,13 @@ mod tests {
         for (shader, variant) in
             (rows.map(|s| (s, FEATURE_ROWS)).into_iter()).chain(planes.map(|s| (s, FEATURE_STATE)))
         {
-            assert!(shader.takes(shader.vertex, PLANE), "{}", shader.label);
-            assert!(shader.takes(shader.vertex, variant), "{}", shader.label);
+            // A compute shader's one stage, or the vertex stage.
+            let first = [shader.vertex, shader.compute]
+                .into_iter()
+                .find(|e| !e.is_empty());
+            let first = first.expect("an entry point");
+            assert!(shader.takes(first, PLANE), "{}", shader.label);
+            assert!(shader.takes(first, variant), "{}", shader.label);
             for (entry, one) in split::entry_modules(&validate(shader)) {
                 let info = naga::valid::Validator::new(
                     naga::valid::ValidationFlags::all(),
@@ -759,6 +767,20 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Each shader's label is its own: the build's modules and GLSL are
+    /// found by it.
+    #[test]
+    fn labels_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for shader in SHADERS {
+            assert!(
+                seen.insert(shader.label),
+                "two shaders are {}",
+                shader.label
+            );
         }
     }
 

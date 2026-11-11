@@ -212,26 +212,40 @@ fn data_width(gpu: &dyn Gpu, shader: &Shader, entry: &str) -> Option<(&'static s
     }
 }
 
-/// A draw pipeline's plane and full variants ([`Draw::plane`]), each made
+/// A pipeline's plane and full variants ([`Draw::plane`]), each made
 /// once asked for. The plane variant draws a view of affine tiles on the
 /// plane without terrain exactly as the full one does, and compiles in
 /// about half the time on Adreno (#69).
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Variants([Option<RenderPipelineId>; 2]);
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Variants<P = RenderPipelineId>([Option<P>; 2]);
+
+impl<P> Default for Variants<P> {
+    fn default() -> Self {
+        Self([None, None])
+    }
+}
 
 impl Variants {
     /// Makes each of the variants `[plane, full]` asked for that isn't
     /// made.
     pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, variants: [bool; 2], draw: Draw<'_>) {
+        self.make_with(variants, |full| {
+            Draw {
+                plane: !full,
+                ..draw
+            }
+            .make(gpu)
+        });
+    }
+}
+
+impl<P: Copy + Into<PipelineId>> Variants<P> {
+    /// Makes each of the variants `[plane, full]` asked for that isn't
+    /// made, with `make(full)`.
+    pub(crate) fn make_with(&mut self, variants: [bool; 2], mut make: impl FnMut(bool) -> P) {
         for (full, made) in [false, true].into_iter().zip(&mut self.0) {
             if variants[usize::from(full)] && made.is_none() {
-                *made = Some(
-                    Draw {
-                        plane: !full,
-                        ..draw
-                    }
-                    .make(gpu),
-                );
+                *made = Some(make(full));
             }
         }
     }
@@ -241,9 +255,9 @@ impl Variants {
     /// in its place while it isn't made or compiled. Only what it may draw
     /// with is asked after: a variant made ahead of need
     /// ([`Gpu::set_background_compiles`]) stays in the background.
-    pub(crate) fn drawn(&self, gpu: &mut dyn Gpu, full: bool) -> Option<RenderPipelineId> {
+    pub(crate) fn drawn(&self, gpu: &mut dyn Gpu, full: bool) -> Option<P> {
         let [plane, whole] = self.0;
-        let mut ready = |p: Option<RenderPipelineId>| p.filter(|&p| gpu.pipeline_ready(p.into()));
+        let mut ready = |p: Option<P>| p.filter(|&p| gpu.pipeline_ready(p.into()));
         if full {
             ready(whole)
         } else {
@@ -252,7 +266,7 @@ impl Variants {
     }
 
     /// The variant a frame waits for (`full` as in [`drawn`](Self::drawn)).
-    pub(crate) fn wanted(&self, full: bool) -> Option<RenderPipelineId> {
+    pub(crate) fn wanted(&self, full: bool) -> Option<P> {
         if full {
             self.0[1]
         } else {
@@ -261,7 +275,7 @@ impl Variants {
     }
 }
 
-impl crate::release::Release for Variants {
+impl<P: crate::release::Release> crate::release::Release for Variants<P> {
     fn release(self, gpu: &mut dyn Gpu) {
         self.0.release(gpu);
     }
