@@ -30,7 +30,7 @@ const WHOLE_CORE: &str = "target/web/core-whole.wasm";
 /// if the growth earns its bytes, raise the level to the new size plus the
 /// same margin, and when a change shrinks a module, lower it.
 const CORE_WATCH_KIB: usize = 700;
-const CORE_DEFERRED_WATCH_KIB: usize = 250;
+const CORE_DEFERRED_WATCH_KIB: usize = 260;
 const CORE_GL_WATCH_KIB: usize = 1330;
 const SHAPER_WATCH_KIB: usize = 380;
 
@@ -98,14 +98,19 @@ pub(crate) fn build(options: Options) -> Result<(), String> {
         deferred.split.inferred,
         js.len() / 1024,
     );
-    if deferred.split.missing > 0 {
+    let split::Split {
+        unnamed: (unnamed, unnamed_bytes),
+        unnamed_kept: (kept, kept_bytes),
+        ..
+    } = deferred.split;
+    if unnamed > 0 {
         eprintln!(
-            "{} of the {} functions {} lists are gone or renamed (new names stay in \
-             core.wasm unless only deferred functions call them); `pnpm -C web coverage \
-             --tour --write` refreshes it",
-            deferred.split.missing,
-            deferred.split.listed,
+            "{} doesn't name {unnamed} functions ({} KiB of code), new or renamed since \
+             `pnpm -C web coverage --tour --write` wrote it: {kept} of them ({} KiB) stay \
+             in core.wasm, as kept code reaches them",
             split::LIST,
+            unnamed_bytes / 1024,
+            kept_bytes / 1024,
         );
     }
     watch("core.wasm", core.brotli, CORE_WATCH_KIB);
@@ -148,6 +153,18 @@ fn watch(name: &str, brotli: usize, level_kib: usize) {
             brotli / 1024
         );
     }
+}
+
+/// `cargo xtask deferred <profile>`: rewrites [`split::LIST`] from a
+/// coverage profile of [`NAMED_CORE`].
+pub(crate) fn write_list(args: &[String]) -> Result<(), String> {
+    let [profile] = args else {
+        return Err(
+            "deferred: takes the profile (`pnpm -C web coverage --tour --write` gives it)".into(),
+        );
+    };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    split::write_list(&root, &root.join(NAMED_CORE), Path::new(profile))
 }
 
 pub(crate) fn pages() -> Result<(), String> {

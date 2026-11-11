@@ -1,7 +1,7 @@
 // Which of core.wasm's functions a map's first frames run, by scene, and
-// what a module split along that line weighs; `--write` sets that line
-// for `cargo xtask web`, which moves what no scene ran into
-// core-deferred.wasm (xtask/src/split.rs).
+// what a module split along that line weighs; `--write` has `cargo xtask
+// deferred` set that line in web/deferred.txt for `cargo xtask web`, which
+// moves what no scene ran into core-deferred.wasm (xtask/src/split.rs).
 //
 //   cargo xtask web --names
 //   pnpm coverage [--scenes=liberty,paris,globe,terrain,raster,tokyo,
@@ -31,9 +31,9 @@
 //   first frame needs, and the rest, which could load later;
 // - the code only that scene ran, and that none ran, split out of the
 //   rest: what a module of that feature would take off every other load;
-// - what web/deferred.txt defers that ran (which would load
+// - what the build's split defers that ran (which would load
 //   core-deferred.wasm before first idle); `--write`, with every scene
-//   and `--tour`, rewrites the list from what none ran;
+//   and `--tour`, rewrites web/deferred.txt from what none ran;
 // - code by crate and by module of ours, with the share each scene ran (a
 //   function's crate is the first `orb_` crate in its name, else its first).
 // Profiles and modules stay in `--out` (by default target/coverage), for
@@ -69,7 +69,9 @@ if (!existsSync(named))
     "no target/web/core-names.wasm: run `cargo xtask web --names` (a build without it removes it)",
   );
 const out = option("out", join(root, "target/coverage"));
-const DEFERRED = join(root, "web/deferred.txt");
+// The build's split: core.wasm whole, the symbol map naming its
+// functions, and the indices it deferred (xtask/src/web.rs).
+const WHOLE = join(root, "target/web/core-whole");
 mkdirSync(out, { recursive: true });
 
 /** Each scene's load.html query: a style and a camera. */
@@ -136,7 +138,8 @@ const brotli = (bytes) =>
 const kib = (bytes) => `${(bytes / 1024).toFixed(0)} KiB`;
 const pct = (part, whole) => `${((part * 100) / whole).toFixed(1)}%`;
 
-/** The module's defined functions, in index order, as { name, size } (code bytes). */
+/** The module's defined functions, in index order, as { name, size } (code
+ * bytes), and as `imported` how many functions it imports. */
 function functions(wasm) {
   let at = 8;
   const u32 = () => {
@@ -209,26 +212,17 @@ function functions(wasm) {
     at = end;
   }
   // binaryen calls a function without a name by its index among those defined.
-  return sizes.map((size, i) => ({
-    name: names.get(imported + i) ?? String(i),
-    named: names.has(imported + i),
-    size,
-  }));
+  return Object.assign(
+    sizes.map((size, i) => ({
+      name: names.get(imported + i) ?? String(i),
+      size,
+    })),
+    { imported },
+  );
 }
 
 /** A crate's hash after its name in a function's name. */
 const HASH = /(?<=[A-Za-z0-9_])\[[0-9a-f]+\]/g;
-
-/** A function's key in web/deferred.txt: FNV-1a 64 of its name without
- * its crates' hashes, which change with a crate's build settings (as
- * xtask/src/split.rs computes it). */
-function key(name) {
-  const unhashed = name.replace(HASH, "");
-  let hash = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(unhashed))
-    hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
-  return hash.toString(16).padStart(16, "0");
-}
 
 const funcs = functions(readFileSync(named));
 
@@ -610,60 +604,50 @@ if (scenes.length > 1) {
   );
 }
 
-// web/deferred.txt, the functions `cargo xtask web` moves into
-// core-deferred.wasm: what it lists that ran here would load that module
-// before the scene's first idle. `--write` rewrites it from what no scene
-// ran.
+// What the build's split moved into core-deferred.wasm (by name: the split
+// cut core-whole.wasm, which binaryen optimized apart from core-names.wasm)
+// that ran here: it would load that module before the scene's first idle.
+// `--write` has `cargo xtask deferred` rewrite web/deferred.txt from what
+// no scene ran.
 {
   const anyRan = (i) => scenes.some((s) => ran[s][i]);
-  const keys = funcs.map((f) => (f.named ? key(f.name) : undefined));
-  // Deferred keys, and `+`keys of functions some earlier run saw run.
-  const list = existsSync(DEFERRED)
-    ? readFileSync(DEFERRED, "utf8")
-        .split("\n")
-        .filter((line) => line && !line.startsWith("#"))
-    : [];
-  const listed = new Set(list.filter((line) => !line.startsWith("+")));
-  const seen = new Set(
-    list.filter((line) => line.startsWith("+")).map((line) => line.slice(1)),
+  const { imported } = functions(readFileSync(`${WHOLE}.wasm`));
+  const symbols = new Map(
+    readFileSync(`${WHOLE}.symbols`, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const colon = line.indexOf(":");
+        return [Number(line.slice(0, colon)), line.slice(colon + 1)];
+      }),
+  );
+  const split = new Set(
+    readFileSync(`${WHOLE}.deferred`, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((i) => symbols.get(imported + Number(i))),
   );
   const stale = funcs
-    .filter((_, i) => anyRan(i) && listed.has(keys[i]))
+    .filter((f, i) => anyRan(i) && split.has(f.name))
     .sort((a, b) => b.size - a.size);
   lines.push(
     "",
     stale.length
-      ? `${stale.length} functions web/deferred.txt defers ran here (${kib(stale.reduce((s, f) => s + f.size, 0))}), so these scenes load core-deferred.wasm early; \`--tour --write\` refreshes the list. The largest: ${stale
+      ? `${stale.length} functions the build defers ran here (${kib(stale.reduce((s, f) => s + f.size, 0))}), so these scenes load core-deferred.wasm early; \`--tour --write\` refreshes web/deferred.txt. The largest: ${stale
           .slice(0, 10)
           .map((f) => `\`${f.name.replace(HASH, "").slice(0, 100)}\``)
           .join(", ")}`
-      : `Nothing web/deferred.txt defers ran here.`,
+      : `Nothing the build defers ran here.`,
   );
   if (args.includes("--write")) {
     if (!tour || scenes.length !== Object.keys(SCENES).length || !cache)
       throw new Error(
         "--write takes every scene, the real-world ones too (`cargo xtask h2h mirror` checks out their cache), and --tour: the list defers what none ran",
       );
-    // What runs can turn on timing (which pipelines a frame prepares
-    // together): what any run saw run stays, so runs only add to it.
-    for (const [i, k] of keys.entries()) if (k && anyRan(i)) seen.add(k);
-    const deferred = [...new Set(keys.filter((k) => k && !seen.has(k)))];
-    writeFileSync(
-      DEFERRED,
-      [
-        "# The functions core.wasm leaves to core-deferred.wasm, which loads once the",
-        "# map is idle or first calls one: those no scene of `pnpm -C web coverage",
-        "# --tour` has run. Each is the FNV-1a 64 hash of the function's name without",
-        "# its crates' hashes (xtask/src/split.rs); a `+` marks one a run has seen run,",
-        "# which stays in core.wasm. Written by `pnpm -C web coverage --tour --write`.",
-        ...deferred.sort(),
-        ...[...seen].sort().map((k) => `+${k}`),
-        "",
-      ].join("\n"),
-    );
-    lines.push(
-      `Wrote ${deferred.length} functions to defer, and ${seen.size} seen running, to ${DEFERRED}.`,
-    );
+    execFileSync("cargo", ["xtask", "deferred", join(out, "union.profile")], {
+      cwd: root,
+      stdio: "inherit",
+    });
   }
 }
 

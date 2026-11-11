@@ -49,6 +49,9 @@ cargo xtask <task>
                --panics builds both to say on the console why they panic
                (bigger: for debugging, never to ship); --gl builds
                core-gl.wasm alone
+  deferred <profile>  rewrite web/deferred.txt from wasm-split's profile
+               of target/web/core-names.wasm (`pnpm -C web coverage --tour
+               --write` runs it)
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
   rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|chrome-webgl2|android-chrome|android-chrome-webgl2|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]
@@ -110,6 +113,7 @@ fn main() -> ExitCode {
             gl: args.iter().any(|a| a == "--gl"),
         }),
         Some("pages") => web::pages(),
+        Some("deferred") => web::write_list(&args[1..]),
         Some("rt") => rt(&args[1..]),
         Some("bench") if args.iter().any(|a| a == "--compare") => compare::bench(&args[1..]),
         Some("bench") => {
