@@ -150,6 +150,7 @@ pub(crate) struct MapEntry {
     debug_flags: mln_map_debug_flags,
     stats_view: bool,
     viewport: mln_map_viewport,
+    projection_mode: mln_projection_mode,
     bounds: mln_camera_bounds,
     prefetch_zoom_delta: u32,
     pub(crate) style_url: String,
@@ -243,8 +244,7 @@ impl MapEntry {
             size: std::mem::size_of::<mln_map_view>() as u32,
             camera: self.camera(),
             extent: self.extent,
-            // SAFETY: plain C data; zero is Native's default projection.
-            projection_mode: unsafe { std::mem::zeroed() },
+            projection_mode: self.projection_mode,
             viewport: self.viewport,
         }
     }
@@ -664,6 +664,12 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                                 right: 0.0,
                             },
                         },
+                        // Perspective, as a new Native map's.
+                        projection_mode: mln_projection_mode {
+                            axonometric: false,
+                            x_skew: 0.0,
+                            y_skew: 0.0,
+                        },
                         bounds: default_bounds(),
                         prefetch_zoom_delta: 4,
                         style_url: String::new(),
@@ -872,6 +878,16 @@ command!(
     false,
     true,
     |state, id| {
+        let known = MLN_MAP_DEBUG_TILE_BORDERS
+            | MLN_MAP_DEBUG_PARSE_STATUS
+            | MLN_MAP_DEBUG_TIMESTAMPS
+            | MLN_MAP_DEBUG_COLLISION
+            | MLN_MAP_DEBUG_OVERDRAW
+            | MLN_MAP_DEBUG_STENCIL_CLIP
+            | MLN_MAP_DEBUG_DEPTH_BUFFER;
+        if flags & !known != 0 {
+            return Err(Failure::argument("debug flags contain unknown bits"));
+        }
         Ok(job(move |entry| {
             entry.unchanged = entry.debug_flags == flags;
             entry.debug_flags = flags;
@@ -1128,6 +1144,56 @@ command!(
             if has(MLN_MAP_VIEWPORT_OPTION_FRUSTUM_OFFSET) {
                 entry.viewport.frustum_offset = o.frustum_offset;
             }
+            Ok(())
+        }))
+    }
+);
+
+command!(
+    mln_map_set_projection_mode(options: *const mln_projection_mode_options),
+    false,
+    true,
+    |state, id| {
+        let o = *sized(options, "options")?;
+        let known = MLN_PROJECTION_MODE_OPTION_AXONOMETRIC
+            | MLN_PROJECTION_MODE_OPTION_X_SKEW
+            | MLN_PROJECTION_MODE_OPTION_Y_SKEW;
+        if o.fields & !known != 0 {
+            return Err(Failure::argument(
+                "the projection mode options have unknown bits",
+            ));
+        }
+        let has = |bit| o.fields & bit != 0;
+        for (bit, value, what) in [
+            (MLN_PROJECTION_MODE_OPTION_X_SKEW, o.x_skew, "x_skew"),
+            (MLN_PROJECTION_MODE_OPTION_Y_SKEW, o.y_skew, "y_skew"),
+        ] {
+            if has(bit) && !value.is_finite() {
+                return Err(Failure::argument(format!("{what} must be finite")));
+            }
+        }
+        Ok(job(move |entry| {
+            let has = |bit| o.fields & bit != 0;
+            let mut mode = entry.projection_mode;
+            if has(MLN_PROJECTION_MODE_OPTION_AXONOMETRIC) {
+                mode.axonometric = o.axonometric;
+            }
+            if has(MLN_PROJECTION_MODE_OPTION_X_SKEW) {
+                mode.x_skew = o.x_skew;
+            }
+            if has(MLN_PROJECTION_MODE_OPTION_Y_SKEW) {
+                mode.y_skew = o.y_skew;
+            }
+            let before = entry.projection_mode;
+            entry.unchanged = (mode.axonometric, mode.x_skew, mode.y_skew)
+                == (before.axonometric, before.x_skew, before.y_skew);
+            entry.projection_mode = mode;
+            entry
+                .map
+                .set_axonometric(mode.axonometric.then_some(orb_api::Skew {
+                    x: mode.x_skew,
+                    y: mode.y_skew,
+                }));
             Ok(())
         }))
     }

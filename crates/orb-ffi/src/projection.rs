@@ -129,17 +129,13 @@ fn resolve(v: &mln_map_view) -> View {
     // North pointing right turns the picture a quarter clockwise, as a
     // bearing of -90° does.
     let turn = f64::from(v.viewport.north_orientation) * 90.0;
-    // An axonometric view centres the target in the whole extent.
-    let padding = if v.projection_mode.axonometric {
-        Padding::default()
-    } else {
-        Padding {
-            top: c.padding.top,
-            right: c.padding.right,
-            bottom: c.padding.bottom,
-            left: c.padding.left,
-        }
+    let padding = Padding {
+        top: c.padding.top,
+        right: c.padding.right,
+        bottom: c.padding.bottom,
+        left: c.padding.left,
     };
+    let mode = v.projection_mode;
     let mut camera = CameraState::new(
         Geodetic::new(c.center.longitude, c.center.latitude),
         c.zoom,
@@ -151,6 +147,11 @@ fn resolve(v: &mln_map_view) -> View {
     camera.fov = c.field_of_view;
     camera.elevation = c.center_altitude;
     camera.padding = padding;
+    // An axonometric view centres the target in the whole extent.
+    camera.axonometric = mode.axonometric.then_some(orb_api::Skew {
+        x: mode.x_skew,
+        y: mode.y_skew,
+    });
     View::new(
         &camera,
         Viewport {

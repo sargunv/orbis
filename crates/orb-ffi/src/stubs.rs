@@ -440,17 +440,6 @@ pub unsafe extern "C" fn mln_map_set_image_source_image(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_image_source_image") }
 }
 
-/// `mln_map_set_projection_mode`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_set_projection_mode(
-    map: mln_map,
-    options: *const mln_projection_mode_options,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_projection_mode") }
-}
-
 /// `mln_ohos_frame_pacer_create`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_ohos_frame_pacer_create(
@@ -1159,6 +1148,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_map_set_image_source_url,
         crate::style::mln_map_set_image_source_url,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_projection_mode,
+        crate::map::mln_map_set_projection_mode,
     ];
     let _ = [
         crate::sys::mln_map_set_rendering_stats_view_enabled,
