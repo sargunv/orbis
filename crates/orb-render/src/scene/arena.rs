@@ -89,6 +89,29 @@ impl Arena {
         Some(start..start + len)
     }
 
+    /// Whether allocations of `lens` would all succeed now, in order: what
+    /// [`alloc`](Self::alloc) would do, found without copying the free
+    /// list. First fit takes the first block with room, and what it leaves
+    /// of a block stays where the block was in the list's order.
+    pub(crate) fn fits_all(&self, lens: impl IntoIterator<Item = u32>) -> bool {
+        // Words taken so far from each block they came from, by its start.
+        let mut taken: Vec<(u32, u32)> = Vec::new();
+        'next: for len in lens.into_iter().filter(|&len| len > 0) {
+            for (&start, &size) in &self.free {
+                let at = taken.iter().position(|&(s, _)| s == start);
+                if size - at.map_or(0, |i| taken[i].1) >= len {
+                    match at {
+                        Some(i) => taken[i].1 += len,
+                        None => taken.push((start, len)),
+                    }
+                    continue 'next;
+                }
+            }
+            return false;
+        }
+        true
+    }
+
     /// The size, in words, that would have held each allocation refused
     /// since the last call when it was refused, or 0. It counts what the
     /// arena held then, which an upload that failed may have given back
@@ -237,6 +260,35 @@ mod tests {
         tail.free(low);
         assert_eq!(arena.used(), 0);
         assert_eq!(arena.alloc(100), Some(0..100));
+    }
+
+    /// `fits_all` answers as allocating would, over free lists of many
+    /// shapes.
+    #[test]
+    fn fits_all_is_first_fit() {
+        let mut seed = 7u64;
+        let mut next = |n: u32| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as u32 % n
+        };
+        for _ in 0..200 {
+            let mut arena = Arena::new(256);
+            let mut held = Vec::new();
+            for _ in 0..next(20) {
+                if let Some(r) = arena.alloc(1 + next(40)) {
+                    held.push(r);
+                }
+            }
+            for r in held.into_iter().filter(|_| next(2) == 0) {
+                arena.free(r);
+            }
+            let lens: Vec<u32> = (0..1 + next(6)).map(|_| next(60)).collect();
+            let mut copy = arena.clone();
+            let allocates = lens.iter().all(|&len| copy.alloc(len).is_some());
+            assert_eq!(arena.fits_all(lens.iter().copied()), allocates, "{lens:?}");
+        }
     }
 
     #[test]

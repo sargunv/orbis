@@ -278,10 +278,11 @@ fn headroom(used: u32, step: u32) -> u32 {
 }
 
 impl Scene {
-    /// A node's runs, in mesh, placement and chunk order, and the most
+    /// A node's runs into `runs` (emptied first; one list serves every
+    /// node of a layout), in mesh, placement and chunk order, and the most
     /// vertex words a mesh of it has.
-    fn node_runs<'a>(&'a self, node: &NodeEntry) -> (Vec<RunPlan<'a>>, u32) {
-        let mut runs = Vec::new();
+    fn node_runs<'a>(&'a self, node: &NodeEntry, runs: &mut Vec<RunPlan<'a>>) -> u32 {
+        runs.clear();
         let mut vertex_words = 1u32;
         for mesh in &node.meshes {
             let entry = self.meshes[mesh.0 as usize]
@@ -306,7 +307,7 @@ impl Scene {
                 });
             }
         }
-        (runs, vertex_words)
+        vertex_words
     }
 
     /// Lays out every node's candidates contiguously, in mesh, placement
@@ -327,10 +328,11 @@ impl Scene {
                 .then(|| &old[n])
                 .filter(|o| o.shape == shape(node))
         };
+        let mut runs = Vec::new();
         let plans: Vec<NodePlan> = (self.nodes.iter().enumerate())
             .map(|(n, node)| {
                 let indexed = node.cull.draw == NodeDraw::Indexed;
-                let (runs, vertex_words) = self.node_runs(node);
+                let vertex_words = self.node_runs(node, &mut runs);
                 let shift = if indexed { run_shift(vertex_words) } else { 0 };
                 let old = old(n, node).and_then(|o| o.movable(shift));
                 NodePlan::new(&runs, indexed, shift, &limits, &mut budget, old)
@@ -404,6 +406,7 @@ impl Scene {
         let mut writes = Writes::default();
         let (mut rows_end, mut words_end) = (self.rows_end, self.compacted_words);
         let mut relaid = Vec::new();
+        let mut runs = Vec::new();
         let mut fits = true;
         for (n, (node, laid)) in self.nodes.iter().zip(&mut laid).enumerate() {
             if laid.shape != shape(node) {
@@ -411,7 +414,7 @@ impl Scene {
                 break;
             }
             let indexed = node.cull.draw == NodeDraw::Indexed;
-            let (runs, vertex_words) = self.node_runs(node);
+            let vertex_words = self.node_runs(node, &mut runs);
             let shift = if indexed { run_shift(vertex_words) } else { 0 };
             if laid.runs.is_some() && shift == laid.run_shift {
                 let mut node_writes = Writes::default();

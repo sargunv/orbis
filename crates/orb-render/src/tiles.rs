@@ -321,7 +321,7 @@ impl Renderer {
             .filter(|&i| self.nodes[i as usize].source == Some(key.source))
             .collect();
         let sizes = vec![image_mesh_size(build.mesh.as_deref()); nodes.len()];
-        let fits = self.scene.fits(sizes.iter().copied()) || (grow && self.grow_for(gpu, &sizes));
+        let fits = self.scene.fits(&sizes) || (grow && self.grow_for(gpu, &sizes));
         if !fits {
             return Err(UploadError::NoRoom);
         }
@@ -615,7 +615,7 @@ impl Renderer {
 
     /// Whether meshes of these sizes would fit without growing the pools.
     pub fn fits(&self, meshes: &[MeshSize]) -> bool {
-        self.scene.fits(meshes.iter().copied())
+        self.scene.fits(meshes)
     }
 
     /// Grows the pools, within their limits, until meshes of these sizes

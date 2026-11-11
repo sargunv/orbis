@@ -1627,21 +1627,14 @@ impl Scene {
     /// Whether meshes of these sizes would all insert now, in order: the
     /// arena ranges and chunk slots [`insert_mesh`](Self::insert_mesh)
     /// would take, found without writing anything.
-    pub(crate) fn fits(&self, meshes: impl IntoIterator<Item = MeshSize>) -> bool {
-        let mut vertices = self.vertex_arena.clone();
-        let mut indices = self.index_arena.clone();
-        let mut props = self.prop_arena.clone();
-        let mut chunks = 0u64;
-        for mesh in meshes {
-            if vertices.alloc(mesh.vertices).is_none()
-                || indices.alloc(mesh.indices).is_none()
-                || props.alloc(mesh.props).is_none()
-            {
-                return false;
-            }
-            chunks += u64::from(mesh.chunks);
-        }
-        chunks <= u64::from(self.chunk_slots.available())
+    pub(crate) fn fits(&self, meshes: &[MeshSize]) -> bool {
+        // The pools are apart: each takes its words of every mesh in turn.
+        let words = |of: fn(&MeshSize) -> u32| meshes.iter().map(of);
+        let chunks: u64 = meshes.iter().map(|m| u64::from(m.chunks)).sum();
+        self.vertex_arena.fits_all(words(|m| m.vertices))
+            && self.index_arena.fits_all(words(|m| m.indices))
+            && self.prop_arena.fits_all(words(|m| m.props))
+            && chunks <= u64::from(self.chunk_slots.available())
     }
 
     pub(crate) fn insert_mesh(
@@ -1997,12 +1990,11 @@ impl Scene {
     /// Returns whether they would.
     pub(crate) fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
         loop {
-            if self.fits(meshes.iter().copied()) {
+            if self.fits(meshes) {
                 return true;
             }
             let short = |arena: &Arena, words: fn(&MeshSize) -> u32| {
-                let mut arena = arena.clone();
-                meshes.iter().any(|m| arena.alloc(words(m)).is_none())
+                !arena.fits_all(meshes.iter().map(words))
             };
             let vertices = short(&self.vertex_arena, |m| m.vertices);
             let indices = short(&self.index_arena, |m| m.indices);
