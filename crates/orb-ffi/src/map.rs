@@ -634,6 +634,10 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                 let mut map = orb_api::Map::new(&state.runtime, orb_api::MapOptions::default());
                 let extent = options.initial_extent;
                 map.set_viewport(f64::from(extent.width), f64::from(extent.height));
+                // Native's limits, not orb-camera's GL JS ones (zoom from
+                // -2 to 22, pitch to 85°), which a map whose bounds were
+                // never set would otherwise keep.
+                map.set_constraints(constraints(&default_bounds()));
                 let woken = Arc::new(AtomicBool::new(false));
                 let flag = woken.clone();
                 map.set_wake(move || {
@@ -1285,13 +1289,7 @@ command!(
                     .then(|| pitch.clamp(b.min_pitch, b.max_pitch)),
                 ..CameraTarget::default()
             };
-            entry.map.set_constraints(orb_api::Constraints {
-                min_zoom: b.min_zoom,
-                max_zoom: b.max_zoom,
-                min_pitch: b.min_pitch,
-                max_pitch: b.max_pitch,
-                bounds: (!b.unbounded).then(|| bounds(b.bounds)),
-            });
+            entry.map.set_constraints(constraints(&b));
             if limited != CameraTarget::default() {
                 entry.map.jump_to(&limited);
             }
@@ -2331,6 +2329,17 @@ command!(
         }))
     }
 );
+
+/// The camera's limits for `b`.
+fn constraints(b: &mln_camera_bounds) -> orb_api::Constraints {
+    orb_api::Constraints {
+        min_zoom: b.min_zoom,
+        max_zoom: b.max_zoom,
+        min_pitch: b.min_pitch,
+        max_pitch: b.max_pitch,
+        bounds: (!b.unbounded).then(|| bounds(b.bounds)),
+    }
+}
 
 fn bounds(b: mln_lat_lng_bounds) -> orb_api::Bounds {
     orb_api::Bounds {
