@@ -129,16 +129,35 @@ pub(crate) fn layout_clipped(
 /// Lays out the outlines of the polygons among `features` as line
 /// segments, with the same vertex layout as [`layout`]. Edges along the
 /// tile square that clipping created are left out: they aren't polygon
-/// edges, and GL JS's stencil hides them too.
+/// edges, and GL JS's stencil hides them too. A polygon's own edge that
+/// lies on the square is kept where its source clipped past the square
+/// (so the edge is in its geometry, not made by a clip) and the polygon
+/// lies inside this tile beside it, so that one tile draws it, as in GL
+/// JS one tile's stencil keeps it.
 pub fn outline(layer: &Layer, features: &[u32]) -> Mesh {
     let extent = i32::try_from(layer.extent()).expect("extent fits i32");
     assert!(
         extent <= i32::from(i16::MAX),
         "extent {extent} exceeds i16 positions"
     );
-    let synthetic = |a: [i32; 2], b: [i32; 2]| {
-        (0..2).any(|axis| a[axis] == b[axis] && (a[axis] == 0 || a[axis] == extent))
+    // The axis and line of the square an edge lies along, if any.
+    let along = |a: [i32; 2], b: [i32; 2]| {
+        (0..2).find(|&axis| a[axis] == b[axis] && (a[axis] == 0 || a[axis] == extent))
     };
+    // Whether the source ring has an edge along that line covering `a..b`.
+    let in_source = |source: &[[i32; 2]], a: [i32; 2], b: [i32; 2], axis: usize| {
+        let other = 1 - axis;
+        let (lo, hi) = (a[other].min(b[other]), a[other].max(b[other]));
+        let n = source.len();
+        (0..n).any(|i| {
+            let (p, q) = (source[i], source[(i + 1) % n]);
+            p[axis] == a[axis]
+                && q[axis] == a[axis]
+                && p[other].min(q[other]) <= lo
+                && p[other].max(q[other]) >= hi
+        })
+    };
+    let buffered = layer.clip_buffer() > 0;
 
     let mut builder = MeshBuilder::new(STRIDE);
     let mut ring = Vec::new();
@@ -160,9 +179,20 @@ pub fn outline(layer: &Layer, features: &[u32]) -> Mesh {
                     builder.push_vertex(p, &[pack_position(p[0], p[1]), slot]);
                 }
                 let n = ring.len();
+                // Twice its area: none where clipping left only the line
+                // along the square that a neighbour's polygon ends on.
+                let area: i64 = (0..n)
+                    .map(|i| {
+                        let (a, b) = (ring[i], ring[(i + 1) % n]);
+                        i64::from(a[0]) * i64::from(b[1]) - i64::from(b[0]) * i64::from(a[1])
+                    })
+                    .sum();
                 for i in 0..n {
                     let j = (i + 1) % n;
-                    if !synthetic(ring[i], ring[j]) {
+                    let (a, b) = (ring[i], ring[j]);
+                    let keep = along(a, b)
+                        .is_none_or(|axis| buffered && area != 0 && in_source(source, a, b, axis));
+                    if keep {
                         builder.push_segment(base + i as u32, base + j as u32);
                     }
                 }
@@ -320,6 +350,26 @@ mod tests {
         assert_eq!(area(&mesh), 100.0 * 100.0 - 50.0 * 50.0);
         assert_eq!(mesh.chunks.len(), 1);
         assert_eq!(mesh.vertices[1], 0, "feature slot");
+    }
+
+    #[test]
+    fn outlines_keep_their_own_edges_on_the_tile_square() {
+        // A tile whose source clipped past the square (a second polygon
+        // reaches 64 units out): the square's left side at x = 0 is the
+        // first polygon's own edge, kept by the tile it lies in, and the
+        // neighbour holding only that line in its buffer draws nothing.
+        let buffered = |ring: &[[i32; 2]]| {
+            let mut b = LayerBuilder::new("water", 4096);
+            polygon(&mut b, &[ring]);
+            polygon(&mut b, &[&[[-64, 0], [-32, 0], [-32, 10], [-64, 10]]]);
+            b.finish()
+        };
+        let ring = [[0, 100], [0, 200], [100, 200], [100, 100]];
+        let layer = buffered(&ring);
+        assert_eq!(layer.clip_buffer(), 64);
+        assert_eq!(outline(&layer, &[0]).vertex_indices().count(), 8);
+        let layer = buffered(&ring.map(|[x, y]| [x + 4096, y]));
+        assert_eq!(outline(&layer, &[0]).vertex_indices().count(), 0);
     }
 
     #[test]

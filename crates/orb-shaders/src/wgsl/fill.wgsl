@@ -81,9 +81,17 @@ fn fill_outline_vertex(v: Pulled) -> FillOut {
         }
     }
     var out = fill_vertex(v);
+    // A polygon's own edge along the tile's east or south side (orb-layout
+    // keeps it in the one tile the polygon lies in) is drawn here, as GL
+    // JS's line lands on the pixels beside it: its fragments are held half
+    // a unit inside the half-open square.
+    let tile = tile_at(v.tile);
+    let edge = select(vec2<f32>(0.0), vec2<f32>(0.5), unpack_i16x2(vertex_at(v.vertex)) >= vec2<f32>(tile.extent));
+    out.tile_pos -= edge;
+    out.owner_pos -= edge;
     let ndc = out.position.xy / out.position.w;
     let size = frame.viewport * frame.pixel_ratio;
-    out.screen_origin = drape_origin(tile_at(v.tile));
+    out.screen_origin = drape_origin(tile);
     out.screen = vec2<f32>(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * size - out.screen_origin;
     return out;
 }
