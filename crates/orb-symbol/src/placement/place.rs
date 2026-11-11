@@ -45,6 +45,10 @@ pub struct PlacementTables {
     /// the tile's zoom and the next, blended by
     /// [`PlacedTile::translate_t`]. Empty where the layer's apply.
     pub translates: [Vec<[[f32; 2]; 2]>; 2],
+    /// For an overzoom slice laid out in its ancestor, the ancestor's size
+    /// in slices ([`crate::SymbolBucket::ancestor_scale`]): slices of one
+    /// ancestor place merged, in its instance order.
+    pub ancestor_scale: u32,
 }
 
 impl PlacementTables {
@@ -1045,11 +1049,52 @@ impl<'a> Pass<'a> {
             if params.sort_across_tiles {
                 parts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             }
+            // Overzoom slices laid out in one ancestor place as its one
+            // overscaled tile would in GL JS and Native: merged, in its
+            // instance order, so the labels along a line pack the same
+            // way whichever slices the line crosses.
+            let ancestor = |t: &PlacedTile| {
+                let scale = buckets[&copy_key(t)].tables.ancestor_scale;
+                let id = t.view.id;
+                (scale > 1 && !params.z_order_viewport_y)
+                    .then(|| (id.z, id.x / scale, id.y / scale, id.wrap))
+            };
             let mut seen = HashSet::new();
-            for (key, t, range) in parts {
+            let mut done = vec![false; parts.len()];
+            for i in 0..parts.len() {
+                if done[i] {
+                    continue;
+                }
+                let (key, t, _) = parts[i];
                 self.sort_key = key;
-                let b = &buckets[&copy_key(t)];
-                self.place_part(params, group, t, b, range, &mut seen);
+                let members: Vec<usize> = match ancestor(t) {
+                    Some(a) => (i..parts.len())
+                        .filter(|&j| {
+                            !done[j]
+                                && parts[j].0.to_bits() == key.to_bits()
+                                && ancestor(parts[j].1) == Some(a)
+                        })
+                        .collect(),
+                    None => vec![i],
+                };
+                for &j in &members {
+                    done[j] = true;
+                }
+                let slices: Vec<(&PlacedTile, &Bucket, std::ops::Range<usize>)> = (members.iter())
+                    .map(|&j| {
+                        (
+                            parts[j].1,
+                            &buckets[&copy_key(parts[j].1)],
+                            parts[j].2.clone(),
+                        )
+                    })
+                    .collect();
+                let order = self.order(params, &slices);
+                for run in order.chunk_by(|a, b| a.0 == b.0) {
+                    let (t, b, _) = &slices[run[0].0];
+                    let run = run.iter().map(|&(_, i)| i);
+                    self.place_part(params, group, t, b, run, &mut seen);
+                }
             }
         }
     }
@@ -1059,19 +1104,37 @@ impl<'a> Pass<'a> {
         self.now.orientations.insert(id, orientation);
     }
 
-    /// The order a bucket part's instances are placed in.
-    fn order(&self, p: &LayerParams, b: &Bucket, range: std::ops::Range<usize>) -> Vec<usize> {
-        let mut order: Vec<usize> = if p.z_order_viewport_y {
-            let mut order = viewport_y_order(&b.tables, -self.camera.bearing);
-            order.reverse();
-            order
-        } else {
-            range.collect()
+    /// The order the instances of bucket parts are placed in, as (part,
+    /// instance): a lone part's in its order, or several slices of one
+    /// ancestor merged in the ancestor's (by feature, then along each
+    /// feature's anchors).
+    fn order(
+        &self,
+        p: &LayerParams,
+        parts: &[(&PlacedTile, &Bucket, std::ops::Range<usize>)],
+    ) -> Vec<(usize, usize)> {
+        let mut order: Vec<(usize, usize)> = match parts {
+            [(_, b, _)] if p.z_order_viewport_y => {
+                let mut order = viewport_y_order(&b.tables, -self.camera.bearing);
+                order.reverse();
+                order.into_iter().map(|i| (0, i)).collect()
+            }
+            [(_, _, range)] => range.clone().map(|i| (0, i)).collect(),
+            _ => {
+                let mut all: Vec<(usize, usize)> = (parts.iter().enumerate())
+                    .flat_map(|(s, (_, _, range))| range.clone().map(move |i| (s, i)))
+                    .collect();
+                all.sort_by_key(|&(s, i)| {
+                    let instance = &parts[s].1.tables.instances[i];
+                    (instance.feature, instance.ordinal)
+                });
+                all
+            }
         };
         // MapLibre Native's `getSortedSymbols`: in a tilted view, labels
         // shown before go first, then new ones, then those hidden before.
         if let Some(prev) = self.stable_prev().filter(|_| self.tilted()) {
-            order.sort_by_key(|&i| match prev.placements.get(&b.ids[i]) {
+            order.sort_by_key(|&(s, i)| match prev.placements.get(&parts[s].1.ids[i]) {
                 Some(p) if p.text || p.icon => 0,
                 None => 1,
                 Some(_) => 2,
@@ -1080,14 +1143,14 @@ impl<'a> Pass<'a> {
         order
     }
 
-    /// GL JS `placeLayerBucketPart`.
+    /// GL JS `placeLayerBucketPart`: the bucket's instances `order`.
     fn place_part(
         &mut self,
         p: &LayerParams,
         group: Option<u32>,
         tile: &PlacedTile,
         b: &Bucket,
-        range: std::ops::Range<usize>,
+        order: impl Iterator<Item = usize>,
         seen: &mut HashSet<u32>,
     ) {
         let t = &b.tables;
@@ -1096,7 +1159,7 @@ impl<'a> Pass<'a> {
         let text_translation = translation(self.camera, &tile.view, p.text_translate);
         let icon_translation = translation(self.camera, &tile.view, p.icon_translate);
         let own_translates = t.translates.iter().any(|t| !t.is_empty());
-        for i in self.order(p, b, range) {
+        for i in order {
             let instance = &t.instances[i];
             let id = b.ids[i];
             if seen.contains(&id) {
@@ -2370,6 +2433,54 @@ mod tests {
         );
         // A label no listed tile holds isn't placed.
         assert!(!placed(&left)[2]);
+    }
+
+    /// Overzoom slices laid out in one ancestor place merged in its order,
+    /// along each feature's anchors, as one overscaled tile does: the
+    /// first anchor along the line wins, whichever slice holds it.
+    #[test]
+    fn slices_of_one_ancestor_place_in_its_order() {
+        let slice = |ordinal: u32, key: u64, scale: u32| {
+            let mut t = labels(&[(key, [4096, 4096])]);
+            t.instances[0].ordinal = ordinal;
+            t.ancestor_scale = scale;
+            t
+        };
+        let tile_at = |bucket: u64, x: u32| PlacedTile {
+            view: TileView {
+                id: TileId {
+                    z: 1,
+                    x,
+                    y: 0,
+                    wrap: 0,
+                },
+                ..view(0)
+            },
+            ..tile(bucket, 0)
+        };
+        let shown_of = |scale: u32| {
+            let mut placer = Placer::default();
+            // The left slice holds the line's second anchor, the right one
+            // its first; their labels overlap.
+            placer.ingest(1, slice(1, 1, scale));
+            placer.ingest(2, slice(0, 2, scale));
+            let f = frame(
+                vec![LayerFrame {
+                    params: params(7),
+                    tiles: vec![tile_at(1, 0), tile_at(2, 1)],
+                }],
+                0.0,
+                0.0,
+            );
+            let mut changed = placer.place(&f).changed;
+            changed.sort_by_key(|c| c.0);
+            changed
+                .iter()
+                .map(|c| shown(word(&c.2, 0)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown_of(2), [false, true], "merged: the first anchor");
+        assert_eq!(shown_of(1), [true, false], "apart: tile by tile");
     }
 
     #[test]

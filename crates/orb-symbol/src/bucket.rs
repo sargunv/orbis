@@ -89,6 +89,12 @@ pub struct SymbolInstance {
     /// Range of this instance's rows in [`SymbolBucket::anchor_offsets`].
     pub anchor_offsets: [u32; 2],
     pub flags: u32,
+    /// Its anchor's place among those of its feature, counting anchors
+    /// outside the tile: overzoom slices laid out in one ancestor number
+    /// a feature's anchors alike, so placement can merge them into the
+    /// order one overscaled tile has.
+    pub ordinal: u32,
+    pub _pad: u32,
 }
 
 /// One drawn variant of a label or icon: a run of quads around an anchor,
@@ -276,6 +282,9 @@ pub struct SymbolBucket {
     pub allow_vertical_placement: bool,
     /// The largest `symbol-height-offset`, meters, at least 0.
     pub max_height_offset: f64,
+    /// For an overzoom slice laid out in its ancestor, the ancestor's size
+    /// in slices; 1 otherwise.
+    pub ancestor_scale: u32,
     pub warnings: Warnings,
 }
 

@@ -997,6 +997,7 @@ impl Labels {
             allow_vertical_placement: meta.allow_vertical_placement,
             reloaded,
             translates,
+            ancestor_scale: meta.ancestor_scale,
         });
         meshes.names = names;
         self.lane.ingest(bucket, Arc::clone(&meshes.tables));

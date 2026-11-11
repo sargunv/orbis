@@ -387,7 +387,7 @@ fn stable_keys_name_layer_feature_and_text() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn tables_are_flat_rows() {
     use std::mem::size_of;
-    assert_eq!(size_of::<SymbolInstance>(), 96);
+    assert_eq!(size_of::<SymbolInstance>(), 104);
     assert_eq!(size_of::<PlacedSymbol>(), 44);
     assert_eq!(size_of::<Quad>(), 48);
     assert_eq!(size_of::<AnchorOffset>(), 12);

@@ -951,6 +951,7 @@ pub struct SymbolMeta {
     pub icons_need_linear: bool,
     pub allow_vertical_placement: bool,
     pub max_height_offset: f64,
+    pub ancestor_scale: u32,
 }
 
 /// A symbol layer's share of a finished tile: its bucket's tables as word
@@ -1015,6 +1016,7 @@ impl ResultSymbols {
                 icons_need_linear: b.icons_need_linear,
                 allow_vertical_placement: b.allow_vertical_placement,
                 max_height_offset: b.max_height_offset,
+                ancestor_scale: b.ancestor_scale,
             },
             tables,
             glyphs: build.glyphs.clone(),

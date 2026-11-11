@@ -729,6 +729,9 @@ struct Builder<'a> {
     /// Anchors so far per label text, for `symbol-spacing` across features
     /// (GL JS `compareText`).
     compare_text: HashMap<String, Vec<Point>>,
+    /// The current feature's anchors so far, in the tile or not
+    /// ([`SymbolInstance::ordinal`]).
+    ordinal: u32,
     quads: Vec<SymbolQuad>,
     anchors: Vec<SymbolAnchor>,
     clipped: Lines,
@@ -741,6 +744,7 @@ impl<'a> Builder<'a> {
             text_size: style.text_size,
             icon_size: style.icon_size,
             allow_vertical_placement: style.allow_vertical_placement(),
+            ancestor_scale: tile.ancestor.map_or(1, |a| a.scale),
             ..SymbolBucket::default()
         };
         Self {
@@ -749,6 +753,7 @@ impl<'a> Builder<'a> {
             context,
             bucket,
             compare_text: HashMap::new(),
+            ordinal: 0,
             quads: Vec::new(),
             anchors: Vec::new(),
             clipped: Lines::default(),
@@ -780,6 +785,7 @@ impl<'a> Builder<'a> {
 
     /// The loop body of GL JS `performSymbolLayout`.
     fn add_feature(&mut self, feature: &SymbolFeature, geometry: &Geometry) {
+        self.ordinal = 0;
         let anchor_offsets = self.variable_anchor_offsets(&feature.layout);
         let anchor_offsets = anchor_offsets.as_deref();
         let (shapings, text_offset) = match &feature.text {
@@ -1183,6 +1189,8 @@ impl<'a> Builder<'a> {
         line: &[Point],
         shared_line: &mut Option<[u32; 2]>,
     ) {
+        let ordinal = self.ordinal;
+        self.ordinal += 1;
         if is_outside_tile(anchor.point) {
             return;
         }
@@ -1247,6 +1255,8 @@ impl<'a> Builder<'a> {
             boxes,
             anchor_offsets: [offsets_start, offsets_end],
             flags,
+            ordinal,
+            _pad: 0,
         });
     }
 
