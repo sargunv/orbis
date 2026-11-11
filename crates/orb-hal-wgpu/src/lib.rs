@@ -1655,15 +1655,18 @@ impl Gpu for WgpuGpu {
         }));
         // While timing, each compute and render pass's first query.
         let queries = match &mut self.timing {
-            Some(timing) => timing.begin(passes.iter().map(|pass| match pass {
-                Pass::Compute(p) => Some(p.label),
-                Pass::Render(p) => Some(p.label),
-                _ => None,
-            })),
+            Some(timing) => timing.begin(
+                &self.device,
+                passes.iter().map(|pass| match pass {
+                    Pass::Compute(p) => Some(p.label),
+                    Pass::Render(p) => Some(p.label),
+                    _ => None,
+                }),
+            ),
             None => Vec::new(),
         };
-        let set = self.timing.as_ref().and_then(timing::Timing::set);
-        let writes = |i: usize| Some((set?, (*queries.get(i)?)?));
+        let timing = self.timing.as_ref();
+        let writes = |i: usize| timing?.query((*queries.get(i)?)?);
         // Debug groups and the encoder's label, for captures only.
         let groups = self.capturing || self.debug_groups;
         let mut encoder = self

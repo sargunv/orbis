@@ -20,8 +20,6 @@ use crate::{GesturePaths, Settings, clock, frame, settle};
 
 /// A 60 Hz display's frame.
 const FRAME: Duration = Duration::from_micros(16_667);
-/// Frames between collections of GPU times.
-const GPU_COLLECT: u32 = 20;
 /// Frames per path: 6 s at 60 Hz.
 const PATH_FRAMES: usize = 360;
 /// A label that all but vanishes (opacity under 0.1) and is back in full
@@ -242,16 +240,9 @@ pub(crate) fn run(
         let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
         let (mut blinks, mut blink_frames, mut returns, mut drops) = (0, 0, 0, 0);
         let (mut rebuilds, mut rows) = (0, 0);
-        // GPU times, collected now and then: each collection waits for the
-        // GPU, and the queries hold a few dozen frames' passes. Submissions
-        // without timed passes (a page's growth copies) took no measured
-        // GPU time, so they aren't samples.
+        // GPU times, collected after the path: a collection waits for the
+        // GPU.
         runtime.set_gpu_timing(true);
-        let mut gpu = Vec::new();
-        let collect = |gpu: &mut Vec<Duration>| {
-            let timed = runtime.gpu_timings().into_iter();
-            gpu.extend(timed.filter(|s| !s.passes.is_empty()).map(|s| s.gpu()));
-        };
         let started = clock::now();
         let mut now = base;
         for f in 1.. {
@@ -312,13 +303,15 @@ pub(crate) fn run(
                 }
             }
             warnings.extend(crate::take_warnings(&mut map));
-            if f % GPU_COLLECT == 0 {
-                collect(&mut gpu);
-            }
             let next = started + FRAME * f;
             std::thread::sleep(next.saturating_sub(clock::now()));
         }
-        collect(&mut gpu);
+        // Submissions without timed passes (a page's growth copies) took no
+        // measured GPU time, so they aren't samples.
+        let mut gpu: Vec<_> = (runtime.gpu_timings().into_iter())
+            .filter(|s| !s.passes.is_empty())
+            .map(|s| s.gpu())
+            .collect();
         runtime.set_gpu_timing(false);
         gpu.sort_unstable();
         let ended = clock::now();

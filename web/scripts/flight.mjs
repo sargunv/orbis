@@ -162,7 +162,8 @@ try {
           let timer;
           if (gpu) {
             map.setGpuTiming(true);
-            // Two queries a pass and 4096 between collections.
+            // Collected each quarter second, which places each
+            // submission in the flight (`at`) to within that.
             timer = setInterval(collect, 250);
           }
           const started = await new Promise((r) => requestAnimationFrame(r));

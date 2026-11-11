@@ -428,8 +428,7 @@ fn run_path(
         let next = started + FRAME * f;
         std::thread::sleep(next.saturating_sub(clock::now()));
         // The frame's submissions, done by now unless the GPU is behind:
-        // collecting them waits for it then. Taken each frame, the
-        // timestamp queries never run out.
+        // collecting them waits for it then.
         if gpu_timestamps {
             let frame = frames.last_mut().expect("pushed");
             let timings = runtime.gpu_timings();

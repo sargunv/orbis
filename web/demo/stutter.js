@@ -262,11 +262,8 @@ async function runOrbis(container, scenario, style, legs, show) {
     await rest();
     show(`${scenario.name}: moving`);
     const frames = [];
-    // GPU timings each second, before the timestamp queries run out.
-    const batches = [];
     let uploaded;
     const off = map.on("render", (s) => {
-      if (frames.length % 60 === 59) batches.push(map.gpuTimings());
       const bytes =
         s.uploadedFromWasm +
         s.uploadedFromJs +
@@ -303,11 +300,8 @@ async function runOrbis(container, scenario, style, legs, show) {
     const ended = performance.now();
     long.stop();
     const timed = frames.slice(timedFrom);
-    batches.push(map.gpuTimings());
     // One submission a frame has passes; the others only copy.
-    const submissions = (await Promise.all(batches))
-      .flat()
-      .filter((s) => s.passes.length);
+    const submissions = (await map.gpuTimings()).filter((s) => s.passes.length);
     map.setGpuTiming(false);
     const gpuMatched = submissions.length === timed.length;
     if (gpuMatched) {

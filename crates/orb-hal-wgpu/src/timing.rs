@@ -10,7 +10,8 @@ use std::time::Duration;
 use crate::WgpuGpu;
 use crate::offscreen::map_read;
 
-/// Timestamp queries between two [`WgpuGpu::take_timings`]: two per pass.
+/// Timestamp queries in one set, WebGPU's most: two per pass. Submissions
+/// between two [`WgpuGpu::take_timings`] that need more write further sets.
 const QUERIES: u32 = 4096;
 
 /// One submission's times.
@@ -62,32 +63,39 @@ pub(crate) struct Timing {
 /// and whether it draws.
 type Submission = (Vec<(String, u32)>, Duration, bool);
 
-#[derive(Debug)]
+/// The query sets written since the last take, in order: query `i` is
+/// set `i / QUERIES`'s `i % QUERIES`.
+#[derive(Debug, Default)]
 struct Queries {
-    set: wgpu::QuerySet,
+    sets: Vec<wgpu::QuerySet>,
+    /// The next query, counting through every set.
     next: u32,
 }
 
 impl Queries {
-    fn new(device: &wgpu::Device) -> Option<Self> {
-        device
-            .features()
-            .contains(wgpu::Features::TIMESTAMP_QUERY)
-            .then(|| Self {
-                set: device.create_query_set(&wgpu::QuerySetDescriptor {
+    /// The first of the next pass's two queries, in a new set once the
+    /// last is full.
+    fn pair(&mut self, device: &wgpu::Device) -> u32 {
+        if self.next == self.sets.len() as u32 * QUERIES {
+            self.sets
+                .push(device.create_query_set(&wgpu::QuerySetDescriptor {
                     label: Some("pass timestamps"),
                     ty: wgpu::QueryType::Timestamp,
                     count: QUERIES,
-                }),
-                next: 0,
-            })
+                }));
+        }
+        let first = self.next;
+        self.next += 2;
+        first
     }
 }
 
 impl Timing {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         Self {
-            queries: Queries::new(device),
+            queries: (device.features())
+                .contains(wgpu::Features::TIMESTAMP_QUERY)
+                .then(Queries::default),
             submissions: Vec::new(),
             step: Arc::default(),
         }
@@ -97,6 +105,7 @@ impl Timing {
     /// which a submission is about to encode; `None` without timestamps.
     pub(crate) fn begin<'a>(
         &mut self,
+        device: &wgpu::Device,
         labels: impl Iterator<Item = Option<&'a str>>,
     ) -> Vec<Option<u32>> {
         let mut passes = Vec::new();
@@ -105,9 +114,7 @@ impl Timing {
             .map(|label| {
                 draws |= label.is_some();
                 let (label, queries) = (label?, self.queries.as_mut()?);
-                assert!(queries.next + 2 <= QUERIES, "take_timings more often");
-                let first = queries.next;
-                queries.next += 2;
+                let first = queries.pair(device);
                 passes.push((label.to_string(), first));
                 Some(first)
             })
@@ -116,9 +123,11 @@ impl Timing {
         firsts
     }
 
-    /// The pass timestamps' query set.
-    pub(crate) fn set(&self) -> Option<&wgpu::QuerySet> {
-        self.queries.as_ref().map(|q| &q.set)
+    /// The set holding query `first`, which [`begin`](Self::begin) gave,
+    /// and its index in it.
+    pub(crate) fn query(&self, first: u32) -> Option<(&wgpu::QuerySet, u32)> {
+        let sets = &self.queries.as_ref()?.sets;
+        Some((sets.get((first / QUERIES) as usize)?, first % QUERIES))
     }
 
     /// The submission [`begin`](Self::begin) started took `cpu`.
@@ -153,20 +162,12 @@ impl WgpuGpu {
         let (device, queue) = (self.device.clone(), self.queue.clone());
         let period = f64::from(self.timestamp_period_ns());
         let (submissions, used, step) = match &mut self.timing {
-            Some(timing) => {
-                // Later submissions write a fresh set.
-                let used = match &timing.queries {
-                    Some(q) if q.next > 0 => timing
-                        .queries
-                        .replace(Queries::new(&device).expect("timestamps")),
-                    _ => None,
-                };
-                (
-                    std::mem::take(&mut timing.submissions),
-                    used,
-                    timing.step.clone(),
-                )
-            }
+            Some(timing) => (
+                std::mem::take(&mut timing.submissions),
+                // Later submissions write fresh sets.
+                timing.queries.as_mut().map(std::mem::take),
+                timing.step.clone(),
+            ),
             None => (Vec::new(), None, Arc::default()),
         };
         async move {
@@ -176,7 +177,7 @@ impl WgpuGpu {
             // value.
             done.await;
             let mut ticks = Vec::new();
-            if let Some(Queries { set, next: used }) = used {
+            if let Some(Queries { sets, next: used }) = used.filter(|q| q.next > 0) {
                 let size = u64::from(used) * 8;
                 let resolve = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("pass timestamps"),
@@ -193,7 +194,10 @@ impl WgpuGpu {
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("timestamps"),
                 });
-                encoder.resolve_query_set(&set, 0..used, &resolve, 0);
+                for (set, start) in sets.iter().zip((0..).step_by(QUERIES as usize)) {
+                    let count = (used - start).min(QUERIES);
+                    encoder.resolve_query_set(set, 0..count, &resolve, u64::from(start) * 8);
+                }
                 encoder.copy_buffer_to_buffer(&resolve, 0, &readback, 0, size);
                 queue.submit([encoder.finish()]);
                 ticks = map_read(&device, &readback)
@@ -258,5 +262,46 @@ pub(crate) fn now() -> Duration {
             })
             .unwrap_or_else(js_sys::Date::now);
         Duration::from_secs_f64(ms / 1000.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use orb_hal::{ComputePass, Gpu, Pass};
+
+    use super::*;
+
+    #[test]
+    fn more_passes_than_a_query_set_holds_are_all_timed() {
+        let Ok(mut gpu) = pollster::block_on(WgpuGpu::offscreen()) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        gpu.set_timing(true);
+        let pass = |label| {
+            Pass::Compute(ComputePass {
+                label,
+                commands: Vec::new(),
+            })
+        };
+        // Three passes a submission: a set's last pair falls in the middle
+        // of a submission.
+        let submissions = QUERIES as usize;
+        for _ in 0..submissions {
+            gpu.submit(&[pass("a"), pass("b"), pass("c")]);
+        }
+        let times = pollster::block_on(gpu.take_timings());
+        assert_eq!(times.len(), submissions);
+        let timed = gpu
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY);
+        for t in &times {
+            let labels: Vec<_> = t.passes.iter().map(|(l, _)| l.as_str()).collect();
+            assert_eq!(labels, if timed { &["a", "b", "c"][..] } else { &[] });
+        }
+        // Sets start over after a take.
+        gpu.submit(&[pass("a")]);
+        assert_eq!(pollster::block_on(gpu.take_timings()).len(), 1);
     }
 }
