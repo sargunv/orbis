@@ -1089,7 +1089,11 @@ async function playground(browser, server) {
     "a rejected edit applies none of its calls",
   );
 
-  // Measure frame acknowledgements, rather than elapsed wall time.
+  // Measure frame acknowledgements, rather than elapsed wall time: the
+  // frames from the edit's reply on. Frames acknowledged before it began
+  // before the worker applied the edit (it posts the reply in that task),
+  // as one already under way when the call went out, or one a pipeline
+  // compiled ahead at rest asked for, does.
   const measurements = await page.evaluate(async () => {
     const apply = async (name, commands) => {
       const frames = [];
@@ -1099,6 +1103,7 @@ async function playground(browser, server) {
       const generation = await app.map.edit((tx) => {
         for (const [method, ...args] of commands) tx[method](...args);
       });
+      const earlier = frames.filter((f) => f.generation < generation).length;
       await new Promise((resolve) => {
         if (frames.some((f) => f.generation >= generation)) return resolve();
         const done = (e) => {
@@ -1113,8 +1118,10 @@ async function playground(browser, server) {
       const visible = frames.find((f) => f.generation >= generation);
       return {
         name,
-        frames: frames.findIndex((f) => f.generation >= generation) + 1,
+        frames:
+          frames.findIndex((f) => f.generation >= generation) + 1 - earlier,
         generation,
+        earlier,
         meshUploads: visible.meshesUploaded - before.meshesUploaded,
         rowUploads: visible.rowsUploaded - before.rowsUploaded,
       };
