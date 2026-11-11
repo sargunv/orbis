@@ -940,8 +940,9 @@ impl NodeEntry {
 enum Stream {
     /// Every chunk: a node that isn't an extrusion's.
     All,
-    /// An extrusion node's [`Owner::Square`] chunks.
-    Whole,
+    /// An extrusion node's [`Owner::Square`] chunks, the same in every
+    /// placement, with the row of its cut stream.
+    Whole(u32),
     /// Render node `n`'s chunks its placements draw cut: those of
     /// buildings the source cut ([`Owner::Every`]), a neighbour's where
     /// that neighbour isn't placed alone, and in a placement that isn't
@@ -970,15 +971,26 @@ impl Route {
         neighbours: 0,
         alone: false,
     };
+    /// The whole stream's, which keeps a mesh's chunks of one owner
+    /// whatever the placement: its runs stay as they are laid out when a
+    /// placement's clip or neighbours change.
+    const WHOLE: Self = Self {
+        stream: 1,
+        ..Self::ALL
+    };
 
     fn new(stream: Stream, row: &TileRow) -> Self {
-        let stream = match stream {
-            Stream::All => return Self::ALL,
-            Stream::Whole => 1,
-            Stream::Cut(_) => 2,
-        };
+        match stream {
+            Stream::All => Self::ALL,
+            Stream::Whole(_) => Self::WHOLE,
+            Stream::Cut(_) => Self::cut(row),
+        }
+    }
+
+    /// A placement's route in a cut stream.
+    fn cut(row: &TileRow) -> Self {
         Self {
-            stream,
+            stream: 2,
             neighbours: row.neighbours,
             alone: row.globe.is_none() && row.covers_square(),
         }
@@ -1328,26 +1340,27 @@ impl Scene {
     /// own, its candidates what the node's placements draw cut
     /// ([`Stream`]).
     pub(crate) fn cut_row(&self, node: u32) -> Option<u32> {
-        (self.nodes.iter())
-            .position(|n| n.stream == Stream::Cut(node))
-            .map(|row| row as u32)
+        match self.nodes.get(node as usize)?.stream {
+            Stream::Whole(cut) => Some(cut),
+            Stream::All | Stream::Cut(_) => None,
+        }
     }
 
     /// The cull's rows for `nodes`, render nodes in order: each node's,
     /// then each extrusion node's cut stream.
     fn rows_for(nodes: &[NodeCull]) -> Vec<NodeEntry> {
-        let stream = |c: &NodeCull| {
-            if c.unclipped {
-                Stream::Whole
-            } else {
-                Stream::All
-            }
-        };
-        let own = nodes.iter().map(|&c| NodeEntry::new(c, stream(&c)));
-        let cut = (nodes.iter().enumerate())
-            .filter(|(_, c)| c.unclipped)
-            .map(|(n, &c)| NodeEntry::new(c, Stream::Cut(n as u32)));
-        own.chain(cut).collect()
+        let mut cuts = Vec::new();
+        let mut rows: Vec<NodeEntry> = (nodes.iter().enumerate())
+            .map(|(n, &c)| {
+                if !c.unclipped {
+                    return NodeEntry::new(c, Stream::All);
+                }
+                cuts.push(NodeEntry::new(c, Stream::Cut(n as u32)));
+                NodeEntry::new(c, Stream::Whole((nodes.len() + cuts.len() - 1) as u32))
+            })
+            .collect();
+        rows.append(&mut cuts);
+        rows
     }
 
     /// Whether a node draws in streams, whose candidates follow its
@@ -1624,11 +1637,9 @@ impl Scene {
         for (i, (placement, row)) in entry.placements.iter_mut().zip(rows).enumerate() {
             if i >= fresh || placement.row != *row {
                 // Which nodes draw it decides the candidates, and which of
-                // their chunks, the streams'.
-                let routes =
-                    |r: &TileRow| (Route::new(Stream::Whole, r), Route::new(Stream::Cut(0), r));
+                // their chunks, the cut streams'.
                 self.candidates_dirty |= placement.row.target != row.target
-                    || (streams && routes(&placement.row) != routes(row));
+                    || (streams && Route::cut(&placement.row) != Route::cut(row));
                 placement.row = *row;
                 self.rows_dirty.push((placement.slot, *row));
             }

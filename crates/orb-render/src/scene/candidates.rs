@@ -293,7 +293,7 @@ impl Scene {
         let mut vertex_words = 1u32;
         let meshes = match node.stream {
             Stream::Cut(of) => &self.nodes[of as usize].meshes,
-            Stream::All | Stream::Whole => &node.meshes,
+            Stream::All | Stream::Whole(_) => &node.meshes,
         };
         for mesh in meshes {
             let entry = self.meshes[mesh.0 as usize]

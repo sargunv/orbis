@@ -763,7 +763,7 @@ mod tests {
         ];
         // The override constants pipelines set (orb-render's plane
         // variants, `ORB_CULL=keep-all`, the ground mask on terrain, an
-        // `ElevationShape`), each stage taking those it reads.
+        // `ExtrusionShape`), each stage taking those it reads.
         const VARIANTS: &[&[(&str, f64)]] = &[
             &[],
             &[
