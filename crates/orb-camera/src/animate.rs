@@ -162,6 +162,77 @@ pub(crate) struct Track<T> {
     pub easing: Easing,
 }
 
+/// How far a retargeted track's curve reaches toward its start speed: the
+/// length of its first control point from the origin, as GL JS's
+/// `_smoothOutEasing` keeps it (and as `ease`'s (0.25, 0.1) is long).
+const RETARGET_HANDLE: f64 = 0.27;
+
+/// A track's amount, for matching speeds along it.
+pub(crate) trait Amount:
+    Copy + std::ops::AddAssign + std::ops::Mul<f64, Output = Self>
+{
+    fn dot(self, other: Self) -> f64;
+}
+
+impl Amount for f64 {
+    fn dot(self, other: Self) -> f64 {
+        self * other
+    }
+}
+
+impl Amount for DVec2 {
+    fn dot(self, other: Self) -> f64 {
+        DVec2::dot(self, other)
+    }
+}
+
+impl<T: Amount> Track<T> {
+    /// What the track has left `elapsed` milliseconds in, and how fast it
+    /// moves then, per millisecond.
+    fn rest(&self, elapsed: f64) -> (T, T) {
+        if self.duration <= 0.0 {
+            return (self.amount * 0.0, self.amount * 0.0);
+        }
+        let t = elapsed / self.duration;
+        (
+            self.amount * (1.0 - self.easing.at(t)),
+            self.amount * (self.easing.slope(t) / self.duration),
+        )
+    }
+
+    /// Takes over from a track interrupted with `rest` left to move at
+    /// `velocity` per millisecond: this one moves the rest as well, and
+    /// starts at that speed, so the motion doesn't stall. Its curve's
+    /// first control point turns to the start slope that speed needs (a
+    /// Bézier leaves its start toward that point) and its second stays.
+    fn continue_from(&mut self, (rest, velocity): (T, T)) {
+        self.amount += rest;
+        let length = self.amount.dot(self.amount);
+        // The start slope, in the curve's units: the velocity along the
+        // new amount, over the amount's average speed.
+        let slope = match length > 0.0 && self.duration > 0.0 {
+            true => velocity.dot(self.amount) / length * self.duration,
+            false => 0.0,
+        };
+        let (x2, y2) = match self.easing {
+            Easing::Bezier([_, _, x2, y2]) => (x2, y2),
+            Easing::Linear => (2.0 / 3.0, 2.0 / 3.0),
+        };
+        let x1 = RETARGET_HANDLE / slope.mul_add(slope, 1.0).sqrt();
+        self.easing = Easing::Bezier([x1, slope * x1, x2, y2]);
+    }
+}
+
+/// What a running glide has left of each track, and how fast it moves
+/// it, per millisecond.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct GlideRest {
+    pan: Option<(DVec2, DVec2)>,
+    zoom: Option<(f64, f64)>,
+    bearing: Option<(f64, f64)>,
+    pitch: Option<(f64, f64)>,
+}
+
 /// A move continued over time by deltas: a smooth wheel zoom. Each
 /// property eases on its own schedule.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -185,6 +256,21 @@ impl Glide {
             .max(d(self.zoom.map(|t| t.duration)))
             .max(d(self.bearing.map(|t| t.duration)))
             .max(d(self.pitch.map(|t| t.duration)))
+    }
+
+    /// Takes over from an interrupted glide: each track both move adds
+    /// what that one had left and starts at its speed (as GL JS's
+    /// `_smoothOutEasing` approximates for its wheel zoom).
+    pub(crate) fn continue_from(&mut self, rest: &GlideRest) {
+        fn take<T: Amount>(track: &mut Option<Track<T>>, rest: Option<(T, T)>) {
+            if let (Some(track), Some(rest)) = (track, rest) {
+                track.continue_from(rest);
+            }
+        }
+        take(&mut self.pan, rest.pan);
+        take(&mut self.zoom, rest.zoom);
+        take(&mut self.bearing, rest.bearing);
+        take(&mut self.pitch, rest.pitch);
     }
 }
 
@@ -463,25 +549,18 @@ impl Motion {
         to.elevation = ground;
     }
 
-    /// What a glide has still to move, for a glide that continues it.
-    pub(crate) fn remaining_glide(&self) -> Option<Glide> {
-        let Self::Glide { glide, done } = self else {
+    /// What a glide `elapsed` milliseconds in has still to move, and how
+    /// fast, for a glide that continues it.
+    pub(crate) fn glide_rest(&self, elapsed: f64) -> Option<GlideRest> {
+        let Self::Glide { glide, .. } = self else {
             return None;
         };
-        let mut out = *glide;
-        if let Some(t) = &mut out.pan {
-            t.amount *= 1.0 - done[0];
-        }
-        if let Some(t) = &mut out.zoom {
-            t.amount *= 1.0 - done[1];
-        }
-        if let Some(t) = &mut out.bearing {
-            t.amount *= 1.0 - done[2];
-        }
-        if let Some(t) = &mut out.pitch {
-            t.amount *= 1.0 - done[3];
-        }
-        Some(out)
+        Some(GlideRest {
+            pan: glide.pan.map(|t| t.rest(elapsed)),
+            zoom: glide.zoom.map(|t| t.rest(elapsed)),
+            bearing: glide.bearing.map(|t| t.rest(elapsed)),
+            pitch: glide.pitch.map(|t| t.rest(elapsed)),
+        })
     }
 
     /// Moves `camera` to the animation's state `elapsed` milliseconds in.

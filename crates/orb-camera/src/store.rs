@@ -9,7 +9,7 @@ use orb_crs::Geodetic;
 use orb_crs::Projection;
 
 use crate::Skew;
-use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion, Track};
+use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
 use crate::fit::FitOptions;
 use crate::momentum::{GestureMomentum, Momentum, MomentumVelocity, Stage};
 use crate::moves::{Bounds, Constraints, wrap_bearing};
@@ -576,13 +576,15 @@ impl Camera {
     }
 
     /// Continues a user's move with a glide (smooth wheel zoom). A
-    /// glide started during another adds what that one had left.
+    /// glide started during another adds what that one had left, and
+    /// starts at the speed it had.
     pub(crate) fn glide(&mut self, mut glide: Glide, now: f64) -> AnimationId {
-        if let Some(rest) = self.running.iter().find_map(|r| r.motion.remaining_glide()) {
-            merge(&mut glide.zoom, rest.zoom);
-            merge(&mut glide.bearing, rest.bearing);
-            merge(&mut glide.pitch, rest.pitch);
-            merge(&mut glide.pan, rest.pan);
+        if let Some(rest) = self
+            .running
+            .iter()
+            .find_map(|r| r.motion.glide_rest(r.elapsed))
+        {
+            glide.continue_from(&rest);
         }
         self.stop();
         let motion = Motion::glide(glide);
@@ -982,13 +984,6 @@ impl Camera {
             to.settle_on(terrain, projection);
         }
         (to, around)
-    }
-}
-
-/// Adds what an interrupted glide's track had left to the new one's.
-fn merge<T: std::ops::AddAssign>(a: &mut Option<Track<T>>, b: Option<Track<T>>) {
-    if let (Some(a), Some(b)) = (a.as_mut(), b) {
-        a.amount += b.amount;
     }
 }
 
@@ -1497,6 +1492,50 @@ mod tests {
             t += 16.0;
         }
         assert!((camera.state().zoom(&mercator()) - (start + 2.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_retargeted_glide_keeps_its_speed() {
+        let track = Track {
+            amount: 1.0,
+            duration: 200.0,
+            easing: Easing::DEFAULT,
+        };
+        let glide = Glide {
+            zoom: Some(track),
+            around: Some(DVec2::new(100.0, 100.0)),
+            ..Glide::default()
+        };
+        // A second wheel notch 20, 50 or 80 ms into the first: restarting
+        // `ease` from rest would slow the zoom to its start slope, 0.4×
+        // its average speed (2.21 levels per 200 ms down to 0.64 at 50 ms).
+        for at in [20.0, 50.0, 80.0] {
+            let mut camera = camera();
+            let zoom = |camera: &Camera| camera.state().zoom(&mercator());
+            let from = zoom(&camera);
+            camera.glide(glide, 0.0);
+            // Levels per 0.1 ms on either side.
+            camera.frame(at - 0.1);
+            let before = zoom(&camera);
+            camera.frame(at);
+            let speed = zoom(&camera) - before;
+            camera.glide(glide, at);
+            let start = zoom(&camera);
+            camera.frame(at + 0.1);
+            let after = zoom(&camera) - start;
+            assert!(
+                (after / speed - 1.0).abs() < 0.02,
+                "{at} ms in: {speed} then {after} levels per 0.1 ms"
+            );
+            let mut t = at + 0.1;
+            while camera.frame(t) {
+                t += 16.0;
+            }
+            assert!(
+                (zoom(&camera) - (from + 2.0)).abs() < 1e-6,
+                "and zooms both"
+            );
+        }
     }
 
     #[test]
