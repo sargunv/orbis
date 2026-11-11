@@ -103,6 +103,11 @@ url = "https://github.com/pnpm/pnpm/releases/download/v11.25.0/pnpm-darwin-arm64
 url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/535298948"
 provenance = "github-attestations"
 
+[[tools."cargo:cargo-fuzz"]]
+version = "0.13.2"
+backend = "cargo:cargo-fuzz"
+specifiers = ["0.13.2"]
+
 [[tools."cargo:twiggy"]]
 version = "0.8.0"
 backend = "cargo:twiggy"

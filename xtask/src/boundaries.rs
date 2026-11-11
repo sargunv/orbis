@@ -25,6 +25,7 @@ const PLATFORM: &[&str] = &[
     "orb-shaper",
     "orb-demo",
     "orb-fixtures",
+    "orb-fuzz",
     "orb-bench",
     "xtask",
 ];
@@ -85,6 +86,7 @@ pub(crate) const NATIVE_ONLY: &[&str] = &[
     "orb-demo",
     "orb-ffi",
     "orb-fixtures",
+    "orb-fuzz",
     "xtask",
 ];
 

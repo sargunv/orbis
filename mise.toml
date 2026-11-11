@@ -30,6 +30,8 @@ ORB_ANDROID_EMULATOR_API = "{{vars.android_system_image_api}}"
 "github:wasm-bindgen/wasm-bindgen" = "0.2.130"
 "aqua:WebAssembly/binaryen" = "133"
 "cargo:twiggy" = "0.8.0"
+# `cargo xtask fuzz` runs orb-fuzz's targets with it.
+"cargo:cargo-fuzz" = "0.13.2"
 "core:node" = "24.22.2"
 "aqua:pnpm/pnpm" = "11.25.0"
 # The Android app: Gradle and its JDK package and sign the APK.

@@ -9,6 +9,7 @@ mod compare;
 mod dxc;
 mod expression_fixtures;
 mod fixtures;
+mod fuzz;
 mod h2h;
 mod labels;
 mod mln_ffi;
@@ -91,6 +92,10 @@ cargo xtask <task>
   demo-data    reproduce the committed Tokyo MVT/MLT PMTiles extracts, then
                add Liberty's labels, sprite and glyph subsets to their styles
   unicode      regenerate orb-text's character tables from the UCD
+  fuzz <style|mvt|mlt|glyphs|geojson|dem> [--seconds n]  run one of
+               orb-fuzz's targets under cargo-fuzz (default 600 s), seeded
+               from the fixture mirrors; its corpus and any input that
+               panics are kept in target/fuzz
 ";
 
 fn main() -> ExitCode {
@@ -114,6 +119,7 @@ fn main() -> ExitCode {
         }
         Some("h2h") => h2h::run(&args[1..]),
         Some("sweep") => sweep::run(&args[1..]),
+        Some("fuzz") => fuzz::run(&args[1..]),
         Some("dxc") => dxc::run(&args[1..]),
         Some("support") => support::run(),
         Some("mln-ffi") => mln_ffi::run(&args[1..]),

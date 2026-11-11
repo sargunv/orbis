@@ -220,7 +220,7 @@ impl TileWorker {
 
     /// Adds a resource a build asked for (or its failure) for later
     /// builds, which report a failure.
-    pub(crate) fn add_resource(&self, url: &str, bytes: Result<&[u8], String>) {
+    pub fn add_resource(&self, url: &str, bytes: Result<&[u8], String>) {
         if self.declares_font(url) {
             self.data.glyphs.insert_font(url, bytes);
             return;

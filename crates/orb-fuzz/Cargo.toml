@@ -1,0 +1,63 @@
+[package]
+name = "orb-fuzz"
+description = "cargo-fuzz targets for input Orbis takes from the network and apps: styles, MVT and MLT tiles laid out, glyph ranges, GeoJSON and DEM tiles (`cargo xtask fuzz`)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys.workspace = true
+orb-crs.workspace = true
+orb-runtime.workspace = true
+orb-style.workspace = true
+orb-text.workspace = true
+orb-tile.workspace = true
+
+[[bin]]
+name = "style"
+path = "fuzz_targets/style.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mvt"
+path = "fuzz_targets/mvt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mlt"
+path = "fuzz_targets/mlt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glyphs"
+path = "fuzz_targets/glyphs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "geojson"
+path = "fuzz_targets/geojson.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dem"
+path = "fuzz_targets/dem.rs"
+test = false
+doc = false
+bench = false
+
+[lints]
+workspace = true
