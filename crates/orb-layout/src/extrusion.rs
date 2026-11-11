@@ -12,7 +12,7 @@
 //! and walls; walls clip original segments independently, so clipping never
 //! introduces a wall across the tile square.
 use crate::round_corners::{rounded_layer, wall_normals};
-use crate::{Mesh, MeshBuilder, clip::clip_segment, fill};
+use crate::{Mesh, MeshBuilder, Owner, clip::clip_segment, fill};
 use orb_tile::{GeometryType, Layer};
 
 pub const STRIDE: usize = 4;
@@ -40,15 +40,21 @@ pub fn layout_in_extent(
         ..b
     });
     let rounded = rounding > 0.0;
-    // From the source's rings, as the property rows take it.
+    // From the source's rings, as the property rows take them.
     let whole = whole(layer, features, bend.is_some());
+    let owners: Vec<Owner> = (features.iter().zip(whole))
+        .map(|(&f, whole)| match whole {
+            true => Owner::of_whole(centroid(layer, f, output_extent), output_extent),
+            false => Owner::Every,
+        })
+        .collect();
     if output_extent == layer.extent() && !rounded {
-        return layout_normalized(layer, features, &whole, false, bend);
+        return layout_normalized(layer, features, &owners, false, bend);
     }
     layout_normalized(
         &rounded_layer(layer, features, output_extent, rounding),
         &(0..features.len() as u32).collect::<Vec<_>>(),
-        &whole,
+        &owners,
         rounded,
         bend,
     )
@@ -94,31 +100,51 @@ pub fn whole(layer: &Layer, features: &[u32], bent: bool) -> Vec<bool> {
         .collect()
 }
 
-/// `whole`, per slot: the building keeps its roof and walls past the
-/// tile square.
+/// `owners`, per slot: whose the building is, a whole one keeping its
+/// roof and walls past the tile square. A chunk holds one owner's
+/// buildings, so the cull's candidates keep it only where its owner draws
+/// it: the square's first, then those every placement cuts, then each
+/// neighbour's.
 fn layout_normalized(
     layer: &Layer,
     features: &[u32],
-    whole: &[bool],
+    owners: &[Owner],
     rounded: bool,
     bend: Option<fill::Bend>,
 ) -> Mesh {
-    let roof = fill::layout_clipped(layer, features, bend, &|slot| !whole[slot as usize]);
+    let rank = |slot: u32| match owners[slot as usize] {
+        Owner::Square => 0,
+        Owner::Every => 1,
+        Owner::Neighbour(cell) => 2 + cell,
+    };
+    let roof = fill::layout_clipped(layer, features, bend, &|slot| rank(slot) == 1);
     let mut builder = MeshBuilder::new(STRIDE);
-    // Preserve roof chunks by feeding their triangles through the builder.
     for v in roof.vertices.as_chunks::<2>().0 {
         let p = [v[0] as i16, (v[0] >> 16) as i16];
         builder.push_vertex(p, &[v[0], v[1], 1, 16384]);
     }
-    let mut indices = roof.vertex_indices();
-    while let (Some(a), Some(b), Some(c)) = (indices.next(), indices.next(), indices.next()) {
+    // A roof vertex's second word is its slot.
+    let slot_of = |v: u32| roof.vertices[v as usize * fill::STRIDE + 1];
+    let mut roofs: Vec<[u32; 3]> = roof
+        .vertex_indices()
+        .collect::<Vec<_>>()
+        .as_chunks()
+        .0
+        .to_vec();
+    roofs.sort_by_key(|t| rank(slot_of(t[0])));
+    for [a, b, c] in roofs {
+        builder.set_owner(owners[slot_of(a) as usize]);
         // Tile Y points south; world Y points north. Reverse winding
         // so outward faces are counterclockwise after projection.
         builder.push_triangle(a, c, b);
     }
     let extent = layer.extent() as i32;
-    for (slot, &feature) in features.iter().enumerate() {
-        let feature = feature as usize;
+    let mut slots: Vec<u32> = (0..features.len() as u32).collect();
+    slots.sort_by_key(|&slot| rank(slot));
+    for slot in slots {
+        builder.set_owner(owners[slot as usize]);
+        let slot = slot as usize;
+        let feature = features[slot] as usize;
         let closed = layer.geometry_type(feature) == GeometryType::Polygon;
         if !closed && layer.geometry_type(feature) != GeometryType::LineString {
             continue;
@@ -151,7 +177,7 @@ fn layout_normalized(
                     if distance + length > 32768.0 {
                         distance = 0.0;
                     }
-                    let clipped = if whole[slot] {
+                    let clipped = if owners[slot] != Owner::Every {
                         Some((a, b))
                     } else {
                         clip_segment(a.map(i64::from), b.map(i64::from), 0, extent)
@@ -242,6 +268,53 @@ mod tests {
             .map(|v| v[0] as i16)
             .min();
         assert_eq!(min_x, Some(-10));
+    }
+
+    #[test]
+    fn chunks_hold_one_owners_buildings() {
+        let mut b = LayerBuilder::new("building", 100);
+        let square = |b: &mut LayerBuilder, x: i32, y: i32| {
+            b.begin_feature(None, GeometryType::Polygon);
+            b.begin_part();
+            b.begin_ring();
+            for p in [[x, y], [x + 10, y], [x + 10, y + 10], [x, y + 10]] {
+                b.push_vertex(p);
+            }
+        };
+        // West of the square, inside it, cut at the buffer, inside again.
+        square(&mut b, -8, 40);
+        square(&mut b, 40, 40);
+        b.begin_feature(None, GeometryType::Polygon);
+        b.begin_part();
+        b.begin_ring();
+        for p in [[-10, 0], [5, 0], [5, 10], [-10, 10]] {
+            b.push_vertex(p);
+        }
+        square(&mut b, 60, 60);
+        let layer = b.finish();
+        let mesh = layout(&layer, &[0, 1, 2, 3]);
+        let owners: Vec<Owner> = mesh.chunks.iter().map(|c| c.owner).collect();
+        // Roofs, then walls, each the square's, the cut's, the west's.
+        let order = [Owner::Square, Owner::Every, Owner::Neighbour(3)];
+        assert_eq!(owners, [order, order].concat());
+        let slot = |c: &crate::Chunk| {
+            let mut v = (c.first_index..c.first_index + c.index_count).map(|i| {
+                mesh.vertices[(c.first_vertex + u32::from(crate::mesh::index_at(&mesh.indices, i)))
+                    as usize
+                    * STRIDE
+                    + 1]
+            });
+            let first = v.next().expect("indices");
+            v.all(|s| match c.owner {
+                Owner::Square => s == 1 || s == 3,
+                _ => s == first,
+            })
+            .then_some(first)
+        };
+        let slots: Vec<_> = mesh.chunks.iter().map(slot).collect();
+        assert!(slots.iter().all(Option::is_some));
+        assert_eq!(slots[1], Some(2));
+        assert_eq!(slots[2], Some(0));
     }
 
     #[test]

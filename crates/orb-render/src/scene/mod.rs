@@ -28,8 +28,8 @@ use std::ops::Range;
 use crate::driver::{self, SubmitLimits};
 use arena::{Arena, Slots};
 use orb_hal::{BufferDesc, BufferId, BufferUsages, Gpu, HostBytesId};
-use orb_layout::Chunk;
 use orb_layout::Mesh;
+use orb_layout::{Chunk, Owner};
 use orb_shaders::layout;
 pub use pages::Pixels;
 pub(crate) use pages::{PageTexture, TilePage};
@@ -389,6 +389,15 @@ pub struct TileRow {
 }
 
 impl TileRow {
+    /// Whether it draws all of its square: one clip rectangle holds it,
+    /// as its bound does.
+    fn covers_square(&self) -> bool {
+        let holds = |c: &ClipRect| {
+            (0..2).all(|i| f32::from(c.min[i]) <= 0.0 && f32::from(c.max[i]) >= self.extent)
+        };
+        holds(&self.bound) && self.clips.iter().any(holds)
+    }
+
     /// Its clip as fragments test it where its content lands where it was
     /// (`types.wgsl`'s `fragment_clip`): the one rectangle it owns, within
     /// its bound, where it is affine (empty where it owns none); otherwise
@@ -904,6 +913,87 @@ pub(crate) const NO_STATE: u32 = u32::MAX;
 struct NodeEntry {
     meshes: Vec<MeshId>,
     cull: NodeCull,
+    stream: Stream,
+}
+
+impl NodeEntry {
+    fn new(cull: NodeCull, stream: Stream) -> Self {
+        Self {
+            meshes: Vec::new(),
+            cull,
+            stream,
+        }
+    }
+}
+
+/// Which of its meshes' chunks a cull row's candidates hold, in which
+/// placements. An extrusion node draws whole buildings and cut ones in
+/// two pipelines, the second discarding outside the placement's clip; each
+/// pipeline drawing the other's vertices only to drop them cost the moto
+/// g a fifth of a pitched 3D frame's buildings (#180). So the node's own
+/// row holds the chunks of buildings its placements may own, and a row
+/// after every render node's, its cut stream ([`Scene::cut_row`]), holds
+/// what they draw cut, which the cut pipelines draw. A chunk of a
+/// neighbour's buildings goes to neither where that neighbour is placed
+/// alone, drawing them entire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stream {
+    /// Every chunk: a node that isn't an extrusion's.
+    All,
+    /// An extrusion node's [`Owner::Square`] chunks.
+    Whole,
+    /// Render node `n`'s chunks its placements draw cut: those of
+    /// buildings the source cut ([`Owner::Every`]), a neighbour's where
+    /// that neighbour isn't placed alone, and in a placement that isn't
+    /// alone over its square ([`Route`]), its own.
+    Cut(u32),
+}
+
+/// A placement's part in which of a node's chunks it draws
+/// ([`Stream`]): it is part of the runs' keys, so a run whose chunks
+/// change is laid out as another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Route {
+    stream: u8,
+    /// [`TileRow::neighbours`].
+    neighbours: u16,
+    /// The placement draws its whole square, off a globe: every building
+    /// its square owns draws whole, none cut. On a globe, a tile across
+    /// the horizon draws every building in the cut pipeline, which hides
+    /// what the sphere does per fragment.
+    alone: bool,
+}
+
+impl Route {
+    pub(super) const ALL: Self = Self {
+        stream: 0,
+        neighbours: 0,
+        alone: false,
+    };
+
+    fn new(stream: Stream, row: &TileRow) -> Self {
+        let stream = match stream {
+            Stream::All => return Self::ALL,
+            Stream::Whole => 1,
+            Stream::Cut(_) => 2,
+        };
+        Self {
+            stream,
+            neighbours: row.neighbours,
+            alone: row.globe.is_none() && row.covers_square(),
+        }
+    }
+
+    /// Whether its stream draws a chunk of `owner` in the placement.
+    pub(super) fn keeps(self, owner: Owner) -> bool {
+        match (self.stream, owner) {
+            (0, _) => true,
+            (1, owner) => owner == Owner::Square,
+            (_, Owner::Every) => true,
+            (_, Owner::Square) => !self.alone,
+            (_, Owner::Neighbour(cell)) => self.neighbours & (1 << cell) == 0,
+        }
+    }
 }
 
 /// How the cull pass treats a render node's chunks.
@@ -1227,10 +1317,50 @@ impl Scene {
         &self.frame
     }
 
-    /// The render nodes.
-    #[cfg(cpu_driven)]
+    /// The cull's rows: the render nodes', then their cut streams'
+    /// ([`cut_row`](Self::cut_row)).
     pub(crate) fn node_count(&self) -> u32 {
         self.nodes.len() as u32
+    }
+
+    /// The row of render node `node`'s cut stream, if it draws one (an
+    /// extrusion node, [`NodeCull::unclipped`]): drawn as a node of its
+    /// own, its candidates what the node's placements draw cut
+    /// ([`Stream`]).
+    pub(crate) fn cut_row(&self, node: u32) -> Option<u32> {
+        (self.nodes.iter())
+            .position(|n| n.stream == Stream::Cut(node))
+            .map(|row| row as u32)
+    }
+
+    /// The cull's rows for `nodes`, render nodes in order: each node's,
+    /// then each extrusion node's cut stream.
+    fn rows_for(nodes: &[NodeCull]) -> Vec<NodeEntry> {
+        let stream = |c: &NodeCull| {
+            if c.unclipped {
+                Stream::Whole
+            } else {
+                Stream::All
+            }
+        };
+        let own = nodes.iter().map(|&c| NodeEntry::new(c, stream(&c)));
+        let cut = (nodes.iter().enumerate())
+            .filter(|(_, c)| c.unclipped)
+            .map(|(n, &c)| NodeEntry::new(c, Stream::Cut(n as u32)));
+        own.chain(cut).collect()
+    }
+
+    /// Whether a node draws in streams, whose candidates follow its
+    /// placements' routes.
+    fn streams(&self) -> bool {
+        self.nodes.iter().any(|n| n.stream != Stream::All)
+    }
+
+    /// The render nodes' rows, before their cut streams'.
+    fn render_nodes(&self) -> usize {
+        (self.nodes.iter())
+            .position(|n| matches!(n.stream, Stream::Cut(_)))
+            .unwrap_or(self.nodes.len())
     }
 
     /// Lays the candidates out again at the next
@@ -1317,19 +1447,13 @@ impl Scene {
     /// `map[i]`, and the scene has `nodes.len()` nodes. Nodes mapped to
     /// `None` must hold no meshes.
     pub(crate) fn remap_nodes(&mut self, map: &[Option<u32>], nodes: &[NodeCull]) {
-        assert_eq!(map.len(), self.nodes.len(), "one entry per node");
+        assert_eq!(map.len(), self.render_nodes(), "one entry per node");
+        let mut entries = Self::rows_for(nodes);
         assert!(
-            nodes.len() as u32 <= self.capacity.nodes,
+            entries.len() as u32 <= self.capacity.nodes,
             "too many render nodes"
         );
-        let mut entries: Vec<NodeEntry> = nodes
-            .iter()
-            .map(|&cull| NodeEntry {
-                meshes: Vec::new(),
-                cull,
-            })
-            .collect();
-        for (old, node) in self.nodes.drain(..).enumerate() {
+        for (old, node) in self.nodes.drain(..).enumerate().take(map.len()) {
             match map[old] {
                 Some(new) => {
                     for &id in &node.meshes {
@@ -1350,22 +1474,19 @@ impl Scene {
     /// visibility are parameters the cull reads from the node rows: they
     /// change without laying the candidates out again.
     pub(crate) fn set_nodes(&mut self, nodes: &[NodeCull]) {
-        if nodes.len() != self.nodes.len() {
+        let render = &self.nodes[..self.render_nodes()];
+        let same_rows = nodes.len() == render.len()
+            && (nodes.iter().zip(render)).all(|(c, n)| c.unclipped == n.cull.unclipped);
+        if !same_rows {
             assert!(
                 self.nodes.iter().all(|n| n.meshes.is_empty()),
                 "nodes changed while meshes are resident"
             );
+            self.nodes = Self::rows_for(nodes);
             assert!(
-                nodes.len() as u32 <= self.capacity.nodes,
+                self.nodes.len() as u32 <= self.capacity.nodes,
                 "too many render nodes"
             );
-            self.nodes = nodes
-                .iter()
-                .map(|&cull| NodeEntry {
-                    meshes: Vec::new(),
-                    cull,
-                })
-                .collect();
             self.candidates_dirty = true;
             self.laid.clear();
             return;
@@ -1375,9 +1496,20 @@ impl Scene {
         }
     }
 
-    /// Sets how one render node is culled; see [`set_nodes`](Self::set_nodes).
+    /// Sets how one render node is culled, and its cut stream; see
+    /// [`set_nodes`](Self::set_nodes).
     pub(crate) fn set_node(&mut self, node: u32, cull: NodeCull) {
-        let i = node as usize;
+        assert_eq!(
+            self.nodes[node as usize].cull.unclipped, cull.unclipped,
+            "a node keeps whether it draws a cut stream"
+        );
+        let cut = self.cut_row(node);
+        for row in std::iter::once(node).chain(cut) {
+            self.set_row(row as usize, cull);
+        }
+    }
+
+    fn set_row(&mut self, i: usize, cull: NodeCull) {
         let entry = &mut self.nodes[i];
         if entry.cull == cull {
             return;
@@ -1468,6 +1600,7 @@ impl Scene {
     /// a frame that only moves the camera changes none; changed rows reach
     /// the GPU together in the next [`prepare`](Self::prepare).
     pub(crate) fn place_tile(&mut self, tile: TileId, rows: &[TileRow]) -> Result<(), OutOfSpace> {
+        let streams = self.streams();
         let entry = self.tiles[tile.0 as usize].as_mut().expect("unknown tile");
         let added = rows.len().saturating_sub(entry.placements.len());
         if entry.placements.len() != rows.len() {
@@ -1490,8 +1623,12 @@ impl Scene {
         let fresh = entry.placements.len() - added;
         for (i, (placement, row)) in entry.placements.iter_mut().zip(rows).enumerate() {
             if i >= fresh || placement.row != *row {
-                // Which nodes draw it decides the candidates.
-                self.candidates_dirty |= placement.row.target != row.target;
+                // Which nodes draw it decides the candidates, and which of
+                // their chunks, the streams'.
+                let routes =
+                    |r: &TileRow| (Route::new(Stream::Whole, r), Route::new(Stream::Cut(0), r));
+                self.candidates_dirty |= placement.row.target != row.target
+                    || (streams && routes(&placement.row) != routes(row));
                 placement.row = *row;
                 self.rows_dirty.push((placement.slot, *row));
             }

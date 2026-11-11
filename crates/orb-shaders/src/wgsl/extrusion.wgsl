@@ -96,10 +96,20 @@ struct ExtrusionOut {
 // second discards, which would turn off the GPU's hidden-surface removal
 // for every building it drew: a quarter of a dense 3D frame. The second
 // also draws every building of a tile that may stand across a globe's
-// horizon (`sphere_limb`), hidden behind the sphere per fragment.
+// horizon (`sphere_limb`), hidden behind the sphere per fragment. Each
+// draws a stream of its own (orb-render's `Stream`), the chunks it may
+// draw: the first, buildings the tile's square owns, whole where the
+// placement holds their centroid.
 @vertex
 fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
-    return extrusion_part(index, 1u << EXTRUSION_WHOLE, 0u);
+    var v: Pulled;
+    if !pull_indexed(node.index, index, 4u, &v) || !extrusion_owned(v)
+        || sphere_limb(tile_at(v.tile)) {
+        var out: ExtrusionOut;
+        out.position = discarded_vertex();
+        return out;
+    }
+    return extrusion_vertex(v, false);
 }
 // Every cut building, clipped per fragment: where clip distances aren't.
 @vertex
@@ -194,7 +204,7 @@ fn extrusion_drawn(v: Pulled) -> u32 {
         return cut;
     }
     let centroid = unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID));
-    if (one && in_clip(tile.clip, centroid)) || (!one && inside_clips(tile, centroid)) {
+    if holds_centroid(tile, centroid) {
         return EXTRUSION_WHOLE;
     }
     let cell = floor(centroid / tile.extent) + 1.0;
@@ -203,6 +213,20 @@ fn extrusion_drawn(v: Pulled) -> u32 {
         return 0u;
     }
     return cut;
+}
+// Whether the placement draws whole the building of vertex `v`, a whole
+// one: where its clip holds the building's centroid.
+fn extrusion_owned(v: Pulled) -> bool {
+    let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
+    return holds_centroid(tile_at(v.tile), unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID)));
+}
+// Whether a placement's clip holds a whole building's `centroid`: the one
+// rectangle its row holds (`fragment_clip`), else its rectangles.
+fn holds_centroid(tile: Tile, centroid: vec2<f32>) -> bool {
+    if any(tile.clip != CLIP_FETCHED) {
+        return in_clip(tile.clip, centroid);
+    }
+    return inside_clips(tile, centroid);
 }
 // Whether a cut building's fragment at `tile_pos` lies in its placement.
 // Shared tile edges can contain real vertical walls: they have zero ground

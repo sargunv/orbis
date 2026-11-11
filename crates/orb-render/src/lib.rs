@@ -221,6 +221,10 @@ struct Node {
     heatmap: Option<heatmap::NodeHeatmap>,
     /// An extrusion node's colour target.
     extrusion: Option<extrusion::NodeExtrusion>,
+    /// An extrusion node's cut stream's group ([`Scene::cut_row`]): its
+    /// uniform at the stream's row, the node's paint with that row's
+    /// index.
+    cut_group: Option<BindGroupId>,
     /// A symbol node draws its halos in a pass of their own.
     separate_halo: bool,
     /// A symbol node places its labels along lines.
@@ -402,9 +406,10 @@ pub struct Renderer {
     node_uniforms: BufferId,
     node_stride: u64,
     /// The node uniforms as written, and the nodes changed since the last
-    /// frame: one buffer write a frame, not one a node.
+    /// frame: one buffer write a frame, not one a node, and one for the
+    /// cut streams' rows past them.
     node_words: Vec<u32>,
-    nodes_dirty: Option<std::ops::Range<usize>>,
+    nodes_dirty: [Option<std::ops::Range<usize>>; 2],
     nodes: Vec<Node>,
     tiles: tiles::Tiles,
     surface_warps: tiles::SurfaceWarps,
@@ -704,7 +709,7 @@ impl Renderer {
             node_uniforms,
             node_stride,
             node_words: vec![0; (node_stride / 4) as usize * capacity.nodes as usize],
-            nodes_dirty: None,
+            nodes_dirty: [None, None],
             nodes: Vec::new(),
             tiles: Default::default(),
             surface_warps: Default::default(),
@@ -864,14 +869,14 @@ impl Renderer {
             args.get(at..at + 4)
                 .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("a word")))
         };
+        // An extrusion node's counts take in its cut stream's.
         (self.nodes.iter().enumerate())
             .map(|(i, n)| {
-                let candidates = self.scene.node_candidates(i as u32);
-                (
-                    n.family,
-                    if n.cull.visible { candidates } else { 0 },
-                    word(i),
-                )
+                let rows = std::iter::once(i as u32).chain(self.scene.cut_row(i as u32));
+                let (candidates, kept) = rows.fold((0, 0), |(c, k), row| {
+                    (c + self.scene.node_candidates(row), k + word(row as usize))
+                });
+                (n.family, if n.cull.visible { candidates } else { 0 }, kept)
             })
             .collect()
     }
@@ -905,9 +910,14 @@ impl Renderer {
         assert_eq!(nodes.len(), retained.len());
         let families: Vec<Family> = nodes.iter().map(|n| n.family).collect();
         let families = &families[..];
-        // A style with more nodes than ever drawn: the node tables grow.
+        // A style with more nodes than ever drawn: the node tables grow,
+        // with a row for each extrusion node's cut stream after them.
         // Every node's group binds its uniform again below.
-        let count = families.len() as u32;
+        let cut = families
+            .iter()
+            .filter(|&&f| f == Family::FillExtrusion)
+            .count();
+        let count = (families.len() + cut) as u32;
         let mut retired_uniforms = None;
         if count > self.scene.capacity().nodes {
             self.scene.grow_nodes(gpu, count);
@@ -958,7 +968,7 @@ impl Renderer {
             let (mut image, cull, (shaded, by_zoom)) = match node {
                 Some(node) => {
                     // Groups bind the uniform at the node's index.
-                    (node.group, node.extrusion, node.heatmap).release(gpu);
+                    ((node.group, node.cut_group), node.extrusion, node.heatmap).release(gpu);
                     (node.image, node.cull, (node.shaded, node.by_zoom))
                 }
                 None => (
@@ -993,6 +1003,7 @@ impl Renderer {
                 group,
                 extrusion: (family == Family::FillExtrusion)
                     .then(extrusion::NodeExtrusion::default),
+                cut_group: None,
                 heatmap: (family == Family::Heatmap)
                     .then(|| heatmap::Heatmaps::node(gpu, self.linear.is_some())),
                 cull,
@@ -1023,6 +1034,21 @@ impl Renderer {
         self.drape.take().release(gpu);
         let cull: Vec<NodeCull> = self.nodes.iter().map(Node::scene_cull).collect();
         self.scene.remap_nodes(&map, &cull);
+        for i in 0..self.nodes.len() {
+            let Some(row) = self.scene.cut_row(i as u32) else {
+                continue;
+            };
+            let uniform = self.node_uniform(row);
+            let group = gpu.create_bind_group(&BindGroupDesc {
+                label: "node cut stream",
+                layout: self.node_layout,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: uniform,
+                }],
+            });
+            self.nodes[i].cut_group = Some(group);
+        }
         self.pipelines_stale = true;
         self.invalidate_bundle(gpu);
         let complete = self.add_image_nodes(gpu, &added);
@@ -1495,6 +1521,7 @@ impl Renderer {
     /// Writes a node's paint values. The paint's family must match the
     /// node's.
     pub fn set_paint(&mut self, gpu: &mut dyn Gpu, node: u32, paint: &NodePaint) {
+        let cut_row = self.scene.cut_row(node);
         let entry = &mut self.nodes[node as usize];
         assert!(
             paint.fits(entry.family),
@@ -1544,12 +1571,23 @@ impl Renderer {
             entry.occlusion = p.ground_occlusion();
         }
         if words != entry.written {
-            let (node, stride) = (node as usize, (self.node_stride / 4) as usize);
-            self.node_words[node * stride..][..words.len()].copy_from_slice(&words);
-            self.nodes_dirty = Some(match self.nodes_dirty.take() {
-                Some(r) => r.start.min(node)..r.end.max(node + 1),
-                None => node..node + 1,
+            let stride = (self.node_stride / 4) as usize;
+            // An extrusion node's cut stream draws with its paint, from
+            // its own row, past the render nodes'.
+            let cut = cut_row.map(|row| {
+                let mut cut = words.clone();
+                cut[orb_shaders::layout::extrusion_node::INDEX] = row;
+                (row as usize, cut)
             });
+            let rows = std::iter::once((0, node as usize, &words));
+            for (part, row, words) in rows.chain(cut.as_ref().map(|(row, cut)| (1, *row, cut))) {
+                self.node_words[row * stride..][..words.len()].copy_from_slice(words);
+                let dirty = &mut self.nodes_dirty[part];
+                *dirty = Some(match dirty.take() {
+                    Some(r) => r.start.min(row)..r.end.max(row + 1),
+                    None => row..row + 1,
+                });
+            }
             entry.written = words;
             self.paints_written += 1;
         }
@@ -1930,7 +1968,13 @@ impl Renderer {
     ) -> FrameStats {
         self.destroy_retired_pages(gpu);
         self.bind_scene(gpu);
-        if let Some(nodes) = self.nodes_dirty.take() {
+        for nodes in self
+            .nodes_dirty
+            .each_mut()
+            .map(Option::take)
+            .into_iter()
+            .flatten()
+        {
             let stride = (self.node_stride / 4) as usize;
             gpu.write_buffer(
                 self.node_uniforms,
@@ -2393,7 +2437,7 @@ impl Renderer {
             Pass::group(passes, start, "image mips");
         }
         let cull_ready = self.driver.ready(gpu);
-        let dispatches = self.driver.cull(gpu, self.nodes.len() as u32, passes);
+        let dispatches = self.driver.cull(gpu, self.scene.node_count(), passes);
         if self.driver.culled(dispatches) {
             self.scene.culled();
         }
@@ -2537,18 +2581,23 @@ impl Renderer {
                 node.ground_drawn = ground.recorded();
                 target.forget_bundle(gpu);
             }
-            let draw = self.driver.draw(&buffers, index as u32, NodeDraw::Indexed);
+            let draw = |row| self.driver.draw(&buffers, row, NodeDraw::Indexed);
+            let cut = self.scene.cut_row(index as u32).zip(node.cut_group);
+            let (cut_row, cut_group) = cut.expect("an extrusion node draws a cut stream");
+            let streams = extrusion::Streams {
+                whole: (node.group, draw(index as u32)),
+                cut: (cut_group, draw(cut_row)),
+            };
             if decal.is_some() {
-                let groups = (draw_group, node.group);
-                let mask = (self.extrusions).mask_pass(groups, &buffers, (draw.clone(), ground));
+                let mask = (self.extrusions).mask_pass(draw_group, &buffers, (&streams, ground));
                 passes.extend(mask.map(Pass::Render));
             }
             let mut pass = self.extrusions.prepare(
                 gpu,
                 target,
-                (draw_group, node.group),
+                draw_group,
                 &buffers,
-                (draw, node.elevation, ground),
+                (&streams, node.elevation, ground),
                 first,
             );
             pass.commands.extend(decal.into_iter().flatten());
@@ -3048,7 +3097,8 @@ struct Drape {
 
 impl release::Release for Node {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.group, self.image, self.heatmap, self.extrusion).release(gpu);
+        let groups = (self.group, self.cut_group);
+        (groups, self.image, self.heatmap, self.extrusion).release(gpu);
     }
 }
 

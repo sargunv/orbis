@@ -652,6 +652,7 @@ fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_l
                     max: [i16::MIN; 2],
                 },
                 sort_key: key,
+                owner: orb_layout::Owner::Every,
             });
         }
         let c = chunks.last_mut().expect("pushed above");

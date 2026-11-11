@@ -45,8 +45,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::driver::SubmitLimits;
 
 use super::{
-    CANDIDATE_WORDS, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, PlacementTarget, Scene, Table,
-    UNKNOWN, VISIBLE_WORDS,
+    CANDIDATE_WORDS, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, PlacementTarget, Route, Scene,
+    Stream, Table, UNKNOWN, VISIBLE_WORDS,
 };
 
 /// A candidate row that holds no candidate: a hole a run left in an
@@ -194,8 +194,9 @@ struct LaidRun {
 }
 
 /// What identifies a run across rebuilds: its mesh (by the serial it was
-/// added with, which no other mesh takes) and its placement slot.
-type RunKey = (u64, u32);
+/// added with, which no other mesh takes) and its placement slot, and
+/// which of its chunks it holds there.
+type RunKey = (u64, u32, Route);
 
 /// A node's slices of the lists as last laid out.
 #[derive(Clone, Debug)]
@@ -244,6 +245,8 @@ struct Movable<'a> {
 struct RunPlan<'a> {
     key: RunKey,
     placement: u32,
+    /// Which of the mesh's chunks it holds in the placement.
+    route: Route,
     /// The mesh's chunk slots (the first names the run in its run row) and
     /// chunks.
     slots: &'a [u32],
@@ -253,7 +256,9 @@ struct RunPlan<'a> {
 impl RunPlan<'_> {
     /// Its chunks: slot, index count, sort key.
     fn chunks(&self) -> impl Iterator<Item = (u32, u32, Option<f32>)> + '_ {
-        (self.slots.iter().zip(self.chunks)).map(|(&slot, c)| (slot, c.index_count, c.sort_key))
+        (self.slots.iter().zip(self.chunks))
+            .filter(|(_, c)| self.route.keeps(c.owner))
+            .map(|(&slot, c)| (slot, c.index_count, c.sort_key))
     }
 
     fn first(&self) -> u32 {
@@ -280,11 +285,17 @@ fn headroom(used: u32, step: u32) -> u32 {
 impl Scene {
     /// A node's runs into `runs` (emptied first; one list serves every
     /// node of a layout), in mesh, placement and chunk order, and the most
-    /// vertex words a mesh of it has.
+    /// vertex words a mesh of it has. A cut stream's are its render
+    /// node's meshes; a stream's runs hold the chunks their placements'
+    /// routes keep, and none that keep none.
     fn node_runs<'a>(&'a self, node: &NodeEntry, runs: &mut Vec<RunPlan<'a>>) -> u32 {
         runs.clear();
         let mut vertex_words = 1u32;
-        for mesh in &node.meshes {
+        let meshes = match node.stream {
+            Stream::Cut(of) => &self.nodes[of as usize].meshes,
+            Stream::All | Stream::Whole => &node.meshes,
+        };
+        for mesh in meshes {
             let entry = self.meshes[mesh.0 as usize]
                 .as_ref()
                 .expect("node lists live meshes");
@@ -299,12 +310,17 @@ impl Scene {
                 if !node.cull.draws(placement.row.target) {
                     continue;
                 }
-                runs.push(RunPlan {
-                    key: (self.mesh_serials[mesh.0 as usize], placement.slot),
+                let route = Route::new(node.stream, &placement.row);
+                let run = RunPlan {
+                    key: (self.mesh_serials[mesh.0 as usize], placement.slot, route),
                     placement: placement.slot,
+                    route,
                     slots: &entry.chunk_slots,
                     chunks: &entry.chunks,
-                });
+                };
+                if run.chunks().next().is_some() {
+                    runs.push(run);
+                }
             }
         }
         vertex_words
@@ -813,8 +829,8 @@ impl LaidNode {
                 continue;
             }
             let after = next[i].map_or(u32::MAX, |j| kept[&runs[j].key].words.start);
-            let n = run.slots.len() as u32;
-            let words: u32 = run.chunks.iter().map(|c| c.index_count).sum();
+            let n = run.chunks().count() as u32;
+            let words: u32 = run.chunks().map(|(_, count, _)| count).sum();
             let number = match self.numbers.iter().position(|taken| !taken) {
                 Some(free) => free as u32,
                 None => {
@@ -1104,10 +1120,12 @@ mod tests {
                 max: [0; 2],
             },
             sort_key: None,
+            owner: orb_layout::Owner::Every,
         };
         RunPlan {
-            key: (serial, 0),
+            key: (serial, 0, Route::ALL),
             placement: 0,
+            route: Route::ALL,
             slots: Vec::leak((0..chunks).map(|c| serial as u32 * 100 + c).collect()),
             chunks: Vec::leak(vec![chunk; chunks as usize]),
         }
@@ -1134,7 +1152,9 @@ mod tests {
     }
 
     fn slots(node: &LaidNode, serial: u64) -> Range<u32> {
-        node.runs.as_ref().unwrap()[&(serial, 0)].words.clone()
+        node.runs.as_ref().unwrap()[&(serial, 0, Route::ALL)]
+            .words
+            .clone()
     }
 
     #[test]
@@ -1250,7 +1270,7 @@ mod tests {
         // A run before the others: those that stay move behind it with
         // their numbers, and only its rows wait for the cull.
         let plan = again(&node, &runs);
-        let number = |serial| node.runs.as_ref().unwrap()[&(serial, 0)].run;
+        let number = |serial| node.runs.as_ref().unwrap()[&(serial, 0, Route::ALL)].run;
         assert_eq!(
             plan.moves,
             [

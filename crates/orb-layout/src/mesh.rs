@@ -53,6 +53,40 @@ pub struct Chunk {
     pub bounds: TileBox,
     /// Optional layer sort key; candidates merge these runs across tiles.
     pub sort_key: Option<f32>,
+    /// Which of its tile's placements draw it.
+    pub owner: Owner,
+}
+
+/// Which of its tile's placements draw a chunk: an extrusion's whole
+/// buildings draw entire from the placement holding their centroid
+/// (`orb_tile::Layer::is_whole`), so a chunk holds buildings of one owner
+/// alone, and the cull's candidates keep a chunk only where its owner
+/// may draw it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Owner {
+    /// Every placement, each its own part: what isn't a whole building.
+    #[default]
+    Every,
+    /// Whole buildings whose centroid the tile's square holds.
+    Square,
+    /// Whole buildings whose centroid lies in the tile beside it at bit
+    /// `3 (dy + 1) + dx + 1` (rows down), never 4, its own: drawn there
+    /// when that tile is placed alone over its square, else clipped here.
+    Neighbour(u8),
+}
+
+impl Owner {
+    /// The owner of a whole building with `centroid` in a tile of
+    /// `extent` units: its square, or one of the eight around it. Beyond
+    /// those, every placement draws its own part.
+    pub fn of_whole(centroid: [i16; 2], extent: u32) -> Self {
+        let cell = centroid.map(|c| i32::from(c).div_euclid(extent as i32) + 1);
+        match cell {
+            [1, 1] => Self::Square,
+            [x @ 0..=2, y @ 0..=2] => Self::Neighbour((3 * y + x) as u8),
+            _ => Self::Every,
+        }
+    }
 }
 
 /// GPU streams for one style layer of one tile.
@@ -111,6 +145,7 @@ pub struct MeshBuilder {
     positions: Vec<[i16; 2]>,
     open: TileBox,
     sort_key: Option<f32>,
+    owner: Owner,
     /// Where the open chunk's primitives lie against `focus`: meeting it,
     /// or all away from it.
     focus: Option<TileBox>,
@@ -127,6 +162,7 @@ impl MeshBuilder {
             positions: Vec::new(),
             open: TileBox::EMPTY,
             sort_key: None,
+            owner: Owner::Every,
             focus: None,
             open_meets: false,
         }
@@ -147,6 +183,15 @@ impl MeshBuilder {
         if self.sort_key != key {
             self.close_chunk();
             self.sort_key = key;
+        }
+    }
+
+    /// Gives what follows `owner`, closing the previous chunk when it
+    /// changes.
+    pub(crate) fn set_owner(&mut self, owner: Owner) {
+        if self.owner != owner {
+            self.close_chunk();
+            self.owner = owner;
         }
     }
 
@@ -260,6 +305,7 @@ impl MeshBuilder {
                 first_vertex: 0,
                 bounds: self.open,
                 sort_key: self.sort_key,
+                owner: self.owner,
             });
         }
         self.open = TileBox::EMPTY;

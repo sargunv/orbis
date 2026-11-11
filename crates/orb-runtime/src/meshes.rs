@@ -169,6 +169,7 @@ fn background_tile(
             let last = ((c * 256 + run.len() - 1) / 2) as u32 / cells;
             orb_layout::Chunk {
                 sort_key: None,
+                owner: orb_layout::Owner::Every,
                 first_index: (c * 256 * 3) as u32,
                 first_vertex: 0,
                 index_count: (run.len() * 3) as u32,

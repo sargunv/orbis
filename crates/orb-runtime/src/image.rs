@@ -183,6 +183,7 @@ impl Warped {
                 let max = [max.x.ceil() as i16, max.y.ceil() as i16];
                 Chunk {
                     sort_key: None,
+                    owner: orb_layout::Owner::Every,
                     first_index: (c * 256 * 3) as u32,
                     first_vertex: 0,
                     index_count: (triangles.len() * 3) as u32,

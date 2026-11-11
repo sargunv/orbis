@@ -1103,6 +1103,7 @@ const QUAD: [u32; 20] = {
 const QUAD_INDICES: [u32; 3] = [1 << 16, 2 | 2 << 16, 1 | 3 << 16];
 const QUAD_CHUNK: Chunk = Chunk {
     sort_key: None,
+    owner: orb_layout::Owner::Every,
     first_index: 0,
     index_count: 6,
     first_vertex: 0,

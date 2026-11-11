@@ -103,6 +103,42 @@ pub(crate) struct Extrusions {
 /// An extrusion layer's node, drawn apart.
 pub(crate) type NodeExtrusion = Apart;
 
+/// An extrusion node's two draws, each with the node group it binds: the
+/// buildings its placements may draw whole, which the whole pipeline
+/// draws, and its cut stream ([`Scene::cut_row`](crate::scene::Scene::cut_row)),
+/// what they draw cut, which the cut pipelines draw. What the buildings
+/// darken on the ground draws over both.
+#[derive(Clone, Debug)]
+pub(crate) struct Streams {
+    pub(crate) whole: (BindGroupId, RenderCommand),
+    pub(crate) cut: (BindGroupId, RenderCommand),
+}
+
+impl Streams {
+    /// Records each of `draws` whose pipeline is made, a pipeline over a
+    /// stream, binding each stream's group as it changes.
+    fn record<'a>(
+        &self,
+        draws: impl Iterator<Item = (Option<RenderPipelineId>, &'a (BindGroupId, RenderCommand))>,
+        commands: &mut Vec<RenderCommand>,
+    ) {
+        let mut bound = None;
+        for (pipeline, (group, draw)) in draws {
+            let Some(pipeline) = pipeline else {
+                continue;
+            };
+            if bound != Some(*group) {
+                bound = Some(*group);
+                commands.push(RenderCommand::SetBindGroup {
+                    index: 1,
+                    group: *group,
+                });
+            }
+            commands.extend([RenderCommand::SetPipeline(pipeline), draw.clone()]);
+        }
+    }
+}
+
 type Pipelines = [[Option<RenderPipelineId>; 2]; 3];
 
 impl Extrusions {
@@ -448,28 +484,32 @@ impl Extrusions {
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeExtrusion,
-        (scene, group): (BindGroupId, BindGroupId),
+        scene: BindGroupId,
         buffers: &SceneBuffers,
-        (draw, shape, ground): (RenderCommand, ElevationShape, Ground),
+        (streams, shape, ground): (&Streams, ElevationShape, Ground),
         first: bool,
     ) -> RenderPass {
         let ground = self.ground_made(ground.recorded());
-        let pipelines = self.slot(shape);
+        let [whole, cut, planes] = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
             let mut commands = vec![
                 RenderCommand::SetBindGroup {
                     index: 0,
                     group: scene,
                 },
-                RenderCommand::SetBindGroup { index: 1, group },
                 RenderCommand::SetIndexBuffer {
                     buffer: buffers.compacted,
                     offset: 0,
                 },
             ];
-            for &pipeline in pipelines.iter().chain(&ground).flatten() {
-                commands.extend([RenderCommand::SetPipeline(pipeline), draw.clone()]);
-            }
+            // The buildings, each pipeline over its stream, then what
+            // they darken on the ground, over both.
+            let [w, c] = [&streams.whole, &streams.cut];
+            let draws = [(whole, w), (cut, c), (planes, c)].into_iter();
+            let ground = [c, w]
+                .into_iter()
+                .flat_map(|s| ground.iter().map(move |&g| (g, s)));
+            streams.record(draws.chain(ground), &mut commands);
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "3d layer",
@@ -529,9 +569,9 @@ impl Extrusions {
     /// its buildings draw.
     pub(crate) fn mask_pass(
         &self,
-        (scene, group): (BindGroupId, BindGroupId),
+        scene: BindGroupId,
         buffers: &SceneBuffers,
-        (draw, ground): (RenderCommand, Ground),
+        (streams, ground): (&Streams, Ground),
     ) -> Option<RenderPass> {
         let (target, ..) = self.mask_target.as_ref()?;
         let mut commands = vec![
@@ -539,15 +579,17 @@ impl Extrusions {
                 index: 0,
                 group: scene,
             },
-            RenderCommand::SetBindGroup { index: 1, group },
             RenderCommand::SetIndexBuffer {
                 buffer: buffers.compacted,
                 offset: 0,
             },
         ];
-        for pipeline in self.ground_made(ground).into_iter().flatten() {
-            commands.extend([RenderCommand::SetPipeline(pipeline), draw.clone()]);
-        }
+        let [w, c] = [&streams.whole, &streams.cut];
+        let ground = self.ground_made(ground);
+        let ground = [c, w]
+            .into_iter()
+            .flat_map(|s| ground.iter().map(move |&g| (g, s)));
+        streams.record(ground, &mut commands);
         Some(RenderPass {
             label: "ground mask",
             colors: vec![target.attachment(0, LoadOp::Clear([0.0; 4]))],
