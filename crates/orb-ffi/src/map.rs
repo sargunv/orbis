@@ -664,11 +664,15 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                                 right: 0.0,
                             },
                         },
-                        // Perspective, as a new Native map's.
-                        projection_mode: mln_projection_mode {
-                            axonometric: false,
-                            x_skew: 0.0,
-                            y_skew: 0.0,
+                        // Perspective, with Native's skews: heights rise
+                        // straight up once axonometric.
+                        projection_mode: {
+                            let skew = orb_api::Skew::default();
+                            mln_projection_mode {
+                                axonometric: false,
+                                x_skew: skew.x,
+                                y_skew: skew.y,
+                            }
                         },
                         bounds: default_bounds(),
                         prefetch_zoom_delta: 4,
