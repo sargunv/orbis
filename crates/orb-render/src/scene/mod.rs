@@ -692,6 +692,11 @@ pub struct SceneMemory {
     /// The fixed tables: placements, chunks, candidates, visible lists,
     /// node tables and draw arguments.
     pub tables: u64,
+    /// Not GPU memory, so not [`allocated`](Self::allocated): what the
+    /// CPU driver (WebGL 2) keeps in the heap, wasm memory on the web,
+    /// of the tables its cull reads and of the index writes its copies
+    /// wait for.
+    pub cpu_copies: u64,
 }
 
 impl SceneMemory {
@@ -2287,6 +2292,7 @@ impl Scene {
                 + u64::from(c.nodes) * (NODE_CULL_WORDS + ARGS_WORDS) as u64)
                 * 4
                 + self.scratch.map_or(0, |(_, bytes)| bytes),
+            cpu_copies: self.tables.mirror_bytes(),
         }
     }
 }

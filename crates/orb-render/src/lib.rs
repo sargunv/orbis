@@ -780,6 +780,7 @@ impl Renderer {
         let copies = self.driver.compacted_copies();
         memory.compacted.allocated *= copies;
         memory.compacted.ceiling *= copies;
+        memory.cpu_copies += self.driver.heap_bytes();
         memory
     }
 

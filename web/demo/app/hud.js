@@ -16,6 +16,7 @@ function memoryRows(m) {
     ["vertices", pool(m.verticesUsed, m.verticesAllocated, m.verticesCeiling)],
     ["indices", pool(m.indicesUsed, m.indicesAllocated, m.indicesCeiling)],
     ["compacted", `${mib(m.compactedUsed)} / ${mib(m.compactedAllocated)}`],
+    ...(m.cpuCopies ? [["CPU copies", mib(m.cpuCopies)]] : []),
     ["textures", mib(m.textures)],
     [
       "cache",

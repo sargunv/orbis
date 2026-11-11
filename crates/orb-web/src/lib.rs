@@ -283,6 +283,10 @@ pub struct FrameMemory {
     pub compacted_used: f64,
     #[wasm_bindgen(readonly, js_name = compactedAllocated)]
     pub compacted_allocated: f64,
+    /// Not GPU memory: what WebGL 2's CPU driver keeps in wasm memory of
+    /// the tables its cull reads and the index writes waiting for a copy.
+    #[wasm_bindgen(readonly, js_name = cpuCopies)]
+    pub cpu_copies: f64,
     /// Tile pages, glyph pages and the icon and pattern atlas.
     #[wasm_bindgen(readonly)]
     pub textures: f64,
@@ -308,6 +312,7 @@ impl From<&orb_runtime::Memory> for FrameMemory {
             indices_ceiling: s.indices.ceiling as f64,
             compacted_used: s.compacted.used as f64,
             compacted_allocated: s.compacted.allocated as f64,
+            cpu_copies: s.cpu_copies as f64,
             textures: (m.tile_textures + m.glyph_textures + m.image_atlas) as f64,
             cached_tiles: m.cached_tiles,
             cached: m.cached as f64,

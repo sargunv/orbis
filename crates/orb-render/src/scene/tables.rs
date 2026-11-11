@@ -687,6 +687,17 @@ impl Tables {
         self.mirrors.revision
     }
 
+    /// Bytes of the heap the copies of tables take.
+    pub(crate) fn mirror_bytes(&self) -> u64 {
+        #[cfg(cpu_driven)]
+        let bytes = (self.mirrors.tables.iter().flatten())
+            .map(|m| m.capacity() as u64 * 4)
+            .sum();
+        #[cfg(not(cpu_driven))]
+        let bytes = 0;
+        bytes
+    }
+
     /// The storage buffer of `table`, on the storage backing.
     pub(crate) fn buffer(&self, table: Table) -> BufferId {
         match self.places[table.index()] {

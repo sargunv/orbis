@@ -171,6 +171,15 @@ impl Driver {
         }
     }
 
+    /// Bytes it holds of the heap.
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        match self {
+            Self::Gpu(_) => 0,
+            #[cfg(cpu_driven)]
+            Self::Cpu(d) => d.heap_bytes(),
+        }
+    }
+
     /// Whether frames can draw: its pipelines compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
         match self {

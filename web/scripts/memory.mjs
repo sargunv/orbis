@@ -5,7 +5,7 @@
 // tilt, a camera a display frame, until idle).
 //
 //   pnpm memory [--cache=<cache-style.db> | --style=<url>] [--engines=orbis,gljs,native]
-//     [--views=a,b] [--runs=1]
+//     [--views=a,b] [--runs=1] [--backend=webgl2]
 //
 // By default it loads MapLibre Native's five real-world render tests at
 // 512×512, served offline from the render-test cache in the mln-rs
@@ -27,7 +27,9 @@
 //   held at launch, once it holds still (it falls by tens of MB in the
 //   second or two after the map settles): an estimate of the engine's GPU
 //   memory, its WebGPU or WebGL device's own included.
-// Orbis also reports what it allocated itself (buffers and textures).
+// Orbis also reports what it allocated itself (buffers and textures) and,
+// on WebGL 2 (`--backend=webgl2`, `createMap`'s `backend`), what its CPU
+// driver keeps in wasm memory.
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -55,6 +57,7 @@ const engines = option("engines", "orbis,gljs,native").split(",");
 const VIEWS = CAMERAS[cache ? "realWorld" : "liberty"];
 const views = option("views", Object.keys(VIEWS).join(",")).split(",");
 const runs = Number(option("runs", "1"));
+const backend = option("backend");
 const viewport = cache
   ? { width: 512, height: 512 }
   : { width: 1024, height: 768 };
@@ -176,7 +179,7 @@ async function sample(server, engine, view) {
       ? `${server.url}real-world/styles/${view}.json`
       : style;
     await page.goto(
-      `${server.url}load.html?${new URLSearchParams({ engine, style: styleUrl, at: VIEWS[view] })}`,
+      `${server.url}load.html?${new URLSearchParams({ engine, style: styleUrl, at: VIEWS[view], ...(backend && engine === "orbis" && { backend }) })}`,
     );
     await page.waitForFunction(
       () => /^(done|error)/.test(document.title),
@@ -225,6 +228,7 @@ async function sample(server, engine, view) {
         gpu: now.gpu.total - launched.gpu.total,
         graphics: now.gpu.graphics - launched.gpu.graphics,
         own: await page.evaluate(() => window.gpuBytes?.()),
+        cpu: await page.evaluate(() => window.cpuCopies?.()),
       };
     };
     console.error(`memory: ${engine} ${view}: loaded`);
@@ -296,9 +300,10 @@ const KEYS = [
   ["graphics", "GPU graphics Δ"],
   ["gpu", "GPU process Δ"],
   ["own", "Orbis's own GPU"],
+  ["cpu", "Orbis's CPU copies"],
 ];
 const lines = [
-  `### Browser memory, MB (Chromium, ${viewport.width}×${viewport.height} @1×; ${runs > 1 ? `medians of ${runs} runs` : "1 run"})`,
+  `### Browser memory, MB (Chromium, ${viewport.width}×${viewport.height} @1×${backend === "webgl2" ? ", Orbis on WebGL 2" : ""}; ${runs > 1 ? `medians of ${runs} runs` : "1 run"})`,
   "",
   `| engine | phase | view | ${KEYS.map(([, name]) => name).join(" | ")} |`,
   `|---|---|---|${KEYS.map(() => "---|").join("")}`,

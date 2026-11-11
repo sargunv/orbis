@@ -43,8 +43,10 @@ const engines = {
       worker,
       ...(backend && { backend }),
     });
-    // GPU bytes the map allocated, by its own count (memory.mjs).
+    // GPU bytes the map allocated, by its own count, and what WebGL 2's
+    // CPU driver keeps in wasm memory (memory.mjs).
     window.gpuBytes = () => map.stats?.memory.allocated;
+    window.cpuCopies = () => map.stats?.memory.cpuCopies;
     // The shaders `?nonce=` made cold, and the backend (load.mjs).
     window.loadDetails = () => ({ busted: busted(), backend: map.backend });
     return {

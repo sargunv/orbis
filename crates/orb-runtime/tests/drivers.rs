@@ -213,14 +213,32 @@ fn the_cpu_driver_writes_the_gpu_cull_s_words_along_gestures() {
     checked.settle_and_keep_all("z15");
     checked.glide("to z15 pitch 60", |c, t| c.pitch = 60.0 * t, 6);
     checked.settle_and_keep_all("z15 pitch 60");
-    // A pan frame by frame, east by a screen.
+    // A pan frame by frame, east by a screen, part of it with layers
+    // hidden, whose slots move while their nodes aren't culled.
+    let visibility = |value: &str| {
+        let layers = ["water", "park", "building", "road_minor"];
+        let commands = (layers.iter())
+            .map(|l| format!(r#"["setLayoutProperty", "{l}", "visibility", "{value}"]"#))
+            .collect::<Vec<_>>();
+        orb_runtime::Transaction::from_commands(&format!("[{}]", commands.join(","))).unwrap()
+    };
+    let target = checked.map.camera().target;
+    checked.map.edit(&visibility("none")).unwrap();
+    checked.glide(
+        "panning, layers hidden",
+        |c, t| {
+            c.target = Geodetic::new(target.lon + 0.015 * t, target.lat);
+        },
+        6,
+    );
+    checked.map.edit(&visibility("visible")).unwrap();
     let target = checked.map.camera().target;
     checked.glide(
         "panning",
         |c, t| {
-            c.target = Geodetic::new(target.lon + 0.03 * t, target.lat);
+            c.target = Geodetic::new(target.lon + 0.015 * t, target.lat);
         },
-        12,
+        6,
     );
     checked.glide(
         "to z17 flat, turning",
