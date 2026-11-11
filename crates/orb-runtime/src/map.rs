@@ -305,6 +305,44 @@ impl NodeState {
     }
 }
 
+/// When tiles whose labels drew glyphs of a range that failed lay out
+/// again, fetching the range again: on the tiles' backoff
+/// ([`orb_source::retry_delay`]) while it keeps failing, retried while
+/// frames are drawn, and at once when the host asks
+/// ([`Map::retry_failed_tiles`]).
+#[derive(Debug, Default)]
+pub(crate) struct GlyphRetry {
+    /// When the next retry is due (ms): set as a tile arrives that drew a
+    /// failed range.
+    due: Option<f64>,
+    /// Retries since a range last loaded.
+    failures: u32,
+}
+
+impl GlyphRetry {
+    /// A tile arrived whose labels drew a failed range (`failed`) or none
+    /// at `now`, having drawn one before or not (`had_failed`).
+    pub(crate) fn arrived(&mut self, failed: bool, had_failed: bool, now: f64) {
+        if failed {
+            let failures = self.failures;
+            self.due
+                .get_or_insert_with(|| now + orb_source::retry_delay(failures));
+        } else if had_failed {
+            self.failures = 0;
+        }
+    }
+
+    /// Whether a retry is due at `now`, which it then starts.
+    fn take(&mut self, now: f64) -> bool {
+        if self.due.is_none_or(|due| due > now) {
+            return false;
+        }
+        self.due = None;
+        self.failures = self.failures.saturating_add(1);
+        true
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedStyle {
     /// Identifies the style to the jobs.
@@ -325,6 +363,7 @@ pub(crate) struct LoadedStyle {
     /// Whether the glyphs labels start with were asked for
     /// ([`TileWorker::first_glyphs`]).
     pub(crate) glyphs_fetched: bool,
+    pub(crate) glyph_retry: GlyphRetry,
     /// Sprite metadata loaded so far, and the images the host added; the
     /// jobs get it once every sprite has resolved, before tiles with symbol
     /// layers are requested.
@@ -962,6 +1001,11 @@ impl Map {
         if let Some(terrain) = &mut style.terrain {
             terrain.pyramid.retry_failed(f64::INFINITY);
         }
+        style.glyph_retry = GlyphRetry {
+            due: Some(f64::NEG_INFINITY),
+            failures: 0,
+        };
+        self.retry_glyphs(f64::INFINITY);
         (self.services.wake)();
     }
 
@@ -970,6 +1014,41 @@ impl Map {
     /// Native's `tileCacheEnabled` off.
     pub fn set_tile_cache(&mut self, enabled: bool) {
         self.tile_cache = enabled;
+    }
+
+    /// Lays out again, if a glyph retry is due at `now`, the labels of the
+    /// tiles that drew glyphs of a range that failed, the jobs letting the
+    /// ranges be fetched again first. Each tile draws as it did until its
+    /// relayout lands.
+    fn retry_glyphs(&mut self, now: f64) {
+        let Some(style) = &mut self.style else {
+            return;
+        };
+        if !style.glyph_retry.take(now) {
+            return;
+        }
+        let plan = style.worker.plan();
+        let mut relayout = Vec::new();
+        for (index, source) in style.sources.iter().enumerate() {
+            let SourceState::Ready { pyramid, .. } = source else {
+                continue;
+            };
+            let symbols = plan.nodes.iter().filter(|n| n.source == index);
+            let nodes: Vec<u32> = (symbols.filter(|n| n.family.is_symbol()))
+                .map(|n| n.key)
+                .collect();
+            for (tile, _) in pyramid.ready().filter(|(_, r)| r.glyphs_failed) {
+                relayout.push((index, tile, nodes.clone()));
+            }
+        }
+        if relayout.is_empty() {
+            return;
+        }
+        self.services.jobs.retry_glyphs();
+        let version = self.version;
+        for (index, tile, nodes) in relayout {
+            self.send_job(index, tile, Some(nodes), false, Some(version));
+        }
     }
 
     /// Lets go of the tiles kept out of view at the next frame, as a
@@ -1328,6 +1407,7 @@ impl Map {
             image_namespace: None,
             sprites: SpriteState::default(),
             glyphs_fetched: false,
+            glyph_retry: GlyphRetry::default(),
             icons: crate::SpriteIcons::default(),
             image_edits: Vec::new(),
             added_images: Default::default(),
@@ -1783,13 +1863,15 @@ impl Map {
         let planning = clock.now();
         times.terrain = micros(at, planning);
         let elevation = self.terrain_elevation();
-        // Failed tiles due for a retry go, so the plan asks for them.
+        // Failed tiles due for a retry go, so the plan asks for them; so do
+        // failed glyph ranges, laying out the labels that drew them again.
         let now = self.services.clock.now();
         for source in self.style.iter_mut().flat_map(|s| &mut s.sources) {
             if let SourceState::Ready { pyramid, .. } = source {
                 pyramid.retry_failed(now);
             }
         }
+        self.retry_glyphs(now);
         let plan = self.plan_frame(renderer, view, elevation.as_deref());
         for (index, update) in plan.into_iter().enumerate() {
             self.apply_source(renderer, index, update, report);
@@ -3044,6 +3126,24 @@ mod tests {
 
     fn style(name: &str) -> String {
         format!(r#"{{"version": 8, "name": "{name}", "sources": {{}}, "layers": []}}"#)
+    }
+
+    /// Glyph retries wait out the tiles' backoff while a range keeps
+    /// failing, and start over once it loads.
+    #[test]
+    fn glyph_retries_back_off_while_a_range_fails() {
+        let mut retry = GlyphRetry::default();
+        assert!(!retry.take(f64::INFINITY), "nothing failed");
+        retry.arrived(true, false, 0.0);
+        assert!(!retry.take(999.0) && retry.take(1000.0));
+        // Failing again, twice as long; a second tile doesn't put it off.
+        retry.arrived(true, true, 5000.0);
+        retry.arrived(true, false, 5500.0);
+        assert!(!retry.take(6999.0) && retry.take(7000.0));
+        // Loaded: the next failure waits a second again.
+        retry.arrived(false, true, 8000.0);
+        retry.arrived(true, false, 9000.0);
+        assert!(retry.take(10_000.0));
     }
 
     #[test]

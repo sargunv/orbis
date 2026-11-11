@@ -438,6 +438,12 @@ impl Jobs for WorkerJobs {
         }
     }
 
+    fn retry_glyphs(&self) {
+        // Ahead of the relayouts that need the ranges: each worker takes
+        // its messages in order.
+        self.broadcast(&JobRequest::RetryGlyphs);
+    }
+
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
         // A unit's owner worker rasterizes it.
         let owner = request.owner(self.workers);

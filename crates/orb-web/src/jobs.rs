@@ -225,6 +225,10 @@ impl JobWorker {
                 self.host.glyph_range(style, url, bytes);
                 return Ok(None);
             }
+            JobRequest::RetryGlyphs => {
+                self.host.retry_glyphs();
+                return Ok(None);
+            }
             JobRequest::Cluster { id, request } => {
                 self.host.cluster(
                     request,

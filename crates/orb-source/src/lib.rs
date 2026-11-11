@@ -65,6 +65,12 @@ enum State<T> {
 const RETRY_MS: f64 = 1000.0;
 const RETRY_MAX_MS: f64 = 60_000.0;
 
+/// How long to wait (ms) before retrying what failed `failures` times in
+/// a row before: [`RETRY_MS`], doubling with each, up to [`RETRY_MAX_MS`].
+pub fn retry_delay(failures: u32) -> f64 {
+    (RETRY_MS * 2f64.powi(failures.min(16) as i32)).min(RETRY_MAX_MS)
+}
+
 /// What stands in for a missing tile.
 enum StandIn {
     Ready(TileIndex),
@@ -366,7 +372,7 @@ impl<T> TilePyramid<T> {
             && matches!(entry.state, State::Loading)
         {
             let failures = self.failures.entry(tile).or_default();
-            let delay = (RETRY_MS * 2f64.powi(*failures as i32)).min(RETRY_MAX_MS);
+            let delay = retry_delay(*failures);
             *failures = failures.saturating_add(1);
             entry.state = State::Failed {
                 retry_at: now + delay,

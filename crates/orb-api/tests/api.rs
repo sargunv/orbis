@@ -2630,3 +2630,47 @@ fn fill_corners_round_off_with_their_outline() {
         .count();
     assert!(red >= 4, "{red} outline pixels about the arc");
 }
+
+/// A glyph range that failed is fetched again when failed resources are
+/// retried, as a still does first, and its labels lay out with it: the
+/// map then draws as one that had the range from the start.
+#[test]
+fn failed_glyph_ranges_are_fetched_again() {
+    let glyphs = common::Scratch::new("glyph-retry");
+    let font = glyphs.join("Noto Sans Regular");
+    std::fs::create_dir_all(&font).unwrap();
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 2,
+        "glyphs": "file://{}/{{fontstack}}/{{range}}.pbf",
+        "sources": {{"p": {{"type": "geojson", "data": {{"type": "Feature", "properties": {{}},
+            "geometry": {{"type": "Point", "coordinates": [0, 0]}}}}}}}},
+        "layers": [
+          {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+          {{"id": "t", "type": "symbol", "source": "p",
+           "layout": {{"text-field": "Orbis", "text-font": ["Noto Sans Regular"], "text-size": 30}}}}]}}"##,
+        glyphs.display()
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let still = |map: &mut Map| map.snapshot(200, 100, 1.0).expect("snapshot").pixels;
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    // The range's file isn't there yet: a missing range, as a failed fetch.
+    let without = still(&mut map);
+    std::fs::copy(
+        common::data().join("glyphs/Noto Sans Regular/0-255.pbf"),
+        font.join("0-255.pbf"),
+    )
+    .unwrap();
+    let retried = still(&mut map);
+    let mut fresh = Map::new(&runtime, MapOptions::default());
+    fresh.set_style_json(&style).unwrap();
+    let expected = still(&mut fresh);
+    assert!(
+        without != expected,
+        "without its range the label draws otherwise"
+    );
+    assert!(
+        retried == expected,
+        "the retried range draws as a fresh map's"
+    );
+}

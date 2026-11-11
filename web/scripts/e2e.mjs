@@ -1697,6 +1697,30 @@ async function failing(browser, server) {
     if (entry !== "globe") await page.close();
   }
 
+  // Glyph ranges that failed are fetched again by the next snapshot, whose
+  // labels then draw as with ranges that never failed (#186). Each style
+  // names its ranges apart, so none comes from another's.
+  const tokyo = await tokyoStyle(server);
+  const named = (n) => ({ ...tokyo, glyphs: `${tokyo.glyphs}?n=${n}` });
+  const ranges = /\/glyphs\/.+\.pbf\?n=/;
+  const refuse = (route) => route.abort("internetdisconnected");
+  const still = (style) =>
+    page.evaluate(async (style) => {
+      if (style) app.map.setStyle(style);
+      const { data } = await app.map.snapshot(400, 300, 1);
+      let hash = 0;
+      for (const byte of data) hash = (Math.imul(hash, 31) + byte) | 0;
+      return hash;
+    }, style);
+  const loaded = await still(named(1));
+  await page.route(ranges, refuse);
+  const without = await still(named(2));
+  await page.unroute(ranges, refuse);
+  const retried = await still(null);
+  assert.notEqual(without, loaded, "labels draw otherwise without ranges");
+  assert.equal(retried, loaded, "retried ranges draw as ranges that loaded");
+  console.log("failing: glyph ranges that failed load at the next snapshot");
+
   // A snapshot of a style that failed to load fails at once, saying why,
   // rather than waiting out its minute.
   const refused = await page.evaluate(async () => {

@@ -621,6 +621,8 @@ impl Map {
         });
         resident.series = series;
         resident.neighbour = build.neighbour;
+        resident.glyphs_failed = build.glyphs_failed;
+        (style.glyph_retry).arrived(build.glyphs_failed, false, self.services.clock.now());
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
         resident.cost = tile_cost(renderer, &resident);

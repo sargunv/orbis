@@ -47,6 +47,8 @@ pub enum JobRequest {
         url: String,
         bytes: Result<Vec<u8>, String>,
     },
+    /// [`Jobs::retry_glyphs`].
+    RetryGlyphs,
     Load {
         id: u32,
         request: TileRequest,
@@ -165,6 +167,9 @@ pub trait Jobs: Send + Sync {
     /// Starts fetching glyph ranges style `id`'s tiles are about to need,
     /// so that their layout finds them in.
     fn prefetch_glyphs(&self, _id: u64, _urls: Vec<String>) {}
+    /// Lets the glyph ranges that failed be fetched again by the tiles
+    /// that need them, in every job host.
+    fn retry_glyphs(&self) {}
     /// PMTiles archive `url` begins with `head`, which the map read for its
     /// header: loads of its tiles start from these bytes rather than read
     /// them again.
@@ -234,6 +239,10 @@ impl Jobs for PoolJobs {
 
     fn prefetch_glyphs(&self, id: u64, urls: Vec<String>) {
         self.host.prefetch_glyphs(id, urls);
+    }
+
+    fn retry_glyphs(&self) {
+        self.host.retry_glyphs();
     }
 
     fn add_archive_head(&self, url: &str, head: &Arc<Vec<u8>>) {
@@ -366,6 +375,8 @@ pub struct TileResult {
     pub warnings: Vec<String>,
     /// Images the tile's symbol layers name that the style doesn't have.
     pub missing_images: Vec<String>,
+    /// Some label drew a glyph from a range that failed.
+    pub glyphs_failed: bool,
     /// The style revision the tile was laid out with.
     pub revision: u64,
     /// Keys of the nodes laid out; those without a mesh have no features.
@@ -551,6 +562,7 @@ impl From<TileBuild> for TileResult {
             host_bytes: None,
             warnings: build.warnings,
             missing_images: build.missing_images,
+            glyphs_failed: build.glyphs_failed,
             image: None,
             warp_grid: None,
             dem: None,

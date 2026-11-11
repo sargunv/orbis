@@ -82,7 +82,8 @@ pub(crate) struct GlyphCatalog {
 enum RangeState {
     Ready(Arc<GlyphRange>),
     /// The range failed to load or parse: its glyphs fall back to local
-    /// fonts, as in GL JS.
+    /// fonts, as in GL JS, until [`GlyphCatalog::retry_failed`] lets it be
+    /// fetched again.
     Failed,
 }
 
@@ -92,6 +93,9 @@ pub(crate) struct Resolved {
     pub(crate) glyphs: GlyphMap,
     /// Glyphs that need a local font, which the host doesn't provide.
     pub(crate) local: usize,
+    /// Some glyph's range failed: it draws locally, or not at all, until
+    /// a retry fetches the range.
+    pub(crate) failed: bool,
 }
 
 impl GlyphCatalog {
@@ -184,6 +188,14 @@ impl GlyphCatalog {
                 .expect("glyph warnings poisoned")
                 .push(warning);
         }
+    }
+
+    /// Forgets the ranges that failed: tiles that need one fetch it again
+    /// ([`missing`](Self::missing)) rather than keep drawing its glyphs
+    /// locally.
+    pub(crate) fn retry_failed(&self) {
+        (self.ranges.lock().expect("glyph catalog poisoned"))
+            .retain(|_, state| !matches!(state, RangeState::Failed));
     }
 
     /// Reports a text-stage warning with the glyph warnings.
@@ -322,7 +334,10 @@ impl GlyphCatalog {
                             range.get(code_point).map(|g| g.glyph(&request.stack))
                         }
                         // A failed range draws locally, as in GL JS.
-                        Some(RangeState::Failed) | None => draw_locally(&request, &mut resolved),
+                        Some(RangeState::Failed) | None => {
+                            resolved.failed = true;
+                            draw_locally(&request, &mut resolved)
+                        }
                     }
                 }
                 Provider::Local => draw_locally(&request, &mut resolved),
@@ -535,6 +550,18 @@ mod tests {
             resolved.local, 1,
             "a failed range falls back to local fonts"
         );
+        assert!(resolved.failed);
+        // A retry lets the failed range be fetched again, and only it.
+        catalog.retry_failed();
+        let r = requests("Ab東");
+        assert_eq!(
+            catalog.missing(&r, Some(TEMPLATE), policy, &Vec::new()),
+            [missing[1].clone()]
+        );
+        assert!(!catalog.has(&missing[1]) && catalog.has(&missing[0]));
+        catalog.insert(&missing[1], Ok(&range_bytes()));
+        let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, &Vec::new());
+        assert!(!resolved.failed && resolved.local == 0);
     }
 
     #[test]

@@ -437,6 +437,14 @@ impl JobHost {
         }
     }
 
+    /// Lets the glyph ranges that failed be fetched again by the tiles that
+    /// need them ([`Jobs::retry_glyphs`](crate::Jobs::retry_glyphs)).
+    pub fn retry_glyphs(&self) {
+        for (_, worker) in self.styles.lock().expect("styles poisoned").iter() {
+            worker.data.glyphs.retry_failed();
+        }
+    }
+
     /// Glyph ranges style `id`'s tiles are about to need that another
     /// context fetches and hands in with [`glyph_range`](Self::glyph_range):
     /// tiles that need them meanwhile wait for them rather than fetch them.

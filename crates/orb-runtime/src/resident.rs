@@ -39,6 +39,9 @@ pub(crate) struct ResidentTile {
     /// Laid out as a neighbour of the tile Tile mode draws: only what
     /// reaches into the tiles beside it. Drawn, it loads again whole.
     pub(crate) neighbour: bool,
+    /// Its labels drew glyphs of a range that failed: a glyph retry lays
+    /// them out again ([`TileResult::glyphs_failed`]).
+    pub(crate) glyphs_failed: bool,
 }
 
 impl ResidentTile {
@@ -52,6 +55,7 @@ impl ResidentTile {
             symbols: Vec::new(),
             cost: 0,
             neighbour: false,
+            glyphs_failed: false,
         }
     }
 }

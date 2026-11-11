@@ -39,6 +39,9 @@ pub struct TileBuild {
     pub(crate) symbols: Vec<(u32, SymbolBuild)>,
     /// Images the symbol layers name that the style doesn't have.
     pub(crate) missing_images: Vec<String>,
+    /// Some label drew a glyph from a range that failed (locally, or not
+    /// at all): a glyph retry lays its symbol layers out again.
+    pub(crate) glyphs_failed: bool,
 }
 
 /// What symbol layout reads beyond the tile: the worker's glyph metrics
@@ -562,7 +565,7 @@ fn build_symbols<'f>(
     select: Select<'_>,
     symbols: Symbols<'_>,
     groups: &mut Groups<'f>,
-    warnings: &mut Vec<String>,
+    (warnings, glyphs_failed): (&mut Vec<String>, &mut bool),
 ) -> Result<Vec<(u32, SymbolBuild)>, Vec<String>> {
     let template = plan.style.glyphs.as_deref();
     let policy = orb_text::FontPolicy {
@@ -641,6 +644,7 @@ fn build_symbols<'f>(
             symbols.ideographs,
             &plan.style.font_faces,
         );
+        *glyphs_failed |= resolved.failed;
         if resolved.local > 0 && symbols.glyphs.warn_local() {
             warnings.push(
                 "glyphs that need local fonts (clusters, complex scripts, ideographs or a missing range) are not drawn: this host has no local fonts".into(),
@@ -696,7 +700,7 @@ pub(crate) fn build(
         select,
         symbols,
         &mut groups,
-        &mut build.warnings,
+        (&mut build.warnings, &mut build.glyphs_failed),
     )?;
     for (_, symbols) in &mut build.symbols {
         for name in symbols.missing_images.drain(..) {

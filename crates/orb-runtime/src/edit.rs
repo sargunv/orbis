@@ -477,6 +477,19 @@ impl Map {
                 self.counts.rows_uploaded += 1;
             }
         } else {
+            // Whether its labels drew a failed glyph range: as the build
+            // has it where it laid out every symbol layer, else either.
+            let symbols = (plan.nodes.iter()).filter(|n| n.source == index && n.family.is_symbol());
+            let mut laid_out = symbols.map(|n| build.nodes.contains(&n.key)).peekable();
+            if laid_out.peek().is_some() {
+                let had_failed = resident.glyphs_failed;
+                resident.glyphs_failed = match laid_out.all(|laid| laid) {
+                    true => build.glyphs_failed,
+                    false => had_failed || build.glyphs_failed,
+                };
+                let now = self.services.clock.now();
+                (style.glyph_retry).arrived(resident.glyphs_failed, had_failed, now);
+            }
             for &key in &build.nodes {
                 let Some(state) = style.nodes.get(&key) else {
                     continue;
