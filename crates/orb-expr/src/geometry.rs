@@ -380,9 +380,7 @@ pub(crate) fn distance(feature: &FeatureGeometry, geometries: &[Geometry]) -> f6
     let mut input = Vec::new();
     match feature.kind {
         GeometryType::Point => input.extend(parts.into_iter().flatten().map(Geometry::Point)),
-        GeometryType::LineString => {
-            input.push(Geometry::Line(parts.into_iter().flatten().collect()))
-        }
+        GeometryType::LineString => input.extend(parts.into_iter().map(Geometry::Line)),
         GeometryType::Polygon => {
             let mut outer_sign = None;
             let mut polygon = Vec::new();
@@ -415,4 +413,25 @@ pub(crate) fn distance(feature: &FeatureGeometry, geometries: &[Geometry]) -> f6
         }
     }
     distance
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GL JS and Native measure each line of a multi-line feature: joining
+    /// them would add a segment from the first's end to the second's
+    /// start, here through the point.
+    #[test]
+    fn distance_measures_each_line_of_a_multi_line() {
+        let tile = CanonicalTile {
+            z: 8,
+            x: 128,
+            y: 127,
+        };
+        let lines = r#"{"type":"MultiLineString","coordinates":[[[0,0],[10,0]],[[0,2],[10,2]]]}"#;
+        let feature = fixture_geometry(&crate::json::parse(lines).unwrap(), tile).unwrap();
+        let metres = distance(&feature, &[Geometry::Point([5.0, 1.0])]);
+        assert!((metres - 110_600.0).abs() < 500.0, "{metres}");
+    }
 }
