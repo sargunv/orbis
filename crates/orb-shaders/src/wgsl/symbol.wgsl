@@ -402,6 +402,14 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let quad_index = vertex_at(base + vertex_at(base + H_ORDER) + chunk.first_index + local);
     let qa = base + vertex_at(base + H_QUADS) + quad_index * QUAD_WORDS;
     let placed_index = vertex_at(qa + 10u);
+    // The placement's state first: most quads of a dense view are hidden,
+    // and leave after the fewest reads. The block of the placement's world
+    // copy; the placed table runs up to the glyph offsets.
+    let placed_count = (vertex_at(base + H_GLYPH_OFFSETS) - vertex_at(base + H_PLACED)) / PLACED_WORDS;
+    let copy = bitcast<u32>(tile.wrap) & (vertex_at(base + H_COPIES) - 1u);
+    let state_at = vertex_at(base + H_STATES) + (copy * placed_count + placed_index) * STATE_WORDS;
+    let state = prop_at(state_at);
+    if (state & S_HIDDEN) != 0u { return out; }
     let placed = read_placed(base, placed_index);
     let flags = vertex_at(qa + 11u) >> 16u;
     let image = (flags & Q_IMAGE) != 0u;
@@ -410,21 +418,13 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     // block; row 0, unused, for an image). Read after the full variants'
     // projections, these returned another glyph's row on an Adreno 619
     // (native Vulkan, naga's SPIR-V; Tint's of the same source didn't),
-    // and labels sampled empty texels (#173).
+    // and labels sampled empty texels (#173, #178).
     let atlas = vertex_at(base + vertex_at(base + select(H_GLYPHS, H_IMAGES, image)) + vertex_at(qa + 9u));
     let glyph_row = select(atlas, 0u, image) * 4u;
     let glyph_origin = prop_at(glyph_row);
     let glyph_ready = prop_at(glyph_row + 1u);
     let glyph_layer = prop_at(glyph_row + 2u);
     if !point_owned(tile, placed.anchor) { return out; }
-
-    // The block of the placement's world copy; the placed table runs up to
-    // the glyph offsets.
-    let placed_count = (vertex_at(base + H_GLYPH_OFFSETS) - vertex_at(base + H_PLACED)) / PLACED_WORDS;
-    let copy = bitcast<u32>(tile.wrap) & (vertex_at(base + H_COPIES) - 1u);
-    let state_at = vertex_at(base + H_STATES) + (copy * placed_count + placed_index) * STATE_WORDS;
-    let state = prop_at(state_at);
-    if (state & S_HIDDEN) != 0u { return out; }
     let fade_from = f32(state & S_OPACITY) / 127.0;
     let fade_change = select(-frame.symbol_fade_change, frame.symbol_fade_change, (state & S_PLACED) != 0u);
     let fade = clamp(fade_from + fade_change, 0.0, 1.0);
