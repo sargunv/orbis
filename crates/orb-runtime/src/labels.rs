@@ -2042,7 +2042,7 @@ mod tests {
         assert!(!h.labels.lane.restarted());
     }
 
-    /// S1: a relayout drops the bucket a placement was asked for; its
+    /// A relayout drops the bucket a placement was asked for; its
     /// commit must not write to the freed meshes.
     #[test]
     fn commits_skip_buckets_replaced_while_placing() {
@@ -2058,7 +2058,7 @@ mod tests {
         assert!(!h.labels.buckets.contains_key(&old));
     }
 
-    /// S4: a commit applies against the frame it was asked for, even if
+    /// A commit applies against the frame it was asked for, even if
     /// the needs-placement marker was cleared meanwhile.
     #[test]
     fn commits_keep_world_copies_apart_after_invalidation() {
@@ -2153,7 +2153,7 @@ mod tests {
         assert!(h.labels.released(bucket, 2300.0));
     }
 
-    /// S6: a failed upload hands its glyph leases back.
+    /// A failed upload hands its glyph leases back.
     #[test]
     fn failed_uploads_release_their_glyph_rows() {
         let mut h = Harness::new(SceneCapacity {
@@ -2181,7 +2181,7 @@ mod tests {
         }
     }
 
-    /// S2: a bitmap asked for one lease of a row never lands in a later
+    /// A bitmap asked for one lease of a row never lands in a later
     /// lease of the same row.
     #[test]
     fn raster_replies_land_only_in_their_lease() {
@@ -2204,7 +2204,7 @@ mod tests {
         rows.apply(&mut h.gpu, atlas, &second, &[bitmap(65)]);
     }
 
-    /// S3: one stack name under two glyphs templates is two fonts.
+    /// One stack name under two glyphs templates is two fonts.
     #[test]
     fn glyph_leases_are_per_glyphs_template() {
         let mut h = Harness::new(SceneCapacity::default());

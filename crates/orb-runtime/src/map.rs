@@ -2822,7 +2822,7 @@ impl Map {
 mod tests {
     use super::*;
 
-    /// S5: a result laid out before an edit to a symbol layer brings
+    /// A result laid out before an edit to a symbol layer brings
     /// neither its meshes nor its bucket.
     #[test]
     fn stale_results_drop_symbol_buckets_with_their_meshes() {
