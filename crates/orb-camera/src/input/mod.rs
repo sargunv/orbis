@@ -1101,6 +1101,12 @@ impl Interaction {
         if !self.options.zoom.enabled {
             return false;
         }
+        // A platform pinch already zooms: a trackpad pinch some browsers
+        // also send as Ctrl-wheel events (Safari's `gesture*` events
+        // beside them, if it does) would zoom twice.
+        if modifiers.ctrl && matches!(self.mode, Mode::Platform) {
+            return true;
+        }
         let mut value = match unit {
             WheelUnit::Pixel => delta.y,
             WheelUnit::Line => delta.y * 40.0,

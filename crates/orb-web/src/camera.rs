@@ -7,8 +7,8 @@
 
 use glam::DVec2;
 use orb_camera::input::{
-    Button, Fling, GestureOptions, Input, Key, Modifiers, Movement, PointerKind, Thresholds,
-    WheelSource, WheelUnit,
+    Button, Fling, GestureOptions, GesturePhase, Input, Key, Modifiers, Movement, PointerKind,
+    Thresholds, WheelSource, WheelUnit,
 };
 use orb_camera::{
     AnchoredMomentum, Bounds, CameraTarget, Constraints, DecayModel, EaseOptions, Easing,
@@ -406,6 +406,34 @@ impl OrbisMap {
             modifiers: modifiers(modifiers_bits),
             // The DOM doesn't say.
             source: WheelSource::Unknown,
+        };
+        self.map.input(input, time)
+    }
+
+    /// A pinch the browser recognized (Safari's `gesture*` events) at
+    /// `x, y`: since the last, it scaled by `scale` and turned `rotation`
+    /// degrees clockwise; `phase` is 0 begin, 1 update, 2 end, 3 cancel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pinch(
+        &mut self,
+        x: f64,
+        y: f64,
+        scale: f64,
+        rotation: f64,
+        phase: u32,
+        time: f64,
+    ) -> bool {
+        let phase = match phase {
+            0 => GesturePhase::Begin,
+            1 => GesturePhase::Update,
+            2 => GesturePhase::End,
+            _ => GesturePhase::Cancel,
+        };
+        let input = Input::Pinch {
+            center: DVec2::new(x, y),
+            scale,
+            rotation,
+            phase,
         };
         self.map.input(input, time)
     }

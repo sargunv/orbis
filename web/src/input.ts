@@ -1,6 +1,6 @@
 // DOM input to the map's gestures (orb-camera's input): pointer events for
-// mouse, pen and touch, wheel, keys and focus, sent to the map wherever it
-// runs. Each carries the event's timestamp, which release velocities and
+// mouse, pen and touch, wheel, Safari's trackpad pinches, keys and focus,
+// sent to the map wherever it runs. Each carries the event's timestamp, which release velocities and
 // double taps measure, on the clock frames' timestamps use. A Shift-drag's
 // box shows over the canvas while it is drawn.
 
@@ -160,6 +160,36 @@ export function attachInput(
       e.timeStamp,
     );
   };
+  // Safari's trackpad pinch (`GestureEvent`, which only it has): `scale`
+  // and `rotation` (degrees clockwise) since the gesture began, handed on
+  // as the change since the last. Any Ctrl-wheel events beside it don't
+  // zoom again (orb-camera drops them during a pinch).
+  type Gesture = Event & {
+    scale: number;
+    rotation: number;
+    clientX: number;
+    clientY: number;
+  };
+  let pinch = { scale: 1, rotation: 0 };
+  const gesture = (phase: number) => (event: Event) => {
+    const e = event as Gesture;
+    if (!allowedNow.zoom && !allowedNow.rotate) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const [scale, rotation] = phase === 0 ? [1, 0] : [e.scale, e.rotation];
+    send(
+      "pinch",
+      [
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+        scale / pinch.scale,
+        rotation - pinch.rotation,
+        phase,
+      ],
+      e.timeStamp,
+    );
+    pinch = { scale, rotation };
+  };
   const key = (e: KeyboardEvent) => {
     const uses = usesKey(e, allowedNow);
     if (uses) e.preventDefault();
@@ -175,6 +205,9 @@ export function attachInput(
     ["pointercancel", cancel as EventListener],
     ["lostpointercapture", lost],
     ["wheel", wheel as EventListener, { passive: false }],
+    ["gesturestart", gesture(0)],
+    ["gesturechange", gesture(1)],
+    ["gestureend", gesture(2)],
     ["keydown", key as EventListener],
     ["blur", blur as EventListener],
     ["contextmenu", menu],

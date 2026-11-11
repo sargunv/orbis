@@ -532,6 +532,48 @@ async function scenarioOn(browser, server, thread, backend = "webgpu") {
   });
   assert.deepEqual(unzoomed, { prevented: false, moved: false });
 
+  // Safari's trackpad pinch (`gesture*` events, synthesized here) zooms
+  // and turns the map once, with the Ctrl-wheel events Safari may send
+  // beside it left unused, and keeps the page from zooming.
+  const pinched = await scenario(async (s) => {
+    const canvas = s.map.canvas;
+    const rect = canvas.getBoundingClientRect();
+    const at = {
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    };
+    const fire = (type, scale, rotation) => {
+      const e = new Event(type, { cancelable: true, bubbles: true });
+      canvas.dispatchEvent(Object.assign(e, at, { scale, rotation }));
+      return e.defaultPrevented;
+    };
+    const before = { ...s.map.camera.current };
+    const prevented = fire("gesturestart", 1, 0);
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", {
+        ...at,
+        deltaY: -50,
+        ctrlKey: true,
+        cancelable: true,
+        bubbles: true,
+      }),
+    );
+    fire("gesturechange", 2, 10);
+    await s.sync();
+    const after = s.map.camera.current;
+    fire("gestureend", 2, 10);
+    await s.idle();
+    s.map.camera.jumpTo({ zoom: before.zoom, bearing: before.bearing });
+    await s.idle();
+    const round = (v) => Math.round(v * 1000) / 1000;
+    return {
+      prevented,
+      zoom: round(after.zoom - before.zoom),
+      bearing: round(after.bearing - before.bearing),
+    };
+  });
+  assert.deepEqual(pinched, { prevented: true, zoom: 1, bearing: -10 });
+
   // Errors: an edit of a layer that isn't there fails, and the map keeps its style.
   const rejected = await scenario((s) =>
     s.map

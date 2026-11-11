@@ -97,6 +97,7 @@ export type InputKind =
   | "pointerUp"
   | "pointerCancel"
   | "wheel"
+  | "pinch"
   | "key"
   | "blur";
 

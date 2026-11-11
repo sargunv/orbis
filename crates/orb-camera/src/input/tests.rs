@@ -801,6 +801,39 @@ fn platform_pinches_zoom_turn_and_glide() {
     assert!((rig.camera.zoom() - 12.5).abs() < 1e-9);
 }
 
+/// A trackpad pinch the platform hands over as a pinch zooms once, even
+/// where it also arrives as Ctrl-wheel events, as Chrome and Firefox send
+/// a pinch; a Ctrl-wheel outside a pinch still zooms.
+#[test]
+fn a_platform_pinch_takes_no_ctrl_wheel_beside_it() {
+    let mut rig = Rig::new();
+    let ctrl_wheel = |rig: &mut Rig| {
+        rig.send(Input::Wheel {
+            position: DVec2::new(200.0, 200.0),
+            delta: DVec2::new(0.0, -10.0),
+            unit: WheelUnit::Pixel,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            source: WheelSource::Unknown,
+        });
+    };
+    rig.pinch(1.0, 0.0, GesturePhase::Begin);
+    for _ in 0..10 {
+        rig.now += 16.0;
+        ctrl_wheel(&mut rig);
+        rig.pinch(2f64.powf(0.05), 0.0, GesturePhase::Update);
+    }
+    assert!((rig.camera.zoom() - 12.5).abs() < 1e-9);
+    rig.pinch(1.0, 0.0, GesturePhase::Cancel);
+    rig.settle();
+    rig.now += 1000.0;
+    ctrl_wheel(&mut rig);
+    rig.settle();
+    assert!(rig.camera.zoom() > 12.5);
+}
+
 #[test]
 fn changing_the_options_cancels_a_platform_pinch_until_it_ends() {
     let mut rig = Rig::new();
