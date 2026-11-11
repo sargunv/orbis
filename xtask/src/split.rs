@@ -8,8 +8,11 @@
 //! ([`key`]), which a build on another machine or after an unrelated
 //! change still matches (`+` lines are functions a run saw run, which
 //! coverage keeps so that later runs only add to them). A function that
-//! isn't listed stays in core.wasm, so a stale list only defers less; the
-//! build reports how many listed functions it didn't find.
+//! isn't listed stays in core.wasm unless only deferred functions call it
+//! ([`only_called_deferred`]), so a function renamed or added since the
+//! list was written defers when its callers do, and a stale list otherwise
+//! only defers less; the build reports how many listed functions it didn't
+//! find.
 //!
 //! binaryen's `wasm-split` moves the listed functions out. core.wasm then
 //! imports a placeholder for each one it calls, from [`NAMESPACE`], and
@@ -22,7 +25,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
-use wasmparser::{CompositeInnerType, ElementKind, Parser, Payload, TypeRef, ValType};
+use wasmparser::{
+    CompositeInnerType, ElementItems, ElementKind, ExternalKind, Operator, Parser, Payload,
+    TypeRef, ValType,
+};
 
 /// The functions to defer (see the module docs).
 pub(crate) const LIST: &str = "web/deferred.txt";
@@ -38,6 +44,9 @@ const SECTION: &str = "orbis.deferred";
 pub(crate) struct Split {
     /// Functions deferred.
     pub(crate) deferred: usize,
+    /// Of those, the ones the list doesn't defer but only deferred
+    /// functions call ([`only_called_deferred`]).
+    pub(crate) inferred: usize,
     /// Hashes in the list.
     pub(crate) listed: usize,
     /// Hashes in the list that matched no function here.
@@ -88,20 +97,63 @@ pub(crate) fn key(name: &str) -> u64 {
         })
 }
 
-/// Reads [`LIST`]'s deferred functions: hashes in hex, one per line,
-/// besides `#` comments and the `+` lines of functions seen running.
-pub(crate) fn read_list(root: &Path) -> Result<HashSet<u64>, String> {
+/// [`LIST`]'s keys.
+#[derive(Default)]
+pub(crate) struct List {
+    /// Functions to defer.
+    pub(crate) deferred: HashSet<u64>,
+    /// Functions a run saw run (`+` lines), which stay in core.wasm.
+    pub(crate) seen: HashSet<u64>,
+}
+
+/// Reads [`LIST`]: hashes in hex, one per line, `+` before those seen
+/// running, besides `#` comments.
+pub(crate) fn read_list(root: &Path) -> Result<List, String> {
     let path = root.join(LIST);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(List::default()),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with(['#', '+']))
-        .map(|line| u64::from_str_radix(line, 16).map_err(|e| format!("{LIST}: {line}: {e}")))
-        .collect()
+    let mut list = List::default();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (set, hex) = match line.strip_prefix('+') {
+            Some(hex) => (&mut list.seen, hex),
+            None => (&mut list.deferred, line),
+        };
+        set.insert(u64::from_str_radix(hex, 16).map_err(|e| format!("{LIST}: {line}: {e}"))?);
+    }
+    Ok(list)
+}
+
+/// Adds to `moved` every function that only moved functions call, until
+/// there are no more. One renamed since the list was written (its old
+/// name stale in the list, its new one in neither half of it), or added
+/// since, can then only run once core-deferred.wasm has, so it goes there
+/// too. A function JS or a table can reach, one with a v128 in its
+/// signature, and one a run saw run (`seen`) stay.
+fn only_called_deferred(functions: &Functions, seen: &[bool], moved: &mut [bool]) {
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (i, function) in functions.defined.iter().enumerate() {
+            if moved[i]
+                || seen[i]
+                || function.v128
+                || function.reachable
+                || function.callers.is_empty()
+            {
+                continue;
+            }
+            if function.callers.iter().all(|&c| moved[c as usize]) {
+                moved[i] = true;
+                changed = true;
+            }
+        }
+    }
 }
 
 /// Splits `whole` (core.wasm, without names) into `primary` and
@@ -114,7 +166,7 @@ pub(crate) fn split(
     symbols: &Path,
     primary: &Path,
     secondary: &Path,
-    list: &HashSet<u64>,
+    list: &List,
     features: &[&str],
 ) -> Result<Split, String> {
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
@@ -129,31 +181,38 @@ pub(crate) fn split(
         })
         .collect();
     let mut matched = HashSet::new();
-    let mut split = String::new();
-    let mut deferred = 0;
-    for (i, function) in (0u32..).zip(&functions.defined) {
+    let mut moved = vec![false; functions.defined.len()];
+    let mut seen = vec![false; functions.defined.len()];
+    for ((i, function), (moved, seen)) in (0u32..)
+        .zip(&functions.defined)
+        .zip(moved.iter_mut().zip(&mut seen))
+    {
         let Some(name) = names.get(&(functions.imported + i)) else {
             continue;
         };
         let key = key(name);
-        if !list.contains(&key) {
-            continue;
+        *seen = list.seen.contains(&key);
+        if list.deferred.contains(&key) {
+            matched.insert(key);
+            // A placeholder is a JS function, and JS can't pass a v128.
+            *moved = !function.v128;
         }
-        matched.insert(key);
-        // A placeholder is a JS function, and JS can't pass a v128.
-        if function.v128 {
-            continue;
-        }
+    }
+    let listed = moved.iter().filter(|&&m| m).count();
+    only_called_deferred(&functions, &seen, &mut moved);
+    let mut split = String::new();
+    for (i, _) in moved.iter().enumerate().filter(|(_, m)| **m) {
         // binaryen names a function the module leaves unnamed by its
         // index among those it defines.
         split.push_str(&i.to_string());
         split.push('\n');
-        deferred += 1;
     }
+    let deferred = moved.iter().filter(|&&m| m).count();
     let result = Split {
         deferred,
-        listed: list.len(),
-        missing: list.len() - matched.len(),
+        inferred: deferred - listed,
+        listed: list.deferred.len(),
+        missing: list.deferred.len() - matched.len(),
     };
     if deferred == 0 {
         std::fs::copy(whole, primary).map_err(|e| format!("{}: {e}", primary.display()))?;
@@ -196,13 +255,23 @@ struct Functions {
 struct Function {
     /// Whether its signature takes or gives a v128.
     v128: bool,
+    /// Whether anything but a direct call reaches it: an export, the
+    /// start function, a table or a `ref.func`.
+    reachable: bool,
+    /// The defined functions that call it, by their index among those.
+    callers: Vec<u32>,
 }
 
-/// The module's functions.
+/// The module's functions, and what calls them.
 fn functions(wasm: &[u8]) -> Result<Functions, String> {
     let mut types = Vec::new();
     let mut imported = 0u32;
     let mut defined = Vec::new();
+    // Functions reached other than by a direct call, and (callee, caller)
+    // pairs, in the module's index space and among defined functions.
+    let mut reached = Vec::new();
+    let mut calls = Vec::new();
+    let mut bodies = 0u32;
     for payload in Parser::new(0).parse_all(wasm) {
         match payload.map_err(|e| e.to_string())? {
             Payload::TypeSection(reader) => {
@@ -231,10 +300,71 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                     let ty = ty.map_err(|e| e.to_string())?;
                     defined.push(Function {
                         v128: types.get(ty as usize).copied().unwrap_or(false),
+                        reachable: false,
+                        callers: Vec::new(),
                     });
                 }
             }
+            Payload::ExportSection(reader) => {
+                for export in reader {
+                    let export = export.map_err(|e| e.to_string())?;
+                    if export.kind == ExternalKind::Func {
+                        reached.push(export.index);
+                    }
+                }
+            }
+            Payload::StartSection { func, .. } => reached.push(func),
+            Payload::ElementSection(reader) => {
+                for element in reader {
+                    match element.map_err(|e| e.to_string())?.items {
+                        ElementItems::Functions(items) => {
+                            for item in items {
+                                reached.push(item.map_err(|e| e.to_string())?);
+                            }
+                        }
+                        ElementItems::Expressions(_, items) => {
+                            for item in items {
+                                let item = item.map_err(|e| e.to_string())?;
+                                for op in item.get_operators_reader() {
+                                    if let Operator::RefFunc { function_index } =
+                                        op.map_err(|e| e.to_string())?
+                                    {
+                                        reached.push(function_index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                let caller = bodies;
+                bodies += 1;
+                for op in body.get_operators_reader().map_err(|e| e.to_string())? {
+                    match op.map_err(|e| e.to_string())? {
+                        Operator::Call { function_index }
+                        | Operator::ReturnCall { function_index } => {
+                            calls.push((function_index, caller));
+                        }
+                        Operator::RefFunc { function_index } => reached.push(function_index),
+                        _ => {}
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+    let local = |index: u32| index.checked_sub(imported).map(|i| i as usize);
+    for index in reached {
+        if let Some(function) = local(index).and_then(|i| defined.get_mut(i)) {
+            function.reachable = true;
+        }
+    }
+    for (callee, caller) in calls {
+        if let Some(function) = local(callee).and_then(|i| defined.get_mut(i))
+            && !function.callers.contains(&caller)
+        {
+            function.callers.push(caller);
         }
     }
     Ok(Functions { imported, defined })
@@ -333,6 +463,38 @@ mod tests {
         );
         assert_eq!(unhashed("x::<[u8; 16]>"), "x::<[u8; 16]>");
         assert_eq!(unhashed("a[b"), "a[b");
+    }
+
+    #[test]
+    fn defers_what_only_deferred_functions_call() {
+        let function = |callers: &[u32]| Function {
+            v128: false,
+            reachable: false,
+            callers: callers.to_vec(),
+        };
+        // 0 is listed; 1 and then 2 only it calls; 3 a kept function calls
+        // too; 4 was seen running; 5 is exported; 6 takes a v128.
+        let mut defined = vec![
+            function(&[]),
+            function(&[0]),
+            function(&[1]),
+            function(&[0, 7]),
+            function(&[0]),
+            function(&[0]),
+            function(&[0]),
+            function(&[]),
+        ];
+        defined[5].reachable = true;
+        defined[6].v128 = true;
+        let functions = Functions {
+            imported: 0,
+            defined,
+        };
+        let mut seen = vec![false; 8];
+        seen[4] = true;
+        let mut moved = vec![true, false, false, false, false, false, false, false];
+        only_called_deferred(&functions, &seen, &mut moved);
+        assert_eq!(moved, [true, true, true, false, false, false, false, false]);
     }
 
     #[test]

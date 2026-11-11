@@ -30,7 +30,7 @@ const WHOLE_CORE: &str = "target/web/core-whole.wasm";
 /// if the growth earns its bytes, raise the level to the new size plus the
 /// same margin, and when a change shrinks a module, lower it.
 const CORE_WATCH_KIB: usize = 700;
-const CORE_DEFERRED_WATCH_KIB: usize = 215;
+const CORE_DEFERRED_WATCH_KIB: usize = 225;
 const CORE_GL_WATCH_KIB: usize = 1330;
 const SHAPER_WATCH_KIB: usize = 380;
 
@@ -87,19 +87,22 @@ pub(crate) fn build(options: Options) -> Result<(), String> {
     let deferred = core.deferred.as_ref().expect("core.wasm splits");
     eprintln!(
         "core.wasm: {} KiB raw, {} KiB brotli ({} bytes); core-deferred.wasm: {} KiB raw, \
-         {} KiB brotli, {} functions; core.js {} KiB raw ({OUT_DIR})",
+         {} KiB brotli, {} functions ({} of them only deferred ones call); core.js {} KiB \
+         raw ({OUT_DIR})",
         core.raw / 1024,
         core.brotli / 1024,
         core.brotli,
         deferred.raw / 1024,
         deferred.brotli / 1024,
         deferred.split.deferred,
+        deferred.split.inferred,
         js.len() / 1024,
     );
     if deferred.split.missing > 0 {
         eprintln!(
-            "{} of the {} functions {} lists are gone or renamed (any new ones stay in \
-             core.wasm); `pnpm -C web coverage --tour --write` refreshes it",
+            "{} of the {} functions {} lists are gone or renamed (new names stay in \
+             core.wasm unless only deferred functions call them); `pnpm -C web coverage \
+             --tour --write` refreshes it",
             deferred.split.missing,
             deferred.split.listed,
             split::LIST,
