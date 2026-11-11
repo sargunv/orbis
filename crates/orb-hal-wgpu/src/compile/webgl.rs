@@ -301,16 +301,24 @@ fn idle_step(state: &Rc<RefCell<State>>, wake: &Wake, deadline: &JsValue) {
 }
 
 impl Job {
-    /// Makes the pipeline, catching validation errors: wgpu's GL backend
-    /// validates on this thread, so its error scope is ready at once.
+    /// Makes the pipeline, catching validation errors and the driver's
+    /// (a shader it fails to compile or link, which wgpu reports as
+    /// internal): wgpu's GL backend validates and compiles on this
+    /// thread, so its error scopes are ready at once.
     fn compile(&self, device: &wgpu::Device) -> Result<Built, String> {
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let built = self.build(device);
-        let mut scope = std::pin::pin!(scope.pop());
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-        match std::future::Future::poll(scope.as_mut(), &mut context) {
-            std::task::Poll::Ready(Some(error)) => Err(error.to_string()),
-            _ => Ok(built),
+        let mut error = None;
+        for scope in [validation, internal] {
+            let mut popped = std::pin::pin!(scope.pop());
+            if let std::task::Poll::Ready(Some(e)) =
+                std::future::Future::poll(popped.as_mut(), &mut context)
+            {
+                error.get_or_insert(e.to_string());
+            }
         }
+        error.map_or(Ok(built), Err)
     }
 }

@@ -238,8 +238,8 @@ impl Job {
         }
     }
 
-    /// Makes the pipeline, catching validation errors and panics, and a
-    /// device lost in the making: a driver that fails to compile a
+    /// Makes the pipeline, catching validation and internal errors and
+    /// panics, and a device lost in the making: a driver that fails to compile a
     /// pipeline (Vulkan's `VK_ERROR_INITIALIZATION_FAILED`, which wgpu
     /// takes as "driver implementation is at fault") loses the device
     /// without an error to catch, and would on any other device too.
@@ -251,9 +251,14 @@ impl Job {
         let lost_here =
             || loss.and_then(|l| *l.thread.lock().ok()?) == Some(std::thread::current().id());
         let lost_before = lost_here();
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        // A driver that fails to compile or link a shader (GLES) is an
+        // internal error.
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.build(device)));
-        let error = pollster::block_on(scope.pop());
+        // Popped innermost first; both must be.
+        let invalid = pollster::block_on(validation.pop());
+        let error = invalid.or(pollster::block_on(internal.pop()));
         match (built, error) {
             (Ok(_), None) if !lost_before && lost_here() => {
                 let reason = (loss.and_then(|l| l.reason.lock().ok()?.clone()))
