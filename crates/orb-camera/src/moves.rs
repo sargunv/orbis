@@ -8,6 +8,12 @@ use orb_crs::{Projection, WorldRect, sphere};
 use crate::{CameraState, STYLE_ZOOM_TILE_PX, View, Viewport};
 use orb_crs::Surface;
 
+/// How many times as far as the ground at the view's centre a pan moves
+/// the ground under the pointer, at most. A view tilted 60° spans about 5
+/// times the centre's ground per pixel at its top edge, which drags keep
+/// under the pointer; nearer a horizon, a pixel spans kilometres.
+pub(crate) const PAN_REACH: f64 = 8.0;
+
 /// A longitude and latitude box, in degrees. `west` may exceed `east` only
 /// by wrapping: boxes that cross the antimeridian give `east` above 180.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -177,20 +183,49 @@ impl CameraState {
     }
 
     /// Moves the camera so the ground under `from` (logical pixels) ends up
-    /// under `to`. Nothing moves when either is above the horizon.
+    /// under `to`, as far as the ground there moves at most
+    /// `PAN_REACH` times as far as the ground at the view's centre would
+    /// for the same pixels. Toward a tilted view's horizon each pixel spans
+    /// ever more ground, without bound, so a step there moves no farther
+    /// than that, and a step that starts or ends above the horizon moves
+    /// that far too. (MapLibre Native's `moveBy` moves the ground at the
+    /// centre by a step's pixels wherever the pointer is.)
     pub fn pan(&mut self, surface: &Surface, viewport: Viewport, from: DVec2, to: DVec2) {
         let projection = &surface.projection;
         let view = View::new(self, viewport, surface);
+        let center = self.center(viewport);
         if view.globe().is_some() {
-            if let Some(ground) = view.low_ground(from, view.elevation()) {
+            // A drag that starts off the planet turns it as one from its
+            // middle would, as GL JS's and MapLibre Native's do.
+            let elevation = view.elevation();
+            let held = match view.low_ground(from, elevation) {
+                Some(ground) => Some((ground, to)),
+                None => view
+                    .low_ground(center, elevation)
+                    .map(|ground| (ground, center + (to - from))),
+            };
+            if let Some((ground, to)) = held {
                 self.put_under(surface, viewport, ground, to);
             }
             return;
         }
-        let (Some(a), Some(b)) = (view.unproject(from), view.unproject(to)) else {
-            return;
+        let span = |a: DVec2, b: DVec2| Some(view.unproject(b)? - view.unproject(a)?);
+        let steady = span(center - (to - from), center);
+        let moved = match (span(from, to), steady) {
+            (Some(grab), Some(steady)) => {
+                let reach = PAN_REACH * steady.length();
+                if grab.length() > reach {
+                    grab * (reach / grab.length())
+                } else {
+                    grab
+                }
+            }
+            (Some(grab), None) => grab,
+            // Past the horizon the reach holds, as it does just below it.
+            (None, Some(steady)) => steady * PAN_REACH,
+            (None, None) => return,
         };
-        let world = view.camera_world() - (b - a);
+        let world = view.camera_world() - moved;
         self.set_target_world(projection, world, view.world_per_px());
     }
 

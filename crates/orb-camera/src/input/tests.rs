@@ -913,3 +913,96 @@ fn a_known_trackpad_zooms_at_once_from_its_first_event() {
     }
     assert!(rig.camera.zoom() > zoom);
 }
+
+#[test]
+fn a_drag_toward_a_tilted_horizon_moves_a_bounded_way_and_on_past_it() {
+    let mut rig = Rig::new();
+    rig.camera.pitch_by(85.0);
+    let mid = DVec2::new(400.0, 300.0);
+    // The ground the centre's 25 px span, and the view's top row of ground.
+    let span = |rig: &Rig| {
+        let (a, b) = (
+            rig.camera.unproject(DVec2::new(400.0, 325.0)).unwrap(),
+            rig.camera.unproject(mid).unwrap(),
+        );
+        (b.lat - a.lat).abs()
+    };
+    let sky = (0..600)
+        .map(f64::from)
+        .find(|&y| rig.camera.unproject(DVec2::new(400.0, y)).is_some())
+        .unwrap();
+    assert!(sky > 100.0, "the horizon is in view: {sky}");
+    rig.down(1, PointerKind::Mouse, 400.0, 550.0);
+    let mut y = 550.0;
+    let mut last = rig.camera.unproject(mid).unwrap();
+    while y > 0.0 {
+        let reach = crate::moves::PAN_REACH * span(&rig);
+        rig.now += 8.0;
+        y -= 25.0;
+        rig.to(1, 400.0, y);
+        let at = rig.camera.unproject(mid).unwrap();
+        let moved = (at.lat - last.lat).abs();
+        // Each step moves the map, up to the reach, past the horizon too.
+        assert!(moved > 0.0, "moves at {y}");
+        assert!(moved <= reach * 1.01, "{moved} past {reach} at {y}");
+        last = at;
+    }
+    // Low in the view, the ground stays under the pointer.
+    let mut rig = Rig::new();
+    rig.camera.pitch_by(60.0);
+    let (from, to) = (DVec2::new(400.0, 500.0), DVec2::new(380.0, 20.0));
+    let ground = rig.camera.unproject(from).unwrap();
+    rig.down(1, PointerKind::Mouse, from.x, from.y);
+    rig.now += 8.0;
+    rig.to(1, from.x, from.y - 10.0);
+    for i in 1..=10 {
+        rig.now += 8.0;
+        rig.to(
+            1,
+            from.x + (to.x - from.x) * f64::from(i) / 10.0,
+            from.y - 10.0 + (to.y - from.y + 10.0) * f64::from(i) / 10.0,
+        );
+    }
+    assert!(rig.camera.project(ground).unwrap().distance(to) < 1e-6);
+}
+
+#[test]
+fn a_drag_off_the_globe_turns_it() {
+    let projection = *TileMatrixSet::web_mercator().projection();
+    let surface = orb_crs::Surface {
+        projection,
+        globe: Some(orb_crs::Globe::V8),
+    };
+    let viewport = Viewport {
+        width: 800.0,
+        height: 600.0,
+    };
+    let mut rig = Rig {
+        camera: Camera::new(
+            CameraState::new(Geodetic::new(0.0, 0.0), 1.0, &projection),
+            surface,
+            viewport,
+        ),
+        input: Interaction::default(),
+        now: 1000.0,
+    };
+    let corner = DVec2::new(20.0, 20.0);
+    assert!(
+        rig.camera.unproject(corner).is_none(),
+        "the corner is space"
+    );
+    let mid = DVec2::new(400.0, 300.0);
+    rig.down(1, PointerKind::Mouse, corner.x, corner.y);
+    for i in 1..=10 {
+        // Each step turns the planet as a drag from its middle would: what
+        // is there follows the pointer.
+        let ground = rig.camera.unproject(mid).unwrap();
+        rig.now += 16.0;
+        rig.to(1, corner.x + f64::from(i) * 20.0, corner.y);
+        let moved = rig.camera.project(ground).unwrap() - mid;
+        assert!(
+            (moved.x - 20.0).abs() < 0.5 && moved.y.abs() < 0.5,
+            "step {i}: {moved}"
+        );
+    }
+}
