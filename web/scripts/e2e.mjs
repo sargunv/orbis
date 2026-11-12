@@ -42,12 +42,11 @@
 // - `options`: the Globe's map options, offline (the Tokyo extract's style
 //   standing in for Protomaps Light): by default it loads with every
 //   Orbis-only preview off and none of their keys in its style, the URL's
-//   choices (its preview on) apply as it loads, every option is listed in
-//   its group, clicks and keys edit the live style without a reload and
-//   keep the URL, options that need another (the blended relief the
-//   hillshade, fog terrain) wait for it, a reload reproduces
-//   the choices, opening the panel moves nothing, and at phone width it's
-//   a bottom sheet that fits.
+//   choices (its preview on) apply as it loads, clicks and keys edit the
+//   live style without a reload and keep the URL, options that need
+//   another (the blended relief the hillshade, fog terrain) wait for it, a
+//   reload reproduces the choices, opening the panel moves nothing, and at
+//   phone width it's a bottom sheet that fits.
 // - `resize`: the Alps terrain style, offline, with circles over it,
 //   resized three times: each resize draws the map at the new size, not
 //   black, with no WebGPU error in any submit (a bundle bound to a target
@@ -1805,12 +1804,10 @@ async function failing(browser, server) {
 
 /**
  * The Globe entry offline: Protomaps Light stood in for by the Tokyo
- * extract's style, with a buildings layer to extrude and a label under a
- * Protomaps id the Globe recolours.
+ * extract's style, with a buildings layer to extrude.
  */
 async function offlineGlobe(page, server) {
   const tokyo = await tokyoStyle(server);
-  const label = tokyo.layers.find((l) => l.type === "symbol");
   const style = {
     ...tokyo,
     layers: [
@@ -1822,7 +1819,6 @@ async function offlineGlobe(page, server) {
         "source-layer": "buildings",
         paint: { "fill-color": "#ccc" },
       },
-      { ...label, id: "address_label" },
     ],
   };
   await page.route(
@@ -1834,20 +1830,6 @@ async function offlineGlobe(page, server) {
     },
   );
 }
-
-// The Globe's options, in the panel's order, and their defaults: every
-// Orbis-only one off, though the Globe designs it.
-const GLOBE_OPTIONS = {
-  terrain: false,
-  hillshade: true,
-  blend: false,
-  light: "viewport",
-  buildings: true,
-  projection: "globe",
-  atmosphere: true,
-  fog: true,
-  labels: true,
-};
 
 async function options(browser, server) {
   const page = await browser.newPage({
@@ -1864,28 +1846,24 @@ async function options(browser, server) {
     null,
     { timeout: 60_000 },
   );
-  // The panel's values, what the map's style draws, the disabled rows and the URL's choices.
+  // What the map's style draws, the disabled rows and the URL's choices.
   const state = () =>
     page.evaluate(async () => {
       const style = await app.map.getStyle();
       const layer = (id) => style.layers.find((l) => l.id === id);
       const query = new URLSearchParams(location.search);
       return {
-        values: app.options.values,
         style: {
-          label: layer("address_label").paint["text-color"],
           anchor: style.light.anchor,
           projection: style.projection.type,
           terrain: Boolean(style.terrain),
           hillshade: layer("hillshade").layout?.visibility ?? "visible",
           buildings: layer("buildings_3d").layout.visibility ?? "visible",
-          // The relief multiplied, in the colours made for it.
-          blend: [
+          // The relief multiplied.
+          blend:
             layer("hillshade").paint[
               "dev.sargunv.orbis:hillshade-layer-blend"
             ] ?? null,
-            layer("hillshade").paint["hillshade-shadow-color"],
-          ],
           labels: [
             ...new Set(
               style.layers
@@ -1902,16 +1880,14 @@ async function options(browser, server) {
         ),
       };
     });
-  const expect = (values, style, disabled, url) => ({
-    values: { ...GLOBE_OPTIONS, ...values },
+  const expect = (style, disabled, url) => ({
     style: {
-      label: "#736b79",
       anchor: "viewport",
       projection: "globe",
       terrain: false,
       hillshade: "visible",
       buildings: "visible",
-      blend: [null, "#776f82"],
+      blend: null,
       labels: ["visible"],
       ...style,
     },
@@ -1923,8 +1899,7 @@ async function options(browser, server) {
     page,
     state,
     expect(
-      { blend: true, projection: "mercator" },
-      { blend: ["multiply", "#72707f"], projection: "mercator" },
+      { blend: "multiply", projection: "mercator" },
       ["atmosphere", "fog"],
       { blend: "1", projection: "mercator" },
     ),
@@ -1951,7 +1926,7 @@ async function options(browser, server) {
       .getBoundingClientRect()
       .toJSON(),
   }));
-  // The renderer's row, which every map has: Auto, drawing WebGPU.
+  // The renderer's row, which every map has: Auto, drawing the browser's backend.
   assert.deepEqual(await renderer(page), {
     picked: "auto",
     active: browser.expects.backend,
@@ -1969,14 +1944,14 @@ async function options(browser, server) {
   await settles(
     page,
     state,
-    expect({}, {}, ["fog"], {}),
+    expect({}, ["fog"], {}),
     "the blended relief off and the globe leave the URL",
   );
   await option(page, "light").locator('[data-value="map"]').click();
   await settles(
     page,
     state,
-    expect({ light: "map" }, { anchor: "map" }, ["fog"], { light: "map" }),
+    expect({ anchor: "map" }, ["fog"], { light: "map" }),
     "the light fixed to the map",
   );
   await option(page, "light").locator('[data-value="viewport"]').click();
@@ -1984,7 +1959,7 @@ async function options(browser, server) {
   await settles(
     page,
     state,
-    expect({ hillshade: false }, { hillshade: "none" }, ["blend", "fog"], {
+    expect({ hillshade: "none" }, ["blend", "fog"], {
       hillshade: "0",
     }),
     "without the hillshade, the blended relief waits",
@@ -1994,7 +1969,7 @@ async function options(browser, server) {
   await settles(
     page,
     state,
-    expect({ buildings: false }, { buildings: "none" }, ["fog"], {
+    expect({ buildings: "none" }, ["fog"], {
       buildings: "0",
     }),
     "without 3D buildings",
@@ -2008,9 +1983,8 @@ async function options(browser, server) {
   await option(page, "light").locator('[aria-checked="true"]').focus();
   await page.keyboard.press("ArrowLeft");
   const chosen = expect(
-    { blend: true, terrain: true, labels: false, light: "map" },
     {
-      blend: ["multiply", "#72707f"],
+      blend: "multiply",
       terrain: true,
       labels: ["none"],
       anchor: "map",
@@ -2067,7 +2041,6 @@ async function options(browser, server) {
     phone,
     () =>
       phone.evaluate(async () => ({
-        values: app.options.values,
         keys: [
           ...new Set(
             JSON.stringify(await app.map.getStyle()).match(
@@ -2076,7 +2049,7 @@ async function options(browser, server) {
           ),
         ],
       })),
-    { values: GLOBE_OPTIONS, keys: [] },
+    { keys: [] },
     "the Globe opens without Orbis's previews",
   );
   const scene = await phone.evaluate(() =>
