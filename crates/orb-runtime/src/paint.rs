@@ -599,22 +599,30 @@ fn write_paint(
         }
         let visible = drawn_at(layer, node, zoom);
         let draped = draping && node.family.is_draped();
-        renderer.set_visible(
-            index,
-            if draped {
-                layer.visibility == orb_style::Visibility::Visible
-            } else {
-                visible
-            },
-        );
-        if !draped && !visible {
-            continue;
+        let shown = if draped {
+            layer.visibility == orb_style::Visibility::Visible
+        } else {
+            visible
+        };
+        renderer.set_visible(index, shown);
+        if !shown {
+            // A layer that shows nothing composites nothing: blended, it
+            // would split the main pass for no draw. Its composite is
+            // written again with its paint when it shows.
+            if layer_composite(layer, zoom).is_some() {
+                let normal = orb_render::Blend::Normal;
+                renderer.set_layer_composite(gpu, index, node.layer as u32, 1.0, normal);
+            }
+            state.painted = None;
+            if !draped {
+                continue;
+            }
         }
         // Paint that is the same for every camera was written this epoch.
         if state.painted == Some(style.paint.epoch) {
             continue;
         }
-        if camera_free(plan, node) {
+        if camera_free(plan, node) && shown {
             state.painted = Some(style.paint.epoch);
         }
         if matches!(node.family, Family::Circle | Family::Heatmap) {
@@ -646,7 +654,7 @@ fn write_paint(
         renderer.set_paint(gpu, index, &paint);
         // A layer below layer opacity 1, or blending other than normally,
         // composites once.
-        if let Some((opacity, blend)) = layer_composite(layer, zoom) {
+        if let Some((opacity, blend)) = layer_composite(layer, zoom).filter(|_| shown) {
             renderer.set_layer_composite(gpu, index, node.layer as u32, opacity, blend);
         }
         if node.family.is_image() {

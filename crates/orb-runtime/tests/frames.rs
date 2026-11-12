@@ -1136,6 +1136,65 @@ mod tests {
         assert_eq!(differing, 0, "MVT/MLT differing pixels");
     }
 
+    /// A blended layer costs its composite only while it shows: a raster
+    /// multiplied over the map draws its composite (and splits the main
+    /// pass for it) at the zooms it shows at, recording its bundles once,
+    /// and none once a zoom past its range or its visibility hides it.
+    #[test]
+    fn a_hidden_blended_layer_composites_nothing() {
+        let dir = crate::common::Scratch::new("hidden-blend");
+        let tile = solid_tile(&dir);
+        let draws = |blend: &str| {
+            let style = format!(
+                r##"{{"version":8,"sources":{{
+                    "imagery":{{"type":"raster","tiles":["file://{tile}"],"tileSize":256}}}},
+                  "layers":[{{"id":"ground","type":"background","paint":{{"background-color":"#88aa66"}}}},
+                    {{"id":"raster","type":"raster","source":"imagery","maxzoom":5,
+                      "paint":{{"raster-layer-blend":"{blend}"}}}}]}}"##,
+                tile = tile.display(),
+            );
+            let path = dir.join(format!("{blend}.json"));
+            std::fs::write(&path, style).unwrap();
+            let options = crate::common::Options {
+                style: Some(format!("file://{}", path.display())),
+                at: Some((orb_crs::Geodetic::new(0.0, 0.0), 3.0, 0.0, 0.0)),
+                ..tokyo(3.0)
+            };
+            let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
+            let frame = |offscreen: &mut crate::common::Offscreen| {
+                settle(offscreen);
+                let report = offscreen.frame();
+                assert!(!report.frame.bundle_recorded, "{blend}");
+                report.frame.draws
+            };
+            let shown = frame(&mut offscreen);
+            let projection = offscreen.map.projection();
+            crate::common::move_camera(&mut offscreen.map, |c| c.set_zoom(&projection, 6.0));
+            let past = frame(&mut offscreen);
+            crate::common::move_camera(&mut offscreen.map, |c| c.set_zoom(&projection, 3.0));
+            assert_eq!(frame(&mut offscreen), shown, "{blend}: shown again");
+            let hide = r#"[["setLayoutProperty", "raster", "visibility", "none"]]"#;
+            let hide = orb_runtime::Transaction::from_commands(hide).unwrap();
+            offscreen.map.edit(&hide).unwrap();
+            [shown, past, frame(&mut offscreen)]
+        };
+        let [shown, past, hidden] = draws("multiply");
+        let normal = draws("normal");
+        assert_eq!(shown, normal[0] + 1, "the blend's composite");
+        // Hidden, no more than drawn normally (whose bundle, recorded while
+        // the layer showed, keeps its draw for the cull to skip).
+        assert!(
+            past <= normal[1],
+            "past its zooms: {past} draws, {} normally",
+            normal[1]
+        );
+        assert!(
+            hidden <= normal[2],
+            "hidden: {hidden} draws, {} normally",
+            normal[2]
+        );
+    }
+
     /// A 256-pixel tile of one colour, as `tile.png` in `dir`.
     fn solid_tile(dir: &std::path::Path) -> std::path::PathBuf {
         let tile = dir.join("tile.png");

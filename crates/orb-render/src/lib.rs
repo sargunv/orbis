@@ -2542,9 +2542,11 @@ impl Renderer {
                     let segment = bound_once(std::mem::take(&mut commands));
                     self.bundles
                         .push(gpu.create_render_bundle(&layers, &segment));
+                    self.recorded += 1;
                 }
                 Some(group) => {
                     commands.extend(self.layers.composite_commands(&self.composites, group));
+                    self.recorded += 1;
                 }
                 None => {}
             }
