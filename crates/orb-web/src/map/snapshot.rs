@@ -121,10 +121,7 @@ impl OrbisMap {
 
 /// Whether a target of `format` holds its bytes blue first.
 pub(crate) fn bgra(format: TextureFormat) -> bool {
-    matches!(
-        format,
-        TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb
-    )
+    format == TextureFormat::Bgra8Unorm
 }
 
 /// A target's premultiplied pixels as RGBA: straight, as `ImageData` holds

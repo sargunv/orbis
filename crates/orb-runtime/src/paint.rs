@@ -48,11 +48,11 @@ pub(crate) struct PaintState {
     camera_plan: Option<CameraPlan>,
 }
 
-/// A plan of the worker `of` with its camera reads resolved at `read`.
+/// A plan of the worker `of` with its camera reads resolved at `camera`.
 #[derive(Debug)]
 struct CameraPlan {
     of: std::sync::Weak<TileWorker>,
-    read: CameraInputs,
+    camera: CameraInputs,
     plan: Arc<StylePlan>,
 }
 
@@ -112,12 +112,11 @@ fn camera_plan(
     if !std::ptr::eq(plan, style.worker.plan()) {
         return at_camera(plan, camera).map(Arc::new);
     }
-    let read = camera;
     let of = Arc::downgrade(&style.worker);
     let cache = &mut style.paint.camera_plan;
     if let Some(c) = cache.as_ref()
         && c.of.ptr_eq(&of)
-        && c.read == read
+        && c.camera == camera
     {
         return Some(Arc::clone(&c.plan));
     }
@@ -125,7 +124,7 @@ fn camera_plan(
     let kept = Arc::clone(&plan);
     *cache = Some(CameraPlan {
         of,
-        read,
+        camera,
         plan: kept,
     });
     Some(plan)

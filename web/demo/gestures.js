@@ -266,7 +266,7 @@ async function runPath(
     jobWorkers,
     camera: path.camera(center, 0),
     interactive: false,
-    // As the demo draws it: the Globe entry's light and fills are previews.
+    // As the demo draws it, with every preview on (main.js).
     previews: "all",
     ...(backend && { backend }),
   });

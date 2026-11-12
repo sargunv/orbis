@@ -70,9 +70,7 @@ pub(crate) fn texture_format(format: TextureFormat) -> wgpu::TextureFormat {
         TextureFormat::R32Uint => wgpu::TextureFormat::R32Uint,
         TextureFormat::Rgba32Uint => wgpu::TextureFormat::Rgba32Uint,
         TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
-        TextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-        TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8UnormSrgb,
         TextureFormat::Depth32Float => wgpu::TextureFormat::Depth32Float,
     }
 }
@@ -86,9 +84,7 @@ pub fn from_texture_format(format: wgpu::TextureFormat) -> Option<TextureFormat>
         wgpu::TextureFormat::R32Uint => TextureFormat::R32Uint,
         wgpu::TextureFormat::Rgba32Uint => TextureFormat::Rgba32Uint,
         wgpu::TextureFormat::Rgba8Unorm => TextureFormat::Rgba8Unorm,
-        wgpu::TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8UnormSrgb,
         wgpu::TextureFormat::Bgra8Unorm => TextureFormat::Bgra8Unorm,
-        wgpu::TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8UnormSrgb,
         wgpu::TextureFormat::Depth32Float => TextureFormat::Depth32Float,
         _ => return None,
     })

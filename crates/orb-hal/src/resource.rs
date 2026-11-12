@@ -85,9 +85,7 @@ pub enum TextureFormat {
     /// Filterable, blendable half-float density targets.
     Rgba16Float,
     Rgba8Unorm,
-    Rgba8UnormSrgb,
     Bgra8Unorm,
-    Bgra8UnormSrgb,
     Depth32Float,
 }
 
@@ -101,9 +99,7 @@ impl TextureFormat {
             Self::R32Float
             | Self::R32Uint
             | Self::Rgba8Unorm
-            | Self::Rgba8UnormSrgb
             | Self::Bgra8Unorm
-            | Self::Bgra8UnormSrgb
             | Self::Depth32Float => 4,
         }
     }
@@ -122,12 +118,6 @@ pub struct TextureDesc<'a> {
     pub sample_count: u32,
     /// Mip levels, at least 1. Level 0 is the full size.
     pub mip_levels: u32,
-}
-
-impl TextureFormat {
-    pub fn is_srgb(self) -> bool {
-        matches!(self, Self::Rgba8UnormSrgb | Self::Bgra8UnormSrgb)
-    }
 }
 
 /// A rectangle of one layer of a texture's mip level, for writes; its

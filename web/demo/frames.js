@@ -175,7 +175,7 @@ async function orbisEngine(
     interactive: false,
     pixelRatio: ratio,
     camera: { center, zoom, pitch, bearing: 0 },
-    // As the demo draws it: the Globe entry's light and fills are previews.
+    // As the demo draws it, with every preview on (main.js).
     previews: "all",
     ...(backend && { backend }),
     ...(worker === false && { worker }),

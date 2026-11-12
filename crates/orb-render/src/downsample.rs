@@ -159,11 +159,7 @@ impl Downsampler {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         for level in 0..LEVELS {
-            gpu.write_buffer(
-                levels,
-                level * STRIDE,
-                bytemuck::cast_slice(&[level as u32, 0]),
-            );
+            gpu.write_buffer(levels, level * STRIDE, bytemuck::bytes_of(&(level as u32)));
         }
         Self {
             layout,

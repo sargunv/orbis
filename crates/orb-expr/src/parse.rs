@@ -1360,10 +1360,7 @@ mod tests {
     /// that takes its arity.
     #[test]
     fn one_overload_takes_each_arity() {
-        let names = OPERATORS
-            .iter()
-            .chain(&["dev.sargunv.orbis:meters-per-pixel"]);
-        for (name, (_, overloads)) in names.filter_map(|n| Some((n, compound(n)?))) {
+        for (name, (_, overloads)) in OPERATORS.iter().filter_map(|n| Some((n, compound(n)?))) {
             for arity in 0..8 {
                 let taking = overloads
                     .iter()

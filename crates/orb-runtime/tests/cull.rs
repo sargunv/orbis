@@ -59,8 +59,7 @@ fn keeping_every_candidate_draws_the_same_pixels() {
     culled_and_kept((15.0, 30.0, 60.0), None);
 }
 
-/// Extrusions, whose cull reaches up by their height and out by their
-/// shadows.
+/// Extrusions, whose cull reaches up by their height.
 #[test]
 fn keeping_every_extrusion_draws_the_same_pixels() {
     let buildings = r#"[["addLayer", {"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles", "source-layer": "building", "minzoom": 14, "paint": {"fill-extrusion-color": "hsl(35,8%,85%)", "fill-extrusion-height": ["get", "render_height"], "fill-extrusion-base": ["get", "render_min_height"]}}]]"#;

@@ -34,7 +34,7 @@ pub enum ElevationOp {
 
 /// A value that reads `["elevation"]` only as the input of one curve.
 #[derive(Clone, Debug)]
-pub struct InputCurve {
+pub struct ElevationCurve {
     /// What the curve's input does to the elevation, innermost first.
     pub input: Vec<ElevationOp>,
     /// The curve's input stops; a `step`'s first is −∞.
@@ -50,7 +50,7 @@ pub struct InputCurve {
     input_node: NodeId,
 }
 
-impl InputCurve {
+impl ElevationCurve {
     /// The value at stop `i`: the curve's output there, so that it reads
     /// the feature only if that output (or what is around the curve) does.
     pub fn stop(&self, i: usize) -> PropertyExpression {
@@ -106,7 +106,7 @@ impl PropertyExpression {
     /// must read `["elevation"]` once, as the input of a `step` or
     /// `interpolate`, through `+`, `-`, `*`, `/`, `%`, `min` and `max` with
     /// constants, `abs`, `floor`, `ceil` and `round`.
-    pub fn elevation_curve(&self) -> Result<InputCurve, &'static str> {
+    pub fn elevation_curve(&self) -> Result<ElevationCurve, &'static str> {
         const SHAPE: &str = "[\"elevation\"] draws per fragment once, as the input of a \"step\" or \"interpolate\", through arithmetic with constants";
         let ir = &self.expression().ir;
         let reads = |id: NodeId| ir.node(id).deps.contains(Deps::ELEVATION);
@@ -188,7 +188,7 @@ impl PropertyExpression {
             at = args[x];
         }
         ops.reverse();
-        Ok(InputCurve {
+        Ok(ElevationCurve {
             input: ops,
             labels,
             interpolation,
