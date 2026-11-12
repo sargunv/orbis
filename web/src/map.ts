@@ -304,7 +304,7 @@ export class OrbisMap {
   }
 
   /** Whether the map runs in a worker (the default where the browser
-   * allows it), not on the page's thread. */
+   * allows it, {@link MapOptions.worker}), not on the page's thread. */
   get inWorker(): boolean {
     return this.#link.worker;
   }
@@ -783,11 +783,29 @@ export class OrbisMap {
 
 /** Whether this browser runs the map in a worker: it can hand a canvas to
  * one, and tells the page of pointer moves as they come (without that, a
- * worker's frames show input a frame late). Chromium-based browsers can;
- * whether the worker has WebGPU, it says. */
+ * worker's frames show input a frame late). Chromium-based browsers and
+ * Firefox can; whether the worker has WebGPU, it says. */
 const workerCapable = () =>
   typeof HTMLCanvasElement.prototype.transferControlToOffscreen ===
     "function" && "onpointerrawupdate" in HTMLElement.prototype;
+
+/** Whether this is Firefox on macOS with a WebGPU adapter, where a map
+ * asking for anything but WebGL 2 draws on the page's thread: Firefox shows
+ * older frames of a WebGPU canvas a worker draws whenever the page's DOM
+ * changes, as a map's compass and markers change it each frame, and
+ * slows until it freezes (https://bugzilla.mozilla.org/show_bug.cgi?id=2091844;
+ * its WebGL 2 is unaffected). Drawn on the page, every frame shows in
+ * order. Remove once Firefox fixes it. */
+async function staleWorkerFrames(backend?: BackendChoice): Promise<boolean> {
+  const agent = navigator.userAgent;
+  if (
+    backend === "webgl2" ||
+    !/ Firefox\//.test(agent) ||
+    !/Mac OS X/.test(agent)
+  )
+    return false;
+  return !!(await navigator.gpu?.requestAdapter().catch(() => null));
+}
 
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on.
  * It draws with WebGPU, or WebGL 2 where WebGPU gives no adapter ({@link OrbisMap.backend}),
@@ -846,7 +864,11 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   const preload = typeof options.style === "string" ? style : options.style;
   let link: Link | string | undefined;
   try {
-    if ((options.worker ?? true) && workerCapable()) {
+    if (
+      (options.worker ?? true) &&
+      workerCapable() &&
+      !(await staleWorkerFrames(options.backend))
+    ) {
       // The worker's canvas starts at the element's size.
       [element.width, element.height] = size();
       link = await workerLink(element, {
