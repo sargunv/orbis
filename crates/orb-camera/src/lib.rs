@@ -31,7 +31,7 @@ pub use momentum::{
 };
 pub use moves::{Bounds, Constraints};
 pub use store::{AnimationId, Camera, CameraEvent, Change, Phase};
-pub use terrain::Elevation;
+pub use terrain::{Elevation, HIGHEST_GROUND};
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -933,8 +933,15 @@ impl View {
             let ground = terrain
                 .and_then(|t| t.range(bounds, index.z))
                 .map(|(lo, hi)| (self.world_z(lo), self.world_z(hi)));
-            // Elevated content stands on the ground under the tile.
-            let (lo, hi) = ground.map_or(flat_range, |(lo, hi)| (lo, hi + raised));
+            // Elevated content stands on the ground under the tile, which
+            // where unknown on terrain may stand as high as any.
+            let unknown = terrain.map_or(flat_range, |t| {
+                (
+                    flat_range.0,
+                    flat_range.1.max(self.world_z(t.ceiling()) + raised),
+                )
+            });
+            let (lo, hi) = ground.map_or(unknown, |(lo, hi)| (lo, hi + raised));
             let rel = bounds.translated(-self.camera_world);
             if !frustum.meets(&rel, lo, hi) {
                 return CoverDecision::Skip;
@@ -1045,7 +1052,10 @@ impl View {
         let eye_dir = eye.normalize();
         let height = height.max(0.0);
         let elevation = globe.target.length() - sphere::RADIUS;
-        let unknown = (elevation.min(0.0), elevation.max(0.0));
+        // Where the terrain's ranges are unknown, between sea level and the
+        // target, or the highest ground could stand on terrain.
+        let ceiling = terrain.map_or(0.0, |t| t.ceiling().0);
+        let unknown = (elevation.min(0.0), elevation.max(ceiling));
         let center_distance = globe.eye.length();
         let projection = tms.projection();
         // The zoom whose tiles span `tile_px` pixels where the set's scale

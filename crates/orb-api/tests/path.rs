@@ -1866,3 +1866,48 @@ fn terrain_switched_by_edits_ends_as_a_fresh_map_does() {
     let (fresh, _) = fresh_at(&runtime, &mut target, &flat, at);
     assert_same("terrain-off", (off, fresh));
 }
+
+/// A plateau 2,400 m up rising 6 km south of a valley at 300 m, its top
+/// red over green ground, seen north at zoom 11.5 and a pitch of 65°: the
+/// view's bottom edge falls on the plateau, about 7.3 km south, though at
+/// the valley's height it would fall short of it. The cover bounds tiles
+/// by the DEM tiles their zoom reads, and near the eye a parent's coarser
+/// DEM tile may not have loaded while its children's have: bounded below
+/// the plateau as if it stood at the target's height, the parent was
+/// culled, with it the children, and nothing asked for the DEM tile that
+/// would bring them back. The tiles beyond showed their skirts through
+/// the hole, as streaks along the bottom edge.
+#[test]
+fn ground_near_the_eye_shows_before_its_coarser_dem_tiles_load() {
+    let (lon, lat) = (7.9, 46.0);
+    let edge = lat - 6.0 / 111.0;
+    let (source, _dem) = dem("plateau", (7.6, 45.7, 8.2, 46.3), 12, |_, la| {
+        if la < edge { 2400.0 } else { 300.0 }
+    });
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    for projection in ["mercator", "globe"] {
+        let style = format!(
+            r##"{{"version": 8, "projection": {{"type": "{projection}"}},
+              "sources": {{{source}
+                "top": {{"type": "geojson", "data": {{"type": "Polygon", "coordinates":
+                  [[[7.6, 45.7], [8.2, 45.7], [8.2, {edge}], [7.6, {edge}], [7.6, 45.7]]]}}}}}},
+              "terrain": {{"source": "plateau", "exaggeration": 1}},
+              "layers": [
+                {{"id": "ground", "type": "background", "paint": {{"background-color": "#00ff00"}}}},
+                {{"id": "top", "type": "fill", "source": "top",
+                  "paint": {{"fill-color": "#ff0000", "fill-antialias": false}}}}
+              ]}}"##
+        );
+        let at = (Geodetic::new(lon, lat), 11.5, 0.0, 65.0);
+        let (pixels, _) = fresh_at(&runtime, &mut target, &style, at);
+        for x in (0..8).map(|i| WIDTH * (2 * i + 1) / 16) {
+            let k = (((HEIGHT - 2) * WIDTH + x) * 4) as usize;
+            assert_eq!(
+                pixels[k..k + 3],
+                [255, 0, 0],
+                "{projection}: the bottom edge at x {x} misses the plateau"
+            );
+        }
+    }
+}

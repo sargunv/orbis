@@ -1122,6 +1122,10 @@ impl orb_camera::Elevation for TerrainElevation {
     fn range(&self, rect: WorldRect, z: u8) -> Option<(Metres, Metres)> {
         self.range_of(rect, z).map(|(_, _, range)| range)
     }
+
+    fn ceiling(&self) -> Metres {
+        Metres(orb_camera::HIGHEST_GROUND.0 * self.exaggeration)
+    }
 }
 
 impl TerrainElevation {
@@ -1162,6 +1166,10 @@ impl orb_camera::Elevation for Consulted<'_> {
             .expect("ranges poisoned")
             .push((tile, dem));
         Some(range)
+    }
+
+    fn ceiling(&self) -> Metres {
+        self.elevation.ceiling()
     }
 }
 

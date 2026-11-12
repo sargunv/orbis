@@ -19,7 +19,21 @@ pub trait Elevation: Send + Sync + std::fmt::Debug {
     /// The lowest and highest elevation over a tile's world rectangle at
     /// zoom `z`, or `None` where unknown.
     fn range(&self, rect: WorldRect, z: u8) -> Option<(Metres, Metres)>;
+
+    /// The highest the ground can stand where its [`range`](Self::range)
+    /// is unknown: as high as any on Earth, with the exaggeration. A cover
+    /// keeps a tile of unknown range wherever ground that high would show,
+    /// so that it asks for the DEM tile that tells; capped any lower, a
+    /// mountain near the eye that no DEM tile has loaded for is culled,
+    /// never asks, and leaves a hole the tiles beyond show their skirts
+    /// through.
+    fn ceiling(&self) -> Metres {
+        HIGHEST_GROUND
+    }
 }
+
+/// The highest ground on Earth (Everest's summit), metres.
+pub const HIGHEST_GROUND: Metres = Metres(8849.0);
 
 /// How close, in metres, the eye and its near plane may come to the
 /// terrain: a little slack over zero, so the near plane never cuts a

@@ -77,9 +77,6 @@ pub(crate) fn atmosphere_view(
     }
 }
 
-/// The highest ground on Earth, metres.
-const HIGHEST_GROUND: f64 = 8849.0;
-
 /// How the light shades the ground (`dev.sargunv.orbis:ground-lighting`),
 /// when it does, with terrain drawn at `exaggeration` (0 without).
 fn ground_light(
@@ -101,7 +98,7 @@ fn ground_light(
         sun: toward_light(camera, light).as_vec3().to_array(),
         up: up.as_vec3().to_array(),
         // As high as Everest, exaggerated.
-        relief: (exaggeration * HIGHEST_GROUND / orb_crs::sphere::RADIUS) as f32,
+        relief: (exaggeration * orb_camera::HIGHEST_GROUND.0 / orb_crs::sphere::RADIUS) as f32,
     })
 }
 
