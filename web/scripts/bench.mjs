@@ -1,7 +1,7 @@
 // Builds and runs web/dist/bench.html and prints its Markdown report: in
 // headless Chromium, or in Chrome on Android.
 //
-//   pnpm bench [--precise] [--android [--physical]] [--firefox] [--unpaced] [--globe] [--name=value…]
+//   pnpm bench [--precise] [--android [--physical]] [--firefox [--prefs=name=value,…]] [--webkit] [--unpaced] [--globe] [--name=value…]
 //
 // `--name=value` pairs become the page's query (format, style, frames,
 // warmup, rounds, size, ratio, at, experiment, backend (`webgl2` draws
@@ -24,9 +24,12 @@
 // same, for stutter it loads the page once an engine.
 // Chrome runs as a
 // user's would, quantizing timestamps (to 65.5 µs on a Mac) and
-// `performance.now()` (to 100 µs). `--firefox` runs the page in headless
-// Firefox instead, which draws Orbis with WebGL 2 where it has no WebGPU
-// (macOS, Linux). `--unpaced` runs animation frames as fast as the
+// `performance.now()` (to 100 µs). `--firefox` runs the page in Firefox
+// instead: the installed one, headed, on WebGPU (serve.mjs's
+// `launchFirefox`; `--prefs` sets its prefs), else Playwright's headless,
+// which draws Orbis with WebGL 2. `--webkit` runs it in Playwright's
+// WebKit, on WebGPU, Orbis on the page's thread as in Safari. Neither
+// traces presents (flight.mjs records Firefox's composites). `--unpaced` runs animation frames as fast as the
 // browser draws them (Chromium's flags, Firefox's `layout.frame_rate`
 // 0; in Firefox with Orbis on the page, whose workers stay paced), so a
 // still view's repaint interval is what a frame costs rather than the
@@ -42,9 +45,14 @@
 // drawn here, in headless Chromium on the same backend, their snapshots
 // compared cell by cell, and the run fails where a view's picture differs
 // (a phone's WebGL 2 drew no fills or lines for days of benches, #140).
-import { firefox } from "playwright";
-
-import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
+import { parsePrefs } from "./firefox.mjs";
+import {
+  launchChromium,
+  launchFirefox,
+  launchWebkit,
+  openAndroid,
+  serveDemo,
+} from "./serve.mjs";
 
 const FLAGS = [
   "--precise",
@@ -52,6 +60,7 @@ const FLAGS = [
   "--physical",
   "--globe",
   "--firefox",
+  "--webkit",
   "--unpaced",
 ];
 // The picture check (`checkPictures`).
@@ -63,13 +72,17 @@ const WRONG_SHARE = 0.1;
 const args = process.argv.slice(2);
 const precise = args.includes("--precise");
 const inFirefox = args.includes("--firefox");
+const inWebkit = args.includes("--webkit");
+const prefs = parsePrefs(
+  args.find((a) => a.startsWith("--prefs="))?.slice("--prefs=".length),
+);
 const unpaced = args.includes("--unpaced");
 const physical = args.includes("--physical");
 const android = physical || args.includes("--android");
 const params = new URLSearchParams();
 if (args.includes("--globe")) params.set("globe", "");
 for (const arg of args) {
-  if (FLAGS.includes(arg)) continue;
+  if (FLAGS.includes(arg) || arg.startsWith("--prefs=")) continue;
   const match = arg.match(/^--([a-z]+)=(.+)$/);
   if (!match) throw new Error(`unknown argument ${arg}`);
   params.set(match[1], match[2]);
@@ -79,10 +92,11 @@ for (const arg of args) {
 // Linux, where GL JS's on the page went unpaced), so unpaced Firefox draws
 // Orbis on the page unless `--worker` says otherwise.
 if (inFirefox && unpaced && !params.has("worker")) params.set("worker", "0");
-if ((android || inFirefox) && precise)
+if ((android || inFirefox || inWebkit) && precise)
   throw new Error("--precise needs headless Chromium");
-if (android && (inFirefox || unpaced))
-  throw new Error("--firefox and --unpaced run on this machine");
+if (android && (inFirefox || inWebkit || unpaced))
+  throw new Error("--firefox, --webkit and --unpaced run on this machine");
+if (inWebkit && unpaced) throw new Error("--unpaced needs Chromium or Firefox");
 // The gestures and frames pages interleave engines themselves, path by
 // path or view by view; for the rest, one page load an engine.
 const engines = ["gestures", "frames"].includes(
@@ -99,16 +113,19 @@ if (android) {
   ({ browser, page, close: cleanup } = await openAndroid(server, { physical }));
 } else {
   browser = inFirefox
-    ? await firefox.launch({
-        // As Talos runs Firefox unpaced: tasks still run between frames.
-        firefoxUserPrefs: unpaced
-          ? {
-              "layout.frame_rate": 0,
-              "docshell.event_starvation_delay_hint": 1,
-            }
-          : {},
+    ? await launchFirefox({
+        prefs: {
+          // As Talos runs Firefox unpaced: tasks still run between frames.
+          ...(unpaced && {
+            "layout.frame_rate": 0,
+            "docshell.event_starvation_delay_hint": 1,
+          }),
+          ...prefs,
+        },
       })
-    : await launchChromium({ unsafe: precise, unpaced });
+    : inWebkit
+      ? await launchWebkit()
+      : await launchChromium({ unsafe: precise, unpaced });
   page = await browser.newPage();
 }
 try {
@@ -132,7 +149,10 @@ try {
   // keep their pace while the GPU runs behind: the GPU process's presents
   // show what reached the screen.
   const tracing =
-    params.get("experiment") === "gestures" && !android && !inFirefox
+    params.get("experiment") === "gestures" &&
+    !android &&
+    !inFirefox &&
+    !inWebkit
       ? await startTrace(await page.context().newCDPSession(page))
       : null;
   const checked =

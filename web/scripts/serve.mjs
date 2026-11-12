@@ -8,8 +8,10 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 
-import { chromium } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 import { build } from "vite";
+
+import { installedFirefox } from "./firefox.mjs";
 
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
 const androidSerial = fileURLToPath(
@@ -216,6 +218,30 @@ export function launchChromium({
       ...(unpaced ? ["--disable-gpu-vsync", "--disable-frame-rate-limit"] : []),
     ],
   });
+}
+
+// Firefox as its users run it, with WebGPU where it has it: the installed
+// Firefox, headed, since headless Firefox blocklists its WebGPU adapter
+// (`requestAdapter` gives null) and draws through software WebRender. Where
+// none is installed, or `webgpu: false`, Playwright's Firefox headless,
+// whose maps draw with WebGL 2 (WebGPU blocklisted). `prefs` are
+// `about:config` prefs. Resolves to the browser; its `webgpu` says whether
+// it should have WebGPU.
+export async function launchFirefox({ webgpu = true, prefs = {} } = {}) {
+  const executablePath = webgpu ? installedFirefox() : undefined;
+  const browser = await firefox.launch({
+    ...(executablePath && { channel: "moz-firefox", executablePath }),
+    headless: !executablePath,
+    firefoxUserPrefs: prefs,
+  });
+  browser.webgpu = !!executablePath;
+  return browser;
+}
+
+// Playwright's WebKit, which has WebGPU (on Metal) headless, in workers
+// and on OffscreenCanvas too, as Safari 26 does.
+export function launchWebkit({ headed = false } = {}) {
+  return webkit.launch({ headless: !headed });
 }
 
 // `chromiumPlatform` with WebGPU off: ANGLE as pinned there.

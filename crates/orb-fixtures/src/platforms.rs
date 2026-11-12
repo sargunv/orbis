@@ -48,10 +48,10 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
         reports.insert("chrome", suite.run(root, filter, "chrome")?);
         reports.insert("chrome-webgl2", suite.run(root, filter, "chrome-webgl2")?);
     }
-    // A phone's Chrome beside this machine's on the same backend: what the
-    // phone alone fails.
-    if let Some(desktop) = platform.strip_prefix("android-") {
-        reports.insert(desktop, suite.run(root, filter, desktop)?);
+    // A phone's Chrome beside this machine's on the same backend, and
+    // Firefox or WebKit beside Chrome: what the one alone fails.
+    if let Some(reference) = beside_chrome(platform) {
+        reports.insert(reference, suite.run(root, filter, reference)?);
         reports.insert(platform, suite.run(root, filter, platform)?);
     }
     if ["lavapipe", "all"].contains(&platform) {
@@ -131,20 +131,34 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
         (Some(webgpu), Some(gl)) => lost_report("WebGPU", webgpu, "GL", gl),
         _ => Value::Null,
     };
-    let phone = match platform.strip_prefix("android-") {
-        Some(desktop) => lost_report(desktop, &reports[desktop], platform, &reports[platform]),
+    let beside = match beside_chrome(platform) {
+        Some(reference) => {
+            lost_report(reference, &reports[reference], platform, &reports[platform])
+        }
         None => Value::Null,
     };
-    let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity,"webgl2":webgl2,"phone":phone});
+    let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity,"webgl2":webgl2,"beside":beside});
     write_json(&combined, &summary)?;
     println!("\nReport: {}", combined.display());
     Ok(())
 }
 
+/// The Chrome a browser platform runs beside, for what it alone fails: a
+/// phone's beside this machine's on the same backend, Firefox and WebKit
+/// beside Chrome on WebGPU.
+fn beside_chrome(platform: &str) -> Option<&'static str> {
+    match platform {
+        "android-chrome" | "firefox" | "webkit" => Some("chrome"),
+        "android-chrome-webgl2" => Some("chrome-webgl2"),
+        _ => None,
+    }
+}
+
 /// The tests `first` passes and `second` doesn't, by cause: a gap the map
 /// reported (`degraded:<gap>`), or one the renderer didn't, which is a bug
 /// of the second's path (WebGL 2's against WebGPU, #140; a phone's against
-/// this machine). Printed, and the summary's `webgl2` or `phone`.
+/// this machine; Firefox's or WebKit's against Chrome). Printed, and the
+/// summary's `webgl2` or `beside`.
 fn lost_report(first_name: &str, webgpu: &Value, second_name: &str, gl: &Value) -> Value {
     let status = |report: &Value| -> BTreeMap<String, Value> {
         (report["tests"].as_array().into_iter().flatten())

@@ -1,6 +1,7 @@
-//! The Chrome driver (`web/scripts/render-fixtures.mjs`): one Chromium
-//! process drawing fixtures through the `orbis` package; selection and
-//! comparison stay in Rust.
+//! The browser driver (`web/scripts/render-fixtures.mjs`): one browser
+//! (Chromium by default, or Firefox, WebKit or a phone's Chrome) drawing
+//! fixtures through the `orbis` package; selection and comparison stay in
+//! Rust.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -20,22 +21,22 @@ pub(crate) struct Chrome {
 
 impl Chrome {
     /// The driver, drawing on WebGPU or with `webgl2` on WebGL 2 (in a
-    /// Chrome without WebGPU), in this machine's Chromium or with
-    /// `android` the assigned phone's Chrome, serving `assets` to the page
-    /// as `kind`'s suite serves them.
+    /// Chrome without WebGPU), in this machine's Chromium or `browser`
+    /// (`android`: the assigned phone's Chrome; `firefox`, `webkit`),
+    /// serving `assets` to the page as `kind`'s suite serves them.
     pub(crate) fn new(
         root: &Path,
         assets: &Path,
         kind: Assets,
         webgl2: bool,
-        android: bool,
+        browser: Option<&str>,
     ) -> Result<Self, String> {
         let mut child = Command::new("node")
             .arg(root.join("web/scripts/render-fixtures.mjs"))
             .arg(assets)
             .args((kind == Assets::Native).then_some("--offline"))
             .args(webgl2.then_some("--webgl2"))
-            .args(android.then_some("--android"))
+            .args(browser.map(|b| format!("--{b}")))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

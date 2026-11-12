@@ -1,4 +1,10 @@
-// End-to-end checks in headless Chromium:
+// End-to-end checks in Chromium, Firefox and WebKit: each check in each of
+// `--browsers` (all three by default), but those that need Chromium
+// (`CHROMIUM_ONLY`, which says why). Firefox is the installed one, headed,
+// on WebGPU, else Playwright's headless on WebGL 2 (serve.mjs's
+// `launchFirefox`); WebKit is Playwright's, headless, on WebGPU, its maps on
+// the page's thread. Each browser's backend and thread come from boot.html
+// first, and the checks expect them.
 //
 // - `scenario`: the binding scenario through the orbis package
 //   on web/dist/scenario.html: an inline style,
@@ -91,7 +97,7 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split,offline]
+//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -101,8 +107,14 @@ import { fileURLToPath } from "node:url";
 
 import { chromium, firefox } from "playwright";
 
+import { installedFirefox } from "./firefox.mjs";
 import { decodePng, encodePng } from "./png.mjs";
-import { launchChromium, serveDemo } from "./serve.mjs";
+import {
+  launchChromium,
+  launchFirefox,
+  launchWebkit,
+  serveDemo,
+} from "./serve.mjs";
 
 const arg = (name, fallback) =>
   process.argv
@@ -113,6 +125,7 @@ const only = arg(
   "only",
   "scenario,webgl2,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split",
 ).split(",");
+const browsers = arg("browsers", "chromium,firefox,webkit").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -203,11 +216,21 @@ const EDITS = [
   ["global state", [["setGlobalStateProperty", "unused", 1]]],
 ];
 
+/** Calls `handle` with each of `page`'s errors' messages but Firefox's
+ * report of a request a check failed on purpose (`route.abort`), which
+ * WebDriver BiDi gives as a page error. */
+function onPageError(page, handle) {
+  page.on("pageerror", (e) => {
+    if (!/\(Reason: CORS request did not succeed\)/.test(e.message))
+      handle(e.message);
+  });
+}
+
 /** A page that collects its errors and warnings. */
 async function open(browser, viewport) {
   const page = await browser.newPage({ viewport });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  onPageError(page, (m) => errors.push(m));
   page.on("console", (m) => {
     if (["error", "warning"].includes(m.type())) errors.push(m.text());
   });
@@ -220,7 +243,12 @@ async function scenario(browser, server) {
   await scenarioOn(browser, server, "page");
 }
 
-async function scenarioOn(browser, server, thread, backend = "webgpu") {
+async function scenarioOn(
+  browser,
+  server,
+  thread,
+  backend = browser.expects.backend,
+) {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
   const query = new URLSearchParams({
     ...(thread === "page" && { worker: "0" }),
@@ -231,7 +259,7 @@ async function scenarioOn(browser, server, thread, backend = "webgpu") {
     await page.evaluate(() =>
       window.scenario.then((s) => [s.map.inWorker, s.map.backend]),
     ),
-    [thread === "worker", backend],
+    [thread === "worker" && browser.expects.worker, backend],
     thread,
   );
   const scenario = (fn, arg) =>
@@ -979,8 +1007,12 @@ async function edits(browser, server) {
     map.loseDevice();
     await lost;
     const during = [];
-    while (recovering)
+    // A task between calls: on the page's thread a call can answer within
+    // the task, and the recovery's own tasks would never run.
+    while (recovering) {
       during.push(await map.getLayersOrder().then(() => null, String));
+      await new Promise((r) => setTimeout(r));
+    }
     await restored;
     await map.once("idle");
     const at = await map.project([139.735 + 7 * 0.0004, 35.682]);
@@ -1391,7 +1423,7 @@ async function switching(browser, server) {
   // A map that stops fails the pick at once, saying why, rather than
   // leaving it loading.
   const stopped = new Promise((_, reject) =>
-    picking.on("pageerror", (e) => reject(e)),
+    onPageError(picking, (m) => reject(new Error(m))),
   );
   stopped.catch(() => {});
   await picking.goto(`${server.url}#15/35.687/139.74/20/30`);
@@ -1491,7 +1523,7 @@ async function light(browser, server) {
   // The style is the demo's; its tiles would come from the network, which
   // fails here: the switch only edits the style.
   const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  onPageError(page, (m) => errors.push(m));
   await page.route(
     (u) => !u.href.startsWith(server.url),
     (route) => route.abort("internetdisconnected"),
@@ -1577,7 +1609,7 @@ async function terrain(browser, server) {
   });
   // As in `light`: the switch only edits the style.
   const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  onPageError(page, (m) => errors.push(m));
   await page.route(
     (u) => !u.href.startsWith(server.url),
     (route) => route.abort("internetdisconnected"),
@@ -1829,7 +1861,7 @@ async function options(browser, server) {
     viewport: { width: 1200, height: 800 },
   });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  onPageError(page, (m) => errors.push(m));
   await offlineGlobe(page, server);
   await page.goto(
     `${server.url}?style=globe&shadows=1&night=1&projection=mercator&colors=linear#14/35.687/139.74`,
@@ -1962,7 +1994,7 @@ async function options(browser, server) {
   ]);
   assert.deepEqual(await renderer(page), {
     picked: "auto",
-    active: "webgpu",
+    active: browser.expects.backend,
   });
   assert.ok(
     panel.box.right <= panel.button.left &&
@@ -2155,8 +2187,15 @@ function reportGpuErrors() {
       return device;
     };
   }
+  // The map's worker draws only where the page hears raw pointer moves
+  // (map.ts's `workerCapable`); elsewhere (WebKit) the map is on the page,
+  // and patched job workers there left GeoJSON tiles loading for good.
   const Base = globalThis.Worker;
-  if (!Base) return;
+  if (
+    !Base ||
+    (globalThis.HTMLElement && !("onpointerrawupdate" in HTMLElement.prototype))
+  )
+    return;
   const patch = `data:text/javascript,${encodeURIComponent(`(${reportGpuErrors})()`)}`;
   globalThis.Worker = class extends Base {
     constructor(url, options) {
@@ -2367,7 +2406,7 @@ async function compare(browser, server) {
   const open = async (url) => {
     const page = await context.newPage();
     const pageErrors = [];
-    page.on("pageerror", (e) => pageErrors.push(e.message));
+    onPageError(page, (m) => pageErrors.push(m));
     // Console errors explain a failure, but resources missing on purpose (the
     // Tokyo extract's glyph ranges) log some.
     const logged = [];
@@ -3317,7 +3356,7 @@ async function pitchedCity(webgpuBrowser, browser, server) {
       deviceScaleFactor: 2,
     });
     const errors = [];
-    page.on("pageerror", (e) => errors.push(e.message));
+    onPageError(page, (m) => errors.push(m));
     // GL errors reach the browser's log, from the map's worker too, and
     // never the console.
     const cdp = await page.context().newCDPSession(page);
@@ -3435,6 +3474,12 @@ async function boot(webgpuBrowser, server) {
     // WebGL 2 asked for, though WebGPU has an adapter: only core-gl.wasm loads.
     ["Chromium asked for WebGL 2", "webgl2", () => webgpuBrowser, "webgl2"],
     ["Firefox", "webgl2", () => firefox.launch()],
+    // The installed Firefox, headed, has WebGPU (macOS, Windows).
+    ...(installedFirefox()
+      ? [["Firefox with WebGPU", "webgpu", () => launchFirefox()]]
+      : []),
+    // WebKit has WebGPU, but no raw pointer moves: its maps stay on the page.
+    ["WebKit", "webgpu", () => launchWebkit(), undefined, false],
     [
       "Chromium without a GPU",
       "webgl2",
@@ -3444,7 +3489,7 @@ async function boot(webgpuBrowser, server) {
     // WebGPU asked for where it has none: the map doesn't start, saying why.
     ["Chromium without WebGPU asked for it", null, noWebgpu, "webgpu"],
   ];
-  for (const [name, backend, launch, asked] of browsers) {
+  for (const [name, backend, launch, asked, workers = true] of browsers) {
     const browser = await launch();
     try {
       for (const worker of [true, false]) {
@@ -3483,7 +3528,7 @@ async function boot(webgpuBrowser, server) {
         if (asked === "webgl2")
           assert.deepEqual([...new Set(builds)], ["core-gl"], where);
         // Firefox and Chromium hand a worker the canvas.
-        assert.equal(booted.inWorker, worker, where);
+        assert.equal(booted.inWorker, worker && workers, where);
         await page.waitForTimeout(100);
         const image = decodePng(await page.locator("#map").screenshot());
         const at = (100 * image.width + 100) * image.channels;
@@ -3516,7 +3561,7 @@ async function boot(webgpuBrowser, server) {
   // adapter, and its renderer row says so; Auto starts it again on WebGPU.
   const { page } = await open(webgpuBrowser, { width: 1200, height: 800 });
   const pageErrors = [];
-  page.on("pageerror", (e) => pageErrors.push(e.message));
+  onPageError(page, (m) => pageErrors.push(m));
   const style = encodeURIComponent(`${server.url}e2e/data/playground.json`);
   // Without clip control, as in Firefox, extrusions show the badge.
   await page.addInitScript(`(${withoutClipControl})()`);
@@ -3596,22 +3641,73 @@ const server = {
   })),
   styles,
 };
-const browser = await launchChromium();
+// Checks that need Chromium, and why; the rest run in each browser.
+const CHROMIUM_ONLY = {
+  gestures: "synthesizes touch input through the DevTools protocol",
+  webgl2: "compares Chromium with and without WebGPU, and reads its GPU log",
+  boot: "launches the browsers it compares itself",
+  compare: "MapLibre Native's web build is measured in Chromium alone",
+};
+// Checks a browser fails for a reason left to fix, and why.
+const KNOWN = {
+  webkit: {
+    readback:
+      "WebKit's VideoFrame converts a bitmap's colours, so images decode through a canvas, which fingerprinting protection perturbs",
+  },
+};
+const launchers = {
+  chromium: () => launchChromium(),
+  firefox: () => launchFirefox(),
+  webkit: () => launchWebkit(),
+};
 let failed = 0;
 try {
-  for (const name of only) {
-    const check = CHECKS[name];
-    if (!check) throw new Error(`unknown check ${name}`);
+  for (const name of browsers) {
+    const launch = launchers[name];
+    if (!launch) throw new Error(`unknown browser ${name}`);
+    const browser = await launch();
     try {
-      await check(browser, server);
-    } catch (e) {
-      failed++;
-      console.error(`${name} failed: ${e.message}`);
+      browser.expects = await expectations(browser, server);
+      console.log(
+        `${name} ${browser.version()}: maps draw with ${browser.expects.backend}` +
+          (browser.expects.worker ? ", in a worker" : ", on the page"),
+      );
+      for (const check of only) {
+        if (!CHECKS[check]) throw new Error(`unknown check ${check}`);
+        const skip =
+          (name !== "chromium" && CHROMIUM_ONLY[check]) || KNOWN[name]?.[check];
+        if (skip) {
+          console.log(`${check}: skipped in ${name}: ${skip}`);
+          continue;
+        }
+        try {
+          await CHECKS[check](browser, server);
+        } catch (e) {
+          failed++;
+          console.error(`${check} failed in ${name}: ${e.message}`);
+        }
+      }
+    } finally {
+      await browser.close();
     }
   }
 } finally {
-  await browser.close();
   server.close();
   await rm(styles, { recursive: true, force: true });
 }
 if (failed) process.exit(1);
+
+/** What a map in `browser` draws with, and whether it runs in a worker
+ * (map.ts's `workerCapable`: WebKit tells the page of no raw pointer
+ * moves, so its maps stay on the page). */
+async function expectations(browser, server) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${server.url}boot.html`);
+    const booted = await page.evaluate(() => window.booted);
+    if (booted.error) throw new Error(`the map didn't boot: ${booted.error}`);
+    return { backend: booted.backend, worker: booted.inWorker };
+  } finally {
+    await page.close();
+  }
+}

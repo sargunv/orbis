@@ -183,9 +183,10 @@ impl Counts {
     }
 }
 
-/// The backend for `platform`: Chrome (`chrome`, `chrome-webgl2`, and on
-/// a phone `android-chrome`, `android-chrome-webgl2`) or the native
-/// runtime, fetching `assets` as the suite's server serves them.
+/// The backend for `platform`: a browser (`chrome`, `chrome-webgl2`, on a
+/// phone `android-chrome`, `android-chrome-webgl2`, and `firefox`,
+/// `webkit`) or the native runtime, fetching `assets` as the suite's server
+/// serves them.
 pub(crate) fn backend(
     root: &Path,
     platform: &str,
@@ -193,15 +194,22 @@ pub(crate) fn backend(
     kind: crate::fetch::Assets,
 ) -> Result<crate::Backend, String> {
     match platform {
-        "chrome" | "chrome-webgl2" | "android-chrome" | "android-chrome-webgl2" => {
-            Ok(crate::Backend::Chrome(crate::chrome::Chrome::new(
-                root,
-                assets,
-                kind,
-                platform.ends_with("webgl2"),
-                platform.starts_with("android-"),
-            )?))
-        }
+        "chrome"
+        | "chrome-webgl2"
+        | "android-chrome"
+        | "android-chrome-webgl2"
+        | "firefox"
+        | "webkit" => Ok(crate::Backend::Chrome(crate::chrome::Chrome::new(
+            root,
+            assets,
+            kind,
+            platform.ends_with("webgl2"),
+            match platform {
+                "firefox" | "webkit" => Some(platform),
+                _ if platform.starts_with("android-") => Some("android"),
+                _ => None,
+            },
+        )?)),
         _ => crate::runtime(assets, kind),
     }
 }

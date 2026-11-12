@@ -1,4 +1,4 @@
-// The Chrome transport for orb-fixtures: web/demo/fixture.html, which
+// The browser transport for orb-fixtures: web/demo/fixture.html, which
 // draws each fixture through the orbis package. Rust sends one JSON request
 // per line; a render's response names RGBA bytes written by this process
 // (a GL JS fixture's premultiplied, a Native one's straight), a query's
@@ -8,13 +8,21 @@
 // MapLibre Native's cache, whose `https://` and `mapbox://` URLs are files
 // too. `--android` draws them in Chrome on the phone assigned to this
 // worktree (`devices-cli assign`), its WebGPU or with `--webgl2` its
-// WebGL 2.
+// WebGL 2. `--firefox` draws them in Firefox (serve.mjs's `launchFirefox`:
+// the installed one, headed, on WebGPU; else Playwright's, on WebGL 2),
+// `--webkit` in Playwright's WebKit, on WebGPU.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
+import {
+  launchChromium,
+  launchFirefox,
+  launchWebkit,
+  openAndroid,
+  serveDemo,
+} from "./serve.mjs";
 
 const assets = process.argv[2]
   ? resolve(process.argv[2]) + sep
@@ -24,18 +32,24 @@ const offline = process.argv.includes("--offline");
 // (`--platform chrome-webgl2`).
 const webgl2 = process.argv.includes("--webgl2");
 const android = process.argv.includes("--android");
+const inFirefox = process.argv.includes("--firefox");
+const inWebkit = process.argv.includes("--webkit");
 const reply = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const server = await serveDemo({ assets, offline });
 // A phone's Chrome has WebGPU; `?backend=webgl2` puts its maps on WebGL 2.
 const { browser, page, close } = android
   ? await openAndroid(server, { physical: true })
-  : await launchChromium({ unpaced: true, webgpu: !webgl2 }).then(
-      async (browser) => ({
-        browser,
-        page: await browser.newPage(),
-        close: () => browser.close(),
-      }),
-    );
+  : await (
+      inFirefox
+        ? launchFirefox()
+        : inWebkit
+          ? launchWebkit()
+          : launchChromium({ unpaced: true, webgpu: !webgl2 })
+    ).then(async (browser) => ({
+      browser,
+      page: await browser.newPage(),
+      close: () => browser.close(),
+    }));
 try {
   page.on("console", (m) => {
     if (["error", "warning"].includes(m.type())) console.error(m.text());
@@ -95,10 +109,11 @@ try {
       .goto(`${server.url}fixture.html${webgl2 ? "?backend=webgl2" : ""}`)
       .then(() => page.waitForFunction(() => window.fixture));
   await open();
+  // Where WebGPU has no adapter (Playwright's Firefox), maps draw with
+  // WebGL 2.
   const maxSize = await page.evaluate(async (webgl2) => {
-    if (!webgl2)
-      return (await navigator.gpu.requestAdapter()).limits
-        .maxTextureDimension2D;
+    const adapter = !webgl2 && (await navigator.gpu?.requestAdapter());
+    if (adapter) return adapter.limits.maxTextureDimension2D;
     const gl = new OffscreenCanvas(1, 1).getContext("webgl2");
     return gl.getParameter(gl.MAX_TEXTURE_SIZE);
   }, webgl2);
