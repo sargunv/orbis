@@ -320,6 +320,17 @@ fn idle_comes_once_after_an_ease() {
     assert!((map.zoom() - 1.0).abs() < 1e-9);
 }
 
+/// A texture target's viewport is its size in logical pixels, and once
+/// resized it reads back at its new size.
+#[test]
+fn texture_targets_resize_and_read_back() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, 10, 6, 2.0);
+    assert_eq!(target.viewport().width, 5.0);
+    target.resize(8, 4, 1.0);
+    assert_eq!(target.read_pixels().unwrap().len(), 8 * 4 * 4);
+}
+
 /// A wake callback dies with its map, even while a fetch the map started
 /// is still in flight and the runtime lives on: a host may free the
 /// callback's state as soon as the map is gone.

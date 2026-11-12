@@ -549,7 +549,6 @@ fn default_extent(plane: &Plane) -> WorldRect {
     )
 }
 
-/// Web Mercator's northing, written out for its tests.
 #[cfg(test)]
 mod tests {
     use super::*;
