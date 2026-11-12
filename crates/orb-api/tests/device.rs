@@ -305,7 +305,9 @@ const SET_CHILD: &str = "ORB_TEST_PIPELINE_SET_CHILD";
 /// of the layer's pipeline are slowed from the environment.
 #[test]
 fn hidden_layers_compile_ahead_of_need() {
-    const COMPILE: Duration = Duration::from_millis(800);
+    // Long against a load, even on a loaded machine (a full test run,
+    // other builds), so the load rests well before it ends.
+    const COMPILE: Duration = Duration::from_secs(3);
     if std::env::var_os(SET_CHILD).is_none() {
         let child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -372,11 +374,10 @@ fn hidden_layers_compile_ahead_of_need() {
         loading.elapsed() < COMPILE,
         "the load waited for the circle"
     );
-    // Long enough for the slowed compile to end on a loaded machine (a
-    // full test run, other builds), where twice its time fell short and
-    // the zoom then waited for it.
+    // Long enough for the slowed compile to end, its own compile time
+    // included, where a frame would collect it.
     let rested = Instant::now();
-    while rested.elapsed() < COMPILE * 5 {
+    while rested.elapsed() < COMPILE * 2 {
         assert!(!map.needs_frame(), "a background compile woke the map");
         std::thread::sleep(Duration::from_millis(10));
     }
