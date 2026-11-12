@@ -43,6 +43,10 @@ pub(crate) struct Module {
     /// postcard-encoded, and each made when a stage first uses it.
     #[cfg(not(target_arch = "wasm32"))]
     entries: Vec<EntryModule>,
+    /// Natively, boolean override constants written into the module
+    /// (`ShaderModuleDesc::fold`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fold: Vec<(String, f64)>,
     /// On a GL ES device, the build's GLSL of its stages, and whether the
     /// device clips depth from 0 to 1: each stage is a module of its own,
     /// its constants written in, which wgpu compiles as it is.
@@ -62,6 +66,7 @@ impl Module {
         source: String,
         ir: Option<IrModules>,
         glsl: Option<(Glsl, bool)>,
+        fold: &[(&str, f64)],
     ) -> Shared<Self> {
         Shared::new(Self {
             label: label.to_owned(),
@@ -75,6 +80,8 @@ impl Module {
                     made: OnceLock::new(),
                 })
                 .collect(),
+            #[cfg(not(target_arch = "wasm32"))]
+            fold: (fold.iter()).map(|&(k, v)| (k.to_owned(), v)).collect(),
             #[cfg(not(webgpu))]
             glsl,
             #[cfg(not(target_arch = "wasm32"))]
@@ -87,27 +94,34 @@ impl Module {
     /// The module for a stage at `entry`: natively the build's module of
     /// that entry point when there is one, which skips parsing the WGSL
     /// (most of a module's cost) and wgpu's split of a module per stage;
-    /// the WGSL's otherwise.
+    /// the WGSL's otherwise, parsed here when constants are to be folded
+    /// into it. Either has its [`fold`](Self::fold) folded in.
     #[cfg(not(target_arch = "wasm32"))]
     fn get(&self, device: &wgpu::Device, entry: &str) -> &wgpu::ShaderModule {
+        let made = |mut module: naga::Module| {
+            fold::fold(&mut module, &self.fold);
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(&self.label),
+                source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
+            })
+        };
         if let Some(one) = self.entries.iter().find(|e| e.entry == entry)
             && let Some(module) = one
                 .made
-                .get_or_init(|| {
-                    let module = postcard::from_bytes::<naga::Module>(one.bytes).ok()?;
-                    Some(device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some(&self.label),
-                        source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
-                    }))
-                })
+                .get_or_init(|| postcard::from_bytes::<naga::Module>(one.bytes).ok().map(made))
                 .as_ref()
         {
             return module;
         }
         self.made.get_or_init(|| {
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&self.label),
-                source: wgpu::ShaderSource::Wgsl(self.source.as_str().into()),
+            let parsed = (!self.fold.is_empty())
+                .then(|| naga::front::wgsl::parse_str(&self.source).ok())
+                .flatten();
+            parsed.map(made).unwrap_or_else(|| {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(&self.label),
+                    source: wgpu::ShaderSource::Wgsl(self.source.as_str().into()),
+                })
             })
         })
     }
@@ -1393,6 +1407,8 @@ compile_error!("orb-hal-wgpu on the web takes one of the `webgpu` and `gl` featu
 
 #[cfg(not(target_arch = "wasm32"))]
 mod dump;
+#[cfg(not(target_arch = "wasm32"))]
+mod fold;
 #[cfg(webgl)]
 mod webgl;
 #[cfg(webgl)]

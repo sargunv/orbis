@@ -167,6 +167,11 @@ pub struct ShaderModuleDesc<'a> {
     /// (`orb_shaders::glsl`), for a GL ES device to compile as they are
     /// rather than translate `source`.
     pub glsl: Option<Glsl>,
+    /// Boolean override constants a device that compiles with naga writes
+    /// into the module (`ir`'s, or `source` parsed), dropping the code
+    /// they decide: a pipeline variant's, which its stages then don't set.
+    /// Where `ir` is `None` the browser compiles `source` as it is.
+    pub fold: &'a [(&'a str, f64)],
 }
 
 /// Shader `label`'s stage at `entry` as GLSL ES 3.00, with a pipeline's

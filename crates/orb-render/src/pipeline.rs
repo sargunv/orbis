@@ -227,11 +227,14 @@ impl Variant {
     }
 }
 
-/// A module of `shader`'s WGSL specialised to `variant`, and whether it
-/// is: Apple's compiler takes as long over code no branch reaches as over
-/// code that runs, and about 30 ms over a stage with any texture in it,
-/// which override constants alone left to it. Not on a GL device, whose
-/// GLSL the build wrote and whose compiler drops what a constant decides.
+/// A module of `shader` specialised to `variant`, and whether it is:
+/// Apple's compiler takes as long over code no branch reaches as over code
+/// that runs, and about 30 ms over a stage with any texture in it, which
+/// override constants alone left to it. The build's naga modules have the
+/// device fold it into them (`ShaderModuleDesc::fold`), with no WGSL
+/// parsed; the browser's WGSL is specialised as text
+/// ([`orb_shaders::specialise`]). Not on a GL device, whose GLSL the build
+/// wrote and whose compiler drops what a constant decides.
 ///
 /// It reads the tables from data textures where the device's vertex
 /// stage has no storage buffers (the tables' texture backing), and on a
@@ -258,31 +261,30 @@ fn module(gpu: &mut dyn Gpu, shader: &Shader, variant: Variant) -> (ShaderModule
     #[cfg(all(not(cpu_driven), target_arch = "wasm32"))]
     let (source, ir, glsl) = (shader.source(), shader.ir(), None);
     #[cfg(not(all(cpu_driven, target_arch = "wasm32")))]
-    let (source, ir, specialised) = {
-        // Natively the module is then made from its WGSL, not from the
-        // build's naga modules, and parsing that takes about 25 ms of a
-        // compile thread on an M6: only for the variants that leave out
-        // more, the terrain's and the patterns' textures. Where there are
-        // no naga modules (the browser) every module is parsed anyway.
-        let pays = ir.is_none() || variant.plane || !variant.patterns;
-        match (glsl.is_none() && pays)
-            .then(|| orb_shaders::specialise(&source, &variant.constants()))
-            .flatten()
-        {
-            Some(specialised) => (specialised, None, true),
-            None => (source, ir, false),
-        }
+    let constants = variant.constants();
+    #[cfg(not(all(cpu_driven, target_arch = "wasm32")))]
+    let (source, fold, specialised): (_, &[_], _) = match (&glsl, ir) {
+        (Some(_), _) => (source, &[], false),
+        // Natively the data tables' WGSL too, which the device parses: so
+        // both drivers' stages go through the same fold, and draw alike.
+        (None, Some(_)) => (source, &constants, true),
+        (None, None) if cfg!(not(target_arch = "wasm32")) => (source, &constants, true),
+        (None, None) => match orb_shaders::specialise(&source, &constants) {
+            Some(specialised) => (specialised, &[], true),
+            None => (source, &[], false),
+        },
     };
     #[cfg(all(cpu_driven, target_arch = "wasm32"))]
-    let specialised = {
+    let (fold, specialised) = {
         let _ = variant;
-        false
+        (&[], false)
     };
     let module = gpu.create_shader_module(&ShaderModuleDesc {
         label: shader.label,
         source: source.into(),
         ir,
         glsl,
+        fold,
     });
     (module, specialised)
 }

@@ -1806,6 +1806,7 @@ impl Gpu for WgpuGpu {
             source,
             ir,
             (desc.glsl.filter(|_| self.glsl_es)).map(|g| (g, self.caps.zero_to_one_depth)),
+            desc.fold,
         )))
     }
 

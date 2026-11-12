@@ -50,7 +50,11 @@ pub(super) fn job(job: &Job) {
         if !path.exists() {
             let _ = std::fs::write(&path, &s.module.source);
         }
-        let constants: Vec<String> = (s.constants.iter())
+        // Those folded into the module too: the probe's `--specialise`
+        // writes them in again.
+        let folded = (s.module.fold.iter())
+            .filter(|(k, _)| s.module.source.contains(&format!("override {k}:")));
+        let constants: Vec<String> = (s.constants.iter().chain(folded))
             .map(|(k, v)| format!("{k}={v}"))
             .collect();
         format!("{file}\t{}\t{}", s.entry_point, constants.join(","))

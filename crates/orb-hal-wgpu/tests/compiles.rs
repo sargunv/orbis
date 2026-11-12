@@ -38,6 +38,7 @@ fn one_at_a_time_compiles_one_at_a_time() {
         source: SHADER.into(),
         ir: None,
         glsl: None,
+        fold: &[],
     });
     let stage = |entry_point| ShaderStage {
         module,
