@@ -455,7 +455,7 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     assert!(next.bundle_recorded || first.pipelines_pending == 0);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     assert_eq!(pixel(&pixels, 4, 32), RED);
-    assert_eq!(h.gpu.pipelines_created(), pipelines);
+    assert_eq!(h.gpu.counters().pipelines_compiled, pipelines);
 }
 
 #[test]

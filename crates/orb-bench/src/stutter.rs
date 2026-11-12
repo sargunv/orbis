@@ -381,7 +381,7 @@ fn run_path(
         } else {
             map.jump_to_state((scenario.camera)(f64::from(f) / scenario.frames as f64));
         }
-        let before = runtime.stats().uploaded_bytes;
+        let before = runtime.stats().counters.uploaded_bytes();
         // The target keeps two frames in flight, as a swapchain does.
         let (report, cpu, instructions) = crate::frame_counted(map, target, now)?;
         warnings.extend(crate::take_warnings(map));
@@ -393,7 +393,7 @@ fn run_path(
             stages: Frame::stages(&report.times, cpu),
             gpu: None,
             passes: Vec::new(),
-            uploaded: runtime.stats().uploaded_bytes - before,
+            uploaded: runtime.stats().counters.uploaded_bytes() - before,
             arrived: report.tiles_arrived,
             waiting: report.frame.nodes_waiting,
         });

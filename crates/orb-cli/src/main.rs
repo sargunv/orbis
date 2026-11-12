@@ -235,7 +235,7 @@ fn render(
         "orbis: {} in {:.0} ms; {} pipelines in {:.0} ms of compile threads",
         output.display(),
         started.elapsed().as_secs_f64() * 1000.0,
-        stats.pipelines_created,
+        stats.counters.pipelines_compiled,
         stats.pipeline_time.as_secs_f64() * 1000.0,
     );
     if args.has("--pipelines") {

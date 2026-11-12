@@ -6,7 +6,7 @@ use orb_camera::{CameraState, View, Viewport};
 use orb_crs::{Metres, TileIndex, TileMatrixSet};
 
 use crate::surface::Surface;
-use orb_hal::{Gpu, TextureId};
+use orb_hal::{Gpu, GpuCounters, TextureId};
 use orb_host::{Abort, Fetch, FetchError, ImageDecode, ResourceKind};
 use orb_render::GpuTile;
 use orb_render::ImageAtlas;
@@ -120,6 +120,19 @@ pub struct FrameReport {
     /// frames to come unless the camera moves (MapLibre Native's
     /// `needsRepaint` unset). Upkeep doesn't count.
     pub settled: bool,
+    /// The tiles under the view's centre have arrived, for every source
+    /// the frame draws: what time-to-centre waits for.
+    pub centre_loaded: bool,
+    /// The camera moved for this frame: input, a glide or an animation.
+    pub moved: bool,
+    /// Input holds the camera: a drag, a pinch or wheel zooming is under
+    /// way. What the device did meanwhile (`gpu`) happened mid-gesture.
+    pub input: bool,
+    /// What the device did since the last frame drawn, in its
+    /// preparations and in it: pipelines asked for, memory made, bytes
+    /// and calls uploaded. The device's counts, which other maps on it
+    /// add to.
+    pub gpu: GpuCounters,
 }
 
 /// Where a frame's CPU time went on this thread, in microseconds of the
@@ -555,6 +568,8 @@ pub struct Map {
     pub(crate) tiles_arrived: u32,
     /// What preparing spent since the last frame drawn.
     prepared: (FrameTimes, u32),
+    /// The device's counts at the last frame drawn.
+    counted: GpuCounters,
     /// Arrived tiles wait for the next frame: this one spent its budget.
     pub(crate) tiles_deferred: bool,
     /// Tiles that arrived when the scene had no room for them, while other
@@ -808,6 +823,7 @@ impl Map {
             upload_ms: 0.0,
             tiles_arrived: 0,
             prepared: Default::default(),
+            counted: GpuCounters::default(),
             tiles_deferred: false,
             waiting: Vec::new(),
             candidates_dropped: 0,
@@ -1233,6 +1249,29 @@ impl Map {
     /// The style asked for last is installed, with its sprites and its
     /// sources' TileJSON: not while a style URL is loading to replace the
     /// one drawn, which would otherwise settle a still of the old style.
+    /// Whether every source's tiles under the view's centre, of the last
+    /// plan's cover, have arrived (or have nothing to load).
+    fn centre_loaded(&self) -> bool {
+        let Some(style) = &self.style else {
+            return false;
+        };
+        let target = self.camera.state().target;
+        style.sources.iter().all(|source| match source {
+            SourceState::Ready {
+                endpoint, pyramid, ..
+            } => {
+                let tms = &endpoint.tms;
+                let at = tms.projection().forward(target);
+                !pyramid.cover_loading(|tile| {
+                    let bounds = tms.tile_bounds(tile);
+                    at.cmpge(bounds.min).all() && at.cmplt(bounds.max).all()
+                })
+            }
+            SourceState::Resolving => false,
+            SourceState::Failed => true,
+        })
+    }
+
     fn style_loaded(&self) -> bool {
         !self.style_fetching
             && self.style.as_ref().is_some_and(|s| {
@@ -1766,6 +1805,11 @@ impl Map {
         // arrival blanked the drape slots, to draw from the next frame)
         // asks for that frame itself.
         self.settle_report(gpu, renderer, &mut report, moving);
+        (report.moved, report.input) = (moving, held);
+        report.centre_loaded = self.centre_loaded();
+        let counted = gpu.counters();
+        report.gpu = counted.since(&self.counted);
+        self.counted = counted;
         times.total = micros(started, clock.now());
         report.times = times;
         report

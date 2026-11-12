@@ -9,6 +9,7 @@
 //   pnpm session [--session=manhattan|paris|alps|globe] [--browser=chromium|firefox]
 //     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
 //     [--ratio=r] [--start=ms] [--warm] [--driver] [--page] [--headed] [--worst=n]
+//     [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
 //     [--dump=prefix] [--profile=firefox-profile.json]
 //
 // Sessions: `manhattan` opens Liberty over Midtown at z13 and wheel-zooms
@@ -25,9 +26,19 @@
 // reloads, so tiles come from the HTTP cache and pipelines from the
 // browser's. `--headed` runs Chromium in a window, at the display's
 // refresh. `--dump` writes each engine's frames, input windows and
-// presents to `<prefix>-<engine>.json`. `--profile` (Firefox, one engine)
-// runs Gecko's profiler on every thread from startup and writes its
-// profile there when Firefox quits, for profiler.firefox.com.
+// presents to `<prefix>-<engine>.json`. `--backend` draws Orbis with that
+// backend. `--pkgs` runs Orbis on each of these builds of web/pkg (copies
+// of it) in turn, run by run, for A/B runs in one session; GL JS runs once
+// a run. `--profile` (Firefox, one engine) runs Gecko's profiler on every
+// thread of every process from startup and writes its profile there when
+// Firefox quits, for profiler.firefox.com; the report's `profile` then
+// says, for the worst intervals and the pipelines made mid-move, which
+// threads of which processes were busy (CPU ms), so whether a compile
+// runs on the thread that presents shows without symbols.
+// In Chromium the report has the GPU process's main thread over the
+// moves (`gpuProcess`: busy time, tasks over 50 ms, the longest), and with
+// `--deep` (GPU service tracing) what its slow tasks did, its GL calls
+// (ANGLE's waits on WebGL 2, #140) and its work in the worst present gaps.
 //
 // For each run it reports when the first frame came, the map's frame
 // intervals (as the page hears of them: Orbis's `render` events from its
@@ -50,8 +61,18 @@
 // bust the driver's shader cache (`?nonce=`, cold.js), which a map in a
 // worker can't, unless `--driver` keeps what the driver's cache holds from
 // earlier runs (a user's later launches).
-import { readFileSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 import { launchChromium, launchFirefox, serveDemo } from "./serve.mjs";
 
@@ -73,6 +94,8 @@ const worstCount = Number(args.worst ?? 6);
 const warm = !!args.warm;
 const wheelScale = browserName === "firefox" ? ratio : 1;
 const dump = args.dump;
+const deep = !!args.deep;
+const pkgs = args.pkgs ? args.pkgs.split(",").map((p) => resolve(p)) : [null];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alps = JSON.parse(
@@ -222,6 +245,48 @@ function presents(traceEvents, origin) {
 const round = (x, d = 1) => +x.toFixed(d);
 const mib = (b) => round(b / (1 << 20));
 
+/** What Orbis's device did over `frames` (each frame's counts since the
+ * one before): pipelines asked for, buffers and textures made and their
+ * bytes, bytes copied on the GPU, uploads and their calls, texture-write
+ * submissions, drape slots redrawn. */
+function deviceTotals(frames) {
+  const sum = (f) => frames.reduce((s, x) => s + (f(x) ?? 0), 0);
+  return {
+    frames: frames.length,
+    pipelines: sum((f) => f.device.pipelinesRequested),
+    created: sum((f) => f.device.buffersCreated + f.device.texturesCreated),
+    allocatedMiB: mib(sum((f) => f.device.bytesAllocated)),
+    copiedMiB: mib(sum((f) => f.device.bytesCopied)),
+    uploadMiB: mib(sum((f) => f.device.uploadBytes)),
+    uploadCalls: sum((f) => f.device.uploadCalls),
+    textureWriteSubmissions: sum((f) => f.device.textureWriteSubmissions),
+    drapeSlots: sum((f) => f.drapeSlots),
+  };
+}
+
+/** Time to centre: when the first frame came whose tiles under the
+ * view's centre had all arrived (from navigation), and for each move how
+ * long after it ended that took (0 when they were in already). */
+function centre(frames, windows) {
+  const first = frames.find((f) => f.centre);
+  const afterMoves = windows.map(([, end]) => {
+    // The frame showing the move's end: an engine draws none after it
+    // when nothing changes.
+    if (frames.findLast((f) => f.t <= end)?.centre) return 0;
+    const f = frames.find((f) => f.t >= end && f.centre);
+    return f ? Math.round(f.t - end) : null;
+  });
+  const known = afterMoves.filter((x) => x !== null).sort((a, b) => a - b);
+  return {
+    centreMs: first ? Math.round(first.t) : null,
+    centreAfterMoves: {
+      p50: known[Math.floor((known.length - 1) / 2)] ?? null,
+      max: known.at(-1) ?? null,
+      never: afterMoves.length - known.length,
+    },
+  };
+}
+
 /** The WebGPU calls made between two tallies that took 1 ms or more or
  * wrote 1 MiB or more (`writeBuffer:<label>`: its bytes by buffer). */
 function callsBetween(a = {}, b = {}) {
@@ -273,6 +338,13 @@ function attribute(frames, i, gap, raf, longTasks) {
     jobs: f.jobs - prev.jobs,
     uploadedMiB: mib(f.uploaded - prev.uploaded),
     gpuGrewMiB: mib(f.gpuBytes - prev.gpuBytes),
+    ...(f.device && {
+      pipelines: f.device.pipelinesRequested,
+      allocatedMiB: mib(f.device.bytesAllocated),
+      uploadCalls: f.device.uploadCalls,
+      textureWriteSubmissions: f.device.textureWriteSubmissions,
+      drapeSlots: f.drapeSlots,
+    }),
     candidatesRebuilt: f.rebuilt,
     ...(f.gpu && { webgpu: callsBetween(prev.gpu, f.gpu) }),
     longestPageFrame: round(pageGap),
@@ -307,8 +379,17 @@ async function launch() {
     if (!browser.webgpu) console.error("no installed Firefox: WebGL 2");
     return browser;
   }
-  if (browserName === "chromium")
-    return launchChromium({ unsafe: false, headed: !!args.headed });
+  if (browserName === "chromium") {
+    if (!deep) return launchChromium({ unsafe: false, headed: !!args.headed });
+    const { chromium } = await import("playwright");
+    const { chromiumPlatform } = await import("./serve.mjs");
+    const { executablePath, args: flags } = chromiumPlatform();
+    return chromium.launch({
+      headless: !args.headed,
+      executablePath,
+      args: [...flags, "--enable-gpu-service-tracing"],
+    });
+  }
   throw new Error(`unknown browser ${browserName}`);
 }
 
@@ -333,6 +414,7 @@ async function run(server, engine) {
         style,
         at: session.at.join(","),
         frames: "",
+        ...(engine === "orbis" && args.backend && { backend: args.backend }),
         // Firefox on macOS draws Orbis on the page anyway; there its
         // shaders can be made unique to the run, past the driver's cache.
         ...(engine === "orbis" &&
@@ -566,7 +648,18 @@ async function run(server, engine) {
     const cdp =
       browserName === "chromium" ? await context.newCDPSession(page) : null;
     await cdp?.send("Tracing.start", {
-      categories: "gpu,viz,toplevel,blink.user_timing",
+      categories: [
+        "gpu,viz,toplevel,blink.user_timing",
+        ...(deep
+          ? [
+              "gpu.service",
+              "gpu.angle",
+              "disabled-by-default-gpu.service",
+              "disabled-by-default-gpu.decoder",
+              "disabled-by-default-gpu_decoder",
+            ]
+          : []),
+      ].join(","),
       transferMode: "ReturnAsStream",
     });
     const mark = await page.evaluate(() => {
@@ -574,7 +667,7 @@ async function run(server, engine) {
       return performance.now();
     });
     const windows = await moves();
-    let screen;
+    let screen, gpuProcess;
     if (cdp) {
       const traced = new Promise((r) => cdp.once("Tracing.tracingComplete", r));
       await cdp.send("Tracing.end");
@@ -588,7 +681,14 @@ async function run(server, engine) {
       const trace = JSON.parse(chunks.join(""));
       const events = Array.isArray(trace) ? trace : trace.traceEvents;
       const at = events.find((e) => e.name === "session-clock");
-      if (at) screen = presents(events, at.ts / 1000 - mark);
+      if (at) {
+        const origin = at.ts / 1000 - mark;
+        screen = presents(events, origin);
+        gpuProcess = gpuMain(events, origin, [
+          windows[0][0],
+          windows.at(-1)[1],
+        ]);
+      }
     }
     const lastInput = windows.at(-1)[1];
     const settled = await settle();
@@ -637,8 +737,10 @@ async function run(server, engine) {
       ...(screen && {
         presents: pacing(intervals(screen, windows).map((g) => g.gap)),
       }),
+      ...(gpuProcess && { gpuProcess }),
       pageFrames: pacing(pageGaps.map((g) => g.gap)),
       settleMs: settled === null ? null : Math.round(settled - lastInput),
+      ...(frames.some((f) => "centre" in f) && centre(frames, windows)),
       // Where the moves left the camera: the same in every engine and
       // browser when they take input alike.
       firstWheel,
@@ -686,6 +788,20 @@ async function run(server, engine) {
           frames.findLast((f) => f.pending > 0)?.t ?? 0,
         ),
       };
+      if (last.device) {
+        // The gates' counts: what the device did while input held the
+        // camera (a pipeline made then is a compile mid-gesture) and in
+        // frames that moved it (memory made then moves while it moves).
+        const inMoves = frames.filter((f) =>
+          windows.some(([a, b]) => f.t >= a && f.t <= b),
+        );
+        report.device = {
+          session: deviceTotals(frames),
+          input: deviceTotals(frames.filter((f) => f.input)),
+          moving: deviceTotals(frames.filter((f) => f.moved || f.input)),
+          inMoves: deviceTotals(inMoves),
+        };
+      }
       report.worst = mapGaps
         .sort((a, b) => b.gap - a.gap)
         .slice(0, worstCount)
@@ -693,6 +809,16 @@ async function run(server, engine) {
     }
     if (errors.length)
       report.errors = errors.slice(0, 5).map((e) => e.split("\n")[0]);
+    if (browserName === "firefox" && args.profile)
+      profiled = {
+        report,
+        origin: await page.evaluate(() => performance.timeOrigin),
+        gaps: [...mapGaps]
+          .sort((a, b) => b.gap - a.gap)
+          .slice(0, worstCount)
+          .map(({ i, gap }) => [frames[i].t - gap, frames[i].t]),
+        pipelines: (pipelines ?? []).filter((p) => p.at >= windows[0][0]),
+      };
     if (dump)
       writeFileSync(
         `${dump}-${engine}.json`,
@@ -704,14 +830,174 @@ async function run(server, engine) {
   }
 }
 
-const server = await serveDemo();
-try {
-  for (let r = 0; r < runs; r++) {
-    // The engines' order turns each run, so neither always goes first.
-    for (const engine of r % 2 ? [...engines].reverse() : engines) {
-      console.log(JSON.stringify({ run: r, ...(await run(server, engine)) }));
+/** The GPU process's main thread in a Chrome trace over `span` (page
+ * ms): its busy time and tasks over 50 ms, and with `--deep` what its
+ * slow tasks did, its GL calls and its work in the worst present gaps. */
+function gpuMain(events, origin, [from, to]) {
+  const meta = (name) => events.filter((e) => e.ph === "M" && e.name === name);
+  const pid = meta("process_name").find(
+    (e) => e.args.name === "GPU Process",
+  )?.pid;
+  const tid = meta("thread_name").find(
+    (e) => e.pid === pid && e.args.name === "CrGpuMain",
+  )?.tid;
+  if (pid === undefined) return undefined;
+  const inSpan = (e) =>
+    e.ts / 1000 - origin >= from && e.ts / 1000 - origin <= to;
+  const onMain = events.filter(
+    (e) => e.pid === pid && e.tid === tid && e.ph === "X" && inSpan(e),
+  );
+  const tasks = onMain.filter(
+    (e) => e.name === "ThreadControllerImpl::RunTask",
+  );
+  const out = {
+    busyMs: Math.round(tasks.reduce((s, e) => s + e.dur, 0) / 1000),
+    over50: tasks.filter((e) => e.dur > 50_000).length,
+    longestMs: Math.round(Math.max(0, ...tasks.map((e) => e.dur)) / 1000),
+  };
+  if (!deep) return out;
+  const tally = (list) => {
+    const by = {};
+    for (const e of list) {
+      const b = (by[e.name] ??= { n: 0, ms: 0, max: 0 });
+      b.n++;
+      b.ms += e.dur / 1000;
+      b.max = Math.max(b.max, e.dur / 1000);
+    }
+    return Object.entries(by)
+      .sort((a, b) => b[1].ms - a[1].ms)
+      .slice(0, 12)
+      .map(
+        ([name, b]) =>
+          `${name}: ${b.n}× ${round(b.ms, 0)} ms (max ${round(b.max)})`,
+      );
+  };
+  const slow = tasks.filter((e) => e.dur > 16_000);
+  out.inSlowTasks = tally(
+    onMain.filter(
+      (e) =>
+        e.name !== "ThreadControllerImpl::RunTask" &&
+        slow.some((t) => e.ts >= t.ts && e.ts < t.ts + t.dur),
+    ),
+  );
+  out.gl = tally(
+    onMain
+      .filter((e) => e.name.startsWith("TraceGLAPI::"))
+      .map((e) => ({ ...e, name: e.name.slice(12) })),
+  );
+  const shown = presents(events, 0)
+    .map((t) => t * 1000)
+    .filter((ts) => inSpan({ ts }));
+  out.worstGaps = shown
+    .slice(1)
+    .map((t, i) => ({ g: (t - shown[i]) / 1000, from: shown[i], to: t }))
+    .sort((a, b) => b.g - a.g)
+    .slice(0, 4)
+    .map(({ g, from, to }) => {
+      const inside = tasks.filter((t) => t.ts < to && t.ts + t.dur > from);
+      const busy = inside.reduce((s, t) => s + t.dur, 0) / 1000;
+      return `${round(g, 0)} ms: GPU main busy ${round(busy, 0)} ms`;
+    });
+  return out;
+}
+
+/** Which threads of which Firefox processes were busy, by CPU ms, in
+ * each of `windows` (page ms; `origin` the page's `timeOrigin`), from the
+ * Gecko profile at `path`: thread names need no symbols. */
+function profileThreads(path, origin, windows) {
+  let raw = readFileSync(path);
+  if (raw[0] === 0x1f) raw = gunzipSync(raw);
+  const profile = JSON.parse(raw.toString("utf8"));
+  const threads = [];
+  const walk = (p) => {
+    const unit = p.meta?.sampleUnits?.threadCPUDelta ?? "µs";
+    const scale = unit === "ns" ? 1e-6 : unit === "µs" ? 1e-3 : 0;
+    for (const t of p.threads ?? []) {
+      const s = t.samples;
+      if (!s?.data?.length) continue;
+      const time = s.schema.time;
+      const cpu = s.schema.threadCPUDelta;
+      threads.push({
+        name: `${t.processName ?? t.processType ?? "?"}:${t.name}`,
+        start: p.meta.startTime,
+        samples: s.data.map((d) => [
+          d[time],
+          cpu === undefined ? null : d[cpu],
+        ]),
+        scale,
+        interval: p.meta.interval ?? 1,
+      });
+    }
+    for (const sub of p.processes ?? []) walk(sub);
+  };
+  walk(profile);
+  return windows.map(([a, b]) => {
+    const [from, to] = [origin + a, origin + b];
+    const busy = threads
+      .map((t) => {
+        let ms = 0;
+        for (const [at, delta] of t.samples) {
+          const epoch = t.start + at;
+          if (epoch < from || epoch > to) continue;
+          // Without CPU deltas, a sample stands for its interval.
+          ms += delta === null || !t.scale ? t.interval : delta * t.scale;
+        }
+        return [t.name, ms];
+      })
+      .filter(([, ms]) => ms >= 2)
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, 6)
+      .map(([name, ms]) => `${name} ${round(ms, 0)}`);
+    return `${Math.round(a)}–${Math.round(b)} ms: ${busy.join(", ") || "nothing busy"}`;
+  });
+}
+
+/** What the last Orbis run in Firefox saw, for the profile's report. */
+let profiled;
+
+/** Serves `pkg` (a copy of web/pkg) or web/pkg itself as the demo. */
+async function serve(pkg) {
+  const live = fileURLToPath(new URL("../pkg/", import.meta.url));
+  if (!pkg) return serveDemo();
+  const saved = mkdtempSync(join(tmpdir(), "orbis-pkg-"));
+  cpSync(live, saved, { recursive: true });
+  try {
+    cpSync(pkg, live, { recursive: true });
+    return await serveDemo();
+  } finally {
+    cpSync(saved, live, { recursive: true });
+    rmSync(saved, { recursive: true });
+  }
+}
+
+for (let r = 0; r < runs; r++) {
+  for (const [k, pkg] of pkgs.entries()) {
+    const server = await serve(pkg);
+    try {
+      // The engines' order turns each run, so neither always goes first;
+      // GL JS runs once a run.
+      const these = (r % 2 ? [...engines].reverse() : engines).filter(
+        (e) => e === "orbis" || k === 0,
+      );
+      for (const engine of these) {
+        const report = await run(server, engine);
+        if (profiled && existsSync(args.profile)) {
+          const { origin, gaps, pipelines } = profiled;
+          report.profile = {
+            worst: profileThreads(args.profile, origin, gaps),
+            // 300 ms from each pipeline made mid-move: its compile.
+            pipelines: profileThreads(
+              args.profile,
+              origin,
+              pipelines.map((p) => [p.at, p.at + 300]),
+            ).map((line, i) => `${pipelines[i].label}: ${line}`),
+          };
+          profiled = undefined;
+        }
+        console.log(JSON.stringify({ run: r, ...(pkg && { pkg }), ...report }));
+      }
+    } finally {
+      server.close();
     }
   }
-} finally {
-  server.close();
 }

@@ -147,6 +147,9 @@ pub struct FrameStats {
     pub paints_written: u32,
     /// DEM tiles the prepare pass processed.
     pub prepared: u32,
+    /// Terrain drape slots drawn again: each a pass's share over a slot of
+    /// up to 1024² texels, and its mips.
+    pub drape_slots: u32,
     /// Pipelines the device is still compiling.
     pub pipelines_pending: u32,
     /// Nodes not drawn because a pipeline they need is still compiling.
@@ -2128,9 +2131,10 @@ impl Renderer {
         let (terrain_above, depth_cleared) = match terrain_on {
             true => {
                 let passing = clock();
-                let (above, cleared, draws) =
+                let (above, cleared, drawn) =
                     self.terrain_passes(gpu, &drape, extrusions_ready, &mut passes);
-                stats.draws += draws;
+                stats.draws += drawn.draws;
+                stats.drape_slots = drawn.slots;
                 drape_passes = micros(passing, clock());
                 (above, cleared)
             }
@@ -2457,7 +2461,7 @@ impl Renderer {
         drape: &[(u32, RenderBundleId)],
         extrusions_ready: bool,
         passes: &mut Vec<Pass>,
-    ) -> (Vec<(usize, RenderPass)>, bool, u32) {
+    ) -> (Vec<(usize, RenderPass)>, bool, terrain::TerrainDrawn) {
         let terrain = self.terrain.as_mut().expect("terrain is on");
         let mut terrain_above: Vec<(usize, RenderPass)> = Vec::new();
         let mut depth_cleared = false;
@@ -2473,7 +2477,7 @@ impl Renderer {
             })
             .collect();
         let mut layers = Vec::with_capacity(self.terrain_layers.len());
-        let draws = terrain.passes(
+        let drawn = terrain.passes(
             gpu,
             (b.frame, self.scene.tables().entry(Table::Props, 8)),
             (drape, &shades),
@@ -2501,7 +2505,7 @@ impl Renderer {
             }
         }
         Pass::group(passes, start, "terrain");
-        (terrain_above, depth_cleared, draws)
+        (terrain_above, depth_cleared, drawn)
     }
 
     /// The 3D layers' passes, in order with the terrain layers above them

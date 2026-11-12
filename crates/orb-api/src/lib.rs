@@ -32,6 +32,7 @@ pub use orb_camera::{
     TileLodMode,
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
+pub use orb_hal::GpuCounters;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use orb_hal_wgpu::{MetalTexture, metal_texture};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
@@ -149,8 +150,9 @@ struct Shared {
 pub struct RuntimeStats {
     /// The device's adapter: its name and graphics API.
     pub adapter: String,
-    /// Render and compute pipelines the device has made so far.
-    pub pipelines_created: u32,
+    /// What the device has done so far: pipelines asked for and compiled,
+    /// memory made, bytes and calls uploaded.
+    pub counters: GpuCounters,
     /// Time spent making shader modules and pipelines so far.
     pub pipeline_time: std::time::Duration,
     /// Each pipeline compiled so far and how long it took, in the order
@@ -166,8 +168,6 @@ pub struct RuntimeStats {
     pub region_bytes: u64,
     /// The widest and tallest texture target the device makes, in pixels.
     pub max_texture_size: u32,
-    /// Bytes written to the device's buffers and textures so far.
-    pub uploaded_bytes: u64,
     /// Whether [`Runtime::gpu_timings`] times passes on the GPU: the
     /// device has timestamp queries.
     pub gpu_timestamps: bool,
@@ -334,10 +334,9 @@ impl Runtime {
     pub fn stats(&self) -> RuntimeStats {
         let gpu = self.shared.gpu();
         let caps = orb_hal::Gpu::caps(&*gpu);
-        let u = gpu.uploaded();
         RuntimeStats {
             adapter: lock(&self.shared.adapter).clone(),
-            pipelines_created: gpu.pipelines_created(),
+            counters: orb_hal::Gpu::counters(&*gpu),
             pipeline_time: gpu.pipeline_time(),
             pipeline_timings: gpu.pipeline_timings().to_vec(),
             hung_compile: gpu.hung().map(str::to_owned),
@@ -347,10 +346,17 @@ impl Runtime {
                 .regions()
                 .map_or(0, |r| r.iter().map(|r| r.bytes).sum()),
             max_texture_size: caps.limits.max_texture_dimension_2d,
-            uploaded_bytes: u.from_core + u.from_js + u.texels_from_core + u.texels_from_js,
             gpu_timestamps: caps.timestamp_query,
             timestamp_resolution: gpu.timestamp_resolution(),
         }
+    }
+
+    /// Makes the shader modules the device makes from now on unique to
+    /// `nonce`, past every shader cache, for cold-start measurements
+    /// (`WgpuGpu::set_shader_nonce`). A device made after a loss keeps
+    /// none.
+    pub fn set_shader_nonce(&self, nonce: Option<u32>) {
+        self.shared.gpu().set_shader_nonce(nonce);
     }
 
     /// Times every submission from now on, for measurements:
@@ -503,7 +509,7 @@ impl Runtime {
         let file = dir.join(key);
         let data = std::fs::read(&file).ok();
         device.start_pipeline_cache(data.as_deref());
-        let made = device.pipelines_created();
+        let made = orb_hal::Gpu::counters(&*device).pipelines_compiled;
         // The cache's lock goes before the device's, as in
         // `save_pipeline_cache`.
         drop(device);
@@ -519,7 +525,7 @@ impl Runtime {
             return Ok(());
         };
         let mut device = self.shared.gpu();
-        let made = device.pipelines_created();
+        let made = orb_hal::Gpu::counters(&*device).pipelines_compiled;
         if made == *saved {
             return Ok(());
         }

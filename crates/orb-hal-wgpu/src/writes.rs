@@ -21,6 +21,15 @@ use orb_hal::BufferId;
 /// and go to the queue on WebGPU (on WebGL 2, gathered too).
 pub(crate) const GATHERED: usize = 64 << 10;
 
+/// What uploading the gathered writes issued: queue writes (natively,
+/// the staging belt's one), and submissions made only for texture
+/// writes' earlier waves.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Issued {
+    pub(crate) calls: u32,
+    pub(crate) submissions: u32,
+}
+
 /// The uploads WebGL 2 takes in turn: more than the submissions in flight.
 #[cfg(target_arch = "wasm32")]
 const RING: usize = 4;
@@ -260,7 +269,7 @@ impl Writes {
     /// into place in `encoder`, ahead of anything else it records: the
     /// staged buffer writes, the gathered ones, then the texture writes.
     /// Texture writes in waves before the last are submitted first, a
-    /// submission each (`texture_writes`). `false` when the staging belt's
+    /// submission each (`texture_writes`). `None` when the staging belt's
     /// buffer is invalid, which only a lost device (or one out of memory)
     /// explains: the writes and the belt are dropped.
     #[cfg(not(target_arch = "wasm32"))]
@@ -270,7 +279,7 @@ impl Writes {
         buffer: impl Fn(BufferId) -> wgpu::Buffer,
         texture: impl Fn(orb_hal::TextureId) -> wgpu::Texture,
         encoder: &mut wgpu::CommandEncoder,
-    ) -> bool {
+    ) -> Option<Issued> {
         let mut pending = self.0.lock().expect("writes poisoned");
         let mut gathered = None;
         if !pending.writes.is_empty() {
@@ -283,12 +292,16 @@ impl Writes {
             if gathered.is_none() {
                 pending.clear();
                 pending.staged.clear();
-                return false;
+                return None;
             }
         }
         if pending.staged.is_empty() && gathered.is_none() {
-            return true;
+            return Some(Issued::default());
         }
+        let mut issued = Issued {
+            calls: u32::from(gathered.is_some()),
+            submissions: 0,
+        };
         pending.belt.finish(encoder);
         let staged = std::mem::take(&mut pending.staged);
         let last = staged.iter().map(crate::staging::Staged::wave).max();
@@ -300,6 +313,7 @@ impl Writes {
                 s.encode(&mut early, &buffer, &texture);
             }
             queue.submit([early.finish()]);
+            issued.submissions += 1;
         }
         let last = last.unwrap_or(0);
         let (buffers, textures): (Vec<_>, Vec<_>) = (staged.iter())
@@ -326,7 +340,7 @@ impl Writes {
         // Kept for its allocation.
         pending.staged = staged;
         pending.staged.clear();
-        true
+        Some(issued)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -336,11 +350,12 @@ impl Writes {
         queue: &wgpu::Queue,
         buffer: impl Fn(BufferId) -> wgpu::Buffer,
         encoder: &mut wgpu::CommandEncoder,
-    ) -> bool {
+    ) -> Issued {
         let mut pending = self.0.lock().expect("writes poisoned");
+        let mut issued = Issued::default();
         if pending.writes.is_empty() {
             pending.clear();
-            return true;
+            return issued;
         }
         // Index buffers' runs last, from their own upload on WebGL 2.
         let index = |id| cfg!(webgl) && buffer(id).usage().contains(wgpu::BufferUsages::INDEX);
@@ -379,6 +394,7 @@ impl Writes {
             }
             let staging = staging.as_ref().expect("made above");
             queue.write_buffer(staging, 0, &upload[start as usize..end as usize]);
+            issued.calls += 1;
             for run in runs {
                 encoder.copy_buffer_to_buffer(
                     staging,
@@ -391,7 +407,7 @@ impl Writes {
         }
         pending.upload = upload;
         pending.clear();
-        true
+        issued
     }
 }
 

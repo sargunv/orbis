@@ -147,6 +147,90 @@ pub trait Gpu {
 
     /// Resources alive, of every kind, for leak checks.
     fn live_resources(&self) -> usize;
+
+    /// What the device has done since it was made, for measurements. An
+    /// implementation that counts nothing reports zeros.
+    fn counters(&self) -> GpuCounters {
+        GpuCounters::default()
+    }
+}
+
+/// What a device has done since it was made: every count only grows, so
+/// what happened between two readings is their [`since`](Self::since).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuCounters {
+    /// Render and compute pipelines asked for: each one compiles, which
+    /// some browsers do on the thread that presents.
+    pub pipelines_requested: u32,
+    /// Pipelines whose compile finished, background ones too.
+    pub pipelines_compiled: u32,
+    /// Buffers and textures made (views aside), and their bytes, every mip
+    /// level and layer: new GPU memory, which a pool or page growing then
+    /// copies into.
+    pub buffers_created: u32,
+    pub textures_created: u32,
+    pub bytes_allocated: u64,
+    /// Bytes copied on the GPU from buffer to buffer and texture to
+    /// texture: pools and pages moving into larger ones, candidates
+    /// compacting, mip chains.
+    pub bytes_copied: u64,
+    /// Bytes written to buffers from core memory ([`Gpu::write_buffer`],
+    /// and host bytes the host keeps in core memory), and from host
+    /// memory that never enters it (JS `ArrayBuffer`s).
+    pub buffer_bytes_from_core: u64,
+    pub buffer_bytes_from_host: u64,
+    /// Texel bytes written to textures from core memory, and copied from
+    /// host images (`ImageBitmap`s, video).
+    pub texel_bytes_from_core: u64,
+    pub texel_bytes_from_host: u64,
+    /// Uploads the device issued to the graphics API: queue writes and
+    /// image copies, and natively each staged copy (gathered writes count
+    /// once a submission).
+    pub upload_calls: u32,
+    /// Submissions made only to order texture writes that share a block
+    /// (their waves), each an extra command buffer.
+    pub texture_write_submissions: u32,
+}
+
+impl GpuCounters {
+    /// Every byte uploaded, to buffers and textures.
+    pub fn uploaded_bytes(&self) -> u64 {
+        self.buffer_bytes_from_core
+            + self.buffer_bytes_from_host
+            + self.texel_bytes_from_core
+            + self.texel_bytes_from_host
+    }
+
+    /// What happened between `earlier` and these: zeros where a device
+    /// made since started its counts again.
+    #[must_use]
+    pub fn since(&self, earlier: &Self) -> Self {
+        let (a, b) = (self, earlier);
+        Self {
+            pipelines_requested: a.pipelines_requested.saturating_sub(b.pipelines_requested),
+            pipelines_compiled: a.pipelines_compiled.saturating_sub(b.pipelines_compiled),
+            buffers_created: a.buffers_created.saturating_sub(b.buffers_created),
+            textures_created: a.textures_created.saturating_sub(b.textures_created),
+            bytes_allocated: a.bytes_allocated.saturating_sub(b.bytes_allocated),
+            bytes_copied: a.bytes_copied.saturating_sub(b.bytes_copied),
+            buffer_bytes_from_core: a
+                .buffer_bytes_from_core
+                .saturating_sub(b.buffer_bytes_from_core),
+            buffer_bytes_from_host: a
+                .buffer_bytes_from_host
+                .saturating_sub(b.buffer_bytes_from_host),
+            texel_bytes_from_core: a
+                .texel_bytes_from_core
+                .saturating_sub(b.texel_bytes_from_core),
+            texel_bytes_from_host: a
+                .texel_bytes_from_host
+                .saturating_sub(b.texel_bytes_from_host),
+            upload_calls: a.upload_calls.saturating_sub(b.upload_calls),
+            texture_write_submissions: a
+                .texture_write_submissions
+                .saturating_sub(b.texture_write_submissions),
+        }
+    }
 }
 
 /// A render or compute pipeline.

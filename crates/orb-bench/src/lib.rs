@@ -16,6 +16,8 @@
 //!   frames' attribution.
 //! - `cull` ([`cull`]): at each view, the candidates the cull keeps by
 //!   draw kind, and the GPU time and pixels of keeping them all.
+//! - `session` ([`session`]): `pnpm session`'s native twin, a user's cold
+//!   first session with real input before the map is idle.
 //!
 //! [`run`] returns a [`Report`], which formats as Markdown.
 
@@ -26,6 +28,7 @@ mod cull;
 mod gestures;
 mod load;
 mod report;
+mod session;
 mod stutter;
 mod tiles;
 
@@ -39,6 +42,7 @@ use orb_api::{
     CameraState, Event, FrameReport, Geodetic, Map, MapEvent, MapOptions, Runtime, Target,
 };
 use report::{FramesReport, Summary, ViewResult};
+pub use session::SessionReport;
 pub use stutter::{LIBERTY, StutterReport};
 pub use tiles::TilesReport;
 
@@ -90,6 +94,9 @@ pub enum Experiment {
     /// What the cull keeps at each view, and what keeping everything
     /// costs.
     Cull,
+    /// A user's cold first session with real input, on runtimes of its
+    /// own.
+    Session,
 }
 
 /// The gestures bench's camera paths.
@@ -112,6 +119,7 @@ pub enum Report {
     Tiles(TilesReport),
     Stutter(StutterReport),
     Cull(CullReport),
+    Session(SessionReport),
 }
 
 impl Report {
@@ -125,6 +133,7 @@ impl Report {
             Self::Tiles(r) => r.write(&mut out),
             Self::Stutter(r) => r.write(&mut out),
             Self::Cull(r) => r.write(&mut out),
+            Self::Session(r) => r.write(&mut out),
         }
         .expect("writing to a String");
         out
@@ -191,6 +200,9 @@ pub struct Settings {
     pub antialias: bool,
     /// Only a flight's first legs (`stutter`).
     pub legs: Option<usize>,
+    /// Each session once untimed first, its state and shaders kept for
+    /// the timed run (`session`).
+    pub warm: bool,
 }
 
 impl Default for Settings {
@@ -211,6 +223,7 @@ impl Default for Settings {
             nudge: false,
             antialias: MapOptions::default().antialias,
             legs: None,
+            warm: false,
         }
     }
 }
@@ -285,11 +298,11 @@ impl Settings {
                     "tiles" => Experiment::Tiles,
                     "stutter" => Experiment::Stutter,
                     "cull" => Experiment::Cull,
+                    "session" => Experiment::Session,
                     _ => {
-                        return Err(
-                            "experiment needs frames, gestures, load, tiles, stutter or cull"
-                                .into(),
-                        );
+                        return Err("experiment needs frames, gestures, load, tiles, stutter, \
+                                    cull or session"
+                            .into());
                     }
                 }
             }
@@ -475,6 +488,10 @@ pub fn run(
         }
         Experiment::Cull => {
             return cull::run(runtime, settings, about, style, progress).map(Report::Cull);
+        }
+        Experiment::Session => {
+            let alps = format!("file://{}", data.join("alps.json").display());
+            return session::run(settings, about, (style, &alps), progress).map(Report::Session);
         }
         Experiment::Frames | Experiment::Gestures => {}
     }

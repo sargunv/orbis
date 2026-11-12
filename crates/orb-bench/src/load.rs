@@ -135,7 +135,7 @@ fn load(
     antialias: bool,
     warnings: &mut Vec<String>,
 ) -> Result<(Duration, Option<Duration>, u32), String> {
-    let pipelines = runtime.stats().pipelines_created;
+    let pipelines = runtime.stats().counters.pipelines_compiled;
     let cpu = clock::cpu();
     let started = clock::now();
     let mut map = new_map(runtime, style, camera, antialias);
@@ -144,7 +144,11 @@ fn load(
     let wall = clock::now() - started;
     let cpu = clock::cpu().zip(cpu).map(|(after, before)| after - before);
     warnings.extend(take_warnings(&mut map));
-    Ok((wall, cpu, runtime.stats().pipelines_created - pipelines))
+    Ok((
+        wall,
+        cpu,
+        runtime.stats().counters.pipelines_compiled - pipelines,
+    ))
 }
 
 impl LoadReport {

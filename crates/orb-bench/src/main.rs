@@ -2,14 +2,16 @@
 //! [--experiment frames|gestures|load|tiles|stutter] [--frames N] [--warmup N]
 //! [--rounds N] [--samples N] [--size WxH] [--ratio R] [--at lon,lat]
 //! [--view zoom,pitch,bearing]... [--views file] [--filter s] [--nudge]
-//! [--antialias on|off] [--paths city|alps] [--legs N] [--capture N]`.
+//! [--antialias on|off] [--paths city|alps] [--legs N] [--capture N]
+//! [--warm]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract, as the browser
 //! bench (`web/demo/bench.html`) does; `alps` is the Alps terrain style
 //! (live tiles), at its view and with the gestures bench's Alps paths.
 //! `stutter` is `--experiment stutter`, whose Liberty scenarios draw
 //! OpenFreeMap's live Liberty unless a style URL (say, `cargo xtask h2h
-//! mirror`'s) stands in.
+//! mirror`'s) stands in. `session` is `--experiment session` at 1440×900,
+//! `pnpm session`'s native twin, on live Liberty and the Alps style.
 //! `--views` reads cameras in mln-rs's `views.txt` format, keeping those
 //! whose style column is the style URL's last path segment (`liberty` for
 //! `…/styles/liberty`). `--capture N` asks the graphics debugger the bench
@@ -44,6 +46,10 @@ fn run() -> Result<(), String> {
         settings.center = orb_api::Geodetic::new(orb_bench::ALPS.0, orb_bench::ALPS.1);
         settings.paths = orb_bench::GesturePaths::Alps;
     }
+    if args.iter().any(|a| a == "session") {
+        // `pnpm session`'s viewport, unless `--size` says otherwise.
+        (settings.width, settings.height) = (1440, 900);
+    }
     let mut views_file = None;
     let mut capture = None;
     let mut style_given = false;
@@ -51,6 +57,8 @@ fn run() -> Result<(), String> {
     while let Some(arg) = args.next() {
         if arg == "--nudge" {
             settings.nudge = true;
+        } else if arg == "--warm" {
+            settings.warm = true;
         } else if let Some(name) = arg.strip_prefix("--") {
             let value = args.next().ok_or(format!("{arg} needs a value"))?;
             match name {
@@ -73,13 +81,19 @@ fn run() -> Result<(), String> {
             about_data.clone_from(&style);
         } else if arg == "stutter" {
             settings.experiment = orb_bench::Experiment::Stutter;
+        } else if arg == "session" {
+            settings.experiment = orb_bench::Experiment::Session;
         } else {
             style = arg;
             about_data.clone_from(&style);
             style_given = true;
         }
     }
-    if settings.experiment == orb_bench::Experiment::Stutter && !style_given {
+    let live = [
+        orb_bench::Experiment::Stutter,
+        orb_bench::Experiment::Session,
+    ];
+    if live.contains(&settings.experiment) && !style_given {
         style = orb_bench::LIBERTY.to_string();
         about_data = format!("{style}, and the Alps terrain style");
     }

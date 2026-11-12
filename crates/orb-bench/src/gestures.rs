@@ -190,7 +190,7 @@ pub struct GesturesReport {
 }
 
 fn uploaded(runtime: &Runtime) -> u64 {
-    runtime.stats().uploaded_bytes
+    runtime.stats().counters.uploaded_bytes()
 }
 
 pub(crate) fn run(

@@ -85,8 +85,17 @@ const engines = {
       attributionControl: false,
     });
     map.on("error", (e) => console.error(String(e.error)));
-    if (recording)
-      map.on("render", () => mapFrames.push({ t: performance.now() }));
+    if (recording) {
+      // Whether the tiles under the view's centre are in, as Orbis's
+      // `centreLoaded` says: looked at once a frame until they are, and
+      // again once the camera moves.
+      let centre = false;
+      map.on("move", () => (centre = false));
+      map.on("render", () => {
+        centre ||= centreLoaded(map, maplibregl);
+        mapFrames.push({ t: performance.now(), centre });
+      });
+    }
     return {
       created: performance.now(),
       idle: () => new Promise((resolve) => map.once("idle", resolve)),
@@ -148,6 +157,13 @@ const counters = (s) => ({
   waiting: s.layersWaiting,
   gpuBytes: s.memory.allocated,
   rebuilt: s.candidatesRebuilt,
+  // What the device did since the last frame: pipelines asked for, memory
+  // made, uploads and their calls, texture-write submissions.
+  device: s.gpu,
+  drapeSlots: s.drapeSlots,
+  input: s.input,
+  moved: s.moved,
+  centre: s.centreLoaded,
   // session.mjs's running tally of WebGPU calls, where it wraps them.
   gpu: globalThis.sessionGpuCalls?.(),
 });
@@ -166,6 +182,35 @@ const STAGES = [
   "encode",
   "submit",
 ];
+
+/** Whether every source GL JS draws has the ideal tile under the view's
+ * centre loaded (or failed): Orbis's `centreLoaded`. */
+function centreLoaded(map, maplibregl) {
+  const style = map.style;
+  if (!style?._loaded) return false;
+  const at = maplibregl.MercatorCoordinate.fromLngLat(map.getCenter());
+  return Object.values(style.tileManagers ?? style.sourceCaches ?? {}).every(
+    (tm) => {
+      if (!tm.used) return true;
+      const source = tm.getSource();
+      if (!source.loaded?.() && source.tileSize === undefined) return false;
+      const ideal = map
+        .coveringTiles({
+          tileSize: source.tileSize ?? 512,
+          minzoom: source.minzoom,
+          maxzoom: source.maxzoom,
+          roundZoom: source.roundZoom,
+        })
+        .find(({ canonical: c }) => {
+          const n = 2 ** c.z;
+          return Math.floor(at.x * n) === c.x && Math.floor(at.y * n) === c.y;
+        });
+      if (!ideal) return true;
+      const state = tm.getTile(ideal)?.state;
+      return state !== undefined && state !== "loading";
+    },
+  );
+}
 
 /** The tour's camera at `f` in [0, 1]: two screens east and back, two zooms in and back, a half turn tilting to 60°. */
 function tourCamera(f) {

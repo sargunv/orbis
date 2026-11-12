@@ -35,7 +35,7 @@ pub mod regions;
 #[cfg(target_arch = "wasm32")]
 pub use jobs::JobWorker;
 #[cfg(target_arch = "wasm32")]
-pub use map::{FrameMemory, FrameStats, FrameTimes, OrbisMap, create_map};
+pub use map::{FrameGpu, FrameMemory, FrameStats, FrameTimes, OrbisMap, create_map};
 #[cfg(target_arch = "wasm32")]
 pub use placement::PlacementWorker;
 

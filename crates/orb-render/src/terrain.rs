@@ -556,6 +556,14 @@ pub(crate) struct Terrain {
     atmosphere: BufferId,
 }
 
+/// What a frame's terrain passes drew: render passes, and drape slots
+/// redrawn.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TerrainDrawn {
+    pub(crate) draws: u32,
+    pub(crate) slots: u32,
+}
+
 impl Terrain {
     /// Terrain drawn into `target`, fogged by `atmosphere`, shading
     /// hillshades through image node groups of `shade_layout`.
@@ -1197,6 +1205,7 @@ impl Terrain {
     /// texture, in order, the first clearing `depth`, the rest loading it.
     /// The caller places the layer passes among the 3D layers' passes. A
     /// layer shades its hillshade where `shades` has the node's group.
+    /// Returns its draws and the slots it redrew.
     pub(crate) fn passes(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1205,25 +1214,26 @@ impl Terrain {
         (depth, depth_store): (TextureId, StoreOp),
         downsampler: &crate::downsample::Downsampler,
         (passes, layers): (&mut Vec<Pass>, &mut Vec<RenderPass>),
-    ) -> u32 {
-        let mut draws = 0;
+    ) -> TerrainDrawn {
+        let mut drawn = TerrainDrawn::default();
         if !self.ready(gpu) || !downsampler.ready(gpu) {
             // The map placed this frame's drape for these slots only: it
             // draws them all again once terrain can.
             if !self.pending.is_empty() {
                 self.redraw_all();
             }
-            return 0;
+            return drawn;
         }
         // The last frame, which drew into them, was submitted.
         std::mem::take(&mut self.mip_targets).release(gpu);
         let (Some(colour), Some(dem)) = (&self.atlas[0], self.dem) else {
-            return 0;
+            return drawn;
         };
         if !self.pending.is_empty() {
             let start = passes.len();
             self.pending.sort_unstable();
             self.pending.dedup();
+            drawn.slots = self.pending.len() as u32;
             let layout = self.layout_state;
             for (page, atlas) in self.atlas.iter().enumerate() {
                 let Some(atlas) = atlas else {
@@ -1293,7 +1303,7 @@ impl Terrain {
                         depth: None,
                         commands,
                     }));
-                    draws += 1;
+                    drawn.draws += 1;
                 }
                 // Each level from the one above, over the page's slots.
                 let chain = ("drape mips", &atlas.mips);
@@ -1402,7 +1412,7 @@ impl Terrain {
                 }),
                 commands: draw(occlusion_pipeline, layer_group, None),
             }));
-            draws += 1;
+            drawn.draws += 1;
         }
         for (layer, target) in self.targets.iter().enumerate() {
             let shade = (shades.get(layer).copied().flatten()).zip(backdrops[layer]);
@@ -1421,9 +1431,9 @@ impl Terrain {
                 }),
                 commands: draw(pipeline, self.stack_groups[layer], shade),
             });
-            draws += 1;
+            drawn.draws += 1;
         }
-        draws
+        drawn
     }
 
     /// Terrain layer `layer`'s backdrop group: the texture of the layer

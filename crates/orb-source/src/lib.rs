@@ -529,6 +529,12 @@ impl<T> TilePyramid<T> {
         Some(self.take_ready(found))
     }
 
+    /// Whether a tile of the last committed plan's cover that `which`
+    /// picks is still loading.
+    pub fn cover_loading(&self, which: impl Fn(TileIndex) -> bool) -> bool {
+        self.cover.iter().any(|&t| which(t) && self.is_loading(t))
+    }
+
     /// Whether the last committed plan's cover holds `tile`.
     pub fn covers(&self, tile: TileIndex) -> bool {
         self.cover.contains(&tile)

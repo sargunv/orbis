@@ -2735,6 +2735,7 @@ dependencies = [
 name = "orb-bench"
 version = "0.0.0"
 dependencies = [
+ "glam",
  "orb-api",
  "orb-crs",
  "orb-host-native",

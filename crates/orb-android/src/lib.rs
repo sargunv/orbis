@@ -348,7 +348,7 @@ impl State {
             self.since_start(),
             self.device.as_millis(),
             self.frames,
-            stats.pipelines_created,
+            stats.counters.pipelines_compiled,
             stats.pipeline_time.as_secs_f64() * 1000.0,
         ));
         let mut timings = stats.pipeline_timings;

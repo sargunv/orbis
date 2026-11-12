@@ -157,6 +157,71 @@ pub struct FrameStats {
     /// GPU memory against the budget.
     #[wasm_bindgen(readonly)]
     pub memory: FrameMemory,
+    /// What the device did since the last frame, in `prepare` and in
+    /// this frame.
+    #[wasm_bindgen(readonly)]
+    pub gpu: FrameGpu,
+    /// Terrain drape slots drawn again.
+    #[wasm_bindgen(readonly, js_name = drapeSlots)]
+    pub drape_slots: u32,
+    /// The tiles under the view's centre have arrived, for every source.
+    #[wasm_bindgen(readonly, js_name = centreLoaded)]
+    pub centre_loaded: bool,
+    /// The camera moved for this frame.
+    #[wasm_bindgen(readonly)]
+    pub moved: bool,
+    /// Input holds the camera: a gesture is under way.
+    #[wasm_bindgen(readonly)]
+    pub input: bool,
+}
+
+/// What the device did since the last frame: orb-hal's `GpuCounters`
+/// between the two.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameGpu {
+    /// Pipelines asked for: each a compile, which Firefox may do on the
+    /// thread that presents.
+    #[wasm_bindgen(readonly, js_name = pipelinesRequested)]
+    pub pipelines_requested: u32,
+    #[wasm_bindgen(readonly, js_name = pipelinesCompiled)]
+    pub pipelines_compiled: u32,
+    #[wasm_bindgen(readonly, js_name = buffersCreated)]
+    pub buffers_created: u32,
+    #[wasm_bindgen(readonly, js_name = texturesCreated)]
+    pub textures_created: u32,
+    /// Bytes of the buffers and textures made: new GPU memory.
+    #[wasm_bindgen(readonly, js_name = bytesAllocated)]
+    pub bytes_allocated: f64,
+    /// Bytes copied on the GPU, buffer to buffer and texture to texture.
+    #[wasm_bindgen(readonly, js_name = bytesCopied)]
+    pub bytes_copied: f64,
+    /// Bytes written to buffers and textures.
+    #[wasm_bindgen(readonly, js_name = uploadBytes)]
+    pub upload_bytes: f64,
+    /// `writeBuffer`, `writeTexture` and `copyExternalImageToTexture`
+    /// calls.
+    #[wasm_bindgen(readonly, js_name = uploadCalls)]
+    pub upload_calls: u32,
+    /// Submissions made only to order texture writes.
+    #[wasm_bindgen(readonly, js_name = textureWriteSubmissions)]
+    pub texture_write_submissions: u32,
+}
+
+impl From<&orb_hal::GpuCounters> for FrameGpu {
+    fn from(c: &orb_hal::GpuCounters) -> Self {
+        Self {
+            pipelines_requested: c.pipelines_requested,
+            pipelines_compiled: c.pipelines_compiled,
+            buffers_created: c.buffers_created,
+            textures_created: c.textures_created,
+            bytes_allocated: c.bytes_allocated as f64,
+            bytes_copied: c.bytes_copied as f64,
+            upload_bytes: c.uploaded_bytes() as f64,
+            upload_calls: c.upload_calls,
+            texture_write_submissions: c.texture_write_submissions,
+        }
+    }
 }
 
 /// Where a frame's CPU time went, in milliseconds: orb-runtime's
@@ -1099,7 +1164,7 @@ impl OrbisMap {
                 format!("orbis: a pipeline failed, and what draws with it is missing: {failed}");
             web_sys::console::error_1(&message.into());
         }
-        let uploaded = orb_hal_wgpu::WgpuGpu::uploaded(self.canvas.gpu_ref());
+        let uploaded = orb_hal::Gpu::counters(self.canvas.gpu_ref());
         let counts = self.map.job_counts();
         Ok(FrameStats {
             ms: orb_host::Clock::now(&crate::host::WebClock) - started,
@@ -1124,15 +1189,20 @@ impl OrbisMap {
             prepared: FrameTimes::from(&report.prepared),
             tiles_arrived: report.tiles_arrived,
             paints_written: report.frame.paints_written,
-            uploaded_from_wasm: uploaded.from_core as f64,
-            uploaded_from_js: uploaded.from_js as f64,
-            texels_from_wasm: uploaded.texels_from_core as f64,
-            texels_from_js: uploaded.texels_from_js as f64,
+            uploaded_from_wasm: uploaded.buffer_bytes_from_core as f64,
+            uploaded_from_js: uploaded.buffer_bytes_from_host as f64,
+            texels_from_wasm: uploaded.texel_bytes_from_core as f64,
+            texels_from_js: uploaded.texel_bytes_from_host as f64,
             header_bytes: self.header_bytes as f64,
             jobs_done: self.worker_jobs.done(),
             pipelines_pending: report.frame.pipelines_pending,
             layers_waiting: report.frame.nodes_waiting,
             memory: FrameMemory::from(&report.memory),
+            gpu: FrameGpu::from(&report.gpu),
+            drape_slots: report.frame.drape_slots,
+            centre_loaded: report.centre_loaded,
+            moved: report.moved,
+            input: report.input,
         })
     }
 

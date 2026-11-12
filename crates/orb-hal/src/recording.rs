@@ -626,6 +626,10 @@ impl<G: Gpu> Gpu for Recording<G> {
     fn live_resources(&self) -> usize {
         self.inner.live_resources()
     }
+
+    fn counters(&self) -> crate::GpuCounters {
+        self.inner.counters()
+    }
 }
 
 #[cfg(test)]
