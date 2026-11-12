@@ -13,8 +13,12 @@
 //! formula. Then the map's draws continue on top. The last pass draws
 //! into the target, so a map without such groups keeps its one pass.
 //!
-//! On terrain, a draped layer's group is its own drape stack: the stack's terrain layer is the texture the group composites,
-//! in place of the stack's plain composite.
+//! On terrain, a draped layer's group is its own drape stack: the stack's
+//! terrain layer is the texture the group composites, in place of the
+//! stack's plain composite. A blended terrain layer fades into the fog
+//! rather than taking its colour, since what it blends with is fogged
+//! already. A blended hillshade the terrain pass lights needs no group:
+//! its terrain layer blends it into the stack below it.
 
 use crate::release::Release;
 use std::ops::Range;
@@ -24,8 +28,8 @@ use orb_hal::*;
 use crate::offscreen::{Composite, Composites, Mode, Target};
 
 /// How a layer composited once combines with the map beneath it: W3C
-/// Compositing 1's modes, as `fill-layer-blend` and `line-layer-blend`
-/// name them.
+/// Compositing 1's modes, as `fill-layer-blend`, `line-layer-blend` and
+/// `raster-layer-blend` name them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Blend {
     #[default]

@@ -559,12 +559,7 @@ fn hills() -> (String, common::Scratch) {
 /// it at a high pitch. Crests are rounded: a crease one DEM pixel wide
 /// running across the pixel grid shades as dotted lines.
 fn alps() -> (String, common::Scratch) {
-    let (dem, dir) = dem("alps", (7.4, 45.7, 8.4, 46.3), 11, |lon, lat| {
-        let ridge = |v: f64| 1.0 - (v.sin().powi(2) + 0.04).sqrt();
-        700.0
-            + 2600.0 * ridge(lon * 31.0 + lat * 9.0) * ridge(lat * 23.0 - lon * 5.0)
-            + 1200.0 * ridge(lon * 97.0 - lat * 61.0)
-    });
+    let (dem, dir) = alps_dem();
     let dem = dem.trim_end_matches(',');
     let style = format!(
         r##"{{"version": 8,
@@ -577,6 +572,16 @@ fn alps() -> (String, common::Scratch) {
             ]}}"##
     );
     (style, dir)
+}
+
+/// The ridges' DEM source `alps`, and its directory.
+fn alps_dem() -> (String, common::Scratch) {
+    dem("alps", (7.4, 45.7, 8.4, 46.3), 11, |lon, lat| {
+        let ridge = |v: f64| 1.0 - (v.sin().powi(2) + 0.04).sqrt();
+        700.0
+            + 2600.0 * ridge(lon * 31.0 + lat * 9.0) * ridge(lat * 23.0 - lon * 5.0)
+            + 1200.0 * ridge(lon * 97.0 - lat * 61.0)
+    })
 }
 
 /// A line draped on flat terrain is as wide as on a flat map at any
@@ -1540,6 +1545,196 @@ fn coarser_terrain_keeps_the_hillshade_it_drew() {
         first <= settled + middle / 100,
         "{first} of {middle} pixels in the middle are bare in the first frame, {settled} once settled"
     );
+}
+
+/// A hillshade multiplied over the ground (style-spec#1661's
+/// `dev.sargunv.orbis:hillshade-layer-blend`) shades it by its own colour:
+/// each pixel is the ground's colour times the hillshade drawn normally
+/// over white, W3C multiply's identity, on a flat map, the globe and
+/// terrain (lit by the terrain pass, viewport-anchored, which blends it
+/// into the drape beneath, or draped, map-anchored, a terrain layer
+/// composited apart), on the globe's terrain too, and over another lit
+/// hillshade (whose terrain layer it then blends into): each pixel is the
+/// map beneath it times the hillshade drawn normally over white. Where the
+/// ground doesn't show (the sky, space), the map is as without the
+/// hillshade.
+#[test]
+fn a_multiplied_hillshade_shades_the_ground_by_its_colour() {
+    let (dem, _dir) = alps_dem();
+    let dem = dem.trim_end_matches(',');
+    let at = Geodetic::new(7.9, 46.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let terrain = r#""terrain": {"source": "alps", "exaggeration": 1.2},"#;
+    let views: [(&str, &str, At, &str, bool); 6] = [
+        ("flat", "", (at, 10.0, 0.0, 0.0), "viewport", false),
+        (
+            "globe",
+            r#""projection": {"type": "globe"},"#,
+            (at, 5.0, 0.0, 0.0),
+            "viewport",
+            false,
+        ),
+        (
+            "terrain, lit",
+            terrain,
+            (at, 10.5, 20.0, 55.0),
+            "viewport",
+            false,
+        ),
+        (
+            "terrain, draped",
+            terrain,
+            (at, 10.5, 20.0, 55.0),
+            "map",
+            false,
+        ),
+        (
+            "globe terrain",
+            r#""projection": {"type": "globe"}, "terrain": {"source": "alps", "exaggeration": 1.2},"#,
+            (at, 8.5, 0.0, 45.0),
+            "viewport",
+            false,
+        ),
+        (
+            "terrain, over a hillshade",
+            terrain,
+            (at, 10.5, 20.0, 55.0),
+            "viewport",
+            true,
+        ),
+    ];
+    for (name, extra, view, anchor, under) in views {
+        // `under`: another hillshade, lit from the north-east, beneath it.
+        let mut draw = |ground: &str, hillshade: Option<&str>, under: bool| {
+            let (visibility, blend) = match hillshade {
+                Some(blend) => ("visible", blend),
+                None => ("none", "normal"),
+            };
+            let beneath = if under { "visible" } else { "none" };
+            let style = format!(
+                r##"{{"version": 8, {extra}
+                    "sources": {{{dem}}},
+                    "layers": [
+                      {{"id": "ground", "type": "background", "paint": {{"background-color": "{ground}"}}}},
+                      {{"id": "under", "type": "hillshade", "source": "alps",
+                        "layout": {{"visibility": "{beneath}"}},
+                        "paint": {{"hillshade-illumination-direction": 45,
+                          "hillshade-shadow-color": "#204080"}}}},
+                      {{"id": "relief", "type": "hillshade", "source": "alps",
+                        "layout": {{"visibility": "{visibility}"}},
+                        "paint": {{"hillshade-illumination-anchor": "{anchor}",
+                          "hillshade-shadow-color": "#3a2a5a", "hillshade-accent-color": "#806a90",
+                          "dev.sargunv.orbis:hillshade-layer-blend": "{blend}"}}}}
+                    ]}}"##
+            );
+            let mut map = Map::new(&runtime, options());
+            map.set_style_json(&style).unwrap();
+            map.jump_to(&camera(view));
+            common::settle(&mut map, &mut target);
+            target.read_pixels().unwrap()
+        };
+        let white = draw("#ffffff", None, false);
+        let normal = draw("#ffffff", Some("normal"), false);
+        let beneath = draw("#66aa33", None, under);
+        let multiplied = draw("#66aa33", Some("multiply"), under);
+        let (mut ground, mut shaded, mut off) = (0, 0, Vec::new());
+        for i in (0..white.len()).step_by(4) {
+            let px = |p: &[u8]| [p[i], p[i + 1], p[i + 2]];
+            let (got, at) = (px(&multiplied), (i / 4) as u32);
+            let (x, y) = (at % WIDTH, at / WIDTH);
+            let expected = if px(&white) == [255; 3] {
+                ground += 1;
+                shaded += usize::from(px(&normal) != [255; 3]);
+                let (n, b) = (px(&normal), px(&beneath));
+                std::array::from_fn(|c| (f32::from(b[c]) * f32::from(n[c]) / 255.0).round() as u8)
+            } else {
+                px(&beneath)
+            };
+            if !got.iter().zip(expected).all(|(&g, e)| g.abs_diff(e) <= 3) {
+                off.push(format!("({x}, {y}) is {got:?}, expected {expected:?}"));
+            }
+        }
+        let pixels = white.len() / 4;
+        assert!(off.is_empty(), "{name}: {off:#?}");
+        assert!(ground > pixels / 4, "{name}: {ground} ground pixels");
+        assert!(shaded > ground / 4, "{name}: {shaded} of {ground} shaded");
+    }
+}
+
+/// A blended hillshade on terrain fades into the fog rather than taking
+/// its colour: the ground it blends with is fogged already, so fogged as
+/// its own content it would multiply the far ground by the fog's colour
+/// again. Toward the horizon, where the fog is thick, the map is as
+/// without the hillshade, whether the terrain pass lights it (the fog
+/// falls on what it blended into) or it drapes, a terrain layer
+/// composited apart (which fades).
+#[test]
+fn a_blended_hillshade_fades_into_the_fog() {
+    // Ridges reaching past the horizon.
+    let (dem, _dir) = dem("ridges", (0.0, 40.0, 16.0, 56.0), 7, |lon, lat| {
+        1500.0 + 1200.0 * (lon * 9.0).sin() * (lat * 7.0).cos()
+    });
+    let dem = dem.trim_end_matches(',');
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    for anchor in ["viewport", "map"] {
+        let mut draw = |ground: &str, visibility: &str| {
+            let style = format!(
+                r##"{{"version": 8,
+                "terrain": {{"source": "ridges", "exaggeration": 1.2}},
+                "sky": {{"sky-color": "#4f8fd9", "horizon-color": "#8899aa", "fog-color": "#8899aa",
+                         "fog-ground-blend": 0.2, "horizon-fog-blend": 0.9}},
+                "sources": {{{dem}}},
+                "layers": [
+                  {{"id": "ground", "type": "background", "paint": {{"background-color": "{ground}"}}}},
+                  {{"id": "relief", "type": "hillshade", "source": "ridges",
+                    "layout": {{"visibility": "{visibility}"}},
+                    "paint": {{"hillshade-shadow-color": "#3a2a5a",
+                      "hillshade-illumination-anchor": "{anchor}",
+                      "dev.sargunv.orbis:hillshade-layer-blend": "multiply"}}}}
+                ]}}"##
+            );
+            let mut map = Map::new(&runtime, options());
+            map.set_style_json(&style).unwrap();
+            map.jump_to(&camera((Geodetic::new(8.0, 43.0), 7.5, 0.0, 75.0)));
+            common::settle(&mut map, &mut target);
+            target.read_pixels().unwrap()
+        };
+        let bare = draw("#66aa33", "none");
+        let red = draw("#ff0000", "none");
+        let shaded = draw("#66aa33", "visible");
+        let row = |y: u32| (y * WIDTH * 4) as usize..((y + 1) * WIDTH * 4) as usize;
+        // The horizon: the first row mostly ground, which the background's
+        // colour shows through.
+        let horizon = (0..HEIGHT)
+            .find(|&y| {
+                let (a, b) = (&bare[row(y)], &red[row(y)]);
+                a.chunks(4).zip(b.chunks(4)).filter(|(a, b)| a != b).count() > WIDTH as usize / 2
+            })
+            .expect("ground in view");
+        let shading = |rows: std::ops::Range<u32>| {
+            let n = rows.len() as f64 * f64::from(WIDTH);
+            let sum: u64 = (rows.flat_map(&row))
+                .map(|i| u64::from(bare[i].abs_diff(shaded[i])))
+                .sum();
+            sum as f64 / n
+        };
+        let band = HEIGHT / 20;
+        let (far, near) = (
+            shading(horizon..horizon + band),
+            shading(HEIGHT - band..HEIGHT),
+        );
+        assert!(horizon < HEIGHT / 2, "the horizon at row {horizon}");
+        assert!(
+            near > 4.0,
+            "{anchor}: the hillshade shades the near ground by {near}"
+        );
+        assert!(
+            far < near / 2.0,
+            "{anchor}: the hillshade shades the far ground by {far}, the near by {near}"
+        );
+    }
 }
 
 /// Edits ease alike on terrain and off it: a draped fill hidden, its

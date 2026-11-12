@@ -35,7 +35,8 @@ const SYMBOL_PLACE_COMPUTE: &str = wgsl!("symbol_place_compute");
 const SYMBOL_POINT: &str = wgsl!("symbol_point");
 const SYMBOL_LINE: &str = wgsl!("symbol_line");
 const HEATMAP: &str = wgsl!("heatmap");
-const COMPOSITE: &str = concat!(wgsl!("color"), wgsl!("composite"));
+const BLEND: &str = wgsl!("blend");
+const COMPOSITE: &str = concat!(wgsl!("color"), wgsl!("blend"), wgsl!("composite"));
 pub(crate) const CULL: &str = wgsl!("cull");
 const IMAGE: &str = wgsl!("image");
 const DEM: &str = wgsl!("dem");
@@ -122,6 +123,7 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
         PROJECT,
         TERRAIN,
         HILLSHADE,
+        BLEND,
         wgsl!("terrain_shade"),
     ],
     vertex: "vs_terrain",

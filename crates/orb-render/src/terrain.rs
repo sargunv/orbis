@@ -251,7 +251,22 @@ pub(crate) struct TerrainLayer {
     /// The hillshade node, and the stack its unlit slopes draw into.
     pub(crate) shade: Option<(u32, u8)>,
     pub(crate) above: Option<u8>,
+    /// A layer's own, composited in a blend mode other than normal.
+    pub(crate) blended: bool,
+    /// How its hillshade blends into the colours below it: normal, or a
+    /// blend mode its layer composites in, which the layer then takes.
+    pub(crate) shade_blend: crate::Blend,
+    /// The colours its hillshade blends into are the terrain layer's
+    /// before it, as it drew them, rather than a stack of its own: the
+    /// hillshade lies on that layer, which shades another.
+    pub(crate) backdrop: bool,
 }
+
+/// How a terrain layer fogs (`Layer.fog` in `terrain.wgsl`): its content,
+/// the whole ground, or by fading its coverage.
+const FOG_CONTENT: u32 = 0;
+const FOG_GROUND: u32 = 1;
+const FOG_FADES: u32 = 2;
 
 /// A terrain tile on a globe: its patches in
 /// space around `origin`, the anchor less the camera target in metres, and
@@ -510,6 +525,13 @@ pub(crate) struct Terrain {
     stack_layout: BindGroupLayoutId,
     /// A shaded hillshade's node group: its image node's.
     shade_layout: BindGroupLayoutId,
+    /// What a shaded hillshade blends into, where its layer has a
+    /// backdrop: the terrain layer's before it.
+    backdrop_layout: BindGroupLayoutId,
+    /// Each terrain layer's backdrop group and the texture it binds, and
+    /// the blank one for the layers without.
+    backdrops: Vec<Option<(TextureId, BindGroupId)>>,
+    blank: Option<(TextureId, BindGroupId)>,
     clear_layout: BindGroupLayoutId,
     /// Draping and shading, each at one sample and at four.
     pipelines: [[Option<RenderPipelineId>; 2]; 2],
@@ -604,6 +626,10 @@ impl Terrain {
             label: "terrain layer",
             entries: &[E::uniform(0, fs)],
         });
+        let backdrop_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "terrain backdrop",
+            entries: &[E::texture(0, fs, false, TextureViewDimension::D2)],
+        });
         let decal_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "terrain decal",
             entries: &[
@@ -658,6 +684,9 @@ impl Terrain {
             layout,
             stack_layout,
             shade_layout,
+            backdrop_layout,
+            backdrops: Vec::new(),
+            blank: None,
             clear_layout,
             pipelines: [[None; 2]; 2],
             decal_layout,
@@ -734,7 +763,7 @@ impl Terrain {
                             0,
                             buffer,
                             UNIFORM_STRIDE * u64::from(layer),
-                            16,
+                            32,
                         )],
                     })
                 })
@@ -747,12 +776,25 @@ impl Terrain {
             // A slope stack by its rank on the slope page.
             let slopes = (layer.shade).map_or(NONE, |(_, s)| u32::from(s) - colour);
             // The first layer is the ground: it fogs where it draws
-            // nothing too, and the layers over it only their own content.
+            // nothing too, and the layers over it only their own content,
+            // but for a blended one, which fades into the fog: what it
+            // blends with is fogged already.
+            let fog = match () {
+                () if layer.blended => FOG_FADES,
+                () if i == 0 => FOG_GROUND,
+                () => FOG_CONTENT,
+            };
+            let blend = layer.shade_blend.mode() as u32;
+            let backdrop = u32::from(layer.backdrop);
             let words = [
                 stack(layer.below),
                 stack(layer.above),
                 slopes,
-                u32::from(i == 0),
+                fog,
+                blend,
+                backdrop,
+                0,
+                0,
             ];
             gpu.write_buffer(
                 buffer,
@@ -1265,7 +1307,12 @@ impl Terrain {
         let (shader, layouts): (&Shader, &[_]) = if shaded {
             (
                 &TERRAIN_SHADE_SHADER,
-                &[self.layout, self.stack_layout, self.shade_layout],
+                &[
+                    self.layout,
+                    self.stack_layout,
+                    self.shade_layout,
+                    self.backdrop_layout,
+                ],
             )
         } else {
             (&TERRAIN_SHADER, &[self.layout, self.stack_layout])
@@ -1434,7 +1481,14 @@ impl Terrain {
         });
         let step = GRID_STEPS.iter().position(|&s| s == self.grid_step);
         let indices = self.grid_ranges[step.expect("a grid step")].clone();
-        let draw = |pipeline, layer_group, shade: Option<BindGroupId>| {
+        // A shaded layer's backdrop: the layer's before it, or blank.
+        let backdrops: Vec<Option<BindGroupId>> = (0..self.targets.len())
+            .map(|layer| {
+                shades.get(layer).copied().flatten()?;
+                Some(self.backdrop_group(gpu, layer))
+            })
+            .collect();
+        let draw = |pipeline, layer_group, shade: Option<(BindGroupId, BindGroupId)>| {
             let mut commands = vec![
                 RenderCommand::SetPipeline(pipeline),
                 RenderCommand::SetBindGroup { index: 0, group },
@@ -1443,7 +1497,16 @@ impl Terrain {
                     group: layer_group,
                 },
             ];
-            commands.extend(shade.map(|group| RenderCommand::SetBindGroup { index: 2, group }));
+            if let Some((shade, backdrop)) = shade {
+                commands.push(RenderCommand::SetBindGroup {
+                    index: 2,
+                    group: shade,
+                });
+                commands.push(RenderCommand::SetBindGroup {
+                    index: 3,
+                    group: backdrop,
+                });
+            }
             commands.extend([
                 RenderCommand::SetIndexBuffer {
                     buffer: self.grid_indices,
@@ -1481,7 +1544,7 @@ impl Terrain {
             draws += 1;
         }
         for (layer, target) in self.targets.iter().enumerate() {
-            let shade = shades.get(layer).copied().flatten();
+            let shade = (shades.get(layer).copied().flatten()).zip(backdrops[layer]);
             let pipeline = pipelines[usize::from(shade.is_some())].expect("made above");
             layers.push(RenderPass {
                 label: "terrain",
@@ -1500,6 +1563,59 @@ impl Terrain {
             draws += 1;
         }
         draws
+    }
+
+    /// Terrain layer `layer`'s backdrop group: the texture of the layer
+    /// before it, where its hillshade blends into that, else a blank one.
+    fn backdrop_group(&mut self, gpu: &mut dyn Gpu, layer: usize) -> BindGroupId {
+        let previous = layer
+            .checked_sub(1)
+            .filter(|_| self.layers.get(layer).is_some_and(|l| l.backdrop))
+            .map(|l| self.targets[l].target.texture(0));
+        let make = |gpu: &mut dyn Gpu, layout, texture| {
+            let group = gpu.create_bind_group(&BindGroupDesc {
+                label: "terrain backdrop",
+                layout,
+                entries: &[BindGroupEntry::texture(
+                    0,
+                    texture,
+                    TextureViewDimension::D2,
+                )],
+            });
+            (texture, group)
+        };
+        let Some(texture) = previous else {
+            if let Some((_, group)) = self.blank {
+                return group;
+            }
+            let texture = gpu.create_texture(&TextureDesc {
+                label: "terrain backdrop",
+                width: 1,
+                height: 1,
+                array_layers: 1,
+                dimension: TextureViewDimension::D2,
+                format: self.target.color,
+                usage: TextureUsages::TEXTURE_BINDING,
+                sample_count: 1,
+                mip_levels: 1,
+                view_formats: &[],
+            });
+            let blank = make(gpu, self.backdrop_layout, texture);
+            self.blank = Some(blank);
+            return blank.1;
+        };
+        if self.backdrops.len() <= layer {
+            self.backdrops.resize(layer + 1, None);
+        }
+        match self.backdrops[layer] {
+            Some((bound, group)) if bound == texture => group,
+            stale => {
+                stale.map(|(_, group)| group).release(gpu);
+                let made = make(gpu, self.backdrop_layout, texture);
+                self.backdrops[layer] = Some(made);
+                made.1
+            }
+        }
     }
 
     /// The drape frame: the map's, at its zoom, drawn into page `page`.
@@ -1667,6 +1783,8 @@ impl crate::release::Release for Terrain {
             self.decal_group.map(|(g, _)| g),
         );
         let layouts = (self.layout, self.stack_layout, self.clear_layout, decal);
+        let backdrops: Vec<BindGroupId> = (self.backdrops.iter().flatten()).map(|b| b.1).collect();
+        (self.backdrop_layout, backdrops, self.blank).release(gpu);
         let [colour_clear, slope_clear] = self.clear;
         let clear = (
             colour_clear,

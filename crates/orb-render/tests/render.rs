@@ -1646,6 +1646,118 @@ fn layer_blends_follow_w3c_compositing() {
     }
 }
 
+/// An image layer composites once like a fill: a raster over the whole
+/// view, in `mode`, over an opaque fill of the left half and the clear
+/// colour beyond it (`raster-layer-blend`, and the hillshade's and colour
+/// relief's, which draw as image nodes too).
+fn blended_raster(mode: Blend) -> Vec<u8> {
+    use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey};
+    let mut h = Harness::new();
+    let source = 7;
+    let nodes = [
+        RenderNode {
+            family: Family::Fill,
+            source: None,
+        },
+        RenderNode {
+            family: Family::Raster,
+            source: Some(source),
+        },
+    ];
+    assert!(h.renderer.remap_nodes(&mut h.gpu, &nodes, &[None, None]));
+    let tile = h.tile();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    h.renderer.set_paint(
+        &mut h.gpu,
+        0,
+        &NodePaint::Fill(FillPaint {
+            color: [0.2, 0.6, 0.4, 1.0],
+            opacity: 1.0,
+            translate: Default::default(),
+            table_mask: 0,
+            curves: [Curve::STEP; 2],
+            state: Default::default(),
+        }),
+    );
+    h.renderer
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, EXTENT),
+            &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
+        )
+        .unwrap();
+    let pixels = [204u8, 102, 51, 255].repeat(4);
+    let build = ImageBuild {
+        key: TileKey {
+            source,
+            tile: orb_crs::TileIndex::new(0, 0, 0),
+        },
+        kind: PageKind::Raster,
+        size: [2, 2],
+        pixels: Pixels::Core(&pixels),
+        mesh: None,
+        patches: None,
+        fade_from: None,
+        unpack: None,
+        area: None,
+    };
+    let image = h.renderer.upload_image(&mut h.gpu, &build, true).unwrap();
+    h.renderer.set_paint(
+        &mut h.gpu,
+        1,
+        &NodePaint::Raster(RasterPaint {
+            opacity: 0.75,
+            hue_rotate: 0.0,
+            brightness_min: 0.0,
+            brightness_max: 1.0,
+            saturation: 0.0,
+            contrast: 0.0,
+            nearest: true,
+            mipmapped: false,
+            fade_duration: 0.0,
+        }),
+    );
+    let row = TileRow {
+        extent: 8192.0,
+        scale: 2.0 / 8192.0,
+        clips: [
+            ClipRect::new([0, 0], [8192, 8192]),
+            ClipRect::EMPTY,
+            ClipRect::EMPTY,
+            ClipRect::EMPTY,
+        ],
+        ..full_view_tile(0.0)
+    };
+    h.renderer.place(image, 8192, &[row]).unwrap();
+    h.renderer
+        .set_layer_composite(&mut h.gpu, 0, 0, 1.0, Blend::Normal);
+    h.renderer.set_layer_composite(&mut h.gpu, 1, 1, 1.0, mode);
+    h.render()
+}
+
+#[test]
+fn image_layer_blends_follow_w3c_compositing() {
+    let raster = [0.8, 0.4, 0.2, 1.0].map(|v| v * 0.75);
+    for mode in [Blend::Normal, Blend::Multiply, Blend::Screen] {
+        let pixels = blended_raster(mode);
+        for (x, backdrop) in [(8, [0.2, 0.6, 0.4, 1.0]), (48, [0.0, 0.0, 1.0, 1.0])] {
+            let expected = w3c_composite(mode, raster, backdrop);
+            let actual = pixel(&pixels, x, 32);
+            for (a, e) in actual.into_iter().zip(expected) {
+                assert!(
+                    (f32::from(a) - e * 255.0).abs() <= 2.0,
+                    "{mode:?} at x {x}: {actual:?}, expected {:?}",
+                    expected.map(|v| v * 255.0)
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn sky_gradient_composites_over_the_host_backing() {
     let mut h = Harness::new();

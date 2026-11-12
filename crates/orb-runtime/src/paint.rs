@@ -644,6 +644,11 @@ fn write_paint(
             continue;
         };
         renderer.set_paint(gpu, index, &paint);
+        // A layer below layer opacity 1, or blending other than normally,
+        // composites once.
+        if let Some((opacity, blend)) = layer_composite(layer, zoom) {
+            renderer.set_layer_composite(gpu, index, node.layer as u32, opacity, blend);
+        }
         if node.family.is_image() {
             continue;
         }
@@ -660,23 +665,6 @@ fn write_paint(
             && style.reported_missing.insert(name.clone())
         {
             missing.push(name);
-        }
-        // A fill or line layer below layer opacity 1, or blending other
-        // than normally, composites once.
-        let composite = match layer.ty {
-            LayerType::Fill => Some((orb_style::FILL_LAYER_OPACITY, orb_style::FILL_LAYER_BLEND)),
-            LayerType::Line => Some((orb_style::LINE_LAYER_OPACITY, orb_style::LINE_LAYER_BLEND)),
-            _ => None,
-        };
-        if let Some((opacity, blend)) = composite {
-            let (opacity, blend) = (layer.get(opacity), layer.get(blend));
-            renderer.set_layer_composite(
-                gpu,
-                index,
-                node.layer as u32,
-                opacity.evaluate(zoom),
-                layer_blend(blend.evaluate(zoom)),
-            );
         }
     }
     missing
@@ -908,6 +896,23 @@ fn node_paint(
         paint
     };
     Some(paint)
+}
+
+/// The layer opacity and blend of a layer whose type has them: fill and
+/// line layers both, raster layers and the hillshade's and colour relief's
+/// extensions a blend alone.
+fn layer_composite(layer: &orb_style::Layer, zoom: f64) -> Option<(f32, orb_render::Blend)> {
+    use orb_style as s;
+    let (opacity, blend) = match layer.ty {
+        LayerType::Fill => (Some(s::FILL_LAYER_OPACITY), s::FILL_LAYER_BLEND),
+        LayerType::Line => (Some(s::LINE_LAYER_OPACITY), s::LINE_LAYER_BLEND),
+        LayerType::Raster => (None, s::RASTER_LAYER_BLEND),
+        LayerType::Hillshade => (None, s::HILLSHADE_LAYER_BLEND),
+        LayerType::ColorRelief => (None, s::COLOR_RELIEF_LAYER_BLEND),
+        _ => return None,
+    };
+    let opacity = opacity.map_or(1.0, |o| layer.get(o).evaluate(zoom));
+    Some((opacity, layer_blend(layer.get(blend).evaluate(zoom))))
 }
 
 /// The renderer's blend for a v8 layer blend.

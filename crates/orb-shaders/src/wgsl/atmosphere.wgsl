@@ -276,6 +276,14 @@ fn atmosphere_fog_depth(a: Atmosphere, w: f32) -> f32 {
     return a.fog_far / (a.fog_far - a.fog_near) * (1.0 - a.fog_near / max(w, 1e-6));
 }
 
+// How much of the fog's colour a surface at a fog depth takes.
+fn atmosphere_fog_factor(a: Atmosphere, depth: f32) -> f32 {
+    if a.fog_opacity <= 0.0 || depth <= a.fog_ground_blend {
+        return 0.0;
+    }
+    return pow(max(depth - a.fog_ground_blend, 0.0) / (1.0 - a.fog_ground_blend), 2.0) * a.fog_opacity;
+}
+
 // GL JS's terrain fog over a premultiplied surface colour at a fog depth,
 // blended in linear space toward the horizon colour far off: through GL
 // JS's 2.2 gamma for encoded colours, as they are in linear light.
@@ -288,7 +296,7 @@ fn atmosphere_fog(a: Atmosphere, surface: vec4<f32>, depth: f32, ground: bool) -
         return surface;
     }
     let blend = smoothstep(0.0, 1.0, max((depth - a.horizon_fog_blend) / (1.0 - a.horizon_fog_blend), 0.0));
-    let factor = pow(max(depth - a.fog_ground_blend, 0.0) / (1.0 - a.fog_ground_blend), 2.0) * a.fog_opacity;
+    let factor = atmosphere_fog_factor(a, depth);
     if a.linear != 0.0 {
         let coverage = select(surface.a, 1.0, ground);
         return mix(surface, mix(a.fog_color, a.horizon_color, blend) * coverage, factor);

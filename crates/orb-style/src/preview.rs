@@ -1,4 +1,4 @@
-//! Previews: new style syntax beyond the approved v8 spec (style-spec 26.5.1),
+//! Previews: new style syntax beyond the approved v8 spec (style-spec 26.6.0),
 //! which a map opts into by name. With a preview off, its inputs are
 //! treated like any unknown or invalid style input: a warning, then the
 //! default. A preview may change or disappear at any time.
@@ -57,6 +57,12 @@ pub enum Preview {
     /// style-spec#1047: `dev.sargunv.orbis:fill-rounded-corner-distance`,
     /// fills' corners rounded as extrusions' are.
     FillRoundedCornerDistance,
+    /// style-spec#1661: `dev.sargunv.orbis:hillshade-layer-blend`, a
+    /// hillshade composited in a blend mode.
+    HillshadeLayerBlend,
+    /// style-spec#1661: `dev.sargunv.orbis:color-relief-layer-blend`, a
+    /// colour relief composited in a blend mode.
+    ColorReliefLayerBlend,
     /// `metadata["dev.sargunv.orbis:color-space"]`: `"srgb"` or `"linear"`,
     /// the space colours mix in.
     ColorSpace,
@@ -83,7 +89,7 @@ pub enum Preview {
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 24] = [
         Self::Equirectangular,
         Self::NaturalEarth,
         Self::EqualEarth,
@@ -99,6 +105,8 @@ impl Preview {
         Self::AoGroundIntensity,
         Self::AoGroundRadius,
         Self::FillRoundedCornerDistance,
+        Self::HillshadeLayerBlend,
+        Self::ColorReliefLayerBlend,
         Self::ColorSpace,
         Self::GroundLighting,
         Self::AmbientColor,
@@ -133,6 +141,8 @@ impl Preview {
                 "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-radius"
             }
             Self::FillRoundedCornerDistance => "dev.sargunv.orbis:fill-rounded-corner-distance",
+            Self::HillshadeLayerBlend => "dev.sargunv.orbis:hillshade-layer-blend",
+            Self::ColorReliefLayerBlend => "dev.sargunv.orbis:color-relief-layer-blend",
             Self::ColorSpace => "dev.sargunv.orbis:color-space",
             Self::GroundLighting => "dev.sargunv.orbis:ground-lighting",
             Self::AmbientColor => "dev.sargunv.orbis:ambient-color",
@@ -162,6 +172,7 @@ impl Preview {
             | Self::AoGroundIntensity
             | Self::AoGroundRadius => 1796,
             Self::FillRoundedCornerDistance => 1047,
+            Self::HillshadeLayerBlend | Self::ColorReliefLayerBlend => 1661,
             Self::NaturalEarth
             | Self::Crs
             | Self::TileMatrixSet
@@ -222,6 +233,12 @@ impl Preview {
             }
             Self::FillRoundedCornerDistance => {
                 "`dev.sargunv.orbis:fill-rounded-corner-distance` (metres, default 0, off), a layout constant mirroring `fill-extrusion-rounded-corner-distance`: each corner replaced by an arc that far along its edges, at most a fifth of either edge, the same arc as an extrusion's, so a footprint drawn flat matches the building. The outline (`fill-antialias`, `fill-outline-color`) follows the rounded shape, and corners the tile's clipping made stay sharp. The name is Orbis's guess: the proposal has no 2D design yet."
+            }
+            Self::HillshadeLayerBlend => {
+                "`dev.sargunv.orbis:hillshade-layer-blend` (default `normal`): how a hillshade layer composites with what is beneath it, in the seven modes of the spec's `fill-layer-blend`, `line-layer-blend` and `raster-layer-blend` (W3C Compositing 1). `multiply` shades the colours beneath by the hillshade's own, so land keeps its saturation in the shadows: give it a white or near-white highlight, which multiplies to no change, since multiply can only darken. A constant, as the spec's are. On terrain, a hillshade the terrain pass lights (viewport-anchored) blends into the draped layers beneath it as the terrain draws them, with no pass of its own, where the layer right beneath it drapes and draws normally; otherwise (map-anchored, which drapes, or over a layer that doesn't drape or composites apart) it is a terrain layer of its own, composited over the map in its mode, which fades into the fog by its coverage rather than taking the fog's colour. The proposal names `*-layer-blend` for every layer type; Orbis takes it for the two image layers the spec left out."
+            }
+            Self::ColorReliefLayerBlend => {
+                "`dev.sargunv.orbis:color-relief-layer-blend` (default `normal`): how a colour relief layer composites with what is beneath it, in the same seven modes, so that an elevation ramp can tint (`color`, `multiply`) or light (`screen`, `overlay`) the map beneath rather than cover it. A constant, as the spec's are. The proposal names `*-layer-blend` for every layer type; Orbis takes it for the two image layers the spec left out."
             }
             Self::ColorSpace => {
                 "`metadata[\"dev.sargunv.orbis:color-space\"]`, the space colours mix in wherever they meet: `\"srgb\"` (the default) mixes gamma-encoded values, as GL JS and MapLibre Native do; `\"linear\"` mixes linear light: translucent layers, antialiased edges, the terrain's drape, hillshade, fog, the sky's gradients and the globe's scattering, which then adds to what's beneath exactly. Colours in the style keep their meaning: one interpolates as the spec says, then mixes in linear light. In `metadata`, so GL JS, Native and validators ignore it. Our own design; no proposal yet."

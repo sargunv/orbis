@@ -625,8 +625,10 @@ fn projections_read_the_global_state() {
     assert_eq!(parse_projection(&json, &state, Previews::NONE).0, None);
 }
 
-/// style-spec's `layer-blend` validation test: every mode of both
-/// properties parses, with no warnings.
+/// style-spec's `layer-blend` validation test: every mode of the spec's
+/// three properties parses, with no warnings, and so does every mode of
+/// style-spec#1661's hillshade and colour relief ones with their previews.
+/// Without them, those warn and stay normal.
 #[test]
 fn layer_blends_parse() {
     let modes = [
@@ -638,35 +640,71 @@ fn layer_blends_parse() {
         ("screen", LayerBlend::Screen),
         ("overlay", LayerBlend::Overlay),
     ];
-    let layers: Vec<String> = ["fill", "line"]
-        .iter()
-        .flat_map(|ty| {
+    let types = [
+        ("fill", "geojson", "fill-layer-blend", FILL_LAYER_BLEND),
+        ("line", "geojson", "line-layer-blend", LINE_LAYER_BLEND),
+        ("raster", "raster", "raster-layer-blend", RASTER_LAYER_BLEND),
+        (
+            "hillshade",
+            "dem",
+            "dev.sargunv.orbis:hillshade-layer-blend",
+            HILLSHADE_LAYER_BLEND,
+        ),
+        (
+            "color-relief",
+            "dem",
+            "dev.sargunv.orbis:color-relief-layer-blend",
+            COLOR_RELIEF_LAYER_BLEND,
+        ),
+    ];
+    let layers: Vec<String> = (types.iter())
+        .flat_map(|&(ty, source, name, _)| {
             modes.iter().map(move |(mode, _)| {
                 format!(
-                    r#"{{"id": "{ty}-{mode}", "type": "{ty}", "source": "geojson",
-                        "paint": {{"{ty}-layer-blend": "{mode}"}}}}"#
+                    r#"{{"id": "{ty}-{mode}", "type": "{ty}", "source": "{source}",
+                        "paint": {{"{name}": "{mode}"}}}}"#
                 )
             })
         })
         .collect();
-    let style = parse(&format!(
-        r#"{{"version": 8, "sources": {{"geojson": {{"type": "geojson",
-            "data": {{"type": "FeatureCollection", "features": []}}}}}},
+    let doc = format!(
+        r#"{{"version": 8, "sources": {{
+            "geojson": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": []}}}},
+            "raster": {{"type": "raster", "tiles": ["https://example.com/{{z}}/{{x}}/{{y}}.png"]}},
+            "dem": {{"type": "raster-dem", "tiles": ["https://example.com/{{z}}/{{x}}/{{y}}.png"]}}}},
             "layers": [{}]}}"#,
         layers.join(",")
-    ))
-    .unwrap();
-    assert!(style.warnings.is_empty(), "{:?}", style.warnings);
-    let blends: Vec<LayerBlend> = style
-        .layers
-        .iter()
-        .map(|l| match l.ty {
-            LayerType::Fill => l.get(FILL_LAYER_BLEND).evaluate(0.0),
-            _ => l.get(LINE_LAYER_BLEND).evaluate(0.0),
-        })
+    );
+    let blends = |style: &Style| -> Vec<LayerBlend> {
+        (style.layers.iter())
+            .map(|l| {
+                let (.., key) = types.iter().find(|t| t.0 == l.ty.name()).unwrap();
+                l.get(*key).evaluate(0.0)
+            })
+            .collect()
+    };
+    let on = parse_with(&doc, Previews::ALL, &[]).unwrap();
+    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+    let expected: Vec<LayerBlend> = (types.iter())
+        .flat_map(|_| modes.iter().map(|&(_, b)| b))
         .collect();
-    let expected: Vec<LayerBlend> = modes.iter().chain(&modes).map(|&(_, b)| b).collect();
-    assert_eq!(blends, expected);
+    assert_eq!(blends(&on), expected);
+    let off = parse(&doc).unwrap();
+    assert_eq!(off.warnings.len(), 2 * modes.len(), "{:?}", off.warnings);
+    assert!(
+        (off.warnings.iter()).all(|w| w.message.contains("preview")
+            && (w.path.contains("hillshade-layer-blend")
+                || w.path.contains("color-relief-layer-blend"))),
+        "{:?}",
+        off.warnings
+    );
+    let spec = 3 * modes.len();
+    assert_eq!(blends(&off)[..spec], expected[..spec]);
+    assert!(
+        blends(&off)[spec..]
+            .iter()
+            .all(|&b| b == LayerBlend::Normal)
+    );
     // `erase` was dropped from the spec: not a mode.
     let error = parse(
         r#"{"version": 8, "sources": {"s": {"type": "geojson",

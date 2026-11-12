@@ -679,6 +679,8 @@ properties! {
     }
     Raster {
         paint RASTER_OPACITY: f32 = prop("raster-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
+        /// How the layer composites with what is beneath it (style-spec 26.6).
+        paint RASTER_LAYER_BLEND: LayerBlend = prop("raster-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent().in_phase(Phase::Layer);
         paint RASTER_HUE_ROTATE: f32 = prop("raster-hue-rotate", NUMBER, Some("0")).interpolated().extends(Inputs::CAMERA);
         paint RASTER_BRIGHTNESS_MIN: f32 = prop("raster-brightness-min", NUMBER, Some("0")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
         paint RASTER_BRIGHTNESS_MAX: f32 = prop("raster-brightness-max", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
@@ -698,12 +700,16 @@ properties! {
         paint HILLSHADE_SHADOW_COLOR: List<Color> = prop("hillshade-shadow-color", COLOR, Some("\"#000000\"")).interpolated().list();
         paint HILLSHADE_HIGHLIGHT_COLOR: List<Color> = prop("hillshade-highlight-color", COLOR, Some("\"#FFFFFF\"")).interpolated().list();
         paint HILLSHADE_ACCENT_COLOR: Color = prop("hillshade-accent-color", COLOR, Some("\"#000000\"")).interpolated().extends(Inputs::CAMERA);
+        /// style-spec#1661: `*-layer-blend` for every layer type.
+        paint HILLSHADE_LAYER_BLEND: LayerBlend = prop("dev.sargunv.orbis:hillshade-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent().in_phase(Phase::Layer).preview(crate::Preview::HillshadeLayerBlend);
         paint HILLSHADE_METHOD: HillshadeMethod = prop("hillshade-method", enumeration::<HillshadeMethod>(), Some("\"standard\""));
         /// `resampling`, which raster, hillshade and color-relief layers share.
         paint HILLSHADE_RESAMPLE: Resampling = prop("resampling", enumeration::<Resampling>(), Some("\"linear\""));
     }
     ColorRelief {
         paint COLOR_RELIEF_OPACITY: f32 = prop("color-relief-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
+        /// style-spec#1661: `*-layer-blend` for every layer type.
+        paint COLOR_RELIEF_LAYER_BLEND: LayerBlend = prop("dev.sargunv.orbis:color-relief-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent().in_phase(Phase::Layer).preview(crate::Preview::ColorReliefLayerBlend);
         /// A colour ramp over `["elevation"]`, not zoom or the feature.
         paint COLOR_RELIEF_COLOR: Ramp = prop("color-relief-color", COLOR, None).zoom_independent().interpolated().ramp().elevation();
         /// `resampling`, which raster, hillshade and color-relief layers share.

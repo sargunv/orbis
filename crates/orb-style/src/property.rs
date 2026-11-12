@@ -230,8 +230,10 @@ v8_enum!(
     Visibility { Visible = "visible", None = "none" }
 );
 v8_enum!(
-    /// `fill-layer-blend`, `line-layer-blend`: how the layer, composited
-    /// once, combines with what is beneath it (W3C compositing modes).
+    /// `fill-layer-blend`, `line-layer-blend`, `raster-layer-blend` and
+    /// the hillshade's and colour relief's extensions: how the layer,
+    /// composited once, combines with what is beneath it (W3C compositing
+    /// modes).
     LayerBlend {
         Normal = "normal",
         Multiply = "multiply",

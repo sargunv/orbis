@@ -249,6 +249,10 @@ struct Node {
     /// terrain layer that composites it.
     stack: Option<u8>,
     terrain_layer: Option<u8>,
+    /// A shaded hillshade blending other than normally that its terrain
+    /// layer blends into the colours beneath it, rather than one
+    /// composited apart.
+    blends_on_terrain: bool,
     /// A hillshade the terrain pass lights from the frame's bearing: it
     /// drapes its unlit slopes ([`Renderer::set_shaded_on_terrain`]).
     shaded: bool,
@@ -1028,6 +1032,7 @@ impl Renderer {
                 ground_drawn: extrusion::Ground::default(),
                 stack: None,
                 terrain_layer: None,
+                blends_on_terrain: false,
                 shaded,
                 by_zoom,
                 composite: None,
@@ -1103,14 +1108,19 @@ impl Renderer {
             .map(|node| StackInput {
                 draped: on && node.family.is_draped(),
                 group: composite_group(node.composite),
+                blend: (node.composite).map_or(Blend::Normal, |(_, _, blend)| blend),
                 shaded: node.shaded,
                 by_zoom: node.by_zoom,
             })
             .collect();
         let stacks = drape_stacks(&inputs);
-        for (node, (stack, layer)) in (self.nodes.iter_mut()).zip(stacks.nodes) {
+        for (i, (node, (stack, layer))) in (self.nodes.iter_mut()).zip(stacks.nodes).enumerate() {
             node.stack = stack;
             node.terrain_layer = layer;
+            node.blends_on_terrain = layer.is_some_and(|l| {
+                let l = &stacks.layers[usize::from(l)];
+                l.shade_blend != Blend::Normal && l.shade.is_some_and(|(n, _)| n as usize == i)
+            });
             node.cull.target = match stack {
                 Some(stack) => PlacementTarget::Drape(stack),
                 None => PlacementTarget::Map,
@@ -1118,6 +1128,14 @@ impl Renderer {
         }
         self.drape_stacks = stacks.counts;
         self.terrain_layers = stacks.layers;
+        // A layer's own terrain layer composites in its blend mode.
+        for node in self.nodes.iter().filter(|n| !n.blends_on_terrain) {
+            if let (Some(layer), Some((_, _, blend))) = (node.terrain_layer, node.composite)
+                && blend != Blend::Normal
+            {
+                self.terrain_layers[usize::from(layer)].blended = true;
+            }
+        }
     }
 
     /// Makes node `node`, a hillshade, one the terrain pass lights from
@@ -2433,9 +2451,11 @@ impl Renderer {
         // nodes take the terrain's way.
         // On terrain, a draped layer's group is its terrain layer: the
         // texture it composites.
+        // A hillshade its terrain layer blends composites with it.
         let mut runs: Vec<layer_composite::Run> = Vec::new();
         for (i, node) in self.nodes.iter().enumerate() {
-            let Some(layer) = composite_group(node.composite) else {
+            let Some(layer) = composite_group(node.composite).filter(|_| !node.blends_on_terrain)
+            else {
                 continue;
             };
             let (_, opacity, blend) = node.composite.expect("grouped");
@@ -3043,6 +3063,8 @@ struct StackInput {
     draped: bool,
     /// The layer it composites with, if its layer composites once.
     group: Option<u32>,
+    /// How that layer blends.
+    blend: Blend,
     /// A hillshade the terrain lights between stacks.
     shaded: bool,
     /// What it draws changes with the zoom.
@@ -3068,8 +3090,22 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
     let mut previous: Option<Option<u32>> = None;
     for (i, node) in inputs.iter().enumerate() {
         let draped = node.draped;
-        let group = node.group;
         let shaded = draped && node.shaded;
+        // A shaded hillshade blending other than normally blends into the
+        // open terrain layer's colours beneath it, which are what it lies
+        // on, where they draw normally and the layer shades no other: it
+        // joins the layer, which goes on above it. Elsewhere its layer
+        // composites apart, a terrain layer of its own.
+        let blends = shaded && node.blend != Blend::Normal && previous == Some(None);
+        let joins = blends
+            && layers
+                .last()
+                .is_some_and(|l| l.shade.is_none() && l.below.is_some());
+        // Where that layer shades another, it starts the next, whose
+        // hillshade blends into what the layer before drew.
+        let backdrop = blends && layers.last().is_some_and(|l| l.shade.is_some());
+        let inline = joins || backdrop;
+        let group = if inline { None } else { node.group };
         let open = layers
             .last()
             .filter(|l| draped && previous == Some(group) && !(shaded && l.shade.is_some()));
@@ -3087,6 +3123,10 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
             stack = Some(if shaded {
                 let slopes = next();
                 layer.shade = Some((i as u32, slopes));
+                if inline {
+                    layer.shade_blend = node.blend;
+                    layer.backdrop = backdrop;
+                }
                 slopes
             } else {
                 let part = match layer.shade {
@@ -3349,6 +3389,10 @@ mod tests {
         let node = |draped, group, shaded, by_zoom| StackInput {
             draped,
             group,
+            blend: match group {
+                Some(_) => Blend::Multiply,
+                None => Blend::Normal,
+            },
             shaded,
             by_zoom,
         };
@@ -3357,6 +3401,9 @@ mod tests {
             below,
             shade,
             above,
+            blended: false,
+            shade_blend: Blend::Normal,
+            backdrop: false,
         };
         type Case = (&'static str, Vec<StackInput>, DrapeStacks);
         let cases: Vec<Case> = vec![
@@ -3415,6 +3462,53 @@ mod tests {
                         layer(None, Some((1, 1)), None),
                     ],
                     counts: [0, 2],
+                },
+            ),
+            (
+                "a blended shaded hillshade blends into the layer it lies on",
+                vec![plain, node(true, Some(5), true, false), plain],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)), (Some(2), Some(0)), (Some(1), Some(0))],
+                    layers: vec![TerrainLayer {
+                        shade_blend: Blend::Multiply,
+                        ..layer(Some(0), Some((1, 2)), Some(1))
+                    }],
+                    counts: [2, 1],
+                },
+            ),
+            (
+                "after another shaded hillshade, it blends into its layer",
+                vec![
+                    plain,
+                    node(true, None, true, false),
+                    node(true, Some(5), true, false),
+                    plain,
+                ],
+                DrapeStacks {
+                    nodes: vec![
+                        (Some(0), Some(0)),
+                        (Some(2), Some(0)),
+                        (Some(3), Some(1)),
+                        (Some(1), Some(1)),
+                    ],
+                    layers: vec![
+                        layer(Some(0), Some((1, 2)), None),
+                        TerrainLayer {
+                            shade_blend: Blend::Multiply,
+                            backdrop: true,
+                            ..layer(None, Some((2, 3)), Some(1))
+                        },
+                    ],
+                    counts: [2, 2],
+                },
+            ),
+            (
+                "with nothing beneath it, it composites apart",
+                vec![node(true, Some(5), true, false), plain],
+                DrapeStacks {
+                    nodes: vec![(Some(1), Some(0)), (Some(0), Some(1))],
+                    layers: vec![layer(None, Some((0, 1)), None), layer(Some(0), None, None)],
+                    counts: [1, 1],
                 },
             ),
             (
