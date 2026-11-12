@@ -2720,6 +2720,7 @@ name = "orb-api"
 version = "0.0.0"
 dependencies = [
  "glam",
+ "miniz_oxide 0.9.1",
  "orb-camera",
  "orb-crs",
  "orb-hal",
@@ -2729,6 +2730,7 @@ dependencies = [
  "orb-runtime",
  "png",
  "pollster",
+ "rusqlite",
 ]
 
 [[package]]
@@ -2836,6 +2838,7 @@ dependencies = [
  "orb-crs",
  "orb-hal",
  "orb-runtime",
+ "orb-source",
  "orb-style",
  "orb-text",
  "orb-tile",
@@ -2927,6 +2930,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "log",
+ "miniz_oxide 0.9.1",
  "orb-camera",
  "orb-crs",
  "orb-expr",
@@ -2938,6 +2942,7 @@ dependencies = [
  "orb-render",
  "orb-shaders",
  "orb-source",
+ "orb-sqlite",
  "orb-style",
  "orb-symbol",
  "orb-text",
@@ -2945,6 +2950,7 @@ dependencies = [
  "png",
  "pollster",
  "postcard",
+ "rusqlite",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -2975,9 +2981,18 @@ dependencies = [
  "miniz_oxide 0.9.1",
  "orb-crs",
  "orb-expr",
+ "orb-sqlite",
  "orb-style",
+ "rusqlite",
  "rustc-hash 2.1.3",
  "serde",
+]
+
+[[package]]
+name = "orb-sqlite"
+version = "0.0.0"
+dependencies = [
+ "rusqlite",
 ]
 
 [[package]]

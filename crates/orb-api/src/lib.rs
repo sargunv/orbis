@@ -105,6 +105,9 @@ pub struct RuntimeOptions {
     /// [`HTTP_CACHE_BYTES`]) and offline regions. Without one, pipelines
     /// compile on every start and nothing fetched is kept.
     pub state_dir: Option<PathBuf>,
+    /// Where offline regions are kept without a state directory, which
+    /// otherwise keeps them (`regions/` in it).
+    pub regions_dir: Option<PathBuf>,
 }
 
 /// A GPU device and host services, shared by the maps made from it. A
@@ -268,6 +271,7 @@ impl Runtime {
                 regions: options
                     .state_dir
                     .as_ref()
+                    .or(options.regions_dir.as_ref())
                     .map(|dir| regions::Regions::new(dir, fetch)),
                 executor,
                 images: Default::default(),
@@ -547,6 +551,21 @@ impl Runtime {
     pub fn download_region(&self, definition: RegionDefinition) -> Result<u32, Error> {
         self.region_store()?
             .download(definition, wake_all(&self.shared.wakes))
+    }
+
+    /// Adds a region to the state directory without downloading it: listed
+    /// incomplete, and served by no map.
+    pub fn create_region(&self, definition: RegionDefinition) -> Result<RegionInfo, Error> {
+        self.region_store()?.create(definition)
+    }
+
+    /// Copies the regions of another store into the state directory: an
+    /// Orbis state directory's, or, with the `sqlite` feature, those of
+    /// MapLibre Native's offline database file. A region whose definition
+    /// (metadata included) matches one already here isn't copied again.
+    /// Returns this directory's copy of each, and reads `source` only.
+    pub fn merge_regions(&self, source: &std::path::Path) -> Result<Vec<RegionInfo>, Error> {
+        self.region_store()?.merge(source)
     }
 
     /// Deletes a region, stopping its download.

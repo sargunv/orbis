@@ -96,6 +96,7 @@ pub async fn download_region(
             style_url,
             bounds,
             zooms,
+            ..RegionDefinition::default()
         },
         events,
         Box::new(move |r| drop(tx.send(r))),

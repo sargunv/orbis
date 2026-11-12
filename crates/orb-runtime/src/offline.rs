@@ -33,6 +33,28 @@ pub struct RegionDefinition {
     pub style_url: String,
     pub bounds: [f64; 4],
     pub zooms: [f64; 2],
+    /// What MapLibre Native's definitions add, kept and given back: the
+    /// app's bytes, the pixel ratio, whether ideographs are downloaded,
+    /// and a GeoJSON geometry the region covers within `bounds`.
+    pub metadata: Vec<u8>,
+    pub pixel_ratio: f32,
+    pub include_ideographs: bool,
+    pub geometry: Option<String>,
+}
+
+impl Default for RegionDefinition {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            style_url: String::new(),
+            bounds: [-180.0, -85.051_128_779_806_59, 180.0, 85.051_128_779_806_59],
+            zooms: [0.0, 0.0],
+            metadata: Vec::new(),
+            pixel_ratio: 1.0,
+            include_ideographs: false,
+            geometry: None,
+        }
+    }
 }
 
 /// A region in storage.
@@ -100,11 +122,7 @@ pub fn download(
                 Ok(names) => names,
                 Err(e) => return done(Err(e)),
             };
-            let id = names
-                .iter()
-                .filter_map(|n| n.parse::<u32>().ok())
-                .max()
-                .map_or(1, |n| n + 1);
+            let id = next_id(&names);
             let job = Arc::new(Job {
                 id,
                 fetch,
@@ -177,6 +195,135 @@ pub fn list(storage: Arc<dyn Storage>, done: StorageDone<Vec<RegionInfo>>) {
     );
 }
 
+/// A region written whole from what another store holds, as a merge
+/// reads it: its resources and templated tiles go in as they're read, and
+/// [`Import::finish`] stores it complete.
+#[derive(Clone)]
+pub struct Import(Arc<Job>);
+
+impl std::fmt::Debug for Import {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Import").field(&self.0.id).finish()
+    }
+}
+
+/// Fetches nothing: an import's region reads nothing from the network.
+struct NoFetch;
+
+impl Fetch for NoFetch {
+    fn get(&self, _: ResourceKind, _: &str, _: &Abort, done: FetchDone) {
+        done(Err(FetchError::NotFound));
+    }
+
+    fn get_range(&self, _: ResourceKind, _: &str, _: u64, _: u64, _: &Abort, done: FetchDone) {
+        done(Err(FetchError::NotFound));
+    }
+}
+
+/// Starts region `definition` in `storage`, written by the [`Import`]
+/// `done` gets; `events` get its completion.
+pub fn import(
+    storage: Arc<dyn Storage>,
+    definition: RegionDefinition,
+    events: RegionEvents,
+    done: StorageDone<Import>,
+) {
+    let listed = storage.clone();
+    listed.list(
+        "regions",
+        Box::new(move |names| {
+            let id = match names {
+                Ok(names) => next_id(&names),
+                Err(e) => return done(Err(e)),
+            };
+            let job = Arc::new(Job {
+                id,
+                fetch: Arc::new(NoFetch),
+                storage,
+                definition,
+                events,
+                state: Mutex::new(State::default()),
+                abort: Abort::new(),
+            });
+            let manifest = job.manifest(false);
+            let storage = job.storage.clone();
+            storage.write(
+                &format!("{}/manifest.json", region_dir(id)),
+                manifest.into_bytes(),
+                false,
+                Box::new(move |written| done(written.map(|()| Import(job)))),
+            );
+        }),
+    );
+}
+
+/// The id after the greatest of the regions `names`.
+fn next_id(names: &[String]) -> u32 {
+    names
+        .iter()
+        .filter_map(|n| n.parse::<u32>().ok())
+        .max()
+        .map_or(1, |n| n + 1)
+}
+
+impl Import {
+    pub fn id(&self) -> u32 {
+        self.0.id
+    }
+
+    /// Keeps the body of `url`, as a download keeps a resource.
+    pub fn resource(&self, url: &str, bytes: &[u8]) {
+        self.0.keep(orb_host::cache::key(url, None), bytes);
+    }
+
+    /// Keeps `tile` of the source whose tiles are at `template`, a URL with
+    /// `{z}`, `{x}` and `{y}` and no other tokens, `y` counted from the
+    /// north.
+    pub fn tile(&self, template: &str, tile: TileIndex, bytes: Vec<u8>) {
+        let archive = {
+            let mut state = self.0.lock();
+            let found = state
+                .archives
+                .iter()
+                .position(|a| a.templates.iter().any(|t| t == template));
+            let index = found.unwrap_or_else(|| {
+                state.archives.push(Archive {
+                    templates: vec![template.to_string()],
+                    scheme: Scheme::Xyz,
+                    tile_type: tile_type(&bytes),
+                    zooms: [tile.z, tile.z],
+                    bounds: self.0.definition.bounds,
+                    entries: Vec::new(),
+                    data_len: 0,
+                    buffer: Vec::new(),
+                });
+                state.archives.len() - 1
+            });
+            let zooms = &mut state.archives[index].zooms;
+            *zooms = [zooms[0].min(tile.z), zooms[1].max(tile.z)];
+            index
+        };
+        self.0.keep_tile(archive, tile, bytes);
+    }
+
+    /// Stores the region complete, then tells its events.
+    pub fn finish(self) {
+        self.0.lock().stopped = true;
+        self.0.finish();
+    }
+}
+
+/// What a tile's first bytes say it is, for an extract's header: tiles
+/// serve by URL whatever it says.
+fn tile_type(bytes: &[u8]) -> pmtiles::TileType {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => pmtiles::TileType::Png,
+        [0xff, 0xd8, ..] => pmtiles::TileType::Jpeg,
+        [b'R', b'I', b'F', b'F', ..] => pmtiles::TileType::Webp,
+        _ => pmtiles::TileType::Mvt,
+    }
+}
+
 /// The regions in `storage`, with their manifests.
 fn regions(storage: Arc<dyn Storage>, done: StorageDone<Vec<(RegionInfo, Json)>>) {
     let reader = storage.clone();
@@ -235,6 +382,23 @@ fn parse_manifest(id: u32, bytes: &[u8]) -> Option<(RegionInfo, Json)> {
             style_url: doc.get("style")?.as_str()?.to_string(),
             bounds: bounds.try_into().ok()?,
             zooms: zooms.try_into().ok()?,
+            metadata: numbers("metadata")
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| b as u8)
+                .collect(),
+            pixel_ratio: doc
+                .get("pixel_ratio")
+                .and_then(Json::as_f64)
+                .map_or(1.0, |r| r as f32),
+            include_ideographs: doc
+                .get("ideographs")
+                .and_then(Json::as_bool)
+                .unwrap_or(false),
+            geometry: doc
+                .get("geometry")
+                .and_then(Json::as_str)
+                .map(str::to_string),
         },
         complete: doc.get("complete")?.as_bool()?,
         bytes: doc.get("bytes")?.as_f64()? as u64,
@@ -994,7 +1158,7 @@ impl Job {
                 ])
             })
             .collect();
-        object(vec![
+        let mut members = vec![
             ("name", text(&d.name)),
             ("style", text(&d.style_url)),
             ("bounds", array(d.bounds.iter().map(|v| num(*v)).collect())),
@@ -1003,8 +1167,17 @@ impl Job {
             ("bytes", num(state.bytes as f64)),
             ("resources", array(resources)),
             ("archives", array(archives)),
-        ])
-        .to_string()
+            (
+                "metadata",
+                array(d.metadata.iter().map(|&b| num(b.into())).collect()),
+            ),
+            ("pixel_ratio", num(d.pixel_ratio.into())),
+            ("ideographs", j(JsonValue::Bool(d.include_ideographs))),
+        ];
+        if let Some(geometry) = &d.geometry {
+            members.push(("geometry", text(geometry)));
+        }
+        object(members).to_string()
     }
 }
 
@@ -1468,6 +1641,7 @@ mod tests {
             style_url: "https://s/style.json".into(),
             bounds: [139.7, 35.6, 139.8, 35.7],
             zooms: [0.0, 2.0],
+            ..RegionDefinition::default()
         };
         let events: RegionEvents = Arc::new(move |e| tx.send(e).unwrap());
         download(

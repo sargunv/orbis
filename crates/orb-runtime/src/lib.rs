@@ -24,6 +24,10 @@ mod line;
 mod loader;
 mod map;
 mod meshes;
+#[cfg(feature = "sqlite")]
+pub mod native_db;
+#[cfg(feature = "sqlite")]
+pub use orb_sqlite;
 pub mod offline;
 mod options;
 mod paint;

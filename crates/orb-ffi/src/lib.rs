@@ -28,6 +28,7 @@ mod handles;
 mod logging;
 mod map;
 mod network;
+mod offline;
 mod pacer;
 mod projection;
 mod queries;

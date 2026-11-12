@@ -435,41 +435,6 @@ pub unsafe extern "C" fn mln_render_session_set_win32_window_target(
     }
 }
 
-/// `mln_runtime_create_offline_region`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_runtime_create_offline_region(
-    runtime: mln_runtime,
-    definition: *const mln_offline_region_definition,
-    metadata: *const u8,
-    metadata_size: usize,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_runtime_create_offline_region") }
-}
-
-/// `mln_runtime_delete_offline_region`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_runtime_delete_offline_region(
-    runtime: mln_runtime,
-    region_id: mln_offline_region_id,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_runtime_delete_offline_region") }
-}
-
-/// `mln_runtime_get_offline_region`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_runtime_get_offline_region(
-    runtime: mln_runtime,
-    region_id: mln_offline_region_id,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_runtime_get_offline_region") }
-}
-
 /// `mln_runtime_get_offline_region_status`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_runtime_get_offline_region_status(
@@ -490,27 +455,6 @@ pub unsafe extern "C" fn mln_runtime_invalidate_offline_region(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_runtime_invalidate_offline_region") }
-}
-
-/// `mln_runtime_list_offline_regions`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_runtime_list_offline_regions(
-    runtime: mln_runtime,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_runtime_list_offline_regions") }
-}
-
-/// `mln_runtime_merge_offline_regions`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_runtime_merge_offline_regions(
-    runtime: mln_runtime,
-    side_database_path: mln_buffer_view,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_runtime_merge_offline_regions") }
 }
 
 /// `mln_runtime_set_offline_region_download_state`: not implemented.
@@ -1250,8 +1194,28 @@ const _: () = {
         crate::map::mln_runtime_create_map,
     ];
     let _ = [
+        crate::sys::mln_runtime_create_offline_region,
+        crate::offline::mln_runtime_create_offline_region,
+    ];
+    let _ = [
+        crate::sys::mln_runtime_delete_offline_region,
+        crate::offline::mln_runtime_delete_offline_region,
+    ];
+    let _ = [
         crate::sys::mln_runtime_dispose,
         crate::runtime::mln_runtime_dispose,
+    ];
+    let _ = [
+        crate::sys::mln_runtime_get_offline_region,
+        crate::offline::mln_runtime_get_offline_region,
+    ];
+    let _ = [
+        crate::sys::mln_runtime_list_offline_regions,
+        crate::offline::mln_runtime_list_offline_regions,
+    ];
+    let _ = [
+        crate::sys::mln_runtime_merge_offline_regions,
+        crate::offline::mln_runtime_merge_offline_regions,
     ];
     let _ = [
         crate::sys::mln_runtime_release,

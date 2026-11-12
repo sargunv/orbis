@@ -382,7 +382,26 @@ fn c_event(e: &mut Event) -> mln_runtime_event {
 /// without a frame to draw it: Orbis advances maps in steps.
 const IDLE_STEP: Duration = Duration::from_millis(16);
 
-fn run(rx: Receiver<Msg>) {
+/// A fresh directory for the regions of a runtime without a cache file,
+/// removed with it.
+fn temporary_state_dir() -> Result<std::path::PathBuf> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!(
+        "orbis-runtime-{}-{n}-{stamp:x}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| Failure::native(format!("can't make the runtime's regions directory: {e}")))?;
+    Ok(dir)
+}
+
+/// Runs the runtime thread until it's stopped; `temporary` is its regions
+/// directory to remove then, before the stop completes.
+fn run(rx: Receiver<Msg>, temporary: Option<&std::path::Path>) {
     loop {
         let busy = STATE.with(|s| s.borrow().as_ref().is_some_and(crate::map::any_busy));
         let first = if busy {
@@ -428,6 +447,9 @@ fn run(rx: Receiver<Msg>) {
                 state.runtime.set_network_hook(None);
                 state.hook.clear();
             }
+            if let Some(dir) = temporary {
+                let _ = std::fs::remove_dir_all(dir);
+            }
             if let Some(completion) = completion {
                 completion.complete(Ok(Value::None), 0);
             }
@@ -464,6 +486,12 @@ pub unsafe extern "C" fn mln_runtime_create(
                     state_dir = Some(state_dir_for(&cache)?);
                 }
             }
+            // Without a cache file, as in MapLibre Native's in-memory
+            // database, offline regions last as long as the runtime.
+            let temporary = match state_dir {
+                Some(_) => None,
+                None => Some(temporary_state_dir()?),
+            };
             let (tx, rx) = mpsc::channel();
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
             let hook = crate::resources::hook();
@@ -475,6 +503,7 @@ pub unsafe extern "C" fn mln_runtime_create(
                     delivery::start_outbox();
                     let options = orb_api::RuntimeOptions {
                         state_dir,
+                        regions_dir: temporary.clone(),
                         ..Default::default()
                     };
                     match orb_api::Runtime::new(&options) {
@@ -494,11 +523,14 @@ pub unsafe extern "C" fn mln_runtime_create(
                                 })
                             });
                             let _ = ready_tx.send(Ok(()));
-                            run(rx);
+                            run(rx, temporary.as_deref());
                         }
                         Err(e) => {
                             let _ = ready_tx.send(Err(Failure::from(e)));
                         }
+                    }
+                    if let Some(dir) = &temporary {
+                        let _ = std::fs::remove_dir_all(dir);
                     }
                 })
                 .map_err(|e| Failure::native(format!("can't start the runtime thread: {e}")))?;
@@ -522,6 +554,9 @@ pub unsafe extern "C" fn mln_runtime_create(
     }
 }
 
+/// How the file Orbis writes at a cache path starts.
+pub(crate) const CACHE_MARKER: &str = "An Orbis cache:";
+
 /// Where Orbis keeps a runtime's state for MapLibre Native's cache file:
 /// a directory beside the file, which names it. Both are made if need be,
 /// in a directory that must exist and be writable, as Native's database
@@ -538,7 +573,7 @@ fn state_dir_for(cache: &str) -> Result<std::path::PathBuf> {
     if !file.exists() {
         std::fs::write(
             file,
-            format!("An Orbis cache: its resources and offline regions are in {name}.orbis.\n"),
+            format!("{CACHE_MARKER} its resources and offline regions are in {name}.orbis.\n"),
         )
         .map_err(open)?;
     }

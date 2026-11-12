@@ -19,6 +19,8 @@ pub enum TileLocation {
     Url(String),
     /// The archive URL without the `pmtiles://` protocol prefix.
     Pmtiles(String),
+    /// An MBTiles archive's URL ([`archive_url`]).
+    Mbtiles(String),
     /// The app's answer for a tile of a source it feeds.
     Host(HostTile),
 }
@@ -43,7 +45,7 @@ pub enum HostTile {
 /// sources).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileEndpoint {
-    archive: Option<String>,
+    archive: Option<TileLocation>,
     pub bounds: Option<[f64; 4]>,
     pub templates: Vec<String>,
     /// A whole GeoJSON document; an empty URL denotes inline source data.
@@ -103,13 +105,11 @@ impl TileEndpoint {
                 })
                 .unwrap_or_default(),
         };
-        let archive = tileset.url.as_ref().and_then(|url| {
-            if tileset.tiles.is_none() {
-                url.strip_prefix("pmtiles://").map(str::to_string)
-            } else {
-                None
-            }
-        });
+        let archive = tileset
+            .url
+            .as_deref()
+            .filter(|_| tileset.tiles.is_none())
+            .and_then(archive_url);
         if templates.is_empty() && archive.is_none() {
             return Err("source has no tile URLs".to_string());
         }
@@ -249,7 +249,7 @@ impl TileEndpoint {
 
     pub fn location(&self, tile: TileIndex) -> TileLocation {
         match &self.archive {
-            Some(url) => TileLocation::Pmtiles(url.clone()),
+            Some(archive) => archive.clone(),
             None => TileLocation::Url(self.url(tile)),
         }
     }
@@ -359,7 +359,8 @@ pub(crate) fn join_url(base: &str, relative: &str) -> String {
 /// Resolves a style's relative URLs against `base`, the URL it came from,
 /// as a browser resolves a style's links: sources' `url`, `urls`, `tiles`
 /// and GeoJSON `data`, `glyphs`, `sprite` and `font-faces` (a
-/// `pmtiles://` URL keeps its prefix).
+/// `pmtiles://` or `mbtiles://` URL keeps its prefix, and an `mbtiles://`
+/// path names a file).
 pub fn resolve_style_urls(doc: &mut Json, base: &str) {
     // A URL, or each URL of an array of them.
     fn resolve(value: Option<&mut Json>, base: &str) {
@@ -375,8 +376,13 @@ pub fn resolve_style_urls(doc: &mut Json, base: &str) {
         let JsonValue::String(url) = value else {
             return;
         };
-        let (prefix, rest) = match url.strip_prefix("pmtiles://") {
-            Some(rest) => ("pmtiles://", rest),
+        let (prefix, rest) = match ARCHIVES
+            .iter()
+            .find_map(|p| Some((*p, url.strip_prefix(p)?)))
+        {
+            // A path names a file, as MapLibre Native reads `mbtiles:///`.
+            Some(("mbtiles://", rest)) if rest.starts_with('/') => return,
+            Some(found) => found,
             None => ("", url.as_str()),
         };
         *url = format!("{prefix}{}", join_url(base, rest));
@@ -419,6 +425,23 @@ pub fn resolve_style_urls(doc: &mut Json, base: &str) {
 }
 
 /// Header metadata has the same precedence as TileJSON keys.
+/// The protocols of archives a source's `url` names.
+const ARCHIVES: [&str; 2] = ["pmtiles://", "mbtiles://"];
+
+/// Where the archive a source's `url` names is, if it names one: a
+/// `pmtiles://` URL's archive, or an `mbtiles://` URL's, a path (as
+/// `mbtiles:///data/a.mbtiles`) as a `file://` URL.
+pub fn archive_url(url: &str) -> Option<TileLocation> {
+    if let Some(rest) = url.strip_prefix("pmtiles://") {
+        return Some(TileLocation::Pmtiles(rest.to_string()));
+    }
+    let rest = url.strip_prefix("mbtiles://")?;
+    Some(TileLocation::Mbtiles(match rest.starts_with('/') {
+        true => format!("file://{rest}"),
+        false => rest.to_string(),
+    }))
+}
+
 pub fn archive_tilejson(bytes: &[u8]) -> Result<String, String> {
     let header = crate::pmtiles::Header::parse(bytes)?;
     let [west, south, east, north] = header.bounds;
@@ -573,6 +596,37 @@ mod tests {
         assert_eq!(
             endpoint.dem_unpack,
             Some([256.0, 1.0, 1.0 / 256.0, 32768.0])
+        );
+    }
+
+    #[test]
+    fn mbtiles_urls_name_files_or_urls() {
+        assert_eq!(
+            archive_url("mbtiles:///data/a.mbtiles"),
+            Some(TileLocation::Mbtiles("file:///data/a.mbtiles".into()))
+        );
+        assert_eq!(
+            archive_url("mbtiles://https://x/a.mbtiles"),
+            Some(TileLocation::Mbtiles("https://x/a.mbtiles".into()))
+        );
+        assert_eq!(archive_url("https://x/a.json"), None);
+        let mut doc = json::parse(
+            r#"{"sources": {"a": {"url": "mbtiles://./a.mbtiles"}, "b": {"url": "mbtiles:///b.mbtiles"}}}"#,
+        )
+        .unwrap();
+        resolve_style_urls(&mut doc, "https://x/styles/s.json");
+        let url = |id| {
+            let source = doc.get("sources").unwrap().get(id).unwrap();
+            source.get("url").unwrap().as_str().unwrap().to_string()
+        };
+        assert_eq!(url("a"), "mbtiles://https://x/styles/a.mbtiles");
+        assert_eq!(url("b"), "mbtiles:///b.mbtiles");
+        let source = vector(r#"{"type":"vector","url":"mbtiles:///b.mbtiles"}"#);
+        let endpoint =
+            TileEndpoint::resolve(&source, Some(r#"{"maxzoom":3}"#), mercator()).unwrap();
+        assert_eq!(
+            endpoint.location(TileIndex::new(2, 1, 1)),
+            TileLocation::Mbtiles("file:///b.mbtiles".into())
         );
     }
 

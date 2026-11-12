@@ -22,6 +22,7 @@ const TARGETS: &[(&str, &[&str], Option<u8>)] = &[
     ("geojson", &["geojson"], None),
     ("dem", &[], None),
     ("packed", &[], None),
+    ("sqlite", &["mbtiles", "db", "sqlite"], None),
 ];
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
@@ -55,6 +56,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     for source in [
         "fixtures/gl-js",
         "fixtures/native",
+        "fixtures/mln-ffi",
         "web/demo/data",
         "crates/orb-text/tests/data/fonts",
     ] {

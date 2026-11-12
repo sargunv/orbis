@@ -12,6 +12,8 @@
 
 pub mod endpoint;
 mod gzip;
+#[cfg(feature = "mbtiles")]
+pub mod mbtiles;
 pub mod pmtiles;
 
 use std::collections::BTreeMap;

@@ -29,6 +29,7 @@ fn a_downloaded_region_opens_offline() {
             style_url: LIBERTY.into(),
             bounds: [139.745, 35.676, 139.760, 35.690],
             zooms: [11.0, 14.0],
+            ..RegionDefinition::default()
         })
         .unwrap();
     let complete = loop {

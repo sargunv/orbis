@@ -38,6 +38,9 @@ struct Sharing {
 pub(crate) struct TileLoader {
     fetch: Arc<dyn Fetch>,
     archives: Mutex<Archives>,
+    /// MBTiles archives' readers, as [`Self::archives`].
+    #[cfg(feature = "sqlite")]
+    mbtiles: Mutex<VecDeque<(String, Arc<Mutex<orb_source::mbtiles::Reader>>)>>,
     in_flight: Mutex<InFlight>,
     /// Numbers shared fetches and their waiters.
     next: std::sync::atomic::AtomicU64,
@@ -88,6 +91,8 @@ impl TileLoader {
         Arc::new(Self {
             fetch,
             archives: Mutex::new(VecDeque::new()),
+            #[cfg(feature = "sqlite")]
+            mbtiles: Mutex::default(),
             in_flight: Mutex::new(HashMap::new()),
             next: Default::default(),
         })
@@ -255,6 +260,34 @@ impl TileLoader {
                 let reader = self.reader(&url);
                 self.archive(url, reader, tile, encoding, 0, abort.clone(), done);
             }
+            #[cfg(feature = "sqlite")]
+            TileLocation::Mbtiles(url) => {
+                let reader = {
+                    let mut readers = self.mbtiles.lock().expect("archives poisoned");
+                    most_recent(&mut readers, &url)
+                };
+                let step = move |r: &mut orb_source::mbtiles::Reader| r.tile(tile);
+                drive(
+                    self,
+                    url,
+                    reader,
+                    step,
+                    abort.clone(),
+                    Box::new(move |result| {
+                        use orb_source::mbtiles::Format;
+                        done(result.map(|found| match found {
+                            // Left out of the archive: empty, as PMTiles.
+                            None => (Vec::new(), encoding),
+                            Some((bytes, Format::Vector(own))) => (bytes, own),
+                            Some((bytes, Format::Raster)) => (bytes, encoding),
+                        }))
+                    }),
+                );
+            }
+            #[cfg(not(feature = "sqlite"))]
+            TileLocation::Mbtiles(_) => done(Err(FetchError::UnsupportedUrl(
+                "mbtiles:// needs Orbis built with its `sqlite` feature".into(),
+            ))),
         }
     }
 
@@ -340,6 +373,102 @@ impl TileLoader {
             }
         }
     }
+}
+
+/// The reader of archive `url` in `readers`, made if need be: the most
+/// recently used of the eight kept.
+#[cfg(feature = "sqlite")]
+fn most_recent<R: Default>(
+    readers: &mut VecDeque<(String, Arc<Mutex<R>>)>,
+    url: &str,
+) -> Arc<Mutex<R>> {
+    if let Some(index) = readers.iter().position(|(u, _)| u == url) {
+        let entry = readers.remove(index).expect("found");
+        let reader = entry.1.clone();
+        readers.push_back(entry);
+        return reader;
+    }
+    let reader = Arc::<Mutex<R>>::default();
+    if readers.len() == 8 {
+        readers.pop_front();
+    }
+    readers.push_back((url.to_string(), reader.clone()));
+    reader
+}
+
+/// What an MBTiles read gives, or why it failed.
+#[cfg(feature = "sqlite")]
+pub(crate) type MbtilesDone<T> = Box<dyn FnOnce(Result<T, FetchError>) + Send>;
+
+/// Runs `step` on the MBTiles archive `url`'s `reader` until it answers,
+/// reading the pages it asks for through `loader`'s shared fetches.
+#[cfg(feature = "sqlite")]
+pub(crate) fn drive<T: 'static>(
+    loader: &Arc<TileLoader>,
+    url: String,
+    reader: Arc<Mutex<orb_source::mbtiles::Reader>>,
+    step: impl Fn(&mut orb_source::mbtiles::Reader) -> Result<orb_source::mbtiles::Step<T>, String>
+    + Send
+    + 'static,
+    abort: Abort,
+    done: MbtilesDone<T>,
+) {
+    read_until(loader, url, reader, step, abort, done, 0);
+}
+
+#[cfg(feature = "sqlite")]
+fn read_until<T: 'static>(
+    loader: &Arc<TileLoader>,
+    url: String,
+    reader: Arc<Mutex<orb_source::mbtiles::Reader>>,
+    step: impl Fn(&mut orb_source::mbtiles::Reader) -> Result<orb_source::mbtiles::Step<T>, String>
+    + Send
+    + 'static,
+    abort: Abort,
+    done: MbtilesDone<T>,
+    reads: u32,
+) {
+    use orb_source::mbtiles::Step;
+    // A lookup reads a page per level of two trees and an overflow run.
+    if reads > 64 {
+        return done(Err(FetchError::Range(format!(
+            "{url}: too many MBTiles reads"
+        ))));
+    }
+    let answer = step(&mut reader.lock().expect("reader poisoned"));
+    let (offset, length) = match answer {
+        Ok(Step::Done(value)) => return done(Ok(value)),
+        Err(e) => return done(Err(FetchError::Range(format!("{url}: {e}")))),
+        Ok(Step::Read { offset, length }) => (offset, length),
+    };
+    let range = match Range::new(offset, length) {
+        Ok(range) => range,
+        Err(e) => return done(Err(FetchError::Range(e))),
+    };
+    let next = Arc::clone(loader);
+    loader.share(
+        ResourceKind::Tile,
+        &url.clone(),
+        Some(range),
+        &abort.clone(),
+        Box::new(move |result| {
+            let inserted = {
+                let mut reader = reader.lock().expect("reader poisoned");
+                match result {
+                    Ok(bytes) => reader
+                        .insert(offset, &bytes)
+                        .map_err(|e| FetchError::Range(format!("{url}: {e}"))),
+                    // A file shorter than the first read is read again.
+                    Err(e) if falls_back(&e) && reader.read_failed(offset) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            };
+            match inserted {
+                Ok(()) => read_until(&next, url, reader, step, abort, done, reads + 1),
+                Err(e) => done(Err(e)),
+            }
+        }),
+    );
 }
 
 /// A shared fetch's bytes, copied unless this was the last load waiting.
@@ -541,5 +670,66 @@ mod tests {
         fetch.release();
         assert_eq!(got.lock().unwrap().len(), 2);
         assert_eq!(fetch.reads.lock().unwrap().len(), 1);
+    }
+
+    /// An MBTiles archive on disk loads its TileJSON and tiles through
+    /// range reads of the file, as a `mbtiles:///path` source does.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn mbtiles_archives_load_by_range_reads() {
+        let path = std::env::temp_dir().join(format!("orb-loader-{}.mbtiles", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute_batch(
+                "CREATE TABLE metadata (name text, value text);
+                 CREATE TABLE tiles (zoom_level integer, tile_column integer, tile_row integer, tile_data blob);
+                 CREATE UNIQUE INDEX tile_index on tiles (zoom_level, tile_column, tile_row);
+                 INSERT INTO metadata VALUES ('format', 'pbf'), ('minzoom', '0'), ('maxzoom', '2');",
+            )
+            .unwrap();
+            for (z, x, y) in [(0, 0, 0), (2, 1, 2), (2, 3, 0)] {
+                let row = (1 << z) - 1 - y;
+                let body = vec![z as u8 * 16 + x as u8; 5000];
+                db.execute(
+                    "INSERT INTO tiles VALUES (?, ?, ?, ?)",
+                    rusqlite::params![z, x, row, body],
+                )
+                .unwrap();
+            }
+        }
+        let fetch: Arc<dyn Fetch> = orb_host_native::NativeFetch::new();
+        let loader = TileLoader::new(fetch);
+        let url = format!("file://{}", path.display());
+        let (tx, rx) = std::sync::mpsc::channel();
+        drive(
+            &loader,
+            url.clone(),
+            Arc::default(),
+            orb_source::mbtiles::Reader::tilejson,
+            Abort::new(),
+            Box::new(move |r| tx.send(r).unwrap()),
+        );
+        let tilejson = rx.recv().unwrap().unwrap();
+        assert!(tilejson.contains(r#""maxzoom":2"#), "{tilejson}");
+        for (z, x, y, found) in [(2, 1, 2, true), (2, 3, 0, true), (2, 0, 0, false)] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            loader.load(
+                ResourceKind::Tile,
+                TileLocation::Mbtiles(url.clone()),
+                TileIndex::new(z, x, y),
+                Encoding::Mvt,
+                &Abort::new(),
+                Box::new(move |r| tx.send(r).unwrap()),
+            );
+            let (bytes, encoding) = rx.recv().unwrap().unwrap();
+            let want = if found {
+                vec![z * 16 + x as u8; 5000]
+            } else {
+                Vec::new()
+            };
+            assert_eq!((bytes, encoding), (want, Encoding::Mvt), "{z}/{x}/{y}");
+        }
+        std::fs::remove_file(&path).unwrap();
     }
 }

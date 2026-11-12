@@ -10,6 +10,9 @@ version.workspace = true
 # The CPU frame driver and the tables' texture backing on the web
 # (`orb-render`'s `cpu-driven`), for WebGL 2.
 cpu-driven = ["orb-render/cpu-driven"]
+# SQLite files, read by orb-sqlite: `mbtiles://` sources, and MapLibre
+# Native's offline databases merged into a runtime's regions.
+sqlite = ["dep:orb-sqlite", "dep:miniz_oxide", "orb-source/mbtiles"]
 
 [dependencies]
 rustc-hash.workspace = true
@@ -26,6 +29,9 @@ orb-layout.workspace = true
 orb-render.workspace = true
 orb-shaders.workspace = true
 orb-source.workspace = true
+orb-sqlite = { workspace = true, optional = true }
+# Native's compressed bodies.
+miniz_oxide = { workspace = true, optional = true }
 orb-style.workspace = true
 orb-symbol.workspace = true
 orb-text.workspace = true
@@ -45,6 +51,8 @@ orb-hal-wgpu.workspace = true
 log.workspace = true
 png.workspace = true
 pollster.workspace = true
+# Writes the MBTiles archives the loader's tests read.
+rusqlite.workspace = true
 # GL JS golden vectors hold shortest round-trip doubles; parse them exactly.
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 

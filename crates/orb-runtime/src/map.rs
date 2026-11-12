@@ -26,7 +26,7 @@ use crate::resident::*;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
 use crate::worker::{StyleUpdate, TileRequest, TileWorker};
-use orb_source::endpoint::TileEndpoint;
+use orb_source::endpoint::{TileEndpoint, TileLocation};
 
 /// Logical pixel size of vector/background tiles and pattern origins.
 pub(crate) const TILE_PX: f64 = 512.0;
@@ -1718,6 +1718,29 @@ impl Map {
                         });
                         let abort = &self.style_loads;
                         crate::loader::read_head(&self.services.fetch, archive, abort, done);
+                    } else if let Some(TileLocation::Mbtiles(archive)) =
+                        orb_source::endpoint::archive_url(url)
+                    {
+                        // Its TileJSON is its metadata table's.
+                        let done = self.reply(move |result| Message::TileJson {
+                            generation,
+                            source: key,
+                            result,
+                            head: None,
+                        });
+                        #[cfg(feature = "sqlite")]
+                        crate::loader::drive(
+                            &crate::loader::TileLoader::new(self.services.fetch.clone()),
+                            archive,
+                            Arc::default(),
+                            orb_source::mbtiles::Reader::tilejson,
+                            self.style_loads.clone(),
+                            done,
+                        );
+                        #[cfg(not(feature = "sqlite"))]
+                        done(Err(FetchError::UnsupportedUrl(format!(
+                            "{archive}: mbtiles:// needs Orbis built with its `sqlite` feature"
+                        ))));
                     } else {
                         let abort = self.style_loads.clone();
                         self.fetch_text(ResourceKind::Source, url, &abort, move |result| {

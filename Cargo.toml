@@ -115,6 +115,7 @@ orb-render = { path = "crates/orb-render" }
 orb-runtime = { path = "crates/orb-runtime" }
 orb-shaders = { path = "crates/orb-shaders" }
 orb-source = { path = "crates/orb-source" }
+orb-sqlite = { path = "crates/orb-sqlite" }
 orb-symbol = { path = "crates/orb-symbol" }
 orb-text = { path = "crates/orb-text", default-features = false }
 orb-style = { path = "crates/orb-style" }

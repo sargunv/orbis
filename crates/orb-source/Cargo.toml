@@ -6,6 +6,10 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# `mbtiles://` sources (`mbtiles.rs`), read with orb-sqlite.
+mbtiles = ["dep:orb-sqlite"]
+
 [dependencies]
 rustc-hash.workspace = true
 serde.workspace = true
@@ -13,9 +17,12 @@ miniz_oxide.workspace = true
 orb-crs.workspace = true
 orb-expr.workspace = true
 orb-style.workspace = true
+orb-sqlite = { workspace = true, optional = true }
 
 [dev-dependencies]
 flate2.workspace = true
+# Writes the MBTiles archives the tests read.
+rusqlite.workspace = true
 
 [lints]
 workspace = true

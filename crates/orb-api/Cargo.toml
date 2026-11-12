@@ -6,6 +6,12 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+default = ["sqlite"]
+# SQLite files: `mbtiles://` sources, and MapLibre Native's offline
+# databases merged into the runtime's regions (`Runtime::merge_regions`).
+sqlite = ["orb-runtime/sqlite"]
+
 [dependencies]
 glam.workspace = true
 orb-camera.workspace = true
@@ -19,6 +25,9 @@ pollster.workspace = true
 
 [dev-dependencies]
 png.workspace = true
+# Writes the MapLibre Native offline database the merge test reads.
+rusqlite.workspace = true
+miniz_oxide.workspace = true
 
 [lints]
 workspace = true

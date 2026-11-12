@@ -1,6 +1,6 @@
 [package]
 name = "orb-fuzz"
-description = "cargo-fuzz targets for input Orbis takes from the network, apps and its job workers: styles, MVT and MLT tiles laid out, glyph ranges, font files, GeoJSON, DEM tiles and packed tiles (`cargo xtask fuzz`)"
+description = "cargo-fuzz targets for input Orbis takes from the network, apps and its job workers: styles, MVT and MLT tiles laid out, glyph ranges, font files, GeoJSON, DEM tiles, packed tiles and SQLite files (`cargo xtask fuzz`)"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -13,7 +13,8 @@ cargo-fuzz = true
 libfuzzer-sys.workspace = true
 orb-crs.workspace = true
 orb-hal.workspace = true
-orb-runtime.workspace = true
+orb-runtime = { workspace = true, features = ["sqlite"] }
+orb-source = { workspace = true, features = ["mbtiles"] }
 orb-style.workspace = true
 orb-text = { workspace = true, features = ["fonts"] }
 orb-tile.workspace = true
@@ -70,6 +71,13 @@ bench = false
 [[bin]]
 name = "packed"
 path = "fuzz_targets/packed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sqlite"
+path = "fuzz_targets/sqlite.rs"
 test = false
 doc = false
 bench = false
