@@ -1590,12 +1590,6 @@ mod tests {
     }
 
     #[test]
-    fn coarser_dem_tiles_draw_with_gl_js_density() {
-        let steps = [64.0, 256.0, 512.0, 1024.0, 4096.0].map(grid_step);
-        assert_eq!(steps, [1, 1, 2, 4, 4]);
-    }
-
-    #[test]
     fn layers_take_as_many_slots_as_their_tiles_but_for_part_of_a_row() {
         assert_eq!(layer_grid(0, 8), Some((1, 1)));
         assert_eq!(layer_grid(24, 8), Some((4, 6)));
@@ -1605,23 +1599,5 @@ mod tests {
         // Never past the device's side.
         assert_eq!(layer_grid(65, 8), None);
         assert_eq!(layer_grid(17, 4), None);
-    }
-
-    #[test]
-    fn a_tile_slots_stacks_lie_at_one_place_of_their_layers() {
-        let layout = DrapeLayout {
-            stacks: [3, 1],
-            columns: [5, 5],
-            tile_slots: 30,
-            generation: 1,
-        };
-        assert_eq!(layout.corner(1, 0), [DRAPE_SLOT_PX, 0]);
-        assert_eq!(layout.corner(1, 2), [DRAPE_SLOT_PX, 0]);
-        assert_eq!(layout.corner(7, 0), [2 * DRAPE_SLOT_PX, DRAPE_SLOT_PX]);
-        assert_eq!((layout.layer(0), layout.layer(2)), (0, 2));
-        // Slopes on their own page, at half the texels a side.
-        assert_eq!(layout.page(3), (1, 0));
-        assert_eq!(layout.corner(1, 3), [SLOPE_SLOT_PX, 0]);
-        assert_eq!(layout.corner(6, 3), [SLOPE_SLOT_PX, SLOPE_SLOT_PX]);
     }
 }

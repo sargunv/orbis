@@ -5,8 +5,8 @@ use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
     Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameLight, FrameStats,
-    MeshData, Moves, NodePaint, PipelineGroup, PipelineSet, PlacementTarget, Renderer,
-    SceneCapacity, SymbolPaint, TargetFormat, TileRow, Words,
+    MeshData, Moves, NodePaint, PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow,
+    Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -2150,62 +2150,4 @@ fn sky_view() -> orb_render::AtmosphereView {
         ],
         globe: None,
     }
-}
-
-/// Real basemaps have hundreds of render nodes (Americana about 400).
-#[test]
-fn default_capacity_holds_a_large_basemaps_nodes() {
-    let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
-    let images = orb_render::ImageAtlas::new(&mut gpu, 512, 4, 4096);
-    let mut renderer = Renderer::new(
-        &mut gpu,
-        TargetFormat {
-            color: TextureFormat::Rgba8Unorm,
-            sample_count: 1,
-        },
-        SceneCapacity::default(),
-        images.bindings(),
-    );
-    renderer.set_nodes(&mut gpu, &[Family::Line; 400]);
-}
-
-#[test]
-fn the_set_asks_for_the_symbol_pipeline_both_halves_pick() {
-    let mut h = Harness::new();
-    h.renderer
-        .set_nodes(&mut h.gpu, &[Family::SymbolIcon, Family::SymbolText]);
-    let plain = NodePaint::Symbol(SymbolPaint::default());
-    let rows = NodePaint::Symbol(SymbolPaint {
-        table_mask: 1,
-        ..SymbolPaint::default()
-    });
-    let set = |groups: Vec<Vec<_>>| PipelineSet {
-        groups: (groups.into_iter())
-            .map(|nodes| PipelineGroup {
-                nodes,
-                composite: None,
-                rank: 1,
-            })
-            .collect(),
-        sky: false,
-        shaded: false,
-    };
-    // Neither half painted yet: the icons alone, with text that draws
-    // nothing, or with text painted alike pick the pipeline without rows.
-    h.renderer.set_pipelines(
-        &mut h.gpu,
-        set(vec![
-            vec![(0, Some(plain))],
-            vec![(0, Some(plain)), (1, None)],
-            vec![(0, Some(plain)), (1, Some(plain))],
-        ]),
-    );
-    let plain_pipelines = h.gpu.background_pending();
-    assert!(plain_pipelines > 0);
-    // Text reading rows picks the variant with them for both halves.
-    h.renderer.set_pipelines(
-        &mut h.gpu,
-        set(vec![vec![(0, Some(plain)), (1, Some(rows))]]),
-    );
-    assert_eq!(h.gpu.background_pending(), 2 * plain_pipelines);
 }

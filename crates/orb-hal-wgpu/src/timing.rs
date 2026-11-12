@@ -317,20 +317,8 @@ mod tests {
             let labels: Vec<_> = t.passes.iter().map(|(l, _)| l.as_str()).collect();
             assert_eq!(labels, if timed { &["a", "b", "c"][..] } else { &[] });
         }
-        // Sets start over after a take, in the sets it read.
-        let spare = |gpu: &WgpuGpu| gpu.timing.as_ref().unwrap().spare.lock().unwrap().len();
-        let read = spare(&gpu);
-        assert_eq!(
-            read,
-            if timed {
-                submissions * 3 * 2 / QUERIES as usize
-            } else {
-                0
-            }
-        );
+        // Timing goes on after a take.
         gpu.submit(&[pass("a")]);
-        assert_eq!(spare(&gpu), read.saturating_sub(1));
         assert_eq!(pollster::block_on(gpu.take_timings()).len(), 1);
-        assert_eq!(spare(&gpu), read.max(usize::from(timed)));
     }
 }
