@@ -63,9 +63,10 @@ type Grid = (u32, u32, u32);
 /// with their tiles, so that a view of few tiles keeps them all in one,
 /// redrawn in one pass, and one of many has a layer a stack. A grid is a
 /// power of two slots a side, so that drape space maps to clip space and
-/// atlas uv by powers of two, exactly: a slot's texels then don't depend
-/// on where in the atlas it lies, which depends on the tiles that came
-/// and went before. A new grid holds the slots in the fewest, or on
+/// atlas uv by powers of two, exactly; the GPU still drapes and samples a
+/// slot a step apart at a few pixels by where it lies, which is why a map
+/// at rest gives each tile the slot of its place in the cover (the
+/// runtime's `Terrain::plan`). A new grid holds the slots in the fewest, or on
 /// shrinking twice that, so that a view must grow past it again to make
 /// another; squarest, columns first. `tiles` is at most `side²`.
 fn atlas_grid(

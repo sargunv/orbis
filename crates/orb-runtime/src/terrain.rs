@@ -625,10 +625,11 @@ impl Terrain {
                 slot.index = to;
             }
         }
-        // Filters read a little past a slot's edge, into the slots beside
-        // it in the atlas: which tiles those hold must follow the cover
-        // alone, not the tiles that came and went before it, for a map at
-        // rest to draw what a fresh one does.
+        // The same tile drapes and samples a step apart at a few pixels in
+        // another slot (where it lies in the atlas, not what the slots
+        // beside it hold: those never show), so which slot a tile takes
+        // must follow the cover alone, not the tiles that came and went
+        // before it, for a map at rest to draw what a fresh one does.
         if at_rest {
             debug_assert!(self.tiles.len() <= layout.tile_slots as usize);
             for (place, tile) in (0u32..).zip(&self.tiles) {

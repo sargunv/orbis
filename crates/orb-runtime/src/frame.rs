@@ -622,12 +622,15 @@ impl Map {
         let kept = terrain.kept_slots();
         let tiles = terrain.tiles.len() as u32;
         // At rest the pages fit the view: room for more tiles than it has,
-        // or shrunk to them (`resize_now`).
+        // or shrunk to them (`resize_now`), unless a pool grew this frame;
+        // the tiles take the slots of their places in the cover in any
+        // frame at rest, as moving them allocates nothing.
+        let still = self.mode != RenderMode::Continuous;
         let resize = self.resize_now && !self.resize_grew;
-        let at_rest = resize || self.mode != RenderMode::Continuous;
+        let at_rest = self.resize_now || still;
         let wanted = resize.then(|| renderer.drape_at_rest(gpu, tiles)).flatten();
         let slots = (wanted.unwrap_or(tiles).max(tiles), &kept[..]);
-        let (layout, moves) = match renderer.reserve_drape(gpu, slots, at_rest) {
+        let (layout, moves) = match renderer.reserve_drape(gpu, slots, resize || still) {
             Ok(reserved) => reserved,
             Err(full) => {
                 // The cover fits the atlas's room (`Terrain::update`)
