@@ -1,8 +1,8 @@
 //! The GPU-driven render graph.
 //!
-//! A frame has a cull and main pass: one cull/compact dispatch, a workgroup per render
-//! node that keeps its visible `(chunk, tile placement)` candidates in draw
-//! order and writes its indirect arguments, and the main pass, which
+//! A frame has a cull and main pass: one flat cull/compact dispatch, which
+//! keeps each render node's visible `(chunk, tile placement)` candidates in
+//! draw order and writes its indirect arguments, and the main pass, which
 //! replays a render bundle of one indirect draw per render node. The bundle
 //! is recorded again only when the node list changes or an image page
 //! grows; tile arrival changes buffers, not commands. Frames in which DEM

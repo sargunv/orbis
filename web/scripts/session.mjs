@@ -547,6 +547,12 @@ async function run(server, engine) {
         };
       }
       wrap(GPUCommandEncoder.prototype, "finish");
+      // GPU-side fills: no bytes cross the queue, but each is a call.
+      wrap(
+        GPUCommandEncoder.prototype,
+        "clearBuffer",
+        (a) => a[2] ?? a[0].size - (a[1] ?? 0),
+      );
       wrap(GPURenderBundleEncoder.prototype, "finish");
       wrap(GPUBuffer.prototype, "destroy");
       wrap(GPUTexture.prototype, "destroy");

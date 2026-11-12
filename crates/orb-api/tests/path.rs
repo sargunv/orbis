@@ -1054,9 +1054,10 @@ fn terrain_fog_fades_through_the_globe_handover() {
 
 /// A view at rest over the Alps stays put: frames after idle cover the
 /// same terrain tiles and read the same DEM tiles, so they pad no DEM
-/// borders, write no rows, keep the cull's candidates and run no more than
-/// one cull (none, once the drape is drawn and nothing else culls), from
-/// the first frame after idle on. Here the DEM tile under one
+/// borders, write no rows, keep the cull's candidates and dispatch the
+/// same cull every frame (at most one, and none once the drape is drawn
+/// and nothing else has candidates to cull), from the first frame after
+/// idle on. Here the DEM tile under one
 /// cover tile culls that tile, which must not let go of the DEM tile and
 /// bring the cover tile back on the next frame.
 #[test]
@@ -1068,12 +1069,15 @@ fn an_alpine_view_at_rest_redoes_nothing() {
     map.set_style_json(&alps).unwrap();
     map.jump_to(&camera((Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0)));
     common::settle(&mut map, &mut target);
+    let mut dispatches = None;
     for frame in 1..=4 {
         let report = map.render(&mut target, 0.0).unwrap().unwrap();
         assert!(report.idle, "frame {frame}");
         assert_eq!(report.frame.prepared, 0, "frame {frame}");
         assert_eq!(report.frame.placements_written, 0, "frame {frame}");
         assert!(report.frame.dispatches <= culls(), "frame {frame}");
+        let first = *dispatches.get_or_insert(report.frame.dispatches);
+        assert_eq!(report.frame.dispatches, first, "frame {frame}");
         assert!(!report.frame.candidates_rebuilt, "frame {frame}");
     }
 }

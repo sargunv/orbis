@@ -280,7 +280,8 @@ fn cull_indexed(index: u32, lane: u32, node: NodeCull, start: u32) {
         }
         var drawn = candidate.drawn;
         if drawn == MOVED {
-            // Hidden either way: this index, or the CPU driver's restart.
+            // Hidden: a slot cleared, or one the cull hid (the CPU
+            // driver's restart indices are in its own copies, never here).
             let hidden = chunk.index_count == 0u || compacted[candidate.slot] == HIDDEN_INDEX;
             drawn = select(1u, 0u, hidden);
             candidates[node.visible_base + i].drawn = drawn;
