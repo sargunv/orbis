@@ -288,6 +288,67 @@ mod tests {
         assert_eq!(differing, 0, "pixels differ from a fresh map");
     }
 
+    /// A viewport that grows under a held drag (a window resized, a
+    /// phone's toolbar sliding away) sizes the pools for its larger cover
+    /// once the camera rests, not in a frame of the gesture.
+    #[test]
+    fn a_viewport_grown_under_a_gesture_sizes_the_pools_at_rest() {
+        use orb_camera::input::{Button, Input, Modifiers, PointerKind};
+        let mut map = crate::common::Offscreen::sized(&tokyo(14.0)).unwrap();
+        let full = map.viewport;
+        let small = orb_runtime::Viewport {
+            width: full.width / 2.0,
+            height: full.height / 2.0,
+        };
+        map.viewport = small;
+        let sized = map.settle().unwrap().0.memory.scene;
+        let point = |x: f64| glam::DVec2::new(x, small.height / 2.0);
+        let time = map.time;
+        map.map.input(
+            Input::PointerDown {
+                id: 1,
+                kind: PointerKind::Mouse,
+                button: Button::Primary,
+                position: point(small.width * 0.8),
+                modifiers: Modifiers::default(),
+            },
+            time,
+        );
+        for step in 1..=20 {
+            let time = map.time;
+            let x = small.width * (0.8 - 0.3 * f64::from(step) / 20.0);
+            map.map.input(
+                Input::PointerMove {
+                    id: 1,
+                    position: point(x),
+                },
+                time,
+            );
+            let grown = f64::from(step) / 20.0;
+            let viewport = orb_runtime::Viewport {
+                width: small.width + (full.width - small.width) * grown,
+                height: small.height + (full.height - small.height) * grown,
+            };
+            let report = map.frame_at(viewport);
+            assert!(report.input, "the drag holds the camera");
+            assert_eq!(report.resized.moves, 0, "step {step}: memory moved");
+        }
+        let time = map.time;
+        map.map.input(
+            Input::PointerUp {
+                id: 1,
+                position: point(small.width * 0.5),
+            },
+            time,
+        );
+        map.viewport = full;
+        let rested = map.settle().unwrap().0.memory.scene;
+        assert!(
+            rested.vertices.allocated > sized.vertices.allocated,
+            "sized for the larger view at rest: {rested:#?}"
+        );
+    }
+
     /// Coarser tiles left standing in by a zoom don't crowd out the tiles
     /// that replace them: a scene with room for the view, but not for the
     /// view and the levels zoomed through, ends where a fresh map does.

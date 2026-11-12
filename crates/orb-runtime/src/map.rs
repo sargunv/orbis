@@ -189,7 +189,7 @@ pub struct FrameReport {
     /// What this map's pools, tables, tile pages and drape atlas did in
     /// this frame moving into memory of another size (part of `gpu`):
     /// none in a frame that moved the camera or had input, but for a
-    /// style's first sizes and labels outgrowing twice what the symbol
+    /// renderer's first sizes and labels outgrowing twice what the symbol
     /// placement target held at rest.
     pub resized: orb_render::Resized,
     /// What they did in [`Map::prepare`]'s frames since the last frame
@@ -1142,9 +1142,9 @@ impl Map {
 
     /// Sets the GPU memory the map aims to stay within
     /// ([`DESKTOP_BUDGET`](orb_render::DESKTOP_BUDGET), the default, or
-    /// [`MOBILE_BUDGET`](orb_render::MOBILE_BUDGET)). The scene's pools and
-    /// tile pages start at its shares for the viewport's cover
-    /// ([`orb_render::Sizing`]); tiles out of view stay cached within a
+    /// [`MOBILE_BUDGET`](orb_render::MOBILE_BUDGET)). A continuous map's
+    /// scene pools and tile pages start at its shares for the viewport's
+    /// cover ([`orb_render::Sizing`]); tiles out of view stay cached within a
     /// quarter of it and give way first; the pools and pages grow at rest
     /// as the tiles in view need, to the device's limits, so a view that
     /// needs more than the budget still draws.
@@ -1820,8 +1820,8 @@ impl Map {
         let asked = gpu.counters().pipelines_requested;
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
         let deadline = self.open_beat(started);
-        // No memory moves while the camera does, but for a style's first
-        // sizes. At rest the candidate lists and glyph pages grow as the
+        // No memory moves while the camera does, but for the renderer's
+        // first sizes. At rest the candidate lists and glyph pages grow as the
         // frame needs (the lists copy nothing), and the pools and tile
         // pages in the map's upkeep, below, a move a frame; a still map's
         // all move as its frame needs.
@@ -2329,12 +2329,20 @@ impl Map {
         !self.resizes_freely() && (self.is_moving() || !self.camera_rested)
     }
 
-    /// Sizes the renderer's pools and new tile pages for the style and
-    /// the viewport's cover ([`orb_render::Sizing`]), once each changes.
+    /// Sizes a continuous map's pools and new tile pages for the style
+    /// and the viewport's cover ([`orb_render::Sizing`]), once each
+    /// changes: at once for the renderer's first sizes, and otherwise at
+    /// rest, so that a viewport resized or a style replaced under a
+    /// gesture moves nothing until it ends. A still map's grow as its
+    /// frames need, as they may.
     fn size_pools(&self, gpu: &mut dyn Gpu, renderer: &mut Renderer, viewport: Viewport) {
-        let Some(style) = self.style.as_ref().filter(|_| self.sized) else {
+        let sizes = self.sized && !self.resizes_freely();
+        let Some(style) = self.style.as_ref().filter(|_| sizes) else {
             return;
         };
+        if self.holds_memory() && renderer.sizing().is_some() {
+            return;
+        }
         let plan = style.worker.plan();
         // Background and sky nodes have no source.
         let vector = (plan.nodes.iter())

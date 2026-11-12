@@ -843,6 +843,11 @@ impl Renderer {
             .set_table(self.scene.tables().writer(Table::Props));
     }
 
+    /// What the pools were last sized for ([`size_for`](Self::size_for)).
+    pub fn sizing(&self) -> Option<Sizing> {
+        self.sizing
+    }
+
     /// Whether something waits for room only a move at rest makes: a
     /// layout left candidates out, or glyph bitmaps wait for a page.
     pub fn wants_room(&self) -> bool {

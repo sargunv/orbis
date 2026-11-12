@@ -195,11 +195,21 @@ impl Offscreen {
 
     /// The map with its style set, before anything has loaded.
     pub(crate) fn new(options: &Options, capacity: SceneCapacity) -> Result<Self, String> {
+        Self::made(options, |map| map.set_scene_capacity(capacity))
+    }
+
+    /// Like [`new`](Self::new), the pools sized from the map's budget and
+    /// view, as an app's are.
+    pub(crate) fn sized(options: &Options) -> Result<Self, String> {
+        Self::made(options, |_| {})
+    }
+
+    fn made(options: &Options, set: impl FnOnce(&mut Map)) -> Result<Self, String> {
         let services = native_services(Arc::new(|| {}));
         let mut map = Map::new(services, camera(options));
         // Snapshots use the same white backing as the native demo window.
         map.set_clear_color([1.0; 4]);
-        map.set_scene_capacity(capacity);
+        set(&mut map);
         // Tests compare maps reached by different paths: labels placed by
         // the camera alone, as AGENTS.md's path rule has the path tests.
         map.set_stable_labels(false);

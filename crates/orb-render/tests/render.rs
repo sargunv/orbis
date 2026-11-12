@@ -458,8 +458,9 @@ fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
         // Pages start at eight layers before a map sizes them.
         let green = [0, 255, 0, 255];
         let first = upload(&mut h, 0, RED).unwrap();
+        let mut last = first;
         for col in 1..8 {
-            upload(&mut h, col, green).unwrap();
+            last = upload(&mut h, col, green).unwrap();
         }
         assert!(matches!(upload(&mut h, 8, green), Err(UploadError::NoRoom)));
         let room = h.renderer.take_refusals();
@@ -474,19 +475,25 @@ fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
         );
         upload(&mut h, 8, green).unwrap();
         if kind == PageKind::Raster {
-            let row = TileRow {
+            // The first layer on the left, the last before the move on the
+            // right: each keeps its own texels (the Adreno 619's WebGL 2
+            // copied layer 0 into every layer).
+            let row = |from: i16, to: i16| TileRow {
                 extent: 8192.0,
                 scale: 2.0 / 8192.0,
                 clips: [
-                    ClipRect::new([0, 0], [8192, 8192]),
+                    ClipRect::new([from, 0], [to, 8192]),
                     ClipRect::EMPTY,
                     ClipRect::EMPTY,
                     ClipRect::EMPTY,
                 ],
                 ..full_view_tile(0.0)
             };
-            h.renderer.place(first, 8192, &[row]).unwrap();
-            assert_eq!(pixel(&h.render(), 32, 32), RED, "the first layer's texels");
+            h.renderer.place(first, 8192, &[row(0, 4096)]).unwrap();
+            h.renderer.place(last, 8192, &[row(4096, 8192)]).unwrap();
+            let pixels = h.render();
+            assert_eq!(pixel(&pixels, 16, 32), RED, "the first layer's texels");
+            assert_eq!(pixel(&pixels, 48, 32), green, "the last layer's texels");
         }
     }
 }

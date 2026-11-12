@@ -647,9 +647,9 @@ impl SceneMemory {
 
 /// What pools, tables, tile pages and the drape atlas did moving into
 /// memory of another size: how many moves, the GPU memory they made and
-/// the bytes they copied over on the GPU. A map makes these only at rest
-/// (but for a style's first sizes), so a frame that moves the camera
-/// counts none.
+/// the bytes they copied over on the GPU. A continuous map makes these
+/// only at rest (but for its first sizes), so a frame that moves the
+/// camera counts none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resized {
     pub moves: u32,
@@ -1333,9 +1333,18 @@ impl Scene {
             scratch_short: 0,
         };
         // Relayouts move at most about half the slots at once.
-        scene.scratch(gpu, u64::from(c.compacted_words) * 2);
+        if scene.moves_through_scratch() {
+            scene.scratch(gpu, u64::from(c.compacted_words) * 2);
+        }
         scene.resized = Resized::default();
         scene
+    }
+
+    /// Whether relayouts move slots through the scratch buffer: the GPU
+    /// driver's do. The CPU driver writes the words it moves itself (its
+    /// twin, in the drivers test, makes a scratch buffer as it needs one).
+    fn moves_through_scratch(&self) -> bool {
+        self.driver == driver::Kind::Gpu
     }
 
     /// What moving pools and tables did since the last call.
@@ -2227,7 +2236,7 @@ impl Scene {
             false => self.lay_out(gpu),
         };
         let moved: u64 = self.moves.iter().map(|m| u64::from(m.words) * 4).sum();
-        if resize || moved <= self.scratch_bytes() {
+        if resize || !self.moves_through_scratch() || moved <= self.scratch_bytes() {
             return short;
         }
         self.scratch_short = self.scratch_short.max(moved);
@@ -2664,7 +2673,9 @@ impl Scene {
             gpu.destroy_buffer(scratch);
         }
         // Relayouts move at most about half the slots at once.
-        self.scratch(gpu, u64::from(new) * 2);
+        if self.moves_through_scratch() {
+            self.scratch(gpu, u64::from(new) * 2);
+        }
         self.capacity.compacted_words = new;
         self.laid.clear();
         self.buffers_revision += 1;
