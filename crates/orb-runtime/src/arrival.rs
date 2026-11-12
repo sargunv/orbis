@@ -322,7 +322,8 @@ impl Map {
                     Applied::Parks(build) => {
                         kept = true;
                         let at = (generation, source, tile);
-                        (self.parked).park(at, build, &mut self.retired.host);
+                        let cap = crate::schedule::Parked::bytes(self.budget);
+                        (self.parked).park(at, build, cap, &mut self.retired.host);
                     }
                 },
                 Some(_) => self.apply_edit(gpu, renderer, source, tile, result),
@@ -471,7 +472,8 @@ impl Map {
                 }
                 Applied::Parks(build) => {
                     let at = (waiting.generation, waiting.source, waiting.tile);
-                    (self.parked).park(at, build, &mut self.retired.host);
+                    let cap = crate::schedule::Parked::bytes(self.budget);
+                    (self.parked).park(at, build, cap, &mut self.retired.host);
                 }
                 Applied::Done => {
                     host.release(gpu);

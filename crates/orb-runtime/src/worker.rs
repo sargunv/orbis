@@ -1572,6 +1572,75 @@ pub(crate) mod tests {
         assert_eq!(glyph_gets, 1, "{gets:?}");
     }
 
+    /// A tile whose labels wait for a glyph range answers at once with its
+    /// other layers, naming the symbol nodes it left out; their relayout
+    /// waits for the range, which the first answer started fetching.
+    #[test]
+    fn labels_wait_for_glyphs_apart_from_a_tiles_other_layers() {
+        let style = SYMBOLS.replace(
+            r#""layers":["#,
+            r#""layers":[{"id":"places","type":"circle","source":"s","source-layer":"place"},"#,
+        );
+        let fetch = Arc::new(AssetFetch::default());
+        let jobs = PoolJobs::new(
+            fetch.clone(),
+            Arc::new(crate::testing::NoDecode),
+            Arc::new(orb_host::jobs::Inline),
+        );
+        let worker = Arc::new(TileWorker::new(&style).unwrap());
+        jobs.set_style(1, &StyleUpdate::default(), &worker);
+        let (tx, rx) = std::sync::mpsc::channel();
+        jobs.load(symbol_request(), Box::new(move |r| tx.send(r).unwrap()));
+        let tile = rx
+            .try_iter()
+            .next()
+            .expect("answered first")
+            .unwrap()
+            .built();
+        assert!(tile.symbols.is_empty());
+        assert!(!tile.meshes.is_empty(), "the circles");
+        assert!(!tile.labels_later.is_empty());
+        assert!(tile.labels_later.iter().all(|k| !tile.nodes.contains(k)));
+        let relayout = TileRequest {
+            nodes: Some(tile.labels_later.clone()),
+            ..symbol_request()
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        jobs.load(relayout, Box::new(move |r| tx.send(r).unwrap()));
+        assert_eq!(rx.try_iter().count(), 0, "the labels wait for their range");
+        fetch.release();
+        let labels = rx.try_iter().next().expect("laid out").unwrap().built();
+        assert_eq!(labels.symbols.len(), 1);
+        let gets = fetch.gets.lock().unwrap();
+        let glyph_gets = gets.iter().filter(|u| u.contains("/glyphs/")).count();
+        assert_eq!(glyph_gets, 1, "{gets:?}");
+    }
+
+    /// A load its map gives up while it waits for glyphs isn't laid out
+    /// when they come: it answers cancelled.
+    #[test]
+    fn a_load_given_up_while_its_glyphs_load_is_not_laid_out() {
+        let fetch = Arc::new(AssetFetch::default());
+        let jobs = PoolJobs::new(
+            fetch.clone(),
+            Arc::new(crate::testing::NoDecode),
+            Arc::new(orb_host::jobs::Inline),
+        );
+        let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
+        jobs.set_style(1, &StyleUpdate::default(), &worker);
+        let request = symbol_request();
+        let (style, source, tile) = (request.style, request.source, request.tile);
+        let (tx, rx) = std::sync::mpsc::channel();
+        jobs.load(request, Box::new(move |r| tx.send(r).unwrap()));
+        jobs.cancel(style, source, tile);
+        fetch.release();
+        let answers: Vec<_> = rx.try_iter().collect();
+        assert!(
+            matches!(answers[..], [Ok(crate::TileOutcome::Cancelled)]),
+            "{answers:?}"
+        );
+    }
+
     /// Overzoomed tiles of one ancestor share its fetch and its decode.
     #[test]
     fn overzoomed_siblings_share_their_ancestor() {

@@ -85,8 +85,9 @@ pub(crate) struct Inbox {
 }
 
 /// Vector tiles built after the view gave their loads up, kept off the GPU
-/// up to [`Parked::BYTES`], oldest out first: a view that comes back to
-/// one uploads it rather than fetching and laying it out again.
+/// up to [`Parked::bytes`] of the map's memory budget, oldest out first: a
+/// view that comes back to one uploads it rather than fetching and laying
+/// it out again.
 #[derive(Debug, Default)]
 pub(crate) struct Parked {
     tiles: VecDeque<ParkedTile>,
@@ -104,16 +105,21 @@ struct ParkedTile {
 }
 
 impl Parked {
-    /// A few views' worth of tiles.
-    pub(crate) const BYTES: u64 = 48 << 20;
+    /// What a map whose memory budget is `budget` parks at most: an eighth
+    /// of it, a few views' worth of tiles (64 MiB on a desktop, 24 on a
+    /// phone).
+    pub(crate) fn bytes(budget: u64) -> u64 {
+        budget / 8
+    }
 
     /// Parks `build`, tile `tile` of source `source` in tile generation
-    /// `generation`; the host data of those it pushes out goes to
-    /// `release`.
+    /// `generation`, within `cap` bytes; the host data of those it pushes
+    /// out goes to `release`.
     pub(crate) fn park(
         &mut self,
         (generation, source, tile): (u64, u32, TileIndex),
         build: TileResult,
+        cap: u64,
         release: &mut Vec<HostData>,
     ) {
         let bytes = upload_bytes(&build);
@@ -125,7 +131,7 @@ impl Parked {
             build,
             bytes,
         });
-        while self.bytes > Self::BYTES
+        while self.bytes > cap
             && let Some(oldest) = self.tiles.pop_front()
         {
             self.bytes -= oldest.bytes;
@@ -184,13 +190,11 @@ mod tests {
     fn parked_tiles_come_back_once_and_push_out_the_oldest() {
         let mut parked = Parked::default();
         let mut released = Vec::new();
-        let texels = (Parked::BYTES / 4 / 3) as u32 + 1;
+        let cap = 48 << 20;
+        let texels = (cap / 4 / 3) as u32 + 1;
         for col in 0..3 {
-            parked.park(
-                (1, 7, TileIndex::new(5, col, 0)),
-                build(texels),
-                &mut released,
-            );
+            let at = (1, 7, TileIndex::new(5, col, 0));
+            parked.park(at, build(texels), cap, &mut released);
         }
         assert_eq!(released.len(), 1, "the third pushes the first out");
         assert!(parked.take((1, 7, TileIndex::new(5, 0, 0))).is_none());

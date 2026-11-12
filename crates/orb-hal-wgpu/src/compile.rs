@@ -437,8 +437,8 @@ mod native {
     use super::{Done, Job, Loss};
 
     /// Background compiles running at once: each runs as a task of its
-    /// own, queued behind whatever the executor has, so tiles keep
-    /// flowing while a style's pipelines compile ahead of need.
+    /// own, queued behind whatever the executor has at any rank, so tiles
+    /// keep flowing while a style's pipelines compile ahead of need.
     const BACKGROUND_LANES: usize = 2;
 
     /// How long one pipeline may compile before its driver is taken to
@@ -799,8 +799,10 @@ mod native {
                 }
                 background.running += 1;
             }
+            // Behind every job queued, ranked ones too: a map's tiles rank
+            // theirs by distance from the view's centre.
             let executor = self.executor.clone();
-            executor.spawn(Box::new(move || self.run()));
+            executor.spawn_ranked(u32::MAX, Box::new(move || self.run()));
         }
 
         fn run(self) {

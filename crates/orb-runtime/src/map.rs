@@ -609,6 +609,10 @@ pub struct GridTile {
 struct PlanKey {
     camera: u64,
     viewport: [u64; 2],
+    /// How covers coarsen with distance ([`Map::set_tile_lod`]).
+    lod: orb_camera::TileLod,
+    /// Tile mode covers its grid, and only a continuous map parks tiles.
+    mode: std::mem::Discriminant<RenderMode>,
     /// The style's revision.
     version: u64,
     /// Each source's tiles, once it resolved.
@@ -2644,6 +2648,13 @@ impl Map {
         };
         let (asked, held) = self.host_tiles.forget(key, which);
         (self.parked).drop_where(|s, tile| s == key && picks(tile), &mut self.retired.host);
+        // Answers waiting for room hold the old data: their tiles load again.
+        let generation = self.tile_generation;
+        let (old, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting)
+            .into_iter()
+            .partition(|w| (w.generation, w.source) == (generation, key) && picks(w.tile));
+        self.waiting = waiting;
+        (self.retired.host).extend(old.iter().map(|w| HostData::of(&w.build)));
         // A tile still waiting for the app is asked for again; a load
         // under way with the old answer lands nowhere, and one that held
         // nothing is forgotten: the next frame that needs either asks.
@@ -2657,6 +2668,9 @@ impl Map {
             self.style.as_mut().map(|style| &mut style.sources[index])
         {
             pyramid.forget_settled(&picks);
+            for waiting in old {
+                pyramid.forget_loading(waiting.tile);
+            }
             let stale: Vec<TileIndex> = pyramid
                 .loading_tiles()
                 .filter(|t| picks(*t) && !held.contains(t))
@@ -3003,7 +3017,6 @@ impl Map {
         Some(terrain.snapshot() as Arc<dyn orb_camera::Elevation>)
     }
 
-    /// Changes whenever [`elevation`](Self::elevation) has new data.
     /// What the sources' plan reads ([`PlanKey`]); `None` while easing
     /// (paint transitions, the terrain coming or going), which plans every
     /// frame.
@@ -3016,6 +3029,8 @@ impl Map {
         Some(PlanKey {
             camera: self.camera.revision(),
             viewport: [viewport.width.to_bits(), viewport.height.to_bits()],
+            lod: self.tile_lod,
+            mode: std::mem::discriminant(&self.mode),
             version: self.version,
             sources: (style.sources.iter())
                 .map(|s| match s {
@@ -3038,6 +3053,7 @@ impl Map {
         })
     }
 
+    /// Changes whenever [`elevation`](Self::elevation) has new data.
     pub fn elevation_revision(&self) -> u64 {
         self.style
             .as_ref()

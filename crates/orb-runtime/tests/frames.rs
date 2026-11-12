@@ -683,6 +683,29 @@ mod tests {
         );
     }
 
+    /// A map at rest covers with a new tile level of detail at once, as
+    /// one loaded with it does: the plan that frames keep while nothing
+    /// changes reads it.
+    #[test]
+    fn a_map_at_rest_covers_with_a_new_tile_lod() {
+        let lod = orb_camera::TileLod {
+            zoom_shift: -1.0,
+            ..orb_camera::TileLod::default()
+        };
+        let (mut moved, _, _) = crate::common::Offscreen::load(&tokyo(14.0)).unwrap();
+        moved.map.set_tile_lod(lod);
+        settle(&mut moved);
+        let mut fresh =
+            crate::common::Offscreen::new(&tokyo(14.0), orb_runtime::SceneCapacity::default())
+                .unwrap();
+        fresh.map.set_tile_lod(lod);
+        settle(&mut fresh);
+        assert_eq!(
+            crate::common::differing_pixels(&moved.pixels(), &fresh.pixels()),
+            0
+        );
+    }
+
     #[test]
     fn point_and_line_families_keep_camera_only_uploads_to_placements() {
         for style in [

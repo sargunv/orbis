@@ -1461,6 +1461,33 @@ pub(crate) fn frame_globe(globe: &orb_camera::GlobeView, view: &View) -> orb_ren
 mod tests {
     use super::*;
 
+    /// Covers load from the ground under the view's centre outwards, a
+    /// world copy by where it lies.
+    #[test]
+    fn covers_load_from_the_focus_out() {
+        let tile = |(z, x, y), wrap| orb_crs::CoveredTile {
+            index: TileIndex::new(z, x, y),
+            wrap,
+        };
+        let mut cover = [
+            tile((2, 0, 1), 1),
+            tile((2, 3, 1), 0),
+            tile((2, 1, 1), 0),
+            tile((3, 2, 3), 0),
+            tile((2, 0, 1), 0),
+        ];
+        let focus = Geodetic::new(-45.0, 0.0);
+        focus_first(&mut cover, TileMatrixSet::web_mercator(), focus);
+        let order = [
+            tile((3, 2, 3), 0),
+            tile((2, 1, 1), 0),
+            tile((2, 0, 1), 0),
+            tile((2, 3, 1), 0),
+            tile((2, 0, 1), 1),
+        ];
+        assert_eq!(cover, order);
+    }
+
     #[test]
     fn fallback_placements_keep_more_than_four_regions_exact() {
         let tms = TileMatrixSet::web_mercator();
