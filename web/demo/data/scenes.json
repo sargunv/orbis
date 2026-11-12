@@ -52,7 +52,7 @@
           "flight": "alps-flight.json",
           "light": true,
           "dark": true,
-          "swatch": ["#efebe4", "#74a6d2", "#070b19"]
+          "swatch": ["#efebe4", "#74a6d2", "#05070b"]
         },
         {
           "key": "equal-earth",
