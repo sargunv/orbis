@@ -533,24 +533,13 @@ fn pacing(xs: &mut [f64]) -> String {
     )
 }
 
-/// The device's counts over `frames`, summed.
+/// The device's counts over `frames`, summed, the drape slots redrawn
+/// and how many frames.
 fn summed<'a>(frames: impl Iterator<Item = &'a Frame>) -> (GpuCounters, u32, usize) {
     let mut sum = GpuCounters::default();
     let (mut slots, mut n) = (0, 0);
     for f in frames {
-        let c = &f.report.gpu;
-        sum.pipelines_requested += c.pipelines_requested;
-        sum.pipelines_compiled += c.pipelines_compiled;
-        sum.buffers_created += c.buffers_created;
-        sum.textures_created += c.textures_created;
-        sum.bytes_allocated += c.bytes_allocated;
-        sum.bytes_copied += c.bytes_copied;
-        sum.buffer_bytes_from_core += c.buffer_bytes_from_core;
-        sum.buffer_bytes_from_host += c.buffer_bytes_from_host;
-        sum.texel_bytes_from_core += c.texel_bytes_from_core;
-        sum.texel_bytes_from_host += c.texel_bytes_from_host;
-        sum.upload_calls += c.upload_calls;
-        sum.texture_write_submissions += c.texture_write_submissions;
+        sum += f.report.gpu;
         slots += f.report.frame.drape_slots;
         n += 1;
     }

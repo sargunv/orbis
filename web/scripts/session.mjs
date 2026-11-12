@@ -683,7 +683,9 @@ async function run(server, engine) {
       args.sample && browserName === "firefox"
         ? gpuHelpers().find((pid) => !helpers.includes(pid))
         : undefined;
-    // Stopped (SIGINT, which writes the report) once the moves end.
+    // Stopped (SIGINT, which writes the report) once the moves end; an
+    // earlier run's report goes first, so that a failed sample reads none.
+    if (gpuPid) rmSync(args.sample, { force: true });
     const sampler =
       gpuPid &&
       spawn(
@@ -694,7 +696,14 @@ async function run(server, engine) {
         },
       );
     const sampled =
-      sampler && new Promise((resolve) => sampler.on("exit", resolve));
+      sampler &&
+      new Promise((resolve) => {
+        sampler.on("exit", resolve);
+        sampler.on("error", (e) => {
+          console.error(`session: sample: ${e.message}`);
+          resolve();
+        });
+      });
     const windows = await moves();
     if (sampler) {
       sampler.kill("SIGINT");

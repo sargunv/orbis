@@ -1246,9 +1246,6 @@ impl Map {
         self.style_error.is_some() && self.style_unparsed
     }
 
-    /// The style asked for last is installed, with its sprites and its
-    /// sources' TileJSON: not while a style URL is loading to replace the
-    /// one drawn, which would otherwise settle a still of the old style.
     /// Whether every source's tiles under the view's centre, of the last
     /// plan's cover, have arrived (or have nothing to load).
     fn centre_loaded(&self) -> bool {
@@ -1272,6 +1269,9 @@ impl Map {
         })
     }
 
+    /// The style asked for last is installed, with its sprites and its
+    /// sources' TileJSON: not while a style URL is loading to replace the
+    /// one drawn, which would otherwise settle a still of the old style.
     fn style_loaded(&self) -> bool {
         !self.style_fetching
             && self.style.as_ref().is_some_and(|s| {

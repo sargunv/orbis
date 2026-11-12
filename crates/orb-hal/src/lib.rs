@@ -201,35 +201,58 @@ impl GpuCounters {
             + self.texel_bytes_from_host
     }
 
-    /// What happened between `earlier` and these: zeros where a device
-    /// made since started its counts again.
+    /// What happened between `earlier` and these. A device made since
+    /// (after a loss) counts from zero again: then all of these.
     #[must_use]
     pub fn since(&self, earlier: &Self) -> Self {
-        let (a, b) = (self, earlier);
-        Self {
-            pipelines_requested: a.pipelines_requested.saturating_sub(b.pipelines_requested),
-            pipelines_compiled: a.pipelines_compiled.saturating_sub(b.pipelines_compiled),
-            buffers_created: a.buffers_created.saturating_sub(b.buffers_created),
-            textures_created: a.textures_created.saturating_sub(b.textures_created),
-            bytes_allocated: a.bytes_allocated.saturating_sub(b.bytes_allocated),
-            bytes_copied: a.bytes_copied.saturating_sub(b.bytes_copied),
-            buffer_bytes_from_core: a
-                .buffer_bytes_from_core
-                .saturating_sub(b.buffer_bytes_from_core),
-            buffer_bytes_from_host: a
-                .buffer_bytes_from_host
-                .saturating_sub(b.buffer_bytes_from_host),
-            texel_bytes_from_core: a
-                .texel_bytes_from_core
-                .saturating_sub(b.texel_bytes_from_core),
-            texel_bytes_from_host: a
-                .texel_bytes_from_host
-                .saturating_sub(b.texel_bytes_from_host),
-            upload_calls: a.upload_calls.saturating_sub(b.upload_calls),
-            texture_write_submissions: a
-                .texture_write_submissions
-                .saturating_sub(b.texture_write_submissions),
+        let restarted = self.zip(earlier, |a, b| u32::from(a < b), |a, b| u64::from(a < b));
+        match restarted == Self::default() {
+            true => self.zip(earlier, u32::wrapping_sub, u64::wrapping_sub),
+            false => *self,
         }
+    }
+
+    /// Each count of these and `other`, combined field by field.
+    fn zip(
+        &self,
+        other: &Self,
+        count: impl Fn(u32, u32) -> u32,
+        bytes: impl Fn(u64, u64) -> u64,
+    ) -> Self {
+        let (a, b) = (self, other);
+        Self {
+            pipelines_requested: count(a.pipelines_requested, b.pipelines_requested),
+            pipelines_compiled: count(a.pipelines_compiled, b.pipelines_compiled),
+            buffers_created: count(a.buffers_created, b.buffers_created),
+            textures_created: count(a.textures_created, b.textures_created),
+            bytes_allocated: bytes(a.bytes_allocated, b.bytes_allocated),
+            bytes_copied: bytes(a.bytes_copied, b.bytes_copied),
+            buffer_bytes_from_core: bytes(a.buffer_bytes_from_core, b.buffer_bytes_from_core),
+            buffer_bytes_from_host: bytes(a.buffer_bytes_from_host, b.buffer_bytes_from_host),
+            texel_bytes_from_core: bytes(a.texel_bytes_from_core, b.texel_bytes_from_core),
+            texel_bytes_from_host: bytes(a.texel_bytes_from_host, b.texel_bytes_from_host),
+            upload_calls: count(a.upload_calls, b.upload_calls),
+            texture_write_submissions: count(
+                a.texture_write_submissions,
+                b.texture_write_submissions,
+            ),
+        }
+    }
+}
+
+/// Counts over several spans, as [`GpuCounters::since`] gives them.
+impl std::ops::AddAssign for GpuCounters {
+    fn add_assign(&mut self, other: Self) {
+        *self = self.zip(&other, u32::saturating_add, u64::saturating_add);
+    }
+}
+
+impl std::iter::Sum for GpuCounters {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), |mut sum, c| {
+            sum += c;
+            sum
+        })
     }
 }
 

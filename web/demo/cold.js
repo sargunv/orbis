@@ -2,10 +2,12 @@
 // every shader module's code unique to `n`, so neither the browser's
 // caches nor the driver's hold its pipelines, whatever earlier loads left
 // there (`chrome://gpuclean` doesn't reach the driver's own cache on an
-// Adreno phone). It moves the discarded vertex's z by `n`, which every
-// vertex stage that culls a vertex reads; the vertex still falls outside
-// the view volume. WebGL 2's shaders (the GLSL naga writes from the same
-// WGSL) are changed the same way. Only on the page's thread (`createMap`'s
+// Adreno phone). Every WGSL entry point opens with a local holding `n`,
+// as orb-hal-wgpu's `set_shader_nonce` does natively: compaction to the
+// entry point keeps it and the back end writes it, where a change to a
+// function the stage doesn't call would go before the driver saw it.
+// WebGL 2's shaders (the GLSL naga writes from the same WGSL) get a
+// define unique to `n`, and their discarded vertex moved by it. Only on the page's thread (`createMap`'s
 // `worker: false`), where the device's methods can be wrapped. Returns
 // how many shaders it changed so far, of how many.
 export function bustShaderCaches(params) {
@@ -13,13 +15,12 @@ export function bustShaderCaches(params) {
   let changed = 0;
   let total = 0;
   if (!nonce) return () => ({ changed, total });
-  const z = (2 + (nonce % 10000) * 1e-4).toFixed(4);
   if (typeof GPUDevice !== "undefined") {
     const original = GPUDevice.prototype.createShaderModule;
     GPUDevice.prototype.createShaderModule = function (desc) {
       const code = desc.code.replace(
-        /vec4<f32>\(2\.0,\s*2\.0,\s*2\.0,\s*1\.0\)/g,
-        `vec4<f32>(2.0, 2.0, ${z}, 1.0)`,
+        /(@(?:vertex|fragment|compute)\b[^{]*\{)/g,
+        `$1 var orb_nonce: u32 = ${nonce >>> 0}u;`,
       );
       total++;
       if (code !== desc.code) changed++;
@@ -34,7 +35,7 @@ export function bustShaderCaches(params) {
       const busted = code
         .replace(
           /vec4\(2\.0,\s*2\.0,\s*2\.0,\s*1\.0\)/g,
-          `vec4(2.0, 2.0, ${z}, 1.0)`,
+          `vec4(2.0, 2.0, ${(2 + (nonce % 10000) * 1e-4).toFixed(4)}, 1.0)`,
         )
         .replace(/^(#version[^\n]*\n)/, `$1#define ORB_NONCE_${nonce}\n`);
       total++;

@@ -319,13 +319,28 @@ fn gl_array_layers(desc: &TextureDesc<'_>) -> u32 {
     }
 }
 
-/// `source` with its discarded vertex moved by `nonce` ([`WgpuGpu::set_shader_nonce`]).
+/// `source` unique to `nonce` in every entry point
+/// ([`WgpuGpu::set_shader_nonce`]): each opens with a local holding it,
+/// which compaction to the entry point keeps and each back end writes, so
+/// what the driver compiles differs too. (A change to a function the
+/// entry point doesn't call wouldn't reach the driver: compaction drops
+/// it before the back end writes the stage.)
 fn nonced(source: &str, nonce: u32) -> String {
-    let z = 2.0 + f64::from(nonce % 10_000) * 1e-4;
-    source.replace(
-        "vec4<f32>(2.0, 2.0, 2.0, 1.0)",
-        &format!("vec4<f32>(2.0, 2.0, {z:.4}, 1.0)"),
-    )
+    let mut out = String::with_capacity(source.len() + 512);
+    let mut rest = source;
+    while let Some(stage) = ["@vertex", "@fragment", "@compute"]
+        .iter()
+        .filter_map(|s| rest.find(s))
+        .min()
+        && let Some(body) = rest[stage..].find('{')
+    {
+        let (head, tail) = rest.split_at(stage + body + 1);
+        out.push_str(head);
+        out.push_str(&format!(" var orb_nonce: u32 = {nonce}u;"));
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Bytes a texture of `desc` with `layers` layers takes, every mip level.
@@ -721,11 +736,10 @@ impl WgpuGpu {
     /// Makes the shader modules made from now on unique to `nonce`, so
     /// that no shader cache (the driver's, the system's) holds their
     /// pipelines: cold compiles for measurements, as the web pages'
-    /// `?nonce=` makes them. It moves the discarded vertex's depth by
-    /// `nonce`, which every vertex stage that culls a vertex reads (the
-    /// vertex still falls outside the view volume), and parses each
-    /// module's WGSL rather than taking the build's IR, which adds the
-    /// parse to the compiles. GL's GLSL is left alone.
+    /// `?nonce=` makes them. Every entry point opens with a local holding
+    /// `nonce`, and each module's WGSL is parsed rather than the build's
+    /// IR taken, which adds the parse to the compiles. GL's GLSL is left
+    /// alone.
     pub fn set_shader_nonce(&mut self, nonce: Option<u32>) {
         self.shader_nonce = nonce;
     }
@@ -1555,7 +1569,9 @@ impl Gpu for WgpuGpu {
         image: HostImageId,
         premultiply: bool,
     ) {
-        self.count(|c| c.texel_bytes_from_host += u64::from(region.width * region.height * 4));
+        self.count(|c| {
+            c.texel_bytes_from_host += u64::from(region.width) * u64::from(region.height) * 4;
+        });
         // Issued at the next submission; the image is closed after it,
         // which WebGL 2, copying only at a submission, needs too.
         self.texture_writes
@@ -1930,7 +1946,10 @@ impl Gpu for WgpuGpu {
                         };
                         let texel = u64::from(convert::texel_bytes(source.format()));
                         self.count(|c| {
-                            c.bytes_copied += u64::from(size.width * size.height * layers) * texel;
+                            c.bytes_copied += u64::from(size.width)
+                                * u64::from(size.height)
+                                * u64::from(layers)
+                                * texel;
                         });
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
@@ -2124,6 +2143,42 @@ fn joined_compute(passes: &[Pass], groups: bool) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shader_nonce_reaches_every_entry_point() {
+        let source = "fn unused() -> vec4<f32> { return vec4<f32>(2.0); }
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32(i));
+}
+@fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+@compute @workgroup_size(64)
+fn cs() {}
+";
+        let module = naga::front::wgsl::parse_str(&nonced(source, 1_234_567)).expect("parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("valid");
+        assert_eq!(module.entry_points.len(), 3);
+        for entry in &module.entry_points {
+            let f = &entry.function;
+            let nonce = (f.local_variables.iter())
+                .find(|(_, v)| v.name.as_deref() == Some("orb_nonce"))
+                .and_then(|(_, v)| v.init)
+                .map(|init| &f.expressions[init]);
+            assert!(
+                matches!(
+                    nonce,
+                    Some(naga::Expression::Literal(naga::Literal::U32(1_234_567)))
+                ),
+                "{}: {nonce:?}",
+                entry.name
+            );
+        }
+    }
 
     #[test]
     fn compute_passes_join_across_debug_markers_only() {
