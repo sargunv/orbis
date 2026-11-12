@@ -6,6 +6,7 @@
 //
 //   pnpm measure [--android [--physical] | --headed] [--runs=3]
 //     [--configs=orbis,orbis-page,gljs] [--no-capture] [--no-annotation] [--profile]
+//     [--mouse]
 //     [--style=<url or key>] [--at=lon,lat,zoom,bearing,pitch]
 //   pnpm measure --pipelines [--runs=3] [--android [--physical]]
 //
@@ -73,7 +74,13 @@ const annotation = !args.includes("--no-annotation");
 // `--profile` samples the main thread over the gestures and reports its
 // wasm self time, and the busiest wasm functions.
 const profile = args.includes("--profile");
-const GESTURES = ["pan", "pinch", "rotate"];
+// `--mouse` pans with a mouse instead, its moves streamed every 2 ms
+// without waiting for each to be handled, as a high-rate mouse sends
+// them. DevTools' touches are handled one at a time, which paces them to
+// one a display frame at a fixed point in it: a map that draws on its
+// animation frames shows them later than input that streams.
+const mouse = args.includes("--mouse");
+const GESTURES = mouse ? ["pan"] : ["pan", "pinch", "rotate"];
 
 /** The centroid of pixels matching `test`, or null. */
 function centroid(image, test) {
@@ -232,25 +239,47 @@ async function run(page, config, viewport) {
         radiusY: 2,
         force: 1,
       }));
-    await cdp.send("Input.dispatchTouchEvent", {
-      type: "touchStart",
-      touchPoints: touches(0),
-    });
+    const press = (type, t) => {
+      const [{ x, y }] = touches(t);
+      return cdp.send("Input.dispatchMouseEvent", {
+        type,
+        x,
+        y,
+        button: "left",
+        buttons: type === "mouseReleased" ? 0 : 1,
+        clickCount: 1,
+      });
+    };
+    await (mouse
+      ? press("mousePressed", 0)
+      : cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: touches(0),
+        }));
     const started = performance.now();
+    const moves = [];
     for (;;) {
       const t = (performance.now() - started) / 1000;
       if (t >= 1) break;
+      if (mouse) {
+        moves.push(press("mouseMoved", t));
+        await sleep(2);
+        continue;
+      }
       await cdp.send("Input.dispatchTouchEvent", {
         type: "touchMove",
         touchPoints: touches(t),
       });
       await sleep(8);
     }
+    await Promise.all(moves);
     // Android's Chrome keeps a gesture open unless the end names its points.
-    await cdp.send("Input.dispatchTouchEvent", {
-      type: "touchEnd",
-      touchPoints: touches(1),
-    });
+    await (mouse
+      ? press("mouseReleased", 1)
+      : cdp.send("Input.dispatchTouchEvent", {
+          type: "touchEnd",
+          touchPoints: touches(1),
+        }));
     await sleep(700);
     const gestureBusy = (await busy()) - busyStart;
     await session?.send("Page.stopScreencast");

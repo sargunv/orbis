@@ -33,13 +33,15 @@ pub(crate) const TILE_PX: f64 = 512.0;
 
 /// What a frame may spend applying what arrived since the last before it
 /// draws: tiles' and edits' results, label commits, and the bytes they
-/// upload ([`crate::schedule`]). A host draws frames on the display's refresh, and they are the
-/// one time the map works: what arrives between them only queues, its wake
-/// asking for the next. Counted from the frame's start, so however often
-/// the host hears of arrivals, a frame spends no more; tiles that arrive
-/// together spread over frames rather than stalling one, at least one a
-/// frame. A frame whose camera moves draws the move on time; one at rest
-/// has the rest of the frame to spare, and loads sooner.
+/// upload ([`crate::schedule`]), counted from the frame's start: however
+/// often the host hears of arrivals, a frame spends no more, and tiles
+/// that arrive together spread over frames rather than stalling one, at
+/// least one a frame. A frame whose camera moves draws the move on time;
+/// one at rest has the rest of the frame to spare, and loads sooner. The
+/// web's frames, on the display's refresh, are the one time its map
+/// works: what arrives between them only queues, its wake asking for the
+/// next. Native hosts also spend a budget in the upkeep a report asks for
+/// ([`Map::prepare`]) and, drawing nothing, in [`Map::apply_arrivals`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameBudget {
     /// While the camera moves or input holds it.
@@ -79,10 +81,7 @@ impl FrameBudget {
 
     /// A frame's, as the camera moves or rests.
     pub fn at(&self, moving: bool) -> crate::Budget {
-        match moving {
-            true => self.moving,
-            false => self.resting,
-        }
+        if moving { self.moving } else { self.resting }
     }
 }
 

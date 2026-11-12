@@ -1713,8 +1713,8 @@ async function failing(browser, server) {
     ({ page, errors } = await open(browser, { width: 800, height: 600 }));
     await offline(page);
     await page.goto(`${server.url}?style=${entry}`);
-    // Long enough for tiles and DEM tiles to fail between frames too, whose
-    // sources a switch to a style with fewer took away (#160).
+    // Long enough for tiles and DEM tiles to fail, whose sources a switch
+    // to a style with fewer took away (#160).
     await page.waitForFunction(() => app.map, null, { timeout: 60_000 });
     await page.waitForTimeout(3000);
     await page.evaluate(() => app.show("tokyo"));
