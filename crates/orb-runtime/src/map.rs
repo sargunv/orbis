@@ -865,6 +865,9 @@ impl Drop for Map {
         self.retired.hand_to(&mut images);
         if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
             images.retired.push(namespace);
+            if let Some(atlas) = &mut images.atlas {
+                atlas.hold(namespace, false);
+            }
         }
     }
 }
@@ -1888,6 +1891,7 @@ impl Map {
         // the pools and tile pages in the map's upkeep, below, a move a
         // frame; a still map's all move as its frame needs.
         renderer.set_moves(gpu, self.moves());
+        self.gate_images(gpu);
         self.size_pages(renderer, viewport);
         self.take_arrivals(gpu, renderer, pixel_ratio, deadline);
         let mut times = FrameTimes {
@@ -2028,7 +2032,8 @@ impl Map {
             && !self.tiles_deferred
             && self.waiting.is_empty()
             && self.uploading.is_none()
-            && self.pending.is_empty();
+            && self.pending.is_empty()
+            && !self.images_pending();
         let labels_settled = self.place_labels(gpu, renderer, &view, now, data_loaded);
         times.placement = micros(0.0, self.placement_ms);
         times.upload = micros(0.0, self.upload_ms);
