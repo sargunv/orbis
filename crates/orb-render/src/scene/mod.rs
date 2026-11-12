@@ -1146,6 +1146,16 @@ pub(crate) struct Scene {
     /// buffer) is stale: tiles or placements came or went, or nodes changed
     /// how they draw.
     candidates_dirty: bool,
+    /// The nodes (by row) whose runs changed since the last layout, which
+    /// the next lays out again ([`dirty_node`](Self::dirty_node)); none
+    /// beyond its end, which are new.
+    dirty: Vec<bool>,
+    /// Every node's runs may have changed: the next layout walks them all.
+    all_dirty: bool,
+    /// A layout while memory was held left a node untidy
+    /// (`LaidNode::tidy`), for the next one at
+    /// rest to lay out again.
+    untidy: bool,
     /// The node rows as the last rebuild laid them out, with their cull
     /// parameters (margin, elevation, visibility) patched since.
     node_rows: Vec<u32>,
@@ -1168,6 +1178,10 @@ pub(crate) struct Scene {
     /// compacted buffer.
     rows_end: u32,
     compacted_words: u32,
+    /// Room for nodes' slices in the candidate lists and the compacted
+    /// buffer: past their ends, and where a node laid out again in new
+    /// slices left its old ones.
+    slices: (candidates::Space, candidates::Space),
     /// Each node's slices as last laid out, so a rebuild lays out only
     /// what changed (`candidates`); empty when the next is laid out whole.
     laid: Vec<candidates::LaidNode>,
@@ -1328,6 +1342,9 @@ impl Scene {
             tile_ranks: Vec::new(),
             nodes: Vec::new(),
             candidates_dirty: true,
+            dirty: Vec::new(),
+            all_dirty: true,
+            untidy: false,
             node_rows: Vec::new(),
             params_dirty: false,
             cull_groups: 0,
@@ -1338,6 +1355,7 @@ impl Scene {
             labels_faded: false,
             rows_end: 0,
             compacted_words: 0,
+            slices: Default::default(),
             laid: Vec::new(),
             hidden: Vec::new(),
             moves: Vec::new(),
@@ -1496,13 +1514,58 @@ impl Scene {
             mesh.as_ref()
                 .map_or(u64::MAX, |m| place(&self.tiles, m.tile))
         }));
-        for node in &mut self.nodes {
+        let mut sorted = Vec::new();
+        for (n, node) in self.nodes.iter_mut().enumerate() {
             let key = |id: &MeshId| ranks[id.0 as usize];
             if !node.meshes.is_sorted_by_key(key) {
                 node.meshes.sort_by_key(key);
-                self.candidates_dirty = true;
+                sorted.push(n as u32);
             }
         }
+        for n in sorted {
+            self.dirty_node(n);
+        }
+    }
+
+    /// Lays out the runs of node `node`'s meshes again at the next
+    /// [`prepare`](Self::prepare): a mesh of it came or went, or its
+    /// tiles' placements or order changed. Its cut stream draws them too,
+    /// and the node before it if that draws its next node's.
+    fn dirty_node(&mut self, node: u32) {
+        self.candidates_dirty = true;
+        let n = node as usize;
+        let before = (n.checked_sub(1)).filter(|&b| {
+            matches!(
+                self.nodes[b].cull.meshes,
+                NodeMeshes::WithNext { next: true, .. }
+            )
+        });
+        let cut = self.cut_row(node).map(|c| c as usize);
+        for row in [Some(n), cut, before].into_iter().flatten() {
+            if let Some(dirty) = self.dirty.get_mut(row) {
+                *dirty = true;
+            }
+        }
+    }
+
+    /// [`dirty_node`](Self::dirty_node) for each node of `tile`'s meshes.
+    fn dirty_tile(&mut self, tile: TileId) {
+        let Some(entry) = self.tiles[tile.0 as usize].as_ref() else {
+            return;
+        };
+        let nodes: Vec<u32> = (entry.meshes.iter())
+            .filter_map(|m| self.meshes[m.0 as usize].as_ref().map(|m| m.node))
+            .collect();
+        for node in nodes {
+            self.dirty_node(node);
+        }
+    }
+
+    /// Lays out every node's runs again at the next
+    /// [`prepare`](Self::prepare), where they stay.
+    fn dirty_all(&mut self) {
+        self.candidates_dirty = true;
+        self.all_dirty = true;
     }
 
     /// Gives `tile`, which has no meshes yet, its place in the tile order
@@ -1636,8 +1699,11 @@ impl Scene {
         }
         let shape = |c: &NodeCull| (c.draw, c.target, c.labels, c.meshes);
         if shape(&entry.cull) != shape(&cull) {
-            self.candidates_dirty = true;
-        } else if let Some(row) = self
+            entry.cull = cull;
+            self.dirty_all();
+            return;
+        }
+        if let Some(row) = self
             .node_rows
             .get_mut(i * NODE_CULL_WORDS..(i + 1) * NODE_CULL_WORDS)
         {
@@ -1676,7 +1742,6 @@ impl Scene {
         for mesh in entry.meshes {
             self.drop_mesh(mesh);
         }
-        self.candidates_dirty = true;
     }
 
     /// Uploads a warp ([`warp_words`]) for tile rows to draw through:
@@ -1723,6 +1788,7 @@ impl Scene {
         let streams = self.streams();
         let entry = self.tiles[tile.0 as usize].as_mut().expect("unknown tile");
         let added = rows.len().saturating_sub(entry.placements.len());
+        let mut changed = false;
         if entry.placements.len() != rows.len() {
             let needed = rows.len().saturating_sub(entry.placements.len()) as u32;
             if needed > self.placement_slots.available() {
@@ -1738,18 +1804,21 @@ impl Scene {
                     row: rows[entry.placements.len()],
                 });
             }
-            self.candidates_dirty = true;
+            changed = true;
         }
         let fresh = entry.placements.len() - added;
         for (i, (placement, row)) in entry.placements.iter_mut().zip(rows).enumerate() {
             if i >= fresh || placement.row != *row {
                 // Which nodes draw it decides the candidates, and which of
                 // their chunks, the cut streams'.
-                self.candidates_dirty |= placement.row.target != row.target
+                changed |= placement.row.target != row.target
                     || (streams && Route::cut(&placement.row) != Route::cut(row));
                 placement.row = *row;
                 self.rows_dirty.push((placement.slot, *row));
             }
+        }
+        if changed {
+            self.dirty_tile(tile);
         }
         Ok(())
     }
@@ -2069,18 +2138,18 @@ impl Scene {
         // In its tile's place in the tile order, after the tile's others.
         let at = place(&self.tiles, tile);
         let (meshes, tiles) = (&self.meshes, &self.tiles);
-        let node = &mut self.nodes[node as usize].meshes;
-        let index = node.partition_point(|m| {
+        let list = &mut self.nodes[node as usize].meshes;
+        let index = list.partition_point(|m| {
             let other = meshes[m.0 as usize].as_ref().expect("live mesh");
             place(tiles, other.tile) <= at
         });
-        node.insert(index, id);
+        list.insert(index, id);
         self.tiles[tile.0 as usize]
             .as_mut()
             .expect("checked above")
             .meshes
             .push(id);
-        self.candidates_dirty = true;
+        self.dirty_node(node);
         id
     }
 
@@ -2195,7 +2264,6 @@ impl Scene {
             .meshes
             .retain(|&m| m != id);
         self.drop_mesh(id);
-        self.candidates_dirty = true;
     }
 
     fn drop_mesh(&mut self, id: MeshId) {
@@ -2204,6 +2272,7 @@ impl Scene {
             .expect("mesh already removed");
         self.free_meshes.push(id.0);
         self.nodes[entry.node as usize].meshes.retain(|&m| m != id);
+        self.dirty_node(entry.node);
         for chunk in entry.chunk_slots {
             self.chunk_slots.free(chunk);
         }
@@ -2265,7 +2334,11 @@ impl Scene {
             // everything fits or neither can.
             loop {
                 let (compacted, candidates) = self.rebuild_candidates(gpu, resize_lists);
-                self.lists_short = [compacted, candidates];
+                // A layout changed in place (held, with candidates still
+                // left out) keeps what the last whole one found short.
+                if self.candidates_dropped == 0 || compacted > 0 || candidates > 0 {
+                    self.lists_short = [compacted, candidates];
+                }
                 let grew = resize_lists
                     && ((compacted > 0 && self.grow_compacted(gpu, compacted))
                         | (candidates > 0 && self.grow_candidates(gpu, candidates)));
@@ -2276,6 +2349,11 @@ impl Scene {
             if resize_lists && self.shrink_lists(gpu) {
                 self.rebuild_candidates(gpu, true);
             }
+            self.dirty.clear();
+            self.dirty.resize(self.nodes.len(), false);
+            self.all_dirty = false;
+            // A layout at rest tidies every node.
+            self.untidy &= !resize_lists;
         } else if std::mem::take(&mut self.params_dirty) && !self.node_rows.is_empty() {
             self.write_node_rows(gpu);
         }
@@ -2296,11 +2374,19 @@ impl Scene {
     /// Slots that moved go through the scratch buffer: where it holds
     /// fewer and may not grow (`resize`), the candidates are laid out whole
     /// instead, which moves nothing (the cull writes every slot), and the
-    /// scratch grows at rest.
+    /// scratch grows at rest. While memory is held (not `resize`), a layout
+    /// that can't be changed in place (the lists have no room left for a
+    /// node's new slices) moves nothing either: copying every slot over is
+    /// what holding memory still spares the frame.
     fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu, resize: bool) -> (u64, u64) {
-        let short = match self.lay_out_changes(gpu) {
+        let short = match self.lay_out_changes(gpu, !resize) {
             true => (0, 0),
-            false => self.lay_out(gpu),
+            false => {
+                if !resize {
+                    self.laid.clear();
+                }
+                self.lay_out(gpu)
+            }
         };
         let moved: u64 = self.moves.iter().map(|m| u64::from(m.words) * 4).sum();
         if resize || !self.moves_through_scratch() || moved <= self.scratch_bytes() {
@@ -2458,7 +2544,11 @@ impl Scene {
         if short > self.scratch_bytes() {
             self.scratch(gpu, short);
         }
-        self.candidates_dirty |= self.lists_short();
+        if self.lists_short() {
+            self.dirty_all();
+        }
+        // What a layout while memory was held left untidy or out.
+        self.candidates_dirty |= self.untidy;
     }
 
     /// What the pools and the chunk table refused since the last call or
@@ -2561,7 +2651,7 @@ impl Scene {
         first.compacted_words = target.compacted_words.min(c.compacted_words);
         first.candidates = target.candidates.min(c.candidates);
         first.chunks = target.chunks.min(c.chunks);
-        self.candidates_dirty = true;
+        self.dirty_all();
     }
 
     /// Halves a pool or the chunk table while what it holds all lies in

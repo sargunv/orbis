@@ -66,10 +66,11 @@ pub(crate) struct Move {
     pub(crate) words: u32,
 }
 
-/// Room in one of a node's slices, relative to its start: the first hole a
-/// request fits, else past the last thing in it.
+/// Room in one of a node's slices, relative to its start, or in a list
+/// for the nodes' slices: the first hole a request fits, else past the
+/// last thing in it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Space {
+pub(super) struct Space {
     cap: u32,
     end: u32,
     /// Free ranges below `end`, in order, none touching another.
@@ -219,6 +220,14 @@ pub(super) struct LaidNode {
     unwritten: bool,
     /// Its candidates, holes aside.
     pub(super) live: u32,
+    /// Whether it is laid out as at rest: its slots in its runs' draw
+    /// order, holes in no more than an eighth of them, nothing left out.
+    /// A layout while memory is held changes a node without moving slots
+    /// (runs out of order, holes kept, what its slices don't hold left
+    /// out), and the first layout at rest lays it out again.
+    pub(super) tidy: bool,
+    /// Candidates it left out for want of room.
+    dropped: u32,
 }
 
 impl LaidNode {
@@ -358,13 +367,16 @@ impl Scene {
                 .filter(|o| o.shape == shape(node))
         };
         let mut runs = Vec::new();
-        let plans: Vec<NodePlan> = (self.nodes.iter().enumerate())
+        // Each node's plan, and the candidates it left out.
+        let plans: Vec<(NodePlan, u32)> = (self.nodes.iter().enumerate())
             .map(|(n, node)| {
                 let indexed = node.cull.draw == NodeDraw::Indexed;
                 let vertex_words = self.node_runs(n, &mut runs);
                 let shift = if indexed { run_shift(vertex_words) } else { 0 };
                 let old = old(n, node).and_then(|o| o.movable(shift));
-                NodePlan::new(&runs, indexed, shift, &limits, &mut budget, old)
+                let dropped = budget.dropped;
+                let plan = NodePlan::new(&runs, indexed, shift, &limits, &mut budget, old);
+                (plan, budget.dropped - dropped)
             })
             .collect();
 
@@ -373,9 +385,12 @@ impl Scene {
             0 => plan.growth(),
             _ => [0; 2],
         };
-        let wanted = plans.iter().map(grows).fold([0u64; 2], |[r, w], [a, b]| {
-            [r + u64::from(a), w + u64::from(b)]
-        });
+        let wanted = plans
+            .iter()
+            .map(|(plan, _)| grows(plan))
+            .fold([0u64; 2], |[r, w], [a, b]| {
+                [r + u64::from(a), w + u64::from(b)]
+            });
         let spare = [budget.rows as u64, u64::from(budget.words)];
         let scale = |grow: [u32; 2]| -> [u32; 2] {
             [0, 1].map(|i| match wanted[i] <= spare[i] {
@@ -386,7 +401,7 @@ impl Scene {
         let mut writes = Writes::default();
         let mut laid = Vec::with_capacity(self.nodes.len());
         let (mut rows_end, mut words_end) = (0u32, 0u32);
-        for (node, plan) in self.nodes.iter().zip(plans) {
+        for (node, (plan, dropped)) in self.nodes.iter().zip(plans) {
             let [grow_rows, grow_words] = scale(grows(&plan));
             let [rows, words] = [plan.rows.len() as u32 + grow_rows, plan.words + grow_words];
             let mut node_laid = LaidNode {
@@ -400,15 +415,21 @@ impl Scene {
                 numbers: Vec::new(),
                 unwritten: false,
                 live: 0,
+                tidy: true,
+                dropped: 0,
             };
             plan.write(&mut node_laid, &mut writes);
+            node_laid.dropped = dropped;
             laid.push(node_laid);
             rows_end += rows;
             words_end += words;
         }
-        self.candidates_dropped = budget.dropped;
         self.node_rows = vec![0; self.nodes.len() * NODE_CULL_WORDS];
         self.write_layout(gpu, laid, writes, rows_end, words_end);
+        self.slices = (
+            Space::new(rows_end, limits.candidates),
+            Space::new(words_end, limits.compacted_words),
+        );
         (budget.compacted_short, budget.candidates_short)
     }
 
@@ -421,23 +442,37 @@ impl Scene {
     /// is laid out again). When it couldn't, the last layout stays for
     /// [`lay_out`](Self::lay_out) to move runs from, but for nodes laid out
     /// again, whose runs no longer say where their slots are.
-    pub(super) fn lay_out_changes(&mut self, gpu: &mut dyn Gpu) -> bool {
+    ///
+    /// Only the nodes whose runs changed are walked ([`dirty`](Self::dirty)):
+    /// an arrival costs what its tile's nodes hold, not the scene. While
+    /// memory is `held` nothing is laid out from the start: a node changes
+    /// without moving slots where it can (no longer [tidy](LaidNode::tidy)),
+    /// and one whose slices can't hold it and that finds no room past
+    /// every node's leaves out what they don't hold. At rest the first
+    /// layout lays out again the nodes left untidy, and everything when
+    /// something was left out.
+    pub(super) fn lay_out_changes(&mut self, gpu: &mut dyn Gpu, held: bool) -> bool {
         if self.nodes.is_empty()
             || self.laid.len() != self.nodes.len()
-            || self.candidates_dropped > 0
+            || (self.candidates_dropped > 0 && !held)
         {
             return false;
         }
+        let all = std::mem::take(&mut self.all_dirty);
         let limits = self.limits();
         // Changed in place: a node that can't keep its runs is laid out
         // again whole, and a layout that can't be changed, from the start.
         let mut laid = std::mem::take(&mut self.laid);
         let mut writes = Writes::default();
-        let (mut rows_end, mut words_end) = (self.rows_end, self.compacted_words);
+        let mut slices = self.slices.clone();
         let mut relaid = Vec::new();
         let mut runs = Vec::new();
         let mut fits = true;
         for (n, (node, laid)) in self.nodes.iter().zip(&mut laid).enumerate() {
+            let dirty = all || self.dirty.get(n).is_none_or(|&d| d);
+            if !dirty && (held || laid.tidy) {
+                continue;
+            }
             if laid.shape != shape(node) {
                 fits = false;
                 break;
@@ -445,9 +480,9 @@ impl Scene {
             let indexed = node.cull.draw == NodeDraw::Indexed;
             let vertex_words = self.node_runs(n, &mut runs);
             let shift = if indexed { run_shift(vertex_words) } else { 0 };
-            if laid.runs.is_some() && shift == laid.run_shift {
+            if laid.runs.is_some() && shift == laid.run_shift && (held || laid.tidy) {
                 let mut node_writes = Writes::default();
-                if laid.lay_out_changes(&runs, &limits, &mut node_writes) {
+                if laid.lay_out_changes(&runs, &limits, &mut node_writes, held) {
                     if !node_writes.moves.is_empty() {
                         relaid.push(n);
                     }
@@ -467,19 +502,24 @@ impl Scene {
                 }
                 plan if plan.fits(laid) => plan,
                 plan => {
-                    let [rows, words] = plan.room();
-                    if u64::from(rows_end) + u64::from(rows) > u64::from(limits.candidates)
-                        || u64::from(words_end) + u64::from(words)
-                            > u64::from(limits.compacted_words)
-                    {
-                        fits = false;
-                        break;
+                    // New slices: room another node's left, or past every
+                    // node's; its old ones are room for others then.
+                    let room = plan.room();
+                    if let Some((row, word)) = alloc_slices(&mut slices, room) {
+                        slices.0.free(laid.row_base..laid.row_base + laid.rows.cap);
+                        slices
+                            .1
+                            .free(laid.word_base..laid.word_base + laid.words.cap);
+                        (laid.row_base, laid.word_base) = (row, word);
+                        [laid.rows.cap, laid.words.cap] = room;
+                        plan.write(laid, &mut writes);
+                        relaid.push(n);
+                        continue;
                     }
-                    (laid.row_base, laid.word_base) = (rows_end, words_end);
-                    (laid.rows.cap, laid.words.cap) = (rows, words);
-                    rows_end += rows;
-                    words_end += words;
-                    plan
+                    // With none, everything is laid out again from the
+                    // start, held or not: leaving chunks out would show.
+                    fits = false;
+                    break;
                 }
             };
             plan.write(laid, &mut writes);
@@ -496,7 +536,9 @@ impl Scene {
             self.laid = laid;
             return false;
         }
-        self.write_layout(gpu, laid, writes, rows_end, words_end);
+        self.write_layout(gpu, laid, writes, slices.0.end, slices.1.end);
+        self.slices = slices;
+        self.untidy |= held && self.laid.iter().any(|laid| !laid.tidy);
         true
     }
 
@@ -553,6 +595,7 @@ impl Scene {
             row[nc::ELEVATION] = node.cull.elevation.to_bits();
             live += laid.live;
         }
+        self.candidates_dropped = laid.iter().map(|laid| laid.dropped).sum();
         self.write_node_rows(gpu);
         self.params_dirty = false;
         self.placed_quads = quads;
@@ -720,6 +763,19 @@ impl Writes {
     }
 }
 
+/// Room for a node's new slices, `rows` candidate rows and `words`
+/// compacted words, in the lists' `slices`: where they start.
+fn alloc_slices(slices: &mut (Space, Space), [rows, words]: [u32; 2]) -> Option<(u32, u32)> {
+    let row = slices.0.alloc(rows)?;
+    match slices.1.alloc(words) {
+        Some(word) => Some((row, word)),
+        None => {
+            slices.0.free(row..row + rows);
+            None
+        }
+    }
+}
+
 /// `ranges` in order, those that touch or overlap joined.
 fn joined(mut ranges: Vec<Range<u32>>) -> Vec<Range<u32>> {
     ranges.sort_unstable_by_key(|r| r.start);
@@ -816,18 +872,23 @@ impl LaidNode {
     /// whether they fit, leaving holes in no more than an eighth of its
     /// slots. A run that came with no room between the runs around it
     /// slides those after it along into the next hole, their slots moving
-    /// (once a cull wrote them). When they don't fit, it is left part
-    /// changed, but its runs still say where their slots are.
+    /// (once a cull wrote them). While memory is `held` nothing moves: a
+    /// run that came takes room anywhere in the slice, out of order if it
+    /// must, runs that stay keep their slots in whatever order they now
+    /// draw in, and holes stay, the node no longer [tidy](Self::tidy).
+    /// When they don't fit, it is left part changed, but its runs still
+    /// say where their slots are.
     fn lay_out_changes(
         &mut self,
         runs: &[RunPlan<'_>],
         limits: &SubmitLimits,
         writes: &mut Writes,
+        held: bool,
     ) -> bool {
         // Runs that slid, by where they were in `runs` and their slots
         // before.
         let mut slid = FxHashMap::default();
-        let fits = self.change(runs, limits, writes, &mut slid);
+        let fits = self.change(runs, limits, writes, &mut slid, held);
         let kept = self.runs.as_mut().expect("a node that keeps its runs");
         for (k, words) in slid {
             let run = kept.get_mut(&runs[k].key).expect("a run that slid");
@@ -860,6 +921,7 @@ impl LaidNode {
         limits: &SubmitLimits,
         writes: &mut Writes,
         slid: &mut FxHashMap<usize, Range<u32>>,
+        held: bool,
     ) -> bool {
         let kept = self.runs.as_mut().expect("a node that keeps its runs");
         // Each listed run's slots, if it was laid out before.
@@ -893,9 +955,14 @@ impl LaidNode {
             self.live -= n;
         }
         // The runs that stay draw in the order they're listed in: their
-        // slots must be in it already.
+        // slots must be in it already, but while memory is held, when the
+        // order changed (their tiles' did), until the node is laid out
+        // again at rest.
         if !stays.iter().flatten().map(|w| w.start).is_sorted() {
-            return false;
+            if !held {
+                return false;
+            }
+            self.tidy = false;
         }
         // Runs that came: rows anywhere, a run number, and slots between
         // the runs that stay before and after it, which may slide along.
@@ -931,6 +998,16 @@ impl LaidNode {
             };
             let slot = match self.words.alloc_in(words, before, after) {
                 Some(slot) => slot,
+                // Held, a run that finds no room in its place in the order
+                // takes room elsewhere rather than slide others along,
+                // which copies them.
+                None if held => match self.words.alloc(words) {
+                    Some(slot) => {
+                        self.tidy = false;
+                        slot
+                    }
+                    None => return false,
+                },
                 None if slide(
                     &mut self.words,
                     kept,
@@ -973,9 +1050,12 @@ impl LaidNode {
         // Holes below the last run draw as hidden indices, every frame:
         // past an eighth of its slots, the node is laid out again whole
         // instead, its slots moving (on Liberty's Manhattan stutter path,
-        // a quarter drew 5% more indices and moved 23% fewer words).
+        // a quarter drew 5% more indices and moved 23% fewer words). Held,
+        // they stay until the node is laid out again at rest.
         let holes: u32 = self.words.holes.iter().map(|h| h.end - h.start).sum();
-        holes <= self.words.end / 8
+        let few = holes <= self.words.end / 8;
+        self.tidy &= few;
+        few || held
     }
 }
 
@@ -1182,6 +1262,8 @@ impl NodePlan {
         laid.unwritten = (self.kept.iter().flat_map(|k| k.values())).any(|r| !r.written);
         laid.runs = self.kept;
         laid.live = count;
+        laid.tidy = true;
+        laid.dropped = 0;
     }
 }
 #[cfg(test)]
@@ -1231,6 +1313,8 @@ mod tests {
             numbers: Vec::new(),
             unwritten: false,
             live: 0,
+            tidy: true,
+            dropped: 0,
         };
         plan.write(&mut node, &mut Writes::default());
         node
@@ -1263,7 +1347,7 @@ mod tests {
         // the others stay.
         let mut writes = Writes::default();
         let runs = tail(&[run(1, 2), run(3, 2), run(7, 2), run(8, 2)]);
-        assert!(node.lay_out_changes(&runs, &limits, &mut writes));
+        assert!(node.lay_out_changes(&runs, &limits, &mut writes, false));
         assert_eq!(writes.hidden, vec![6..12]);
         let (_, first) = writes.rows().next().unwrap();
         assert_eq!(first[..CANDIDATE_WORDS], [NO_CHUNK, 0, 0, 0, 0]);
@@ -1273,13 +1357,13 @@ mod tests {
         let mut writes = Writes::default();
         let mut runs = tail(&[run(1, 2), run(4, 1), run(3, 2), run(7, 2), run(8, 2)]);
         runs.push(run(5, 2));
-        assert!(node.lay_out_changes(&runs, &limits, &mut writes));
+        assert!(node.lay_out_changes(&runs, &limits, &mut writes, false));
         assert_eq!((slots(&node, 4), slots(&node, 5)), (6..9, 60..66));
         assert_eq!((slots(&node, 1), slots(&node, 3)), (0..6, 12..18));
         assert!(writes.hidden.is_empty());
         let fits = |runs: &[RunPlan<'_>]| {
             node.clone()
-                .lay_out_changes(runs, &limits, &mut Writes::default())
+                .lay_out_changes(runs, &limits, &mut Writes::default(), false)
         };
         // One with no room between the runs around it can't come this way
         // while their slots wait for a cull.
@@ -1293,7 +1377,7 @@ mod tests {
             run.written = true;
         }
         let mut writes = Writes::default();
-        assert!(written.lay_out_changes(&more, &limits, &mut writes));
+        assert!(written.lay_out_changes(&more, &limits, &mut writes, false));
         let at = |serial| slots(&written, serial);
         assert_eq!([at(6), at(1), at(4), at(3)], [0..3, 3..9, 9..12, 12..18]);
         assert_eq!(
@@ -1314,7 +1398,7 @@ mod tests {
         tight.words.cap = tight.words.end;
         let mut first = more.clone();
         first.insert(0, run(9, 1));
-        assert!(!tight.lay_out_changes(&first, &limits, &mut Writes::default()));
+        assert!(!tight.lay_out_changes(&first, &limits, &mut Writes::default(), false));
         assert_eq!(slots(&tight, 1), 3..9, "a run that couldn't slide stays");
         // Nor can runs that stay but draw in another order.
         assert!(!fits(&tail(&[
@@ -1326,6 +1410,55 @@ mod tests {
         ])));
         // Nor so many going that holes fill over an eighth of its slots.
         assert!(!fits(&[run(1, 2), run(5, 2)]));
+    }
+
+    /// While memory is held a node changes in place without moving a slot
+    /// where at rest it would slide runs along or be laid out again: a run
+    /// with no room in its place in the order takes room elsewhere, runs
+    /// whose order changed keep their slots, and holes stay. It is no
+    /// longer tidy, for the first layout at rest to lay out again.
+    #[test]
+    fn a_held_node_changes_without_moving_a_slot() {
+        let limits = SubmitLimits {
+            index_bits: 32,
+            compacted_words: 1 << 20,
+            candidates: 1 << 20,
+        };
+        let runs = [run(1, 2), run(2, 2), run(3, 2), run(4, 2)];
+        let mut node = laid(&runs, &limits);
+        for run in node.runs.as_mut().unwrap().values_mut() {
+            run.written = true;
+        }
+        let held = |node: &mut LaidNode, runs: &[RunPlan<'_>]| {
+            let mut writes = Writes::default();
+            assert!(node.lay_out_changes(runs, &limits, &mut writes, true));
+            assert!(writes.moves.is_empty(), "held: no slot moved");
+        };
+        // A run before the first, which at rest slides the others along.
+        let mut first = node.clone();
+        let mut more = runs.to_vec();
+        more.insert(0, run(5, 1));
+        assert!(first.lay_out_changes(&more, &limits, &mut Writes::default(), false));
+        assert!(first.tidy);
+        held(&mut node, &more);
+        assert!(!node.tidy, "a run out of order");
+        assert_eq!(slots(&node, 1), 0..6, "the others stay");
+        // Runs in another order, which at rest is laid out again.
+        let mut turned = laid(&runs, &limits);
+        let swapped = [run(2, 2), run(1, 2), run(3, 2), run(4, 2)];
+        held(&mut turned, &swapped);
+        assert!(!turned.tidy);
+        assert_eq!((slots(&turned, 1), slots(&turned, 2)), (0..6, 6..12));
+        // Most going, leaving holes in over an eighth of its slots.
+        let mut emptied = laid(&runs, &limits);
+        held(&mut emptied, &[run(1, 2), run(4, 2)]);
+        assert!(!emptied.tidy);
+        assert!(!emptied.clone().lay_out_changes(
+            &[run(1, 2), run(4, 2)],
+            &limits,
+            &mut Writes::default(),
+            false
+        ));
     }
 
     #[test]
