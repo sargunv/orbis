@@ -75,6 +75,17 @@ pub enum PageKind {
     Raster,
     /// DEM tiles: raw elevations, a padded copy and hillshade slopes.
     Dem,
+    /// DEM tiles a terrain stands on: raw elevations and a padded copy.
+    /// Nothing shades from them, so they have no slopes: a third fewer
+    /// bytes, and half the prepare draws.
+    Terrain,
+}
+
+impl PageKind {
+    /// Whether its tiles are DEM tiles, prepared on arrival.
+    fn dem(self) -> bool {
+        matches!(self, Self::Dem | Self::Terrain)
+    }
 }
 
 /// A DEM tile to prepare: its layer, its resident neighbours' layers and
@@ -386,7 +397,7 @@ impl Images {
         };
         // Raster pages are mipmapped: compute passes make the levels once
         // a raster node draws, or without compute render passes draw them.
-        if kind == PageKind::Dem {
+        if kind.dem() {
             self.make_prepare(gpu);
         }
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
@@ -405,6 +416,10 @@ impl Images {
                 texture("dem tiles", 0, uploaded),
                 texture("padded dem tiles", 2, uploaded),
                 texture("hillshade slopes", 1, uploaded),
+            ],
+            PageKind::Terrain => vec![
+                texture("dem tiles", 0, uploaded),
+                texture("padded dem tiles", 2, uploaded),
             ],
         };
         let page = Page {
@@ -470,7 +485,7 @@ impl Images {
     /// the revision of its textures.
     pub(crate) fn dem_texture(&self, id: PageId) -> (TextureId, u32) {
         let page = self.page(id);
-        assert_eq!(page.kind, PageKind::Dem, "terrain reads DEM pages");
+        assert!(page.kind.dem(), "terrain reads DEM pages");
         (page.page.texture(DEM_PADDED), page.page.revision())
     }
 
@@ -674,7 +689,7 @@ impl Images {
 
     pub(crate) fn prepare_dem(&mut self, id: PageId, job: DemPrepare) {
         let page = self.page_mut(id);
-        assert_eq!(page.kind, PageKind::Dem, "only DEM pages are prepared");
+        assert!(page.kind.dem(), "only DEM pages are prepared");
         // A job still waiting for the layer: this one takes its borders
         // too, or the whole tile if either does.
         let mut job = job;
@@ -816,7 +831,7 @@ mod prepare {
     use orb_hal::*;
     use orb_shaders::{PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER};
 
-    use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, Page, prepare_job};
+    use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, Page, PageKind, prepare_job};
     use crate::TargetFormat;
     use crate::pipeline::Draw;
     use crate::release::Release;
@@ -882,8 +897,9 @@ mod prepare {
         revision: u32,
         jobs: BufferId,
         slots: u32,
-        /// Per layer: its padded and slope views.
-        views: Vec<Option<[TextureId; 2]>>,
+        /// Per layer: its padded view, and its slopes' where the page has
+        /// slopes.
+        views: Vec<Vec<TextureId>>,
         /// Per slot: its pad and slope groups.
         groups: Vec<[BindGroupId; 2]>,
     }
@@ -986,22 +1002,25 @@ mod prepare {
                 }
                 let layer = job.layer as usize;
                 if targets.views.len() <= layer {
-                    targets.views.resize(layer + 1, None);
+                    targets.views.resize(layer + 1, Vec::new());
                 }
-                let views = *targets.views[layer].get_or_insert_with(|| {
-                    [DEM_PADDED, DEM_SLOPES]
-                        .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer, 0))
-                });
+                // A terrain's page pads its elevations alone.
+                let drawn = match page.kind {
+                    PageKind::Terrain => &[DEM_PADDED][..],
+                    _ => &[DEM_PADDED, DEM_SLOPES],
+                };
+                let views = &mut targets.views[layer];
+                if views.is_empty() {
+                    *views = (drawn.iter())
+                        .map(|&t| gpu.create_layer_view(page.page.texture(t), job.layer, 0))
+                        .collect();
+                }
                 let dim = page.page.size(DEM_RAW)[0];
-                for (pipeline, group, target, border) in [
-                    (self.pad, targets.groups[slot][0], views[0], Border::Padded),
-                    (
-                        self.slope,
-                        targets.groups[slot][1],
-                        views[1],
-                        Border::Slopes,
-                    ),
-                ] {
+                let stages = [
+                    (self.pad, targets.groups[slot][0], Border::Padded),
+                    (self.slope, targets.groups[slot][1], Border::Slopes),
+                ];
+                for ((pipeline, group, border), &target) in stages.into_iter().zip(&*views) {
                     let mut commands = vec![
                         RenderCommand::SetPipeline(pipeline),
                         RenderCommand::SetBindGroup { index: 0, group },

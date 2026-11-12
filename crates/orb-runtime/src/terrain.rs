@@ -508,7 +508,7 @@ impl Terrain {
         let size = [image.width, image.height];
         let page = *self
             .page
-            .get_or_insert_with(|| renderer.create_page(gpu, orb_render::PageKind::Dem, size));
+            .get_or_insert_with(|| renderer.create_page(gpu, orb_render::PageKind::Terrain, size));
         let layer = match renderer.page_size(page) {
             other if other != size => Err(format!("{}×{} among {other:?} tiles", size[0], size[1])),
             _ => match self.alloc_layer(gpu, renderer, page, grow) {

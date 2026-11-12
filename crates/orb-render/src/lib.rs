@@ -1669,6 +1669,7 @@ impl Renderer {
             PageKind::Raster => 4 * 4 / 3,
             // Elevations, padded elevations and slopes.
             PageKind::Dem => 4 + 4 + 2,
+            PageKind::Terrain => 4 + 4,
         };
         let layer_bytes = u64::from(size[0]) * u64::from(size[1]) * texel;
         self.sizing
