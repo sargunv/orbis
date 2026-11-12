@@ -1143,6 +1143,9 @@ pub(crate) struct Scene {
     tiles: Vec<Option<TileEntry>>,
     free_tiles: Vec<u32>,
     meshes: Vec<Option<MeshEntry>>,
+    /// Per mesh, its tile's place in the last tile order: kept for its
+    /// allocation.
+    tile_ranks: Vec<usize>,
     free_meshes: Vec<u32>,
     nodes: Vec<NodeEntry>,
     /// Node rows' layout (slices of the candidate lists and compacted
@@ -1311,6 +1314,7 @@ impl Scene {
             free_tiles: Vec::new(),
             meshes: Vec::new(),
             free_meshes: Vec::new(),
+            tile_ranks: Vec::new(),
             nodes: Vec::new(),
             candidates_dirty: true,
             node_rows: Vec::new(),
@@ -1442,12 +1446,17 @@ impl Scene {
             .enumerate()
             .map(|(index, &tile)| (tile, index))
             .collect();
-        let meshes = &self.meshes;
+        // Each mesh's tile's place, looked up once rather than at every
+        // comparison of the sorts.
+        let ranks = &mut self.tile_ranks;
+        ranks.clear();
+        ranks.extend(self.meshes.iter().map(|mesh| {
+            mesh.as_ref()
+                .and_then(|m| order.get(&m.tile).copied())
+                .unwrap_or(usize::MAX)
+        }));
         for node in &mut self.nodes {
-            let key = |id: &MeshId| {
-                let tile = meshes[id.0 as usize].as_ref().expect("live mesh").tile;
-                order.get(&tile).copied().unwrap_or(usize::MAX)
-            };
+            let key = |id: &MeshId| ranks[id.0 as usize];
             if !node.meshes.is_sorted_by_key(key) {
                 node.meshes.sort_by_key(key);
                 self.candidates_dirty = true;

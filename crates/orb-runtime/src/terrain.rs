@@ -707,24 +707,51 @@ impl Drawn {
     /// comes within `reach_px` of it, in logical pixels at style zoom
     /// `zoom`, which the tile's slots are drawn at: what a translation
     /// that far moves into them.
+    #[cfg(test)]
     pub(crate) fn overlaps(
         &self,
         surface: &TileMatrixSet,
         terrain: CoveredTile,
-        (zoom, reach_px): (f64, f64),
+        reach: (f64, f64),
     ) -> bool {
-        let b = terrain_bounds(surface, terrain);
-        let reach = DVec2::splat(reach_px * b.size().x / slot_span_px(surface, terrain, zoom));
-        let b = WorldRect {
-            min: b.min - reach,
-            max: b.max + reach,
-        };
-        let a = self.bounds;
-        let eps = 1e-9 * surface.tile_span(0);
+        self.within(&Reach::of(surface, terrain, reach))
+    }
+
+    /// Whether it overlaps a terrain tile's [`Reach`].
+    pub(crate) fn within(&self, reach: &Reach) -> bool {
+        let (a, b, eps) = (self.bounds, reach.bounds, reach.eps);
         a.min.x < b.max.x - eps
             && b.min.x < a.max.x - eps
             && a.min.y < b.max.y - eps
             && b.min.y < a.max.y - eps
+    }
+}
+
+/// A terrain tile's bounds grown by `reach_px` logical pixels at style
+/// zoom `zoom` ([`Drawn::overlaps`]): worked out once for every drawn
+/// tile tested against it, as finding the tile's style zoom inverts the
+/// projection.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Reach {
+    bounds: WorldRect,
+    eps: f64,
+}
+
+impl Reach {
+    pub(crate) fn of(
+        surface: &TileMatrixSet,
+        terrain: CoveredTile,
+        (zoom, reach_px): (f64, f64),
+    ) -> Self {
+        let b = terrain_bounds(surface, terrain);
+        let reach = DVec2::splat(reach_px * b.size().x / slot_span_px(surface, terrain, zoom));
+        Self {
+            bounds: WorldRect {
+                min: b.min - reach,
+                max: b.max + reach,
+            },
+            eps: 1e-9 * surface.tile_span(0),
+        }
     }
 }
 

@@ -675,6 +675,7 @@ impl Map {
             }
         }
         let content = |t: orb_crs::CoveredTile| {
+            let reach = crate::terrain::Reach::of(&surface, t, (zoom, reach_px));
             let mut parts = vec![Vec::new(); stacks];
             for &i in &draped {
                 let (
@@ -693,7 +694,7 @@ impl Map {
                         .and_then(|image| image.warped.as_ref())
                         .map(|warped| warped.frame);
                     let drawn = crate::terrain::Drawn::of(&endpoint.tms, draw, frame, period);
-                    if !drawn.overlaps(&surface, t, (zoom, reach_px)) {
+                    if !drawn.within(&reach) {
                         continue;
                     }
                     // The renderer's tiles stand for their meshes.
@@ -707,7 +708,7 @@ impl Map {
                     let regions: Vec<TileIndex> = (draw.regions.iter())
                         .filter(|&&r| {
                             let part = drawn.region(&endpoint.tms, draw, r);
-                            part.overlaps(&surface, t, (zoom, reach_px))
+                            part.within(&reach)
                         })
                         .copied()
                         .collect();
@@ -750,10 +751,14 @@ impl Map {
             .map(|(_, slot, stacks)| (*slot, &stacks[..]))
             .collect();
         renderer.redraw_drape(&slots);
+        let reaches = (redraw.iter())
+            .map(|&(t, ..)| crate::terrain::Reach::of(&surface, t, (zoom, reach_px)))
+            .collect();
         Some(DrapePlan {
             surface,
             layout,
             redraw,
+            reaches,
             zoom,
             reach_px,
         })
@@ -891,6 +896,8 @@ pub(crate) struct DrapePlan {
     pub(crate) surface: TileMatrixSet,
     pub(crate) layout: orb_render::DrapeLayout,
     pub(crate) redraw: Vec<crate::terrain::Redraw>,
+    /// Each redrawn terrain tile's reach.
+    reaches: Vec<crate::terrain::Reach>,
     /// The camera's style zoom, which the slots are drawn at.
     pub(crate) zoom: f64,
     /// The farthest a draped fill or line is translated, logical pixels.
@@ -908,14 +915,12 @@ impl DrapePlan {
         out: &mut Vec<TileRow>,
     ) {
         let drawn = crate::terrain::Drawn::of(tms, draw, at.frame, at.period);
-        for (terrain, slot, redrawn) in &self.redraw {
+        for ((terrain, slot, redrawn), reach) in self.redraw.iter().zip(&self.reaches) {
             let (terrain, slot) = (*terrain, *slot);
             let stacks: Vec<u8> = (stacks.iter().copied())
                 .filter(|s| redrawn.contains(s))
                 .collect();
-            if !stacks.is_empty()
-                && drawn.overlaps(&self.surface, terrain, (self.zoom, self.reach_px))
-            {
+            if !stacks.is_empty() && drawn.within(reach) {
                 let zoom = self.zoom;
                 let map = placements(tms, draw, Placement { zoom, ..at });
                 crate::terrain::drape_rows(
