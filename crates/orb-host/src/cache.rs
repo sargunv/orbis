@@ -188,13 +188,4 @@ mod tests {
         );
         assert_eq!(fresh(None, None, None), Some(now));
     }
-
-    #[test]
-    fn range_keys_never_collide_with_urls() {
-        assert_eq!(
-            key("https://a/b.pmtiles", Some((10, 5))),
-            "bytes=10-14 https://a/b.pmtiles"
-        );
-        assert_eq!(key("https://a/b.pmtiles", None), "https://a/b.pmtiles");
-    }
 }

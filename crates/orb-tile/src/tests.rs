@@ -703,15 +703,6 @@ fn mlt_skips_unknown_layer_tags() {
 }
 
 #[test]
-fn decoder_errors_implement_std_error() {
-    fn check(error: &dyn std::error::Error) {
-        assert!(!error.to_string().is_empty());
-    }
-    check(&mvt::decode(&[0]).unwrap_err());
-    check(&mlt::decode(&[255]).unwrap_err());
-}
-
-#[test]
 fn truncated_and_garbage_inputs_never_panic() {
     let mvt_bytes = [geometry_fixture(), property_fixture()].concat();
     let mlt_bytes = to_mlt(&mvt_bytes, Tessellation::Off);

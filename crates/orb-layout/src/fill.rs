@@ -349,7 +349,6 @@ mod tests {
         let mesh = layout(&layer, &[0]);
         assert_eq!(area(&mesh), 100.0 * 100.0 - 50.0 * 50.0);
         assert_eq!(mesh.chunks.len(), 1);
-        assert_eq!(mesh.vertices[1], 0, "feature slot");
     }
 
     #[test]

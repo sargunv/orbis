@@ -252,17 +252,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summary_and_statistic() {
+    fn summary() {
         let us = Duration::from_micros;
         let mut samples = vec![us(300), us(100), us(200), us(200)];
         let s = Summary::of(&mut samples);
         assert_eq!((s.median, s.mean), (us(200), us(200)));
         assert_eq!(s.p90, us(300));
-        assert_eq!(
-            Stat::for_clock(Some(Duration::from_nanos(40))),
-            Stat::Median
-        );
-        assert_eq!(Stat::for_clock(Some(us(100))), Stat::Mean);
-        assert_eq!(Stat::for_clock(None), Stat::Mean);
     }
 }

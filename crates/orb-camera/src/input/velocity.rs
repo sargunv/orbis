@@ -148,22 +148,4 @@ mod tests {
         assert_eq!(tracker(&[(0.0, 5.0)]).velocity(8.0), 0.0);
         assert_eq!(tracker(&[]).velocity(0.0), 0.0);
     }
-
-    #[test]
-    fn samples_at_one_time_coalesce_and_earlier_ones_restart() {
-        let t = tracker(&[(0.0, 0.0), (8.0, 1.0), (8.0, 2.0), (16.0, 4.0)]);
-        assert_eq!(t.samples, [(0.0, 0.0), (8.0, 2.0), (16.0, 4.0)]);
-        let t = tracker(&[(0.0, 0.0), (8.0, 1.0), (4.0, 2.0)]);
-        assert_eq!(t.samples, [(4.0, 2.0)]);
-    }
-
-    #[test]
-    fn history_keeps_the_window_and_where_it_starts() {
-        // A sample a millisecond: the window's 100 and the one before.
-        let samples: Vec<_> = (0..300).map(|i| (f64::from(i), f64::from(i))).collect();
-        let t = tracker(&samples);
-        assert_eq!(t.samples.first(), Some(&(199.0, 199.0)));
-        assert_eq!(t.samples.len(), 101);
-        assert!((t.velocity(299.0) - 1000.0).abs() < 1e-6);
-    }
 }

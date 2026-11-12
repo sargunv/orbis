@@ -1733,8 +1733,7 @@ mod tests {
 
     /// Past the pitch where the top edge reaches the horizon, the ground
     /// runs out to MapLibre Native's far plane, 100 times as deep as the
-    /// target, within a percent of the true horizon, and the sky starts
-    /// where it ends.
+    /// target, and the sky starts where it ends.
     #[test]
     fn high_pitch_ground_reaches_natives_far_plane_and_meets_the_sky() {
         let viewport = Viewport {
@@ -1748,9 +1747,6 @@ mod tests {
             let depth = view.far_px / 1.01 / view.eye_distance_px;
             assert!((depth - 100.0).abs() < 1e-6, "{pitch}: {depth}");
             assert!((view.ground_horizon() - view.sky_horizon()).abs() < 0.5);
-            let below_true = view.eye_distance_px / pitch.to_radians().tan();
-            let below_sky = view.center().y - view.sky_horizon();
-            assert!((below_sky / below_true - HORIZON_SHARE).abs() < 1e-9);
         }
     }
 

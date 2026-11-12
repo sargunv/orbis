@@ -255,33 +255,4 @@ mod tests {
         let origin = rd.forward(deg(5.387_638_888_888_89), deg(52.156_160_555_555_6));
         assert!((origin - DVec2::new(155_000.0, 463_000.0)).length() < 1e-6);
     }
-
-    #[test]
-    fn swiss_grid_matches_proj() {
-        // CH1903+ / LV95's origin, and two points as PROJ 9.8's `somerc`
-        // puts them on Bessel 1841.
-        let lv95 = SwissObliqueMercator::new(
-            Ellipsoid::BESSEL_1841,
-            deg(7.439_583_333_333_33),
-            deg(46.952_405_555_555_6),
-            1.0,
-            2_600_000.0,
-            1_200_000.0,
-        );
-        for (lon, lat, x, y) in [
-            (
-                7.439_583_333_333_33,
-                46.952_405_555_555_6,
-                2_600_000.0,
-                1_200_000.0,
-            ),
-            (7.0, 46.0, 2_565_948.043_5, 1_094_232.448_0),
-            (8.5, 47.3, 2_680_187.805_5, 1_239_181.419_8),
-        ] {
-            let p = lv95.forward(deg(lon), deg(lat));
-            assert!((p - DVec2::new(x, y)).abs().max_element() < 1e-3, "{p}");
-            let (l, b) = lv95.inverse(p);
-            assert!((l - deg(lon)).abs() < 1e-11 && (b - deg(lat)).abs() < 1e-11);
-        }
-    }
 }

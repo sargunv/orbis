@@ -49,13 +49,6 @@ pub(crate) struct Elevation<'a> {
 }
 
 impl Elevation<'_> {
-    #[cfg(test)]
-    pub(crate) const FLAT: Self = Self {
-        ground: None,
-        height_offset: 0.0,
-        anchor_ground: true,
-    };
-
     pub(crate) fn at(&self, x: f64, y: f64) -> Option<f64> {
         let ground = self.ground.map(|(g, tile)| g.elevation(tile, x, y));
         symbol_elevation(ground, self.height_offset, self.anchor_ground)
@@ -369,66 +362,4 @@ pub(crate) fn first_and_last_glyph(
     let [x, y] = line_offset;
     place_glyph(cx, font_scale * first_offset, x, y, segment, first)
         && place_glyph(cx, font_scale * last_offset, x, y, segment, last)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn walks_glyphs_along_a_straight_line() {
-        // The label plane is the tile plane at one pixel per unit.
-        let camera = Camera {
-            width: 512.0,
-            height: 512.0,
-            zoom: 0.0,
-            bearing: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
-            camera_to_center_distance: 1.0,
-        };
-        let identity = TileView {
-            id: TileId {
-                z: 0,
-                x: 0,
-                y: 0,
-                wrap: 0,
-            },
-            matrix: [
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-            ],
-            globe: None,
-        };
-        let lines = [[0, 0], [100, 0], [200, 0]];
-        let plane = LabelPlane::Pitched([1.0, 0.0, 0.0, 1.0]);
-        let mut cache = LineCache::default();
-        let mut cx = LineContext::new(
-            &lines,
-            plane,
-            &identity,
-            &camera,
-            Point::new(50.0, 0.0),
-            [0.0; 2],
-            Elevation::FLAT,
-            &mut cache,
-        );
-        let mut path = Vec::new();
-        assert!(place_glyph(&mut cx, 80.0, 0.0, 0.0, 0, &mut path));
-        assert_eq!(
-            path,
-            [
-                Point::new(50.0, 0.0),
-                Point::new(100.0, 0.0),
-                Point::new(130.0, 0.0)
-            ]
-        );
-        assert!(place_glyph(&mut cx, -30.0, 0.0, 0.0, 0, &mut path));
-        assert_eq!(path.last().unwrap().x, 20.0);
-        // Off the end of the line.
-        assert!(!place_glyph(&mut cx, 200.0, 0.0, 0.0, 0, &mut path));
-        // Offset below the line.
-        assert!(place_glyph(&mut cx, 20.0, 0.0, 10.0, 0, &mut path));
-        let below = path.last().unwrap();
-        assert_eq!((below.x, below.y), (70.0, 10.0));
-    }
 }

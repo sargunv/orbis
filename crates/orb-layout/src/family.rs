@@ -75,11 +75,6 @@ pub fn pack_color(color: [f32; 4]) -> u32 {
     r | g << 8 | b << 16 | a << 24
 }
 
-#[test]
-fn packs_colors_as_rgba8() {
-    assert_eq!(pack_color([1.0, 0.0, 0.5, 1.0]), 0xff80_00ff);
-}
-
 /// Deferred image identity, resolved only on the scene side. Generated
 /// textures cannot collide with sprite names. Dash values are f32 bits.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

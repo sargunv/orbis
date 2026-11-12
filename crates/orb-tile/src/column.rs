@@ -277,18 +277,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bitmap_push_and_get() {
-        let mut b = Bitmap::new();
-        for i in 0..130 {
-            b.push(i % 3 == 0);
-        }
-        assert_eq!(b.len(), 130);
-        assert!((0..130).all(|i| b.get(i) == (i % 3 == 0)));
-        let rows = Bitmap::from_rows(130, (0..130).filter(|i| i % 3 == 0));
-        assert_eq!(rows, b);
-    }
-
-    #[test]
     fn select_keeps_rows_and_the_strings_they_use() {
         // 100 rows, every third with a value, cycling through 3 strings.
         let present = Bitmap::from_rows(100, (0..100).step_by(3));

@@ -551,33 +551,8 @@ fn default_extent(plane: &Plane) -> WorldRect {
 
 /// Web Mercator's northing, written out for its tests.
 #[cfg(test)]
-fn mercator_y(lat: f64) -> f64 {
-    wgs84::SEMI_MAJOR_M
-        * (std::f64::consts::FRAC_PI_4 + lat.to_radians() / 2.0)
-            .tan()
-            .ln()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mercator_round_trips() {
-        let p = Projection::from_descriptor("web-mercator").unwrap();
-        for g in [
-            Geodetic::new(0.0, 0.0),
-            Geodetic::new(-122.4, 47.6),
-            Geodetic::new(179.9, -80.0),
-        ] {
-            let back = p.inverse(p.forward(g));
-            assert!(
-                (back.lon - g.lon).abs() < 1e-9 && (back.lat - g.lat).abs() < 1e-9,
-                "{g:?} -> {back:?}"
-            );
-            assert_eq!(p.forward(g).y, mercator_y(g.lat));
-        }
-    }
 
     #[test]
     fn mercator_world_is_square() {

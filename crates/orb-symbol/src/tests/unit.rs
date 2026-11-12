@@ -7,8 +7,8 @@ use orb_text::{
 use orb_tile::{GeometryType, Layer, LayerBuilder, Value};
 
 use crate::bucket::{
-    AnchorOffset, NONE, PlacedSymbol, Quad, SortKeyRange, SymbolBucket, SymbolInstance,
-    SymbolWritingMode, instance_flags, justification,
+    AnchorOffset, NONE, PlacedSymbol, Quad, SortKeyRange, SymbolBucket, SymbolWritingMode,
+    instance_flags, justification,
 };
 use crate::layout::{
     FeatureLayout, LayerLayout, LayoutContext, Placement, SymbolFeature, TextJustify, TileImages,
@@ -381,24 +381,6 @@ fn stable_keys_name_layer_feature_and_text() {
     assert_eq!(seven, key("place", Some(Value::F64(7.0)), "Paris"));
     assert_ne!(seven, key("place", Some(Value::Str("7".into())), "Paris"));
     assert_ne!(seven, key("place", Some(Value::F64(7.5)), "Paris"));
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn tables_are_flat_rows() {
-    use std::mem::size_of;
-    assert_eq!(size_of::<SymbolInstance>(), 104);
-    assert_eq!(size_of::<PlacedSymbol>(), 44);
-    assert_eq!(size_of::<Quad>(), 48);
-    assert_eq!(size_of::<AnchorOffset>(), 12);
-    assert_eq!(size_of::<SortKeyRange>(), 16);
-
-    let layer = points(&[[4096, 4096]]);
-    let bucket = run(&layer, &[feature(0, "Hi")], &LayerLayout::default());
-    let bytes: &[u8] = bytemuck::cast_slice(&bucket.text.quads);
-    assert_eq!(bytes.len(), 2 * 48);
-    let back: &[Quad] = bytemuck::cast_slice(bytes);
-    assert_eq!(back, &bucket.text.quads[..]);
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

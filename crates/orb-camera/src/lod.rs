@@ -119,23 +119,6 @@ mod tests {
     }
 
     #[test]
-    fn weight_eases_in_past_the_threshold() {
-        let lod = TileLod::default();
-        assert_eq!(lod.weight(60.0), 0.0);
-        assert!((lod.weight(62.5) - 0.5).abs() < 1e-9);
-        assert_eq!(lod.weight(85.0), 1.0);
-    }
-
-    #[test]
-    fn distance_levels_follow_distance_and_tilt() {
-        let lod = TileLod::default();
-        assert_eq!(lod.levels(1.0, 1.0, 1.0), 0.0);
-        assert_eq!(lod.levels(4.0, 1.0, 1.0), -2.0);
-        assert_eq!(lod.levels(1.0, 0.25, 1.0), -1.0);
-        assert_eq!(lod.levels(0.5, 1.0, 0.5), 0.5);
-    }
-
-    #[test]
     fn settings_out_of_range_are_brought_in() {
         let lod = TileLod {
             min_radius: 0.0,

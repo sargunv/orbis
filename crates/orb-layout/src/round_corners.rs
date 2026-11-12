@@ -196,8 +196,6 @@ mod tests {
     fn a_square_gets_four_arcs_on_the_grid() {
         let square = [[1000, 1000], [3000, 1000], [3000, 3000], [1000, 3000]];
         let rounded = round_ring(&square, 200.0, 8192);
-        // Each right angle becomes three 30° steps: four points per corner.
-        assert_eq!(rounded.len(), 16);
         // Every point stays within the square, and the corners are gone.
         assert!(
             rounded

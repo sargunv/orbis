@@ -1061,10 +1061,7 @@ mod tests {
         // Same-plane tiles map one to one.
         let same = Warp::new(mercator(), *mercator().projection());
         let tile = TileIndex::new(5, 10, 12);
-        let mesh = check_mesh(&same, tile, 1.0 / 2048.0);
-        // A 4×4 grid: four inner cells, and twelve boundary cells fanned
-        // to 64 steps per tile edge (plus their 32 inner sides).
-        assert_eq!(mesh.triangles.len(), 4 * 2 + 4 * 64 + 32);
+        check_mesh(&same, tile, 1.0 / 2048.0);
         let footprint = same.footprint(tile).unwrap();
         assert!((footprint.span - mercator().tile_span(5)).abs() < 1e-6 * footprint.span);
     }

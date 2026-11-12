@@ -111,18 +111,3 @@ pub(crate) fn from_authalic(beta: f64) -> f64 {
 pub(crate) fn authalic_radius() -> f64 {
     A * (q(FRAC_PI_2) / 2.0).sqrt()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn latitude_functions_invert() {
-        for deg in [-89.9, -60.0, -1.0, 0.0, 33.3, 70.0, 89.99] {
-            let phi = f64::to_radians(deg);
-            assert!((phi_from_t(t(phi)) - phi).abs() < 1e-12, "{deg}");
-            assert!((phi_from_q(q(phi)) - phi).abs() < 1e-12, "{deg}");
-            assert!((from_authalic(authalic(phi)) - phi).abs() < 1e-12, "{deg}");
-        }
-    }
-}

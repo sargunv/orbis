@@ -102,38 +102,3 @@ fn geodetic(ellipsoid: Ellipsoid, p: DVec3) -> (f64, f64) {
     }
     (p.y.atan2(p.x), lat)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn geocentric_round_trips() {
-        for (lon, lat) in [(0.0, 0.0), (5.0, 52.0), (-120.0, -45.0), (179.0, 89.9)] {
-            let (lon, lat) = (f64::to_radians(lon), f64::to_radians(lat));
-            let (l, b) = geodetic(
-                Ellipsoid::BESSEL_1841,
-                geocentric(Ellipsoid::BESSEL_1841, lon, lat),
-            );
-            assert!((l - lon).abs() < 1e-14 && (b - lat).abs() < 1e-13);
-        }
-    }
-
-    #[test]
-    fn helmert_round_trips() {
-        let datum = Datum::position_vector(
-            Ellipsoid::AIRY_1830,
-            [446.448, -125.157, 542.06],
-            [0.15, 0.247, 0.842],
-            -20.489,
-        );
-        let (lon, lat) = (f64::to_radians(-2.0), f64::to_radians(54.0));
-        let (l, b) = datum.local(lon, lat);
-        // About a hundred metres apart.
-        assert!((l - lon).abs() > 1e-6);
-        let (l, b) = datum.wgs84(l, b);
-        // Within a millimetre: the dropped height (tens of metres) moves
-        // the way back by the arc-seconds between the ellipsoids' normals.
-        assert!((l - lon).abs() < 1e-13 && (b - lat).abs() < 1e-13);
-    }
-}

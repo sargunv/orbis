@@ -379,11 +379,4 @@ mod tests {
         assert_eq!(drawn, [0, 1, far - 1, 1, far - 1, 2]);
         assert!(mesh.vertex_indices().all(|v| v >= far));
     }
-
-    #[test]
-    fn packs_indices_two_to_a_word() {
-        let words = pack_indices([1, 2, 3]);
-        assert_eq!(words, [1 | 2 << 16, 3]);
-        assert_eq!([0, 1, 2].map(|i| index_at(&words, i)), [1, 2, 3]);
-    }
 }

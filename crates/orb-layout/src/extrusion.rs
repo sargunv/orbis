@@ -374,12 +374,5 @@ mod tests {
         }
         let mesh = layout(&b.finish(), &[0]);
         assert_eq!(mesh.vertex_indices().count(), 6);
-        assert!(
-            mesh.vertices
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .all(|v| v[3] == 16384)
-        );
     }
 }

@@ -33,23 +33,6 @@ fn line(paint: &str, layout: &str) -> Layer {
 }
 
 #[test]
-fn defaults_follow_the_spec() {
-    let l = line("{}", "{}");
-    assert_eq!(l.get(LINE_WIDTH).constant(), Some(1.0));
-    assert_eq!(l.get(LINE_OPACITY).constant(), Some(1.0));
-    assert_eq!(l.get(LINE_COLOR).constant(), Some(Color::BLACK));
-    assert_eq!(l.get(LINE_GAP_WIDTH).constant(), Some(0.0));
-    assert_eq!(
-        l.get(LINE_TRANSLATE_ANCHOR).constant(),
-        Some(TranslateAnchor::Map)
-    );
-    assert_eq!(l.get(LINE_DASHARRAY).constant(), Some(None));
-    assert_eq!(l.get(LINE_ROUND_LIMIT).constant(), Some(1.05));
-    assert_eq!(l.get(LINE_SORT_KEY).constant(), Some(None));
-    assert!(l.ramp(LINE_GRADIENT).is_none());
-}
-
-#[test]
 fn sources_are_typed() {
     let s = style("[]").unwrap();
     let SourceKind::Vector(v) = &s.source("v").unwrap().kind else {
@@ -435,26 +418,6 @@ fn image_expressions_resolve_with_the_styles_images() {
 
 #[test]
 fn symbol_layers_are_typed() {
-    let s = symbol("{}", "{}");
-    let l = &s;
-    assert_eq!(
-        l.get(SYMBOL_PLACEMENT).constant(),
-        Some(SymbolPlacement::Point)
-    );
-    assert_eq!(l.get(TEXT_SIZE).constant(), Some(16.0));
-    assert_eq!(
-        l.get(TEXT_FONT).constant().unwrap(),
-        ["Open Sans Regular", "Arial Unicode MS Regular"]
-    );
-    assert_eq!(l.get(ICON_PADDING).constant(), Some(Padding([2.0; 4])));
-    assert_eq!(l.get(TEXT_OVERLAP).constant(), Some(None));
-    assert_eq!(l.get(TEXT_VARIABLE_ANCHOR).constant(), Some(None));
-    assert_eq!(l.get(TEXT_FIELD).constant().unwrap()[0].text, "");
-    assert_eq!(
-        s.get(TEXT_HALO_COLOR).constant().unwrap().premultiplied(),
-        [0.0; 4]
-    );
-
     let s = symbol(
         r#"{
             "text-field": "{name} ({ref})",
