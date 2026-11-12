@@ -2,14 +2,15 @@
 //! query and glyph jobs need beyond a worker's CPU work. It keeps the style
 //! revisions requests name, shares fetches between the requests that need
 //! them (a source's data document, glyph ranges, word data, font files), and
-//! answers each request once. Tile fetches take turns, [`FETCHES`] at once:
-//! a load its map gives up ([`cancel`](JobHost::cancel)) before its turn
-//! never starts, and one fetching is aborted. Natively
+//! answers each request once. Tile fetches take turns, [`FETCHES`] at once,
+//! by their requests' rank (the view's centre first): a load its map gives
+//! up ([`cancel`](JobHost::cancel)) before its turn never starts, and one
+//! fetching is aborted. Natively
 //! [`PoolJobs`](crate::PoolJobs) runs one in the map's process; on the web
 //! every job worker runs one behind the page's messages. Image tiles come
 //! out as their encoded bytes: each platform decodes them its own way.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -48,12 +49,14 @@ pub(crate) const FETCHES: usize = 16;
 /// A load its map can give up: its style, source and tile.
 type LoadKey = (u64, u32, TileIndex);
 
-/// Tile fetches running, and those waiting for a turn in request order,
-/// with the aborts that give each up.
+/// Tile fetches running, and those waiting for a turn by rank, with the
+/// aborts that give each up.
 #[derive(Default)]
 struct Fetches {
     running: Vec<(Option<LoadKey>, Abort)>,
-    waiting: VecDeque<(Option<LoadKey>, Abort, Waiting)>,
+    waiting: BinaryHeap<WaitingFetch>,
+    /// Counts the fetches queued, for their order within a rank.
+    queued: u64,
     /// A thread starts waiting fetches: one whose fetch completes as it
     /// starts hands its turn on without starting more itself.
     starting: bool,
@@ -61,6 +64,36 @@ struct Fetches {
 
 /// Starts a fetch with its turn, or, given none, answers it cancelled.
 type Waiting = Box<dyn FnOnce(Option<Turn>) + Send>;
+
+/// A fetch waiting for its turn: the heap's greatest is the lowest rank
+/// queued first.
+struct WaitingFetch {
+    rank: u32,
+    order: u64,
+    key: Option<LoadKey>,
+    abort: Abort,
+    start: Waiting,
+}
+
+impl Ord for WaitingFetch {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (other.rank, other.order).cmp(&(self.rank, self.order))
+    }
+}
+
+impl PartialOrd for WaitingFetch {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for WaitingFetch {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for WaitingFetch {}
 
 /// A running fetch's turn, and the abort its fetch takes: dropped, the
 /// next waiting fetch starts.
@@ -90,12 +123,15 @@ fn start_waiting(fetches: &Arc<Mutex<Fetches>>) {
     }
     state.starting = true;
     while state.running.len() < FETCHES {
-        let Some((key, abort, fetch)) = state.waiting.pop_front() else {
+        let Some(WaitingFetch {
+            key, abort, start, ..
+        }) = state.waiting.pop()
+        else {
             break;
         };
         state.running.push((key, abort.clone()));
         drop(state);
-        fetch(Some(Turn {
+        start(Some(Turn {
             fetches: Arc::clone(fetches),
             abort,
         }));
@@ -153,6 +189,50 @@ struct GlyphLoads {
     /// their bitmaps from these rather than fetch them again (workers keep
     /// metrics only).
     recent: Mutex<RecentRanges>,
+    wants: Arc<Wants>,
+}
+
+/// The whole-tile loads under way, each with whether its map still wants
+/// it: one it gave up ([`JobHost::cancel`]) after its fetch is neither
+/// decoded nor laid out, at whatever stage it waits, and answers
+/// [`Loaded::Cancelled`].
+#[derive(Default)]
+struct Wants(Mutex<HashMap<LoadKey, bool>>);
+
+impl Wants {
+    /// Counts `request`'s load as under way, wanted, until `done` answers.
+    fn track(self: &Arc<Self>, request: &TileRequest, done: LoadedDone) -> LoadedDone {
+        let Some(key) = load_key(request) else {
+            return done;
+        };
+        self.0.lock().expect("wants poisoned").insert(key, true);
+        let wants = Arc::clone(self);
+        Box::new(move |loaded| {
+            wants.0.lock().expect("wants poisoned").remove(&key);
+            done(loaded);
+        })
+    }
+
+    /// Whether `request`'s map still wants it: a relayout always.
+    fn wanted(&self, request: &TileRequest) -> bool {
+        let wants = self.0.lock().expect("wants poisoned");
+        load_key(request).is_none_or(|key| wants.get(&key).copied().unwrap_or(true))
+    }
+
+    fn give_up(&self, key: LoadKey) {
+        if let Some(wanted) = self.0.lock().expect("wants poisoned").get_mut(&key) {
+            *wanted = false;
+        }
+    }
+}
+
+/// A whole tile's load, which its map may give up; not a relayout.
+fn load_key(request: &TileRequest) -> Option<LoadKey> {
+    (request.nodes.is_none() && !request.rows_only).then_some((
+        request.style,
+        request.source,
+        request.tile,
+    ))
 }
 
 /// The glyph ranges fetched last, up to [`RecentRanges::BUDGET`] bytes.
@@ -282,6 +362,10 @@ impl GlyphLoads {
         request: TileRequest,
         done: LoadedDone,
     ) {
+        // Given up while it was fetched, or waited: nothing more is done.
+        if !self.wants.wanted(&request) {
+            return done(Ok(Loaded::Cancelled));
+        }
         // Fetched and decoded while the sprites loaded, a tile with symbol
         // layers lays out once their icons are in.
         if worker.awaits_icons(request.icons) {
@@ -291,11 +375,12 @@ impl GlyphLoads {
             }
             let (this, waiting) = (Arc::clone(self), Arc::clone(&worker));
             let executor = Arc::clone(&self.executor);
-            let epoch = request.icons;
+            let (epoch, rank) = (request.icons, request.rank);
             let ready = Box::new(move || {
-                executor.spawn(Box::new(move || {
-                    this.complete(waiting, bytes, request, done);
-                }));
+                executor.spawn_ranked(
+                    rank,
+                    Box::new(move || this.complete(waiting, bytes, request, done)),
+                );
             });
             worker.with_icons(epoch, ready);
             return;
@@ -306,6 +391,25 @@ impl GlyphLoads {
             Ok(Built::Fetch(urls)) => urls,
         };
         let style = request.style;
+        // Labels never hold up a whole tile's other layers: those go now,
+        // and its map lays the labels out again once their glyphs are in,
+        // which these fetches bring.
+        if load_key(&request).is_some()
+            && !request.neighbour
+            && let Some((others, labels)) = worker.labels_apart(request.source)
+        {
+            let geometry = TileRequest {
+                nodes: Some(others),
+                ..request.clone()
+            };
+            if let Ok(Built::Tile(mut build)) = worker.build(&bytes, request.encoding, &geometry) {
+                for url in urls {
+                    self.wait(&worker, style, url, Box::new(|| {}));
+                }
+                build.labels_later = labels;
+                return done(Ok(Loaded::Tile(build)));
+            }
+        }
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(urls.len()));
         let retry = Arc::new(Mutex::new(Some((bytes, request, done))));
         for url in urls {
@@ -321,9 +425,10 @@ impl GlyphLoads {
                     .take()
                     .expect("retried once");
                 let executor = Arc::clone(&this.executor);
-                executor.spawn(Box::new(move || {
-                    this.complete(worker2, bytes, request, done);
-                }));
+                executor.spawn_ranked(
+                    request.rank,
+                    Box::new(move || this.complete(worker2, bytes, request, done)),
+                );
             });
             self.wait(&worker, style, url, ready);
         }
@@ -351,6 +456,7 @@ impl JobHost {
                 executor: Arc::clone(&executor),
                 waiting: Mutex::default(),
                 recent: Mutex::default(),
+                wants: Arc::default(),
             }),
             fetch,
             executor,
@@ -477,11 +583,14 @@ impl JobHost {
         let Some(worker) = self.worker(request.style) else {
             return done(Err(format!("style {} was replaced", request.style)));
         };
+        let done = self.glyphs.wants.track(&request, done);
         let glyphs = Arc::clone(&self.glyphs);
+        let rank = request.rank;
         if worker.has_data(&request) {
-            self.executor.spawn(Box::new(move || {
-                glyphs.complete(worker, Arc::default(), request, done);
-            }));
+            self.executor.spawn_ranked(
+                rank,
+                Box::new(move || glyphs.complete(worker, Arc::default(), request, done)),
+            );
             return;
         }
         if let Some(url) = worker.data_url(request.source).map(str::to_string) {
@@ -489,12 +598,7 @@ impl JobHost {
             return;
         }
         let (executor, loader) = (Arc::clone(&self.executor), Arc::clone(&self.loader));
-        // A whole tile's load, which its map may give up; not a relayout.
-        let key = (request.nodes.is_none() && !request.rows_only).then_some((
-            request.style,
-            request.source,
-            request.tile,
-        ));
+        let key = load_key(&request);
         if let Some(kind) = worker.image_kind(request.source) {
             let (source, tile, warp) = (request.source, request.tile, request.warp);
             let resource = worker.resource_kind(source);
@@ -505,27 +609,32 @@ impl JobHost {
                 let abort = turn.abort.clone();
                 loader.load(
                     resource,
-                    request.location,
+                    request.location.clone(),
                     request.tile,
                     request.encoding,
                     &abort,
                     Box::new(move |fetched| {
                         drop(turn);
                         match fetched {
+                            // Given up while it was fetched: not decoded.
+                            Ok(_) if !glyphs.wants.wanted(&request) => done(Ok(Loaded::Cancelled)),
                             // An archive's left-out tile draws nothing.
                             Ok((bytes, _)) if bytes.is_empty() => {
                                 done(Ok(Loaded::Tile(TileBuild::default())))
                             }
                             // Its mesh on the surface's plane is the costly
                             // part of drawing it there: the grid is made here.
-                            Ok((bytes, _)) if warp => executor.spawn(Box::new(move || {
-                                let warp_grid = worker.warp_grid(source, tile).map(Arc::new);
-                                done(Ok(Loaded::Image {
-                                    bytes,
-                                    kind,
-                                    warp_grid,
-                                }))
-                            })),
+                            Ok((bytes, _)) if warp => executor.spawn_ranked(
+                                rank,
+                                Box::new(move || {
+                                    let warp_grid = worker.warp_grid(source, tile).map(Arc::new);
+                                    done(Ok(Loaded::Image {
+                                        bytes,
+                                        kind,
+                                        warp_grid,
+                                    }))
+                                }),
+                            ),
                             Ok((bytes, _)) => done(Ok(Loaded::Image {
                                 bytes,
                                 kind,
@@ -536,7 +645,7 @@ impl JobHost {
                     }),
                 );
             });
-            return self.take_turn(key, fetch);
+            return self.take_turn(rank, key, fetch);
         }
         let newest = Arc::clone(&self.newest);
         let fetch: Waiting = Box::new(move |turn| {
@@ -553,33 +662,44 @@ impl JobHost {
                 &abort,
                 Box::new(move |fetched| {
                     drop(turn);
-                    executor.spawn(Box::new(move || match fetched {
-                        Err(FetchError::Aborted) => done(Ok(Loaded::Cancelled)),
-                        _ if newest.load(Ordering::Relaxed) > request.style => {
-                            done(Err(format!("style {} was replaced", request.style)))
-                        }
-                        Ok((bytes, encoding)) => {
-                            let request = TileRequest {
-                                encoding,
-                                ..request
-                            };
-                            glyphs.complete(worker, Arc::new(bytes), request, done)
-                        }
-                        Err(e) => done(missing(e)),
-                    }));
+                    executor.spawn_ranked(
+                        rank,
+                        Box::new(move || match fetched {
+                            Err(FetchError::Aborted) => done(Ok(Loaded::Cancelled)),
+                            _ if newest.load(Ordering::Relaxed) > request.style => {
+                                done(Err(format!("style {} was replaced", request.style)))
+                            }
+                            Ok((bytes, encoding)) => {
+                                let request = TileRequest {
+                                    encoding,
+                                    ..request
+                                };
+                                glyphs.complete(worker, Arc::new(bytes), request, done)
+                            }
+                            Err(e) => done(missing(e)),
+                        }),
+                    );
                 }),
             );
         });
-        self.take_turn(key, fetch);
+        self.take_turn(rank, key, fetch);
     }
 
     /// Runs `fetch` in its turn: at once while fewer than [`FETCHES`] run,
-    /// or once one ends.
-    fn take_turn(&self, key: Option<LoadKey>, fetch: Waiting) {
+    /// or once one ends and none of a lower `rank` waits.
+    fn take_turn(&self, rank: u32, key: Option<LoadKey>, start: Waiting) {
         // Each turn its own, which names its place among the running.
         let abort = Abort::new();
         let mut fetches = self.fetches.lock().expect("fetches poisoned");
-        fetches.waiting.push_back((key, abort, fetch));
+        let order = fetches.queued;
+        fetches.queued += 1;
+        fetches.waiting.push(WaitingFetch {
+            rank,
+            order,
+            key,
+            abort,
+            start,
+        });
         drop(fetches);
         start_waiting(&self.fetches);
     }
@@ -599,16 +719,17 @@ impl JobHost {
     /// (a fetch other loads share goes on for them). Either way the load
     /// answers [`Loaded::Cancelled`], unless its bytes already came.
     pub fn cancel(&self, style: u64, source: u32, tile: TileIndex) {
+        self.glyphs.wants.give_up((style, source, tile));
         let key = Some((style, source, tile));
         let (given_up, running): (Vec<Waiting>, Vec<Abort>) = {
             let mut fetches = self.fetches.lock().expect("fetches poisoned");
-            let (given_up, kept) = std::mem::take(&mut fetches.waiting)
+            let (given_up, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut fetches.waiting)
                 .into_iter()
-                .partition(|(k, _, _)| *k == key);
-            fetches.waiting = kept;
+                .partition(|w| w.key == key);
+            fetches.waiting = kept.into();
             let running = fetches.running.iter().filter(|(k, _)| *k == key);
             (
-                given_up.into_iter().map(|(_, _, fetch)| fetch).collect(),
+                given_up.into_iter().map(|w| w.start).collect(),
                 running.map(|(_, abort)| abort.clone()).collect(),
             )
         };

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use glam::DVec2;
 use orb_camera::View;
-use orb_crs::{TileIndex, TileMatrixSet};
+use orb_crs::{Geodetic, TileIndex, TileMatrixSet};
 use orb_hal::Gpu;
 use orb_render::{
     ClipRect, DemRef, DrapeFull, Family, PlacementTarget, Renderer, TileRow, TileWarp,
@@ -51,6 +51,7 @@ impl Map {
         }
         let zoom = self.camera.state().zoom(self.surface.projection());
         let camera = crate::paint::camera_inputs(self.camera.state());
+        let focus = self.camera.state().target;
         // The tallest extrusion or the highest a symbol layer lifts its
         // labels (`symbol-height-offset`): their tiles stay covered while
         // the lifted content can show, as in GL JS. Per feature, the most
@@ -147,6 +148,7 @@ impl Map {
                 .collect();
             cover.sort();
             cover.dedup();
+            focus_first(&mut cover, &endpoint.tms, focus);
             return Some(SourcePlan::of(pyramid.plan(&cover)));
         }
         let tms = &endpoint.tms;
@@ -220,16 +222,19 @@ impl Map {
             }),
         };
         let Some(middle) = middle else {
+            let mut cover = cover_of(cover_view);
+            focus_first(&mut cover, tms, focus);
             return Some(SourcePlan {
-                update: pyramid.plan(&cover_of(cover_view)),
+                update: pyramid.plan(&cover),
                 neighbours: Vec::new(),
             });
         };
         let drawn = cover_of(middle);
-        let cover = match (cover_view.low_plane(), *warped) {
+        let mut cover = match (cover_view.low_plane(), *warped) {
             (None, false) => volume(cover_view, lifted(&drawn)),
             _ => cover_of(cover_view),
         };
+        focus_first(&mut cover, tms, focus);
         let neighbours = (cover.iter())
             .map(|t| t.index)
             .filter(|&t| !drawn.iter().any(|d| d.index == t))
@@ -269,7 +274,6 @@ impl Map {
         let SourceState::Ready {
             endpoint,
             pyramid,
-            loading,
             warped,
             ..
         } = &mut style.sources[index]
@@ -290,6 +294,7 @@ impl Map {
         }
         pyramid.commit(&update);
         let tms = &endpoint.tms;
+        let key = style.worker.plan().sources[index].key;
         let mut requests = Vec::new();
         for &tile in &update.request {
             // Vector tiles on another plane need a series to draw through:
@@ -304,20 +309,37 @@ impl Map {
                 pyramid.insert_empty(tile);
                 continue;
             }
-            *loading += 1;
+            // A tile parked when the view left it comes back without a
+            // load: it waits its turn to upload.
+            let generation = self.tile_generation;
+            if !neighbours.contains(&tile)
+                && let Some(build) = self.parked.take((generation, key, tile))
+            {
+                pyramid.arrived(tile);
+                let source = key;
+                let (tried, waiting) = (None, &mut self.waiting);
+                waiting.push(WaitingTile {
+                    generation,
+                    source,
+                    tile,
+                    build,
+                    tried,
+                });
+                continue;
+            }
             requests.push(tile);
         }
-        report.tiles_loading += *loading;
+        report.tiles_loading += pyramid.loading() as u32;
         // Loads nothing wants now give way to those the view waits for.
         let unwanted = pyramid.unwanted_loads();
         style.draws[index] = Some(update.draw);
-        let (id, key) = (style.id, style.worker.plan().sources[index].key);
+        let id = style.id;
         for tile in unwanted {
             self.services.jobs.cancel(id, key, tile);
         }
-        for tile in requests {
+        for (rank, tile) in requests.into_iter().enumerate() {
             let neighbour = neighbours.contains(&tile);
-            self.send_tile_job(index, tile, (None, false, neighbour), None);
+            self.send_tile_job(index, tile, (None, false, neighbour), None, rank as u32);
         }
     }
 
@@ -336,7 +358,8 @@ impl Map {
         drawn: &mut Vec<crate::query::DrawnTile>,
     ) {
         let style = self.style.as_mut().expect("called with a style");
-        let Some(draws) = style.draws[index].take() else {
+        // The plan's draws stand until the next plan.
+        let Some(draws) = style.draws[index].clone() else {
             return;
         };
         let draped = drape.filter(|_| {
@@ -940,6 +963,36 @@ impl DrapePlan {
                 );
             }
         }
+    }
+}
+
+/// Orders `cover` as its tiles load: nearest the view's `focus` (the
+/// ground under its centre, which on a pitched view is nearer the bottom
+/// edge than the screen's middle) first, by their centres in `tms`'s
+/// plane, then the finer of two as far. GL JS and Native sort their
+/// covers alike; a depth-first cover would load the view's corners first.
+pub(crate) fn focus_first(
+    cover: &mut [orb_crs::CoveredTile],
+    tms: &TileMatrixSet,
+    focus: Geodetic,
+) {
+    let key = focus_key(tms, focus);
+    cover.sort_by_cached_key(|t| key(*t));
+}
+
+/// A tile's place in the order [`focus_first`] gives: by the squared
+/// distance of its centre from `focus` in `tms`'s plane (whose bits,
+/// never negative, order as it does), then finer first.
+pub(crate) fn focus_key(
+    tms: &TileMatrixSet,
+    focus: Geodetic,
+) -> impl Fn(orb_crs::CoveredTile) -> (u64, std::cmp::Reverse<u8>) {
+    let at = tms.projection().forward(focus);
+    let period = tms.projection().wrap_period().unwrap_or(0.0);
+    move |t| {
+        let wrap = DVec2::new(f64::from(t.wrap) * period, 0.0);
+        let distance = (tms.tile_bounds(t.index).center() + wrap).distance_squared(at);
+        (distance.to_bits(), std::cmp::Reverse(t.index.z))
     }
 }
 

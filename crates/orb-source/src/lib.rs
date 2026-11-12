@@ -45,7 +45,17 @@ pub struct Update {
 
 #[derive(Debug)]
 enum State<T> {
+    /// Requested, and wanted by the last plan or one before it that
+    /// hasn't given it up: its result is drawn when it comes.
     Loading,
+    /// Requested, then left by the view, its load given up
+    /// ([`unwanted_loads`](TilePyramid::unwanted_loads)): its result
+    /// isn't drawn unless a plan wants it again first, which makes it
+    /// [`Loading`](Self::Loading) once more.
+    GivenUp,
+    /// Its result came, wanted, and waits its turn to be drawn (for room,
+    /// say): no longer in flight.
+    Arrived,
     Ready(T),
     /// Loaded with nothing to draw (HTTP 204, outside the source's
     /// bounds): counts as ready.
@@ -80,12 +90,35 @@ enum StandIn {
     Nothing,
 }
 
+impl<T> State<T> {
+    /// Requested and not yet settled: in flight, or arrived.
+    fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading | Self::GivenUp | Self::Arrived)
+    }
+
+    /// Requested and not yet answered, wanted or given up.
+    fn in_flight(&self) -> bool {
+        matches!(self, Self::Loading | Self::GivenUp)
+    }
+}
+
 #[derive(Debug)]
 struct Entry<T> {
     state: State<T>,
     last_used: u64,
-    /// Loading, its load was given up ([`unwanted_loads`](TilePyramid::unwanted_loads)).
-    given_up: bool,
+}
+
+/// What a load's answer for a tile finds in its pyramid
+/// ([`TilePyramid::awaited`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Awaited {
+    /// The plan wants it: it's drawn once inserted.
+    Wanted,
+    /// Its load was given up and no plan wanted it since: nothing draws
+    /// it, so it needn't go to the GPU.
+    GivenUp,
+    /// No load of it is under way (it was drained, or answered already).
+    No,
 }
 
 /// One source's tiles: loading, ready and cached.
@@ -101,6 +134,10 @@ pub struct TilePyramid<T> {
     failures: FxHashMap<TileIndex, u32>,
     /// The last committed plan's cover.
     cover: FxHashSet<TileIndex>,
+    /// Entries in flight, wanted or given up.
+    loading: usize,
+    /// Counts changes to the tiles held and their states.
+    revision: u64,
 }
 
 impl<T> TilePyramid<T> {
@@ -113,6 +150,39 @@ impl<T> TilePyramid<T> {
             frame: 0,
             failures: FxHashMap::default(),
             cover: FxHashSet::default(),
+            loading: 0,
+            revision: 0,
+        }
+    }
+
+    /// Counts changes to the tiles held and their states: the same cover
+    /// plans alike until it changes.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Settles loading `tile` in `state`; gives `state` back if `tile`
+    /// isn't loading.
+    fn settle(&mut self, tile: TileIndex, state: State<T>) -> Result<(), State<T>> {
+        match self.tiles.get_mut(&tile) {
+            Some(entry) if entry.state.is_loading() => {
+                self.loading -= usize::from(entry.state.in_flight());
+                entry.state = state;
+                self.revision += 1;
+                Ok(())
+            }
+            _ => Err(state),
+        }
+    }
+
+    /// Marks wanted `tile`'s result as come: no longer in flight
+    /// ([`loading`](Self::loading)), it waits to be inserted.
+    pub fn arrived(&mut self, tile: TileIndex) {
+        if let Some(entry) = self.tiles.get_mut(&tile)
+            && matches!(entry.state, State::Loading)
+        {
+            entry.state = State::Arrived;
+            self.loading -= 1;
         }
     }
 
@@ -159,14 +229,19 @@ impl<T> TilePyramid<T> {
             })
     }
 
+    /// Whether `tile`'s load is under way, wanted or given up.
     pub fn is_loading(&self, tile: TileIndex) -> bool {
-        matches!(
-            self.tiles.get(&tile),
-            Some(Entry {
-                state: State::Loading,
-                ..
-            })
-        )
+        self.tiles.get(&tile).is_some_and(|e| e.state.is_loading())
+    }
+
+    /// What an answer to `tile`'s load finds: whether the plan still
+    /// wants it.
+    pub fn awaited(&self, tile: TileIndex) -> Awaited {
+        match self.tiles.get(&tile).map(|e| &e.state) {
+            Some(State::Loading | State::Arrived) => Awaited::Wanted,
+            Some(State::GivenUp) => Awaited::GivenUp,
+            _ => Awaited::No,
+        }
     }
 
     /// Plans a frame and records it ([`plan`](Self::plan), then
@@ -210,7 +285,7 @@ impl<T> TilePyramid<T> {
                     continue;
                 }
                 Some(State::Empty) => continue,
-                Some(State::Loading | State::Failed { .. }) => {}
+                Some(State::Loading | State::GivenUp | State::Arrived | State::Failed { .. }) => {}
                 // A missing tile's nearest ancestor in the tileset stands
                 // in for it, whatever else is resident: other tiles stand
                 // in only while that ancestor loads.
@@ -289,49 +364,56 @@ impl<T> TilePyramid<T> {
         self.cover.clear();
         self.cover.extend(&update.cover);
         for &tile in &update.request {
-            self.tiles.entry(tile).or_insert(Entry {
-                state: State::Loading,
-                last_used: frame,
-                given_up: false,
+            self.tiles.entry(tile).or_insert_with(|| {
+                self.loading += 1;
+                self.revision += 1;
+                Entry {
+                    state: State::Loading,
+                    last_used: frame,
+                }
             });
         }
         for tile in &update.used {
             if let Some(entry) = self.tiles.get_mut(tile) {
                 entry.last_used = frame;
+                // Wanted again before its given-up load answered.
+                if matches!(entry.state, State::GivenUp) {
+                    entry.state = State::Loading;
+                    self.revision += 1;
+                }
             }
         }
     }
 
-    /// Loading tiles the last update didn't use, each once: nothing draws
-    /// them or waits for them now, so their loads may be cancelled, as GL
-    /// JS aborts the requests of tiles it drops. One a later update wants
-    /// again stays loading until its result comes back; a cancelled one
-    /// is then forgotten ([`forget_loading`](Self::forget_loading)) and
-    /// requested anew.
+    /// Wanted loads the last update didn't use, given up, each once:
+    /// nothing draws them or waits for them now, so their loads may be
+    /// cancelled, as GL JS aborts the requests of tiles it drops. One a
+    /// later update wants again loads on until its result comes back; a
+    /// cancelled one is then forgotten
+    /// ([`forget_loading`](Self::forget_loading)) and requested anew.
     pub fn unwanted_loads(&mut self) -> Vec<TileIndex> {
         let frame = self.frame;
-        (self.tiles.iter_mut())
-            .filter(|(_, e)| {
-                matches!(e.state, State::Loading) && e.last_used != frame && !e.given_up
-            })
-            .map(|(&tile, e)| {
-                e.given_up = true;
-                tile
-            })
-            .collect()
+        self.give_up(|e| e.last_used != frame)
     }
 
-    /// Every loading tile not yet given up, each once, as
+    /// Every wanted load, given up, as
     /// [`unwanted_loads`](Self::unwanted_loads) gives up those out of
     /// view: for a caller that drops the pyramid, or stops drawing.
     pub fn give_up_loads(&mut self) -> Vec<TileIndex> {
-        (self.tiles.iter_mut())
-            .filter(|(_, e)| matches!(e.state, State::Loading) && !e.given_up)
+        self.give_up(|_| true)
+    }
+
+    /// Gives up the wanted loads `which` picks.
+    fn give_up(&mut self, which: impl Fn(&Entry<T>) -> bool) -> Vec<TileIndex> {
+        let given_up: Vec<TileIndex> = (self.tiles.iter_mut())
+            .filter(|(_, e)| matches!(e.state, State::Loading) && which(e))
             .map(|(&tile, e)| {
-                e.given_up = true;
+                e.state = State::GivenUp;
                 tile
             })
-            .collect()
+            .collect();
+        self.revision += u64::from(!given_up.is_empty());
+        given_up
     }
 
     /// Counts `tile` as used by the last update, as if its plan had used
@@ -346,22 +428,19 @@ impl<T> TilePyramid<T> {
     /// their value back. After a drain, callers must reject old-generation
     /// results before they can reach newly requested entries.
     pub fn insert(&mut self, tile: TileIndex, value: T) -> Option<T> {
-        match self.tiles.get_mut(&tile) {
-            Some(entry) if matches!(entry.state, State::Loading) => {
-                entry.state = State::Ready(value);
+        match self.settle(tile, State::Ready(value)) {
+            Ok(()) => {
                 self.failures.remove(&tile);
                 None
             }
-            _ => Some(value),
+            Err(State::Ready(value)) => Some(value),
+            Err(_) => unreachable!("given back as given"),
         }
     }
 
     /// Marks a loading tile as loaded with nothing to draw.
     pub fn insert_empty(&mut self, tile: TileIndex) {
-        if let Some(entry) = self.tiles.get_mut(&tile)
-            && matches!(entry.state, State::Loading)
-        {
-            entry.state = State::Empty;
+        if self.settle(tile, State::Empty).is_ok() {
             self.failures.remove(&tile);
         }
     }
@@ -370,16 +449,14 @@ impl<T> TilePyramid<T> {
     /// pass: ancestors or children stand in until it's retried, after a
     /// delay that doubles with each failure in a row.
     pub fn insert_failed(&mut self, tile: TileIndex, now: f64) {
-        if let Some(entry) = self.tiles.get_mut(&tile)
-            && matches!(entry.state, State::Loading)
-        {
-            let failures = self.failures.entry(tile).or_default();
-            let delay = retry_delay(*failures);
-            *failures = failures.saturating_add(1);
-            entry.state = State::Failed {
-                retry_at: now + delay,
-            };
+        if !self.is_loading(tile) {
+            return;
         }
+        let failures = self.failures.entry(tile).or_default();
+        let delay = retry_delay(*failures);
+        *failures = failures.saturating_add(1);
+        let retry_at = now + delay;
+        let _ = self.settle(tile, State::Failed { retry_at });
     }
 
     /// Forgets failed tiles due for a retry at `now` (ms), so the next
@@ -387,7 +464,7 @@ impl<T> TilePyramid<T> {
     /// failed tile with `now` infinite, as when the network returns.
     /// Whether any failed tile remains.
     pub fn retry_failed(&mut self, now: f64) -> bool {
-        let mut waiting = false;
+        let (mut waiting, before) = (false, self.tiles.len());
         self.tiles.retain(|_, entry| match entry.state {
             State::Failed { retry_at } if retry_at <= now => false,
             State::Failed { .. } => {
@@ -396,6 +473,7 @@ impl<T> TilePyramid<T> {
             }
             _ => true,
         });
+        self.revision += u64::from(self.tiles.len() != before);
         waiting
     }
 
@@ -403,29 +481,31 @@ impl<T> TilePyramid<T> {
     /// missing or failed), as if they had never been requested: the next
     /// plan that needs one requests it again.
     pub fn forget_settled(&mut self, which: &dyn Fn(TileIndex) -> bool) {
+        let before = self.tiles.len();
         self.tiles.retain(|&tile, entry| {
             !matches!(
                 entry.state,
                 State::Empty | State::Missing | State::Failed { .. }
             ) || !which(tile)
         });
+        self.revision += u64::from(self.tiles.len() != before);
     }
 
-    /// The tiles whose loads are under way.
+    /// The tiles whose loads are under way, wanted or given up.
     pub fn loading_tiles(&self) -> impl Iterator<Item = TileIndex> + '_ {
         self.tiles
             .iter()
-            .filter(|(_, entry)| matches!(entry.state, State::Loading))
+            .filter(|(_, entry)| entry.state.in_flight())
             .map(|(&tile, _)| tile)
     }
 
     /// Forgets a loading tile whose load completed unused, as if it had
     /// never been requested: a later plan that needs it requests it again.
     pub fn forget_loading(&mut self, tile: TileIndex) {
-        if let Some(entry) = self.tiles.get(&tile)
-            && matches!(entry.state, State::Loading)
-        {
-            self.tiles.remove(&tile);
+        if self.is_loading(tile) {
+            let entry = self.tiles.remove(&tile).expect("loading");
+            self.loading -= usize::from(entry.state.in_flight());
+            self.revision += 1;
         }
     }
 
@@ -434,10 +514,7 @@ impl<T> TilePyramid<T> {
     /// loads, ready ancestors and descendants stand in as for a loading
     /// tile.
     pub fn insert_missing(&mut self, tile: TileIndex) {
-        if let Some(entry) = self.tiles.get_mut(&tile)
-            && matches!(entry.state, State::Loading)
-        {
-            entry.state = State::Missing;
+        if self.settle(tile, State::Missing).is_ok() {
             self.failures.remove(&tile);
         }
     }
@@ -453,7 +530,7 @@ impl<T> TilePyramid<T> {
         let mut unused: Vec<(u64, TileIndex)> = self
             .tiles
             .iter()
-            .filter(|(_, e)| e.last_used != frame && !matches!(e.state, State::Loading))
+            .filter(|(_, e)| e.last_used != frame && !e.state.is_loading())
             .map(|(&t, e)| (e.last_used, t))
             .collect();
         if unused.len() <= self.cache_size {
@@ -461,6 +538,7 @@ impl<T> TilePyramid<T> {
         }
         unused.sort_unstable();
         let excess = unused.len() - self.cache_size;
+        self.revision += 1;
         unused[..excess]
             .iter()
             .filter_map(|(_, t)| {
@@ -500,6 +578,7 @@ impl<T> TilePyramid<T> {
 
     /// Removes `tile`, which is ready, and gives its value.
     fn take_ready(&mut self, tile: TileIndex) -> T {
+        self.revision += 1;
         match self.tiles.remove(&tile).map(|e| e.state) {
             Some(State::Ready(value)) => value,
             _ => unreachable!("a ready tile"),
@@ -581,6 +660,8 @@ impl<T> TilePyramid<T> {
     /// Forgets every tile, returning the ready values.
     pub fn drain(&mut self) -> Vec<T> {
         self.failures.clear();
+        self.loading = 0;
+        self.revision += 1;
         self.tiles
             .drain()
             .filter_map(|(_, entry)| match entry.state {
@@ -590,12 +671,9 @@ impl<T> TilePyramid<T> {
             .collect()
     }
 
-    /// Tiles requested and not yet inserted.
+    /// Tiles requested and not yet answered, wanted or given up.
     pub fn loading(&self) -> usize {
-        self.tiles
-            .values()
-            .filter(|e| matches!(e.state, State::Loading))
-            .count()
+        self.loading
     }
 
     fn is_ready(&self, tile: TileIndex) -> bool {
@@ -613,7 +691,7 @@ impl<T> TilePyramid<T> {
     /// size × depth, not 4^depth.
     fn branches(&self) -> FxHashSet<TileIndex> {
         let mut branches = FxHashSet::default();
-        let known = (self.tiles.iter()).filter(|(_, e)| !matches!(e.state, State::Loading));
+        let known = (self.tiles.iter()).filter(|(_, e)| !e.state.is_loading());
         for (&tile, _) in known {
             let ancestors = std::iter::successors(tile.parent(), |t| t.parent());
             for parent in ancestors.take_while(|t| t.z >= self.min_zoom) {
@@ -665,7 +743,9 @@ impl<T> TilePyramid<T> {
                     return StandIn::Loading;
                 }
                 Some(State::Missing | State::Failed { .. }) => tile = parent,
-                Some(State::Loading) => return StandIn::Loading,
+                Some(State::Loading | State::GivenUp | State::Arrived) => {
+                    return StandIn::Loading;
+                }
                 Some(State::Ready(_)) => return StandIn::Ready(parent),
                 Some(State::Empty) => break,
             }
@@ -1158,6 +1238,43 @@ mod tests {
         assert!(p.update(&here).request.is_empty());
         p.forget_loading(t(3, 1, 2));
         assert_eq!(p.update(&here).request, [t(3, 1, 2)]);
+    }
+
+    /// A given-up load's answer finds it given up, unless a plan wanted
+    /// it again first.
+    #[test]
+    fn loads_wanted_again_are_awaited_again() {
+        let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+        let (here, there) = (cover(&[(3, 1, 2)]), cover(&[(3, 6, 6)]));
+        p.update(&here);
+        assert_eq!(p.awaited(t(3, 1, 2)), Awaited::Wanted);
+        p.update(&there);
+        p.unwanted_loads();
+        assert_eq!(p.awaited(t(3, 1, 2)), Awaited::GivenUp);
+        assert_eq!(p.loading(), 2, "given up, still in flight");
+        p.update(&here);
+        assert_eq!(p.awaited(t(3, 1, 2)), Awaited::Wanted);
+        assert_eq!(p.awaited(t(5, 0, 0)), Awaited::No);
+    }
+
+    /// An arrived result waiting its turn is out of flight, but stands in
+    /// as loading until it's inserted.
+    #[test]
+    fn arrived_tiles_are_not_in_flight() {
+        let mut p = TilePyramid::new(0, 14, 8);
+        p.update(&cover(&[(0, 0, 0)]));
+        p.insert(t(0, 0, 0), "world");
+        let view = cover(&[(1, 0, 0)]);
+        p.update(&view);
+        p.arrived(t(1, 0, 0));
+        assert_eq!(p.loading(), 0);
+        let update = p.update(&view);
+        assert!(update.request.is_empty(), "not asked for twice");
+        assert_eq!(update.draw[0].tile, t(0, 0, 0), "the ancestor stands in");
+        let revision = p.revision();
+        assert_eq!(p.insert(t(1, 0, 0), "tile"), None);
+        assert!(p.revision() > revision);
+        assert_eq!(p.update(&view).draw[0].tile, t(1, 0, 0));
     }
 
     #[test]

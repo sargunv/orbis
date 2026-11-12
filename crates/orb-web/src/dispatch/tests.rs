@@ -64,7 +64,7 @@ fn tile(col: u32) -> TileIndex {
 }
 
 /// A load's result, once it has one.
-type Outcome = Arc<Mutex<Option<Result<TileResult, String>>>>;
+type Outcome = Arc<Mutex<Option<Result<TileOutcome, String>>>>;
 
 fn load(jobs: &WorkerJobs, tile: TileIndex) -> Outcome {
     let location = TileLocation::Url("test://tile.mvt".into());
@@ -82,13 +82,13 @@ fn answer(jobs: &WorkerJobs, id: u32) {
 }
 
 fn answered(outcome: &Outcome) -> bool {
-    matches!(*outcome.lock().unwrap(), Some(Ok(ref r)) if !r.missing)
+    matches!(*outcome.lock().unwrap(), Some(Ok(TileOutcome::Built(_))))
 }
 
 /// The warning a load answered missing gave, if it was.
 fn left_out(outcome: &Outcome) -> Option<Vec<String>> {
     match &*outcome.lock().unwrap() {
-        Some(Ok(r)) if r.missing => Some(r.warnings.clone()),
+        Some(Ok(TileOutcome::Missing { warnings })) => Some(warnings.clone()),
         _ => None,
     }
 }

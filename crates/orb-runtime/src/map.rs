@@ -32,7 +32,8 @@ use orb_source::endpoint::TileEndpoint;
 pub(crate) const TILE_PX: f64 = 512.0;
 
 /// What a frame may spend applying what arrived since the last before it
-/// draws. A host draws frames on the display's refresh, and they are the
+/// draws: tiles' and edits' results, label commits, and the bytes they
+/// upload ([`crate::schedule`]). A host draws frames on the display's refresh, and they are the
 /// one time the map works: what arrives between them only queues, its wake
 /// asking for the next. Counted from the frame's start, so however often
 /// the host hears of arrivals, a frame spends no more; tiles that arrive
@@ -41,29 +42,43 @@ pub(crate) const TILE_PX: f64 = 512.0;
 /// has the rest of the frame to spare, and loads sooner.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameBudget {
-    /// Milliseconds of a frame while the camera moves or input holds it.
-    pub moving: f64,
-    /// Milliseconds of a frame at rest.
-    pub resting: f64,
+    /// While the camera moves or input holds it.
+    pub moving: crate::Budget,
+    /// At rest.
+    pub resting: crate::Budget,
 }
 
 impl FrameBudget {
-    /// A desktop's, the default, in a 60 Hz frame: a quarter of it while
-    /// moving, and most of it at rest (with a quarter, Liberty's views
-    /// took 13 % longer to their first idle in Chromium than with as long
-    /// as arrivals took).
+    /// A desktop's, the default, in a 60 Hz frame: a quarter of it and
+    /// 4 MiB while moving, most of it and 16 MiB at rest (with a quarter,
+    /// Liberty's views took 13 % longer to their first idle in Chromium
+    /// than with as long as arrivals took). What a frame applies costs it
+    /// again in the cull's candidates and drape slots, so the bytes bound
+    /// it as much as the time.
     pub const DESKTOP: Self = Self {
-        moving: 4.0,
-        resting: 12.0,
+        moving: crate::Budget {
+            ms: 4.0,
+            bytes: 4 << 20,
+        },
+        resting: crate::Budget {
+            ms: 12.0,
+            bytes: 16 << 20,
+        },
     };
     /// A phone's or a tablet's.
     pub const MOBILE: Self = Self {
-        moving: 2.0,
-        resting: 8.0,
+        moving: crate::Budget {
+            ms: 2.0,
+            bytes: 1 << 20,
+        },
+        resting: crate::Budget {
+            ms: 8.0,
+            bytes: 4 << 20,
+        },
     };
 
-    /// The milliseconds of a frame, as the camera moves or rests.
-    pub fn ms(&self, moving: bool) -> f64 {
+    /// A frame's, as the camera moves or rests.
+    pub fn at(&self, moving: bool) -> crate::Budget {
         match moving {
             true => self.moving,
             false => self.resting,
@@ -330,7 +345,7 @@ pub(crate) enum Message {
         /// A DEM tile for the terrain rather than for the source's layers.
         terrain: bool,
         /// Boxed: the other messages are much smaller.
-        result: Box<Result<TileResult, String>>,
+        result: Box<Result<crate::TileOutcome, String>>,
     },
 }
 
@@ -510,6 +525,8 @@ pub(crate) struct Retired {
     pub(crate) images: Vec<u64>,
     /// Gradient ramps of meshes that went.
     pub(crate) ramps: Vec<u32>,
+    /// Host data of tile results dropped, parked ones among them.
+    pub(crate) host: Vec<HostData>,
 }
 
 impl Retired {
@@ -583,6 +600,26 @@ pub struct GridTile {
     pub center: glam::DVec2,
 }
 
+/// What a frame's plan of the sources reads, but the time: a frame with the
+/// key the last plan had plans as it did, and keeps it.
+#[derive(Debug, PartialEq)]
+struct PlanKey {
+    camera: u64,
+    viewport: [u64; 2],
+    /// The style's revision.
+    version: u64,
+    /// Each source's tiles, once it resolved.
+    sources: Vec<Option<u64>>,
+    /// The terrain's elevations and DEM tiles.
+    terrain: Option<(u64, u64)>,
+    /// Results applied (their heights widen covers).
+    applied: u64,
+    draping: bool,
+    /// Per node, how high its content stands and how far it reaches, as
+    /// this frame's paint has them.
+    culls: Vec<(u32, u32)>,
+}
+
 /// A gap the style uses on the frames' renderer, and the layers it touches.
 type Degraded = (crate::Gap, Vec<String>);
 
@@ -606,8 +643,18 @@ pub struct Map {
     prepared: (FrameTimes, u32),
     /// The device's counts at the last frame drawn.
     counted: GpuCounters,
-    /// Arrived tiles wait for the next frame: this one spent its budget.
+    /// Arrived tiles wait for the next beat: this one spent its budget.
     pub(crate) tiles_deferred: bool,
+    /// What this frame has spent of its [`FrameBudget`].
+    pub(crate) beat: crate::schedule::Beat,
+    /// Tiles' results waiting their turn.
+    pub(crate) inbox: crate::schedule::Inbox,
+    /// Tiles built after the view gave them up.
+    pub(crate) parked: crate::schedule::Parked,
+    /// Counts tiles' and edits' results applied: the scene changed.
+    pub(crate) applied: u64,
+    /// What the sources' last plan read.
+    planned: Option<PlanKey>,
     /// Tiles that arrived when the scene had no room for them, while other
     /// tiles' jobs were in flight: those tiles' arrivals free the stand-ins
     /// they replace, so these try again on the next frames.
@@ -863,6 +910,11 @@ impl Map {
             prepared: Default::default(),
             counted: GpuCounters::default(),
             tiles_deferred: false,
+            beat: Default::default(),
+            inbox: Default::default(),
+            parked: Default::default(),
+            applied: 0,
+            planned: None,
             waiting: Vec::new(),
             candidates_dropped: 0,
             prewarm_due: false,
@@ -1049,6 +1101,14 @@ impl Map {
     /// limits, so a view that needs more than the budget still draws.
     pub fn set_memory_budget(&mut self, bytes: u64) {
         self.budget = bytes;
+    }
+
+    /// Begins a frame's spending on arrivals at `now`: its bytes, and its
+    /// deadline, which it returns.
+    fn open_beat(&mut self, now: f64) -> f64 {
+        let budget = self.frame_budget.at(self.is_moving());
+        self.beat = crate::schedule::Beat::new(budget.bytes);
+        now + budget.ms
     }
 
     /// Sets what each frame may spend applying what arrived
@@ -1371,6 +1431,9 @@ impl Map {
     /// them (refetched where not); labels place afresh, and sprites and
     /// glyphs load again.
     fn forget_gpu(&mut self) {
+        self.planned = None;
+        // Their host data went with the device.
+        self.parked = Default::default();
         self.globe_warps = crate::globe::GlobeWarps::new(*self.surface.projection());
         self.retired = Retired::default();
         let old = &self.labels;
@@ -1604,7 +1667,7 @@ impl Map {
     /// before the style is in waits for it this way. [`render`](Self::render)
     /// begins with it.
     pub fn apply_arrivals(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, pixel_ratio: f32) {
-        let deadline = self.services.clock.now() + self.frame_budget.ms(self.is_moving());
+        let deadline = self.open_beat(self.services.clock.now());
         self.apply_arrivals_until(gpu, renderer, pixel_ratio, deadline);
     }
 
@@ -1626,6 +1689,9 @@ impl Map {
             self.nodes_stale = true;
         }
         self.retired.release(renderer);
+        for host in self.retired.host.drain(..) {
+            host.release(gpu);
+        }
         self.start_sprites(gpu, pixel_ratio);
         self.apply_image_edits(gpu);
         // Bring the scene's nodes to the plan before results for it apply.
@@ -1702,7 +1768,7 @@ impl Map {
         let clock = Arc::clone(&self.services.clock);
         let started = clock.now();
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
-        let deadline = started + self.frame_budget.ms(self.is_moving());
+        let deadline = self.open_beat(started);
         self.take_arrivals(gpu, renderer, pixel_ratio, deadline);
         let mut times = FrameTimes {
             // Uploads and label commits are stages of their own.
@@ -1959,9 +2025,22 @@ impl Map {
             }
         }
         self.retry_glyphs(now);
-        let plan = self.plan_frame(renderer, view, elevation.as_deref());
-        for (index, update) in plan.into_iter().enumerate() {
-            self.apply_source(renderer, index, update, report);
+        // The sources' plan reads the view, the style, the tiles held and
+        // the terrain: unchanged, the last one stands, its loads asked for.
+        let key = self.plan_key(renderer, view);
+        if key.is_none() || key != self.planned {
+            let plan = self.plan_frame(renderer, view, elevation.as_deref());
+            for (index, update) in plan.into_iter().enumerate() {
+                self.apply_source(renderer, index, update, report);
+            }
+            self.planned = key;
+        } else {
+            report.tiles_loading += (self.style.iter().flat_map(|s| &s.sources))
+                .map(|s| match s {
+                    SourceState::Ready { pyramid, .. } => pyramid.loading() as u32,
+                    _ => 0,
+                })
+                .sum::<u32>();
         }
         let draping = clock.now();
         times.plan = micros(planning, draping);
@@ -2371,17 +2450,20 @@ impl Map {
         let neighbour = edit.is_some()
             && matches!(&self.style.as_ref().expect("jobs need a style").sources[index],
                 SourceState::Ready { pyramid, .. } if pyramid.get(tile).is_some_and(|r| r.neighbour));
-        self.send_tile_job(index, tile, (nodes, rows_only, neighbour), edit);
+        // Relayouts are of tiles drawn now: they go first.
+        self.send_tile_job(index, tile, (nodes, rows_only, neighbour), edit, 0);
     }
 
     /// [`send_job`](Self::send_job), for a neighbour of the tile Tile mode
-    /// draws if `neighbour` ([`TileRequest::neighbour`]).
+    /// draws if `neighbour` ([`TileRequest::neighbour`]), in its place
+    /// `rank` in the load order ([`TileRequest::rank`]).
     pub(crate) fn send_tile_job(
         &mut self,
         index: usize,
         tile: TileIndex,
         (nodes, rows_only, neighbour): (Option<Vec<u32>>, bool, bool),
         edit: Option<u64>,
+        rank: u32,
     ) {
         let style = self.style.as_mut().expect("jobs need a style");
         let key = style.worker.plan().sources[index].key;
@@ -2441,6 +2523,7 @@ impl Map {
             nodes,
             rows_only,
             neighbour,
+            rank,
             ..TileRequest::whole(style.id, key, tile, location, endpoint.encoding)
         };
         // Symbol layout needs the sprites' metadata: while the sprites load,
@@ -2549,6 +2632,7 @@ impl Map {
             which(tile) || (0..tile.z).any(|z| tile.ancestor(z).is_some_and(which))
         };
         let (asked, held) = self.host_tiles.forget(key, which);
+        (self.parked).drop_where(|s, tile| s == key && picks(tile), &mut self.retired.host);
         // A tile still waiting for the app is asked for again; a load
         // under way with the old answer lands nowhere, and one that held
         // nothing is forgotten: the next frame that needs either asks.
@@ -2826,7 +2910,7 @@ impl Map {
                 renderer.set_drapes_by_zoom(gpu, index as u32, by_zoom);
             }
         }
-        let at = (view, self.surface.tms());
+        let at = (view, self.surface.tms(), self.camera.state().target);
         let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, view.world_z(skirt));
         let mut loads = Vec::new();
         for tile in requests {
@@ -2838,11 +2922,11 @@ impl Map {
             loads.push(TileRequest {
                 zoom: endpoint.tms.style_zoom(tile),
                 dem_unpack: endpoint.dem_unpack.map(crate::DemUnpack),
+                rank: loads.len() as u32,
                 ..TileRequest::whole(style.id, terrain.key, tile, location, endpoint.encoding)
             });
         }
-        terrain.loading += loads.len() as u32;
-        report.tiles_loading += terrain.loading;
+        report.tiles_loading += terrain.pyramid.loading() as u32;
         for tile in terrain.pyramid.unwanted_loads() {
             self.services.jobs.cancel(style.id, terrain.key, tile);
         }
@@ -2909,6 +2993,40 @@ impl Map {
     }
 
     /// Changes whenever [`elevation`](Self::elevation) has new data.
+    /// What the sources' plan reads ([`PlanKey`]); `None` while easing
+    /// (paint transitions, the terrain coming or going), which plans every
+    /// frame.
+    fn plan_key(&self, renderer: &Renderer, view: &View) -> Option<PlanKey> {
+        let style = self.style.as_ref()?;
+        if self.transitions.running() || self.root.running() {
+            return None;
+        }
+        let viewport = view.viewport();
+        Some(PlanKey {
+            camera: self.camera.revision(),
+            viewport: [viewport.width.to_bits(), viewport.height.to_bits()],
+            version: self.version,
+            sources: (style.sources.iter())
+                .map(|s| match s {
+                    SourceState::Ready { pyramid, .. } => Some(pyramid.revision()),
+                    _ => None,
+                })
+                .collect(),
+            terrain: style
+                .terrain
+                .as_ref()
+                .map(|t| (t.revision, t.pyramid.revision())),
+            applied: self.applied,
+            draping: renderer.terrain_on(),
+            culls: (0..style.worker.plan().nodes.len() as u32)
+                .map(|i| {
+                    let (lift, margin) = (renderer.cull_elevation(i), renderer.cull_margin_px(i));
+                    (lift.to_bits(), margin.to_bits())
+                })
+                .collect(),
+        })
+    }
+
     pub fn elevation_revision(&self) -> u64 {
         self.style
             .as_ref()
@@ -2923,7 +3041,7 @@ impl Map {
         renderer: &mut Renderer,
         source: u32,
         tile: TileIndex,
-        result: Result<TileResult, String>,
+        result: Result<crate::TileOutcome, String>,
     ) {
         let now = self.services.clock.now();
         let terrain = self.style.as_mut().and_then(|s| s.terrain.as_mut());
@@ -3003,17 +3121,15 @@ impl Map {
             for (tile, counted) in work.wanted {
                 let result = match (work.failed, work.frame) {
                     (Some(e), _) => Err(format!("video: {e}")),
-                    (None, frame) => Ok(TileResult {
+                    (None, frame) => Ok(crate::TileOutcome::Built(TileResult {
                         image: frame.map(crate::video::tile_image),
                         ..TileResult::default()
-                    }),
+                    })),
                 };
                 // The frame stays the source's: a tile without room drops
                 // it and tries again.
-                if self
-                    .apply_tile(gpu, renderer, work.key, tile, result, !counted)
-                    .is_some()
-                {
+                let applied = self.apply_tile(gpu, renderer, work.key, tile, result, !counted);
+                if matches!(applied, crate::arrival::Applied::Waits(_)) {
                     retries.push((work.key, tile));
                 }
             }
@@ -3156,7 +3272,7 @@ impl Map {
                 continue;
             };
             let loaded = match &style.sources[index] {
-                SourceState::Ready { loading, .. } => *loading == 0,
+                SourceState::Ready { pyramid, .. } => pyramid.loading() == 0,
                 SourceState::Resolving => false,
                 _ => true,
             };
@@ -3193,11 +3309,7 @@ impl Map {
         self.cancel_tile_loads();
         let Some(style) = &mut self.style else { return };
         for source in style.sources.iter_mut().chain(&mut style.retired) {
-            if let SourceState::Ready {
-                pyramid, loading, ..
-            } = source
-            {
-                *loading = 0;
+            if let SourceState::Ready { pyramid, .. } = source {
                 for tile in pyramid.drain() {
                     self.retired.tiles.push(tile.gpu);
                     self.retired
@@ -3216,6 +3328,7 @@ impl Map {
         // In-flight tiles belong to the old scene: none lands to be
         // dropped as stale.
         self.tile_generation += 1;
+        (self.parked).drop_where(|_, _| true, &mut self.retired.host);
         self.host_tiles.clear_stale();
     }
 }

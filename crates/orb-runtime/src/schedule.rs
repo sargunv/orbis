@@ -1,0 +1,225 @@
+//! What each frame applies of what arrived, and in which order: the
+//! [`Budget`] a frame spends on arrivals ([`FrameBudget`]), what it has
+//! spent, and the tiles parked after the view left them.
+//!
+//! Frames are the one time the map works ([`Map::render`]). Arrived
+//! loads wait in the map's inbox and apply nearest the view's focus
+//! first; edits' results apply in the order they came. A frame applies at
+//! least one result, so arrivals never stall, and stops once its time or
+//! its bytes run out.
+//!
+//! [`FrameBudget`]: crate::FrameBudget
+//! [`Map::render`]: crate::Map::render
+
+use std::collections::VecDeque;
+
+use orb_crs::TileIndex;
+
+use crate::jobs::TileResult;
+use crate::map::Message;
+use crate::resident::HostData;
+
+/// What a frame may spend applying what arrived: tiles' and edits' results
+/// (their uploads, and the room made for them) and label commits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Budget {
+    /// Time on the map's thread from the frame's start, in milliseconds.
+    pub ms: f64,
+    /// Bytes of tile data uploaded.
+    pub bytes: u64,
+}
+
+/// What the current frame has spent of its [`Budget`]'s bytes: its time
+/// is a deadline on the services' clock.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Beat {
+    /// The budget's bytes.
+    cap: u64,
+    bytes: u64,
+    /// Tiles and edits applied.
+    applied: u32,
+}
+
+impl Beat {
+    /// A frame's, with `cap` bytes to upload.
+    pub(crate) fn new(cap: u64) -> Self {
+        Self {
+            cap,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the frame, `in_time` (before its deadline), affords
+    /// applying a result that uploads `bytes`: its first always.
+    pub(crate) fn affords(&self, in_time: bool, bytes: u64) -> bool {
+        self.applied == 0 || (in_time && self.bytes + bytes <= self.cap)
+    }
+
+    /// Counts a result applied that uploaded `bytes`.
+    pub(crate) fn applied(&mut self, bytes: u64) {
+        self.applied += 1;
+        self.bytes += bytes;
+    }
+}
+
+/// The bytes a tile result uploads: its meshes' and symbol tables' words
+/// and its image's texels.
+pub(crate) fn upload_bytes(build: &TileResult) -> u64 {
+    let meshes: u64 = (build.meshes.iter())
+        .map(|m| u64::from(m.vertices.len() + m.indices.len() + m.props.len()))
+        .sum();
+    let symbols: u64 = (build.symbols.iter())
+        .flat_map(|s| &s.tables)
+        .map(|t| u64::from(t.len()))
+        .sum();
+    let image = (build.image.as_ref()).map_or(0, |i| u64::from(i.width) * u64::from(i.height));
+    4 * (meshes + symbols + image)
+}
+
+/// Tiles' results arrived and waiting their turn: edits' in the order they
+/// came, loads in any (each beat takes them nearest the focus first).
+#[derive(Default)]
+pub(crate) struct Inbox {
+    pub(crate) edits: VecDeque<Message>,
+    pub(crate) loads: Vec<Message>,
+}
+
+/// Vector tiles built after the view gave their loads up, kept off the GPU
+/// up to [`Parked::BYTES`], oldest out first: a view that comes back to
+/// one uploads it rather than fetching and laying it out again.
+#[derive(Debug, Default)]
+pub(crate) struct Parked {
+    tiles: VecDeque<ParkedTile>,
+    bytes: u64,
+}
+
+#[derive(Debug)]
+struct ParkedTile {
+    generation: u64,
+    /// The plan source's key.
+    source: u32,
+    tile: TileIndex,
+    build: TileResult,
+    bytes: u64,
+}
+
+impl Parked {
+    /// A few views' worth of tiles.
+    pub(crate) const BYTES: u64 = 48 << 20;
+
+    /// Parks `build`, tile `tile` of source `source` in tile generation
+    /// `generation`; the host data of those it pushes out goes to
+    /// `release`.
+    pub(crate) fn park(
+        &mut self,
+        (generation, source, tile): (u64, u32, TileIndex),
+        build: TileResult,
+        release: &mut Vec<HostData>,
+    ) {
+        let bytes = upload_bytes(&build);
+        self.bytes += bytes;
+        self.tiles.push_back(ParkedTile {
+            generation,
+            source,
+            tile,
+            build,
+            bytes,
+        });
+        while self.bytes > Self::BYTES
+            && let Some(oldest) = self.tiles.pop_front()
+        {
+            self.bytes -= oldest.bytes;
+            release.push(HostData::of(&oldest.build));
+        }
+    }
+
+    /// Takes the tile parked for `tile` of source `source` in
+    /// `generation`.
+    pub(crate) fn take(
+        &mut self,
+        (generation, source, tile): (u64, u32, TileIndex),
+    ) -> Option<TileResult> {
+        let at = (self.tiles.iter())
+            .position(|p| (p.generation, p.source, p.tile) == (generation, source, tile))?;
+        let parked = self.tiles.remove(at).expect("found");
+        self.bytes -= parked.bytes;
+        Some(parked.build)
+    }
+
+    /// Drops the tiles `which` picks by source and tile, their host data
+    /// to `release`.
+    pub(crate) fn drop_where(
+        &mut self,
+        which: impl Fn(u32, TileIndex) -> bool,
+        release: &mut Vec<HostData>,
+    ) {
+        let (dropped, kept) = std::mem::take(&mut self.tiles)
+            .into_iter()
+            .partition::<VecDeque<_>, _>(|p| which(p.source, p.tile));
+        self.tiles = kept;
+        for parked in dropped {
+            self.bytes -= parked.bytes;
+            release.push(HostData::of(&parked.build));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A result that uploads `texels` texels.
+    fn build(texels: u32) -> TileResult {
+        TileResult {
+            image: Some(crate::TileImage {
+                width: texels,
+                height: 1,
+                pixels: crate::ImagePixels::Core(Vec::new()),
+            }),
+            ..TileResult::default()
+        }
+    }
+
+    #[test]
+    fn parked_tiles_come_back_once_and_push_out_the_oldest() {
+        let mut parked = Parked::default();
+        let mut released = Vec::new();
+        let texels = (Parked::BYTES / 4 / 3) as u32 + 1;
+        for col in 0..3 {
+            parked.park(
+                (1, 7, TileIndex::new(5, col, 0)),
+                build(texels),
+                &mut released,
+            );
+        }
+        assert_eq!(released.len(), 1, "the third pushes the first out");
+        assert!(parked.take((1, 7, TileIndex::new(5, 0, 0))).is_none());
+        assert!(
+            parked.take((2, 7, TileIndex::new(5, 1, 0))).is_none(),
+            "another generation's"
+        );
+        assert!(parked.take((1, 7, TileIndex::new(5, 1, 0))).is_some());
+        assert!(
+            parked.take((1, 7, TileIndex::new(5, 1, 0))).is_none(),
+            "taken once"
+        );
+        parked.drop_where(|source, _| source == 7, &mut released);
+        assert_eq!(
+            (parked.tiles.len(), parked.bytes, released.len()),
+            (0, 0, 2)
+        );
+    }
+
+    #[test]
+    fn a_frame_applies_its_first_result_whatever_it_costs() {
+        let mut beat = Beat::new(10);
+        assert!(beat.affords(false, 100));
+        beat.applied(100);
+        assert!(!beat.affords(true, 0));
+        let mut beat = Beat::new(10);
+        beat.applied(4);
+        assert!(beat.affords(true, 6));
+        assert!(!beat.affords(true, 7));
+        assert!(!beat.affords(false, 0));
+    }
+}

@@ -24,7 +24,7 @@ use orb_host::Fetch;
 use orb_runtime::wire;
 use orb_runtime::{
     GlyphRaster, JobReply, JobRequest, Jobs, RasterDone, SpriteIcons, StyleUpdate, TileDone,
-    TileRequest, TileResult, TileWorker,
+    TileOutcome, TileRequest, TileResult, TileWorker,
 };
 
 /// Posts a message, a [`JobRequest`] in [`wire`]'s bytes, to each of the
@@ -271,17 +271,13 @@ impl WorkerJobs {
         }
         drop(state);
         done(match message {
-            JobReply::Missing { .. } => Ok(TileResult {
-                missing: true,
-                ..TileResult::default()
+            JobReply::Missing { .. } => Ok(TileOutcome::Missing {
+                warnings: Vec::new(),
             }),
-            JobReply::Cancelled { .. } => Ok(TileResult {
-                cancelled: true,
-                ..TileResult::default()
-            }),
+            JobReply::Cancelled { .. } => Ok(TileOutcome::Cancelled),
             JobReply::Error { message, .. } => Err(message),
             JobReply::Tile { .. } | JobReply::Image { .. } | JobReply::Dem { .. } => {
-                payload(message)
+                payload(message).map(TileOutcome::Built)
             }
             _ => Err("malformed job reply".into()),
         });
@@ -338,11 +334,9 @@ impl WorkerJobs {
 
 /// A quarantined tile's load: missing, so its ancestor stands in, with why
 /// as a warning.
-fn quarantine(why: String) -> TileResult {
-    TileResult {
-        missing: true,
+fn quarantine(why: String) -> TileOutcome {
+    TileOutcome::Missing {
         warnings: (!why.is_empty()).then_some(why).into_iter().collect(),
-        ..TileResult::default()
     }
 }
 

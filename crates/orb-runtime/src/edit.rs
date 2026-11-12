@@ -25,7 +25,7 @@ use orb_hal::Gpu;
 use orb_style::v8::{StyleDoc, Transaction};
 use orb_style::{Binding, Change, Class, LayerKey, Patch, PropertyId};
 
-use crate::jobs::TileResult;
+use crate::jobs::TileOutcome;
 use crate::map::{LoadedStyle, Map, NodeState, revise};
 use crate::resident::{
     SourceState, evict_unused, mesh_sizes, record_maxima, remove_resident, resolve_rows,
@@ -352,7 +352,7 @@ impl Map {
         renderer: &mut orb_render::Renderer,
         source: u32,
         tile: TileIndex,
-        result: Result<TileResult, String>,
+        result: Result<TileOutcome, String>,
     ) {
         let Some(style) = &mut self.style else {
             return;
@@ -362,7 +362,13 @@ impl Map {
             return;
         };
         let mut build = match result {
-            Ok(build) => build,
+            Ok(TileOutcome::Built(build)) => build,
+            // The tile's data went: it stays as it was until it reloads.
+            Ok(TileOutcome::Missing { mut warnings }) => {
+                self.warnings.append(&mut warnings);
+                return;
+            }
+            Ok(TileOutcome::Cancelled) => return,
             Err(e) => {
                 self.warnings.push(format!("tile {tile:?}: {e}"));
                 return;

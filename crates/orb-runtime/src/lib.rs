@@ -33,6 +33,7 @@ mod queries;
 mod query;
 mod resident;
 mod root;
+mod schedule;
 mod settle;
 mod sprite;
 pub mod stages;
@@ -58,8 +59,8 @@ pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use job_host::{JobHost, Loaded};
 pub use jobs::{
-    ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, TileDone, TileImage, TileResult, pack,
-    packed_header, unpack, unpremultiply,
+    ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, TileDone, TileImage, TileOutcome,
+    TileResult, pack, packed_header, unpack, unpremultiply,
 };
 pub use loader::TileLocation;
 pub use map::{
@@ -85,6 +86,7 @@ pub use orb_style::{Preview, Previews};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane};
 pub use queries::QueryDone;
 pub use query::Hit;
+pub use schedule::Budget;
 pub use settle::Settle;
 pub use style::ImageKind;
 pub use style_image::StyleImage;

@@ -590,6 +590,18 @@ impl TileWorker {
         }
     }
 
+    /// Source `source`'s (by key) node keys but its symbol layers', and its
+    /// symbol layers': what a tile lays out while its labels wait for
+    /// glyphs, and what follows. `None` unless both hold some.
+    pub(crate) fn labels_apart(&self, source: u32) -> Option<(Vec<u32>, Vec<u32>)> {
+        let index = self.plan.source(source)?;
+        let (labels, others): (Vec<_>, Vec<_>) = (self.plan.nodes.iter())
+            .filter(|n| n.source == index)
+            .partition(|n| n.family.is_symbol());
+        let keys = |nodes: Vec<&crate::style::NodePlan>| nodes.iter().map(|n| n.key).collect();
+        (!labels.is_empty() && !others.is_empty()).then(|| (keys(others), keys(labels)))
+    }
+
     /// Whether `request` can build without fetching bytes: its tile is
     /// cached, or its source is inline or already indexed GeoJSON. Job
     /// hosts use this to avoid fetching again; `build` ignores bytes then.
@@ -964,6 +976,10 @@ pub struct TileRequest {
     /// for, fetched and decoded meanwhile: a style's sprites still loading
     /// hold symbol layout, not the tile's request. 0 waits for none.
     pub(crate) icons: u32,
+    /// Its place in the map's load order, lowest first: the tiles nearest
+    /// the view's focus take fetch turns and workers before the rest
+    /// ([`Executor::spawn_ranked`](orb_host::jobs::Executor::spawn_ranked)).
+    pub rank: u32,
 }
 
 /// GL JS's unpack vector of a DEM encoding: metres are
@@ -1007,6 +1023,7 @@ impl TileRequest {
             neighbour: false,
             dem_unpack: None,
             icons: 0,
+            rank: 0,
         }
     }
 
@@ -1181,7 +1198,7 @@ pub(crate) mod tests {
         assert!(worker.has_data(&request(TileIndex::new(0, 0, 0))));
         assert_eq!(
             rx.try_iter()
-                .filter(|r| r.as_ref().is_ok_and(|t| !t.meshes.is_empty()))
+                .filter(|r| matches!(r, Ok(crate::TileOutcome::Built(t)) if !t.meshes.is_empty()))
                 .count(),
             2
         );
@@ -1515,7 +1532,7 @@ pub(crate) mod tests {
         assert!(
             results
                 .iter()
-                .all(|r| r.as_ref().is_ok_and(|t| t.symbols.len() == 1))
+                .all(|r| matches!(r, Ok(crate::TileOutcome::Built(t)) if t.symbols.len() == 1))
         );
         let gets = fetch.gets.lock().unwrap();
         let glyph_gets = gets.iter().filter(|u| u.contains("/glyphs/")).count();
@@ -1540,7 +1557,7 @@ pub(crate) mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         jobs.load(symbol_request(), Box::new(move |r| tx.send(r).unwrap()));
         fetch.release();
-        let tile = rx.try_iter().next().expect("laid out").unwrap();
+        let tile = rx.try_iter().next().expect("laid out").unwrap().built();
         assert_eq!(tile.symbols.len(), 1);
         let (tx, rx) = std::sync::mpsc::channel();
         let raster = crate::GlyphRaster::Pbf {
@@ -1846,7 +1863,7 @@ pub(crate) mod tests {
         let mut icons = SpriteIcons::default();
         icons.epoch = 1;
         jobs.set_icons(1, &Arc::new(icons), &worker);
-        let tile = rx.try_iter().next().expect("laid out").unwrap();
+        let tile = rx.try_iter().next().expect("laid out").unwrap().built();
         assert_eq!(tile.symbols.len(), 1);
     }
 

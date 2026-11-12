@@ -136,7 +136,6 @@ pub(crate) struct Terrain {
     pub(crate) pyramid: TilePyramid<DemTile>,
     /// The DEM tiles' page, made for the first.
     pub(crate) page: Option<PageId>,
-    pub(crate) loading: u32,
     zooms: DemZooms,
     /// The DEM tiles' size in logical pixels.
     tile_px: f64,
@@ -184,7 +183,6 @@ impl Terrain {
             exaggeration,
             pyramid: TilePyramid::new(min_zoom, max_zoom, DEM_CACHE),
             page: None,
-            loading: 0,
             zooms: DemZooms {
                 delta,
                 min: min_zoom,
@@ -250,7 +248,11 @@ impl Terrain {
     /// culls lets go of that DEM, comes back under its ancestor's wider
     /// range and asks for it again: a view at rest would flip between two
     /// covers forever.
-    fn update(&mut self, view: &View, tms: &TileMatrixSet, budget: usize) -> Vec<TileIndex> {
+    fn update(
+        &mut self,
+        (view, tms, focus): (&View, &TileMatrixSet, orb_crs::Geodetic),
+        budget: usize,
+    ) -> Vec<TileIndex> {
         let consulted = Consulted {
             elevation: &self.elevation,
             ranges: Mutex::new(Vec::new()),
@@ -319,6 +321,7 @@ impl Terrain {
         wanted.extend(culled_by);
         wanted.sort();
         wanted.dedup();
+        crate::frame::focus_first(&mut wanted, tms, focus);
         let update = self.pyramid.update(&wanted);
         update.request
     }
@@ -369,7 +372,7 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        (view, tms): (&View, &TileMatrixSet),
+        at: (&View, &TileMatrixSet, orb_crs::Geodetic),
         unpack: [f32; 4],
         skirt: f64,
     ) -> (orb_render::FrameTerrain, Vec<TileIndex>) {
@@ -384,7 +387,7 @@ impl Terrain {
             dem_tile_px: self.tile_px as f32,
         };
         renderer.set_terrain(gpu, Some((self.page, paint)));
-        let requests = self.update(view, tms, renderer.drape_room(gpu) as usize);
+        let requests = self.update(at, renderer.drape_room(gpu) as usize);
         let evicted = self.pyramid.evict();
         self.stale |= !evicted.is_empty();
         if let Some(page) = self.page {
@@ -418,32 +421,30 @@ impl Terrain {
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
         tile: TileIndex,
-        result: Result<crate::TileResult, String>,
+        result: Result<crate::TileOutcome, String>,
         now: f64,
     ) -> Result<(), String> {
-        self.loading = self.loading.saturating_sub(1);
+        use crate::TileOutcome::{Built, Cancelled, Missing};
         if !self.pyramid.is_loading(tile) {
             return Ok(());
         }
         let (image, grid) = match result {
-            Ok(crate::TileResult { missing: true, .. }) => {
+            Ok(Missing { .. }) => {
                 self.pyramid.insert_missing(tile);
                 return Ok(());
             }
             // Given up before it loaded: a later cover that wants it asks
             // again.
-            Ok(crate::TileResult {
-                cancelled: true, ..
-            }) => {
+            Ok(Cancelled) => {
                 self.pyramid.forget_loading(tile);
                 return Ok(());
             }
-            Ok(crate::TileResult {
+            Ok(Built(crate::TileResult {
                 image: Some(image),
                 dem: Some(dem),
                 ..
-            }) => (image, dem),
-            Ok(_) | Err(_) => {
+            })) => (image, dem),
+            Ok(Built(_)) | Err(_) => {
                 self.pyramid.insert_failed(tile, now);
                 return Err(result.err().unwrap_or("no elevations".into()));
             }

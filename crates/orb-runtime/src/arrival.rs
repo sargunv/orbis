@@ -10,214 +10,328 @@ use orb_render::{ImageUpload, OutOfSpace, Renderer, TileKey};
 use orb_style::{LayerType, SourceKind};
 
 use crate::image::ResidentImage;
-use crate::jobs::TileResult;
+use crate::jobs::{TileOutcome, TileResult};
 use crate::map::*;
 use crate::meshes::*;
 use crate::resident::*;
+use crate::schedule::upload_bytes;
 use crate::{MapEvent, Progress};
+use orb_source::Awaited;
 use orb_source::endpoint::TileEndpoint;
 
 impl Map {
-    /// Applies arrived results in order. New tiles apply until `deadline`
-    /// on the services' clock (the frame's [`FrameBudget`]), at least one a
-    /// frame: tiles that arrive together spread their uploads over frames
-    /// rather than stalling one. Edits' results apply whole.
+    /// Applies what arrived until `deadline` on the services' clock and
+    /// within the frame's bytes ([`FrameBudget`], [`crate::schedule`]):
+    /// every message in the order it came but tiles' results, which queue;
+    /// then edits' results in their order, then loads nearest the view's
+    /// focus first, then the tiles waiting for room. Tiles that arrive
+    /// together spread their uploads over frames rather than stalling one.
+    ///
+    /// [`FrameBudget`]: crate::FrameBudget
     pub(crate) fn apply_messages(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
         deadline: f64,
     ) {
-        self.tiles_deferred = false;
+        let clock = Arc::clone(&self.services.clock);
         while let Ok(message) = self.receiver.try_recv() {
-            let new_tile = matches!(message, Message::Tile { edit: None, .. });
             match message {
-                // Replies to the labels a GPU reset replaced are dropped.
-                Message::Placed { epoch, committed } => {
-                    if epoch == self.label_epoch {
-                        match committed {
-                            Ok(committed) => {
-                                let started = self.services.clock.now();
-                                self.labels.committed(gpu, renderer, committed);
-                                self.placement_ms += self.services.clock.now() - started;
-                            }
-                            // The labels ask again with the next frame.
-                            Err(message) => {
-                                self.labels.place_failed();
-                                self.warnings.push(format!("placement: {message}"));
-                            }
-                        }
-                    }
-                }
-                Message::Raster {
-                    epoch,
-                    rows,
-                    result,
-                } => {
-                    if epoch == self.label_epoch {
-                        self.labels.rastered(
-                            gpu,
-                            renderer.glyphs(),
-                            &rows,
-                            result,
-                            &mut self.warnings,
-                        );
-                    }
-                }
-                Message::Style {
-                    request,
-                    url,
-                    result,
-                } => self.apply_style(request, &url, result),
-                Message::SpriteIcons {
-                    generation,
-                    epoch,
-                    index,
-                    result,
-                } => {
-                    let mut done = false;
-                    if let Some(style) = self
-                        .style
-                        .as_mut()
-                        .filter(|s| generation == self.generation && epoch == s.sprites.epoch)
-                    {
-                        style.sprites.loading -= 1;
-                        match result {
-                            Err(e) => {
-                                let sprite = &style.worker.plan().style.sprites[index];
-                                if !std::mem::replace(&mut style.sprites.failed[index], true) {
-                                    self.events.push(MapEvent::Sprite {
-                                        id: sprite.id.clone(),
-                                        url: sprite.url.clone(),
-                                        progress: Progress::Failed(e.clone()),
-                                    });
-                                }
-                                let message = format!("sprite: {e}");
-                                self.events.push(MapEvent::Error { message });
-                            }
-                            Ok(icons) => {
-                                for icon in icons {
-                                    style.sprites.names.insert(icon.name.clone());
-                                    style.icons.add(
-                                        &icon.name,
-                                        [icon.width, icon.height],
-                                        &icon.metadata,
-                                    );
-                                    style.sprites.icon_names[index].push(icon.name);
-                                }
-                            }
-                        }
-                        done = style.sprites.loading == 0;
-                    }
-                    if done {
-                        self.sprites_done(gpu);
-                    }
-                }
-                Message::Sprite {
-                    generation,
-                    epoch,
-                    index,
-                    result,
-                } => self.apply_sprite_pixels(gpu, (generation, epoch, index), result),
-                Message::TileJson {
-                    generation,
-                    source,
-                    result,
-                    head,
-                } => {
-                    let Some(style) = self
-                        .style
-                        .as_mut()
-                        .filter(|_| generation == self.generation)
-                    else {
-                        continue;
-                    };
-                    if let Some((url, head)) = head {
-                        self.services.jobs.add_archive_head(&url, &Arc::new(head));
-                    }
-                    let plan = style.worker.plan();
-                    let Some(index) = plan.source(source) else {
-                        continue;
-                    };
-                    if !matches!(style.sources[index], SourceState::Resolving) {
-                        continue;
-                    }
-                    let def = plan.source_def(index);
-                    let tms = self.surface.source_tms(&def.id, false);
-                    let endpoint = match (result, self.surface.plan(&tms, plan.image_kind(index))) {
-                        (Err(e), _) => Err(format!("TileJSON: {e}")),
-                        (Ok(_), Err(e)) => Err(e),
-                        (Ok(text), Ok(warp)) => TileEndpoint::resolve(&def.kind, Some(&text), tms)
-                            .map(|endpoint| (endpoint, warp)),
-                    };
-                    let image = plan.image_kind(index).is_some();
-                    if endpoint.is_ok() {
-                        self.events.push(MapEvent::SourceChanged {
-                            source: def.id.clone(),
-                        });
-                    }
-                    style.sources[index] = ready_source(endpoint, &def.id, image, &mut self.events);
-                    self.events.sources.insert(source);
-                    // Color-relief ramps wait for their source's encoding.
-                    style.paint.invalidate();
-                    for node in plan.nodes.iter().filter(|n| n.source == index) {
-                        style.nodes.entry(node.key).or_default().ramp = None;
-                    }
-                }
-                Message::Tile {
-                    generation,
-                    source,
-                    tile,
-                    edit,
-                    terrain,
-                    result,
-                } => {
-                    let result = *result;
-                    let host = result.as_ref().ok().map(HostData::of);
-                    if let Some(edit) = edit {
-                        self.finish_job(edit);
-                    }
-                    let mut kept = false;
-                    if generation == self.tile_generation {
-                        // Loads given up, missing or failed brought nothing.
-                        self.tiles_arrived += u32::from(
-                            edit.is_none()
-                                && result.as_ref().is_ok_and(|r| !r.cancelled && !r.missing),
-                        );
-                        match edit {
-                            None if terrain => {
-                                self.apply_terrain_tile(gpu, renderer, source, tile, result)
-                            }
-                            None => {
-                                if let Some(build) =
-                                    self.apply_tile(gpu, renderer, source, tile, result, true)
-                                {
-                                    kept = true;
-                                    let tried = Some(self.room_state(renderer));
-                                    self.waiting.push(WaitingTile {
-                                        generation,
-                                        source,
-                                        tile,
-                                        build,
-                                        tried,
-                                    });
-                                }
-                            }
-                            Some(_) => self.apply_edit(gpu, renderer, source, tile, result),
-                        }
-                    }
-                    // Uploaded or dropped, the result's host data is done.
-                    if let Some(host) = host.filter(|_| !kept) {
-                        host.release(gpu);
-                    }
-                }
-            }
-            if new_tile && self.services.clock.now() > deadline {
-                self.tiles_deferred = true;
-                break;
+                Message::Tile { edit: Some(_), .. } => self.inbox.edits.push_back(message),
+                Message::Tile { .. } => self.inbox.loads.push(message),
+                message => self.apply_message(gpu, renderer, message),
             }
         }
-        self.retry_waiting(gpu, renderer, deadline);
+        while let Some(message) = self.inbox.edits.front() {
+            let bytes = self.upload_cost(message);
+            if !self.beat.affords(clock.now() < deadline, bytes) {
+                break;
+            }
+            let message = self.inbox.edits.pop_front().expect("in front");
+            self.apply_tile_message(gpu, renderer, message);
+            self.beat.applied(bytes);
+        }
+        // Farthest first, to take the nearest from the end.
+        let mut loads = std::mem::take(&mut self.inbox.loads);
+        loads.sort_by_cached_key(|m| std::cmp::Reverse(self.load_rank(m)));
+        while let Some(message) = loads.last() {
+            let bytes = self.upload_cost(message);
+            if !self.beat.affords(clock.now() < deadline, bytes) {
+                break;
+            }
+            let message = loads.pop().expect("last");
+            self.apply_tile_message(gpu, renderer, message);
+            self.beat.applied(bytes);
+        }
+        self.inbox.loads = loads;
+        let deferred = self.retry_waiting(gpu, renderer, deadline);
+        self.tiles_deferred =
+            deferred || !self.inbox.edits.is_empty() || !self.inbox.loads.is_empty();
+    }
+
+    /// What applying `message`, a tile's result, uploads: nothing for a
+    /// result nothing waits for.
+    fn upload_cost(&self, message: &Message) -> u64 {
+        let Message::Tile {
+            generation,
+            source,
+            tile,
+            edit,
+            terrain,
+            result,
+        } = message
+        else {
+            return 0;
+        };
+        let Ok(TileOutcome::Built(build)) = &**result else {
+            return 0;
+        };
+        let wanted = *generation == self.tile_generation
+            && (edit.is_some() || *terrain || self.awaited(*source, *tile) == Awaited::Wanted);
+        if wanted { upload_bytes(build) } else { 0 }
+    }
+
+    /// What arrived for tile `tile` of the source keyed `source` finds.
+    fn awaited(&self, source: u32, tile: TileIndex) -> Awaited {
+        let Some(style) = &self.style else {
+            return Awaited::No;
+        };
+        let index = style.worker.plan().source(source);
+        match index.map(|i| &style.sources[i]) {
+            Some(SourceState::Ready { pyramid, .. }) => pyramid.awaited(tile),
+            _ => Awaited::No,
+        }
+    }
+
+    /// A load's place in the order loads apply in: by its tile's distance
+    /// from the view's focus, as [`crate::frame::focus_first`] orders a
+    /// cover; results nothing waits for (given up, of a replaced style),
+    /// `None`, first, since they take no upload.
+    fn load_rank(&self, message: &Message) -> Option<(u64, std::cmp::Reverse<u8>)> {
+        let Message::Tile {
+            generation,
+            source,
+            tile,
+            terrain,
+            ..
+        } = message
+        else {
+            return None;
+        };
+        let style = self
+            .style
+            .as_ref()
+            .filter(|_| *generation == self.tile_generation);
+        let endpoint = style.and_then(|style| match terrain {
+            true => (style.terrain.as_ref())
+                .filter(|t| t.key == *source)
+                .map(|t| &t.endpoint),
+            false => {
+                let index = style.worker.plan().source(*source)?;
+                match &style.sources[index] {
+                    SourceState::Ready { endpoint, .. } => Some(endpoint),
+                    _ => None,
+                }
+            }
+        });
+        let endpoint =
+            endpoint.filter(|_| *terrain || self.awaited(*source, *tile) == Awaited::Wanted)?;
+        let key = crate::frame::focus_key(&endpoint.tms, self.camera.state().target);
+        Some(key(orb_crs::CoveredTile {
+            index: *tile,
+            wrap: 0,
+        }))
+    }
+
+    /// Applies an arrived message other than a tile's result.
+    fn apply_message(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, message: Message) {
+        match message {
+            // Replies to the labels a GPU reset replaced are dropped.
+            Message::Placed { epoch, committed } => {
+                if epoch == self.label_epoch {
+                    match committed {
+                        Ok(committed) => {
+                            let started = self.services.clock.now();
+                            self.labels.committed(gpu, renderer, committed);
+                            self.placement_ms += self.services.clock.now() - started;
+                        }
+                        // The labels ask again with the next frame.
+                        Err(message) => {
+                            self.labels.place_failed();
+                            self.warnings.push(format!("placement: {message}"));
+                        }
+                    }
+                }
+            }
+            Message::Raster {
+                epoch,
+                rows,
+                result,
+            } => {
+                if epoch == self.label_epoch {
+                    self.labels
+                        .rastered(gpu, renderer.glyphs(), &rows, result, &mut self.warnings);
+                }
+            }
+            Message::Style {
+                request,
+                url,
+                result,
+            } => self.apply_style(request, &url, result),
+            Message::SpriteIcons {
+                generation,
+                epoch,
+                index,
+                result,
+            } => {
+                let mut done = false;
+                if let Some(style) = self
+                    .style
+                    .as_mut()
+                    .filter(|s| generation == self.generation && epoch == s.sprites.epoch)
+                {
+                    style.sprites.loading -= 1;
+                    match result {
+                        Err(e) => {
+                            let sprite = &style.worker.plan().style.sprites[index];
+                            if !std::mem::replace(&mut style.sprites.failed[index], true) {
+                                self.events.push(MapEvent::Sprite {
+                                    id: sprite.id.clone(),
+                                    url: sprite.url.clone(),
+                                    progress: Progress::Failed(e.clone()),
+                                });
+                            }
+                            let message = format!("sprite: {e}");
+                            self.events.push(MapEvent::Error { message });
+                        }
+                        Ok(icons) => {
+                            for icon in icons {
+                                style.sprites.names.insert(icon.name.clone());
+                                style.icons.add(
+                                    &icon.name,
+                                    [icon.width, icon.height],
+                                    &icon.metadata,
+                                );
+                                style.sprites.icon_names[index].push(icon.name);
+                            }
+                        }
+                    }
+                    done = style.sprites.loading == 0;
+                }
+                if done {
+                    self.sprites_done(gpu);
+                }
+            }
+            Message::Sprite {
+                generation,
+                epoch,
+                index,
+                result,
+            } => self.apply_sprite_pixels(gpu, (generation, epoch, index), result),
+            Message::TileJson {
+                generation,
+                source,
+                result,
+                head,
+            } => {
+                let Some(style) = self
+                    .style
+                    .as_mut()
+                    .filter(|_| generation == self.generation)
+                else {
+                    return;
+                };
+                if let Some((url, head)) = head {
+                    self.services.jobs.add_archive_head(&url, &Arc::new(head));
+                }
+                let plan = style.worker.plan();
+                let Some(index) = plan.source(source) else {
+                    return;
+                };
+                if !matches!(style.sources[index], SourceState::Resolving) {
+                    return;
+                }
+                let def = plan.source_def(index);
+                let tms = self.surface.source_tms(&def.id, false);
+                let endpoint = match (result, self.surface.plan(&tms, plan.image_kind(index))) {
+                    (Err(e), _) => Err(format!("TileJSON: {e}")),
+                    (Ok(_), Err(e)) => Err(e),
+                    (Ok(text), Ok(warp)) => TileEndpoint::resolve(&def.kind, Some(&text), tms)
+                        .map(|endpoint| (endpoint, warp)),
+                };
+                let image = plan.image_kind(index).is_some();
+                if endpoint.is_ok() {
+                    self.events.push(MapEvent::SourceChanged {
+                        source: def.id.clone(),
+                    });
+                }
+                style.sources[index] = ready_source(endpoint, &def.id, image, &mut self.events);
+                self.events.sources.insert(source);
+                // Color-relief ramps wait for their source's encoding.
+                style.paint.invalidate();
+                for node in plan.nodes.iter().filter(|n| n.source == index) {
+                    style.nodes.entry(node.key).or_default().ramp = None;
+                }
+            }
+            Message::Tile { .. } => unreachable!("tiles' results queue"),
+        }
+    }
+
+    /// Applies a tile's result, a load's or an edit's.
+    fn apply_tile_message(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, message: Message) {
+        let Message::Tile {
+            generation,
+            source,
+            tile,
+            edit,
+            terrain,
+            result,
+        } = message
+        else {
+            unreachable!("a tile's result");
+        };
+        let result = *result;
+        self.applied += 1;
+        let host = match &result {
+            Ok(TileOutcome::Built(build)) => Some(HostData::of(build)),
+            _ => None,
+        };
+        if let Some(edit) = edit {
+            self.finish_job(edit);
+        }
+        let mut kept = false;
+        if generation == self.tile_generation {
+            // Loads given up, missing or failed brought nothing.
+            self.tiles_arrived +=
+                u32::from(edit.is_none() && matches!(result, Ok(TileOutcome::Built(_))));
+            match edit {
+                None if terrain => self.apply_terrain_tile(gpu, renderer, source, tile, result),
+                None => match self.apply_tile(gpu, renderer, source, tile, result, true) {
+                    Applied::Done => {}
+                    Applied::Waits(build) => {
+                        kept = true;
+                        let tried = Some(self.room_state(renderer));
+                        self.waiting.push(WaitingTile {
+                            generation,
+                            source,
+                            tile,
+                            build,
+                            tried,
+                        });
+                    }
+                    Applied::Parks(build) => {
+                        kept = true;
+                        let at = (generation, source, tile);
+                        (self.parked).park(at, build, &mut self.retired.host);
+                    }
+                },
+                Some(_) => self.apply_edit(gpu, renderer, source, tile, result),
+            }
+        }
+        // Uploaded or dropped, the result's host data is done.
+        if let Some(host) = host.filter(|_| !kept) {
+            host.release(gpu);
+        }
     }
 
     /// A sprite's pixels, into the atlas, for the icons its JSON gave. A
@@ -315,47 +429,57 @@ impl Map {
         }
     }
 
-    /// Tries the tiles waiting for room again until `deadline`, the frame's
-    /// budget, each only if room may have changed since it last failed:
-    /// memory freed or grown, or other tiles' jobs done.
+    /// Tries the tiles waiting for room again (and those parked that the
+    /// view came back to), in the frame's budget left (until `deadline`),
+    /// each only if room may have changed since it last failed: memory
+    /// freed or grown, or other tiles' jobs done. Whether the budget left
+    /// some untried.
     pub(crate) fn retry_waiting(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
         deadline: f64,
-    ) {
+    ) -> bool {
         let mut state = self.room_state(renderer);
+        let mut deferred = false;
         for mut waiting in std::mem::take(&mut self.waiting) {
             let host = HostData::of(&waiting.build);
             if waiting.generation != self.tile_generation {
                 host.release(gpu);
                 continue;
             }
-            if self.tiles_deferred || waiting.tried == Some(state) {
+            if deferred || waiting.tried == Some(state) {
                 self.waiting.push(waiting);
                 continue;
             }
-            match self.apply_tile(
-                gpu,
-                renderer,
-                waiting.source,
-                waiting.tile,
-                Ok(waiting.build),
-                false,
-            ) {
-                Some(build) => {
+            let bytes = upload_bytes(&waiting.build);
+            let in_time = self.services.clock.now() < deadline;
+            if !self.beat.affords(in_time, bytes) {
+                deferred = true;
+                self.waiting.push(waiting);
+                continue;
+            }
+            self.beat.applied(bytes);
+            self.applied += 1;
+            let result = Ok(TileOutcome::Built(waiting.build));
+            match self.apply_tile(gpu, renderer, waiting.source, waiting.tile, result, false) {
+                Applied::Waits(build) => {
                     state = self.room_state(renderer);
                     waiting.build = build;
                     waiting.tried = Some(state);
                     self.waiting.push(waiting);
                 }
-                None => {
+                Applied::Parks(build) => {
+                    let at = (waiting.generation, waiting.source, waiting.tile);
+                    (self.parked).park(at, build, &mut self.retired.host);
+                }
+                Applied::Done => {
                     host.release(gpu);
                     state = self.room_state(renderer);
                 }
             }
-            self.tiles_deferred = self.services.clock.now() > deadline;
         }
+        deferred
     }
 
     /// What a waiting tile depends on: the scene's pools in use and their
@@ -368,7 +492,7 @@ impl Map {
             .iter()
             .flat_map(|s| &s.sources)
             .map(|s| match s {
-                SourceState::Ready { loading, .. } => u64::from(*loading),
+                SourceState::Ready { pyramid, .. } => pyramid.loading() as u64,
                 _ => 0,
             })
             .sum();
@@ -400,32 +524,32 @@ impl Map {
         renderer: &mut Renderer,
         source: u32,
         tile: TileIndex,
-        result: Result<TileResult, String>,
+        result: Result<TileOutcome, String>,
         arrived: bool,
-    ) -> Option<TileResult> {
+    ) -> Applied {
         let Some(style) = &mut self.style else {
-            return None;
+            return Applied::Done;
         };
         let plan = style.worker.plan();
         let key = source;
-        let source = plan.source(key)?;
+        let Some(source) = plan.source(key) else {
+            return Applied::Done;
+        };
         let SourceState::Ready {
             pyramid,
-            loading,
             endpoint,
             warped,
             ..
         } = &mut style.sources[source]
         else {
-            return None;
+            return Applied::Done;
         };
         let warped = *warped;
         if arrived {
-            *loading = loading.saturating_sub(1);
             self.events.sources.insert(key);
             let progress = match &result {
                 Err(e) => Progress::Failed(e.clone()),
-                Ok(build) if build.cancelled => Progress::Cancelled,
+                Ok(TileOutcome::Cancelled) => Progress::Cancelled,
                 Ok(_) => Progress::Loaded,
             };
             self.events.push(MapEvent::Tile {
@@ -437,18 +561,56 @@ impl Map {
             if self.host_tiles.landed_stale(key, tile) {
                 pyramid.forget_loading(tile);
                 self.events.wake();
-                return None;
+                return Applied::Done;
             }
         }
         let mut build = match result {
-            Ok(build) => build,
+            Ok(TileOutcome::Built(build)) => build,
             Err(e) => {
                 let message = format!("tile {tile:?}: {e}");
                 self.events.push(MapEvent::Error { message });
                 pyramid.insert_failed(tile, self.services.clock.now());
-                return None;
+                return Applied::Done;
+            }
+            Ok(TileOutcome::Missing { mut warnings }) => {
+                self.warnings.append(&mut warnings);
+                // A vector tile left out of its tileset may mean no data
+                // there ([`MissingTiles`]); an image tile's ancestor fills
+                // the hole.
+                if self.missing_tiles == crate::MissingTiles::Empty
+                    && plan.image_kind(source).is_none()
+                {
+                    pyramid.insert_empty(tile);
+                } else {
+                    pyramid.insert_missing(tile);
+                }
+                return Applied::Done;
+            }
+            // Given up before it loaded: a later plan that wants it asks
+            // again.
+            Ok(TileOutcome::Cancelled) => {
+                pyramid.forget_loading(tile);
+                return Applied::Done;
             }
         };
+        match pyramid.awaited(tile) {
+            // No longer in flight: other tiles' loads are what this one
+            // waits for, if it waits.
+            Awaited::Wanted => pyramid.arrived(tile),
+            // Built after its load was given up, it isn't uploaded: parked,
+            // so that a view that comes back to it costs an upload, not a
+            // fetch and layout. An image's decode is cheap to do again.
+            Awaited::GivenUp => {
+                pyramid.forget_loading(tile);
+                let parks = build.image.is_none() && self.mode == RenderMode::Continuous;
+                return if parks {
+                    Applied::Parks(build)
+                } else {
+                    Applied::Done
+                };
+            }
+            Awaited::No => return Applied::Done,
+        }
         self.warnings.append(&mut build.warnings);
         crate::style_image::report_missing(
             &mut style.reported_missing,
@@ -457,27 +619,6 @@ impl Map {
             &build,
             &mut self.events,
         );
-        if build.missing {
-            // A vector tile left out of its tileset may mean no data there
-            // ([`MissingTiles`]); an image tile's ancestor fills the hole.
-            if self.missing_tiles == crate::MissingTiles::Empty && plan.image_kind(source).is_none()
-            {
-                pyramid.insert_empty(tile);
-            } else {
-                pyramid.insert_missing(tile);
-            }
-            return None;
-        }
-        // Given up before it loaded: a later plan that wants it asks again.
-        if build.cancelled {
-            pyramid.forget_loading(tile);
-            return None;
-        }
-        // Neighbours' prepares refer to an image tile's layer, so only a
-        // tile the pyramid still wants is uploaded.
-        if !pyramid.is_loading(tile) {
-            return None;
-        }
         // Nodes the tile was laid out for before an edit changed them are
         // laid out again from the job's cached tile.
         let mut stale = Vec::new();
@@ -488,6 +629,13 @@ impl Map {
             }
         }
         drop_stale(&mut build, plan, &stale);
+        // Labels left out while their glyphs loaded follow as a relayout,
+        // as stale nodes do.
+        for &key in &build.labels_later {
+            if !stale.contains(&key) && plan.node(key).is_some() {
+                stale.push(key);
+            }
+        }
         let footprint = warped
             .then(|| self.globe_warps.surface_footprint(&endpoint.tms, tile))
             .flatten();
@@ -512,7 +660,7 @@ impl Map {
             ) else {
                 // Nothing of the tile reaches the surface.
                 pyramid.insert_empty(tile);
-                return None;
+                return Applied::Done;
             };
             // Raster tiles fade in over their layers' longest duration;
             // still output, and a map not yet idle once (as GL JS's first
@@ -542,7 +690,7 @@ impl Map {
         // whose labels show images waits for the sprites' pixels (layout
         // needed only their JSON).
         if style.awaits_sprite_pixels(&build) {
-            return Some(build);
+            return Applied::Waits(build);
         }
         let sizes = mesh_sizes(plan, &build);
         // Room: what's free first; then unused tiles go, this source's
@@ -559,7 +707,7 @@ impl Map {
         let others_loading = style
             .sources
             .iter()
-            .any(|s| matches!(s, SourceState::Ready { loading, .. } if *loading > 0));
+            .any(|s| matches!(s, SourceState::Ready { pyramid, .. } if pyramid.loading() > 0));
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
         let mut grow = under_budget(renderer, atlas.bytes(), self.budget);
@@ -630,12 +778,12 @@ impl Map {
             Err(Some(e)) => {
                 self.warnings.push(format!("tile {tile:?}: {e}"));
                 pyramid.insert_empty(tile);
-                return None;
+                return Applied::Done;
             }
-            Err(None) if others_loading => return Some(build),
+            Err(None) if others_loading => return Applied::Waits(build),
             Err(None) if !wanted => {
                 pyramid.forget_loading(tile);
-                return None;
+                return Applied::Done;
             }
             // Even the tiles in view don't leave room: what's loaded stands
             // in, and the tile is tried again after a while (the view may
@@ -647,7 +795,7 @@ impl Map {
                 );
                 self.events.push(MapEvent::Error { message });
                 pyramid.insert_failed(tile, self.services.clock.now());
-                return None;
+                return Applied::Done;
             }
         };
         if fade_ms > 0.0 {
@@ -674,8 +822,18 @@ impl Map {
             let version = self.version;
             self.send_job(source, tile, Some(stale), false, Some(version));
         }
-        None
+        Applied::Done
     }
+}
+
+/// What became of a tile's result ([`Map::apply_tile`]).
+pub(crate) enum Applied {
+    /// Uploaded, or settled without (missing, empty, failed or dropped).
+    Done,
+    /// Waits for room, or for the sprites' pixels its labels show.
+    Waits(TileResult),
+    /// Built after its load was given up ([`Parked`](crate::schedule::Parked)).
+    Parks(TileResult),
 }
 
 /// The longest fade of `source`'s raster layers at `tile_zoom`, in

@@ -102,7 +102,6 @@ pub(crate) enum SourceState {
     Ready {
         endpoint: Arc<TileEndpoint>,
         pyramid: TilePyramid<ResidentTile>,
-        loading: u32,
         /// Its tiles are on another plane than the surface's, and reach
         /// it through their warp (`Map::globe_warps`).
         warped: bool,
@@ -111,7 +110,7 @@ pub(crate) enum SourceState {
 }
 
 /// The host data a tile result holds until it's uploaded or dropped.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct HostData(Option<HostBytesId>, Option<orb_hal::HostImageId>);
 
 impl HostData {
@@ -190,7 +189,6 @@ pub(crate) fn ready_source(
                 usize::MAX,
             ),
             endpoint: Arc::new(endpoint),
-            loading: 0,
         },
         Err(e) => {
             events.push(MapEvent::Error {

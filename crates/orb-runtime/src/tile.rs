@@ -42,6 +42,12 @@ pub struct TileBuild {
     /// Some label drew a glyph from a range that failed (locally, or not
     /// at all): a glyph retry lays its symbol layers out again.
     pub(crate) glyphs_failed: bool,
+    /// The source's symbol nodes, by key, left out while their glyphs
+    /// load: the tile draws its other layers first, and its map lays these
+    /// out again once it's in ([`TileResult::labels_later`]).
+    ///
+    /// [`TileResult::labels_later`]: crate::TileResult::labels_later
+    pub(crate) labels_later: Vec<u32>,
 }
 
 /// What symbol layout reads beyond the tile: the worker's glyph metrics

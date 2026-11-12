@@ -18,8 +18,33 @@ use crate::symbol::{ResultSymbols, SpriteIcons};
 use crate::tile::{ImageRef, TileBuild};
 use crate::worker::{DemUnpack, StyleUpdate, TileRequest, TileWorker};
 
-/// Called once with a tile's result, on any thread.
-pub type TileDone = Box<dyn FnOnce(Result<TileResult, String>) + Send + 'static>;
+/// Called once with what a tile's load came to, on any thread.
+pub type TileDone = Box<dyn FnOnce(Result<TileOutcome, String>) + Send + 'static>;
+
+/// What a tile's load came to, unless it failed.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant, reason = "moved once, in a boxed message")]
+pub enum TileOutcome {
+    /// Laid out, or its image decoded: ready to upload.
+    Built(TileResult),
+    /// The tileset doesn't have the tile; nearby zooms stand in. A worker
+    /// that set it aside (it took a worker down) says why in `warnings`.
+    Missing { warnings: Vec<String> },
+    /// The map gave the load up before its bytes came
+    /// ([`Jobs::cancel`]): nothing was loaded.
+    Cancelled,
+}
+
+#[cfg(test)]
+impl TileOutcome {
+    /// The built tile, which a test expects.
+    pub(crate) fn built(self) -> TileResult {
+        match self {
+            Self::Built(build) => build,
+            other => panic!("not built: {other:?}"),
+        }
+    }
+}
 
 /// A request to a job host in another worker, as [`crate::wire`] carries it.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -267,37 +292,36 @@ impl Jobs for PoolJobs {
 
     fn load(&self, request: TileRequest, done: TileDone) {
         let (decode, executor) = (Arc::clone(&self.decode), Arc::clone(&self.executor));
-        let dem_unpack = request.dem_unpack;
+        let (dem_unpack, rank) = (request.dem_unpack, request.rank);
         self.host.load(
             request,
             Box::new(move |loaded| match loaded {
-                Ok(crate::Loaded::Tile(build)) => done(Ok(build.into())),
-                Ok(crate::Loaded::Missing) => done(Ok(TileResult {
-                    missing: true,
-                    ..TileResult::default()
+                Ok(crate::Loaded::Tile(build)) => done(Ok(TileOutcome::Built(build.into()))),
+                Ok(crate::Loaded::Missing) => done(Ok(TileOutcome::Missing {
+                    warnings: Vec::new(),
                 })),
-                Ok(crate::Loaded::Cancelled) => done(Ok(TileResult {
-                    cancelled: true,
-                    ..TileResult::default()
-                })),
+                Ok(crate::Loaded::Cancelled) => done(Ok(TileOutcome::Cancelled)),
                 Ok(crate::Loaded::Image {
                     bytes,
                     kind,
                     warp_grid,
-                }) => executor.spawn(Box::new(move || {
-                    decode.decode(
-                        bytes,
-                        Box::new(move |decoded| {
-                            done(decoded.and_then(|i| {
-                                let result = image_result(kind, i, dem_unpack)?;
-                                Ok(TileResult {
-                                    warp_grid,
-                                    ..result
-                                })
-                            }))
-                        }),
-                    );
-                })),
+                }) => executor.spawn_ranked(
+                    rank,
+                    Box::new(move || {
+                        decode.decode(
+                            bytes,
+                            Box::new(move |decoded| {
+                                done(decoded.and_then(|i| {
+                                    let result = image_result(kind, i, dem_unpack)?;
+                                    Ok(TileOutcome::Built(TileResult {
+                                        warp_grid,
+                                        ..result
+                                    }))
+                                }))
+                            }),
+                        );
+                    }),
+                ),
                 Err(e) => done(Err(e)),
             }),
         );
@@ -377,6 +401,10 @@ pub struct TileResult {
     pub missing_images: Vec<String>,
     /// Some label drew a glyph from a range that failed.
     pub glyphs_failed: bool,
+    /// Symbol nodes, by key, left out while their glyphs load: the map
+    /// lays them out again once the tile is in. Labels never hold up a
+    /// tile's other layers.
+    pub labels_later: Vec<u32>,
     /// The style revision the tile was laid out with.
     pub revision: u64,
     /// Keys of the nodes laid out; those without a mesh have no features.
@@ -408,13 +436,6 @@ pub struct TileResult {
     /// A terrain DEM tile's elevations.
     #[serde(skip)]
     pub dem: Option<Arc<orb_tile::DemGrid>>,
-    /// The tileset doesn't have the tile; nearby zooms stand in.
-    #[serde(skip)]
-    pub missing: bool,
-    /// The map gave the load up before its fetch started
-    /// ([`Jobs::cancel`]): nothing was loaded.
-    #[serde(skip)]
-    pub cancelled: bool,
 }
 
 /// An image tile's texels, rows top to bottom.
@@ -563,11 +584,10 @@ impl From<TileBuild> for TileResult {
             warnings: build.warnings,
             missing_images: build.missing_images,
             glyphs_failed: build.glyphs_failed,
+            labels_later: build.labels_later,
             image: None,
             warp_grid: None,
             dem: None,
-            missing: false,
-            cancelled: false,
             hit_geometry,
         };
         result.link_hits();
