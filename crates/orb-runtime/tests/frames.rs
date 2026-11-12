@@ -988,15 +988,25 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let mut camera = *offscreen.map.camera();
-        let mut placements = 0;
+        let (mut placements, mut placed_last) = (0, false);
         for _ in 0..30 {
             camera.bearing += 1.0;
             offscreen.map.jump_to_state(camera);
-            placements += offscreen.frame().placements;
+            let asked = offscreen.frame().placements;
+            placements += asked;
+            placed_last = asked > 0;
             // The lane answers well within a frame.
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        // 30 frames at 60 Hz, three or more apart.
         assert!((1..=10).contains(&placements), "{placements} placements");
+        if placed_last {
+            // A slow answer shifted the cadence onto the last frame: one
+            // more, a frame after it, doesn't place.
+            camera.bearing += 1.0;
+            offscreen.map.jump_to_state(camera);
+            assert_eq!(offscreen.frame().placements, 0);
+        }
         // At rest the view places as soon as the lane is free: the last
         // moving frame placed wasn't the last.
         let (started, mut placements) = (std::time::Instant::now(), 0);

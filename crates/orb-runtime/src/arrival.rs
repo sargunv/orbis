@@ -268,7 +268,10 @@ impl Map {
                         Ok(committed) => {
                             let started = self.services.clock.now();
                             let bytes = (committed.changed.iter())
-                                .map(|(_, _, s)| 4 * (s.text.len() + s.icon.len()) as u64)
+                                .map(|(_, _, s)| {
+                                    let words = [&s.text, &s.icon, &s.text_order, &s.icon_order];
+                                    4 * words.iter().map(|w| w.len() as u64).sum::<u64>()
+                                })
                                 .sum();
                             self.labels.committed(gpu, renderer, committed);
                             self.beat.spend(bytes);
