@@ -101,6 +101,10 @@ export type InputKind =
   | "key"
   | "blur";
 
+/** orb-web's `InputEffect.Moved`: the input moved the camera at once. A
+ * number here, as the build that defines the enum loads later. */
+const MOVED = 2;
+
 /** How the map starts. */
 export interface EngineSetup {
   canvas: HTMLCanvasElement | OffscreenCanvas;
@@ -327,15 +331,17 @@ export class Engine {
     this.#inputTime = time;
     const core = this.#core as unknown as Record<
       InputKind,
-      (...a: unknown[]) => boolean
+      (...a: unknown[]) => number | undefined
     >;
+    const effect = core[kind](...args, time + this.#clock);
     // A release may end a click, which the next frame reports.
-    if (
-      core[kind](...args, time + this.#clock) ||
-      kind === "blur" ||
-      kind === "pointerUp"
-    ) {
-      if (this.#drawOnInput && !this.#drewOnInput) {
+    if (effect || kind === "blur" || kind === "pointerUp") {
+      // Only input that moved the camera draws at once: a frame drawn now
+      // for an eased step, a glide's start or a release would show nothing
+      // new, and drawn off the animation frame it puts the frames after
+      // it out of step with the display, which drops one of them (wheel
+      // zooms: 2-7 frames over 25 ms apart where none were).
+      if (this.#drawOnInput && !this.#drewOnInput && effect === MOVED) {
         this.#drewOnInput = true;
         this.#draw(performance.now());
         // The next animation frame lets the next input draw.
