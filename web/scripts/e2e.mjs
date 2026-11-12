@@ -247,7 +247,7 @@ async function scenarioOn(
   browser,
   server,
   thread,
-  backend = browser.expects.backend,
+  backend = browser.expects?.backend ?? "webgpu",
 ) {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
   const query = new URLSearchParams({
@@ -259,7 +259,7 @@ async function scenarioOn(
     await page.evaluate(() =>
       window.scenario.then((s) => [s.map.inWorker, s.map.backend]),
     ),
-    [thread === "worker" && browser.expects.worker, backend],
+    [thread === "worker" && (browser.expects?.worker ?? true), backend],
     thread,
   );
   const scenario = (fn, arg) =>
@@ -2079,11 +2079,13 @@ async function options(browser, server) {
     "the switches edit the style without a reload",
   );
 
-  // Escape closes the panel, focus back on its button.
+  // Escape closes the panel, focus back where it was when it opened: on
+  // its button, which the click focused, but in WebKit, which (as Safari)
+  // doesn't focus a button it clicks.
   await page.keyboard.press("Escape");
   assert.deepEqual(
     await page.evaluate(() => [app.options.open, document.activeElement?.id]),
-    [false, "options-button"],
+    [false, browser.browserType().name() === "webkit" ? "" : "options-button"],
   );
 
   // The link reproduces the view.
@@ -3474,9 +3476,18 @@ async function boot(webgpuBrowser, server) {
     // WebGL 2 asked for, though WebGPU has an adapter: only core-gl.wasm loads.
     ["Chromium asked for WebGL 2", "webgl2", () => webgpuBrowser, "webgl2"],
     ["Firefox", "webgl2", () => firefox.launch()],
-    // The installed Firefox, headed, has WebGPU (macOS, Windows).
+    // The installed Firefox, headed, has WebGPU (macOS, Windows); on macOS
+    // its maps stay on the page (map.ts's `staleWorkerFrames`).
     ...(installedFirefox()
-      ? [["Firefox with WebGPU", "webgpu", () => launchFirefox()]]
+      ? [
+          [
+            "Firefox with WebGPU",
+            "webgpu",
+            () => launchFirefox(),
+            undefined,
+            process.platform !== "darwin",
+          ],
+        ]
       : []),
     // WebKit has WebGPU, but no raw pointer moves: its maps stay on the page.
     ["WebKit", "webgpu", () => launchWebkit(), undefined, false],
@@ -3649,10 +3660,14 @@ const CHROMIUM_ONLY = {
   compare: "MapLibre Native's web build is measured in Chromium alone",
 };
 // Checks a browser fails for a reason left to fix, and why.
+const SPLIT_UNSEEN =
+  "its first frames call into core-deferred.wasm (1 or 2 synchronous loads): code it runs that Chromium doesn't, which `pnpm coverage` (Chromium alone) can't see";
 const KNOWN = {
+  firefox: { split: SPLIT_UNSEEN },
   webkit: {
     readback:
       "WebKit's VideoFrame converts a bitmap's colours, so images decode through a canvas, which fingerprinting protection perturbs",
+    split: SPLIT_UNSEEN,
   },
 };
 const launchers = {
