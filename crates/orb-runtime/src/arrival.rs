@@ -142,7 +142,7 @@ impl Map {
             }
             Applied::Parks(build) => {
                 let at = (generation, source, tile);
-                let cap = crate::schedule::Parked::bytes(self.budget);
+                let cap = self.cache_limit();
                 (self.parked).park(at, build, cap, &mut self.retired.host);
                 true
             }
@@ -885,8 +885,9 @@ impl Map {
             return Applied::Waits(build, Room::default());
         }
         let sizes = mesh_sizes(plan, &build);
-        // Room: what's free first; then unused tiles go, this source's
-        // before others'; under the budget the pools grow before they do.
+        // Room: what's free first; then the pools grow before unused tiles
+        // go, this source's before others': the cache, within a view of the
+        // tiles in view (`trim_cache`), is held too.
         // While other tiles load (they free the stand-ins they replace),
         // this one waits. Otherwise, for a tile of the cover, the tiles it
         // replaces go, then tiles that only stand in (a fresh view of this
@@ -898,17 +899,16 @@ impl Map {
         // asked to stand in.
         // A continuous map's pools don't grow here (the renderer's gate
         // refuses): while the camera moves, unused tiles and stand-ins go
-        // instead; at rest under the budget the tile waits for its upkeep
-        // to grow them, keeping the cache; and one with no room after all
-        // waits for that too.
+        // instead; at rest the tile waits for its upkeep to grow them,
+        // keeping the cache; and one with no room after all waits for that
+        // too.
         let others_loading = style
             .sources
             .iter()
             .any(|s| matches!(s, SourceState::Ready { pyramid, .. } if pyramid.loading() > 0));
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
-        let under = under_budget(renderer, atlas.bytes(), self.budget);
-        let mut grow = under;
+        let mut grow = true;
         let uploading = self.services.clock.now();
         let uploaded = loop {
             atlas.release_ramps(gpu, self.retired.ramps.drain(..));
@@ -967,7 +967,7 @@ impl Map {
                 Err(Invalid(e)) => break Err(Some(e)),
                 // Labels' sizes aren't known ahead: both pools grow.
                 Err(NoRoom) if grow && image_build.is_none() && renderer.grow(gpu) => continue,
-                Err(NoRoom) if moves == Moves::Rest && under && renderer.can_grow_refused() => {
+                Err(NoRoom) if moves == Moves::Rest && renderer.can_grow_refused() => {
                     break Err(None);
                 }
                 Err(NoRoom) => evict_unused(&mut style.sources, source),

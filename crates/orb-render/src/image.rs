@@ -560,17 +560,16 @@ impl Images {
             .any(|page| page.page.would_shrink())
     }
 
-    /// Whether a page holds more than three quarters of its layers, and
-    /// growing it fits in `room` bytes.
-    pub(crate) fn wants_headroom(&self, room: u64) -> bool {
-        (self.pages.iter().flatten()).any(|page| page.page.headroom().is_some_and(|b| b <= room))
+    /// Whether a page holds more than three quarters of its layers.
+    pub(crate) fn wants_headroom(&self) -> bool {
+        (self.pages.iter().flatten()).any(|page| page.page.wants_headroom())
     }
 
     /// Grows the first page holding more than three quarters of its
-    /// layers, within `room` bytes; whether one grew.
-    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: u64) -> bool {
+    /// layers; whether one grew.
+    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu) -> bool {
         (self.pages.iter_mut().flatten())
-            .find(|page| page.page.headroom().is_some_and(|b| b <= room))
+            .find(|page| page.page.wants_headroom())
             .is_some_and(|page| page.page.grow(gpu).is_ok())
     }
 

@@ -47,7 +47,7 @@ impl Room {
         *self == Self::default()
     }
 
-    /// Room for both.
+    /// Room for either: the larger of what each asks.
     pub fn merge(&mut self, other: &Room) {
         for (a, b) in self.words.iter_mut().zip(other.words) {
             *a = (*a).max(b);
@@ -413,8 +413,8 @@ impl Renderer {
     /// Uploads an image tile: its pixels into a layer of its source's page,
     /// and a quad (or its mesh) into each of the source's image nodes.
     /// Without `grow`, only room already there is used; with it, the page
-    /// and the scene's pools grow within their limits, if memory is
-    /// [free](crate::Moves::Free). No source's first page is made while
+    /// and the scene's pools grow within their limits, unless memory is
+    /// [held](crate::Moves::Held). No source's first page is made while
     /// memory is [held](crate::Moves::Held) ([`has_page`](Self::has_page)).
     pub fn upload_image(
         &mut self,
@@ -432,7 +432,7 @@ impl Renderer {
             Some(page) => page,
             None if self.moves() == crate::Moves::Held => return Err(UploadError::NoRoom),
             None => {
-                let layers = self.page_layers(kind, size);
+                let layers = self.page_layers(size);
                 let page = self.images.create_page(gpu, kind, size, layers);
                 for node in &mut self.nodes {
                     if node.source == Some(key.source)
@@ -621,8 +621,8 @@ impl Renderer {
 
     /// Uploads a tile: all its meshes, in order, or none. Without `grow`,
     /// only room already there is used; with it, the pools grow within
-    /// their limits, if memory is [free](crate::Moves::Free). Returns the
-    /// tile and its meshes' ids.
+    /// their limits, unless memory is [held](crate::Moves::Held). Returns
+    /// the tile and its meshes' ids.
     pub fn upload_tile(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -897,8 +897,8 @@ impl Renderer {
     }
 
     /// Grows the pools, within their limits, until meshes of these sizes
-    /// fit; whether they do. Only [free](crate::Moves::Free) memory grows
-    /// for an upload.
+    /// fit; whether they do. Never while memory is
+    /// [held](crate::Moves::Held).
     pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
         if !self.uploads_grow() {
             return self.fits(meshes);
@@ -937,37 +937,60 @@ impl Renderer {
         self.refused_pages.clear();
     }
 
-    /// Whether a pool, the chunk table or an image tile page is more than
-    /// three quarters full, below its ceiling, and growing it fits in
-    /// `room` bytes.
-    pub fn wants_headroom(&self, room: u64) -> bool {
-        self.scene.wants_headroom(room)
-            || self.images.wants_headroom(room)
-            || self.glyphs.wants_headroom(room)
+    /// Adds what `other` asks to `room`: the words and chunk rows each
+    /// asks past the pools' and the chunk table's ends now, summed, so that
+    /// one move a pool at rest holds every upload that waits. A merge
+    /// would hold only the largest, and a fresh map's pools, which start
+    /// small, would take a move a tile.
+    pub fn add_room(&self, room: &mut Room, other: &Room) {
+        let (tops, chunks) = self.scene.room_base();
+        for ((a, b), base) in room.words.iter_mut().zip(other.words).zip(tops) {
+            if b > 0 {
+                *a = (*a).max(base).saturating_add(b.saturating_sub(base));
+            }
+        }
+        if other.chunks > 0 {
+            room.chunks =
+                (room.chunks.max(chunks)).saturating_add(other.chunks.saturating_sub(chunks));
+        }
+        for &page in &other.pages {
+            if !room.pages.contains(&page) {
+                room.pages.push(page);
+            }
+        }
+    }
+
+    /// Whether a pool, the chunk table, an image tile page or the glyph
+    /// pages are more than three quarters full, below their ceilings.
+    pub fn wants_headroom(&self) -> bool {
+        self.scene.wants_headroom() || self.images.wants_headroom() || self.glyphs.wants_headroom()
     }
 
     /// Grows one of what is more than three quarters full, within its
-    /// ceiling and `room` bytes: a map at rest makes room ahead of the next
-    /// view, so that a gesture from rest needn't grow them. New memory
+    /// ceiling: a map at rest makes room ahead of the next view, so that a
+    /// gesture from rest needn't grow them, and what it holds of tiles out
+    /// of view doesn't make way for each tile it brings in. A doubling of
+    /// what's three quarters full, so the room ahead follows what the view
+    /// holds, not a share of a fixed number. New memory
     /// costs its clearing, and a device may hold up other work while it
     /// clears (#176: on RADV 43 µs a MiB, holding up submissions; a new
     /// 256 MiB block of wgpu's allocator 10-12 ms), so a frame grows one,
     /// and a gesture that starts waits for one at most. Whether one grew:
     /// never while memory is [held](crate::Moves::Held).
-    pub fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: u64) -> bool {
+    pub fn grow_headroom(&mut self, gpu: &mut dyn Gpu) -> bool {
         if self.moves() == crate::Moves::Held {
             return false;
         }
-        if self.scene.grow_headroom(gpu, room) {
+        if self.scene.grow_headroom(gpu) {
             self.glyphs
                 .set_table(self.scene.tables().writer(Table::Props));
             return true;
         }
-        self.images.grow_headroom(gpu, room) || self.glyphs.grow_headroom(gpu, room)
+        self.images.grow_headroom(gpu) || self.glyphs.grow_headroom(gpu)
     }
 
-    /// Grows the pools once, within their limits; whether they grew. Only
-    /// [free](crate::Moves::Free) memory grows for an upload.
+    /// Grows the pools once, within their limits; whether they grew. Never
+    /// while memory is [held](crate::Moves::Held).
     pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
         self.uploads_grow() && self.grow_for_style(gpu)
     }

@@ -553,6 +553,15 @@ impl<T> TilePyramid<T> {
             .collect()
     }
 
+    /// How many tiles the last update used, in any state: those the view
+    /// covers, and those standing in for its tiles.
+    pub fn used(&self) -> usize {
+        let frame = self.frame;
+        (self.tiles.values())
+            .filter(|entry| entry.last_used == frame)
+            .count()
+    }
+
     /// The ready tiles the last update didn't use, with how many updates
     /// ago each was last used: comparable across pyramids updated together.
     pub fn unused(&self) -> impl Iterator<Item = (TileIndex, u64, &T)> {

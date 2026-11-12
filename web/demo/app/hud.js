@@ -5,23 +5,20 @@ const kib = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
 const COMMIT = __ORBIS_COMMIT__;
 const mib = (bytes) => `${(bytes / 1048576).toFixed(1)} MiB`;
 
-/** The budget: GPU memory allocated, the scene's growable pools
+/** GPU memory allocated, the scene's growable pools
  * (used / allocated / ceiling) and the tile cache. */
 function memoryRows(m) {
-  if (!m?.budget) return [];
+  if (!m?.allocated) return [];
   const pool = (used, allocated, ceiling) =>
     `${mib(used)} / ${mib(allocated)} / ${mib(ceiling)}`;
   return [
-    ["GPU memory", `${mib(m.allocated)} of ${mib(m.budget)}`],
+    ["GPU memory", mib(m.allocated)],
     ["vertices", pool(m.verticesUsed, m.verticesAllocated, m.verticesCeiling)],
     ["indices", pool(m.indicesUsed, m.indicesAllocated, m.indicesCeiling)],
     ["compacted", `${mib(m.compactedUsed)} / ${mib(m.compactedAllocated)}`],
     ...(m.cpuCopies ? [["CPU copies", mib(m.cpuCopies)]] : []),
     ["textures", mib(m.textures)],
-    [
-      "cache",
-      `${m.cachedTiles} tiles, ${mib(m.cached)} of ${mib(m.cacheBudget)}`,
-    ],
+    ["cache", `${m.cachedTiles} of ${m.cacheLimit} tiles, ${mib(m.cached)}`],
   ];
 }
 

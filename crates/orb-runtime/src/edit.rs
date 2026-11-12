@@ -29,7 +29,7 @@ use crate::jobs::TileOutcome;
 use crate::map::{LoadedStyle, Map, NodeState, revise};
 use crate::resident::{
     SourceState, evict_unused, mesh_sizes, record_maxima, remove_resident, resolve_rows,
-    under_budget, upload_mesh, with_room,
+    upload_mesh, with_room,
 };
 use crate::style::StylePlan;
 use crate::worker::StyleUpdate;
@@ -355,8 +355,8 @@ impl Map {
         result: Result<TileOutcome, String>,
     ) {
         // Pools don't move while the camera does (the renderer's gate):
-        // tiles out of view make the room. An edit at rest grows them, as a
-        // style's load sizes them: it has no upkeep to wait for.
+        // tiles out of view make the room. An edit at rest grows them: it
+        // has no upkeep to wait for.
         let free = renderer.moves() != orb_render::Moves::Held;
         let Some(style) = &mut self.style else {
             return;
@@ -393,12 +393,11 @@ impl Map {
         if pyramid.get(tile).is_none() {
             return;
         }
-        let wanted = pyramid.wants(tile);
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
-        // Room as for an arriving tile: what's free first; over the budget,
-        // or while the camera moves, tiles out of view go before the pools
-        // grow (this one, if it is one, ends the edit's result).
+        // Room as for an arriving tile: what's free first; while the camera
+        // moves, tiles out of view go, as the pools can't grow (this one, if
+        // it is one, ends the edit's result).
         let mut sizes = mesh_sizes(plan, &build);
         if build.rows_only {
             for size in &mut sizes {
@@ -408,9 +407,7 @@ impl Map {
                 };
             }
         }
-        while !renderer.fits(&sizes)
-            && (!free || !under_budget(renderer, atlas.bytes(), self.budget))
-        {
+        while !renderer.fits(&sizes) && !free {
             let Some(victim) = evict_unused(&mut style.sources, index) else {
                 break;
             };
@@ -418,7 +415,7 @@ impl Map {
                 .ramps
                 .extend(remove_resident(renderer, victim, &mut style.states));
         }
-        let grow = wanted || under_budget(renderer, atlas.bytes(), self.budget);
+        let grow = true;
         let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
             unreachable!("checked above");
         };

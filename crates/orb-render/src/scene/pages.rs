@@ -209,16 +209,11 @@ impl TilePage {
         Ok(())
     }
 
-    /// The bytes growing the arrays would add, when they hold more than
-    /// three quarters of their layers below the device's most: room a map
-    /// at rest makes by growing them ([`grow`](Self::grow)).
-    pub(crate) fn headroom(&self) -> Option<u64> {
-        let capacity = self.grown_capacity();
-        (capacity > self.capacity && self.layers.used() * 4 > self.capacity * 3).then(|| {
-            (self.textures.iter())
-                .map(|(desc, _)| texture_bytes(desc, capacity) - texture_bytes(desc, self.capacity))
-                .sum()
-        })
+    /// Whether the arrays hold more than three quarters of their layers
+    /// below the device's most: room a map at rest makes by growing them
+    /// ([`grow`](Self::grow)).
+    pub(crate) fn wants_headroom(&self) -> bool {
+        self.grown_capacity() > self.capacity && self.layers.used() * 4 > self.capacity * 3
     }
 
     /// Whether [`grow`](Self::grow) would add layers.

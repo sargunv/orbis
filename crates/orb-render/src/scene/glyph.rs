@@ -125,11 +125,10 @@ impl GlyphAtlas {
         true
     }
 
-    /// Grows the pages past three quarters full, within `room` bytes, and
-    /// writes the bitmaps waiting for room: one move. Whether they grew.
-    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: u64) -> bool {
-        if !self.page.headroom().is_some_and(|bytes| bytes <= room) || self.page.grow(gpu).is_err()
-        {
+    /// Grows the pages past three quarters full, and writes the bitmaps
+    /// waiting for room: one move. Whether they grew.
+    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu) -> bool {
+        if !self.page.wants_headroom() || self.page.grow(gpu).is_err() {
             return false;
         }
         for (row, size, bitmap) in std::mem::take(&mut self.deferred) {
@@ -139,8 +138,8 @@ impl GlyphAtlas {
     }
 
     /// Whether [`grow_headroom`](Self::grow_headroom) would grow the pages.
-    pub(crate) fn wants_headroom(&self, room: u64) -> bool {
-        self.page.headroom().is_some_and(|bytes| bytes <= room)
+    pub(crate) fn wants_headroom(&self) -> bool {
+        self.page.wants_headroom()
     }
 
     /// The R8 page array, replaced when the atlas grows (see

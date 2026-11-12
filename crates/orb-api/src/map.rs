@@ -230,9 +230,8 @@ impl Map {
         };
         runtime.add_wake(&device_wake);
         let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
-        // Phones and tablets hold less than desktops.
+        // Phones and tablets do less a frame than desktops.
         if cfg!(any(target_os = "android", target_os = "ios")) {
-            map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
             map.set_frame_budget(orb_runtime::FrameBudget::MOBILE);
         }
         map.set_options(&options);

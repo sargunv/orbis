@@ -772,11 +772,11 @@ impl SessionReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| session | budget | allocated at the end | peak | vertices used / allocated | \
+            "| session | allocated at the end | peak | vertices used / allocated | \
              indices | props | compacted | tables | tile pages | glyph pages | image atlas | drape \
              atlas | cached |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(14))?;
+        writeln!(out, "|{}", "---|".repeat(13))?;
         for r in &self.results {
             let Some(end) = r.frames.last().map(|f| f.report.memory) else {
                 continue;
@@ -789,9 +789,8 @@ impl SessionReport {
             let s = &end.scene;
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({} of {} tiles) |",
                 r.name,
-                mib(end.budget),
                 mib(end.allocated()),
                 mib(peak),
                 pool(s.vertices),
@@ -804,13 +803,15 @@ impl SessionReport {
                 mib(end.image_atlas),
                 mib(end.drape_atlas),
                 mib(end.cached),
+                end.cached_tiles,
+                end.cache_limit,
             )?;
         }
         writeln!(out)?;
         writeln!(
             out,
-            "GPU memory in MiB, against the map's budget, when the map settled after the moves, \
-             and the most it held in any frame."
+            "GPU memory in MiB when the map settled after the moves, and the most it held in \
+             any frame; the cache keeps at most as many tiles as the view draws."
         )?;
         for r in &self.results {
             writeln!(out)?;

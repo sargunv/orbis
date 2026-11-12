@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use orb_api::{CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target};
 
-/// The demo's Tokyo extract draws within the map's budget: pools and
-/// tables start at the budget's share for the viewport's cover, so that a
-/// gesture's tiles fit without moving them, and grow at rest only as the
-/// tiles in view need.
+/// The demo's Tokyo extract holds what it draws, and little more: the
+/// scene's pools start small and grow at rest to the smallest doubling
+/// that holds what the tiles in view (and the cache within a view of them)
+/// need, and halve while what they hold lies in their lowest quarter, so
+/// each holds at most four times what it uses, and the cache no more
+/// tiles than the view draws.
 #[test]
-fn tokyo_stays_within_the_budget() {
+fn tokyo_holds_what_it_draws() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, 1024, 768, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
@@ -32,7 +34,23 @@ fn tokyo_stays_within_the_budget() {
             "z{zoom} pitch {pitch}: {:.1} MB allocated",
             memory.allocated() as f64 / 1e6
         );
-        assert!(memory.allocated() <= memory.budget, "z{zoom}: {memory:#?}");
+        let s = &memory.scene;
+        for (name, pool) in [
+            ("vertices", s.vertices),
+            ("indices", s.indices),
+            ("props", s.props),
+        ] {
+            // The pools' first size, 1 MiB.
+            let floor = 1 << 20;
+            assert!(
+                pool.allocated <= 4 * pool.used.max(floor),
+                "z{zoom}: {name} {pool:?}"
+            );
+        }
+        assert!(
+            memory.cached_tiles <= memory.cache_limit,
+            "z{zoom}: {memory:#?}"
+        );
     }
 }
 

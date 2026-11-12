@@ -198,8 +198,8 @@ impl Offscreen {
         Self::made(options, |map| map.set_scene_capacity(capacity))
     }
 
-    /// Like [`new`](Self::new), the pools sized from the map's budget and
-    /// view, as an app's are.
+    /// Like [`new`](Self::new), the pools growing to what the view needs
+    /// and the tile pages sized for the viewport, as an app's are.
     pub(crate) fn sized(options: &Options) -> Result<Self, String> {
         Self::made(options, |_| {})
     }

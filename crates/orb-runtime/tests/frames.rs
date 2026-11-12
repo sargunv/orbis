@@ -229,7 +229,7 @@ mod tests {
         let (unbounded, report) = zoom_out(crate::common::SceneCapacity::default());
         assert!(
             report.scene.vertex_words > capacity.vertex_words,
-            "the path must need eviction to fit: {} cached, {} budget",
+            "the path must need eviction to fit: {} cached, {} held",
             report.scene.vertex_words,
             capacity.vertex_words
         );
@@ -703,7 +703,7 @@ mod tests {
         };
         let pages = |offscreen: &mut crate::common::Offscreen| {
             // The cache keeps nothing out of view.
-            offscreen.map.set_memory_budget(0);
+            offscreen.map.release_cached_tiles();
             settle(offscreen).memory.tile_textures
         };
         let (mut offscreen, _, _) = crate::common::Offscreen::load(&options(4.5, 60.0)).unwrap();
@@ -722,20 +722,19 @@ mod tests {
         let (mut fresh, _, _) = crate::common::Offscreen::load(&options(1.0, 0.0)).unwrap();
         let fresh = pages(&mut fresh);
         assert!(many > 4 * fresh, "{many} bytes of pages at the tilted view");
-        // No more than a fresh map's, which loaded within a budget that
-        // left it room to grow ahead of need at rest (#176).
+        // No more than a fresh map's.
         assert!(
             few <= fresh,
             "pages of {many} bytes shrank to {few}, past {fresh}"
         );
     }
 
-    /// Tiles out of view stay cached by their memory, within a
-    /// quarter of the budget, the least recently used giving way first.
+    /// Tiles out of view stay cached, as many as the view draws, the least
+    /// recently used giving way first: panned off the extract's data, the
+    /// view still keeps the city it came from.
     #[test]
-    fn tile_cache_stays_within_its_memory_budget() {
+    fn tile_cache_keeps_a_view_of_tiles() {
         let (mut offscreen, _, _) = crate::common::Offscreen::load(&tokyo(14.0)).unwrap();
-        offscreen.map.set_memory_budget(16 << 20);
         let viewport = offscreen.viewport;
         let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
         let mut most = 0;
@@ -749,7 +748,7 @@ mod tests {
             );
             let report = settle(&mut offscreen);
             let memory = report.memory;
-            assert!(memory.cached <= memory.cache_budget, "{memory:?}");
+            assert!(memory.cached_tiles <= memory.cache_limit, "{memory:?}");
             most = most.max(memory.cached_tiles);
         }
         assert!(most > 0, "tiles out of view are kept");

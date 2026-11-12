@@ -208,6 +208,15 @@ Advice that cost time to learn, not rules:
 - Size, performance, simplicity and correctness all count at once: take the best
   design, not the one that games a number. The build's watch levels are
   tripwires for a look, not budgets, and room under one isn't margin to spend.
+- GPU memory has no budget: it is as slim as the view lets it be. Pools, pages
+  and atlases hold what the view needs, packed exactly, and grow and shrink only
+  at rest (the renderer's `Moves` gate); a shortage mid-gesture may show a
+  stand-in briefly, but never a picture at rest. What's kept of tiles out of
+  view (the tile cache, parked payloads) is bounded by the tiles the view draws,
+  and goes first on a platform's low-memory warning or an allocation the device
+  refuses. A cap that coarsens or drops what a view draws, or sizes from a share
+  of a fixed number, is the wrong tool: being slim is what keeps a phone's
+  context.
 - Burn issues down rather than piling them up. The focus is performance, size,
   style parity and clean, modern Rust. Fix small follow-ups in the same piece of
   work. File an issue only for something substantial in that focus, and drop the

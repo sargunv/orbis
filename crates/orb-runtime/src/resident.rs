@@ -570,14 +570,6 @@ pub(crate) fn with_room<T>(
     }
 }
 
-/// Whether the map's GPU memory (the scene's pools and tables, its
-/// textures, and the image atlas's `atlas` bytes) is under `budget`: the
-/// pools grow for arriving tiles before cached ones go, and the cache is
-/// held to its share of the budget by `trim_cache`.
-pub(crate) fn under_budget(renderer: &Renderer, atlas: u64, budget: u64) -> bool {
-    crate::Memory::of(renderer, atlas).allocated() < budget
-}
-
 /// What a resident tile costs to keep: the GPU bytes of its meshes and its
 /// texture layer, and its picking data.
 pub(crate) fn tile_cost(renderer: &Renderer, resident: &ResidentTile) -> u64 {

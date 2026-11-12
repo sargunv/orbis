@@ -544,45 +544,44 @@ impl Map {
         }
     }
 
-    /// Keeps the tiles out of view within the cache budget, a quarter of the
-    /// memory budget (none with the tile cache off): the least recently used
-    /// go first, from any source.
+    /// Keeps each source's tiles out of view to as many as its view draws
+    /// ([`cache_limit`](Self::cache_limit); none with the tile cache off):
+    /// the least recently used go first.
     /// The scene's pools then hold the tiles in view and what's left of the
     /// cache, and arrivals that need room evict more (`evict_unused`).
     pub(crate) fn trim_cache(&mut self, renderer: &mut Renderer) {
+        if self.style.is_none() {
+            return;
+        }
+        // Pressure sheds what's kept out of view, parked payloads too.
+        let release = std::mem::take(&mut self.release_cached);
+        if release {
+            (self.parked).drop_where(|_, _| true, &mut self.retired.host);
+        }
+        let keeps = !release && self.tile_cache;
         let Some(style) = &mut self.style else {
             return;
         };
-        let budget = if std::mem::take(&mut self.release_cached) || !self.tile_cache {
-            0
-        } else {
-            self.budget / 4
-        };
-        // (age, source, tile, cost), oldest first.
-        let mut unused: Vec<(u64, usize, TileIndex, u64)> = Vec::new();
+        // Per source, its tiles out of view past its limit, oldest first:
+        // (source, tile).
+        let mut gone: Vec<(usize, TileIndex)> = Vec::new();
         for (index, source) in style.sources.iter().enumerate() {
             if let SourceState::Ready { pyramid, .. } = source {
-                unused.extend(
-                    pyramid
-                        .unused()
-                        .map(|(tile, age, r)| (age, index, tile, r.cost)),
-                );
+                let limit = if keeps { pyramid.used() } else { 0 };
+                let mut unused: Vec<(u64, TileIndex)> =
+                    pyramid.unused().map(|(tile, age, _)| (age, tile)).collect();
+                if unused.len() > limit {
+                    unused.sort_unstable_by_key(|u| std::cmp::Reverse(u.0));
+                    let over = unused.len() - limit;
+                    gone.extend(unused.into_iter().take(over).map(|(_, tile)| (index, tile)));
+                }
             }
         }
-        let mut total: u64 = unused.iter().map(|u| u.3).sum();
-        if total <= budget {
-            return;
-        }
-        unused.sort_unstable_by_key(|u| std::cmp::Reverse(u.0));
-        for (_, index, tile, cost) in unused {
-            if total <= budget {
-                break;
-            }
+        for (index, tile) in gone {
             let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
                 continue;
             };
             if let Some(resident) = pyramid.evict_unused(tile) {
-                total -= cost;
                 // Without a tile cache, nothing of it stays to load from.
                 if !self.tile_cache {
                     let key = style.worker.plan().sources[index].key;
@@ -644,10 +643,15 @@ impl Map {
                     DrapeFull::Room => {
                         "too many drape stacks for the drape atlas; terrain is flat".into()
                     }
-                    DrapeFull::Refused(bytes) => format!(
-                        "the GPU refused the drape atlas's {} MiB; terrain is flat until it fits in less",
-                        bytes >> 20
-                    ),
+                    DrapeFull::Refused(bytes) => {
+                        // A device short of memory: what's kept out of view
+                        // goes first.
+                        self.release_cached = true;
+                        format!(
+                            "the GPU refused the drape atlas's {} MiB; terrain is flat until it fits in less",
+                            bytes >> 20
+                        )
+                    }
                 });
                 renderer.set_terrain(gpu, None);
                 return None;

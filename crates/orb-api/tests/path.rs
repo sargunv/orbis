@@ -1605,8 +1605,8 @@ fn an_emptied_view_gives_its_memory_back() {
         ));
     }
     let ocean = memory(&mut map, (Geodetic::new(150.0, 30.0), 15.5, 30.0, 60.0));
-    // The cache keeps what it holds of the city (a quarter of the budget):
-    // the pools hold it too.
+    // The cache keeps what it holds of the city (as many tiles as the view
+    // over the ocean draws): the pools hold it too.
     assert!(ocean <= dense);
     // Nothing left to draw or keep: the pools, the lists and tables, and
     // the tile pages go back to a fresh map's.

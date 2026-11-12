@@ -370,13 +370,11 @@ fn held_pools_grow_into_their_refusals_a_move_at_a_time() {
     assert!(!h.renderer.grow_into(&mut h.gpu, &room));
     assert!(!h.renderer.grow_for(&mut h.gpu, &sizes));
     assert!(!h.renderer.grow(&mut h.gpu));
-    assert!(!h.renderer.grow_headroom(&mut h.gpu, u64::MAX));
+    assert!(!h.renderer.grow_headroom(&mut h.gpu));
     assert_eq!(h.renderer.take_resized().moves, 0, "held: nothing moved");
-    // At rest, an upload still doesn't grow them; upkeep does.
+    // At rest the upkeep grows what waited while held. (An upload at rest
+    // grows what it needs itself.)
     h.renderer.set_moves(&mut h.gpu, Moves::Rest);
-    assert!(!h.renderer.grow_for(&mut h.gpu, &sizes));
-    assert!(!h.renderer.grow(&mut h.gpu));
-    assert_eq!(h.renderer.take_resized().moves, 0, "an upload at rest grew");
     // Vertices, indices, properties and chunks: four moves, one a call.
     let mut moves = 0;
     while !h.renderer.fits(&sizes) {

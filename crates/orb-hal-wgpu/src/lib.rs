@@ -85,9 +85,9 @@ pub fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
 /// The limits Orbis asks `adapter`'s device for: WebGPU's defaults, lowered
 /// where the adapter falls short of them (the iOS simulator has 15
 /// inter-stage variables), with buffers and storage bindings as large as it
-/// allows up to 1 GiB. The scene's pools grow within one storage binding,
-/// up to the map's memory budget and past it for the tiles in view: at
-/// WebGPU's default 128 MiB, a pitched view over a dense city ran out.
+/// allows up to 1 GiB. The scene's pools grow within one storage binding
+/// to what the tiles in view need: at WebGPU's default 128 MiB, a pitched
+/// view over a dense city ran out.
 pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let offered = adapter.limits();
     let mut limits = wgpu::Limits::default().or_worse_values_from(&offered);

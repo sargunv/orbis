@@ -157,7 +157,7 @@ pub struct FrameStats {
     /// Layers not drawn while their pipelines compile.
     #[wasm_bindgen(readonly, js_name = layersWaiting)]
     pub layers_waiting: u32,
-    /// GPU memory against the budget.
+    /// GPU memory.
     #[wasm_bindgen(readonly)]
     pub memory: FrameMemory,
     /// What the device did since the last frame.
@@ -320,13 +320,12 @@ impl From<&orb_runtime::FrameTimes> for FrameTimes {
 }
 
 /// The map's GPU memory by pool, in bytes but `cached_tiles`: the scene's
-/// pools grow within ceilings the budget sets; tiles out of view stay
-/// cached within `cache_budget`.
+/// pools grow at rest to what the tiles in view need, within the device's
+/// ceilings; tiles out of view stay cached, at most `cache_limit` of them,
+/// as many as the view draws.
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameMemory {
-    #[wasm_bindgen(readonly)]
-    pub budget: f64,
     #[wasm_bindgen(readonly)]
     pub allocated: f64,
     #[wasm_bindgen(readonly, js_name = verticesUsed)]
@@ -356,15 +355,14 @@ pub struct FrameMemory {
     pub cached_tiles: u32,
     #[wasm_bindgen(readonly)]
     pub cached: f64,
-    #[wasm_bindgen(readonly, js_name = cacheBudget)]
-    pub cache_budget: f64,
+    #[wasm_bindgen(readonly, js_name = cacheLimit)]
+    pub cache_limit: u32,
 }
 
 impl From<&orb_runtime::Memory> for FrameMemory {
     fn from(m: &orb_runtime::Memory) -> Self {
         let s = &m.scene;
         Self {
-            budget: m.budget as f64,
             allocated: m.allocated() as f64,
             vertices_used: s.vertices.used as f64,
             vertices_allocated: s.vertices.allocated as f64,
@@ -378,7 +376,7 @@ impl From<&orb_runtime::Memory> for FrameMemory {
             textures: (m.tile_textures + m.glyph_textures + m.image_atlas) as f64,
             cached_tiles: m.cached_tiles,
             cached: m.cached as f64,
-            cache_budget: m.cache_budget as f64,
+            cache_limit: m.cache_limit,
         }
     }
 }
@@ -494,7 +492,6 @@ pub async fn create_map(
     };
     let mut map = Map::new(services, None);
     if mobile() {
-        map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
         map.set_frame_budget(orb_runtime::FrameBudget::MOBILE);
     }
     map.set_placement_lane(lane);
@@ -1275,7 +1272,7 @@ impl OrbisMap {
     }
 }
 
-/// Whether this browser is a phone's or a tablet's, for the mobile memory
+/// Whether this browser is a phone's or a tablet's, for the mobile frame
 /// budget: `navigator.userAgentData.mobile` where there is one
 /// (Chromium, pages and workers), else the user agent string.
 fn mobile() -> bool {

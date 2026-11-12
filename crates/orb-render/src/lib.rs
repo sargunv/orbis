@@ -57,12 +57,12 @@ pub use scene::{
     NodeDraw, NodeMeshes, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity, SceneStats, TileId,
     TileRow, TileWarp, Words, warp_words,
 };
-pub use scene::{DESKTOP_BUDGET, MOBILE_BUDGET, PoolMemory, Resized, SceneMemory};
 pub use scene::{
     GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas, PLACED_WORDS, QUAD_WORDS,
     SYMBOL_HEADER_WORDS, SYMBOL_STATE_WORDS, SymbolMeshData, pack_image_rect, symbol_header,
     symbol_state,
 };
+pub use scene::{PoolMemory, Resized, SceneMemory};
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, Reserved, Room, TileBuild, TileKey,
     UploadError, WarpKey, changed_borders, dem_neighbours, tile_extents, tile_latitudes, tile_size,
@@ -515,8 +515,7 @@ pub struct Renderer {
     /// Tile pages an upload was refused a layer of since the last
     /// [`take_refusals`](Self::take_refusals).
     refused_pages: Vec<PageId>,
-    /// What the pools were last sized for ([`size_for`](Self::size_for)),
-    /// which new tile pages start from too.
+    /// What new tile pages start from ([`size_for`](Self::size_for)).
     sizing: Option<Sizing>,
     /// What the symbol placement target did made again at another size,
     /// since the last [`take_resized`](Self::take_resized).
@@ -534,14 +533,15 @@ pub enum Moves {
     /// gesture to keep smooth.
     #[default]
     Free,
-    /// A continuous map whose camera rests. The pools, the chunk table and
-    /// tile page layers move only in its upkeep, a move a frame
-    /// ([`Renderer::grow_into`], [`Renderer::grow_headroom`],
-    /// [`Renderer::shrink`]); what an upload finds no room for meanwhile
-    /// is refused ([`Renderer::take_refusals`]). The lists, glyph pages,
-    /// symbol placement target, drape atlas and a source's first tile page
-    /// move or are made as the frame needs, and an edit's relayouts grow
-    /// the pools ([`Renderer::grow_for_edit`]).
+    /// A continuous map whose camera rests. An upload grows the pools, the
+    /// chunk table and tile page layers it finds full, so that a view
+    /// loads into what it needs; the map's upkeep grows what waited while
+    /// memory was held, and room ahead, and shrinks what a view left
+    /// mostly free, a move a frame ([`Renderer::grow_into`],
+    /// [`Renderer::grow_headroom`], [`Renderer::shrink`]). The lists, glyph
+    /// pages, symbol placement target, drape atlas and a source's first
+    /// tile page move or are made as the frame needs, and an edit's
+    /// relayouts grow the pools ([`Renderer::grow_for_edit`]).
     Rest,
     /// The camera moves: nothing moves or is made. Uploads, layouts and
     /// glyphs that find no room leave out or wait for what they wanted, and
@@ -550,16 +550,13 @@ pub enum Moves {
     Held,
 }
 
-/// What a map's first sizes follow ([`Renderer::size_for`]): its GPU
-/// memory budget, and the tiles of 512 logical pixels its view covers.
+/// What a map's new tile pages start at ([`Renderer::size_for`]): the
+/// tiles of 512 logical pixels its view covers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sizing {
-    pub budget: u64,
     /// The cover's tiles at the steepest pitch: the viewport's, in tiles,
     /// and those up to the horizon ([`Sizing::of_viewport`]).
     pub tiles: f64,
-    /// Whether the style draws vector tiles: the pools hold them.
-    pub vector: bool,
 }
 
 impl Sizing {
@@ -567,69 +564,22 @@ impl Sizing {
     /// Orbis cover a view at pitch 60 to 85 with about four times its
     /// flat tiles, the far ones coarser.
     const PITCHED: f64 = 4.0;
-    /// The tiles of a 1440 × 900 view: the cover the budget's shares are
-    /// for. A smaller view takes proportionally less, to an eighth.
-    const REFERENCE_TILES: f64 = 1440.0 * 900.0 / (512.0 * 512.0) * Self::PITCHED;
 
     /// Sizing for a viewport of `width × height` logical pixels.
-    pub fn of_viewport(budget: u64, [width, height]: [f64; 2], vector: bool) -> Self {
+    pub fn of_viewport([width, height]: [f64; 2]) -> Self {
         Self {
-            budget,
             tiles: width * height / (512.0 * 512.0) * Self::PITCHED,
-            vector,
         }
     }
 
-    /// The scene's first sizes: at the reference cover, a quarter of the
-    /// budget for vertices, an eighth each for indices and compacted
-    /// indices, a thirty-second for properties, and the chunk and
-    /// candidate tables a thirty-second each. A view that holds more grows
-    /// them at rest; one moving evicts cached tiles first.
-    pub fn capacity(&self, base: &SceneCapacity) -> SceneCapacity {
-        if !self.vector {
-            return *base;
-        }
-        let share = (self.tiles / Self::REFERENCE_TILES).clamp(0.125, 1.0);
-        let words = |fraction: u64, per: u64| {
-            let bytes = (self.budget / fraction) as f64 * share;
-            ((bytes / per as f64) as u64)
-                .next_power_of_two()
-                .min(1 << 31) as u32
-        };
-        let rows = |per: usize| words(32, per as u64 * 4);
-        SceneCapacity {
-            vertex_words: base.vertex_words.max(words(4, 4)),
-            index_words: base.index_words.max(words(8, 4)),
-            compacted_words: base.compacted_words.max(words(8, 4)),
-            prop_words: base.prop_words.max(words(32, 4)),
-            chunks: base.chunks.max(rows(orb_shaders::layout::chunk::WORDS)),
-            candidates: base.candidates.max(rows(
-                orb_shaders::layout::candidate::WORDS + orb_shaders::layout::visible::WORDS,
-            )),
-            ..*base
-        }
-    }
-
-    /// Rows the symbol placement target keeps at least: a sixty-fourth of
-    /// the budget at the reference cover, 8 MiB of a desktop's, for about
-    /// 4,000 symbol candidates' quads.
-    fn placed_rows(&self) -> u32 {
-        let share = (self.tiles / Self::REFERENCE_TILES).clamp(0.125, 1.0);
-        let bytes = (self.budget / 64) as f64 * share;
-        let row = u64::from(scene::PLACED_WIDTH) * 16 * 2;
-        ((bytes as u64 / row) as u32).next_power_of_two()
-    }
-
-    /// Layers a page of `size`-texel tiles of `layer_bytes` each starts
-    /// with: three for each tile the cover holds at that size (a tile,
-    /// what stands in for it, and the coarser tiles a terrain's cover and
-    /// culling read), within a quarter of the budget, and no fewer than
-    /// eight.
-    fn page_layers(&self, size: [u32; 2], layer_bytes: u64) -> u32 {
+    /// Layers a page of `size`-texel tiles starts with: one for each tile
+    /// the cover holds at that size, and no fewer than eight. A view that
+    /// holds more (stand-ins while tiles load, the coarser tiles a
+    /// terrain's cover and culling read) grows it at rest.
+    fn page_layers(self, size: [u32; 2]) -> u32 {
         let side = f64::from(size[0].max(size[1]).max(1));
         let tiles = self.tiles * (512.0 / side).powi(2);
-        let budgeted = self.budget / 4 / layer_bytes.max(1);
-        ((3.0 * tiles).ceil() as u64).min(budgeted).max(8) as u32
+        (tiles.ceil() as u32).max(8)
     }
 }
 
@@ -873,29 +823,21 @@ impl Renderer {
     }
 
     /// Whether an upload may grow the pools, tables and tile pages it
-    /// finds full: only a [free](Moves::Free) renderer's do.
+    /// finds full: unless memory is [held](Moves::Held). A map's pools
+    /// start small and hold what its view needs: at rest a view loads
+    /// into memory grown for it, rather than wait a frame a move.
     fn uploads_grow(&self) -> bool {
-        self.moves == Moves::Free
+        self.moves != Moves::Held
     }
 
-    /// Sizes the pools, tables and lists for `sizing`, and the tile pages
-    /// made from then on: each grows to its share, and doesn't shrink
-    /// below it. Moves only what's held, and only once per sizing. The
-    /// first sizing is made whenever it comes (a style's first frame may
-    /// move the camera); a later one waits while memory is
-    /// [held](Moves::Held).
-    pub fn size_for(&mut self, gpu: &mut dyn Gpu, sizing: Sizing) {
-        if self.sizing == Some(sizing) || (self.sizing.is_some() && self.moves == Moves::Held) {
-            return;
-        }
+    /// Sizes the tile pages made from then on for `sizing`. The pools,
+    /// tables and lists start small and grow at rest to what the tiles in
+    /// view need ([`grow_into`](Self::grow_into)).
+    pub fn size_for(&mut self, sizing: Sizing) {
         self.sizing = Some(sizing);
-        let target = sizing.capacity(self.scene.initial());
-        self.scene.size_to(gpu, &target);
-        self.glyphs
-            .set_table(self.scene.tables().writer(Table::Props));
     }
 
-    /// What the pools were last sized for ([`size_for`](Self::size_for)).
+    /// What the tile pages were last sized for ([`size_for`](Self::size_for)).
     pub fn sizing(&self) -> Option<Sizing> {
         self.sizing
     }
@@ -1707,7 +1649,7 @@ impl Renderer {
         if self.moves == Moves::Held {
             return None;
         }
-        let layers = self.page_layers(kind, size);
+        let layers = self.page_layers(size);
         Some(self.images.create_page(gpu, kind, size, layers))
     }
 
@@ -1718,18 +1660,9 @@ impl Renderer {
     }
 
     /// Layers a new page starts with: what the view's cover needs of its
-    /// tiles ([`Sizing`]), or eight before the map sized the pools.
-    pub(crate) fn page_layers(&self, kind: PageKind, size: [u32; 2]) -> u32 {
-        let texel = match kind {
-            // Colour, and its mips.
-            PageKind::Raster => 4 * 4 / 3,
-            // Elevations, padded elevations and slopes.
-            PageKind::Dem => 4 + 4 + 2,
-            PageKind::Terrain => 4 + 4,
-        };
-        let layer_bytes = u64::from(size[0]) * u64::from(size[1]) * texel;
-        self.sizing
-            .map_or(8, |sizing| sizing.page_layers(size, layer_bytes))
+    /// tiles ([`Sizing`]), or eight before the map sized them.
+    pub(crate) fn page_layers(&self, size: [u32; 2]) -> u32 {
+        self.sizing.map_or(8, |sizing| sizing.page_layers(size))
     }
 
     /// Destroys a page. Nodes that bind it must be rebound or replaced.
@@ -2604,17 +2537,15 @@ impl Renderer {
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame, !held);
         // The symbol draws bind the placement target, which is made again
         // for the symbol nodes' quads: when memory may move, with room for
-        // twice them, so that a gesture's labels rarely outgrow it; never
-        // below its share. Held, it stays, and symbol nodes whose quads lie
-        // past it don't draw until it grows: before the cull, which reads
-        // which do.
+        // twice them, so that a gesture's labels rarely outgrow it. Held,
+        // it stays, and symbol nodes whose quads lie past it don't draw
+        // until it grows: before the cull, which reads which do.
         let (rows, needed) = (self.symbols.rows(), self.scene.placed_rows());
-        let floor = self.sizing.map_or(0, |s| s.placed_rows());
         let fit = match held {
-            false if needed * 2 > rows || needed * 8 <= rows => (needed * 2).max(floor),
-            false => rows.max(floor),
+            false if needed * 2 > rows || needed * 8 <= rows => needed * 2,
+            false => rows,
             // Its first is made for a first use.
-            true if rows == 0 => (needed * 2).max(floor),
+            true if rows == 0 => needed * 2,
             true => rows,
         };
         let before = gpu.counters();

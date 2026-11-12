@@ -456,6 +456,14 @@ impl ApplicationHandler<Wake> for App {
         }
     }
 
+    /// Android's low-memory warning (`onLowMemory`): the tiles kept out of
+    /// view go, so that the map holds only what it draws.
+    fn memory_warning(&mut self, _: &ActiveEventLoop) {
+        if let Some(state) = &mut self.state {
+            state.map.release_cached_tiles();
+        }
+    }
+
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(state) = &mut self.state {
             state.target = None;
