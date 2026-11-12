@@ -31,12 +31,13 @@
 // refresh. `--dump` writes each engine's frames, input windows,
 // presents, pipelines and the page thread's stalls (`beats`) to
 // `<prefix>-<engine>.json`. `--backend` draws Orbis with that
-// backend. `--pkgs` runs Orbis on each of these builds of web/pkg (copies
-// of it) in turn, run by run, for A/B runs in one session; GL JS runs once
-// a run. `--profile` (Firefox, one engine) runs Gecko's profiler on every
-// thread of every process from startup and writes its profile there when
-// Firefox quits, for profiler.firefox.com; the report's `profile` then
-// says, for the worst intervals and the pipelines made mid-move, which
+// backend. `--pkgs` runs Orbis on each of these builds of web/pkg (whole
+// copies of it, each in its place alone) in turn, run by run, for A/B
+// runs in one session; GL JS runs once a run. `--profile` (Firefox, one
+// engine) runs Gecko's profiler on every thread of every process from
+// startup and writes its profile there when Firefox quits, for
+// profiler.firefox.com; the report's `profile` then says, for the worst
+// intervals and the pipelines made mid-move, which
 // threads of which processes were busy (CPU ms), so whether a compile
 // runs on the thread that presents shows without symbols. Gecko's
 // profile leaves out Firefox's GPU process, where WebGPU's server runs:
@@ -957,7 +958,13 @@ async function run(server, engine) {
         .map(({ i, gap }) => attribute(frames, i, gap, raf, longTasks));
     }
     if (errors.length)
-      report.errors = errors.slice(0, 5).map((e) => e.split("\n")[0]);
+      // The first errors and the last, with their stacks: what broke, and
+      // what that left the map doing.
+      report.errors = [
+        ...errors.slice(0, 3),
+        ...errors.slice(Math.max(3, errors.length - 2)),
+      ].map((e) => e.split("\n").slice(0, 12).join("\n"));
+    if (errors.length > 5) report.errorCount = errors.length;
     if (gpuPid && existsSync(args.sample))
       report.gpuSample = sampledThreads(readFileSync(args.sample, "utf8"));
     if (browserName === "firefox" && args.profile)
@@ -1207,11 +1214,18 @@ async function serve(pkg) {
   if (!pkg) return serveDemo();
   const saved = mkdtempSync(join(tmpdir(), "orbis-pkg-"));
   cpSync(live, saved, { recursive: true });
+  // The build is `pkg` whole: copied over web/pkg, a file it lacks would
+  // come from the build there, a deferred half from another build among
+  // them.
+  const replace = (from) => {
+    rmSync(live, { recursive: true, force: true });
+    cpSync(from, live, { recursive: true });
+  };
   try {
-    cpSync(pkg, live, { recursive: true });
+    replace(pkg);
     return await serveDemo();
   } finally {
-    cpSync(saved, live, { recursive: true });
+    replace(saved);
     rmSync(saved, { recursive: true });
   }
 }
