@@ -14,7 +14,9 @@
 // terrain layer draws a stack's slots, two stacks' where the zoom splits
 // it, or two around a hillshade it shades between them from its slopes
 // (`terrain_shade.wgsl`).
-// Mip levels never mix slots, and samples keep to the slot at the level
+// A tile's slots are the top-left square of their place, its `shrink`
+// halving their page's side, which a tile that shows small draws few texels
+// of. Mip levels never mix slots, and samples keep to the slot at the level
 // they read, as a texture of its own would clamp to its edge.
 
 struct TerrainTile {
@@ -27,8 +29,10 @@ struct TerrainTile {
     // Tile uv → DEM tile uv: `uv * dem_scale + dem_offset`.
     dem_offset: vec2<f32>,
     dem_scale: f32,
-    // Its block of drape slots.
+    // Its block of drape slots, and how many times they halve their page's
+    // side.
     slot: u32,
+    shrink: u32,
     // On a globe: its patches in space (`project.wgsl`'s layout, from word
     // `globe_base` of the props) around `globe_origin`, camera-relative
     // metres, and the poles its skirts close (bit 0 north, bit 1 south).
@@ -127,8 +131,8 @@ struct TerrainOut {
     @builtin(position) @invariant position: vec4<f32>,
     // Tile uv, y down.
     @location(0) uv: vec2<f32>,
-    // The tile's index and its block of drape slots.
-    @location(1) @interpolate(flat, either) tile: vec2<u32>,
+    // The tile's index, its block of drape slots and their shrink.
+    @location(1) @interpolate(flat, either) tile: vec3<u32>,
     @location(2) fog_depth: f32,
     // Mercator's slope stretch for a hillshade the layer shades
     // (`terrain_shade.wgsl`): per vertex rather than per fragment, which
@@ -170,7 +174,7 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     let depth = select(plane_depth(world, z), clip.w - clip.z, globe);
     out.position = vec4<f32>(clip.xy, depth, clip.w);
     out.uv = uv;
-    out.tile = vec2<u32>(instance, tile.slot);
+    out.tile = vec3<u32>(instance, tile.slot, tile.shrink);
     out.stretch = 1.0 / cos(radians(mix(tile.latitudes.x, tile.latitudes.y, uv.y)));
     // The view depth is the clip w, mixed as the globe hands over: fog
     // fades in as it does (`fog_opacity`).
@@ -185,9 +189,10 @@ fn fs_terrain_depth(@builtin(position) position: vec4<f32>) -> @location(0) vec4
     return vec4<f32>(position.z, 0.0, 0.0, 0.0);
 }
 
-// Where a fragment samples its tile's drape slots of `slot_px` texels: the
-// texel in a slot and the footprint's gradients, the same in every slot of
-// that size (the colour page's, or the slope page's). Trilinear and
+// Where a fragment samples its tile's drape slots on a page of `slot_px`
+// texels a slot: the texel in a slot and the footprint's gradients, the
+// same in every slot of the page and side (the colour page's, or the slope
+// page's, shrunk as the tile's). Trilinear and
 // anisotropic, as GL JS samples its render-to-texture tiles, and kept in
 // the slot as a texture of its own would clamp to its edge.
 struct DrapeSample {
@@ -196,7 +201,9 @@ struct DrapeSample {
     dy: vec2<f32>,
 };
 
-fn drape_sample(in: TerrainOut, slot_px: f32) -> DrapeSample {
+fn drape_sample(in: TerrainOut, page_px: f32) -> DrapeSample {
+    // Exact: a power of two over one.
+    let slot_px = page_px / f32(1u << in.tile.z);
     let texel = in.uv * slot_px;
     let dx = dpdx(texel);
     let dy = dpdy(texel);

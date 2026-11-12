@@ -11,13 +11,13 @@ composite over fs_replace 7b1d22e2ec2eb793
 composite replace vs_composite fe2b34eabe869054
 composite replace fs_over a9613473514cf06a
 composite replace fs_replace 7b1d22e2ec2eb793
-terrain vs_terrain 413964f36b458f6f
+terrain vs_terrain e9515a22e0c14315
 terrain fs_terrain_depth fc3e943a6a35d497
-terrain fs_terrain f9984aed22cdb022
-terrain shade vs_terrain 1a75caa089f294e7
+terrain fs_terrain 159496882d153334
+terrain shade vs_terrain 13eff5076ba633fb
 terrain shade fs_terrain_depth 9e29741ae7a2ab85
-terrain shade fs_terrain 9b24383c071b8e70
-terrain shade fs_terrain_shaded f5024428160627c1
+terrain shade fs_terrain 780b38d4bf19506a
+terrain shade fs_terrain_shaded 244b3c7750308c08
 drape vs_slot e22d84da18d45c8e
 drape fs_clear 87c933f264755498
 extrusion vs_extrusion d0a8f4ea9a410e93

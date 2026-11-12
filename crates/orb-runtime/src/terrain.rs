@@ -10,10 +10,11 @@
 //! 1024 pixels with the same 128 cells, so the renderer draws every
 //! second vertex there (`orb_render`'s grid step), GL JS's mesh density;
 //! slots and covers stay 512 pixels, so one atlas size serves every
-//! DEM. A terrain tile's drape slots
-//! are drawn at the camera's zoom, as a flat map would draw their
-//! content, and redrawn only when what they show changes: what is draped
-//! under the tile, or for stacks whose content scales with it, the zoom.
+//! DEM. A terrain tile's drape slots are drawn at the camera's zoom, to a
+//! 32nd of a level, as a flat map would draw their content, at as many
+//! texels as the tile shows at, and redrawn only when what they show
+//! changes: what is draped under the tile, its size on screen, or for
+//! stacks whose content scales with it, the zoom's step.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::{Hash, Hasher};
@@ -109,17 +110,63 @@ fn bilinear(dim: u32, uv: DVec2, texel: impl Fn(i64, i64) -> f32) -> f64 {
     top + (bottom - top) * f.y
 }
 
-/// A terrain tile's drape slots and the content each stack's was drawn
-/// with.
+/// A terrain tile's drape slots, the side they were drawn at and the
+/// content each stack's was drawn with.
 #[derive(Debug)]
 struct Slot {
     index: u32,
+    shrink: u8,
     content: Vec<u64>,
 }
 
-/// A tile slot to redraw: its terrain tile, tile slot, and the stacks
-/// whose content changed.
-pub(crate) type Redraw = (CoveredTile, u32, Vec<u8>);
+/// A tile slot to redraw.
+#[derive(Debug)]
+pub(crate) struct Redraw {
+    pub(crate) tile: CoveredTile,
+    pub(crate) slot: u32,
+    /// Its slots' side, in halvings of their page's ([`slot_shrink`]).
+    pub(crate) shrink: u8,
+    /// The stacks whose content changed.
+    pub(crate) stacks: Vec<u8>,
+}
+
+/// The most a drape slot's side halves: to 64 texels a colour slot.
+const MAX_SHRINK: u8 = 4;
+
+/// How many times terrain tile `tile`'s drape slots halve their page's
+/// side in `view`: as many as leave √2 texels a logical pixel along its
+/// longest edge on screen, the least a tile of a flat view's cover gets
+/// (a zoom's tiles show at 362 to 724 pixels, for 1024 texels; fewer
+/// soften a checkerboard's edges). A tile of a pitched or globe view that
+/// shows smaller takes as few texels as it shows, a quarter of the
+/// drawing a halving; the terrain's cover keeps most at full size.
+/// Projected level with the camera's target, and at full size where a
+/// corner is behind the eye or beyond a globe's horizon: a function of the
+/// camera alone, as what slots show must be.
+pub(crate) fn slot_shrink(view: &View, tms: &TileMatrixSet, tile: CoveredTile) -> u8 {
+    let b = tms.tile_bounds(tile.index);
+    let period = tms.projection().wrap_period().unwrap_or(0.0);
+    let shift = DVec2::new(f64::from(tile.wrap) * period, 0.0);
+    let corners = [
+        b.min,
+        DVec2::new(b.max.x, b.min.y),
+        b.max,
+        DVec2::new(b.min.x, b.max.y),
+    ];
+    let mut px = [DVec2::ZERO; 4];
+    for (out, corner) in px.iter_mut().zip(corners) {
+        let Some(at) = view.project(corner + shift) else {
+            return 0;
+        };
+        *out = at;
+    }
+    let edge = (0..4)
+        .map(|i| px[i].distance(px[(i + 1) % 4]))
+        .fold(0.0, f64::max);
+    let texels = edge * std::f64::consts::SQRT_2;
+    let room = f64::from(orb_render::DRAPE_SLOT_PX) / texels.max(1.0);
+    room.log2().floor().clamp(0.0, f64::from(MAX_SHRINK)) as u8
+}
 
 #[derive(Debug)]
 pub(crate) struct Terrain {
@@ -556,10 +603,11 @@ impl Terrain {
     /// This frame's terrain tiles for the renderer, with slots assigned
     /// from `layout` after the atlas's `moves`, and which tile slots'
     /// stacks to redraw: those whose draped content, as `content` hashes
-    /// it per stack, changed. On a globe, `globe` places a tile on the
-    /// sphere. While the camera moves, a tile keeps its slot and a new one
-    /// takes a free one; `at_rest`, each takes the slot of its place in
-    /// the cover, redrawn if it moved there.
+    /// it per stack, changed, and every stack of a tile whose slots' side
+    /// in `view` did ([`slot_shrink`]). On a globe, `globe` places a tile
+    /// on the sphere. While the camera moves, a tile keeps its slot and a
+    /// new one takes a free one; `at_rest`, each takes the slot of its
+    /// place in the cover, redrawn if it moved there.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
@@ -597,15 +645,27 @@ impl Terrain {
         let mut redraw = Vec::new();
         for (place, &tile) in (0u32..).zip(&self.tiles) {
             let content = content(tile);
+            let shrink = slot_shrink(view, tms, tile);
+            let every = || (0..content.len() as u8).collect();
             let slot = match self.slots.get_mut(&tile) {
                 Some(slot) => {
-                    let changed: Vec<u8> = (0..content.len())
-                        .filter(|&s| slot.content.get(s) != content.get(s))
-                        .map(|s| s as u8)
-                        .collect();
-                    if !changed.is_empty() {
+                    let stacks: Vec<u8> = if slot.shrink == shrink {
+                        (0..content.len())
+                            .filter(|&s| slot.content.get(s) != content.get(s))
+                            .map(|s| s as u8)
+                            .collect()
+                    } else {
+                        every()
+                    };
+                    if !stacks.is_empty() {
+                        redraw.push(Redraw {
+                            tile,
+                            slot: slot.index,
+                            shrink,
+                            stacks,
+                        });
+                        slot.shrink = shrink;
                         slot.content = content;
-                        redraw.push((tile, slot.index, changed));
                     }
                     slot.index
                 }
@@ -615,9 +675,18 @@ impl Terrain {
                     } else {
                         free.next().expect("the atlas holds every tile")
                     };
-                    let every = (0..content.len() as u8).collect();
-                    self.slots.insert(tile, Slot { index, content });
-                    redraw.push((tile, index, every));
+                    redraw.push(Redraw {
+                        tile,
+                        slot: index,
+                        shrink,
+                        stacks: every(),
+                    });
+                    let slot = Slot {
+                        index,
+                        shrink,
+                        content,
+                    };
+                    self.slots.insert(tile, slot);
                     index
                 }
             };
@@ -637,6 +706,7 @@ impl Terrain {
                 scale: (tms.tile_span(tile.index.z) / f64::from(orb_render::TERRAIN_EXTENT)) as f32,
                 dem,
                 slot,
+                shrink,
                 globe: globe(tile.index),
                 latitudes: orb_render::tile_latitudes(tile.index),
             });
@@ -797,18 +867,19 @@ fn terrain_bounds(surface: &TileMatrixSet, terrain: CoveredTile) -> WorldRect {
 
 /// Drape placements of a drawn tile (`extent` data units a side, mapped
 /// by its map placements `map_rows`) for a terrain tile and its tile
-/// slot, drawn at style zoom `zoom`, the camera's: one row set per drape
-/// stack of `stacks` (those its source's layers draw into), each mapping
-/// the tile's data into the stack's slot, clipped to the terrain tile and
-/// the `reach_px` (logical pixels) a translation moves content into it
-/// from, bounded by the terrain tile, with pixel sizes in slot texels at
-/// that zoom.
+/// slot, its slots `shrink` halvings of their page's side, drawn at style
+/// zoom `zoom` ([`drape_zoom`](crate::frame::drape_zoom)): one row set per
+/// drape stack of `stacks` (those its source's layers draw into), each
+/// mapping the tile's data into the stack's slot, clipped to the terrain
+/// tile and the `reach_px` (logical pixels) a translation moves content
+/// into it from, bounded by the terrain tile, with pixel sizes in slot
+/// texels at that zoom.
 #[expect(clippy::too_many_arguments, reason = "one placement's terms")]
 pub(crate) fn drape_rows(
     surface: &TileMatrixSet,
     drawn: Drawn,
     extent: u32,
-    (terrain, slot): (CoveredTile, u32),
+    (terrain, slot, shrink): (CoveredTile, u32, u8),
     (layout, stacks): (&DrapeLayout, &[u8]),
     (zoom, reach_px): (f64, f64),
     map_rows: impl Iterator<Item = TileRow>,
@@ -846,7 +917,7 @@ pub(crate) fn drape_rows(
             let [cx, cy] = layout.corner(slot, u32::from(stack));
             let corner = DVec2::new(f64::from(cx), -f64::from(cy));
             // Texels per world unit, and per logical pixel at the zoom.
-            let slot_px = f64::from(layout.slot_px(u32::from(stack)));
+            let slot_px = f64::from(layout.slot_px(u32::from(stack)) >> shrink);
             let k = slot_px / span;
             let o = corner + (origin - t_origin) * k;
             out.push(TileRow {
@@ -1595,7 +1666,7 @@ mod tests {
                 &tms,
                 drawn,
                 4096,
-                (terrain, 1),
+                (terrain, 1, 0),
                 (&layout, &[0, 1, 2]),
                 (zoom, 0.0),
                 [row].into_iter(),
@@ -1644,6 +1715,41 @@ mod tests {
     /// A drawn tile's regions reach a terrain tile's slots only where they
     /// overlap it: a coarse tile over two terrain tiles draws its west
     /// half's region into the west one alone.
+    #[test]
+    fn slots_shrink_with_their_tiles_on_screen() {
+        let tms = tms();
+        let mercator = *tms.projection();
+        let viewport = orb_camera::Viewport {
+            width: 1024.0,
+            height: 768.0,
+        };
+        let shrinks = |zoom: f64, pitch: f64| {
+            let target = orb_crs::Geodetic::new(7.75, 46.02);
+            let mut camera = orb_camera::CameraState::new(target, zoom, &mercator);
+            camera.pitch = pitch;
+            let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
+            (view.cover(&tms, TERRAIN_TILE_PX, 22).into_iter())
+                .map(|t| (t, slot_shrink(&view, &tms, t)))
+                .collect::<Vec<_>>()
+        };
+        // Straight down, every tile shows at 512 pixels or more.
+        for zoom in [11.0, 11.5, 11.99] {
+            assert!(shrinks(zoom, 0.0).iter().all(|&(_, s)| s == 0), "z{zoom}");
+        }
+        // A pitched view's far tiles show smaller than its near ones, and
+        // their slots with them.
+        let tilted = shrinks(11.5, 70.0);
+        assert!(tilted.iter().any(|&(_, s)| s >= 1), "{tilted:?}");
+        // The two rows under the target, at the bottom of the view.
+        let near: Vec<_> = (tilted.iter())
+            .filter(|(t, _)| t.index.z == 11 && t.index.row >= 728)
+            .collect();
+        assert!(
+            near.len() >= 4 && near.iter().all(|&&(_, s)| s == 0),
+            "{tilted:?}"
+        );
+    }
+
     #[test]
     fn a_drawn_region_reaches_the_slots_it_overlaps() {
         let tms = tms();

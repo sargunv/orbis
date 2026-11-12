@@ -6,7 +6,9 @@
 //! layers between layers that draw in 3D or on screen, the part of one
 //! above its first layer whose drawing changes with the zoom, or a
 //! hillshade the terrain shades, whose stack holds its unlit slopes).
-//! Slots are squares of mipmapped atlas pages, sized to the slots in use:
+//! Slots are squares of mipmapped atlas pages, sized to the slots in use
+//! (a tile that shows small draws the top-left square of its slots that
+//! it shows at, [`TerrainTile::shrink`]):
 //! colour stacks in one, slope stacks at half the texels a side in
 //! another, each stack's slots side by side in a layer of its page, as
 //! many stacks a layer as fit, so that a page holds as many terrain tiles
@@ -226,6 +228,11 @@ pub struct TerrainTile {
     pub dem: Option<TerrainDem>,
     /// Its block of drape slots (see [`DrapeLayout`]).
     pub slot: u32,
+    /// How many times its slots halve their page's side: each takes the
+    /// top-left square of that side of its place in the grid, which keeps
+    /// to it at every mip level, so that a tile that shows small draws
+    /// few texels.
+    pub shrink: u8,
     /// On a globe, where it lies on the sphere.
     pub globe: Option<TerrainGlobe>,
     /// Latitudes of its top and bottom edges, in degrees, which a shaded
@@ -545,9 +552,10 @@ pub(crate) struct Terrain {
     /// The size of `occlusion`, in logical pixels.
     occlusion_size: [u32; 2],
     target_samples: u32,
-    /// Slots to redraw this frame: (page, stack, slot in its layer). In a
-    /// page's order they're each stack's in turn, so each layer's.
-    pending: Vec<(usize, u32, u32)>,
+    /// Slots to redraw this frame: (page, stack, slot in its layer, its
+    /// side). In a page's order they're each stack's in turn, so each
+    /// layer's.
+    pending: Vec<(usize, u32, u32, u32)>,
     /// What the last frame's drawn mip levels rendered into, released
     /// by the next.
     mip_targets: crate::downsample::Transient,
@@ -945,16 +953,16 @@ impl Terrain {
         self.group.take().map(|(group, _)| group).release(gpu);
     }
 
-    /// Redraws tile slots' stacks this frame: per tile slot, the stacks
-    /// to redraw.
-    pub(crate) fn redraw(&mut self, tile_slots: &[(u32, &[u8])]) {
+    /// Redraws tile slots' stacks this frame: per tile slot, its
+    /// [`shrink`](TerrainTile::shrink) and the stacks to redraw.
+    pub(crate) fn redraw(&mut self, tile_slots: &[(u32, u8, &[u8])]) {
         let layout = self.layout_state;
-        for &(tile, redrawn) in tile_slots {
+        for &(tile, shrink, redrawn) in tile_slots {
             let stacks =
                 (redrawn.iter().map(|&s| u32::from(s))).filter(|&s| s < layout.stack_count());
             self.pending.extend(stacks.map(|stack| {
                 let (page, slot) = layout.slot(tile, stack);
-                (page, stack, slot)
+                (page, stack, slot, layout.slot_px(stack) >> shrink)
             }));
         }
     }
@@ -992,7 +1000,8 @@ impl Terrain {
                     .u(n::DEM_LAYER, &[layer]);
                 b.f(n::DEM_OFFSET, &offset)
                     .f(n::DEM_SCALE, &[scale])
-                    .u(n::SLOT, &[t.slot]);
+                    .u(n::SLOT, &[t.slot])
+                    .u(n::SHRINK, &[u32::from(t.shrink)]);
                 if let Some(g) = t.globe {
                     let poles = u32::from(g.poles[0]) | u32::from(g.poles[1]) << 1;
                     b.f(n::GLOBE_ORIGIN, &g.origin)
@@ -1252,10 +1261,11 @@ impl Terrain {
                 let Some(atlas) = atlas else {
                     continue;
                 };
-                // (stack, slot), each stack's in turn, so each layer's.
-                let pending: Vec<(u32, u32)> = (self.pending.iter())
+                // (stack, slot, side), each stack's in turn, so each
+                // layer's.
+                let pending: Vec<(u32, u32, u32)> = (self.pending.iter())
                     .filter(|p| p.0 == page)
-                    .map(|&(_, stack, slot)| (stack, slot))
+                    .map(|&(_, stack, slot, side)| (stack, slot, side))
                     .collect();
                 if pending.is_empty() {
                     continue;
@@ -1263,17 +1273,22 @@ impl Terrain {
                 let (columns, _) = atlas.grid();
                 let px = atlas.slot_px;
                 let regions: Vec<[u32; 4]> = (pending.iter())
-                    .map(|&(stack, s)| {
-                        [layout.layer(stack), s % columns * px, s / columns * px, px]
+                    .map(|&(stack, s, side)| {
+                        [
+                            layout.layer(stack),
+                            s % columns * px,
+                            s / columns * px,
+                            side,
+                        ]
                     })
                     .collect();
                 atlas.mips.regions.write(gpu, &regions);
                 // A pass a layer: its slots' regions cleared, then each
                 // stack's bundle replayed once per rectangle of its redrawn
-                // slots, scissored to it: what a coarse tile standing in
-                // draws spans far more than the slots it draws into (all of
-                // the layer), and would otherwise be rasterized there only
-                // to be discarded.
+                // full slots, and once per smaller slot, scissored to it:
+                // what a coarse tile standing in draws spans far more than
+                // the slots it draws into (all of the layer), and would
+                // otherwise be rasterized there only to be discarded.
                 let mut first = 0;
                 for run in pending.chunk_by(|a, b| layout.layer(a.0) == layout.layer(b.0)) {
                     let end = first + run.len() as u32;
@@ -1294,14 +1309,18 @@ impl Terrain {
                         let Some(&(_, bundle)) = drape.iter().find(|d| d.0 == stack) else {
                             continue;
                         };
-                        let slots: Vec<u32> = stack_run.iter().map(|p| p.1).collect();
-                        for [x, y, width, height] in slot_runs(&slots, columns) {
-                            commands.push(RenderCommand::SetScissor([
-                                x * px,
-                                y * px,
-                                width * px,
-                                height * px,
-                            ]));
+                        let full: Vec<u32> = (stack_run.iter())
+                            .filter(|p| p.2 == px)
+                            .map(|p| p.1)
+                            .collect();
+                        let runs = slot_runs(&full, columns)
+                            .into_iter()
+                            .map(|[x, y, w, h]| [x * px, y * px, w * px, h * px]);
+                        let small = (stack_run.iter())
+                            .filter(|p| p.2 < px)
+                            .map(|&(_, s, side)| [s % columns * px, s / columns * px, side, side]);
+                        for scissor in runs.chain(small) {
+                            commands.push(RenderCommand::SetScissor(scissor));
                             commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
                         }
                     }

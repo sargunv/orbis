@@ -595,13 +595,14 @@ impl Map {
     }
 
     /// Plans this frame's drape: makes room for the terrain tiles' slots,
-    /// writes the draped paint at the camera's zoom and picks the slots to
-    /// redraw, by what is draped under each tile. Nothing here depends on
-    /// the camera but which tiles there are, the zoom where a stack's
-    /// paint or pixel sizes follow it, and the bearing under a
-    /// viewport-anchored translate. Viewport-anchored hillshades turn with
-    /// the map too: they drape their slopes, which the terrain pass lights
-    /// from the frame's bearing.
+    /// writes the draped paint at the camera's zoom on the drape's steps
+    /// ([`drape_zoom`]) and picks the slots to redraw, by what is draped
+    /// under each tile and how large it shows. Nothing here depends on
+    /// the camera but which tiles there are and their footprints, the
+    /// zoom step where a stack's paint or pixel sizes follow it, and the
+    /// bearing under a viewport-anchored translate. Viewport-anchored
+    /// hillshades turn with the map too: they drape their slopes, which
+    /// the terrain pass lights from the frame's bearing.
     pub(crate) fn plan_drape(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -646,7 +647,7 @@ impl Map {
             }
         };
         let surface = self.surface.tms().clone();
-        let zoom = self.camera.state().zoom(self.surface.projection());
+        let zoom = drape_zoom(self.camera.state().zoom(self.surface.projection()));
         let stacks = layout.stack_count() as usize;
         let bearing = self.camera.state().bearing;
         let mut images = self.services.images.0.lock().expect("images poisoned");
@@ -771,12 +772,12 @@ impl Map {
         let slots = (layout, &moves[..], at_rest);
         let (tiles, redraw) = terrain.plan(&surface, view, slots, &content, &mut globe);
         renderer.set_terrain_tiles(gpu, &tiles);
-        let slots: Vec<(u32, &[u8])> = (redraw.iter())
-            .map(|(_, slot, stacks)| (*slot, &stacks[..]))
+        let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
+            .map(|r| (r.slot, r.shrink, &r.stacks[..]))
             .collect();
         renderer.redraw_drape(&slots);
         let reaches = (redraw.iter())
-            .map(|&(t, ..)| crate::terrain::Reach::of(&surface, t, (zoom, reach_px)))
+            .map(|r| crate::terrain::Reach::of(&surface, r.tile, (zoom, reach_px)))
             .collect();
         Some(DrapePlan {
             surface,
@@ -872,9 +873,9 @@ impl Map {
         report.tiles_drawn += rows.len() as u32;
         // Into each slot, the background's quad on its terrain tile.
         let mut slots = Vec::new();
-        for (drape, (terrain, _, _)) in drape
+        for (drape, terrain) in drape
             .iter()
-            .flat_map(|d| d.redraw.iter().map(move |r| (d, r)))
+            .flat_map(|d| d.redraw.iter().map(move |r| (d, r.tile)))
         {
             let draw = Draw {
                 tile: terrain.index,
@@ -912,6 +913,21 @@ impl Map {
     }
 }
 
+/// Steps of a zoom level the drape draws at.
+const DRAPE_ZOOM_STEPS: f64 = 32.0;
+
+/// The zoom drape slots are drawn at for a camera at style zoom `zoom`:
+/// the step below it, 1/[`DRAPE_ZOOM_STEPS`] of a level, so that a zooming
+/// camera redraws the slots whose content scales with the zoom once a
+/// step rather than every frame, at most 2% thin, and they show what a
+/// map at rest there shows, however the camera got there. Layers' zoom
+/// ranges end on steps, as their zooms are whole or halves. A zoom a
+/// rounding error short of a step (a camera's zoom read back from its
+/// scale) is on it.
+pub(crate) fn drape_zoom(zoom: f64) -> f64 {
+    (zoom * DRAPE_ZOOM_STEPS + 1e-6).floor() / DRAPE_ZOOM_STEPS
+}
+
 /// The drape slots a frame redraws: terrain tiles with their tile slots,
 /// and where slots are.
 #[derive(Debug)]
@@ -922,7 +938,7 @@ pub(crate) struct DrapePlan {
     pub(crate) redraw: Vec<crate::terrain::Redraw>,
     /// Each redrawn terrain tile's reach.
     reaches: Vec<crate::terrain::Reach>,
-    /// The camera's style zoom, which the slots are drawn at.
+    /// The zoom the slots are drawn at ([`drape_zoom`]).
     pub(crate) zoom: f64,
     /// The farthest a draped fill or line is translated, logical pixels.
     pub(crate) reach_px: f64,
@@ -941,13 +957,12 @@ impl DrapePlan {
         let drawn = crate::terrain::Drawn::of(tms, draw, at.frame, at.period);
         // The stacks a slot redraws, kept across slots for its allocation.
         let mut redrawing = Vec::new();
-        for ((terrain, slot, redrawn), reach) in self.redraw.iter().zip(&self.reaches) {
-            let (terrain, slot) = (*terrain, *slot);
+        for (redraw, reach) in self.redraw.iter().zip(&self.reaches) {
             if !drawn.within(reach) {
                 continue;
             }
             redrawing.clear();
-            redrawing.extend((stacks.iter().copied()).filter(|s| redrawn.contains(s)));
+            redrawing.extend((stacks.iter().copied()).filter(|s| redraw.stacks.contains(s)));
             let stacks = &redrawing;
             if !stacks.is_empty() {
                 let zoom = self.zoom;
@@ -956,7 +971,7 @@ impl DrapePlan {
                     &self.surface,
                     drawn,
                     at.extent,
-                    (terrain, slot),
+                    (redraw.tile, redraw.slot, redraw.shrink),
                     (&self.layout, stacks),
                     (zoom, self.reach_px),
                     map,

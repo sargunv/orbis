@@ -630,6 +630,48 @@ fn a_draped_line_is_as_wide_as_a_flat_one() {
     }
 }
 
+/// A draped line's slots draw at the zoom's drape step, a 32nd of a level:
+/// a camera zooming within one redraws none of them, and one into the
+/// next redraws them, whichever way it zooms.
+#[test]
+fn a_zoom_within_a_drape_step_redraws_no_slots() {
+    let (lon, lat) = (139.76, 35.68);
+    let (flat, _dem) = dem("flat", (139.2, 35.2, 140.3, 36.2), 11, |_, _| 0.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let style = format!(
+        r##"{{"version": 8,
+        "sources": {{{flat}
+          "line": {{"type": "geojson", "data": {{"type": "LineString",
+            "coordinates": [[{w}, {lat}], [{e}, {lat}]]}}}}
+        }},
+        "terrain": {{"source": "flat", "exaggeration": 1}},
+        "layers": [
+          {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+          {{"id": "line", "type": "line", "source": "line",
+              "paint": {{"line-color": "#000000", "line-width": 6}}}}
+        ]}}"##,
+        w = lon - 0.2,
+        e = lon + 0.2,
+    );
+    let mut map = Map::new(&runtime, options());
+    map.set_style_json(&style).unwrap();
+    let at = |zoom: f64| camera((Geodetic::new(lon, lat), zoom, 0.0, 0.0));
+    map.jump_to(&at(12.1));
+    common::settle(&mut map, &mut target);
+    let mut slots = |zoom: f64| {
+        map.jump_to(&at(zoom));
+        let report = map.render(&mut target, 0.0).unwrap().unwrap();
+        report.frame.drape_slots
+    };
+    // 12.1 is in the step from 12.09375.
+    for zoom in [12.095, 12.11, 12.12, 12.1] {
+        assert_eq!(slots(zoom), 0, "z{zoom}");
+    }
+    assert!(slots(12.13) > 0, "z12.13");
+    assert!(slots(12.09) > 0, "z12.09");
+}
+
 /// A fill draped on terrain and translated far, in a pitched view where
 /// near terrain tiles are of zooms past the camera's, draws whole: a slot
 /// takes the rows of drawn tiles as far around it as the translation
