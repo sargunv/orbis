@@ -62,26 +62,26 @@ bundle "heatmap density"#0: [Rgba16Float] depth None samples 1
     draw indirect buffer "draw args"#0 at 1824
 layout "symbol placements"#0: 0 ShaderStages(COMPUTE) Uniform; 1 ShaderStages(COMPUTE) Storage { read_only: true }; 2 ShaderStages(COMPUTE) Storage { read_only: true }; 3 ShaderStages(COMPUTE) Storage { read_only: true }; 4 ShaderStages(COMPUTE) Storage { read_only: true }; 6 ShaderStages(COMPUTE) Storage { read_only: true }; 7 ShaderStages(COMPUTE) Storage { read_only: true }; 14 ShaderStages(COMPUTE) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(COMPUTE) Texture { filterable: false, dimension: D2 }; 17 ShaderStages(COMPUTE) Storage { read_only: true }; 18 ShaderStages(COMPUTE) Storage { read_only: true }; 19 ShaderStages(COMPUTE) StorageTexture { format: Rgba32Uint, dimension: D2Array }; 
 module "symbol placement"#0: wgsl
-compute "symbol placement"#0: layouts [layout "symbol placements"#0]; module "symbol placement"#0 cs_place [("plane", 1.0), ("feature_rows", 0.0)]; 
+compute "symbol placement"#0: layouts [layout "symbol placements"#0]; module "symbol placement"#0 cs_place []; 
 texture "symbol placements"#0: Rgba32Uint D2Array samples 1 TextureUsages(TEXTURE_BINDING | STORAGE_BINDING)
 group "symbol placements"#0: layout layout "symbol placements"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 14 texture "no tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 17 buffer "node uniforms"#0 at 0 size None; 18 buffer "draw args"#0 at 0 size None; 19 texture "symbol placements"#0 as D2Array
 module "symbol line placement"#0: wgsl
-compute "symbol line placement"#0: layouts [layout "symbol placements"#0]; module "symbol line placement"#0 cs_place [("plane", 1.0), ("feature_rows", 0.0)]; 
+compute "symbol line placement"#0: layouts [layout "symbol placements"#0]; module "symbol line placement"#0 cs_place []; 
 texture "target"#0: Rgba8Unorm D2 samples 1 TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
 module "fill"#0: wgsl
-render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill [("plane", 1.0), ("feature_rows", 0.0)]; module "fill"#0 fs_fill [("plane", 1.0)]; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill []; module "fill"#0 fs_fill []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#1: layout layout "node"#0; 0 buffer "node uniforms"#0 at 2560 size Some(512)
 group "node"#2: layout layout "node"#0; 0 buffer "node uniforms"#0 at 3072 size Some(512)
 group "node"#3: layout layout "node"#0; 0 buffer "node uniforms"#0 at 4096 size Some(512)
 module "fill outline"#0: wgsl
-render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline [("plane", 1.0), ("feature_rows", 0.0)]; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
+render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline []; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
 group "node"#4: layout layout "node"#0; 0 buffer "node uniforms"#0 at 4608 size Some(512)
 group "node"#5: layout layout "node"#0; 0 buffer "node uniforms"#0 at 6144 size Some(512)
 group "node"#6: layout layout "node"#0; 0 buffer "node uniforms"#0 at 6656 size Some(512)
 group "node"#7: layout layout "node"#0; 0 buffer "node uniforms"#0 at 8192 size Some(512)
 group "node"#8: layout layout "node"#0; 0 buffer "node uniforms"#0 at 8704 size Some(512)
 module "line"#0: wgsl
-render "line"#0: layouts [layout "scene"#0, layout "node"#0]; module "line"#0 vs_line [("plane", 1.0), ("feature_rows", 0.0)]; module "line"#0 fs_line []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "line"#0: layouts [layout "scene"#0, layout "node"#0]; module "line"#0 vs_line []; module "line"#0 fs_line []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#9: layout layout "node"#0; 0 buffer "node uniforms"#0 at 9728 size Some(512)
 group "node"#10: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10240 size Some(512)
 group "node"#11: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10752 size Some(512)
@@ -127,7 +127,7 @@ group "node"#43: layout layout "node"#0; 0 buffer "node uniforms"#0 at 38912 siz
 group "node"#44: layout layout "node"#0; 0 buffer "node uniforms"#0 at 39424 size Some(512)
 layout "symbol pass"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX) UintTexture { dimension: D2Array }; 
 module "symbol"#0: wgsl
-render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol [("plane", 1.0), ("feature_rows", 0.0)]; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol []; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 group "node"#45: layout layout "node"#0; 0 buffer "node uniforms"#0 at 42496 size Some(1024)
 buffer "quad indices"#0: BufferUsages(COPY_DST | INDEX)
 buffer "symbol passes"#0: BufferUsages(COPY_DST | UNIFORM)

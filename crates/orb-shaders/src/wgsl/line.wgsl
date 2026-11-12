@@ -303,7 +303,7 @@ fn fs_line_styled(in: StyledLineOut) -> @location(0) vec4<f32> {
         discard;
     }
     var alpha = line_alpha(in.normal, in.width2, in.blur, in.gamma_scale);
-    if node.pattern.enabled != 0u {
+    if with_patterns && node.pattern.enabled != 0u {
         let a = image_at(in.images.x);
         let b = image_at(in.images.y);
         let size_a = max(vec2<f32>(a.size) / max(a.pixel_ratio, 1.0e-6), vec2<f32>(1.0e-6));

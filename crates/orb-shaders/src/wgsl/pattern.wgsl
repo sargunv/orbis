@@ -13,6 +13,14 @@ struct Pattern {
     _pad2: f32,
 };
 
+// A pipeline's variant without patterns (orb-render's `Draw::patterns`):
+// its nodes draw no fill, line or fill-extrusion pattern, and their
+// pattern reads leave its source (`orb_shaders::specialise`): the texture
+// they sample costs Apple's compiler about 30 ms a stage, whether a branch
+// reaches it or not. On by default: the variant with patterns draws every
+// node.
+override with_patterns: bool = true;
+
 fn pattern_ids(row: u32, base: u32, image_from: u32, image_to: u32, mask: u32, pattern: Pattern) -> vec2<u32> {
     if (mask & 64u) != 0u { return vec2<u32>(prop_at(row + base + select(2u, 0u, pattern.from_scale > 1.0)), prop_at(row + base + 1u)); }
     return vec2<u32>(image_from, image_to);

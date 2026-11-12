@@ -49,7 +49,7 @@ texture "target"#0: Rgba8Unorm D2 samples 1 TextureUsages(COPY_SRC | RENDER_ATTA
 layout "scene"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 2 ShaderStages(VERTEX) Storage { read_only: true }; 3 ShaderStages(VERTEX) Storage { read_only: true }; 4 ShaderStages(VERTEX) Storage { read_only: true }; 5 ShaderStages(VERTEX) Storage { read_only: true }; 6 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 7 ShaderStages(VERTEX) Storage { read_only: true }; 8 ShaderStages(FRAGMENT) Storage { read_only: true }; 9 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 10 ShaderStages(FRAGMENT) Sampler { filtering: true }; 11 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 12 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 13 ShaderStages(FRAGMENT) Sampler { filtering: true }; 14 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2 }; 16 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 
 layout "node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 
 module "fill"#0: wgsl
-render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill [("feature_rows", 0.0)]; module "fill"#0 fs_fill []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
+render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill []; module "fill"#0 fs_fill []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 buffer "image rects"#0: BufferUsages(COPY_DST | STORAGE)
 texture "images"#0: Rgba8Unorm D2Array samples 1 TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
 sampler "images"#0: Linear mips Nearest anisotropy 1
@@ -66,7 +66,7 @@ bundle "layers"#0: [Rgba8Unorm] depth None samples 1
     draw indexed indirect buffer "draw args"#0 at 0
 group "node"#1: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10240 size Some(512)
 module "fill outline"#0: wgsl
-render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline [("feature_rows", 0.0)]; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
+render "fill outline"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill outline"#0 vs_fill_outline []; module "fill outline"#0 fs_fill_outline []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None LineList cull back false samples 1
 group "node"#2: layout layout "node"#0; 0 buffer "node uniforms"#0 at 10752 size Some(512)
 layout "symbol pass"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX) UintTexture { dimension: D2Array }; 
 module "symbol"#0: wgsl

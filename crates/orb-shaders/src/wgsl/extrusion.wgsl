@@ -11,6 +11,9 @@ struct ExtrusionNode {
     vertical_gradient: u32,
     opacity: f32,
     image_from: u32, image_to: u32,
+    // 1 in the uniform of its cut stream's row (orb-render's
+    // `Scene::cut_row`), which draws the buildings its placements cut.
+    cut: u32,
     // Color, height, base, and per-feature opacity.
     curves: array<Curve, 4>,
     translate_curve: Curve,
@@ -96,12 +99,16 @@ fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
 // frame's building pass, though it read none of them (#180).
 struct ExtrusionPlainOut {
     @builtin(position) position: vec4<f32>,
+    //planes @builtin(clip_distances) clip: array<f32, 4>,
     @location(0) color: vec4<f32>,
 };
 @vertex
 fn vs_extrusion_plain(@builtin(vertex_index) index: u32) -> ExtrusionPlainOut {
     let out = extrusion_whole(index);
-    return ExtrusionPlainOut(out.position, out.color);
+    var plain: ExtrusionPlainOut;
+    plain.position = out.position;
+    plain.color = out.color;
+    return plain;
 }
 fn extrusion_whole(index: u32) -> ExtrusionOut {
     var v: Pulled;
@@ -118,11 +125,37 @@ fn extrusion_whole(index: u32) -> ExtrusionOut {
 fn vs_extrusion_cut(@builtin(vertex_index) index: u32) -> ExtrusionOut {
     return extrusion_part(index, (1u << EXTRUSION_CUT) | (1u << EXTRUSION_CUT_SPLIT), EXTRUSION_ALL);
 }
-// Where they are (`CLIP_PLANES`): cut buildings of a placement with one clip
-// rectangle, clipped by its four planes, which needs no discard...
+// Where they are (`CLIP_PLANES`): whole buildings, which no plane clips,
+// with those of the cut stream (`node.cut`) of a placement with one clip
+// rectangle, clipped by its four planes, in one pipeline that needs no
+// discard...
 @vertex
-fn vs_extrusion_cut_planes(@builtin(vertex_index) index: u32) -> ExtrusionOut {
-    return extrusion_part(index, 1u << EXTRUSION_CUT, 0u);
+fn vs_extrusion_planes(@builtin(vertex_index) index: u32) -> ExtrusionOut {
+    return extrusion_planes_vertex(index);
+}
+// ...shaded by their colour alone, as `vs_extrusion_plain`...
+@vertex
+fn vs_extrusion_planes_plain(@builtin(vertex_index) index: u32) -> ExtrusionPlainOut {
+    let out = extrusion_planes_vertex(index);
+    var plain: ExtrusionPlainOut;
+    plain.position = out.position;
+    plain.color = out.color;
+    //planes plain.clip[0] = out.clip[0];
+    //planes plain.clip[1] = out.clip[1];
+    //planes plain.clip[2] = out.clip[2];
+    //planes plain.clip[3] = out.clip[3];
+    return plain;
+}
+fn extrusion_planes_vertex(index: u32) -> ExtrusionOut {
+    if node.cut != 0u {
+        return extrusion_part(index, 1u << EXTRUSION_CUT, 0u);
+    }
+    var out = extrusion_whole(index);
+    //planes out.clip[0] = 1.0;
+    //planes out.clip[1] = 1.0;
+    //planes out.clip[2] = 1.0;
+    //planes out.clip[3] = 1.0;
+    return out;
 }
 // ...and those of a placement with several, clipped per fragment.
 @vertex
@@ -339,7 +372,7 @@ fn extrusion_vertex(v: Pulled, limb: bool) -> ExtrusionOut {
     if normal.z == 0.0 && vertical_gradient {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
     }
-    if node.pattern.enabled != 0u {
+    if with_patterns && node.pattern.enabled != 0u {
         out.images = pattern_ids(row, EXTRUSION_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
         var pattern_pos = pos;
         if normal.z == 0.0 {
@@ -471,7 +504,7 @@ fn elevation_shade(in: ExtrusionOut) -> vec4<f32> {
     return vec4<f32>(light_lit(color.rgb, in.color.x, in.color.y), 1.0) * in.color.z;
 }
 fn extrusion_color(in: ExtrusionOut) -> vec4<f32> {
-    if node.pattern.enabled == 0u {
+    if !with_patterns || node.pattern.enabled == 0u {
         if elevation_stops > 0u {
             return elevation_shade(in);
         }

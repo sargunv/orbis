@@ -219,6 +219,9 @@ struct Node {
     /// A paint or symbol node's paint reads a feature's property row or
     /// state: it draws with its pipeline's variant with rows.
     rows: bool,
+    /// A fill or line node draws a pattern: it draws with its pipeline's
+    /// variant with patterns.
+    pattern: bool,
     /// What an extrusion node's pipelines are specialised for.
     elevation: paint::ExtrusionShape,
     /// On terrain, the drape stack a draped node draws into, and the
@@ -264,6 +267,7 @@ pub fn same_pipelines(a: &NodePaint, b: &NodePaint) -> bool {
 struct PaintShape {
     styled: bool,
     rows: bool,
+    pattern: bool,
     along_line: Option<bool>,
     elevation: Option<paint::ExtrusionShape>,
 }
@@ -273,6 +277,7 @@ impl PaintShape {
         Self {
             styled: paint.styled(),
             rows: paint.reads_rows(),
+            pattern: paint.patterned(),
             along_line: match paint {
                 NodePaint::Symbol(p) => Some(p.along_line),
                 _ => None,
@@ -293,24 +298,33 @@ impl Node {
         self.shaded && self.stack.is_some()
     }
 
-    /// Its paint pipeline.
-    fn paint_kind(&self) -> PaintKind {
+    /// Its paint pipeline, `patterned` where another node of its family
+    /// draws a pattern ([`Renderer::patterned`]).
+    fn paint_kind(&self, patterned: &[Family]) -> PaintKind {
         PaintKind {
             family: self.family,
             styled: self.styled,
             rows: self.rows,
+            pattern: self.pattern || patterned.contains(&self.family),
         }
     }
 
     /// What of it picks its pipelines, which [`Renderer::set_pipelines`]
     /// sets from a paint it may draw with and puts back.
     fn shape(&self) -> NodeShape {
-        (self.styled, self.rows, self.along_line, self.elevation)
+        (
+            self.styled,
+            self.rows,
+            self.pattern,
+            self.along_line,
+            self.elevation,
+        )
     }
 
     /// Its pipelines' shape as `paint` picks them.
     fn set_shape(&mut self, paint: &NodePaint) {
         (self.styled, self.rows) = (paint.styled(), paint.reads_rows());
+        self.pattern = paint.patterned();
         match paint {
             NodePaint::Symbol(p) => self.along_line = p.along_line,
             NodePaint::Extrusion(_) | NodePaint::ExtrusionPattern(..) => {
@@ -321,12 +335,18 @@ impl Node {
     }
 
     fn restore_shape(&mut self, shape: NodeShape) {
-        (self.styled, self.rows, self.along_line, self.elevation) = shape;
+        (
+            self.styled,
+            self.rows,
+            self.pattern,
+            self.along_line,
+            self.elevation,
+        ) = shape;
     }
 }
 
-/// [`Node::shape`]: styled, rows, along lines and elevation.
-type NodeShape = (bool, bool, bool, paint::ExtrusionShape);
+/// [`Node::shape`]: styled, rows, pattern, along lines and elevation.
+type NodeShape = (bool, bool, bool, bool, paint::ExtrusionShape);
 
 /// What draws together at one zoom a style shows it at, of a style's
 /// pipeline set ([`Renderer::set_pipelines`]): a node and its paint
@@ -339,9 +359,12 @@ pub struct PipelineGroup {
     /// The blend the layer composites in there, when it composites once
     /// (below layer opacity 1, or blending other than normally).
     pub composite: Option<Blend>,
-    /// It draws in the view the set was made for: its pipelines compile
-    /// first, and frames wait for them.
-    pub first: bool,
+    /// How soon a view may need it: 0 where it draws in the view the set
+    /// was made for (its pipelines compile first, and frames wait for
+    /// them), else the place of the nearest zoom it draws at among the
+    /// whole zooms nearest that view's. Background compiles go by it, so
+    /// what a zoom reaches next compiles next.
+    pub rank: u32,
 }
 
 /// Every pipeline a style can reach on a renderer
@@ -396,6 +419,11 @@ pub struct Renderer {
     pipelines_stale: bool,
     /// Every pipeline the style can reach ([`set_pipelines`](Self::set_pipelines)).
     pipeline_set: PipelineSet,
+    /// The paint families a node of the set draws a pattern in: each of
+    /// their nodes draws with the variant with patterns. Its uniform
+    /// branch costs a pattern-less node nothing that shows, and a style
+    /// with both kinds then compiles one pipeline, not two.
+    patterned: Vec<Family>,
     /// The set is to be asked for again, in what the map draws it with
     /// now: other variants, another sample count, or into the drape.
     set_stale: bool,
@@ -649,6 +677,7 @@ impl Renderer {
             beneath: None,
             pipelines_stale: false,
             pipeline_set: PipelineSet::default(),
+            patterned: Vec::new(),
             set_stale: false,
             set_asked: 0,
             made_seen: 0,
@@ -967,6 +996,7 @@ impl Renderer {
                 // only once painted: unpainted (its layer not shown yet, or
                 // its part's opacity 0), it draws nothing.
                 rows: !family.is_symbol(),
+                pattern: false,
                 elevation: paint::ExtrusionShape::default(),
                 stack: None,
                 terrain_layer: None,
@@ -1561,10 +1591,9 @@ impl Renderer {
                 std::mem::take(&mut self.bundles).release(gpu);
             }
         }
-        let (styled, rows) = (paint.styled(), paint.reads_rows());
-        if (entry.styled, entry.rows) != (styled, rows) {
-            entry.styled = styled;
-            entry.rows = rows;
+        let shape = (paint.styled(), paint.reads_rows(), paint.patterned());
+        if (entry.styled, entry.rows, entry.pattern) != shape {
+            (entry.styled, entry.rows, entry.pattern) = shape;
             if self.nodes[self.drawer(node as usize)].drawn {
                 self.pipelines_stale = true;
                 self.invalidate_bundle(gpu);
@@ -1584,10 +1613,11 @@ impl Renderer {
         if words != entry.written {
             let stride = (NODE_UNIFORM_SIZE / 4) as usize;
             // An extrusion node's cut stream draws with its paint, from
-            // its own row, past the render nodes'.
+            // its own row, past the render nodes', which it says.
             let cut = cut_row.map(|row| {
                 let mut cut = words.clone();
                 cut[orb_shaders::layout::extrusion_node::INDEX] = row;
+                cut[orb_shaders::layout::extrusion_node::CUT] = 1;
                 (row as usize, cut)
             });
             let rows = std::iter::once((0, node as usize, &words));
@@ -1787,6 +1817,18 @@ impl Renderer {
     /// compiled waits for that pipeline alone, or draws with a variant
     /// compiled that draws it alike (`Variants::drawn`).
     pub fn set_pipelines(&mut self, gpu: &mut dyn Gpu, set: PipelineSet) {
+        let mut patterned: Vec<Family> = (set.groups.iter())
+            .flat_map(|g| &g.nodes)
+            .filter(|(_, paint)| paint.as_ref().is_some_and(NodePaint::patterned))
+            .filter_map(|&(i, _)| self.nodes.get(i as usize).map(|n| n.family))
+            .collect();
+        patterned.sort_by_key(|f| *f as u8);
+        patterned.dedup();
+        if patterned != self.patterned {
+            self.patterned = patterned;
+            self.pipelines_stale = true;
+            self.invalidate_bundle(gpu);
+        }
         self.pipeline_set = set;
         self.set_stale = false;
         self.request_set(gpu);
@@ -1842,13 +1884,14 @@ impl Renderer {
         if ahead {
             self.assign_stacks_as(true);
         }
-        for first in [true, false] {
+        let mut order: Vec<&PipelineGroup> = set.groups.iter().collect();
+        order.sort_by_key(|g| g.rank);
+        for group in order {
+            let first = group.rank == 0;
             gpu.set_background_compiles(!first);
-            for group in set.groups.iter().filter(|g| g.first == first) {
-                self.request_group(gpu, &group.nodes, !first);
-                if let Some(blend) = group.composite {
-                    self.composites.make(gpu, offscreen::Mode::Blend(blend));
-                }
+            self.request_group(gpu, &group.nodes, !first);
+            if let Some(blend) = group.composite {
+                self.composites.make(gpu, offscreen::Mode::Blend(blend));
             }
         }
         gpu.set_background_compiles(false);
@@ -1955,7 +1998,7 @@ impl Renderer {
         let own_drape = self.target.color != drape_target.color;
         let variants = self.variants();
         let node = &self.nodes[i];
-        let (family, kind) = (node.family, node.paint_kind());
+        let (family, kind) = (node.family, node.paint_kind(&self.patterned));
         if matches!(family, Family::Hillshade | Family::ColorRelief) {
             // Its DEM tiles are prepared.
             self.images.make_prepare(gpu);
@@ -2003,7 +2046,7 @@ impl Renderer {
         let variants = self.variants();
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
-                let kind = self.nodes[i].paint_kind();
+                let kind = self.nodes[i].paint_kind(&self.patterned);
                 self.paint.make(gpu, self.target, &layouts, kind, variants);
             }
             Family::SymbolIcon | Family::SymbolText => {
@@ -2046,7 +2089,7 @@ impl Renderer {
         {
             out.extend(
                 d.paint
-                    .wanted(node.paint_kind(), self.full)
+                    .wanted(node.paint_kind(&self.patterned), self.full)
                     .or_else(|| {
                         node.family
                             .is_image()
@@ -2074,9 +2117,12 @@ impl Renderer {
                     out.extend(self.images.prepare_pipelines());
                 }
             }
-            _ => {
-                out.extend((self.paint.wanted(node.paint_kind(), self.full)).map(PipelineId::from))
-            }
+            _ => out.extend(
+                (self
+                    .paint
+                    .wanted(node.paint_kind(&self.patterned), self.full))
+                .map(PipelineId::from),
+            ),
         }
     }
 
@@ -2990,9 +3036,13 @@ impl Renderer {
         let pipeline = match (drape, node.family.is_image()) {
             _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),
-            (Some(d), false) => d.paint.drawn(gpu, node.paint_kind(), self.full),
+            (Some(d), false) => d
+                .paint
+                .drawn(gpu, node.paint_kind(&self.patterned), self.full),
             (None, true) => self.images.pipeline(node.family),
-            (None, false) => self.paint.drawn(gpu, node.paint_kind(), self.full),
+            (None, false) => self
+                .paint
+                .drawn(gpu, node.paint_kind(&self.patterned), self.full),
         };
         let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
             return false;
@@ -3238,13 +3288,16 @@ struct PaintKind {
     styled: bool,
     /// Its variant with property rows ([`orb_shaders::FEATURE_ROWS`]).
     rows: bool,
+    /// Its variant with patterns ([`orb_shaders::PATTERNS`]).
+    pattern: bool,
 }
 
-/// The vector families' pipelines (fill, fill outline, line, circle), each
-/// made for the family's first node, with property rows and without.
+/// The vector families' pipelines (fill, fill outline, line, styled line,
+/// circle), each made for the family's first node, with property rows and
+/// without, and those that draw patterns with them and without.
 #[derive(Clone, Copy, Debug, Default)]
 struct PaintPipelines {
-    pipelines: [Variants; 10],
+    pipelines: [Variants; 20],
 }
 
 impl PaintPipelines {
@@ -3258,7 +3311,7 @@ impl PaintPipelines {
             Family::Circle => 3,
             _ => return None,
         };
-        Some(2 * shader + usize::from(kind.rows))
+        Some(4 * shader + 2 * usize::from(kind.pattern) + usize::from(kind.rows))
     }
 
     /// What a frame draws a node of `kind` with ([`Variants::drawn`]).
@@ -3285,7 +3338,7 @@ impl PaintPipelines {
         let Some(index) = Self::index(kind) else {
             return;
         };
-        let (shader, topology) = match index / 2 {
+        let (shader, topology) = match index / 4 {
             0 => (&FILL_SHADER, PrimitiveTopology::TriangleList),
             1 => (&FILL_OUTLINE_SHADER, PrimitiveTopology::LineList),
             2 => (&LINE_SHADER, PrimitiveTopology::TriangleList),
@@ -3295,6 +3348,7 @@ impl PaintPipelines {
         let draw = Draw {
             topology,
             rows: kind.rows,
+            patterns: kind.pattern,
             ..Draw::new(
                 shader,
                 layouts,

@@ -70,7 +70,7 @@ pub(crate) fn for_style(
                     groups.push(PipelineGroup {
                         nodes: vec![(index as u32, None)],
                         composite,
-                        first: n == 0,
+                        rank: n as u32,
                     });
                 }
             }
@@ -136,7 +136,7 @@ pub(crate) fn for_style(
                 groups.push(PipelineGroup {
                     nodes,
                     composite,
-                    first: n == 0,
+                    rank: n as u32,
                 });
             }
         }

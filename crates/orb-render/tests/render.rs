@@ -1855,7 +1855,7 @@ fn the_set_asks_for_the_symbol_pipeline_both_halves_pick() {
             .map(|nodes| PipelineGroup {
                 nodes,
                 composite: None,
-                first: false,
+                rank: 1,
             })
             .collect(),
         sky: false,

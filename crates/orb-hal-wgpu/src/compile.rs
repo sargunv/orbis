@@ -949,10 +949,12 @@ mod webgpu {
     /// Called when a promise settles: the map draws the pipeline then.
     type Wake = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
-    /// Background compiles in flight at once: the browser compiles async
-    /// pipelines on a few threads in turn, and one a frame asks for later
-    /// waits behind those it already has.
-    const BACKGROUND_LANES: usize = 2;
+    /// Background compiles in flight at once: one. The browser compiles
+    /// async pipelines in turn, Firefox on the thread that runs the
+    /// device's commands (frames' submissions and presents wait behind
+    /// each), and one a frame asks for later waits behind those it already
+    /// has: when input pauses them, at most one is left to finish.
+    const BACKGROUND_LANES: usize = 1;
 
     /// Compiles with the browser's async pipeline creation.
     #[derive(Default)]

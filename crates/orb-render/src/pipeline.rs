@@ -35,6 +35,9 @@ pub(crate) struct Draw<'a> {
     /// ([`orb_shaders::FEATURE_STATE`], set in the stages that read it):
     /// for nodes whose paint reads no feature's state.
     pub(crate) state: bool,
+    /// False for its variant without patterns ([`orb_shaders::PATTERNS`]):
+    /// for nodes that draw none.
+    pub(crate) patterns: bool,
     pub(crate) layouts: &'a [BindGroupLayoutId],
     pub(crate) target: ColorTargetState,
     pub(crate) sample_count: u32,
@@ -58,6 +61,7 @@ impl<'a> Draw<'a> {
             plane: false,
             rows: true,
             state: true,
+            patterns: true,
             layouts,
             target: ColorTargetState {
                 format: target.color,
@@ -72,18 +76,24 @@ impl<'a> Draw<'a> {
 
     pub(crate) fn make(&self, gpu: &mut dyn Gpu) -> RenderPipelineId {
         let ((vertex, vertex_entry), (fragment, fragment_entry)) = (self.vertex, self.fragment);
-        let vertex_module = module(gpu, vertex);
+        let variant = Variant {
+            plane: self.plane,
+            rows: self.rows,
+            state: self.state,
+            patterns: self.patterns,
+        };
+        let vertex_module = module(gpu, vertex, variant);
         let apart = vertex.label != fragment.label;
         let fragment_module = if apart {
-            module(gpu, fragment)
+            module(gpu, fragment, variant)
         } else {
             vertex_module
         };
         let [vertex_constants, fragment_constants] = [
-            (vertex, vertex_entry, self.constants[0]),
-            (fragment, fragment_entry, self.constants[1]),
+            (vertex, vertex_entry, self.constants[0], vertex_module),
+            (fragment, fragment_entry, self.constants[1], fragment_module),
         ]
-        .map(|(shader, entry, constants)| {
+        .map(|(shader, entry, constants, (_, specialised))| {
             let mut constants = constants.to_vec();
             if self.plane && shader.takes(entry, orb_shaders::PLANE) {
                 constants.push((orb_shaders::PLANE, 1.0));
@@ -94,9 +104,16 @@ impl<'a> Draw<'a> {
             if !self.state && shader.takes(entry, orb_shaders::FEATURE_STATE) {
                 constants.push((orb_shaders::FEATURE_STATE, 0.0));
             }
+            if !self.patterns && shader.takes(entry, orb_shaders::PATTERNS) {
+                constants.push((orb_shaders::PATTERNS, 0.0));
+            }
             constants.extend(data_width(gpu, shader, entry));
+            if specialised {
+                constants.retain(|(name, _)| !VARIANT_CONSTANTS.contains(name));
+            }
             constants
         });
+        let (vertex_module, fragment_module) = (vertex_module.0, fragment_module.0);
         debug_assert!(
             !self.plane || vertex.takes(vertex_entry, orb_shaders::PLANE),
             "{}: no plane variant",
@@ -147,8 +164,22 @@ pub(crate) fn compute(
     layouts: &[BindGroupLayoutId],
     constants: &[(&str, f64)],
 ) -> ComputePipelineId {
-    let module = module(gpu, shader);
+    let set = |name: &str, default: bool| {
+        (constants.iter())
+            .find(|(n, _)| *n == name)
+            .map_or(default, |&(_, v)| v != 0.0)
+    };
+    let variant = Variant {
+        plane: set(orb_shaders::PLANE, false),
+        rows: set(orb_shaders::FEATURE_ROWS, true),
+        state: set(orb_shaders::FEATURE_STATE, true),
+        patterns: set(orb_shaders::PATTERNS, true),
+    };
+    let (module, specialised) = module(gpu, shader, variant);
     let mut constants = constants.to_vec();
+    if specialised {
+        constants.retain(|(name, _)| !VARIANT_CONSTANTS.contains(name));
+    }
     constants.extend(data_width(gpu, shader, shader.compute));
     let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
         label: shader.label,
@@ -163,14 +194,53 @@ pub(crate) fn compute(
     pipeline
 }
 
-/// A module of `shader`'s WGSL: reading the tables from data textures
-/// where the device's vertex stage has no storage buffers (the tables'
-/// texture backing), and on a device without compute (WebGL 2) every
-/// other table too, with the built-ins written out
-/// ([`Shader::gl_source`]), and that written as GLSL ES 3.00 by the build
-/// (`orb_shaders::glsl`), which a GL ES device compiles as it is. WebGL 2's
-/// build (core-gl.wasm) carries that GLSL alone, no WGSL.
-fn module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
+/// The override constants that make a pipeline's variant: its module is
+/// specialised to them ([`orb_shaders::specialise`]), and its stages set
+/// none of them.
+const VARIANT_CONSTANTS: [&str; 4] = [
+    orb_shaders::PLANE,
+    orb_shaders::FEATURE_ROWS,
+    orb_shaders::FEATURE_STATE,
+    orb_shaders::PATTERNS,
+];
+
+/// A pipeline's variant: [`Draw::plane`], [`Draw::rows`], [`Draw::state`]
+/// and [`Draw::patterns`].
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(
+    all(cpu_driven, target_arch = "wasm32"),
+    expect(dead_code, reason = "WebGL 2's build compiles the build's GLSL")
+)]
+struct Variant {
+    plane: bool,
+    rows: bool,
+    state: bool,
+    patterns: bool,
+}
+
+impl Variant {
+    /// [`VARIANT_CONSTANTS`]' values.
+    #[cfg(not(all(cpu_driven, target_arch = "wasm32")))]
+    fn constants(self) -> [(&'static str, f64); 4] {
+        let flags = [self.plane, self.rows, self.state, self.patterns];
+        std::array::from_fn(|i| (VARIANT_CONSTANTS[i], f64::from(u8::from(flags[i]))))
+    }
+}
+
+/// A module of `shader`'s WGSL specialised to `variant`, and whether it
+/// is: Apple's compiler takes as long over code no branch reaches as over
+/// code that runs, and about 30 ms over a stage with any texture in it,
+/// which override constants alone left to it. Not on a GL device, whose
+/// GLSL the build wrote and whose compiler drops what a constant decides.
+///
+/// It reads the tables from data textures where the device's vertex
+/// stage has no storage buffers (the tables' texture backing), and on a
+/// device without compute (WebGL 2) every other table too, with the
+/// built-ins written out ([`Shader::gl_source`]), and that written as GLSL
+/// ES 3.00 by the build (`orb_shaders::glsl`), which a GL ES device
+/// compiles as it is. WebGL 2's build (core-gl.wasm) carries that GLSL
+/// alone, no WGSL.
+fn module(gpu: &mut dyn Gpu, shader: &Shader, variant: Variant) -> (ShaderModuleId, bool) {
     #[cfg(cpu_driven)]
     let gl: Option<Glsl> = Some(orb_shaders::glsl);
     #[cfg(all(cpu_driven, target_arch = "wasm32"))]
@@ -187,12 +257,34 @@ fn module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
     };
     #[cfg(all(not(cpu_driven), target_arch = "wasm32"))]
     let (source, ir, glsl) = (shader.source(), shader.ir(), None);
-    gpu.create_shader_module(&ShaderModuleDesc {
+    #[cfg(not(all(cpu_driven, target_arch = "wasm32")))]
+    let (source, ir, specialised) = {
+        // Natively the module is then made from its WGSL, not from the
+        // build's naga modules, and parsing that takes about 25 ms of a
+        // compile thread on an M6: only for the variants that leave out
+        // more, the terrain's and the patterns' textures. Where there are
+        // no naga modules (the browser) every module is parsed anyway.
+        let pays = ir.is_none() || variant.plane || !variant.patterns;
+        match (glsl.is_none() && pays)
+            .then(|| orb_shaders::specialise(&source, &variant.constants()))
+            .flatten()
+        {
+            Some(specialised) => (specialised, None, true),
+            None => (source, ir, false),
+        }
+    };
+    #[cfg(all(cpu_driven, target_arch = "wasm32"))]
+    let specialised = {
+        let _ = variant;
+        false
+    };
+    let module = gpu.create_shader_module(&ShaderModuleDesc {
         label: shader.label,
         source: source.into(),
         ir,
         glsl,
-    })
+    });
+    (module, specialised)
 }
 
 /// The data width a stage reading data textures takes, where it isn't

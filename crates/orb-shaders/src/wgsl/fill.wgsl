@@ -163,7 +163,7 @@ fn fs_fill(in: FillOut) -> @location(0) vec4<f32> {
     if !fill_drawn(in) {
         discard;
     }
-    if node.pattern.enabled == 1u {
+    if with_patterns && node.pattern.enabled == 1u {
         return fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);
     }
     return in.color;
@@ -176,7 +176,7 @@ fn fs_fill_outline(in: FillOut) -> @location(0) vec4<f32> {
     }
     let dist = length(in.screen - (in.position.xy - in.screen_origin));
     var color = in.color;
-    if node.pattern.enabled == 1u {
+    if with_patterns && node.pattern.enabled == 1u {
         color = fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);
     }
     return color * (1.0 - smoothstep(0.0, 1.0, dist));

@@ -420,14 +420,15 @@ pub const EXTRUSION_CUT_SHADER: Shader = Shader {
     fragment: "fs_extrusion_cut",
     ..EXTRUSION_SHADER
 };
-/// Cut extrusions of a placement with one clip rectangle, clipped by its
-/// four planes: no discard. Where clip distances are. Vertex only: its
-/// pipeline draws `EXTRUSION_SHADER`'s `fs_extrusion`, as a fragment stage
-/// can't take the clip distances its vertex output carries.
+/// Where clip distances are, whole extrusions and those cut of a placement
+/// with one clip rectangle, clipped by its four planes, in one pipeline
+/// without discard: [`EXTRUSION_SHADER`]'s whole pipeline's place. Vertex
+/// only: its pipeline draws `EXTRUSION_SHADER`'s fragment stages, as a
+/// fragment stage can't take the clip distances its vertex output carries.
 pub const EXTRUSION_PLANES_SHADER: Shader = Shader {
     label: "extrusion planes",
     parts: &[CLIP_PLANES, TYPES, DRAW, PATTERN, LIGHTING, EXTRUSION],
-    vertex: "vs_extrusion_cut_planes",
+    vertex: "vs_extrusion_planes",
     fragment: "",
     ..EXTRUSION_SHADER
 };

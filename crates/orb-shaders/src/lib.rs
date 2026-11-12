@@ -35,6 +35,10 @@ mod catalog;
 pub use catalog::*;
 #[cfg(not(glsl_only))]
 mod sources;
+#[cfg(not(glsl_only))]
+mod specialise;
+#[cfg(not(glsl_only))]
+pub use specialise::specialise;
 
 #[cfg(feature = "ir")]
 mod ir {
@@ -97,6 +101,11 @@ pub const FEATURE_ROWS: &str = "feature_rows";
 /// without feature state (`draw.wgsl`'s `feature_state`): for nodes whose
 /// paint reads no feature's state.
 pub const FEATURE_STATE: &str = "feature_state";
+
+/// The override constant that, set false, makes a pipeline its variant
+/// without patterns (`pattern.wgsl`'s `with_patterns`): for nodes that draw
+/// no fill, line or fill-extrusion pattern.
+pub const PATTERNS: &str = "with_patterns";
 
 /// The override constant that, set to 11, makes a pipeline read data
 /// textures 2048 words wide (`data_texture.wgsl`'s `data_width_log2`;
@@ -229,6 +238,41 @@ mod tests {
                     let base = function_info[base].ty.inner_with(&module.types);
                     assert!(!is_array(base), "{name}: indexes an array value");
                 }
+            }
+        }
+    }
+
+    /// Every shader specialised to every variant (orb-render's
+    /// `pipeline::module`) is valid WGSL with each of its entry points, and
+    /// sets none of the variant's constants: a fold that cut what it
+    /// shouldn't, or left a block open, shows here.
+    #[test]
+    fn every_variant_specialises_to_valid_wgsl() {
+        let flags = [PLANE, FEATURE_ROWS, FEATURE_STATE, PATTERNS];
+        for shader in SHADERS {
+            let source = shader.source();
+            for bits in 0..16u8 {
+                let constants: Vec<(&str, f64)> = (flags.iter().enumerate())
+                    .map(|(i, &name)| (name, f64::from((bits >> i) & 1)))
+                    .collect();
+                let Some(specialised) = specialise(&source, &constants) else {
+                    continue;
+                };
+                let label = format!("{} {constants:?}", shader.label);
+                let (module, _) = parse(&label, &specialised);
+                for entry in [shader.vertex, shader.fragment, shader.compute] {
+                    assert!(
+                        entry.is_empty() || module.entry_points.iter().any(|e| e.name == entry),
+                        "{label}: no {entry}"
+                    );
+                }
+                assert!(
+                    !module
+                        .overrides
+                        .iter()
+                        .any(|(_, o)| (o.name.as_deref()).is_some_and(|n| flags.contains(&n))),
+                    "{label}: a variant constant is left"
+                );
             }
         }
     }

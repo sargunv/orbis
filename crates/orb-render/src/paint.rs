@@ -294,6 +294,8 @@ pub(crate) struct ExtrusionShape {
     /// Stops from features' rows (bit 0) or state (bit 1).
     dynamic: u32,
     pub(crate) stateless: bool,
+    /// It draws a pattern ([`orb_shaders::PATTERNS`]).
+    pub(crate) pattern: bool,
     /// No pattern or colour over the elevation: the whole pipeline passes
     /// its fragment stage the colour alone
     /// (`vs_extrusion_plain`).
@@ -326,6 +328,7 @@ impl ExtrusionPaint {
         let Some(e) = &self.elevation else {
             return ExtrusionShape {
                 stateless,
+                pattern,
                 plain: !pattern,
                 ..ExtrusionShape::default()
             };
@@ -345,6 +348,7 @@ impl ExtrusionPaint {
             },
             dynamic: u32::from(e.rows != 0) | u32::from(state) << 1,
             stateless,
+            pattern,
             plain: false,
         }
     }
@@ -502,6 +506,15 @@ impl NodePaint {
 
     /// A line's dashes, pattern or gradient: it draws with the styled
     /// line pipeline.
+    /// Whether it draws a pattern: its pipeline's variant without
+    /// patterns can't draw it ([`orb_shaders::PATTERNS`]).
+    pub(crate) fn patterned(&self) -> bool {
+        matches!(
+            self,
+            Self::FillPattern(..) | Self::LinePattern(..) | Self::ExtrusionPattern(..)
+        )
+    }
+
     pub(crate) fn styled(&self) -> bool {
         match self {
             Self::Line(p) => p.dash.is_some() || p.gradient,

@@ -13,10 +13,15 @@ use orb_shaders::{EXTRUSION_CUT_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADE
 #[derive(Debug)]
 pub(crate) struct Extrusions {
     /// Per shape of colour over the elevation and variant (`full`):
-    /// whole buildings; cut ones clipped per fragment, which alone discard;
-    /// and where clip distances are, cut ones clipped by planes; at one
-    /// sample and at four.
+    /// whole buildings, and where clip distances are, with them the cut
+    /// ones of a placement with one clip rectangle, clipped by its planes
+    /// (`planes`); and the cut ones clipped per fragment, which alone
+    /// discard; at one sample and at four.
     pipelines: Vec<((ExtrusionShape, bool), Pipelines)>,
+    /// The device has clip distances: the first pipeline draws the cut
+    /// stream too, its buildings of a placement with one clip rectangle,
+    /// in one compile fewer than a pipeline of their own.
+    planes: bool,
     /// The shapes and variants of `pipelines` made ahead of need
     /// ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)) that no node has
     /// drawn with: what draws waits for none of them.
@@ -77,7 +82,7 @@ impl Streams {
     }
 }
 
-type Pipelines = [[Option<RenderPipelineId>; 2]; 3];
+type Pipelines = [[Option<RenderPipelineId>; 2]; 2];
 
 impl Extrusions {
     pub(crate) fn new(
@@ -87,6 +92,7 @@ impl Extrusions {
     ) -> Self {
         Self {
             pipelines: Vec::new(),
+            planes: false,
             warm: Vec::new(),
             full: true,
             drawn_full: true,
@@ -128,19 +134,19 @@ impl Extrusions {
         (self.pipelines.iter()).filter(|(key, _)| !self.warm.contains(key))
     }
 
-    /// The whole, cut and planes pipelines for `shape` at the current
-    /// sample count in the variant they draw in.
-    fn slot(&self, shape: ExtrusionShape) -> [Option<RenderPipelineId>; 3] {
+    /// The whole and cut pipelines for `shape` at the current sample count
+    /// in the variant they draw in.
+    fn slot(&self, shape: ExtrusionShape) -> [Option<RenderPipelineId>; 2] {
         self.slot_in(shape, self.drawn_full)
     }
 
-    /// The whole, cut and planes pipelines for `shape` at the current
-    /// sample count in the full variant or the plane one.
-    fn slot_in(&self, shape: ExtrusionShape, full: bool) -> [Option<RenderPipelineId>; 3] {
+    /// The whole and cut pipelines for `shape` at the current sample count
+    /// in the full variant or the plane one.
+    fn slot_in(&self, shape: ExtrusionShape, full: bool) -> [Option<RenderPipelineId>; 2] {
         let samples = usize::from(self.samples == 4);
         (self.pipelines.iter())
             .find(|(s, _)| *s == (shape, full))
-            .map_or([None; 3], |(_, p)| p.map(|p| p[samples]))
+            .map_or([None; 2], |(_, p)| p.map(|p| p[samples]))
     }
 
     /// Makes the pipelines for `shape` at the current sample count and
@@ -152,7 +158,7 @@ impl Extrusions {
         let index = match self.pipelines.iter().position(|(s, _)| *s == key) {
             Some(i) => i,
             None => {
-                self.pipelines.push((key, [[None; 2]; 3]));
+                self.pipelines.push((key, [[None; 2]; 2]));
                 if warm {
                     self.warm.push(key);
                 }
@@ -163,37 +169,33 @@ impl Extrusions {
             self.warm.retain(|k| *k != key);
         }
         let (whole, cut) = (EXTRUSION_SHADER, EXTRUSION_CUT_SHADER);
-        // With clip distances, the cut pipeline keeps the buildings of
-        // placements with several clip rectangles, and the planes one draws
-        // the rest with the whole pipeline's fragment stage.
-        let planes = gpu.caps().clip_distances;
+        // With clip distances, the whole pipeline's vertex stage also clips
+        // the cut buildings of placements with one clip rectangle by its
+        // planes, and the cut pipeline keeps those of placements with
+        // several.
+        self.planes = gpu.caps().clip_distances;
+        let (whole_vertex, cut_vertex) = match self.planes {
+            true => (
+                (&EXTRUSION_PLANES_SHADER, "vs_extrusion_planes"),
+                "vs_extrusion_cut_split",
+            ),
+            false => ((&whole, whole.vertex), cut.vertex),
+        };
         // Buildings shaded by their colour alone pass nothing else.
-        let whole_stages = match shape.plain {
-            true => ("vs_extrusion_plain", "fs_extrusion_plain"),
-            false => (whole.vertex, whole.fragment),
+        let whole_stages = match (shape.plain, self.planes) {
+            (true, true) => (
+                (whole_vertex.0, "vs_extrusion_planes_plain"),
+                "fs_extrusion_plain",
+            ),
+            (true, false) => ((&whole, "vs_extrusion_plain"), "fs_extrusion_plain"),
+            (false, _) => (whole_vertex, whole.fragment),
         };
         let stages = [
-            Some(((&whole, whole_stages.0), (&whole, whole_stages.1))),
-            Some((
-                (
-                    &cut,
-                    if planes {
-                        "vs_extrusion_cut_split"
-                    } else {
-                        cut.vertex
-                    },
-                ),
-                (&cut, cut.fragment),
-            )),
-            planes.then_some((
-                (&EXTRUSION_PLANES_SHADER, EXTRUSION_PLANES_SHADER.vertex),
-                (&whole, whole.fragment),
-            )),
+            (whole_stages.0, (&whole, whole_stages.1)),
+            ((&cut, cut_vertex), (&cut, cut.fragment)),
         ];
-        for (kind, stages) in stages.into_iter().enumerate() {
-            if let (None, Some((vertex, fragment))) =
-                (self.pipelines[index].1[kind][samples], stages)
-            {
+        for (kind, (vertex, fragment)) in stages.into_iter().enumerate() {
+            if self.pipelines[index].1[kind][samples].is_none() {
                 let pipeline = self.pipeline(gpu, vertex, fragment, shape);
                 self.pipelines[index].1[kind][samples] = Some(pipeline);
             }
@@ -222,6 +224,7 @@ impl Extrusions {
             cull_back: true,
             plane: !self.full,
             state: !shape.stateless,
+            patterns: shape.pattern,
             ..Draw::new(vertex.0, &self.layouts, target, None)
         }
         .make(gpu)
@@ -331,7 +334,7 @@ impl Extrusions {
         (streams, shape): (&Streams, ExtrusionShape),
         first: bool,
     ) -> RenderPass {
-        let [whole, cut, planes] = self.slot(shape);
+        let [whole, cut] = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
             let mut commands = vec![
                 RenderCommand::SetBindGroup {
@@ -343,9 +346,12 @@ impl Extrusions {
                     offset: 0,
                 },
             ];
-            // The buildings, each pipeline over its stream.
+            // The buildings, each pipeline over its stream; with clip
+            // distances the whole pipeline draws the cut stream's
+            // buildings it clips by planes too.
             let [w, c] = [&streams.whole, &streams.cut];
-            let draws = [(whole, w), (cut, c), (planes, c)].into_iter();
+            let planes = self.planes.then_some((whole, c));
+            let draws = [(whole, w), (cut, c)].into_iter().chain(planes);
             streams.record(draws, &mut commands);
             gpu.create_render_bundle(
                 &RenderBundleDesc {
