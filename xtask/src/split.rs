@@ -31,7 +31,10 @@
 //! calls them through a table of them; the deferred module, made with
 //! core.wasm's exports, writes the real functions into that table. A
 //! custom section, [`SECTION`], names the table's export, and its absence
-//! tells the loader the module is whole.
+//! tells the loader the module is whole. Both halves carry another,
+//! [`PAIR`], a hash of the deferred half: a deferred half from another
+//! build would link to the wrong functions, or not at all, so the loader
+//! takes only its own.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -51,6 +54,9 @@ const NAMESPACE: &str = "placeholder.deferred";
 const PREFIX: &str = "placeholder";
 /// The custom section naming the placeholder table's export.
 const SECTION: &str = "orbis.deferred";
+/// The custom section in both halves naming their pair: the FNV-1a 64
+/// hash of the deferred half's bytes, in hex.
+const PAIR: &str = "orbis.pair";
 
 /// What a split moved.
 pub(crate) struct Split {
@@ -175,7 +181,11 @@ pub(crate) fn loose(name: &str) -> String {
 }
 
 fn fnv(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, b| {
+    fnv_bytes(text.as_bytes())
+}
+
+fn fnv_bytes(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
         (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })
 }
@@ -469,8 +479,12 @@ pub(crate) fn split(
             "wasm-split imported a placeholder from `{other}`, not `{NAMESPACE}`"
         ));
     }
-    let table = placeholder_table(&read(secondary)?)?;
+    let deferred = read(secondary)?;
+    let table = placeholder_table(&deferred)?;
     append_section(primary, SECTION, table.as_bytes())?;
+    let pair = format!("{:016x}", fnv_bytes(&deferred));
+    append_section(primary, PAIR, pair.as_bytes())?;
+    append_section(secondary, PAIR, pair.as_bytes())?;
     Ok(result)
 }
 

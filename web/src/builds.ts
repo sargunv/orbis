@@ -59,6 +59,9 @@ const DEFERRED: Partial<Record<Backend, URL>> = {
 /** The custom section of a split module naming its placeholder table's
  * export; a whole module has none. */
 const SECTION = "orbis.deferred";
+/** The custom section both halves of a split build carry, naming their
+ * pair: a deferred half takes only its own primary. */
+const PAIR = "orbis.pair";
 /** Where a split module imports its placeholders from. */
 const PLACEHOLDERS = "placeholder.deferred";
 
@@ -66,7 +69,9 @@ const compile = (backend: Backend) =>
   WebAssembly.compileStreaming(fetch(WASM[backend]));
 
 /** This context's map instance, while its deferred half isn't in. */
-let waiting: { instance: WebAssembly.Instance; url: URL } | undefined;
+let waiting:
+  | { instance: WebAssembly.Instance; module: WebAssembly.Module; url: URL }
+  | undefined;
 /** The compiled deferred half, once this context has it. */
 let deferred: WebAssembly.Module | undefined;
 let fetching: Promise<WebAssembly.Module> | undefined;
@@ -107,7 +112,7 @@ export function instantiate(
     table = instance.exports[
       new TextDecoder().decode(section)
     ] as WebAssembly.Table;
-    waiting = { instance, url };
+    waiting = { instance, module, url };
     if (deferred) link();
   }
   glue.__wbg_finalize_init(instance, module);
@@ -175,13 +180,20 @@ export function takeDeferred(module: WebAssembly.Module): void {
  * fetched and compiled now, for a placeholder called before. */
 function link(): void {
   if (!waiting) return;
-  const { instance, url } = waiting;
+  const { instance, module, url } = waiting;
   try {
     deferred ??= new WebAssembly.Module(fetchNow(url));
+    // Another build's deferred half (a stale copy, a cache) would write
+    // other functions into the table, or fail to link, its error thrown
+    // through the Rust frames of the call that needed it.
+    const pair = (m: WebAssembly.Module) =>
+      new TextDecoder().decode(WebAssembly.Module.customSections(m, PAIR)[0]);
+    if (pair(deferred) !== pair(module))
+      throw new Error("it is another build's");
+    new WebAssembly.Instance(deferred, { primary: instance.exports });
   } catch (e) {
     throw new DeferredLoadError(url, e);
   }
-  new WebAssembly.Instance(deferred, { primary: instance.exports });
   waiting = undefined;
 }
 
