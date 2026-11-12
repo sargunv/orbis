@@ -11,7 +11,8 @@
 //! Messages, map to placement worker: `{ingest, buffer}` (a
 //! bucket id and its packed tables), `{remove}` (a bucket id),
 //! `{ground: buffer}` (the terrain's elevation pyramid for the frames that
-//! follow, empty for none; sent when the terrain changes) and
+//! follow, as the DEM tiles that changed since the last one sent,
+//! [`orb_runtime::pyramid_delta`]; empty for no terrain) and
 //! `{place: buffer}` (a packed frame). Placement worker to map:
 //! `{committed: buffer}`, one per frame.
 
@@ -33,11 +34,12 @@ thread_local! {
 }
 
 /// A map's `post(message, transfer)` to its placement worker, the commits
-/// it owes, oldest first, and the terrain last sent.
+/// it owes, oldest first, and the terrain last sent with its pyramid.
 struct Lane {
     post: js_sys::Function,
     owed: VecDeque<PlaceDone>,
     ground: Option<GroundRef>,
+    pyramid: Option<Arc<[u8]>>,
     /// The worker was replaced since the map last asked.
     restarted: bool,
 }
@@ -49,6 +51,7 @@ pub(crate) fn lost(map: u32, why: &str) {
     let owed = with_lane(map, |lane| {
         lane.restarted = true;
         lane.ground = None;
+        lane.pyramid = None;
         std::mem::take(&mut lane.owed)
     });
     for done in owed.into_iter().flatten() {
@@ -76,6 +79,7 @@ impl WorkerPlacement {
             post,
             owed: VecDeque::new(),
             ground: None,
+            pyramid: None,
             restarted: false,
         };
         LANES.with(|lanes| lanes.borrow_mut().insert(map, lane));
@@ -131,18 +135,21 @@ impl PlacementLane for WorkerPlacement {
     }
 
     fn place(&self, frame: Frame, done: PlaceDone) {
-        let changed = with_lane(self.0, |lane| {
+        let pyramid = frame.ground.as_ref().map(|g| g.0.pyramid());
+        let sent = with_lane(self.0, |lane| {
             lane.owed.push_back(done);
             let changed = lane.ground != frame.ground;
             lane.ground.clone_from(&frame.ground);
-            changed
+            changed.then(|| std::mem::replace(&mut lane.pyramid, pyramid.clone()))
         })
-        .unwrap_or(false);
-        if changed {
-            let bytes = frame
-                .ground
-                .as_ref()
-                .map_or_else(Default::default, |g| g.0.pyramid());
+        .flatten();
+        if let Some(sent) = sent {
+            // The DEM tiles that came and went, not the whole terrain.
+            let bytes = match &pyramid {
+                Some(pyramid) => orb_runtime::pyramid_delta(sent.as_deref(), pyramid)
+                    .expect("the map's own pyramids read back"),
+                None => Vec::new(),
+            };
             let buffer = Uint8Array::from(&bytes[..]);
             self.post(
                 &js::object(&[("ground", buffer.clone().into())]),
@@ -166,8 +173,9 @@ impl PlacementLane for WorkerPlacement {
 #[derive(Debug, Default)]
 pub struct PlacementWorker {
     lane: InlinePlacement,
-    /// The terrain frames place on.
-    ground: Option<GroundRef>,
+    /// The terrain frames place on, and its pyramid, which the next
+    /// changes apply to.
+    ground: Option<(GroundRef, Vec<u8>)>,
 }
 
 #[wasm_bindgen]
@@ -205,18 +213,22 @@ impl PlacementWorker {
         }
         let ground = get("ground");
         if !ground.is_undefined() {
-            let pyramid = bytes(ground)?;
-            self.ground = if pyramid.is_empty() {
-                None
-            } else {
-                let terrain =
-                    TerrainElevation::from_pyramid(&pyramid).map_err(|e| JsError::new(&e))?;
-                Some(GroundRef(Arc::new(terrain)))
+            let delta = bytes(ground)?;
+            self.ground = match delta.is_empty() {
+                true => None,
+                false => {
+                    let held = self.ground.take().map(|(_, pyramid)| pyramid);
+                    let pyramid = orb_runtime::apply_pyramid_delta(held.as_deref(), &delta)
+                        .map_err(|e| JsError::new(&e))?;
+                    let terrain =
+                        TerrainElevation::from_pyramid(&pyramid).map_err(|e| JsError::new(&e))?;
+                    Some((GroundRef(Arc::new(terrain)), pyramid))
+                }
             };
             return Ok(JsValue::UNDEFINED);
         }
         let mut frame: Frame = wire::decode(&bytes(get("place"))?).map_err(|e| JsError::new(&e))?;
-        frame.ground.clone_from(&self.ground);
+        frame.ground = self.ground.as_ref().map(|(ground, _)| ground.clone());
         let reply = Arc::new(Mutex::new(None));
         let sink = Arc::clone(&reply);
         self.lane.place(

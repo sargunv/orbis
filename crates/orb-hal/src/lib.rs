@@ -94,6 +94,16 @@ pub trait Gpu {
         image: HostImageId,
         premultiply: bool,
     );
+    /// Like [`write_texture`](Self::write_texture), from `region`'s
+    /// tightly packed texels at byte `offset` of host-held bytes, which
+    /// never pass through core memory (the web's `writeTexture` from a
+    /// buffer a job worker transferred).
+    fn write_texture_from_host_bytes(
+        &mut self,
+        region: &TextureRegion,
+        bytes: HostBytesId,
+        offset: u64,
+    );
     /// Releases a host-held image once every write from it is queued.
     fn release_host_image(&mut self, image: HostImageId);
     fn create_sampler(&mut self, desc: &SamplerDesc<'_>) -> SamplerId;

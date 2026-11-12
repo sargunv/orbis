@@ -14,6 +14,7 @@
 //! resident ancestor.
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::ops::Range;
 use std::sync::Arc;
 
 use crate::scene::{
@@ -142,26 +143,118 @@ const SURFACE_WARPS: usize = 2048;
 /// its property rows, which per-feature paint (a circle's radius) reads.
 /// Fills, lines and extrusions are meshes; point families (circles,
 /// heatmaps) are their points.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct MeshBuild<'a> {
     pub node: u32,
     pub extent: u32,
-    pub data: MeshData<'a>,
+    /// Its vertices, indices and property rows: ranges of the tile's
+    /// [`words`](TileBuild::words), empty for those it shares.
+    pub spans: [Range<u32>; 3],
+    /// Words per feature of the rows.
+    pub row_words: u32,
+    pub chunks: &'a [Chunk],
     pub rows: MeshRows<'a>,
     /// The earlier mesh of the build whose vertices, and whose indices,
-    /// it draws instead of its own (left out of `data`).
+    /// it draws instead of its own.
     pub shares: [Option<usize>; 2],
 }
 
-/// A tile to upload, all of it or none: its meshes by node, and the
-/// planar patches it draws through on another plane (as
+/// A tile to upload, all of it or none: its words, its meshes by node, and
+/// the planar patches it draws through on another plane (as
 /// [`warp_words`](crate::warp_words) has them). Symbol streams join with
 /// [`add_symbol_mesh`](Renderer::add_symbol_mesh).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TileBuild<'a> {
     pub key: TileKey,
+    /// Every mesh's words, each pool's together (all the vertices, all
+    /// the indices, all the rows): they go up as one range of each pool,
+    /// with one write per pool.
+    pub words: Words<'a>,
     pub meshes: &'a [MeshBuild<'a>],
     pub patches: Option<(u32, &'a [f32])>,
+}
+
+/// Per pool (vertices, indices, rows), the words of a tile from its
+/// meshes' first span to their last: what it takes of the pool, as one
+/// range.
+pub fn tile_extents<'a>(spans: impl IntoIterator<Item = &'a [Range<u32>; 3]>) -> [Range<u32>; 3] {
+    let mut extents: [Option<Range<u32>>; 3] = Default::default();
+    for spans in spans {
+        for (extent, span) in extents.iter_mut().zip(spans) {
+            if !span.is_empty() {
+                let (start, end) = extent.as_ref().map_or((span.start, span.end), |e| {
+                    (e.start.min(span.start), e.end.max(span.end))
+                });
+                *extent = Some(start..end);
+            }
+        }
+    }
+    extents.map(Option::unwrap_or_default)
+}
+
+/// What a tile whose meshes take `extents` ([`tile_extents`]) and hold
+/// `chunks` chunks takes of the scene.
+pub fn tile_size(extents: &[Range<u32>; 3], chunks: u32) -> MeshSize {
+    let len = |p: usize| extents[p].end - extents[p].start;
+    MeshSize {
+        vertices: len(0),
+        indices: len(1),
+        props: len(2),
+        chunks,
+    }
+}
+
+impl TileBuild<'_> {
+    fn extents(&self) -> [Range<u32>; 3] {
+        tile_extents(self.meshes.iter().map(|m| &m.spans))
+    }
+
+    /// What it takes of the scene.
+    pub fn size(&self) -> MeshSize {
+        let chunks = self.meshes.iter().map(|m| m.chunks.len() as u32).sum();
+        tile_size(&self.extents(), chunks)
+    }
+
+    /// Whether its meshes' spans lie in its words apart from each other.
+    fn spans_apart(&self) -> bool {
+        (0..3).all(|pool| {
+            let mut spans: Vec<&Range<u32>> = (self.meshes.iter())
+                .map(|m| &m.spans[pool])
+                .filter(|s| !s.is_empty())
+                .collect();
+            spans.sort_unstable_by_key(|s| s.start);
+            spans.windows(2).all(|w| w[0].end <= w[1].start)
+                && spans.last().is_none_or(|s| s.end <= self.words.len())
+        })
+    }
+}
+
+/// A tile's words being written into the pools it holds room in, one
+/// range each ([`Renderer::reserve`]): nothing draws them until
+/// [`Renderer::finish_tile`], so a tile written over several frames shows
+/// whole or not at all.
+#[derive(Debug)]
+pub struct Reserved {
+    /// Per pool, the tile's words it holds (a range of the build's) and
+    /// where in the pool they start.
+    pools: [(Range<u32>, u32); 3],
+    /// Bytes written, over the pools in turn.
+    written: u64,
+}
+
+impl Reserved {
+    /// The bytes written.
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
+    /// The bytes it has left to write.
+    pub fn left(&self) -> u64 {
+        let words: u64 = (self.pools.iter())
+            .map(|(words, _)| u64::from(words.end - words.start))
+            .sum();
+        words * 4 - self.written
+    }
 }
 
 /// Why an upload failed.
@@ -532,36 +625,165 @@ impl Renderer {
         build: &TileBuild<'_>,
         grow: bool,
     ) -> Result<(GpuTile, Vec<MeshId>), UploadError> {
-        let sizes: Vec<MeshSize> = build.meshes.iter().map(|m| m.data.size()).collect();
-        if !(self.fits(&sizes) || (grow && self.grow_for(gpu, &sizes))) {
-            self.scene.refuse(&sizes);
+        let size = build.size();
+        if grow && !self.fits(&[size]) {
+            self.grow_for(gpu, &[size]);
+        }
+        let mut reserved = self.reserve(build)?;
+        self.write_reserved(gpu, build.words, &mut reserved, u64::MAX);
+        self.finish_tile(gpu, build, reserved)
+    }
+
+    /// Takes room for a tile's words, one range of each pool, without
+    /// growing them; [`write_reserved`](Self::write_reserved) writes them
+    /// and [`finish_tile`](Self::finish_tile) makes the tile of them, or
+    /// [`unreserve`](Self::unreserve) gives the room back.
+    pub fn reserve(&mut self, build: &TileBuild<'_>) -> Result<Reserved, UploadError> {
+        if !build.spans_apart() {
+            return Err(UploadError::Invalid("a tile's streams overlap".into()));
+        }
+        let size = build.size();
+        if !self.fits(&[size]) {
+            self.scene.refuse(&[size]);
             return Err(UploadError::NoRoom);
         }
-        let tile = self
-            .add_tile(gpu, build.key, build.patches)
-            .map_err(|_| UploadError::NoRoom)?;
+        let extents = build.extents();
+        let lens = extents.clone().map(|e| e.end - e.start);
+        let block = self.scene.alloc_block(lens).ok_or(UploadError::NoRoom)?;
+        Ok(Reserved {
+            pools: [0, 1, 2].map(|p| (extents[p].clone(), block[p].start)),
+            written: 0,
+        })
+    }
+
+    /// Writes up to `bytes` more of a reserved tile's `words` (its
+    /// build's), in whole words: at most one write per pool. Returns the
+    /// bytes written.
+    pub fn write_reserved(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        words: Words<'_>,
+        reserved: &mut Reserved,
+        bytes: u64,
+    ) -> u64 {
+        let mut budget = bytes / 4;
+        let mut skip = reserved.written / 4;
+        let mut written = 0;
+        for (pool, (range, at)) in reserved.pools.iter().enumerate() {
+            let len = u64::from(range.end - range.start);
+            if skip >= len {
+                skip -= len;
+                continue;
+            }
+            let take = (len - skip).min(budget);
+            if take == 0 {
+                break;
+            }
+            let from = range.start + skip as u32;
+            let piece = words.slice(from..from + take as u32);
+            self.scene.write_pool(gpu, pool, at + skip as u32, piece);
+            (skip, budget, written) = (0, budget - take, written + take * 4);
+        }
+        reserved.written += written;
+        written
+    }
+
+    /// Gives back a reserved tile's room.
+    pub fn unreserve(&mut self, reserved: Reserved) {
+        for (pool, (range, at)) in reserved.pools.into_iter().enumerate() {
+            self.scene
+                .free_words(pool, at..at + (range.end - range.start));
+        }
+    }
+
+    /// Makes a reserved tile, its words all written, of its build: its
+    /// meshes take their words where they were written, and from then on
+    /// draw. Returns the tile and its meshes' ids. On `Err` the room is
+    /// given back.
+    pub fn finish_tile(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        build: &TileBuild<'_>,
+        reserved: Reserved,
+    ) -> Result<(GpuTile, Vec<MeshId>), UploadError> {
+        debug_assert_eq!(reserved.left(), 0, "a tile's words are written first");
+        let Ok(tile) = self.add_tile(gpu, build.key, build.patches) else {
+            self.unreserve(reserved);
+            return Err(UploadError::NoRoom);
+        };
+        // Empty ranges start at 0, as an arena's empty allocations do.
+        let at = |pool: usize, span: &Range<u32>| {
+            if span.is_empty() {
+                return 0..0;
+            }
+            let (words, at) = &reserved.pools[pool];
+            let start = at + (span.start - words.start);
+            start..start + (span.end - span.start)
+        };
+        // The words between the meshes' (those of meshes left out) go.
+        for pool in 0..3 {
+            let mut spans: Vec<Range<u32>> = (build.meshes.iter())
+                .map(|m| m.spans[pool].clone())
+                .filter(|s| !s.is_empty())
+                .collect();
+            spans.sort_unstable_by_key(|s| s.start);
+            let mut from = reserved.pools[pool].0.start;
+            for span in spans
+                .into_iter()
+                .chain(std::iter::once(reserved.pools[pool].0.end..u32::MAX))
+            {
+                if span.start > from {
+                    self.scene.free_words(pool, at(pool, &(from..span.start)));
+                }
+                from = span.end;
+            }
+        }
         let mut ids: Vec<MeshId> = Vec::with_capacity(build.meshes.len());
-        for mesh in build.meshes {
-            let shares = mesh.shares.map(|of| of.map(|of| ids[of]));
-            let added = self.add_mesh_sharing(
+        for (i, mesh) in build.meshes.iter().enumerate() {
+            let shared = mesh
+                .shares
+                .map(|of| of.map(|of| self.scene.mesh_ranges(ids[of])));
+            let ranges = [0, 1, 2].map(|p| match (&shared, p) {
+                ([Some(of), _], 0) => of[0].clone(),
+                ([_, Some(of)], 1) => of[1].clone(),
+                _ => at(p, &mesh.spans[p]),
+            });
+            let part = self.part(tile, mesh.extent);
+            let inserted = self.scene.insert_mesh_at(
                 gpu,
-                tile,
-                (mesh.node, mesh.extent),
-                &mesh.data,
-                &mesh.rows,
-                shares,
+                part,
+                mesh.node,
+                ranges,
+                (mesh.chunks, mesh.row_words),
+                mesh.shares.map(|s| s.is_some()),
             );
-            match added {
-                Ok(id) => ids.push(id),
-                Err(OutOfSpace) => {
-                    self.release_tile(tile);
-                    return Err(UploadError::NoRoom);
+            let failed = match inserted {
+                Ok(id) => match self.attach(gpu, id, &mesh.rows) {
+                    Ok(()) => {
+                        self.entry_mut(tile).meshes.push((mesh.node, id));
+                        ids.push(id);
+                        continue;
+                    }
+                    Err(OutOfSpace) => {
+                        self.scene.remove_mesh(id);
+                        i + 1
+                    }
+                },
+                Err(OutOfSpace) => i,
+            };
+            // The meshes not inserted give back their own words.
+            for mesh in &build.meshes[failed..] {
+                for (pool, span) in mesh.spans.iter().enumerate() {
+                    if !span.is_empty() {
+                        self.scene.free_words(pool, at(pool, span));
+                    }
                 }
             }
+            self.release_tile(tile);
+            return Err(UploadError::NoRoom);
         }
         Ok((tile, ids))
     }
-
     /// A vector tile with no meshes yet, drawing through planar patches
     /// (cells per side and their words) if it has any.
     pub fn add_tile(

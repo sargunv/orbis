@@ -184,6 +184,9 @@ pub struct WgpuGpu {
     /// closed at the next submission.
     #[cfg(target_arch = "wasm32")]
     released_images: Vec<HostImageId>,
+    /// Host bytes released while a held texture write still reads them.
+    #[cfg(target_arch = "wasm32")]
+    released_bytes: Vec<HostBytesId>,
     /// What the device did ([`Gpu::counters`]), counted from `&self` too:
     /// where held writes are issued.
     counters: std::cell::Cell<GpuCounters>,
@@ -508,6 +511,8 @@ impl WgpuGpu {
             host_images: Slots::default(),
             #[cfg(target_arch = "wasm32")]
             released_images: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            released_bytes: Vec::new(),
             counters: Default::default(),
             shader_nonce: None,
             writes: writes::Writes::default(),
@@ -682,6 +687,12 @@ impl WgpuGpu {
                 size,
             ),
             #[cfg(target_arch = "wasm32")]
+            texture_writes::Source::Bytes {
+                bytes,
+                offset,
+                bytes_per_row,
+            } => self.write_texture_from_js(region, (bytes, offset), bytes_per_row),
+            #[cfg(target_arch = "wasm32")]
             texture_writes::Source::Host { image, premultiply } => {
                 let source = self.host_images[image.0].clone();
                 // WebGL 2 copies an `ImageBitmap` as it is: the host made
@@ -706,6 +717,85 @@ impl WgpuGpu {
                     size,
                 )
             }
+        }
+    }
+
+    /// Writes `region` from a JS buffer's texels at `offset`, rows
+    /// `bytes_per_row` apart: WebGPU's `writeTexture` straight from the
+    /// buffer, WebGL 2's from a copy.
+    #[cfg(target_arch = "wasm32")]
+    fn write_texture_from_js(
+        &self,
+        region: &TextureRegion,
+        (bytes, offset): (HostBytesId, u64),
+        bytes_per_row: u32,
+    ) {
+        let HostBytes::Js(data) = &self.host_bytes[bytes.0] else {
+            unreachable!("host bytes on the web are JS buffers")
+        };
+        #[cfg(webgl)]
+        {
+            let len = bytes_per_row * region.height;
+            let texels =
+                js_sys::Uint8Array::new_with_byte_offset_and_length(data, offset as u32, len)
+                    .to_vec();
+            let write = texture_writes::TextureWrite {
+                region: *region,
+                source: texture_writes::Source::Core {
+                    at: 0,
+                    len: texels.len(),
+                    bytes_per_row,
+                },
+            };
+            self.issue_texture_write(&write, &texels, 0);
+        }
+        #[cfg(webgpu)]
+        {
+            // wgpu exposes the queue and texture, not the dictionaries
+            // `writeTexture` takes: they're plain objects.
+            use wasm_bindgen::{JsCast, JsValue};
+            let object = |fields: &[(&str, JsValue)]| -> JsValue {
+                let object = js_sys::Object::new();
+                for (key, value) in fields {
+                    let _ = js_sys::Reflect::set(&object, &JsValue::from_str(key), value);
+                }
+                object.into()
+            };
+            let texture = self
+                .texture(region.texture)
+                .as_webgpu()
+                .expect("the web uses the WebGPU backend");
+            let origin = object(&[
+                ("x", region.x.into()),
+                ("y", region.y.into()),
+                ("z", region.layer.into()),
+            ]);
+            let destination = object(&[
+                ("texture", JsValue::from(texture)),
+                ("mipLevel", region.level.into()),
+                ("origin", origin),
+            ]);
+            let layout = object(&[
+                ("offset", (offset as f64).into()),
+                ("bytesPerRow", bytes_per_row.into()),
+            ]);
+            let size = object(&[
+                ("width", region.width.into()),
+                ("height", region.height.into()),
+                ("depthOrArrayLayers", 1.into()),
+            ]);
+            let queue = JsValue::from(
+                self.queue
+                    .as_webgpu()
+                    .expect("the web uses the WebGPU backend"),
+            );
+            let write = js_sys::Reflect::get(&queue, &JsValue::from_str("writeTexture"))
+                .expect("GPUQueue.writeTexture")
+                .unchecked_into::<js_sys::Function>();
+            let args = js_sys::Array::of4(&destination, data, &layout, &size);
+            write
+                .apply(&queue, &args)
+                .expect("writeTexture from a host ArrayBuffer");
         }
     }
 
@@ -1084,6 +1174,10 @@ impl WgpuGpu {
     /// now: that write went with the device.
     pub fn take_host_data(&mut self) -> HostData {
         #[cfg(target_arch = "wasm32")]
+        for bytes in std::mem::take(&mut self.released_bytes) {
+            self.host_bytes.remove(bytes.0);
+        }
+        #[cfg(target_arch = "wasm32")]
         for image in std::mem::take(&mut self.released_images) {
             if let wgpu::ExternalImageSource::ImageBitmap(bitmap) = self.host_images.remove(image.0)
             {
@@ -1427,7 +1521,48 @@ impl Gpu for WgpuGpu {
     }
 
     fn release_host_bytes(&mut self, bytes: HostBytesId) {
+        // A held write still reads them: released once that is issued.
+        #[cfg(target_arch = "wasm32")]
+        if self
+            .texture_writes
+            .get_mut()
+            .expect("texture writes poisoned")
+            .reads_bytes(bytes)
+        {
+            self.released_bytes.push(bytes);
+            return;
+        }
         self.host_bytes.remove(bytes.0);
+    }
+
+    fn write_texture_from_host_bytes(
+        &mut self,
+        region: &TextureRegion,
+        bytes: HostBytesId,
+        offset: u64,
+    ) {
+        let texture = self.texture(region.texture);
+        let bytes_per_row = region.width * convert::texel_bytes(texture.format());
+        let len = u64::from(bytes_per_row * region.height);
+        match &self.host_bytes[bytes.0] {
+            HostBytes::Owned(data) => {
+                let texels = data[offset as usize..(offset + len) as usize].to_vec();
+                self.write_texture(region, &texels);
+            }
+            #[cfg(target_arch = "wasm32")]
+            HostBytes::Js(_) => {
+                self.count(|c| c.texel_bytes_from_host += len);
+                let held = self
+                    .texture_writes
+                    .get_mut()
+                    .expect("texture writes poisoned")
+                    .bytes(region, (bytes, offset), bytes_per_row);
+                if !held {
+                    self.count(|c| c.upload_calls += 1);
+                    self.write_texture_from_js(region, (bytes, offset), bytes_per_row);
+                }
+            }
+        }
     }
 
     fn texture_fits(&self, desc: &TextureDesc<'_>) -> bool {
@@ -2131,6 +2266,10 @@ impl Gpu for WgpuGpu {
         #[cfg(target_arch = "wasm32")]
         for image in std::mem::take(&mut self.released_images) {
             self.release_host_image(image);
+        }
+        #[cfg(target_arch = "wasm32")]
+        for bytes in std::mem::take(&mut self.released_bytes) {
+            self.host_bytes.remove(bytes.0);
         }
         if let Some(timing) = &mut self.timing {
             timing.end(timing::now() - started);

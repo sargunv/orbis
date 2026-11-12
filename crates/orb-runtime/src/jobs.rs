@@ -118,11 +118,11 @@ pub enum JobReply {
         id: u32,
         warp_grid: Option<orb_crs::WarpGrid>,
     },
-    /// A terrain DEM tile: its pixels are the buffer.
+    /// A terrain DEM tile: the buffer holds its texels, then its
+    /// elevations as little-endian `f32`s.
     Dem {
         id: u32,
         width: u32,
-        elevations: Vec<f32>,
     },
     /// The source doesn't have the tile.
     Missing {
@@ -393,7 +393,8 @@ pub fn unpremultiply(pixels: &mut [u8]) {
     }
 }
 
-/// A finished tile, ready to upload: in core memory, or in host-held bytes.
+/// A finished tile, ready to upload: its words laid out once in its
+/// [`Payload`], in core memory or in host-held bytes.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TileResult {
     pub warnings: Vec<String>,
@@ -422,10 +423,9 @@ pub struct TileResult {
     /// Per symbol layer laid out, its bucket. Its icon and text nodes'
     /// meshes carry property rows only.
     pub symbols: Vec<ResultSymbols>,
-    /// Holds every [`Stream::Host`] of the meshes and symbols; released
-    /// after upload.
+    /// Every stream's words; host bytes are released after upload.
     #[serde(skip)]
-    pub host_bytes: Option<HostBytesId>,
+    pub payload: Payload,
     /// An image source's tile.
     #[serde(skip)]
     pub image: Option<TileImage>,
@@ -452,6 +452,9 @@ pub enum ImagePixels {
     Core(Vec<u8>),
     /// A host-held image, straight alpha; released after upload.
     Host(HostImageId),
+    /// Texels at byte `offset` of host-held bytes, ready to store (a DEM
+    /// tile's, decoded in a job worker); released after upload.
+    Bytes { bytes: HostBytesId, offset: u64 },
 }
 
 impl ImagePixels {
@@ -461,6 +464,7 @@ impl ImagePixels {
         match self {
             Self::Core(bytes) => orb_render::Pixels::Core(bytes),
             &Self::Host(image) => orb_render::Pixels::Host { image, premultiply },
+            &Self::Bytes { bytes, offset } => orb_render::Pixels::HostBytes { bytes, offset },
         }
     }
 }
@@ -492,57 +496,120 @@ pub struct ResultMesh {
     pub data: Vec<orb_expr::FeatureData>,
 }
 
-/// A stream of u32 words. Packed for another worker, a stream's header
-/// holds its length; its words follow the header raw ([`pack`]).
-#[derive(Debug, PartialEq, Eq)]
-pub enum Stream {
+/// A tile's words, laid out once in the order they upload: every mesh's
+/// vertices, then every mesh's indices, then the scene's meshes' property
+/// rows and the symbol nodes' after them, then each symbol layer's tables
+/// as placement reads them. Each pool's words are contiguous, so a tile
+/// uploads with one write per pool. It moves rather than copies: a `Vec`
+/// natively, and on the web the buffer a job worker transferred.
+#[derive(Debug, Default)]
+pub enum Payload {
+    /// A result with no words (an image tile's).
+    #[default]
+    None,
     Core(Vec<u32>),
-    /// `len` words at byte `offset` of the result's host bytes.
+    /// `words` words at byte `base` of host-held bytes.
     Host {
-        offset: u64,
-        len: u32,
+        bytes: HostBytesId,
+        base: u64,
+        words: u32,
     },
 }
 
-impl Stream {
-    /// Its length in words.
-    pub(crate) fn len(&self) -> u32 {
-        match self {
-            Self::Core(words) => words.len() as u32,
-            Self::Host { len, .. } => *len,
-        }
-    }
-
-    /// Its words for an upload, in core memory or in the result's host
-    /// `bytes`.
-    pub(crate) fn words(&self, bytes: Option<HostBytesId>) -> orb_render::Words<'_> {
-        match self {
-            Self::Core(words) => orb_render::Words::Core(words),
-            Self::Host { offset, len } => orb_render::Words::Host {
-                bytes: bytes.expect("host streams come with host bytes"),
-                offset: *offset,
-                len: *len,
+impl Payload {
+    /// All its words, for an upload.
+    pub(crate) fn words(&self) -> orb_render::Words<'_> {
+        match *self {
+            Self::None => orb_render::Words::Core(&[]),
+            Self::Core(ref words) => orb_render::Words::Core(words),
+            Self::Host { bytes, base, words } => orb_render::Words::Host {
+                bytes,
+                offset: base,
+                len: words,
             },
         }
     }
 
-    /// Its words in core memory, read back from the host's `bytes` when
-    /// they are there.
-    pub(crate) fn core_words(
-        &self,
+    /// The host bytes it is in, which go once it's uploaded.
+    pub(crate) fn host_bytes(&self) -> Option<HostBytesId> {
+        match *self {
+            Self::Host { bytes, .. } => Some(bytes),
+            _ => None,
+        }
+    }
+}
+
+/// A span of a tile's [`Payload`]: `len` words from word `at`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Stream {
+    pub at: u32,
+    pub len: u32,
+}
+
+impl Stream {
+    /// Its length in words.
+    pub(crate) fn len(self) -> u32 {
+        self.len
+    }
+
+    /// Its words in the payload.
+    pub(crate) fn range(self) -> std::ops::Range<u32> {
+        self.at..self.at + self.len
+    }
+
+    /// Its words for an upload, in `payload`.
+    pub(crate) fn words(self, payload: &Payload) -> orb_render::Words<'_> {
+        payload.words().slice(self.range())
+    }
+
+    /// Its words in core memory, read back from the host's bytes when the
+    /// payload is there.
+    pub(crate) fn core_words<'a>(
+        self,
         gpu: &dyn orb_hal::Gpu,
-        bytes: Option<HostBytesId>,
-    ) -> std::borrow::Cow<'_, [u32]> {
-        match self {
-            Self::Core(words) => std::borrow::Cow::Borrowed(words),
-            Self::Host { offset, len } => {
-                let bytes = gpu.read_host_bytes(
-                    bytes.expect("host streams come with host bytes"),
-                    *offset..offset + u64::from(*len) * 4,
-                );
-                let words = bytes.as_chunks::<4>().0.iter();
-                std::borrow::Cow::Owned(words.map(|w| u32::from_le_bytes(*w)).collect())
+        payload: &'a Payload,
+    ) -> std::borrow::Cow<'a, [u32]> {
+        match self.words(payload) {
+            orb_render::Words::Core(words) => std::borrow::Cow::Borrowed(words),
+            orb_render::Words::Host { bytes, offset, len } => {
+                let bytes = gpu.read_host_bytes(bytes, offset..offset + u64::from(len) * 4);
+                // Host bytes come unaligned (copied from a JS buffer).
+                std::borrow::Cow::Owned(bytemuck::pod_collect_to_vec(&bytes))
             }
+        }
+    }
+}
+
+/// Lays a tile's streams out one after another in its payload.
+#[derive(Debug, Default)]
+pub(crate) struct Arena {
+    words: Vec<u32>,
+}
+
+impl Arena {
+    /// Words, as they are.
+    pub(crate) fn push(&mut self, words: &[u32]) -> Stream {
+        let at = self.words.len() as u32;
+        self.words.extend_from_slice(words);
+        Stream {
+            at,
+            len: words.len() as u32,
+        }
+    }
+
+    /// Plain values: their bytes, zero-padded to a word.
+    pub(crate) fn push_pod<T: bytemuck::NoUninit>(&mut self, rows: &[T]) -> Stream {
+        if let Ok(words) = bytemuck::try_cast_slice::<T, u32>(rows) {
+            return self.push(words);
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(rows);
+        let at = self.words.len();
+        self.words.resize(at + bytes.len().div_ceil(4), 0);
+        bytemuck::cast_slice_mut::<u32, u8>(&mut self.words[at..])[..bytes.len()]
+            .copy_from_slice(bytes);
+        Stream {
+            at: at as u32,
+            len: (self.words.len() - at) as u32,
         }
     }
 }
@@ -550,19 +617,45 @@ impl Stream {
 impl From<TileBuild> for TileResult {
     fn from(build: TileBuild) -> Self {
         let hit_geometry: Vec<_> = build.hits.into_iter().map(|(_, g)| Arc::new(g)).collect();
+        let shares = share_geometry(&build.meshes);
+        let symbol_nodes: Vec<u32> = (build.symbols.iter())
+            .flat_map(|(layer, _)| [0, 1].map(|n| crate::style::node_key(*layer, n)))
+            .collect();
+        let mut arena = Arena::default();
+        let mesh_words: usize = (build.meshes.iter())
+            .map(|m| m.mesh.vertices.len() + m.mesh.indices.len() + m.props.len())
+            .sum();
+        arena.words.reserve(mesh_words);
+        let mut streams = vec![[Stream::default(); 3]; build.meshes.len()];
+        for pool in 0..2 {
+            for (i, m) in build.meshes.iter().enumerate() {
+                if shares[i][pool].is_none() {
+                    streams[i][pool] = arena.push([&m.mesh.vertices, &m.mesh.indices][pool]);
+                }
+            }
+        }
+        // The scene's rows together, then those that go up with labels.
+        for symbol in [false, true] {
+            for (i, m) in build.meshes.iter().enumerate() {
+                if symbol_nodes.contains(&m.node) == symbol {
+                    streams[i][2] = arena.push(&m.props);
+                }
+            }
+        }
+        let symbols = (build.symbols.iter())
+            .map(|(layer, s)| ResultSymbols::new(*layer, s, &mut arena))
+            .collect();
         let mut result = Self {
-            meshes: build
-                .meshes
-                .into_iter()
-                .map(|m| ResultMesh {
+            meshes: (build.meshes.into_iter().zip(streams).zip(shares))
+                .map(|((m, [vertices, indices, props]), shares)| ResultMesh {
                     node: m.node,
                     hits: Arc::new(m.hits),
                     extent: m.extent,
                     chunks: m.mesh.chunks,
-                    vertices: Stream::Core(m.mesh.vertices),
-                    indices: Stream::Core(m.mesh.indices),
-                    props: Stream::Core(m.props),
-                    shares: [None; 2],
+                    vertices,
+                    indices,
+                    props,
+                    shares,
                     row_words: m.row_words,
                     maxima: m.maxima,
                     images: m.images,
@@ -570,17 +663,13 @@ impl From<TileBuild> for TileResult {
                     data: m.data,
                 })
                 .collect(),
-            symbols: build
-                .symbols
-                .iter()
-                .map(|(layer, s)| ResultSymbols::new(*layer, s))
-                .collect(),
+            symbols,
             revision: build.revision,
             nodes: build.nodes,
             rows_only: build.rows_only,
             neighbour: build.neighbour,
             ids: build.ids,
-            host_bytes: None,
+            payload: Payload::Core(arena.words),
             warnings: build.warnings,
             missing_images: build.missing_images,
             glyphs_failed: build.glyphs_failed,
@@ -591,65 +680,45 @@ impl From<TileBuild> for TileResult {
             hit_geometry,
         };
         result.link_hits();
-        result.share_geometry();
         result
     }
 }
 
-impl serde::Serialize for Stream {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u32(self.len())
+/// Per mesh, the earlier mesh whose vertices, and whose indices, equal its
+/// own, so that it lays none of them out itself. A road's casing and its
+/// fill lay out the same lines, and a fill and its outline the same
+/// vertices: as GL JS and Native group layers that lay out alike into one
+/// bucket, the words cross to the map and upload once.
+fn share_geometry(meshes: &[crate::tile::NodeMesh]) -> Vec<[Option<u32>; 2]> {
+    fn streams(m: &crate::tile::NodeMesh) -> [&Vec<u32>; 2] {
+        [&m.mesh.vertices, &m.mesh.indices]
     }
-}
-
-/// A packed stream: its offset is set once the whole header is read.
-impl<'de> serde::Deserialize<'de> for Stream {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let len = u32::deserialize(deserializer)?;
-        Ok(Self::Host { offset: 0, len })
+    let mut shares = vec![[None; 2]; meshes.len()];
+    for (i, mesh) in meshes.iter().enumerate() {
+        for (s, words) in streams(mesh).into_iter().enumerate() {
+            if words.is_empty() {
+                continue;
+            }
+            // The first that has them, which shares nothing of them.
+            let same = (meshes[..i].iter().enumerate())
+                .find(|&(e, earlier)| shares[e][s].is_none() && streams(earlier)[s] == words);
+            shares[i][s] = same.map(|(of, _)| of as u32);
+        }
     }
+    shares
 }
 
 impl TileResult {
     /// A mesh's vertices: its own, or those of the mesh it shares them
     /// with.
-    pub(crate) fn vertices<'a>(&'a self, mesh: &'a ResultMesh) -> &'a Stream {
-        mesh.shares[0].map_or(&mesh.vertices, |of| &self.meshes[of as usize].vertices)
+    pub(crate) fn vertices(&self, mesh: &ResultMesh) -> Stream {
+        mesh.shares[0].map_or(mesh.vertices, |of| self.meshes[of as usize].vertices)
     }
 
     /// A mesh's indices: its own, or those of the mesh it shares them
     /// with.
-    pub(crate) fn indices<'a>(&'a self, mesh: &'a ResultMesh) -> &'a Stream {
-        mesh.shares[1].map_or(&mesh.indices, |of| &self.meshes[of as usize].indices)
-    }
-
-    /// Points each mesh's vertices and indices that equal an earlier
-    /// mesh's at that mesh, leaving its own empty. A road's casing and
-    /// its fill lay out the same lines, and a fill and its outline the
-    /// same vertices: as GL JS and Native group layers that lay out alike
-    /// into one bucket, the words pack, cross to the map and upload once.
-    fn share_geometry(&mut self) {
-        for i in 1..self.meshes.len() {
-            let (earlier, rest) = self.meshes.split_at_mut(i);
-            let mesh = &mut rest[0];
-            let streams = [&mut mesh.vertices, &mut mesh.indices];
-            for (s, stream) in streams.into_iter().enumerate() {
-                let Stream::Core(words) = stream else {
-                    continue;
-                };
-                if words.is_empty() {
-                    continue;
-                }
-                let same = earlier.iter().position(|e| {
-                    let theirs = [&e.vertices, &e.indices][s];
-                    matches!(theirs, Stream::Core(w) if w == words)
-                });
-                if let Some(of) = same {
-                    *stream = Stream::Core(Vec::new());
-                    mesh.shares[s] = Some(of as u32);
-                }
-            }
-        }
+    pub(crate) fn indices(&self, mesh: &ResultMesh) -> Stream {
+        mesh.shares[1].map_or(mesh.indices, |of| self.meshes[of as usize].indices)
     }
 
     /// Points its meshes' hits at its hit geometry.
@@ -661,34 +730,71 @@ impl TileResult {
         }
     }
 
-    /// The streams in packed order: each mesh's vertices, indices and
-    /// rows, then each symbol layer's tables.
-    fn streams_mut(&mut self) -> impl Iterator<Item = &mut Stream> {
-        self.meshes
-            .iter_mut()
-            .flat_map(|m| [&mut m.vertices, &mut m.indices, &mut m.props])
-            .chain(self.symbols.iter_mut().flat_map(|s| s.tables.iter_mut()))
+    /// Whether every stream lies in a payload of `words` words, and every
+    /// share names an earlier mesh that has its own: what a packed tile
+    /// from another worker must hold to.
+    fn holds_together(&self, words: u32) -> bool {
+        let inside = |s: &Stream| s.at.checked_add(s.len).is_some_and(|end| end <= words);
+        let meshes = self.meshes.iter().enumerate().all(|(i, m)| {
+            let shares = (0..2).all(|s| {
+                m.shares[s].is_none_or(|of| {
+                    (of as usize) < i && self.meshes[of as usize].shares[s].is_none()
+                })
+            });
+            shares && [m.vertices, m.indices, m.props].iter().all(inside)
+        });
+        meshes && (self.symbols.iter()).all(|s| s.tables.iter().all(inside))
     }
 }
 
-/// Packs a build into one buffer for another worker: the header's length
-/// in bytes (a little-endian u32), the header (the result without its
-/// streams' words, [`crate::wire`]), padding to a word, then every stream's
-/// words in `TileResult::streams_mut`'s order, little-endian.
-pub fn pack(build: TileBuild) -> Vec<u8> {
-    let mut result = TileResult::from(build);
-    let header = crate::wire::encode(&result);
-    let mut packed = Vec::with_capacity(header.len() + 8);
-    packed.extend((header.len() as u32).to_le_bytes());
-    packed.extend(&header);
-    packed.resize(packed.len().next_multiple_of(4), 0);
-    for stream in result.streams_mut() {
-        let Stream::Core(words) = stream else {
-            unreachable!("built streams are in core memory")
-        };
-        packed.extend(words.iter().flat_map(|w| w.to_le_bytes()));
+/// A tile packed for another worker: `head` holds the header's length in
+/// bytes (a little-endian u32), the header (the result without its
+/// payload, [`crate::wire`]) and padding to a word; the payload's words
+/// follow it as they are.
+#[derive(Debug)]
+pub struct Packed {
+    pub head: Vec<u8>,
+    pub words: Vec<u32>,
+}
+
+// Packed words are the payload's own bytes: every target Orbis ships on
+// is little-endian.
+const _: () = assert!(cfg!(target_endian = "little"));
+
+impl Packed {
+    /// Its bytes in one buffer, as they travel.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        [&self.head[..], self.payload_bytes()].concat()
     }
-    packed
+
+    /// The payload's bytes, which follow the head.
+    pub fn payload_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.words)
+    }
+
+    /// Its length in bytes.
+    pub fn len(&self) -> usize {
+        self.head.len() + self.words.len() * 4
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Packs a build for another worker ([`Packed`]): its payload moves in as
+/// it is.
+pub fn pack(build: TileBuild) -> Packed {
+    let mut result = TileResult::from(build);
+    let Payload::Core(words) = std::mem::take(&mut result.payload) else {
+        unreachable!("built payloads are in core memory")
+    };
+    let header = crate::wire::encode(&result);
+    let mut head = Vec::with_capacity((header.len() + 4).next_multiple_of(4));
+    head.extend((header.len() as u32).to_le_bytes());
+    head.extend(&header);
+    head.resize(head.len().next_multiple_of(4), 0);
+    Packed { head, words }
 }
 
 /// The header of a packed tile (see [`pack`]): the bytes after its length.
@@ -699,19 +805,17 @@ pub fn packed_header(packed: &[u8]) -> Result<&[u8], String> {
     packed.get(4..4 + len).ok_or_else(bad)
 }
 
-/// Reads a packed tile's `header` (see [`packed_header`]): its streams are
-/// [`Stream::Host`] at their offsets in the packed buffer, registered as
-/// `bytes`; the payload need not be in core memory.
-pub fn unpack(header: &[u8], bytes: HostBytesId) -> Result<TileResult, String> {
+/// Reads a packed tile's `header` (see [`packed_header`]): its payload
+/// stays in the packed buffer, `len` bytes registered as `bytes`, and need
+/// not be in core memory.
+pub fn unpack(header: &[u8], bytes: HostBytesId, len: u64) -> Result<TileResult, String> {
     let mut result: TileResult = crate::wire::decode(header)?;
-    let mut offset = (4 + header.len()).next_multiple_of(4) as u64;
-    for stream in result.streams_mut() {
-        if let Stream::Host { offset: at, len } = stream {
-            *at = offset;
-            offset += u64::from(*len) * 4;
-        }
-    }
-    result.host_bytes = Some(bytes);
+    let base = (4 + header.len()).next_multiple_of(4) as u64;
+    let words = (len.checked_sub(base)).and_then(|b| u32::try_from(b / 4).ok());
+    let Some(words) = words.filter(|&w| result.holds_together(w)) else {
+        return Err("malformed packed tile".into());
+    };
+    result.payload = Payload::Host { bytes, base, words };
     result.link_hits();
     Ok(result)
 }
@@ -722,9 +826,10 @@ pub(crate) mod tests {
     use crate::tile::NodeMesh;
     use orb_layout::Mesh;
 
-    /// A packed tile read back, its streams in host bytes.
+    /// A packed tile read back, its payload in host bytes.
     pub(crate) fn unpacked(packed: &[u8]) -> TileResult {
-        unpack(packed_header(packed).unwrap(), HostBytesId(3)).unwrap()
+        let header = packed_header(packed).unwrap();
+        unpack(header, HostBytesId(3), packed.len() as u64).unwrap()
     }
 
     #[test]
@@ -750,16 +855,13 @@ pub(crate) mod tests {
         );
     }
 
-    /// The header is postcard; the streams follow it raw, where the
-    /// result's host bytes say, a mesh's words that equal an earlier
-    /// one's once.
-    #[test]
-    fn packs_and_unpacks() {
-        let mesh = |node, vertices: Vec<u32>, props: Vec<u32>| NodeMesh {
+    fn mesh(node: u32, vertices: Vec<u32>, props: Vec<u32>) -> NodeMesh {
+        NodeMesh {
             hits: crate::query::MeshHits::default(),
             node,
             extent: 4096,
             mesh: Mesh {
+                indices: vec![node; 2],
                 vertices,
                 ..Mesh::default()
             },
@@ -769,8 +871,15 @@ pub(crate) mod tests {
             images: Vec::new(),
             state_ids: Some(vec![1, crate::tile::NO_ID]),
             data: Vec::new(),
-        };
-        let bytes = pack(TileBuild {
+        }
+    }
+
+    /// The header is postcard; the payload follows it as it is, each
+    /// pool's words together, a mesh's words that equal an earlier one's
+    /// once.
+    #[test]
+    fn packs_and_unpacks() {
+        let packed = pack(TileBuild {
             revision: 1 << 33 | 5,
             nodes: vec![3, 4, 5],
             warnings: vec!["é".into()],
@@ -781,14 +890,17 @@ pub(crate) mod tests {
             ],
             ..TileBuild::default()
         });
-        let words: Vec<u32> = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|b| u32::from_le_bytes(*b))
-            .collect();
-        let result = unpack(packed_header(&bytes).unwrap(), HostBytesId(7)).unwrap();
-        assert_eq!(result.host_bytes, Some(HostBytesId(7)));
+        let bytes = packed.to_bytes();
+        assert_eq!(bytes.len(), packed.len());
+        let words: Vec<u32> = bytemuck::pod_collect_to_vec(&bytes);
+        let result = unpacked(&bytes);
+        let Payload::Host {
+            bytes: id, base, ..
+        } = result.payload
+        else {
+            panic!("a host payload")
+        };
+        assert_eq!((id, base), (HostBytesId(3), packed.head.len() as u64));
         assert_eq!(
             (result.revision, &result.warnings[..]),
             (1 << 33 | 5, &["é".to_string()][..])
@@ -797,18 +909,46 @@ pub(crate) mod tests {
             result.meshes[1].state_ids,
             Some(vec![1, crate::tile::NO_ID])
         );
-        let stream = |s: &Stream| match *s {
-            Stream::Host { offset, len } => &words[offset as usize / 4..][..len as usize],
-            Stream::Core(_) => panic!("a host stream"),
-        };
-        assert_eq!(stream(&result.meshes[0].vertices), [1, 2, 3]);
-        assert_eq!(stream(&result.meshes[0].props), [9; 12]);
+        let stream = |s: Stream| &words[base as usize / 4..][s.at as usize..][..s.len as usize];
+        assert_eq!(stream(result.meshes[0].vertices), [1, 2, 3]);
+        assert_eq!(stream(result.meshes[0].props), [9; 12]);
         let shared = &result.meshes[2];
         assert_eq!(shared.shares, [Some(0), None]);
-        assert!(stream(&shared.vertices).is_empty());
+        assert!(stream(shared.vertices).is_empty());
         assert_eq!(stream(result.vertices(shared)), [1, 2, 3]);
-        assert_eq!(stream(&shared.props), [8; 12]);
+        assert_eq!(stream(shared.props), [8; 12]);
+        // Each pool's words together: vertices, indices, rows.
+        assert_eq!(
+            packed.words,
+            [&[1, 2, 3][..], &[3, 3, 4, 4, 5, 5], &[9; 12], &[8; 12]].concat()
+        );
         assert!(packed_header(&bytes[..3]).is_err());
-        assert!(unpack(&bytes[4..8], HostBytesId(0)).is_err());
+        assert!(unpack(&bytes[4..8], HostBytesId(0), 8).is_err());
+    }
+
+    /// A packed tile whose streams reach past its payload, or that shares
+    /// a later mesh's words, is malformed, not a panic.
+    #[test]
+    fn a_packed_tile_must_hold_together() {
+        let packed = pack(TileBuild {
+            meshes: vec![mesh(3, vec![1, 2], vec![9; 6]), mesh(4, vec![1, 2], vec![])],
+            ..TileBuild::default()
+        });
+        let header = packed_header(&packed.head).unwrap();
+        let len = packed.len() as u64;
+        assert!(unpack(header, HostBytesId(0), len).is_ok());
+        assert!(
+            unpack(header, HostBytesId(0), len - 4).is_err(),
+            "cut short"
+        );
+        let mut result = unpack(header, HostBytesId(0), len).unwrap();
+        result.payload = Payload::None;
+        result.meshes.swap(0, 1);
+        let header = crate::wire::encode(&result);
+        let len = ((4 + header.len()).next_multiple_of(4) + packed.words.len() * 4) as u64;
+        assert!(
+            unpack(&header, HostBytesId(0), len).is_err(),
+            "a later share"
+        );
     }
 }

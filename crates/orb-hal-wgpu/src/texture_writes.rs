@@ -43,6 +43,14 @@ pub(crate) enum Source {
         image: orb_hal::HostImageId,
         premultiply: bool,
     },
+    /// Host bytes from `offset`, rows `bytes_per_row` apart
+    /// ([`orb_hal::Gpu::write_texture_from_host_bytes`]).
+    #[cfg(target_arch = "wasm32")]
+    Bytes {
+        bytes: orb_hal::HostBytesId,
+        offset: u64,
+        bytes_per_row: u32,
+    },
 }
 
 /// A write made since the last submission.
@@ -125,6 +133,46 @@ impl TextureWrites {
             },
         });
         true
+    }
+
+    /// Takes a write from host bytes, as [`core`](Self::core) one from
+    /// core memory: held if it shares a block with one made since the last
+    /// submission, else `false` for the caller to issue it now.
+    #[cfg(target_arch = "wasm32")]
+    #[must_use]
+    pub(crate) fn bytes(
+        &mut self,
+        region: &TextureRegion,
+        (bytes, offset): (orb_hal::HostBytesId, u64),
+        bytes_per_row: u32,
+    ) -> bool {
+        let write = TextureWrite {
+            region: *region,
+            source: Source::Issued,
+        };
+        let (subresource, blocks) = (write.subresource(), write.blocks());
+        let held = (self.writes.iter())
+            .any(|w| w.subresource() == subresource && intersect(blocks, w.blocks()));
+        self.writes.push(TextureWrite {
+            source: match held {
+                true => Source::Bytes {
+                    bytes,
+                    offset,
+                    bytes_per_row,
+                },
+                false => Source::Issued,
+            },
+            ..write
+        });
+        held
+    }
+
+    /// Whether a held write reads `bytes`, which must stay registered
+    /// until the writes are issued.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn reads_bytes(&self, bytes: orb_hal::HostBytesId) -> bool {
+        (self.writes.iter())
+            .any(|w| matches!(w.source, Source::Bytes { bytes: b, .. } if b == bytes))
     }
 
     /// Holds a write from a host image.
@@ -234,7 +282,7 @@ impl TextureWrites {
                     Source::Issued => continue,
                     Source::Core { at, len, .. } => &self.texels[at..at + len],
                     #[cfg(target_arch = "wasm32")]
-                    Source::Host { .. } => &[][..],
+                    Source::Host { .. } | Source::Bytes { .. } => &[][..],
                 };
                 put(w, texels);
             }

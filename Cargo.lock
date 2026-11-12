@@ -2834,6 +2834,7 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "orb-crs",
+ "orb-hal",
  "orb-runtime",
  "orb-style",
  "orb-text",

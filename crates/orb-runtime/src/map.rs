@@ -160,6 +160,11 @@ pub struct FrameReport {
     /// up, missing or failed) since the last frame drawn, in its
     /// preparations or in it.
     pub tiles_arrived: u32,
+    /// Bytes of tiles' and edits' results and label commits the frame
+    /// uploaded: within its [`FrameBudget`]'s, but for a first one that
+    /// can't go up in pieces (an image tile's texels, an edit's, a
+    /// commit).
+    pub tile_bytes: u64,
     /// Only compiling pipelines keep the frame from being complete: a
     /// host whose GPU wakes it when a pipeline compiles needs no frames
     /// until then.
@@ -582,12 +587,17 @@ pub(crate) struct Retired {
     pub(crate) ramps: Vec<u32>,
     /// Host data of tile results dropped, parked ones among them.
     pub(crate) host: Vec<HostData>,
+    /// Room held for tiles going up in pieces that went.
+    pub(crate) reserved: Vec<orb_render::Reserved>,
 }
 
 impl Retired {
     fn release(&mut self, renderer: &mut Renderer) {
         for tile in self.tiles.drain(..) {
             renderer.release_tile(tile);
+        }
+        for reserved in self.reserved.drain(..) {
+            renderer.unreserve(reserved);
         }
         for table in self.tables.drain(..) {
             renderer.free_table(table);
@@ -721,6 +731,8 @@ pub struct Map {
     /// tiles' jobs were in flight: those tiles' arrivals free the stand-ins
     /// they replace, so these try again on the next frames.
     pub(crate) waiting: Vec<WaitingTile>,
+    /// The vector tile going up over frames, which shows once it's all in.
+    pub(crate) uploading: Option<crate::arrival::Uploading>,
     /// Chunks the last frame's cull left out for want of room.
     pub(crate) candidates_dropped: u32,
     /// Pipelines prepared frames asked for that the style's set left out,
@@ -991,6 +1003,7 @@ impl Map {
             applied: 0,
             planned: None,
             waiting: Vec::new(),
+            uploading: None,
             candidates_dropped: 0,
             pipelines_late: 0,
             resize_due: false,
@@ -1197,6 +1210,12 @@ impl Map {
     /// ([`FrameBudget::DESKTOP`], the default, or [`FrameBudget::MOBILE`]).
     pub fn set_frame_budget(&mut self, budget: FrameBudget) {
         self.frame_budget = budget;
+    }
+
+    /// What the next frame may spend on what arrived, moving or at rest:
+    /// a host that decodes arrivals for it does so within its time.
+    pub fn frame_budget_now(&self) -> crate::Budget {
+        self.frame_budget.at(self.is_moving())
     }
 
     /// What a job host that starts afresh needs to take this map's requests
@@ -1516,6 +1535,7 @@ impl Map {
         self.planned = None;
         // Their host data went with the device.
         self.parked = Default::default();
+        self.uploading = None;
         self.globe_warps = crate::globe::GlobeWarps::new(*self.surface.projection());
         self.retired = Retired::default();
         let old = &self.labels;
@@ -1983,6 +2003,7 @@ impl Map {
             && report.tiles_loading == 0
             && !self.tiles_deferred
             && self.waiting.is_empty()
+            && self.uploading.is_none()
             && self.pending.is_empty();
         let labels_settled = self.place_labels(gpu, renderer, &view, now, data_loaded);
         times.placement = micros(0.0, self.placement_ms);
@@ -2000,6 +2021,7 @@ impl Map {
         report.prepared = prepared;
         report.prepared_resized = resized;
         report.tiles_arrived = self.tiles_arrived + arrived;
+        report.tile_bytes = self.beat.bytes();
 
         if !self.retired.ramps.is_empty() {
             let mut images = self.services.images.0.lock().expect("images poisoned");
@@ -2878,6 +2900,19 @@ impl Map {
             .partition(|w| (w.generation, w.source) == (generation, key) && picks(w.tile));
         self.waiting = waiting;
         (self.retired.host).extend(old.iter().map(|w| HostData::of(&w.build)));
+        let stale = |u: &crate::arrival::Uploading| {
+            (u.generation, u.source) == (generation, key) && picks(u.tile)
+        };
+        let old_upload = self.uploading.take_if(|u| stale(u));
+        if let Some(up) = old_upload {
+            self.retired.host.push(HostData::of(&up.build));
+            self.retired.reserved.push(up.reserved);
+            if let Some(SourceState::Ready { pyramid, .. }) =
+                self.style.as_mut().map(|style| &mut style.sources[index])
+            {
+                pyramid.forget_loading(up.tile);
+            }
+        }
         // A tile still waiting for the app is asked for again; a load
         // under way with the old answer lands nowhere, and one that held
         // nothing is forgotten: the next frame that needs either asks.
@@ -3583,6 +3618,10 @@ impl Map {
         // dropped as stale.
         self.tile_generation += 1;
         (self.parked).drop_where(|_, _| true, &mut self.retired.host);
+        if let Some(up) = self.uploading.take() {
+            self.retired.host.push(HostData::of(&up.build));
+            self.retired.reserved.push(up.reserved);
+        }
         self.host_tiles.clear_stale();
     }
 }
@@ -3601,6 +3640,43 @@ mod tests {
         drop_stale(&mut result, worker.plan(), &[text]);
         assert!(result.symbols.is_empty());
         assert!(result.meshes.iter().all(|m| m.node != text));
+    }
+
+    /// A mesh kept from a stale result that drew a dropped mesh's words
+    /// takes them as its own, and shares name the meshes kept.
+    #[test]
+    fn stale_results_hand_shared_words_to_the_meshes_kept() {
+        let (worker, mut result) = crate::testing::symbol_tile();
+        let [icon, text] = [0, 1].map(|n| crate::style::node_key(result.symbols[0].layer, n));
+        let mesh = |node, vertices: (u32, u32), shares| crate::jobs::ResultMesh {
+            hits: Default::default(),
+            node,
+            extent: 4096,
+            chunks: Vec::new(),
+            vertices: crate::jobs::Stream {
+                at: vertices.0,
+                len: vertices.1,
+            },
+            indices: Default::default(),
+            props: Default::default(),
+            shares,
+            row_words: 0,
+            maxima: Vec::new(),
+            images: Vec::new(),
+            state_ids: None,
+            data: Vec::new(),
+        };
+        result.meshes = vec![
+            mesh(icon, (0, 4), [None; 2]),
+            mesh(text, (4, 6), [None; 2]),
+            mesh(icon, (0, 0), [Some(1), None]),
+            mesh(icon, (0, 0), [Some(1), None]),
+        ];
+        drop_stale(&mut result, worker.plan(), &[text]);
+        let kept: Vec<_> = (result.meshes.iter())
+            .map(|m| (m.vertices.range(), m.shares[0]))
+            .collect();
+        assert_eq!(kept, [(0..4, None), (4..10, None), (0..0, Some(1))]);
     }
 
     fn style(name: &str) -> String {

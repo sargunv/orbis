@@ -23,9 +23,11 @@ impl Map {
     /// Applies what arrived until `deadline` on the services' clock and
     /// within the frame's bytes ([`FrameBudget`], [`crate::schedule`]):
     /// every message in the order it came but tiles' results, which queue;
-    /// then edits' results in their order, then loads nearest the view's
-    /// focus first, then the tiles waiting for room. Tiles that arrive
-    /// together spread their uploads over frames rather than stalling one.
+    /// then the tile going up in pieces, edits' results in their order,
+    /// loads nearest the view's focus first, and the tiles waiting for
+    /// room. Tiles that arrive together spread their uploads over frames
+    /// rather than stalling one, and a tile larger than what a frame has
+    /// left goes up over several ([`Uploading`]).
     ///
     /// [`FrameBudget`]: crate::FrameBudget
     pub(crate) fn apply_messages(
@@ -42,6 +44,7 @@ impl Map {
                 message => self.apply_message(gpu, renderer, message),
             }
         }
+        self.continue_upload(gpu, renderer);
         while let Some(message) = self.inbox.edits.front() {
             let bytes = self.upload_cost(message);
             if !self.beat.affords(clock.now() < deadline, bytes) {
@@ -49,24 +52,134 @@ impl Map {
             }
             let message = self.inbox.edits.pop_front().expect("in front");
             self.apply_tile_message(gpu, renderer, message);
-            self.beat.applied(bytes);
+            (self.beat).spend(bytes);
+            self.beat.count();
         }
         // Farthest first, to take the nearest from the end.
         let mut loads = std::mem::take(&mut self.inbox.loads);
         loads.sort_by_cached_key(|m| std::cmp::Reverse(self.load_rank(m)));
         while let Some(message) = loads.last() {
             let bytes = self.upload_cost(message);
-            if !self.beat.affords(clock.now() < deadline, bytes) {
+            let in_time = clock.now() < deadline;
+            if !self.beat.takes(in_time, bytes, self.splits(message)) {
                 break;
             }
             let message = loads.pop().expect("last");
             self.apply_tile_message(gpu, renderer, message);
-            self.beat.applied(bytes);
+            self.beat.count();
         }
         self.inbox.loads = loads;
         let deferred = self.retry_waiting(gpu, renderer, deadline);
-        self.tiles_deferred =
-            deferred || !self.inbox.edits.is_empty() || !self.inbox.loads.is_empty();
+        self.tiles_deferred = deferred
+            || self.uploading.is_some()
+            || !self.inbox.edits.is_empty()
+            || !self.inbox.loads.is_empty();
+    }
+
+    /// Writes what the frame's bytes allow of the tile going up in pieces,
+    /// and makes the tile of them once they're all in: until then it draws
+    /// nothing, and what stands in for it stays. A tile the view no longer
+    /// waits for goes.
+    fn continue_upload(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        let Some(mut up) = self.uploading.take() else {
+            return;
+        };
+        let wanted = up.generation == self.tile_generation
+            && self.awaited(up.source, up.tile) == Awaited::Wanted;
+        if !wanted {
+            renderer.unreserve(up.reserved);
+            HostData::of(&up.build).release(gpu);
+            return;
+        }
+        let words = up.build.payload.words();
+        let written = renderer.write_reserved(gpu, words, &mut up.reserved, self.beat.left());
+        self.beat.spend(written);
+        self.beat.count();
+        // Its labels go up with it, whole: in a frame with room for them,
+        // or one that has written nothing else.
+        let labels = upload_bytes(&up.build).saturating_sub(up.reserved.written());
+        let room = labels <= self.beat.left() || self.beat.bytes() == 0;
+        if up.reserved.left() > 0 || !room {
+            self.uploading = Some(up);
+            return;
+        }
+        self.beat.spend(labels);
+        let host = HostData::of(&up.build);
+        let mut reserved = Some(up.reserved);
+        let result = Ok(TileOutcome::Built(up.build));
+        let at = (up.source, up.tile);
+        let allowed = (false, self.beat.left());
+        let applied = self.apply_tile_with(gpu, renderer, at, result, allowed, &mut reserved);
+        let at = (up.generation, up.source, up.tile);
+        if !self.settle_applied(renderer, at, applied) {
+            host.release(gpu);
+        }
+    }
+
+    /// Where `applied`, what became of tile `tile` of source `source` in
+    /// tile generation `generation`, goes: waiting for room (`tried` now),
+    /// parked or going up in pieces. Whether its result is kept (its host
+    /// data held).
+    fn settle_applied(
+        &mut self,
+        renderer: &Renderer,
+        (generation, source, tile): (u64, u32, TileIndex),
+        applied: Applied,
+    ) -> bool {
+        match applied {
+            Applied::Done => false,
+            Applied::Waits(build, room) => {
+                let tried = Some(self.room_state(renderer));
+                self.waiting.push(WaitingTile {
+                    generation,
+                    source,
+                    tile,
+                    build,
+                    tried,
+                    room,
+                });
+                true
+            }
+            Applied::Parks(build) => {
+                let at = (generation, source, tile);
+                let cap = crate::schedule::Parked::bytes(self.budget);
+                (self.parked).park(at, build, cap, &mut self.retired.host);
+                true
+            }
+            Applied::Uploading(build, reserved) => {
+                self.uploading = Some(Uploading {
+                    generation,
+                    source,
+                    tile,
+                    build,
+                    reserved,
+                });
+                true
+            }
+        }
+    }
+
+    /// Whether `message` is a vector tile's result that may go up in
+    /// pieces: one the view waits for, while no other tile does.
+    fn splits(&self, message: &Message) -> bool {
+        let Message::Tile {
+            result, terrain, ..
+        } = message
+        else {
+            return false;
+        };
+        let built = matches!(&**result, Ok(TileOutcome::Built(b)) if b.image.is_none());
+        built && !terrain && self.uploading.is_none()
+    }
+
+    /// What applying a result may write of a vector tile's words this
+    /// frame: the frame's bytes left, or all of them while another tile
+    /// goes up in pieces (the beat then took it whole).
+    fn allowed(&self) -> u64 {
+        match self.uploading {
+            None => self.beat.left(),
+            Some(_) => u64::MAX,
+        }
     }
 
     /// What applying `message`, a tile's result, uploads: nothing for a
@@ -158,7 +271,8 @@ impl Map {
                                 .map(|(_, _, s)| 4 * (s.text.len() + s.icon.len()) as u64)
                                 .sum();
                             self.labels.committed(gpu, renderer, committed);
-                            self.beat.applied(bytes);
+                            self.beat.spend(bytes);
+                            self.beat.count();
                             self.placement_ms += self.services.clock.now() - started;
                         }
                         // The labels ask again with the next frame.
@@ -283,8 +397,10 @@ impl Map {
         }
     }
 
-    /// Applies a tile's result, a load's or an edit's.
+    /// Applies a tile's result, a load's or an edit's: what a load
+    /// uploads counts against the frame's bytes.
     fn apply_tile_message(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, message: Message) {
+        let allowed = self.allowed();
         let Message::Tile {
             generation,
             source,
@@ -312,27 +428,18 @@ impl Map {
                 u32::from(edit.is_none() && matches!(result, Ok(TileOutcome::Built(_))));
             match edit {
                 None if terrain => self.apply_terrain_tile(gpu, renderer, source, tile, result),
-                None => match self.apply_tile(gpu, renderer, source, tile, result, true) {
-                    Applied::Done => {}
-                    Applied::Waits(build, room) => {
-                        kept = true;
-                        let tried = Some(self.room_state(renderer));
-                        self.waiting.push(WaitingTile {
-                            generation,
-                            source,
-                            tile,
-                            build,
-                            tried,
-                            room,
-                        });
-                    }
-                    Applied::Parks(build) => {
-                        kept = true;
-                        let at = (generation, source, tile);
-                        let cap = crate::schedule::Parked::bytes(self.budget);
-                        (self.parked).park(at, build, cap, &mut self.retired.host);
-                    }
-                },
+                None => {
+                    let mut reserved = None;
+                    let applied = self.apply_tile_with(
+                        gpu,
+                        renderer,
+                        (source, tile),
+                        result,
+                        (true, allowed),
+                        &mut reserved,
+                    );
+                    kept = self.settle_applied(renderer, (generation, source, tile), applied);
+                }
                 Some(_) => self.apply_edit(gpu, renderer, source, tile, result),
             }
         }
@@ -462,15 +569,20 @@ impl Map {
             }
             let bytes = upload_bytes(&waiting.build);
             let in_time = self.services.clock.now() < deadline;
-            if !self.beat.affords(in_time, bytes) {
+            let splits = waiting.build.image.is_none() && self.uploading.is_none();
+            if !self.beat.takes(in_time, bytes, splits) {
                 deferred = true;
                 self.waiting.push(waiting);
                 continue;
             }
-            self.beat.applied(bytes);
             self.applied += 1;
+            let (allowed, mut reserved) = (self.allowed(), None);
             let result = Ok(TileOutcome::Built(waiting.build));
-            match self.apply_tile(gpu, renderer, waiting.source, waiting.tile, result, false) {
+            let at = (waiting.source, waiting.tile);
+            let applied =
+                self.apply_tile_with(gpu, renderer, at, result, (false, allowed), &mut reserved);
+            self.beat.count();
+            match applied {
                 Applied::Waits(build, room) => {
                     state = self.room_state(renderer);
                     waiting.build = build;
@@ -478,14 +590,13 @@ impl Map {
                     waiting.room = room;
                     self.waiting.push(waiting);
                 }
-                Applied::Parks(build) => {
-                    let at = (waiting.generation, waiting.source, waiting.tile);
-                    let cap = crate::schedule::Parked::bytes(self.budget);
-                    (self.parked).park(at, build, cap, &mut self.retired.host);
-                }
                 Applied::Done => {
                     host.release(gpu);
                     state = self.room_state(renderer);
+                }
+                applied => {
+                    let at = (waiting.generation, waiting.source, waiting.tile);
+                    self.settle_applied(renderer, at, applied);
                 }
             }
         }
@@ -528,6 +639,8 @@ impl Map {
         }
     }
 
+    /// Applies a tile's result whole: [`apply_tile_with`](Self::apply_tile_with)
+    /// with no bound on what it writes.
     pub(crate) fn apply_tile(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -537,6 +650,51 @@ impl Map {
         result: Result<TileOutcome, String>,
         arrived: bool,
     ) -> Applied {
+        let mut reserved = None;
+        let at = (source, tile);
+        self.apply_tile_with(
+            gpu,
+            renderer,
+            at,
+            result,
+            (arrived, u64::MAX),
+            &mut reserved,
+        )
+    }
+
+    /// Applies tile `tile` of the source keyed `source`'s result, whose
+    /// load just answered if `arrived`. A vector tile whose words come to
+    /// more than `allowed` bytes takes room for them and writes that many
+    /// ([`Applied::Uploading`]); one whose words are all written in
+    /// `reserved` is made of them. What it doesn't take of `reserved`
+    /// goes back.
+    pub(crate) fn apply_tile_with(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        at: (u32, TileIndex),
+        result: Result<TileOutcome, String>,
+        allowed: (bool, u64),
+        reserved: &mut Option<orb_render::Reserved>,
+    ) -> Applied {
+        let applied = self.apply_tile_in(gpu, renderer, at, result, allowed, reserved);
+        if let Some(reserved) = reserved.take() {
+            renderer.unreserve(reserved);
+        }
+        applied
+    }
+
+    fn apply_tile_in(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        (source, tile): (u32, TileIndex),
+        result: Result<TileOutcome, String>,
+        (arrived, allowed): (bool, u64),
+        reserved: &mut Option<orb_render::Reserved>,
+    ) -> Applied {
+        // A tile made of words written over frames spent them as they went.
+        let finishing = reserved.is_some();
         // Whether the pools grow as the tile needs, and whether the camera
         // rests: a continuous map's grow only in its upkeep at rest.
         let free = self.resizes_freely();
@@ -737,11 +895,30 @@ impl Map {
             let attempt = match &image_build {
                 Some(image_build) => renderer
                     .upload_image(gpu, image_build, grow)
-                    .map(|handle| ResidentTile::new(handle, tile_zoom)),
+                    .map(|handle| Upload::Resident(ResidentTile::new(handle, tile_zoom))),
+                // Its words written, the tile is made of them.
+                None if let Some(written) = reserved.take() => upload(
+                    gpu,
+                    renderer,
+                    plan,
+                    (key, &build, patches),
+                    atlas,
+                    style.image_namespace.expect("namespace"),
+                    &mut style.states,
+                    &mut self.labels,
+                    tile_zoom,
+                    &mut self.warnings,
+                    Some(written),
+                )
+                .map(Upload::Resident)
+                .map_err(|OutOfSpace| NoRoom),
                 // Room for the meshes first, then their rows and labels.
                 None if !(renderer.fits(&sizes) || grow && renderer.grow_for(gpu, &sizes)) => {
                     renderer.refuse(&sizes);
                     Err(NoRoom)
+                }
+                None if upload_bytes(&build) > allowed => {
+                    crate::resident::reserve(renderer, plan, key, &build).map(Upload::Reserved)
                 }
                 None => upload(
                     gpu,
@@ -754,11 +931,13 @@ impl Map {
                     &mut self.labels,
                     tile_zoom,
                     &mut self.warnings,
+                    None,
                 )
+                .map(Upload::Resident)
                 .map_err(|OutOfSpace| NoRoom),
             };
             let victim = match attempt {
-                Ok(resident) => break Ok(resident),
+                Ok(uploaded) => break Ok(uploaded),
                 Err(Invalid(e)) => break Err(Some(e)),
                 // Labels' sizes aren't known ahead: both pools grow.
                 Err(NoRoom) if grow && image_build.is_none() && renderer.grow(gpu) => continue,
@@ -809,7 +988,18 @@ impl Map {
             }
         };
         let mut resident = match uploaded {
-            Ok(resident) => resident,
+            Ok(Upload::Resident(resident)) => {
+                if !finishing {
+                    self.beat.spend(upload_bytes(&build));
+                }
+                resident
+            }
+            Ok(Upload::Reserved(mut reserved)) => {
+                let words = build.payload.words();
+                let written = renderer.write_reserved(gpu, words, &mut reserved, allowed);
+                self.beat.spend(written);
+                return Applied::Uploading(build, reserved);
+            }
             Err(Some(e)) => {
                 self.warnings.push(format!("tile {tile:?}: {e}"));
                 pyramid.insert_empty(tile);
@@ -871,6 +1061,28 @@ pub(crate) enum Applied {
     Waits(TileResult, Room),
     /// Built after its load was given up ([`Parked`](crate::schedule::Parked)).
     Parks(TileResult),
+    /// Has room for its words and goes up over frames ([`Uploading`]).
+    Uploading(TileResult, orb_render::Reserved),
+}
+
+/// What an attempt at a tile's upload made room for.
+enum Upload {
+    Resident(ResidentTile),
+    Reserved(orb_render::Reserved),
+}
+
+/// A vector tile going up over frames, its words written into room it
+/// holds ([`orb_render::Reserved`]): it shows once every word is in, so
+/// that what a frame shows never has part of it, and no frame writes more
+/// of it than its budget's bytes.
+#[derive(Debug)]
+pub(crate) struct Uploading {
+    pub(crate) generation: u64,
+    /// The plan source's key.
+    pub(crate) source: u32,
+    pub(crate) tile: TileIndex,
+    pub(crate) build: TileResult,
+    pub(crate) reserved: orb_render::Reserved,
 }
 
 /// The longest fade of `source`'s raster layers at `tile_zoom`, in

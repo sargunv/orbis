@@ -64,8 +64,8 @@ pub use scene::{
     symbol_state,
 };
 pub use tiles::{
-    GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, Room, TileBuild, TileKey, UploadError,
-    WarpKey, changed_borders, dem_neighbours, tile_latitudes,
+    GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, Reserved, Room, TileBuild, TileKey,
+    UploadError, WarpKey, changed_borders, dem_neighbours, tile_extents, tile_latitudes, tile_size,
 };
 
 use crate::pipeline::{Draw, Variants};

@@ -533,27 +533,22 @@ fn shared_geometry_lives_until_its_last_mesh() {
     let mut h = Harness::new();
     red_fill(&mut h);
     let square = left_half_square();
-    let data = MeshData::new(&square, &[], 0);
-    let shared = MeshData {
-        vertices: Words::Core(&[]),
-        indices: Words::Core(&[]),
-        ..data
-    };
-    let empty = MeshData {
-        chunks: &[],
-        ..shared
-    };
-    let build = |data, shares| orb_render::MeshBuild {
+    // The tile's words: the square's vertices, then its indices.
+    let words = [&square.vertices[..], &square.indices].concat();
+    let (v, i) = (square.vertices.len() as u32, square.indices.len() as u32);
+    let build = |spans, chunks, shares| orb_render::MeshBuild {
         node: 0,
         extent: EXTENT,
-        data,
+        spans,
+        row_words: 0,
+        chunks,
         rows: Default::default(),
         shares,
     };
     let meshes = [
-        build(data, [None; 2]),
-        build(shared, [Some(0); 2]),
-        build(empty, [None; 2]),
+        build([0..v, v..v + i, 0..0], &square.chunks[..], [None; 2]),
+        build([0..0, 0..0, 0..0], &square.chunks[..], [Some(0); 2]),
+        build([0..0, 0..0, 0..0], &[], [None; 2]),
     ];
     let key = orb_render::TileKey {
         source: 0,
@@ -561,6 +556,7 @@ fn shared_geometry_lives_until_its_last_mesh() {
     };
     let tile_build = orb_render::TileBuild {
         key,
+        words: Words::Core(&words),
         meshes: &meshes,
         patches: None,
     };

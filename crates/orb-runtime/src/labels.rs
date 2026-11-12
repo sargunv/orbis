@@ -780,7 +780,7 @@ impl Labels {
             return Ok(());
         };
         let symbol = &plan.style.layers[plan.nodes[icon_node].layer];
-        let bytes = result.host_bytes;
+        let bytes = &result.payload;
         let table = |t: SymbolTable| s.table(t).core_words(gpu, bytes);
         let instances: Vec<SymbolInstance> = rows(&table(SymbolTable::Instances));
         let text_placed: Vec<PlacedSymbol> = rows(&table(SymbolTable::TextPlaced));
@@ -2034,10 +2034,7 @@ mod tests {
         /// A commit showing every text symbol of `bucket` at `wraps`.
         fn commit(&self, bucket: u64, wraps: &[i32]) -> Committed {
             let placed = self.result.symbols[0].table(SymbolTable::TextPlaced);
-            let crate::jobs::Stream::Core(words) = placed else {
-                panic!("core streams")
-            };
-            let count = words.len() / PLACED_WORDS as usize;
+            let count = placed.len() as usize / PLACED_WORDS as usize;
             let states = BucketStates {
                 text: [orb_symbol::state::PLACED | 127, 0, 0].repeat(count),
                 ..BucketStates::default()

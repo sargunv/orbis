@@ -45,6 +45,13 @@ pub enum Pixels<'a> {
         image: HostImageId,
         premultiply: bool,
     },
+    /// Tightly packed rows at byte `offset` of host-held bytes (a DEM
+    /// tile's texels in the buffer a job worker transferred), written
+    /// without entering core memory.
+    HostBytes {
+        bytes: orb_hal::HostBytesId,
+        offset: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -170,6 +177,9 @@ impl TilePage {
             Pixels::Core(bytes) => gpu.write_texture(&region, bytes),
             Pixels::Host { image, premultiply } => {
                 gpu.write_texture_from_host(&region, image, premultiply)
+            }
+            Pixels::HostBytes { bytes, offset } => {
+                gpu.write_texture_from_host_bytes(&region, bytes, offset)
             }
         }
     }

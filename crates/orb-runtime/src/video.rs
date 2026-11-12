@@ -240,7 +240,7 @@ impl Videos {
 fn host(frame: TileImage) -> Option<HostImageId> {
     match frame.pixels {
         ImagePixels::Host(id) => Some(id),
-        ImagePixels::Core(_) => None,
+        ImagePixels::Core(_) | ImagePixels::Bytes { .. } => None,
     }
 }
 
@@ -252,6 +252,7 @@ pub(crate) fn tile_image(frame: &TileImage) -> TileImage {
         pixels: match &frame.pixels {
             ImagePixels::Core(pixels) => ImagePixels::Core(pixels.clone()),
             &ImagePixels::Host(id) => ImagePixels::Host(id),
+            &ImagePixels::Bytes { bytes, offset } => ImagePixels::Bytes { bytes, offset },
         },
     }
 }

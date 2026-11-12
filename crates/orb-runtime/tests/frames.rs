@@ -143,6 +143,45 @@ mod tests {
         );
     }
 
+    /// No frame writes more of tiles' words than its budget's bytes: a
+    /// tile larger than that (the extract's take 0.3–3 MiB, their labels
+    /// under 256 KiB) goes up over frames and shows whole once all of it
+    /// is in, so the map at rest draws what one that takes each tile whole
+    /// does.
+    #[test]
+    fn tiles_larger_than_a_frame_s_bytes_go_up_in_pieces() {
+        let cap = 256 << 10;
+        let budget = orb_runtime::Budget {
+            ms: 1000.0,
+            bytes: cap,
+            ..orb_runtime::FrameBudget::DESKTOP.resting
+        };
+        let tight = orb_runtime::FrameBudget {
+            moving: budget,
+            resting: budget,
+        };
+        let capacity = crate::common::SceneCapacity::default();
+        let mut pieces = crate::common::Offscreen::new(&tokyo(14.0), capacity).unwrap();
+        pieces.map.set_frame_budget(tight);
+        let started = std::time::Instant::now();
+        let (mut most, mut was_idle) = (0, false);
+        loop {
+            let report = pieces.frame();
+
+            most = most.max(report.tile_bytes);
+            if report.idle && was_idle {
+                break;
+            }
+            was_idle = report.idle;
+            assert!(started.elapsed().as_secs() < 60, "did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(most <= cap, "a frame uploaded {most} bytes of tiles");
+        let (whole, _, _) = crate::common::Offscreen::load(&tokyo(14.0)).unwrap();
+        let differing = crate::common::differing_pixels(&pieces.pixels(), &whole.pixels());
+        assert_eq!(differing, 0, "pixels differ from tiles taken whole");
+    }
+
     /// Tiles never draw with some of their layers missing: when the scene
     /// is full, uploads evict unused cached tiles, so a small scene that has
     /// zoomed through several levels draws what an unbounded one does.

@@ -736,6 +736,23 @@ impl Words<'_> {
         self.len() == 0
     }
 
+    /// Its words `range`.
+    #[must_use]
+    pub fn slice(self, range: Range<u32>) -> Self {
+        assert!(
+            range.start <= range.end && range.end <= self.len(),
+            "words in range"
+        );
+        match self {
+            Self::Core(words) => Self::Core(&words[range.start as usize..range.end as usize]),
+            Self::Host { bytes, offset, .. } => Self::Host {
+                bytes,
+                offset: offset + u64::from(range.start) * 4,
+                len: range.end - range.start,
+            },
+        }
+    }
+
     /// Queues the words into `buffer` from word `word_offset`: what the
     /// storage backing of [`Tables`] does.
     fn write_buffer(&self, gpu: &mut dyn Gpu, buffer: BufferId, word_offset: u32) {
@@ -1891,65 +1908,105 @@ impl Scene {
         mesh: &MeshData<'_>,
         shares: [Option<MeshId>; 2],
     ) -> Result<MeshId, OutOfSpace> {
+        // A shared range is the earlier mesh's; the others are allocated.
+        let shared = shares.map(|of| of.map(|of| self.mesh_ranges(of)));
+        let words = [mesh.vertices, mesh.indices, mesh.props];
+        let lens = [0, 1, 2].map(|p| match p {
+            0 | 1 if shared[p].is_some() => 0,
+            _ => words[p].len(),
+        });
+        let block = self.alloc_block(lens).ok_or(OutOfSpace)?;
+        for (pool, range) in block.iter().enumerate() {
+            if !range.is_empty() {
+                self.write_pool(gpu, pool, range.start, words[pool]);
+            }
+        }
+        let ranges = [0, 1, 2].map(|p| match &shared {
+            [Some(of), _] if p == 0 => of[0].clone(),
+            [_, Some(of)] if p == 1 => of[1].clone(),
+            _ => block[p].clone(),
+        });
+        let inserted = self.insert_mesh_at(
+            gpu,
+            tile,
+            node,
+            ranges,
+            (mesh.chunks, mesh.row_words),
+            shares.map(|s| s.is_some()),
+        );
+        if inserted.is_err() {
+            for (pool, range) in block.into_iter().enumerate() {
+                self.free_words(pool, range);
+            }
+        }
+        inserted
+    }
+
+    /// Takes `lens` words of each pool (vertices, indices, property rows),
+    /// all of them or none.
+    pub(crate) fn alloc_block(&mut self, lens: [u32; 3]) -> Option<[Range<u32>; 3]> {
+        let vertices = self.vertex_arena.alloc(lens[0]);
+        let indices = self.index_arena.alloc(lens[1]);
+        let props = self.prop_arena.alloc(lens[2]);
+        match (vertices, indices, props) {
+            (Some(v), Some(i), Some(p)) => Some([v, i, p]),
+            (v, i, p) => {
+                for (pool, range) in [v, i, p].into_iter().enumerate() {
+                    if let Some(range) = range {
+                        self.free_words(pool, range);
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Gives back words of pool `pool` that no mesh holds.
+    pub(crate) fn free_words(&mut self, pool: usize, range: Range<u32>) {
+        match POOLS[pool] {
+            Pool::Vertices => self.vertex_arena.free(range),
+            Pool::Indices => self.index_arena.free(range),
+            Pool::Props => self.prop_arena.free(range),
+        }
+    }
+
+    /// Queues `words` into pool `pool` from word `at`.
+    pub(crate) fn write_pool(&mut self, gpu: &mut dyn Gpu, pool: usize, at: u32, words: Words<'_>) {
+        let table = [Table::Vertices, Table::Indices, Table::Props][pool];
+        self.tables.write(gpu, table, at, words);
+    }
+
+    /// Inserts a mesh of `tile` for render `node` whose words are written
+    /// at `ranges` of the pools (vertices, indices, property rows): its
+    /// own, or for those `shared`, an earlier mesh's. On `Err` it holds
+    /// nothing and the ranges are still the caller's.
+    pub(crate) fn insert_mesh_at(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tile: TileId,
+        node: u32,
+        [vertices, indices, props]: [Range<u32>; 3],
+        (chunks, row_words): (&[Chunk], u32),
+        shared: [bool; 2],
+    ) -> Result<MeshId, OutOfSpace> {
         assert!(
             (node as usize) < self.nodes.len(),
             "unknown render node {node}"
         );
         assert!(self.tiles[tile.0 as usize].is_some(), "unknown tile");
-        let len = |v: usize| u32::try_from(v).map_err(|_| OutOfSpace);
-        if !self.chunk_slots.reserve(len(mesh.chunks.len())?) {
+        let len = u32::try_from(chunks.len()).map_err(|_| OutOfSpace)?;
+        if !self.chunk_slots.reserve(len) {
             return Err(OutOfSpace);
         }
-        // A shared range is the earlier mesh's; the others are allocated.
-        let ranges = shares.map(|of| {
-            of.map(|of| {
-                let entry = self.meshes[of.0 as usize].as_ref().expect("live mesh");
-                [entry.vertices.clone(), entry.indices.clone()]
-            })
-        });
-        let vertices = match &ranges[0] {
-            Some([vertices, _]) => Some(vertices.clone()),
-            None => self.vertex_arena.alloc(mesh.vertices.len()),
-        };
-        let indices = match &ranges[1] {
-            Some([_, indices]) => Some(indices.clone()),
-            None => self.index_arena.alloc(mesh.indices.len()),
-        };
-        let props = self.prop_arena.alloc(mesh.props.len());
-        let (Some(vertices), Some(indices), Some(prop_range)) =
-            (vertices.clone(), indices.clone(), props.clone())
-        else {
-            if let (Some(range), None) = (vertices, &ranges[0]) {
-                self.vertex_arena.free(range);
-            }
-            if let (Some(range), None) = (indices, &ranges[1]) {
-                self.index_arena.free(range);
-            }
-            if let Some(range) = props {
-                self.prop_arena.free(range);
-            }
-            return Err(OutOfSpace);
-        };
-        for (pool, (range, words, table)) in [
-            (&vertices, mesh.vertices, Table::Vertices),
-            (&indices, mesh.indices, Table::Indices),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            match ranges[pool] {
-                // Empty ranges all start at 0, where the first allocation
-                // does: they hold nothing to share.
-                Some(_) if range.is_empty() => {}
-                Some(_) => *self.shared[pool].entry(range.start).or_default() += 1,
-                None => self.tables.write(gpu, table, range.start, words),
+        for (pool, range) in [&vertices, &indices].into_iter().enumerate() {
+            // Empty ranges all start at 0, where the first allocation
+            // does: they hold nothing to share.
+            if shared[pool] && !range.is_empty() {
+                *self.shared[pool].entry(range.start).or_default() += 1;
             }
         }
-        self.tables
-            .write(gpu, Table::Props, prop_range.start, mesh.props);
-
-        let mut chunk_ids = Vec::with_capacity(mesh.chunks.len());
-        for chunk in mesh.chunks {
+        let mut chunk_ids = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
             let id = self.chunk_slots.alloc().expect("checked above");
             let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
             let row: [u32; CHUNK_WORDS] = [
@@ -1957,11 +2014,11 @@ impl Scene {
                 chunk.index_count,
                 vertices.start,
                 chunk.first_vertex,
-                prop_range.start,
+                props.start,
                 pack(chunk.bounds.min),
                 pack(chunk.bounds.max),
                 NO_STATE,
-                mesh.row_words,
+                row_words,
             ];
             self.tables
                 .write_words(gpu, Table::Chunks, id * CHUNK_WORDS as u32, &row);
@@ -1972,15 +2029,21 @@ impl Scene {
             tile,
             node,
             chunk_slots: chunk_ids,
-            chunks: mesh.chunks.to_vec(),
+            chunks: chunks.to_vec(),
             vertices,
             indices,
-            props: prop_range,
-            row_words: mesh.row_words,
+            props,
+            row_words,
             state: 0..0,
             symbol: None,
         };
         Ok(self.add_mesh(entry))
+    }
+
+    /// A mesh's vertex and index ranges, which a mesh sharing them draws.
+    pub(crate) fn mesh_ranges(&self, mesh: MeshId) -> [Range<u32>; 2] {
+        let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
+        [entry.vertices.clone(), entry.indices.clone()]
     }
 
     /// Registers an uploaded mesh with its node and tile.

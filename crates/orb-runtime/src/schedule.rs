@@ -55,14 +55,39 @@ impl Beat {
     }
 
     /// Whether the frame, `in_time` (before its deadline), affords
-    /// applying a result that uploads `bytes`: its first always.
+    /// applying a result that uploads `bytes` whole: its first always, so
+    /// that arrivals never stall.
     pub(crate) fn affords(&self, in_time: bool, bytes: u64) -> bool {
         self.applied == 0 || (in_time && self.bytes + bytes <= self.cap)
     }
 
-    /// Counts a result applied that uploaded `bytes`.
-    pub(crate) fn applied(&mut self, bytes: u64) {
+    /// Whether the frame takes a result that uploads `bytes`, whole or,
+    /// if it `splits`, the bytes the frame has left of it: a vector tile's
+    /// words go up over frames, so that none writes more than its cap.
+    pub(crate) fn takes(&self, in_time: bool, bytes: u64, splits: bool) -> bool {
+        match splits && bytes > self.left() {
+            true => (self.applied == 0 || in_time) && self.left() > 0,
+            false => self.affords(in_time, bytes),
+        }
+    }
+
+    /// The bytes spent.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// The bytes it has left.
+    pub(crate) fn left(&self) -> u64 {
+        self.cap.saturating_sub(self.bytes)
+    }
+
+    /// Counts a result applied, or a piece of one.
+    pub(crate) fn count(&mut self) {
         self.applied += 1;
+    }
+
+    /// Counts bytes uploaded.
+    pub(crate) fn spend(&mut self, bytes: u64) {
         self.bytes += bytes;
     }
 }
@@ -219,14 +244,34 @@ mod tests {
         );
     }
 
+    /// A vector tile larger than what the frame has left is taken in
+    /// pieces; one that can't split is taken whole only as the first.
+    #[test]
+    fn a_frame_takes_what_splits_within_its_cap() {
+        let mut beat = Beat::new(10);
+        assert!(beat.takes(false, 100, true));
+        beat.spend(10);
+        beat.count();
+        assert!(!beat.takes(true, 100, true), "nothing left");
+        let mut beat = Beat::new(10);
+        beat.spend(4);
+        beat.count();
+        assert!(beat.takes(true, 100, true));
+        assert!(!beat.takes(false, 100, true), "out of time");
+        assert!(!beat.takes(true, 100, false));
+        assert!(beat.takes(true, 6, false));
+    }
+
     #[test]
     fn a_frame_applies_its_first_result_whatever_it_costs() {
         let mut beat = Beat::new(10);
         assert!(beat.affords(false, 100));
-        beat.applied(100);
+        beat.spend(100);
+        beat.count();
         assert!(!beat.affords(true, 0));
         let mut beat = Beat::new(10);
-        beat.applied(4);
+        beat.spend(4);
+        beat.count();
         assert!(beat.affords(true, 6));
         assert!(!beat.affords(true, 7));
         assert!(!beat.affords(false, 0));

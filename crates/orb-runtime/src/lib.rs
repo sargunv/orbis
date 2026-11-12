@@ -92,6 +92,6 @@ pub use settle::Settle;
 pub use style::ImageKind;
 pub use style_image::StyleImage;
 pub use symbol::SpriteIcons;
-pub use terrain::TerrainElevation;
+pub use terrain::{TerrainElevation, apply_pyramid_delta, pyramid_delta};
 pub use tile::TileBuild;
 pub use worker::{Built, DemUnpack, StyleUpdate, TileRequest, TileWorker};

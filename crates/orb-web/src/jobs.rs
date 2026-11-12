@@ -57,6 +57,13 @@ impl WorkerJobs {
         Self::new(workers, Box::new(post), crate::regions::service())
     }
 
+    /// Whether a job worker's reply carries a tile's data beside its
+    /// message: a packed tile or a DEM tile's texels, or an image.
+    pub(crate) fn carries_data(reply: &JsValue) -> bool {
+        let has = |key| !crate::js::get(reply, key).is_undefined();
+        has("buffer") || has("image")
+    }
+
     /// Completes a request with a job worker's reply. A packed tile's
     /// buffer is registered with `gpu`; only its header enters wasm memory,
     /// counted in `headers`.
@@ -92,20 +99,35 @@ fn payload(
     headers: &mut u64,
 ) -> Result<TileResult, String> {
     match message {
-        // A DEM tile, decoded by the core in the job worker.
-        JobReply::Dem {
-            width, elevations, ..
-        } => {
-            let pixels = buffer.map(|b| js_sys::Uint8Array::new(&b).to_vec());
-            orb_tile::DemGrid::from_elevations(width, elevations).map(|dem| TileResult {
-                image: Some(TileImage {
-                    width,
-                    height: width,
-                    pixels: ImagePixels::Core(pixels.unwrap_or_default()),
+        // A DEM tile, decoded by the core in the job worker: its texels go
+        // from the buffer to the GPU, and its elevations alone into wasm
+        // memory, for the CPU.
+        JobReply::Dem { width, .. } => {
+            let buffer = buffer.ok_or("DEM reply without a buffer")?;
+            let texels = u64::from(width) * u64::from(width) * 4;
+            if u64::from(buffer.byte_length()) != 2 * texels {
+                return Err("malformed DEM reply".into());
+            }
+            let bytes = gpu.register_array_buffer(buffer);
+            let elevations = gpu.read_host_bytes(bytes, texels..2 * texels);
+            let elevations = elevations.as_chunks::<4>().0.iter();
+            let elevations = elevations.map(|e| f32::from_le_bytes(*e)).collect();
+            let dem = orb_tile::DemGrid::from_elevations(width, elevations);
+            match dem {
+                Ok(dem) => Ok(TileResult {
+                    image: Some(TileImage {
+                        width,
+                        height: width,
+                        pixels: ImagePixels::Bytes { bytes, offset: 0 },
+                    }),
+                    dem: Some(Arc::new(dem)),
+                    ..TileResult::default()
                 }),
-                dem: Some(Arc::new(dem)),
-                ..TileResult::default()
-            })
+                Err(e) => {
+                    gpu.release_host_bytes(bytes);
+                    Err(e)
+                }
+            }
         }
         JobReply::Image { warp_grid, .. } => {
             let bitmap = crate::js::get(reply, "image")
@@ -125,8 +147,9 @@ fn payload(
             let buffer = buffer.ok_or("tile reply without a buffer")?;
             let header = header_bytes(&buffer)?;
             *headers += header.len() as u64;
+            let len = u64::from(buffer.byte_length());
             let bytes = gpu.register_array_buffer(buffer);
-            let result = unpack(&header, bytes);
+            let result = unpack(&header, bytes, len);
             if result.is_err() {
                 gpu.release_host_bytes(bytes);
             }
@@ -292,9 +315,8 @@ impl JobWorker {
                             &JobReply::Dem {
                                 id,
                                 width: image.width,
-                                elevations: grid.elevations().to_vec(),
                             },
-                            Some(js_sys::Uint8Array::from(image.pixels.as_slice()).buffer()),
+                            Some(dem_buffer(&image.pixels, grid.elevations())),
                             None,
                         ),
                         Err(e) => error(format!("image decode: {e}")),
@@ -345,11 +367,30 @@ fn reply(message: &JobReply, buffer: Option<ArrayBuffer>, image: Option<JsValue>
     .into()
 }
 
-/// A packed tile's reply.
+/// A DEM tile's texels, then its elevations (little-endian `f32`s), in
+/// one buffer to transfer.
+fn dem_buffer(texels: &[u8], elevations: &[f32]) -> ArrayBuffer {
+    let len = texels.len() + elevations.len() * 4;
+    let array = js_sys::Uint8Array::new_with_length(len as u32);
+    array.subarray(0, texels.len() as u32).copy_from(texels);
+    let elevations: Vec<u8> = elevations.iter().flat_map(|e| e.to_le_bytes()).collect();
+    array
+        .subarray(texels.len() as u32, len as u32)
+        .copy_from(&elevations);
+    array.buffer()
+}
+
+/// A packed tile's reply: its head and payload copied once, into the
+/// buffer it transfers.
 fn tile_reply(id: u32, build: TileBuild) -> JsValue {
     let packed = pack(build);
-    let buffer = js_sys::Uint8Array::from(packed.as_slice()).buffer();
-    reply(&JobReply::Tile { id }, Some(buffer), None)
+    let array = js_sys::Uint8Array::new_with_length(packed.len() as u32);
+    let head = packed.head.len() as u32;
+    array.subarray(0, head).copy_from(&packed.head);
+    array
+        .subarray(head, packed.len() as u32)
+        .copy_from(packed.payload_bytes());
+    reply(&JobReply::Tile { id }, Some(array.buffer()), None)
 }
 
 /// A message's bytes as a JS array.

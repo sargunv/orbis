@@ -21,6 +21,7 @@ const TARGETS: &[(&str, &[&str], Option<u8>)] = &[
     ("font", &["ttf", "otf", "woff", "woff2"], None),
     ("geojson", &["geojson"], None),
     ("dem", &[], None),
+    ("packed", &[], None),
 ];
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {

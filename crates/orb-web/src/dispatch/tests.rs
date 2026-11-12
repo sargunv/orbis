@@ -243,3 +243,37 @@ fn a_lost_workers_rasters_go_again() {
     jobs.complete(reply, |_| unreachable!()).unwrap();
     assert_eq!(bitmaps.lock().unwrap().take(), Some(Ok(vec![])));
 }
+
+/// A GeoJSON source's tiles all go to one worker, which parses and
+/// indexes its document once; a vector source's spread over them.
+#[test]
+fn a_geojson_source_s_tiles_share_one_worker() {
+    let style = r#"{"version":8,"sources":{
+        "geo":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}},
+        "vec":{"type":"vector","tiles":["test://{z}/{x}/{y}"]}},
+      "layers":[{"id":"a","type":"fill","source":"geo"},
+        {"id":"b","type":"fill","source":"vec","source-layer":"x"}]}"#;
+    let worker = Arc::new(TileWorker::new(style).unwrap());
+    let (jobs, posted) = jobs(4);
+    jobs.set_style(1, &StyleUpdate::default(), &worker);
+    let whole = worker.whole_sources();
+    let [geojson] = whole[..] else {
+        panic!("one GeoJSON source: {whole:?}")
+    };
+    let workers = |source: u32| {
+        posted.take();
+        for col in 0..8 {
+            let location = TileLocation::Url("test://tile".into());
+            let request =
+                TileRequest::whole(1, source, tile(col), location, orb_style::Encoding::Mvt);
+            jobs.load(request, Box::new(|_| {}));
+        }
+        let mut workers: Vec<u32> = posted.loads().iter().map(|l| l.0).collect();
+        workers.sort_unstable();
+        workers.dedup();
+        workers
+    };
+    assert_eq!(workers(geojson).len(), 1);
+    let vector = (1..=2).find(|&k| k != geojson).unwrap();
+    assert!(workers(vector).len() > 1);
+}

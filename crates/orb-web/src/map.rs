@@ -48,6 +48,9 @@ pub struct OrbisMap {
     images: orb_runtime::Images,
     pixel_ratio: f64,
     worker_jobs: Arc<WorkerJobs>,
+    /// Job workers' replies that carry a tile's data, decoded by the next
+    /// frame within its budget's time rather than as they arrive.
+    replies: std::collections::VecDeque<JsValue>,
     /// Bytes of packed tile headers copied into wasm memory.
     header_bytes: u64,
     /// A snapshot being drawn ([`snapshot`]).
@@ -507,6 +510,7 @@ pub async fn create_map(
         images,
         pixel_ratio: 1.0,
         worker_jobs,
+        replies: Default::default(),
         header_bytes: 0,
         snapshot: None,
         read_next: None,
@@ -1001,10 +1005,36 @@ impl OrbisMap {
         self.map.has_image(name)
     }
 
-    /// Completes a tile job with a job worker's reply.
+    /// Completes a job with a job worker's reply: one carrying a tile's
+    /// data (a packed tile, a DEM tile's texels, an image) at the next
+    /// frame, the rest now.
     #[wasm_bindgen(js_name = receiveJob)]
     pub fn receive_job(&mut self, reply: &JsValue) -> Result<(), JsError> {
+        if WorkerJobs::carries_data(reply) {
+            self.replies.push_back(reply.clone());
+            wake(self.id);
+            return Ok(());
+        }
         (self.worker_jobs).receive(self.canvas.gpu(), reply, &mut self.header_bytes)
+    }
+
+    /// Decodes the replies waiting for a frame, until `until` on the page's
+    /// clock (one at least): what they bring then waits for the map's
+    /// arrivals in its budget, nearest the view's focus first.
+    fn take_replies(&mut self, until: f64) {
+        while let Some(reply) = self.replies.pop_front() {
+            let received =
+                (self.worker_jobs).receive(self.canvas.gpu(), &reply, &mut self.header_bytes);
+            if let Err(e) = received {
+                web_sys::console::error_1(&e.into());
+            }
+            if orb_host::Clock::now(&crate::host::WebClock) >= until {
+                break;
+            }
+        }
+        if !self.replies.is_empty() {
+            wake(self.id);
+        }
     }
 
     /// Job worker `worker` is lost (its wasm trapped, or it died): the
@@ -1013,6 +1043,8 @@ impl OrbisMap {
     /// style; without, the others take its share.
     #[wasm_bindgen(js_name = jobWorkerLost)]
     pub fn job_worker_lost(&mut self, worker: u32, why: &str, replaced: bool) {
+        // What it answered before it went is its.
+        self.take_replies(f64::INFINITY);
         let replacement = replaced.then(|| self.map.jobs_style());
         self.worker_jobs.lost(worker, why, replacement);
         wake(self.id);
@@ -1158,6 +1190,7 @@ impl OrbisMap {
             });
         }
         let started = orb_host::Clock::now(&crate::host::WebClock);
+        self.take_replies(started + self.map.frame_budget_now().ms);
         let viewport = self.viewport();
         let (map, ratio, renderer) = (&mut self.map, self.pixel_ratio as f32, &mut self.renderer);
         let (report, pixels) = self

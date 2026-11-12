@@ -416,6 +416,16 @@ impl<G: Gpu> Gpu for Recording<G> {
         self.inner.read_host_bytes(bytes, range)
     }
 
+    fn write_texture_from_host_bytes(
+        &mut self,
+        region: &TextureRegion,
+        bytes: HostBytesId,
+        offset: u64,
+    ) {
+        self.inner
+            .write_texture_from_host_bytes(region, bytes, offset);
+    }
+
     fn release_host_bytes(&mut self, bytes: HostBytesId) {
         self.inner.release_host_bytes(bytes);
     }
@@ -674,6 +684,7 @@ mod tests {
         fn read_host_bytes(&self, _: HostBytesId, _: std::ops::Range<u64>) -> Vec<u8> {
             Vec::new()
         }
+        fn write_texture_from_host_bytes(&mut self, _: &TextureRegion, _: HostBytesId, _: u64) {}
         fn release_host_bytes(&mut self, _: HostBytesId) {}
         fn create_texture(&mut self, _: &TextureDesc<'_>) -> TextureId {
             TextureId(self.id())

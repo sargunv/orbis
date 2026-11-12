@@ -5,7 +5,9 @@
 //!
 //! `cargo xtask fuzz <target> [--seconds n]` runs one, seeded from the
 //! fixture mirrors. Input must never panic: a malformed input fails with
-//! an error or warning, as the runtime reports it.
+//! an error or warning, as the runtime reports it. A tile laid out also
+//! crosses to the map as a job worker sends it, packed, and must read
+//! back whole.
 
 #![forbid(unsafe_code)]
 
@@ -76,8 +78,9 @@ pub fn lay_out(bytes: &[u8], encoding: Encoding, options: u8) {
             poles: [true, false],
         });
     }
-    if let Ok(Built::Fetch(urls)) = worker.build(bytes, encoding, &request) {
-        for url in &urls {
+    let mut built = worker.build(bytes, encoding, &request);
+    if let Ok(Built::Fetch(urls)) = &built {
+        for url in urls {
             let range = if url.ends_with("/0-255.pbf") {
                 Ok(LATIN)
             } else {
@@ -85,6 +88,20 @@ pub fn lay_out(bytes: &[u8], encoding: Encoding, options: u8) {
             };
             worker.add_resource(url, range);
         }
-        let _ = worker.build(bytes, encoding, &request);
+        built = worker.build(bytes, encoding, &request);
     }
+    if let Ok(Built::Tile(build)) = built {
+        let packed = orb_runtime::pack(build).to_bytes();
+        assert!(unpack(&packed), "a packed tile reads back");
+    }
+}
+
+/// Reads `bytes` as a packed tile from a job worker
+/// ([`orb_runtime::unpack`]): whether it holds together.
+pub fn unpack(bytes: &[u8]) -> bool {
+    let Ok(header) = orb_runtime::packed_header(bytes) else {
+        return false;
+    };
+    let id = orb_hal::HostBytesId(0);
+    orb_runtime::unpack(header, id, bytes.len() as u64).is_ok()
 }

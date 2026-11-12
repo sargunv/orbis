@@ -115,14 +115,16 @@ pub(crate) struct HostData(Option<HostBytesId>, Option<orb_hal::HostImageId>);
 
 impl HostData {
     pub(crate) fn of(result: &TileResult) -> Self {
-        let image = match &result.image {
-            Some(crate::TileImage {
-                pixels: crate::ImagePixels::Host(image),
-                ..
-            }) => Some(*image),
+        let pixels = result.image.as_ref().map(|i| &i.pixels);
+        let image = match pixels {
+            Some(&crate::ImagePixels::Host(image)) => Some(image),
             _ => None,
         };
-        Self(result.host_bytes, image)
+        let bytes = match pixels {
+            Some(&crate::ImagePixels::Bytes { bytes, .. }) => Some(bytes),
+            _ => result.payload.host_bytes(),
+        };
+        Self(bytes, image)
     }
 
     pub(crate) fn release(self, gpu: &mut dyn Gpu) {
@@ -207,9 +209,50 @@ pub(crate) fn ready_source(
 /// or laid out since (`stale`, by key); a symbol layer's bucket goes with
 /// its nodes.
 pub(crate) fn drop_stale(build: &mut TileResult, plan: &StylePlan, stale: &[u32]) {
-    build
-        .meshes
-        .retain(|m| plan.node(m.node).is_some() && !stale.contains(&m.node));
+    let keep: Vec<bool> = (build.meshes.iter())
+        .map(|m| plan.node(m.node).is_some() && !stale.contains(&m.node))
+        .collect();
+    // A kept mesh drawing a dropped one's words takes them as its own,
+    // and those drawing them too draw them from it; then shares name the
+    // meshes kept by their new places.
+    for pool in 0..2 {
+        let mut owner: Vec<Option<u32>> = vec![None; build.meshes.len()];
+        for i in 0..build.meshes.len() {
+            let Some(of) = build.meshes[i].shares[pool].filter(|_| keep[i]) else {
+                continue;
+            };
+            if keep[of as usize] {
+                continue;
+            }
+            match owner[of as usize] {
+                Some(new) => build.meshes[i].shares[pool] = Some(new),
+                None => {
+                    let words = [
+                        build.meshes[of as usize].vertices,
+                        build.meshes[of as usize].indices,
+                    ];
+                    let mesh = &mut build.meshes[i];
+                    *[&mut mesh.vertices, &mut mesh.indices][pool] = words[pool];
+                    mesh.shares[pool] = None;
+                    owner[of as usize] = Some(i as u32);
+                }
+            }
+        }
+    }
+    let kept: Vec<u32> = (keep.iter())
+        .scan(0, |before, &k| {
+            let at = *before;
+            *before += u32::from(k);
+            Some(at)
+        })
+        .collect();
+    for mesh in &mut build.meshes {
+        for share in &mut mesh.shares {
+            *share = share.map(|of| kept[of as usize]);
+        }
+    }
+    let mut keep = keep.into_iter();
+    build.meshes.retain(|_| keep.next().expect("one per mesh"));
     build.symbols.retain(|s| {
         let keys = [
             crate::style::node_key(s.layer, 0),
@@ -317,9 +360,9 @@ pub(crate) fn upload_mesh(
     let node = plan.node(mesh.node).expect("meshes of planned nodes") as u32;
     // Alone, it uploads the words it shares too.
     let data = MeshData {
-        vertices: result.vertices(mesh).words(result.host_bytes),
-        indices: result.indices(mesh).words(result.host_bytes),
-        props: mesh.props.words(result.host_bytes),
+        vertices: result.vertices(mesh).words(&result.payload),
+        indices: result.indices(mesh).words(&result.payload),
+        props: mesh.props.words(&result.payload),
         row_words: mesh.row_words,
         chunks: &mesh.chunks,
     };
@@ -336,8 +379,54 @@ pub(crate) fn upload_mesh(
     Ok(())
 }
 
+/// A tile result's meshes the scene holds ([`scene_meshes`]), with `rows`
+/// for each (or none), as a build for the renderer.
+fn mesh_builds<'a>(
+    plan: &StylePlan,
+    meshes: &[(usize, &'a ResultMesh)],
+    rows: Option<&'a [ResolvedRows]>,
+) -> Vec<orb_render::MeshBuild<'a>> {
+    // A mesh shares another's words as the build's index of that mesh.
+    let build_index = |of: u32| meshes.binary_search_by_key(&(of as usize), |m| m.0).ok();
+    (meshes.iter().map(|&(_, m)| m).enumerate())
+        .map(|(i, m)| orb_render::MeshBuild {
+            node: plan.node(m.node).expect("meshes of planned nodes") as u32,
+            extent: m.extent,
+            spans: [m.vertices.range(), m.indices.range(), m.props.range()],
+            row_words: m.row_words,
+            chunks: &m.chunks,
+            rows: rows.map(|r| r[i].rows()).unwrap_or_default(),
+            shares: m.shares.map(|of| {
+                of.map(|of| build_index(of).expect("a mesh shares an earlier one's words"))
+            }),
+        })
+        .collect()
+}
+
+/// Takes room for a vector tile result's meshes' words, to write them over
+/// frames ([`orb_render::Reserved`]); [`upload`] then makes the tile of
+/// them.
+pub(crate) fn reserve(
+    renderer: &mut Renderer,
+    plan: &StylePlan,
+    key: TileKey,
+    result: &TileResult,
+) -> Result<orb_render::Reserved, orb_render::UploadError> {
+    let meshes: Vec<_> = scene_meshes(plan, result).collect();
+    let builds = mesh_builds(plan, &meshes, None);
+    let build = orb_render::TileBuild {
+        key,
+        words: result.payload.words(),
+        meshes: &builds,
+        patches: None,
+    };
+    renderer.reserve(&build)
+}
+
 /// Uploads a tile's meshes and symbol buckets, drawing through `patches`:
-/// all of them or, when the scene is out of space, none.
+/// all of them or, when the scene is out of space, none. A tile whose
+/// meshes' words are `reserved` and written ([`reserve`]) is made of them;
+/// on `Err` their room goes back.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn upload(
     gpu: &mut dyn Gpu,
@@ -350,39 +439,25 @@ pub(crate) fn upload(
     labels: &mut crate::labels::Labels,
     tile_zoom: f64,
     warnings: &mut Vec<String>,
+    reserved: Option<orb_render::Reserved>,
 ) -> Result<ResidentTile, OutOfSpace> {
-    let (indices, meshes): (Vec<usize>, Vec<&ResultMesh>) = scene_meshes(plan, result).unzip();
-    // A mesh shares another's words as the build's index of that mesh.
-    let build_index = |of: u32| indices.binary_search(&(of as usize)).ok();
+    let meshes: Vec<_> = scene_meshes(plan, result).collect();
     let rows: Vec<ResolvedRows> = meshes
         .iter()
-        .map(|m| resolve_rows(gpu, plan, result, m, atlas, namespace, states, warnings))
+        .map(|(_, m)| resolve_rows(gpu, plan, result, m, atlas, namespace, states, warnings))
         .collect();
-    let builds: Vec<orb_render::MeshBuild> = meshes
-        .iter()
-        .zip(&rows)
-        .map(|(m, rows)| orb_render::MeshBuild {
-            node: plan.node(m.node).expect("meshes of planned nodes") as u32,
-            extent: m.extent,
-            data: MeshData {
-                vertices: m.vertices.words(result.host_bytes),
-                indices: m.indices.words(result.host_bytes),
-                props: m.props.words(result.host_bytes),
-                row_words: m.row_words,
-                chunks: &m.chunks,
-            },
-            rows: rows.rows(),
-            shares: m.shares.map(|of| {
-                of.map(|of| build_index(of).expect("a mesh shares an earlier one's words"))
-            }),
-        })
-        .collect();
+    let builds = mesh_builds(plan, &meshes, Some(&rows));
     let build = orb_render::TileBuild {
         key,
+        words: result.payload.words(),
         meshes: &builds,
         patches,
     };
-    let (handle, ids) = match renderer.upload_tile(gpu, &build, false) {
+    let uploaded = match reserved {
+        Some(reserved) => renderer.finish_tile(gpu, &build, reserved),
+        None => renderer.upload_tile(gpu, &build, false),
+    };
+    let (handle, ids) = match uploaded {
         Ok(uploaded) => uploaded,
         Err(_) => {
             for rows in rows {
@@ -396,7 +471,7 @@ pub(crate) fn upload(
         .iter()
         .zip(rows)
         .zip(ids)
-        .map(|((m, rows), id)| Resident::new(m, id, rows, result.revision))
+        .map(|((&(_, m), rows), id)| Resident::new(m, id, rows, result.revision))
         .collect();
     if let Err(e) = labels.upload(
         gpu,
@@ -463,16 +538,17 @@ fn scene_meshes<'a>(
 }
 
 /// What a tile result's meshes take in the scene, as [`upload`] inserts
-/// them.
+/// them: one range of each pool.
 pub(crate) fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {
-    scene_meshes(plan, result)
-        .map(|(_, mesh)| MeshSize {
-            vertices: mesh.vertices.len(),
-            indices: mesh.indices.len(),
-            props: mesh.props.len(),
-            chunks: mesh.chunks.len() as u32,
-        })
-        .collect()
+    let meshes = || scene_meshes(plan, result).map(|(_, m)| m);
+    let spans: Vec<_> = (meshes())
+        .map(|m| [m.vertices.range(), m.indices.range(), m.props.range()])
+        .collect();
+    let chunks = meshes().map(|m| m.chunks.len() as u32).sum();
+    vec![orb_render::tile_size(
+        &orb_render::tile_extents(&spans),
+        chunks,
+    )]
 }
 
 /// Runs `upload` until the scene has room for it: after each refusal,

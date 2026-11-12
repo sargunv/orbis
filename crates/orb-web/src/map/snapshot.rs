@@ -63,13 +63,15 @@ impl OrbisMap {
     /// failed to load. Wait a little for data between calls.
     #[wasm_bindgen(js_name = snapshotFrame)]
     pub fn snapshot_frame(&mut self) -> Result<bool, JsError> {
-        let snapshot = self
-            .snapshot
-            .as_mut()
-            .ok_or_else(|| JsError::new("no snapshot started"))?;
+        if self.snapshot.is_none() {
+            return Err(JsError::new("no snapshot started"));
+        }
         if self.canvas.lost() {
             return Err(JsError::new("the GPU was lost"));
         }
+        // A still has no frame to keep: everything that came is its.
+        self.take_replies(f64::INFINITY);
+        let snapshot = self.snapshot.as_mut().expect("checked above");
         let format = self.canvas.format();
         let (map, gpu) = (&mut self.map, self.canvas.gpu());
         let renderer = self

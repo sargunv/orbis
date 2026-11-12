@@ -16,7 +16,7 @@
 //! ancestor stands in, rather than take down a worker each time it is
 //! loaded.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
 
 use orb_crs::TileIndex;
@@ -79,6 +79,9 @@ struct State {
     /// [`HOMES`] of them, oldest first in `home_order`.
     homes: HashMap<(u32, TileIndex), u32>,
     home_order: VecDeque<(u32, TileIndex)>,
+    /// Sources whose every tile slices one document (GeoJSON), by key:
+    /// their tiles go to one worker, which parses and indexes it once.
+    whole: HashSet<u32>,
     /// Replies received.
     done: u32,
 }
@@ -348,7 +351,9 @@ impl State {
     /// The worker `tile` of `source` went to, or the one with the fewest
     /// requests in flight, which becomes its home.
     fn home(&mut self, source: u32, tile: TileIndex) -> u32 {
-        let key = (source, tile);
+        // A whole source's home stays while the map does.
+        let whole = self.whole.contains(&source);
+        let key = (source, if whole { TileIndex::new(0, 0, 0) } else { tile });
         if let Some(&worker) = self.homes.get(&key) {
             return worker;
         }
@@ -360,12 +365,15 @@ impl State {
             .filter(|&w| !self.lost[w])
             .min_by_key(|&w| busy[w])
             .unwrap_or(0) as u32;
+        self.homes.insert(key, worker);
+        if whole {
+            return worker;
+        }
         if self.home_order.len() == HOMES
             && let Some(oldest) = self.home_order.pop_front()
         {
             self.homes.remove(&oldest);
         }
-        self.homes.insert(key, worker);
         self.home_order.push_back(key);
         worker
     }
@@ -380,7 +388,11 @@ fn route(lost: &[bool], preferred: u32) -> Option<u32> {
 }
 
 impl Jobs for WorkerJobs {
-    fn set_style(&self, style: u64, update: &StyleUpdate, _: &Arc<TileWorker>) {
+    fn set_style(&self, style: u64, update: &StyleUpdate, worker: &Arc<TileWorker>) {
+        {
+            let mut state = self.state.lock().expect("jobs poisoned");
+            state.whole.extend(worker.whole_sources());
+        }
         self.broadcast(&JobRequest::Style {
             style,
             update: Box::new(update.clone()),

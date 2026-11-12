@@ -412,6 +412,16 @@ impl TileWorker {
         ))
     }
 
+    /// The keys of the sources whose every tile slices one document
+    /// (GeoJSON): a host with several job workers sends their tiles to
+    /// one, which parses and indexes the document once.
+    pub fn whole_sources(&self) -> Vec<u32> {
+        (0..self.plan.sources.len())
+            .filter(|&i| matches!(self.plan.source_def(i).kind, SourceKind::GeoJson(_)))
+            .map(|i| self.plan.sources[i].key)
+            .collect()
+    }
+
     pub(crate) fn plan(&self) -> &StylePlan {
         &self.plan
     }
@@ -1112,7 +1122,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .tile()
         };
-        assert_eq!(pack(again()), pack(again()));
+        assert_eq!(pack(again()).to_bytes(), pack(again()).to_bytes());
         assert_eq!(build.meshes.len(), again().meshes.len());
         // A column job re-evaluates the fill's rows from the cached tile.
         let rows = worker
@@ -1489,24 +1499,17 @@ pub(crate) mod tests {
 
         let core = TileResult::from(build);
         let packed = pack(worker.build(&[], Encoding::Mvt, &request).unwrap().tile());
-        let words: Vec<u32> = packed
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|b| u32::from_le_bytes(*b))
-            .collect();
-        let result = crate::jobs::tests::unpacked(&packed);
+        let result = crate::jobs::tests::unpacked(&packed.to_bytes());
         let (unpacked, original) = (&result.symbols[0], &core.symbols[0]);
         assert_eq!(unpacked.layer, original.layer);
         assert_eq!(unpacked.meta, original.meta);
         assert_eq!(unpacked.glyphs, original.glyphs);
         assert_eq!(unpacked.images, original.images);
-        for (host, core) in unpacked.tables.iter().zip(&original.tables) {
-            let (Stream::Host { offset, len }, Stream::Core(core)) = (host, core) else {
-                panic!("host and core streams")
-            };
-            assert_eq!(&words[*offset as usize / 4..][..*len as usize], &core[..]);
-        }
+        let crate::jobs::Payload::Core(core_words) = &core.payload else {
+            panic!("a core payload")
+        };
+        assert_eq!(&packed.words, core_words);
+        assert_eq!(unpacked.tables, original.tables);
     }
 
     #[test]

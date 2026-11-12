@@ -674,9 +674,10 @@ impl SessionReport {
             out,
             "| session | frames | pipelines asked | late | made | buffers + textures made | MiB made | MiB \
              copied on the GPU | pool moves | MiB they made | MiB they copied | MiB uploaded | \
-             upload calls | texture-write submissions | drape slots | peak frame MiB uploaded |"
+             upload calls | texture-write submissions | drape slots | peak frame MiB uploaded | \
+             peak frame MiB of tiles |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(16))?;
+        writeln!(out, "|{}", "---|".repeat(17))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -697,10 +698,14 @@ impl SessionReport {
                     .map(|f| f.report.gpu.uploaded_bytes())
                     .max()
                     .unwrap_or(0);
+                let tiles = (r.frames.iter().filter(keep))
+                    .map(|f| f.report.tile_bytes)
+                    .max()
+                    .unwrap_or(0);
                 writeln!(
                     out,
                     "| {} {what} | {n} | {} | {late} | {} | {} | {} | {} | {} | {} | {} | {} | {} | \
-                     {} | {slots} | {} |",
+                     {} | {slots} | {} | {} |",
                     r.name,
                     c.pipelines_requested,
                     c.pipelines_compiled,
@@ -714,6 +719,7 @@ impl SessionReport {
                     c.upload_calls,
                     c.texture_write_submissions,
                     mib(peak),
+                    mib(tiles),
                 )?;
             }
         }
@@ -727,7 +733,8 @@ impl SessionReport {
              moves: pools, tables, tile pages and the drape atlas moving into memory of another \
              size, and what they made and copied (part of the device's counts), in the frames \
              (all: and in the map's upkeep between them, at rest); peak frame: the most one frame \
-             uploaded, with what was prepared before it."
+             uploaded, with what was prepared before it; of tiles: the most of tiles' and edits' \
+             results one frame uploaded, which its budget's bytes bound."
         )?;
         writeln!(out)?;
         writeln!(

@@ -975,39 +975,25 @@ impl ResultSymbols {
         &self.tables[table as usize]
     }
 
-    /// The layer's tables copied into word streams.
-    pub(crate) fn new(layer: u32, build: &SymbolBuild) -> Self {
+    /// The layer's tables, laid into the tile's `arena` as placement reads
+    /// them.
+    pub(crate) fn new(layer: u32, build: &SymbolBuild, arena: &mut crate::jobs::Arena) -> Self {
         let b = &build.bucket;
-        let words = |rows: &[u32]| crate::jobs::Stream::Core(rows.to_vec());
-        let cast = |bytes: &[u8]| {
-            crate::jobs::Stream::Core(
-                bytes
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|w| u32::from_ne_bytes(*w))
-                    .collect(),
-            )
-        };
         let tables = [
-            cast(bytemuck::cast_slice(&b.instances)),
-            cast(bytemuck::cast_slice(&b.text.placed)),
-            cast(bytemuck::cast_slice(&b.text.quads)),
-            cast(bytemuck::cast_slice(&b.text.glyph_offsets)),
-            cast(bytemuck::cast_slice(&b.icon.placed)),
-            cast(bytemuck::cast_slice(&b.icon.quads)),
-            cast(bytemuck::cast_slice(&b.icon.glyph_offsets)),
-            cast(bytemuck::cast_slice(&b.lines)),
-            cast(bytemuck::cast_slice(&b.anchor_offsets)),
-            cast(bytemuck::cast_slice(&b.sort_key_ranges)),
-            words(&build.instance_rows),
-            words(&build.text_colors),
-            words(&build.name_ranges),
-            {
-                let mut bytes = build.name_bytes.clone();
-                bytes.resize(bytes.len().next_multiple_of(4), 0);
-                cast(&bytes)
-            },
+            arena.push_pod(&b.instances),
+            arena.push_pod(&b.text.placed),
+            arena.push_pod(&b.text.quads),
+            arena.push_pod(&b.text.glyph_offsets),
+            arena.push_pod(&b.icon.placed),
+            arena.push_pod(&b.icon.quads),
+            arena.push_pod(&b.icon.glyph_offsets),
+            arena.push_pod(&b.lines),
+            arena.push_pod(&b.anchor_offsets),
+            arena.push_pod(&b.sort_key_ranges),
+            arena.push(&build.instance_rows),
+            arena.push(&build.text_colors),
+            arena.push(&build.name_ranges),
+            arena.push_pod(&build.name_bytes),
         ];
         Self {
             layer,

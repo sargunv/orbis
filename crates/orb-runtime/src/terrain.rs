@@ -1253,6 +1253,111 @@ impl TerrainElevation {
     }
 }
 
+/// A pyramid's words ([`TerrainElevation::pyramid`]): its header, through
+/// its tile matrix set's id, and each DEM tile's block (its index, then
+/// its samples) by tile.
+struct PyramidWords<'a> {
+    header: &'a [u32],
+    blocks: Vec<(TileIndex, &'a [u32])>,
+}
+
+/// Words in a DEM tile's block: its index, its range and its samples.
+const PYRAMID_BLOCK: usize = 3 + 2 + (PYRAMID_DIM * PYRAMID_DIM).div_ceil(2) as usize;
+
+impl<'a> PyramidWords<'a> {
+    /// Reads a pyramid of version `version`, whose block count is its
+    /// sixth word, its blocks after its header; what follows them stays.
+    fn read(words: &'a [u32], version: u32) -> Result<(Self, &'a [u32]), String> {
+        let bad = || "malformed elevation pyramid".to_string();
+        if words.first() != Some(&version) || words.len() < 7 {
+            return Err(bad());
+        }
+        let (tiles, id) = (words[5] as usize, (words[6] as usize).div_ceil(4));
+        let (header, mut rest) = words.split_at_checked(7 + id).ok_or_else(bad)?;
+        let mut blocks = Vec::with_capacity(tiles);
+        for _ in 0..tiles {
+            let (block, after) = rest.split_at_checked(PYRAMID_BLOCK).ok_or_else(bad)?;
+            let tile = TileIndex::new(block[0] as u8, block[1], block[2]);
+            blocks.push((tile, block));
+            rest = after;
+        }
+        Ok((Self { header, blocks }, rest))
+    }
+}
+
+/// What a reader holding pyramid `old` ([`TerrainElevation::pyramid`])
+/// needs to hold `new`: `new`'s header, the blocks of DEM tiles `old`
+/// lacks or has other samples for, and the tiles only `old` has; a
+/// placement worker takes the terrain's changes rather than all of it
+/// again. [`apply_pyramid_delta`] reads it.
+pub fn pyramid_delta(old: Option<&[u8]>, new: &[u8]) -> Result<Vec<u8>, String> {
+    let words = |bytes: &[u8]| -> Vec<u32> { bytemuck::pod_collect_to_vec(bytes) };
+    let (old_words, new_words) = (old.map(words), words(new));
+    let (new, _) = PyramidWords::read(&new_words, 1)?;
+    let old = (old_words.as_deref())
+        .map(|w| PyramidWords::read(w, 1).map(|(old, _)| old))
+        .transpose()?;
+    let held: FxHashMap<TileIndex, &[u32]> = old
+        .as_ref()
+        .map(|old| old.blocks.iter().copied().collect())
+        .unwrap_or_default();
+    let added: Vec<&[u32]> = (new.blocks.iter())
+        .filter(|(tile, block)| held.get(tile) != Some(block))
+        .map(|(_, block)| *block)
+        .collect();
+    let kept: FxHashSet<TileIndex> = new.blocks.iter().map(|(tile, _)| *tile).collect();
+    let removed: Vec<TileIndex> = held.keys().filter(|t| !kept.contains(t)).copied().collect();
+    let mut out: Vec<u32> = Vec::with_capacity(new.header.len() + added.len() * PYRAMID_BLOCK);
+    out.push(2);
+    out.extend_from_slice(&new.header[1..5]);
+    out.push(added.len() as u32);
+    out.extend_from_slice(&new.header[6..]);
+    for block in added {
+        out.extend_from_slice(block);
+    }
+    out.push(removed.len() as u32);
+    for tile in removed {
+        out.extend([u32::from(tile.z), tile.col, tile.row]);
+    }
+    Ok(bytemuck::cast_slice(&out).to_vec())
+}
+
+/// Pyramid `old` (none for an empty one) with `delta` ([`pyramid_delta`])
+/// applied: the pyramid the delta was made from.
+pub fn apply_pyramid_delta(old: Option<&[u8]>, delta: &[u8]) -> Result<Vec<u8>, String> {
+    let bad = || "malformed elevation pyramid delta".to_string();
+    if !delta.len().is_multiple_of(4) {
+        return Err(bad());
+    }
+    let delta_words: Vec<u32> = bytemuck::pod_collect_to_vec(delta);
+    let (delta, rest) = PyramidWords::read(&delta_words, 2)?;
+    let (&removed, rest) = rest.split_first().ok_or_else(bad)?;
+    if rest.len() != removed as usize * 3 {
+        return Err(bad());
+    }
+    let removed: FxHashSet<TileIndex> = (rest.as_chunks::<3>().0.iter())
+        .map(|&[z, col, row]| TileIndex::new(z as u8, col, row))
+        .collect();
+    let old_words: Vec<u32> = old.map(bytemuck::pod_collect_to_vec).unwrap_or_default();
+    let old = match old {
+        Some(_) => Some(PyramidWords::read(&old_words, 1)?.0),
+        None => None,
+    };
+    let mut blocks: FxHashMap<TileIndex, &[u32]> = (old.iter())
+        .flat_map(|old| old.blocks.iter().copied())
+        .filter(|(tile, _)| !removed.contains(tile))
+        .collect();
+    blocks.extend(delta.blocks.iter().copied());
+    let mut out: Vec<u32> = vec![1];
+    out.extend_from_slice(&delta.header[1..5]);
+    out.push(blocks.len() as u32);
+    out.extend_from_slice(&delta.header[6..]);
+    for block in blocks.values() {
+        out.extend_from_slice(block);
+    }
+    Ok(bytemuck::cast_slice(&out).to_vec())
+}
+
 impl orb_symbol::Ground for TerrainElevation {
     /// GL JS's `Terrain.getElevation(tileID, x, y)`: the DEM tile the drawn
     /// tile reads, as its placements' DEM references name it on the GPU.
@@ -1636,6 +1741,35 @@ mod tests {
         );
         // Nothing loaded elsewhere.
         assert!(elevation.at(at(-1.0, 0.5)).is_none());
+    }
+
+    /// A placement worker that holds a pyramid takes the next as the DEM
+    /// tiles that came and went, and holds what it would have whole.
+    #[test]
+    fn pyramid_deltas_carry_only_what_changed() {
+        let tms = tms();
+        let quad = |z, c, r| TileIndex::new(z, c, r);
+        let mut terrain = terrain_with(&[
+            (quad(10, 530, 360), hills(256, 0.0)),
+            (quad(10, 531, 360), hills(256, 7.0)),
+        ]);
+        let first = terrain.elevation(&tms).pyramid();
+        let whole = pyramid_delta(None, &first).unwrap();
+        assert_eq!(apply_pyramid_delta(None, &whole).unwrap(), *first);
+        arrive(&mut terrain, &[(quad(10, 530, 361), hills(256, 3.0))]);
+        let second = terrain.elevation(&tms).pyramid();
+        let delta = pyramid_delta(Some(&first), &second).unwrap();
+        assert!(delta.len() < second.len() / 2, "one block of three");
+        let held = apply_pyramid_delta(Some(&first), &delta).unwrap();
+        let tiles = |bytes: &[u8]| {
+            let elevation = TerrainElevation::from_pyramid(bytes).unwrap();
+            let mut tiles: Vec<_> = elevation.dems.keys().copied().collect();
+            tiles.sort();
+            tiles
+        };
+        assert_eq!(tiles(&held), tiles(&second));
+        assert_eq!(held.len(), second.len());
+        assert!(apply_pyramid_delta(Some(&first), &delta[..delta.len() - 4]).is_err());
     }
 
     #[test]

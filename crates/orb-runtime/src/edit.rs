@@ -453,7 +453,7 @@ impl Map {
                 if state.layout_epoch > current.layout_rev || build.revision < state.rows_epoch {
                     continue;
                 }
-                let props = mesh.props.words(build.host_bytes);
+                let props = mesh.props.words(&build.payload);
                 let rows = resolve_rows(
                     gpu,
                     plan,
