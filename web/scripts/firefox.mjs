@@ -190,6 +190,14 @@ export async function openFirefox({
       await marionette.send("WebDriver:Navigate", { url });
     },
     evaluate,
+    /** WebDriver input `actions` (pointer and wheel sources), performed
+     * through Firefox's widget layer as the user's input is, then
+     * released. */
+    async perform(actions) {
+      await marionette.send("Marionette:SetContext", { value: "content" });
+      await marionette.send("WebDriver:PerformActions", { actions });
+      await marionette.send("WebDriver:ReleaseActions", {});
+    },
     async waitForFunction(fn, arg, { timeout = 30_000 } = {}) {
       const until = Date.now() + timeout;
       while (!(await evaluate(`(arg) => !!(${fn})(arg)`, arg))) {
