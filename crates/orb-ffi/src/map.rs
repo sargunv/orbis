@@ -149,6 +149,9 @@ pub(crate) struct MapEntry {
     pub(crate) event_mask: u64,
     debug_flags: mln_map_debug_flags,
     stats_view: bool,
+    /// The setting from `mln_map_set_globe_free_bearing_enabled`. Orbis's
+    /// gestures on a globe keep the bearing, as with it off.
+    globe_free_bearing: bool,
     viewport: mln_map_viewport,
     projection_mode: mln_projection_mode,
     bounds: mln_camera_bounds,
@@ -220,6 +223,36 @@ pub(crate) struct MapEntry {
     pub(crate) rendered: Option<bool>,
 }
 
+/// The style projection a view draws with, from how much of a globe it
+/// is: a blend turns the globe into Mercator as the zoom grows, as v8's
+/// `globe` hands over.
+fn projection_definition(globe: f64) -> mln_projection_definition {
+    let (from, to, transition) = if globe <= 0.0 {
+        (
+            MLN_PROJECTION_TYPE_MERCATOR,
+            MLN_PROJECTION_TYPE_MERCATOR,
+            0.0,
+        )
+    } else if globe >= 1.0 {
+        (
+            MLN_PROJECTION_TYPE_VERTICAL_PERSPECTIVE,
+            MLN_PROJECTION_TYPE_VERTICAL_PERSPECTIVE,
+            0.0,
+        )
+    } else {
+        (
+            MLN_PROJECTION_TYPE_VERTICAL_PERSPECTIVE,
+            MLN_PROJECTION_TYPE_MERCATOR,
+            1.0 - globe,
+        )
+    };
+    mln_projection_definition {
+        from,
+        to,
+        transition,
+    }
+}
+
 impl MapEntry {
     pub(crate) fn camera(&self) -> mln_camera {
         let c = self.map.camera();
@@ -250,7 +283,14 @@ impl MapEntry {
             extent: self.extent,
             projection_mode: self.projection_mode,
             viewport: self.viewport,
+            projection: projection_definition(self.globe_amount()),
         }
+    }
+
+    /// How much of a globe the map draws at its zoom: 0 the plane, 1 a
+    /// globe, between a blend.
+    fn globe_amount(&self) -> f64 {
+        self.map.surface().globe_amount(self.map.zoom())
     }
 
     /// Publishes the snapshot `mln_map_get_snapshot` copies.
@@ -283,6 +323,8 @@ impl MapEntry {
             bounds: self.bounds,
             free_camera: free_camera(&self.map),
             view: self.view(),
+            globe_rendering: self.globe_amount() > 0.0,
+            globe_free_bearing_enabled: self.globe_free_bearing,
         };
         *self
             .handle
@@ -720,6 +762,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         event_mask,
                         debug_flags: 0,
                         stats_view: false,
+                        globe_free_bearing: false,
                         viewport: mln_map_viewport {
                             north_orientation: MLN_NORTH_ORIENTATION_UP,
                             constrain_mode: MLN_CONSTRAIN_MODE_HEIGHT_ONLY,
@@ -975,6 +1018,19 @@ command!(
         Ok(job(move |entry| {
             entry.unchanged = entry.stats_view == enabled;
             entry.stats_view = enabled;
+            Ok(())
+        }))
+    }
+);
+
+command!(
+    mln_map_set_globe_free_bearing_enabled(enabled: bool),
+    false,
+    true,
+    |state, id| {
+        Ok(job(move |entry| {
+            entry.unchanged = true;
+            entry.globe_free_bearing = enabled;
             Ok(())
         }))
     }
@@ -1470,7 +1526,7 @@ command!(
             // A document that doesn't parse leaves the style as it was.
             result
                 .map(|()| Value::None)
-                .map_err(|e| Failure::native(e.message()))
+                .map_err(|e| Failure::argument(e.message()))
         })
     }
 );
@@ -1618,6 +1674,7 @@ struct Animation {
     duration_ms: f64,
     velocity: f64,
     min_zoom: f64,
+    max_duration_ms: f64,
     easing: mln_unit_bezier,
     transition_id: u64,
     handler: Option<EndHandler>,
@@ -1629,19 +1686,26 @@ impl Animation {
             | MLN_ANIMATION_OPTION_VELOCITY
             | MLN_ANIMATION_OPTION_MIN_ZOOM
             | MLN_ANIMATION_OPTION_EASING
-            | MLN_ANIMATION_OPTION_TRANSITION_ID;
+            | MLN_ANIMATION_OPTION_TRANSITION_ID
+            | MLN_ANIMATION_OPTION_MAX_DURATION;
         if a.fields & !known != 0 {
             return Err(Failure::argument("the animation options have unknown bits"));
         }
         let has = |bit| a.fields & bit != 0;
-        if has(MLN_ANIMATION_OPTION_DURATION)
-            && !(a.duration_ms.is_finite()
-                && a.duration_ms >= 0.0
-                && a.duration_ms <= orb_camera::MAX_DURATION_MS)
-        {
-            return Err(Failure::argument(
-                "duration_ms must be a non-negative duration within the native duration range",
-            ));
+        let duration = |v: f64| (0.0..=orb_camera::MAX_DURATION_MS).contains(&v);
+        for (bit, v, what) in [
+            (MLN_ANIMATION_OPTION_DURATION, a.duration_ms, "duration_ms"),
+            (
+                MLN_ANIMATION_OPTION_MAX_DURATION,
+                a.max_duration_ms,
+                "max_duration_ms",
+            ),
+        ] {
+            if has(bit) && !duration(v) {
+                return Err(Failure::argument(format!(
+                    "{what} must be a non-negative duration within the native duration range"
+                )));
+            }
         }
         if has(MLN_ANIMATION_OPTION_VELOCITY) && !(a.velocity.is_finite() && a.velocity > 0.0) {
             return Err(Failure::argument("velocity must be positive and finite"));
@@ -1663,6 +1727,7 @@ impl Animation {
             duration_ms: a.duration_ms,
             velocity: a.velocity,
             min_zoom: a.min_zoom,
+            max_duration_ms: a.max_duration_ms,
             easing: a.easing,
             transition_id: a.transition_id,
             handler: EndHandler::from_c(&a.end_handler)?,
@@ -1766,6 +1831,9 @@ fn update_camera(
             }
             if animation.fields & MLN_ANIMATION_OPTION_VELOCITY != 0 {
                 options.screen_speed = Some(animation.velocity);
+            }
+            if animation.fields & MLN_ANIMATION_OPTION_MAX_DURATION != 0 {
+                options.max_duration = Some(animation.max_duration_ms);
             }
             if let Some(e) = easing(animation) {
                 options.easing = e;

@@ -606,6 +606,12 @@ impl Map {
         self.map.zoom()
     }
 
+    /// What the map draws on: its style's plane, or the globe the style's
+    /// `projection` wraps it around.
+    pub fn surface(&self) -> orb_crs::Surface {
+        self.map.surface()
+    }
+
     /// The viewport the camera and gestures use: the last target's, in
     /// logical pixels.
     pub fn viewport(&self) -> Viewport {

@@ -824,6 +824,10 @@ const _: () = {
         crate::style::mln_map_get_style_light_property,
     ];
     let _ = [
+        crate::sys::mln_map_get_style_root_property,
+        crate::style::mln_map_get_style_root_property,
+    ];
+    let _ = [
         crate::sys::mln_map_get_style_source,
         crate::style::mln_map_get_style_source,
     ];
@@ -874,6 +878,10 @@ const _: () = {
     let _ = [
         crate::sys::mln_map_projection_get_camera,
         crate::projection::mln_map_projection_get_camera,
+    ];
+    let _ = [
+        crate::sys::mln_map_projection_is_location_occluded,
+        crate::projection::mln_map_projection_is_location_occluded,
     ];
     let _ = [
         crate::sys::mln_map_projection_lat_lng_for_pixel,
@@ -990,6 +998,10 @@ const _: () = {
         crate::style::mln_map_set_global_state_property,
     ];
     let _ = [
+        crate::sys::mln_map_set_globe_free_bearing_enabled,
+        crate::map::mln_map_set_globe_free_bearing_enabled,
+    ];
+    let _ = [
         crate::sys::mln_map_set_image_source_coordinates,
         crate::style::mln_map_set_image_source_coordinates,
     ];
@@ -1018,12 +1030,12 @@ const _: () = {
         crate::style::mln_map_set_style_layer_property,
     ];
     let _ = [
-        crate::sys::mln_map_set_style_light_json,
-        crate::style::mln_map_set_style_light_json,
-    ];
-    let _ = [
         crate::sys::mln_map_set_style_light_property,
         crate::style::mln_map_set_style_light_property,
+    ];
+    let _ = [
+        crate::sys::mln_map_set_style_root_property,
+        crate::style::mln_map_set_style_root_property,
     ];
     let _ = [
         crate::sys::mln_map_set_style_source_volatile,

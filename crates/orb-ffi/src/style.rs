@@ -994,9 +994,7 @@ command!(
 
 /// The style's root member `key`, as its document has it now.
 fn root(entry: &MapEntry, key: &str) -> Result<Option<Json>> {
-    let doc = doc(entry)?;
-    let root = json::parse(&doc.to_json()).map_err(|e| Failure::native(e.to_string()))?;
-    Ok(root.get(key).cloned())
+    Ok(doc(entry)?.root(key).cloned())
 }
 
 fn set_light(entry: &mut MapEntry, light: Json, what: &str) -> Result {
@@ -1013,17 +1011,147 @@ fn set_light(entry: &mut MapEntry, light: Json, what: &str) -> Result {
     .map_err(|f| Failure::new(f.status, format!("the {what} is invalid: {}", f.message)))
 }
 
+/// The root properties v8 defines, but `sources` and `layers`, which the
+/// source and layer calls change.
+const ROOT_PROPERTIES: [&str; 18] = [
+    "version",
+    "name",
+    "metadata",
+    "center",
+    "centerAltitude",
+    "zoom",
+    "bearing",
+    "pitch",
+    "roll",
+    "state",
+    "light",
+    "sky",
+    "projection",
+    "terrain",
+    "sprite",
+    "glyphs",
+    "font-faces",
+    "transition",
+];
+
+fn root_property(name: &str) -> Result {
+    if ROOT_PROPERTIES.contains(&name) {
+        Ok(())
+    } else {
+        Err(Failure::argument(format!(
+            "\"{name}\" is not a style root property the C API reads or sets"
+        )))
+    }
+}
+
+/// A root property's value as Native writes it: the style's own JSON, its
+/// members in the spec's order where Native orders them, and colors as
+/// `["rgba", …]`.
+fn write_root(out: &mut String, name: &str, json: &Json) {
+    let order: &[&str] = match name {
+        "light" => &["anchor", "position", "color", "intensity"],
+        "transition" => &["duration", "delay"],
+        _ => &[],
+    };
+    let colors = matches!(name, "light" | "sky");
+    let Some(members) = json.as_object().filter(|_| colors || !order.is_empty()) else {
+        write_json(out, json);
+        return;
+    };
+    let rank = |key: &str| order.iter().position(|k| *k == key).unwrap_or(order.len());
+    let mut members: Vec<&json::Member> = members.iter().collect();
+    members.sort_by_key(|m| rank(&m.key));
+    out.push('{');
+    for (i, m) in members.into_iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        write_string(out, &m.key);
+        out.push(':');
+        let color = colors && (m.key == "color" || m.key.ends_with("-color"));
+        match (&m.value.value, color) {
+            (JsonValue::String(text), true) if let Some(c) = Color::parse(text) => {
+                write_color(out, c);
+            }
+            _ => write_json(out, &m.value),
+        }
+    }
+    out.push('}');
+}
+
+/// `json` as written, a whole number without a fraction.
+fn write_json(out: &mut String, json: &Json) {
+    match &json.value {
+        JsonValue::Number(n) if n.fract() == 0.0 && n.abs() < 2f64.powi(53) => {
+            out.push_str(&format!("{n:.0}"));
+        }
+        JsonValue::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_json(out, item);
+            }
+            out.push(']');
+        }
+        JsonValue::Object(members) => {
+            out.push('{');
+            for (i, m) in members.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_string(out, &m.key);
+                out.push(':');
+                write_json(out, &m.value);
+            }
+            out.push('}');
+        }
+        _ => write_native(out, json, false),
+    }
+}
+
 command!(
-    mln_map_set_style_light_json(light: mln_buffer_view),
+    mln_map_set_style_root_property(name: mln_buffer_view, value: mln_buffer_view),
     false,
     true,
     |state, id| {
-        let light = json_text(light, "light_json")?;
+        let name = id(name, "property_name")?;
+        let value = json_text(value, "value")?;
         Ok(job(move |entry| {
+            root_property(&name)?;
             doc(entry)?;
-            let light = parse_json(&light, "the style light")?;
-            set_light(entry, light, "style light")
+            let what = format!("style root property \"{name}\"");
+            let value = parse_json(&value, &what)?;
+            let value = (!value.is_null()).then_some(value);
+            edit(entry, vec![Op::SetRoot { key: name, value }]).map_err(|f| {
+                Failure::new(f.status, format!("the {what} is invalid: {}", f.message))
+            })
         }))
+    }
+);
+
+command!(
+    mln_map_get_style_root_property(name: mln_buffer_view),
+    true,
+    false,
+    |state, id| {
+        let name = id(name, "property_name")?;
+        Ok(move |state: &mut State, id: u64| {
+            root_property(&name)?;
+            let entry = entry(state, id);
+            let value = match root(entry, &name)? {
+                Some(value) => value,
+                // Native gives a style without a transition its default.
+                None if name == "transition" => {
+                    json::parse("{\"duration\":300}").map_err(|e| Failure::native(e.to_string()))?
+                }
+                None => return Ok(Value::None),
+            };
+            let mut out = String::new();
+            write_root(&mut out, &name, &value);
+            Ok(Value::Text(out))
+        })
     }
 );
 
@@ -1107,9 +1235,9 @@ command!(
                     )));
                 }
             }
-            let mut members = root(entry, "transition")?
-                .and_then(|t| t.as_object().map(<[_]>::to_vec))
-                .unwrap_or_default();
+            // The timing replaces the style's, as Native's transition
+            // options do: a field it doesn't set takes the default.
+            let mut members = Vec::new();
             for (bit, key, v) in [
                 (
                     MLN_STYLE_TRANSITION_OPTION_DURATION,
@@ -1119,7 +1247,6 @@ command!(
                 (MLN_STYLE_TRANSITION_OPTION_DELAY, "delay", o.delay_ms),
             ] {
                 if has(bit) {
-                    members.retain(|m| m.key != key);
                     members.push(json::Member {
                         key: key.into(),
                         key_span: json::Span::default(),

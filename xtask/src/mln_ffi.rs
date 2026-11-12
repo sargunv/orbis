@@ -28,11 +28,11 @@ use crate::fixtures::{SOURCE_MD, entry_path, get, hex, install, open, unwrap_roo
 
 /// The upstream repository and the commit Orbis implements.
 const REPO: &str = "https://github.com/maplibre/maplibre-native-ffi";
-const COMMIT: &str = "9cbe0b9c6388aabf3841cbd92dfafddf27ca76ee";
+const COMMIT: &str = "eae96a42c493b41f04410264d3014faf548b434b";
 
 /// The mirror's content hash at [`COMMIT`], with [`UNITY`] and
 /// [`VULKAN_HEADERS`].
-const MIRROR_SHA256: &str = "c4bce2809b69a8c604c8e59be5cae7bc7d43bd37f0a7c1242d3d6db356200acc";
+const MIRROR_SHA256: &str = "fe5f3cfd29bad1eb00ae4cfed5181ebf6408f5058fa269cc357fe339c637fdfa";
 
 /// Unity, at the release and hash `cmake/mln_ffi_tests.cmake` pins.
 const UNITY: (&str, &str) = (
@@ -551,8 +551,18 @@ fn abi_files(mirror: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-fn work_dir() -> PathBuf {
-    root().join("target/mln-ffi")
+/// Where a run builds and scores: `target/mln-ffi` for orb-ffi, a
+/// directory of its own below it for another library (`--lib`), so the
+/// two can run side by side and keep their own last results.
+fn work_dir(lib: Option<&Path>) -> PathBuf {
+    let base = root().join("target/mln-ffi");
+    match lib {
+        None => base,
+        Some(lib) => base.join(format!(
+            "lib-{}",
+            &hex(&Sha256::digest(lib.as_os_str().as_encoded_bytes()))[..12]
+        )),
+    }
 }
 
 /// A C or C++ compiler command. On macOS it takes the SDK `rustc` links
@@ -592,11 +602,13 @@ fn run_tool(command: &mut Command) -> Result<(), String> {
     }
 }
 
-/// Builds `maplibre-native-c` and installs it as mln-ffi's install
-/// prefix lays it out: `lib/`, `include/`.
-fn install_library(mirror: &Path) -> Result<PathBuf, String> {
-    crate::cargo(&["build", "--release", "-p", "orb-ffi"])?;
-    let prefix = work_dir().join("install");
+/// Builds `maplibre-native-c` (or takes the one at `library`) and installs it
+/// as mln-ffi's install prefix lays it out: `lib/`, `include/`.
+fn install_library(mirror: &Path, library: Option<&Path>) -> Result<PathBuf, String> {
+    if library.is_none() {
+        crate::cargo(&["build", "--release", "-p", "orb-ffi"])?;
+    }
+    let prefix = work_dir(library).join("install");
     let lib = prefix.join("lib");
     fs::create_dir_all(&lib).map_err(|e| e.to_string())?;
     let (built, installed) = if cfg!(target_vendor = "apple") {
@@ -606,7 +618,10 @@ fn install_library(mirror: &Path) -> Result<PathBuf, String> {
     } else {
         ("libmaplibre_native_c.so", "libmaplibre-native-c.so")
     };
-    let from = root().join("target/release").join(built);
+    let from = library.map_or_else(
+        || root().join("target/release").join(built),
+        Path::to_path_buf,
+    );
     fs::copy(&from, lib.join(installed)).map_err(|e| format!("{}: {e}", from.display()))?;
     let include = prefix.join("include");
     if include.exists() {
@@ -632,8 +647,8 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 
 /// Compiles the ABI suite against the install at `prefix` and links it:
 /// the suite's executable.
-fn build_suite(mirror: &Path, prefix: &Path) -> Result<PathBuf, String> {
-    let build = work_dir().join("suite");
+fn build_suite(mirror: &Path, prefix: &Path, work: &Path) -> Result<PathBuf, String> {
+    let build = work.join("suite");
     if build.exists() {
         fs::remove_dir_all(&build).map_err(|e| e.to_string())?;
     }
@@ -926,15 +941,16 @@ fn run_file(exe: &Path, mirror: &Path, file: &str, cases: &[String]) -> BTreeMap
     outcomes
 }
 
-/// `cargo xtask mln-ffi [--filter <s>] [--verbose]`: builds Orbis's
-/// `maplibre-native-c`, compiles the pinned ABI suite against it, runs it
-/// file by file and scores it case by case.
+/// `cargo xtask mln-ffi [--filter <s>] [--verbose] [--lib <path>]`: builds
+/// Orbis's `maplibre-native-c` (or takes another build of the library, such
+/// as mln-rs's `mln_c`, from `--lib`), compiles the pinned ABI suite against
+/// it, runs it file by file and scores it case by case.
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("declarations") => return declarations(args.iter().any(|a| a == "--check")),
         Some("help") => {
             eprintln!(
-                "cargo xtask mln-ffi [--filter <substring>] [--verbose]\n\
+                "cargo xtask mln-ffi [--filter <substring>] [--verbose] [--lib <path>]\n\
                  cargo xtask mln-ffi declarations [--check]"
             );
             return Ok(());
@@ -943,20 +959,30 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     }
     let mut filter = None;
     let mut verbose = false;
+    let mut lib = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--filter" => filter = Some(iter.next().ok_or("--filter takes a substring")?.clone()),
             "--verbose" => verbose = true,
+            "--lib" => {
+                let path = PathBuf::from(iter.next().ok_or("--lib takes a library's path")?);
+                lib =
+                    Some(fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?);
+            }
             other => return Err(format!("mln-ffi: unknown argument `{other}`")),
         }
     }
     ensure()?;
-    declarations(true)?;
+    if lib.is_none() {
+        declarations(true)?;
+    }
     let mirror = mirror_dir();
-    let prefix = install_library(&mirror)?;
+    let lib = lib.as_deref();
+    let work = work_dir(lib);
+    let prefix = install_library(&mirror, lib)?;
     eprintln!("building the ABI suite against {}", prefix.display());
-    let exe = build_suite(&mirror, &prefix)?;
+    let exe = build_suite(&mirror, &prefix, &work)?;
     let cases = list_cases(&exe)?;
     let files: Vec<(&String, &Vec<String>)> = cases
         .iter()
@@ -986,7 +1012,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         }
     });
     let results = results.into_inner().expect("results");
-    report(&results, &cases, verbose, filter.is_none())
+    report(&results, &cases, verbose, filter.is_none(), &work)
 }
 
 /// Prints the score by domain and file, compares it with the last full
@@ -996,6 +1022,7 @@ fn report(
     cases: &BTreeMap<String, Vec<String>>,
     verbose: bool,
     full: bool,
+    work: &Path,
 ) -> Result<(), String> {
     let mut by_domain: BTreeMap<&str, [usize; 5]> = BTreeMap::new();
     for (file, outcomes) in results {
@@ -1044,7 +1071,7 @@ fn report(
         "total", sum[0], sum[1], sum[2], sum[3], sum[4]
     );
 
-    let path = work_dir().join("results.json");
+    let path = work.join("results.json");
     let json: Value = results
         .iter()
         .map(|(file, outcomes)| {

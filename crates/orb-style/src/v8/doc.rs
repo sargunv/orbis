@@ -259,6 +259,13 @@ impl StyleDoc {
         self.sources.iter().find(|s| s.id == id).map(|s| &*s.json)
     }
 
+    /// Root member `key` as the document has it now, but `sources` and
+    /// `layers`, which [`source`](Self::source) and [`layer`](Self::layer)
+    /// read (GL JS `getLight`, `getSky`, `getProjection`, …).
+    pub fn root(&self, key: &str) -> Option<&Json> {
+        member(&self.root, key)
+    }
+
     /// The global state: root defaults with transactions' values over them.
     pub fn global_state(&self) -> Vec<(String, Value<'static>)> {
         crate::v8::resolve_state(&self.style.state, &self.overrides)

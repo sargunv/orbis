@@ -17,6 +17,7 @@ pub const MLN_ANIMATION_OPTION_VELOCITY: mln_animation_option_field = 2;
 pub const MLN_ANIMATION_OPTION_MIN_ZOOM: mln_animation_option_field = 4;
 pub const MLN_ANIMATION_OPTION_EASING: mln_animation_option_field = 8;
 pub const MLN_ANIMATION_OPTION_TRANSITION_ID: mln_animation_option_field = 16;
+pub const MLN_ANIMATION_OPTION_MAX_DURATION: mln_animation_option_field = 32;
 pub type mln_bound_option_field = u32;
 pub const MLN_BOUND_OPTION_BOUNDS: mln_bound_option_field = 1;
 pub const MLN_BOUND_OPTION_MIN_ZOOM: mln_bound_option_field = 2;
@@ -246,6 +247,10 @@ pub type mln_projection_mode_option_field = u32;
 pub const MLN_PROJECTION_MODE_OPTION_AXONOMETRIC: mln_projection_mode_option_field = 1;
 pub const MLN_PROJECTION_MODE_OPTION_X_SKEW: mln_projection_mode_option_field = 2;
 pub const MLN_PROJECTION_MODE_OPTION_Y_SKEW: mln_projection_mode_option_field = 4;
+pub type mln_projection_type = u32;
+pub const MLN_PROJECTION_TYPE_MERCATOR: mln_projection_type = 0;
+pub const MLN_PROJECTION_TYPE_VERTICAL_PERSPECTIVE: mln_projection_type = 1;
+pub const MLN_PROJECTION_TYPE_GLOBE: mln_projection_type = 2;
 pub type mln_render_abandon_disposition = u32;
 pub const MLN_RENDER_ABANDON_DISPOSITION_CLEAN: mln_render_abandon_disposition = 0;
 pub const MLN_RENDER_ABANDON_DISPOSITION_QUARANTINED: mln_render_abandon_disposition = 1;
@@ -483,9 +488,8 @@ pub const MLN_STYLE_SOURCE_TYPE_RASTER_DEM: mln_style_source_type = 3;
 pub const MLN_STYLE_SOURCE_TYPE_GEO_JSON: mln_style_source_type = 4;
 pub const MLN_STYLE_SOURCE_TYPE_IMAGE: mln_style_source_type = 5;
 pub const MLN_STYLE_SOURCE_TYPE_VIDEO: mln_style_source_type = 6;
-pub const MLN_STYLE_SOURCE_TYPE_ANNOTATIONS: mln_style_source_type = 7;
-pub const MLN_STYLE_SOURCE_TYPE_CUSTOM_GEOMETRY: mln_style_source_type = 8;
-pub const MLN_STYLE_SOURCE_TYPE_CUSTOM_VECTOR: mln_style_source_type = 9;
+pub const MLN_STYLE_SOURCE_TYPE_CUSTOM_GEOMETRY: mln_style_source_type = 7;
+pub const MLN_STYLE_SOURCE_TYPE_CUSTOM_VECTOR: mln_style_source_type = 8;
 pub type mln_style_tile_scheme = u32;
 pub const MLN_STYLE_TILE_SCHEME_XYZ: mln_style_tile_scheme = 0;
 pub const MLN_STYLE_TILE_SCHEME_TMS: mln_style_tile_scheme = 1;
@@ -578,6 +582,7 @@ pub struct mln_animation_options {
     pub duration_ms: f64,
     pub velocity: f64,
     pub min_zoom: f64,
+    pub max_duration_ms: f64,
     pub easing: mln_unit_bezier,
     pub transition_id: u64,
     pub end_handler: mln_camera_transition_handler,
@@ -1075,6 +1080,8 @@ pub struct mln_map_snapshot {
     pub bounds: mln_camera_bounds,
     pub free_camera: mln_free_camera,
     pub view: mln_map_view,
+    pub globe_rendering: bool,
+    pub globe_free_bearing_enabled: bool,
 }
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1106,6 +1113,7 @@ pub struct mln_map_view {
     pub extent: mln_logical_extent,
     pub projection_mode: mln_projection_mode,
     pub viewport: mln_map_viewport,
+    pub projection: mln_projection_definition,
 }
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1380,6 +1388,13 @@ pub struct mln_premultiplied_rgba8_image {
 pub struct mln_projected_meters {
     pub northing: f64,
     pub easting: f64,
+}
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct mln_projection_definition {
+    pub from: mln_projection_type,
+    pub to: mln_projection_type,
+    pub transition: f64,
 }
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -2746,6 +2761,12 @@ unsafe extern "C" {
         completion: *const mln_completion,
         out_diagnostic: *mut mln_diagnostic,
     ) -> mln_status;
+    pub fn mln_map_get_style_root_property(
+        map: mln_map,
+        property_name: mln_buffer_view,
+        completion: *const mln_completion,
+        out_diagnostic: *mut mln_diagnostic,
+    ) -> mln_status;
     pub fn mln_map_get_style_source(
         map: mln_map,
         source_id: mln_buffer_view,
@@ -2821,6 +2842,12 @@ unsafe extern "C" {
     pub fn mln_map_projection_get_camera(
         projection: mln_map_projection,
         out_result: *mut mln_map_projection_camera_result,
+        out_diagnostic: *mut mln_diagnostic,
+    ) -> mln_status;
+    pub fn mln_map_projection_is_location_occluded(
+        projection: mln_map_projection,
+        coordinate: mln_lat_lng,
+        out_occluded: *mut bool,
         out_diagnostic: *mut mln_diagnostic,
     ) -> mln_status;
     pub fn mln_map_projection_lat_lng_for_pixel(
@@ -3011,6 +3038,12 @@ unsafe extern "C" {
         completion: *const mln_completion,
         out_diagnostic: *mut mln_diagnostic,
     ) -> mln_status;
+    pub fn mln_map_set_globe_free_bearing_enabled(
+        map: mln_map,
+        enabled: bool,
+        completion: *const mln_completion,
+        out_diagnostic: *mut mln_diagnostic,
+    ) -> mln_status;
     pub fn mln_map_set_image_source_coordinates(
         map: mln_map,
         source_id: mln_buffer_view,
@@ -3067,13 +3100,14 @@ unsafe extern "C" {
         completion: *const mln_completion,
         out_diagnostic: *mut mln_diagnostic,
     ) -> mln_status;
-    pub fn mln_map_set_style_light_json(
+    pub fn mln_map_set_style_light_property(
         map: mln_map,
-        light_json: mln_buffer_view,
+        property_name: mln_buffer_view,
+        value: mln_buffer_view,
         completion: *const mln_completion,
         out_diagnostic: *mut mln_diagnostic,
     ) -> mln_status;
-    pub fn mln_map_set_style_light_property(
+    pub fn mln_map_set_style_root_property(
         map: mln_map,
         property_name: mln_buffer_view,
         value: mln_buffer_view,

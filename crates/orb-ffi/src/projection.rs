@@ -2,9 +2,10 @@
 // coordinates and screen points on any thread for as long as the caller
 // keeps it, and the spherical Mercator helpers.
 //
-// A view carries no projection or terrain (`mln_map_view` has no slot for
-// them), so a projection is the flat Web Mercator view of its camera, as
-// Native's is.
+// A view carries no terrain (`mln_map_view` has no slot for it), so a
+// projection is the flat Web Mercator view of its camera, as Native's is. A
+// view whose style projection draws a globe is refused as unsupported, as
+// the header allows, until projections follow Orbis's globe.
 
 use std::sync::{Arc, Mutex};
 
@@ -120,7 +121,28 @@ fn check_view(v: &mln_map_view) -> Result {
             "viewport.north_orientation names no orientation",
         ));
     }
+    let p = v.projection;
+    if p.from > MLN_PROJECTION_TYPE_GLOBE || p.to > MLN_PROJECTION_TYPE_GLOBE {
+        return Err(Failure::argument(
+            "the view's style projection names unknown projection types",
+        ));
+    }
+    if !p.transition.is_finite() {
+        return Err(Failure::argument(
+            "the view's style projection transition must be finite",
+        ));
+    }
     Ok(())
+}
+
+/// Whether a view's style projection draws any of a globe: `from` until
+/// its transition is done, `to` once it has begun.
+fn draws_globe(p: mln_projection_definition) -> bool {
+    let globe = |t| t != MLN_PROJECTION_TYPE_MERCATOR;
+    if p.from == p.to {
+        return globe(p.from);
+    }
+    (globe(p.from) && p.transition < 1.0) || (globe(p.to) && p.transition > 0.0)
 }
 
 /// The camera and viewport Orbis draws a view with.
@@ -216,6 +238,11 @@ pub unsafe extern "C" fn mln_map_projection_create(
             let view = *sized(view, "view")?;
             fresh_out(out_projection, "out_projection")?;
             check_view(&view)?;
+            if draws_globe(view.projection) {
+                return Err(Failure::unsupported(
+                    "Orbis's projections don't project a globe yet",
+                ));
+            }
             let id = handles::insert(Object::Projection(Arc::new(ProjectionHandle {
                 view: Mutex::new(view),
             })));
@@ -314,6 +341,24 @@ pub unsafe extern "C" fn mln_map_projection_pixel_for_lat_lng(
             }
             let point = pixel(&resolve(&p.view()), coordinate)?;
             put(out_point, point, "out_point")
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_map_projection_is_location_occluded(
+    projection: mln_map_projection,
+    coordinate: mln_lat_lng,
+    out_occluded: *mut bool,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            self::projection(projection)?;
+            check_coordinate(coordinate, "coordinate")?;
+            // A projection is a Mercator view, which hides nothing.
+            put(out_occluded, false, "out_occluded")
         })
     }
 }
