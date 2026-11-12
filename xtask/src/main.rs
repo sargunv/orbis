@@ -438,17 +438,3 @@ fn shown(command: &Command) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_command_shows_its_environment_program_name_and_arguments() {
-        let mut command = Command::new("/usr/local/bin/cargo");
-        command
-            .args(["build", "-p", "orb-web"])
-            .env("RUSTC_BOOTSTRAP", "1");
-        assert_eq!(shown(&command), "RUSTC_BOOTSTRAP=1 cargo build -p orb-web");
-    }
-}

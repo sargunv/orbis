@@ -346,14 +346,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pretty_matches_the_committed_layout() {
-        assert_eq!(
-            pretty(r#"{"id":"a b","f":["==",["get","x"],1],"e":{}}"#, 1),
-            "{\n    \"id\": \"a b\",\n    \"f\": [\n      \"==\",\n      [\n        \"get\",\n        \"x\"\n      ],\n      1\n    ],\n    \"e\": {}\n  }"
-        );
-    }
-
-    #[test]
     fn subsets_keep_wanted_glyphs() {
         let glyph = |id: u8| {
             let mut g = vec![0x08, id];

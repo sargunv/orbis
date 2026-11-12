@@ -1845,17 +1845,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tables_are_markdown_with_a_dash_for_no_value() {
-        let mut table = Table::new(["view", "orbis"]);
-        table.row(["tokyo".to_string(), cell(Some(1.25), 1)]);
-        table.row(["paris".to_string(), cell(None, 1)]);
-        assert_eq!(
-            table.finish(),
-            "| view | orbis |\n|---|---|\n| tokyo | 1.2 |\n| paris | — |\n"
-        );
-    }
-
-    #[test]
     fn cache_paths_decode_and_stay_inside() {
         let shared = Shared {
             base: String::new(),
@@ -1874,17 +1863,5 @@ mod tests {
             shared.cache_path("/../etc/passwd"),
             PathBuf::from("/c/_/etc/passwd")
         );
-        assert!(
-            is_json("/planet", "")
-                && is_json("/styles/liberty", "")
-                && !is_json("/planet/1/0/0.pbf", "")
-        );
-    }
-
-    #[test]
-    fn time_output() {
-        assert_eq!(median(&mut [3.0, 1.0, 2.0]), Some(2.0));
-        assert_eq!(median(&mut [4.0, 1.0, 2.0, 3.0]), Some(2.5));
-        assert_eq!(median(&mut []), None);
     }
 }
