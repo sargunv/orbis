@@ -189,8 +189,11 @@ export function attachInput(
   const wheel = (e: WheelEvent) => {
     if (!allowedNow.zoom) return;
     e.preventDefault();
-    if (e.deltaY === 0) return;
+    // Classified before anything reads a delta: Firefox reports a wheel's
+    // lines only to a page that asks for `deltaMode` first, and pixels
+    // otherwise.
     const [notches, amount] = wheelDelta(e);
+    if (amount === 0) return;
     send(
       "wheel",
       [e.offsetX, e.offsetY, notches, amount, modifiers(e)],

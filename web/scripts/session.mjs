@@ -610,7 +610,12 @@ async function run(server, engine) {
     await page.addInitScript(() => {
       addEventListener(
         "wheel",
-        (e) => (globalThis.__wheel ??= [e.deltaY, e.deltaMode]),
+        // deltaMode first: Firefox reports pixels to a page that reads a
+        // delta before it, the map's listener included.
+        (e) => {
+          const mode = e.deltaMode;
+          globalThis.__wheel ??= [e.deltaY, mode];
+        },
         { capture: true, passive: true },
       );
       globalThis.__raf = [];
