@@ -243,14 +243,28 @@ mod tests {
     }
 
     /// Every shader specialised to every variant (orb-render's
-    /// `pipeline::module`) is valid WGSL with each of its entry points, and
-    /// sets none of the variant's constants: a fold that cut what it
-    /// shouldn't, or left a block open, shows here.
+    /// `pipeline::module`), from its source and from its source with
+    /// tables in data textures (a device whose vertex stage has no storage
+    /// buffers), is valid WGSL with each of its entry points, and sets none
+    /// of the variant's constants: a fold that cut what it shouldn't, or
+    /// left a block open, shows here.
     #[test]
     fn every_variant_specialises_to_valid_wgsl() {
         let flags = [PLANE, FEATURE_ROWS, FEATURE_STATE, PATTERNS];
-        for shader in SHADERS {
-            let source = shader.source();
+        let sources = SHADERS.iter().flat_map(|shader| {
+            [
+                (shader, shader.source()),
+                (shader, shader.texture_tables_source()),
+            ]
+        });
+        for (shader, source) in sources {
+            assert!(
+                (source.lines())
+                    .filter(|l| l.starts_with("//planes "))
+                    .all(|l| !l.contains(['{', '}'])),
+                "{}: a `//planes ` line holds a brace, which the fold reads as code",
+                shader.label
+            );
             for bits in 0..16u8 {
                 let constants: Vec<(&str, f64)> = (flags.iter().enumerate())
                     .map(|(i, &name)| (name, f64::from((bits >> i) & 1)))

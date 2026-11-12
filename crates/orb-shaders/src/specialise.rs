@@ -10,11 +10,12 @@
 //! driver (naga and Tint write the branch, its condition constant), so a
 //! plane variant compiled its terrain's DEM reads all the same.
 //!
-//! It reads the build's stripped WGSL (`strip` in build.rs: no comments,
-//! so no braces but the code's), and folds an `if C {` whose `C` is a
-//! literal, its negation, or `||` or `&&` of terms of which the literals
-//! decide it; other uses of a constant keep its literal for the driver to
-//! fold.
+//! It reads the build's stripped WGSL (`strip` in build.rs): no comments
+//! but the `//planes ` lines of a shader without clip planes, which hold
+//! no braces (the test of every variant checks), so no braces but the
+//! code's. It folds an `if C {` whose `C` is a literal, its negation, or
+//! `||` or `&&` of terms of which the literals decide it; other uses of a
+//! constant keep its literal for the driver to fold.
 
 /// `source` with each of `constants` that is a boolean override written
 /// in, and the code that decides dropped; `None` if none is one. Those
