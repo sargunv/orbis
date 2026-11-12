@@ -1221,18 +1221,25 @@ impl Renderer {
 
     /// Words of the property buffer for a table outside any tile, such as
     /// the feature-state table; not cleared. The pool grows, within its
-    /// limit, to make room.
+    /// limit, to make room, as for an edit's relayout: unless memory is
+    /// [held](crate::Moves::Held), when the caller asks again at rest.
+    /// No upkeep knows to grow the pool for it, so it doesn't wait for one.
     pub fn alloc_table(
         &mut self,
         gpu: &mut dyn Gpu,
         words: u32,
     ) -> Result<std::ops::Range<u32>, OutOfSpace> {
         self.scene.alloc_table(words).or_else(|_| {
+            if self.moves() == crate::Moves::Held {
+                return Err(OutOfSpace);
+            }
             let table = MeshSize {
                 props: words,
                 ..MeshSize::default()
             };
-            self.grow_for(gpu, &[table]);
+            self.scene.grow_for(gpu, &[table]);
+            self.glyphs
+                .set_table(self.scene.tables().writer(Table::Props));
             self.scene.alloc_table(words)
         })
     }

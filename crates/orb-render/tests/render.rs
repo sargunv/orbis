@@ -300,6 +300,29 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
     assert!(!h.renderer.grow_for(&mut h.gpu, &[huge]));
 }
 
+/// A table outside any tile (a map's feature-state table) grows the
+/// property pool as an edit's relayout does: at rest, which no upkeep
+/// would do for it, and not while memory is held.
+#[test]
+fn a_full_property_pool_grows_for_a_table_at_rest_not_while_held() {
+    let capacity = SceneCapacity {
+        prop_words: 64,
+        max_prop_words: 1 << 12,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity, None);
+    h.renderer.set_moves(&mut h.gpu, Moves::Held);
+    assert!(h.renderer.alloc_table(&mut h.gpu, 256).is_err());
+    assert_eq!(h.renderer.take_resized().moves, 0, "held: nothing moved");
+    h.renderer.set_moves(&mut h.gpu, Moves::Rest);
+    let table = h
+        .renderer
+        .alloc_table(&mut h.gpu, 256)
+        .expect("grown at rest");
+    assert_eq!(table.len(), 256);
+    assert!(h.renderer.take_resized().moves > 0);
+}
+
 /// Held pools (a map's while the camera moves) refuse what doesn't fit
 /// and say what would have held it; growing into that is one move a call,
 /// each pool's meshes copied over, and the property pool and chunk table
