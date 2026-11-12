@@ -5,7 +5,14 @@ use js_sys::{Object, Reflect};
 use wasm_bindgen::JsValue;
 
 /// `object[key]`: `undefined` where it has none, or isn't an object.
+///
+/// A non-object is answered here rather than by `Reflect.get` throwing, as
+/// it did for `navigator.userAgentData.mobile` as every map started in
+/// Firefox and Safari, which have no `userAgentData`.
 pub(crate) fn get(object: &JsValue, key: &str) -> JsValue {
+    if !(object.is_object() || object.is_function()) {
+        return JsValue::UNDEFINED;
+    }
     Reflect::get(object, &key.into()).unwrap_or(JsValue::UNDEFINED)
 }
 

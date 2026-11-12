@@ -3582,7 +3582,6 @@ const CHROMIUM_ONLY = {
 const SPLIT_UNSEEN =
   "its first frames call into core-deferred.wasm (1 or 2 synchronous loads): code it runs that Chromium doesn't, which `pnpm coverage` (Chromium alone) can't see";
 const KNOWN = {
-  firefox: { split: SPLIT_UNSEEN },
   webkit: {
     readback:
       "WebKit's VideoFrame converts a bitmap's colours, so images decode through a canvas, which fingerprinting protection perturbs",

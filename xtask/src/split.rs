@@ -352,6 +352,28 @@ pub(crate) fn write_list(root: &Path, names: &Path, profile: &Path) -> Result<()
     Ok(())
 }
 
+/// Functions that stay in core.wasm with all they reach, whatever the
+/// list says, by the start of their names: wasm-bindgen's runtime, which
+/// runs wherever JS throws into an import that catches, where browsers
+/// throw over different calls (Firefox's `configure` of wgpu's
+/// `rgba16float` canvas probe) that no coverage profile's scenes stand
+/// for.
+const ALWAYS: &[&str] = &["__wbindgen_", "__externref_"];
+
+/// Keeps `roots`, and every function they call directly or through
+/// others, in core.wasm.
+fn keep_reached(functions: &Functions, roots: impl Iterator<Item = usize>, moved: &mut [bool]) {
+    let mut reached = vec![false; moved.len()];
+    let mut stack: Vec<usize> = roots.collect();
+    while let Some(i) = stack.pop() {
+        if std::mem::replace(&mut reached[i], true) {
+            continue;
+        }
+        moved[i] = false;
+        stack.extend(functions.defined[i].callees.iter().map(|&c| c as usize));
+    }
+}
+
 /// Adds to `moved` every function that only moved functions call, directly
 /// or through others. One renamed since the list was written (its old
 /// name stale in the list, its new one in neither half of it), or added
@@ -428,6 +450,14 @@ pub(crate) fn split(
             None => unnamed[at] = !name.starts_with("byn$"),
         }
     }
+    let always = (0u32..).zip(&functions.defined).filter_map(|(i, _)| {
+        let name = names.get(&(functions.imported + i))?;
+        ALWAYS
+            .iter()
+            .any(|p| name.starts_with(p))
+            .then_some(i as usize)
+    });
+    keep_reached(&functions, always, &mut moved);
     let listed = moved.iter().filter(|&&m| m).count();
     only_called_deferred(&functions, &seen, &mut moved);
     let mut split = String::new();
@@ -767,6 +797,30 @@ mod tests {
         only_called_deferred(&functions, &seen, &mut moved);
         let moved: Vec<usize> = (0..13).filter(|&i| moved[i]).collect();
         assert_eq!(moved, [0, 1, 2, 6, 8, 9]);
+    }
+
+    #[test]
+    fn keeps_what_the_runtime_reaches() {
+        let function = |callees: &[u32]| Function {
+            v128: false,
+            reachable: false,
+            callees: callees.to_vec(),
+            size: 0,
+        };
+        // 0, the runtime's, calls 1, which calls 2 and back to 0; 3 calls 2
+        // too, and is listed, as all but 0 are.
+        let functions = Functions {
+            imported: 0,
+            defined: vec![
+                function(&[1]),
+                function(&[0, 2]),
+                function(&[]),
+                function(&[2]),
+            ],
+        };
+        let mut moved = vec![false, true, true, true];
+        keep_reached(&functions, [0].into_iter(), &mut moved);
+        assert_eq!(moved, [false, false, false, true]);
     }
 
     #[test]
