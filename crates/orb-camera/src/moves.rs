@@ -191,18 +191,19 @@ impl CameraState {
     /// that far too. (MapLibre Native's `moveBy` moves the ground at the
     /// centre by a step's pixels wherever the pointer is.)
     pub fn pan(&mut self, surface: &Surface, viewport: Viewport, from: DVec2, to: DVec2) {
-        self.pan_with(surface, viewport, from, to, false);
+        self.pan_with(surface, viewport, from, to, None);
     }
 
     /// [`pan`](Self::pan), turning the bearing with the planet on the
-    /// sphere if `free_bearing` (MapLibre Native's globe free bearing).
+    /// sphere within `free_bearing`'s constraints, if given (MapLibre
+    /// Native's globe free bearing).
     pub(crate) fn pan_with(
         &mut self,
         surface: &Surface,
         viewport: Viewport,
         from: DVec2,
         to: DVec2,
-        free_bearing: bool,
+        free_bearing: Option<&Constraints>,
     ) {
         let projection = &surface.projection;
         let view = View::new(self, viewport, surface);
@@ -217,13 +218,22 @@ impl CameraState {
                     .low_ground(center, elevation)
                     .map(|ground| (ground, center + (to - from))),
             };
-            match held {
-                Some((ground, to)) if free_bearing && view.low_plane().is_none() => {
-                    self.turn_under(surface, viewport, ground, to);
+            let Some((ground, to)) = held else { return };
+            if let Some(constraints) = free_bearing.filter(|_| view.low_plane().is_none()) {
+                let mut turned = *self;
+                turned.turn_under(surface, viewport, ground, to);
+                let mut kept = turned;
+                kept.constrain(constraints, surface, viewport);
+                // Past the latitude the constraints reach, the turn would
+                // only turn the bearing about the pinned target, spinning
+                // the map: there the pan holds the bearing and slides along
+                // the limit, as it does with the bearing held.
+                if kept.target == turned.target {
+                    *self = turned;
+                    return;
                 }
-                Some((ground, to)) => self.put_under(surface, viewport, ground, to),
-                None => {}
             }
+            self.put_under(surface, viewport, ground, to);
             return;
         }
         let span = |a: DVec2, b: DVec2| Some(view.unproject(b)? - view.unproject(a)?);
@@ -817,7 +827,7 @@ mod tests {
         let (from, to) = (DVec2::new(520.0, 330.0), DVec2::new(560.0, 360.0));
         let view = View::new(&camera, viewport, &surface);
         let ground = view.low_ground(from, view.elevation()).unwrap();
-        camera.pan_with(&surface, viewport, from, to, true);
+        camera.pan_with(&surface, viewport, from, to, Some(&Constraints::default()));
         let view = View::new(&camera, viewport, &surface);
         let under = view.low_ground(to, view.elevation()).unwrap();
         assert!(
@@ -832,7 +842,7 @@ mod tests {
         let mut camera = CameraState::new(Geodetic::new(10.0, 60.0), 2.0, &mercator());
         for _ in 0..20 {
             let (from, to) = (DVec2::new(400.0, 400.0), DVec2::new(400.0, 430.0));
-            camera.pan_with(&surface, viewport, from, to, true);
+            camera.pan_with(&surface, viewport, from, to, Some(&Constraints::default()));
         }
         assert!(camera.target.lat < 75.0, "{:?}", camera.target);
         assert!(
@@ -845,6 +855,33 @@ mod tests {
             "{}",
             camera.bearing
         );
+    }
+
+    /// Held against the latitude a larger globe's target reaches, a
+    /// free-bearing drag slides along it with the bearing held, rather
+    /// than turn the map about the pinned target.
+    #[test]
+    fn free_bearing_drags_slide_along_the_latitude_limit() {
+        let surface = globe_surface();
+        let viewport = Viewport {
+            width: 800.0,
+            height: 800.0,
+        };
+        let state = CameraState::new(Geodetic::new(10.0, 84.0), 6.0, &mercator());
+        let mut camera = crate::Camera::new(state, surface, viewport);
+        camera.set_globe_free_bearing(true);
+        let drag = |camera: &mut crate::Camera| {
+            camera.pan(DVec2::new(450.0, 400.0), DVec2::new(452.0, 430.0));
+            *camera.state()
+        };
+        for _ in 0..100 {
+            drag(&mut camera);
+        }
+        let pinned = drag(&mut camera);
+        assert!((pinned.target.lat - orb_crs::MERCATOR_MAX_LATITUDE).abs() < 1e-6);
+        let later = (0..100).map(|_| drag(&mut camera)).last().unwrap();
+        assert_eq!(later.bearing, pinned.bearing);
+        assert!(later.target.lon < pinned.target.lon, "it slides west");
     }
 
     /// GL JS's `_getMaxLatitude`: a small globe centres on a pole, and the

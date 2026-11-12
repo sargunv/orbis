@@ -421,7 +421,8 @@ impl Stage<'_> {
         for _ in 0..steps as usize {
             let center = camera.center(self.viewport);
             let to = center + step;
-            camera.pan_with(self.surface, self.viewport, center, to, self.free_bearing);
+            let free = self.free_bearing.then_some(self.constraints);
+            camera.pan_with(self.surface, self.viewport, center, to, free);
             self.settle(camera);
         }
     }

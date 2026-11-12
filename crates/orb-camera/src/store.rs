@@ -732,7 +732,7 @@ impl Camera {
     /// The camera [`pan`](Self::pan) moves to, before the constraints.
     pub fn panned(&self, from: DVec2, to: DVec2) -> CameraState {
         let mut next = self.state;
-        let free = self.globe_free_bearing;
+        let free = self.globe_free_bearing.then_some(&self.constraints);
         next.pan_with(&self.surface, self.viewport, from, to, free);
         next
     }
