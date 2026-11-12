@@ -294,10 +294,18 @@ mod tests {
             })
         };
         // Three passes a submission: a set's last pair falls in the middle
-        // of a submission.
+        // of a submission. Debug groups keep them apart, as they do in
+        // captures: adjacent compute passes otherwise encode as one.
+        gpu.set_debug_groups(true);
+        let group = || [Pass::PushDebugGroup("g"), Pass::PopDebugGroup];
         let submissions = QUERIES as usize;
         for _ in 0..submissions {
-            gpu.submit(&[pass("a"), pass("b"), pass("c")]);
+            let passes: Vec<Pass> = [vec![pass("a")], group().into(), vec![pass("b")]]
+                .into_iter()
+                .chain([group().into(), vec![pass("c")]])
+                .flatten()
+                .collect();
+            gpu.submit(&passes);
         }
         let times = pollster::block_on(gpu.take_timings());
         assert_eq!(times.len(), submissions);

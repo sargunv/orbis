@@ -1861,22 +1861,27 @@ impl Gpu for WgpuGpu {
             Pass::Render(render) => render.commands.as_slice(),
             _ => &[],
         }));
-        // While timing, each compute and render pass's first query.
+        // Debug groups and the encoder's label, for captures only.
+        let groups = self.capturing || self.debug_groups;
+        let joined = joined_compute(passes, groups);
+        // While timing, each compute and render pass's first query; a
+        // compute pass joined to the one before it times with it.
         let queries = match &mut self.timing {
             Some(timing) => timing.begin(
                 &self.device,
-                passes.iter().map(|pass| match pass {
-                    Pass::Compute(p) => Some(p.label),
-                    Pass::Render(p) => Some(p.label),
-                    _ => None,
-                }),
+                passes
+                    .iter()
+                    .zip(&joined)
+                    .map(|(pass, &joined)| match pass {
+                        Pass::Compute(p) if !joined => Some(p.label),
+                        Pass::Render(p) => Some(p.label),
+                        _ => None,
+                    }),
             ),
             None => Vec::new(),
         };
         let timing = self.timing.as_ref();
         let writes = |i: usize| timing?.query((*queries.get(i)?)?);
-        // Debug groups and the encoder's label, for captures only.
-        let groups = self.capturing || self.debug_groups;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1961,7 +1966,22 @@ impl Gpu for WgpuGpu {
                     *destination_offset,
                     *size,
                 ),
+                Pass::Compute(_) if joined[i] => {}
                 Pass::Compute(compute) => {
+                    // It and the compute passes joined to it.
+                    let run = (passes[i + 1..].iter().zip(&joined[i + 1..]))
+                        .take_while(|&(p, &joined)| match p {
+                            Pass::Compute(_) => joined,
+                            Pass::PushDebugGroup(_) | Pass::PopDebugGroup => !groups,
+                            _ => false,
+                        })
+                        .filter_map(|(p, _)| match p {
+                            Pass::Compute(c) => Some(c),
+                            _ => None,
+                        });
+                    let commands = (std::iter::once(compute).chain(run))
+                        .flat_map(|c| &c.commands)
+                        .collect::<Vec<_>>();
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some(compute.label),
                         timestamp_writes: writes(i).map(|(query_set, first)| {
@@ -1972,7 +1992,7 @@ impl Gpu for WgpuGpu {
                             }
                         }),
                     });
-                    for command in &compute.commands {
+                    for command in commands {
                         match command {
                             ComputeCommand::SetPipeline(id) => pass.set_pipeline(
                                 self.compute_pipelines[id.0]
@@ -2075,9 +2095,66 @@ impl Gpu for WgpuGpu {
     }
 }
 
+/// Per pass, whether it is a compute pass joined to the one before it:
+/// compute passes with only debug group markers between them (none while
+/// `groups` keeps them) encode as one. wgpu-core gives each pass a command
+/// buffer of its own, which on Metal costs the driver a command buffer and
+/// an encoder, and the GPU a gap between them; WebGPU orders a pass's
+/// dispatches as it orders passes, so a frame without terrain makes its
+/// cull, image mips and symbol placements in one.
+fn joined_compute(passes: &[Pass], groups: bool) -> Vec<bool> {
+    let mut after_compute = false;
+    passes
+        .iter()
+        .map(|pass| match pass {
+            Pass::Compute(_) => std::mem::replace(&mut after_compute, true),
+            Pass::PushDebugGroup(_) | Pass::PopDebugGroup if !groups => false,
+            _ => {
+                after_compute = false;
+                false
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compute_passes_join_across_debug_markers_only() {
+        let compute = || {
+            Pass::Compute(ComputePass {
+                label: "c",
+                commands: Vec::new(),
+            })
+        };
+        let render = || {
+            Pass::Render(RenderPass {
+                label: "r",
+                colors: Vec::new(),
+                depth: None,
+                commands: Vec::new(),
+            })
+        };
+        let passes = [
+            compute(),
+            Pass::PushDebugGroup("g"),
+            compute(),
+            Pass::PopDebugGroup,
+            compute(),
+            render(),
+            compute(),
+        ];
+        assert_eq!(
+            joined_compute(&passes, false),
+            [false, false, true, false, true, false, false]
+        );
+        assert_eq!(
+            joined_compute(&passes, true),
+            [false, false, false, false, false, false, false]
+        );
+    }
 
     #[test]
     fn gl_arrays_take_neither_a_2d_nor_a_cube_target() {
