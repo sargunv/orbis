@@ -680,11 +680,11 @@ impl SessionReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| session | frames | pipelines asked | buffers + textures made | MiB made | MiB \
+            "| session | frames | pipelines asked | made | buffers + textures made | MiB made | MiB \
              copied on the GPU | MiB uploaded | upload calls | texture-write submissions | drape \
              slots |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(10))?;
+        writeln!(out, "|{}", "---|".repeat(11))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -695,9 +695,10 @@ impl SessionReport {
                 let (c, slots, n) = summed(r.frames.iter().filter(keep));
                 writeln!(
                     out,
-                    "| {} {what} | {n} | {} | {} | {} | {} | {} | {} | {} | {slots} |",
+                    "| {} {what} | {n} | {} | {} | {} | {} | {} | {} | {} | {} | {slots} |",
                     r.name,
                     c.pipelines_requested,
+                    c.pipelines_compiled,
                     c.buffers_created + c.textures_created,
                     mib(c.bytes_allocated),
                     mib(c.bytes_copied),
@@ -711,7 +712,7 @@ impl SessionReport {
         writeln!(
             out,
             "Each frame's device counts since the frame before. input: frames drawn while input \
-             held the camera (a pipeline asked for then compiles mid-gesture); moving: frames \
+             held the camera (a pipeline made then compiled mid-gesture); moving: frames \
              that moved the camera, or with input (memory made then is made while it moves)."
         )?;
         for r in &self.results {
@@ -745,7 +746,7 @@ impl SessionReport {
             writeln!(out)?;
             writeln!(
                 out,
-                "| at ms | interval | CPU | GPU | stages | between frames | pipelines asked | \
+                "| at ms | interval | CPU | GPU | stages | between frames | pipelines made | \
                  MiB made | KiB uploaded | upload calls | tiles arrived | drape slots |"
             )?;
             writeln!(out, "|{}", "---|".repeat(12))?;
@@ -761,7 +762,7 @@ impl SessionReport {
                     f.gpu.map_or("—".into(), ms),
                     top_stages(&f.report.times),
                     top_stages(&f.report.prepared),
-                    f.report.gpu.pipelines_requested,
+                    f.report.gpu.pipelines_compiled,
                     mib(f.report.gpu.bytes_allocated),
                     f.report.gpu.uploaded_bytes() as f64 / 1024.0,
                     f.report.gpu.upload_calls,
