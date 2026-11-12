@@ -504,8 +504,6 @@ impl NodePaint {
         }
     }
 
-    /// A line's dashes, pattern or gradient: it draws with the styled
-    /// line pipeline.
     /// Whether it draws a pattern: its pipeline's variant without
     /// patterns can't draw it ([`orb_shaders::PATTERNS`]).
     pub(crate) fn patterned(&self) -> bool {
@@ -515,6 +513,8 @@ impl NodePaint {
         )
     }
 
+    /// A line's dashes, pattern or gradient: it draws with the styled
+    /// line pipeline.
     pub(crate) fn styled(&self) -> bool {
         match self {
             Self::Line(p) => p.dash.is_some() || p.gradient,
