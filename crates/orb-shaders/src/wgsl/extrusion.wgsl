@@ -161,7 +161,14 @@ fn extrusion_part(index: u32, parts: u32, limb_parts: u32) -> ExtrusionOut {
     }
     var out = extrusion_vertex(v, limb);
     out.limb = select(0u, 1u | select(0u, 2u, drawn == EXTRUSION_WHOLE), limb);
-    //planes out.clip = extrusion_planes(tile_at(v.tile), out.tile_pos);
+    // Element by element: WebKit's Metal translation (WebKit 27.2) writes
+    // the whole array as a C array assignment, which Metal rejects, and the
+    // pipeline was lost.
+    //planes let planes = extrusion_planes(tile_at(v.tile), out.tile_pos);
+    //planes out.clip[0] = planes[0];
+    //planes out.clip[1] = planes[1];
+    //planes out.clip[2] = planes[2];
+    //planes out.clip[3] = planes[3];
     return out;
 }
 // How vertex `index`'s building draws (`extrusion_drawn`), 0 for none,
