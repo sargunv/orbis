@@ -1385,19 +1385,20 @@ impl Scene {
     }
 
     /// Orders tiles within each render node independently of upload order,
-    /// by the places `order` gives them, least first. Meshes of the same
-    /// tile keep their relative order; tiles not listed follow the listed
-    /// ones. The order persists until changed again: meshes inserted later
-    /// take their tile's place in it.
-    pub(crate) fn set_tile_order(&mut self, order: impl IntoIterator<Item = (TileId, u64)>) {
-        for entry in self.tiles.iter_mut().flatten() {
-            entry.order = None;
-        }
+    /// by their places in the tile order, least first: gives each tile of
+    /// `order` its place (`None`: after every place), and keeps the others'.
+    /// Meshes of the same tile keep their relative order. The order persists
+    /// until changed again: meshes inserted later take their tile's place in
+    /// it.
+    pub(crate) fn set_tile_order(
+        &mut self,
+        order: impl IntoIterator<Item = (TileId, Option<u64>)>,
+    ) {
         for (tile, place) in order {
             self.tiles[tile.0 as usize]
                 .as_mut()
                 .expect("unknown tile")
-                .order = Some(place);
+                .order = place;
         }
         // Each mesh's tile's place, looked up once rather than at every
         // comparison of the sorts.

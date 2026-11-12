@@ -896,22 +896,26 @@ impl Renderer {
         }
     }
 
-    /// Orders tiles within each render node, in drawing order; tiles not
-    /// listed follow. The order holds until the next: meshes a tile gains
+    /// Orders source `source`'s tiles within each render node, in drawing
+    /// order; its tiles not listed follow, and other sources' keep their
+    /// order. The order holds until the source's next: meshes a tile gains
     /// later (a relayout's) draw in its place too.
-    pub fn set_tile_order(&mut self, tiles: &[GpuTile]) {
-        for entry in self.tiles.entries.iter_mut().flatten() {
+    pub fn set_tile_order(&mut self, source: u32, tiles: &[GpuTile]) {
+        let mut parts = Vec::new();
+        let ordered = (self.tiles.entries.iter_mut().flatten())
+            .filter(|e| e.key.source == source && e.order.is_some());
+        for entry in ordered {
             entry.order = None;
+            parts.extend(entry.parts.iter().map(|p| (p.1, None)));
         }
         for (order, &tile) in (0u32..).zip(tiles) {
-            self.entry_mut(tile).order = Some(order);
+            let entry = self.entry_mut(tile);
+            debug_assert_eq!(entry.key.source, source, "another source's tile");
+            entry.order = Some(order);
+            let places = (entry.parts.iter().enumerate())
+                .map(|(i, p)| (p.1, Some(Entry::part_place(order, i))));
+            parts.extend(places);
         }
-        let entries = &self.tiles;
-        let parts = tiles.iter().flat_map(|&tile| {
-            let entry = entries.entry(tile);
-            let order = entry.order.expect("set above");
-            (entry.parts.iter().enumerate()).map(move |(i, p)| (p.1, Entry::part_place(order, i)))
-        });
         self.scene.set_tile_order(parts);
     }
 
@@ -1255,7 +1259,7 @@ mod tests {
         for tile in [c, b, a] {
             add(&mut renderer, tile, 4096);
         }
-        renderer.set_tile_order(&[a, b]);
+        renderer.set_tile_order(0, &[a, b]);
         // Another mesh of `a`, and one in a part of another extent.
         add(&mut renderer, a, 4096);
         add(&mut renderer, a, 8192);
@@ -1271,6 +1275,65 @@ mod tests {
             renderer.scene.node_tiles(0),
             [a0, a0, a1, *b0, *c0, *c0],
             "a's meshes, then b's, then c's, which the order leaves out"
+        );
+    }
+
+    /// One source's tile order leaves another's: a relayout of the other's
+    /// tiles still draws in their places in its order.
+    #[test]
+    fn a_source_s_tile_order_keeps_another_s() {
+        let Ok(mut gpu) = pollster::block_on(orb_hal_wgpu::WgpuGpu::offscreen()) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let images = crate::ImageAtlas::new(&mut gpu, 4, 2, 8);
+        let format = crate::TargetFormat {
+            color: orb_hal::TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+        };
+        let capacity = crate::SceneCapacity::default();
+        let mut renderer = Renderer::new(&mut gpu, format, capacity, images.bindings());
+        // A node a source, as a layer draws one source.
+        renderer.set_nodes(&mut gpu, &[crate::Family::Fill, crate::Family::Fill]);
+        let mut square = orb_tile::LayerBuilder::new("water", 4096);
+        square.begin_feature(None, orb_tile::GeometryType::Polygon);
+        square.begin_part();
+        square.begin_ring();
+        for v in [[0, 0], [4096, 0], [4096, 4096], [0, 4096]] {
+            square.push_vertex(v);
+        }
+        let mesh = orb_layout::fill::layout(&square.finish(), &[0]);
+        let mut tile = |renderer: &mut Renderer, source, row| {
+            let key = TileKey {
+                source,
+                tile: TileIndex::new(2, 0, row),
+            };
+            let tile = renderer.add_tile(&mut gpu, key, None).unwrap();
+            let data = MeshData::new(&mesh, &[], 0);
+            renderer
+                .add_mesh(&mut gpu, tile, (source, 4096), &data, &Default::default())
+                .unwrap();
+            tile
+        };
+        let (a, b) = (tile(&mut renderer, 0, 0), tile(&mut renderer, 0, 1));
+        let (c, d) = (tile(&mut renderer, 1, 0), tile(&mut renderer, 1, 1));
+        renderer.set_tile_order(1, &[c, d]);
+        renderer.set_tile_order(0, &[b, a]);
+        // A relayout of c, its old mesh gone and its new one in.
+        let old = renderer.tiles.entry(c).meshes.clone();
+        for (_, id) in old {
+            renderer.remove_mesh(c, id);
+        }
+        let data = MeshData::new(&mesh, &[], 0);
+        renderer
+            .add_mesh(&mut gpu, c, (1, 4096), &data, &Default::default())
+            .unwrap();
+        let part = |tile| renderer.tiles.entry(tile).parts[0].1;
+        assert_eq!(renderer.scene.node_tiles(0), [part(b), part(a)]);
+        assert_eq!(
+            renderer.scene.node_tiles(1),
+            [part(c), part(d)],
+            "the relayout of c draws in its place, before d"
         );
     }
 }

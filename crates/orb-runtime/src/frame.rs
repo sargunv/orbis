@@ -538,7 +538,7 @@ impl Map {
                 .iter()
                 .map(|tile| pyramid.get(*tile).expect("drawn tiles are ready").gpu)
                 .collect();
-            renderer.set_tile_order(&tiles);
+            renderer.set_tile_order(source_key, &tiles);
             *placed = ordered;
         }
     }
