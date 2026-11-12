@@ -8,7 +8,7 @@
 //
 //   pnpm session [--session=manhattan|paris|alps|globe] [--browser=chromium|firefox]
 //     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
-//     [--ratio=r] [--start=ms] [--warm] [--driver] [--page] [--worker] [--headed]
+//     [--ratio=r] [--start=ms] [--input=ms] [--warm] [--driver] [--page] [--worker] [--headed]
 //     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
 //     [--dump=prefix] [--profile=firefox-profile.json] [--sample=gpu-sample.txt]
 //
@@ -22,7 +22,10 @@
 // so every engine and browser ends at the same camera (`camera` in the
 // report says where). `--style` gives a session's moves another catalogue
 // key or style URL. `--start` is how long after the first frame the input
-// starts (500 ms). `--warm` makes the session once untimed first and
+// starts (500 ms); `--input` starts it that many ms after the page's
+// navigation instead, whether the map has drawn or not, so engines and
+// builds whose first frames come at different times meet the same hand
+// (a first frame that waits shows in `moveToFrame`). `--warm` makes the session once untimed first and
 // reloads, so tiles come from the HTTP cache and pipelines from the
 // browser's. `--headed` runs Chromium in a window, at the display's
 // refresh. `--dump` writes each engine's frames, input windows,
@@ -107,6 +110,7 @@ const runs = Number(args.runs ?? 1);
 const [width, height] = (args.size ?? "1440x900").split("x").map(Number);
 const ratio = Number(args.ratio ?? 2);
 const startAfter = Number(args.start ?? 500);
+const inputAt = args.input == null ? null : Number(args.input);
 const worstCount = Number(args.worst ?? 6);
 const warm = !!args.warm;
 const wheelScale = browserName === "firefox" ? ratio : 1;
@@ -696,11 +700,14 @@ async function run(server, engine) {
       await page.goto(`${server.url}load.html?${query()}`, {
         waitUntil: "commit",
       });
+      // With `--input`, until the input's time instead of the map's
+      // first frame.
       await page.waitForFunction(
-        () =>
-          globalThis.mapFrames?.length > 0 ||
-          document.title.startsWith("error"),
-        null,
+        (at) =>
+          (at == null
+            ? globalThis.mapFrames?.length > 0
+            : performance.now() >= at) || document.title.startsWith("error"),
+        inputAt,
         { timeout: 120_000, polling: 16 },
       );
       const title = await page.title();
@@ -724,8 +731,7 @@ async function run(server, engine) {
       await settle();
       await open();
     }
-    const firstFrame = await page.evaluate(() => globalThis.mapFrames[0].t);
-    await sleep(startAfter);
+    if (inputAt == null) await sleep(startAfter);
     // Chrome's presents, on the trace clock: a `clock` mark ties it to the page's.
     const cdp =
       browserName === "chromium" ? await context.newCDPSession(page) : null;
@@ -845,7 +851,7 @@ async function run(server, engine) {
       ...(where && { backend: where.backend }),
       warm,
       size: `${width}x${height}@${ratio}`,
-      firstFrameMs: Math.round(firstFrame),
+      firstFrameMs: Math.round(times[0] ?? -1),
       inputSeconds: round(windows.reduce((s, [a, b]) => s + b - a, 0) / 1000),
       mapFrames: pacing(mapGaps.map((g) => g.gap)),
       // From each move's start to the map's first frame after it: one
