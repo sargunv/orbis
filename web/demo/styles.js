@@ -119,7 +119,10 @@ function isLegacyFilter(filter) {
  * labels; the buildings extruded under the labels. Orbis's previews are
  * designed in too, for the map options to switch on, each off by default
  * (app/options.js) so that the Globe opens as GL JS and MapLibre Native
- * could draw it: the footprints rounded, shadows and ambient occlusion; a
+ * could draw it: the land's hillshade multiplied into the fills beneath it
+ * (`dev.sargunv.orbis:hillshade-layer-blend`), in colours made for it,
+ * which its metadata holds the unblended ones of; the footprints rounded,
+ * shadows and ambient occlusion; a
  * light that shades the ground (`dev.sargunv.orbis:ground-lighting`), from
  * a sun 60° from overhead so the globe shows its night side by the far
  * limb, fading out by zoom 7 so a region or city keeps its own colours,

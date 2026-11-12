@@ -30,6 +30,14 @@ const STARRY: [&str; 2] = [
     "dev.sargunv.orbis:backdrop-color",
 ];
 const HILLSHADE_ANCHOR: &str = "hillshade-illumination-anchor";
+/// Style-spec#1661's blends for the layer types the spec gives none.
+const LAYER_BLENDS: [(&str, &str); 2] = [
+    ("hillshade", "dev.sargunv.orbis:hillshade-layer-blend"),
+    ("color-relief", "dev.sargunv.orbis:color-relief-layer-blend"),
+];
+/// A blended layer's `metadata` key holding the paint it takes with its
+/// blend off: colours made for the layer drawn normally.
+const UNBLENDED: &str = "demo:unblended";
 const AMBIENT_OCCLUSION: [&str; 2] = [
     "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
     "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity",
@@ -47,6 +55,7 @@ pub(crate) struct Context {
 pub(crate) enum Opt {
     Terrain,
     Hillshade,
+    Blend,
     Light,
     Night,
     Buildings,
@@ -68,9 +77,10 @@ pub(crate) enum Kind {
 }
 
 /// The panel's order.
-pub(crate) const ALL: [Opt; 14] = [
+pub(crate) const ALL: [Opt; 15] = [
     Opt::Terrain,
     Opt::Hillshade,
+    Opt::Blend,
     Opt::Light,
     Opt::Night,
     Opt::Buildings,
@@ -130,6 +140,28 @@ fn occluded(style: &Value) -> Vec<&Value> {
             AMBIENT_OCCLUSION
                 .iter()
                 .any(|p| nonzero(&l["paint"][*p], 0.0))
+        })
+        .collect()
+}
+
+/// The blend key of a layer's type, where style-spec#1661's preview has one.
+fn layer_blend(layer: &Value) -> Option<&'static str> {
+    LAYER_BLENDS
+        .iter()
+        .find(|(ty, _)| layer["type"] == *ty)
+        .map(|&(_, key)| key)
+}
+
+/// The layers the style blends by style-spec#1661's preview.
+fn blended(style: &Value) -> Vec<&Value> {
+    style["layers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|l| {
+            layer_blend(l).is_some_and(|key| {
+                !matches!(&l["paint"][key], Value::Null) && l["paint"][key] != "normal"
+            })
         })
         .collect()
 }
@@ -209,7 +241,9 @@ impl SkyNumber {
 impl Opt {
     pub(crate) fn group(self) -> &'static str {
         match self {
-            Opt::Terrain | Opt::Hillshade | Opt::Light | Opt::Night => "Terrain and light",
+            Opt::Terrain | Opt::Hillshade | Opt::Blend | Opt::Light | Opt::Night => {
+                "Terrain and light"
+            }
             Opt::Buildings | Opt::Shadows | Opt::Ao | Opt::Rounded => "Buildings",
             Opt::Projection | Opt::Atmosphere | Opt::Fog | Opt::Stars => "Globe and sky",
             Opt::Labels | Opt::Colors => "Map",
@@ -220,6 +254,7 @@ impl Opt {
         match self {
             Opt::Terrain => "Terrain",
             Opt::Hillshade => "Hillshade",
+            Opt::Blend => "Blended relief",
             Opt::Light => "Light",
             Opt::Night => "Night side",
             Opt::Buildings => "3D buildings",
@@ -237,6 +272,9 @@ impl Opt {
 
     pub(crate) fn note(self) -> Option<&'static str> {
         match self {
+            Opt::Blend => {
+                Some("Shading multiplied into the colours beneath, which keep their saturation")
+            }
             Opt::Light => Some("Fixed to the ground, or turning with the view"),
             Opt::Night => Some("The ground darkened where the sun is down, labels lit against it"),
             Opt::Rounded => Some("Flat footprints rounded as the 3D buildings are"),
@@ -251,7 +289,13 @@ impl Opt {
     pub(crate) fn orbis_only(self) -> bool {
         matches!(
             self,
-            Opt::Night | Opt::Shadows | Opt::Ao | Opt::Rounded | Opt::Stars | Opt::Colors
+            Opt::Blend
+                | Opt::Night
+                | Opt::Shadows
+                | Opt::Ao
+                | Opt::Rounded
+                | Opt::Stars
+                | Opt::Colors
         )
     }
 
@@ -268,6 +312,7 @@ impl Opt {
     /// and how the panel says so.
     pub(crate) fn needs(self) -> Option<(Opt, Value, &'static str)> {
         match self {
+            Opt::Blend => Some((Opt::Hillshade, json!(true), "With the hillshade on")),
             Opt::Shadows | Opt::Ao => Some((Opt::Buildings, json!(true), "With 3D buildings on")),
             Opt::Atmosphere | Opt::Stars => Some((Opt::Projection, json!("globe"), "On the globe")),
             Opt::Fog => Some((Opt::Terrain, json!(true), "With terrain on")),
@@ -319,6 +364,7 @@ impl Opt {
         }
         match self {
             Opt::Terrain => cx.scene.terrain.is_some() && cx.terrain.is_some(),
+            Opt::Blend => !blended(designed).is_empty(),
             Opt::Light => cx.scene.light,
             Opt::Night => nonzero(&designed["light"][GROUND_LIGHTING], 0.0),
             Opt::Shadows => {
@@ -352,6 +398,7 @@ impl Opt {
         }
         match self {
             Opt::Terrain => json!(!style["terrain"].is_null()),
+            Opt::Blend => json!(!blended(style).is_empty()),
             Opt::Light => {
                 let hillshade = layers(style, "hillshade")
                     .next()
@@ -399,6 +446,7 @@ impl Opt {
         match self {
             Opt::Terrain => "terrain",
             Opt::Hillshade => "hillshade",
+            Opt::Blend => "blend",
             Opt::Light => "light",
             Opt::Night => "night",
             Opt::Buildings => "buildings",
@@ -444,6 +492,23 @@ impl Opt {
                 (Some(terrain), true) => style["terrain"] = terrain.clone(),
                 _ => remove(style, "terrain"),
             },
+            // Each layer's blend with the paint designed for it, or neither
+            // and the paint it takes drawn normally.
+            Opt::Blend => {
+                for designed in blended(&cx.designed) {
+                    let Some(layer) = layer_mut(style, &designed["id"]) else {
+                        continue;
+                    };
+                    let unblended = &designed["metadata"][UNBLENDED];
+                    let names: Vec<&str> = (unblended.as_object().into_iter().flatten())
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+                    let from = if on { &designed["paint"] } else { unblended };
+                    with_keys(layer, "paint", &names, true, from);
+                    let key = layer_blend(designed).expect("blended");
+                    with_keys(layer, "paint", &[key], on, &designed["paint"]);
+                }
+            }
             Opt::Light => {
                 for layer in style["layers"].as_array_mut().into_iter().flatten() {
                     if layer["type"] == "hillshade" {
@@ -616,6 +681,15 @@ mod tests {
         };
         panel.attach(context, &mut style);
         assert_eq!(orbis_keys(&style), Vec::<String>::new());
+        // The hillshade in the colours it takes drawn normally.
+        let unblended = &(designed["layers"].as_array().unwrap().iter())
+            .find(|l| l["id"] == "hillshade")
+            .expect("the hillshade")["metadata"][UNBLENDED];
+        let hillshade = layer_mut(&mut style, &json!("hillshade")).expect("hillshade");
+        assert!(unblended.is_object(), "{designed}");
+        for (name, value) in unblended.as_object().into_iter().flatten() {
+            assert_eq!(&hillshade["paint"][name], value);
+        }
         // The label's day colour.
         let label = layer_mut(&mut style, &json!("address_label")).expect("label");
         assert!(label["paint"]["text-color"].is_string(), "{label}");

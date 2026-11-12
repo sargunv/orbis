@@ -36,6 +36,16 @@ const STARRY = [
   "dev.sargunv.orbis:backdrop-color",
 ];
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
+/** Style-spec#1661's blends for the layer types the spec gives none. */
+const LAYER_BLENDS = {
+  hillshade: "dev.sargunv.orbis:hillshade-layer-blend",
+  "color-relief": "dev.sargunv.orbis:color-relief-layer-blend",
+};
+/**
+ * A blended layer's `metadata` key holding the paint it takes with its
+ * blend off: colours made for the layer drawn normally.
+ */
+const UNBLENDED = "demo:unblended";
 const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map(
   (p) => `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-${p}`,
 );
@@ -127,6 +137,12 @@ const occluded = (style) =>
   ofType(style, "fill-extrusion").filter((l) =>
     AMBIENT_OCCLUSION.some((p) => nonzero(l.paint?.[p], 0)),
   );
+/** The layers the style blends by style-spec#1661's preview. */
+const blended = (style) =>
+  style.layers.filter((l) => {
+    const blend = l.paint?.[LAYER_BLENDS[l.type]];
+    return blend !== undefined && blend !== "normal";
+  });
 /** The fill layers whose footprints the style rounds. */
 const rounded = (style) =>
   ofType(style, "fill").filter((l) => nonzero(l.layout?.[ROUNDED], 0));
@@ -163,6 +179,33 @@ export const OPTIONS = [
     label: "Hillshade",
     kind: "switch",
     ...layersOf("hillshade"),
+  },
+  {
+    key: "blend",
+    group: "Terrain and light",
+    label: "Blended relief",
+    note: "Shading multiplied into the colours beneath, which keep their saturation",
+    kind: "switch",
+    orbisOnly: true,
+    needs: ["hillshade", true, "With the hillshade on"],
+    supported: ({ designed }) => blended(designed).length > 0,
+    read: (style) => blended(style).length > 0,
+    // Each layer's blend with the paint designed for it, or neither and
+    // the paint it takes drawn normally.
+    apply(tx, on, { style, designed }) {
+      const present = new Set(style.layers.map((l) => l.id));
+      for (const layer of blended(designed).filter((l) => present.has(l.id))) {
+        const unblended = layer.metadata?.[UNBLENDED] ?? {};
+        for (const name of Object.keys(unblended))
+          tx.setPaintProperty(
+            layer.id,
+            name,
+            on ? (layer.paint[name] ?? null) : unblended[name],
+          );
+        const blend = LAYER_BLENDS[layer.type];
+        tx.setPaintProperty(layer.id, blend, on ? layer.paint[blend] : null);
+      }
+    },
   },
   {
     key: "light",

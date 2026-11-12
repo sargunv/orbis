@@ -1841,6 +1841,7 @@ async function offlineGlobe(page, server) {
 const GLOBE_OPTIONS = {
   terrain: false,
   hillshade: true,
+  blend: false,
   light: "viewport",
   night: false,
   now: false,
@@ -1902,6 +1903,13 @@ async function options(browser, server) {
             layer("buildings").layout?.[
               "dev.sargunv.orbis:fill-rounded-corner-distance"
             ] ?? null,
+          // The relief multiplied, in the colours made for it.
+          blend: [
+            layer("hillshade").paint[
+              "dev.sargunv.orbis:hillshade-layer-blend"
+            ] ?? null,
+            layer("hillshade").paint["hillshade-shadow-color"],
+          ],
           labels: [
             ...new Set(
               style.layers
@@ -1932,6 +1940,7 @@ async function options(browser, server) {
       buildings: "visible",
       ao: null,
       rounded: null,
+      blend: [null, "#776f82"],
       labels: ["visible"],
       ...style,
     },
@@ -2056,6 +2065,7 @@ async function options(browser, server) {
   await option(page, "buildings").click();
   await option(page, "ao").click();
   await option(page, "rounded").click();
+  await option(page, "blend").click();
   await option(page, "terrain").click();
   // The keyboard: a switch takes Space, a choice the arrow keys.
   await option(page, "labels").focus();
@@ -2063,16 +2073,22 @@ async function options(browser, server) {
   await option(page, "colors").locator('[aria-checked="true"]').focus();
   await page.keyboard.press("ArrowLeft");
   const chosen = expect(
-    { ao: true, rounded: true, terrain: true, labels: false },
-    { ao: 0.6, rounded: 2, terrain: true, labels: ["none"] },
+    { ao: true, rounded: true, blend: true, terrain: true, labels: false },
+    {
+      ao: 0.6,
+      rounded: 2,
+      blend: ["multiply", "#72707f"],
+      terrain: true,
+      labels: ["none"],
+    },
     [],
-    { ao: "1", rounded: "1", terrain: "1", labels: "0" },
+    { ao: "1", rounded: "1", blend: "1", terrain: "1", labels: "0" },
   );
   await settles(
     page,
     state,
     chosen,
-    "AO, rounded footprints, terrain, labels and colours by click and key",
+    "AO, rounded footprints, blended relief, terrain, labels and colours by click and key",
   );
   assert.ok(
     await page.evaluate(() => window.stayed),

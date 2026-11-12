@@ -278,8 +278,9 @@ impl Flight {
 /// left to the background with the sea's depth and relief over it and
 /// under the land, a hillshade over the land and lakes, the buildings
 /// extruded under the labels, the DEM sources, and Orbis's previews for the
-/// options to switch on (rounded footprints, a light that shades the
-/// ground, shadows), each off by default. Each addition is placed by the
+/// options to switch on (the hillshade multiplied into the land, rounded
+/// footprints, a light that shades the ground, shadows), each off by
+/// default. Each addition is placed by the
 /// layers it finds.
 fn globe(style: &Value) -> Value {
     let globe: Value = serde_json::from_str(include_str!("../../../web/demo/data/globe.json"))
