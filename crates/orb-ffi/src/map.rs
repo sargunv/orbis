@@ -1629,10 +1629,9 @@ command!(
             let result = entry.map.set_style_json(&json);
             if result.is_ok() {
                 entry.style.reset();
+                // The document is in, and its StyleLoad with it: the
+                // command reports it, as Native's does, with no device.
                 entry.loaded_style = Some(json);
-                // The document is in: take its StyleLoad now, as Native
-                // notifies inside the command.
-                let _ = entry.map.apply_arrivals();
             }
             entry.event(
                 MLN_RUNTIME_EVENT_MAP_LOADING_STARTED,

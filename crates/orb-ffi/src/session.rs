@@ -1439,7 +1439,10 @@ fn step<'a>(
         // A static or tile map publishes updates only with its still
         // images, so only a forced demand draws it between them.
         let force = demand.flags & MLN_FRAME_DEMAND_FORCE != 0;
-        let update = continuous && map.render_update_generation > entry.drawn_update;
+        // Commands sent and not yet applied are an update on its way: a
+        // burst of them shows in one frame, once the last is in.
+        let in_flight = cell.applied.load(Ordering::Acquire) < entry.handle.map.posted();
+        let update = continuous && !in_flight && map.render_update_generation > entry.drawn_update;
         // Inside a command group a forced frame shows the update the
         // session drew last again, which its target still holds.
         if held
