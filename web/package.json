@@ -15,6 +15,7 @@
     "flight": "node scripts/flight.mjs",
     "drag": "node scripts/drag.mjs",
     "gestures": "node scripts/gesture-h2h.mjs",
+    "session": "node scripts/session.mjs",
     "load": "node scripts/load.mjs",
     "memory": "node scripts/memory.mjs",
     "coverage": "node scripts/coverage.mjs"

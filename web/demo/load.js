@@ -12,7 +12,10 @@
 // (and `performance.timeOrigin`, to place them against the harness's
 // request times), or `error <message>`. `window.tour()` then flies the map
 // through a gesture tour, a camera a display frame, and resolves once it
-// is idle again.
+// is idle again. With `?frames`, `window.mapFrames` holds every frame the
+// map draws, by `performance.now()` as the page hears of it, with Orbis's
+// counters (session.mjs); `window.mapIdle()` waits for the map's next idle and
+// `window.mapCamera()` gives Orbis's or GL JS's camera.
 import { bustShaderCaches } from "./cold.js";
 import { demoStyleWithScene } from "./styles.js";
 
@@ -25,6 +28,8 @@ const [lon, lat, zoom, bearing, pitch] = (params.get("at") ?? "0,0,0,0,0")
 const container = document.getElementById("map");
 const nextFrame = () =>
   new Promise((resolve) => requestAnimationFrame(resolve));
+window.mapFrames = [];
+const recording = params.has("frames");
 const json = async (style) =>
   typeof style === "string" ? (await fetch(style)).json() : style;
 
@@ -49,10 +54,15 @@ const engines = {
     window.cpuCopies = () => map.stats?.memory.cpuCopies;
     // The shaders `?nonce=` made cold, and the backend (load.mjs).
     window.loadDetails = () => ({ busted: busted(), backend: map.backend });
+    if (recording)
+      map.on("render", (s) =>
+        mapFrames.push({ t: performance.now(), ...counters(s) }),
+      );
     return {
       created: performance.now(),
       idle: () => map.once("idle"),
       jumpTo: (c) => map.camera.jumpTo(c),
+      camera: () => map.camera.current,
     };
   },
   async gljs(style) {
@@ -75,10 +85,18 @@ const engines = {
       attributionControl: false,
     });
     map.on("error", (e) => console.error(String(e.error)));
+    if (recording)
+      map.on("render", () => mapFrames.push({ t: performance.now() }));
     return {
       created: performance.now(),
       idle: () => new Promise((resolve) => map.once("idle", resolve)),
       jumpTo: (c) => map.jumpTo(c),
+      camera: () => ({
+        center: map.getCenter().toArray(),
+        zoom: map.getZoom(),
+        bearing: map.getBearing(),
+        pitch: map.getPitch(),
+      }),
     };
   },
   async native(style) {
@@ -114,6 +132,41 @@ const engines = {
   },
 };
 
+/** What session.mjs reads of an Orbis frame's counters: enough to say why a frame came late. */
+const counters = (s) => ({
+  ms: s.ms,
+  needs: s.needsFrame,
+  times: Object.fromEntries(STAGES.map((k) => [k, s.times[k]])),
+  prepared: Object.fromEntries(STAGES.map((k) => [k, s.prepared[k]])),
+  arrived: s.tilesArrived,
+  loading: s.tilesLoading,
+  meshes: s.meshesUploaded,
+  uploaded:
+    s.uploadedFromWasm + s.uploadedFromJs + s.texelsFromWasm + s.texelsFromJs,
+  jobs: s.jobsDone,
+  pending: s.pipelinesPending,
+  waiting: s.layersWaiting,
+  gpuBytes: s.memory.allocated,
+  rebuilt: s.candidatesRebuilt,
+  // session.mjs's running tally of WebGPU calls, where it wraps them.
+  gpu: globalThis.sessionGpuCalls?.(),
+});
+const STAGES = [
+  "total",
+  "arrivals",
+  "upload",
+  "terrain",
+  "plan",
+  "drape",
+  "place",
+  "placement",
+  "cull",
+  "bundles",
+  "drapePasses",
+  "encode",
+  "submit",
+];
+
 /** The tour's camera at `f` in [0, 1]: two screens east and back, two zooms in and back, a half turn tilting to 60°. */
 function tourCamera(f) {
   const wave = Math.sin(f * 2 * Math.PI);
@@ -127,6 +180,8 @@ function tourCamera(f) {
 
 try {
   const map = await engines[engine](await demoStyleWithScene(params));
+  window.mapIdle = map.idle;
+  window.mapCamera = map.camera;
   await map.idle();
   window.tour = async (frames = 360) => {
     for (let f = 1; f < frames; f++) {
