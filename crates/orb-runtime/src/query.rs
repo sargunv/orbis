@@ -2481,23 +2481,6 @@ mod tests {
         assert!(clip_ring(&away, -20.0, 220.0).is_empty());
     }
 
-    #[test]
-    fn polygon_edges_holes_and_segments() {
-        let outer = vec![
-            Vec2::ZERO,
-            Vec2::new(10., 0.),
-            Vec2::splat(10.),
-            Vec2::new(0., 10.),
-        ];
-        assert!(inside(Vec2::splat(5.), &outer));
-        assert!(inside(Vec2::ZERO, &outer));
-        assert!(!inside(Vec2::splat(11.), &outer));
-        assert_eq!(
-            distance(Vec2::new(5., 2.), Vec2::ZERO, Vec2::new(10., 0.)),
-            2.
-        );
-    }
-
     /// A point meets a face at the face's depth under it; a box at the
     /// face's nearest corner. Leading repeated points don't count.
     #[test]

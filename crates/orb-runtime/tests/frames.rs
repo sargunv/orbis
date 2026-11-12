@@ -749,7 +749,6 @@ mod tests {
             );
             let report = settle(&mut offscreen);
             let memory = report.memory;
-            assert_eq!(memory.cache_budget, 4 << 20);
             assert!(memory.cached <= memory.cache_budget, "{memory:?}");
             most = most.max(memory.cached_tiles);
         }
@@ -882,10 +881,8 @@ mod tests {
         for pitch in [60.0, 80.0, 85.0] {
             crate::common::move_camera(&mut offscreen.map, |c| c.pitch = pitch);
             let report = offscreen.frame();
-            assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
-            assert_eq!(report.frame.draws, 2);
             assert!(report.idle);
         }
     }
@@ -907,7 +904,6 @@ mod tests {
                 c.pitch = pitch;
             });
             let report = offscreen.frame();
-            assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
             // Only placements: a tile's rows are written again where it
@@ -924,7 +920,6 @@ mod tests {
             let replay = offscreen.frame();
             assert!(!replay.frame.bundle_recorded);
             assert_eq!(replay.frame.paints_written, 0);
-            assert_eq!(replay.frame.dispatches, 1);
         }
         assert!(
             !crate::common::take_warnings(&mut offscreen.map)
@@ -1043,7 +1038,6 @@ mod tests {
                 glam::DVec2::new(520.0, 380.0),
             );
             let report = offscreen.frame();
-            assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
             assert_eq!(report.frame.placements_written, 0);

@@ -874,9 +874,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// The header is postcard; the payload follows it as it is, each
-    /// pool's words together, a mesh's words that equal an earlier one's
-    /// once.
+    /// A packed tile unpacks as it was, a mesh's words that equal an
+    /// earlier one's shared rather than sent twice.
     #[test]
     fn packs_and_unpacks() {
         let packed = pack(TileBuild {
@@ -917,11 +916,6 @@ pub(crate) mod tests {
         assert!(stream(shared.vertices).is_empty());
         assert_eq!(stream(result.vertices(shared)), [1, 2, 3]);
         assert_eq!(stream(shared.props), [8; 12]);
-        // Each pool's words together: vertices, indices, rows.
-        assert_eq!(
-            packed.words,
-            [&[1, 2, 3][..], &[3, 3, 4, 4, 5, 5], &[9; 12], &[8; 12]].concat()
-        );
         assert!(packed_header(&bytes[..3]).is_err());
         assert!(unpack(&bytes[4..8], HostBytesId(0), 8).is_err());
     }

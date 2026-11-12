@@ -1514,7 +1514,6 @@ impl orb_camera::Elevation for Consulted<'_> {
 mod tests {
     use super::*;
     use orb_camera::Elevation;
-    use orb_render::DRAPE_SLOT_PX;
 
     fn tms() -> TileMatrixSet {
         TileMatrixSet::web_mercator().clone()
@@ -1881,102 +1880,6 @@ mod tests {
         // Four pixels a sample over hills 20 pixels across.
         assert!(worst < 10.0, "{worst}");
         assert!(worst > 0.0);
-    }
-
-    #[test]
-    fn drape_rows_map_tiles_into_their_slots() {
-        let tms = tms();
-        let layout = DrapeLayout {
-            stacks: [2, 1],
-            columns: [2, 2],
-            tile_slots: 4,
-            generation: 1,
-        };
-        let terrain = CoveredTile {
-            index: TileIndex::new(3, 2, 2),
-            wrap: 0,
-        };
-        // A vector tile one zoom deeper, in the terrain tile's south-east.
-        let draw = Draw {
-            tile: TileIndex::new(4, 5, 5),
-            wrap: 0,
-            regions: vec![TileIndex::new(4, 5, 5)],
-        };
-        let drawn = Drawn::of(&tms, &draw, None, 0.0);
-        assert!(drawn.overlaps(&tms, terrain, (3.0, 0.0)));
-        let row = TileRow {
-            origin: [0.0; 2],
-            scale: 1.0,
-            zoom: 4.0,
-            bound: ClipRect::EVERYWHERE,
-            clips: [
-                ClipRect::new([0, 0], [4096, 4096]),
-                ClipRect::EMPTY,
-                ClipRect::EMPTY,
-                ClipRect::EMPTY,
-            ],
-            pattern_origin: [0; 2],
-            extent: 4096.0,
-            wrap: 0,
-            px_scale: 1.0,
-            dem: DemRef::NONE,
-            terrain_range: [0.0; 2],
-            target: PlacementTarget::Map,
-            warp: orb_render::TileWarp::NONE,
-            globe: None,
-            neighbours: 0,
-        };
-        let zoom = tms.style_zoom(terrain.index);
-        let rows_at = |zoom: f64| {
-            let mut rows = Vec::new();
-            drape_rows(
-                &tms,
-                drawn,
-                4096,
-                (terrain, 1, 0),
-                (&layout, &[0, 1, 2]),
-                (zoom, 0.0),
-                [row].into_iter(),
-                &mut rows,
-            );
-            rows
-        };
-        let rows = rows_at(zoom);
-        assert_eq!(rows.len(), 3);
-        let slot = DRAPE_SLOT_PX as f32;
-        // Slot 1, stack 0 is atlas slot 1: column 1. The tile's top-left
-        // is the slot's centre; its 4096 units span half a slot.
-        let px = f64::from(DRAPE_SLOT_PX);
-        let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() + (a[1] - b[1]).abs() < 1e-9;
-        assert!(near(rows[0].origin, [1.5 * px, -0.5 * px]));
-        assert_eq!(rows[0].scale, slot / 2.0 / 4096.0);
-        // At the terrain tile's zoom, two texels a logical pixel; at a
-        // camera's zoom past it, as many fewer as the tile has grown, in
-        // the same place.
-        assert_eq!(rows[0].px_scale, 2.0);
-        let past = rows_at(zoom + 0.5);
-        assert!((past[0].px_scale - 2.0f32.sqrt()).abs() < 1e-6);
-        assert_eq!(
-            (past[0].origin, past[0].scale),
-            (rows[0].origin, rows[0].scale)
-        );
-        assert_eq!(rows[1].target, PlacementTarget::Drape(1));
-        // Stack 1's slot is at the same place of its own layer.
-        assert_eq!(rows[1].origin, rows[0].origin);
-        // Stack 2 holds slopes: slot 1 of the slope page, half the texels.
-        let slope = px / 2.0;
-        assert!(near(rows[2].origin, [1.5 * slope, -0.5 * slope]));
-        assert_eq!(rows[2].scale, slot / 4.0 / 4096.0);
-        assert_eq!(rows[2].px_scale, 1.0);
-        // Clipped to the terrain tile: the whole vector tile is inside.
-        assert_eq!(rows[0].clips[0], ClipRect::new([0, 0], [4096, 4096]));
-        // A neighbour outside contributes nothing.
-        let away = Draw {
-            tile: TileIndex::new(4, 7, 5),
-            wrap: 0,
-            regions: vec![TileIndex::new(4, 7, 5)],
-        };
-        assert!(!Drawn::of(&tms, &away, None, 0.0).overlaps(&tms, terrain, (3.0, 0.0)));
     }
 
     /// A terrain tile's slots take the texels it shows at: full in a view

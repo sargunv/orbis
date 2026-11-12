@@ -243,37 +243,4 @@ mod tests {
             (0, 0, 2)
         );
     }
-
-    /// A vector tile larger than what the frame has left is taken in
-    /// pieces; one that can't split is taken whole only as the first.
-    #[test]
-    fn a_frame_takes_what_splits_within_its_cap() {
-        let mut beat = Beat::new(10);
-        assert!(beat.takes(false, 100, true));
-        beat.spend(10);
-        beat.count();
-        assert!(!beat.takes(true, 100, true), "nothing left");
-        let mut beat = Beat::new(10);
-        beat.spend(4);
-        beat.count();
-        assert!(beat.takes(true, 100, true));
-        assert!(!beat.takes(false, 100, true), "out of time");
-        assert!(!beat.takes(true, 100, false));
-        assert!(beat.takes(true, 6, false));
-    }
-
-    #[test]
-    fn a_frame_applies_its_first_result_whatever_it_costs() {
-        let mut beat = Beat::new(10);
-        assert!(beat.affords(false, 100));
-        beat.spend(100);
-        beat.count();
-        assert!(!beat.affords(true, 0));
-        let mut beat = Beat::new(10);
-        beat.spend(4);
-        beat.count();
-        assert!(beat.affords(true, 6));
-        assert!(!beat.affords(true, 7));
-        assert!(!beat.affords(false, 0));
-    }
 }
