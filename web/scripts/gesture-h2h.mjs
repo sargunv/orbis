@@ -8,7 +8,10 @@
 // interval's median and p95, the worst, and how many came over 25 and 50 ms
 // apart), when the first came, and the busiest worker threads' time within
 // it. `--warm` makes the gestures once untimed first, so the timed pass
-// takes its tiles from the HTTP cache.
+// takes its tiles from the HTTP cache. Each gesture's camera trajectory
+// goes beside it: every 100 ms from its start, the change in zoom,
+// bearing, pitch and centre (pixels at the start's zoom, x east and y
+// south), read from each page's camera as its frames report it.
 //
 // `--browser=firefox` makes them in the installed Firefox over Marionette
 // (firefox.mjs), headed, on a fresh profile, input through Firefox's widget
@@ -47,7 +50,76 @@ const CAMERAS = {
 };
 
 async function mark(page, name) {
-  await page.evaluate((n) => performance.mark(n), name);
+  await page.evaluate((n) => {
+    performance.mark(n);
+    globalThis.__marks[n] = performance.now();
+  }, name);
+}
+
+/** Records each camera the page's map shows, as [time, lat, lon, zoom,
+ * bearing, pitch]: mln-rs's map worker posts one per frame that moved it,
+ * and Orbis's is read on each animation frame. */
+function recordCameras() {
+  globalThis.__cameras = [];
+  globalThis.__marks = {};
+  const Base = globalThis.Worker;
+  globalThis.Worker = class extends Base {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener("message", (e) => {
+        if (e.data?.type === "camera" && !globalThis.orbis)
+          globalThis.__cameras.push([performance.now(), ...e.data.camera]);
+      });
+    }
+  };
+  const poll = () => {
+    const camera = globalThis.orbis?.map?.camera?.current;
+    if (camera) {
+      const { center, zoom, bearing, pitch } = camera;
+      const last = globalThis.__cameras.at(-1);
+      const next = [center[1], center[0], zoom, bearing, pitch];
+      if (!last || next.some((v, i) => v !== last[i + 1]))
+        globalThis.__cameras.push([performance.now(), ...next]);
+    }
+    requestAnimationFrame(poll);
+  };
+  requestAnimationFrame(poll);
+}
+
+/** Each gesture's camera every 100 ms from its start, as changes from its
+ * start: [ms, zoom, bearing, pitch, x px, y px]. */
+function trajectories({ cameras, marks }) {
+  const mercatorY = (lat) =>
+    Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+  const at = (t) => {
+    const i = cameras.findLastIndex(([time]) => time <= t);
+    return cameras[Math.max(0, i)];
+  };
+  const out = {};
+  for (const [name] of GESTURES) {
+    const start = marks[`g:${name}:start`];
+    const end = marks[`g:${name}:after`];
+    if (start === undefined || end === undefined || !cameras.length) continue;
+    const [, lat0, lon0, zoom0, bearing0, pitch0] = at(start);
+    const scale = 512 * 2 ** zoom0;
+    const steps = [];
+    for (let t = 0; start + t <= end + 1; t += 100) {
+      const [, lat, lon, zoom, bearing, pitch] = at(start + t);
+      const turn = ((((bearing - bearing0 + 180) % 360) + 360) % 360) - 180;
+      steps.push(
+        [
+          t,
+          zoom - zoom0,
+          turn,
+          pitch - pitch0,
+          ((lon - lon0) / 360) * scale,
+          ((mercatorY(lat0) - mercatorY(lat)) / (2 * Math.PI)) * scale,
+        ].map((v) => +v.toFixed(2)),
+      );
+    }
+    out[name] = steps;
+  }
+  return out;
 }
 
 /** A drag by (dx, dy) over `ms`, a move every 8 ms, released at speed. */
@@ -105,6 +177,7 @@ async function run(engine, base) {
       deviceScaleFactor: 2,
     });
     page.on("pageerror", (e) => console.error(`${engine}: ${e.message}`));
+    await page.addInitScript(recordCameras);
     const url =
       engine === "orbis"
         ? `${base}?style=liberty&backend=webgpu#${CAMERAS[scene]}`
@@ -152,6 +225,10 @@ async function run(engine, base) {
       transferMode: "ReturnAsStream",
     });
     await play(page, true);
+    const cameras = await page.evaluate(() => ({
+      cameras: globalThis.__cameras,
+      marks: globalThis.__marks,
+    }));
     const traced = new Promise((r) => cdp.once("Tracing.tracingComplete", r));
     await cdp.send("Tracing.end");
     const { stream } = await traced;
@@ -161,7 +238,7 @@ async function run(engine, base) {
       chunks.push(data);
       if (eof) break;
     }
-    return JSON.parse(chunks.join(""));
+    return { trace: JSON.parse(chunks.join("")), cameras };
   } finally {
     await browser.close();
   }
@@ -370,10 +447,11 @@ try {
         );
         continue;
       }
-      const trace = await run(engine, server.url);
-      console.log(
-        JSON.stringify({ engine, run: r, scene, warm, ...analyse(trace) }),
-      );
+      const { trace, cameras } = await run(engine, server.url);
+      const camera = trajectories(cameras);
+      const out = analyse(trace);
+      for (const name of Object.keys(out)) out[name].camera = camera[name];
+      console.log(JSON.stringify({ engine, run: r, scene, warm, ...out }));
     }
 } finally {
   server.close();
