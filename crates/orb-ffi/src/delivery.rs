@@ -4,7 +4,8 @@
 // call; with one, the call waits in the queue until the caller dispatches it,
 // and the queue's wake says when the empty queue gains a call. On a runtime
 // thread, calls wait in its outbox until the work that raised them is done,
-// so a callback can call the library back.
+// so a callback can call the library back. Runtime and session threads
+// both have one.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -25,16 +26,16 @@ pub(crate) struct Pending {
 }
 
 thread_local! {
-    /// The calls a runtime thread delivers once its work is done.
+    /// The calls a library thread delivers once its work is done.
     static OUTBOX: RefCell<Option<Vec<(u64, Pending)>>> = const { RefCell::new(None) };
 }
 
-/// Makes this thread a runtime thread, whose deliveries wait for [`flush`].
+/// Makes this thread a library thread, whose deliveries wait for [`flush`].
 pub(crate) fn start_outbox() {
     OUTBOX.with(|o| *o.borrow_mut() = Some(Vec::new()));
 }
 
-/// Hands the calls in this runtime thread's outbox to their queues, or
+/// Hands the calls in this library thread's outbox to their queues, or
 /// runs them.
 pub(crate) fn flush() {
     loop {

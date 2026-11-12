@@ -17,8 +17,7 @@ use orb_style::{LayerType, PropertyId};
 use crate::base::boundary;
 use crate::base::{Failure, Result, sized, text};
 use crate::delivery::Value;
-use crate::map::{MapEntry, command, entry, job, post};
-use crate::runtime::State;
+use crate::map::{MapEntry, command, job, post};
 use crate::sys::*;
 
 /// What the C API keeps about a map's style beyond Orbis's document.
@@ -293,8 +292,7 @@ command!(
 );
 
 command!(mln_map_get_global_state(), true, false, |state, id| {
-    Ok(|state: &mut State, id: u64| {
-        let entry = entry(state, id);
+    Ok(|entry: &mut MapEntry| {
         let mut out = String::from("{");
         if let Some(doc) = entry.map.style() {
             for (i, (key, value)) in doc.global_state().iter().enumerate() {
@@ -567,8 +565,7 @@ command!(
     false,
     |state, id| {
         let source_id = id(source_id, "source_id")?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(move |entry: &mut MapEntry| {
             let Some(json) = entry.map.style().and_then(|d| d.source(&source_id)) else {
                 return Ok(Value::None);
             };
@@ -580,8 +577,7 @@ command!(
 );
 
 command!(mln_map_list_style_sources(), true, false, |state, id| {
-    Ok(|state: &mut State, id: u64| {
-        let entry = entry(state, id);
+    Ok(|entry: &mut MapEntry| {
         let mut lent = Lent::default();
         let mut infos = Vec::new();
         if let Some(doc) = entry.map.style() {
@@ -739,8 +735,7 @@ command!(
     false,
     |state, id| {
         let layer_id = id(layer_id, "layer_id")?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(move |entry: &mut MapEntry| {
             let Some(json) = entry.map.style().and_then(|d| d.layer(&layer_id)) else {
                 return Ok(Value::None);
             };
@@ -752,8 +747,7 @@ command!(
 );
 
 command!(mln_map_list_style_layers(), true, false, |state, id| {
-    Ok(|state: &mut State, id: u64| {
-        let entry = entry(state, id);
+    Ok(|entry: &mut MapEntry| {
         let mut lent = Lent::default();
         let mut infos = Vec::new();
         if let Some(doc) = entry.map.style() {
@@ -773,8 +767,7 @@ command!(
     false,
     |state, id| {
         let layer_id = id(layer_id, "layer_id")?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(move |entry: &mut MapEntry| {
             Ok(entry
                 .map
                 .style()
@@ -973,8 +966,7 @@ command!(
     |state, id| {
         let layer_id = id(layer_id, "layer_id")?;
         let name = id(name, "property_name")?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(move |entry: &mut MapEntry| {
             let json = layer(entry, &layer_id)?;
             // A property the layer's type doesn't have is unset.
             let Ok((slot, color)) = slot(&layer_id, json, &name) else {
@@ -1137,9 +1129,8 @@ command!(
     false,
     |state, id| {
         let name = id(name, "property_name")?;
-        Ok(move |state: &mut State, id: u64| {
+        Ok(move |entry: &mut MapEntry| {
             root_property(&name)?;
-            let entry = entry(state, id);
             let value = match root(entry, &name)? {
                 Some(value) => value,
                 // Native gives a style without a transition its default.
@@ -1191,8 +1182,7 @@ command!(
     false,
     |state, id| {
         let name = id(name, "property_name")?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(move |entry: &mut MapEntry| {
             let color = name == "color";
             Ok(root(entry, "light")?
                 .and_then(|l| l.get(&name).cloned())
@@ -1278,8 +1268,7 @@ command!(
     true,
     false,
     |state, id| {
-        Ok(|state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(|entry: &mut MapEntry| {
             // SAFETY: plain C data.
             let mut o: mln_style_transition_options = std::mem::zeroed();
             o.size = std::mem::size_of::<mln_style_transition_options>() as u32;
@@ -1572,8 +1561,7 @@ command!(
     false,
     |state, id| {
         let image_id = id(image_id, "image_id")?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(move |entry: &mut MapEntry| {
             let Some(copy) = entry.style.images.get(&image_id).cloned() else {
                 return Ok(Value::None);
             };
@@ -2079,8 +2067,7 @@ pub unsafe extern "C" fn mln_map_set_feature_state(
                 return Err(Failure::argument("state must be a JSON object"));
             };
             let members = members.into_owned();
-            post(map, completion, false, true, move |state, id| {
-                let entry = entry(state, id);
+            post(map, completion, false, true, move |entry| {
                 let key = (
                     s.source.clone(),
                     s.layer.clone(),
@@ -2119,8 +2106,7 @@ pub unsafe extern "C" fn mln_map_get_feature_state(
     unsafe {
         boundary(out_diagnostic, || {
             let s = self::selector(selector, true)?;
-            post(map, completion, true, false, move |state, id| {
-                let entry = entry(state, id);
+            post(map, completion, true, false, move |entry| {
                 let key = (s.source, s.layer, s.id.unwrap_or_default());
                 let members = entry
                     .style
@@ -2147,8 +2133,7 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
     unsafe {
         boundary(out_diagnostic, || {
             let s = self::selector(selector, false)?;
-            post(map, completion, false, true, move |state, id| {
-                let entry = entry(state, id);
+            post(map, completion, false, true, move |entry| {
                 let states = &mut entry.style.feature_states;
                 let count = |states: &std::collections::BTreeMap<FeatureKey, FeatureState>| {
                     states.values().map(Vec::len).sum::<usize>()
@@ -2361,8 +2346,8 @@ pub unsafe extern "C" fn mln_map_add_custom_geometry_source(
                 release_user_data: o.release_user_data,
                 queue: o.queue.0,
             };
-            post(map, completion, false, true, move |state, map| {
-                add_custom(entry(state, map), id, json, source).map(|()| Value::None)
+            post(map, completion, false, true, move |entry: &mut MapEntry| {
+                add_custom(entry, id, json, source).map(|()| Value::None)
             })
         })
     }
@@ -2402,8 +2387,8 @@ pub unsafe extern "C" fn mln_map_add_custom_vector_source(
                 release_user_data: o.release_user_data,
                 queue: o.queue.0,
             };
-            post(map, completion, false, true, move |state, map| {
-                add_custom(entry(state, map), id, json, source).map(|()| Value::None)
+            post(map, completion, false, true, move |entry: &mut MapEntry| {
+                add_custom(entry, id, json, source).map(|()| Value::None)
             })
         })
     }
@@ -2588,16 +2573,14 @@ command!(
 /// still needs are asked for again; the drawn ones stay until the answers
 /// come.
 fn invalidate(
-    state: &mut State,
-    map: u64,
+    entry: &mut MapEntry,
     id: &str,
     geometry: bool,
     which: &dyn Fn(orb_api::TileIndex) -> bool,
 ) -> Result {
-    let entry = entry(state, map);
     custom(entry, id, geometry)?;
     if let Some(source) = entry.style.custom(id) {
-        source.cancel(map, id, which);
+        source.cancel(entry.id, id, which);
     }
     // A source still loading has no tiles to ask for again.
     let _ = entry.map.reload_host_tiles_where(id, which);
@@ -2634,9 +2617,9 @@ command!(
     |state, id| {
         let source_id = id(source_id, "source_id")?;
         let tile = tile_index(tile_id);
-        Ok(move |state: &mut State, map: u64| {
+        Ok(move |entry: &mut MapEntry| {
             let tile = tile?;
-            invalidate(state, map, &source_id, true, &|t| t == tile).map(|()| Value::None)
+            invalidate(entry, &source_id, true, &|t| t == tile).map(|()| Value::None)
         })
     }
 );
@@ -2651,9 +2634,9 @@ command!(
     |state, id| {
         let source_id = id(source_id, "source_id")?;
         let tile = tile_index(tile_id);
-        Ok(move |state: &mut State, map: u64| {
+        Ok(move |entry: &mut MapEntry| {
             let tile = tile?;
-            invalidate(state, map, &source_id, false, &|t| t == tile).map(|()| Value::None)
+            invalidate(entry, &source_id, false, &|t| t == tile).map(|()| Value::None)
         })
     }
 );
@@ -2690,10 +2673,9 @@ command!(
     true,
     |state, id| {
         let source_id = id(source_id, "source_id")?;
-        Ok(move |state: &mut State, map: u64| {
+        Ok(move |entry: &mut MapEntry| {
             check_region(&bounds)?;
-            invalidate(state, map, &source_id, true, &|t| tile_meets(t, &bounds))
-                .map(|()| Value::None)
+            invalidate(entry, &source_id, true, &|t| tile_meets(t, &bounds)).map(|()| Value::None)
         })
     }
 );
@@ -2707,10 +2689,9 @@ command!(
     true,
     |state, id| {
         let source_id = id(source_id, "source_id")?;
-        Ok(move |state: &mut State, map: u64| {
+        Ok(move |entry: &mut MapEntry| {
             check_region(&bounds)?;
-            invalidate(state, map, &source_id, false, &|t| tile_meets(t, &bounds))
-                .map(|()| Value::None)
+            invalidate(entry, &source_id, false, &|t| tile_meets(t, &bounds)).map(|()| Value::None)
         })
     }
 );
@@ -2845,8 +2826,8 @@ command!(
     false,
     |state, id| {
         let source_id = id(source_id, "source_id")?;
-        Ok(move |state: &mut State, map: u64| {
-            let json = image_source(entry(state, map), &source_id)?;
+        Ok(move |entry: &mut MapEntry| {
+            let json = image_source(entry, &source_id)?;
             let corners: Vec<mln_lat_lng> = json
                 .get("coordinates")
                 .and_then(Json::as_array)

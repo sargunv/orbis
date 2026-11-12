@@ -9,7 +9,6 @@ use orb_expr::json::{self, Json, JsonValue};
 use crate::base::{Failure, Result, boundary, sized, text};
 use crate::delivery::{Completion, Value};
 use crate::handles;
-use crate::runtime::State;
 use crate::sys::*;
 
 /// What a pending query reports when its answer arrives.
@@ -173,19 +172,19 @@ fn submit(
     // SAFETY: the caller's pointer.
     let completion = unsafe { Completion::required(completion) }?;
     let id = handle.session_id();
-    handle.runtime.post(move |state: &mut State| {
-        let Some(map) = crate::session::map_of(state, id) else {
-            return state.complete(
-                Some(completion),
+    handle.map_handle().command(None, false, move |entry| {
+        if entry.session.as_ref().is_none_or(|s| s.id() != id) {
+            completion.complete(
                 Err(Failure::state("the session is not attached to a map")),
                 0,
             );
-        };
-        let entry = state.maps.get_mut(&map).expect("a session's map");
+            return Ok(Value::None);
+        }
         match start(&mut entry.map) {
             Ok((ids, pending)) => {
                 let Some((&first, rest)) = ids.split_first() else {
-                    return state.complete(Some(completion), Ok(Value::array::<u8>(&[], None)), 0);
+                    completion.complete(Ok(Value::array::<u8>(&[], None)), 0);
+                    return Ok(Value::None);
                 };
                 // A source query of several layers is answered under its
                 // first id; the others forward to it.
@@ -200,8 +199,9 @@ fn submit(
                     },
                 );
             }
-            Err(e) => state.complete(Some(completion), Err(e), 0),
+            Err(e) => completion.complete(Err(e), 0),
         }
+        Ok(Value::None)
     })
 }
 

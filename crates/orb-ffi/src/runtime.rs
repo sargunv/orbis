@@ -1,11 +1,17 @@
-// A runtime is one thread that owns an Orbis runtime (its GPU device and
-// services) and the runtime's maps and render sessions: mln-ffi's core
-// worker. Calls from any thread check their arguments on the caller's
-// thread, post the work to the runtime thread, and report through their
-// completion. After each piece of work the thread publishes the maps'
-// snapshots, then sends the events the work raised, then its completions,
-// so a completion follows its events and both follow the state they
-// report.
+// A runtime is mln-ffi's core worker: one thread that runs every map's
+// commands in the order they were sent, and steps the maps no render
+// session draws. Each session draws its map on a thread of its own
+// (session.rs), so frames don't wait behind commands, and a command's
+// callback that parks the worker holds back no frame, no detach.
+//
+// A map is its state behind a lock (map.rs's `MapCell`): the thread that
+// works on it, this one for a command or its session's for a frame, holds
+// the lock while it does, then publishes the map's snapshot and takes its
+// events before letting go. Calls from any thread check their arguments on
+// the caller's thread and post the work; what it reports waits in the
+// working thread's outbox until the lock is let go, the events first, so a
+// completion follows its events, both follow the state they report, and a
+// callback can call the library back.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,8 +23,7 @@ use std::time::{Duration, Instant};
 use crate::base::{Failure, Result, UserData, boundary, put, sized, text};
 use crate::delivery::{self, Completion, Value};
 use crate::handles::{self, Object};
-use crate::map::MapEntry;
-use crate::session::SessionEntry;
+use crate::map::MapCell;
 use crate::sys::*;
 
 type Job = Box<dyn FnOnce(&mut State) + Send>;
@@ -30,17 +35,61 @@ pub(crate) enum Msg {
     Stop(Option<Completion>),
 }
 
+/// What every thread of a runtime shares: the runtime thread, its
+/// sessions' threads.
+pub(crate) struct Core {
+    pub(crate) runtime: orb_api::Runtime,
+    /// Frame and input times are milliseconds since this.
+    epoch: Instant,
+    handler: Mutex<Option<EventHandler>>,
+    /// Wakes the runtime thread to step its maps.
+    tx: Sender<Msg>,
+}
+
+impl Core {
+    pub(crate) fn now(&self) -> f64 {
+        self.epoch.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Sends a batch of events to the handler, if there is one.
+    pub(crate) fn send(&self, events: Vec<Event>) {
+        if events.is_empty() {
+            return;
+        }
+        if let Some(handler) = &*self
+            .handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            handler.send(events);
+        }
+    }
+
+    /// Asks the runtime thread to look for maps to step.
+    pub(crate) fn wake(&self) {
+        let _ = self.tx.send(Msg::Pump);
+    }
+
+    fn replace_handler(&self, handler: Option<EventHandler>) {
+        let old = std::mem::replace(
+            &mut *self
+                .handler
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            handler,
+        );
+        if let Some(old) = old {
+            old.release();
+        }
+    }
+}
+
 /// What the runtime thread owns.
 pub(crate) struct State {
-    pub(crate) runtime: orb_api::Runtime,
-    pub(crate) id: u64,
-    pub(crate) maps: HashMap<u64, MapEntry>,
-    pub(crate) sessions: HashMap<u64, SessionEntry>,
-    pub(crate) handler: Option<EventHandler>,
-    /// Frame and input times are milliseconds since this.
-    pub(crate) epoch: Instant,
-    /// Events raised and not yet sent.
-    pub(crate) events: Vec<Event>,
+    pub(crate) core: Arc<Core>,
+    pub(crate) maps: HashMap<u64, Arc<MapCell>>,
+    /// The render sessions' threads, for the runtime's end to stop.
+    pub(crate) sessions: HashMap<u64, crate::session::Link>,
     pub(crate) hook: Arc<crate::resources::Hook>,
 }
 
@@ -50,7 +99,7 @@ thread_local! {
 
 /// The handle's side, shared with every thread.
 pub(crate) struct RuntimeHandle {
-    tx: Mutex<Sender<Msg>>,
+    tx: Sender<Msg>,
     thread: ThreadId,
     join: Mutex<Option<JoinHandle<()>>>,
     /// Maps and render sessions alive on the runtime, counted on the
@@ -66,42 +115,9 @@ pub(crate) struct RuntimeHandle {
 impl RuntimeHandle {
     /// Runs `job` on the runtime thread later, in call order.
     pub(crate) fn post(&self, job: impl FnOnce(&mut State) + Send + 'static) -> Result {
-        self.sender()
+        self.tx
             .send(Msg::Run(Box::new(job)))
             .map_err(|_| Failure::state("the runtime was released"))
-    }
-
-    /// Runs `job` on the runtime thread and waits for its result. On the
-    /// runtime thread itself (in a callback), it runs in place.
-    pub(crate) fn call<R: Send + 'static>(
-        &self,
-        job: impl FnOnce(&mut State) -> Result<R> + Send + 'static,
-    ) -> Result<R> {
-        if std::thread::current().id() == self.thread {
-            return STATE.with(|state| match state.try_borrow_mut() {
-                Ok(mut state) => match state.as_mut() {
-                    Some(state) => job(state),
-                    None => Err(Failure::state("the runtime was released")),
-                },
-                Err(_) => Err(Failure::new(
-                    MLN_STATUS_WRONG_THREAD,
-                    "the call can't run inside the runtime's own work",
-                )),
-            });
-        }
-        let (tx, rx) = mpsc::sync_channel(1);
-        self.post(move |state| {
-            let _ = tx.send(job(state));
-        })?;
-        rx.recv()
-            .map_err(|_| Failure::state("the runtime was released"))?
-    }
-
-    pub(crate) fn sender(&self) -> Sender<Msg> {
-        self.tx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
     }
 
     /// A map or session of the runtime went: a disposed runtime stops
@@ -122,111 +138,46 @@ impl RuntimeHandle {
             .disposed
             .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
-            let _ = self.sender().send(Msg::Stop(None));
+            let _ = self.tx.send(Msg::Stop(None));
         }
     }
 }
 
 impl State {
-    pub(crate) fn now(&self) -> f64 {
-        self.epoch.elapsed().as_secs_f64() * 1000.0
+    pub(crate) fn runtime(&self) -> &orb_api::Runtime {
+        &self.core.runtime
     }
 
-    /// Queues an event of a map for the handler, if the map's mask takes
-    /// it, at the map's current generation.
-    pub(crate) fn event(
-        &mut self,
-        map: u64,
-        kind: mln_runtime_event_type,
-        payload: Payload,
-        message: String,
-    ) {
-        let Some(entry) = self.maps.get(&map) else {
-            return;
-        };
-        if entry.event_mask & (1u64 << kind) == 0 {
-            return;
-        }
-        let generation = entry.generation;
-        self.events.push(Event {
-            kind,
-            source_type: MLN_RUNTIME_EVENT_SOURCE_MAP,
-            source: map,
-            generation,
-            payload,
-            message,
-        });
-    }
-
-    /// Publishes the maps' state, then sends the events raised so far:
-    /// what a completion delivered after it can rely on.
-    pub(crate) fn settle(&mut self) {
-        let ids: Vec<u64> = self.maps.keys().copied().collect();
-        let mut after = Vec::new();
-        for id in ids {
-            after.extend(crate::map::take_events(self, id));
-        }
-        for entry in self.maps.values() {
-            entry.publish();
-        }
-        for entry in self.sessions.values() {
-            entry.publish();
-        }
-        let mut events = std::mem::take(&mut self.events);
-        // A map's events carry the generation of the work that raised
-        // them: a command's are queued once it applied, before it
-        // completes.
-        for event in &mut events {
-            if event.source_type == MLN_RUNTIME_EVENT_SOURCE_MAP
-                && let Some(map) = self.maps.get(&event.source)
-            {
-                event.generation = map.generation;
-            }
-        }
-        if !events.is_empty()
-            && let Some(handler) = &self.handler
-        {
-            handler.send(events);
-        }
-        for end in after {
-            end();
-        }
-    }
-
-    /// Delivers `completion` after the state and events of the work so
-    /// far.
+    /// Delivers `completion` after what the work so far reported.
     pub(crate) fn complete(
-        &mut self,
+        &self,
         completion: Option<Completion>,
         result: Result<Value>,
         generation: u64,
     ) {
-        self.complete_update(completion, result, generation, generation);
+        complete_update(completion, result, generation, generation);
     }
+}
 
-    /// As [`complete`](Self::complete), for a map command whose change
-    /// the render update `render_update` first shows.
-    pub(crate) fn complete_update(
-        &mut self,
-        completion: Option<Completion>,
-        result: Result<Value>,
-        generation: u64,
-        render_update: u64,
-    ) {
-        self.settle();
-        match (completion, result) {
-            (Some(c), result) => c.complete_update(result, generation, render_update),
-            // A command posted without a completion has nobody to tell of
-            // its failure but the log, as in Native.
-            (None, Err(failure)) => crate::logging::log(
-                MLN_LOG_SEVERITY_WARNING,
-                &format!(
-                    "a discarded command failed (status {}): {}",
-                    failure.status, failure.message
-                ),
+/// Delivers a command's `completion`, for a change the render update
+/// `render_update` first shows; a command posted without one has nobody to
+/// tell of its failure but the log, as in Native.
+pub(crate) fn complete_update(
+    completion: Option<Completion>,
+    result: Result<Value>,
+    generation: u64,
+    render_update: u64,
+) {
+    match (completion, result) {
+        (Some(c), result) => c.complete_update(result, generation, render_update),
+        (None, Err(failure)) => crate::logging::log(
+            MLN_LOG_SEVERITY_WARNING,
+            &format!(
+                "a discarded command failed (status {}): {}",
+                failure.status, failure.message
             ),
-            (None, Ok(_)) => {}
-        }
+        ),
+        (None, Ok(_)) => {}
     }
 }
 
@@ -380,8 +331,8 @@ fn c_event(e: &mut Event) -> mln_runtime_event {
 
 /// How often a map steps that nothing paces: a camera that moves with no
 /// session drawing it, a still image waiting on time. Data, compiles and
-/// pacers wake the thread themselves.
-const STEP: Duration = Duration::from_millis(16);
+/// pacers wake their threads themselves.
+pub(crate) const STEP: Duration = Duration::from_millis(16);
 
 /// A fresh directory for the regions of a runtime without a cache file,
 /// removed with it.
@@ -422,9 +373,7 @@ fn run(rx: Receiver<Msg>, temporary: Option<&std::path::Path>) {
             match msg {
                 Msg::Run(job) => STATE.with(|s| {
                     let mut s = s.borrow_mut();
-                    let state = s.as_mut().expect("runtime state");
-                    job(state);
-                    state.settle();
+                    job(s.as_mut().expect("runtime state"));
                 }),
                 Msg::Pump => {}
                 Msg::Stop(completion) => {
@@ -439,13 +388,12 @@ fn run(rx: Receiver<Msg>, temporary: Option<&std::path::Path>) {
             if let Some(mut state) = state {
                 // Sessions before maps before the runtime, as their devices
                 // and surfaces need.
-                state.sessions.clear();
-                state.maps.clear();
-                state.settle();
-                if let Some(handler) = state.handler.take() {
-                    handler.release();
+                for (_, session) in state.sessions.drain() {
+                    session.stop();
                 }
-                state.runtime.set_network_hook(None);
+                state.maps.clear();
+                state.core.replace_handler(None);
+                state.runtime().set_network_hook(None);
                 state.hook.clear();
             }
             if let Some(dir) = temporary {
@@ -457,13 +405,7 @@ fn run(rx: Receiver<Msg>, temporary: Option<&std::path::Path>) {
             delivery::flush();
             return;
         }
-        STATE.with(|s| {
-            let mut s = s.borrow_mut();
-            let state = s.as_mut().expect("runtime state");
-            crate::map::advance(state);
-            crate::session::pump(state);
-            state.settle();
-        });
+        STATE.with(|s| crate::map::advance(s.borrow_mut().as_mut().expect("runtime state")));
         delivery::flush();
     }
 }
@@ -493,55 +435,48 @@ pub unsafe extern "C" fn mln_runtime_create(
                 Some(_) => None,
                 None => Some(temporary_state_dir()?),
             };
-            let (tx, rx) = mpsc::channel();
-            let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+            // The device waits for the first session that needs it.
+            let runtime = orb_api::Runtime::new(&orb_api::RuntimeOptions {
+                state_dir,
+                regions_dir: temporary.clone(),
+                ..Default::default()
+            })
+            .map_err(|e| {
+                if let Some(dir) = &temporary {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+                Failure::from(e)
+            })?;
             let hook = crate::resources::hook();
-            let network_hook: Arc<dyn orb_api::NetworkHook> = hook.clone();
-            let state_hook = hook.clone();
+            runtime.set_online(crate::network::online());
+            runtime.set_network_hook(Some(hook.clone()));
+            let (tx, rx) = mpsc::channel();
+            let core = Arc::new(Core {
+                runtime,
+                epoch: Instant::now(),
+                handler: Mutex::new(None),
+                tx: tx.clone(),
+            });
+            let state = State {
+                core: core.clone(),
+                maps: HashMap::new(),
+                sessions: HashMap::new(),
+                hook: hook.clone(),
+            };
             let join = std::thread::Builder::new()
                 .name("orbis-runtime".into())
                 .spawn(move || {
                     delivery::start_outbox();
-                    let options = orb_api::RuntimeOptions {
-                        state_dir,
-                        regions_dir: temporary.clone(),
-                        ..Default::default()
-                    };
-                    match orb_api::Runtime::new(&options) {
-                        Ok(runtime) => {
-                            runtime.set_online(crate::network::online());
-                            runtime.set_network_hook(Some(network_hook));
-                            STATE.with(|s| {
-                                *s.borrow_mut() = Some(State {
-                                    runtime,
-                                    id: 0,
-                                    maps: HashMap::new(),
-                                    sessions: HashMap::new(),
-                                    handler: None,
-                                    epoch: Instant::now(),
-                                    events: Vec::new(),
-                                    hook: state_hook,
-                                })
-                            });
-                            let _ = ready_tx.send(Ok(()));
-                            run(rx, temporary.as_deref());
-                        }
-                        Err(e) => {
-                            let _ = ready_tx.send(Err(Failure::from(e)));
-                        }
-                    }
+                    STATE.with(|s| *s.borrow_mut() = Some(state));
+                    run(rx, temporary.as_deref());
                     if let Some(dir) = &temporary {
                         let _ = std::fs::remove_dir_all(dir);
                     }
                 })
                 .map_err(|e| Failure::native(format!("can't start the runtime thread: {e}")))?;
-            let thread = join.thread().id();
-            ready_rx
-                .recv()
-                .map_err(|_| Failure::native("the runtime thread stopped"))??;
             let handle = Arc::new(RuntimeHandle {
-                tx: Mutex::new(tx),
-                thread,
+                tx,
+                thread: join.thread().id(),
                 join: Mutex::new(Some(join)),
                 maps: Default::default(),
                 hook,
@@ -549,7 +484,6 @@ pub unsafe extern "C" fn mln_runtime_create(
             });
             let id = handles::insert(Object::Runtime(handle.clone()));
             crate::network::register(&handle);
-            handle.post(move |state| state.id = id)?;
             put(out_runtime, mln_runtime(id), "out_runtime")
         })
     }
@@ -604,7 +538,7 @@ fn stop(runtime: mln_runtime, completion: Option<Completion>, wait: bool) -> Res
     }
     handles::remove(runtime.0);
     crate::network::unregister(&handle);
-    let _ = handle.sender().send(Msg::Stop(completion));
+    let _ = handle.tx.send(Msg::Stop(completion));
     if wait
         && !handle.on_thread()
         && let Some(join) = handle
@@ -667,9 +601,7 @@ pub unsafe extern "C" fn mln_runtime_set_event_handler(
                 queue: h.queue.0,
             };
             runtime.post(move |state| {
-                if let Some(old) = state.handler.replace(handler) {
-                    old.release();
-                }
+                state.core.replace_handler(Some(handler));
                 state.complete(completion, Ok(Value::None), 0);
             })
         })
@@ -688,10 +620,7 @@ pub unsafe extern "C" fn mln_runtime_clear_event_handler(
             let runtime = handles::runtime(runtime.0)?;
             let completion = Completion::from_c(completion)?;
             runtime.post(move |state| {
-                state.settle();
-                if let Some(old) = state.handler.take() {
-                    old.release();
-                }
+                state.core.replace_handler(None);
                 state.complete(completion, Ok(Value::None), 0);
             })
         })

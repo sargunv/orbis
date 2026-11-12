@@ -1,10 +1,12 @@
-// Maps: an Orbis map on its runtime's thread, with the state the C API
-// reports about it (mode, extent, masks, debug flags, viewport options), its
-// generation, and the snapshot the runtime thread publishes after each piece
-// of work for `mln_map_get_snapshot` to copy without waiting.
+// Maps: an Orbis map behind a lock, with the state the C API reports about
+// it (mode, extent, masks, debug flags, viewport options), its generation,
+// and the snapshot the thread that last worked on it publishes for
+// `mln_map_get_snapshot` to copy without waiting. Its commands run on the
+// runtime thread in the order they were sent, numbered so its session's
+// frames show the commands sent before them.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use orb_api::{
     AnimationId, CameraTarget, EaseOptions, Easing, FitOptions, FlyOptions, Geodetic, Phase,
@@ -13,7 +15,7 @@ use orb_api::{
 use crate::base::{Failure, Result, UserData, boundary, fresh_out, put, sized, text};
 use crate::delivery::{self, Completion, Value};
 use crate::handles::{self, Object};
-use crate::runtime::{Msg, Payload, RuntimeHandle, State};
+use crate::runtime::{Core, Event, Payload, RuntimeHandle, State};
 use crate::sys::*;
 
 /// The caller's side of a map.
@@ -27,6 +29,8 @@ pub(crate) struct MapHandle {
     pub(crate) has_session: AtomicBool,
     /// Fixed when the map is made.
     pub(crate) mode: mln_map_mode,
+    /// The commands sent to the map so far, which number them.
+    posted: AtomicU64,
 }
 
 impl MapHandle {
@@ -34,6 +38,98 @@ impl MapHandle {
         *self.id.get().expect("map id")
     }
 
+    /// The number of the last command sent: a frame demanded now shows it.
+    pub(crate) fn posted(&self) -> u64 {
+        self.posted.load(Ordering::Acquire)
+    }
+
+    /// Runs `job` on the map on the runtime thread, after the commands
+    /// sent before it, then publishes what it changed and completes. A
+    /// `changes` job grows the map's generation.
+    pub(crate) fn command(
+        &self,
+        completion: Option<Completion>,
+        changes: bool,
+        job: impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static,
+    ) -> Result {
+        let id = self.id();
+        let number = self.posted.fetch_add(1, Ordering::AcqRel) + 1;
+        self.runtime.post(move |state| {
+            let Some(cell) = state.maps.get(&id).cloned() else {
+                let failure =
+                    Failure::state("the map isn't made: its creation failed or it was released");
+                return state.complete(completion, Err(failure), 0);
+            };
+            let mut entry = cell.lock();
+            let result = job(&mut entry);
+            let unchanged = std::mem::take(&mut entry.unchanged);
+            if changes && result.is_ok() {
+                entry.generation += 1;
+                if !unchanged {
+                    entry.update();
+                }
+            }
+            settle(&cell, &mut entry);
+            let (generation, update) = (entry.generation, entry.next_update());
+            crate::runtime::complete_update(completion, result, generation, update);
+            cell.applied.fetch_max(number, Ordering::AcqRel);
+            // Its frames wait for the commands sent before them.
+            entry.wake_session();
+        })
+    }
+}
+
+/// A map, shared by the runtime thread, which runs its commands and steps
+/// it while nothing draws it, and its session's thread, which draws it.
+pub(crate) struct MapCell {
+    entry: Mutex<MapEntry>,
+    /// The number of the last command the map applied.
+    pub(crate) applied: AtomicU64,
+    /// Data arrived since the map last took it in.
+    woken: Arc<AtomicBool>,
+    /// The runtime thread steps it on time: its camera moves and no session
+    /// draws it.
+    steps: AtomicBool,
+}
+
+impl MapCell {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, MapEntry> {
+        self.entry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Publishes the map's state, then sends the events raised so far and ends
+/// what they settle: what a completion delivered after it can rely on. The
+/// thread that holds the map's lock calls it before letting go; what it
+/// delivers waits in the thread's outbox.
+pub(crate) fn settle(cell: &MapCell, entry: &mut MapEntry) {
+    let after = take_events(entry);
+    entry.publish();
+    // A map's events carry the generation of the work that raised them.
+    let (source, generation) = (entry.id, entry.generation);
+    let events = (entry.events.drain(..))
+        .map(|(kind, payload, message)| Event {
+            kind,
+            source_type: MLN_RUNTIME_EVENT_SOURCE_MAP,
+            source,
+            generation,
+            payload,
+            message,
+        })
+        .collect();
+    entry.core.send(events);
+    for end in after {
+        end();
+    }
+    cell.steps.store(
+        entry.session.is_none() && entry.map.is_moving(),
+        Ordering::Release,
+    );
+}
+
+impl MapHandle {
     pub(crate) fn snapshot(&self) -> Option<mln_map_snapshot> {
         *self
             .snapshot
@@ -142,8 +238,15 @@ impl EndHandler {
 }
 
 pub(crate) struct MapEntry {
+    pub(crate) id: u64,
     pub(crate) map: orb_api::Map,
+    pub(crate) core: Arc<Core>,
     handle: Arc<MapHandle>,
+    /// Events raised and not yet sent.
+    events: Vec<(mln_runtime_event_type, Payload, String)>,
+    /// Where the map's data wakes go: its session's thread, or the
+    /// runtime's.
+    waker: Arc<Waker>,
     pub(crate) mode: mln_map_mode,
     pub(crate) extent: mln_logical_extent,
     pub(crate) event_mask: u64,
@@ -156,7 +259,10 @@ pub(crate) struct MapEntry {
     pub(crate) style_url: String,
     /// The style text as loaded, without later edits.
     loaded_style: Option<String>,
-    pub(crate) session: Option<u64>,
+    /// The session that draws the map.
+    pub(crate) session: Option<crate::session::Link>,
+    /// The map was released: no session attaches to it.
+    pub(crate) released: bool,
     /// Grows with each change to the map's state.
     pub(crate) generation: u64,
     /// The render updates the map has published for its session: each
@@ -169,8 +275,6 @@ pub(crate) struct MapEntry {
     /// Set by a command's job that changed nothing the map draws, so it
     /// publishes no render update.
     pub(crate) unchanged: bool,
-    /// Data arrived since the map last took it in.
-    woken: Arc<AtomicBool>,
     /// A style or source change awaits its loads, for LOADING_FINISHED.
     loading: bool,
     /// The STYLE_LOADED of the current style has been raised.
@@ -348,36 +452,93 @@ impl MapEntry {
         self.handle.has_session.store(attached, Ordering::Release);
     }
 
-    /// Whether the map needs a step on time rather than on a wake: its
-    /// camera moves with nothing drawing it, or its session's still image
-    /// needs a frame for something other than data (which wakes it).
-    fn steps(&self) -> bool {
-        match self.session {
-            None => self.map.is_moving(),
-            Some(_) => self.still.is_some() && self.map.needs_frame(),
+    /// Queues an event for the handler, if the map's mask takes it.
+    pub(crate) fn event(
+        &mut self,
+        kind: mln_runtime_event_type,
+        payload: Payload,
+        message: String,
+    ) {
+        if self.event_mask & (1u64 << kind) != 0 {
+            self.events.push((kind, payload, message));
+        }
+    }
+
+    /// Has the map take in what arrived, as data arriving does.
+    pub(crate) fn wake(&self) {
+        self.waker.wake();
+    }
+
+    /// Has the map's session look at it again.
+    pub(crate) fn wake_session(&self) {
+        if let Some(session) = &self.session {
+            session.wake();
+        }
+    }
+
+    /// Starts sending the map's data wakes to the session `link` draws on,
+    /// or (`None`) to the runtime thread.
+    pub(crate) fn set_session(&mut self, link: Option<crate::session::Link>) {
+        (self.waker.session.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone_from(&link);
+        self.session = link;
+    }
+}
+
+/// Where a map's data wakes go: to its session's thread, whose frames
+/// take the data in, or to the runtime thread, which takes it in for a
+/// map no session draws.
+struct Waker {
+    core: std::sync::Weak<Core>,
+    session: Mutex<Option<crate::session::Link>>,
+    /// Data arrived for the runtime thread to take in.
+    woken: Arc<AtomicBool>,
+}
+
+impl Waker {
+    fn wake(&self) {
+        match &*self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            Some(session) => session.wake(),
+            None => {
+                self.woken.store(true, Ordering::Release);
+                if let Some(core) = self.core.upgrade() {
+                    core.wake();
+                }
+            }
         }
     }
 }
 
 /// Whether any map needs the runtime thread to step it on time.
 pub(crate) fn any_steps(state: &State) -> bool {
-    state.maps.values().any(MapEntry::steps)
+    state.maps.values().any(|c| c.steps.load(Ordering::Acquire))
 }
 
 /// Steps the maps no session draws: takes in what arrived, and moves a
 /// moving camera on, so its animation runs and reports as under frames.
 pub(crate) fn advance(state: &mut State) {
-    let now = state.now();
-    for entry in state.maps.values_mut() {
+    let now = state.core.now();
+    for cell in state.maps.values() {
+        if !cell.steps.load(Ordering::Acquire) && !cell.woken.load(Ordering::Acquire) {
+            continue;
+        }
+        let mut entry = cell.lock();
+        // Its session's thread steps it.
         if entry.session.is_some() {
             continue;
         }
         if entry.map.is_moving() {
             entry.map.advance(now);
         }
-        if entry.woken.swap(false, Ordering::AcqRel) {
+        if cell.woken.swap(false, Ordering::AcqRel) {
             let _ = entry.map.apply_arrivals();
         }
+        settle(cell, &mut entry);
     }
 }
 
@@ -386,15 +547,13 @@ pub(crate) fn advance(state: &mut State) {
 ///
 /// Returns what ends the transitions and style loads, for the caller to
 /// run once the events are sent: a handler sees its events queued.
-pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> {
+fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
+    let id = entry.id;
     let mut out = Vec::new();
     let mut ended = Vec::new();
     let mut moving = Vec::new();
     let mut waiters = Vec::new();
     {
-        let Some(entry) = state.maps.get_mut(&id) else {
-            return Vec::new();
-        };
         let mut camera_phases = [false; 3];
         // The report of an immediate move ends with its end phases.
         let mut jump_ended = false;
@@ -588,9 +747,9 @@ pub(crate) fn take_events(state: &mut State, id: u64) -> Vec<Box<dyn FnOnce()>> 
         }
     }
     for (kind, payload, message) in out {
-        state.event(id, kind, payload, message);
+        entry.event(kind, payload, message);
     }
-    let generation = state.maps.get(&id).map_or(0, |m| m.generation);
+    let generation = entry.generation;
     let mut after: Vec<Box<dyn FnOnce()>> = Vec::new();
     for (handler, outcome) in ended {
         after.push(Box::new(move || handler.end(outcome, generation)));
@@ -618,7 +777,7 @@ pub(crate) unsafe fn post(
     completion: *const mln_completion,
     required: bool,
     changes: bool,
-    job: impl FnOnce(&mut State, u64) -> Result<Value> + Send + 'static,
+    job: impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static,
 ) -> Result {
     let handle = handles::map(map.0)?;
     // SAFETY: the caller's contract.
@@ -629,36 +788,7 @@ pub(crate) unsafe fn post(
             Completion::from_c(completion)?
         }
     };
-    let id = handle.id();
-    handle.runtime.post(move |state| {
-        let result = if state.maps.contains_key(&id) {
-            job(state, id)
-        } else {
-            Err(Failure::state(
-                "the map isn't made: its creation failed or it was released",
-            ))
-        };
-        if let Some(entry) = state.maps.get_mut(&id) {
-            let unchanged = std::mem::take(&mut entry.unchanged);
-            if changes && result.is_ok() {
-                entry.generation += 1;
-                if !unchanged {
-                    entry.update();
-                }
-            }
-        }
-        state.settle();
-        let (generation, update) = state
-            .maps
-            .get(&id)
-            .map_or((0, 0), |m| (m.generation, m.next_update()));
-        state.complete_update(completion, result, generation, update);
-    })
-}
-
-/// The map's entry, inside a job.
-pub(crate) fn entry(state: &mut State, id: u64) -> &mut MapEntry {
-    state.maps.get_mut(&id).expect("the job checked the map")
+    handle.command(completion, changes, job)
 }
 
 #[unsafe(no_mangle)]
@@ -711,14 +841,14 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                 snapshot: Mutex::new(None),
                 has_session: AtomicBool::new(false),
                 mode: options.map_mode,
+                posted: AtomicU64::new(0),
             });
             let id = handles::insert(Object::Map(handle.clone()));
             let _ = handle.id.set(id);
             runtime.maps.fetch_add(1, Ordering::AcqRel);
-            let wake_tx = Mutex::new(runtime.sender());
             runtime.post(move |state| {
                 let mut map = orb_api::Map::new(
-                    &state.runtime,
+                    state.runtime(),
                     orb_api::MapOptions {
                         fallback_font_faces,
                         ..orb_api::MapOptions::default()
@@ -734,84 +864,83 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     map.set_tile_cache(options.tile_cache_enabled);
                 }
                 let woken = Arc::new(AtomicBool::new(false));
-                let flag = woken.clone();
-                map.set_wake(move || {
-                    flag.store(true, Ordering::Release);
-                    let tx = wake_tx
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let _ = tx.send(Msg::Pump);
+                let waker = Arc::new(Waker {
+                    core: Arc::downgrade(&state.core),
+                    session: Mutex::new(None),
+                    woken: woken.clone(),
                 });
-                state.maps.insert(
+                let wake = waker.clone();
+                map.set_wake(move || wake.wake());
+                let mut entry = MapEntry {
                     id,
-                    MapEntry {
-                        map,
-                        handle,
-                        mode: options.map_mode,
-                        extent,
-                        event_mask,
-                        debug_flags: 0,
-                        stats_view: false,
-                        viewport: mln_map_viewport {
-                            north_orientation: MLN_NORTH_ORIENTATION_UP,
-                            constrain_mode: MLN_CONSTRAIN_MODE_HEIGHT_ONLY,
-                            viewport_mode: MLN_VIEWPORT_MODE_DEFAULT,
-                            frustum_offset: mln_edge_insets {
-                                top: 0.0,
-                                left: 0.0,
-                                bottom: 0.0,
-                                right: 0.0,
-                            },
+                    map,
+                    core: state.core.clone(),
+                    handle,
+                    events: Vec::new(),
+                    waker,
+                    mode: options.map_mode,
+                    extent,
+                    event_mask,
+                    debug_flags: 0,
+                    stats_view: false,
+                    viewport: mln_map_viewport {
+                        north_orientation: MLN_NORTH_ORIENTATION_UP,
+                        constrain_mode: MLN_CONSTRAIN_MODE_HEIGHT_ONLY,
+                        viewport_mode: MLN_VIEWPORT_MODE_DEFAULT,
+                        frustum_offset: mln_edge_insets {
+                            top: 0.0,
+                            left: 0.0,
+                            bottom: 0.0,
+                            right: 0.0,
                         },
-                        // Perspective, with Native's skews: heights rise
-                        // straight up once axonometric.
-                        projection_mode: {
-                            let skew = orb_api::Skew::default();
-                            mln_projection_mode {
-                                axonometric: false,
-                                x_skew: skew.x,
-                                y_skew: skew.y,
-                            }
-                        },
-                        bounds: default_bounds(),
-                        prefetch_zoom_delta: 4,
-                        style_url: String::new(),
-                        loaded_style: None,
-                        session: None,
-                        generation: 1,
-                        render_update_generation: 0,
-                        held_update: false,
-                        unchanged: false,
-                        woken,
-                        loading: false,
-                        style_loaded: false,
-                        style_waiters: Vec::new(),
-                        transitions: Vec::new(),
-                        groups: 0,
-                        gesture: false,
-                        momentum: None,
-                        gesture_changed: [false; 3],
-                        camera_events: Vec::new(),
-                        ended: Vec::new(),
-                        change: (
-                            MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
-                            MLN_CAMERA_CHANGE_SOURCE_COMMAND,
-                        ),
-                        jumped: false,
-                        style: Default::default(),
-                        queries: Default::default(),
-                        query_aliases: Default::default(),
-                        still: None,
-                        rendered: None,
                     },
-                );
+                    // Perspective, with Native's skews: heights rise
+                    // straight up once axonometric.
+                    projection_mode: {
+                        let skew = orb_api::Skew::default();
+                        mln_projection_mode {
+                            axonometric: false,
+                            x_skew: skew.x,
+                            y_skew: skew.y,
+                        }
+                    },
+                    bounds: default_bounds(),
+                    prefetch_zoom_delta: 4,
+                    style_url: String::new(),
+                    loaded_style: None,
+                    session: None,
+                    released: false,
+                    generation: 1,
+                    render_update_generation: 0,
+                    held_update: false,
+                    unchanged: false,
+                    loading: false,
+                    style_loaded: false,
+                    style_waiters: Vec::new(),
+                    transitions: Vec::new(),
+                    groups: 0,
+                    gesture: false,
+                    momentum: None,
+                    gesture_changed: [false; 3],
+                    camera_events: Vec::new(),
+                    ended: Vec::new(),
+                    change: (
+                        MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
+                        MLN_CAMERA_CHANGE_SOURCE_COMMAND,
+                    ),
+                    jumped: false,
+                    style: Default::default(),
+                    queries: Default::default(),
+                    query_aliases: Default::default(),
+                    still: None,
+                    rendered: None,
+                };
                 // Native's map moves its camera into place as it's made.
                 for kind in [
                     MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE,
                     MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE,
                 ] {
-                    state.event(
-                        id,
+                    entry.event(
                         kind,
                         Payload::CameraChange(
                             MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
@@ -820,8 +949,18 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         String::new(),
                     );
                 }
-                let generation = state.maps[&id].generation;
+                let cell = Arc::new(MapCell {
+                    entry: Mutex::new(entry),
+                    applied: AtomicU64::new(0),
+                    woken,
+                    steps: AtomicBool::new(false),
+                });
+                let mut entry = cell.lock();
+                settle(&cell, &mut entry);
+                let generation = entry.generation;
                 state.complete(Some(completion), Ok(Value::None), generation);
+                drop(entry);
+                state.maps.insert(id, cell);
             })?;
             put(out_map, mln_map(id), "out_map")
         })
@@ -869,10 +1008,14 @@ fn release(map: mln_map, completion: Option<Completion>, force: bool) -> Result 
     let id = handle.id();
     let runtime = handle.runtime.clone();
     runtime.post(move |state| {
-        if let Some(session) = state.maps.get(&id).and_then(|m| m.session) {
-            crate::session::drop_session(state, session);
-        }
-        if let Some(mut entry) = state.maps.remove(&id) {
+        if let Some(cell) = state.maps.remove(&id) {
+            let mut guard = cell.lock();
+            let entry = &mut *guard;
+            entry.released = true;
+            // Its session ends with it.
+            if let Some(session) = entry.session.take() {
+                session.map_released();
+            }
             for handler in entry.transitions.drain(..).filter_map(|t| t.handler) {
                 // A closed transition reports no generation: its map is gone.
                 handler.end(MLN_CAMERA_TRANSITION_OUTCOME_CLOSED, 0);
@@ -968,11 +1111,11 @@ macro_rules! command {
 
 pub(crate) use command;
 
-/// A job that only changes the map entry.
+/// A job that reports nothing but how it went.
 pub(crate) fn job(
     f: impl FnOnce(&mut MapEntry) -> Result + Send + 'static,
-) -> impl FnOnce(&mut State, u64) -> Result<Value> + Send + 'static {
-    move |state, id| f(entry(state, id)).map(|()| Value::None)
+) -> impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static {
+    move |entry| f(entry).map(|()| Value::None)
 }
 
 command!(
@@ -1088,9 +1231,9 @@ command!(
 );
 
 command!(mln_map_request_repaint(), false, false, |state, id| {
-    Ok(move |state: &mut State, id: u64| {
-        if let Some(session) = state.maps[&id].session {
-            crate::session::force_redraw(state, session);
+    Ok(move |entry: &mut MapEntry| {
+        if entry.session.is_some() {
+            crate::session::force_redraw(entry);
         }
         Ok(Value::None)
     })
@@ -1117,12 +1260,11 @@ command!(mln_map_end_command_group(), false, true, |state, id| {
 });
 
 command!(mln_map_get_style_url(), true, false, |state, id| {
-    Ok(|state: &mut State, id: u64| Ok(Value::Text(state.maps[&id].style_url.clone())))
+    Ok(|entry: &mut MapEntry| Ok(Value::Text(entry.style_url.clone())))
 });
 
 command!(mln_map_get_loaded_style_json(), true, false, |state, id| {
-    Ok(|state: &mut State, id: u64| {
-        let entry = &state.maps[&id];
+    Ok(|entry: &mut MapEntry| {
         // Before any style loads, the document is empty.
         Ok(Value::Text(entry.loaded_style.clone().unwrap_or_default()))
     })
@@ -1430,12 +1572,8 @@ pub unsafe extern "C" fn mln_map_set_style_url(
                 return Err(Failure::argument("the URL is empty"));
             }
             let completion = Completion::from_c(completion)?;
-            let id = handle.id();
-            handle.runtime.post(move |state| {
-                let Some(entry) = state.maps.get_mut(&id) else {
-                    state.complete(completion, Err(Failure::state("the map isn't made")), 0);
-                    return;
-                };
+            // The completion waits for the style.
+            handle.command(None, false, move |entry| {
                 entry.map.load_style_url(&url);
                 entry.style.reset();
                 entry.style_url = url;
@@ -1454,13 +1592,13 @@ pub unsafe extern "C" fn mln_map_set_style_url(
                     );
                 }
                 entry.style_waiters.extend(completion);
-                entry.woken.store(true, Ordering::Release);
-                state.event(
-                    id,
+                entry.wake();
+                entry.event(
                     MLN_RUNTIME_EVENT_MAP_LOADING_STARTED,
                     Payload::None,
                     String::new(),
                 );
+                Ok(Value::None)
             })
         })
     }
@@ -1475,8 +1613,7 @@ command!(
             return Err(Failure::argument("the style JSON must not be empty"));
         }
         let json = text(json, "json")?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(move |entry: &mut MapEntry| {
             entry.style_url.clear();
             entry.style_loaded = false;
             entry.loading = true;
@@ -1497,15 +1634,13 @@ command!(
                 // notifies inside the command.
                 let _ = entry.map.apply_arrivals();
             }
-            state.event(
-                id,
+            entry.event(
                 MLN_RUNTIME_EVENT_MAP_LOADING_STARTED,
                 Payload::None,
                 String::new(),
             );
             if let Err(e) = &result {
-                state.event(
-                    id,
+                entry.event(
                     MLN_RUNTIME_EVENT_MAP_LOADING_FAILED,
                     Payload::LoadingFailed(MLN_MAP_LOAD_ERROR_STYLE_PARSE),
                     e.message().into(),
@@ -1889,8 +2024,7 @@ command!(
         check_camera(&update.camera)?;
         let (mode, camera, phase) = (update.mode, update.camera, update.gesture_phase);
         let animation = Animation::from_c(&update.animation)?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = entry(state, id);
+        Ok(move |entry: &mut MapEntry| {
             let t = target(entry, &camera)?;
             update_camera(entry, mode, &t, &animation, phase)?;
             Ok(Value::None)
@@ -2285,8 +2419,7 @@ command!(
 );
 
 command!(mln_map_get_camera(), true, false, |state, id| {
-    Ok(|state: &mut State, id: u64| {
-        let entry = &state.maps[&id];
+    Ok(|entry: &mut MapEntry| {
         Ok(Value::of(mln_camera_query_result {
             generation: entry.generation,
             camera: entry.camera(),
@@ -2690,7 +2823,7 @@ command!(
     |state, id| {
         check_bounds(&b)?;
         let fit = fit_from(fit)?;
-        Ok(move |state: &mut State, id: u64| camera_for(&state.maps[&id], b, &fit).map(Value::of))
+        Ok(move |entry: &mut MapEntry| camera_for(entry, b, &fit).map(Value::of))
     }
 );
 
@@ -2705,7 +2838,7 @@ command!(
     |state, id| {
         let b = box_of(coordinates, count)?;
         let fit = fit_from(fit)?;
-        Ok(move |state: &mut State, id: u64| camera_for(&state.maps[&id], b, &fit).map(Value::of))
+        Ok(move |entry: &mut MapEntry| camera_for(entry, b, &fit).map(Value::of))
     }
 );
 
@@ -2731,7 +2864,7 @@ unsafe fn fit_update(
 fn fit_job(
     b: mln_lat_lng_bounds,
     (mode, fit, animation): (mln_camera_update_mode, FitOptions, Animation),
-) -> impl FnOnce(&mut State, u64) -> Result<Value> + Send + 'static {
+) -> impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static {
     job(move |entry| {
         // A fit that fails leaves the camera, and ends its handler.
         let camera = match camera_for(entry, b, &fit) {
@@ -2784,7 +2917,7 @@ command!(
     |state, id| {
         let b = geometry_box(geometry)?;
         let fit = fit_from(fit)?;
-        Ok(move |state: &mut State, id: u64| camera_for(&state.maps[&id], b, &fit).map(Value::of))
+        Ok(move |entry: &mut MapEntry| camera_for(entry, b, &fit).map(Value::of))
     }
 );
 
@@ -2804,8 +2937,7 @@ command!(
     false,
     |state, id| {
         let camera = *sized(camera, "camera")?;
-        Ok(move |state: &mut State, id: u64| {
-            let entry = &state.maps[&id];
+        Ok(move |entry: &mut MapEntry| {
             let mut t = target(entry, &camera)?;
             let c = entry.map.camera();
             t.center.get_or_insert(c.target);

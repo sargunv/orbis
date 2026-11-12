@@ -6,13 +6,11 @@
 // lacks, and a host may still draw then (offscreen, or for a capture), so
 // the pacer then keeps time on a thread of its own at a nominal refresh.
 
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::base::{Failure, boundary, put, sized};
 use crate::handles::{self, Object};
-use crate::runtime::Msg;
 use crate::session::SessionHandle;
 use crate::sys::*;
 
@@ -25,7 +23,7 @@ const NOMINAL_REFRESH: Duration = Duration::from_micros(16_667);
 
 /// Demands frames of its sessions at the display's refreshes.
 pub(crate) struct FramePacer {
-    sessions: Mutex<Vec<(Arc<SessionHandle>, Sender<Msg>)>>,
+    sessions: Mutex<Vec<Arc<SessionHandle>>>,
     /// The shortest time between two demands, from the frame rate limit.
     interval: Option<Duration>,
     /// When it last demanded frames.
@@ -36,15 +34,14 @@ pub(crate) struct FramePacer {
 
 impl FramePacer {
     pub(crate) fn add(&self, session: &Arc<SessionHandle>) {
-        let tx = session.runtime.sender();
-        self.sessions.lock().unwrap().push((session.clone(), tx));
+        self.sessions.lock().unwrap().push(session.clone());
     }
 
     pub(crate) fn remove(&self, session: &Arc<SessionHandle>) {
         self.sessions
             .lock()
             .unwrap()
-            .retain(|(s, _)| !Arc::ptr_eq(s, session));
+            .retain(|s| !Arc::ptr_eq(s, session));
     }
 
     /// A refresh, on the clock's thread: each session draws at the next
@@ -63,9 +60,9 @@ impl FramePacer {
             }
             *last = Some(now);
         }
-        for (session, tx) in self.sessions.lock().unwrap().iter() {
+        for session in self.sessions.lock().unwrap().iter() {
             if !session.tick.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                let _ = tx.send(Msg::Pump);
+                session.wake();
             }
         }
     }

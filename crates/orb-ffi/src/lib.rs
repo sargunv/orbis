@@ -4,11 +4,11 @@
 //! Native. `cargo xtask mln-ffi` scores it against mln-ffi's C ABI suite at
 //! the commit `xtask/src/mln_ffi.rs` pins.
 //!
-//! Each runtime is a thread that owns an `orb_api::Runtime` and that
-//! runtime's maps and render sessions, as mln-ffi's core worker does. Calls
+//! Each runtime is a thread that runs its maps' commands, as mln-ffi's core
+//! worker does, and each render session a thread that draws its map. Calls
 //! check their arguments on the caller's thread, post their work to the
-//! runtime thread, and report through their `mln_completion`. Handles are
-//! 64-bit ids, so a stale or foreign one is an error, never a dangling
+//! thread that does it, and report through their `mln_completion`. Handles
+//! are 64-bit ids, so a stale or foreign one is an error, never a dangling
 //! pointer.
 //!
 //! The declarations come from the pinned headers (`sys`), and every

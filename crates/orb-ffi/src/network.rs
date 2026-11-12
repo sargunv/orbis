@@ -74,10 +74,10 @@ pub unsafe extern "C" fn mln_network_set_status(
                 .collect();
             for runtime in runtimes {
                 let _ = runtime.post(move |state| {
-                    state.runtime.set_online(online);
+                    state.runtime().set_online(online);
                     if online {
-                        for entry in state.maps.values_mut() {
-                            entry.map.retry_failed_tiles();
+                        for cell in state.maps.values() {
+                            cell.lock().map.retry_failed_tiles();
                         }
                     }
                 });

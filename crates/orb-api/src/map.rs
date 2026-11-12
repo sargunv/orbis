@@ -137,6 +137,30 @@ pub struct Map {
     last_frame: Option<(f64, Instant)>,
 }
 
+/// Waits for a map's wakes ([`Map::waiter`]).
+#[derive(Clone, Debug)]
+pub struct Waiter {
+    signal: Arc<(Mutex<()>, Condvar)>,
+    woken: Arc<AtomicBool>,
+    device_woken: Arc<AtomicBool>,
+}
+
+impl Waiter {
+    /// Blocks until the map is woken or `timeout` passes, as
+    /// [`Map::wait_woken`].
+    pub fn wait(&self, timeout: Duration) {
+        let (lock, condvar) = &*self.signal;
+        let guard = lock.lock().expect("signal poisoned");
+        if !self.woken.load(Ordering::Acquire) && !self.device_woken.load(Ordering::Acquire) {
+            drop(
+                condvar
+                    .wait_timeout(guard, timeout)
+                    .expect("signal poisoned"),
+            );
+        }
+    }
+}
+
 impl std::fmt::Debug for Map {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Map")
@@ -256,8 +280,7 @@ impl Map {
     /// cull drops. Reads the cull's counters back from the GPU, so it
     /// waits for the frame.
     pub fn cull_counts(&self) -> Vec<CullCount> {
-        let (Some(renderer), Some(device)) = (&self.renderer, self.runtime.shared.opened())
-        else {
+        let (Some(renderer), Some(device)) = (&self.renderer, self.runtime.shared.opened()) else {
             return Vec::new();
         };
         let bytes = pollster::block_on(device.read_buffer(renderer.draw_args().0));
@@ -364,8 +387,7 @@ impl Map {
         if !std::mem::take(&mut self.upkeep) || self.device != self.runtime.shared.generation() {
             return;
         }
-        let (Some(renderer), Some(mut device)) =
-            (&mut self.renderer, self.runtime.shared.opened())
+        let (Some(renderer), Some(mut device)) = (&mut self.renderer, self.runtime.shared.opened())
         else {
             return;
         };
@@ -1235,14 +1257,16 @@ impl Map {
     /// a whole frame now, between frames whose report says they waited
     /// for one.
     pub fn wait_woken(&self, timeout: Duration) {
-        let (lock, condvar) = &*self.signal;
-        let guard = lock.lock().expect("signal poisoned");
-        if !self.woken.load(Ordering::Acquire) && !self.device_woken.load(Ordering::Acquire) {
-            drop(
-                condvar
-                    .wait_timeout(guard, timeout)
-                    .expect("signal poisoned"),
-            );
+        self.waiter().wait(timeout);
+    }
+
+    /// What [`wait_woken`](Self::wait_woken) waits on, apart from the map:
+    /// for a host that lets go of a lock on the map while it waits.
+    pub fn waiter(&self) -> Waiter {
+        Waiter {
+            signal: self.signal.clone(),
+            woken: self.woken.clone(),
+            device_woken: self.device_woken.clone(),
         }
     }
 

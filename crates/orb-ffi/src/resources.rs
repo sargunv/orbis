@@ -1357,7 +1357,7 @@ fn operation(
     // SAFETY: the caller's pointer.
     let completion = unsafe { Completion::required(completion) }?;
     handle.post(move |state| {
-        let result = job(&state.runtime).map(|()| Value::None);
+        let result = job(state.runtime()).map(|()| Value::None);
         state.complete(Some(completion), result, 0);
     })
 }

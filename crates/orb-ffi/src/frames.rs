@@ -32,7 +32,7 @@ pub(crate) struct SlotInfo {
 #[derive(Debug)]
 enum SlotState {
     Free,
-    /// The runtime's thread draws into it.
+    /// The session's thread draws into it.
     Drawing,
     /// It holds the newest frame, which the host hasn't acquired.
     Ready,
@@ -232,7 +232,7 @@ impl FrameHandle {
             }
         }
         self.session.count_acquired(-1);
-        self.session.wake_runtime();
+        self.session.wake();
     }
 }
 
@@ -448,7 +448,7 @@ pub unsafe extern "C" fn mln_render_session_set_metal_borrowed_texture_target(
             crate::session::command(
                 &handle,
                 Completion::from_c(completion)?,
-                move |state, id| crate::session::retarget_ring(state, id, logical, slots),
+                move |entry, map| crate::session::retarget_ring(entry, map, logical, slots),
             )
         })
     }

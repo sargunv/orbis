@@ -219,7 +219,7 @@ fn regions(
     // SAFETY: the caller's pointer.
     let completion = unsafe { Completion::required(completion) }?;
     handle.post(move |state| {
-        let result = job(&state.runtime).map(lend);
+        let result = job(state.runtime()).map(lend);
         state.complete(Some(completion), result, 0);
     })
 }
@@ -311,7 +311,7 @@ pub unsafe extern "C" fn mln_runtime_delete_offline_region(
             let handle = handles::runtime(runtime.0)?;
             let completion = Completion::required(completion)?;
             handle.post(move |state| {
-                let r = &state.runtime;
+                let r = state.runtime();
                 let result = match listed(r) {
                     Ok(found) => match id(region_id).filter(|&id| found.iter().any(|f| f.id == id))
                     {
