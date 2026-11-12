@@ -103,7 +103,7 @@ impl Map {
             self.uploading = Some(up);
             return;
         }
-        self.beat.spend(labels);
+        // Making the tile spends its labels' bytes (`apply_tile_in`).
         let host = HostData::of(&up.build);
         let mut reserved = Some(up.reserved);
         let result = Ok(TileOutcome::Built(up.build));
@@ -430,8 +430,17 @@ impl Map {
             self.tiles_arrived +=
                 u32::from(edit.is_none() && matches!(result, Ok(TileOutcome::Built(_))));
             match edit {
+                // A DEM tile's texels go up whole, against the frame's bytes;
+                // one that waits for rest spends nothing yet.
                 None if terrain => {
+                    let bytes = match &result {
+                        Ok(TileOutcome::Built(build)) => upload_bytes(build),
+                        _ => 0,
+                    };
                     kept = self.apply_terrain_tile(gpu, renderer, source, tile, result);
+                    if !kept {
+                        self.beat.spend(bytes);
+                    }
                 }
                 None => {
                     let mut reserved = None;
@@ -700,8 +709,9 @@ impl Map {
         (arrived, allowed): (bool, u64),
         reserved: &mut Option<orb_render::Reserved>,
     ) -> Applied {
-        // A tile made of words written over frames spent them as they went.
-        let finishing = reserved.is_some();
+        // A tile made of words written over frames spent them as they went;
+        // if it isn't made of them after all, they go up again and count.
+        let mut prepaid = reserved.as_ref().map_or(0, orb_render::Reserved::written);
         // The renderer's gate says whether the pools grow as the tile needs
         // (a still map's), or only in the map's upkeep at rest.
         let moves = renderer.moves();
@@ -908,21 +918,26 @@ impl Map {
                     .upload_image(gpu, image_build, grow)
                     .map(|handle| Upload::Resident(ResidentTile::new(handle, tile_zoom))),
                 // Its words written, the tile is made of them.
-                None if let Some(written) = reserved.take() => upload(
-                    gpu,
-                    renderer,
-                    plan,
-                    (key, &build, patches),
-                    atlas,
-                    style.image_namespace.expect("namespace"),
-                    &mut style.states,
-                    &mut self.labels,
-                    tile_zoom,
-                    &mut self.warnings,
-                    Some(written),
-                )
-                .map(Upload::Resident)
-                .map_err(|OutOfSpace| NoRoom),
+                None if let Some(written) = reserved.take() => {
+                    let made = upload(
+                        gpu,
+                        renderer,
+                        plan,
+                        (key, &build, patches),
+                        atlas,
+                        style.image_namespace.expect("namespace"),
+                        &mut style.states,
+                        &mut self.labels,
+                        tile_zoom,
+                        &mut self.warnings,
+                        Some(written),
+                    );
+                    // Its room went back: its words go up again.
+                    if made.is_err() {
+                        prepaid = 0;
+                    }
+                    made.map(Upload::Resident).map_err(|OutOfSpace| NoRoom)
+                }
                 // Room for the meshes first, then their rows and labels.
                 None if !(renderer.fits(&sizes) || grow && renderer.grow_for(gpu, &sizes)) => {
                     renderer.refuse(&sizes);
@@ -1002,9 +1017,8 @@ impl Map {
         };
         let mut resident = match uploaded {
             Ok(Upload::Resident(resident)) => {
-                if !finishing {
-                    self.beat.spend(upload_bytes(&build));
-                }
+                self.beat
+                    .spend(upload_bytes(&build).saturating_sub(prepaid));
                 resident
             }
             Ok(Upload::Reserved(mut reserved)) => {
