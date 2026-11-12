@@ -15,7 +15,7 @@
 //! content, and redrawn only when what they show changes: what is draped
 //! under the tile, or for stacks whose content scales with it, the zoom.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -142,7 +142,7 @@ pub(crate) struct Terrain {
     tile_px: f64,
     /// This frame's terrain tiles.
     pub(crate) tiles: Vec<CoveredTile>,
-    slots: HashMap<CoveredTile, Slot>,
+    slots: FxHashMap<CoveredTile, Slot>,
     generation: u64,
     elevation: Arc<TerrainElevation>,
     /// The DEM tiles this camera's cover reads, sorted: the elevations hold
@@ -156,7 +156,7 @@ pub(crate) struct Terrain {
     culling: Vec<TileIndex>,
     /// Per resident DEM tile padded, its layer and the neighbours' layers
     /// its border was last padded from ([`pads`](Self::pads)).
-    padded: HashMap<TileIndex, (u32, [Option<u32>; 8])>,
+    padded: FxHashMap<TileIndex, (u32, [Option<u32>; 8])>,
     /// DEM tiles arrived, left or are wanted anew since the elevations were
     /// last taken.
     stale: bool,
@@ -192,12 +192,12 @@ impl Terrain {
             },
             tile_px,
             tiles: Vec::new(),
-            slots: HashMap::new(),
+            slots: FxHashMap::default(),
             generation: 0,
             elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
             wanted: Vec::new(),
             culling: Vec::new(),
-            padded: HashMap::new(),
+            padded: FxHashMap::default(),
             stale: true,
             revision: 0,
         }
@@ -259,7 +259,7 @@ impl Terrain {
         let ranges = consulted.ranges.into_inner().expect("ranges poisoned");
         // The tiles the cover drew or refined: any other tile it read a
         // range for, that range culled.
-        let mut kept: HashSet<TileIndex> = tiles.iter().map(|t| t.index).collect();
+        let mut kept: FxHashSet<TileIndex> = tiles.iter().map(|t| t.index).collect();
         for t in &tiles {
             let mut at = t.index.parent();
             while let Some(parent) = at.filter(|&p| kept.insert(p)) {
@@ -483,7 +483,7 @@ impl Terrain {
     pub(crate) fn elevation(&mut self, tms: &TileMatrixSet) -> &Arc<TerrainElevation> {
         if std::mem::take(&mut self.stale) {
             // Each tile, or while it loads its nearest ready ancestor.
-            let held = |tiles: Vec<TileIndex>| -> HashMap<TileIndex, Arc<Dem>> {
+            let held = |tiles: Vec<TileIndex>| -> FxHashMap<TileIndex, Arc<Dem>> {
                 (tiles.into_iter())
                     .filter_map(|t| Some((t, Arc::clone(&self.pyramid.get(t)?.dem))))
                     .collect()
@@ -492,7 +492,7 @@ impl Terrain {
             let culling = self.culling.iter().filter_map(|&t| self.ready(t));
             let mut culling = held(culling.collect());
             culling.retain(|t, _| !dems.contains_key(t));
-            let same = |a: &HashMap<TileIndex, Arc<Dem>>, b: &HashMap<TileIndex, Arc<Dem>>| {
+            let same = |a: &FxHashMap<TileIndex, Arc<Dem>>, b: &FxHashMap<TileIndex, Arc<Dem>>| {
                 a.len() == b.len()
                     && a.iter()
                         .all(|(t, d)| b.get(t).is_some_and(|h| Arc::ptr_eq(h, d)))
@@ -541,7 +541,7 @@ impl Terrain {
     /// Frees the slots of tiles this frame doesn't cover; returns the
     /// tile slots kept, which the atlas carries over.
     pub(crate) fn kept_slots(&mut self) -> Vec<u32> {
-        let keep: HashSet<CoveredTile> = self.tiles.iter().copied().collect();
+        let keep: FxHashSet<CoveredTile> = self.tiles.iter().copied().collect();
         self.slots.retain(|tile, _| keep.contains(tile));
         self.slots.values().map(|s| s.index).collect()
     }
@@ -568,7 +568,7 @@ impl Terrain {
                 slot.index = to;
             }
         }
-        let used: HashSet<u32> = self.slots.values().map(|s| s.index).collect();
+        let used: FxHashSet<u32> = self.slots.values().map(|s| s.index).collect();
         let mut free = (0..layout.tile_slots).filter(|t| !used.contains(t));
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         let mut out = Vec::with_capacity(self.tiles.len());
@@ -634,7 +634,7 @@ fn within(tile: TileIndex, at: TileIndex) -> ([f32; 2], f32) {
 /// already coarsens the cover.
 fn coarsen(tiles: &mut Vec<CoveredTile>, budget: usize, distance: impl Fn(CoveredTile) -> f64) {
     while tiles.len() > budget {
-        let mut under: HashMap<CoveredTile, usize> = HashMap::new();
+        let mut under: FxHashMap<CoveredTile, usize> = FxHashMap::default();
         for t in tiles.iter() {
             let mut at = t.index;
             while let Some(parent) = at.parent() {
@@ -852,10 +852,10 @@ pub struct TerrainElevation {
     tms: TileMatrixSet,
     exaggeration: f64,
     zooms: DemZooms,
-    dems: HashMap<TileIndex, Arc<Dem>>,
+    dems: FxHashMap<TileIndex, Arc<Dem>>,
     /// DEM tiles the cover reads ranges from and nothing else
     /// (the terrain's `culling`).
-    culling: HashMap<TileIndex, Arc<Dem>>,
+    culling: FxHashMap<TileIndex, Arc<Dem>>,
     /// The pyramid, encoded once for every reader of this snapshot.
     encoded: OnceLock<Arc<[u8]>>,
 }
@@ -870,8 +870,8 @@ impl TerrainElevation {
                 min: 0,
                 max: 0,
             },
-            dems: HashMap::new(),
-            culling: HashMap::new(),
+            dems: FxHashMap::default(),
+            culling: FxHashMap::default(),
             encoded: OnceLock::new(),
         }
     }
@@ -1227,7 +1227,7 @@ mod tests {
 
     /// Each DEM tile's block, by where it lives: the same address is the
     /// same resample.
-    fn blocks(e: &TerrainElevation) -> HashMap<TileIndex, usize> {
+    fn blocks(e: &TerrainElevation) -> FxHashMap<TileIndex, usize> {
         e.dems
             .iter()
             .filter_map(|(&t, d)| Some((t, d.coarse.get()?.as_ptr() as usize)))

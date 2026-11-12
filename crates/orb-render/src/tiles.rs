@@ -13,7 +13,7 @@
 //! whose borders it fills, and a raster tile cross-fades from its nearest
 //! resident ancestor.
 
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 use crate::scene::{
@@ -98,7 +98,7 @@ pub struct WarpKey {
 /// was last placed in.
 #[derive(Debug, Default)]
 pub(crate) struct SurfaceWarps {
-    warps: HashMap<WarpKey, (TileWarp, u64)>,
+    warps: FxHashMap<WarpKey, (TileWarp, u64)>,
     frame: u64,
 }
 
@@ -167,7 +167,7 @@ struct Image {
 #[derive(Debug)]
 struct Source {
     page: PageId,
-    tiles: HashMap<TileIndex, GpuTile>,
+    tiles: FxHashMap<TileIndex, GpuTile>,
 }
 
 /// The renderer's tiles.
@@ -175,7 +175,7 @@ struct Source {
 pub(crate) struct Tiles {
     entries: Vec<Option<Entry>>,
     free: Vec<u32>,
-    sources: HashMap<u32, Source>,
+    sources: FxHashMap<u32, Source>,
     /// Pages no source uses any more, for the next frame to destroy.
     retired: Vec<PageId>,
     /// Vector tiles drawing through planar patches, which only the paint
@@ -304,7 +304,7 @@ impl Renderer {
                     key.source,
                     Source {
                         page,
-                        tiles: HashMap::new(),
+                        tiles: FxHashMap::default(),
                     },
                 );
                 page
@@ -726,7 +726,7 @@ impl Renderer {
     /// neighbours: a tile whose drawn neighbours changed since it was last
     /// prepared is prepared again. A border is then a function of what the
     /// view draws, not of which tiles were resident before.
-    pub fn pad_dems(&mut self, source: u32, drawn: &std::collections::HashSet<TileIndex>) {
+    pub fn pad_dems(&mut self, source: u32, drawn: &FxHashSet<TileIndex>) {
         let Some(page) = self.tiles.sources.get(&source).map(|s| s.page) else {
             return;
         };

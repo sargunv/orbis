@@ -14,7 +14,9 @@ pub mod endpoint;
 mod gzip;
 pub mod pmtiles;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use orb_crs::{CoveredTile, TileIndex};
 
@@ -89,28 +91,28 @@ struct Entry<T> {
 /// One source's tiles: loading, ready and cached.
 #[derive(Debug)]
 pub struct TilePyramid<T> {
-    tiles: HashMap<TileIndex, Entry<T>>,
+    tiles: FxHashMap<TileIndex, Entry<T>>,
     min_zoom: u8,
     max_zoom: u8,
     /// Ready tiles kept beyond those in use.
     cache_size: usize,
     frame: u64,
     /// Failures in a row of tiles that last failed, for their backoff.
-    failures: HashMap<TileIndex, u32>,
+    failures: FxHashMap<TileIndex, u32>,
     /// The last committed plan's cover.
-    cover: HashSet<TileIndex>,
+    cover: FxHashSet<TileIndex>,
 }
 
 impl<T> TilePyramid<T> {
     pub fn new(min_zoom: u8, max_zoom: u8, cache_size: usize) -> Self {
         Self {
-            tiles: HashMap::new(),
+            tiles: FxHashMap::default(),
             min_zoom,
             max_zoom,
             cache_size,
             frame: 0,
-            failures: HashMap::new(),
-            cover: HashSet::new(),
+            failures: FxHashMap::default(),
+            cover: FxHashSet::default(),
         }
     }
 
@@ -182,7 +184,7 @@ impl<T> TilePyramid<T> {
     pub fn plan(&self, cover: &[CoveredTile]) -> Update {
         let mut update = Update::default();
         // Tiles this plan requests, loading from here on.
-        let mut requested = HashSet::new();
+        let mut requested = FxHashSet::default();
         // (tile, wrap) → regions, ordered so ancestors draw first.
         let mut draws: BTreeMap<(u8, TileIndex, i32), Vec<TileIndex>> = BTreeMap::new();
 
@@ -603,8 +605,8 @@ impl<T> TilePyramid<T> {
     /// The tiles with a known descendant, the only branches worth
     /// descending: walking the cached tiles' ancestors bounds this by cache
     /// size × depth, not 4^depth.
-    fn branches(&self) -> HashSet<TileIndex> {
-        let mut branches = HashSet::new();
+    fn branches(&self) -> FxHashSet<TileIndex> {
+        let mut branches = FxHashSet::default();
         let known = (self.tiles.iter()).filter(|(_, e)| !matches!(e.state, State::Loading));
         for (&tile, _) in known {
             let ancestors = std::iter::successors(tile.parent(), |t| t.parent());
@@ -620,7 +622,7 @@ impl<T> TilePyramid<T> {
     fn descendant_coverage(
         &self,
         tile: TileIndex,
-        branches: &HashSet<TileIndex>,
+        branches: &FxHashSet<TileIndex>,
         ready: &mut Vec<TileIndex>,
         missing: &mut Vec<TileIndex>,
     ) {
@@ -641,7 +643,7 @@ impl<T> TilePyramid<T> {
     fn stand_in(
         &self,
         mut tile: TileIndex,
-        requested: &mut HashSet<TileIndex>,
+        requested: &mut FxHashSet<TileIndex>,
         update: &mut Update,
     ) -> StandIn {
         while let Some(parent) = tile.parent() {

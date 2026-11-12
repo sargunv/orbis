@@ -2,7 +2,7 @@
 //! view and stand in where they haven't arrived, where they are placed,
 //! the background's quads, and which drape slots draw again.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 use glam::DVec2;
@@ -369,7 +369,7 @@ impl Map {
         if endpoint.dem_unpack.is_some() {
             renderer.pad_dems(source_key, &draws.iter().map(|d| d.tile).collect());
         }
-        let mut rows: HashMap<TileIndex, Vec<&Draw>> = HashMap::new();
+        let mut rows: FxHashMap<TileIndex, Vec<&Draw>> = FxHashMap::default();
         // Picking reads tiles with features in drawing order, ancestors
         // before descendants.
         let mut order = Vec::new();
@@ -660,7 +660,7 @@ impl Map {
             .fold(0.0, f64::max);
         // A DEM tile's border comes from its drawn neighbours
         // (`Renderer::pad_dems`).
-        let drawn_tiles: HashMap<usize, HashSet<TileIndex>> = (draped.iter())
+        let drawn_tiles: FxHashMap<usize, FxHashSet<TileIndex>> = (draped.iter())
             .filter_map(|&i| Some((i, draws[i].as_ref()?.iter().map(|d| d.tile).collect())))
             .collect();
         // Each draped source's stacks: a slot's stack redraws when what
@@ -1020,7 +1020,7 @@ fn refresh_image_meshes(
     (globe, warped): (bool, bool),
     endpoint: &orb_source::endpoint::TileEndpoint,
     pyramid: &mut orb_source::TilePyramid<ResidentTile>,
-    rows: &HashMap<TileIndex, Vec<&Draw>>,
+    rows: &FxHashMap<TileIndex, Vec<&Draw>>,
 ) {
     let tms = &endpoint.tms;
     for &tile in rows.keys() {
@@ -1074,7 +1074,7 @@ fn update_holds(
     renderer: &mut Renderer,
     pyramid: &orb_source::TilePyramid<ResidentTile>,
     (held, placed): (&mut Vec<TileIndex>, &[TileIndex]),
-    rows: &HashMap<TileIndex, Vec<&Draw>>,
+    rows: &FxHashMap<TileIndex, Vec<&Draw>>,
 ) {
     held.retain(|tile| {
         let resident = pyramid.get(*tile);
@@ -1303,7 +1303,7 @@ pub(crate) fn placements<'a>(
 
 /// The draws among `draws` placed alone over their tile's whole square:
 /// each draws entire the whole polygons whose centroid it holds.
-fn whole_draws(tms: &TileMatrixSet, draws: &[Draw]) -> HashSet<(TileIndex, i32)> {
+fn whole_draws(tms: &TileMatrixSet, draws: &[Draw]) -> FxHashSet<(TileIndex, i32)> {
     // Within rounding of its bounds: not a tile of a partial matrix that
     // reaches past its set's extent.
     let full = |tile| {
@@ -1326,7 +1326,7 @@ fn whole_draws(tms: &TileMatrixSet, draws: &[Draw]) -> HashSet<(TileIndex, i32)>
 fn neighbours(
     tms: &TileMatrixSet,
     draw: &Draw,
-    whole: &HashSet<(TileIndex, i32)>,
+    whole: &FxHashSet<(TileIndex, i32)>,
     wraps: bool,
 ) -> u16 {
     let TileIndex { z, col, row } = draw.tile;

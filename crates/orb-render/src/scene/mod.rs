@@ -1136,7 +1136,7 @@ pub(crate) struct Scene {
     prop_arena: Arena,
     /// Vertex and index ranges more than one mesh draws, by their first
     /// word: how many meshes beyond the first. The last to go frees it.
-    shared: [std::collections::HashMap<u32, u32>; 2],
+    shared: [rustc_hash::FxHashMap<u32, u32>; 2],
     /// The capacity the scene started with: the first sizes the growable
     /// pools and lists don't shrink below.
     first: SceneCapacity,
@@ -1437,7 +1437,7 @@ impl Scene {
     /// Meshes of the same tile keep their relative order; tiles not listed
     /// follow the listed ones. The order persists until changed again.
     pub(crate) fn set_tile_order(&mut self, tiles: &[TileId]) {
-        let order: std::collections::HashMap<_, _> = tiles
+        let order: rustc_hash::FxHashMap<_, _> = tiles
             .iter()
             .enumerate()
             .map(|(index, &tile)| (tile, index))

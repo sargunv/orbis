@@ -12,6 +12,7 @@ version.workspace = true
 cpu-driven = ["orb-render/cpu-driven"]
 
 [dependencies]
+rustc-hash.workspace = true
 postcard.workspace = true
 serde.workspace = true
 bytemuck.workspace = true
