@@ -211,7 +211,8 @@ impl Folder<'_> {
         let before = self.known.clone();
         let (block, _) = self.block(block);
         let after = std::mem::replace(&mut self.known, before);
-        self.known.retain(|local, value| after.get(local) == Some(value));
+        self.known
+            .retain(|local, value| after.get(local) == Some(value));
         block
     }
 
@@ -284,7 +285,12 @@ fn height(at: vec2<u32>) -> f32 {
         let constants = [("plane".to_owned(), 1.0), ("rows".to_owned(), 1.0)];
         assert!(fold(&mut plane, &constants));
         validated(&plane);
-        assert_eq!(plane.global_variables.len(), 0, "{:?}", plane.global_variables);
+        assert_eq!(
+            plane.global_variables.len(),
+            0,
+            "{:?}",
+            plane.global_variables
+        );
         let mut full = parsed.clone();
         let constants = [("plane".to_owned(), 0.0), ("rows".to_owned(), 1.0)];
         assert!(fold(&mut full, &constants));

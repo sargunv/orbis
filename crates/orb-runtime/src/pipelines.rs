@@ -144,6 +144,7 @@ pub(crate) fn for_style(
     PipelineSet {
         groups,
         sky: plan.style.atmosphere.is_some(),
+        shaded: false,
     }
 }
 

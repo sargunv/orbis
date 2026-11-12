@@ -569,7 +569,12 @@ async function run(server, engine) {
             at: Math.round(performance.now()),
             label: desc?.label ?? "?",
             // Its stages' override constants and targets: which variant.
-            what: JSON.stringify([desc?.vertex?.constants ?? desc?.compute?.constants, desc?.fragment?.constants, desc?.fragment?.targets?.map((t) => t.format), desc?.multisample?.count]),
+            what: JSON.stringify([
+              desc?.vertex?.constants ?? desc?.compute?.constants,
+              desc?.fragment?.constants,
+              desc?.fragment?.targets?.map((t) => t.format),
+              desc?.multisample?.count,
+            ]),
             async: name.endsWith("Async"),
           };
           made.push(pipeline);

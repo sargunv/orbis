@@ -2519,7 +2519,8 @@ impl Map {
         let Some(atlas) = images.atlas.as_mut() else {
             return;
         };
-        let set = crate::pipelines::for_style(gpu, renderer, style, (zoom, inputs), atlas);
+        let mut set = crate::pipelines::for_style(gpu, renderer, style, (zoom, inputs), atlas);
+        set.shaded = shades_on_terrain(style, self.surface.tms());
         renderer.set_pipelines(gpu, set);
         style.pipelines = Some(key);
     }
@@ -4132,4 +4133,24 @@ mod gpu_tests {
         assert_eq!(work[0].failed, Some(crate::NO_VIDEO));
         assert_eq!(work[0].wanted.len(), 1);
     }
+}
+
+/// Whether a hillshade of `style` may shade on terrain at some zoom, as
+/// `Map::update_terrain` has it: anchored to the viewport there, its source
+/// over the surface's tiles (`tms`), or not known yet.
+fn shades_on_terrain(style: &LoadedStyle, tms: &orb_crs::TileMatrixSet) -> bool {
+    let plan = style.worker.plan();
+    let mut hillshades = (plan.nodes.iter()).filter(|node| node.family == Family::Hillshade);
+    hillshades.any(|node| {
+        let anchor = plan.style.layers[node.layer].get(orb_style::HILLSHADE_ILLUMINATION_ANCHOR);
+        let viewport = (0..=24).any(|zoom| {
+            anchor.evaluate(f64::from(zoom)) == orb_style::IlluminationAnchor::Viewport
+        });
+        viewport
+            && match &style.sources[node.source] {
+                SourceState::Resolving => true,
+                SourceState::Ready { endpoint, .. } => endpoint.tms == *tms,
+                SourceState::Failed => false,
+            }
+    })
 }

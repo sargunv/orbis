@@ -1,7 +1,8 @@
-// Line labels' variant of the symbol placement pass: each glyph placed along
-// its projected line. Point labels compose
-// `symbol_point.wgsl` instead, so their pipeline doesn't compile this:
-// Adreno compilers inline every call.
+// Line labels' part of the symbol placement pass: each glyph placed along
+// its projected line, beside point labels' where the composition says
+// `POINT_LABELS` (the dispatch's, which places every layer). Point labels
+// alone compose `symbol_point.wgsl` instead, so their pipeline doesn't
+// compile this: Adreno compilers inline every call.
 
 const LINE_LABELS: bool = true;
 

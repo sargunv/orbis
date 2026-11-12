@@ -7,10 +7,7 @@ submit 0
     dispatch 67 1 1
   pop
   compute pass "symbol placements"
-    pipeline compute "symbol placement"#0
-    group 0 group "symbol placements"#0
-    dispatch 67 1 1
-    pipeline compute "symbol line placement"#0
+    pipeline compute "symbol placement with lines"#0
     group 0 group "symbol placements"#0
     dispatch 67 1 1
   push "main"
@@ -33,8 +30,8 @@ buffer "indices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "compacted indices"#0: BufferUsages(COPY_SRC | COPY_DST | INDEX | STORAGE)
 group "cull"#0: layout layout "cull"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "candidates"#0 at 0 size None; 4 buffer "node cull"#0 at 0 size None; 5 buffer "visible"#0 at 0 size None; 6 buffer "draw args"#0 at 0 size None; 7 buffer "indices"#0 at 0 size None; 8 buffer "compacted indices"#0 at 0 size None
 layout "symbol placements"#0: 0 ShaderStages(COMPUTE) Uniform; 1 ShaderStages(COMPUTE) Storage { read_only: true }; 2 ShaderStages(COMPUTE) Storage { read_only: true }; 3 ShaderStages(COMPUTE) Storage { read_only: true }; 4 ShaderStages(COMPUTE) Storage { read_only: true }; 6 ShaderStages(COMPUTE) Storage { read_only: true }; 7 ShaderStages(COMPUTE) Storage { read_only: true }; 14 ShaderStages(COMPUTE) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(COMPUTE) Texture { filterable: false, dimension: D2 }; 17 ShaderStages(COMPUTE) Storage { read_only: true }; 18 ShaderStages(COMPUTE) Storage { read_only: true }; 19 ShaderStages(COMPUTE) StorageTexture { format: Rgba32Uint, dimension: D2Array }; 
-module "symbol placement"#0: wgsl
-compute "symbol placement"#0: layouts [layout "symbol placements"#0]; module "symbol placement"#0 cs_place []; 
+module "symbol placement with lines"#0: wgsl
+compute "symbol placement with lines"#0: layouts [layout "symbol placements"#0]; module "symbol placement with lines"#0 cs_place []; 
 buffer "vertices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "props"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 texture "no tiles"#0: Rgba8Unorm D2Array samples 1 TextureUsages(TEXTURE_BINDING)
@@ -42,8 +39,6 @@ texture "no terrain depth"#0: R32Float D2 samples 1 TextureUsages(TEXTURE_BINDIN
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM | STORAGE)
 texture "symbol placements"#0: Rgba32Uint D2Array samples 1 TextureUsages(TEXTURE_BINDING | STORAGE_BINDING)
 group "symbol placements"#0: layout layout "symbol placements"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 14 texture "no tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 17 buffer "node uniforms"#0 at 0 size None; 18 buffer "draw args"#0 at 0 size None; 19 texture "symbol placements"#0 as D2Array
-module "symbol line placement"#0: wgsl
-compute "symbol line placement"#0: layouts [layout "symbol placements"#0]; module "symbol line placement"#0 cs_place []; 
 texture "target"#0: Rgba8Unorm D2 samples 1 TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
 layout "scene"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 2 ShaderStages(VERTEX) Storage { read_only: true }; 3 ShaderStages(VERTEX) Storage { read_only: true }; 4 ShaderStages(VERTEX) Storage { read_only: true }; 5 ShaderStages(VERTEX) Storage { read_only: true }; 6 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 7 ShaderStages(VERTEX) Storage { read_only: true }; 8 ShaderStages(FRAGMENT) Storage { read_only: true }; 9 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 10 ShaderStages(FRAGMENT) Sampler { filtering: true }; 11 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 12 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 13 ShaderStages(FRAGMENT) Sampler { filtering: true }; 14 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(VERTEX | FRAGMENT) Texture { filterable: false, dimension: D2 }; 16 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 
 layout "image node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 2 ShaderStages(FRAGMENT) Sampler { filtering: true }; 3 ShaderStages(FRAGMENT) Sampler { filtering: true }; 5 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 

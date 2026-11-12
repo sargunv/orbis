@@ -69,11 +69,10 @@ fn place_quad(node: NodeCull, first_half: u32, instance: u32) -> PlacedQuad {
     let anchor = placed.anchor + translation;
     let line_label = along_line();
     // The anchor's east neighbour, which map-rotated shifted labels and
-    // in-shader rotation read. Variable anchors are point placement's: the
-    // line variant leaves their code out, as it did before it drew a
-    // layer's other half too (Adreno's compilers take seconds over each
-    // part).
-    let rotate_shifted = !LINE_LABELS && (state & S_SHIFTED) != 0u && !pitch
+    // in-shader rotation read. Variable anchors are point labels': WebGL
+    // 2's line variant leaves their code out (Adreno's compilers take
+    // seconds over each part).
+    let rotate_shifted = POINT_LABELS && !line_label && (state & S_SHIFTED) != 0u && !pitch
         && (halves[half].flags & ROTATE_WITH_MAP) != 0u;
     let east = rotate_shifted || (halves[half].flags & ROTATE_IN_SHADER) != 0u;
     // A line label's untranslated anchor, where its glyphs follow the line
@@ -138,7 +137,7 @@ fn place_quad(node: NodeCull, first_half: u32, instance: u32) -> PlacedQuad {
         plane_pos = glyph.p;
         segment_angle = -glyph.angle;
         in_plane = true;
-    } else if !LINE_LABELS && (state & S_SHIFTED) != 0u {
+    } else if POINT_LABELS && (state & S_SHIFTED) != 0u {
         // GL JS `updateVariableAnchorsForBucket` and `getShiftedAnchor`.
         var shift_size = size;
         if !is_text {

@@ -86,11 +86,11 @@ pub(crate) fn read_usage(caps: &Caps) -> BufferUsages {
     }
 }
 
-/// The placement dispatches' kinds ([`SYMBOL_PLACE_SHADERS`] by `kind /
-/// 2`, with property rows `kind % 2`), the point labels' and the line
-/// labels': `None` where no symbol layer places so. Each places only its
-/// own layers' quads: the line variant leaves variable anchors out.
-pub(crate) type Placings = [Option<usize>; 2];
+/// The placement dispatch's kind ([`SYMBOL_PLACE_SHADERS`] by `kind / 2`,
+/// with property rows `kind % 2`): point labels' alone, or with line
+/// labels' where any symbol layer places along lines; `None` without
+/// symbol layers. One dispatch places every layer's quads.
+pub(crate) type Placings = Option<usize>;
 
 /// How the symbol draws find their quads placed.
 #[derive(Debug)]
@@ -251,7 +251,7 @@ impl Symbols {
             Placing::Dispatched(dispatch) => {
                 dispatch.draws[kind % 2].make(gpu, variants, draw(&SYMBOL_SHADER));
                 let layouts = [dispatch.layout];
-                for placing in placings.into_iter().flatten() {
+                if let Some(placing) = placings {
                     let shader = &SYMBOL_PLACE_SHADERS[placing / 2];
                     dispatch.pipelines[placing].make_with(variants, |full| {
                         let mut constants = Vec::new();
@@ -281,21 +281,15 @@ impl Symbols {
         (kind, placings): (usize, Placings),
         full: bool,
     ) -> impl Iterator<Item = PipelineId> {
-        let [point, line, draw] = match &self.placing {
-            Placing::Dispatched(dispatch) => {
-                let place = |placing: Option<usize>| {
-                    placing.and_then(|p| dispatch.pipelines[p].wanted(full).map(Into::into))
-                };
-                [
-                    place(placings[0]),
-                    place(placings[1]),
-                    dispatch.draws[kind % 2].wanted(full).map(Into::into),
-                ]
-            }
+        let [place, draw] = match &self.placing {
+            Placing::Dispatched(dispatch) => [
+                placings.and_then(|p| dispatch.pipelines[p].wanted(full).map(Into::into)),
+                dispatch.draws[kind % 2].wanted(full).map(Into::into),
+            ],
             #[cfg(cpu_driven)]
-            Placing::Inline(draws) => [None, None, draws[kind].wanted(full).map(Into::into)],
+            Placing::Inline(draws) => [None, draws[kind].wanted(full).map(Into::into)],
         };
-        [point, line, draw].into_iter().flatten()
+        [place, draw].into_iter().flatten()
     }
 
     /// Node `i`'s draws into `commands`, a symbol layer's icon node, `kind`
@@ -350,11 +344,10 @@ impl Symbols {
         true
     }
 
-    /// The frame's placement dispatches, after the cull, which wrote the
+    /// The frame's placement dispatch, after the cull, which wrote the
     /// draw arguments, and the terrain's depth, which hides labels; before
-    /// any pass that draws them. Each covers `quads`, the scene's symbol
-    /// nodes', and places its own layers' (`placings` and `full` as in
-    /// [`commands`](Self::commands)).
+    /// any pass that draws them. It covers `quads`, the scene's symbol
+    /// nodes' (`placings` and `full` as in [`commands`](Self::commands)).
     pub(crate) fn pass(
         &self,
         gpu: &mut dyn Gpu,
@@ -364,10 +357,8 @@ impl Symbols {
         let dispatch = self.placing.dispatch()?;
         let rows = (quads / orb_layout::MAX_CHUNK_INSTANCES).min(MAX_WORKGROUPS);
         let (group, _) = dispatch.group.as_ref().filter(|_| rows > 0)?;
-        let pipelines = dispatch.placements(gpu, placings, full)?;
-        let mut commands = Vec::new();
-        for pipeline in pipelines.into_iter().flatten() {
-            commands.extend([
+        let commands = match dispatch.placements(gpu, placings, full)? {
+            Some(pipeline) => vec![
                 ComputeCommand::SetPipeline(pipeline),
                 ComputeCommand::SetBindGroup {
                     index: 0,
@@ -378,8 +369,9 @@ impl Symbols {
                     y: 1,
                     z: 1,
                 },
-            ]);
-        }
+            ],
+            None => Vec::new(),
+        };
         Some(Pass::Compute(ComputePass {
             label: "symbol placements",
             commands,
@@ -388,21 +380,18 @@ impl Symbols {
 }
 
 impl Dispatch {
-    /// The pipelines of `placings` (`full` as in [`Variants::drawn`]),
-    /// once every one of them has compiled.
+    /// The pipeline of `placings` (`full` as in [`Variants::drawn`]), if
+    /// any, once it has compiled.
     fn placements(
         &self,
         gpu: &mut dyn Gpu,
         placings: Placings,
         full: bool,
-    ) -> Option<[Option<ComputePipelineId>; 2]> {
-        let mut out = [None; 2];
-        for (out, placing) in out.iter_mut().zip(placings) {
-            if let Some(placing) = placing {
-                *out = Some(self.pipelines[placing].drawn(gpu, full)?);
-            }
+    ) -> Option<Option<ComputePipelineId>> {
+        match placings {
+            Some(placing) => self.pipelines[placing].drawn(gpu, full).map(Some),
+            None => Some(None),
         }
-        Some(out)
     }
 }
 

@@ -299,12 +299,13 @@ impl Node {
     }
 
     /// Its paint pipeline, `patterned` where another node of its family
-    /// draws a pattern ([`Renderer::patterned`]).
-    fn paint_kind(&self, patterned: &[Family]) -> PaintKind {
+    /// draws a pattern ([`Renderer::patterned`]), with rows where another
+    /// reads them and `rowed` says so ([`Renderer::rowed`]).
+    fn paint_kind(&self, patterned: &[Family], rowed: &[Family]) -> PaintKind {
         PaintKind {
             family: self.family,
             styled: self.styled,
-            rows: self.rows,
+            rows: self.rows || rowed.contains(&self.family),
             pattern: self.pattern || patterned.contains(&self.family),
         }
     }
@@ -376,6 +377,9 @@ pub struct PipelineSet {
     /// The style has a sky: its pipeline, and the globe's scattering
     /// where views may be on a low-zoom surface.
     pub sky: bool,
+    /// A hillshade may shade on terrain at some zoom: its slopes' and the
+    /// shaded terrain's pipelines.
+    pub shaded: bool,
 }
 
 #[derive(Debug)]
@@ -424,6 +428,14 @@ pub struct Renderer {
     /// branch costs a pattern-less node nothing that shows, and a style
     /// with both kinds then compiles one pipeline, not two.
     patterned: Vec<Family>,
+    /// Where compiles hold presents ([`Caps::compiles_hold_presents`]),
+    /// the families a node of the set reads property rows in: each of
+    /// their nodes draws with the variant with rows, one pipeline, not
+    /// two, as every compile there is a moment the map shows nothing.
+    rowed: Vec<Family>,
+    /// The placement kind of the set's symbol layers at all their zooms
+    /// ([`placings`](Self::placings)).
+    set_placings: symbol::Placings,
     /// The set is to be asked for again, in what the map draws it with
     /// now: other variants, another sample count, or into the drape.
     set_stale: bool,
@@ -800,6 +812,8 @@ impl Renderer {
             pipelines_stale: false,
             pipeline_set: PipelineSet::default(),
             patterned: Vec::new(),
+            rowed: Vec::new(),
+            set_placings: None,
             set_stale: false,
             set_asked: 0,
             made_seen: 0,
@@ -2023,7 +2037,9 @@ impl Renderer {
     /// rows if either reads them.
     fn symbol_kind(&self, i: usize) -> usize {
         let [icons, text] = [&self.nodes[i], &self.nodes[i + 1]];
-        2 * usize::from(icons.along_line || text.along_line) + usize::from(icons.rows || text.rows)
+        let rowed = self.rowed.iter().any(|f| f.is_symbol());
+        2 * usize::from(icons.along_line || text.along_line)
+            + usize::from(icons.rows || text.rows || rowed)
     }
 
     /// Icon node `i`'s [`symbol_kind`](Self::symbol_kind), and the
@@ -2032,19 +2048,16 @@ impl Renderer {
         (self.symbol_kind(i), self.placings())
     }
 
-    /// The placement dispatches' kinds, by whether they place along lines:
-    /// the point labels' and the line labels' (`None` where no symbol
-    /// layer is of it), each with property rows if any of its layers
-    /// reads them.
+    /// The placement dispatch's kind: with line placement if any symbol
+    /// layer places along lines, and property rows if any reads them, at
+    /// any zoom of the style's set or as its nodes are now (`None` without
+    /// symbol layers): one pipeline, whatever the zoom.
     fn placings(&self) -> symbol::Placings {
-        let mut placings = [None; 2];
-        let icons = (self.nodes.iter().enumerate()).filter(|(_, n)| n.family == Family::SymbolIcon);
-        for (i, _) in icons {
-            let kind = self.symbol_kind(i);
-            let placing = placings[kind / 2].get_or_insert(kind);
-            *placing |= kind;
-        }
-        placings
+        (self.nodes.iter().enumerate())
+            .filter(|(_, n)| n.family == Family::SymbolIcon)
+            .map(|(i, _)| self.symbol_kind(i))
+            .chain(self.set_placings)
+            .reduce(|a, b| a | b)
     }
 
     /// Sets whether the frame's backgrounds cover every pixel: drawn flat
@@ -2115,8 +2128,18 @@ impl Renderer {
             .collect();
         patterned.sort_by_key(|f| *f as u8);
         patterned.dedup();
-        if patterned != self.patterned {
-            self.patterned = patterned;
+        let mut rowed: Vec<Family> = Vec::new();
+        if gpu.caps().compiles_hold_presents {
+            rowed = (set.groups.iter())
+                .flat_map(|g| &g.nodes)
+                .filter(|(_, paint)| paint.as_ref().is_some_and(NodePaint::reads_rows))
+                .filter_map(|&(i, _)| self.nodes.get(i as usize).map(|n| n.family))
+                .collect();
+            rowed.sort_by_key(|f| *f as u8);
+            rowed.dedup();
+        }
+        if (&patterned, &rowed) != (&self.patterned, &self.rowed) {
+            (self.patterned, self.rowed) = (patterned, rowed);
             self.pipelines_stale = true;
             self.invalidate_bundle(gpu);
         }
@@ -2175,6 +2198,19 @@ impl Renderer {
         if ahead {
             self.assign_stacks_as(true);
         }
+        // One placement pipeline places every symbol layer, at every zoom.
+        self.set_placings = None;
+        for group in &set.groups {
+            let kept = self.shape_as(&group.nodes);
+            let icons = kept.iter().map(|&(i, _)| self.drawer(i));
+            let icons = icons.filter(|&i| self.nodes[i].family == Family::SymbolIcon);
+            let kinds = icons.map(|i| self.symbol_kind(i)).reduce(|a, b| a | b);
+            self.set_placings = [self.set_placings, kinds]
+                .into_iter()
+                .flatten()
+                .reduce(|a, b| a | b);
+            self.restore_shapes(kept);
+        }
         let mut order: Vec<&PipelineGroup> = set.groups.iter().collect();
         order.sort_by_key(|g| g.rank);
         for group in order {
@@ -2194,7 +2230,7 @@ impl Renderer {
             self.atmosphere.request(gpu, target, frame, false);
         }
         if ahead || self.terrain_on() {
-            self.request_terrain(gpu);
+            self.request_terrain(gpu, set.shaded);
         }
         if ahead {
             self.assign_stacks();
@@ -2204,11 +2240,14 @@ impl Renderer {
     }
 
     /// Asks for the terrain's pipelines at the sample count 3D layers draw
-    /// at, a shaded hillshade's where the terrain layers shade one, and
-    /// the drape atlas's mips.
-    fn request_terrain(&mut self, gpu: &mut dyn Gpu) {
+    /// at, a shaded hillshade's where a hillshade may shade, and the drape
+    /// atlas's mips.
+    fn request_terrain(&mut self, gpu: &mut dyn Gpu, shaded: bool) {
         let samples = self.extrusions.samples;
-        let shaded = self.terrain_layers.iter().any(|l| l.shade.is_some());
+        let shaded = shaded || self.terrain_layers.iter().any(|l| l.shade.is_some());
+        if shaded {
+            self.images.make_slopes(gpu);
+        }
         self.terrain(gpu).request_pipelines(gpu, samples, shaded);
         self.downsampler.make(gpu);
         self.images.make_prepare(gpu);
@@ -2219,14 +2258,27 @@ impl Renderer {
     /// Asks for the pipelines one group draws with: each node shaped as
     /// its paint there picks them, then put back.
     fn request_group(&mut self, gpu: &mut dyn Gpu, group: &[(u32, Option<NodePaint>)], warm: bool) {
+        let kept = self.shape_as(group);
+        let mut drawers: Vec<usize> = kept.iter().map(|&(i, _)| self.drawer(i)).collect();
+        drawers.dedup();
+        for i in drawers {
+            self.make_for_node(gpu, i, warm);
+        }
+        self.restore_shapes(kept);
+    }
+
+    /// Shapes a group's nodes as their paint there picks their pipelines;
+    /// what they were, for [`restore_shapes`](Self::restore_shapes); none
+    /// where a node isn't of its paint's family, and the group is left out.
+    fn shape_as(&mut self, group: &[(u32, Option<NodePaint>)]) -> Vec<(usize, NodeShape)> {
         let fits = |&(i, ref paint): &(u32, Option<NodePaint>)| {
             let node = self.nodes.get(i as usize);
             node.is_some_and(|n| paint.as_ref().is_none_or(|p| p.fits(n.family)))
         };
         if !group.iter().all(fits) {
-            return;
+            return Vec::new();
         }
-        let kept: Vec<_> = (group.iter())
+        (group.iter())
             .map(|(i, paint)| {
                 let node = &mut self.nodes[*i as usize];
                 let kept = node.shape();
@@ -2240,12 +2292,10 @@ impl Renderer {
                 }
                 (*i as usize, kept)
             })
-            .collect();
-        let mut drawers: Vec<usize> = kept.iter().map(|&(i, _)| self.drawer(i)).collect();
-        drawers.dedup();
-        for i in drawers {
-            self.make_for_node(gpu, i, warm);
-        }
+            .collect()
+    }
+
+    fn restore_shapes(&mut self, kept: Vec<(usize, NodeShape)>) {
         for (i, kept) in kept {
             self.nodes[i].restore_shape(kept);
         }
@@ -2289,7 +2339,7 @@ impl Renderer {
         let own_drape = self.target.color != drape_target.color;
         let variants = self.variants();
         let node = &self.nodes[i];
-        let (family, kind) = (node.family, node.paint_kind(&self.patterned));
+        let (family, kind) = (node.family, node.paint_kind(&self.patterned, &self.rowed));
         if matches!(family, Family::Hillshade | Family::ColorRelief) {
             // Its DEM tiles are prepared.
             self.images.make_prepare(gpu);
@@ -2337,7 +2387,7 @@ impl Renderer {
         let variants = self.variants();
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
-                let kind = self.nodes[i].paint_kind(&self.patterned);
+                let kind = self.nodes[i].paint_kind(&self.patterned, &self.rowed);
                 self.paint.make(gpu, self.target, &layouts, kind, variants);
             }
             Family::SymbolIcon | Family::SymbolText => {
@@ -2380,7 +2430,7 @@ impl Renderer {
         {
             out.extend(
                 d.paint
-                    .wanted(node.paint_kind(&self.patterned), self.full)
+                    .wanted(node.paint_kind(&self.patterned, &self.rowed), self.full)
                     .or_else(|| {
                         node.family
                             .is_image()
@@ -2411,7 +2461,7 @@ impl Renderer {
             _ => out.extend(
                 (self
                     .paint
-                    .wanted(node.paint_kind(&self.patterned), self.full))
+                    .wanted(node.paint_kind(&self.patterned, &self.rowed), self.full))
                 .map(PipelineId::from),
             ),
         }
@@ -3350,13 +3400,17 @@ impl Renderer {
         let pipeline = match (drape, node.family.is_image()) {
             _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),
-            (Some(d), false) => d
-                .paint
-                .drawn(gpu, node.paint_kind(&self.patterned), self.full),
+            (Some(d), false) => d.paint.drawn(
+                gpu,
+                node.paint_kind(&self.patterned, &self.rowed),
+                self.full,
+            ),
             (None, true) => self.images.pipeline(node.family),
-            (None, false) => self
-                .paint
-                .drawn(gpu, node.paint_kind(&self.patterned), self.full),
+            (None, false) => self.paint.drawn(
+                gpu,
+                node.paint_kind(&self.patterned, &self.rowed),
+                self.full,
+            ),
         };
         let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
             return false;

@@ -64,12 +64,12 @@ circle vs_circle 13a06f393d40f264
 circle fs_circle 4bf918f397b704a5
 symbol vs_symbol ad53ecc817797d9d
 symbol fs_symbol 219cc487c5110b4f
-symbol placement cs_place 8134f01628778570
-symbol line placement cs_place be92ae7b0672a2cf
-symbol inline vs_symbol 3140b958dc1fe507
-symbol inline fs_symbol ee1eb086f78c9310
-symbol line inline vs_symbol 0ce781cb241df3d2
-symbol line inline fs_symbol 3f7fe72a755960ad
+symbol placement cs_place dc21de41056e3dcc
+symbol placement with lines cs_place 7c1447b6cd8bedad
+symbol inline vs_symbol 41abda7b02b4c300
+symbol inline fs_symbol 60c181785b2d5020
+symbol line inline vs_symbol 9328c5d87063df4e
+symbol line inline fs_symbol 7614bf04a9a4b64e
 heatmap density vs_heatmap 16e09c177fa2910c
 heatmap density fs_heatmap a546a7a1f36e09e7
 raster vs_raster a6c75f33dc96f9c8

@@ -108,7 +108,11 @@ impl Module {
         if let Some(one) = self.entries.iter().find(|e| e.entry == entry)
             && let Some(module) = one
                 .made
-                .get_or_init(|| postcard::from_bytes::<naga::Module>(one.bytes).ok().map(made))
+                .get_or_init(|| {
+                    postcard::from_bytes::<naga::Module>(one.bytes)
+                        .ok()
+                        .map(made)
+                })
                 .as_ref()
         {
             return module;

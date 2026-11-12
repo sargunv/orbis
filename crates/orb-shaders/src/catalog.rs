@@ -211,10 +211,16 @@ pub const SYMBOL_SHADER: Shader = Shader {
     fragment: "fs_symbol",
     compute: "",
 };
+/// [`SYMBOL_LINE`] placing line labels alone: WebGL 2's line variant,
+/// without variable anchors.
+const LINE_LABELS_ALONE: &str = "const POINT_LABELS: bool = false;\n";
+/// [`SYMBOL_LINE`] placing point labels too: the placement dispatch's.
+const POINT_AND_LINE_LABELS: &str = "const POINT_LABELS: bool = true;\n";
 /// The symbol placements: each quad of point labels and of line labels
 /// (`symbol-placement: line` and `line-center`) placed once a frame into
-/// the placement target, by one dispatch for every symbol layer. Two
-/// variants, so point labels' pipeline doesn't compile line placement.
+/// the placement target, by one dispatch for every symbol layer: point
+/// labels' alone where no layer places along lines, so their pipeline
+/// doesn't compile line placement, or both.
 pub const SYMBOL_PLACE_SHADERS: [Shader; 2] = [
     Shader {
         label: "symbol placement",
@@ -233,7 +239,7 @@ pub const SYMBOL_PLACE_SHADERS: [Shader; 2] = [
         compute: "cs_place",
     },
     Shader {
-        label: "symbol line placement",
+        label: "symbol placement with lines",
         parts: &[
             TYPES,
             DRAW,
@@ -243,6 +249,7 @@ pub const SYMBOL_PLACE_SHADERS: [Shader; 2] = [
             SYMBOL_PLACE,
             SYMBOL_PLACE_COMPUTE,
             SYMBOL_LINE,
+            POINT_AND_LINE_LABELS,
         ],
         vertex: "",
         fragment: "",
@@ -281,6 +288,7 @@ pub const SYMBOL_INLINE_SHADERS: [Shader; 2] = [
             SYMBOL_PLACE,
             SYMBOL_PLACE_INLINE,
             SYMBOL_LINE,
+            LINE_LABELS_ALONE,
             SYMBOL_DRAW,
         ],
         vertex: "vs_symbol",

@@ -2097,6 +2097,7 @@ fn the_set_asks_for_the_symbol_pipeline_both_halves_pick() {
             })
             .collect(),
         sky: false,
+        shaded: false,
     };
     // Neither half painted yet: the icons alone, with text that draws
     // nothing, or with text painted alike pick the pipeline without rows.
