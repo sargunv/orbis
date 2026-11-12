@@ -682,6 +682,17 @@ fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_l
     chunks
 }
 
+/// Milliseconds between placements while the camera moves: every third
+/// frame at 60 Hz, with room for the display's jitter. Placing on every
+/// moving frame kept the placement lane busy for most of a rotation and
+/// the map thread applying a commit on nearly every frame; between
+/// placements labels stay on their anchors. At this cadence the gestures
+/// bench's paths bring back as few of the labels they drop within a
+/// second (its label returns) as placing on every frame did; at 100 ms,
+/// a third of GL JS's and MapLibre Native's 300, a rotation brought back
+/// a third more.
+pub(crate) const MOVING_CADENCE: f64 = 45.0;
+
 impl Labels {
     /// Labels placed on `lane`, with `options`' label settings.
     pub(crate) fn new(lane: Arc<dyn PlacementLane>, options: LabelOptions) -> Self {
@@ -1148,19 +1159,19 @@ impl Labels {
     }
 
     /// Whether `frame` needs placing: it differs from the last one placed
-    /// (clock aside) and nothing is out on the lane. Each frame that moves
-    /// the camera places, rather than every 300 ms as GL JS and MapLibre
-    /// Native do: fades then smooth what a frame's collisions decide, and
-    /// a label one placement drops doesn't fade out in full before the
-    /// next can show it again (the gestures bench's label returns).
-    pub(crate) fn wants_placement(&self, frame: &orb_symbol::Frame) -> bool {
+    /// (clock aside), nothing is out on the lane, and, while the camera
+    /// `moving`, [`MOVING_CADENCE`] has passed since the last was asked
+    /// for. At rest a change places at once, so the frame a map comes to
+    /// rest on is placed in full, as a fresh map's is.
+    pub(crate) fn wants_placement(&self, frame: &orb_symbol::Frame, moving: bool) -> bool {
         if self.in_flight.is_some() {
             return false;
         }
-        !self
-            .last_frame
-            .as_ref()
-            .is_some_and(|last| same_inputs(last, frame))
+        match &self.last_frame {
+            None => true,
+            Some(last) if same_inputs(last, frame) => false,
+            Some(last) => !moving || frame.now - last.now >= MOVING_CADENCE,
+        }
     }
 
     /// Whether the last placement asked was of `frame`'s inputs, and has
@@ -1503,6 +1514,11 @@ impl Labels {
     /// Placement commits applied so far.
     pub(crate) fn commits(&self) -> u64 {
         self.commits
+    }
+
+    /// Placements asked of the lane so far.
+    pub(crate) fn requests(&self) -> u64 {
+        self.requests
     }
 
     /// Picking hits for the labels and icons the last commit shows: their

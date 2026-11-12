@@ -160,6 +160,8 @@ struct PathResult {
     /// written over the path.
     rebuilds: usize,
     rows: u64,
+    /// Label placements asked for over the path.
+    placements: u32,
     /// Labels shown in full that all but vanished and were back in full
     /// within [`FLASH_FRAMES`], and the frames between.
     blinks: usize,
@@ -239,7 +241,7 @@ pub(crate) fn run(
         // Per label text: shown in full, and since which frame it is gone.
         let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
         let (mut blinks, mut blink_frames, mut returns, mut drops) = (0, 0, 0, 0);
-        let (mut rebuilds, mut rows) = (0, 0);
+        let (mut rebuilds, mut rows, mut placements) = (0, 0, 0);
         // GPU times, collected after the path: a collection waits for the
         // GPU.
         runtime.set_gpu_timing(true);
@@ -277,6 +279,7 @@ pub(crate) fn run(
             loading += usize::from(report.tiles_loading > 0);
             rebuilds += usize::from(report.frame.candidates_rebuilt);
             rows += u64::from(report.frame.placements_written);
+            placements += report.placements;
             let shown = map.shown_labels();
             for (name, dim) in &mut labels {
                 let opacity = shown.get(name).copied().unwrap_or(0.0);
@@ -338,6 +341,7 @@ pub(crate) fn run(
             loading,
             rebuilds,
             rows,
+            placements,
             blinks,
             blink_frames,
             returns,
@@ -378,16 +382,16 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | GPU p50 | p99 | max | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | drape atlas MiB max (mean) | drape resizes | settle ms | label blinks (frames) | label returns (drops) | placement p50 | p95 | max |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | GPU p50 | p99 | max | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | drape atlas MiB max (mean) | drape resizes | settle ms | label blinks (frames) | label returns (drops) | placements | placement p50 | p95 | max |"
         )?;
         writeln!(
             out,
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         )?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {} | {} | {} ({}) | {} ({}) | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {} | {} | {} ({}) | {} ({}) | {} | {} | {} | {} |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
@@ -413,6 +417,7 @@ impl GesturesReport {
                 p.blink_frames,
                 p.returns,
                 p.drops,
+                p.placements,
                 ms(percentile(&p.placement, 0.5)),
                 ms(percentile(&p.placement, 0.95)),
                 ms(percentile(&p.placement, 1.0)),
@@ -430,7 +435,8 @@ impl GesturesReport {
              vanished (opacity under 0.1) and were back in full within {FLASH_FRAMES} frames (no \
              fade is that quick), and the frames they were gone; label returns: labels \
              that all but vanished and were back in full within {RETURN_FRAMES} frames (1 s), \
-             blinks included, of the labels shown in full that all but vanished; placement: the render thread's \
+             blinks included, of the labels shown in full that all but vanished; placements: those asked \
+             of the placement lane over the path; placement: the render thread's \
              share of it (building the frame the lane places, applying commits; 0.2 ms)."
         )?;
         for warning in &self.warnings {

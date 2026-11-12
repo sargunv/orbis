@@ -935,6 +935,43 @@ mod tests {
         assert_eq!(shown, 1.0, "the label was placed and faded in");
     }
 
+    /// While the camera moves, labels place every third 60 Hz frame at
+    /// most; the frame it comes to rest on places at once.
+    #[test]
+    fn moving_maps_place_labels_on_a_cadence() {
+        let mut offscreen = null_island(
+            r#"{"version":8,
+            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+            "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
+        );
+        let started = std::time::Instant::now();
+        while !offscreen.frame().idle && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let mut camera = *offscreen.map.camera();
+        let mut placements = 0;
+        for _ in 0..30 {
+            camera.bearing += 1.0;
+            offscreen.map.jump_to_state(camera);
+            placements += offscreen.frame().placements;
+            // The lane answers well within a frame.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!((1..=10).contains(&placements), "{placements} placements");
+        // At rest the view places as soon as the lane is free: the last
+        // moving frame placed wasn't the last.
+        let (started, mut placements) = (std::time::Instant::now(), 0);
+        while started.elapsed() < std::time::Duration::from_secs(10) {
+            let report = offscreen.frame();
+            placements += report.placements;
+            if report.idle {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(placements, 1);
+    }
+
     /// Until the map is first idle, labels show at once rather than fade,
     /// as GL JS skips fades before its first `idle`: a map's first view is
     /// complete as soon as its data is. Here a raster tile that never

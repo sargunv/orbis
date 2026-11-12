@@ -36,7 +36,7 @@ pub(crate) struct Beat {
     /// The budget's bytes.
     cap: u64,
     bytes: u64,
-    /// Tiles and edits applied.
+    /// Tiles, edits and label commits applied.
     applied: u32,
 }
 

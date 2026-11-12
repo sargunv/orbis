@@ -150,9 +150,15 @@ impl Map {
             Message::Placed { epoch, committed } => {
                 if epoch == self.label_epoch {
                     match committed {
+                        // A commit applies whole, before the frame's
+                        // tiles, which take what it leaves of the budget.
                         Ok(committed) => {
                             let started = self.services.clock.now();
+                            let bytes = (committed.changed.iter())
+                                .map(|(_, _, s)| 4 * (s.text.len() + s.icon.len()) as u64)
+                                .sum();
                             self.labels.committed(gpu, renderer, committed);
+                            self.beat.applied(bytes);
                             self.placement_ms += self.services.clock.now() - started;
                         }
                         // The labels ask again with the next frame.

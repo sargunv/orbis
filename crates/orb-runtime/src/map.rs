@@ -181,6 +181,10 @@ pub struct FrameReport {
     /// Input holds the camera: a drag, a pinch or wheel zooming is under
     /// way. What the device did meanwhile (`gpu`) happened mid-gesture.
     pub input: bool,
+    /// Label placements asked of the placement lane in this frame and
+    /// the preparations since the last drawn: while the camera moves, one
+    /// each 45 ms at most.
+    pub placements: u32,
     /// What the device did since the last frame drawn, in its
     /// preparations and in it: pipelines asked for, memory made, bytes
     /// and calls uploaded. The device's counts, which other maps on it
@@ -673,6 +677,8 @@ pub struct Map {
     prepared: (FrameTimes, u32, orb_render::Resized),
     /// The device's counts at the last frame drawn.
     counted: GpuCounters,
+    /// The labels' placements asked for by the last frame drawn.
+    placements_counted: u64,
     /// Arrived tiles wait for the next beat: this one spent its budget.
     pub(crate) tiles_deferred: bool,
     /// What this frame has spent of its [`FrameBudget`].
@@ -951,6 +957,7 @@ impl Map {
             tiles_arrived: 0,
             prepared: Default::default(),
             counted: GpuCounters::default(),
+            placements_counted: 0,
             tiles_deferred: false,
             beat: Default::default(),
             inbox: Default::default(),
@@ -2034,6 +2041,10 @@ impl Map {
         let counted = gpu.counters();
         report.gpu = counted.since(&self.counted);
         self.counted = counted;
+        // Labels made again (a lost device) count from nothing.
+        let placements = self.labels.requests();
+        report.placements = placements.saturating_sub(self.placements_counted) as u32;
+        self.placements_counted = placements;
         times.total = micros(started, clock.now());
         report.times = times;
         report
@@ -2971,7 +2982,9 @@ impl Map {
         // what has arrived so far is work no picture keeps. Tile mode
         // placed three to seven times a tile, over its whole grid.
         let wanted = loaded || self.mode == RenderMode::Continuous;
-        if wanted && self.labels.wants_placement(&frame) {
+        // A continuous map places on a cadence while its camera moves.
+        let moving = self.mode == RenderMode::Continuous && !self.camera_rested;
+        if wanted && self.labels.wants_placement(&frame, moving) {
             self.labels.placing(&frame);
             let placing = self.services.clock.now();
             let done = self.reply(move |committed| Message::Placed { epoch, committed });
