@@ -355,10 +355,6 @@ pub struct Limits {
     /// WebGPU's default (8192), so that what a map draws doesn't depend on
     /// a device that offers more.
     pub max_texture_dimension_2d: u32,
-    /// The device's own largest 2D texture side, at least the above: for
-    /// textures whose size changes only how they pack what they hold (the
-    /// terrain drape's pages, whose stacks then share a layer).
-    pub largest_texture_dimension_2d: u32,
     pub max_texture_array_layers: u32,
     /// The most bytes a texture's first mip level may take over its
     /// layers ([`Gpu::texture_fits`]): unbounded on WebGPU and the native

@@ -62,9 +62,8 @@ const CHECKED_TEXTURE_BYTES: u64 = 64 << 20;
 const DRIVER: &str = "ORB_DRIVER";
 
 /// A native device's 2D texture side, lowered to this to stand in for a
-/// device that offers no more ([`Limits::largest_texture_dimension_2d`]):
-/// at `8192`, as in Firefox's WebGL 2, a terrain view of more than 32
-/// tiles gives each drape stack a layer of its own.
+/// device that offers no more ([`Limits::max_texture_dimension_2d`]): at
+/// `4096`, the terrain drape's pages hold a quarter of the slots a layer.
 #[cfg(not(target_arch = "wasm32"))]
 const TEXTURE_SIDE: &str = "ORB_TEXTURE_SIDE";
 
@@ -86,12 +85,9 @@ pub fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
 /// The limits Orbis asks `adapter`'s device for: WebGPU's defaults, lowered
 /// where the adapter falls short of them (the iOS simulator has 15
 /// inter-stage variables), with buffers and storage bindings as large as it
-/// allows up to 1 GiB, and 2D textures as large as it allows. The scene's
-/// pools grow within one storage binding, up to the map's memory budget
-/// and past it for the tiles in view: at WebGPU's default 128 MiB, a
-/// pitched view over a dense city ran out. Textures past WebGPU's default
-/// side are only for those whose size changes how they pack what they
-/// hold ([`Limits::largest_texture_dimension_2d`]).
+/// allows up to 1 GiB. The scene's pools grow within one storage binding,
+/// up to the map's memory budget and past it for the tiles in view: at
+/// WebGPU's default 128 MiB, a pitched view over a dense city ran out.
 pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let offered = adapter.limits();
     let mut limits = wgpu::Limits::default().or_worse_values_from(&offered);
@@ -100,8 +96,6 @@ pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     limits.max_storage_buffer_binding_size = (offered.max_storage_buffer_binding_size)
         .min(LARGEST_BUFFER as _)
         .max(limits.max_storage_buffer_binding_size);
-    limits.max_texture_dimension_2d =
-        (offered.max_texture_dimension_2d).max(limits.max_texture_dimension_2d);
     limits
 }
 
@@ -451,7 +445,6 @@ impl WgpuGpu {
                 max_storage_buffers_per_shader_stage: limits.max_storage_buffers_per_shader_stage,
                 max_texture_dimension_2d: (limits.max_texture_dimension_2d)
                     .min(wgpu::Limits::default().max_texture_dimension_2d),
-                largest_texture_dimension_2d: limits.max_texture_dimension_2d,
                 max_texture_array_layers: limits.max_texture_array_layers,
                 max_texture_bytes: if gl { GL_TEXTURE_BYTES } else { u64::MAX },
                 min_storage_buffer_offset_alignment: limits.min_storage_buffer_offset_alignment,
@@ -545,7 +538,6 @@ impl WgpuGpu {
         if let Ok(side) = std::env::var(TEXTURE_SIDE) {
             let side: u32 = (side.parse()).unwrap_or_else(|e| panic!("{TEXTURE_SIDE}={side}: {e}"));
             let limits = &mut gpu.caps.limits;
-            limits.largest_texture_dimension_2d = limits.largest_texture_dimension_2d.min(side);
             limits.max_texture_dimension_2d = limits.max_texture_dimension_2d.min(side);
         }
         gpu

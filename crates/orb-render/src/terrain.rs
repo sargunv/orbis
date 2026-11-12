@@ -104,9 +104,8 @@ fn fits(gpu: &dyn Gpu, page: usize, (per_layer, columns, rows): Grid, stacks: u3
 /// The terrain tiles the drape pages hold, with `stacks` colour and slope
 /// stacks: the slots of a layer of WebGPU's default texture side (64
 /// colour slots), however many stacks there are, and on every device that
-/// has it, so that a view's terrain doesn't depend on either. A layer of
-/// the device's largest side holds more of the stacks. Where a page of a
-/// layer a stack of them takes more bytes than the device allocates a
+/// has it, so that a view's terrain doesn't depend on either. Where a page
+/// of a layer a stack of them takes more bytes than the device allocates a
 /// texture (GL's [`Limits::max_texture_bytes`]), it holds half as many,
 /// and so on until such a page fits.
 pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
@@ -130,10 +129,12 @@ pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
 }
 
 /// Page `page`'s grid for `tiles` tile slots of `stacks` stacks
-/// ([`atlas_grid`]), or `None` to keep `held`: at the device's largest
-/// side, or a smaller one where that page takes more bytes than the device
-/// allocates, or else a layer a stack ([`tight_grid`]), which a cover
-/// within the [`room`] fits.
+/// ([`atlas_grid`]), or `None` to keep `held`: of layers at most the
+/// device's side, WebGPU's default (8192) where it offers more, or else a
+/// layer a stack ([`tight_grid`]) where that page takes more bytes than
+/// the device allocates, which a cover within the [`room`] fits. A larger
+/// side would only pack the stacks into fewer layers, as one texture
+/// past what some devices allocate at all.
 fn page_grid(
     gpu: &dyn Gpu,
     page: usize,
@@ -141,19 +142,12 @@ fn page_grid(
     held: Option<Grid>,
     stacks: u32,
 ) -> Option<Grid> {
-    let limits = gpu.caps().limits;
-    let base = atlas_side(limits.max_texture_dimension_2d, PAGE_PX[page]);
-    let mut side = atlas_side(limits.largest_texture_dimension_2d, PAGE_PX[page]);
-    loop {
-        let grid = atlas_grid(tiles, held, stacks, side)?;
-        if fits(gpu, page, grid, stacks) {
-            return Some(grid);
-        }
-        if side <= base {
-            return Some(tight_grid(tiles));
-        }
-        side /= 2;
-    }
+    let side = atlas_side(gpu.caps().limits.max_texture_dimension_2d, PAGE_PX[page]);
+    let grid = atlas_grid(tiles, held, stacks, side)?;
+    Some(match fits(gpu, page, grid, stacks) {
+        true => grid,
+        false => tight_grid(tiles),
+    })
 }
 
 /// Why the drape pages can't hold a view's terrain tiles.
@@ -1746,7 +1740,7 @@ mod tests {
         assert_eq!(atlas_grid(33, Some((1, 8, 4)), 1, 16), Some((1, 8, 8)));
         // Shrunk to twice the fewest, half full.
         assert_eq!(atlas_grid(8, Some((1, 8, 4)), 1, 16), Some((1, 4, 4)));
-        // Never past the device's largest.
+        // Never past the device's side.
         assert_eq!(atlas_grid(64, None, 1, 8), Some((1, 8, 8)));
     }
 
