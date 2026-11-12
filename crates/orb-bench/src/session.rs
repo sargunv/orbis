@@ -671,9 +671,9 @@ impl SessionReport {
             out,
             "| session | frames | pipelines asked | made | buffers + textures made | MiB made | MiB \
              copied on the GPU | MiB uploaded | upload calls | texture-write submissions | drape \
-             slots |"
+             slots | peak frame MiB uploaded |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(11))?;
+        writeln!(out, "|{}", "---|".repeat(12))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -682,9 +682,13 @@ impl SessionReport {
                     _ => true,
                 };
                 let (c, slots, n) = summed(r.frames.iter().filter(keep));
+                let peak = (r.frames.iter().filter(keep))
+                    .map(|f| f.report.gpu.uploaded_bytes())
+                    .max()
+                    .unwrap_or(0);
                 writeln!(
                     out,
-                    "| {} {what} | {n} | {} | {} | {} | {} | {} | {} | {} | {} | {slots} |",
+                    "| {} {what} | {n} | {} | {} | {} | {} | {} | {} | {} | {} | {slots} | {} |",
                     r.name,
                     c.pipelines_requested,
                     c.pipelines_compiled,
@@ -694,6 +698,7 @@ impl SessionReport {
                     mib(c.uploaded_bytes()),
                     c.upload_calls,
                     c.texture_write_submissions,
+                    mib(peak),
                 )?;
             }
         }
@@ -702,7 +707,8 @@ impl SessionReport {
             out,
             "Each frame's device counts since the frame before. input: frames drawn while input \
              held the camera (a pipeline made then compiled mid-gesture); moving: frames \
-             that moved the camera, or with input (memory made then is made while it moves)."
+             that moved the camera, or with input (memory made then is made while it moves); peak \
+             frame: the most one frame uploaded, with what was prepared before it."
         )?;
         for r in &self.results {
             writeln!(out)?;
