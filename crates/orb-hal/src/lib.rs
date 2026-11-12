@@ -214,8 +214,6 @@ pub struct Caps {
     /// Blendable `Rgba16Float` and renderable `R32Float` targets: heatmap
     /// density and the terrain's depth for what it hides.
     pub float_targets: bool,
-    /// Many direct draws in one call (`WEBGL_multi_draw`).
-    pub multi_draw: bool,
     /// Clip-space depth from 0 to 1 as the shaders write it. On a GL
     /// context without clip control (`EXT_clip_control`: Firefox), wgpu's
     /// GL back end remaps it into GL's −1 to 1 (`2z − w`), which spends

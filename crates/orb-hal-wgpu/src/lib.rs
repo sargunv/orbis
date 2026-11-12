@@ -482,7 +482,6 @@ impl WgpuGpu {
             // WebGPU guarantees both; elsewhere `read_formats` asks the
             // adapter (WebGL 2 has them with `EXT_color_buffer_float`).
             float_targets: cfg!(webgpu),
-            multi_draw: false,
             zero_to_one_depth: !gl || gl_clips_zero_to_one(&device),
         };
         let glsl_es = gl && gl_takes_glsl_es(&device);
