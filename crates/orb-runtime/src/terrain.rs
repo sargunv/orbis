@@ -29,6 +29,8 @@ use orb_render::{
     TerrainTile, TileRow,
 };
 use orb_source::{Draw, TilePyramid};
+
+use crate::resident::HostData;
 use orb_tile::DemGrid;
 
 /// Terrain tiles' side at their zoom, in logical pixels.
@@ -214,6 +216,10 @@ pub(crate) struct Terrain {
     /// What DEM tiles found no layer for while the page couldn't grow:
     /// they load again once it grows at rest.
     pub(crate) room: orb_render::Room,
+    /// DEM tiles that arrived while memory was held with no page, or no
+    /// layer, for them: still loading in the pyramid, so not asked for
+    /// again, they go in once memory may move ([`retry_held`](Self::retry_held)).
+    held: Vec<(TileIndex, crate::jobs::TileImage, Arc<DemGrid>)>,
 }
 
 impl Terrain {
@@ -254,6 +260,7 @@ impl Terrain {
             stale: true,
             revision: 0,
             room: Default::default(),
+            held: Vec::new(),
         }
     }
 
@@ -471,7 +478,8 @@ impl Terrain {
     }
 
     /// A DEM tile's `result` arrived: into the page and the elevations.
-    /// `Err` says why it isn't drawn.
+    /// `Err` says why it isn't drawn; `Ok(true)` that it waits for rest
+    /// ([`retry_held`](Self::retry_held)), keeping its host data.
     pub(crate) fn arrive(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -479,21 +487,21 @@ impl Terrain {
         tile: TileIndex,
         result: Result<crate::TileOutcome, String>,
         now: f64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         use crate::TileOutcome::{Built, Cancelled, Missing};
         if !self.pyramid.is_loading(tile) {
-            return Ok(());
+            return Ok(false);
         }
         let (image, grid) = match result {
             Ok(Missing { .. }) => {
                 self.pyramid.insert_missing(tile);
-                return Ok(());
+                return Ok(false);
             }
             // Given up before it loaded: a later cover that wants it asks
             // again.
             Ok(Cancelled) => {
                 self.pyramid.forget_loading(tile);
-                return Ok(());
+                return Ok(false);
             }
             Ok(Built(crate::TileResult {
                 image: Some(image),
@@ -505,16 +513,58 @@ impl Terrain {
                 return Err(result.err().unwrap_or("no elevations".into()));
             }
         };
+        self.insert(gpu, renderer, tile, image, grid)
+    }
+
+    /// The DEM tiles that arrived while memory was held, into the page
+    /// once memory may move: the page made for the first, if need be.
+    /// Their host data goes once they're in or dropped. Says why any isn't
+    /// drawn.
+    pub(crate) fn retry_held(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) -> Vec<String> {
+        if self.held.is_empty() || renderer.moves() == Moves::Held {
+            return Vec::new();
+        }
+        let mut errors = Vec::new();
+        for (tile, image, grid) in std::mem::take(&mut self.held) {
+            let host = HostData::of_image(&image);
+            let inserted = match self.pyramid.is_loading(tile) {
+                true => self.insert(gpu, renderer, tile, image, grid),
+                false => Ok(false),
+            };
+            match inserted {
+                Ok(true) => {}
+                Ok(false) => host.release(gpu),
+                Err(e) => {
+                    host.release(gpu);
+                    errors.push(format!("terrain tile {tile:?}: {e}"));
+                }
+            }
+        }
+        errors
+    }
+
+    /// A built DEM tile into the page and the elevations. While memory is
+    /// held, one with no page or layer to go in waits, still loading, for
+    /// [`retry_held`](Self::retry_held): forgotten, it would be asked for,
+    /// fetched and decoded again every frame of the gesture. Whether it
+    /// waits, keeping its host data.
+    fn insert(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        tile: TileIndex,
+        image: crate::jobs::TileImage,
+        grid: Arc<DemGrid>,
+    ) -> Result<bool, String> {
         let size = [image.width, image.height];
         let page = match self.page {
             Some(page) => page,
             None => match renderer.create_page(gpu, orb_render::PageKind::Terrain, size) {
                 Some(page) => *self.page.insert(page),
-                // Memory is held: the page is made at rest, and the tile
-                // loads again then.
+                // Memory is held: the page is made at rest.
                 None => {
-                    self.pyramid.forget_loading(tile);
-                    return Ok(());
+                    self.held.push((tile, image, grid));
+                    return Ok(true);
                 }
             },
         };
@@ -522,15 +572,20 @@ impl Terrain {
             other if other != size => Err(format!("{}×{} among {other:?} tiles", size[0], size[1])),
             _ => match self.alloc_layer(gpu, renderer, page) {
                 Ok(layer) => Ok(layer),
-                // The page grows at rest; the tile loads again then.
+                // The page grows at rest: held, the tile waits for rest;
+                // at rest, it loads again once the page grew.
                 Err(_)
                     if renderer.moves() != Moves::Free && {
                         let room = self.refused(renderer);
                         renderer.can_grow_into(&room)
                     } =>
                 {
-                    self.pyramid.forget_loading(tile);
-                    return Ok(());
+                    let held = renderer.moves() == Moves::Held;
+                    match held {
+                        true => self.held.push((tile, image, grid)),
+                        false => self.pyramid.forget_loading(tile),
+                    }
+                    return Ok(held);
                 }
                 Err(_) => Err("out of terrain texture layers".into()),
             },
@@ -542,7 +597,7 @@ impl Terrain {
         if let Some(old) = self.pyramid.insert(tile, DemTile { layer, dem }) {
             renderer.free_layer(page, old.layer);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// A layer of the DEM page: grown for where memory is
@@ -578,8 +633,11 @@ impl Terrain {
         room
     }
 
-    /// Gives back its DEM page.
+    /// Gives back its DEM page, and the host data of what waits for rest.
     pub(crate) fn release(self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        for (_, image, _) in &self.held {
+            HostData::of_image(image).release(gpu);
+        }
         renderer.set_terrain(gpu, None);
         if let Some(page) = self.page {
             renderer.remove_page(gpu, page);

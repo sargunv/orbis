@@ -3192,6 +3192,8 @@ impl Map {
         terrain.set_exaggeration(root.exaggeration);
         let endpoint = Arc::clone(&terrain.endpoint);
         terrain.pyramid.retry_failed(self.services.clock.now());
+        let held = terrain.retry_held(gpu, renderer);
+        self.warnings.extend(held);
         let unpack = endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32);
         // GL JS's `getSkirtLength`: a fifth of a tile's width at the
         // camera's zoom, in metres at the equator.
@@ -3354,7 +3356,8 @@ impl Map {
             .map_or(0, |t| t.id << 32 | t.revision)
     }
 
-    /// A terrain DEM tile arrived.
+    /// A terrain DEM tile arrived. Whether it waits for rest, keeping its
+    /// host data ([`Terrain::retry_held`](crate::terrain::Terrain::retry_held)).
     pub(crate) fn apply_terrain_tile(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -3362,15 +3365,21 @@ impl Map {
         source: u32,
         tile: TileIndex,
         result: Result<crate::TileOutcome, String>,
-    ) {
+    ) -> bool {
         let now = self.services.clock.now();
         let terrain = self.style.as_mut().and_then(|s| s.terrain.as_mut());
-        if let Some(terrain) = terrain.filter(|t| t.key == source)
-            && let Err(e) = terrain.arrive(gpu, renderer, tile, result, now)
-        {
-            self.warnings.push(format!("terrain tile {tile:?}: {e}"));
-        }
+        let kept = match terrain.filter(|t| t.key == source) {
+            Some(terrain) => match terrain.arrive(gpu, renderer, tile, result, now) {
+                Ok(kept) => kept,
+                Err(e) => {
+                    self.warnings.push(format!("terrain tile {tile:?}: {e}"));
+                    false
+                }
+            },
+            None => false,
+        };
         self.upload_ms += self.services.clock.now() - now;
+        kept
     }
 
     /// Installs a style that `load_style_url` fetched, unless a later

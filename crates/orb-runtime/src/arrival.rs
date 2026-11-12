@@ -430,7 +430,9 @@ impl Map {
             self.tiles_arrived +=
                 u32::from(edit.is_none() && matches!(result, Ok(TileOutcome::Built(_))));
             match edit {
-                None if terrain => self.apply_terrain_tile(gpu, renderer, source, tile, result),
+                None if terrain => {
+                    kept = self.apply_terrain_tile(gpu, renderer, source, tile, result);
+                }
                 None => {
                     let mut reserved = None;
                     let applied = self.apply_tile_with(

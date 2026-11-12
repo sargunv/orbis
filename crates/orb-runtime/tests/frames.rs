@@ -330,6 +330,112 @@ mod tests {
         assert_eq!(differing, 0, "pixels differ from a fresh map");
     }
 
+    /// DEM tiles that arrive while a drag holds memory, before the
+    /// terrain has its first page, wait for rest rather than load again:
+    /// a held drag over one cover asks for each tile once, and the page is
+    /// made, with them in it, once the camera rests.
+    #[test]
+    fn dem_tiles_that_arrive_held_wait_for_rest() {
+        use orb_camera::input::{Button, Input, Modifiers, PointerKind};
+        struct Counting(Arc<AtomicUsize>, Arc<dyn orb_host::jobs::Executor>);
+        impl orb_host::jobs::Executor for Counting {
+            fn spawn(&self, job: orb_host::jobs::Job) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                self.1.spawn(job);
+            }
+        }
+        let dir = crate::common::Scratch::new("dem-held");
+        let tile = solid_tile(&dir);
+        let style = format!(
+            r#"{{"version":8,"sources":{{
+                "dem":{{"type":"raster-dem","tiles":["file://{tile}"],"tileSize":256,"maxzoom":8}}}},
+              "terrain":{{"source":"dem"}},
+              "layers":[{{"id":"bg","type":"background","paint":{{"background-color":"white"}}}}]}}"#,
+            tile = tile.display(),
+        );
+        let path = dir.join("style.json");
+        std::fs::write(&path, style).unwrap();
+        let options = crate::common::Options {
+            style: Some(format!("file://{}", path.display())),
+            at: Some((orb_crs::Geodetic::new(10.0, 46.0), 9.0, 0.0, 40.0)),
+            ..tokyo(9.0)
+        };
+        let jobs = Arc::new(AtomicUsize::new(0));
+        let pool = Arc::new(orb_host::jobs::ThreadPool::new("jobs", 2));
+        let executor = Arc::new(Counting(jobs.clone(), pool));
+        let services = crate::common::services_on(executor, Arc::new(|| {}));
+        let map = crate::common::Map::new(services, crate::common::camera(&options));
+        let mut offscreen = crate::common::Offscreen::with_map(map).unwrap();
+        crate::common::load_style(&mut offscreen.map, &options).unwrap();
+        let viewport = offscreen.viewport;
+        let point = |x: f64| glam::DVec2::new(x, viewport.height / 2.0);
+        let time = offscreen.time;
+        offscreen.map.input(
+            Input::PointerDown {
+                id: 1,
+                kind: PointerKind::Mouse,
+                button: Button::Primary,
+                position: point(400.0),
+                modifiers: Modifiers::default(),
+            },
+            time,
+        );
+        // A drag of a quarter pixel a frame, whose cover stays: once the
+        // terrain asked for its tiles, it asks for nothing more.
+        let mut x = 400.0;
+        let mut drag = |offscreen: &mut crate::common::Offscreen| {
+            x += 0.25;
+            let time = offscreen.time;
+            offscreen.map.input(
+                Input::PointerMove {
+                    id: 1,
+                    position: point(x),
+                },
+                time,
+            );
+            offscreen.frame();
+            std::thread::sleep(std::time::Duration::from_millis(4));
+            jobs.load(Ordering::SeqCst)
+        };
+        // Until the style loaded and its tiles were asked for, ten frames
+        // asking for nothing more.
+        let (mut asked, mut quiet, mut frames) = (0, 0, 0);
+        while asked == 0 || quiet < 10 {
+            let now = drag(&mut offscreen);
+            quiet = if now == asked { quiet + 1 } else { 0 };
+            asked = now;
+            frames += 1;
+            assert!(
+                frames < 300,
+                "DEM tiles were asked for again and again while held"
+            );
+        }
+        for _ in 0..40 {
+            assert_eq!(
+                drag(&mut offscreen),
+                asked,
+                "a DEM tile was asked for again while held"
+            );
+        }
+        let time = offscreen.time;
+        offscreen.map.input(
+            Input::PointerUp {
+                id: 1,
+                position: point(x),
+            },
+            time,
+        );
+        offscreen.settle().unwrap();
+        let camera = *offscreen.map.camera();
+        let view = orb_camera::View::new(&camera, viewport, &offscreen.map.surface());
+        let elevation = offscreen.map.elevation().expect("terrain");
+        assert!(
+            view.clearance(&*elevation).is_some(),
+            "the held DEM tiles went in at rest"
+        );
+        crate::common::take_warnings(&mut offscreen.map);
+    }
+
     /// A viewport that grows under a held drag (a window resized, a
     /// phone's toolbar sliding away) sizes the pools for its larger cover
     /// once the camera rests, not in a frame of the gesture.

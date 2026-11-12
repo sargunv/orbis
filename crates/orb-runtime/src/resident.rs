@@ -115,16 +115,17 @@ pub(crate) struct HostData(Option<HostBytesId>, Option<orb_hal::HostImageId>);
 
 impl HostData {
     pub(crate) fn of(result: &TileResult) -> Self {
-        let pixels = result.image.as_ref().map(|i| &i.pixels);
-        let image = match pixels {
-            Some(&crate::ImagePixels::Host(image)) => Some(image),
-            _ => None,
-        };
-        let bytes = match pixels {
-            Some(&crate::ImagePixels::Bytes { bytes, .. }) => Some(bytes),
-            _ => result.payload.host_bytes(),
-        };
-        Self(bytes, image)
+        let Self(bytes, image) = (result.image.as_ref()).map_or(Self(None, None), Self::of_image);
+        Self(bytes.or_else(|| result.payload.host_bytes()), image)
+    }
+
+    /// A tile image's: a host image, or the host bytes its texels lie in.
+    pub(crate) fn of_image(image: &crate::jobs::TileImage) -> Self {
+        match image.pixels {
+            crate::ImagePixels::Host(image) => Self(None, Some(image)),
+            crate::ImagePixels::Bytes { bytes, .. } => Self(Some(bytes), None),
+            crate::ImagePixels::Core(_) => Self(None, None),
+        }
     }
 
     pub(crate) fn release(self, gpu: &mut dyn Gpu) {
