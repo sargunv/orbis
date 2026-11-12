@@ -9,18 +9,16 @@
 //! command for wgpu to track and the driver to encode (on Metal, a blit
 //! `copyFromBuffer`): merged, they come to a fifth as many.
 //!
-//! Natively the upload goes through a staging belt: mapped buffers that
-//! return once the GPU has copied from them. wgpu's `write_buffer` makes
-//! a staging buffer for every call, and making a Metal buffer is a trip
-//! into the kernel: on sparse views, a tenth of a frame.
+//! Natively the upload goes through Orbis's staging belt (`staging`), as
+//! larger writes and texture writes do, staged when they're made.
 
 use std::ops::Range;
 use std::sync::Mutex;
 
 use orb_hal::BufferId;
 
-/// Writes up to this size are gathered; larger ones go to the queue (on
-/// WebGL 2, gathered too).
+/// Writes up to this size are gathered; larger ones are staged natively
+/// and go to the queue on WebGPU (on WebGL 2, gathered too).
 pub(crate) const GATHERED: usize = 64 << 10;
 
 /// The uploads WebGL 2 takes in turn: more than the submissions in flight.
@@ -72,7 +70,10 @@ struct Pending {
     #[cfg(target_arch = "wasm32")]
     upload: Vec<u8>,
     #[cfg(not(target_arch = "wasm32"))]
-    belt: Option<wgpu::util::StagingBelt>,
+    belt: crate::staging::Belt,
+    /// Writes staged when they were made, in the order they came.
+    #[cfg(not(target_arch = "wasm32"))]
+    staged: Vec<crate::staging::Staged>,
 }
 
 impl Pending {
@@ -187,10 +188,61 @@ impl Writes {
             .any(|w| w.buffer == id && w.offset < offset + len && offset < w.offset + w.len)
     }
 
-    /// Drops the gathered writes to a buffer being destroyed.
+    /// Drops the gathered and staged writes to a buffer being destroyed.
     pub(crate) fn forget(&mut self, id: BufferId) {
         let pending = self.0.get_mut().expect("writes poisoned");
         pending.writes.retain(|w| w.buffer != id);
+        #[cfg(not(target_arch = "wasm32"))]
+        pending.staged.retain(|s| !s.writes_buffer(id));
+    }
+
+    /// Drops the staged writes to a texture being destroyed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn forget_texture(&mut self, id: orb_hal::TextureId) {
+        let pending = self.0.get_mut().expect("writes poisoned");
+        pending.staged.retain(|s| !s.writes_texture(id));
+    }
+
+    /// Stages a write too large to gather: it lands ahead of the gathered
+    /// ones, as one to the queue would. `false` when staging failed (a
+    /// lost device).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn stage(
+        &mut self,
+        device: &wgpu::Device,
+        id: BufferId,
+        offset: u64,
+        data: &[u8],
+    ) -> bool {
+        let pending = self.0.get_mut().expect("writes poisoned");
+        let staged = crate::staging::Staged::buffer(&mut pending.belt, device, (id, offset), data);
+        let staged_ok = staged.is_some();
+        pending.staged.extend(staged);
+        staged_ok
+    }
+
+    /// Stages a texture write, rows `bytes_per_row` apart in `data`, to
+    /// land in `wave` (`texture_writes`). `false` when staging failed (a
+    /// lost device).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn stage_texture(
+        &self,
+        device: &wgpu::Device,
+        (region, wave): (&orb_hal::TextureRegion, u32),
+        data: &[u8],
+        bytes_per_row: u32,
+    ) -> bool {
+        let mut pending = self.0.lock().expect("writes poisoned");
+        let staged = crate::staging::Staged::texture(
+            &mut pending.belt,
+            device,
+            (region, wave),
+            data,
+            bytes_per_row,
+        );
+        let staged_ok = staged.is_some();
+        pending.staged.extend(staged);
+        staged_ok
     }
 
     /// Drops the gathered writes: their device is gone.
@@ -199,53 +251,81 @@ impl Writes {
         pending.clear();
         #[cfg(not(target_arch = "wasm32"))]
         {
-            pending.belt = None;
+            pending.belt = Default::default();
+            pending.staged.clear();
         }
     }
 
-    /// Uploads the gathered writes and copies them into place in
-    /// `encoder`, ahead of anything else it records. `false` when the
-    /// staging belt's buffer is invalid, which only a lost device (or one
-    /// out of memory) explains: the writes and the belt are dropped.
+    /// Uploads the gathered writes and copies them and the staged ones
+    /// into place in `encoder`, ahead of anything else it records: the
+    /// staged buffer writes, the gathered ones, then the texture writes.
+    /// Texture writes in waves before the last are submitted first, a
+    /// submission each (`texture_writes`). `false` when the staging belt's
+    /// buffer is invalid, which only a lost device (or one out of memory)
+    /// explains: the writes and the belt are dropped.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn encode(
         &self,
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
         buffer: impl Fn(BufferId) -> wgpu::Buffer,
+        texture: impl Fn(orb_hal::TextureId) -> wgpu::Texture,
         encoder: &mut wgpu::CommandEncoder,
     ) -> bool {
         let mut pending = self.0.lock().expect("writes poisoned");
-        if pending.writes.is_empty() {
-            pending.clear();
+        let mut gathered = None;
+        if !pending.writes.is_empty() {
+            let size = pending.plan(|_| false);
+            let mut belt = std::mem::take(&mut pending.belt);
+            gathered = belt.stage(device, size, wgpu::COPY_BUFFER_ALIGNMENT, |f| {
+                pending.fill(|to, bytes| f.put(to, bytes));
+            });
+            pending.belt = belt;
+            if gathered.is_none() {
+                pending.clear();
+                pending.staged.clear();
+                return false;
+            }
+        }
+        if pending.staged.is_empty() && gathered.is_none() {
             return true;
         }
-        let size = wgpu::BufferSize::new(pending.plan(|_| false)).expect("writes gathered");
-        let mut belt = pending
-            .belt
-            .take()
-            .unwrap_or_else(|| wgpu::util::StagingBelt::new(device.clone(), GATHERED as u64));
-        let align = wgpu::BufferSize::new(wgpu::COPY_BUFFER_ALIGNMENT).expect("nonzero");
-        let slice = belt.allocate(size, align);
-        let Ok(mut view) = slice.get_mapped_range_mut() else {
-            pending.clear();
-            return false;
-        };
-        pending.fill(|to, bytes| view.slice(to..to + bytes.len()).copy_from_slice(bytes));
-        drop(view);
-        let (staging, start) = (slice.buffer(), slice.offset());
-        for run in &pending.runs {
-            encoder.copy_buffer_to_buffer(
-                staging,
-                start + run.at,
-                &buffer(run.buffer),
-                run.offset,
-                run.len,
-            );
+        pending.belt.finish(encoder);
+        let staged = std::mem::take(&mut pending.staged);
+        let last = staged.iter().map(crate::staging::Staged::wave).max();
+        for wave in 0..last.unwrap_or(0) {
+            let mut early = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("texture writes"),
+            });
+            for s in staged.iter().filter(|s| s.wave() == wave) {
+                s.encode(&mut early, &buffer, &texture);
+            }
+            queue.submit([early.finish()]);
         }
-        belt.finish_and_recall_on_submit(encoder);
-        pending.belt = Some(belt);
+        let last = last.unwrap_or(0);
+        let (buffers, textures): (Vec<_>, Vec<_>) = (staged.iter())
+            .filter(|s| s.wave() == last)
+            .partition(|s| matches!(s, crate::staging::Staged::Buffer { .. }));
+        for s in buffers {
+            s.encode(encoder, &buffer, &texture);
+        }
+        if let Some((staging, start)) = gathered {
+            for run in &pending.runs {
+                encoder.copy_buffer_to_buffer(
+                    &staging,
+                    start + run.at,
+                    &buffer(run.buffer),
+                    run.offset,
+                    run.len,
+                );
+            }
+        }
+        for s in textures {
+            s.encode(encoder, &buffer, &texture);
+        }
         pending.clear();
+        // Kept for its allocation.
+        pending.staged = staged;
+        pending.staged.clear();
         true
     }
 

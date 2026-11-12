@@ -22,6 +22,8 @@ mod metal;
 mod offscreen;
 mod slots;
 #[cfg(not(target_arch = "wasm32"))]
+mod staging;
+#[cfg(not(target_arch = "wasm32"))]
 mod surface;
 mod texture_writes;
 mod timing;
@@ -238,10 +240,11 @@ pub struct Uploaded {
 }
 
 /// A write from core memory: gathered when small, or when it overlaps a
-/// gathered one it must land after; otherwise straight to the queue.
+/// gathered one it must land after; otherwise staged natively, and on the
+/// web straight to the queue.
 fn write_core(
     writes: &mut writes::Writes,
-    queue: &wgpu::Queue,
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
     buffers: &Slots<wgpu::Buffer>,
     (id, idle): (BufferId, bool),
     offset: u64,
@@ -262,6 +265,12 @@ fn write_core(
     {
         writes.gather(id, offset, data);
     } else {
+        #[cfg(not(target_arch = "wasm32"))]
+        if writes.stage(device, id, offset, data) {
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = device;
         queue.write_buffer(&buffers[id.0], offset, data);
     }
 }
@@ -594,6 +603,14 @@ impl WgpuGpu {
             return;
         }
         self.issue_texture_writes();
+        #[cfg(not(target_arch = "wasm32"))]
+        let uploaded = self.writes.encode(
+            (&self.device, &self.queue),
+            |id| self.buffers[id.0].clone(),
+            |id| self.texture(id).clone(),
+            encoder,
+        );
+        #[cfg(target_arch = "wasm32")]
         let uploaded = self.writes.encode(
             &self.device,
             &self.queue,
@@ -608,24 +625,41 @@ impl WgpuGpu {
         let _ = uploaded;
     }
 
-    /// Issues the held texture writes to the queue, wave by wave, each wave
-    /// before the last its own submission (see `texture_writes`). GL
-    /// orders its texture uploads as they come, so there the waves share
-    /// one: each submission is a flush, which ANGLE's Metal back end
-    /// commits as a command buffer of its own (#140).
+    /// Issues the held texture writes, wave by wave, each wave before the
+    /// last its own submission (see `texture_writes`): natively staged,
+    /// each in its wave, and on the web to the queue. GL orders its
+    /// texture uploads as they come, so there the waves share one: each
+    /// submission is a flush, which ANGLE's Metal back end commits as a
+    /// command buffer of its own (#140).
     fn issue_texture_writes(&self) {
         let mut held = self.texture_writes.lock().expect("texture writes poisoned");
+        let wave = std::cell::Cell::new(0);
         held.issue(
-            |write, texels| self.issue_texture_write(write, texels),
+            |write, texels| self.issue_texture_write(write, texels, wave.get()),
             || {
-                if !self.gl {
+                wave.set(wave.get() + 1);
+                if cfg!(target_arch = "wasm32") && !self.gl {
                     self.queue.submit([]);
                 }
             },
         );
     }
 
-    fn issue_texture_write(&self, write: &texture_writes::TextureWrite, texels: &[u8]) {
+    /// Issues a texture write in `wave`: natively staged, else (or where
+    /// staging failed, on a lost device) to the queue.
+    fn issue_texture_write(&self, write: &texture_writes::TextureWrite, texels: &[u8], wave: u32) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let texture_writes::Source::Core { bytes_per_row, .. } = write.source
+            && (self.writes).stage_texture(
+                &self.device,
+                (&write.region, wave),
+                texels,
+                bytes_per_row,
+            )
+        {
+            return;
+        }
+        let _ = wave;
         let region = &write.region;
         let origin = wgpu::Origin3d {
             x: region.x,
@@ -1278,7 +1312,7 @@ impl Gpu for WgpuGpu {
         self.uploaded.from_core += data.len() as u64;
         write_core(
             &mut self.writes,
-            &self.queue,
+            (&self.device, &self.queue),
             &self.buffers,
             (id, self.idle_writes.contains(&id.0)),
             offset,
@@ -1300,7 +1334,7 @@ impl Gpu for WgpuGpu {
                 let range = range.start as usize..range.end as usize;
                 write_core(
                     &mut self.writes,
-                    &self.queue,
+                    (&self.device, &self.queue),
                     &self.buffers,
                     (id, self.idle_writes.contains(&id.0)),
                     offset,
@@ -1318,7 +1352,7 @@ impl Gpu for WgpuGpu {
                 .to_vec();
                 write_core(
                     &mut self.writes,
-                    &self.queue,
+                    (&self.device, &self.queue),
                     &self.buffers,
                     (id, self.idle_writes.contains(&id.0)),
                     offset,
@@ -1488,6 +1522,8 @@ impl Gpu for WgpuGpu {
             .get_mut()
             .expect("texture writes poisoned")
             .forget(id);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.writes.forget_texture(id);
         let entry = self.textures.remove(id.0);
         if let (Some(texture), None) = (entry.texture, entry.levels) {
             texture.destroy();
@@ -1518,7 +1554,7 @@ impl Gpu for WgpuGpu {
                 region: *region,
                 source,
             };
-            self.issue_texture_write(&write, data);
+            self.issue_texture_write(&write, data, 0);
         }
     }
 
@@ -1846,6 +1882,16 @@ impl Gpu for WgpuGpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: groups.then_some("passes"),
             });
+        // wgpu-core takes a texture-to-texture copy's barriers as at most
+        // two, which a texture whose layers a staged write left in another
+        // state than the rest outnumbers (a glyph page growing): such a
+        // submission's writes go in a command buffer of their own, as the
+        // queue's pending writes would.
+        if passes.iter().any(|p| matches!(p, Pass::CopyTexture { .. })) {
+            let mut uploads = (self.device).create_command_encoder(&Default::default());
+            self.encode_writes(&mut uploads);
+            self.queue.submit([uploads.finish()]);
+        }
         if groups {
             encoder.push_debug_group("uploads");
         }
