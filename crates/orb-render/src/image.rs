@@ -825,8 +825,8 @@ impl Images {
 }
 
 /// The prepare (render-to-texture `Prepare`): for each pending
-/// job a draw into its padded layer, then one into its slope layer, the job
-/// read from a uniform slot of its own.
+/// job a draw into its padded layer, then one into its slope layer where
+/// the page has slopes, the job read from a uniform slot of its own.
 mod prepare {
     use orb_hal::*;
     use orb_shaders::{PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER};
@@ -838,6 +838,23 @@ mod prepare {
 
     /// A job slot's bytes; jobs are 64 bytes.
     const SLOT: u64 = 256;
+
+    /// A draw a job makes: its group's label, the texture it reads, the
+    /// one it draws into and its borders' shape.
+    type Stage = (&'static str, usize, usize, Border);
+
+    /// The draws a job makes on a page of `kind`: a terrain's page pads
+    /// its elevations alone.
+    fn stages(kind: PageKind) -> &'static [Stage] {
+        const STAGES: [Stage; 2] = [
+            ("prepare pad", DEM_RAW, DEM_PADDED, Border::Padded),
+            ("prepare slope", DEM_PADDED, DEM_SLOPES, Border::Slopes),
+        ];
+        match kind {
+            PageKind::Terrain => &STAGES[..1],
+            _ => &STAGES,
+        }
+    }
 
     /// A layer a job draws into, for its borders' rectangles.
     #[derive(Clone, Copy)]
@@ -897,11 +914,10 @@ mod prepare {
         revision: u32,
         jobs: BufferId,
         slots: u32,
-        /// Per layer: its padded view, and its slopes' where the page has
-        /// slopes.
+        /// Per layer: a view a [stage](stages).
         views: Vec<Vec<TextureId>>,
-        /// Per slot: its pad and slope groups.
-        groups: Vec<[BindGroupId; 2]>,
+        /// Per slot: a group a [stage](stages).
+        groups: Vec<Vec<BindGroupId>>,
     }
 
     impl Targets {
@@ -979,48 +995,50 @@ mod prepare {
                     slot as u64 * SLOT,
                     bytemuck::cast_slice(&job.words()),
                 );
+                let stages = stages(page.kind);
                 while targets.groups.len() <= slot {
                     let at = targets.groups.len() as u64 * SLOT;
-                    let mut group = |label, texture| {
-                        gpu.create_bind_group(&BindGroupDesc {
-                            label,
-                            layout: self.layout,
-                            entries: &[
-                                BindGroupEntry::texture(0, texture, TextureViewDimension::D2Array),
-                                BindGroupEntry::slice(
-                                    2,
-                                    targets.jobs,
-                                    at,
-                                    prepare_job::WORDS as u64 * 4,
-                                ),
-                            ],
+                    let groups = (stages.iter())
+                        .map(|&(label, source, ..)| {
+                            let texture = page.page.texture(source);
+                            gpu.create_bind_group(&BindGroupDesc {
+                                label,
+                                layout: self.layout,
+                                entries: &[
+                                    BindGroupEntry::texture(
+                                        0,
+                                        texture,
+                                        TextureViewDimension::D2Array,
+                                    ),
+                                    BindGroupEntry::slice(
+                                        2,
+                                        targets.jobs,
+                                        at,
+                                        prepare_job::WORDS as u64 * 4,
+                                    ),
+                                ],
+                            })
                         })
-                    };
-                    let pad = group("prepare pad", page.page.texture(DEM_RAW));
-                    let slope = group("prepare slope", page.page.texture(DEM_PADDED));
-                    targets.groups.push([pad, slope]);
+                        .collect();
+                    targets.groups.push(groups);
                 }
                 let layer = job.layer as usize;
                 if targets.views.len() <= layer {
                     targets.views.resize(layer + 1, Vec::new());
                 }
-                // A terrain's page pads its elevations alone.
-                let drawn = match page.kind {
-                    PageKind::Terrain => &[DEM_PADDED][..],
-                    _ => &[DEM_PADDED, DEM_SLOPES],
-                };
                 let views = &mut targets.views[layer];
                 if views.is_empty() {
-                    *views = (drawn.iter())
-                        .map(|&t| gpu.create_layer_view(page.page.texture(t), job.layer, 0))
+                    *views = (stages.iter())
+                        .map(|&(_, _, t, _)| {
+                            gpu.create_layer_view(page.page.texture(t), job.layer, 0)
+                        })
                         .collect();
                 }
                 let dim = page.page.size(DEM_RAW)[0];
-                let stages = [
-                    (self.pad, targets.groups[slot][0], Border::Padded),
-                    (self.slope, targets.groups[slot][1], Border::Slopes),
-                ];
-                for ((pipeline, group, border), &target) in stages.into_iter().zip(&*views) {
+                let pipelines = [self.pad, self.slope];
+                let drawn =
+                    (stages.iter().zip(pipelines)).zip(views.iter().zip(&targets.groups[slot]));
+                for ((&(.., border), pipeline), (&target, &group)) in drawn {
                     let mut commands = vec![
                         RenderCommand::SetPipeline(pipeline),
                         RenderCommand::SetBindGroup { index: 0, group },
