@@ -380,11 +380,7 @@ fn run_test(
             );
         }
     }
-    // Whether it draws 3D terrain, whose images may differ by one in a
-    // channel from run to run (`platforms::byte_identity`).
-    let terrain = value.get("terrain").is_some_and(|t| !t.is_null());
-    let mut result =
-        json!({"id":id, "metadata":metadata.value, "diagnostics":diagnostics, "terrain":terrain});
+    let mut result = json!({"id":id, "metadata":metadata.value, "diagnostics":diagnostics});
     if !reasons.is_empty() {
         finish_skip(&mut result, &reasons, started);
         return Ok(result);
