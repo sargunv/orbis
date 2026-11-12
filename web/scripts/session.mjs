@@ -271,6 +271,11 @@ function deviceTotals(frames) {
     created: sum((f) => f.device.buffersCreated + f.device.texturesCreated),
     allocatedMiB: mib(sum((f) => f.device.bytesAllocated)),
     copiedMiB: mib(sum((f) => f.device.bytesCopied)),
+    // Of those, what pools, tables, tile pages and the drape atlas made
+    // and copied moving into memory of another size: none while moving.
+    poolMoves: sum((f) => f.device.poolMoves),
+    poolAllocatedMiB: mib(sum((f) => f.device.poolBytesAllocated)),
+    poolCopiedMiB: mib(sum((f) => f.device.poolBytesCopied)),
     uploadMiB: mib(sum((f) => f.device.uploadBytes)),
     uploadCalls: sum((f) => f.device.uploadCalls),
     textureWriteSubmissions: sum((f) => f.device.textureWriteSubmissions),

@@ -207,6 +207,12 @@ pub(crate) struct Terrain {
     /// last taken.
     stale: bool,
     pub(crate) revision: u64,
+    /// The cover's tiles before it was coarsened to the drape atlas's
+    /// room: more than the atlas holds asks it to grow at rest.
+    pub(crate) covered: usize,
+    /// What DEM tiles found no layer for while the page couldn't grow:
+    /// they load again once it grows at rest.
+    pub(crate) room: orb_render::Room,
 }
 
 impl Terrain {
@@ -245,6 +251,8 @@ impl Terrain {
             padded: FxHashMap::default(),
             stale: true,
             revision: 0,
+            covered: 0,
+            room: Default::default(),
         }
     }
 
@@ -321,6 +329,7 @@ impl Terrain {
             .collect();
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         let eye = view.eye().truncate();
+        self.covered = tiles.len();
         coarsen(&mut tiles, budget, |t| {
             let offset = DVec2::new(f64::from(t.wrap) * period, 0.0) - view.camera_world();
             let rel = tms.tile_bounds(t.index).translated(offset);
@@ -421,7 +430,7 @@ impl Terrain {
         renderer: &mut Renderer,
         at: (&View, &TileMatrixSet, orb_crs::Geodetic),
         unpack: [f32; 4],
-        skirt: f64,
+        (skirt, cover_room): (f64, u32),
     ) -> (orb_render::FrameTerrain, Vec<TileIndex>) {
         // The terrain draws before its DEM tiles arrive, and where its
         // source has none: flat, skirts and all, as GL JS draws it.
@@ -434,7 +443,7 @@ impl Terrain {
             dem_tile_px: self.tile_px as f32,
         };
         renderer.set_terrain(gpu, Some((self.page, paint)));
-        let requests = self.update(at, renderer.drape_room(gpu) as usize);
+        let requests = self.update(at, cover_room as usize);
         let evicted = self.pyramid.evict();
         self.stale |= !evicted.is_empty();
         if let Some(page) = self.page {
@@ -467,7 +476,7 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        tile: TileIndex,
+        (tile, grow): (TileIndex, bool),
         result: Result<crate::TileOutcome, String>,
         now: f64,
     ) -> Result<(), String> {
@@ -502,9 +511,20 @@ impl Terrain {
             .get_or_insert_with(|| renderer.create_page(gpu, orb_render::PageKind::Dem, size));
         let layer = match renderer.page_size(page) {
             other if other != size => Err(format!("{}×{} among {other:?} tiles", size[0], size[1])),
-            _ => renderer
-                .alloc_layer(gpu, page)
-                .map_err(|_| "out of terrain texture layers".into()),
+            _ => match self.alloc_layer(gpu, renderer, page, grow) {
+                Ok(layer) => Ok(layer),
+                // The page grows at rest; the tile loads again then.
+                Err(_)
+                    if !grow && {
+                        let room = self.refused(renderer);
+                        renderer.can_grow_into(&room)
+                    } =>
+                {
+                    self.pyramid.forget_loading(tile);
+                    return Ok(());
+                }
+                Err(_) => Err("out of terrain texture layers".into()),
+            },
         };
         let layer = layer.inspect_err(|_| self.pyramid.insert_empty(tile))?;
         renderer.write_layer(gpu, page, layer, image.pixels.upload(false));
@@ -514,6 +534,39 @@ impl Terrain {
             renderer.free_layer(page, old.layer);
         }
         Ok(())
+    }
+
+    /// A layer of the DEM page: grown for, if `grow`, or else made by
+    /// evicting DEM tiles the cover no longer reads, least recently used
+    /// first.
+    fn alloc_layer(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        page: PageId,
+        grow: bool,
+    ) -> Result<u32, orb_render::OutOfSpace> {
+        loop {
+            match renderer.alloc_layer(gpu, page, grow) {
+                Err(_) if !grow => match self.pyramid.evict_lru() {
+                    Some(old) => {
+                        renderer.forget_refusals();
+                        renderer.free_layer(page, old.layer);
+                        self.stale = true;
+                    }
+                    None => return renderer.alloc_layer(gpu, page, false),
+                },
+                done => return done,
+            }
+        }
+    }
+
+    /// Keeps what an upload was just refused, for the map to grow at
+    /// rest, and returns it.
+    fn refused(&mut self, renderer: &mut Renderer) -> orb_render::Room {
+        let room = renderer.take_refusals();
+        self.room.merge(&room);
+        room
     }
 
     /// Gives back its DEM page.

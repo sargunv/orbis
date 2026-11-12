@@ -201,6 +201,93 @@ mod tests {
         assert_eq!(differing, 0, "pixels differ from an unbounded scene");
     }
 
+    /// No pool, table, page or atlas moves while input holds the camera or
+    /// it glides after: a map whose pools start at what a flat view needs
+    /// (a host's first sizes, a megabyte each, grown at rest for it) tilts
+    /// to 60° under a drag, evicting cached tiles and stand-ins as it goes
+    /// and waiting where that leaves no room, and makes the room once the
+    /// camera rests, a move a frame, ending where a fresh map does.
+    #[test]
+    fn memory_moves_only_at_rest() {
+        use orb_camera::input::{Button, Input, Modifiers, PointerKind};
+        let at = crate::common::Options {
+            at: Some((orb_crs::Geodetic::new(139.765, 35.68), 14.5, -12.0, 0.0)),
+            ..tokyo(14.5)
+        };
+        let small = crate::common::SceneCapacity::growable();
+        let (mut moved, _, _) = crate::common::Offscreen::load_with(&at, small).unwrap();
+        let viewport = moved.viewport;
+        let point = |x: f64| glam::DVec2::new(x, viewport.height / 2.0);
+        let time = moved.time;
+        moved.map.input(
+            Input::PointerDown {
+                id: 1,
+                kind: PointerKind::Mouse,
+                button: Button::Primary,
+                position: point(viewport.width * 0.8),
+                modifiers: Modifiers::default(),
+            },
+            time,
+        );
+        let (mut moving, mut rest, mut most) = (0, 0, 0);
+        let mut count = |report: &orb_runtime::FrameReport| {
+            let moves = report.resized.moves + report.prepared_resized.moves;
+            if report.moved || report.input {
+                moving += moves;
+            } else {
+                rest += moves;
+                most = most.max(report.resized.moves);
+            }
+        };
+        for step in 1..=40 {
+            let x = viewport.width * (0.8 - 0.6 * f64::from(step) / 40.0);
+            let time = moved.time;
+            moved.map.input(
+                Input::PointerMove {
+                    id: 1,
+                    position: point(x),
+                },
+                time,
+            );
+            crate::common::move_camera(&mut moved.map, |c| c.pitch = 1.5 * f64::from(step));
+            count(&moved.frame());
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        let time = moved.time;
+        let end = point(viewport.width * 0.2);
+        moved.map.input(
+            Input::PointerUp {
+                id: 1,
+                position: end,
+            },
+            time,
+        );
+        let started = std::time::Instant::now();
+        let mut was_idle = false;
+        loop {
+            let report = moved.frame();
+            count(&report);
+            if report.idle && was_idle {
+                break;
+            }
+            was_idle = report.idle;
+            assert!(started.elapsed().as_secs() < 60, "did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        crate::common::take_warnings(&mut moved.map);
+        assert_eq!(moving, 0, "memory moved while the camera did");
+        assert!(rest > 0, "the view needed the pools grown");
+        // A style's first sizes aside (none here), a frame at rest moves
+        // a pool or page once, and lists that copy nothing.
+        assert!(most <= 3, "{most} moves in a frame at rest");
+        let camera = *moved.map.camera();
+        let mut fresh = crate::common::Offscreen::new(&at, small).unwrap();
+        fresh.map.jump_to_state(camera);
+        fresh.settle().unwrap();
+        let differing = crate::common::differing_pixels(&moved.pixels(), &fresh.pixels());
+        assert_eq!(differing, 0, "pixels differ from a fresh map");
+    }
+
     /// Coarser tiles left standing in by a zoom don't crowd out the tiles
     /// that replace them: a scene with room for the view, but not for the
     /// view and the levels zoomed through, ends where a fresh map does.

@@ -182,6 +182,11 @@ impl Symbols {
     /// Gives the placement target `rows` rows (the scene's
     /// `placed_rows`); whether the draws' bindings changed, which the
     /// bundles record.
+    /// The placement target's rows, 0 before it has one.
+    pub(crate) fn rows(&self) -> u32 {
+        self.placing.dispatch().map_or(0, |dispatch| dispatch.rows)
+    }
+
     pub(crate) fn fit(&mut self, gpu: &mut dyn Gpu, rows: u32) -> bool {
         let Some(dispatch) = self.placing.dispatch_mut() else {
             return false;

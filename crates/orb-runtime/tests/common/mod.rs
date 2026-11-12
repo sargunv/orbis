@@ -164,21 +164,26 @@ impl Offscreen {
         capacity: SceneCapacity,
     ) -> Result<(Self, orb_runtime::FrameReport, u32), String> {
         let mut this = Self::new(options, capacity)?;
+        let (report, frames) = this.settle()?;
+        Ok((this, report, frames))
+    }
+
+    /// Draws frames until two in a row are idle (the second draws what
+    /// the first's messages installed): the last report, and how many.
+    pub(crate) fn settle(&mut self) -> Result<(orb_runtime::FrameReport, u32), String> {
         let started = Instant::now();
         let mut frames = 0;
-        // Two idle frames in a row: the second draws what the first's
-        // messages installed.
         let mut was_idle = false;
         loop {
-            let report = this.frame();
+            let report = self.frame();
             frames += 1;
-            for event in this.map.take_events() {
+            for event in self.map.take_events() {
                 if let MapEvent::Warning { message } | MapEvent::Error { message } = event {
                     eprintln!("orb-demo: {message}");
                 }
             }
             if report.idle && was_idle {
-                return Ok((this, report, frames));
+                return Ok((report, frames));
             }
             was_idle = report.idle;
             if started.elapsed().as_secs() > 60 {

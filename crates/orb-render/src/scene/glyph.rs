@@ -19,6 +19,10 @@ pub const GLYPH_PADDING: u32 = 1;
 /// cover their padding, so filtering at their edge reaches one texel past
 /// it, which must not be whichever glyph was packed next to it.
 const GLYPH_MARGIN: u32 = 1;
+/// Glyph pages the atlas starts with: 2 MiB, which Latin labels of a
+/// style's few fonts take a fraction of. It grows at rest past three
+/// quarters full ([`Renderer::grow_headroom`](crate::Renderer::grow_headroom)).
+const FIRST_PAGES: u32 = 8;
 /// Words per glyph row: padded origin (`x | y << 16`), padded size
 /// (`w | h << 16`), page layer, and a zero.
 pub const GLYPH_ROW_WORDS: usize = 4;
@@ -42,6 +46,12 @@ pub struct GlyphAtlas {
     capacity: u32,
     rows: Vec<Option<Row>>,
     free: Vec<u32>,
+    /// Whether a full page may grow as a bitmap arrives: otherwise the
+    /// bitmap waits, its row transparent, for [`grow`](Self::grow).
+    grows: bool,
+    /// Bitmaps that arrived while the pages were full and couldn't grow:
+    /// row, size and texels.
+    deferred: Vec<(u32, [u32; 2], Vec<u8>)>,
 }
 
 impl GlyphAtlas {
@@ -53,6 +63,11 @@ impl GlyphAtlas {
     /// GPU bytes of the glyph pages.
     pub fn bytes(&self) -> u64 {
         self.page.bytes()
+    }
+
+    /// What moving the glyph pages did since the last call.
+    pub(crate) fn take_resized(&mut self) -> crate::scene::Resized {
+        self.page.take_resized()
     }
 
     /// An atlas of at most `capacity` rows, its row table the first
@@ -69,6 +84,7 @@ impl GlyphAtlas {
                 usage: orb_hal::TextureUsages::TEXTURE_BINDING,
                 mip_levels: 1,
             }],
+            FIRST_PAGES,
         );
         table.write_words(gpu, 0, &[0; GLYPH_ROW_WORDS]);
         Self {
@@ -78,7 +94,53 @@ impl GlyphAtlas {
             capacity,
             rows: vec![Some(Row { placed: None })],
             free: Vec::new(),
+            grows: true,
+            deferred: Vec::new(),
         }
+    }
+
+    /// Whether a full page may grow as a bitmap arrives; otherwise the
+    /// bitmap waits for [`grow`](Self::grow).
+    pub(crate) fn set_grows(&mut self, grows: bool) {
+        self.grows = grows;
+    }
+
+    /// Whether bitmaps wait for the pages to grow, and they can.
+    pub(crate) fn short(&self) -> bool {
+        !self.deferred.is_empty() && self.page.can_grow()
+    }
+
+    /// Grows the pages for the bitmaps waiting for room, and writes them:
+    /// one move. Whether the pages grew.
+    pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
+        if self.deferred.is_empty() || self.page.grow(gpu).is_err() {
+            return false;
+        }
+        let grows = std::mem::replace(&mut self.grows, false);
+        for (row, size, bitmap) in std::mem::take(&mut self.deferred) {
+            // Those still without room wait again.
+            let _ = self.upload(gpu, row, size, &bitmap);
+        }
+        self.grows = grows;
+        true
+    }
+
+    /// Grows the pages past three quarters full, within `room` bytes, and
+    /// writes the bitmaps waiting for room: one move. Whether they grew.
+    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: u64) -> bool {
+        if !self.page.headroom().is_some_and(|bytes| bytes <= room) || self.page.grow(gpu).is_err()
+        {
+            return false;
+        }
+        for (row, size, bitmap) in std::mem::take(&mut self.deferred) {
+            let _ = self.upload(gpu, row, size, &bitmap);
+        }
+        true
+    }
+
+    /// Whether [`grow_headroom`](Self::grow_headroom) would grow the pages.
+    pub(crate) fn wants_headroom(&self, room: u64) -> bool {
+        self.page.headroom().is_some_and(|bytes| bytes <= room)
     }
 
     /// The R8 page array, replaced when the atlas grows (see
@@ -149,7 +211,14 @@ impl GlyphAtlas {
         let (layer, origin) = match found {
             Some(found) => found,
             None => {
-                let layer = self.page.alloc(gpu)?;
+                let layer = match self.page.alloc_existing() {
+                    Some(layer) => layer,
+                    None if !self.grows && self.page.can_grow() => {
+                        self.deferred.push((row, size, bitmap.to_vec()));
+                        return Ok(());
+                    }
+                    None => self.page.alloc(gpu)?,
+                };
                 if self.shelves.len() <= layer as usize {
                     self.shelves
                         .resize_with(layer as usize + 1, Shelves::default);
@@ -194,6 +263,7 @@ impl GlyphAtlas {
     /// Frees a row and its texels.
     pub fn release(&mut self, gpu: &mut dyn Gpu, row: u32) {
         assert_ne!(row, 0, "the empty row is never released");
+        self.deferred.retain(|d| d.0 != row);
         let entry = self.rows[row as usize].take().expect("a reserved row");
         if let Some((layer, origin, size)) = entry.placed {
             let shelves = &mut self.shelves[layer as usize];

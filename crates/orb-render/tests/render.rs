@@ -300,6 +300,222 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
     assert!(!h.renderer.grow_for(&mut h.gpu, &[huge]));
 }
 
+/// Held pools (a map's while the camera moves) refuse what doesn't fit
+/// and say what would have held it; growing into that is one move a call,
+/// each pool's meshes copied over, and the property pool and chunk table
+/// grow alike.
+#[test]
+fn held_pools_grow_into_their_refusals_a_move_at_a_time() {
+    let (left, right) = (half_square(0), half_square(2048));
+    let capacity = SceneCapacity {
+        vertex_words: left.vertices.len() as u32,
+        index_words: left.indices.len() as u32,
+        chunks: left.chunks.len() as u32,
+        prop_words: 64,
+        max_vertex_words: 1 << 12,
+        max_index_words: 1 << 12,
+        max_prop_words: 1 << 12,
+        max_chunks: 64,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity, None);
+    h.renderer.set_resizing(&mut h.gpu, false);
+    red_fill(&mut h);
+    let tile = h.tile();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    let data = |mesh| MeshData::new(mesh, &[], 0);
+    let rows = Default::default();
+    h.renderer
+        .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data(&left), &rows)
+        .unwrap();
+    assert_eq!(pixel(&h.render(), 4, 32), RED);
+    h.renderer.take_resized();
+    let sizes = [
+        data(&right).size(),
+        orb_render::MeshSize {
+            props: 1024,
+            ..Default::default()
+        },
+    ];
+    assert!(!h.renderer.fits(&sizes));
+    h.renderer.refuse(&sizes);
+    let room = h.renderer.take_refusals();
+    assert!(!room.is_empty() && h.renderer.can_grow_into(&room));
+    // Vertices, indices, properties and chunks: four moves, one a call.
+    let mut moves = 0;
+    while !h.renderer.fits(&sizes) {
+        assert!(
+            h.renderer.grow_into(&mut h.gpu, &room),
+            "room after {moves} moves"
+        );
+        assert_eq!(h.renderer.take_resized().moves, 1, "one move a call");
+        moves += 1;
+    }
+    assert_eq!(moves, 4);
+    assert!(
+        !h.renderer.grow_into(&mut h.gpu, &room),
+        "nothing left to grow"
+    );
+    h.renderer
+        .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data(&right), &rows)
+        .unwrap();
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 4, 32), RED, "the first mesh copied over");
+    assert_eq!(pixel(&pixels, 36, 32), RED, "the second in the grown pools");
+    assert_eq!(
+        h.renderer.take_resized().moves,
+        0,
+        "held: the frame moved nothing"
+    );
+}
+
+/// Held candidate lists leave out what doesn't fit, and say so; the
+/// first layout that may resize them grows them and draws it all.
+#[test]
+fn held_lists_leave_candidates_out_until_they_may_grow() {
+    let capacity = SceneCapacity {
+        candidates: 1,
+        max_candidates: 1 << 10,
+        max_compacted_words: 1 << 14,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity, None);
+    h.renderer.set_resizing(&mut h.gpu, false);
+    red_fill(&mut h);
+    let tile = h.tile();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    for mesh in [half_square(0), half_square(2048)] {
+        let data = MeshData::new(&mesh, &[], 0);
+        h.renderer
+            .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+            .unwrap();
+    }
+    h.render_stats();
+    assert!(h.renderer.stats().candidates_dropped > 0);
+    assert!(h.renderer.wants_room());
+    assert_eq!(h.renderer.take_resized().moves, 0, "held lists don't move");
+    h.renderer.set_resizing(&mut h.gpu, true);
+    let pixels = h.render();
+    assert_eq!(h.renderer.stats().candidates_dropped, 0);
+    assert!(!h.renderer.wants_room());
+    assert_eq!(pixel(&pixels, 4, 32), RED);
+    assert_eq!(pixel(&pixels, 36, 32), RED);
+    assert!(h.renderer.take_resized().moves > 0, "the lists grew");
+}
+
+/// A held tile page refuses a layer past its last and names itself;
+/// growing into that keeps the layers it held (their texels copied over)
+/// and then takes the tile. Raster and DEM pages alike.
+#[test]
+fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
+    use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey, UploadError};
+    let mut h = Harness::new();
+    let source = 5;
+    let node = RenderNode {
+        family: Family::Raster,
+        source: Some(source),
+    };
+    assert!(h.renderer.remap_nodes(&mut h.gpu, &[node], &[None]));
+    h.renderer.set_paint(
+        &mut h.gpu,
+        0,
+        &NodePaint::Raster(RasterPaint {
+            opacity: 1.0,
+            hue_rotate: 0.0,
+            brightness_min: 0.0,
+            brightness_max: 1.0,
+            saturation: 0.0,
+            contrast: 0.0,
+            nearest: true,
+            mipmapped: false,
+            fade_duration: 0.0,
+        }),
+    );
+    h.renderer.set_resizing(&mut h.gpu, false);
+    for (kind, source) in [(PageKind::Raster, source), (PageKind::Dem, source + 1)] {
+        let upload = |h: &mut Harness, col: u32, rgba: [u8; 4]| {
+            let pixels = rgba.repeat(4);
+            let build = ImageBuild {
+                key: TileKey {
+                    source,
+                    tile: orb_crs::TileIndex::new(4, col, 0),
+                },
+                kind,
+                size: [2, 2],
+                pixels: Pixels::Core(&pixels),
+                mesh: None,
+                patches: None,
+                fade_from: None,
+                unpack: (kind == PageKind::Dem).then_some([0.0; 4]),
+                area: None,
+            };
+            h.renderer.upload_image(&mut h.gpu, &build, false)
+        };
+        // Pages start at eight layers before a map sizes them.
+        let green = [0, 255, 0, 255];
+        let first = upload(&mut h, 0, RED).unwrap();
+        for col in 1..8 {
+            upload(&mut h, col, green).unwrap();
+        }
+        assert!(matches!(upload(&mut h, 8, green), Err(UploadError::NoRoom)));
+        let room = h.renderer.take_refusals();
+        assert!(h.renderer.can_grow_into(&room), "{kind:?}");
+        h.renderer.take_resized();
+        assert!(h.renderer.grow_into(&mut h.gpu, &room));
+        let moved = h.renderer.take_resized();
+        assert_eq!(moved.moves, 1);
+        assert!(
+            moved.bytes_copied > 0,
+            "{kind:?}: the layers held copied over"
+        );
+        upload(&mut h, 8, green).unwrap();
+        if kind == PageKind::Raster {
+            let row = TileRow {
+                extent: 8192.0,
+                scale: 2.0 / 8192.0,
+                clips: [
+                    ClipRect::new([0, 0], [8192, 8192]),
+                    ClipRect::EMPTY,
+                    ClipRect::EMPTY,
+                    ClipRect::EMPTY,
+                ],
+                ..full_view_tile(0.0)
+            };
+            h.renderer.place(first, 8192, &[row]).unwrap();
+            assert_eq!(pixel(&h.render(), 32, 32), RED, "the first layer's texels");
+        }
+    }
+}
+
+/// Glyph bitmaps that arrive while the held glyph pages are full wait,
+/// their rows transparent; growing the pages writes them.
+#[test]
+fn held_glyph_pages_keep_bitmaps_until_they_grow() {
+    let mut h = Harness::new();
+    h.renderer.set_resizing(&mut h.gpu, false);
+    let revision = h.renderer.glyphs().revision();
+    // A page-sized bitmap per row: the ninth outgrows the first 8 pages.
+    let bitmap = vec![255u8; 500 * 500];
+    for _ in 0..9 {
+        let row = h.renderer.glyphs().reserve().unwrap();
+        h.renderer
+            .glyphs()
+            .upload(&mut h.gpu, row, [500, 500], &bitmap)
+            .unwrap();
+    }
+    assert_eq!(h.renderer.glyphs().revision(), revision, "held pages stay");
+    assert!(h.renderer.wants_room());
+    h.renderer.take_resized();
+    assert!(h.renderer.grow_into(&mut h.gpu, &Default::default()));
+    assert_eq!(h.renderer.take_resized().moves, 1);
+    assert_ne!(h.renderer.glyphs().revision(), revision, "the pages grew");
+    assert!(!h.renderer.wants_room(), "the waiting bitmap is written");
+}
+
 /// A mesh drawing another's vertices and indices takes no pool words of
 /// its own, and keeps drawing them when that mesh goes; they free with
 /// the last. A mesh with no words of its own (a point node's indices, a

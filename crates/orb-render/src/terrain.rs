@@ -559,6 +559,9 @@ pub(crate) struct Terrain {
     pub(crate) paint: Option<TerrainPaint>,
     /// The atmosphere's uniform, for fog.
     atmosphere: BufferId,
+    /// What remaking the drape pages did since the last
+    /// [`take_resized`](Self::take_resized).
+    resized: crate::scene::Resized,
 }
 
 /// What a frame's terrain passes drew: render passes, and drape slots
@@ -693,7 +696,13 @@ impl Terrain {
             mip_targets: Default::default(),
             paint: None,
             atmosphere,
+            resized: Default::default(),
         }
+    }
+
+    /// What remaking the drape pages did since the last call.
+    pub(crate) fn take_resized(&mut self) -> crate::scene::Resized {
+        std::mem::take(&mut self.resized)
     }
 
     /// The drape pages' bytes, mips included.
@@ -837,6 +846,7 @@ impl Terrain {
         if !changed {
             return Ok(None);
         }
+        let before = gpu.counters();
         let layout = DrapeLayout {
             stacks,
             per_layer: grids.map(|g| g.map_or(1, |(per_layer, ..)| per_layer)),
@@ -922,6 +932,7 @@ impl Terrain {
         self.write_layout(gpu);
         self.pending.clear();
         self.forget_group(gpu);
+        self.resized.count(gpu, &before);
         Ok(Some(moves))
     }
 

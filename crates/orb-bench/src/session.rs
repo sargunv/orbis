@@ -673,10 +673,10 @@ impl SessionReport {
         writeln!(
             out,
             "| session | frames | pipelines asked | late | made | buffers + textures made | MiB made | MiB \
-             copied on the GPU | MiB uploaded | upload calls | texture-write submissions | drape \
-             slots | peak frame MiB uploaded |"
+             copied on the GPU | pool moves | MiB they made | MiB they copied | MiB uploaded | \
+             upload calls | texture-write submissions | drape slots | peak frame MiB uploaded |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(13))?;
+        writeln!(out, "|{}", "---|".repeat(16))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -685,19 +685,31 @@ impl SessionReport {
                     _ => true,
                 };
                 let (c, slots, late, n) = summed(r.frames.iter().filter(keep));
+                // Moves in upkeep between frames happened at rest.
+                let mut resized = orb_api::Resized::default();
+                for f in r.frames.iter().filter(keep) {
+                    resized += f.report.resized;
+                    if what == "all" {
+                        resized += f.report.prepared_resized;
+                    }
+                }
                 let peak = (r.frames.iter().filter(keep))
                     .map(|f| f.report.gpu.uploaded_bytes())
                     .max()
                     .unwrap_or(0);
                 writeln!(
                     out,
-                    "| {} {what} | {n} | {} | {late} | {} | {} | {} | {} | {} | {} | {} | {slots} | {} |",
+                    "| {} {what} | {n} | {} | {late} | {} | {} | {} | {} | {} | {} | {} | {} | {} | \
+                     {} | {slots} | {} |",
                     r.name,
                     c.pipelines_requested,
                     c.pipelines_compiled,
                     c.buffers_created + c.textures_created,
                     mib(c.bytes_allocated),
                     mib(c.bytes_copied),
+                    resized.moves,
+                    mib(resized.bytes_allocated),
+                    mib(resized.bytes_copied),
                     mib(c.uploaded_bytes()),
                     c.upload_calls,
                     c.texture_write_submissions,
@@ -711,8 +723,54 @@ impl SessionReport {
             "Each frame's device counts since the frame before. late: pipelines asked for that \
              the style's pipeline set left out. input: frames drawn while input \
              held the camera (a pipeline made then compiled mid-gesture); moving: frames \
-             that moved the camera, or with input (memory made then is made while it moves); peak \
-             frame: the most one frame uploaded, with what was prepared before it."
+             that moved the camera, or with input (memory made then is made while it moves); pool \
+             moves: pools, tables, tile pages and the drape atlas moving into memory of another \
+             size, and what they made and copied (part of the device's counts), in the frames \
+             (all: and in the map's upkeep between them, at rest); peak frame: the most one frame \
+             uploaded, with what was prepared before it."
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "| session | budget | allocated at the end | peak | vertices used / allocated | \
+             indices | props | compacted | tables | tile pages | glyph pages | image atlas | drape \
+             atlas | cached |"
+        )?;
+        writeln!(out, "|{}", "---|".repeat(14))?;
+        for r in &self.results {
+            let Some(end) = r.frames.last().map(|f| f.report.memory) else {
+                continue;
+            };
+            let peak = (r.frames.iter())
+                .map(|f| f.report.memory.allocated())
+                .max()
+                .unwrap_or(0);
+            let pool = |p: orb_api::PoolMemory| format!("{} / {}", mib(p.used), mib(p.allocated));
+            let s = &end.scene;
+            writeln!(
+                out,
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                r.name,
+                mib(end.budget),
+                mib(end.allocated()),
+                mib(peak),
+                pool(s.vertices),
+                pool(s.indices),
+                pool(s.props),
+                pool(s.compacted),
+                mib(s.tables),
+                mib(end.tile_textures),
+                mib(end.glyph_textures),
+                mib(end.image_atlas),
+                mib(end.drape_atlas),
+                mib(end.cached),
+            )?;
+        }
+        writeln!(out)?;
+        writeln!(
+            out,
+            "GPU memory in MiB, against the map's budget, when the map settled after the moves, \
+             and the most it held in any frame."
         )?;
         for r in &self.results {
             writeln!(out)?;

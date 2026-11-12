@@ -4,9 +4,11 @@
 //!
 //! A page is one or more texture arrays that share layer numbers: a DEM
 //! tile has its raw elevations, a padded copy and its slopes in the same
-//! layer of three arrays. Pages start at one layer and grow when full, copying
-//! their layers into the larger arrays; [`TilePage::revision`] changes so
-//! bind groups over the old arrays are rebuilt.
+//! layer of three arrays. Pages start at the layers a map's view needs
+//! and grow when full, copying their layers into the larger arrays;
+//! [`TilePage::revision`] changes so bind groups over the old arrays are
+//! rebuilt. Growing and shrinking are their own calls, which a map makes
+//! at rest; the growth tests move every kind of page.
 
 use crate::scene::arena::Slots;
 use orb_hal::{
@@ -14,15 +16,8 @@ use orb_hal::{
     TextureViewDimension,
 };
 
-use crate::scene::OutOfSpace;
+use crate::scene::{OutOfSpace, Resized};
 
-/// Layers a page holds before it first grows: one, so any page that holds
-/// more has grown, and its copy (`resize`) runs wherever a second tile or
-/// glyph page arrives, every fixture with either testing it. Starting at
-/// eight, the copy ran only past an eighth glyph page, and nothing caught
-/// the Adreno 619's WebGL 2 copying layer 0 into every layer, which drew
-/// labels with other glyphs' texels.
-const FIRST_LAYERS: u32 = 1;
 /// Layers a page grows by at least.
 const GROWTH: u32 = 8;
 
@@ -56,9 +51,14 @@ pub enum Pixels<'a> {
 pub(crate) struct TilePage {
     textures: Vec<(PageTexture, TextureId)>,
     capacity: u32,
+    /// The layers it started with, which it doesn't shrink below.
+    first: u32,
     max_layers: u32,
     layers: Slots,
     revision: u32,
+    /// What moving the arrays did since the last
+    /// [`take_resized`](Self::take_resized).
+    resized: Resized,
 }
 
 impl TilePage {
@@ -78,19 +78,26 @@ impl TilePage {
             .sum()
     }
 
-    /// A page of texture arrays whose layers are allocated together.
-    pub(crate) fn new(gpu: &mut dyn Gpu, textures: &[PageTexture]) -> Self {
+    /// A page of texture arrays whose layers are allocated together, of
+    /// `layers` layers to start with, or fewer where the device holds
+    /// fewer in a texture ([`Gpu::texture_fits`]).
+    pub(crate) fn new(gpu: &mut dyn Gpu, textures: &[PageTexture], layers: u32) -> Self {
         let max_layers = gpu.caps().limits.max_texture_array_layers;
-        let capacity = FIRST_LAYERS.min(max_layers);
+        let mut capacity = layers.clamp(1, max_layers);
+        while capacity > 1 && !(textures.iter()).all(|t| gpu.texture_fits(&desc(t, capacity))) {
+            capacity /= 2;
+        }
         Self {
             textures: textures
                 .iter()
                 .map(|&t| (t, gpu.create_texture(&desc(&t, capacity))))
                 .collect(),
             capacity,
+            first: capacity,
             max_layers,
             layers: Slots::new(capacity),
             revision: 0,
+            resized: Resized::default(),
         }
     }
 
@@ -117,6 +124,11 @@ impl TilePage {
 
     pub(crate) fn capacity(&self) -> u32 {
         self.capacity
+    }
+
+    /// What moving the arrays did since the last call.
+    pub(crate) fn take_resized(&mut self) -> Resized {
+        std::mem::take(&mut self.resized)
     }
 
     /// A free layer, growing the page if it is full.
@@ -199,6 +211,11 @@ impl TilePage {
         })
     }
 
+    /// Whether [`grow`](Self::grow) would add layers.
+    pub(crate) fn can_grow(&self) -> bool {
+        self.grown_capacity() > self.capacity
+    }
+
     fn grown_capacity(&self) -> u32 {
         (self.capacity + (self.capacity / 2).max(GROWTH)).min(self.max_layers)
     }
@@ -225,8 +242,7 @@ impl TilePage {
     }
 
     fn shrunk_capacity(&self) -> u32 {
-        let first = FIRST_LAYERS.min(self.max_layers);
-        super::shrunk(self.capacity, self.layers.held_below(), first)
+        super::shrunk(self.capacity, self.layers.held_below(), self.first)
     }
 
     /// Moves the arrays into ones of `capacity` layers, the layers held
@@ -234,6 +250,7 @@ impl TilePage {
     /// it land in the old arrays first and later ones after it. Fails,
     /// keeping the arrays, where the device refuses one.
     fn resize(&mut self, gpu: &mut dyn Gpu, capacity: u32) -> Result<(), OutOfSpace> {
+        let before = gpu.counters();
         let mut made = Vec::with_capacity(self.textures.len());
         for (t, _) in &self.textures {
             match gpu.try_create_texture(&desc(t, capacity)) {
@@ -271,6 +288,7 @@ impl TilePage {
         }
         self.capacity = capacity;
         self.revision += 1;
+        self.resized.count(gpu, &before);
         Ok(())
     }
 }

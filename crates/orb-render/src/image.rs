@@ -203,6 +203,9 @@ pub(crate) struct Images {
     /// What the last frame's levels and edge extensions used (scratch
     /// layers, drawn levels' targets), released by the next mip pass.
     edges: crate::downsample::Transient,
+    /// What removed pages' moves did since the last
+    /// [`take_resized`](Self::take_resized).
+    resized: crate::scene::Resized,
 }
 
 impl Images {
@@ -274,6 +277,7 @@ impl Images {
             prepare: None,
             pages: Vec::new(),
             edges: Default::default(),
+            resized: Default::default(),
         }
     }
 
@@ -359,11 +363,14 @@ impl Images {
             .collect()
     }
 
+    /// A page of `kind` for tiles of `width × height` texels, of `layers`
+    /// layers to start with.
     pub(crate) fn create_page(
         &mut self,
         gpu: &mut dyn Gpu,
         kind: PageKind,
         [width, height]: [u32; 2],
+        layers: u32,
     ) -> PageId {
         let sampled = TextureUsages::TEXTURE_BINDING;
         // Host images are copied in as render targets, and the prepare
@@ -402,7 +409,7 @@ impl Images {
         };
         let page = Page {
             kind,
-            page: TilePage::new(gpu, &textures),
+            page: TilePage::new(gpu, &textures, layers),
             pending: Vec::new(),
             mip_layers: Vec::new(),
             edges: Vec::new(),
@@ -423,9 +430,10 @@ impl Images {
     }
 
     pub(crate) fn remove_page(&mut self, gpu: &mut dyn Gpu, id: PageId) {
-        let page = self.pages[id.0 as usize]
+        let mut page = self.pages[id.0 as usize]
             .take()
             .expect("page already removed");
+        self.resized += page.page.take_resized();
         if let Some(mips) = page.mips {
             destroy_mips(gpu, mips);
         }
@@ -476,6 +484,15 @@ impl Images {
         self.page(id).page.size(0)
     }
 
+    /// What moving the pages did since the last call.
+    pub(crate) fn take_resized(&mut self) -> crate::scene::Resized {
+        let mut resized = std::mem::take(&mut self.resized);
+        for page in self.pages.iter_mut().flatten() {
+            resized += page.page.take_resized();
+        }
+        resized
+    }
+
     /// GPU bytes of the raster and DEM pages.
     pub(crate) fn bytes(&self) -> u64 {
         self.pages.iter().flatten().map(|p| p.page.bytes()).sum()
@@ -495,14 +512,29 @@ impl Images {
             .sum()
     }
 
-    /// Shrinks the pages whose layers in use went down to a quarter;
-    /// whether any did.
+    /// Shrinks the first page whose layers in use went down to a
+    /// quarter: one move. Whether one did.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let mut shrank = false;
-        for page in self.pages.iter_mut().flatten() {
-            shrank |= page.page.shrink(gpu);
-        }
-        shrank
+        (self.pages.iter_mut().flatten()).any(|page| page.page.shrink(gpu))
+    }
+
+    /// Whether page `id` can grow.
+    pub(crate) fn can_grow(&self, id: PageId) -> bool {
+        self.pages[id.0 as usize]
+            .as_ref()
+            .is_some_and(|page| page.page.can_grow())
+    }
+
+    /// Grows page `id`: one move. Whether it grew.
+    pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu, id: PageId) -> bool {
+        (self.pages[id.0 as usize].as_mut()).is_some_and(|page| page.page.grow(gpu).is_ok())
+    }
+
+    /// Changes whenever a page's textures are replaced.
+    pub(crate) fn revisions(&self) -> u64 {
+        (self.pages.iter().flatten())
+            .map(|page| u64::from(page.page.revision()))
+            .sum()
     }
 
     /// Whether [`shrink`](Self::shrink) would shrink a page.

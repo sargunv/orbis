@@ -27,6 +27,39 @@ use orb_layout::{Chunk, TileBox};
 use crate::Renderer;
 use crate::image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
 
+/// What uploads found no room for while the pools couldn't grow
+/// ([`Renderer::take_refusals`]): per pool (vertices, indices,
+/// properties) the words, and the chunk rows, that would have held them,
+/// 0 where they fit; and the tile pages they wanted a layer of. A map
+/// that doesn't move memory while the camera moves keeps it with what
+/// waits, and makes the room at rest ([`Renderer::grow_into`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Room {
+    pub(crate) words: [u32; 3],
+    pub(crate) chunks: u32,
+    pub(crate) pages: Vec<PageId>,
+}
+
+impl Room {
+    /// Nothing was refused.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Room for both.
+    pub fn merge(&mut self, other: &Room) {
+        for (a, b) in self.words.iter_mut().zip(other.words) {
+            *a = (*a).max(b);
+        }
+        self.chunks = self.chunks.max(other.chunks);
+        for &page in &other.pages {
+            if !self.pages.contains(&page) {
+                self.pages.push(page);
+            }
+        }
+    }
+}
+
 /// A tile the renderer holds, from an upload; [`Renderer::release_tile`]
 /// frees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -303,7 +336,8 @@ impl Renderer {
         let page = match self.tiles.page(key.source) {
             Some(page) => page,
             None => {
-                let page = self.images.create_page(gpu, kind, size);
+                let layers = self.page_layers(kind, size);
+                let page = self.images.create_page(gpu, kind, size, layers);
                 for node in &mut self.nodes {
                     if node.source == Some(key.source)
                         && let Some(image) = &mut node.image
@@ -334,14 +368,12 @@ impl Renderer {
         let sizes = vec![image_mesh_size(build.mesh.as_deref()); nodes.len()];
         let fits = self.scene.fits(&sizes) || (grow && self.grow_for(gpu, &sizes));
         if !fits {
+            self.scene.refuse(&sizes);
             return Err(UploadError::NoRoom);
         }
-        let layer = if grow {
-            self.images.alloc_layer(gpu, page).ok()
-        } else {
-            self.images.alloc_existing_layer(page)
-        }
-        .ok_or(UploadError::NoRoom)?;
+        let layer = self
+            .alloc_layer(gpu, page, grow)
+            .map_err(|OutOfSpace| UploadError::NoRoom)?;
         self.images.write_layer(gpu, page, layer, build.pixels);
         if let (PageKind::Raster, Some(area)) = (kind, build.area) {
             self.images.extend_edges(page, layer, area);
@@ -502,6 +534,7 @@ impl Renderer {
     ) -> Result<(GpuTile, Vec<MeshId>), UploadError> {
         let sizes: Vec<MeshSize> = build.meshes.iter().map(|m| m.data.size()).collect();
         if !(self.fits(&sizes) || (grow && self.grow_for(gpu, &sizes))) {
+            self.scene.refuse(&sizes);
             return Err(UploadError::NoRoom);
         }
         let tile = self
@@ -631,6 +664,12 @@ impl Renderer {
         self.scene.fits(meshes)
     }
 
+    /// Records that meshes of these sizes found no room, as an upload
+    /// refused would ([`take_refusals`](Self::take_refusals)).
+    pub fn refuse(&mut self, meshes: &[MeshSize]) {
+        self.scene.refuse(meshes);
+    }
+
     /// Grows the pools, within their limits, until meshes of these sizes
     /// fit; whether they do.
     pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
@@ -640,13 +679,16 @@ impl Renderer {
         fits
     }
 
-    /// Halves the pools, tables and image tile pages a view that emptied
-    /// left mostly free; whether any shrank.
+    /// Halves a pool, table or image tile page a view that emptied left
+    /// mostly free: one move. Whether one shrank.
     pub fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let shrank = self.scene.shrink(gpu);
-        self.glyphs
-            .set_table(self.scene.tables().writer(Table::Props));
-        self.images.shrink(gpu) | shrank
+        self.refused_pages.clear();
+        if self.scene.shrink(gpu) {
+            self.glyphs
+                .set_table(self.scene.tables().writer(Table::Props));
+            return true;
+        }
+        self.images.shrink(gpu)
     }
 
     /// Whether [`shrink`](Self::shrink) would shrink anything.
@@ -658,13 +700,16 @@ impl Renderer {
     /// a frame that doesn't shrink.
     pub fn forget_refusals(&mut self) {
         self.scene.forget_refusals();
+        self.refused_pages.clear();
     }
 
     /// Whether a pool, the chunk table or an image tile page is more than
     /// three quarters full, below its ceiling, and growing it fits in
     /// `room` bytes.
     pub fn wants_headroom(&self, room: u64) -> bool {
-        self.scene.wants_headroom(room) || self.images.wants_headroom(room)
+        self.scene.wants_headroom(room)
+            || self.images.wants_headroom(room)
+            || self.glyphs.wants_headroom(room)
     }
 
     /// Grows one of what is more than three quarters full, within its
@@ -680,7 +725,7 @@ impl Renderer {
                 .set_table(self.scene.tables().writer(Table::Props));
             return true;
         }
-        self.images.grow_headroom(gpu, room)
+        self.images.grow_headroom(gpu, room) || self.glyphs.grow_headroom(gpu, room)
     }
 
     /// Grows the pools once, within their limits; whether they grew.

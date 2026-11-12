@@ -77,7 +77,7 @@ pub use orb_camera::{
 pub use orb_expr::json;
 pub use orb_layout::fill::Bend;
 pub use orb_render::{
-    ARGS_WORDS, DESKTOP_BUDGET, ImageMetadata, MOBILE_BUDGET, PoolMemory, SceneCapacity,
+    ARGS_WORDS, DESKTOP_BUDGET, ImageMetadata, MOBILE_BUDGET, PoolMemory, Resized, SceneCapacity,
     SceneMemory, TargetFormat,
 };
 pub use orb_render::{Gap, Renderer};

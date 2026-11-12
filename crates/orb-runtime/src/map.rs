@@ -186,6 +186,15 @@ pub struct FrameReport {
     /// and calls uploaded. The device's counts, which other maps on it
     /// add to.
     pub gpu: GpuCounters,
+    /// What this map's pools, tables, tile pages and drape atlas did in
+    /// this frame moving into memory of another size (part of `gpu`):
+    /// none in a frame that moved the camera or had input, but for a
+    /// style's first sizes and labels outgrowing twice what the symbol
+    /// placement target held at rest.
+    pub resized: orb_render::Resized,
+    /// What they did in [`Map::prepare`]'s frames since the last frame
+    /// drawn (part of `gpu` too): at rest, in its upkeep.
+    pub prepared_resized: orb_render::Resized,
 }
 
 /// Where a frame's CPU time went on this thread, in microseconds of the
@@ -264,14 +273,18 @@ impl Memory {
             tile_textures,
             glyph_textures,
             image_atlas: atlas,
+            drape_atlas: renderer.drape_bytes(),
             ..Self::default()
         }
     }
 
-    /// GPU bytes allocated: what the budget holds (the drape atlas
-    /// aside).
+    /// GPU bytes allocated: what the budget holds.
     pub fn allocated(&self) -> u64 {
-        self.scene.allocated() + self.tile_textures + self.glyph_textures + self.image_atlas
+        self.scene.allocated()
+            + self.tile_textures
+            + self.glyph_textures
+            + self.image_atlas
+            + self.drape_atlas
     }
 }
 
@@ -655,8 +668,9 @@ pub struct Map {
     pub(crate) placement_ms: f64,
     pub(crate) upload_ms: f64,
     pub(crate) tiles_arrived: u32,
-    /// What preparing spent since the last frame drawn.
-    prepared: (FrameTimes, u32),
+    /// What preparing spent, the tiles it took in and what it moved since
+    /// the last frame drawn.
+    prepared: (FrameTimes, u32, orb_render::Resized),
     /// The device's counts at the last frame drawn.
     counted: GpuCounters,
     /// Arrived tiles wait for the next beat: this one spent its budget.
@@ -761,6 +775,15 @@ pub struct Map {
     /// The renderer's nodes are of a replaced style.
     pub(crate) nodes_stale: bool,
     pub(crate) capacity: SceneCapacity,
+    /// Whether the map sizes the renderer's pools from its budget and the
+    /// viewport ([`orb_render::Sizing`]): unless the host set them.
+    sized: bool,
+    /// Whether this frame's lists and glyph pages may move: the camera
+    /// rested as it began ([`Renderer::set_resizing`]).
+    resizing: bool,
+    /// The last frame neither moved the camera nor had input, nor found
+    /// it moved since the frame before ([`holds_memory`](Self::holds_memory)).
+    camera_rested: bool,
     /// The GPU memory budget.
     pub(crate) budget: u64,
     /// What a frame may spend on arrivals.
@@ -972,6 +995,9 @@ impl Map {
             keep_all_cull: false,
             nodes_stale: false,
             capacity: SceneCapacity::default(),
+            sized: true,
+            resizing: true,
+            camera_rested: true,
             budget: orb_render::DESKTOP_BUDGET,
             frame_budget: FrameBudget::DESKTOP,
             release_cached: false,
@@ -1107,17 +1133,21 @@ impl Map {
     }
 
     /// Sets how much the GPU scene holds, for renderers made after
-    /// ([`Map::create_renderer`]).
+    /// ([`Map::create_renderer`]): its first sizes, which the map no
+    /// longer sizes from its budget.
     pub fn set_scene_capacity(&mut self, capacity: SceneCapacity) {
         self.capacity = capacity;
+        self.sized = false;
     }
 
     /// Sets the GPU memory the map aims to stay within
     /// ([`DESKTOP_BUDGET`](orb_render::DESKTOP_BUDGET), the default, or
-    /// [`MOBILE_BUDGET`](orb_render::MOBILE_BUDGET)). Tiles out of view stay
-    /// cached within a quarter of it and give way first: the scene's pools
-    /// and tile pages grow only as the tiles in view need, to the device's
-    /// limits, so a view that needs more than the budget still draws.
+    /// [`MOBILE_BUDGET`](orb_render::MOBILE_BUDGET)). The scene's pools and
+    /// tile pages start at its shares for the viewport's cover
+    /// ([`orb_render::Sizing`]); tiles out of view stay cached within a
+    /// quarter of it and give way first; the pools and pages grow at rest
+    /// as the tiles in view need, to the device's limits, so a view that
+    /// needs more than the budget still draws.
     pub fn set_memory_budget(&mut self, bytes: u64) {
         self.budget = bytes;
     }
@@ -1790,6 +1820,14 @@ impl Map {
         let asked = gpu.counters().pipelines_requested;
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
         let deadline = self.open_beat(started);
+        // No memory moves while the camera does, but for a style's first
+        // sizes. At rest the candidate lists and glyph pages grow as the
+        // frame needs (the lists copy nothing), and the pools and tile
+        // pages in the map's upkeep, below, a move a frame; a still map's
+        // all move as its frame needs.
+        self.resizing = !self.holds_memory();
+        renderer.set_resizing(gpu, self.resizing);
+        self.size_pools(gpu, renderer, viewport);
         self.take_arrivals(gpu, renderer, pixel_ratio, deadline);
         let mut times = FrameTimes {
             // Uploads and label commits are stages of their own.
@@ -1806,14 +1844,25 @@ impl Map {
             None => false,
         };
         // Room a frame at rest asked for, made before anything this frame
-        // reads it: one pool or page a frame, or else the drape pages in its
-        // plan; each frame looks again. A camera that moved since, or input,
+        // reads it: one move a frame, of a pool, table or page for what
+        // waits for room, or else for room ahead, or else the drape pages in
+        // its plan, or the lists its layout grows or the shrinking at its
+        // end; each frame looks again. A camera that moved since, or input,
         // ends it, so a gesture's first frame doesn't pay for it.
         let held = self.camera.is_held() || self.input.is_active();
         self.resize_now = self.resize_due && !moving && !held && self.camera_seen == seen;
+        self.camera_rested = !moving && !held && self.camera_seen == seen;
         let growing = clock.now();
-        self.resize_grew =
-            self.resize_now && renderer.grow_headroom(gpu, self.headroom_room(renderer));
+        self.resize_grew = self.resize_now && {
+            let room = self.room_wanted();
+            let grew = renderer.grow_into(gpu, &room)
+                || renderer.grow_headroom(gpu, self.headroom_room(renderer));
+            if let Some(terrain) = self.style.as_mut().and_then(|s| s.terrain.as_mut()) {
+                // Its tiles load again, and ask again if they still don't fit.
+                terrain.room = Default::default();
+            }
+            grew
+        };
         self.upload_ms += clock.now() - growing;
 
         // Tiles' patches are on the low-zoom surface the style draws on.
@@ -1911,10 +1960,12 @@ impl Map {
             times.total = micros(started, clock.now());
             self.prepared.0.add_prepared(&times);
             self.prepared.1 += self.tiles_arrived;
+            self.prepared.2 += renderer.take_resized();
             return report;
         };
-        let (prepared, arrived) = std::mem::take(&mut self.prepared);
+        let (prepared, arrived, resized) = std::mem::take(&mut self.prepared);
         report.prepared = prepared;
+        report.prepared_resized = resized;
         report.tiles_arrived = self.tiles_arrived + arrived;
 
         if !self.retired.ramps.is_empty() {
@@ -1979,6 +2030,7 @@ impl Map {
         self.settle_report(gpu, renderer, &mut report, moving);
         (report.moved, report.input) = (moving, held);
         report.centre_loaded = self.centre_loaded();
+        report.resized = renderer.take_resized();
         let counted = gpu.counters();
         report.gpu = counted.since(&self.counted);
         self.counted = counted;
@@ -2109,10 +2161,9 @@ impl Map {
         self.trim_cache(renderer);
         // A moving view only grows what it fills: shrinking as soon as its
         // tiles dipped made the next ones grow it again, into new memory.
-        if self.resize_now || self.mode != RenderMode::Continuous {
+        // What waits for room keeps what it was refused.
+        if (self.resize_now && !self.resize_grew) || self.resizes_freely() {
             renderer.shrink(gpu);
-        } else {
-            renderer.forget_refusals();
         }
         times.place = micros(placing, clock.now());
         (frame_terrain, redrew)
@@ -2192,14 +2243,31 @@ impl Map {
         let holding = (self.style.as_ref()).is_some_and(|s| s.held.iter().any(|h| !h.is_empty()));
         let rest =
             report.idle && !moving && !held && !holding && self.mode == RenderMode::Continuous;
+        // What waits for room a move at rest makes asks for it whether or
+        // not the map is idle, which it isn't until that room is made.
+        // So does a terrain cover coarsened to drape pages that couldn't
+        // grow while the camera moved.
+        let coarsened = (self.style.as_ref().and_then(|s| s.terrain.as_ref())).is_some_and(|t| {
+            t.covered > t.tiles.len() && renderer.drape_held(gpu) < renderer.drape_room(gpu)
+        });
+        let short = !moving
+            && !held
+            && !self.resizes_freely()
+            && (renderer.wants_room() || coarsened || {
+                let room = self.room_wanted();
+                !room.is_empty() && renderer.can_grow_into(&room)
+            });
+        // A rest counts the resizes it made, not those it asked for: a
+        // camera that jumps each frame makes none.
         self.resizes = match rest {
-            true => self.resizes + u8::from(std::mem::take(&mut self.resize_due)),
+            true => self.resizes + u8::from(self.resize_now),
             false => 0,
         };
         self.resize_due = false;
-        if rest
-            && self.resizes < RESIZES
-            && (renderer.would_shrink()
+        if short
+            || rest
+                && self.resizes < RESIZES
+                && (renderer.would_shrink()
                 // What the budget leaves is summed only for something full.
                 || (renderer.wants_headroom(u64::MAX)
                     && renderer.wants_headroom(self.headroom_room(renderer)))
@@ -2230,20 +2298,71 @@ impl Map {
         self.globe_warps.end_frame();
         report.scene = renderer.stats();
         report.memory = self.memory(renderer);
-        // Chunks the cull has no room for don't draw: say so when it starts.
+        // Chunks the cull has no room for don't draw: say so when it starts,
+        // in a frame whose lists could grow (others' wait for rest).
         let dropped = report.scene.candidates_dropped;
-        if dropped > 0 && self.candidates_dropped == 0 {
+        let waits = dropped > 0 && !self.resizing;
+        if dropped > 0 && self.candidates_dropped == 0 && !waits {
             let message = format!(
                 "{dropped} chunks are not drawn: the scene's candidate or compacted-index \
                  memory is full"
             );
             self.events.push(MapEvent::Error { message });
         }
-        self.candidates_dropped = dropped;
+        self.candidates_dropped = if waits { 0 } else { dropped };
+    }
+
+    /// Whether the renderer's pools, lists and pages move as its frames
+    /// need: a still map's do. A continuous map's move only at rest, its
+    /// pools and tile pages in its upkeep, one move a frame, so that no
+    /// frame of a gesture copies or clears memory; meanwhile what doesn't
+    /// fit evicts cached tiles, then stand-ins, or waits.
+    pub(crate) fn resizes_freely(&self) -> bool {
+        self.mode != RenderMode::Continuous
+    }
+
+    /// Whether no memory moves now: a continuous map's camera moves,
+    /// under input or an animation, or moved since the frame before last
+    /// (a host jumping it frame by frame). The first frame after a rest
+    /// may move memory, as a fresh view's does.
+    pub(crate) fn holds_memory(&self) -> bool {
+        !self.resizes_freely() && (self.is_moving() || !self.camera_rested)
+    }
+
+    /// Sizes the renderer's pools and new tile pages for the style and
+    /// the viewport's cover ([`orb_render::Sizing`]), once each changes.
+    fn size_pools(&self, gpu: &mut dyn Gpu, renderer: &mut Renderer, viewport: Viewport) {
+        let Some(style) = self.style.as_ref().filter(|_| self.sized) else {
+            return;
+        };
+        let plan = style.worker.plan();
+        // Background and sky nodes have no source.
+        let vector = (plan.nodes.iter())
+            .any(|n| n.source < plan.sources.len() && plan.image_kind(n.source).is_none());
+        let size = [viewport.width, viewport.height];
+        renderer.size_for(
+            gpu,
+            orb_render::Sizing::of_viewport(self.budget, size, vector),
+        );
+    }
+
+    /// What the tiles and DEM tiles waiting for room were refused: what
+    /// the map's upkeep at rest grows for them.
+    pub(crate) fn room_wanted(&self) -> orb_render::Room {
+        let mut room = orb_render::Room::default();
+        for waiting in &self.waiting {
+            if waiting.generation == self.tile_generation {
+                room.merge(&waiting.room);
+            }
+        }
+        if let Some(terrain) = self.style.as_ref().and_then(|s| s.terrain.as_ref()) {
+            room.merge(&terrain.room);
+        }
+        room
     }
 
     /// The bytes growing ahead of need may take: what the memory budget has
-    /// left (the drape atlas aside, as the budget leaves it).
+    /// left.
     fn headroom_room(&self, renderer: &Renderer) -> u64 {
         let images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_ref().map_or(0, ImageAtlas::bytes);
@@ -2257,7 +2376,7 @@ impl Map {
         let terrain = self.style.as_ref()?.terrain.as_ref()?;
         renderer
             .terrain_on()
-            .then(|| renderer.drape_at_rest(gpu, terrain.tiles.len() as u32))
+            .then(|| renderer.drape_at_rest(gpu, terrain.covered.max(terrain.tiles.len()) as u32))
             .flatten()
     }
 
@@ -2870,7 +2989,6 @@ impl Map {
         let atlas = images.atlas.as_ref().map_or(0, ImageAtlas::bytes);
         Memory {
             budget: self.budget,
-            drape_atlas: renderer.drape_bytes(),
             cached_tiles,
             cached,
             cache_budget: self.budget / 4,
@@ -2888,6 +3006,9 @@ impl Map {
         view: &View,
         report: &mut FrameReport,
     ) -> Option<orb_render::FrameTerrain> {
+        // While the camera moves (as the frame began) the cover fits the
+        // drape pages as they are; otherwise they grow for a cover of more.
+        let held = !self.resizing;
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();
         let root = self.root_frame.expect("eased before the terrain");
@@ -2981,7 +3102,12 @@ impl Map {
             }
         }
         let at = (view, self.surface.tms(), self.camera.state().target);
-        let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, view.world_z(skirt));
+        let cover_room = match held {
+            true => renderer.drape_held(gpu),
+            false => renderer.drape_room(gpu),
+        };
+        let ground = (view.world_z(skirt), cover_room);
+        let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, ground);
         let mut loads = Vec::new();
         for tile in requests {
             if !endpoint.contains(tile) {
@@ -3116,9 +3242,10 @@ impl Map {
         result: Result<crate::TileOutcome, String>,
     ) {
         let now = self.services.clock.now();
+        let grow = self.resizes_freely();
         let terrain = self.style.as_mut().and_then(|s| s.terrain.as_mut());
         if let Some(terrain) = terrain.filter(|t| t.key == source)
-            && let Err(e) = terrain.arrive(gpu, renderer, tile, result, now)
+            && let Err(e) = terrain.arrive(gpu, renderer, (tile, grow), result, now)
         {
             self.warnings.push(format!("terrain tile {tile:?}: {e}"));
         }
@@ -3201,7 +3328,7 @@ impl Map {
                 // The frame stays the source's: a tile without room drops
                 // it and tries again.
                 let applied = self.apply_tile(gpu, renderer, work.key, tile, result, !counted);
-                if matches!(applied, crate::arrival::Applied::Waits(_)) {
+                if matches!(applied, crate::arrival::Applied::Waits(..)) {
                     retries.push((work.key, tile));
                 }
             }

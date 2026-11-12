@@ -6,11 +6,12 @@ use std::time::Duration;
 
 use orb_api::{CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target};
 
-/// The demo's Tokyo extract draws on a few tens of megabytes: pools and
-/// tables start small and grow as the tiles in view need, and the image
-/// atlas adds pages as images arrive. They started at about 110 MB.
+/// The demo's Tokyo extract draws within the map's budget: pools and
+/// tables start at the budget's share for the viewport's cover, so that a
+/// gesture's tiles fit without moving them, and grow at rest only as the
+/// tiles in view need.
 #[test]
-fn tokyo_takes_what_it_draws() {
+fn tokyo_stays_within_the_budget() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, 1024, 768, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
@@ -31,7 +32,7 @@ fn tokyo_takes_what_it_draws() {
             "z{zoom} pitch {pitch}: {:.1} MB allocated",
             memory.allocated() as f64 / 1e6
         );
-        assert!(memory.allocated() < 64 << 20, "z{zoom}: {memory:#?}");
+        assert!(memory.allocated() <= memory.budget, "z{zoom}: {memory:#?}");
     }
 }
 

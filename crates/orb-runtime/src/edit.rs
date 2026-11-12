@@ -354,6 +354,10 @@ impl Map {
         tile: TileIndex,
         result: Result<TileOutcome, String>,
     ) {
+        // Pools don't move while the camera does: tiles out of view make
+        // the room. An edit at rest grows them, as a style's load sizes
+        // them: it has no upkeep to wait for.
+        let free = !self.holds_memory();
         let Some(style) = &mut self.style else {
             return;
         };
@@ -393,8 +397,8 @@ impl Map {
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
         // Room as for an arriving tile: what's free first; over the budget,
-        // tiles out of view go before the pools grow (this one, if it is
-        // one, ends the edit's result).
+        // or while the camera moves, tiles out of view go before the pools
+        // grow (this one, if it is one, ends the edit's result).
         let mut sizes = mesh_sizes(plan, &build);
         if build.rows_only {
             for size in &mut sizes {
@@ -404,7 +408,9 @@ impl Map {
                 };
             }
         }
-        while !renderer.fits(&sizes) && !under_budget(renderer, atlas.bytes(), self.budget) {
+        while !renderer.fits(&sizes)
+            && (!free || !under_budget(renderer, atlas.bytes(), self.budget))
+        {
             let Some(victim) = evict_unused(&mut style.sources, index) else {
                 break;
             };
@@ -412,7 +418,7 @@ impl Map {
                 .ramps
                 .extend(remove_resident(renderer, victim, &mut style.states));
         }
-        let grow = wanted || under_budget(renderer, atlas.bytes(), self.budget);
+        let grow = free && (wanted || under_budget(renderer, atlas.bytes(), self.budget));
         let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
             unreachable!("checked above");
         };

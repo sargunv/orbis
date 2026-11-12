@@ -201,6 +201,30 @@ pub struct FrameGpu {
     /// Submissions made only to order texture writes.
     #[wasm_bindgen(readonly, js_name = textureWriteSubmissions)]
     pub texture_write_submissions: u32,
+    /// The map's pools, tables, tile pages and drape atlas moving into
+    /// memory of another size, and what those moves made and copied (part
+    /// of the counts above): none while the camera moves.
+    #[wasm_bindgen(readonly, js_name = poolMoves)]
+    pub pool_moves: u32,
+    #[wasm_bindgen(readonly, js_name = poolBytesAllocated)]
+    pub pool_bytes_allocated: f64,
+    #[wasm_bindgen(readonly, js_name = poolBytesCopied)]
+    pub pool_bytes_copied: f64,
+}
+
+impl FrameGpu {
+    /// A frame's counts, its pool moves those of the frame and of any
+    /// preparations before it.
+    fn of(report: &orb_runtime::FrameReport) -> Self {
+        let mut resized = report.resized;
+        resized += report.prepared_resized;
+        Self {
+            pool_moves: resized.moves,
+            pool_bytes_allocated: resized.bytes_allocated as f64,
+            pool_bytes_copied: resized.bytes_copied as f64,
+            ..Self::from(&report.gpu)
+        }
+    }
 }
 
 impl From<&orb_hal::GpuCounters> for FrameGpu {
@@ -215,6 +239,7 @@ impl From<&orb_hal::GpuCounters> for FrameGpu {
             upload_bytes: c.uploaded_bytes() as f64,
             upload_calls: c.upload_calls,
             texture_write_submissions: c.texture_write_submissions,
+            ..Self::default()
         }
     }
 }
@@ -1192,7 +1217,7 @@ impl OrbisMap {
             pipelines_pending: report.frame.pipelines_pending,
             layers_waiting: report.frame.nodes_waiting,
             memory: FrameMemory::from(&report.memory),
-            gpu: FrameGpu::from(&report.gpu),
+            gpu: FrameGpu::of(&report),
             drape_slots: report.frame.drape_slots,
             centre_loaded: report.centre_loaded,
             moved: report.moved,

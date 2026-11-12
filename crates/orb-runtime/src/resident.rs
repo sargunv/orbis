@@ -146,6 +146,10 @@ pub(crate) struct WaitingTile {
     pub(crate) build: TileResult,
     /// [`Map::room_state`] when it was last tried.
     pub(crate) tried: Option<[u64; 7]>,
+    /// What it was refused while the pools couldn't grow: what the map's
+    /// upkeep at rest makes room for. Empty while it waits for other
+    /// tiles or sprites' pixels.
+    pub(crate) room: orb_render::Room,
 }
 
 /// Raises the nodes' row maxima to those of new meshes; paint is written

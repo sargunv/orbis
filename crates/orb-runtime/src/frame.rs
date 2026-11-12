@@ -324,6 +324,7 @@ impl Map {
                     tile,
                     build,
                     tried,
+                    room: Default::default(),
                 });
                 continue;
             }
