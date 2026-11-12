@@ -1,7 +1,8 @@
-// The symbol placements in one dispatch: a workgroup for each 64 texels of
-// the placement target, the quads of one of a symbol node's visible chunks
-// (`place_quad`). The workgroups of chunks a node's cull didn't keep this
-// frame leave at once.
+// The symbol placements, a dispatch for point labels and one for line
+// labels: a workgroup for each 64 texels of the placement target, the
+// quads of one of a symbol node's visible chunks (`place_quad`). The
+// workgroups of chunks a node's cull didn't keep this frame, or of the
+// other variant's layers, leave at once.
 
 // The cull's draw arguments and counters, ARGS_WORDS a node (`cull.wgsl`):
 // at 5 the chunks it kept.
@@ -35,6 +36,11 @@ fn cs_place(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_i
     let node = node_cull_at(n);
     let instance = first - node.quad_base + lane;
     if instance / CHUNK_QUADS >= cull_args[n * ARGS_WORDS + 5u] { return; }
+    // Each variant places its own layers, those that place along lines
+    // if either half does (orb-render's `symbol_kind`): the other's
+    // dispatch places the rest, as the line variant has no variable
+    // anchors.
+    if (((halves[n].flags | halves[n + 1u].flags) & ALONG_LINE) != 0u) != LINE_LABELS { return; }
     let placed = place_quad(node, n, instance);
     if placed.written {
         let at = placed_texel_at(first + lane);

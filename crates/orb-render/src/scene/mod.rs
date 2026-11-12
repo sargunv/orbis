@@ -2147,7 +2147,6 @@ impl Scene {
         }
 
         let mut words = frame_words(frame, linear);
-        words[layout::frame::PLACED_ROWS] = self.placed_rows();
         words[layout::frame::PLACED_NODES] = self.nodes.len() as u32;
         gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
         #[cfg(cpu_driven)]

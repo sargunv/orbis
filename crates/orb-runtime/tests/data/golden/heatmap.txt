@@ -11,6 +11,9 @@ submit 0
     bundles [bundle "heatmap density"#0]
   pop
   compute pass "symbol placements"
+    pipeline compute "symbol placement"#0
+    group 0 group "symbol placements"#0
+    dispatch 92 1 1
     pipeline compute "symbol line placement"#0
     group 0 group "symbol placements"#0
     dispatch 92 1 1
@@ -57,10 +60,12 @@ bundle "heatmap density"#0: [Rgba16Float] depth None samples 1
     group 1 group "node"#0
     draw indirect buffer "draw args"#0 at 1824
 layout "symbol placements"#0: 0 ShaderStages(COMPUTE) Uniform; 1 ShaderStages(COMPUTE) Storage { read_only: true }; 2 ShaderStages(COMPUTE) Storage { read_only: true }; 3 ShaderStages(COMPUTE) Storage { read_only: true }; 4 ShaderStages(COMPUTE) Storage { read_only: true }; 6 ShaderStages(COMPUTE) Storage { read_only: true }; 7 ShaderStages(COMPUTE) Storage { read_only: true }; 14 ShaderStages(COMPUTE) Texture { filterable: false, dimension: D2Array }; 15 ShaderStages(COMPUTE) Texture { filterable: false, dimension: D2 }; 17 ShaderStages(COMPUTE) Storage { read_only: true }; 18 ShaderStages(COMPUTE) Storage { read_only: true }; 19 ShaderStages(COMPUTE) StorageTexture { format: Rgba32Uint, dimension: D2Array }; 
-module "symbol line placement"#0: wgsl
-compute "symbol line placement"#0: layouts [layout "symbol placements"#0]; module "symbol line placement"#0 cs_place [("plane", 1.0), ("feature_rows", 0.0)]; 
+module "symbol placement"#0: wgsl
+compute "symbol placement"#0: layouts [layout "symbol placements"#0]; module "symbol placement"#0 cs_place [("plane", 1.0), ("feature_rows", 0.0)]; 
 texture "symbol placements"#0: Rgba32Uint D2Array samples 1 views [] TextureUsages(TEXTURE_BINDING | STORAGE_BINDING)
 group "symbol placements"#0: layout layout "symbol placements"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 14 texture "no tiles"#0 as D2Array; 15 texture "no terrain depth"#0 as D2; 17 buffer "node uniforms"#0 at 0 size None; 18 buffer "draw args"#0 at 0 size None; 19 texture "symbol placements"#0 as D2Array
+module "symbol line placement"#0: wgsl
+compute "symbol line placement"#0: layouts [layout "symbol placements"#0]; module "symbol line placement"#0 cs_place [("plane", 1.0), ("feature_rows", 0.0)]; 
 texture "target"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
 module "fill"#0: wgsl
 render "fill"#0: layouts [layout "scene"#0, layout "node"#0]; module "fill"#0 vs_fill [("plane", 1.0), ("feature_rows", 0.0)]; module "fill"#0 fs_fill [("plane", 1.0)]; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1

@@ -149,7 +149,7 @@ const EXTENT: f32 = 8192.0;
 const PI: f32 = 3.14159265358979;
 const CHUNK_QUADS: u32 = 64u;
 
-// The placement target: two layers of PLACED_WIDTH × `frame.placed_rows`
+// The placement target: two layers of PLACED_WIDTH × its rows
 // texels, a symbol node's quads from its `quad_base` on, a quad's texel in
 // each (orb-render's symbol placements):
 //

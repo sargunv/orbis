@@ -130,10 +130,8 @@ struct Frame {
     // orb-render's `surface_cells` of the view, so the cull, the point
     // shaders and a driver that draws without the cull count them alike.
     surface_cells: u32,
-    // The symbol placements' target's rows (`symbol.wgsl`'s
-    // `PLACED_WIDTH` texels each), and the render nodes whose symbols they
-    // place (the cull's node rows).
-    placed_rows: u32,
+    // The render nodes whose symbols the symbol placements place (the
+    // cull's node rows).
     placed_nodes: u32,
     // Ground lighting (`dev.sargunv.orbis:ground-lighting`), which labels'
     // `["dev.sargunv.orbis:daylight"]` follows (`symbol.wgsl`): toward the

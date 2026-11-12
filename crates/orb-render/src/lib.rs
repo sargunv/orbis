@@ -1720,17 +1720,25 @@ impl Renderer {
         2 * usize::from(icons.along_line || text.along_line) + usize::from(icons.rows || text.rows)
     }
 
-    /// Icon node `i`'s [`symbol_kind`](Self::symbol_kind), and every
-    /// symbol layer's together, which the one placement dispatch for all
-    /// of them places with.
-    fn symbol_kinds(&self, i: usize) -> (usize, usize) {
-        (self.symbol_kind(i), self.symbols_kind())
+    /// Icon node `i`'s [`symbol_kind`](Self::symbol_kind), and the
+    /// [`placings`](Self::placings) that place every symbol layer's quads.
+    fn symbol_kinds(&self, i: usize) -> (usize, symbol::Placings) {
+        (self.symbol_kind(i), self.placings())
     }
 
-    fn symbols_kind(&self) -> usize {
-        (self.nodes.iter().enumerate())
-            .filter(|(_, n)| n.family == Family::SymbolIcon)
-            .fold(0, |kind, (i, _)| kind | self.symbol_kind(i))
+    /// The placement dispatches' kinds, by whether they place along lines:
+    /// the point labels' and the line labels' (`None` where no symbol
+    /// layer is of it), each with property rows if any of its layers
+    /// reads them.
+    fn placings(&self) -> symbol::Placings {
+        let mut placings = [None; 2];
+        let icons = (self.nodes.iter().enumerate()).filter(|(_, n)| n.family == Family::SymbolIcon);
+        for (i, _) in icons {
+            let kind = self.symbol_kind(i);
+            let placing = placings[kind / 2].get_or_insert(kind);
+            *placing |= kind;
+        }
+        placings
     }
 
     /// Sets whether the frame's backgrounds cover every pixel: drawn flat
@@ -2238,8 +2246,8 @@ impl Renderer {
             }
             false => (Vec::new(), false),
         };
-        let kind = (self.symbols_kind(), self.full);
-        passes.extend(self.symbols.pass(gpu, kind, self.scene.placed_quads()));
+        let placings = (self.placings(), self.full);
+        passes.extend(self.symbols.pass(gpu, placings, self.scene.placed_quads()));
         stats.draws += self.extrusion_passes(
             gpu,
             size,
@@ -2977,10 +2985,10 @@ impl Renderer {
             // all 0, as points always have them.
             let quads = (self.driver).draw(self.scene.buffers(), i as u32, NodeDraw::Indexed);
             let apart = [node.separate_halo, self.nodes[i + 1].separate_halo];
-            let (kind, union) = self.symbol_kinds(i);
+            let (kind, placings) = self.symbol_kinds(i);
             return self.symbols.commands(
                 gpu,
-                (kind, union, self.full),
+                (kind, placings, self.full),
                 (scene, group),
                 apart,
                 quads,
