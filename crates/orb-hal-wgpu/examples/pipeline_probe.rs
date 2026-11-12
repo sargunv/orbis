@@ -17,6 +17,14 @@
 //! - `--replace OLD NEW`, `--replace-fs OLD NEW`: edit the vertex (or
 //!   fragment) stage's WGSL, the first `OLD`, which must occur. The dumped
 //!   WGSL has no indentation.
+//! - `--nonce N`: every stage unique to `N`, as the map's shader nonce
+//!   makes them (`orb_hal_wgpu::nonced`), so the system's shader caches
+//!   don't hold it: a cold compile, timed after a trivial one has started
+//!   the driver's compiler.
+//! - `--unchecked`: modules without wgpu's runtime checks (bounds, loop
+//!   bounding), to see what they cost the driver's compiler.
+//! - `--specialise`: each stage's WGSL specialised to its boolean override
+//!   constants, as orb-render makes it (`orb_shaders::specialise`).
 //! - `--vs-entry NAME`: another vertex entry point of the same module.
 //! - `--vs-const k=v,…`, `--fs-const k=v,…`: set override constants.
 //! - `--const-vs`, `--const-fs`: a constant stage in its place (the vertex
@@ -31,6 +39,8 @@
 //!   `--restrict`, `--buffer-restrict` and `--image-restrict`.
 //! - `--vs-spv FILE`, `--fs-spv FILE`: SPIR-V words straight to the driver.
 //! - `--emit-spv PREFIX`: write naga's SPIR-V of each stage there.
+//! - `--emit-msl PREFIX`: write naga's Metal Shading Language of each stage
+//!   there, about as wgpu-hal's Metal back end writes it.
 //!
 //! Prints `OK <label> <ms>` and exits 0, or `FAIL <label>: <why>` and exits
 //! 1; 2 for bad arguments.
@@ -59,6 +69,9 @@ mod native {
         entry: String,
         constants: Vec<(String, f64)>,
         edits: Vec<(String, String)>,
+        nonce: Option<u32>,
+        /// Its WGSL specialised to its boolean constants.
+        specialise: bool,
     }
 
     impl Stage {
@@ -68,6 +81,8 @@ mod native {
                 entry: fields[1].to_string(),
                 constants: constants(fields[2]),
                 edits: Vec::new(),
+                nonce: None,
+                specialise: false,
             }
         }
 
@@ -81,6 +96,35 @@ mod native {
                     return Err(format!("{} has no `{old}`", self.file.display()));
                 }
                 source = source.replacen(old.as_str(), new, 1);
+            }
+            if self.specialise {
+                // The variant's flags, at their defaults where unset.
+                let mut constants: Vec<(&str, f64)> = (self.constants.iter())
+                    .map(|(k, v)| (k.as_str(), *v))
+                    .collect();
+                for (name, default) in [
+                    (orb_shaders::PLANE, 0.0),
+                    (orb_shaders::FEATURE_ROWS, 1.0),
+                    (orb_shaders::FEATURE_STATE, 1.0),
+                    (orb_shaders::PATTERNS, 1.0),
+                ] {
+                    if !constants.iter().any(|(k, _)| *k == name) {
+                        constants.push((name, default));
+                    }
+                }
+                if let Some(specialised) = orb_shaders::specialise(&source, &constants) {
+                    source = specialised;
+                }
+            }
+            if let Some(nonce) = self.nonce {
+                // A run with a nonce dumped its modules with that one.
+                const NONCE: &str = " var orb_nonce: u32 = ";
+                while let Some(at) = source.find(NONCE)
+                    && let Some(end) = source[at..].find("u;")
+                {
+                    source.replace_range(at..at + end + 2, "");
+                }
+                source = orb_hal_wgpu::nonced(&source, nonce);
             }
             entry_module(&source, &self.entry)
         }
@@ -189,6 +233,9 @@ mod native {
         let mut robust: Option<(bool, bool)> = None;
         let (mut const_vs, mut const_fs) = (false, false);
         let (mut vs_spv, mut fs_spv, mut emit) = (None, None, None);
+        let mut nonce = None;
+        let mut unchecked = false;
+        let mut emit_msl = None;
         let mut options = args[2..].iter();
         while let Some(option) = options.next() {
             let mut value = || options.next().cloned().unwrap_or_else(|| usage());
@@ -201,12 +248,33 @@ mod native {
                     let old = value();
                     fs.edits.push((old, value()));
                 }
+                ("--nonce", any) => {
+                    let n = value().parse().unwrap_or_else(|_| usage());
+                    nonce = Some(n);
+                    let stages: Vec<&mut Stage> = match any {
+                        Spec::Render { vs, fs, .. } => vec![vs, fs],
+                        Spec::Compute { cs, .. } => vec![cs],
+                    };
+                    for stage in stages {
+                        stage.nonce = Some(n);
+                    }
+                }
                 ("--vs-entry", Spec::Render { vs, .. }) => vs.entry = value(),
                 ("--vs-const", Spec::Render { vs: s, .. } | Spec::Compute { cs: s, .. }) => {
                     merge(&mut s.constants, constants(&value()));
                 }
                 ("--fs-const", Spec::Render { fs, .. }) => {
                     merge(&mut fs.constants, constants(&value()));
+                }
+                ("--unchecked", _) => unchecked = true,
+                ("--specialise", any) => {
+                    let stages: Vec<&mut Stage> = match any {
+                        Spec::Render { vs, fs, .. } => vec![vs, fs],
+                        Spec::Compute { cs, .. } => vec![cs],
+                    };
+                    for stage in stages {
+                        stage.specialise = true;
+                    }
                 }
                 ("--const-vs", _) => const_vs = true,
                 ("--const-fs", _) => const_fs = true,
@@ -224,6 +292,7 @@ mod native {
                 ("--vs-spv", _) => vs_spv = Some(value()),
                 ("--fs-spv", _) => fs_spv = Some(value()),
                 ("--emit-spv", _) => emit = Some(value()),
+                ("--emit-msl", _) => emit_msl = Some(value()),
                 _ => {
                     eprintln!("pipeline_probe: {option} isn't an option here");
                     std::process::exit(2)
@@ -351,6 +420,11 @@ mod native {
             .enumerate()
             .map(|(i, (source, entry))| {
                 let name = ["vs", "fs"][i.min(1)];
+                if let (Some(prefix), Source::Naga(module, constants)) = (&emit_msl, &source) {
+                    let msl = naga_msl(module, constants).unwrap_or_else(|e| fail(e));
+                    let path = format!("{prefix}-{name}.metal");
+                    std::fs::write(&path, msl).unwrap_or_else(|e| fail(format!("{path}: {e}")));
+                }
                 if let (Some(prefix), Source::Naga(module, constants)) = (&emit, &source) {
                     let words = naga_spv(module, constants, &writing, &binding_map)
                         .unwrap_or_else(|e| fail(e));
@@ -369,10 +443,21 @@ mod native {
                         words
                     }
                     (Source::Naga(module, constants), None) => {
-                        let made = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        let desc = wgpu::ShaderModuleDescriptor {
                             label: Some(name),
                             source: wgpu::ShaderSource::Naga(Cow::Owned(*module)),
-                        });
+                        };
+                        let made = if unchecked {
+                            // SAFETY: a probe's pipeline is compiled, never run.
+                            unsafe {
+                                device.create_shader_module_trusted(
+                                    desc,
+                                    wgpu::ShaderRuntimeChecks::unchecked(),
+                                )
+                            }
+                        } else {
+                            device.create_shader_module(desc)
+                        };
                         return (made, constants, entry);
                     }
                 };
@@ -402,6 +487,23 @@ mod native {
         let constants: Vec<Vec<(&str, f64)>> = (modules.iter())
             .map(|(_, c, _)| c.iter().map(|(k, v)| (k.as_str(), *v)).collect())
             .collect();
+        if let Some(nonce) = nonce {
+            // The driver's compiler service starts with the first compile:
+            // a trivial one first, so the timed one is the pipeline's own.
+            let wgsl = orb_hal_wgpu::nonced("@compute @workgroup_size(1) fn warm() {}", nonce);
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("warm-up"),
+                source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+            });
+            let _ = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("warm-up"),
+                layout: None,
+                module: &module,
+                entry_point: Some("warm"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        }
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let start = Instant::now();
         match &spec {
@@ -734,6 +836,7 @@ mod native {
                     naga::StorageFormat::R32Float => wgpu::TextureFormat::R32Float,
                     naga::StorageFormat::R32Uint => wgpu::TextureFormat::R32Uint,
                     naga::StorageFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
+                    naga::StorageFormat::Rgba32Uint => wgpu::TextureFormat::Rgba32Uint,
                     other => panic!("a storage texture of {other:?}"),
                 },
                 view_dimension,
@@ -876,6 +979,46 @@ mod native {
     /// naga's SPIR-V of a stage as wgpu-hal's Vulkan back end writes it
     /// (`naga_options`, `compile_stage`), without varying names as for
     /// Qualcomm's drivers.
+    /// `module`'s one entry point in Metal Shading Language, its override
+    /// constants `constants`, with wgpu-hal's bounds checks.
+    fn naga_msl(module: &naga::Module, constants: &[(String, f64)]) -> Result<String, String> {
+        use naga::back::msl;
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(module)
+        .map_err(|e| format!("{e:?}"))?;
+        let entry = &module.entry_points[0];
+        let map = constants.iter().cloned().collect();
+        let (module, info) = naga::back::pipeline_constants::process_overrides(
+            module,
+            &info,
+            Some((entry.stage, entry.name.as_str())),
+            &map,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        let check = naga::proc::BoundsCheckPolicy::ReadZeroSkipWrite;
+        let options = msl::Options {
+            lang_version: (3, 0),
+            bounds_check_policies: naga::proc::BoundsCheckPolicies {
+                index: check,
+                buffer: check,
+                image_load: check,
+                binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
+            },
+            ..msl::Options::default()
+        };
+        let pipeline = msl::PipelineOptions {
+            entry_point: Some((entry.stage, entry.name.clone())),
+            vertex_pulling_transform: true,
+            ..msl::PipelineOptions::default()
+        };
+        msl::write_string(&module, &info, &options, &pipeline)
+            .map(|(source, _)| source)
+            .map_err(|e| format!("{e:?}"))
+    }
+
     fn naga_spv(
         module: &naga::Module,
         constants: &[(String, f64)],

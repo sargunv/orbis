@@ -88,10 +88,13 @@ pollster.workspace = true
 log.workspace = true
 
 # examples/pipeline_probe.rs writes naga's SPIR-V as wgpu-hal does, from
-# the device's robustness as wgpu-hal reads it.
+# the device's robustness as wgpu-hal reads it, and its Metal Shading
+# Language.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 ash.workspace = true
-naga = { workspace = true, features = ["spv-out"] }
+naga = { workspace = true, features = ["msl-out", "spv-out"] }
+# Its `--specialise`.
+orb-shaders.workspace = true
 
 [lints]
 workspace = true

@@ -2862,6 +2862,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "orb-hal",
  "orb-host",
+ "orb-shaders",
  "pollster",
  "postcard",
  "sha2",

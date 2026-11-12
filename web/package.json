@@ -12,6 +12,7 @@
     "snapshot": "node scripts/snapshot.mjs",
     "measure": "node scripts/measure.mjs",
     "bench": "node scripts/bench.mjs",
+    "compiles": "node scripts/compiles.mjs",
     "flight": "node scripts/flight.mjs",
     "gestures": "node scripts/gesture-h2h.mjs",
     "session": "node scripts/session.mjs",

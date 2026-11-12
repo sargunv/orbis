@@ -2,7 +2,8 @@
 //! it compiles, for `examples/pipeline_probe.rs` to compile again alone. A
 //! line of `<dir>/pipelines.tsv` per pipeline, once across runs (written
 //! before the driver sees it, so a compile that loses the device is there
-//! too), and each module's WGSL beside it.
+//! too), and each module's WGSL beside it, named by its label and a hash
+//! of its text.
 //!
 //! The line's tab-separated fields: `render`, the label, then the vertex
 //! and fragment stages (each its WGSL file, entry point and `k=v,…`
@@ -38,7 +39,13 @@ pub(super) fn job(job: &Job) {
         let name: String = (s.module.label.chars())
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .collect();
-        let file = format!("{name}.wgsl");
+        // A module's variants (`orb_shaders::specialise`) are its WGSL's.
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&s.module.source, &mut hasher);
+        let file = format!(
+            "{name}-{:08x}.wgsl",
+            std::hash::Hasher::finish(&hasher) as u32
+        );
         let path = dir.join(&file);
         if !path.exists() {
             let _ = std::fs::write(&path, &s.module.source);

@@ -321,7 +321,7 @@ fn gl_array_layers(desc: &TextureDesc<'_>) -> u32 {
 /// what the driver compiles differs too. (A change to a function the
 /// entry point doesn't call wouldn't reach the driver: compaction drops
 /// it before the back end writes the stage.)
-fn nonced(source: &str, nonce: u32) -> String {
+pub fn nonced(source: &str, nonce: u32) -> String {
     let mut out = String::with_capacity(source.len() + 512);
     let mut rest = source;
     while let Some(stage) = ["@vertex", "@fragment", "@compute"]
