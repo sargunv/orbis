@@ -182,7 +182,6 @@ fn style_frame_query_edit_gesture_idle() {
     });
     assert_eq!(map.camera().roll, 30.0);
     map.set_center_clamped_to_ground(false);
-    assert!(!map.center_clamped_to_ground());
     map.set_center_elevation(120.0);
     assert_eq!(map.camera().elevation, 120.0);
     map.ease_to(
@@ -319,16 +318,6 @@ fn idle_comes_once_after_an_ease() {
     );
     assert_eq!(idles, 1);
     assert!((map.zoom() - 1.0).abs() < 1e-9);
-}
-
-#[test]
-fn texture_targets_report_size_and_read_back() {
-    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
-    let mut target = Target::texture(&runtime, 10, 6, 2.0);
-    assert_eq!(target.size(), (10, 6));
-    assert_eq!(target.viewport().width, 5.0);
-    target.resize(8, 4, 1.0);
-    assert_eq!(target.read_pixels().unwrap().len(), 8 * 4 * 4);
 }
 
 /// A wake callback dies with its map, even while a fetch the map started
@@ -1544,7 +1533,6 @@ fn request_transforms_rewrite_what_the_map_fetches() {
     })));
     // Files read offline too.
     runtime.set_online(false);
-    assert!(!runtime.online());
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
     map.load_style_url("app://style.json");

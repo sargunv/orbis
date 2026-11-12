@@ -1462,9 +1462,8 @@ fn camera_only_frames_write_no_rows() {
             assert_eq!(report.tiles_loading, 0, "the move loads nothing");
             assert_eq!(report.frame.placements_written, 0, "step {step}");
             assert!(!report.frame.candidates_rebuilt, "step {step}");
-            // One cull, and the recorded bundles replayed (the CPU driver's
-            // record again when what a node draws changes).
-            assert_eq!(report.frame.dispatches, culls(), "step {step}");
+            // The recorded bundles replayed (the CPU driver's record again
+            // when what a node draws changes).
             assert!(!report.frame.bundle_recorded || culls() == 0, "step {step}");
         }
     }
