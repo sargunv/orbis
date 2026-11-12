@@ -277,7 +277,8 @@ impl Composites {
     }
 
     /// A composite of `source` in `mode` at `opacity`, with `aux` its ramp
-    /// or the canvas beneath; makes the pipeline it needs.
+    /// or the canvas beneath. It draws once its pipeline, the pipeline
+    /// set's, compiled ([`ready`](Self::ready)).
     pub(crate) fn composite(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -286,7 +287,6 @@ impl Composites {
         mode: Mode,
         opacity: f32,
     ) -> Composite {
-        self.make(gpu, mode);
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "composite",
             size: 16,

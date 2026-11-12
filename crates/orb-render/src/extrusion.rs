@@ -18,7 +18,7 @@ pub(crate) struct Extrusions {
     /// sample and at four.
     pipelines: Vec<((ExtrusionShape, bool), Pipelines)>,
     /// The shapes and variants of `pipelines` made ahead of need
-    /// ([`Renderer::prewarm`](crate::Renderer::prewarm)) that no node has
+    /// ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)) that no node has
     /// drawn with: what draws waits for none of them.
     warm: Vec<(ExtrusionShape, bool)>,
     /// The pipelines are made in their full variants, not their plane
@@ -99,10 +99,9 @@ impl Extrusions {
         }
     }
 
-    /// Sets whether the pipelines are made in their full variants; true
-    /// when that changed, and the new variant's are to be made.
-    pub(crate) fn set_full(&mut self, full: bool) -> bool {
-        std::mem::replace(&mut self.full, full) != full
+    /// Sets whether the pipelines are made in their full variants.
+    pub(crate) fn set_full(&mut self, full: bool) {
+        self.full = full;
     }
 
     /// Picks the variant the pipelines draw in (`drawn_full`): the one

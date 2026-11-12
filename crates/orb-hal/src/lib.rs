@@ -131,6 +131,14 @@ pub trait Gpu {
     fn set_background_compiles(&mut self, on: bool) {
         let _ = on;
     }
+    /// Holds background compiles that haven't started while `paused`
+    /// (the map isn't at rest): they run at low priority, after every
+    /// compile a frame waits for and while the map rests. In a browser
+    /// that compiles on the thread that presents (Firefox), each would
+    /// hold frames back. One a frame asks for compiles at once.
+    fn pause_background_compiles(&mut self, paused: bool) {
+        let _ = paused;
+    }
 
     /// Records render commands once for replay with
     /// [`RenderCommand::ExecuteBundles`]. Bundles may not contain

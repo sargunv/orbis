@@ -294,25 +294,26 @@ fn a_drape_pipeline_arriving_last_still_idles() {
 }
 
 /// The child's role in [`hidden_layers_compile_ahead_of_need`].
-const PREWARM_CHILD: &str = "ORB_TEST_PREWARM_CHILD";
+const SET_CHILD: &str = "ORB_TEST_PIPELINE_SET_CHILD";
 
-/// A layer a zoom shows later has its pipelines compiled once the map
-/// rests, in the background: the rest isn't broken by them (no frame
-/// asked for while they compile), and the zoom that shows the layer
-/// waits for nothing. Zoomed in while its compile still runs, the map
+/// A layer a zoom shows later has its pipelines, the style's pipeline
+/// set's, compiled from the load, in the background: the view's load
+/// isn't held up by them, the rest isn't broken by them (no frame asked
+/// for while they compile), and the zoom that shows the layer waits for
+/// nothing. Zoomed in while its compile still runs, the map
 /// waits for it and is woken when it ends. In a child process: compiles
 /// of the layer's pipeline are slowed from the environment.
 #[test]
 fn hidden_layers_compile_ahead_of_need() {
     const COMPILE: Duration = Duration::from_millis(800);
-    if std::env::var_os(PREWARM_CHILD).is_none() {
+    if std::env::var_os(SET_CHILD).is_none() {
         let child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "hidden_layers_compile_ahead_of_need",
                 "--nocapture",
             ])
-            .env(PREWARM_CHILD, "1")
+            .env(SET_CHILD, "1")
             .env(
                 "ORB_FAULT_INJECTION",
                 format!("slow:circle:{}", COMPILE.as_millis()),
@@ -361,15 +362,16 @@ fn hidden_layers_compile_ahead_of_need() {
         });
     };
 
-    // Compiled at rest, ahead of the zoom.
+    // Compiled from the load, ahead of the zoom, which waits for none of
+    // them.
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(style).unwrap();
+    let loading = Instant::now();
     rest(&mut map, &mut target);
-    // The frame at rest asks for one more, which asks for them: upkeep,
-    // which shows nothing new.
-    assert!(map.needs_frame());
-    assert!(!map.has_news(), "upkeep is news");
-    rest(&mut map, &mut target);
+    assert!(
+        loading.elapsed() < COMPILE,
+        "the load waited for the circle"
+    );
     // Long enough for the slowed compile to end on a loaded machine (a
     // full test run, other builds), where twice its time fell short and
     // the zoom then waited for it.

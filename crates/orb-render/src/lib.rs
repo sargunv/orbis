@@ -302,8 +302,8 @@ impl Node {
         }
     }
 
-    /// What of it picks its pipelines, which [`Renderer::prewarm`] sets
-    /// from a paint it may draw with and puts back.
+    /// What of it picks its pipelines, which [`Renderer::set_pipelines`]
+    /// sets from a paint it may draw with and puts back.
     fn shape(&self) -> NodeShape {
         (self.styled, self.rows, self.along_line, self.elevation)
     }
@@ -328,6 +328,22 @@ impl Node {
 /// [`Node::shape`]: styled, rows, along lines and elevation.
 type NodeShape = (bool, bool, bool, paint::ExtrusionShape);
 
+/// What draws together at one zoom a style shows it at, of a style's
+/// pipeline set ([`Renderer::set_pipelines`]): a node and its paint
+/// there (`None` for a family whose pipelines its paint doesn't pick),
+/// or a symbol layer's icon and text nodes, which draw in one list with
+/// one pipeline (`None` for a half that draws nothing there).
+#[derive(Clone, Debug)]
+pub struct PipelineGroup {
+    pub nodes: Vec<(u32, Option<NodePaint>)>,
+    /// The blend the layer composites in there, when it composites once
+    /// (below layer opacity 1, or blending other than normally).
+    pub composite: Option<Blend>,
+    /// It draws in the view the set was made for: its pipelines compile
+    /// first, and frames wait for them.
+    pub first: bool,
+}
+
 #[derive(Debug)]
 pub struct Renderer {
     id: u64,
@@ -350,6 +366,9 @@ pub struct Renderer {
     /// Whether the map's views may need the full projection
     /// ([`set_full_projection`](Self::set_full_projection)).
     full_projection: bool,
+    /// The style has terrain, on or not yet
+    /// ([`set_terrain_reachable`](Self::set_terrain_reachable)).
+    terrain_reachable: bool,
     /// Whether the last frame needed the paint and symbol pipelines' full
     /// variants, not their plane ones (`Variants`): its bundles drew with
     /// them.
@@ -361,9 +380,14 @@ pub struct Renderer {
     /// they were recorded: the bundle a frame the backgrounds fill leaves
     /// out, clearing to its colour.
     beneath: Option<usize>,
-    /// Nodes changed since pipelines were last made for them, or one
-    /// was shown.
+    /// Nodes changed since frames last checked that the pipeline set
+    /// holds theirs, or one was shown.
     pipelines_stale: bool,
+    /// Every pipeline the style can reach ([`set_pipelines`](Self::set_pipelines)).
+    pipeline_set: Vec<PipelineGroup>,
+    /// The set is to be asked for again, in what the map draws it with
+    /// now: other variants, another sample count, or into the drape.
+    set_stale: bool,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
     /// Nodes the main bundle left out, waiting for a pipeline.
@@ -606,10 +630,13 @@ impl Renderer {
             paint: PaintPipelines::default(),
             symbols,
             full_projection: false,
+            terrain_reachable: false,
             full: false,
             background_fills: false,
             beneath: None,
             pipelines_stale: false,
+            pipeline_set: Vec::new(),
+            set_stale: false,
             made_seen: 0,
             waiting: 0,
             drape_waiting: false,
@@ -699,7 +726,7 @@ impl Renderer {
     /// default).
     pub fn set_antialias_3d(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
         if self.extrusions.set_antialias(enabled) {
-            self.pipelines_stale = true;
+            self.set_stale = true;
             self.invalidate_bundle(gpu);
         }
     }
@@ -1000,7 +1027,11 @@ impl Renderer {
     /// one above. Colour stacks come first, in order, then slope stacks,
     /// which the drape keeps on a page of their own ([`DrapeLayout`]).
     fn assign_stacks(&mut self) {
-        let on = self.terrain_on();
+        self.assign_stacks_as(self.terrain_on());
+    }
+
+    /// Puts the draped nodes in stacks as on terrain (`on`), or in none.
+    fn assign_stacks_as(&mut self, on: bool) {
         let inputs: Vec<StackInput> = (self.nodes.iter())
             .map(|node| StackInput {
                 draped: on && node.family.is_draped(),
@@ -1096,7 +1127,6 @@ impl Renderer {
         self.terrain_page = terrain.and_then(|(page, _)| page);
         match terrain {
             Some((page, paint)) => {
-                let target = self.target;
                 let (dem, dim) = match page {
                     Some(page) => (
                         self.images.dem_texture(page),
@@ -1104,12 +1134,7 @@ impl Renderer {
                     ),
                     None => ((self.images.placeholder(), 0), 1),
                 };
-                let atmosphere = self.atmosphere.uniform;
-                let t = self.terrain.get_or_insert_with(|| {
-                    let images = (self.images.image_layout(), self.images.linear());
-                    terrain::Terrain::new(gpu, target, atmosphere, images)
-                });
-                t.set_paint(gpu, paint, dem, dim);
+                self.terrain(gpu).set_paint(gpu, paint, dem, dim);
             }
             None => {
                 if let Some(t) = &mut self.terrain {
@@ -1119,7 +1144,9 @@ impl Renderer {
             }
         }
         if was != self.terrain_on() {
-            self.pipelines_stale = true;
+            // Draped nodes draw into the drape, with its pipelines, and
+            // in the full variants.
+            self.set_stale = true;
             self.restack(gpu);
         }
     }
@@ -1132,6 +1159,30 @@ impl Renderer {
         self.invalidate_bundle(gpu);
     }
 
+    /// The terrain, made for the first that turns on or that the set asks
+    /// for ahead.
+    fn terrain(&mut self, gpu: &mut dyn Gpu) -> &mut terrain::Terrain {
+        let (target, atmosphere) = (self.target, self.atmosphere.uniform);
+        let images = (self.images.image_layout(), self.images.linear());
+        (self.terrain).get_or_insert_with(|| terrain::Terrain::new(gpu, target, atmosphere, images))
+    }
+
+    /// Sets whether the style has terrain, on or not yet (its DEM source
+    /// may still resolve): the pipeline set then holds the terrain's and
+    /// the draped nodes' drape pipelines from the first.
+    pub fn set_terrain_reachable(&mut self, on: bool) {
+        if self.terrain_reachable != on {
+            self.terrain_reachable = on;
+            self.set_stale = true;
+        }
+    }
+
+    /// Whether the style's terrain is still to turn on: its DEM source
+    /// resolves.
+    fn terrain_ahead(&self) -> bool {
+        self.terrain_reachable && !self.terrain_on()
+    }
+
     /// Whether terrain is on: draped nodes draw drape placements.
     pub fn terrain_on(&self) -> bool {
         self.terrain.as_ref().is_some_and(|t| t.paint.is_some())
@@ -1140,13 +1191,14 @@ impl Renderer {
     /// Sets whether the map's views may need the full projection: it
     /// draws on a low-zoom surface (the style's globe, or a projection's
     /// low-zoom plane) at some zoom, or a source's tiles warp onto its
-    /// surface. Those views need the paint and symbol pipelines' full
-    /// variants, which are then made from the first, so a zoom onto the
-    /// surface or a warped tile's arrival doesn't wait for them.
+    /// surface, or terrain may be on. Those views need the paint and
+    /// symbol pipelines' full variants, which are then the set's, so a
+    /// zoom onto the surface or a warped tile's arrival doesn't wait for
+    /// them.
     pub fn set_full_projection(&mut self, on: bool) {
         if self.full_projection != on {
             self.full_projection = on;
-            self.pipelines_stale = true;
+            self.set_stale = true;
         }
     }
 
@@ -1157,13 +1209,14 @@ impl Renderer {
         frame.globe.is_some_and(|g| g.amount > 0.0) || self.terrain_on() || self.tiles.warped() > 0
     }
 
-    /// Which variants of the paint and symbol pipelines to make, `[plane,
-    /// full]`: the plane's for a map that never needs the full ones, and
-    /// otherwise the full ones, which draw every view; and whichever the
-    /// last frame needed.
+    /// Which variants of the paint and symbol pipelines the set takes,
+    /// `[plane, full]`: the plane's for a map that never needs the full
+    /// ones, and otherwise the full ones, which draw every view. The map
+    /// says which ([`set_full_projection`](Self::set_full_projection)),
+    /// not its frames.
     fn variants(&self) -> [bool; 2] {
-        let full = self.full_projection || self.terrain_on() || self.tiles.warped() > 0;
-        [!full && !self.full, full || self.full]
+        let full = self.full_projection || self.terrain_on();
+        [!full, full]
     }
 
     /// How many terrain tiles the drape atlas can hold with this style's
@@ -1318,6 +1371,7 @@ impl Renderer {
         let before = grouped(n.composite);
         n.composite = Some((layer, opacity, blend));
         if grouped(n.composite) != before {
+            self.pipelines_stale = true;
             if n.terrain_layer.is_some() {
                 // The layer gains or loses a terrain layer of its own.
                 self.restack(gpu);
@@ -1695,7 +1749,8 @@ impl Renderer {
         view: AtmosphereView,
     ) {
         let frame = self.scene.buffers().frame;
-        self.atmosphere.set(gpu, self.target, frame, paint, view);
+        let target = (self.target, self.full_projection);
+        self.atmosphere.set(gpu, target, frame, paint, view);
     }
 
     /// Whether a layer can composite at a layer opacity, asking for the
@@ -1706,32 +1761,134 @@ impl Renderer {
         self.composites.ready(gpu, offscreen::Mode::Over)
     }
 
-    /// Asks for the pipelines the nodes shown need and counts those
-    /// compiling: a frame is complete only once none are.
-    pub fn pipelines(&mut self, gpu: &mut dyn Gpu) -> PipelineCounts {
-        if std::mem::take(&mut self.pipelines_stale) {
-            self.make_pipelines(gpu);
-        }
-        gpu.poll_pipelines()
+    /// Sets the style's pipeline set: every pipeline it can reach, by
+    /// what draws together ([`PipelineGroup`]). Asks for them at once: the
+    /// first view's groups as frames wait for them, in draw order, then
+    /// the rest in the background, after every other compile. Frames then
+    /// choose among them and make none: a node shown before its pipeline
+    /// compiled waits for that pipeline alone, or draws with a variant
+    /// compiled that draws it alike (`Variants::drawn`).
+    pub fn set_pipelines(&mut self, gpu: &mut dyn Gpu, set: Vec<PipelineGroup>) {
+        self.pipeline_set = set;
+        self.set_stale = false;
+        self.request_set(gpu);
     }
 
-    /// Makes the pipelines the nodes shown (their layers draw at this
-    /// zoom) or that have drawn need and that aren't made yet, in draw
-    /// order: the device compiles them in the order they are asked for
-    /// (the cull's was first), and [`prioritize`](Self::prioritize) moves
-    /// what the view shows ahead.
-    ///
-    /// A still compiles what its zoom shows and no more, while the
-    /// compiles still overlap the tiles' loading. A node shown for the
-    /// first time records the bundles again, which left it out.
-    fn make_pipelines(&mut self, gpu: &mut dyn Gpu) {
+    /// What comes before a frame: asks for the set's pipelines again in
+    /// what the map now draws them with (other variants, sample count,
+    /// terrain), once that changed, and for the pipelines of nodes shown
+    /// that the set left out. Returns how many of those it asked for: none
+    /// for a complete set, which the path tests hold.
+    pub fn request_pipelines(&mut self, gpu: &mut dyn Gpu) -> u32 {
+        if std::mem::take(&mut self.set_stale) {
+            self.request_set(gpu);
+        }
+        if !self.pipelines_stale {
+            return 0;
+        }
+        let requested = gpu.counters().pipelines_requested;
+        for i in 0..self.nodes.len() {
+            if !self.scene_cull(i).visible && !self.nodes[i].drawn {
+                continue;
+            }
+            self.make_for_node(gpu, i, false);
+            let composite = self.nodes[i].composite;
+            if let (Some(_), Some((.., blend))) = (composite_group(composite), composite) {
+                self.composites.make(gpu, offscreen::Mode::Blend(blend));
+            }
+        }
+        gpu.counters().pipelines_requested - requested
+    }
+
+    /// Asks for the set's pipelines that aren't made: the first view's,
+    /// then the rest in the background. On a style whose terrain isn't on
+    /// yet, they are the drape's and the terrain's: its draped nodes wait
+    /// for it.
+    fn request_set(&mut self, gpu: &mut dyn Gpu) {
+        // Extrusions take the paint pipelines' variant.
+        self.extrusions.set_full(self.variants()[1]);
+        let set = std::mem::take(&mut self.pipeline_set);
+        let ahead = self.terrain_ahead();
+        if ahead {
+            self.assign_stacks_as(true);
+        }
+        for first in [true, false] {
+            gpu.set_background_compiles(!first);
+            for group in set.iter().filter(|g| g.first == first) {
+                self.request_group(gpu, &group.nodes, !first);
+                if let Some(blend) = group.composite {
+                    self.composites.make(gpu, offscreen::Mode::Blend(blend));
+                }
+            }
+        }
+        gpu.set_background_compiles(false);
+        if ahead || self.terrain_on() {
+            self.request_terrain(gpu);
+        }
+        if ahead {
+            self.assign_stacks();
+        }
+        self.pipeline_set = set;
+    }
+
+    /// Asks for the terrain's pipelines at the sample count 3D layers draw
+    /// at, a shaded hillshade's where the terrain layers shade one, and
+    /// the drape atlas's mips.
+    fn request_terrain(&mut self, gpu: &mut dyn Gpu) {
+        let samples = self.extrusions.samples;
+        let shaded = self.terrain_layers.iter().any(|l| l.shade.is_some());
+        self.terrain(gpu).request_pipelines(gpu, samples, shaded);
+        self.downsampler.make(gpu);
+        self.images.make_prepare(gpu);
+        // Terrain layers composite into the map.
+        self.composites.make(gpu, offscreen::Mode::Over);
+    }
+
+    /// Asks for the pipelines one group draws with: each node shaped as
+    /// its paint there picks them, then put back.
+    fn request_group(&mut self, gpu: &mut dyn Gpu, group: &[(u32, Option<NodePaint>)], warm: bool) {
+        let fits = |&(i, ref paint): &(u32, Option<NodePaint>)| {
+            let node = self.nodes.get(i as usize);
+            node.is_some_and(|n| paint.as_ref().is_none_or(|p| p.fits(n.family)))
+        };
+        if !group.iter().all(fits) {
+            return;
+        }
+        let kept: Vec<_> = (group.iter())
+            .map(|(i, paint)| {
+                let node = &mut self.nodes[*i as usize];
+                let kept = node.shape();
+                match paint {
+                    Some(paint) => node.set_shape(paint),
+                    // A symbol half that draws nothing reads nothing.
+                    None if node.family.is_symbol() => {
+                        (node.rows, node.along_line) = (false, false)
+                    }
+                    None => {}
+                }
+                (*i as usize, kept)
+            })
+            .collect();
+        let mut drawers: Vec<usize> = kept.iter().map(|&(i, _)| self.drawer(i)).collect();
+        drawers.dedup();
+        for i in drawers {
+            self.make_for_node(gpu, i, warm);
+        }
+        for (i, kept) in kept {
+            self.nodes[i].restore_shape(kept);
+        }
+    }
+
+    /// Marks the nodes shown (their layers draw at this zoom) as drawn: a
+    /// node shown for the first time records the bundles again, which
+    /// left it out, and a draped one redraws the drape slots.
+    fn show_nodes(&mut self, gpu: &mut dyn Gpu) {
         let (mut started, mut draped) = (false, false);
         for i in 0..self.nodes.len() {
             // A node that drew keeps its pipelines made for what it draws
             // into (the 3D sample count, the terrain's drape) while it
-            // hides: the bundles record it, and it may show again. A
-            // symbol layer's text node draws with its icon node.
-            if !self.scene_cull(i).visible && !self.nodes[i].drawn {
+            // hides: the bundles record it, and it may show again.
+            if !self.scene_cull(i).visible {
                 continue;
             }
             let node = &mut self.nodes[i];
@@ -1739,7 +1896,6 @@ impl Renderer {
                 started = true;
                 draped |= node.stack.is_some();
             }
-            self.make_for_node(gpu, i, false);
         }
         if started {
             self.invalidate_bundle(gpu);
@@ -1748,53 +1904,6 @@ impl Renderer {
             // Slots drawn without them lack those layers.
             terrain.redraw_all();
         }
-    }
-
-    /// Asks, in the background, for the pipelines each group of `(i,
-    /// paint)` draws with, so a gesture that shows them later, or changes
-    /// what their paint reads, doesn't wait for their compiles: for the
-    /// map's variants, sample count and terrain as they are now. A group
-    /// is what draws together at one zoom it shows at: a node and its
-    /// paint (`None` for a family whose pipelines its paint doesn't pick),
-    /// or a symbol layer's icon and text nodes, which draw in one list
-    /// with one pipeline (`None` for a half that draws nothing there).
-    /// They compile after every pipeline a frame asks for, and frames
-    /// don't wait for them until a node shown draws with one.
-    pub fn prewarm(&mut self, gpu: &mut dyn Gpu, groups: &[Vec<(u32, Option<NodePaint>)>]) {
-        gpu.set_background_compiles(true);
-        for group in groups {
-            let fits = |&(i, ref paint): &(u32, Option<NodePaint>)| {
-                let node = self.nodes.get(i as usize);
-                node.is_some_and(|n| paint.as_ref().is_none_or(|p| p.fits(n.family)))
-            };
-            if !group.iter().all(fits) {
-                continue;
-            }
-            let kept: Vec<_> = (group.iter())
-                .map(|(i, paint)| {
-                    let node = &mut self.nodes[*i as usize];
-                    let kept = node.shape();
-                    match paint {
-                        Some(paint) => node.set_shape(paint),
-                        // A symbol half that draws nothing reads nothing.
-                        None if node.family.is_symbol() => {
-                            (node.rows, node.along_line) = (false, false)
-                        }
-                        None => {}
-                    }
-                    (*i as usize, kept)
-                })
-                .collect();
-            let mut drawers: Vec<usize> = kept.iter().map(|&(i, _)| self.drawer(i)).collect();
-            drawers.dedup();
-            for i in drawers {
-                self.make_for_node(gpu, i, true);
-            }
-            for (i, kept) in kept {
-                self.nodes[i].restore_shape(kept);
-            }
-        }
-        gpu.set_background_compiles(false);
     }
 
     /// Makes node `i`'s pipelines as it draws now, or (`warm`) ahead of
@@ -1809,10 +1918,19 @@ impl Renderer {
         let variants = self.variants();
         let node = &self.nodes[i];
         let (family, kind) = (node.family, node.paint_kind());
+        if matches!(family, Family::Hillshade | Family::ColorRelief) {
+            // Its DEM tiles are prepared.
+            self.images.make_prepare(gpu);
+        }
         if node.shades_on_terrain() {
             // Its slopes into the drape atlas, which the terrain pass
             // lights.
             self.images.make_slopes(gpu);
+            return;
+        }
+        if node.stack.is_none() && family.is_draped() && own_drape && self.terrain_ahead() {
+            // It drapes once the style's terrain is on: until then it waits
+            // for it, rather than for pipelines it would draw flat with.
             return;
         }
         if node.stack.is_some() && own_drape {
@@ -1946,7 +2064,9 @@ impl Renderer {
     }
 
     /// Draws a frame into `target`, cleared to `clear` (premultiplied RGBA),
-    /// timing its stages on `clock` (milliseconds).
+    /// timing its stages on `clock` (milliseconds). It asks for no
+    /// pipeline: [`request_pipelines`](Self::request_pipelines) comes
+    /// before it.
     pub fn render(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1977,7 +2097,13 @@ impl Renderer {
             );
         }
         let generation = self.terrain.as_ref().map(|t| t.layout().generation);
+        let requested = gpu.counters().pipelines_requested;
         let mut stats = self.record(gpu, frame, target, clear, clock);
+        debug_assert_eq!(
+            gpu.counters().pipelines_requested,
+            requested,
+            "a frame asked for a pipeline"
+        );
         // Drape slots blanked during the frame (pipelines a slot waited for
         // arrived, or terrain couldn't draw yet) draw again from the next:
         // this one shows them without what they lacked.
@@ -2192,24 +2318,23 @@ impl Renderer {
         }
     }
 
-    /// Settles the pipelines the frame draws with: the full projection's,
-    /// made if they weren't, and whatever waited for those that arrived
-    /// recorded again.
+    /// Settles the pipelines the frame draws with: the variant it needs,
+    /// and whatever waited for those that arrived recorded again.
     fn settle_pipelines(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> PipelineCounts {
-        // The bundles draw with the variants the frame needs, made if
-        // they weren't.
+        // The bundles draw with the variants the frame needs.
         let full = self.needs_full(frame);
+        debug_assert!(
+            !full || self.variants()[1],
+            "a frame needs the full projection, which the map didn't declare"
+        );
         if full != self.full {
             self.full = full;
-            self.pipelines_stale = true;
             self.invalidate_bundle(gpu);
         }
-        // Extrusions are made in the plane variants where the paint
-        // pipelines are, and draw in them once compiled.
-        if self.extrusions.set_full(!self.variants()[0]) {
-            self.pipelines_stale = true;
+        if std::mem::take(&mut self.pipelines_stale) {
+            self.show_nodes(gpu);
         }
-        let compiling = self.pipelines(gpu);
+        let compiling = gpu.poll_pipelines();
         if self.extrusions.settle(gpu) {
             for node in &mut self.nodes {
                 if let Some(extrusion) = &mut node.extrusion {
@@ -2612,7 +2737,7 @@ impl Renderer {
 
     /// What a bundle record finds compiled besides the nodes' own
     /// pipelines. Those only a family needs are asked after once a node of
-    /// it drew: made ahead of need ([`prewarm`](Self::prewarm)), they
+    /// it drew: made ahead of need ([`set_pipelines`](Self::set_pipelines)), they
     /// compile in the background until then.
     fn ready(&mut self, gpu: &mut dyn Gpu, terrain_on: bool) -> Ready {
         let drawn = |families: &[Family]| {

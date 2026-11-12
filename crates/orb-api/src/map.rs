@@ -320,8 +320,7 @@ impl Map {
 
     /// Whether the map wants a frame: one that shows something new
     /// ([`has_news`](Self::has_news)), or one for its own upkeep at rest
-    /// (resizing its memory to the view, prewarming pipelines). An idle map
-    /// needs no frames.
+    /// (resizing its memory to the view). An idle map needs no frames.
     pub fn needs_frame(&self) -> bool {
         self.has_news() || self.upkeep
     }

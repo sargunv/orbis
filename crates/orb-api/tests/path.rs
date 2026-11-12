@@ -96,6 +96,9 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
     moved.set_style_json(style).unwrap();
     moved.jump_to(&camera(start));
     common::settle(&mut moved, &mut target);
+    // The style's pipeline set came with it: what the path shows on the
+    // way, and at its end, asks for none.
+    let requested = runtime.stats().counters.pipelines_requested;
     let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
     for step in 1..=steps {
         let t = f64::from(step) / f64::from(steps);
@@ -110,6 +113,11 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
         std::thread::sleep(Duration::from_millis(8));
     }
     common::settle(&mut moved, &mut target);
+    assert_eq!(
+        runtime.stats().counters.pipelines_requested,
+        requested,
+        "the path's frames asked for pipelines the style's set left out"
+    );
     let gestured = target.read_pixels().unwrap();
     let rest = moved.camera();
     drop(moved);

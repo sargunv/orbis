@@ -135,6 +135,7 @@ pub(crate) fn bind_group_layout_entry(entry: &BindGroupLayoutEntry) -> wgpu::Bin
     }
 }
 
+#[cfg(not(webgpu))]
 pub(crate) fn color_target(target: ColorTargetState) -> wgpu::ColorTargetState {
     wgpu::ColorTargetState {
         format: texture_format(target.format),

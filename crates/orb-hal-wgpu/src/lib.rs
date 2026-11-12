@@ -159,6 +159,8 @@ pub struct WgpuGpu {
     background: bool,
     /// Background pipelines compiling that no frame asked for.
     background_pending: std::collections::HashSet<PipelineId>,
+    /// Background compiles wait ([`Gpu::pause_background_compiles`]).
+    background_paused: bool,
     /// Pipelines compiled that a frame asked for ([`PipelineCounts::made`]).
     made: u32,
     /// A compile that ran past the watchdog's limit, or failed: the device
@@ -499,6 +501,7 @@ impl WgpuGpu {
             pending: 0,
             background: false,
             background_pending: Default::default(),
+            background_paused: false,
             made: 0,
             hung: None,
             compiled: Vec::new(),
@@ -940,6 +943,15 @@ impl WgpuGpu {
             self.hung = Some(label);
             self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        self.gate_background();
+    }
+
+    /// Lets background compiles start only while no compile a frame waits
+    /// for is pending and they aren't paused: they are what is left once
+    /// the view has what it needs.
+    fn gate_background(&mut self) {
+        let open = self.pending == 0 && !self.background_paused;
+        self.compiler.open_background(&self.device, open);
     }
 
     fn submit_job(&mut self, job: compile::Job, layouts: &[BindGroupLayoutId]) {
@@ -948,6 +960,7 @@ impl WgpuGpu {
             self.background_pending.insert(job.id());
         } else {
             self.pending += 1;
+            self.gate_background();
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -974,6 +987,7 @@ impl WgpuGpu {
     }
 
     /// The pipeline cache pipelines are made through, if any.
+    #[cfg(not(webgpu))]
     fn cache(&self) -> Option<wgpu::PipelineCache> {
         #[cfg(not(target_arch = "wasm32"))]
         return self.pipeline_cache.clone();
@@ -1192,6 +1206,7 @@ impl WgpuGpu {
         self.queue.get_timestamp_period()
     }
 
+    #[cfg(not(webgpu))]
     fn pipeline_layout(&self, label: &str, layouts: &[BindGroupLayoutId]) -> wgpu::PipelineLayout {
         let layouts: Vec<_> = layouts
             .iter()
@@ -1754,6 +1769,7 @@ impl Gpu for WgpuGpu {
         let module = |stage: &ShaderStage<'_>| self.shader_modules[stage.module.0].clone();
         let job = compile::RenderJob {
             label: desc.label.to_owned(),
+            #[cfg(not(webgpu))]
             layout: self.pipeline_layout(desc.label, desc.bind_group_layouts),
             vertex: compile::Stage::new(&desc.vertex, module(&desc.vertex)),
             fragment: compile::Stage::new(&desc.fragment, module(&desc.fragment)),
@@ -1762,7 +1778,9 @@ impl Gpu for WgpuGpu {
             topology: desc.topology,
             cull_back: desc.cull_back,
             sample_count: desc.sample_count,
+            #[cfg(not(webgpu))]
             attribute_zero: self.caps.gl_shaders(),
+            #[cfg(not(webgpu))]
             cache: self.cache(),
         };
         self.count(|c| c.pipelines_requested += 1);
@@ -1774,11 +1792,13 @@ impl Gpu for WgpuGpu {
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId {
         let job = compile::ComputeJob {
             label: desc.label.to_owned(),
+            #[cfg(not(webgpu))]
             layout: self.pipeline_layout(desc.label, desc.bind_group_layouts),
             compute: compile::Stage::new(
                 &desc.compute,
                 self.shader_modules[desc.compute.module.0].clone(),
             ),
+            #[cfg(not(webgpu))]
             cache: self.cache(),
         };
         self.count(|c| c.pipelines_requested += 1);
@@ -1802,6 +1822,7 @@ impl Gpu for WgpuGpu {
         // A frame asks for a background pipeline: it waits for it now.
         if self.background_pending.remove(&id) {
             self.pending += 1;
+            self.gate_background();
             #[cfg(not(target_arch = "wasm32"))]
             self.compiler.promote(&self.device, id);
             #[cfg(target_arch = "wasm32")]
@@ -1824,6 +1845,13 @@ impl Gpu for WgpuGpu {
 
     fn set_background_compiles(&mut self, on: bool) {
         self.background = on;
+    }
+
+    fn pause_background_compiles(&mut self, paused: bool) {
+        if self.background_paused != paused {
+            self.background_paused = paused;
+            self.gate_background();
+        }
     }
 
     fn create_render_bundle(

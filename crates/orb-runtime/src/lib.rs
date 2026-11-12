@@ -27,6 +27,7 @@ mod meshes;
 pub mod offline;
 mod options;
 mod paint;
+mod pipelines;
 mod placement;
 mod point;
 mod queries;

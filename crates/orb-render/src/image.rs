@@ -335,8 +335,10 @@ impl Images {
         self.pipelines.get(family)
     }
 
-    /// Makes the DEM prepare pipelines, for the first DEM page.
-    fn make_prepare(&mut self, gpu: &mut dyn Gpu) {
+    /// Makes the DEM prepare pipelines, unless they are made: the
+    /// pipeline set's where the style reads DEM tiles, or for the first DEM
+    /// page.
+    pub(crate) fn make_prepare(&mut self, gpu: &mut dyn Gpu) {
         if self.prepare.is_none() {
             self.prepare = Some(prepare::Draws::new(gpu));
         }

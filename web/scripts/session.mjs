@@ -64,8 +64,10 @@
 // agent another platform's, as `pnpm flight` documents). A map on the page
 // has its WebGPU calls timed (each slow frame's, and the session's, with
 // the bytes each buffer took), its message handlers too, its calls over
-// 5 ms listed by when (`slowCalls`), and the pipelines it made during the
-// moves (`pipelinesInMoves`: each a compile mid-gesture). Its cold runs
+// 5 ms listed by when (`slowCalls`), the pipelines it made during the
+// moves (`pipelinesInMoves`: each a compile mid-gesture), and the async
+// ones that finished compiling during them (`pipelinesSettledInMoves`:
+// each a compile that ran into the moves). Its cold runs
 // bust the driver's shader cache (`?nonce=`, cold.js), which a map in a
 // worker can't, unless `--driver` keeps what the driver's cache holds from
 // earlier runs (a user's later launches).
@@ -538,12 +540,22 @@ async function run(server, engine) {
       ]) {
         const original = GPUDevice.prototype[name];
         GPUDevice.prototype[name] = function (desc) {
-          made.push({
+          const pipeline = {
             at: Math.round(performance.now()),
             label: desc?.label ?? "?",
             async: name.endsWith("Async"),
-          });
-          return original.call(this, desc);
+          };
+          made.push(pipeline);
+          const result = original.call(this, desc);
+          // When an async compile finished: one that runs into the moves
+          // may hold frames back where the browser compiles on the thread
+          // that presents.
+          if (pipeline.async)
+            result.then(
+              () => (pipeline.settled = Math.round(performance.now())),
+              () => {},
+            );
+          return result;
         };
       }
       wrap(GPUCommandEncoder.prototype, "finish");
@@ -804,6 +816,9 @@ async function run(server, engine) {
         pipelinesInMoves: pipelines
           .filter((p) => p.at >= windows[0][0])
           .map((p) => `${p.at} ${p.label}${p.async ? " (async)" : ""}`),
+        pipelinesSettledInMoves: pipelines
+          .filter((p) => p.settled >= windows[0][0])
+          .map((p) => `${p.settled} ${p.label} (asked at ${p.at})`),
       }),
       // When the page fetched each wasm file (core-deferred.wasm late, in
       // the moves, is a placeholder's synchronous load).

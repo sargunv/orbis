@@ -8,10 +8,11 @@ version.workspace = true
 
 [features]
 # On the web, the backend: exactly one of the two. `webgpu` is core.wasm's,
-# `gl` core-gl.wasm's (WebGL 2), which compiles the build's GLSL alone (no
-# `wgpu/wgsl`). Natively, `gl` adds GLES over EGL beside the platform's own
-# backend (Android always has it).
-webgpu = ["wgpu/webgpu", "wgpu/wgsl"]
+# where the browser compiles the WGSL and wgpu wraps its pipelines; `gl`
+# core-gl.wasm's (WebGL 2), which compiles the build's GLSL alone. Neither
+# takes `wgpu/wgsl`. Natively, `gl` adds GLES over EGL beside the platform's
+# own backend (Android always has it).
+webgpu = ["wgpu/webgpu"]
 gl = ["wgpu/webgl", "wgpu/gles", "dep:glow"]
 # Vulkan beside Metal on Apple platforms (MoltenVK), for checking the Vulkan
 # path under the validation layer there, and beside D3D12 on Windows, for

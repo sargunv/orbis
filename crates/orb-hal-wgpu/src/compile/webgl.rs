@@ -50,6 +50,8 @@ struct State {
     device: Option<(wgpu::Device, bool)>,
     /// An idle callback is scheduled.
     idle: bool,
+    /// Background compiles may not start ([`Compiler::open_background`]).
+    closed: bool,
 }
 
 struct Linking {
@@ -107,6 +109,15 @@ impl Compiler {
         if let Some(at) = state.queue.iter().position(|job| job.id() == id) {
             let job = state.queue.remove(at).expect("found above");
             state.queue.push_front(job);
+        }
+    }
+
+    /// Lets background compiles start (`open`), or holds those that
+    /// haven't.
+    pub(crate) fn open_background(&mut self, _: &wgpu::Device, open: bool) {
+        let was = !std::mem::replace(&mut self.state.borrow_mut().closed, !open);
+        if open && !was {
+            schedule_idle(&self.state, &self.wake);
         }
     }
 
@@ -273,7 +284,7 @@ fn idle_step(state: &Rc<RefCell<State>>, wake: &Wake, deadline: &JsValue) {
     let mut done = Vec::new();
     poll_links(&mut s, &device, &mut done, |l| l.background);
     let frame_waits = !s.queue.is_empty() || s.linking.iter().any(|l| !l.background);
-    if !frame_waits {
+    if !frame_waits && !s.closed {
         let left = js_sys::Reflect::get(deadline, &"timeRemaining".into())
             .ok()
             .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
@@ -293,7 +304,9 @@ fn idle_step(state: &Rc<RefCell<State>>, wake: &Wake, deadline: &JsValue) {
         }
     }
     s.finished.extend(done);
-    let more = !s.background.is_empty() || s.linking.iter().any(|l| l.background);
+    // Held, they wait for the gate to open again, which schedules them.
+    let held = s.closed && s.linking.iter().all(|l| !l.background);
+    let more = !held && (!s.background.is_empty() || s.linking.iter().any(|l| l.background));
     drop(s);
     if more {
         schedule_idle(state, wake);

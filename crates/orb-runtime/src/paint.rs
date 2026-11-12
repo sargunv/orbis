@@ -39,10 +39,6 @@ pub(crate) struct PaintState {
     /// This frame's plan with its transitions eased in, which the drape
     /// paints from too; `None` with nothing easing.
     pub(crate) overlay: Option<Arc<StylePlan>>,
-    /// The renderer, plan (its style's address) and nodes
-    /// (`LoadedStyle::drawn`) whose pipelines were asked for ahead of need
-    /// ([`prewarm`]).
-    prewarmed: Option<(u64, usize, Vec<u32>)>,
     /// The style's plan with its camera reads resolved, the last time
     /// they were ([`camera_plan`]).
     camera_plan: Option<CameraPlan>,
@@ -104,7 +100,7 @@ pub(crate) fn at_camera(plan: &StylePlan, camera: CameraInputs) -> Option<StyleP
 /// [`at_camera`] of `plan`: kept in `style`'s paint state while the camera
 /// moves within what the plan reads, when `plan` is its worker's (an
 /// overlay's is made each frame).
-fn camera_plan(
+pub(crate) fn camera_plan(
     style: &mut LoadedStyle,
     plan: &StylePlan,
     camera: CameraInputs,
@@ -185,118 +181,6 @@ pub(crate) fn frame(
         atlas,
     );
     (fading, missing)
-}
-
-/// What [`prewarm`] asked for pipelines for: the renderer, the plan (its
-/// style's address) and its nodes.
-fn prewarm_key(renderer: &Renderer, style: &LoadedStyle) -> (u64, usize, Vec<u32>) {
-    let plan = style.worker.plan();
-    (
-        renderer.id(),
-        Arc::as_ptr(&plan.style) as usize,
-        style.drawn.clone(),
-    )
-}
-
-/// Whether [`prewarm`] has yet to ask for these nodes' pipelines.
-pub(crate) fn prewarm_needed(renderer: &Renderer, style: &LoadedStyle) -> bool {
-    style.paint.prewarmed.as_ref() != Some(&prewarm_key(renderer, style))
-}
-
-/// Asks the renderer, in the background, for the pipelines the style's
-/// nodes may draw with at any zoom, unless it was asked for these nodes of
-/// this plan: each node painted at every whole zoom its layer draws at
-/// (from `zoom`, outwards), a symbol layer's two halves together, so a
-/// gesture that brings a layer in, or changes what a layer's paint reads,
-/// doesn't wait for compiles. Called once the map is idle: what the view
-/// needs compiled first.
-pub(crate) fn prewarm(
-    gpu: &mut dyn Gpu,
-    renderer: &mut Renderer,
-    style: &mut LoadedStyle,
-    (zoom, inputs): (f64, CameraInputs),
-    atlas: &mut ImageAtlas,
-) {
-    if !prewarm_needed(renderer, style) {
-        return;
-    }
-    let worker = Arc::clone(&style.worker);
-    let plan = worker.plan();
-    style.paint.prewarmed = Some(prewarm_key(renderer, style));
-    let camera = camera_plan(style, plan, inputs);
-    let plan = camera.as_deref().unwrap_or(plan);
-    let crossfade = Crossfade {
-        from_scale: 1.0,
-        mix: 1.0,
-    };
-    // Whole zooms nearest the camera's first.
-    let mut zooms: Vec<f64> = (0..=24).map(f64::from).collect();
-    zooms.sort_by(|a, b| (a - zoom).abs().total_cmp(&(b - zoom).abs()));
-    let mut groups: Vec<Vec<(u32, Option<NodePaint>)>> = Vec::new();
-    for (index, node) in plan.nodes.iter().enumerate() {
-        let layer = &plan.style.layers[node.layer];
-        if node.family.is_image() || node.family == Family::Heatmap {
-            // Their family alone picks their pipelines.
-            if (zooms.iter()).any(|&z| drawn_at(layer, node, z)) {
-                groups.push(vec![(index as u32, None)]);
-            }
-            continue;
-        }
-        // A symbol layer's icon node draws its text node's quads too, with
-        // one pipeline both halves' paint at a zoom picks.
-        let nodes = match node.family {
-            Family::SymbolText => continue,
-            Family::SymbolIcon => index..index + 2,
-            _ => index..index + 1,
-        };
-        for i in nodes.clone() {
-            let node = &plan.nodes[i];
-            let state = style.nodes.entry(node.key).or_default();
-            let properties = plan.paint_properties(node).len();
-            if state.maxima.len() < properties {
-                state.maxima.resize(properties, 0.0);
-            }
-        }
-        let first = groups.len();
-        for &at in zooms.iter().filter(|&&z| drawn_at(layer, node, z)) {
-            let group: Vec<_> = (nodes.clone())
-                .map(|i| {
-                    let node = &plan.nodes[i];
-                    let state = style.nodes.entry(node.key).or_default();
-                    let lookup = style.states.lookup(i);
-                    let paint = if node.family.is_symbol() {
-                        crate::labels::paint(plan, node, at, &state.maxima, lookup)
-                            .map(NodePaint::Symbol)
-                    } else if node.family == Family::Circle {
-                        crate::point::node_paint(plan, node, at, &state.maxima, lookup)
-                    } else {
-                        let at = PaintAt {
-                            zoom: at,
-                            bearing: inputs.bearing,
-                            crossfade,
-                        };
-                        node_paint(gpu, renderer, (style, plan), i as u32, at, atlas)
-                    };
-                    (i as u32, paint)
-                })
-                .collect();
-            if group.iter().all(|(_, paint)| paint.is_none()) {
-                continue;
-            }
-            // The renderer makes each pipeline once: only paint that may
-            // pick others is kept.
-            let same = |a: &[(u32, Option<NodePaint>)]| {
-                a.iter().zip(&group).all(|((_, a), (_, b))| match (a, b) {
-                    (Some(a), Some(b)) => orb_render::same_pipelines(a, b),
-                    (a, b) => a.is_none() && b.is_none(),
-                })
-            };
-            if !groups[first..].iter().any(|g| same(g)) {
-                groups.push(group);
-            }
-        }
-    }
-    renderer.prewarm(gpu, &groups);
 }
 
 /// Writes the draped nodes' paint at the camera's `zoom` for drape layout
@@ -474,10 +358,10 @@ impl ZoomHistory {
 /// What a node's paint is evaluated at: a zoom, the bearing (for
 /// viewport-anchored hillshade light) and the pattern cross-fade.
 #[derive(Clone, Copy)]
-struct PaintAt {
-    zoom: f64,
-    bearing: f64,
-    crossfade: Crossfade,
+pub(crate) struct PaintAt {
+    pub(crate) zoom: f64,
+    pub(crate) bearing: f64,
+    pub(crate) crossfade: Crossfade,
 }
 
 /// Whether a node's paint is the same at every zoom, bearing and
@@ -511,7 +395,7 @@ fn camera_free(plan: &StylePlan, node: &crate::style::NodePlan) -> bool {
 /// Whether `node` of `layer` draws at `zoom`. A layer-wide extrusion
 /// opacity of zero hides the layer; a per-feature one hides only its own
 /// buildings, in the shader. So does a fill's `fill-antialias` its outline.
-fn drawn_at(layer: &orb_style::Layer, node: &crate::style::NodePlan, zoom: f64) -> bool {
+pub(crate) fn drawn_at(layer: &orb_style::Layer, node: &crate::style::NodePlan, zoom: f64) -> bool {
     layer.is_visible_at(zoom)
         && (layer.ty != LayerType::FillExtrusion || {
             let opacity = layer.get(orb_style::EXTRUSION_OPACITY);
@@ -705,7 +589,7 @@ fn turns_with_bearing(l: &orb_style::Layer, zoom: f64) -> bool {
 
 /// Node `index`'s paint at `at`, for a fill, line, background, extrusion
 /// or image node; `None` for an image node that can't draw yet.
-fn node_paint(
+pub(crate) fn node_paint(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     (style, plan): (&mut LoadedStyle, &StylePlan),
@@ -881,7 +765,10 @@ fn node_paint(
 /// The layer opacity and blend of a layer whose type has them: fill and
 /// line layers both, raster layers and the hillshade's and colour relief's
 /// extensions a blend alone.
-fn layer_composite(layer: &orb_style::Layer, zoom: f64) -> Option<(f32, orb_render::Blend)> {
+pub(crate) fn layer_composite(
+    layer: &orb_style::Layer,
+    zoom: f64,
+) -> Option<(f32, orb_render::Blend)> {
     use orb_style as s;
     let (opacity, blend) = match layer.ty {
         LayerType::Fill => (Some(s::FILL_LAYER_OPACITY), s::FILL_LAYER_BLEND),

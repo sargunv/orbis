@@ -71,9 +71,9 @@ function idle(map, label) {
 
 /**
  * Waits until no Orbis frame is drawing or due: `QUIET_MS` without one
- * after a repaint, with no pipeline compiling. At rest the map compiles
- * the style's other pipelines ahead of need and wakes for a frame as each
- * arrives (on a phone, through the first view's rounds). A frame drawn
+ * after a repaint, with no pipeline compiling. The first view's pipelines
+ * wake the map for a frame as each arrives (on a phone, through several
+ * rounds); the style's others compile at rest and wake nothing. A frame drawn
  * before a repaint asked for one answers it, every later repaint then
  * takes its predecessor's frame, and the submissions, one per frame,
  * miscount the repaints by one.

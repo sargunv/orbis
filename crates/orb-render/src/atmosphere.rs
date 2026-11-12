@@ -106,11 +106,13 @@ impl Atmosphere {
     }
 
     /// Writes the frame's atmosphere: without a paint there is no sky and
-    /// no fog.
+    /// no fog. The first sky asks for its pipeline, and for the globe's
+    /// scattering where the map's views may be on a low-zoom surface
+    /// (`full_projection`), in the background unless this view is.
     pub(crate) fn set(
         &mut self,
         gpu: &mut dyn Gpu,
-        target: TargetFormat,
+        (target, full_projection): (TargetFormat, bool),
         frame: BufferId,
         paint: Option<AtmospherePaint>,
         view: AtmosphereView,
@@ -124,8 +126,10 @@ impl Atmosphere {
             if self.enabled && self.sky.is_none() {
                 self.sky = Some(pipeline(gpu, &SKY_SHADER, target, layout, blend));
             }
-            if self.enabled && view.globe.is_some() && self.scatter.is_none() {
+            if self.enabled && self.scatter.is_none() && (view.globe.is_some() || full_projection) {
+                gpu.set_background_compiles(view.globe.is_none());
                 self.scatter = Some(pipeline(gpu, &SCATTER_SHADER, target, layout, blend));
+                gpu.set_background_compiles(false);
             }
         }
         if self.written == Some((paint, view)) {

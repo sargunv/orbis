@@ -6,13 +6,17 @@
 //! threads; a request the view needs moves to the front. Each task notes
 //! when it started its job, so a compile that never returns (a driver hung
 //! in its compiler) shows as [`Compiler::hung`]. On WebGPU, jobs compile with
-//! `createRenderPipelineAsync` / `createComputePipelineAsync`; once the
-//! promise resolves, wgpu makes the same pipeline, which the browser's
-//! pipeline cache (Dawn's, keyed by content) returns without compiling it
-//! again. wgpu has no async creation yet (gfx-rs/wgpu#3794). WebGL 2's: `webgl`.
+//! `createRenderPipelineAsync` / `createComputePipelineAsync`, and wgpu
+//! wraps the pipeline the promise resolves to
+//! (`Device::create_render_pipeline_from_webgpu_handle`, the fork's, #35):
+//! wgpu has no async creation of its own (gfx-rs/wgpu#3794), and making the
+//! pipeline again through wgpu compiled it a second time, synchronously, in
+//! a browser without a content-keyed pipeline cache (Firefox). WebGL 2's:
+//! `webgl`.
 
+#[cfg(not(webgpu))]
 use std::borrow::Cow;
-#[cfg(not(webgl))]
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
 /// How modules are shared between requests: across compile threads
@@ -24,6 +28,7 @@ pub(crate) type Shared<T> = std::rc::Rc<T>;
 
 use orb_hal::*;
 
+#[cfg(not(webgpu))]
 use crate::convert;
 
 /// A shader module, made when the first pipeline that uses it compiles:
@@ -43,7 +48,7 @@ pub(crate) struct Module {
     /// its constants written in, which wgpu compiles as it is.
     #[cfg(not(webgpu))]
     glsl: Option<(Glsl, bool)>,
-    #[cfg(not(webgl))]
+    #[cfg(not(target_arch = "wasm32"))]
     made: OnceLock<wgpu::ShaderModule>,
     /// The browser's module for async compiles.
     #[cfg(webgpu)]
@@ -72,7 +77,7 @@ impl Module {
                 .collect(),
             #[cfg(not(webgpu))]
             glsl,
-            #[cfg(not(webgl))]
+            #[cfg(not(target_arch = "wasm32"))]
             made: OnceLock::new(),
             #[cfg(webgpu)]
             raw: Default::default(),
@@ -83,10 +88,8 @@ impl Module {
     /// that entry point when there is one, which skips parsing the WGSL
     /// (most of a module's cost) and wgpu's split of a module per stage;
     /// the WGSL's otherwise.
-    #[cfg(not(webgl))]
-    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn get(&self, device: &wgpu::Device, entry: &str) -> &wgpu::ShaderModule {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(one) = self.entries.iter().find(|e| e.entry == entry)
             && let Some(module) = one
                 .made
@@ -125,6 +128,7 @@ struct EntryModule {
 }
 
 /// A stage's module, and the override constants its pipeline sets.
+#[cfg(not(webgpu))]
 type StageModule<'a> = (Cow<'a, wgpu::ShaderModule>, Vec<(&'a str, f64)>);
 
 #[derive(Debug)]
@@ -149,6 +153,7 @@ impl Stage {
 
     /// Its module, and the override constants the pipeline sets: none for
     /// the build's GLSL, which has them written in.
+    #[cfg(not(webgpu))]
     fn module(&self, device: &wgpu::Device) -> Result<StageModule<'_>, String> {
         let constants: Vec<(&str, f64)> = (self.constants.iter())
             .map(|(k, v)| (k.as_str(), *v))
@@ -185,7 +190,7 @@ impl Stage {
             "{}: WebGL 2 compiles the build's GLSL alone",
             self.module.label
         ));
-        #[cfg(not(webgl))]
+        #[cfg(not(target_arch = "wasm32"))]
         Ok((
             Cow::Borrowed(self.module.get(device, &self.entry_point)),
             constants,
@@ -197,6 +202,9 @@ impl Stage {
 #[derive(Debug)]
 pub(crate) struct RenderJob {
     pub(crate) label: String,
+    /// wgpu's layout. WebGPU's async call takes the browser's, made from
+    /// the bind group layouts' own handles.
+    #[cfg(not(webgpu))]
     pub(crate) layout: wgpu::PipelineLayout,
     pub(crate) vertex: Stage,
     pub(crate) fragment: Stage,
@@ -207,11 +215,14 @@ pub(crate) struct RenderJob {
     pub(crate) sample_count: u32,
     /// Whether the vertex stage reads WebGL 2's attribute zero
     /// ([`Caps::gl_shaders`]).
+    #[cfg(not(webgpu))]
     pub(crate) attribute_zero: bool,
+    #[cfg(not(webgpu))]
     pub(crate) cache: Option<wgpu::PipelineCache>,
 }
 
 /// WebGL 2's attribute zero: a `u32` an instance (#179).
+#[cfg(not(webgpu))]
 const ATTRIBUTE_ZERO: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
     array_stride: 4,
     step_mode: wgpu::VertexStepMode::Instance,
@@ -226,8 +237,10 @@ const ATTRIBUTE_ZERO: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayo
 #[derive(Debug)]
 pub(crate) struct ComputeJob {
     pub(crate) label: String,
+    #[cfg(not(webgpu))]
     pub(crate) layout: wgpu::PipelineLayout,
     pub(crate) compute: Stage,
+    #[cfg(not(webgpu))]
     pub(crate) cache: Option<wgpu::PipelineCache>,
 }
 
@@ -269,6 +282,7 @@ impl Job {
     }
 
     /// Makes the pipeline with wgpu.
+    #[cfg(not(webgpu))]
     fn build(&self, device: &wgpu::Device) -> Result<Built, String> {
         #[cfg(not(target_arch = "wasm32"))]
         dump::job(self);
@@ -333,15 +347,7 @@ impl Job {
     }
 }
 
-impl Job {
-    /// Makes the pipeline the browser compiled: errors already rejected
-    /// its promise.
-    #[cfg(webgpu)]
-    fn compile(&self, device: &wgpu::Device) -> Result<Built, String> {
-        self.build(device)
-    }
-}
-
+#[cfg(not(webgpu))]
 impl RenderJob {
     fn build(&self, device: &wgpu::Device) -> Result<wgpu::RenderPipeline, String> {
         let targets: Vec<_> = self
@@ -485,6 +491,8 @@ mod native {
         /// How many pipelines may compile at once ([`COMPILES`]).
         at_once: usize,
         background: Mutex<Background>,
+        /// Background compiles may start ([`Compiler::open_background`]).
+        open: std::sync::atomic::AtomicBool,
     }
 
     /// Background compiles ([`Compiler::submit_background`]).
@@ -524,6 +532,7 @@ mod native {
             let shared = Shared {
                 limit: Mutex::new(WATCHDOG),
                 at_once,
+                open: true.into(),
                 ..Default::default()
             };
             Self {
@@ -612,6 +621,27 @@ mod native {
                     executor,
                 };
                 lane.feed();
+            }
+        }
+
+        /// Lets background compiles start (`open`), or holds those that
+        /// haven't: lanes finish the compile they run.
+        pub(crate) fn open_background(&mut self, device: &wgpu::Device, open: bool) {
+            use std::sync::atomic::Ordering;
+            let was = self.shared.open.swap(open, Ordering::Relaxed);
+            if open
+                && !was
+                && let Some(executor) = self.executor.clone()
+            {
+                for _ in 0..BACKGROUND_LANES {
+                    let lane = Lane {
+                        shared: self.shared.clone(),
+                        device: device.clone(),
+                        done: self.done_tx.clone(),
+                        executor: executor.clone(),
+                    };
+                    lane.feed();
+                }
             }
         }
 
@@ -750,8 +780,12 @@ mod native {
     }
 
     impl Lane {
-        /// Starts a task for the next waiting job if a lane is free.
+        /// Starts a task for the next waiting job if a lane is free and
+        /// background compiles may start.
         fn feed(self) {
+            if !self.shared.open.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             {
                 let mut background = self.shared.background.lock().expect("compile poisoned");
                 // Under a cap on compiles at once ([`COMPILES`]), they
@@ -901,9 +935,9 @@ mod webgpu {
 
     use js_sys::{Array, Function, Object, Promise, Reflect};
     use orb_hal::*;
-    use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+    use wasm_bindgen::{JsCast, JsValue};
 
-    use super::{Done, Job, Module, RenderJob, Stage};
+    use super::{Built, Done, Job, Module, RenderJob, Stage};
 
     /// Called when a promise settles: the map draws the pipeline then.
     type Wake = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
@@ -921,7 +955,7 @@ mod webgpu {
 
     #[derive(Default)]
     struct State {
-        /// The device, once a job came: wgpu makes each pipeline as its
+        /// The device, once a job came: wgpu wraps each pipeline as its
         /// promise settles.
         device: std::cell::OnceCell<wgpu::Device>,
         /// Pipelines made since the last [`Compiler::take`].
@@ -942,6 +976,8 @@ mod webgpu {
         quiet: std::collections::HashSet<PipelineId>,
         /// The device, once a job came.
         device: Option<JsValue>,
+        /// They may start ([`Compiler::open_background`]).
+        closed: bool,
     }
 
     impl std::fmt::Debug for Compiler {
@@ -995,6 +1031,15 @@ mod webgpu {
             }
         }
 
+        /// Lets background compiles be asked for (`open`), or holds those
+        /// not asked for yet.
+        pub(crate) fn open_background(&mut self, _: &wgpu::Device, open: bool) {
+            let was = !std::mem::replace(&mut self.state.background.borrow_mut().closed, !open);
+            if open && !was {
+                feed(&self.state);
+            }
+        }
+
         /// Makes a background compile one a frame waits for: asked for now
         /// if it waits its turn, woken for when it settles.
         pub(crate) fn promote(&mut self, id: PipelineId) {
@@ -1014,7 +1059,7 @@ mod webgpu {
     fn feed(state: &Rc<State>) {
         loop {
             let mut b = state.background.borrow_mut();
-            if b.running >= BACKGROUND_LANES {
+            if b.closed || b.running >= BACKGROUND_LANES {
                 return;
             }
             let Some((job, layouts)) = b.jobs.pop_front() else {
@@ -1028,7 +1073,7 @@ mod webgpu {
     }
 
     /// Asks the browser to compile `job`; once its promise settles, the
-    /// next [`Compiler::take`] makes it. A `background` one's settling
+    /// next [`Compiler::take`] takes it. A `background` one's settling
     /// starts the next.
     fn dispatch(state: &Rc<State>, raw: &JsValue, layouts: &[JsValue], job: Job, background: bool) {
         let layout = call(
@@ -1049,41 +1094,42 @@ mod webgpu {
         };
         let promise: Promise = call(raw, method, &descriptor).unchecked_into();
         let started = now();
-        let job = Rc::new(RefCell::new(Some(job)));
-        let (ok_job, ok_state) = (job.clone(), state.clone());
-        let err_state = state.clone();
-        // The browser's pipeline stays alive until wgpu made its own:
-        // its cache holds only live pipelines.
-        let ok = Closure::once(move |pipeline: JsValue| {
-            if let Some(job) = ok_job.borrow_mut().take() {
-                settle(&ok_state, job, Ok(()), now() - started, background);
-            }
-            drop(pipeline);
-        });
-        let err = Closure::once(move |reason: JsValue| {
-            if let Some(job) = job.borrow_mut().take() {
-                let message = Reflect::get(&reason, &"message".into())
+        let state = state.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = (wasm_bindgen_futures::JsFuture::from(promise).await).map_err(|reason| {
+                Reflect::get(&reason, &"message".into())
                     .ok()
                     .and_then(|m| m.as_string())
-                    .unwrap_or_else(|| format!("{reason:?}"));
-                settle(&err_state, job, Err(message), now() - started, background);
-            }
+                    .unwrap_or_else(|| format!("{reason:?}"))
+            });
+            settle(&state, job, result, now() - started, background);
         });
-        let _ = promise.then2(&ok, &err);
-        ok.forget();
-        err.forget();
     }
 
-    /// A promise settled: wgpu makes the pipeline the browser compiled, now
-    /// rather than in the next frame's poll (a background one's in the
-    /// page's idle time), and the host is woken unless no frame asked for
-    /// it.
-    fn settle(state: &Rc<State>, job: Job, result: Result<(), String>, ms: f64, background: bool) {
+    /// A promise settled: wgpu wraps the pipeline the browser compiled, and
+    /// the host is woken unless no frame asked for it.
+    fn settle(
+        state: &Rc<State>,
+        job: Job,
+        result: Result<JsValue, String>,
+        ms: f64,
+        background: bool,
+    ) {
         let id = job.id();
         let device = state.device.get().expect("set with the job");
+        let built = result.map(|pipeline| match &job {
+            Job::Render(slot, _) => Built::Render(
+                *slot,
+                device.create_render_pipeline_from_webgpu_handle(pipeline.unchecked_into()),
+            ),
+            Job::Compute(slot, _) => Built::Compute(
+                *slot,
+                device.create_compute_pipeline_from_webgpu_handle(pipeline.unchecked_into()),
+            ),
+        });
         state.settled.borrow_mut().push_back(Done {
             id,
-            built: result.and_then(|()| job.compile(device)),
+            built,
             label: job.label().to_owned(),
             took: std::time::Duration::from_secs_f64(ms / 1000.0),
         });
@@ -1157,8 +1203,7 @@ mod webgpu {
         dict(&fields)
     }
 
-    /// wgpu's mapping of the same request, as a WebGPU dictionary: the
-    /// browser's cache finds wgpu's pipeline equal to this one.
+    /// The request as a WebGPU dictionary, as wgpu would map it.
     fn render(device: &JsValue, layout: &JsValue, job: &RenderJob) -> JsValue {
         let component = |src: &str, dst: &str| {
             dict(&[

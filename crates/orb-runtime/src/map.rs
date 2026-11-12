@@ -159,13 +159,15 @@ pub struct FrameReport {
     /// host whose GPU wakes it when a pipeline compiles needs no frames
     /// until then.
     pub compiling: bool,
-    /// The map shows all it has, and asks for one more frame (or, for
-    /// prewarming alone, a [`Map::prepare`]) for its own upkeep: resizing
-    /// pools and pages to the view (which keeps `idle` false until it's
-    /// done), or making pipelines later views may need. That frame shows
-    /// nothing new, and nothing wakes the host for it: a host that draws
-    /// only what's new can leave it to its next frame.
+    /// The map shows all it has, and asks for one more frame for its own
+    /// upkeep: resizing pools and pages to the view (which keeps `idle`
+    /// false until it's done). That frame shows nothing new, and nothing
+    /// wakes the host for it: a host that draws only what's new can leave
+    /// it to its next frame.
     pub upkeep: bool,
+    /// Pipelines the frame's nodes needed that the style's pipeline set
+    /// left out, asked for before it drew: none for a complete set.
+    pub pipelines_late: u32,
     /// As `idle` but for the camera: nothing the map draws changes in
     /// frames to come unless the camera moves (MapLibre Native's
     /// `needsRepaint` unset). Upkeep doesn't count.
@@ -468,6 +470,8 @@ pub(crate) struct LoadedStyle {
     /// Whether the background and image tiles' meshes are grids for a
     /// globe to bend.
     pub(crate) globe_meshes: bool,
+    /// What the renderer's pipeline set was made for.
+    pub(crate) pipelines: Option<crate::pipelines::SetKey>,
 }
 
 impl LoadedStyle {
@@ -660,9 +664,6 @@ pub struct Map {
     pub(crate) waiting: Vec<WaitingTile>,
     /// Chunks the last frame's cull left out for want of room.
     pub(crate) candidates_dropped: u32,
-    /// A frame at rest asked for the style's pipelines to be made ahead of
-    /// need ([`crate::paint::prewarm`]) by the next.
-    prewarm_due: bool,
     /// A frame at rest found pools, pages or the drape atlas to resize for
     /// the view (more than three quarters full, or at most a quarter), for
     /// the next to resize, which settles it again. A continuous map
@@ -916,7 +917,6 @@ impl Map {
             planned: None,
             waiting: Vec::new(),
             candidates_dropped: 0,
-            prewarm_due: false,
             resize_due: false,
             resize_now: false,
             resize_grew: false,
@@ -1551,6 +1551,7 @@ impl Map {
             draws: Vec::new(),
             terrain: None,
             globe_meshes: self.surface.globe().is_some(),
+            pipelines: None,
         });
         self.nodes_stale = true;
     }
@@ -1798,14 +1799,27 @@ impl Map {
         let plane = self.surface.globe().and_then(|g| g.plane);
         let surface = *self.surface.projection();
         self.globe_warps.set_planes(renderer, surface, plane);
-        // Views need the full projection on a low-zoom surface, and for
-        // tiles that warp onto the surface: likely on any surface but Web
-        // Mercator, known for a source once it resolves.
+        // Views need the full projection on a low-zoom surface, for tiles
+        // that warp onto the surface (likely on any surface but Web
+        // Mercator, known for a source once it resolves), and on terrain,
+        // which the style says it has before its DEM source resolves.
         let warped = surface != crate::frame::mercator_projection()
             || (self.style.as_ref()).is_some_and(|s| {
                 (s.sources.iter()).any(|s| matches!(s, SourceState::Ready { warped: true, .. }))
             });
-        renderer.set_full_projection(self.surface.globe().is_some() || warped);
+        // The style's terrain, unless its DEM source failed or can't be
+        // the surface's.
+        let terrain = (self.style.as_ref()).is_some_and(|s| {
+            let plan = s.worker.plan();
+            plan.terrain()
+                .is_some_and(|(index, _)| match &s.sources[index] {
+                    SourceState::Resolving => true,
+                    SourceState::Ready { endpoint, .. } => endpoint.tms == *self.surface.tms(),
+                    SourceState::Failed => false,
+                })
+        });
+        renderer.set_full_projection(self.surface.globe().is_some() || warped || terrain);
+        renderer.set_terrain_reachable(terrain);
         let view = self.view(viewport);
         // What this frame draws, for picking.
         let mut drawn = Vec::new();
@@ -1867,6 +1881,7 @@ impl Map {
         let labels_settled = self.place_labels(gpu, renderer, &view, now, data_loaded);
         times.placement = micros(0.0, self.placement_ms);
         times.upload = micros(0.0, self.upload_ms);
+        self.pipeline_set(gpu, renderer);
         let Some(target) = target else {
             self.globe_warps.end_frame();
             times.total = micros(started, clock.now());
@@ -1925,6 +1940,7 @@ impl Map {
         {
             renderer.set_images(atlas.bindings());
         }
+        report.pipelines_late = renderer.request_pipelines(gpu);
         report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
         times.render = report.frame.times;
         // A frame that left something out for a compiling pipeline isn't
@@ -1955,7 +1971,6 @@ impl Map {
         renderer.set_antialias_3d(gpu, self.antialias_3d);
         renderer.set_keep_all(gpu, self.keep_all_cull);
         self.apply_arrivals_until(gpu, renderer, pixel_ratio, deadline);
-        self.prewarm(gpu, renderer);
     }
 
     /// Writes the frame's paint at `zoom` and frame time `now` (`time` the
@@ -2121,11 +2136,11 @@ impl Map {
 
     /// Settles a drawn frame's report on what the renderer did: whether it
     /// waited for a compile, whether the camera rests (`moving` it moved
-    /// this frame), its scene and memory; asks for the pipelines later
-    /// views may need, and room for them, once at rest.
+    /// this frame), its scene and memory; lets the pipelines no view has
+    /// needed yet compile, and asks for room, once at rest.
     fn settle_report(
         &mut self,
-        gpu: &dyn Gpu,
+        gpu: &mut dyn Gpu,
         renderer: &Renderer,
         report: &mut FrameReport,
         moving: bool,
@@ -2171,18 +2186,10 @@ impl Map {
         self.events
             .frame(report.loaded, report.settled && !moving && !held);
         report.idle &= !moving;
-        // At rest, the pipelines later views may need compile ahead of
-        // them: asked for by the next frame or prepare, which this one
-        // reports as upkeep, so the idle it reports isn't held up.
-        if report.idle
-            && !held
-            && self.mode == RenderMode::Continuous
-            && !self.prewarm_due
-            && (self.style.as_ref()).is_some_and(|s| crate::paint::prewarm_needed(renderer, s))
-        {
-            self.prewarm_due = true;
-            report.upkeep = true;
-        }
+        // Pipelines no view has needed yet compile while the map rests:
+        // idle, which a gesture's frames and the fades after it aren't, and
+        // nothing held. A frame that needs one sooner asks for it.
+        gpu.pause_background_compiles(!report.idle || held);
         self.globe_warps.end_frame();
         report.scene = renderer.stats();
         report.memory = self.memory(renderer);
@@ -2217,22 +2224,27 @@ impl Map {
             .flatten()
     }
 
-    /// Asks for the style's pipelines ahead of need, if a frame at rest
-    /// asked for that.
-    fn prewarm(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
-        if !std::mem::take(&mut self.prewarm_due) {
-            return;
-        }
+    /// Gives the renderer the style's pipeline set when the style or its
+    /// nodes changed since it was made: every pipeline it can reach,
+    /// the view's first ([`PipelineSet::for_style`](crate::pipelines::PipelineSet::for_style)).
+    fn pipeline_set(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
         let zoom = self.zoom();
         let inputs = crate::paint::camera_inputs(self.camera.state());
         let Some(style) = &mut self.style else {
             return;
         };
+        let key = crate::pipelines::SetKey::of(renderer, style);
+        if style.pipelines.as_ref() == Some(&key) {
+            return;
+        }
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let Some(atlas) = images.atlas.as_mut() else {
             return;
         };
-        crate::paint::prewarm(gpu, renderer, style, (zoom, inputs), atlas);
+        let set =
+            crate::pipelines::PipelineSet::for_style(gpu, renderer, style, (zoom, inputs), atlas);
+        renderer.set_pipelines(gpu, set.groups);
+        style.pipelines = Some(key);
     }
 
     /// Makes the renderer's nodes the plan's: removes the meshes of nodes

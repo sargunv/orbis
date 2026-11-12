@@ -1131,20 +1131,35 @@ impl Terrain {
         Some(&self.targets.get(usize::from(layer))?.composite)
     }
 
+    /// Asks for the pipelines the terrain draws with at `samples`, a
+    /// shaded hillshade's too where one is (`shaded`): the pipeline set's
+    /// ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)).
+    pub(crate) fn request_pipelines(&mut self, gpu: &mut dyn Gpu, samples: u32, shaded: bool) {
+        self.pipeline(gpu, samples, false);
+        if shaded {
+            self.pipeline(gpu, samples, true);
+        }
+        self.occlusion_pipeline(gpu);
+    }
+
+    /// The pipeline terrain layers draw with at `samples`, shading a
+    /// hillshade or not, once asked for.
+    fn made(&self, samples: u32, shaded: bool) -> Option<RenderPipelineId> {
+        self.pipelines[usize::from(shaded)][usize::from(samples > 1)]
+    }
+
     /// Whether every terrain pipeline at the current sample count
-    /// compiled, making the one for it if needed. Until then terrain draws
-    /// nothing.
-    pub(crate) fn ready(&mut self, gpu: &mut dyn Gpu) -> bool {
+    /// compiled. Until then terrain draws nothing.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
         let samples = self.target_samples.max(1);
-        let pipeline = self.pipeline(gpu, samples, false);
-        let shaded = (self.layers.iter().any(|l| l.shade.is_some()))
-            .then(|| self.pipeline(gpu, samples, true));
-        let occlusion = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
-        [pipeline.into(), self.clear.into()]
-            .into_iter()
-            .chain(shaded.map(PipelineId::from))
-            .chain(occlusion.map(PipelineId::from))
-            .all(|p| gpu.pipeline_ready(p))
+        let shaded = self.layers.iter().any(|l| l.shade.is_some());
+        let wanted = [
+            Some(Some(self.clear)),
+            Some(self.made(samples, false)),
+            shaded.then(|| self.made(samples, true)),
+            self.occlusion.map(|_| self.occlusion_pipeline),
+        ];
+        (wanted.into_iter().flatten()).all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
@@ -1166,12 +1181,11 @@ impl Terrain {
         self.pending.clear();
     }
 
-    /// The pipeline terrain layers draw with at `samples`: shading a
-    /// hillshade or not.
-    fn pipeline(&mut self, gpu: &mut dyn Gpu, samples: u32, shaded: bool) -> RenderPipelineId {
-        let slot = &mut self.pipelines[usize::from(shaded)][usize::from(samples > 1)];
-        if let Some(pipeline) = *slot {
-            return pipeline;
+    /// Makes the pipeline terrain layers draw with at `samples`, shading
+    /// a hillshade or not, unless it is made.
+    fn pipeline(&mut self, gpu: &mut dyn Gpu, samples: u32, shaded: bool) {
+        if self.made(samples, shaded).is_some() {
+            return;
         }
         let (shader, layouts): (&Shader, &[_]) = if shaded {
             (
@@ -1196,7 +1210,6 @@ impl Terrain {
         }
         .make(gpu);
         self.pipelines[usize::from(shaded)][usize::from(samples > 1)] = Some(pipeline);
-        pipeline
     }
 
     /// This frame's passes before the map: redrawn drape slots (`drape`
@@ -1344,11 +1357,13 @@ impl Terrain {
                 group
             }
         };
-        let occlusion_pipeline = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
+        let occlusion_pipeline = self.occlusion.and(self.occlusion_pipeline);
         let samples = self.target_samples.max(1);
         let pipelines = [false, true].map(|shaded| {
             let wanted = shaded && shades.iter().any(Option::is_some);
-            (!shaded || wanted).then(|| self.pipeline(gpu, samples, shaded))
+            (!shaded || wanted)
+                .then(|| self.made(samples, shaded))
+                .flatten()
         });
         let step = GRID_STEPS.iter().position(|&s| s == self.grid_step);
         let indices = self.grid_ranges[step.expect("a grid step")].clone();
@@ -1416,7 +1431,7 @@ impl Terrain {
         }
         for (layer, target) in self.targets.iter().enumerate() {
             let shade = (shades.get(layer).copied().flatten()).zip(backdrops[layer]);
-            let pipeline = pipelines[usize::from(shade.is_some())].expect("made above");
+            let pipeline = pipelines[usize::from(shade.is_some())].expect("ready: in the set");
             layers.push(RenderPass {
                 label: "terrain",
                 colors: vec![target.target.attachment(0, LoadOp::Clear([0.0; 4]))],
@@ -1560,10 +1575,11 @@ impl Terrain {
         self.occlusion.take().release(gpu);
     }
 
-    /// The terrain drawn as its depth, at one sample.
-    fn occlusion_pipeline(&mut self, gpu: &mut dyn Gpu) -> RenderPipelineId {
-        if let Some(pipeline) = self.occlusion_pipeline {
-            return pipeline;
+    /// Makes the pipeline of the terrain drawn as its depth, at one
+    /// sample, unless it is made.
+    fn occlusion_pipeline(&mut self, gpu: &mut dyn Gpu) {
+        if self.occlusion_pipeline.is_some() {
+            return;
         }
         let target = TargetFormat {
             color: TextureFormat::R32Float,
@@ -1582,7 +1598,6 @@ impl Terrain {
         }
         .make(gpu);
         self.occlusion_pipeline = Some(pipeline);
-        pipeline
     }
 }
 

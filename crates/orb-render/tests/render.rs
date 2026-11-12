@@ -5,8 +5,8 @@ use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
     Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameLight, FrameStats,
-    MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity, SymbolPaint, TargetFormat,
-    TileRow, Words,
+    MeshData, NodePaint, PipelineGroup, PlacementTarget, Renderer, SceneCapacity, SymbolPaint,
+    TargetFormat, TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -126,8 +126,10 @@ impl Harness {
     fn render_stats_at_ratio(&mut self, pixel_ratio: f32) -> FrameStats {
         let frame = Self::frame(pixel_ratio);
         // The atlas grows pages as images arrive, as a map tells its
-        // renderer.
+        // renderer, and the nodes shown ask for their pipelines: these
+        // tests give no pipeline set.
         self.renderer.set_images(self.images.bindings());
+        self.renderer.request_pipelines(&mut self.gpu);
         self.renderer.render(
             &mut self.gpu,
             &frame,
@@ -438,7 +440,9 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     // Only what the nodes use is made: the cull (on the GPU) and the
     // fill.
     let pipelines = 1 + u32::from(h.gpu_driven());
-    let counts = h.renderer.pipelines(&mut h.gpu);
+    // A map without a pipeline set asks for them as nodes show.
+    assert_eq!(h.renderer.request_pipelines(&mut h.gpu), 1);
+    let counts = h.gpu.poll_pipelines();
     assert_eq!(counts.made + counts.pending, pipelines, "{counts:?}");
     // One worker can't have compiled both yet: the fill waits, and the
     // frame draws only the clear colour.
@@ -1492,6 +1496,7 @@ fn render_at(h: &mut Harness, time: f32) -> [u8; 4] {
         time,
         ..Harness::frame(1.0)
     };
+    h.renderer.request_pipelines(&mut h.gpu);
     h.renderer
         .render(&mut h.gpu, &frame, h.target, [0.0; 4], &|| 0.0);
     pixel(&pollster::block_on(h.gpu.read_texture(h.target)), 16, 16)
@@ -1834,7 +1839,7 @@ fn default_capacity_holds_a_large_basemaps_nodes() {
 }
 
 #[test]
-fn prewarm_asks_for_the_symbol_pipeline_both_halves_pick() {
+fn the_set_asks_for_the_symbol_pipeline_both_halves_pick() {
     let mut h = Harness::new();
     h.renderer
         .set_nodes(&mut h.gpu, &[Family::SymbolIcon, Family::SymbolText]);
@@ -1843,20 +1848,27 @@ fn prewarm_asks_for_the_symbol_pipeline_both_halves_pick() {
         table_mask: 1,
         ..SymbolPaint::default()
     });
+    let group = |nodes| PipelineGroup {
+        nodes,
+        composite: None,
+        first: false,
+    };
     // Neither half painted yet: the icons alone, with text that draws
     // nothing, or with text painted alike pick the pipeline without rows.
-    h.renderer.prewarm(
+    h.renderer.set_pipelines(
         &mut h.gpu,
-        &[
-            vec![(0, Some(plain))],
-            vec![(0, Some(plain)), (1, None)],
-            vec![(0, Some(plain)), (1, Some(plain))],
+        vec![
+            group(vec![(0, Some(plain))]),
+            group(vec![(0, Some(plain)), (1, None)]),
+            group(vec![(0, Some(plain)), (1, Some(plain))]),
         ],
     );
     let plain_pipelines = h.gpu.background_pending();
     assert!(plain_pipelines > 0);
     // Text reading rows picks the variant with them for both halves.
-    h.renderer
-        .prewarm(&mut h.gpu, &[vec![(0, Some(plain)), (1, Some(rows))]]);
+    h.renderer.set_pipelines(
+        &mut h.gpu,
+        vec![group(vec![(0, Some(plain)), (1, Some(rows))])],
+    );
     assert_eq!(h.gpu.background_pending(), 2 * plain_pipelines);
 }
