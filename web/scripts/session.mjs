@@ -87,9 +87,10 @@
 // moves (`pipelinesInMoves`: each a compile mid-gesture), and the async
 // ones that finished compiling during them (`pipelinesSettledInMoves`:
 // each a compile that ran into the moves). Its cold runs
-// bust the driver's shader cache (`?nonce=`, cold.js), which a map in a
-// worker can't, unless `--driver` keeps what the driver's cache holds from
-// earlier runs (a user's later launches).
+// bust the driver's shader cache (`?nonce=`, cold.js; in a worker, the
+// same code put ahead of the map worker's script), unless `--driver` keeps
+// what the driver's cache holds from earlier runs (a user's later
+// launches).
 import { execFileSync, spawn } from "node:child_process";
 import {
   cpSync,
@@ -104,6 +105,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
+import { bustShaderCaches } from "../demo/cold.js";
 import { launchChromium, launchFirefox, serveDemo } from "./serve.mjs";
 
 const args = Object.fromEntries(
@@ -536,6 +538,22 @@ async function run(server, engine) {
       if (m.type() === "error") errors.push(m.text());
     });
     const onPage = (browserName === "firefox" && !args.worker) || !!args.page;
+    // A cold run's shaders, unique to it past the browser's and the
+    // driver's caches (cold.js): on the page through `?nonce=`, in the map
+    // worker by the same code put ahead of the worker's script.
+    const nonce =
+      engine === "orbis" && !warm && !args.driver
+        ? 1 + Math.floor(Math.random() * 9999)
+        : 0;
+    if (nonce && !onPage)
+      await context.route(/\/assets\/map-worker[^/]*\.js$/, async (route) => {
+        const response = await route.fetch();
+        const body = await response.text();
+        await route.fulfill({
+          response,
+          body: `(${bustShaderCaches})(new URLSearchParams("nonce=${nonce}"));\n${body}`,
+        });
+      });
     const query = () =>
       new URLSearchParams({
         engine,
@@ -544,14 +562,9 @@ async function run(server, engine) {
         frames: "",
         ...(args.terrain && { terrain: args.terrain }),
         ...(engine === "orbis" && args.backend && { backend: args.backend }),
-        // Firefox on macOS draws Orbis on the page anyway; there its
-        // shaders can be made unique to the run, past the driver's cache.
+        // Firefox on macOS draws Orbis on the page anyway.
         ...(engine === "orbis" &&
-          onPage && {
-            worker: "0",
-            ...(!warm &&
-              !args.driver && { nonce: 1 + Math.floor(Math.random() * 9999) }),
-          }),
+          onPage && { worker: "0", ...(nonce && { nonce }) }),
       });
     // WebGPU's calls on the page timed and tallied, for a map drawn there:
     // what each frame spent in the browser's WebGPU, by call.
