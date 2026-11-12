@@ -63,19 +63,6 @@ impl Filter {
                     message: "camera expressions not supported".into(),
                 }])
             }
-            Some(root)
-                if parser
-                    .ir
-                    .node(root)
-                    .deps
-                    .contains(crate::ir::Deps::DAYLIGHT) =>
-            {
-                Err(vec![Diagnostic {
-                    path: String::new(),
-                    span: json.span,
-                    message: "[\"dev.sargunv.orbis:daylight\"] is not supported in filters".into(),
-                }])
-            }
             Some(root) => {
                 let ir = parser.ir.compact(root);
                 Ok(Self {

@@ -48,8 +48,7 @@ pub(crate) struct Downsampler {
     drawn: bool,
     /// Made for the first texture that needs it, with `extend`'s.
     pipelines: Option<Pipelines>,
-    /// Per level, at `STRIDE` apart: its number; then again with a flag
-    /// that the texels are linear light, sRGB-encoded.
+    /// Per level, at `STRIDE` apart: its number.
     levels: BufferId,
 }
 
@@ -156,17 +155,15 @@ impl Downsampler {
         });
         let levels = gpu.create_buffer(&BufferDesc {
             label: "downsample levels",
-            size: 2 * LEVELS * STRIDE,
+            size: LEVELS * STRIDE,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        for linear in 0..2 {
-            for level in 0..LEVELS {
-                gpu.write_buffer(
-                    levels,
-                    (linear * LEVELS + level) * STRIDE,
-                    bytemuck::cast_slice(&[level as u32, linear as u32]),
-                );
-            }
+        for level in 0..LEVELS {
+            gpu.write_buffer(
+                levels,
+                level * STRIDE,
+                bytemuck::cast_slice(&[level as u32, 0]),
+            );
         }
         Self {
             layout,
@@ -233,20 +230,17 @@ impl Downsampler {
     }
 
     /// The levels of `texture`, whose views per level are `views`, over
-    /// up to `count` regions at once; `linear` when the texels encode
-    /// linear light, which averages decoded.
+    /// up to `count` regions at once.
     pub(crate) fn chain(
         &self,
         gpu: &mut dyn Gpu,
         (texture, views): (TextureId, &[TextureId]),
         (label, count): (&str, u32),
-        linear: bool,
     ) -> Chain {
         let regions = self.regions(gpu, label, count);
-        let first = if linear { LEVELS } else { 0 };
         let groups = (1..views.len())
             .map(|level| {
-                let at = (first + level as u64) * STRIDE;
+                let at = level as u64 * STRIDE;
                 self.group(
                     gpu,
                     "downsample",
@@ -337,7 +331,7 @@ impl Downsampler {
                 let mut passes = Vec::new();
                 for (level, &group) in (1..).zip(&chain.groups) {
                     for &layer in &layers {
-                        let target = gpu.create_layer_view(chain.texture, layer, level, None);
+                        let target = gpu.create_layer_view(chain.texture, layer, level);
                         transient.textures.push(target);
                         passes.push(drawn_pass(label, mip, group, target, regions, layer));
                     }
@@ -379,7 +373,6 @@ impl Downsampler {
             usage: target | TextureUsages::COPY_SRC,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         let regions = self.regions(gpu, "extended tile areas", count);
         let words: Vec<[u32; 4]> = (edges.iter())
@@ -408,7 +401,7 @@ impl Downsampler {
             }
             Pipelines::Drawn { extend, .. } => (0..count)
                 .map(|i| {
-                    let target = gpu.create_layer_view(scratch, i, 0, None);
+                    let target = gpu.create_layer_view(scratch, i, 0);
                     transient.textures.push(target);
                     let one = RenderCommand::Draw {
                         vertices: 0..4,

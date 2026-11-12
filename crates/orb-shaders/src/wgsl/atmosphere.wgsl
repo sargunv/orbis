@@ -10,12 +10,10 @@
 // scattering pass over the map tints the limb (`atmosphere.fragment.glsl`).
 
 struct Atmosphere {
-    // Premultiplied style colours, in linear light when `linear` is 1.
+    // Premultiplied style colours.
     sky_color: vec4<f32>,
     horizon_color: vec4<f32>,
     fog_color: vec4<f32>,
-    // style-spec#1889's backdrop, premultiplied, behind the stars and sky.
-    backdrop_color: vec4<f32>,
     // Logical pixels, y down.
     horizon: vec2<f32>,
     horizon_normal: vec2<f32>,
@@ -28,28 +26,12 @@ struct Atmosphere {
     // The fog's depth range along the view, in pixels (`View::fog_range_px`).
     fog_near: f32,
     fog_far: f32,
-    // style-spec#1889's stars, 0 to 1.
-    star_opacity: f32,
-    // 1 when colours mix in linear light (`dev.sargunv.orbis:color-space`):
-    // the colours above are decoded, fog mixes them as they are, and the
-    // scattering adds to what's beneath exactly.
-    linear: f32,
     // Clip → camera-relative space on Earth-fixed axes, for view rays.
     ray_inverse: mat4x4<f32>,
     // The globe, mixed in by `globe_amount` (0 on a flat surface): the eye
     // from the globe's centre with the radius in w; toward the sun, unit.
     globe_eye: vec4<f32>,
     globe_sun: vec4<f32>,
-    // Ground lighting (`dev.sargunv.orbis:ground-lighting`), in linear
-    // light whatever the colour space: the sun's light and how much the
-    // light shades the ground (0 off), the ambient light and the sine of
-    // half the twilight, toward the sun and the target's up (unit,
-    // camera-relative globe axes, on flat surfaces too) with the highest
-    // terrain could stand above a globe, as a share of its radius.
-    ground_day: vec4<f32>,
-    ground_night: vec4<f32>,
-    ground_sun: vec4<f32>,
-    ground_up: vec4<f32>,
     globe_amount: f32,
     // GL JS's camera-to-centre distance, logical pixels.
     globe_eye_distance_px: f32,
@@ -117,84 +99,6 @@ fn atmosphere_sky(a: Atmosphere, horizon: vec2<f32>) -> vec4<f32> {
         color = mix(a.sky_color, a.horizon_color, pow(1.0 - distance / a.sky_horizon_blend, 2.0));
     }
     return color * opacity;
-}
-
-// style-spec#1889's stars along a view ray (unit, Earth-fixed axes, so
-// they turn with the globe), `pixel` radians to a logical pixel; the
-// premultiplied colour, before `star_opacity`. Two layers of hashed points,
-// a sparse bright one and a dense faint one, each one point at most per
-// cell of a cube about the eye, with cells of near-equal angle. A star is
-// a Gaussian sized in logical pixels at least 0.7 device pixels wide, so
-// it looks the same at any resolution and doesn't shimmer as it moves.
-fn atmosphere_stars(ray: vec3<f32>, pixel: f32, pixel_ratio: f32) -> vec4<f32> {
-    // The face the ray leaves the cube through, and where on it, in
-    // equal-angle coordinates in [-1, 1].
-    let m = abs(ray);
-    var face: u32;
-    var axes: mat3x3<f32>;
-    if m.x >= m.y && m.x >= m.z {
-        face = select(1u, 0u, ray.x > 0.0);
-        axes = mat3x3<f32>(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(sign(ray.x), 0.0, 0.0));
-    } else if m.y >= m.z {
-        face = select(3u, 2u, ray.y > 0.0);
-        axes = mat3x3<f32>(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, sign(ray.y), 0.0));
-    } else {
-        face = select(5u, 4u, ray.z > 0.0);
-        axes = mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, sign(ray.z)));
-    }
-    let local = transpose(axes) * ray;
-    let uv = atan(local.xy / local.z) * (4.0 / ATMOSPHERE_PI);
-    var sum = vec4<f32>(0.0);
-    // Cells per face edge, the share of cells with a star, and the faintest
-    // and brightest stars' peak and width (logical pixels).
-    let cells = array<f32, 2>(48.0, 128.0);
-    let share = array<f32, 2>(0.22, 0.42);
-    let peak = array<vec2<f32>, 2>(vec2<f32>(0.35, 1.0), vec2<f32>(0.12, 0.45));
-    let width = array<vec2<f32>, 2>(vec2<f32>(0.8, 1.35), vec2<f32>(0.6, 0.8));
-    for (var layer = 0u; layer < 2u; layer++) {
-        let n = cells[layer];
-        let at = (uv * 0.5 + 0.5) * n;
-        let cell = floor(at);
-        // This cell and the three nearest the ray, within the face.
-        let toward = select(vec2<f32>(-1.0), vec2<f32>(1.0), at - cell > vec2<f32>(0.5));
-        for (var k = 0u; k < 4u; k++) {
-            let c = cell + toward * vec2<f32>(f32(k & 1u), f32(k >> 1u));
-            if any(c < vec2<f32>(0.0)) || any(c >= vec2<f32>(n)) {
-                continue;
-            }
-            let h = atmosphere_hash(vec3<u32>(vec2<u32>(c), face * 2u + layer));
-            let r = vec3<f32>(h >> vec3<u32>(8u)) / 16777216.0;
-            if r.z >= share[layer] {
-                continue;
-            }
-            // Brightness skewed faint, as stars' magnitudes are.
-            let bright = pow(r.z / share[layer], 3.0);
-            let star_uv = (c + 0.15 + 0.7 * r.xy) / n * 2.0 - 1.0;
-            let star = axes * normalize(vec3<f32>(tan(star_uv * (ATMOSPHERE_PI / 4.0)), 1.0));
-            let w = max(mix(width[layer].x, width[layer].y, bright), 0.7 / pixel_ratio);
-            // The same light spread wider when a star is widened.
-            let p = mix(peak[layer].x, peak[layer].y, bright) * pow(mix(width[layer].x, width[layer].y, bright) / w, 2.0);
-            let d = length(ray - star) / pixel / w;
-            let tint = f32(h.x & 255u) / 255.0;
-            let color = mix(vec3<f32>(0.78, 0.86, 1.0), vec3<f32>(1.0, 0.9, 0.76), tint);
-            sum += vec4<f32>(color, 1.0) * p * exp(-0.5 * d * d);
-        }
-    }
-    let alpha = min(sum.a, 1.0);
-    return vec4<f32>(sum.rgb * (alpha / max(sum.a, 1e-6)), alpha);
-}
-
-// A 3D hash of a star cell: Jarzynski and Olano's pcg3d.
-fn atmosphere_hash(seed: vec3<u32>) -> vec3<u32> {
-    var v = seed * 1664525u + 1013904223u;
-    v.x += v.y * v.z;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    v ^= v >> vec3<u32>(16u);
-    v.x += v.y * v.z;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    return v;
 }
 
 // A ray's intersections with a sphere about the origin: (near, far), near
@@ -286,7 +190,7 @@ fn atmosphere_fog_factor(a: Atmosphere, depth: f32) -> f32 {
 
 // GL JS's terrain fog over a premultiplied surface colour at a fog depth,
 // blended in linear space toward the horizon colour far off: through GL
-// JS's 2.2 gamma for encoded colours, as they are in linear light.
+// JS's 2.2 gamma.
 // `ground` fogs the whole surface, drawn on or not, as GL JS's terrain
 // does; otherwise only what is drawn, by its coverage: a terrain layer
 // over the ground then fogs its own content and leaves what lies beneath
@@ -297,10 +201,6 @@ fn atmosphere_fog(a: Atmosphere, surface: vec4<f32>, depth: f32, ground: bool) -
     }
     let blend = smoothstep(0.0, 1.0, max((depth - a.horizon_fog_blend) / (1.0 - a.horizon_fog_blend), 0.0));
     let factor = atmosphere_fog_factor(a, depth);
-    if a.linear != 0.0 {
-        let coverage = select(surface.a, 1.0, ground);
-        return mix(surface, mix(a.fog_color, a.horizon_color, blend) * coverage, factor);
-    }
     let gamma = vec4<f32>(ATMOSPHERE_GAMMA);
     let fog = mix(pow(a.fog_color, gamma), pow(a.horizon_color, gamma), blend);
     if ground {

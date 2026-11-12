@@ -116,20 +116,14 @@ function isLegacyFilter(filter) {
  * however low it lies, and Mapterhorn's land hillshade isn't doubled;
  * Mapterhorn's DEM for the entry's terrain (which keeps the sea at sea
  * level) and a hillshade over the land and lakes, under the roads and
- * labels; the buildings extruded under the labels. Orbis's previews are
- * designed in too, for the map options to switch on, each off by default
- * (app/options.js) so that the Globe opens as GL JS and MapLibre Native
- * could draw it: the land's hillshade multiplied into the fills beneath it
- * (`dev.sargunv.orbis:hillshade-layer-blend`), in colours made for it,
- * which its metadata holds the unblended ones of; the footprints rounded,
- * shadows and ambient occlusion; a
- * light that shades the ground (`dev.sargunv.orbis:ground-lighting`), from
- * a sun 60° from overhead so the globe shows its night side by the far
- * limb, fading out by zoom 7 so a region or city keeps its own colours,
- * with labels light on dark halos where it's night
- * (`dev.sargunv.orbis:daylight`); and colours mixed in linear light
- * (`dev.sargunv.orbis:color-space`). Each addition is placed by the layers
- * it finds, so a style with other ids still draws.
+ * labels; the buildings extruded under the labels, lit by a sun 60° from
+ * overhead. One preview is designed in, for the map options to switch on,
+ * off by default (app/options.js) so that the Globe opens as GL JS and
+ * MapLibre Native could draw it: the land's hillshade multiplied into the
+ * fills beneath it (`dev.sargunv.orbis:hillshade-layer-blend`), in colours
+ * made for it, which its metadata holds the unblended ones of. Each
+ * addition is placed by the layers it finds, so a style with other ids
+ * still draws.
  */
 function globeStyle(style) {
   const layers = style.layers.map((layer) => {
@@ -159,15 +153,6 @@ function globeStyle(style) {
   );
   const buildings = layers[at];
   if (buildings) {
-    // The flat footprints round off as the extruded ones do
-    // (style-spec#1047's preview), so they match as the buildings rise.
-    layers[at] = {
-      ...buildings,
-      layout: {
-        ...buildings.layout,
-        "dev.sargunv.orbis:fill-rounded-corner-distance": 2,
-      },
-    };
     // Protomaps carries `height` on only some footprints (about half in
     // Tokyo and Manhattan, a tenth in central Paris) and no level counts:
     // the rest stand at OpenMapTiles' default `render_height`, 5 m, as
@@ -181,7 +166,6 @@ function globeStyle(style) {
     ...style,
     sources: { ...style.sources, ...globe.sources },
     light: globe.light,
-    metadata: { ...style.metadata, ...globe.metadata },
     layers,
   };
 }
@@ -341,7 +325,7 @@ export function demoStyle(params, fallback = "live") {
  * (on, whatever the app's default) put in the style itself, fetched, so
  * that every engine loads them with it, and a restyle's map options as the
  * app opens them: its defaults, which draw nothing GL JS and Native can't,
- * or those `params` names (`&shadows=1`); `globe` in `params` puts
+ * or those `params` names (`&blend=1`); `globe` in `params` puts
  * Liberty-on-the-globe's projection and sky (GLOBE_SKY) in any style.
  * Otherwise the style's URL.
  */

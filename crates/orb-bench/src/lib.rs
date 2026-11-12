@@ -55,12 +55,6 @@ const VIEWS: &[(&str, f64, f64, Buildings)] = &[
     ("z15 pitch 60", 15.0, 60.0, Buildings::None),
     ("z17", 17.0, 0.0, Buildings::None),
     ("z16 pitch 60, 3D buildings", 16.0, 60.0, Buildings::Plain),
-    (
-        "z16 pitch 60, 3D buildings, shadows and AO",
-        16.0,
-        60.0,
-        Buildings::Lit,
-    ),
 ];
 /// The 3D buildings a view adds to the style.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,21 +62,10 @@ pub enum Buildings {
     None,
     /// Liberty's extrusions, [`BUILDINGS_3D`].
     Plain,
-    /// Those with style-spec#1797's shadows and #1796's ambient occlusion
-    /// ([`SHADOWS_AND_OCCLUSION`]).
-    Lit,
 }
 /// OpenFreeMap Liberty's extrusion layer, which the reduced style leaves
 /// out, added before the labels.
 const BUILDINGS_3D: &str = r#"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles", "source-layer": "building", "minzoom": 14, "filter": ["!", ["has", "hide_3d"]], "paint": {"fill-extrusion-base": ["get", "render_min_height"], "fill-extrusion-color": "hsl(35,8%,85%)", "fill-extrusion-height": ["get", "render_height"], "fill-extrusion-opacity": 0.8}}"#;
-/// The edit lighting Liberty's extrusions (`building-3d`) as the demo's
-/// Globe entry does: shadows from v8's default light, and occlusion along
-/// the walls' feet and on the ground.
-pub const SHADOWS_AND_OCCLUSION: &str = r#"[
-    ["setLight", {"anchor": "viewport", "position": [1.15, 210, 30], "intensity": 0.5, "dev.sargunv.orbis:shadow-intensity": 0.35}],
-    ["setPaintProperty", "building-3d", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity", 0.5],
-    ["setPaintProperty", "building-3d", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity", 0.4]
-]"#;
 /// How long a view may take to load.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// The zoom step a nudged frame takes, as mln-rs's still bench.
@@ -638,11 +621,6 @@ pub(crate) fn prepare_view<'a>(
         && let Some(edit) = add_buildings(map)?
     {
         let tx = orb_api::Transaction::from_commands(&edit)?;
-        map.edit(&tx).map_err(|e| e.to_string())?;
-        settle(map, target, warnings)?;
-    }
-    if view.buildings == Buildings::Lit {
-        let tx = orb_api::Transaction::from_commands(SHADOWS_AND_OCCLUSION)?;
         map.edit(&tx).map_err(|e| e.to_string())?;
         settle(map, target, warnings)?;
     }

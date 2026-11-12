@@ -550,14 +550,6 @@ mod native {
                 color: component(F::One, F::One, O::Add),
                 alpha: component(F::One, F::One, O::Add),
             }),
-            "Some(Max)" => Some(wgpu::BlendState {
-                color: component(F::One, F::One, O::Max),
-                alpha: component(F::One, F::One, O::Max),
-            }),
-            "Some(Multiply)" => Some(wgpu::BlendState {
-                color: component(F::Zero, F::Src, O::Add),
-                alpha: component(F::Zero, F::One, O::Add),
-            }),
             other => panic!("blend {other}"),
         }
     }

@@ -29,4 +29,3 @@ pub use mesh::{
     CHUNK_INDICES, Chunk, MAX_CHUNK_INSTANCES, MAX_CHUNK_TRIANGLES, Mesh, MeshBuilder, Owner,
     TileBox, pack_indices,
 };
-pub use round_corners::rounded_layer;

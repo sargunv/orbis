@@ -5,12 +5,10 @@
 //! each stage's per-frame times.
 //!
 //! The scenarios: Liberty's 3D buildings over Manhattan, zooming z12 → z16
-//! at pitch 60 and panning on across new ground, plain and then with
-//! style-spec#1797's shadows and #1796's ambient occlusion; the Alps terrain style's fast
-//! turns and its flight (`web/demo/data/alps.json`); and Liberty on the
-//! globe, zooming from the whole world onto Tokyo, and onto Manhattan as
-//! its buildings arrive, plain and then lit as the demo's Globe entry
-//! lights its own, ground and night side included. Each starts cold from
+//! at pitch 60 and panning on across new ground; the Alps terrain style's
+//! fast turns and its flight (`web/demo/data/alps.json`); and Liberty on
+//! the globe, zooming from the whole world onto Tokyo, and onto Manhattan
+//! as its buildings arrive. Each starts cold from
 //! its first camera at rest and runs at a 60 Hz pace, as the gestures bench
 //! does. `cargo xtask bench stutter`; in the browser
 //! `bench.html?experiment=stutter` runs the same paths through the page's
@@ -60,8 +58,7 @@ enum Style {
 struct Scenario {
     name: &'static str,
     style: Style,
-    /// An edit to the style once it loaded: the globe projection, or the
-    /// buildings' shadows and ambient occlusion.
+    /// An edit to the style once it loaded: the globe projection.
     edit: Option<&'static str>,
     /// Frames the path takes; a flight takes its legs instead.
     frames: usize,
@@ -102,18 +99,6 @@ fn globe_manhattan(f: f64) -> CameraState {
 
 /// The globe, as the globe zoom onto Manhattan draws it.
 const GLOBE: &str = r#"[["setProjection", {"type": "globe"}]]"#;
-/// The globe with Liberty's buildings lit as the demo's Globe entry lights
-/// its own: the sun 60° from overhead, shadows at 0.5, occlusion 0.6 on
-/// the walls and 0.5 on the ground, and the ground lit, night side and
-/// all (`web/demo/data/globe.json`'s `light`).
-const GLOBE_LIT: &str = r##"[
-    ["setProjection", {"type": "globe"}],
-    ["setLight", {"anchor": "viewport", "position": [1.15, 210, 60], "intensity": 0.35, "dev.sargunv.orbis:shadow-intensity": 0.5,
-        "dev.sargunv.orbis:ground-lighting": 1, "dev.sargunv.orbis:ambient-color": "#8d9fd6",
-        "dev.sargunv.orbis:ambient-intensity": 0.5, "dev.sargunv.orbis:twilight": 14}],
-    ["setPaintProperty", "building-3d", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity", 0.6],
-    ["setPaintProperty", "building-3d", "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity", 0.5]
-]"##;
 
 fn camera(lon: f64, lat: f64, zoom: f64, bearing: f64, pitch: f64) -> CameraState {
     CameraState {
@@ -137,14 +122,6 @@ const SCENARIOS: &[Scenario] = &[
         name: "buildings: zoom z12 → z16 at pitch 60, then pan, Manhattan",
         style: Style::Liberty,
         edit: None,
-        frames: 600,
-        camera: manhattan,
-        flight: false,
-    },
-    Scenario {
-        name: "buildings, shadows and AO: zoom z12 → z16 at pitch 60, then pan, Manhattan",
-        style: Style::Liberty,
-        edit: Some(crate::SHADOWS_AND_OCCLUSION),
         frames: 600,
         camera: manhattan,
         flight: false,
@@ -190,14 +167,6 @@ const SCENARIOS: &[Scenario] = &[
         name: "globe, buildings: zoom z1.5 → z16 onto Manhattan",
         style: Style::Liberty,
         edit: Some(GLOBE),
-        frames: 480,
-        camera: globe_manhattan,
-        flight: false,
-    },
-    Scenario {
-        name: "globe, buildings, shadows and AO: zoom z1.5 → z16 onto Manhattan",
-        style: Style::Liberty,
-        edit: Some(GLOBE_LIT),
         frames: 480,
         camera: globe_manhattan,
         flight: false,

@@ -39,8 +39,6 @@ impl Deps {
     pub(crate) const GEOMETRY: Self = Self(4096 | 2048 | 2);
     /// The camera beyond its zoom: `pitch` and `bearing` (Orbis's own).
     pub(crate) const CAMERA: Self = Self(8192);
-    /// How lit the ground is where the feature stands (Orbis's own).
-    pub(crate) const DAYLIGHT: Self = Self(16384);
 
     pub(crate) fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0 && other.0 != 0
@@ -208,24 +206,6 @@ pub(crate) enum Call {
     Pitch,
     /// The camera's bearing, degrees.
     Bearing,
-    /// Ground metres per logical pixel at the camera's target, unpitched
-    /// (style-spec#1881).
-    MetersPerPixel,
-    /// `["dev.sargunv.orbis:daylight"]`: how lit the ground is where the
-    /// feature stands, 0 at night to 1 by day (Orbis's own).
-    Daylight,
-}
-
-impl Call {
-    /// The per-point input a renderer draws a curve over that it reads:
-    /// the elevation or the daylight.
-    pub(crate) fn input_deps(&self) -> Option<Deps> {
-        match self {
-            Self::Elevation => Some(Deps::ELEVATION),
-            Self::Daylight => Some(Deps::DAYLIGHT),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -454,8 +434,7 @@ impl Op {
                 Call::Image => Deps::IMAGE,
                 Call::SupportedScript => Deps::SCRIPT,
                 Call::Geometry { .. } => Deps::GEOMETRY,
-                Call::Pitch | Call::Bearing | Call::MetersPerPixel => Deps::CAMERA,
-                Call::Daylight => Deps::DAYLIGHT,
+                Call::Pitch | Call::Bearing => Deps::CAMERA,
                 _ => Deps::NONE,
             },
             Op::Zoom => Deps::ZOOM,

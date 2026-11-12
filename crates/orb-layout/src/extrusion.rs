@@ -189,11 +189,9 @@ fn layout_normalized(
                         let (start_normal, end_normal) =
                             smooth.as_ref().and_then(|s| s[i]).unwrap_or((flat, flat));
                         let start = builder.vertex_count();
-                        for (end, p, normal) in [(1, cb, end_normal), (0, ca, start_normal)] {
+                        for (p, normal) in [(cb, end_normal), (ca, start_normal)] {
                             let nx = (normal[0] * 8192.0).floor() as i16 * 2;
-                            // Ground occlusion finds the wall's other end
-                            // by this bit (`extrusion_ground.wgsl`).
-                            let ny = ((normal[1] * 8192.0).floor() as i16 * 2) | end;
+                            let ny = (normal[1] * 8192.0).floor() as i16 * 2;
                             // GL JS assigns the cumulative distance to the
                             // edge's end, then distance + length to its start.
                             // Retain that phase even when either end is clipped.

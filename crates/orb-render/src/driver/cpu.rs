@@ -907,7 +907,6 @@ struct Frame {
     viewport: [f32; 2],
     world_per_px: f32,
     extrusion_scale: f32,
-    shadow_offset: [f32; 2],
     camera_whole: [i32; 2],
     camera_rest: [f32; 2],
     quantum: f32,
@@ -916,14 +915,13 @@ struct Frame {
 
 impl Frame {
     /// Its words' ranges in the block.
-    const READS: [(usize, usize); 9] = {
+    const READS: [(usize, usize); 8] = {
         use layout::frame as f;
         [
             (f::VIEW_PROJ, 16),
             (f::VIEWPORT, 2),
             (f::WORLD_PER_PX, 1),
             (f::EXTRUSION_SCALE, 1),
-            (f::SHADOW_OFFSET, 2),
             (f::CAMERA_WHOLE, 2),
             (f::CAMERA_REST, 2),
             (f::QUANTUM, 1),
@@ -942,7 +940,6 @@ impl Frame {
             viewport: [float(f::VIEWPORT), float(f::VIEWPORT + 1)],
             world_per_px: float(f::WORLD_PER_PX),
             extrusion_scale: float(f::EXTRUSION_SCALE),
-            shadow_offset: [float(f::SHADOW_OFFSET), float(f::SHADOW_OFFSET + 1)],
             camera_whole: [
                 word(f::CAMERA_WHOLE) as i32,
                 word(f::CAMERA_WHOLE + 1) as i32,
@@ -1070,19 +1067,10 @@ impl Test<'_> {
             2.0 * margin_px / f.viewport[0],
             2.0 * margin_px / f.viewport[1],
         ];
-        let reach = self.elevation * f.extrusion_scale;
-        let shadow = f.project([
-            f.shadow_offset[0] * reach,
-            f.shadow_offset[1] * reach,
-            0.0,
-            0.0,
-        ]);
         let add = |a: [f32; 4], b: [f32; 4]| -> [f32; 4] { std::array::from_fn(|k| a[k] + b[k]) };
         let mut outside = u32::MAX;
         for c in corners {
-            outside &= outside_planes(c, m)
-                & outside_planes(add(c, raised), m)
-                & outside_planes(add(c, shadow), m);
+            outside &= outside_planes(c, m) & outside_planes(add(c, raised), m);
         }
         outside == 0
     }

@@ -95,8 +95,8 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     }
     // Terrain in front of the centre hides it (GL JS `calculate_visibility`).
     let visibility = terrain_visibility(terrain_seen(projected, center, z));
-    out.color = color_in(color) * opacity * visibility;
-    out.stroke_color = color_in(stroke) * stroke_opacity * visibility;
+    out.color = color * opacity * visibility;
+    out.stroke_color = stroke * stroke_opacity * visibility;
     out.data = vec3<f32>(corner, max(1.0 / frame.pixel_ratio / total, blur));
     out.radius_ratio = radius / total;
     out.stroke_width = stroke_width;

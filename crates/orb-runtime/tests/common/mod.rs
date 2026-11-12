@@ -221,7 +221,6 @@ impl Offscreen {
             usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         Ok(Self {
             gpu,

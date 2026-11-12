@@ -406,8 +406,6 @@ impl Terrain {
             unpack,
             exaggeration,
             dem_dim,
-            // The map sets it from the camera.
-            ground: 0.0,
             lowest: lowest * exaggeration,
         };
         (frame, requests)

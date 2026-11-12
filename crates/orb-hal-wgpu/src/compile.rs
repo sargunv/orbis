@@ -1160,14 +1160,13 @@ mod webgpu {
     /// wgpu's mapping of the same request, as a WebGPU dictionary: the
     /// browser's cache finds wgpu's pipeline equal to this one.
     fn render(device: &JsValue, layout: &JsValue, job: &RenderJob) -> JsValue {
-        let blend = |src: &str, dst: &str, operation: &str| {
+        let component = |src: &str, dst: &str| {
             dict(&[
                 ("srcFactor", src.into()),
                 ("dstFactor", dst.into()),
-                ("operation", operation.into()),
+                ("operation", "add".into()),
             ])
         };
-        let component = |src: &str, dst: &str| blend(src, dst, "add");
         let targets: Array = job
             .targets
             .iter()
@@ -1186,20 +1185,6 @@ mod webgpu {
                         dict(&[
                             ("color", component("one", "one-minus-src-alpha")),
                             ("alpha", component("one", "one-minus-src-alpha")),
-                        ]),
-                    )),
-                    Some(BlendState::Max) => fields.push((
-                        "blend",
-                        dict(&[
-                            ("color", blend("one", "one", "max")),
-                            ("alpha", blend("one", "one", "max")),
-                        ]),
-                    )),
-                    Some(BlendState::Multiply) => fields.push((
-                        "blend",
-                        dict(&[
-                            ("color", component("zero", "src")),
-                            ("alpha", component("zero", "one")),
                         ]),
                     )),
                     None => {}

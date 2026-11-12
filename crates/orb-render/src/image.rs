@@ -255,7 +255,6 @@ impl Images {
                 usage: TextureUsages::TEXTURE_BINDING,
                 sample_count: 1,
                 mip_levels: 1,
-                view_formats: &[],
             })
         };
         let placeholder_array = placeholder("no tiles", 1, 1, TextureViewDimension::D2Array);
@@ -599,12 +598,8 @@ impl Images {
                 let views: Vec<TextureId> = (0..page.page.mip_levels(0))
                     .map(|level| gpu.create_texture_view(texture, level..level + 1))
                     .collect();
-                let chain = downsampler.chain(
-                    gpu,
-                    (texture, &views),
-                    ("image mip regions", capacity),
-                    false,
-                );
+                let chain =
+                    downsampler.chain(gpu, (texture, &views), ("image mip regions", capacity));
                 Mips {
                     revision,
                     views,
@@ -694,7 +689,6 @@ impl Images {
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         let texels: Vec<u32> = colors.iter().chain(elevations).copied().collect();
         gpu.write_texture(
@@ -962,7 +956,7 @@ mod prepare {
                 }
                 let views = *targets.views[layer].get_or_insert_with(|| {
                     [DEM_PADDED, DEM_SLOPES]
-                        .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer, 0, None))
+                        .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer, 0))
                 });
                 let dim = page.page.size(DEM_RAW)[0];
                 for (pipeline, group, target, border) in [

@@ -9,15 +9,9 @@ pub struct EvaluationContext<'a> {
     /// `["bearing"]`.
     pub pitch: f64,
     pub bearing: f64,
-    /// Ground metres per logical pixel at the camera's target, unpitched:
-    /// `["dev.sargunv.orbis:meters-per-pixel"]`. NaN for Web Mercator's on the equator at
-    /// `zoom`.
-    pub meters_per_pixel: f64,
     pub line_progress: f64,
     pub heatmap_density: f64,
     pub elevation: f64,
-    /// `["dev.sargunv.orbis:daylight"]`, 0 at night to 1 by day.
-    pub daylight: f64,
     pub accumulated: Value<'a>,
     pub feature_state: &'a [(String, Value<'static>)],
     pub global_state: &'a [(String, Value<'static>)],
@@ -31,11 +25,9 @@ impl Default for EvaluationContext<'_> {
             zoom: 0.0,
             pitch: 0.0,
             bearing: 0.0,
-            meters_per_pixel: f64::NAN,
             line_progress: 0.0,
             heatmap_density: 0.0,
             elevation: 0.0,
-            daylight: 1.0,
             accumulated: Value::Null,
             feature_state: &[],
             global_state: &[],
@@ -54,29 +46,12 @@ impl FeatureGeometry {
     }
 }
 
-impl EvaluationContext<'_> {
-    /// `["dev.sargunv.orbis:meters-per-pixel"]`: the context's, else Web Mercator's on the
-    /// equator at its zoom, 512 pixels a tile.
-    pub fn meters_per_pixel(&self) -> f64 {
-        if self.meters_per_pixel.is_nan() {
-            EQUATOR_METRES / 512.0 / self.zoom.exp2()
-        } else {
-            self.meters_per_pixel
-        }
-    }
-}
-
-/// The WGS84 equator's length in metres.
-const EQUATOR_METRES: f64 = 2.0 * std::f64::consts::PI * 6_378_137.0;
-
 /// What the camera gives a value beside its zoom.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraInputs {
     /// Degrees.
     pub pitch: f64,
     pub bearing: f64,
-    /// Ground metres per logical pixel at the target, unpitched.
-    pub meters_per_pixel: f64,
 }
 
 /// Feature coordinates in a tile's local units, with the tile's world location.

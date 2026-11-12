@@ -17,7 +17,6 @@
 // that it needs a cross-origin isolated page (isolation.js).
 import { h } from "./dom.js";
 import { isolate, isolated } from "./isolation.js";
-import { byDay } from "./options.js";
 
 const ENGINES = {
   orbis: { name: "Orbis", load: () => import("./orbis.js") },
@@ -37,17 +36,11 @@ const ENGINES = {
   },
 };
 /**
- * The namespace of Orbis's previews (style-spec#1889's stars, #1797's
- * shadows, ground lighting, #1796's ambient occlusion, #1047's rounded
- * fills and the rest), which the other engines don't know: `without`
- * drops their properties. Colours over the daylight draw their day side's
- * (`byDay`).
+ * The namespace of Orbis's previews (style-spec#1661's hillshade and
+ * colour-relief blends and the rest), which the other engines don't know:
+ * `without` drops their properties.
  */
 const ORBIS = "dev.sargunv.orbis:";
-/** `paint` with its colours over the daylight as the day side draws them. */
-const daytime = (paint) =>
-  paint &&
-  Object.fromEntries(Object.entries(paint).map(([k, v]) => [k, byDay(v)]));
 /** `object` less Orbis's own properties and their transitions; absent stays absent. */
 const without = (object) =>
   object &&
@@ -160,7 +153,7 @@ function show(map, scene, pair, { isolating, onPick }) {
     const light = without(now.light);
     const layers = now.layers.map((l) => ({
       ...l,
-      ...(l.paint && { paint: daytime(without(l.paint)) }),
+      ...(l.paint && { paint: without(l.paint) }),
       ...(l.layout && { layout: without(l.layout) }),
     }));
     return { ...now, ...(sky && { sky }), ...(light && { light }), layers };

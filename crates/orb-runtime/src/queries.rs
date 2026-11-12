@@ -71,7 +71,6 @@ impl crate::Map {
                 zoom,
                 pitch: inputs.pitch,
                 bearing: inputs.bearing,
-                meters_per_pixel: inputs.meters_per_pixel,
             };
             (scene.query(view, camera, zoom, min, max, layers), at)
         }) else {

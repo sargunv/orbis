@@ -156,29 +156,6 @@ pub(crate) fn color_target(target: ColorTargetState) -> wgpu::ColorTargetState {
                 },
             },
             BlendState::PremultipliedAlpha => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            BlendState::Max => {
-                let max = wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Max,
-                };
-                wgpu::BlendState {
-                    color: max,
-                    alpha: max,
-                }
-            }
-            BlendState::Multiply => wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::Zero,
-                    dst_factor: wgpu::BlendFactor::Src,
-                    operation: wgpu::BlendOperation::Add,
-                },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::Zero,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-            },
         }),
         write_mask: wgpu::ColorWrites::ALL,
     }

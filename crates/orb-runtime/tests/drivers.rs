@@ -50,7 +50,6 @@ impl Checked {
             usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         let (zoom, bearing, pitch) = scene.at;
         let camera = common::camera(&common::Options {
@@ -60,9 +59,6 @@ impl Checked {
         });
         let mut map = Map::new(common::native_services(Arc::new(|| {})), camera);
         map.set_stable_labels(false);
-        if scene.previews {
-            map.set_previews(orb_runtime::Previews::ALL);
-        }
         map.set_antialias_3d(scene.antialias);
         map.load_style_url(&scene.url);
         let mut renderer = map.create_renderer(&mut gpu, format);
@@ -99,12 +95,7 @@ impl Checked {
         for warning in common::take_warnings(&mut self.map) {
             eprintln!("{what}: {warning}");
         }
-        // A style in linear light made the renderer again, without its
-        // twin: the next frame compares.
-        let Some(check) = self.renderer.driver_check() else {
-            assert!(self.renderer.check_driver(&mut self.gpu, true));
-            return false;
-        };
+        let check = (self.renderer.driver_check()).expect("the CPU driver, with a twin");
         let gpu = &self.gpu;
         let mut read = |buffer| -> Vec<u32> {
             bytemuck::cast_slice(&pollster::block_on(gpu.read_buffer(buffer))).to_vec()
@@ -180,7 +171,6 @@ fn the_cpu_driver_writes_the_gpu_cull_s_words_in_every_scene() {
         "raster",
         "extrusions",
         "extrusions-lit",
-        "linear",
     ];
     for scene in scenes(&names) {
         let mut checked = Checked::new(&scene);
@@ -259,5 +249,5 @@ fn the_cpu_driver_writes_the_gpu_cull_s_words_along_gestures() {
 
     let mut checked = Checked::new(&buildings);
     checked.glide("to bearing 0", |c, t| c.bearing = -20.0 * (1.0 - t), 4);
-    checked.settle_and_keep_all("z16 pitch 60, 3D buildings, shadows and AO");
+    checked.settle_and_keep_all("z16 pitch 60, 3D buildings");
 }

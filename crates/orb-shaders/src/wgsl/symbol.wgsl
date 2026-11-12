@@ -24,9 +24,7 @@
 // no `&` on `i32`, no `select` between bools, no `vec4` comparison and no
 // matrix in a `var`.
 
-// Paint slots: opacity, colour, halo colour, halo width, halo blur, and
-// with `["dev.sargunv.orbis:daylight"]` the colour's and halo colour's
-// night stops, which share their day stops' curves.
+// Paint slots: opacity, colour, halo colour, halo width and halo blur.
 struct SymbolSize {
     // 0 constant, 1 source, 2 camera, 3 composite.
     kind: u32,
@@ -62,20 +60,13 @@ struct SymbolNode {
     text_size: SymbolSize,
     curves: array<Curve, 5>,
     state: StateLookup,
-    // The colours' night stops, and their curves over the daylight (with
-    // `DAYLIGHT_FILL` and `DAYLIGHT_HALO`): the first stop's daylight, the
-    // last's, 0 for a step or 1 for an exponential curve, and its base.
-    night_fill: vec4<f32>,
-    night_halo: vec4<f32>,
-    daylight_fill: vec4<f32>,
-    daylight_halo: vec4<f32>,
     // With `TRANSLATE_ROW_MASK` in `table_mask`, each feature's
     // `*-translate` ends its row (beyond the spec), blended by this curve.
     translate_curve: Curve,
     // To a node uniform's size (orb-render's `NODE_UNIFORM_SIZE`), which
     // `halves` steps by: an `@size` isn't kept by GLSL's std140, and a
     // struct around it would nest past what ANGLE takes.
-    _pad: array<vec4<u32>, 2>,
+    _pad: array<vec4<u32>, 6>,
 };
 // A symbol layer draws its icons and its text in one list, in the order
 // they stack: by sort key, a key's icons then its text (MapLibre Native's),
@@ -97,11 +88,8 @@ const KEEP_UPRIGHT: u32 = 64u;
 const TRANSLATE_VIEWPORT: u32 = 128u;
 // `symbol-height-anchor: ground`: heights count from the terrain.
 const HEIGHT_ANCHOR_GROUND: u32 = 256u;
-// The colour and the halo colour follow the daylight.
-const DAYLIGHT_FILL: u32 = 512u;
-const DAYLIGHT_HALO: u32 = 1024u;
 // Its labels follow their lines (only the line variant places them so).
-const ALONG_LINE: u32 = 2048u;
+const ALONG_LINE: u32 = 512u;
 
 // Header words (orb-render `symbol_header`).
 const H_QUADS: u32 = 0u;
@@ -156,8 +144,8 @@ const CHUNK_QUADS: u32 = 64u;
 // 0: where it lands in the label plane (x, y), and its rotation scaled by
 //    a pitched label's correction on a globe (cos, sin), as f32 bits;
 // 1: its size and its opacity as f32 bits, then its colour and halo
-//    colour packed as four unorm8s, before `color_in`. A quad with zero
-//    opacity draws nothing.
+//    colour packed as four unorm8s. A quad with zero opacity draws
+//    nothing.
 //
 // Colours are kept as 8 bits a channel, as GL JS packs its data-driven
 // ones, so that a quad takes two texels.
@@ -269,8 +257,7 @@ fn paint_number(row: u32, state: u32, slot: u32, constant: f32, z: f32) -> f32 {
 
 fn paint_color(row: u32, state: u32, slot: u32, constant: vec4<f32>, z: f32) -> vec4<f32> {
     var value = constant;
-    // A night stop (slots 5 and 6) shares its day stop's curve.
-    let curve = halves[half].curves[select(slot, slot - 4u, slot > 4u)];
+    let curve = halves[half].curves[slot];
     if (row_mask(halves[half].table_mask) & (1u << slot)) != 0u {
         value = table_color(row, slot, curve, z);
     }
@@ -278,42 +265,6 @@ fn paint_color(row: u32, state: u32, slot: u32, constant: vec4<f32>, z: f32) -> 
         value = state_color(state, halves[half].state, slot, curve, value);
     }
     return value;
-}
-
-// `["dev.sargunv.orbis:daylight"]` at a label's anchor: ground lighting's
-// day side there (`sky.wgsl`'s `fs_ground`), by the sun's elevation over the
-// globe's normal at the anchor, mixed toward the target's up as the globe
-// hands over to a flat surface, which takes the target's; then mixed toward
-// full daylight as the light shades the ground less.
-fn label_daylight(anchor: Ground) -> f32 {
-    let amount = frame.ground_up.w;
-    if amount <= 0.0 {
-        return 1.0;
-    }
-    var normal = frame.ground_up.xyz;
-    if on_globe() && frame.globe_plane == 0u {
-        let sphere = normalize(anchor.globe + frame.globe_target);
-        normal = normalize(mix(normal, sphere, frame.globe_amount));
-    }
-    let elevation = asin(clamp(dot(normal, frame.ground_sun.xyz), -1.0, 1.0)) * (180.0 / PI);
-    let half = frame.ground_sun.w;
-    var day = select(0.0, 1.0, elevation >= 0.0);
-    if half > 0.0 {
-        day = smoothstep(-half, half, elevation);
-    }
-    return mix(1.0, day, amount);
-}
-
-// How far a colour goes from its night stop toward its day stop at
-// `daylight`, over its curve `c` (`SymbolNode`'s `daylight_fill`).
-fn daylight_t(c: vec4<f32>, daylight: f32) -> f32 {
-    if c.z == 0.0 {
-        return select(0.0, 1.0, daylight >= c.y);
-    }
-    var curve: Curve;
-    curve.kind = 1u;
-    curve.params = vec4<f32>(c.w, 0.0, 0.0, 0.0);
-    return curve_factor(curve, clamp(daylight, c.x, c.y), c.x, c.y);
 }
 
 // The drawn symbol's `symbol-height-offset`, metres.

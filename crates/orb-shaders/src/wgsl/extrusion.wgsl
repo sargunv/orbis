@@ -11,10 +11,6 @@ struct ExtrusionNode {
     vertical_gradient: u32,
     opacity: f32,
     image_from: u32, image_to: u32,
-    // style-spec#1796's ambient occlusion: the walls' intensity and radius
-    // (metres up from the ground), then the ground's (metres out from the
-    // walls, extrusion_ground.wgsl). An intensity of 0 is none.
-    occlusion: vec4<f32>,
     // Color, height, base, and per-feature opacity.
     curves: array<Curve, 4>,
     translate_curve: Curve,
@@ -71,25 +67,14 @@ struct ExtrusionOut {
     @location(2) @interpolate(flat, either) tile: u32,
     @location(3) pattern_pos: vec2<f32>,
     @location(4) @interpolate(flat, either) images: vec2<u32>,
-    // A wall's height above the ground, metres, for its ambient occlusion;
-    // EXTRUSION_ROOF_ABOVE on roofs, which it leaves alone. On terrain, its
-    // elevation, less the DEM's at the fragment (`dem` and `dem_layer`,
-    // `ground_dem_at`'s; NO_GROUND_DEM off terrain).
-    @location(5) above: f32,
-    @location(6) dem: vec2<f32>,
-    @location(7) @interpolate(flat, either) dem_layer: u32,
-    // A wall's share of its light that is ambient, which its ambient
-    // occlusion dims (`light_ambient_share`): its face's, though on a
-    // globe the local up turns across a wall by some 1e-5 radians.
-    @location(8) @interpolate(flat, either) ambient: f32,
     // Where its tile may stand across a globe's horizon (`sphere_limb`),
     // the point's direction from the sphere's centre (camera-relative
     // globe space plus the target) and its distance from it: between
     // vertices, the point on the building the mesh's chord stands for,
     // which the sphere hides or not per fragment. Whether it does: 0 not,
     // else 1, plus 2 where the building is drawn whole, past its clip.
-    @location(9) sphere: vec4<f32>,
-    @location(10) @interpolate(flat, either) limb: u32,
+    @location(5) sphere: vec4<f32>,
+    @location(6) @interpolate(flat, either) limb: u32,
 };
 // Extrusions draw in two pipelines: whole buildings, and buildings cut at
 // the source's buffer, clipped per fragment to the placement. Only the
@@ -105,8 +90,8 @@ fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
     return extrusion_whole(index);
 }
 // Whole buildings shaded by their colour alone (orb-render's
-// `ExtrusionShape::plain`: no pattern, colour over the elevation or wall
-// occlusion), passing the fragment stage nothing else. The varyings
+// `ExtrusionShape::plain`: no pattern or colour over the elevation),
+// passing the fragment stage nothing else. The varyings
 // `fs_extrusion` reads for those cost the moto g 40% of a pitched 3D
 // frame's building pass, though it read none of them (#180).
 struct ExtrusionPlainOut {
@@ -281,9 +266,6 @@ fn extrusion_depth_scale(height: f32, feature: u32) -> f32 {
     let tall = min(u32(log2(max(height, 0.0) + 1.0) * 3.1), 31u);
     return 1.0 - f32((31u - tall) * 4u + feature % 4u) * EXTRUSION_DEPTH_STEP;
 }
-// A roof's height above the ground for ambient occlusion: beyond any
-// radius, so it stays unshaded.
-const EXTRUSION_ROOF_ABOVE: f32 = 1e30;
 // A feature's base, height and opacity, from the node, its row (its
 // opacity, beyond the spec, packed beside the whole-building bit) or its
 // state.
@@ -353,31 +335,9 @@ fn extrusion_vertex(v: Pulled, limb: bool) -> ExtrusionOut {
     out.position.z *= extrusion_depth_scale(gradient_height, feature);
     out.tile_pos = pos;
     out.tile = v.tile;
-    out.above = select(EXTRUSION_ROOF_ABOVE, mix(gradient_base - basement, gradient_height, top), normal.z == 0.0);
-    // On terrain a wall's foot is where it meets the ground, which the DEM
-    // shapes between the wall's ends (a street's crown, a pit dug beside
-    // it): a wall measures its height above the ground per fragment.
-    out.dem_layer = NO_GROUND_DEM;
-    if normal.z == 0.0 && node.occlusion.x > 0.0 && frame.dem_dim > 0.0 {
-        let at = ground_dem_at(tile, pos);
-        if at.layer != NO_GROUND_DEM {
-            out.above = elevation;
-            out.dem = at.coord;
-            out.dem_layer = at.layer;
-        }
-    }
     var gradient = 1.0;
     if normal.z == 0.0 && vertical_gradient {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
-    }
-    // Patterns and colours over the elevation are lit as mid luminance.
-    var luminance = 0.5;
-    if node.pattern.enabled == 0u && elevation_stops == 0u {
-        luminance = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    }
-    out.ambient = 1.0;
-    if normal.z == 0.0 && node.occlusion.x > 0.0 {
-        out.ambient = light_ambient_share(light_facing(lit_normal), luminance);
     }
     if node.pattern.enabled != 0u {
         out.images = pattern_ids(row, EXTRUSION_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
@@ -400,7 +360,7 @@ fn extrusion_vertex(v: Pulled, limb: bool) -> ExtrusionOut {
         out.images = vec2<u32>(row, state);
         return out;
     }
-    out.color = color_in(vec4<f32>(light_surface(color.rgb, lit_normal, gradient), 1.0) * opacity);
+    out.color = vec4<f32>(light_surface(color.rgb, lit_normal, gradient), 1.0) * opacity;
     return out;
 }
 // The elevation `v` through input operator `i`. The curve's uniforms are
@@ -508,25 +468,7 @@ fn elevation_shade(in: ExtrusionOut) -> vec4<f32> {
         let t = elevation_factor(x, span.lower, span.upper);
         color = mix(color, elevation_stop(lower + 1u, span.upper_color, in), t);
     }
-    return color_in(vec4<f32>(light_lit(color.rgb, in.color.x, in.color.y), 1.0) * in.color.z);
-}
-// The fragment's colour, its wall darkened toward the ground by
-// style-spec#1796's ambient occlusion as MapLibre Native's walls PR (#4909)
-// shades it: by the intensity at the foot, fading out over the radius, of
-// the ambient share of its light. On terrain, from the ground under the
-// fragment, wherever along the wall the terrain meets it.
-fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {
-    let color = extrusion_color(in);
-    let occlusion = node.occlusion;
-    if occlusion.x <= 0.0 || occlusion.y <= 0.0 {
-        return color;
-    }
-    var above = in.above;
-    if in.dem_layer != NO_GROUND_DEM {
-        above -= dem_bilinear(DemAt(in.dem, in.dem_layer));
-    }
-    let lit = 1.0 - occlusion.x * (1.0 - smoothstep(0.0, occlusion.y, above)) * in.ambient;
-    return vec4<f32>(color.rgb * lit, color.a);
+    return vec4<f32>(light_lit(color.rgb, in.color.x, in.color.y), 1.0) * in.color.z;
 }
 fn extrusion_color(in: ExtrusionOut) -> vec4<f32> {
     if node.pattern.enabled == 0u {
@@ -541,5 +483,5 @@ fn extrusion_color(in: ExtrusionOut) -> vec4<f32> {
     let pos_b = pattern_position(tile, in.pattern_pos, image_b, node.pattern.to_scale);
     let a = pattern_sample(image_a, fract(pos_a), 0.0);
     let b = pattern_sample(image_b, fract(pos_b), 0.0);
-    return color_in(mix(a, b, node.pattern.fade) * in.color);
+    return mix(a, b, node.pattern.fade) * in.color;
 }

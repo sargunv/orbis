@@ -737,30 +737,20 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     assert_same_terrain("terrain", both_ways(&style, start, end, 30));
 }
 
-/// Tokyo's buildings on hills, with style-spec#1797's shadows and
-/// #1796's ambient occlusion: what they darken on the terrain (its ground
-/// mask, on a plane at the ground under the target, carried onto the
-/// terrain) and the walls' occlusion from the ground under them draw as a
-/// fresh map does after a gesture over the hills.
+/// Tokyo's buildings on hills, lit by a map-anchored light: they stand
+/// on the terrain and draw as a fresh map does after a gesture over the
+/// hills.
 #[test]
-fn shadows_on_terrain_after_a_gesture_draw_what_a_fresh_map_does() {
+fn extrusions_on_terrain_after_a_gesture_draw_what_a_fresh_map_does() {
     let (hills, _dem) = hills();
     let style = extruded(tokyo(
         r#""terrain": {"source": "hills", "exaggeration": 1.5},
-           "light": {"anchor": "map", "position": [1.15, 210, 60], "dev.sargunv.orbis:shadow-intensity": 0.5},"#,
+           "light": {"anchor": "map", "position": [1.15, 210, 60]},"#,
         &hills,
-    ))
-    .replacen(
-        r#""fill-extrusion-height": ["get", "render_height"]}"#,
-        r#""fill-extrusion-height": ["get", "render_height"],
-           "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
-           "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity": 0.5}"#,
-        1,
-    );
-    assert!(style.contains("ground-intensity"));
+    ));
     let start = (Geodetic::new(139.735, 35.68), 14.5, -20.0, 40.0);
     let end = (STATION, 16.0, 30.0, 60.0);
-    assert_same_terrain("terrain-shadows", both_ways(&style, start, end, 20));
+    assert_same_terrain("terrain-extrusions", both_ways(&style, start, end, 20));
 }
 
 /// A map over terrain resized between frames draws its next frame at

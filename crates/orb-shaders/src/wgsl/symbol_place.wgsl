@@ -203,20 +203,8 @@ fn place_quad(node: NodeCull, first_half: u32, instance: u32) -> PlacedQuad {
         }
     }
 
-    // Over the daylight, between the colours' night and day stops.
-    var fill = paint_color(row, state_at_slot, 1u, halves[half].fill_color, tile.zoom);
-    var halo = paint_color(row, state_at_slot, 2u, halves[half].halo_color, tile.zoom);
-    if (halves[half].flags & (DAYLIGHT_FILL | DAYLIGHT_HALO)) != 0u {
-        let daylight = label_daylight(anchor_ground);
-        if (halves[half].flags & DAYLIGHT_FILL) != 0u {
-            let night = paint_color(row, state_at_slot, 5u, halves[half].night_fill, tile.zoom);
-            fill = mix(night, fill, daylight_t(halves[half].daylight_fill, daylight));
-        }
-        if (halves[half].flags & DAYLIGHT_HALO) != 0u {
-            let night = paint_color(row, state_at_slot, 6u, halves[half].night_halo, tile.zoom);
-            halo = mix(night, halo, daylight_t(halves[half].daylight_halo, daylight));
-        }
-    }
+    let fill = paint_color(row, state_at_slot, 1u, halves[half].fill_color, tile.zoom);
+    let halo = paint_color(row, state_at_slot, 2u, halves[half].halo_color, tile.zoom);
     var fill_word = pack_4x8_unorm(fill);
     if ((vertex_at(qa + 11u) >> 16u) & Q_COLOR) != 0u {
         fill_word = vertex_at(base + vertex_at(base + H_COLORS) + quad_index);

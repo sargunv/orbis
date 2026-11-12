@@ -60,38 +60,38 @@ buffer "draw args"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE | INDIRECT)
 buffer "indices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
 buffer "compacted indices"#0: BufferUsages(COPY_SRC | COPY_DST | INDEX | STORAGE)
 group "cull"#0: layout layout "cull"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "candidates"#0 at 0 size None; 4 buffer "node cull"#0 at 0 size None; 5 buffer "visible"#0 at 0 size None; 6 buffer "draw args"#0 at 0 size None; 7 buffer "indices"#0 at 0 size None; 8 buffer "compacted indices"#0 at 0 size None
-texture "terrain depth"#0: R32Float D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
-texture "terrain depth pass"#0: Depth32Float D2 samples 1 views [] TextureUsages(RENDER_ATTACHMENT | TRANSIENT_ATTACHMENT)
+texture "terrain depth"#0: R32Float D2 samples 1 TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
+texture "terrain depth pass"#0: Depth32Float D2 samples 1 TextureUsages(RENDER_ATTACHMENT | TRANSIENT_ATTACHMENT)
 layout "terrain"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(VERTEX | FRAGMENT) Storage { read_only: true }; 2 ShaderStages(VERTEX) Storage { read_only: true }; 3 ShaderStages(VERTEX) Texture { filterable: false, dimension: D2Array }; 4 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 5 ShaderStages(FRAGMENT) Sampler { filtering: true }; 6 ShaderStages(VERTEX | FRAGMENT) Uniform; 7 ShaderStages(VERTEX | FRAGMENT) Uniform; 8 ShaderStages(VERTEX) Storage { read_only: true }; 9 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 
 layout "terrain layer"#0: 0 ShaderStages(FRAGMENT) Uniform; 
 module "terrain"#0: wgsl
 render "terrain depth"#0: layouts [layout "terrain"#0, layout "terrain layer"#0]; module "terrain"#0 vs_terrain []; module "terrain"#0 fs_terrain_depth []; [ColorTargetState { format: R32Float, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 1
 buffer "terrain tiles"#0: BufferUsages(COPY_DST | STORAGE)
 buffer "terrain grid"#0: BufferUsages(COPY_DST | STORAGE)
-texture "padded dem tiles"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT)
-texture "drape atlas"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | STORAGE_BINDING | RENDER_ATTACHMENT)
+texture "padded dem tiles"#0: Rgba8Unorm D2Array samples 1 TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT)
+texture "drape atlas"#0: Rgba8Unorm D2Array samples 1 TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | STORAGE_BINDING | RENDER_ATTACHMENT)
 sampler "linear"#0: Linear mips Linear anisotropy 16
 buffer "terrain"#0: BufferUsages(COPY_DST | UNIFORM)
 buffer "atmosphere"#0: BufferUsages(COPY_DST | UNIFORM)
 buffer "props"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
-texture "drape atlas"#1: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | STORAGE_BINDING | RENDER_ATTACHMENT)
+texture "drape atlas"#1: Rgba8Unorm D2Array samples 1 TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | STORAGE_BINDING | RENDER_ATTACHMENT)
 group "terrain"#0: layout layout "terrain"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "terrain tiles"#0 at 0 size None; 2 buffer "terrain grid"#0 at 0 size None; 3 texture "padded dem tiles"#0 as D2Array; 4 texture "drape atlas"#0 as D2Array; 5 sampler "linear"#0; 6 buffer "terrain"#0 at 0 size None; 7 buffer "atmosphere"#0 at 0 size None; 8 buffer "props"#0 at 0 size None; 9 texture "drape atlas"#1 as D2Array
 buffer "terrain layers"#0: BufferUsages(COPY_DST | UNIFORM)
 group "terrain layer"#0: layout layout "terrain layer"#0; 0 buffer "terrain layers"#0 at 0 size Some(32)
 buffer "terrain grid indices"#0: BufferUsages(COPY_DST | INDEX)
-texture "terrain layer"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
-texture "3d depth"#0: Depth32Float D2 samples 1 views [] TextureUsages(RENDER_ATTACHMENT)
+texture "terrain layer"#0: Rgba8Unorm D2 samples 1 TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
+texture "3d depth"#0: Depth32Float D2 samples 1 TextureUsages(RENDER_ATTACHMENT)
 layout "image node"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 2 ShaderStages(FRAGMENT) Sampler { filtering: true }; 3 ShaderStages(FRAGMENT) Sampler { filtering: true }; 5 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2Array }; 
 layout "terrain backdrop"#0: 0 ShaderStages(FRAGMENT) Texture { filterable: false, dimension: D2 }; 
 module "terrain shade"#0: wgsl
 render "terrain shade"#0: layouts [layout "terrain"#0, layout "terrain layer"#0, layout "image node"#0, layout "terrain backdrop"#0]; module "terrain shade"#0 vs_terrain []; module "terrain shade"#0 fs_terrain_shaded []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 1
 buffer "node uniforms"#0: BufferUsages(COPY_DST | UNIFORM | STORAGE)
-texture "hillshade slopes"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT)
+texture "hillshade slopes"#0: Rgba8Unorm D2Array samples 1 TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT)
 sampler "nearest"#0: Nearest mips Nearest anisotropy 1
 group "image node"#0: layout layout "image node"#0; 0 buffer "node uniforms"#0 at 29184 size Some(512); 1 texture "hillshade slopes"#0 as D2Array; 2 sampler "linear"#0; 3 sampler "nearest"#0; 5 texture "hillshade slopes"#0 as D2Array
-texture "terrain backdrop"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING)
+texture "terrain backdrop"#0: Rgba8Unorm D2 samples 1 TextureUsages(TEXTURE_BINDING)
 group "terrain backdrop"#0: layout layout "terrain backdrop"#0; 0 texture "terrain backdrop"#0 as D2
-texture "terrain layer"#1: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
+texture "terrain layer"#1: Rgba8Unorm D2 samples 1 TextureUsages(TEXTURE_BINDING | RENDER_ATTACHMENT)
 module "terrain"#1: wgsl
 render "terrain"#0: layouts [layout "terrain"#0, layout "terrain layer"#0]; module "terrain"#1 vs_terrain []; module "terrain"#1 fs_terrain []; [ColorTargetState { format: Rgba8Unorm, blend: None }] Some(DepthState { format: Depth32Float, write: true }) TriangleList cull back false samples 1
 group "terrain layer"#1: layout layout "terrain layer"#0; 0 buffer "terrain layers"#0 at 256 size Some(32)
@@ -99,16 +99,16 @@ layout "symbol placements"#0: 0 ShaderStages(COMPUTE) Uniform; 1 ShaderStages(CO
 module "symbol placement"#0: wgsl
 compute "symbol placement"#0: layouts [layout "symbol placements"#0]; module "symbol placement"#0 cs_place [("feature_rows", 0.0)]; 
 buffer "vertices"#0: BufferUsages(COPY_SRC | COPY_DST | STORAGE)
-texture "symbol placements"#0: Rgba32Uint D2Array samples 1 views [] TextureUsages(TEXTURE_BINDING | STORAGE_BINDING)
+texture "symbol placements"#0: Rgba32Uint D2Array samples 1 TextureUsages(TEXTURE_BINDING | STORAGE_BINDING)
 group "symbol placements"#0: layout layout "symbol placements"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "terrain depth"#0 as D2; 17 buffer "node uniforms"#0 at 0 size None; 18 buffer "draw args"#0 at 0 size None; 19 texture "symbol placements"#0 as D2Array
 module "symbol line placement"#0: wgsl
 compute "symbol line placement"#0: layouts [layout "symbol placements"#0]; module "symbol line placement"#0 cs_place [("feature_rows", 0.0)]; 
-texture "target"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
+texture "target"#0: Rgba8Unorm D2 samples 1 TextureUsages(COPY_SRC | RENDER_ATTACHMENT)
 layout "composite"#0: 0 ShaderStages(FRAGMENT) Uniform; 1 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 2 ShaderStages(FRAGMENT) Texture { filterable: true, dimension: D2 }; 3 ShaderStages(FRAGMENT) Sampler { filtering: true }; 
 module "composite over"#0: wgsl
 render "composite over"#0: layouts [layout "composite"#0]; module "composite over"#0 vs_composite []; module "composite over"#0 fs_over []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 buffer "composite"#0: BufferUsages(COPY_DST | UNIFORM)
-texture "composite blank"#0: Rgba8Unorm D2 samples 1 views [] TextureUsages(TEXTURE_BINDING)
+texture "composite blank"#0: Rgba8Unorm D2 samples 1 TextureUsages(TEXTURE_BINDING)
 sampler "composite"#0: Linear mips Nearest anisotropy 1
 group "composite"#0: layout layout "composite"#0; 0 buffer "composite"#0 at 0 size None; 1 texture "terrain layer"#0 as D2; 2 texture "composite blank"#0 as D2; 3 sampler "composite"#0
 bundle "layers"#0: [Rgba8Unorm] depth None samples 1
@@ -123,10 +123,10 @@ layout "symbol pass"#0: 0 ShaderStages(VERTEX | FRAGMENT) Uniform; 1 ShaderStage
 module "symbol"#0: wgsl
 render "symbol"#0: layouts [layout "scene"#0, layout "node"#0, layout "symbol pass"#0]; module "symbol"#0 vs_symbol [("feature_rows", 0.0)]; module "symbol"#0 fs_symbol []; [ColorTargetState { format: Rgba8Unorm, blend: Some(PremultipliedAlpha) }] None TriangleList cull back false samples 1
 buffer "image rects"#0: BufferUsages(COPY_DST | STORAGE)
-texture "images"#0: Rgba8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
+texture "images"#0: Rgba8Unorm D2Array samples 1 TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
 sampler "images"#0: Linear mips Nearest anisotropy 1
-texture "line SDF atlas"#0: R8Unorm D2 samples 1 views [] TextureUsages(COPY_DST | TEXTURE_BINDING)
-texture "glyphs"#0: R8Unorm D2Array samples 1 views [] TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
+texture "line SDF atlas"#0: R8Unorm D2 samples 1 TextureUsages(COPY_DST | TEXTURE_BINDING)
+texture "glyphs"#0: R8Unorm D2Array samples 1 TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING)
 group "scene"#0: layout layout "scene"#0; 0 buffer "frame"#0 at 0 size None; 1 buffer "tiles"#0 at 0 size None; 2 buffer "chunks"#0 at 0 size None; 3 buffer "visible"#0 at 0 size None; 4 buffer "vertices"#0 at 0 size None; 5 buffer "indices"#0 at 0 size None; 6 buffer "props"#0 at 0 size None; 7 buffer "node cull"#0 at 0 size None; 8 buffer "image rects"#0 at 0 size None; 9 texture "images"#0 as D2Array; 10 sampler "images"#0; 11 texture "line SDF atlas"#0 as D2; 12 texture "glyphs"#0 as D2Array; 13 sampler "nearest"#0; 14 texture "padded dem tiles"#0 as D2Array; 15 texture "terrain depth"#0 as D2; 16 texture "images"#0 as D2Array
 group "node"#0: layout layout "node"#0; 0 buffer "node uniforms"#0 at 41472 size Some(1024)
 buffer "quad indices"#0: BufferUsages(COPY_DST | INDEX)

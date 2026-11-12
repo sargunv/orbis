@@ -516,7 +516,7 @@ mod tests {
             let (module, _) = parse(label, &source);
             let mut textures = std::collections::BTreeSet::new();
             // Every entry point, not only the catalog's two: pipelines pair
-            // others too (`fs_terrain_depth`, `vs_extrusion_occlusion`).
+            // others too (`fs_terrain_depth`, `vs_extrusion_plain`).
             for (entry, one) in split::entry_modules(&module) {
                 let stage = one.entry_points[0].stage;
                 assert_ne!(stage, naga::ShaderStage::Compute, "{label} {entry}");
@@ -683,7 +683,7 @@ mod tests {
             "WebGL 2's dry run:\n  {}",
             failures.join("\n  ")
         );
-        assert!(written > 90, "only {written} stages written");
+        assert!(written > 80, "only {written} stages written");
     }
 
     /// The pipelines that compile a plane variant (orb-render's paint,
@@ -843,14 +843,13 @@ mod tests {
             ((1, 6), "vulkan1.3"),
         ];
         // The override constants pipelines set (orb-render's plane
-        // variants, `ORB_CULL=keep-all`, the ground mask on terrain, an
-        // `ExtrusionShape`), each stage taking those it reads.
+        // variants, `ORB_CULL=keep-all`, an `ExtrusionShape`), each stage
+        // taking those it reads.
         const VARIANTS: &[&[(&str, f64)]] = &[
             &[],
             &[
                 (PLANE, 1.0),
                 ("keep_all", 1.0),
-                ("ground_mask", 1.0),
                 ("elevation_stops", 2.0),
                 ("elevation_input", 1.0),
                 ("elevation_curve", 1.0),
@@ -942,7 +941,7 @@ mod tests {
             }
         }
         assert!(
-            stages > 100 && modules.len() > 12 * stages,
+            stages > 90 && modules.len() > 12 * stages,
             "only {} modules of {stages} stages",
             modules.len()
         );

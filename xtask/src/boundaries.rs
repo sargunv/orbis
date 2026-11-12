@@ -93,7 +93,7 @@ pub(crate) const NATIVE_ONLY: &[&str] = &[
 ];
 
 /// What only the GPU-driven path has (compute, indirect draws, storage
-/// buffers and textures, reinterpreting views), which the WebGL 2 path
+/// buffers and textures), which the WebGL 2 path
 /// (#140) lacks. Outside the HALs that define it, only the files of
 /// [`GPU_ONLY_FILES`] may name it, each only what its entry allows.
 const GPU_ONLY: &[&str] = &[
@@ -110,12 +110,7 @@ const GPU_ONLY: &[&str] = &[
     "BindingType::Storage",
     "StorageTexture",
     "STORAGE_BINDING",
-    "create_texture_view_as",
-    VIEWS,
 ];
-
-/// Views in other formats: `view_formats` that aren't empty.
-const VIEWS: &str = "view_formats";
 
 /// The crates that define and implement [`GPU_ONLY`] API.
 const HALS: &[&str] = &["orb-hal", "orb-hal-wgpu"];
@@ -163,13 +158,8 @@ const GPU_ONLY_FILES: &[(&str, Allows, &str)] = &[
     ),
     (
         "orb-render/src/terrain.rs",
-        Allows::Only(&[
-            "E::storage(",
-            "STORAGE_BINDING",
-            "create_texture_view_as",
-            VIEWS,
-        ]),
-        "the drape clear's regions in storage: fetch_drape.wgsl over a data texture; drape mips: drawn ones; the atlas's sRGB views: a natively sRGB atlas",
+        Allows::Only(&["E::storage(", "STORAGE_BINDING"]),
+        "the drape clear's regions in storage: fetch_drape.wgsl over a data texture; drape mips: drawn ones",
     ),
     (
         "orb-render/src/scene/tables.rs",
@@ -232,17 +222,7 @@ fn gpu_only_uses() -> Result<Vec<String>, String> {
         let mut named = BTreeSet::new();
         for (i, line) in source.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
-            let names = |api: &str| {
-                if api == VIEWS {
-                    code.contains("view_formats:")
-                        && !code.contains("view_formats: &[]")
-                        && !code.contains("view_formats: vec![]")
-                        && !code.contains("view_formats: Vec::new()")
-                } else {
-                    code.contains(api)
-                }
-            };
-            for &api in GPU_ONLY.iter().filter(|api| names(api)) {
+            for &api in GPU_ONLY.iter().filter(|api| code.contains(*api)) {
                 named.insert(api);
                 if let Allows::Only(allowed) = allows
                     && !allowed.contains(&api)

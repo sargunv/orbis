@@ -2,9 +2,7 @@
 // face away from the light gets 1 − i of the light's colour, a face toward
 // it `max(1 + i − luminance, 1)` (lighter surfaces lit less, so lit faces
 // don't wash out), in between by n·l, for intensity i. That is an ambient
-// light of 1 − i of the colour and a sun's adding the rest by n·l, and
-// maplibre/maplibre#555's ambient light replaces the first by the style's
-// (`frame.light_ambient`, eased in by its w), leaving i the sun's alone.
+// light of 1 − i of the colour and a sun's adding the rest by n·l.
 
 // The light falling on a surface facing `normal`, as a multiplier, with a
 // wall's vertical gradient (1 for none). Normals and the light's position
@@ -55,8 +53,7 @@ fn light_factor_facing(facing: f32, luminance: f32, gradient: f32) -> vec3<f32> 
 
 // The ambient light on every face.
 fn light_ambient() -> vec3<f32> {
-    let gl = (1.0 - frame.light_color.w) * frame.light_color.rgb;
-    return mix(gl, frame.light_ambient.rgb, frame.light_ambient.w);
+    return (1.0 - frame.light_color.w) * frame.light_color.rgb;
 }
 
 // The sun's light on a face turned to it, beyond the ambient.
@@ -65,31 +62,15 @@ fn light_sun(luminance: f32) -> vec3<f32> {
     return (max(1.0 + i - luminance, 1.0) - (1.0 - i)) * frame.light_color.rgb;
 }
 
-// The share of the light on a face that is ambient, which ambient
-// occlusion dims: all of it without the style's ambient light, as GL JS
-// and MapLibre Native's walls PR (#4909) darken the whole colour.
-fn light_ambient_share(facing: f32, luminance: f32) -> f32 {
-    let weights = vec3<f32>(0.2126, 0.7152, 0.0722);
-    let ambient = dot(light_ambient(), weights);
-    let total = ambient + facing * dot(light_sun(luminance), weights);
-    return mix(1.0, ambient / max(total, 1e-6), frame.light_ambient.w);
-}
-
-// The same for flat ground, which ground occlusion dims.
-fn light_ground_ambient() -> f32 {
-    return light_ambient_share(clamp(frame.light_position.z, 0.0, 1.0), 1.0);
-}
-
 // A wall's vertical gradient: darker toward its foot, over its first
 // 150 m, never below what the intensity allows.
 fn light_wall_gradient(above_ground: f32, height: f32) -> f32 {
     return clamp(above_ground * sqrt(height / 150.0), mix(0.7, 0.98, 1.0 - frame.light_color.w), 1.0);
 }
 
-// The least a face is lit: GL JS's floor for tinted lights, none under
-// the style's ambient light, which lights the faces turned from the sun.
+// The least a face is lit: GL JS's floor for tinted lights.
 fn light_floor() -> vec3<f32> {
-    return (vec3<f32>(1.0) - frame.light_color.rgb) * 0.3 * (1.0 - frame.light_ambient.w);
+    return (vec3<f32>(1.0) - frame.light_color.rgb) * 0.3;
 }
 
 // A lit colour, with GL JS's lift of 0.03.

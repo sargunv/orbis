@@ -453,27 +453,6 @@ fn plane_depth(p: vec2<f32>, z: f32) -> f32 {
     return dot(frame.view_depth, vec4<f32>(p, z, 1.0));
 }
 
-// On terrain, what an extrusion layer darkens on the ground draws first
-// into a mask (orb-render's terrain decal): flat, on a plane at the
-// ground under the camera target, as the camera sees it. The terrain's
-// mesh then reads the mask where each of its points falls on that plane,
-// so the darkness lies on the surface drawn. Clip x and y shrink by this
-// in the mask, which reaches past the view as far: a point the terrain
-// lifts or lowers off the plane falls on it off screen.
-const GROUND_MASK_SCALE: f32 = 0.8;
-
-// The ground mask's clip position of camera-relative world point `p`.
-fn ground_mask_clip(p: vec2<f32>) -> vec4<f32> {
-    var clip = frame.view_proj * vec4<f32>(p, frame.terrain_ground * frame.extrusion_scale, 1.0);
-    clip.x *= GROUND_MASK_SCALE;
-    clip.y *= GROUND_MASK_SCALE;
-    // No depth: within the clip volume wherever it lies at least a
-    // hundredth of the way to the target in front of the eye, where the
-    // mask's triangles clip rather than at the eye itself.
-    clip.z = clip.w - 0.01 * frame.camera_to_center;
-    return clip;
-}
-
 fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<f32> {
     return ground_clip_hiding(g, offset, z, solid, solid);
 }

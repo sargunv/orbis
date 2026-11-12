@@ -75,7 +75,6 @@ impl Harness {
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         let images = orb_render::ImageAtlas::new(&mut gpu, size, pages, entries);
         let renderer = Renderer::new(
@@ -166,10 +165,6 @@ impl Harness {
                 color: [1.0; 3],
                 intensity: 0.5,
                 position: [0.0, 0.0, 1.0],
-                shadow_intensity: 0.0,
-                ambient: [0.0; 3],
-                ambient_amount: 0.0,
-                ground: None,
             },
             globe: None,
         }
@@ -1769,8 +1764,6 @@ fn sky_gradient_composites_over_the_host_backing() {
         horizon_fog_blend: 0.5,
         fog_ground_blend: 0.5,
         atmosphere_blend: 0.8,
-        backdrop_color: [0.0; 4],
-        star_opacity: 0.0,
     };
     let view = sky_view();
     h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
@@ -1802,58 +1795,6 @@ fn sky_gradient_composites_over_the_host_backing() {
     assert_eq!(pixel(&pixels, 32, 15), CLEAR);
 }
 
-#[test]
-fn stars_show_on_the_backdrop_above_the_horizon_where_the_sky_is_clear() {
-    let mut h = Harness::new();
-    // A blue that 8 bits hold exactly (51 / 255): 0.1 is 25.5, which GPUs
-    // may round either way (RADV writes 25).
-    let backdrop = [0.0, 0.0, 0.2, 1.0];
-    let mut sky = orb_render::AtmospherePaint {
-        sky_color: [0.0; 4],
-        horizon_color: [0.0; 4],
-        fog_color: [1.0; 4],
-        sky_horizon_blend: 0.5,
-        horizon_fog_blend: 0.5,
-        fog_ground_blend: 0.5,
-        atmosphere_blend: 0.0,
-        backdrop_color: backdrop,
-        star_opacity: 1.0,
-    };
-    let view = sky_view();
-    let frame = Harness::frame(1.0);
-    let draw = |h: &mut Harness, sky| {
-        h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
-        h.renderer
-            .render(&mut h.gpu, &frame, h.target, [0.0; 4], &|| 0.0);
-        pollster::block_on(h.gpu.read_texture(h.target))
-    };
-    let pixels = draw(&mut h, sky);
-    let base = backdrop.map(|v| (v * 255.0).round() as u8);
-    let lit = |pixels: &[u8], rows: std::ops::Range<u32>| {
-        rows.flat_map(|y| (0..SIZE).map(move |x| (x, y)))
-            .filter(|&(x, y)| pixel(pixels, x, y)[..3] != base[..3])
-            .count()
-    };
-    // Below the horizon, the backdrop alone: what the map draws on.
-    assert_eq!(lit(&pixels, 33..SIZE), 0);
-    assert_eq!(pixel(&pixels, 10, 50), base);
-    let stars = lit(&pixels, 0..32);
-    assert!(stars > 8, "{stars} pixels lit by stars");
-    // An opaque sky covers them.
-    sky.sky_color = [0.2, 0.3, 0.5, 1.0];
-    sky.horizon_color = [0.2, 0.3, 0.5, 1.0];
-    let pixels = draw(&mut h, sky);
-    let top = pixel(&pixels, 10, 10);
-    assert!(top[2].abs_diff(128) <= 1, "{top:?}");
-    let covered = (0..31).flat_map(|y| (0..SIZE).map(move |x| (x, y)));
-    assert!(
-        covered
-            .into_iter()
-            .all(|(x, y)| pixel(&pixels, x, y) == top)
-    );
-    assert_eq!(lit(&pixels, 33..SIZE), 0);
-}
-
 /// A flat view whose horizon is row 32, looking along +z with a 60° field
 /// of view.
 fn sky_view() -> orb_render::AtmosphereView {
@@ -1872,63 +1813,7 @@ fn sky_view() -> orb_render::AtmosphereView {
             [0.0, 0.0, 1.0, 1.0],
         ],
         globe: None,
-        ground: None,
     }
-}
-
-/// `dev.sargunv.orbis:ground-lighting` multiplies the ground below the
-/// horizon by the sun's light or the ambient light, by the sun's
-/// elevation, and on a flat surface the sky above it as the target's
-/// ground, so a night view's sky isn't a day's.
-#[test]
-fn ground_lighting_shades_the_ground_by_the_suns_elevation() {
-    let mut h = Harness::new();
-    let frame = Harness::frame(1.0);
-    let clear = [0.0, 0.0, 1.0, 1.0];
-    let mut draw = |sun: [f32; 3], amount: f32| {
-        let ground = orb_render::GroundLight {
-            amount,
-            day: [1.0; 4],
-            // A style colour: 0.25 in linear light.
-            night: [0.5371, 0.5371, 0.5371, 1.0],
-            twilight: 10.0,
-            sun,
-            up: [0.0, 0.0, 1.0],
-            relief: 0.0,
-        };
-        let view = orb_render::AtmosphereView {
-            ground: Some(ground),
-            ..sky_view()
-        };
-        h.renderer.set_atmosphere(&mut h.gpu, None, view);
-        // The first frame records the bundles; by the next the light has
-        // compiled and they record it.
-        for _ in 0..2 {
-            h.renderer
-                .render(&mut h.gpu, &frame, h.target, clear, &|| 0.0);
-        }
-        let pixels = pollster::block_on(h.gpu.read_texture(h.target));
-        (pixel(&pixels, 32, 10), pixel(&pixels, 32, 50))
-    };
-    let blue = |p: [u8; 4]| f32::from(p[2]);
-    // The sun overhead: the map's own colours.
-    let (sky, day) = draw([0.0, 0.0, 1.0], 1.0);
-    assert_eq!(day, [0, 0, 255, 255]);
-    assert_eq!(sky, [0, 0, 255, 255]);
-    // Below the horizon past the twilight: the ambient light, which in
-    // sRGB multiplies by its encoding.
-    let (sky, night) = draw([0.0, 0.6, -0.8], 1.0);
-    let expected = 255.0 * 0.25f32.powf(1.0 / 2.2);
-    assert!((blue(night) - expected).abs() <= 1.5, "{night:?}");
-    assert_eq!(sky, night, "the sky is lit as the ground");
-    // On the horizon: halfway through the twilight.
-    let (_, twilight) = draw([0.0, 1.0, 0.0], 1.0);
-    let expected = 255.0 * 0.625f32.powf(1.0 / 2.2);
-    assert!((blue(twilight) - expected).abs() <= 1.5, "{twilight:?}");
-    // Half the amount, half the way to no change.
-    let (_, half) = draw([0.0, 0.6, -0.8], 0.5);
-    let expected = 255.0 * 0.625f32.powf(1.0 / 2.2);
-    assert!((blue(half) - expected).abs() <= 1.5, "{half:?}");
 }
 
 /// Real basemaps have hundreds of render nodes (Americana about 400).

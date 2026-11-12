@@ -41,9 +41,6 @@ const TRANSLATE_ROW_WORDS: u32 = 2u;
 const TRANSLATE_ROW_UNITS: u32 = 16u;
 const HEATMAP_ROW_WORDS: u32 = 4u;
 const SYMBOL_ROW_WORDS: u32 = 10u;
-// A symbol node whose colours follow the daylight (`symbol.wgsl`) has
-// each colour's night stop in two more slots, after the rest.
-const SYMBOL_DAYLIGHT_ROW_WORDS: u32 = 4u;
 
 // The most light sources a hillshade node holds.
 const MAX_LIGHTS: u32 = 4u;
@@ -86,9 +83,6 @@ struct Frame {
     dem_unpack: vec4<f32>,
     terrain_exaggeration: f32,
     dem_dim: f32,
-    // The ground's elevation under the camera target, metres: the plane
-    // the ground mask lies on (`GROUND_MASK_SCALE`).
-    terrain_ground: f32,
     // The lowest ground the frame's terrain tiles can show, metres with
     // exaggeration, 0 when none is lower: what a solid point on the
     // globe must be behind to be hidden (`sphere_hides`).
@@ -96,11 +90,6 @@ struct Frame {
     // v8's `light` (see lighting.wgsl): its premultiplied colour with its
     // intensity in w; its position in GL JS's extrusion axes is below.
     light_color: vec4<f32>,
-    // style-spec#1797's extrusion shadows (extrusion_ground.wgsl): where a
-    // point a metre up falls on the ground along the light, in metres east
-    // and north, and how dark shadows are, 0 for none.
-    shadow_offset: vec2<f32>,
-    shadow_intensity: f32,
     // The target's clip w (orb-camera's `View::camera_to_center`).
     camera_to_center: f32,
     // The low-zoom surface (orb-render's `FrameGlobe`), the sphere or a plane
@@ -123,9 +112,6 @@ struct Frame {
     camera_whole: vec2<i32>,
     camera_rest: vec2<f32>,
     globe_quantum: f32,
-    // 1 when colours mix in linear light (`dev.sargunv.orbis:color-space`):
-    // the target is sRGB, and shaders decode the style's colours (`color_in`).
-    linear: u32,
     // The cells per side of a surface node's point quads (`point_cells`):
     // orb-render's `surface_cells` of the view, so the cull, the point
     // shaders and a driver that draws without the cull count them alike.
@@ -133,15 +119,6 @@ struct Frame {
     // The render nodes whose symbols the symbol placements place (the
     // cull's node rows).
     placed_nodes: u32,
-    // Ground lighting (`dev.sargunv.orbis:ground-lighting`), which labels'
-    // `["dev.sargunv.orbis:daylight"]` follows (`symbol.wgsl`): toward the
-    // sun with half the twilight in degrees, and the target's up with how
-    // much the light shades the ground (0 off), unit Earth-fixed axes.
-    ground_sun: vec4<f32>,
-    ground_up: vec4<f32>,
-    // maplibre/maplibre#555's ambient light on extrusions (lighting.wgsl),
-    // premultiplied, with how far they take it in w rather than GL JS's.
-    light_ambient: vec4<f32>,
     // The vec3s last, one after another: ANGLE's Metal back end gives a
     // vec3 16 bytes where std140 packs a scalar into its fourth, and a
     // block laid out otherwise than std140 is converted on the CPU at a

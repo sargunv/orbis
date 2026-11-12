@@ -42,11 +42,10 @@
 // - `options`: the Globe's map options, offline (the Tokyo extract's style
 //   standing in for Protomaps Light): by default it loads with every
 //   Orbis-only preview off and none of their keys in its style, the URL's
-//   choices (Orbis's previews on) apply as it loads, the night side with
-//   the labels that follow the daylight,
-//   every option is listed in its group, clicks and keys edit the live
-//   style without a reload and keep the URL, options that need another
-//   (shadows 3D buildings, fog terrain) wait for it, a reload reproduces
+//   choices (its preview on) apply as it loads, every option is listed in
+//   its group, clicks and keys edit the live style without a reload and
+//   keep the URL, options that need another (the blended relief the
+//   hillshade, fog terrain) wait for it, a reload reproduces
 //   the choices, opening the panel moves nothing, and at phone width it's
 //   a bottom sheet that fits.
 // - `resize`: the Alps terrain style, offline, with circles over it,
@@ -1806,8 +1805,8 @@ async function failing(browser, server) {
 
 /**
  * The Globe entry offline: Protomaps Light stood in for by the Tokyo
- * extract's style, with a buildings layer to extrude and a label under
- * Protomaps' id for one whose colours the Globe sets by the daylight.
+ * extract's style, with a buildings layer to extrude and a label under a
+ * Protomaps id the Globe recolours.
  */
 async function offlineGlobe(page, server) {
   const tokyo = await tokyoStyle(server);
@@ -1843,18 +1842,11 @@ const GLOBE_OPTIONS = {
   hillshade: true,
   blend: false,
   light: "viewport",
-  night: false,
-  now: false,
   buildings: true,
-  shadows: false,
-  ao: false,
-  rounded: false,
   projection: "globe",
   atmosphere: true,
   fog: true,
-  stars: false,
   labels: true,
-  colors: "srgb",
 };
 
 async function options(browser, server) {
@@ -1865,7 +1857,7 @@ async function options(browser, server) {
   onPageError(page, (m) => errors.push(m));
   await offlineGlobe(page, server);
   await page.goto(
-    `${server.url}?style=globe&shadows=1&night=1&projection=mercator&colors=linear#14/35.687/139.74`,
+    `${server.url}?style=globe&blend=1&projection=mercator#14/35.687/139.74`,
   );
   await page.waitForFunction(
     () => app.scene === "globe" && app.options.values,
@@ -1881,28 +1873,12 @@ async function options(browser, server) {
       return {
         values: app.options.values,
         style: {
-          shadows: style.light["dev.sargunv.orbis:shadow-intensity"] ?? null,
-          // The night side brings its ambient light and the labels that
-          // follow the daylight, or their day colours without it.
-          night: [
-            "dev.sargunv.orbis:ground-lighting",
-            "dev.sargunv.orbis:ambient-intensity",
-          ].map((k) => style.light[k] !== undefined),
-          label: typeof layer("address_label").paint["text-color"],
-          now: typeof style.light["dev.sargunv.orbis:datetime"],
+          label: layer("address_label").paint["text-color"],
           anchor: style.light.anchor,
           projection: style.projection.type,
           terrain: Boolean(style.terrain),
-          colors: style.metadata?.["dev.sargunv.orbis:color-space"] ?? null,
+          hillshade: layer("hillshade").layout?.visibility ?? "visible",
           buildings: layer("buildings_3d").layout.visibility ?? "visible",
-          ao:
-            layer("buildings_3d").paint[
-              "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity"
-            ] ?? null,
-          rounded:
-            layer("buildings").layout?.[
-              "dev.sargunv.orbis:fill-rounded-corner-distance"
-            ] ?? null,
           // The relief multiplied, in the colours made for it.
           blend: [
             layer("hillshade").paint[
@@ -1929,17 +1905,12 @@ async function options(browser, server) {
   const expect = (values, style, disabled, url) => ({
     values: { ...GLOBE_OPTIONS, ...values },
     style: {
-      shadows: null,
-      night: [false, false],
-      label: "string",
-      now: "undefined",
+      label: "#736b79",
       anchor: "viewport",
       projection: "globe",
       terrain: false,
-      colors: null,
+      hillshade: "visible",
       buildings: "visible",
-      ao: null,
-      rounded: null,
       blend: [null, "#776f82"],
       labels: ["visible"],
       ...style,
@@ -1952,16 +1923,10 @@ async function options(browser, server) {
     page,
     state,
     expect(
-      { shadows: true, night: true, projection: "mercator", colors: "linear" },
-      {
-        shadows: 0.9,
-        night: [true, true],
-        label: "object",
-        projection: "mercator",
-        colors: "linear",
-      },
-      ["atmosphere", "fog", "stars"],
-      { shadows: "1", night: "1", projection: "mercator", colors: "linear" },
+      { blend: true, projection: "mercator" },
+      { blend: ["multiply", "#72707f"], projection: "mercator" },
+      ["atmosphere", "fog"],
+      { blend: "1", projection: "mercator" },
     ),
     "the URL's choices apply as the Globe loads",
   );
@@ -2013,82 +1978,65 @@ async function options(browser, server) {
   );
 
   // Each choice edits the live style and keeps the URL.
-  const linear = (values, style, disabled, url) =>
-    expect(
-      { colors: "linear", ...values },
-      { colors: "linear", ...style },
-      disabled,
-      { colors: "linear", ...url },
-    );
-  await option(page, "shadows").click();
-  await option(page, "night").click();
+  await option(page, "blend").click();
   await option(page, "projection").locator('[data-value="globe"]').click();
   await settles(
     page,
     state,
-    linear({}, {}, ["fog"], {}),
-    "shadows and the night side off and the globe leave the URL",
+    expect({}, {}, ["fog"], {}),
+    "the blended relief off and the globe leave the URL",
   );
-  // The sun now: a time, which puts the light on the map.
-  await option(page, "now").click();
+  await option(page, "light").locator('[data-value="map"]').click();
   await settles(
     page,
     state,
-    linear(
-      { now: true, light: "map" },
-      { now: "number", anchor: "map" },
-      ["fog"],
-      { now: "1", light: "map" },
-    ),
-    "the sun now fixes the light to the map",
+    expect({ light: "map" }, { anchor: "map" }, ["fog"], { light: "map" }),
+    "the light fixed to the map",
   );
-  await option(page, "now").click();
   await option(page, "light").locator('[data-value="viewport"]').click();
+  await option(page, "hillshade").click();
   await settles(
     page,
     state,
-    linear({}, {}, ["fog"], {}),
-    "the designed sun back",
+    expect({ hillshade: false }, { hillshade: "none" }, ["blend", "fog"], {
+      hillshade: "0",
+    }),
+    "without the hillshade, the blended relief waits",
   );
+  await option(page, "hillshade").click();
   await option(page, "buildings").click();
   await settles(
     page,
     state,
-    linear(
-      { buildings: false },
-      { buildings: "none" },
-      ["shadows", "ao", "fog"],
-      { buildings: "0" },
-    ),
-    "without 3D buildings, shadows and AO wait",
+    expect({ buildings: false }, { buildings: "none" }, ["fog"], {
+      buildings: "0",
+    }),
+    "without 3D buildings",
   );
   await option(page, "buildings").click();
-  await option(page, "ao").click();
-  await option(page, "rounded").click();
   await option(page, "blend").click();
   await option(page, "terrain").click();
   // The keyboard: a switch takes Space, a choice the arrow keys.
   await option(page, "labels").focus();
   await page.keyboard.press("Space");
-  await option(page, "colors").locator('[aria-checked="true"]').focus();
+  await option(page, "light").locator('[aria-checked="true"]').focus();
   await page.keyboard.press("ArrowLeft");
   const chosen = expect(
-    { ao: true, rounded: true, blend: true, terrain: true, labels: false },
+    { blend: true, terrain: true, labels: false, light: "map" },
     {
-      ao: 0.6,
-      rounded: 2,
       blend: ["multiply", "#72707f"],
       terrain: true,
       labels: ["none"],
+      anchor: "map",
     },
     [],
-    { ao: "1", rounded: "1", blend: "1", terrain: "1", labels: "0" },
+    { blend: "1", terrain: "1", labels: "0", light: "map" },
   );
   await settles(
     page,
     state,
     chosen,
-    "AO, rounded footprints, blended relief, terrain, labels and colours by click and key",
+    "blended relief, terrain, labels and the light by click and key",
   );
   assert.ok(
     await page.evaluate(() => window.stayed),

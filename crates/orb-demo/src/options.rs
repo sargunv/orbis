@@ -1,8 +1,7 @@
 //! The map options panel's switches, as `web/demo/app/options.js` has
 //! them (which says why each is as it is): what the scene's style draws
-//! (terrain, the light's anchor, buildings and their shadows, the globe
-//! and its sky, labels, the colour space), and only those the style can
-//! take. Each choice edits the style JSON; the map takes it as one diffed
+//! (terrain and its relief, the light's anchor, buildings, the globe and
+//! its sky, labels), and only those the style can take. Each choice edits the style JSON; the map takes it as one diffed
 //! `setStyle`, so nothing reloads. An Orbis-only option starts off,
 //! whatever the scene designs, its keys out of the style, so that by
 //! default every scene draws what GL JS and MapLibre Native could.
@@ -11,24 +10,6 @@ use serde_json::{Value, json};
 
 use crate::scenes::Scene;
 
-const COLOR_SPACE: &str = "dev.sargunv.orbis:color-space";
-const GROUND_LIGHTING: &str = "dev.sargunv.orbis:ground-lighting";
-/// The light's keys that go with the night side: the ground lighting, the
-/// dusk it passes through, and the ambient light the night side keeps.
-const NIGHT: [&str; 4] = [
-    GROUND_LIGHTING,
-    "dev.sargunv.orbis:twilight",
-    "dev.sargunv.orbis:ambient-color",
-    "dev.sargunv.orbis:ambient-intensity",
-];
-const DAYLIGHT: &str = "dev.sargunv.orbis:daylight";
-const SHADOWS: &str = "dev.sargunv.orbis:shadow-intensity";
-const ROUNDED: &str = "dev.sargunv.orbis:fill-rounded-corner-distance";
-/// The stars, and the backdrop they shine on.
-const STARRY: [&str; 2] = [
-    "dev.sargunv.orbis:star-opacity",
-    "dev.sargunv.orbis:backdrop-color",
-];
 const HILLSHADE_ANCHOR: &str = "hillshade-illumination-anchor";
 /// Style-spec#1661's blends for the layer types the spec gives none.
 const LAYER_BLENDS: [(&str, &str); 2] = [
@@ -38,11 +19,6 @@ const LAYER_BLENDS: [(&str, &str); 2] = [
 /// A blended layer's `metadata` key holding the paint it takes with its
 /// blend off: colours made for the layer drawn normally.
 const UNBLENDED: &str = "demo:unblended";
-const AMBIENT_OCCLUSION: [&str; 2] = [
-    "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
-    "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity",
-];
-
 /// The style as the scene designs it, and the terrain its switch puts in:
 /// what each option's support, default and "on" read from.
 pub(crate) struct Context {
@@ -57,17 +33,11 @@ pub(crate) enum Opt {
     Hillshade,
     Blend,
     Light,
-    Night,
     Buildings,
-    Shadows,
-    Ao,
-    Rounded,
     Projection,
     Atmosphere,
     Fog,
-    Stars,
     Labels,
-    Colors,
 }
 
 /// A switch, or one of a few choices: `(value, label)`.
@@ -77,22 +47,16 @@ pub(crate) enum Kind {
 }
 
 /// The panel's order.
-pub(crate) const ALL: [Opt; 15] = [
+pub(crate) const ALL: [Opt; 9] = [
     Opt::Terrain,
     Opt::Hillshade,
     Opt::Blend,
     Opt::Light,
-    Opt::Night,
     Opt::Buildings,
-    Opt::Shadows,
-    Opt::Ao,
-    Opt::Rounded,
     Opt::Projection,
     Opt::Atmosphere,
     Opt::Fog,
-    Opt::Stars,
     Opt::Labels,
-    Opt::Colors,
 ];
 
 fn layers<'a>(style: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> {
@@ -105,16 +69,6 @@ fn layers<'a>(style: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value
 
 fn visible(layer: &Value) -> bool {
     layer["layout"]["visibility"] != "none"
-}
-
-/// Whether a number as written (a number or an expression) is on: not
-/// zero, `fallback` when unset.
-fn nonzero(value: &Value, fallback: f64) -> bool {
-    match value {
-        Value::Null => fallback != 0.0,
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        _ => true,
-    }
 }
 
 fn number_or(value: &Value, fallback: f64) -> Option<f64> {
@@ -132,16 +86,6 @@ fn projection_type(style: &Value) -> String {
         Value::String(s) => s.clone(),
         _ => "globe".into(),
     }
-}
-
-fn occluded(style: &Value) -> Vec<&Value> {
-    layers(style, "fill-extrusion")
-        .filter(|l| {
-            AMBIENT_OCCLUSION
-                .iter()
-                .any(|p| nonzero(&l["paint"][*p], 0.0))
-        })
-        .collect()
 }
 
 /// The blend key of a layer's type, where style-spec#1661's preview has one.
@@ -164,46 +108,6 @@ fn blended(style: &Value) -> Vec<&Value> {
             })
         })
         .collect()
-}
-
-fn rounded(style: &Value) -> Vec<&Value> {
-    layers(style, "fill")
-        .filter(|l| nonzero(&l["layout"][ROUNDED], 0.0))
-        .collect()
-}
-
-/// `value` as the day side draws it: each `step` or `interpolate` over
-/// `["dev.sargunv.orbis:daylight"]` replaced by its last output, its value
-/// at full daylight.
-fn by_day(value: &Value) -> Value {
-    let Some(array) = value.as_array() else {
-        return value.clone();
-    };
-    let op = array.first().and_then(Value::as_str);
-    let input = if op == Some("step") {
-        array.get(1)
-    } else {
-        array.get(2)
-    };
-    let daylight = input
-        .and_then(Value::as_array)
-        .and_then(|i| i.first())
-        .and_then(Value::as_str)
-        == Some(DAYLIGHT);
-    if daylight
-        && (op == Some("step") || op.is_some_and(|o| o.starts_with("interpolate")))
-        && let Some(last) = array.last()
-    {
-        return by_day(last);
-    }
-    Value::Array(array.iter().map(by_day).collect())
-}
-
-/// Whether a property's value reads the daylight.
-fn reads_daylight(value: &Value) -> bool {
-    value.as_array().is_some_and(|a| {
-        a.first().and_then(Value::as_str) == Some(DAYLIGHT) || a.iter().any(reads_daylight)
-    })
 }
 
 /// Sets `keys` in `parent[field]` as `from` has them when `on`, else
@@ -241,12 +145,10 @@ impl SkyNumber {
 impl Opt {
     pub(crate) fn group(self) -> &'static str {
         match self {
-            Opt::Terrain | Opt::Hillshade | Opt::Blend | Opt::Light | Opt::Night => {
-                "Terrain and light"
-            }
-            Opt::Buildings | Opt::Shadows | Opt::Ao | Opt::Rounded => "Buildings",
-            Opt::Projection | Opt::Atmosphere | Opt::Fog | Opt::Stars => "Globe and sky",
-            Opt::Labels | Opt::Colors => "Map",
+            Opt::Terrain | Opt::Hillshade | Opt::Blend | Opt::Light => "Terrain and light",
+            Opt::Buildings => "Buildings",
+            Opt::Projection | Opt::Atmosphere | Opt::Fog => "Globe and sky",
+            Opt::Labels => "Map",
         }
     }
 
@@ -256,17 +158,11 @@ impl Opt {
             Opt::Hillshade => "Hillshade",
             Opt::Blend => "Blended relief",
             Opt::Light => "Light",
-            Opt::Night => "Night side",
             Opt::Buildings => "3D buildings",
-            Opt::Shadows => "Shadows",
-            Opt::Ao => "Ambient occlusion",
-            Opt::Rounded => "Rounded footprints",
             Opt::Projection => "Projection",
             Opt::Atmosphere => "Atmosphere",
             Opt::Fog => "Fog",
-            Opt::Stars => "Stars",
             Opt::Labels => "Labels",
-            Opt::Colors => "Colours",
         }
     }
 
@@ -276,10 +172,6 @@ impl Opt {
                 Some("Shading multiplied into the colours beneath, which keep their saturation")
             }
             Opt::Light => Some("Fixed to the ground, or turning with the view"),
-            Opt::Night => Some("The ground darkened where the sun is down, labels lit against it"),
-            Opt::Rounded => Some("Flat footprints rounded as the 3D buildings are"),
-            Opt::Stars => Some("On a night-sky backdrop"),
-            Opt::Colors => Some("Mixed in linear light, or in sRGB as GL JS mixes them"),
             _ => None,
         }
     }
@@ -287,23 +179,13 @@ impl Opt {
     /// A preview of a style-spec proposal that GL JS and MapLibre Native
     /// don't draw: off by default, and off takes its keys out of the style.
     pub(crate) fn orbis_only(self) -> bool {
-        matches!(
-            self,
-            Opt::Blend
-                | Opt::Night
-                | Opt::Shadows
-                | Opt::Ao
-                | Opt::Rounded
-                | Opt::Stars
-                | Opt::Colors
-        )
+        self == Opt::Blend
     }
 
     pub(crate) fn kind(self) -> Kind {
         match self {
             Opt::Light => Kind::Choices(&[("map", "Map"), ("viewport", "Viewport")]),
             Opt::Projection => Kind::Choices(&[("globe", "Globe"), ("mercator", "Mercator")]),
-            Opt::Colors => Kind::Choices(&[("linear", "Linear"), ("srgb", "sRGB")]),
             _ => Kind::Switch,
         }
     }
@@ -313,8 +195,7 @@ impl Opt {
     pub(crate) fn needs(self) -> Option<(Opt, Value, &'static str)> {
         match self {
             Opt::Blend => Some((Opt::Hillshade, json!(true), "With the hillshade on")),
-            Opt::Shadows | Opt::Ao => Some((Opt::Buildings, json!(true), "With 3D buildings on")),
-            Opt::Atmosphere | Opt::Stars => Some((Opt::Projection, json!("globe"), "On the globe")),
+            Opt::Atmosphere => Some((Opt::Projection, json!("globe"), "On the globe")),
             Opt::Fog => Some((Opt::Terrain, json!(true), "With terrain on")),
             _ => None,
         }
@@ -366,24 +247,12 @@ impl Opt {
             Opt::Terrain => cx.scene.terrain.is_some() && cx.terrain.is_some(),
             Opt::Blend => !blended(designed).is_empty(),
             Opt::Light => cx.scene.light,
-            Opt::Night => nonzero(&designed["light"][GROUND_LIGHTING], 0.0),
-            Opt::Shadows => {
-                nonzero(&designed["light"][SHADOWS], 0.0)
-                    && layers(designed, "fill-extrusion").next().is_some()
-            }
-            Opt::Ao => !occluded(designed).is_empty(),
-            Opt::Rounded => !rounded(designed).is_empty(),
-            Opt::Stars => nonzero(&designed["sky"][STARRY[0]], 0.0),
             Opt::Projection => {
                 matches!(
                     Self::projection_by_design(cx).as_str(),
                     "globe" | "mercator"
                 )
             }
-            Opt::Colors => matches!(
-                designed["metadata"][COLOR_SPACE].as_str(),
-                Some("linear" | "srgb")
-            ),
             _ => unreachable!("layer and sky options return above"),
         }
     }
@@ -408,24 +277,13 @@ impl Opt {
                     _ => json!(style["light"]["anchor"].as_str().unwrap_or("viewport")),
                 }
             }
-            Opt::Night => json!(nonzero(&style["light"][GROUND_LIGHTING], 0.0)),
-            Opt::Shadows => json!(nonzero(&style["light"][SHADOWS], 0.0)),
-            Opt::Ao => json!(!occluded(style).is_empty()),
-            Opt::Rounded => json!(!rounded(style).is_empty()),
-            Opt::Stars => json!(nonzero(&style["sky"][STARRY[0]], 0.0)),
             Opt::Projection => json!(projection_type(style)),
-            Opt::Colors => json!(if style["metadata"][COLOR_SPACE] == "linear" {
-                "linear"
-            } else {
-                "srgb"
-            }),
             _ => unreachable!("layer and sky options return above"),
         }
     }
 
     /// The scene's default: off where it says so or for an Orbis-only
-    /// option (sRGB for the colours), else the option's own, else as
-    /// designed.
+    /// option, else the option's own, else as designed.
     pub(crate) fn initial(self, cx: &Context) -> Value {
         if cx.scene.off.iter().any(|o| o == self.key()) {
             return json!(false);
@@ -435,7 +293,6 @@ impl Opt {
             // with terrain of its own puts it in only when asked.
             Opt::Terrain => json!(cx.scene.terrain == Some(Value::Bool(true))),
             Opt::Projection => json!(Self::projection_by_design(cx)),
-            Opt::Colors => json!("srgb"),
             _ if self.orbis_only() => json!(false),
             _ => self.read(&cx.designed),
         }
@@ -448,17 +305,11 @@ impl Opt {
             Opt::Hillshade => "hillshade",
             Opt::Blend => "blend",
             Opt::Light => "light",
-            Opt::Night => "night",
             Opt::Buildings => "buildings",
-            Opt::Shadows => "shadows",
-            Opt::Ao => "ao",
-            Opt::Rounded => "rounded",
             Opt::Projection => "projection",
             Opt::Atmosphere => "atmosphere",
             Opt::Fog => "fog",
-            Opt::Stars => "stars",
             Opt::Labels => "labels",
-            Opt::Colors => "colors",
         }
     }
 
@@ -517,46 +368,7 @@ impl Opt {
                 }
                 style["light"]["anchor"] = value.clone();
             }
-            // The ambient light and the dusk with it, and the labels'
-            // colours that follow the daylight, or their day side's.
-            Opt::Night => {
-                with_keys(style, "light", &NIGHT, on, &cx.designed["light"]);
-                for designed in layers(&cx.designed, "symbol") {
-                    let Some(layer) = layer_mut(style, &designed["id"]) else {
-                        continue;
-                    };
-                    for (name, value) in designed["paint"].as_object().into_iter().flatten() {
-                        if reads_daylight(value) {
-                            layer["paint"][name] = if on { value.clone() } else { by_day(value) };
-                        }
-                    }
-                }
-            }
-            Opt::Shadows => with_keys(style, "light", &[SHADOWS], on, &cx.designed["light"]),
-            Opt::Ao => {
-                for designed in occluded(&cx.designed) {
-                    if let Some(layer) = layer_mut(style, &designed["id"]) {
-                        with_keys(layer, "paint", &AMBIENT_OCCLUSION, on, &designed["paint"]);
-                    }
-                }
-            }
-            Opt::Rounded => {
-                for designed in rounded(&cx.designed) {
-                    if let Some(layer) = layer_mut(style, &designed["id"]) {
-                        with_keys(layer, "layout", &[ROUNDED], on, &designed["layout"]);
-                    }
-                }
-            }
-            Opt::Stars => with_keys(style, "sky", &STARRY, on, &cx.designed["sky"]),
             Opt::Projection => style["projection"]["type"] = value.clone(),
-            // sRGB is the spec's, without the key.
-            Opt::Colors => with_keys(
-                style,
-                "metadata",
-                &[COLOR_SPACE],
-                value != "srgb",
-                &json!({ COLOR_SPACE: value }),
-            ),
             _ => unreachable!("layer and sky options return above"),
         }
     }
@@ -655,7 +467,7 @@ mod tests {
     }
 
     /// The Globe opens with none of Orbis's previews, and its switches
-    /// bring back all it designs, the night side with its labels.
+    /// bring back all it designs.
     #[test]
     fn globe_opens_spec_only() {
         let scene = Catalogue::read().scene_for("globe");
@@ -671,7 +483,7 @@ mod tests {
             ],
         });
         let designed = scene.designed(&protomaps, false);
-        assert!(orbis_keys(&designed).len() > 10, "{designed}");
+        assert!(!orbis_keys(&designed).is_empty(), "{designed}");
         let mut style = designed.clone();
         let mut panel = Panel::default();
         let context = Context {
@@ -690,16 +502,8 @@ mod tests {
         for (name, value) in unblended.as_object().into_iter().flatten() {
             assert_eq!(&hillshade["paint"][name], value);
         }
-        // The label's day colour.
-        let label = layer_mut(&mut style, &json!("address_label")).expect("label");
-        assert!(label["paint"]["text-color"].is_string(), "{label}");
         for option in ALL.into_iter().filter(|o| o.orbis_only()) {
-            let on = if option == Opt::Colors {
-                json!("linear")
-            } else {
-                json!(true)
-            };
-            assert!(panel.pick(option, on, &mut style), "{option:?}");
+            assert!(panel.pick(option, json!(true), &mut style), "{option:?}");
         }
         assert_eq!(orbis_keys(&style), orbis_keys(&designed));
     }

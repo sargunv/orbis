@@ -352,17 +352,6 @@ fn table_number(row: u32, slot: u32, c: Curve, tile_zoom: f32) -> f32 {
     return camera_scaled(mix(a, b, curve_t(c, tile_zoom)), c);
 }
 
-// A premultiplied style or image colour as it mixes in the frame's colour
-// space: itself, or in linear light. Families call it once a value is
-// chosen and interpolated, so a colour interpolates as the spec says,
-// then mixes in linear light.
-fn color_in(c: vec4<f32>) -> vec4<f32> {
-    if frame.linear == 0u {
-        return c;
-    }
-    return premultiplied_to_linear(c);
-}
-
 // A colour property from a property row: two rgba8 words.
 fn table_color(row: u32, slot: u32, c: Curve, tile_zoom: f32) -> vec4<f32> {
     let a = unpack4x8unorm(prop_at(row + 2u * slot));

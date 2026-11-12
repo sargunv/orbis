@@ -56,9 +56,6 @@ pub struct PropertySpec {
     /// as its data does between them: a colour relief's ramp, an
     /// extrusion's colour.
     pub elevation: bool,
-    /// It reads `["dev.sargunv.orbis:daylight"]` per feature, as it is
-    /// drawn: a label's colours (Orbis's own).
-    pub daylight: bool,
     /// The property may use `interpolate`.
     pub interpolated: bool,
     /// Strings expand `{token}`s: legacy string stops (`convertFunction`)
@@ -179,7 +176,6 @@ pub(crate) fn fold_camera(ir: &crate::ir::Ir, camera: crate::CameraInputs) -> cr
         let value = match node.op {
             Op::Call(Call::Pitch, _) => camera.pitch,
             Op::Call(Call::Bearing, _) => camera.bearing,
-            Op::Call(Call::MetersPerPixel, _) => camera.meters_per_pixel,
             _ => continue,
         };
         node.op = Op::Literal(crate::Value::Number(value));
@@ -280,13 +276,6 @@ impl PropertyExpression {
         if camera && elevation {
             return Err("camera expressions cannot read the elevation");
         }
-        let daylight = deps.contains(Deps::DAYLIGHT);
-        if daylight && !spec.daylight {
-            return Err("[\"dev.sargunv.orbis:daylight\"] is not supported with this property");
-        }
-        if camera && daylight {
-            return Err("camera expressions cannot read the daylight");
-        }
         let mut memo = vec![None; ir.nodes.len()];
         let found = find_zoom_curve(ir, ir.root(), &mut memo)?;
         if camera && !feature_constant {
@@ -326,7 +315,7 @@ impl PropertyExpression {
                 _ => unreachable!("a zoom curve is a step or interpolate"),
             }),
         };
-        let kind = match (&curve, feature_constant && !elevation && !daylight) {
+        let kind = match (&curve, feature_constant && !elevation) {
             (None, true) if camera => Kind::Camera,
             (None, true) => Kind::Constant,
             (None, false) => Kind::Source,
@@ -354,19 +343,10 @@ impl PropertyExpression {
         }
     }
 
-    /// Whether the value reads the camera beyond its zoom: `pitch`,
-    /// `bearing` or `dev.sargunv.orbis:meters-per-pixel`.
+    /// Whether the value reads the camera beyond its zoom: `pitch` or
+    /// `bearing`.
     pub fn reads_camera(&self) -> bool {
         self.scale.is_some() || self.expression.deps().contains(Deps::CAMERA)
-    }
-
-    /// Whether the value reads `["dev.sargunv.orbis:meters-per-pixel"]`.
-    pub fn reads_meters_per_pixel(&self) -> bool {
-        let reads = |e: &Expression| {
-            (e.ir.nodes.iter()).any(|n| matches!(n.op, Op::Call(Call::MetersPerPixel, _)))
-        };
-        self.reads_camera()
-            && (reads(&self.expression) || (self.scale.iter()).any(|s| s.expressions().any(reads)))
     }
 
     /// The camera scale of a per-feature value that reads the camera:

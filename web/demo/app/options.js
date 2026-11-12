@@ -1,11 +1,11 @@
 // The map options panel: switches for what the entry's style draws
-// (terrain, the light's anchor and its sun's time, buildings and their shadows, the globe and
-// its sky, labels, the colour space), grouped, and only those the style
-// can take. Each choice is one edit of the live style through `map.edit`,
-// so nothing reloads, and a comparison's other maps follow it as they
-// follow every edit (compare.js), ignoring what they can't draw. A choice
+// (terrain and its relief, the light's anchor, buildings, the globe and
+// its sky, labels), grouped, and only those the style can take. Each
+// choice is one edit of the live style through `map.edit`, so nothing
+// reloads, and a comparison's other maps follow it as they follow every
+// edit (compare.js), ignoring what they can't draw. A choice
 // other than the entry's own stays in the URL (`&terrain=1`, `&light=map`,
-// `&shadows=1`, …), so a link reproduces the view; the style as the entry
+// `&blend=1`, …), so a link reproduces the view; the style as the entry
 // designs it, before the URL's choices, is what each option's default and
 // its "on" read from. An Orbis-only option starts off whatever the entry
 // designs, its keys out of the style, so that by default every entry draws
@@ -13,28 +13,6 @@
 // previews a switch away.
 import { h } from "./dom.js";
 
-const COLOR_SPACE = "dev.sargunv.orbis:color-space";
-const GROUND_LIGHTING = "dev.sargunv.orbis:ground-lighting";
-/**
- * The light's keys that go with the night side: the ground lighting, the
- * dusk it passes through, and the ambient light the night side keeps, which
- * lights the extrusions' faces the sun doesn't reach too.
- */
-const NIGHT = [
-  GROUND_LIGHTING,
-  "dev.sargunv.orbis:twilight",
-  "dev.sargunv.orbis:ambient-color",
-  "dev.sargunv.orbis:ambient-intensity",
-];
-const DAYLIGHT = "dev.sargunv.orbis:daylight";
-const DATETIME = "dev.sargunv.orbis:datetime";
-const SHADOWS = "dev.sargunv.orbis:shadow-intensity";
-const ROUNDED = "dev.sargunv.orbis:fill-rounded-corner-distance";
-/** The stars, and the backdrop they shine on. */
-const STARRY = [
-  "dev.sargunv.orbis:star-opacity",
-  "dev.sargunv.orbis:backdrop-color",
-];
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
 /** Style-spec#1661's blends for the layer types the spec gives none. */
 const LAYER_BLENDS = {
@@ -46,45 +24,8 @@ const LAYER_BLENDS = {
  * blend off: colours made for the layer drawn normally.
  */
 const UNBLENDED = "demo:unblended";
-const AMBIENT_OCCLUSION = ["wall-intensity", "ground-intensity"].map(
-  (p) => `dev.sargunv.orbis:fill-extrusion-ambient-occlusion-${p}`,
-);
-
-/**
- * `value` as the day side draws it: each `step` or `interpolate` over
- * Orbis's `["dev.sargunv.orbis:daylight"]` (its preview) replaced by its
- * last output, which is its value at full daylight.
- */
-export function byDay(value) {
-  if (!Array.isArray(value)) return value;
-  const [op, ...args] = value;
-  const input = op === "step" ? args[0] : args[1];
-  if (
-    (op === "step" || op.startsWith?.("interpolate")) &&
-    Array.isArray(input) &&
-    input[0] === DAYLIGHT
-  )
-    return byDay(value.at(-1));
-  return value.map(byDay);
-}
-/** Whether a property's value reads the daylight. */
-const readsDaylight = (value) =>
-  Array.isArray(value) && (value[0] === DAYLIGHT || value.some(readsDaylight));
-
-/** `object` with `keys` as `from` has them when `on`, else without them. */
-function withKeys(object, keys, on, from) {
-  const next = { ...object };
-  for (const key of keys) {
-    if (on && from?.[key] !== undefined) next[key] = from[key];
-    else delete next[key];
-  }
-  return next;
-}
-
 const ofType = (style, type) => style.layers.filter((l) => l.type === type);
 const visible = (layer) => layer.layout?.visibility !== "none";
-/** Whether a number property as written (a number or an expression) is on: not zero, `fallback` for unset. */
-const nonzero = (value, fallback) => (value ?? fallback) !== 0;
 
 /** An option that shows or hides every `type` layer, back to each one's visibility as designed. */
 const layersOf = (type) => ({
@@ -132,20 +73,12 @@ const projectionType = (style) => {
 const projectionByDesign = ({ scene, designed }) =>
   scene.projection?.type ?? projectionType(designed);
 
-/** The extrusion layers whose ambient occlusion the style designs. */
-const occluded = (style) =>
-  ofType(style, "fill-extrusion").filter((l) =>
-    AMBIENT_OCCLUSION.some((p) => nonzero(l.paint?.[p], 0)),
-  );
 /** The layers the style blends by style-spec#1661's preview. */
 const blended = (style) =>
   style.layers.filter((l) => {
     const blend = l.paint?.[LAYER_BLENDS[l.type]];
     return blend !== undefined && blend !== "normal";
   });
-/** The fill layers whose footprints the style rounds. */
-const rounded = (style) =>
-  ofType(style, "fill").filter((l) => nonzero(l.layout?.[ROUNDED], 0));
 
 /**
  * The options, in the panel's order. Each has a `key` (its URL parameter
@@ -229,107 +162,11 @@ export const OPTIONS = [
     },
   },
   {
-    key: "night",
-    group: "Terrain and light",
-    label: "Night side",
-    note: "The ground darkened where the sun is down, labels lit against it",
-    kind: "switch",
-    orbisOnly: true,
-    supported: ({ designed }) => nonzero(designed.light?.[GROUND_LIGHTING], 0),
-    read: (style) => nonzero(style.light?.[GROUND_LIGHTING], 0),
-    // The ambient light and the dusk with it, and the labels' colours that
-    // follow the daylight, or their day side's without it.
-    apply(tx, on, { style, designed }) {
-      tx.setLight(withKeys(style.light, NIGHT, on, designed.light));
-      const present = new Set(style.layers.map((l) => l.id));
-      for (const layer of ofType(designed, "symbol")) {
-        if (!present.has(layer.id)) continue;
-        for (const [name, value] of Object.entries(layer.paint ?? {}))
-          if (readsDaylight(value))
-            tx.setPaintProperty(layer.id, name, on ? value : byDay(value));
-      }
-    },
-  },
-  {
-    key: "now",
-    group: "Terrain and light",
-    label: "Sun now",
-    note: "Where the sun stands at this moment",
-    kind: "switch",
-    orbisOnly: true,
-    supported: ({ designed }) => nonzero(designed.light?.[GROUND_LIGHTING], 0),
-    read: (style) => style.light?.[DATETIME] !== undefined,
-    // The time is a map-anchored sun's: it puts the light on the map, as
-    // the Light option's Map does.
-    apply(tx, on, { style }) {
-      const { [DATETIME]: _, ...light } = style.light ?? {};
-      if (on)
-        for (const layer of ofType(style, "hillshade"))
-          tx.setPaintProperty(layer.id, HILLSHADE_ANCHOR, "map");
-      tx.setLight(
-        on ? { ...light, anchor: "map", [DATETIME]: Date.now() } : light,
-      );
-    },
-  },
-  {
     key: "buildings",
     group: "Buildings",
     label: "3D buildings",
     kind: "switch",
     ...layersOf("fill-extrusion"),
-  },
-  {
-    key: "shadows",
-    group: "Buildings",
-    label: "Shadows",
-    kind: "switch",
-    orbisOnly: true,
-    needs: ["buildings", true, "With 3D buildings on"],
-    supported: ({ designed }) =>
-      nonzero(designed.light?.[SHADOWS], 0) &&
-      ofType(designed, "fill-extrusion").length > 0,
-    read: (style) => nonzero(style.light?.[SHADOWS], 0),
-    apply: (tx, on, { style, designed }) =>
-      tx.setLight(withKeys(style.light, [SHADOWS], on, designed.light)),
-  },
-  {
-    key: "ao",
-    group: "Buildings",
-    label: "Ambient occlusion",
-    kind: "switch",
-    orbisOnly: true,
-    needs: ["buildings", true, "With 3D buildings on"],
-    supported: ({ designed }) => occluded(designed).length > 0,
-    read: (style) => occluded(style).length > 0,
-    apply(tx, on, { style, designed }) {
-      const present = new Set(style.layers.map((l) => l.id));
-      for (const layer of occluded(designed).filter((l) => present.has(l.id))) {
-        for (const name of AMBIENT_OCCLUSION) {
-          if (layer.paint[name] !== undefined)
-            tx.setPaintProperty(layer.id, name, on ? layer.paint[name] : null);
-        }
-      }
-    },
-  },
-  {
-    key: "rounded",
-    group: "Buildings",
-    label: "Rounded footprints",
-    note: "Flat footprints rounded as the 3D buildings are",
-    kind: "switch",
-    orbisOnly: true,
-    supported: ({ designed }) => rounded(designed).length > 0,
-    read: (style) => rounded(style).length > 0,
-    apply(tx, on, { style, designed }) {
-      const present = new Set(style.layers.map((l) => l.id));
-      for (const layer of rounded(designed))
-        if (present.has(layer.id))
-          tx.setLayoutProperty(
-            layer.id,
-            ROUNDED,
-            on ? layer.layout[ROUNDED] : null,
-          );
-    },
   },
   {
     key: "projection",
@@ -365,49 +202,11 @@ export const OPTIONS = [
     ...skyNumber("fog-ground-blend", 0.5, 1, (v) => (v ?? 0.5) < 1),
   },
   {
-    key: "stars",
-    group: "Globe and sky",
-    label: "Stars",
-    kind: "switch",
-    note: "On a night-sky backdrop",
-    orbisOnly: true,
-    needs: ["projection", "globe", "On the globe"],
-    supported: ({ designed }) => nonzero(designed.sky?.[STARRY[0]], 0),
-    read: (style) => nonzero(style.sky?.[STARRY[0]], 0),
-    apply: (tx, on, { style, designed }) =>
-      tx.setSky(withKeys(style.sky, STARRY, on, designed.sky)),
-  },
-  {
     key: "labels",
     group: "Map",
     label: "Labels",
     kind: "switch",
     ...layersOf("symbol"),
-  },
-  {
-    key: "colors",
-    group: "Map",
-    label: "Colours",
-    note: "Mixed in linear light, or in sRGB as GL JS mixes them",
-    orbisOnly: true,
-    choices: [
-      ["linear", "Linear"],
-      ["srgb", "sRGB"],
-    ],
-    supported: ({ designed }) =>
-      ["linear", "srgb"].includes(designed.metadata?.[COLOR_SPACE]),
-    read: (style) =>
-      style.metadata?.[COLOR_SPACE] === "linear" ? "linear" : "srgb",
-    // sRGB is the spec's, without the key.
-    initial: () => "srgb",
-    // The metadata isn't an edit of its own: the style, diffed, with it changed.
-    apply: (tx, space, { style }) =>
-      tx.setStyle({
-        ...style,
-        metadata: withKeys(style.metadata, [COLOR_SPACE], space !== "srgb", {
-          [COLOR_SPACE]: space,
-        }),
-      }),
   },
 ];
 const encode = (option, value) =>
@@ -449,9 +248,6 @@ function draft(style) {
     setSky: (sky) => put(tx.style, "sky", sky),
     setTerrain: (terrain) => put(tx.style, "terrain", terrain),
     setProjection: (projection) => put(tx.style, "projection", projection),
-    setStyle: (next) => {
-      tx.style = structuredClone(next);
-    },
   });
   return tx;
 }
@@ -505,8 +301,8 @@ export function mapOptions({ params, setParam, onBackend }) {
   let editing = 0;
   /**
    * The panel's edits, one at a time: each reads the style as the one
-   * before left it, as some write a whole root property (the light) or
-   * the whole style (the colour space). `generation` counts attached
+   * before left it, as some write a whole root property (the light).
+   * `generation` counts attached
    * styles: an edit queued for an older one is dropped.
    */
   let queue = Promise.resolve();

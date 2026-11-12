@@ -35,7 +35,7 @@ mod scene;
 mod symbol;
 mod terrain;
 mod tiles;
-pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky, GroundLight};
+pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
@@ -94,26 +94,6 @@ fn draw_of(family: Family) -> NodeDraw {
         }
         Family::Raster | Family::Hillshade | Family::ColorRelief => NodeDraw::Images,
     }
-}
-
-/// A premultiplied sRGB-encoded colour as it mixes: itself, or when
-/// `linear` its unpremultiplied colour decoded to linear light,
-/// premultiplied (`color.wgsl`'s `premultiplied_to_linear`).
-pub(crate) fn color_in(c: [f32; 4], linear: bool) -> [f32; 4] {
-    let a = c[3];
-    if !linear || a <= 0.0 {
-        return if linear { [0.0; 4] } else { c };
-    }
-    let decode = |v: f32| {
-        let v = (v / a).clamp(0.0, 1.0);
-        let lin = if v <= 0.04045 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        };
-        lin * a
-    };
-    [decode(c[0]), decode(c[1]), decode(c[2]), a]
 }
 
 /// What a renderer draws otherwise than on WebGPU, for want of something
@@ -238,13 +218,6 @@ struct Node {
     rows: bool,
     /// What an extrusion node's pipelines are specialised for.
     elevation: paint::ExtrusionShape,
-    /// What an extrusion node darkens on the ground: the frame's shadows,
-    /// its paint's occlusion. Its paint asks for occlusion.
-    ground: extrusion::Ground,
-    occlusion: bool,
-    /// What its recorded draw darkens: what of `ground` had compiled, as
-    /// the draw records it ([`extrusion::Ground::recorded`]).
-    ground_drawn: extrusion::Ground,
     /// On terrain, the drape stack a draped node draws into, and the
     /// terrain layer that composites it.
     stack: Option<u8>,
@@ -289,7 +262,7 @@ struct PaintShape {
     styled: bool,
     rows: bool,
     along_line: Option<bool>,
-    elevation: Option<(paint::ExtrusionShape, bool)>,
+    elevation: Option<paint::ExtrusionShape>,
 }
 
 impl PaintShape {
@@ -302,8 +275,8 @@ impl PaintShape {
                 _ => None,
             },
             elevation: match paint {
-                NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
-                    Some((paint.extrusion_shape(), p.ground_occlusion()))
+                NodePaint::Extrusion(_) | NodePaint::ExtrusionPattern(..) => {
+                    Some(paint.extrusion_shape())
                 }
                 _ => None,
             },
@@ -329,57 +302,34 @@ impl Node {
     /// What of it picks its pipelines, which [`Renderer::prewarm`] sets
     /// from a paint it may draw with and puts back.
     fn shape(&self) -> NodeShape {
-        (
-            self.styled,
-            self.rows,
-            self.along_line,
-            self.elevation,
-            self.ground,
-        )
+        (self.styled, self.rows, self.along_line, self.elevation)
     }
 
-    /// Its pipelines' shape as `paint` picks them, with the frame's
-    /// `ground`.
-    fn set_shape(&mut self, paint: &NodePaint, ground: extrusion::Ground) {
+    /// Its pipelines' shape as `paint` picks them.
+    fn set_shape(&mut self, paint: &NodePaint) {
         (self.styled, self.rows) = (paint.styled(), paint.reads_rows());
         match paint {
             NodePaint::Symbol(p) => self.along_line = p.along_line,
-            NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
+            NodePaint::Extrusion(_) | NodePaint::ExtrusionPattern(..) => {
                 self.elevation = paint.extrusion_shape();
-                self.ground = extrusion::Ground {
-                    occlusion: p.ground_occlusion(),
-                    ..ground
-                };
             }
             _ => {}
         }
     }
 
     fn restore_shape(&mut self, shape: NodeShape) {
-        (
-            self.styled,
-            self.rows,
-            self.along_line,
-            self.elevation,
-            self.ground,
-        ) = shape;
+        (self.styled, self.rows, self.along_line, self.elevation) = shape;
     }
 }
 
-/// [`Node::shape`]: styled, rows, along lines, elevation and ground.
-type NodeShape = (bool, bool, bool, paint::ExtrusionShape, extrusion::Ground);
+/// [`Node::shape`]: styled, rows, along lines and elevation.
+type NodeShape = (bool, bool, bool, paint::ExtrusionShape);
 
 #[derive(Debug)]
 pub struct Renderer {
     id: u64,
-    /// What it draws into: the host's target, or in linear light an sRGB
-    /// texture of its own ([`offscreen::LinearScene`]), encoded into the
-    /// host's at the end of each frame.
-    target: TargetFormat,
     /// The host's target.
-    host: TargetFormat,
-    /// Colours mix in linear light.
-    linear: Option<offscreen::LinearScene>,
+    target: TargetFormat,
     /// What it draws otherwise than on WebGPU.
     gaps: Vec<Gap>,
     atmosphere: atmosphere::Atmosphere,
@@ -411,15 +361,8 @@ pub struct Renderer {
     /// Nodes changed since pipelines were last made for them, or one
     /// was shown.
     pipelines_stale: bool,
-    /// What the last frame's extrusions darkened on the ground besides
-    /// their paint's occlusion: what [`prewarm`](Self::prewarm)ed
-    /// extrusions are made for.
-    frame_ground: extrusion::Ground,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
-    /// The main bundles light the ground beneath the labels
-    /// (`dev.sargunv.orbis:ground-lighting`).
-    ground_lit: bool,
     /// Nodes the main bundle left out, waiting for a pipeline.
     waiting: u32,
     /// Whether a drape bundle has left out a draped node waiting for a
@@ -525,7 +468,7 @@ impl Renderer {
             self.extrusions,
         )
             .release(gpu);
-        (self.layers, self.composites, self.linear).release(gpu);
+        (self.layers, self.composites).release(gpu);
         let drape = self
             .drape_pipelines
             .map(|d| (d.paint.pipelines, d.images.0));
@@ -559,27 +502,6 @@ impl Renderer {
         capacity: SceneCapacity,
         images: ImageBindings,
     ) -> Self {
-        Self::with_color_space(gpu, target, capacity, images, false)
-    }
-
-    /// [`new`](Self::new), mixing colours in linear light
-    /// when `linear` (`dev.sargunv.orbis:color-space`) rather than as
-    /// gamma-encoded values, as GL JS and MapLibre Native do.
-    pub fn with_color_space(
-        gpu: &mut dyn Gpu,
-        host: TargetFormat,
-        capacity: SceneCapacity,
-        images: ImageBindings,
-        linear: bool,
-    ) -> Self {
-        let target = TargetFormat {
-            color: if linear {
-                TextureFormat::Rgba8UnormSrgb
-            } else {
-                host.color
-            },
-            ..host
-        };
         let kind = driver::Kind::of(gpu.caps());
         let scene = Scene::new(gpu, capacity, kind);
         let b = *scene.buffers();
@@ -636,7 +558,6 @@ impl Renderer {
             usage: TextureUsages::TEXTURE_BINDING,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         let draw_group = scene_group(
             gpu,
@@ -651,14 +572,9 @@ impl Renderer {
         let downsampler = downsample::Downsampler::new(gpu);
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
-        let linear = linear.then(|| offscreen::LinearScene::new(gpu, &composites, host));
-        // 3D layers draw into RGBA8, in linear light its sRGB twin.
-        let extrusion_format = if linear.is_some() {
-            TextureFormat::Rgba8Unorm.srgb()
-        } else {
-            TextureFormat::Rgba8Unorm
-        };
-        let extrusions = extrusion::Extrusions::new(draw_layout, node_layout, extrusion_format);
+        // 3D layers draw into RGBA8.
+        let extrusions =
+            extrusion::Extrusions::new(draw_layout, node_layout, TextureFormat::Rgba8Unorm);
         // WebGPU aligns uniform offsets to at most 256 bytes: nodes lie
         // NODE_UNIFORM_SIZE apart, as the symbol shader's halves do.
         let alignment = gpu.caps().limits.min_uniform_buffer_offset_alignment;
@@ -677,8 +593,6 @@ impl Renderer {
         Self {
             id: RENDERERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             target,
-            host,
-            linear,
             gaps: Self::gaps_on(gpu.caps()),
             atmosphere,
             scene,
@@ -693,9 +607,7 @@ impl Renderer {
             background_fills: false,
             beneath: None,
             pipelines_stale: false,
-            frame_ground: extrusion::Ground::default(),
             made_seen: 0,
-            ground_lit: false,
             waiting: 0,
             drape_waiting: false,
             recorded: 0,
@@ -738,21 +650,7 @@ impl Renderer {
 
     /// The format of the targets it draws into.
     pub fn format(&self) -> TargetFormat {
-        self.host
-    }
-
-    /// Whether colours mix in linear light.
-    pub fn linear(&self) -> bool {
-        self.linear.is_some()
-    }
-
-    /// The drape atlas's colour page's format, as layers draw into it.
-    fn drape_format(&self) -> TextureFormat {
-        if self.linear() {
-            DRAPE_FORMAT.srgb()
-        } else {
-            DRAPE_FORMAT
-        }
+        self.target
     }
 
     /// Identifies the renderer among those of the process: a map holds
@@ -1014,8 +912,7 @@ impl Renderer {
                 extrusion: (family == Family::FillExtrusion)
                     .then(extrusion::NodeExtrusion::default),
                 cut_group: None,
-                heatmap: (family == Family::Heatmap)
-                    .then(|| heatmap::Heatmaps::node(gpu, self.linear.is_some())),
+                heatmap: (family == Family::Heatmap).then(|| heatmap::Heatmaps::node(gpu)),
                 cull,
                 written: Vec::new(),
                 image,
@@ -1027,9 +924,6 @@ impl Renderer {
                 // its part's opacity 0), it draws nothing.
                 rows: !family.is_symbol(),
                 elevation: paint::ExtrusionShape::default(),
-                ground: extrusion::Ground::default(),
-                occlusion: false,
-                ground_drawn: extrusion::Ground::default(),
                 stack: None,
                 terrain_layer: None,
                 blends_on_terrain: false,
@@ -1345,7 +1239,7 @@ impl Renderer {
                 p.fits(self.nodes[node as usize].family),
                 "paint family mismatch for node {node}"
             );
-            p.uniform_words(node, self.linear.is_some())
+            p.uniform_words(node)
         });
         let nodes = self.nodes.len() as u64;
         let stride = NODE_UNIFORM_SIZE;
@@ -1571,12 +1465,12 @@ impl Renderer {
             paint.fits(entry.family),
             "paint family mismatch for node {node}"
         );
-        let mut words = paint.uniform_words(node, self.linear.is_some());
+        let mut words = paint.uniform_words(node);
         entry.solid = match paint {
             NodePaint::Background(p)
                 if p.table_mask == 0 && p.state.mask == 0 && p.color[3] * p.opacity == 1.0 =>
             {
-                Some(color_in(p.color, self.linear.is_some()).map(|c| c * p.opacity))
+                Some(p.color.map(|c| c * p.opacity))
             }
             _ => None,
         };
@@ -1603,7 +1497,7 @@ impl Renderer {
             }
         }
         let entry = &mut self.nodes[node as usize];
-        if let NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) = paint {
+        if let NodePaint::Extrusion(_) | NodePaint::ExtrusionPattern(..) = paint {
             let shape = paint.extrusion_shape();
             if entry.elevation != shape {
                 entry.elevation = shape;
@@ -1612,7 +1506,6 @@ impl Renderer {
                     e.forget_bundle(gpu);
                 }
             }
-            entry.occlusion = p.ground_occlusion();
         }
         if words != entry.written {
             let stride = (NODE_UNIFORM_SIZE / 4) as usize;
@@ -1879,7 +1772,7 @@ impl Renderer {
                     let node = &mut self.nodes[*i as usize];
                     let kept = node.shape();
                     match paint {
-                        Some(paint) => node.set_shape(paint, self.frame_ground),
+                        Some(paint) => node.set_shape(paint),
                         // A symbol half that draws nothing reads nothing.
                         None if node.family.is_symbol() => {
                             (node.rows, node.along_line) = (false, false)
@@ -1906,7 +1799,7 @@ impl Renderer {
     fn make_for_node(&mut self, gpu: &mut dyn Gpu, i: usize, warm: bool) {
         let layouts = [self.draw_layout, self.node_layout];
         let drape_target = TargetFormat {
-            color: self.drape_format(),
+            color: DRAPE_FORMAT,
             sample_count: 1,
         };
         let own_drape = self.target.color != drape_target.color;
@@ -1975,15 +1868,6 @@ impl Renderer {
                 self.extrusions.make(gpu, self.nodes[i].elevation, warm);
                 // Its target's composite.
                 self.composites.make(gpu, offscreen::Mode::Over);
-                let ground = self.nodes[i].ground;
-                self.extrusions.make_ground(gpu, ground);
-                if ground.mask
-                    && ground.any()
-                    && let Some(terrain) = self.terrain.as_mut()
-                {
-                    let (format, samples) = (self.target.color, self.extrusions.samples);
-                    terrain.make_decal(gpu, format, samples);
-                }
             }
         }
     }
@@ -2018,17 +1902,7 @@ impl Renderer {
         }
         match node.family {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
-            Family::FillExtrusion => {
-                out.extend(self.extrusions.pipelines(node.elevation));
-                out.extend(self.extrusions.ground_pipelines(node.ground));
-                if node.ground.mask
-                    && node.ground.any()
-                    && let Some(terrain) = &self.terrain
-                {
-                    let decal = terrain.decal_pipeline(self.extrusions.samples);
-                    out.extend(decal.map(PipelineId::from));
-                }
-            }
+            Family::FillExtrusion => out.extend(self.extrusions.pipelines(node.elevation)),
             Family::SymbolIcon | Family::SymbolText => {
                 let kinds = self.symbol_kinds(self.drawer(i));
                 out.extend(self.symbols.wanted(kinds, self.full));
@@ -2054,7 +1928,6 @@ impl Renderer {
     fn prioritize(&self, gpu: &mut dyn Gpu) {
         let mut wanted = Vec::new();
         wanted.extend(self.driver.pipelines());
-        wanted.extend(self.linear.as_ref().map(offscreen::LinearScene::pipeline));
         for i in 0..self.nodes.len() {
             if self.scene.node_has_meshes(i as u32) {
                 self.node_pipelines(i, &mut wanted);
@@ -2190,8 +2063,7 @@ impl Renderer {
     ) -> FrameStats {
         let mut times = RenderTimes::default();
         let started = clock();
-        let (candidates, candidates_rebuilt) =
-            self.scene.prepare(gpu, frame, self.linear.is_some());
+        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
         // The CPU driver's cull: draws that changed record again.
         if self
             .driver
@@ -2268,7 +2140,6 @@ impl Renderer {
         passes.extend(self.symbols.pass(gpu, placings, self.scene.placed_quads()));
         stats.draws += self.extrusion_passes(
             gpu,
-            size,
             extrusions_ready,
             (terrain_above, depth_cleared),
             &mut passes,
@@ -2276,7 +2147,7 @@ impl Renderer {
         let start = passes.len();
         passes.extend(self.layers.passes());
         Pass::group(&mut passes, start, "layers apart");
-        self.main_passes(gpu, (target, clear), size, terrain_on, &mut passes);
+        self.main_passes(gpu, (target, clear), terrain_on, &mut passes);
         // What the frame wrote into data textures lands before it draws.
         #[cfg(cpu_driven)]
         self.scene.tables_mut().flush(gpu);
@@ -2317,32 +2188,10 @@ impl Renderer {
         }
     }
 
-    /// Settles the pipelines the frame draws with: the extrusions' ground
-    /// variants and the full projection's, made if they weren't, and
-    /// whatever waited for those that arrived recorded again.
+    /// Settles the pipelines the frame draws with: the full projection's,
+    /// made if they weren't, and whatever waited for those that arrived
+    /// recorded again.
     fn settle_pipelines(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> PipelineCounts {
-        // What extrusion nodes darken on the ground: their pipelines are
-        // made with the rest.
-        // On a plane's terrain, through the ground mask.
-        let shadows = frame.light.shadow().1 > 0.0;
-        let mask = frame.globe.is_none_or(|g| g.amount <= 0.0)
-            && self.terrain.as_ref().is_some_and(terrain::Terrain::active);
-        self.frame_ground = extrusion::Ground {
-            shadows,
-            occlusion: false,
-            mask,
-        };
-        for node in self.nodes.iter_mut().filter(|n| n.extrusion.is_some()) {
-            let ground = extrusion::Ground {
-                shadows,
-                occlusion: node.occlusion,
-                mask,
-            };
-            if node.ground != ground {
-                node.ground = ground;
-                self.pipelines_stale |= node.drawn;
-            }
-        }
         // The bundles draw with the variants the frame needs, made if
         // they weren't.
         let full = self.needs_full(frame);
@@ -2379,10 +2228,6 @@ impl Renderer {
         }
         if compiling.pending > 0 {
             self.prioritize(gpu);
-        }
-        // The ground's light records into the bundles beneath the labels.
-        if self.atmosphere.lights_ground(gpu) != self.ground_lit {
-            self.invalidate_bundle(gpu);
         }
         compiling
     }
@@ -2514,12 +2359,6 @@ impl Renderer {
             depth_format: None,
             sample_count: self.target.sample_count,
         };
-        // The ground's light falls beneath the first symbol layer, or
-        // over everything without one: labels keep their colours.
-        self.ground_lit = self.atmosphere.lights_ground(gpu);
-        let lit_before = (self.nodes.iter())
-            .position(|n| n.family.is_symbol())
-            .unwrap_or(self.nodes.len());
         for i in 0..=self.nodes.len() {
             // The solid background and what it hides go in a bundle
             // of their own, which the clear can stand for.
@@ -2527,9 +2366,6 @@ impl Renderer {
                 let segment = bound_once(std::mem::take(&mut commands));
                 self.bundles
                     .push(gpu.create_render_bundle(&layers, &segment));
-            }
-            if i == lit_before && self.ground_lit {
-                commands.extend(self.atmosphere.commands_ground(gpu));
             }
             if i == self.nodes.len() {
                 break;
@@ -2674,7 +2510,6 @@ impl Renderer {
     fn extrusion_passes(
         &mut self,
         gpu: &mut dyn Gpu,
-        size: [u32; 2],
         extrusions_ready: bool,
         (terrain_above, mut depth_cleared): (Vec<(usize, RenderPass)>, bool),
         passes: &mut Vec<Pass>,
@@ -2708,25 +2543,6 @@ impl Renderer {
             }
             let first = !depth_cleared;
             depth_cleared = true;
-            // Ground passes join the recorded draw as they compile. On
-            // terrain they draw into the mask first, and the terrain's
-            // decal carries it into the layer's pass after the buildings,
-            // which hide what they cover from it as from the ground passes.
-            let mut ground = self.extrusions.ground_ready(gpu, node.ground);
-            let mut decal = None;
-            if ground.mask && ground.any() {
-                let mask = self.extrusions.mask_target(gpu, size);
-                let samples = self.extrusions.samples;
-                decal = (self.terrain.as_mut()).and_then(|t| t.decal_commands(gpu, samples, mask));
-                if decal.is_none() {
-                    ground.shadows = false;
-                    ground.occlusion = false;
-                }
-            }
-            if ground.recorded() != node.ground_drawn {
-                node.ground_drawn = ground.recorded();
-                target.forget_bundle(gpu);
-            }
             let draw = |row| self.driver.draw(&buffers, row, NodeDraw::Indexed);
             let cut = self.scene.cut_row(index as u32).zip(node.cut_group);
             let (cut_row, cut_group) = cut.expect("an extrusion node draws a cut stream");
@@ -2734,19 +2550,14 @@ impl Renderer {
                 whole: (node.group, draw(index as u32)),
                 cut: (cut_group, draw(cut_row)),
             };
-            if decal.is_some() {
-                let mask = (self.extrusions).mask_pass(draw_group, &buffers, (&streams, ground));
-                passes.extend(mask.map(Pass::Render));
-            }
-            let mut pass = self.extrusions.prepare(
+            let pass = self.extrusions.prepare(
                 gpu,
                 target,
                 draw_group,
                 &buffers,
-                (&streams, node.elevation, ground),
+                (&streams, node.elevation),
                 first,
             );
-            pass.commands.extend(decal.into_iter().flatten());
             passes.push(Pass::Render(pass));
             draws += 1;
         }
@@ -2758,25 +2569,14 @@ impl Renderer {
     }
 
     /// The main pass into `target`, cleared to `clear`: the sky, the
-    /// bundles, the composited layers, and in linear light the encode
-    /// into the host's target.
+    /// bundles and the composited layers.
     fn main_passes(
         &mut self,
         gpu: &mut dyn Gpu,
-        (target, clear): (TextureId, [f64; 4]),
-        size: [u32; 2],
+        (target, mut clear): (TextureId, [f64; 4]),
         terrain_on: bool,
         passes: &mut Vec<Pass>,
     ) {
-        // In linear light the map draws into its own texture, cleared to the
-        // colour decoded, then encodes into the host's target.
-        let (into, mut into_clear) = match &mut self.linear {
-            Some(linear) => (
-                linear.texture(gpu, &self.composites, size),
-                color_in(clear.map(|c| c as f32), true).map(f64::from),
-            ),
-            None => (target, clear),
-        };
         // A solid background filling the frame is the clear: its bundle
         // and the sky drawn before it, which it hides, are left out.
         let (mut first, mut segments) = (Vec::new(), &self.bundles[..]);
@@ -2786,7 +2586,7 @@ impl Renderer {
             let shown = self.nodes[b].cull.visible && self.scene.node_candidates(b as u32) > 0;
             match self.nodes[b].solid {
                 Some(color) if shown && self.background_fills && !terrain_on => {
-                    into_clear = color.map(f64::from);
+                    clear = color.map(f64::from);
                 }
                 _ => {
                     first = self.atmosphere.commands(gpu);
@@ -2800,12 +2600,9 @@ impl Renderer {
         passes.extend(self.layers.main_passes(
             &self.composites,
             (first, segments, self.atmosphere.commands_after(gpu)),
-            into,
-            into_clear,
+            target,
+            clear,
         ));
-        if let Some(linear) = &self.linear {
-            passes.push(linear.pass(gpu, target, clear));
-        }
         Pass::group(passes, start, "main");
     }
 
@@ -2848,7 +2645,7 @@ impl Renderer {
         let page = usize::from(stack >= colour);
         let drape_frame = terrain.drape_frame(frame, page);
         let level = self.drape.as_mut()?;
-        crate::scene::write_frame(gpu, level.frame[page], &drape_frame, self.linear.is_some());
+        crate::scene::write_frame(gpu, level.frame[page], &drape_frame);
         let at = stack as usize;
         if level.bundle.len() <= at {
             level.bundle.resize_with(at + 1, || None);
@@ -2910,16 +2707,10 @@ impl Renderer {
                 self.drape_waiting = true;
             }
         }
-        // The slope page stays as it is in linear light.
-        let format = if page == 0 {
-            self.drape_format()
-        } else {
-            DRAPE_FORMAT
-        };
         let bundle = gpu.create_render_bundle(
             &RenderBundleDesc {
                 label: "drape",
-                color_formats: &[format],
+                color_formats: &[DRAPE_FORMAT],
                 depth_format: None,
                 sample_count: 1,
             },
@@ -3028,7 +2819,7 @@ impl Renderer {
         let drape = self
             .drape_pipelines
             .as_ref()
-            .filter(|_| scene != self.draw_group && self.target.color != self.drape_format());
+            .filter(|_| scene != self.draw_group && self.target.color != DRAPE_FORMAT);
         let pipeline = match (drape, node.family.is_image()) {
             _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),

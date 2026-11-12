@@ -1272,58 +1272,13 @@ impl Map {
     }
 
     /// A renderer for this map's frames into targets of `format`, on the
-    /// images its runtime shares, mixing colours in the style's colour
-    /// space. A style in another one replaces it at the next frame.
+    /// images its runtime shares.
     pub fn create_renderer(&self, gpu: &mut dyn Gpu, format: TargetFormat) -> Renderer {
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let images = images
             .atlas
             .get_or_insert_with(|| ImageAtlas::new(gpu, 1024, 8, 8192));
-        Renderer::with_color_space(
-            gpu,
-            format,
-            self.capacity,
-            images.bindings(),
-            self.linear_light(),
-        )
-    }
-
-    /// Whether the style mixes colours in linear light
-    /// (`dev.sargunv.orbis:color-space`).
-    fn linear_light(&self) -> bool {
-        self.style
-            .as_ref()
-            .is_some_and(|s| s.doc.style().color_space == orb_style::ColorSpace::Linear)
-    }
-
-    /// Replaces `renderer` with one in the style's colour space if it
-    /// mixes colours in another, which lays the map's tiles out again for
-    /// it, as another device's would; whether it did.
-    fn fit_color_space(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) -> bool {
-        if renderer.linear() == self.linear_light() {
-            return false;
-        }
-        let known = self.renderer == Some(renderer.id());
-        let fresh = self.create_renderer(gpu, renderer.format());
-        std::mem::replace(renderer, fresh).destroy(gpu);
-        // What the map's renderer held went with it, though no device was
-        // lost; another renderer the next arrivals take in as a new device's.
-        if known {
-            // The runtime's image atlas outlives the renderer, unlike a lost
-            // device's: the style's images (its sprites, added images and
-            // tiles' gradient ramps) and those retired go back to it before
-            // the style is installed again in a namespace of its own.
-            if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
-                self.retired.images.push(namespace);
-            }
-            let mut images = self.services.images.0.lock().expect("images poisoned");
-            self.retired.hand_to(&mut images);
-            drop(images);
-            self.forget_gpu();
-            self.renderer = Some(renderer.id());
-            self.nodes_stale = true;
-        }
-        true
+        Renderer::new(gpu, format, self.capacity, images.bindings())
     }
 
     /// Forgets the GPU state of another renderer: after a device loss, or
@@ -1699,7 +1654,6 @@ impl Map {
         let at = crate::light::atmosphere_view(
             &root.light,
             root.terrain_presence,
-            root.exaggeration,
             &view,
             self.camera.state(),
         );
@@ -1714,11 +1668,7 @@ impl Map {
         if let Some(style) = &mut self.style {
             style.symbol_tiles.clear();
         }
-        // Labels reading the daylight follow the ground's light.
-        let frame_light = orb_render::FrameLight {
-            ground: at.ground,
-            ..crate::light::frame_light(&root.light, self.camera.state())
-        };
+        let frame_light = crate::light::frame_light(&root.light, self.camera.state());
         if let Some(style) = &mut self.style
             && !std::mem::replace(&mut style.glyphs_fetched, true)
         {
@@ -1821,21 +1771,12 @@ impl Map {
         report
     }
 
-    /// Takes in what arrived, and the device's state the map sets: in a
-    /// style that arrived, colours may mix in another space, and what
-    /// arrived is taken in again for the renderer made for it.
+    /// Takes in what arrived, and the device's state the map sets.
     fn take_arrivals(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, pixel_ratio: f32) {
-        self.fit_color_space(gpu, renderer);
         renderer.set_antialias_3d(gpu, self.antialias_3d);
         renderer.set_keep_all(gpu, self.keep_all_cull);
         self.apply_arrivals(gpu, renderer, pixel_ratio);
         self.prewarm(gpu, renderer);
-        // A style that arrived may mix colours in another space.
-        if self.fit_color_space(gpu, renderer) {
-            renderer.set_antialias_3d(gpu, self.antialias_3d);
-            renderer.set_keep_all(gpu, self.keep_all_cull);
-            self.apply_arrivals(gpu, renderer, pixel_ratio);
-        }
     }
 
     /// Writes the frame's paint at `zoom` and frame time `now` (`time` the
@@ -1980,10 +1921,7 @@ impl Map {
                     pixel_alignment(view, self.surface.projection(), self.camera.state().bearing)
                 }
             },
-            terrain: frame_terrain.map(|t| orb_render::FrameTerrain {
-                ground: self.camera.state().elevation as f32,
-                ..t
-            }),
+            terrain: frame_terrain,
             light: frame_light,
             globe,
         }
@@ -3446,7 +3384,6 @@ mod gpu_tests {
             usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         let viewport = Viewport {
             width: 64.0,
@@ -3506,75 +3443,6 @@ mod gpu_tests {
             .unwrap();
         centre(&mut map, &mut gpu, &mut renderer);
         assert_eq!(requests(&mut map), [("v".into(), VideoRequest::Close)]);
-    }
-
-    /// A style that switches colour space gives the runtime's image atlas
-    /// back what it held, which outlives the renderer it replaces:
-    /// switching back and forth holds as many rows as the first style.
-    #[test]
-    fn color_space_switches_give_the_image_atlas_back_its_rows() {
-        let Ok(mut gpu) = pollster::block_on(WgpuGpu::offscreen()) else {
-            eprintln!("no GPU adapter; skipped");
-            return;
-        };
-        let fetch = Arc::new(crate::testing::NoFetch);
-        let services = crate::testing::services(fetch.clone());
-        let images = services.images.clone();
-        let mut map = Map::new(services, None);
-        map.set_previews(orb_style::Previews::ALL);
-        // A gradient line holds a ramp row in the style's namespace.
-        let style = |space: &str| {
-            format!(
-                r#"{{"version": 8, "center": [0, 0], "zoom": 2,
-                  "metadata": {{"dev.sargunv.orbis:color-space": "{space}"}},
-                  "sources": {{"l": {{"type": "geojson", "lineMetrics": true, "data": {{
-                    "type": "LineString", "coordinates": [[-20, 0], [20, 0]]}}}}}},
-                  "layers": [{{"id": "l", "type": "line", "source": "l", "paint": {{
-                    "line-width": 8, "line-gradient": ["interpolate", ["linear"],
-                      ["line-progress"], 0, "blue", 1, "red"]}}}}]}}"#
-            )
-        };
-        let format = TargetFormat {
-            color: orb_hal::TextureFormat::Rgba8Unorm,
-            sample_count: 1,
-        };
-        let target = gpu.create_texture(&orb_hal::TextureDesc {
-            label: "colour space test",
-            width: 64,
-            height: 64,
-            array_layers: 1,
-            dimension: orb_hal::TextureViewDimension::D2,
-            format: format.color,
-            usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
-            sample_count: 1,
-            mip_levels: 1,
-            view_formats: &[],
-        });
-        let viewport = Viewport {
-            width: 64.0,
-            height: 64.0,
-        };
-        let mut renderer = map.create_renderer(&mut gpu, format);
-        let mut rows = |map: &mut Map, space: &str| {
-            map.set_style_json(&style(space)).unwrap();
-            for _ in 0..200 {
-                if map
-                    .render(&mut gpu, &mut renderer, target, viewport, 1.0, 0.0)
-                    .idle
-                {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            assert_eq!(renderer.linear(), space == "linear");
-            let state = images.0.lock().unwrap();
-            state.atlas.as_ref().unwrap().rows()
-        };
-        let first = rows(&mut map, "linear");
-        assert!(first > 0, "the gradient's ramp is in the atlas");
-        for space in ["srgb", "linear", "srgb", "linear"] {
-            assert_eq!(rows(&mut map, space), first, "after switching to {space}");
-        }
     }
 
     #[test]

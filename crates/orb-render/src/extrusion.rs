@@ -1,65 +1,14 @@
 //! Extrusion layers draw into a target of their own, resolve it, then
 //! composite it at their layer opacity once. The shared depth attachment
 //! keeps occlusion between 3D layers and the terrain.
-//!
-//! What a layer darkens on the ground beneath its buildings (style-spec
-//! #1797's shadows, #1796's ground occlusion) draws after them in the
-//! same pass, from the buildings' own vertices (`extrusion_ground.wgsl`):
-//! black whose alpha is how dark, the darkest kept where shapes overlap,
-//! depth-tested against the buildings, so what they stand over is never
-//! shaded (in a city at a pitch, most of it), and the composite darkens
-//! the map beneath by what is left.
-//!
-//! On a plane's terrain they draw instead into the ground mask, flat, one
-//! pass before the layer's, and the layer's pass draws the terrain's mesh
-//! after the buildings, reading the mask where it lies (`Terrain`'s
-//! decal), depth-tested against them in the same way: the darkness
-//! falls on the surface drawn, wherever the DEM bends between the
-//! buildings' vertices.
 use crate::TargetFormat;
-use crate::offscreen::{Apart, Composites, Mode, Offscreen, Target};
+use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use crate::paint::ExtrusionShape;
 use crate::pipeline::{DEPTH, Draw};
 use crate::release::Release;
 use crate::scene::SceneBuffers;
 use orb_hal::*;
-use orb_shaders::{
-    EXTRUSION_CUT_SHADER, EXTRUSION_GROUND_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADER,
-    Shader,
-};
-
-/// What an extrusion node darkens on the ground beneath its buildings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Ground {
-    /// style-spec#1797's shadows, cast from the light.
-    pub(crate) shadows: bool,
-    /// style-spec#1796's ambient occlusion along the walls' feet.
-    pub(crate) occlusion: bool,
-    /// On a plane's terrain: into the ground mask, which the terrain's
-    /// decal carries onto the terrain.
-    pub(crate) mask: bool,
-}
-
-impl Ground {
-    /// Whether it darkens anything.
-    pub(crate) fn any(self) -> bool {
-        self.shadows || self.occlusion
-    }
-
-    /// What of it a node's recorded draw holds: none into the mask, which
-    /// draws in a pass of its own.
-    pub(crate) fn recorded(self) -> Self {
-        if self.mask { Self::default() } else { self }
-    }
-
-    /// Each pass's vertex entry point, if it draws.
-    fn passes(self) -> [(bool, &'static str); 2] {
-        [
-            (self.shadows, "vs_extrusion_shadow"),
-            (self.occlusion, "vs_extrusion_occlusion"),
-        ]
-    }
-}
+use orb_shaders::{EXTRUSION_CUT_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADER, Shader};
 
 #[derive(Debug)]
 pub(crate) struct Extrusions {
@@ -82,16 +31,6 @@ pub(crate) struct Extrusions {
     /// pipelines' `Variants::drawn` does: turning terrain off doesn't
     /// hide the buildings for the plane ones' compile.
     drawn_full: bool,
-    /// The shadow and ground occlusion passes, at one sample and at four,
-    /// made for the first node that draws each; and into the ground mask,
-    /// likewise.
-    ground: [[Option<RenderPipelineId>; 2]; 2],
-    mask: [[Option<RenderPipelineId>; 2]; 2],
-    /// The ground mask, its size and samples, made for the first node
-    /// drawing into it. It draws multisampled as the layer's target does,
-    /// resolved into the texture the decal samples: drawn at one sample,
-    /// every shadow's edge stood in steps along the terrain.
-    mask_target: Option<(Target, [u32; 2], u32)>,
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
     /// The targets' format: the map's.
@@ -106,8 +45,7 @@ pub(crate) type NodeExtrusion = Apart;
 /// An extrusion node's two draws, each with the node group it binds: the
 /// buildings its placements may draw whole, which the whole pipeline
 /// draws, and its cut stream ([`Scene::cut_row`](crate::scene::Scene::cut_row)),
-/// what they draw cut, which the cut pipelines draw. What the buildings
-/// darken on the ground draws over both.
+/// what they draw cut, which the cut pipelines draw.
 #[derive(Clone, Debug)]
 pub(crate) struct Streams {
     pub(crate) whole: (BindGroupId, RenderCommand),
@@ -152,9 +90,6 @@ impl Extrusions {
             warm: Vec::new(),
             full: true,
             drawn_full: true,
-            ground: [[None; 2]; 2],
-            mask: [[None; 2]; 2],
-            mask_target: None,
             layouts: [scene, node],
             samples: 1,
             format,
@@ -266,96 +201,6 @@ impl Extrusions {
         }
     }
 
-    /// Makes the ground passes `ground` draws at the current sample count,
-    /// unless they are made: depth-tested against what stands before them
-    /// (the terrain, earlier 3D layers, the node's own buildings) without
-    /// writing it, keeping the darkest of what overlaps.
-    pub(crate) fn make_ground(&mut self, gpu: &mut dyn Gpu, ground: Ground) {
-        if ground.mask {
-            self.make_mask(gpu, ground);
-            return;
-        }
-        let samples = usize::from(self.samples == 4);
-        let target = TargetFormat {
-            color: self.format,
-            sample_count: self.samples,
-        };
-        let shader = &EXTRUSION_GROUND_SHADER;
-        for (kind, (on, entry)) in ground.passes().into_iter().enumerate() {
-            if on && self.ground[kind][samples].is_none() {
-                let draw = Draw {
-                    vertex: (shader, entry),
-                    depth: Some(DepthState {
-                        format: TextureFormat::Depth32Float,
-                        write: false,
-                    }),
-                    ..Draw::new(shader, &self.layouts, target, Some(BlendState::Max))
-                };
-                self.ground[kind][samples] = Some(draw.make(gpu));
-            }
-        }
-    }
-
-    /// Makes the ground passes `ground` draws into the ground mask at the
-    /// current sample count, unless they are made: the darkness alone,
-    /// flat on its plane, the darkest kept.
-    fn make_mask(&mut self, gpu: &mut dyn Gpu, ground: Ground) {
-        let samples = usize::from(self.samples == 4);
-        let target = TargetFormat {
-            color: TextureFormat::R8Unorm,
-            sample_count: self.samples,
-        };
-        let shader = &EXTRUSION_GROUND_SHADER;
-        for (kind, (on, entry)) in ground.passes().into_iter().enumerate() {
-            if on && self.mask[kind][samples].is_none() {
-                let draw = Draw {
-                    label: "extrusion ground mask",
-                    vertex: (shader, entry),
-                    fragment: (shader, "fs_extrusion_ground_mask"),
-                    constants: [&[("ground_mask", 1.0)], &[]],
-                    ..Draw::new(shader, &self.layouts, target, Some(BlendState::Max))
-                };
-                self.mask[kind][samples] = Some(draw.make(gpu));
-            }
-        }
-    }
-
-    /// The ground passes `ground` draws whose pipelines are made: into the
-    /// layer's target or into the mask, at the current sample count.
-    fn ground_made(&self, ground: Ground) -> [Option<RenderPipelineId>; 2] {
-        let samples = usize::from(self.samples == 4);
-        let mut made = [None; 2];
-        for (kind, (on, _)) in ground.passes().into_iter().enumerate() {
-            let pipeline = if ground.mask {
-                self.mask[kind][samples]
-            } else {
-                self.ground[kind][samples]
-            };
-            made[kind] = pipeline.filter(|_| on);
-        }
-        made
-    }
-
-    /// What of `ground` can draw now: the passes whose pipelines compiled.
-    /// A node draws its buildings without the rest until they have.
-    pub(crate) fn ground_ready(&self, gpu: &mut dyn Gpu, ground: Ground) -> Ground {
-        let [shadows, occlusion] = self
-            .ground_made(ground)
-            .map(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())));
-        Ground {
-            shadows,
-            occlusion,
-            mask: ground.mask,
-        }
-    }
-
-    /// The ground passes' pipelines `ground` draws with, made or not.
-    pub(crate) fn ground_pipelines(&self, ground: Ground) -> Vec<PipelineId> {
-        (self.ground_made(ground).into_iter().flatten())
-            .map(PipelineId::from)
-            .collect()
-    }
-
     /// A pipeline of a vertex stage and a fragment stage, each a shader and
     /// its entry point.
     fn pipeline(
@@ -447,7 +292,6 @@ impl Extrusions {
                 },
             sample_count: self.samples,
             mip_levels: 1,
-            view_formats: &[],
         }));
         self.size = size;
         self.single_layer = count == 1;
@@ -478,23 +322,16 @@ impl Extrusions {
     }
 
     /// An extrusion node's pass into its target over the shared depth,
-    /// replaying its draws, recorded once: its buildings, then what
-    /// `ground` darkens on the ground around them. Drawn first, the
-    /// ground passes shaded every shadow's whole area, most of it then
-    /// covered: three times the layer's GPU time over Midtown at pitch 60.
-    /// After, the depth test drops what the buildings cover before it
-    /// shades, and the max blend can't change a building's opaque pixel
-    /// where a shadow on terrain, pulled nearer, still passes.
+    /// replaying its draws, recorded once.
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeExtrusion,
         scene: BindGroupId,
         buffers: &SceneBuffers,
-        (streams, shape, ground): (&Streams, ExtrusionShape, Ground),
+        (streams, shape): (&Streams, ExtrusionShape),
         first: bool,
     ) -> RenderPass {
-        let ground = self.ground_made(ground.recorded());
         let [whole, cut, planes] = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
             let mut commands = vec![
@@ -507,14 +344,10 @@ impl Extrusions {
                     offset: 0,
                 },
             ];
-            // The buildings, each pipeline over its stream, then what
-            // they darken on the ground, over both.
+            // The buildings, each pipeline over its stream.
             let [w, c] = [&streams.whole, &streams.cut];
             let draws = [(whole, w), (cut, c), (planes, c)].into_iter();
-            let ground = [c, w]
-                .into_iter()
-                .flat_map(|s| ground.iter().map(move |&g| (g, s)));
-            streams.record(draws.chain(ground), &mut commands);
+            streams.record(draws, &mut commands);
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "3d layer",
@@ -548,69 +381,9 @@ impl Extrusions {
     }
 }
 
-impl Extrusions {
-    /// The ground mask for a 3D target of `size`, made or remade to fit,
-    /// to sample: as much larger as its plane shrinks into it
-    /// (`GROUND_MASK_SCALE`), at the current sample count.
-    pub(crate) fn mask_target(&mut self, gpu: &mut dyn Gpu, size: [u32; 2]) -> TextureId {
-        let max = gpu.caps().limits.max_texture_dimension_2d;
-        let size = size.map(|s| ((s as f32 / GROUND_MASK_SCALE).ceil() as u32).clamp(1, max));
-        let samples = self.samples;
-        if let Some((target, made, made_samples)) = &self.mask_target
-            && (*made, *made_samples) == (size, samples)
-        {
-            return target.texture(0);
-        }
-        self.mask_target.take().map(|(t, ..)| t).release(gpu);
-        let format = [TextureFormat::R8Unorm];
-        let target = Target::new(gpu, "ground mask", &format, size, samples);
-        let texture = target.texture(0);
-        self.mask_target = Some((target, size, samples));
-        texture
-    }
-
-    /// The pass drawing what a node darkens on the ground into the mask,
-    /// as `ground` (made, into the mask) says: with the node's `draw`, as
-    /// its buildings draw.
-    pub(crate) fn mask_pass(
-        &self,
-        scene: BindGroupId,
-        buffers: &SceneBuffers,
-        (streams, ground): (&Streams, Ground),
-    ) -> Option<RenderPass> {
-        let (target, ..) = self.mask_target.as_ref()?;
-        let mut commands = vec![
-            RenderCommand::SetBindGroup {
-                index: 0,
-                group: scene,
-            },
-            RenderCommand::SetIndexBuffer {
-                buffer: buffers.compacted,
-                offset: 0,
-            },
-        ];
-        let [w, c] = [&streams.whole, &streams.cut];
-        let ground = self.ground_made(ground);
-        let ground = [c, w]
-            .into_iter()
-            .flat_map(|s| ground.iter().map(move |&g| (g, s)));
-        streams.record(ground, &mut commands);
-        Some(RenderPass {
-            label: "ground mask",
-            colors: vec![target.attachment(0, LoadOp::Clear([0.0; 4]))],
-            depth: None,
-            commands,
-        })
-    }
-}
-
-/// `project.wgsl`'s: the ground mask's clip x and y shrink by it.
-const GROUND_MASK_SCALE: f32 = 0.8;
-
 impl crate::release::Release for Extrusions {
     fn release(self, gpu: &mut dyn Gpu) {
         let pipelines: Vec<Pipelines> = self.pipelines.into_iter().map(|(_, p)| p).collect();
-        let mask = self.mask_target.map(|(t, ..)| t);
-        (pipelines, self.ground, self.mask, self.depth, mask).release(gpu);
+        (pipelines, self.depth).release(gpu);
     }
 }

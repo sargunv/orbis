@@ -1490,7 +1490,6 @@ mod tests {
             let camera = orb_style::CameraInputs {
                 pitch: 30.0,
                 bearing: 0.0,
-                meters_per_pixel: 1.0,
             };
             extrusion_bound(&style.layers[0], 10.0, camera).map(|(t, b, _)| (t, b))
         };
@@ -1535,7 +1534,6 @@ fn extrusion_bound(
         zoom,
         pitch: camera.pitch,
         bearing: camera.bearing,
-        meters_per_pixel: camera.meters_per_pixel,
         ..Default::default()
     };
     let scales = [top.scale(&context), base.scale(&context)];

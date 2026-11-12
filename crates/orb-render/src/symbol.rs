@@ -453,7 +453,6 @@ fn placed_target(gpu: &mut dyn Gpu, rows: u32) -> TextureId {
         usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING,
         sample_count: 1,
         mip_levels: 1,
-        view_formats: &[],
     })
 }
 

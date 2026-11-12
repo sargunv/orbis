@@ -112,59 +112,6 @@ pub struct FrameLight {
     /// (y south) with the horizontal parts negated, as long as v8's radial
     /// position. Viewport anchoring is already applied.
     pub position: [f32; 3],
-    /// style-spec#1797: how much extrusions' shadows darken the ground
-    /// beneath them, 0 to 1, cast away from `position`.
-    pub shadow_intensity: f32,
-    /// maplibre/maplibre#555's ambient light on extrusions, premultiplied,
-    /// and how far they take it (0 to 1) rather than GL JS's `1 −
-    /// intensity` of `color`: with it, `intensity` is the sun's alone,
-    /// ambient occlusion dims only the ambient light and shadows only the
-    /// sun's.
-    pub ambient: [f32; 3],
-    pub ambient_amount: f32,
-    /// Its shading of the ground (`dev.sargunv.orbis:ground-lighting`),
-    /// which labels' `["dev.sargunv.orbis:daylight"]` follows.
-    pub ground: Option<crate::GroundLight>,
-}
-
-impl FrameLight {
-    /// The longest a shadow gets, in heights: about a sun 6° up's.
-    const LONGEST_SHADOW: f32 = 10.0;
-
-    /// Where a point a metre up falls on the ground along the light, in
-    /// metres east and north, and how dark extrusions' shadows are. As the
-    /// light sinks to 3° above the horizon its shadows fade out rather
-    /// than streak across the map, and with it below there are none.
-    pub fn shadow(&self) -> ([f32; 2], f32) {
-        let [x, y, z] = self.position;
-        let radius = (x * x + y * y + z * z).sqrt();
-        if self.shadow_intensity <= 0.0 || z <= 0.0 {
-            return ([0.0; 2], 0.0);
-        }
-        let (low, high) = (3f32.to_radians().sin(), 6f32.to_radians().sin());
-        let fade = ((z / radius - low) / (high - low)).clamp(0.0, 1.0);
-        let reach = (x.hypot(y) / z).min(Self::LONGEST_SHADOW);
-        let along = [x, -y].map(|v| v / x.hypot(y).max(f32::MIN_POSITIVE) * reach);
-        // With an ambient light a shadow takes away the sun's share of the
-        // light on the ground (`lighting.wgsl`'s `light_ground_ambient`).
-        let sun = 1.0 - self.ground_ambient_share();
-        let share = 1.0 + (sun - 1.0) * self.ambient_amount;
-        (along, self.shadow_intensity * fade * share)
-    }
-
-    /// The ambient share of the light on flat ground, as `lighting.wgsl`'s
-    /// `light_ground_ambient` gives it before the ambient amount.
-    fn ground_ambient_share(&self) -> f32 {
-        let luminance = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-        let i = self.intensity;
-        let ambient: [f32; 3] = std::array::from_fn(|k| {
-            let gl = (1.0 - i) * self.color[k];
-            gl + (self.ambient[k] - gl) * self.ambient_amount
-        });
-        let facing = self.position[2].clamp(0.0, 1.0);
-        let total: [f32; 3] = std::array::from_fn(|k| ambient[k] + facing * i * self.color[k]);
-        luminance(ambient) / luminance(total).max(1e-6)
-    }
 }
 
 /// A low-zoom surface's terms (`project.wgsl`), as a globe's; positions on the sphere are
@@ -201,9 +148,6 @@ pub struct FrameTerrain {
     pub exaggeration: f32,
     /// DEM pixels per side, without borders.
     pub dem_dim: f32,
-    /// The ground's elevation under the camera target, metres: the plane
-    /// the ground mask lies on (`project.wgsl`'s `ground_mask_clip`).
-    pub ground: f32,
     /// The lowest elevation the frame's terrain tiles can show, metres
     /// with exaggeration: on a globe, ground below sea level near the
     /// limb stays in front of the sphere that hides solid points
@@ -242,13 +186,12 @@ fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
 
 /// Writes a frame block into a uniform buffer of [`FRAME_BYTES`]: the
 /// scene's own, or another view's of the same scene (the terrain drape's).
-/// `linear` when colours mix in linear light.
-pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock, linear: bool) {
-    gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&frame_words(frame, linear)));
+pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
+    gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&frame_words(frame)));
 }
 
 /// A frame block's words, as [`write_frame`] writes them.
-pub(crate) fn frame_words(frame: &FrameBlock, linear: bool) -> Vec<u32> {
+pub(crate) fn frame_words(frame: &FrameBlock) -> Vec<u32> {
     use layout::frame as f;
     let mut b = orb_shaders::Block::new(f::WORDS);
     let view_proj = frame.view_proj.map(|column| column.map(|v| v as f32));
@@ -275,20 +218,11 @@ pub(crate) fn frame_words(frame: &FrameBlock, linear: bool) -> Vec<u32> {
         b.f(f::DEM_UNPACK, &t.unpack);
         b.f(f::TERRAIN_EXAGGERATION, &[t.exaggeration]);
         b.f(f::DEM_DIM, &[t.dem_dim]);
-        b.f(f::TERRAIN_GROUND, &[t.ground]);
         b.f(f::TERRAIN_LOWEST, &[t.lowest.min(0.0)]);
     }
     let [red, green, blue] = frame.light.color;
     b.f(f::LIGHT_COLOR, &[red, green, blue, frame.light.intensity]);
     b.f(f::LIGHT_POSITION, &frame.light.position);
-    let [red, green, blue] = frame.light.ambient;
-    b.f(
-        f::LIGHT_AMBIENT,
-        &[red, green, blue, frame.light.ambient_amount],
-    );
-    let (offset, intensity) = frame.light.shadow();
-    b.f(f::SHADOW_OFFSET, &offset);
-    b.f(f::SHADOW_INTENSITY, &[intensity]);
     let globe = frame.globe.map(|g| {
         b.f(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());
         b.f(f::GLOBE_HORIZON, &g.horizon);
@@ -306,13 +240,6 @@ pub(crate) fn frame_words(frame: &FrameBlock, linear: bool) -> Vec<u32> {
             .u(f::GLOBE_TARGET_REST, &rest);
         b.u(f::GLOBE_PLANE, &[u32::from(plane)]);
     }
-    if let Some(g) = frame.light.ground {
-        let [x, y, z] = g.sun;
-        b.f(f::GROUND_SUN, &[x, y, z, g.twilight / 2.0]);
-        let [x, y, z] = g.up;
-        b.f(f::GROUND_UP, &[x, y, z, g.amount]);
-    }
-    b.u(f::LINEAR, &[u32::from(linear)]);
     b.u(f::SURFACE_CELLS, &[surface_cells(frame.globe)]);
     b.0
 }
@@ -2121,12 +2048,7 @@ impl Scene {
     /// Writes the frame block, and the candidate lists if meshes or
     /// placements changed. Returns the number of candidates, and whether
     /// they were laid out again.
-    pub(crate) fn prepare(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        frame: &FrameBlock,
-        linear: bool,
-    ) -> (u32, bool) {
+    pub(crate) fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
         self.write_rows(gpu, quantum(frame.world_span));
         self.follow_label_fades(gpu, frame.symbol_fade_change);
         self.moves.clear();
@@ -2155,7 +2077,7 @@ impl Scene {
                 .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
         }
 
-        let mut words = frame_words(frame, linear);
+        let mut words = frame_words(frame);
         words[layout::frame::PLACED_NODES] = self.nodes.len() as u32;
         gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
         #[cfg(cpu_driven)]
@@ -2622,30 +2544,7 @@ fn move_buffer(gpu: &mut dyn Gpu, buffer: &mut BufferId, desc: &BufferDesc<'_>, 
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameLight, grown};
-
-    /// With the style's ambient light a shadow takes away the sun's share
-    /// of the light on the ground, so a sun under a bright sky casts faint
-    /// shadows; without it, as dark as the intensity says.
-    #[test]
-    fn shadows_take_away_the_suns_share() {
-        let light = |ambient: f32, amount| FrameLight {
-            color: [1.0; 3],
-            intensity: 0.5,
-            // Overhead.
-            position: [0.0, 0.0, 1.0],
-            shadow_intensity: 0.8,
-            ambient: [ambient; 3],
-            ambient_amount: amount,
-            ground: None,
-        };
-        assert_eq!(light(0.0, 0.0).shadow().1, 0.8);
-        // No sky light: the sun's whole.
-        assert_eq!(light(0.0, 1.0).shadow().1, 0.8);
-        // As bright a sky as the sun: half.
-        assert!((light(0.5, 1.0).shadow().1 - 0.4).abs() < 1e-6);
-        assert!((light(0.5, 0.5).shadow().1 - 0.6).abs() < 1e-6);
-    }
+    use super::grown;
 
     /// The shaders' chunk sizes are the layout's: the most indices a chunk
     /// has, which bounds the cull's copy loop, and the instances a point

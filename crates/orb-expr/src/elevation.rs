@@ -3,7 +3,7 @@
 //! chain of arithmetic with constants, and the value is known at each of
 //! its stops.
 
-use crate::ir::{Deps, Interpolation, MathFn, NodeId, Op};
+use crate::ir::{Call, Deps, Interpolation, MathFn, NodeId, Op};
 use crate::property::{Kind, PropertyExpression};
 use crate::{Expression, Value};
 
@@ -97,19 +97,6 @@ impl PropertyExpression {
         Self::from_parts(Expression { ir }, kind, curve)
     }
 
-    /// The value where the daylight is `daylight` (1 the day side's).
-    #[must_use]
-    pub fn at_daylight(&self, daylight: f64) -> Self {
-        let mut ir = self.expression().ir.clone();
-        for node in &mut ir.nodes {
-            if matches!(node.op, Op::Call(crate::ir::Call::Daylight, _)) {
-                node.op = Op::Literal(Value::Number(daylight));
-            }
-        }
-        let root = ir.root();
-        self.rebuilt(ir, root)
-    }
-
     /// Whether the value reads `["elevation"]`.
     pub fn reads_elevation(&self) -> bool {
         self.expression().deps().contains(Deps::ELEVATION)
@@ -121,49 +108,19 @@ impl PropertyExpression {
     /// constants, `abs`, `floor`, `ceil` and `round`.
     pub fn elevation_curve(&self) -> Result<InputCurve, &'static str> {
         const SHAPE: &str = "[\"elevation\"] draws per fragment once, as the input of a \"step\" or \"interpolate\", through arithmetic with constants";
-        self.input_curve(Deps::ELEVATION, SHAPE)
-    }
-
-    /// Whether the value reads `["dev.sargunv.orbis:daylight"]`.
-    pub fn reads_daylight(&self) -> bool {
-        self.expression().deps().contains(Deps::DAYLIGHT)
-    }
-
-    /// The value as a curve over the daylight, or why it isn't one: it
-    /// must read `["dev.sargunv.orbis:daylight"]` once, as the input of a
-    /// `step` with one stop or a linear or exponential `interpolate` in
-    /// RGB with at most two.
-    pub fn daylight_curve(&self) -> Result<InputCurve, &'static str> {
-        const SHAPE: &str = "[\"dev.sargunv.orbis:daylight\"] draws per label once, as the input of a \"step\" with one stop or a linear or exponential \"interpolate\" in RGB with at most two";
-        let curve = self.input_curve(Deps::DAYLIGHT, SHAPE)?;
-        let stops = curve.labels.len();
-        let fits = match curve.interpolation {
-            None => stops == 2,
-            Some(Interpolation::Linear | Interpolation::Exponential(_)) => curve.rgb && stops <= 2,
-            Some(Interpolation::CubicBezier(_)) => false,
-        };
-        if !curve.input.is_empty() || !fits {
-            return Err(SHAPE);
-        }
-        Ok(curve)
-    }
-
-    /// The value as a curve over the per-point input `deps` names, or
-    /// `shape` where it isn't one.
-    fn input_curve(&self, deps: Deps, shape: &'static str) -> Result<InputCurve, &'static str> {
         let ir = &self.expression().ir;
-        let reads = |id: NodeId| ir.node(id).deps.contains(deps);
+        let reads = |id: NodeId| ir.node(id).deps.contains(Deps::ELEVATION);
         let reads_input = ir
             .nodes
             .iter()
-            .filter(|n| matches!(&n.op, Op::Call(call, _) if call.input_deps() == Some(deps)));
+            .filter(|n| matches!(&n.op, Op::Call(Call::Elevation, _)));
         let mut curves = ir.nodes.iter().enumerate().filter(|(_, n)| match &n.op {
             Op::Step { input, .. } | Op::Interpolate { input, .. } => reads(*input),
             _ => false,
         });
         let (1, Some((curve, node)), None) = (reads_input.count(), curves.next(), curves.next())
         else {
-            return Err(shape);
+            return Err(SHAPE);
         };
         let (input, labels, interpolation, rgb) = match &node.op {
             Op::Step { input, labels, .. } => (*input, labels.clone(), None, true),
@@ -192,7 +149,7 @@ impl PropertyExpression {
         loop {
             let op = &ir.node(at).op;
             let args = match op {
-                Op::Call(call, _) if call.input_deps() == Some(deps) => break,
+                Op::Call(Call::Elevation, _) => break,
                 Op::Sum(args) | Op::Product(args) | Op::Min(args) | Op::Max(args) => args.clone(),
                 Op::Sub(a, b) | Op::Div(a, b) | Op::Rem(a, b) => vec![*a, *b],
                 Op::Neg(a) | Op::Math(_, a) => vec![*a],
@@ -201,14 +158,14 @@ impl PropertyExpression {
                     at = args[0];
                     continue;
                 }
-                _ => return Err(shape),
+                _ => return Err(SHAPE),
             };
-            let x = args.iter().position(|&a| reads(a)).ok_or(shape)?;
+            let x = args.iter().position(|&a| reads(a)).ok_or(SHAPE)?;
             let c: Vec<f64> = (args.iter().enumerate())
                 .filter(|&(i, _)| i != x)
                 .map(|(_, &a)| constant(a))
                 .collect::<Option<_>>()
-                .ok_or(shape)?;
+                .ok_or(SHAPE)?;
             let first = c.first().copied().unwrap_or(0.0);
             ops.push(match (op, x) {
                 (Op::Sum(_), _) => ElevationOp::Add(c.iter().sum()),
@@ -226,7 +183,7 @@ impl PropertyExpression {
                 (Op::Math(MathFn::Floor, _), _) => ElevationOp::Floor,
                 (Op::Math(MathFn::Ceil, _), _) => ElevationOp::Ceil,
                 (Op::Math(MathFn::Round, _), _) => ElevationOp::Round,
-                _ => return Err(shape),
+                _ => return Err(SHAPE),
             });
             at = args[x];
         }
@@ -258,7 +215,6 @@ mod tests {
             camera: false,
             camera_data: false,
             elevation: true,
-            daylight: false,
             interpolated: true,
             tokens: false,
         };
@@ -338,65 +294,6 @@ mod tests {
             r#"["step", ["sqrt", ["elevation"]], "red", 3, "blue"]"#,
         ] {
             assert!(color(text).elevation_curve().is_err(), "{text}");
-        }
-    }
-
-    fn daylight(text: &str, allowed: bool) -> Result<PropertyExpression, Vec<crate::Diagnostic>> {
-        let spec = PropertySpec {
-            ty: PropertyType::Color,
-            default: None,
-            zoom: true,
-            feature: true,
-            state: true,
-            camera: false,
-            camera_data: false,
-            elevation: false,
-            daylight: allowed,
-            interpolated: true,
-            tokens: false,
-        };
-        PropertyExpression::parse(&crate::json::parse(text).unwrap(), &spec)
-    }
-
-    /// The daylight is read per label, so a value over it varies as data
-    /// does, and only where the property allows it.
-    #[test]
-    fn a_value_over_the_daylight_varies_per_label() {
-        let text = r#"["interpolate", ["linear"], ["dev.sargunv.orbis:daylight"], 0, "white", 1, "black"]"#;
-        let e = daylight(text, true).unwrap();
-        assert_eq!(e.kind(), Kind::Source);
-        assert!(e.reads_daylight());
-        assert!(daylight(text, false).is_err());
-        let curve = e.daylight_curve().unwrap();
-        assert_eq!(curve.labels, [0.0, 1.0]);
-        assert_eq!(curve.stop(0).kind(), Kind::Constant);
-        assert_eq!(red(&curve.stop(0)), 1.0);
-        // Within a zoom curve, with data at a stop.
-        let e = daylight(
-            r#"["interpolate", ["linear"], ["zoom"], 4, ["step", ["dev.sargunv.orbis:daylight"], "white", 0.5, ["get", "c"]], 8, "black"]"#,
-            true,
-        )
-        .unwrap();
-        assert_eq!(e.kind(), Kind::Composite);
-        let curve = e.daylight_curve().unwrap();
-        assert_eq!(curve.interpolation, None);
-        assert_eq!(curve.stop(0).kind(), Kind::Camera);
-        assert_eq!(curve.stop(1).kind(), Kind::Composite);
-    }
-
-    /// The renderer mixes two stops in RGB.
-    #[test]
-    fn other_reads_of_the_daylight_are_no_curve() {
-        for text in [
-            r#"["rgb", ["*", 255, ["dev.sargunv.orbis:daylight"]], 0, 0]"#,
-            r#"["interpolate", ["linear"], ["dev.sargunv.orbis:daylight"], 0, "white", 0.5, "red", 1, "black"]"#,
-            r#"["interpolate-hcl", ["linear"], ["dev.sargunv.orbis:daylight"], 0, "white", 1, "black"]"#,
-            r#"["interpolate", ["linear"], ["*", 2, ["dev.sargunv.orbis:daylight"]], 0, "white", 1, "black"]"#,
-            r#"["step", ["dev.sargunv.orbis:daylight"], "white", 0.3, "red", 0.6, "black"]"#,
-            r#"["interpolate", ["cubic-bezier", 0, 0, 1, 1], ["dev.sargunv.orbis:daylight"], 0, "white", 1, "black"]"#,
-        ] {
-            let e = daylight(text, true).unwrap();
-            assert!(e.daylight_curve().is_err(), "{text}");
         }
     }
 }

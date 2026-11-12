@@ -18,8 +18,6 @@ pub(crate) struct Heatmaps {
 #[derive(Debug)]
 pub(crate) struct NodeHeatmap {
     ramp: TextureId,
-    /// Its ramp holds colours in linear light.
-    linear: bool,
     colors: Vec<u32>,
     /// Its density, drawn apart; the composite draws nothing while the
     /// node is hidden or has nothing to draw.
@@ -68,28 +66,21 @@ impl Heatmaps {
         self.pipeline.iter().map(|&p| p.into()).collect()
     }
 
-    /// A heatmap's node; `linear` when colours mix in linear light, whose
-    /// ramp the composite samples decoded from an sRGB texture.
-    pub(crate) fn node(gpu: &mut dyn Gpu, linear: bool) -> NodeHeatmap {
+    /// A heatmap's node.
+    pub(crate) fn node(gpu: &mut dyn Gpu) -> NodeHeatmap {
         let ramp = gpu.create_texture(&TextureDesc {
             label: "heatmap ramp",
             width: 256,
             height: 1,
             array_layers: 1,
             dimension: TextureViewDimension::D2,
-            format: if linear {
-                TextureFormat::Rgba8UnormSrgb
-            } else {
-                TextureFormat::Rgba8Unorm
-            },
+            format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         NodeHeatmap {
             ramp,
-            linear,
             colors: Vec::new(),
             apart: Apart::default(),
         }
@@ -100,16 +91,6 @@ impl Heatmaps {
         if colors == node.colors {
             return;
         }
-        // In linear light each texel holds its colour decoded and
-        // premultiplied, encoded as an sRGB texture stores it, so sampling
-        // decodes and filters it in linear light.
-        let linear: Vec<u32>;
-        let texels = if node.linear {
-            linear = colors.iter().map(|&c| encoded_linear(c)).collect();
-            &linear
-        } else {
-            colors
-        };
         gpu.write_texture(
             &TextureRegion {
                 texture: node.ramp,
@@ -120,7 +101,7 @@ impl Heatmaps {
                 height: 1,
                 level: 0,
             },
-            bytemuck::cast_slice(texels),
+            bytemuck::cast_slice(colors),
         );
         node.colors = colors.to_vec();
     }
@@ -194,21 +175,4 @@ impl crate::release::Release for NodeHeatmap {
     fn release(self, gpu: &mut dyn Gpu) {
         (self.apart, self.ramp).release(gpu);
     }
-}
-
-/// A premultiplied rgba8 colour in linear light, each component encoded as
-/// an sRGB texture stores it.
-fn encoded_linear(c: u32) -> u32 {
-    let [r, g, b, a] = c.to_le_bytes().map(|v| f32::from(v) / 255.0);
-    let [r, g, b, a] = crate::color_in([r, g, b, a], true);
-    let encode = |v: f32| {
-        let v = v.clamp(0.0, 1.0);
-        let e = if v <= 0.003_130_8 {
-            v * 12.92
-        } else {
-            1.055 * v.powf(1.0 / 2.4) - 0.055
-        };
-        (e * 255.0).round() as u8
-    };
-    u32::from_le_bytes([encode(r), encode(g), encode(b), (a * 255.0).round() as u8])
 }

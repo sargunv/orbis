@@ -272,43 +272,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         layers,
         warnings: Vec::new(),
         previews: cx.previews,
-        color_space: doc
-            .get("metadata")
-            .map_or(ColorSpace::Srgb, |m| parse_color_space(cx, m)),
     })
-}
-
-/// The metadata key of the colour space colours mix in.
-const COLOR_SPACE: &str = "dev.sargunv.orbis:color-space";
-
-/// The colour space the root `metadata` names, behind its preview: GL JS,
-/// MapLibre Native and validators ignore metadata, so a style written for
-/// it still loads everywhere.
-fn parse_color_space(cx: &mut Cx, metadata: &Json) -> ColorSpace {
-    let Some(json) = metadata.get(COLOR_SPACE) else {
-        return ColorSpace::Srgb;
-    };
-    let path = format!("metadata.{COLOR_SPACE}");
-    if !cx.preview(
-        Preview::ColorSpace,
-        &path,
-        json.span,
-        format!("\"{COLOR_SPACE}\""),
-    ) {
-        return ColorSpace::Srgb;
-    }
-    match json.as_str() {
-        Some("srgb") => ColorSpace::Srgb,
-        Some("linear") => ColorSpace::Linear,
-        _ => {
-            cx.warn(
-                path,
-                json.span,
-                format!("expected one of [\"srgb\", \"linear\"], {json} found; \"srgb\" used"),
-            );
-            ColorSpace::Srgb
-        }
-    }
 }
 
 /// The root `state`: `{"name": {"default": value}}`.

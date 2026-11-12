@@ -1766,9 +1766,6 @@ pub(crate) fn paint(
         halo_blur: 0.0,
         table_mask: 0,
         curves: [orb_render::Curve::STEP; 5],
-        night_color: [0.0; 4],
-        night_halo_color: [0.0; 4],
-        daylight: node.daylight.as_ref().map_or([None; 2], |d| d.curves()),
         row_words: plan.row_words(node) as u32,
         // Per feature (beyond the spec), the farthest any feature's goes
         // follows the slots' maxima.
@@ -1817,18 +1814,14 @@ pub(crate) fn paint(
             || (!is_text && l.get(orb_style::ICON_SIZE).constant() != Some(1.0)),
     };
     for (slot, property) in plan.paint_properties(node).iter().enumerate() {
-        // A colour's night stop shares its day stop's zoom curve, and so
-        // its slot's: the one of them per feature or in the state table
-        // reads it, and when both do, theirs is the colour's.
-        let curve = if slot > 4 { slot - 4 } else { slot };
         if property.per_feature() {
             paint.table_mask |= 1 << slot;
-            paint.curves[curve] = crate::paint::curve(property, zoom);
+            paint.curves[slot] = crate::paint::curve(property, zoom);
         }
         // A state lookup's constant is its value with no state.
         let lookup = property.is_state_lookup();
         if lookup {
-            paint.curves[curve] = crate::paint::curve(property, zoom);
+            paint.curves[slot] = crate::paint::curve(property, zoom);
         }
         let number = |p: &crate::style::PaintProperty<'_>| match p {
             _ if lookup => p.default_number(zoom),
@@ -1850,9 +1843,7 @@ pub(crate) fn paint(
                 let max = maxima.get(3).copied().unwrap_or(0.0);
                 paint.halo_width = number(property).max(property.row_maximum(zoom, max));
             }
-            4 => paint.halo_blur = number(property),
-            5 => paint.night_color = color(property),
-            _ => paint.night_halo_color = color(property),
+            _ => paint.halo_blur = number(property),
         }
     }
     // Culling reach: a long label, with its offsets and halo, at the
@@ -1993,7 +1984,6 @@ mod tests {
             let camera = orb_style::CameraInputs {
                 pitch: 0.0,
                 bearing: 0.0,
-                meters_per_pixel: f64::NAN,
             };
             let params = layer_params(
                 self.worker.plan(),

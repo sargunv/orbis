@@ -79,15 +79,8 @@ fn raster() {
     check_scenes(&["raster"]);
 }
 
-/// Liberty's 3D buildings, and multisampled with shadows and ambient
-/// occlusion (previews).
+/// Liberty's 3D buildings, and multisampled under a light of their own.
 #[test]
 fn extrusions() {
     check_scenes(&["extrusions", "extrusions-lit"]);
-}
-
-/// Colours mixed in linear light (`dev.sargunv.orbis:color-space`).
-#[test]
-fn linear_light() {
-    check_scenes(&["linear"]);
 }

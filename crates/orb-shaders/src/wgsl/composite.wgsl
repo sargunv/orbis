@@ -47,10 +47,3 @@ fn fs_replace(in: CompositeOut) -> @location(0) vec4<f32> {
     let s = textureLoad(source, texel, 0) * composite.x;
     return blend_over(u32(composite.y), s, textureLoad(aux, texel, 0));
 }
-
-// The linear-light map, drawn into an sRGB target of the renderer's own,
-// into the host's target: encoded, premultiplied.
-@fragment
-fn fs_encode(in: CompositeOut) -> @location(0) vec4<f32> {
-    return premultiplied_to_srgb(textureLoad(source, vec2<i32>(in.position.xy), 0));
-}

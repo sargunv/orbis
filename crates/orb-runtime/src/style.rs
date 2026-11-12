@@ -13,7 +13,6 @@ use orb_layout::Family;
 use orb_shaders::layout;
 use orb_style::{Color, LayerType, PropertyRef, SourceKind, Style, Value};
 
-use crate::daylight::LabelDaylight;
 use crate::elevation::ElevationColor;
 
 /// Node keys a layer has: a fill and its outline, or a symbol layer's
@@ -49,10 +48,6 @@ pub(crate) struct StylePlan {
     /// The layers whose paint reads the camera beyond its zoom
     /// ([`crate::paint::at_camera`]).
     pub(crate) camera_layers: Vec<usize>,
-    /// Whether any of them reads `["dev.sargunv.orbis:meters-per-pixel"]`, which a pan
-    /// changes: paint that reads only the pitch and bearing isn't written
-    /// again as the map pans.
-    pub(crate) reads_resolution: bool,
     /// By layer, the first layer before it that lays out alike
     /// ([`orb_style::Layer::layout_group`]): the group's leader.
     pub(crate) layout_leaders: Vec<Option<usize>>,
@@ -86,8 +81,6 @@ pub(crate) struct NodePlan {
     pub(crate) key: u32,
     /// An extrusion's colour over the elevation, drawn per fragment.
     pub(crate) elevation: Option<Arc<ElevationColor>>,
-    /// A symbol node's colours over the daylight, drawn per label.
-    pub(crate) daylight: Option<Arc<LabelDaylight>>,
 }
 
 /// A paint property as the renderer packs it.
@@ -271,7 +264,6 @@ impl StylePlan {
                         source: usize::MAX,
                         key,
                         elevation: None,
-                        daylight: None,
                     });
                     continue;
                 }
@@ -348,20 +340,12 @@ impl StylePlan {
                 }
                 None => None,
             };
-            let mut daylight = |part| {
-                let (daylight, why) = LabelDaylight::of(layer, part);
-                for why in why {
-                    warn(index, &why);
-                }
-                daylight.map(Arc::new)
-            };
             nodes.push(NodePlan {
                 layer: index,
                 family,
                 source,
                 key,
                 elevation,
-                daylight: daylight(orb_style::ICON_PART),
             });
             // A symbol layer has a node for its icons and one for its text,
             // which the icon node draws with its own: all its icons, then
@@ -374,7 +358,6 @@ impl StylePlan {
                     source,
                     key: key + 1,
                     elevation: None,
-                    daylight: daylight(orb_style::TEXT_PART),
                 });
             }
             // GL JS antialiases fills by drawing their outlines after them:
@@ -389,7 +372,6 @@ impl StylePlan {
                     source,
                     key: key + 1,
                     elevation: None,
-                    daylight: None,
                 });
             }
         }
@@ -412,12 +394,6 @@ impl StylePlan {
             })
             .map(|(i, _)| i)
             .collect();
-        let reads_resolution = camera_layers.iter().any(|&i| {
-            (style.layers[i].slots()).any(|(_, s)| {
-                s.as_expression()
-                    .is_some_and(|e| e.reads_meters_per_pixel())
-            })
-        });
         let mut groups = std::collections::HashMap::new();
         let layout_leaders = (style.layers.iter().enumerate())
             .map(|(i, l)| {
@@ -434,7 +410,6 @@ impl StylePlan {
             sources,
             warnings,
             camera_layers,
-            reads_resolution,
             layout_leaders,
         }
     }
@@ -508,10 +483,7 @@ impl StylePlan {
             }
             Family::Circle => layout::CIRCLE_ROW_WORDS,
             Family::Heatmap => layout::HEATMAP_ROW_WORDS,
-            Family::SymbolIcon | Family::SymbolText => {
-                let daylight = node.daylight.is_some();
-                layout::SYMBOL_ROW_WORDS + usize::from(daylight) * layout::SYMBOL_DAYLIGHT_ROW_WORDS
-            }
+            Family::SymbolIcon | Family::SymbolText => layout::SYMBOL_ROW_WORDS,
             image => unreachable!("{image:?} nodes have no property rows"),
         }
     }
@@ -649,25 +621,12 @@ impl StylePlan {
                     Family::SymbolIcon => ICON_PART,
                     _ => TEXT_PART,
                 };
-                // Over the daylight, the colours' day stops, then their
-                // night stops ([`crate::daylight`]).
-                let Some(d) = &node.daylight else {
-                    return vec![
-                        N(l.get(part.opacity)),
-                        C(l.get(part.color)),
-                        C(l.get(part.halo_color)),
-                        N(l.get(part.halo_width)),
-                        N(l.get(part.halo_blur)),
-                    ];
-                };
                 vec![
                     N(l.get(part.opacity)),
-                    C(d.day(l, 0, part.color)),
-                    C(d.day(l, 1, part.halo_color)),
+                    C(l.get(part.color)),
+                    C(l.get(part.halo_color)),
                     N(l.get(part.halo_width)),
                     N(l.get(part.halo_blur)),
-                    C(d.night(l, 0, part.color)),
-                    C(d.night(l, 1, part.halo_color)),
                 ]
             }
             // Image families have no property rows.

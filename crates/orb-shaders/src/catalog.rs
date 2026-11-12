@@ -6,7 +6,6 @@ const PROJECT: &str = wgsl!("project");
 /// scene's tables.
 const DRAW: &str = concat!(
     wgsl!("builtins"),
-    wgsl!("color"),
     wgsl!("bezier"),
     wgsl!("dem"),
     wgsl!("draw"),
@@ -16,7 +15,6 @@ const DRAW: &str = concat!(
 const PATTERN: &str = wgsl!("pattern");
 const EXTRUSION: &str = wgsl!("extrusion");
 const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
-const EXTRUSION_GROUND: &str = wgsl!("extrusion_ground");
 
 const FILL: &str = wgsl!("fill");
 const LINE: &str = wgsl!("line");
@@ -36,12 +34,12 @@ const SYMBOL_POINT: &str = wgsl!("symbol_point");
 const SYMBOL_LINE: &str = wgsl!("symbol_line");
 const HEATMAP: &str = wgsl!("heatmap");
 const BLEND: &str = wgsl!("blend");
-const COMPOSITE: &str = concat!(wgsl!("color"), wgsl!("blend"), wgsl!("composite"));
+const COMPOSITE: &str = concat!(wgsl!("blend"), wgsl!("composite"));
 pub(crate) const CULL: &str = wgsl!("cull");
 const IMAGE: &str = wgsl!("image");
 const DEM: &str = wgsl!("dem");
 /// The atmosphere's sky and fog.
-const ATMOSPHERE: &str = concat!(wgsl!("color"), wgsl!("atmosphere"));
+const ATMOSPHERE: &str = wgsl!("atmosphere");
 /// v8's `light` on extrusions.
 const LIGHTING: &str = wgsl!("lighting");
 const RASTER: &str = wgsl!("raster");
@@ -93,23 +91,6 @@ pub const TERRAIN_SHADER: Shader = Shader {
     parts: &[TYPES, DEM, ATMOSPHERE, PROJECT, TERRAIN],
     vertex: "vs_terrain",
     fragment: "fs_terrain",
-    compute: "",
-};
-
-/// What an extrusion layer darkens on terrain: the terrain's mesh again,
-/// reading the ground mask (`fs_terrain_decal`).
-pub const TERRAIN_DECAL_SHADER: Shader = Shader {
-    label: "terrain decal",
-    parts: &[
-        TYPES,
-        DEM,
-        ATMOSPHERE,
-        PROJECT,
-        TERRAIN,
-        wgsl!("terrain_decal"),
-    ],
-    vertex: "vs_terrain",
-    fragment: "fs_terrain_decal",
     compute: "",
 };
 
@@ -167,26 +148,10 @@ pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
     compute: "",
 };
 
-/// A linear-light map, drawn into an sRGB target, encoded into the host's.
-pub const COMPOSITE_ENCODE_SHADER: Shader = Shader {
-    label: "composite encode",
-    parts: &[COMPOSITE],
-    vertex: "vs_composite",
-    fragment: "fs_encode",
-    compute: "",
-};
-
 /// The globe atmosphere's scattering over the map.
 pub const SCATTER_SHADER: Shader = Shader {
     label: "atmosphere scattering",
     fragment: "fs_scatter",
-    ..SKY_SHADER
-};
-
-/// Ground lighting over the map beneath its labels.
-pub const GROUND_LIGHT_SHADER: Shader = Shader {
-    label: "ground lighting",
-    fragment: "fs_ground",
     ..SKY_SHADER
 };
 
@@ -368,12 +333,7 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
 /// Mip levels over regions of array layers: drape slots, raster pages.
 pub const DOWNSAMPLE_SHADER: Shader = Shader {
     label: "downsample",
-    parts: &[
-        wgsl!("color"),
-        FETCH_REGIONS,
-        DOWNSAMPLE,
-        wgsl!("downsample_compute"),
-    ],
+    parts: &[FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_compute")],
     vertex: "",
     fragment: "",
     compute: "downsample",
@@ -383,12 +343,7 @@ pub const DOWNSAMPLE_SHADER: Shader = Shader {
 /// their mip levels, in the downsampler's bindings.
 pub const EXTEND_SHADER: Shader = Shader {
     label: "extend",
-    parts: &[
-        wgsl!("color"),
-        FETCH_REGIONS,
-        DOWNSAMPLE,
-        wgsl!("downsample_compute"),
-    ],
+    parts: &[FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_compute")],
     vertex: "",
     fragment: "",
     compute: "extend",
@@ -398,12 +353,7 @@ pub const EXTEND_SHADER: Shader = Shader {
 /// region into a view of the level's layer.
 pub const MIP_DRAW_SHADER: Shader = Shader {
     label: "mip draw",
-    parts: &[
-        wgsl!("color"),
-        FETCH_REGIONS,
-        DOWNSAMPLE,
-        wgsl!("downsample_draw"),
-    ],
+    parts: &[FETCH_REGIONS, DOWNSAMPLE, wgsl!("downsample_draw")],
     vertex: "vs_mip",
     fragment: "fs_mip",
     compute: "",
@@ -481,33 +431,19 @@ pub const EXTRUSION_PLANES_SHADER: Shader = Shader {
     fragment: "",
     ..EXTRUSION_SHADER
 };
-/// What extrusions darken on the ground beneath them, from their own
-/// vertices: shadows (`vs_extrusion_shadow`) and the walls' ground
-/// occlusion (`vs_extrusion_occlusion`).
-pub const EXTRUSION_GROUND_SHADER: Shader = Shader {
-    label: "extrusion ground",
-    parts: &[TYPES, DRAW, PATTERN, LIGHTING, EXTRUSION, EXTRUSION_GROUND],
-    vertex: "vs_extrusion_shadow",
-    fragment: "fs_extrusion_ground",
-    compute: "",
-};
 /// Every shader: what the build script reflects layouts from, and the
 /// tests validate.
 pub const SHADERS: &[Shader] = &[
     SKY_SHADER,
     SCATTER_SHADER,
-    GROUND_LIGHT_SHADER,
     COMPOSITE_OVER_SHADER,
     COMPOSITE_REPLACE_SHADER,
-    COMPOSITE_ENCODE_SHADER,
     TERRAIN_SHADER,
     TERRAIN_SHADE_SHADER,
-    TERRAIN_DECAL_SHADER,
     DRAPE_SHADER,
     EXTRUSION_SHADER,
     EXTRUSION_CUT_SHADER,
     EXTRUSION_PLANES_SHADER,
-    EXTRUSION_GROUND_SHADER,
     FILL_SHADER,
     FILL_OUTLINE_SHADER,
     LINE_SHADER,

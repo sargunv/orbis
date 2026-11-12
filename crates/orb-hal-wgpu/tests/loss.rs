@@ -29,7 +29,6 @@ fn a_frame_goes_on_after_a_loss_in_it() {
         usage: TextureUsages::RENDER_ATTACHMENT,
         sample_count: 1,
         mip_levels: 1,
-        view_formats: &[],
     });
     gpu.submit(&[Pass::Render(RenderPass {
         label: "after the loss",

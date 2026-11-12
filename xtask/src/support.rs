@@ -299,11 +299,8 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          azimuth clockwise from the top of the viewport (`viewport` anchor) or\n\
          from north (`map`), its polar angle from the zenith. GL JS's and\n\
          MapLibre Native's extrusions agree on that direction. Orbis lights\n\
-         the extrusions and the ground under\n\
-         `dev.sargunv.orbis:ground-lighting` by it. A viewport light stands\n\
-         over the camera's target; on a globe a map light stands as if over\n\
-         0°, 0° for the ground, while extrusions take either anchor's light over the\n\
-         target, as on a flat map. On a globe that light is one direction\n\
+         the extrusions by it, either anchor's light standing over the\n\
+         camera's target, as on a flat map. On a globe that light is one direction\n\
          across the sphere: a face far from the target is lit by how far it\n\
          turns to it there, as a wall at the limb facing it is lit.\n\n\
          GL JS's globe extrusions turn their normals and the light onto the\n\
@@ -319,8 +316,7 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          the globe, and the haze rims its far side, while the extrusions are\n\
          lit from the front. Native has no globe, sky or atmosphere, so\n\
          GL JS's is the atmosphere's only reference and its fixtures hold it:\n\
-         Orbis's scattering takes GL JS's sun, turning to the ground's only\n\
-         as a preview moves the light (ground lighting, or a dated sun).\n",
+         Orbis's scattering takes GL JS's sun.\n",
     );
 
     out.push_str(
@@ -342,20 +338,17 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
 
     out.push_str(
         "\n## Properties\n\n\
-         Inputs are `zoom`; `camera`, the camera's pitch and bearing (and with\n\
-         `dev.sargunv.orbis:meters-per-pixel` its ground resolution), in values\n\
-         the same for every\n\
-         feature; `data`, the feature's properties, id and geometry;\n\
-         `state`, its feature state; and with `dev.sargunv.orbis:daylight`\n\
-         `daylight`, how lit the ground is where a label stands.\n\
+         Inputs are `zoom`; `camera`, the camera's pitch and bearing, in\n\
+         values the same for every feature; `data`, the feature's\n\
+         properties, id and geometry; and `state`, its feature state.\n\
          `camera × data` is the camera and data in one number:\n\
          `clamp(feature × factor, min, max)`, where the feature part reads\n\
          data, state and the zoom but no camera, and the factor and bounds\n\
          read the camera and the zoom but no data. Property rows hold each\n\
          feature's part, laid out with its tile, and the camera's part\n\
-         scales it every frame, so `[\"/\", [\"get\", \"width_m\"],\n\
-         [\"dev.sargunv.orbis:meters-per-pixel\"]]` draws each feature's\n\
-         metres as pixels at every zoom. Parts combine through `*` and `/`;\n\
+         scales it every frame, so `[\"*\", [\"get\", \"width\"],\n\
+         [\"/\", [\"pitch\"], 60]]` widens each feature's line as the map\n\
+         tilts. Parts combine through `*` and `/`;\n\
          a `step`, `interpolate`, `match` or `case` the camera chooses by\n\
          takes outputs that are constant multiples of one feature part (or\n\
          0), one the feature chooses by outputs sharing one camera part;\n\
@@ -406,9 +399,6 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
             let mut orbis = inputs(prop.spec_inputs());
             if !prop.extended.is_empty() {
                 let _ = write!(orbis, "; {} accepted (not portable)", inputs(prop.extended));
-            }
-            if prop.daylight {
-                let _ = write!(orbis, "; `daylight` with preview `{}`", Preview::Daylight);
             }
             // A proposal's property isn't in the spec yet.
             let spec_inputs = match prop.preview {

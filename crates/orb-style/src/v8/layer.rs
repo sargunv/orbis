@@ -144,9 +144,8 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
                 .flatten();
             match extended {
                 Some(parsed) => {
-                    // New syntax warns as its preview's instead.
                     let beyond = reads(&parsed).minus(prop.spec_inputs());
-                    if !parsed.reads_meters_per_pixel() && !beyond.is_empty() {
+                    if !beyond.is_empty() {
                         cx.not_portable(path, json.span, prop, beyond);
                     }
                     Ok(parsed)
@@ -154,25 +153,6 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
                 None => Err(errors),
             }
         });
-    // style-spec#1881's ground resolution is new syntax: a preview.
-    let parsed = match parsed {
-        Ok(p) if p.reads_meters_per_pixel() => {
-            let what = "[\"dev.sargunv.orbis:meters-per-pixel\"]";
-            if !cx.preview(Preview::MetersPerPixel, path, json.span, what) {
-                return Slot::constant(Value::Null, false);
-            }
-            Ok(p)
-        }
-        // Orbis's daylight too.
-        Ok(p) if p.reads_daylight() => {
-            let what = "[\"dev.sargunv.orbis:daylight\"]";
-            if !cx.preview(Preview::Daylight, path, json.span, what) {
-                return Slot::constant(Value::Null, false);
-            }
-            Ok(p)
-        }
-        parsed => parsed,
-    };
     match parsed {
         Err(errors) => {
             cx.errors_at(path, errors);

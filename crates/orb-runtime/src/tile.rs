@@ -309,15 +309,13 @@ fn features(
 #[derive(Debug, PartialEq)]
 enum Shape<'f> {
     /// `bend` cuts fills for a tile drawn through a curved warp or on a
-    /// globe, and extends them to the poles. `rounding` rounds corners by
-    /// that many units of an 8192 grid (style-spec#1047), 0 for none.
+    /// globe, and extends them to the poles.
     Fill {
         bend: Option<orb_layout::fill::Bend>,
-        rounding: f64,
     },
-    FillOutline {
-        rounding: f64,
-    },
+    FillOutline,
+    /// `rounding` rounds corners by that many units of an 8192 grid
+    /// (`fill-extrusion-rounded-corner-distance`), 0 for none.
     Extrusion {
         rounding: f64,
         bend: Option<orb_layout::fill::Bend>,
@@ -346,11 +344,6 @@ impl PartialEq for ByAddress<'_> {
     }
 }
 
-/// Features `0..n` of a layer made of `features`' slots.
-fn slots(features: &[u32]) -> Vec<u32> {
-    (0..features.len() as u32).collect()
-}
-
 impl<'f> Shape<'f> {
     fn of(
         layer: &Layer,
@@ -363,14 +356,10 @@ impl<'f> Shape<'f> {
     ) -> Self {
         let l = style_layer;
         match l.ty {
-            LayerType::Fill => {
-                let rounding = f64::from(l.get(orb_style::FILL_ROUNDED_CORNER).evaluate(zoom))
-                    * units_per_metre;
-                match family {
-                    Family::FillOutline => Self::FillOutline { rounding },
-                    _ => Self::Fill { bend, rounding },
-                }
-            }
+            LayerType::Fill => match family {
+                Family::FillOutline => Self::FillOutline,
+                _ => Self::Fill { bend },
+            },
             LayerType::FillExtrusion => Self::Extrusion {
                 rounding: f64::from(l.get(orb_style::EXTRUSION_ROUNDED_CORNER).evaluate(zoom))
                     * units_per_metre,
@@ -415,25 +404,11 @@ impl<'f> Shape<'f> {
         }
     }
 
-    /// Whether it lays fills out in an 8192 grid, as their rounded corners
-    /// need, rather than the tile's own.
-    fn rounds_fills(&self) -> bool {
-        matches!(self, Self::Fill { rounding, .. } | Self::FillOutline { rounding } if *rounding > 0.0)
-    }
-
     /// The geometry of `features` of `layer` in this shape.
     fn layout(&self, layer: &Layer, features: &[u32]) -> Mesh {
         match self {
-            Self::Fill { bend, rounding } if *rounding > 0.0 => {
-                let rounded = orb_layout::rounded_layer(layer, features, 8192, *rounding);
-                fill::layout_subdivided(&rounded, &slots(features), *bend)
-            }
-            Self::Fill { bend, .. } => fill::layout_subdivided(layer, features, *bend),
-            Self::FillOutline { rounding } if *rounding > 0.0 => {
-                let rounded = orb_layout::rounded_layer(layer, features, 8192, *rounding);
-                fill::outline(&rounded, &slots(features))
-            }
-            Self::FillOutline { .. } => fill::outline(layer, features),
+            Self::Fill { bend } => fill::layout_subdivided(layer, features, *bend),
+            Self::FillOutline => fill::outline(layer, features),
             Self::Extrusion { rounding, bend } => {
                 extrusion::layout_in_extent(layer, features, 8192, *rounding, *bend)
             }
@@ -807,8 +782,6 @@ pub(crate) fn build(
         };
         for features in split.groups {
             let row_words = plan.row_words(node);
-            // Rounded fills lay out in an 8192 grid, as lines do.
-            let mut fine_grid = false;
             let mesh = match node.family {
                 _ if select.rows_only => Mesh::default(),
                 // Symbol geometry is the layer's bucket; its nodes carry rows.
@@ -836,7 +809,6 @@ pub(crate) fn build(
                         bend,
                         units_per_metre,
                     );
-                    fine_grid = shape.rounds_fills();
                     // A layer of pieces is this node's alone.
                     let mesh = match origin {
                         Some(_) => shape.layout(layer, &features),
@@ -918,14 +890,10 @@ pub(crate) fn build(
             build.meshes.push(NodeMesh {
                 hits,
                 node: node.key,
-                extent: if fine_grid
-                    || matches!(
-                        node.family,
-                        Family::Line
-                            | Family::FillExtrusion
-                            | Family::SymbolIcon
-                            | Family::SymbolText
-                    ) {
+                extent: if matches!(
+                    node.family,
+                    Family::Line | Family::FillExtrusion | Family::SymbolIcon | Family::SymbolText
+                ) {
                     8192
                 } else {
                     layer.extent()

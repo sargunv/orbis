@@ -16,16 +16,11 @@
 // (`downsample_draw.wgsl`), one body for either.
 
 @group(0) @binding(0) var source: texture_2d_array<f32>;
-// The level being written, and 1 in y when texels are linear light
-// sRGB-encoded (a linear-light drape), which average decoded.
+// The level being written.
 @group(0) @binding(3) var<uniform> level: vec4<u32>;
 
 fn downsample_load(p: vec2<i32>, layer: u32) -> vec4<f32> {
-    let texel = textureLoad(source, p, layer, 0);
-    if level.y == 0u {
-        return texel;
-    }
-    return vec4<f32>(srgb_to_linear(texel.rgb), texel.a);
+    return textureLoad(source, p, layer, 0);
 }
 
 // Texel `p` of the level being written, in `layer`: the mean of the four
@@ -33,15 +28,11 @@ fn downsample_load(p: vec2<i32>, layer: u32) -> vec4<f32> {
 fn mip_texel(p: vec2<u32>, layer: u32) -> vec4<f32> {
     let last = vec2<i32>(textureDimensions(source)) - 1;
     let s = vec2<i32>(p) * 2;
-    var mean = 0.25 * (
+    return 0.25 * (
         downsample_load(min(s, last), layer)
         + downsample_load(min(s + vec2<i32>(1, 0), last), layer)
         + downsample_load(min(s + vec2<i32>(0, 1), last), layer)
         + downsample_load(min(s + vec2<i32>(1, 1), last), layer));
-    if level.y != 0u {
-        mean = vec4<f32>(linear_to_srgb(mean.rgb), mean.a);
-    }
-    return mean;
 }
 
 // Texel `p` of an extended region's level 0: its own inside the tile's

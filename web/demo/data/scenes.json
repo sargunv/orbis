@@ -35,16 +35,6 @@
               0.1,
               8,
               0
-            ],
-            "dev.sargunv.orbis:backdrop-color": "#070b19",
-            "dev.sargunv.orbis:star-opacity": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              2,
-              1,
-              6,
-              0
             ]
           },
           "restyle": "globe",

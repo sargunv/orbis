@@ -8,7 +8,7 @@
 
 use crate::release::Release;
 use orb_hal::*;
-use orb_shaders::{COMPOSITE_ENCODE_SHADER, COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER};
+use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER};
 
 use crate::pipeline::Draw;
 use crate::{Blend, TargetFormat};
@@ -45,7 +45,6 @@ impl Target {
                 usage,
                 sample_count: samples,
                 mip_levels: 1,
-                view_formats: &[],
             })
         };
         let colors = formats
@@ -249,7 +248,6 @@ impl Composites {
             usage: TextureUsages::TEXTURE_BINDING,
             sample_count: 1,
             mip_levels: 1,
-            view_formats: &[],
         });
         Self {
             layout,
@@ -406,120 +404,5 @@ impl crate::release::Release for Composites {
             self.blank,
         )
             .release(gpu);
-    }
-}
-
-/// A linear-light map's own target: the renderer draws into an sRGB texture
-/// in its format, which blends in linear light, and encodes it into the
-/// host's target at the end of the frame, as hosts' targets aren't sRGB.
-#[derive(Debug)]
-pub(crate) struct LinearScene {
-    /// The encode, drawing into the host's format.
-    pipeline: RenderPipelineId,
-    uniform: BufferId,
-    /// The texture at its size, and the encode's group over it.
-    target: Option<(TextureId, [u32; 2], BindGroupId)>,
-}
-
-impl LinearScene {
-    /// The encode into targets of `host`, over `composites`' layout.
-    pub(crate) fn new(gpu: &mut dyn Gpu, composites: &Composites, host: TargetFormat) -> Self {
-        let pipeline =
-            Draw::new(&COMPOSITE_ENCODE_SHADER, &[composites.layout], host, None).make(gpu);
-        let uniform = gpu.create_buffer(&BufferDesc {
-            label: "linear scene",
-            size: 16,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        gpu.write_buffer(uniform, 0, bytemuck::cast_slice(&[1.0f32, 0.0, 0.0, 0.0]));
-        Self {
-            pipeline,
-            uniform,
-            target: None,
-        }
-    }
-
-    /// The texture a frame of `size` texels draws into, in `composites`'
-    /// format, made again at another size.
-    pub(crate) fn texture(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        composites: &Composites,
-        size: [u32; 2],
-    ) -> TextureId {
-        if let Some((texture, made, _)) = self.target
-            && made == size
-        {
-            return texture;
-        }
-        if let Some((texture, _, group)) = self.target.take() {
-            (group, texture).release(gpu);
-        }
-        let texture = gpu.create_texture(&TextureDesc {
-            label: "linear scene",
-            width: size[0],
-            height: size[1],
-            array_layers: 1,
-            dimension: TextureViewDimension::D2,
-            format: composites.target.color,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            sample_count: 1,
-            mip_levels: 1,
-            view_formats: &[],
-        });
-        use TextureViewDimension::D2;
-        let group = gpu.create_bind_group(&BindGroupDesc {
-            label: "linear scene",
-            layout: composites.layout,
-            entries: &[
-                BindGroupEntry::buffer(0, self.uniform),
-                BindGroupEntry::texture(1, texture, D2),
-                BindGroupEntry::texture(2, composites.blank, D2),
-                BindGroupEntry::sampler(3, composites.linear),
-            ],
-        });
-        self.target = Some((texture, size, group));
-        texture
-    }
-
-    pub(crate) fn pipeline(&self) -> PipelineId {
-        self.pipeline.into()
-    }
-
-    /// The pass encoding the frame's texture into `host`, once the encode
-    /// compiled; until then `host` is cleared to `clear`, encoded.
-    pub(crate) fn pass(&self, gpu: &mut dyn Gpu, host: TextureId, clear: [f64; 4]) -> Pass {
-        let ready = gpu.pipeline_ready(self.pipeline.into());
-        let commands = match self.target {
-            Some((_, _, group)) if ready => vec![
-                RenderCommand::SetPipeline(self.pipeline),
-                RenderCommand::SetBindGroup { index: 0, group },
-                RenderCommand::Draw {
-                    vertices: 0..3,
-                    instances: 0..1,
-                },
-            ],
-            _ => Vec::new(),
-        };
-        Pass::Render(RenderPass {
-            label: "encode",
-            colors: vec![ColorAttachment {
-                target: host,
-                resolve: None,
-                store: StoreOp::Store,
-                load: LoadOp::Clear(clear),
-            }],
-            depth: None,
-            commands,
-        })
-    }
-}
-
-impl crate::release::Release for LinearScene {
-    fn release(self, gpu: &mut dyn Gpu) {
-        if let Some((texture, _, group)) = self.target {
-            (group, texture).release(gpu);
-        }
-        (self.pipeline, self.uniform).release(gpu);
     }
 }

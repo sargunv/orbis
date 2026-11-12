@@ -45,7 +45,6 @@ pub struct QueryCamera {
     pub zoom: f64,
     pub pitch: f64,
     pub bearing: f64,
-    pub meters_per_pixel: f64,
 }
 
 /// A query to a tile's owner worker: the tile, as it was loaded, and what
@@ -168,7 +167,6 @@ impl TileWorker {
                             zoom: camera.zoom,
                             pitch: camera.pitch,
                             bearing: camera.bearing,
-                            meters_per_pixel: camera.meters_per_pixel,
                             feature_state: &state,
                             available_images: icons.names(),
                             ..Default::default()

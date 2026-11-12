@@ -484,7 +484,6 @@ fn page_texture(gpu: &mut dyn Gpu, size: u32, pages: u32) -> orb_hal::TextureId 
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
         sample_count: 1,
         mip_levels: 1,
-        view_formats: &[],
     })
 }
 

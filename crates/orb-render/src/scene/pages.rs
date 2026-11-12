@@ -296,6 +296,5 @@ fn desc(desc: &PageTexture, layers: u32) -> TextureDesc<'static> {
         usage: desc.usage | TextureUsages::COPY_SRC | TextureUsages::COPY_DST,
         sample_count: 1,
         mip_levels: desc.mip_levels,
-        view_formats: &[],
     }
 }

@@ -30,30 +30,6 @@ const ALPS = [7.7491, 46.0207];
 const ease = (f) => f * f * (3 - 2 * f);
 const lerp = (a, b, f) => a + (b - a) * f;
 
-/** Liberty's buildings lit as the demo's Globe entry lights its own, ground and night side included (orb-bench's GLOBE_LIT). */
-const lit = (tx) =>
-  tx
-    .setLight({
-      anchor: "viewport",
-      position: [1.15, 210, 60],
-      intensity: 0.35,
-      "dev.sargunv.orbis:shadow-intensity": 0.5,
-      "dev.sargunv.orbis:ground-lighting": 1,
-      "dev.sargunv.orbis:ambient-color": "#8d9fd6",
-      "dev.sargunv.orbis:ambient-intensity": 0.5,
-      "dev.sargunv.orbis:twilight": 14,
-    })
-    .setPaintProperty(
-      "building-3d",
-      "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
-      0.6,
-    )
-    .setPaintProperty(
-      "building-3d",
-      "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity",
-      0.5,
-    );
-
 /** 6 s from the whole globe down to Midtown at z16, tilting to pitch 60 as the buildings come in, then 2 s turning. */
 function globeManhattan(f) {
   const zoomIn = Math.min(1, f / 0.75),
@@ -89,30 +65,6 @@ const SCENARIOS = [
         pitch: 60,
       };
     },
-  },
-  {
-    name: "buildings, shadows and AO: zoom z12 → z16 at pitch 60, then pan, Manhattan",
-    style: "liberty",
-    frames: 600,
-    edit: (tx) =>
-      tx
-        .setLight({
-          anchor: "viewport",
-          position: [1.15, 210, 30],
-          intensity: 0.5,
-          "dev.sargunv.orbis:shadow-intensity": 0.35,
-        })
-        .setPaintProperty(
-          "building-3d",
-          "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
-          0.5,
-        )
-        .setPaintProperty(
-          "building-3d",
-          "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity",
-          0.4,
-        ),
-    camera: (f) => SCENARIOS[0].camera(f),
   },
   {
     name: "terrain: fast turns at z11.6, pitch 80, Alps",
@@ -154,14 +106,6 @@ const SCENARIOS = [
     name: "globe, buildings: zoom z1.5 → z16 onto Manhattan",
     style: "liberty",
     globe: true,
-    frames: 480,
-    camera: globeManhattan,
-  },
-  {
-    name: "globe, buildings, shadows and AO: zoom z1.5 → z16 onto Manhattan",
-    style: "liberty",
-    globe: true,
-    edit: lit,
     frames: 480,
     camera: globeManhattan,
   },
@@ -245,18 +189,13 @@ async function runOrbis(container, scenario, style, legs, show) {
     style,
     camera: scenario.camera(0),
     interactive: false,
-    // The lit paths' shadows and ground lighting are previews, as in orb-bench.
-    previews: "all",
     ...(orbisBackend && { backend: orbisBackend }),
   });
   try {
     await idle(() => map.once("idle"), scenario.name);
-    if (scenario.globe || scenario.edit) {
+    if (scenario.globe) {
       const loaded = idle(() => map.once("idle"), scenario.name);
-      map.edit((tx) => {
-        if (scenario.globe) tx.setProjection({ type: "globe" });
-        scenario.edit?.(tx);
-      });
+      map.edit((tx) => tx.setProjection({ type: "globe" }));
       await loaded;
     }
     await rest();
@@ -677,12 +616,7 @@ export async function runStutter({
   const results = Object.fromEntries(keys.map((key) => [key, []]));
   const flight = alpsFlight.legs.slice(0, legs ?? alpsFlight.legs.length);
   try {
-    // GL JS has no shadows or ambient occlusion: the paths that light the buildings are Orbis's alone.
-    const chosen = SCENARIOS.filter(
-      (s) =>
-        (!filter || s.name.includes(filter)) &&
-        !(s.edit && keys.includes("gl")),
-    );
+    const chosen = SCENARIOS.filter((s) => !filter || s.name.includes(filter));
     for (const scenario of chosen) {
       const style = scenario.style === "alps" ? alps : liberty;
       if (keys.length > 1) {

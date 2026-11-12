@@ -251,7 +251,7 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     let with_perspective = length(projected_extrude / out.position.w * units_to_px);
     out.gamma_scale = length(dist) / max(with_perspective, 1e-6);
 
-    out.color = color_in(color) * opacity;
+    out.color = color * opacity;
     out.opacity = opacity;
     out.linesofar = f32(vertex_at(v.vertex + 2u) >> 2u) * 2.0 * tile.extent / 8192.0;
     out.floorwidth = node.pattern.floor_width;
@@ -314,7 +314,7 @@ fn fs_line_styled(in: StyledLineOut) -> @location(0) vec4<f32> {
         let y = in.normal.y * 0.5 + 0.5;
         let ca = pattern_sample(a, vec2<f32>(x_a, y), 1.0);
         let cb = pattern_sample(b, vec2<f32>(x_b, y), 1.0);
-        return color_in(mix(ca, cb, node.pattern.fade)) * alpha * in.opacity;
+        return mix(ca, cb, node.pattern.fade) * alpha * in.opacity;
     }
     if node.dashed != 0u {
         let a = image_at(in.images.x);
@@ -326,7 +326,7 @@ fn fs_line_styled(in: StyledLineOut) -> @location(0) vec4<f32> {
         alpha *= smoothstep(0.5 - gamma, 0.5 + gamma, mix(ca, cb, node.dash_fade));
     }
     if node.gradient != 0u {
-        return color_in(gradient_sample(image_at(in.ramp), in.progress)) * alpha * in.opacity;
+        return gradient_sample(image_at(in.ramp), in.progress) * alpha * in.opacity;
     }
     return in.color * alpha;
 }

@@ -543,7 +543,6 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
                     zoom,
                     pitch: camera.pitch,
                     bearing: camera.bearing,
-                    meters_per_pixel: camera.meters_per_pixel,
                     ..Default::default()
                 };
                 let value = expression.expression().evaluate_with(&context);

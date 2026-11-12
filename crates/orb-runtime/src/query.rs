@@ -1180,7 +1180,6 @@ impl Query<'_> {
             zoom,
             pitch: camera.pitch,
             bearing: camera.bearing,
-            meters_per_pixel: camera.meters_per_pixel,
             ..Default::default()
         };
         let mut scales = [Scale::IDENTITY; 3];

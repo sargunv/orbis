@@ -3,8 +3,8 @@
     "The Globe entry's restyle of Protomaps Light, which web/demo/styles.js and orb-demo's scenes.rs both apply (styles.js says how).",
     "The palette is the Globe's own: warm, calm limestone land; vegetation in muted sage that tints the globe by biome from orbit and gives way to parks close in; a sea that deepens from a pale lagoon over the shelves to slate blue over the abyss, with a faint seafloor relief; white roads with honey motorways on Protomaps' quiet hierarchy; slate-plum labels on soft halos, each text colour at least 4.5:1 against its halo (3:1 for the large ocean, country and region names).",
     "The land's hillshade shades the fills beneath it, with the relief option, by multiplying them (style-spec#1661's `dev.sargunv.orbis:hillshade-layer-blend`), so that forests and parks keep their saturation in shade rather than greying: a near-neutral slate shadow, which darkens each colour in proportion, a warm white highlight, which tints sunlit slopes without lifting them (multiply can only darken), and a little more exaggeration than drawn normally to make up for the highlights' contrast; without the option it takes the colours its `metadata[\"demo:unblended\"]` keeps, made for it composited normally, plum shadows and white highlights. The seafloor's relief stays normal: multiplied, it looks the same over the depth ramp's blues, whose paleness over the ridges is the ramp's, and would cost a second blended layer.",
-    "Orbis's previews here (the blended relief, the night side, its ambient light and labels, shadows, ambient occlusion, rounded footprints, linear colour) are each a map option, off by default, so the Globe opens as GL JS and MapLibre Native could draw it. The night side is a globe-scale effect: ground lighting fades out from zoom 5 to 7, and the labels follow the daylight where they stand (`dev.sargunv.orbis:daylight`), switching to light text on dark navy halos (POIs keep their category hues, lightened) where the ground is dark, past a quarter of the way from night to day, so each reads against the ground beneath it.",
-    "The ambient light is the night side's dim blue at globe zooms and a pale sky by city zooms, where it lights the buildings' faces the sun doesn't reach (maplibre/maplibre#555's ambient light); the sun adds half its light to the faces turned to it, and its shadows take that away.",
+    "Orbis's one preview here, the blended relief, is a map option, off by default, so the Globe opens as GL JS and MapLibre Native could draw it.",
+    "`light` stands the sun 60° from overhead, turning with the view, at the spec's intensity: the buildings' faces turned to it are lit, the rest take half its light.",
     "`paint` is set over each Protomaps layer's own by id; `sea` goes over the background (the ocean, its shore colour) and under `earth`, the land, so neither shows on land however low it lies; its last layer, `caspian`, fills the Caspian Sea as the lake it is: OpenStreetMap maps its shore as coastline, so it is among Protomaps' ocean polygons, and the DEM there shows its surface, 28 m below sea level, in blocks; a box around it, under the land, takes the shore's shape; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source.",
     "The bathymetry stops at zoom 10, and closer views draw its zoom-10 tiles enlarged: from zoom 11 Terrain Tiles lay land-only elevation models over much of the coast and hold 0 m over the sea there (Puget Sound, Tokyo Bay, New York harbour, Miami and Marseille offshore), so the depths and seafloor relief would vanish from zoom 9.5, where a map starts using zoom-11 tiles."
   ],
@@ -298,482 +298,173 @@
       "line-color": "#fbe4a6"
     },
     "address_label": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#d2cbd9",
-        0.25,
-        "#736b79"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#1a1d2e",
-        0.25,
-        "#fbfaf7"
-      ]
+      "text-color": "#736b79",
+      "text-halo-color": "#fbfaf7"
     },
     "water_waterway_label": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#a9cdea",
-        0.25,
-        "#234d76"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#122238",
-        0.25,
-        "#b0dbe7"
-      ]
+      "text-color": "#234d76",
+      "text-halo-color": "#b0dbe7"
     },
     "roads_labels_minor": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#d2cbd9",
-        0.25,
-        "#736b79"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#1a1d2e",
-        0.25,
-        "#ffffff"
-      ]
+      "text-color": "#736b79",
+      "text-halo-color": "#ffffff"
     },
     "water_label_ocean": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#9fc4e4",
-        0.25,
-        "#234d76"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "rgba(14, 28, 50, 0.6)",
-        0.25,
-        "rgba(214, 238, 242, 0.6)"
-      ]
+      "text-color": "#234d76",
+      "text-halo-color": "rgba(214, 238, 242, 0.6)"
     },
     "earth_label_islands": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#d2cbd9",
-        0.25,
-        "#736b79"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#1a1d2e",
-        0.25,
-        "#efebe4"
-      ]
+      "text-color": "#736b79",
+      "text-halo-color": "#efebe4"
     },
     "water_label_lakes": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#a9cdea",
-        0.25,
-        "#234d76"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#122238",
-        0.25,
-        "#b0dbe7"
-      ]
+      "text-color": "#234d76",
+      "text-halo-color": "#b0dbe7"
     },
     "roads_shields": {
       "text-color": "#6c6570"
     },
     "roads_labels_major": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#ddd7e2",
-        0.25,
-        "#6c6570"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#1a1d2e",
-        0.25,
-        "#ffffff"
-      ]
+      "text-color": "#6c6570",
+      "text-halo-color": "#ffffff"
     },
     "pois": {
       "text-color": [
-        "step",
+        "case",
         [
-          "dev.sargunv.orbis:daylight"
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "beach",
+              "forest",
+              "marina",
+              "park",
+              "peak",
+              "zoo",
+              "garden",
+              "bench"
+            ]
+          ]
         ],
+        "#3b7550",
         [
-          "case",
+          "in",
           [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "beach",
-                "forest",
-                "marina",
-                "park",
-                "peak",
-                "zoo",
-                "garden",
-                "bench"
-              ]
-            ]
+            "get",
+            "kind"
           ],
-          "#93d1a6",
           [
-            "in",
+            "literal",
             [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "aerodrome",
-                "station",
-                "bus_stop",
-                "ferry_terminal"
-              ]
+              "aerodrome",
+              "station",
+              "bus_stop",
+              "ferry_terminal"
             ]
-          ],
-          "#a3bdf0",
-          [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "stadium",
-                "university",
-                "library",
-                "school",
-                "animal",
-                "toilets",
-                "drinking_water",
-                "post_office",
-                "building",
-                "townhall"
-              ]
-            ]
-          ],
-          "#bdb1e2",
-          [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "supermarket",
-                "convenience",
-                "books",
-                "beauty",
-                "electronics",
-                "clothes"
-              ]
-            ]
-          ],
-          "#8fc8de",
-          [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "restaurant",
-                "fast_food",
-                "cafe",
-                "bar"
-              ]
-            ]
-          ],
-          "#efb07a",
-          [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "attraction",
-                "museum",
-                "theatre",
-                "artwork"
-              ]
-            ]
-          ],
-          "#eba0cb",
-          "#d2cbd9"
+          ]
         ],
-        0.25,
+        "#3a64ad",
         [
-          "case",
+          "in",
           [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "beach",
-                "forest",
-                "marina",
-                "park",
-                "peak",
-                "zoo",
-                "garden",
-                "bench"
-              ]
-            ]
+            "get",
+            "kind"
           ],
-          "#3b7550",
           [
-            "in",
+            "literal",
             [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "aerodrome",
-                "station",
-                "bus_stop",
-                "ferry_terminal"
-              ]
+              "stadium",
+              "university",
+              "library",
+              "school",
+              "animal",
+              "toilets",
+              "drinking_water",
+              "post_office",
+              "building",
+              "townhall"
             ]
-          ],
-          "#3a64ad",
-          [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "stadium",
-                "university",
-                "library",
-                "school",
-                "animal",
-                "toilets",
-                "drinking_water",
-                "post_office",
-                "building",
-                "townhall"
-              ]
-            ]
-          ],
-          "#685a8c",
-          [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "supermarket",
-                "convenience",
-                "books",
-                "beauty",
-                "electronics",
-                "clothes"
-              ]
-            ]
-          ],
-          "#2c7593",
-          [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "restaurant",
-                "fast_food",
-                "cafe",
-                "bar"
-              ]
-            ]
-          ],
-          "#a85c1c",
-          [
-            "in",
-            [
-              "get",
-              "kind"
-            ],
-            [
-              "literal",
-              [
-                "attraction",
-                "museum",
-                "theatre",
-                "artwork"
-              ]
-            ]
-          ],
-          "#ad4683",
-          "#736b79"
-        ]
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
+          ]
         ],
-        "#1a1d2e",
-        0.25,
-        "#fbfaf7"
-      ]
-    },
-    "places_subplace": {
-      "text-color": [
-        "step",
+        "#685a8c",
         [
-          "dev.sargunv.orbis:daylight"
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "supermarket",
+              "convenience",
+              "books",
+              "beauty",
+              "electronics",
+              "clothes"
+            ]
+          ]
         ],
-        "#d2cbd9",
-        0.25,
+        "#2c7593",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "restaurant",
+              "fast_food",
+              "cafe",
+              "bar"
+            ]
+          ]
+        ],
+        "#a85c1c",
+        [
+          "in",
+          [
+            "get",
+            "kind"
+          ],
+          [
+            "literal",
+            [
+              "attraction",
+              "museum",
+              "theatre",
+              "artwork"
+            ]
+          ]
+        ],
+        "#ad4683",
         "#736b79"
       ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#1a1d2e",
-        0.25,
-        "#fbfaf7"
-      ]
+      "text-halo-color": "#fbfaf7"
+    },
+    "places_subplace": {
+      "text-color": "#736b79",
+      "text-halo-color": "#fbfaf7"
     },
     "places_region": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#bdb4c8",
-        0.25,
-        "#8a8090"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#1a1d2e",
-        0.25,
-        "#fbfaf7"
-      ]
+      "text-color": "#8a8090",
+      "text-halo-color": "#fbfaf7"
     },
     "places_locality": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#f4f0e8",
-        0.25,
-        "#3f3a45"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#1a1d2e",
-        0.25,
-        "#fbfaf7"
-      ],
+      "text-color": "#3f3a45",
+      "text-halo-color": "#fbfaf7",
       "text-halo-width": 1.25
     },
     "places_country": {
-      "text-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#d8d0e4",
-        0.25,
-        "#776b82"
-      ],
-      "text-halo-color": [
-        "step",
-        [
-          "dev.sargunv.orbis:daylight"
-        ],
-        "#1a1d2e",
-        0.25,
-        "#fbfaf7"
-      ]
+      "text-color": "#776b82",
+      "text-halo-color": "#fbfaf7"
     }
   },
   "sea": [
@@ -953,9 +644,7 @@
           ]
         ]
       ],
-      "fill-extrusion-opacity": 0.9,
-      "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": 0.6,
-      "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-intensity": 0.5
+      "fill-extrusion-opacity": 0.9
     }
   },
   "sources": {
@@ -1026,50 +715,6 @@
       210,
       60
     ],
-    "intensity": 0.5,
-    "dev.sargunv.orbis:shadow-intensity": 0.9,
-    "dev.sargunv.orbis:ground-lighting": [
-      "interpolate",
-      [
-        "linear"
-      ],
-      [
-        "zoom"
-      ],
-      5,
-      1,
-      7,
-      0
-    ],
-    "dev.sargunv.orbis:ambient-color": [
-      "interpolate",
-      [
-        "linear"
-      ],
-      [
-        "zoom"
-      ],
-      7,
-      "#8d9fd6",
-      12,
-      "#e4e9f5"
-    ],
-    "dev.sargunv.orbis:ambient-intensity": [
-      "interpolate",
-      [
-        "linear"
-      ],
-      [
-        "zoom"
-      ],
-      7,
-      0.5,
-      12,
-      0.55
-    ],
-    "dev.sargunv.orbis:twilight": 14
-  },
-  "metadata": {
-    "dev.sargunv.orbis:color-space": "linear"
+    "intensity": 0.5
   }
 }

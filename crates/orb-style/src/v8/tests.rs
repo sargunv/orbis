@@ -938,7 +938,6 @@ fn extended_inputs_are_drawn_and_warn_once() {
             .at_camera(orb_expr::CameraInputs {
                 pitch: 30.0,
                 bearing: 0.0,
-                meters_per_pixel: 1.0,
             })
             .unwrap();
         assert_eq!(folded.kind(), Kind::Constant);
@@ -996,8 +995,7 @@ fn extended_inputs_are_drawn_and_warn_once() {
 
 /// A per-feature value times one of the camera draws per feature, its
 /// rows holding the feature's part and the camera's scaling it: not
-/// portable, and behind the ground resolution's preview where it reads
-/// that.
+/// portable.
 #[test]
 fn camera_scales_of_feature_data_are_drawn() {
     let layer = |paint: &str| {
@@ -1024,23 +1022,14 @@ fn camera_scales_of_feature_data_are_drawn() {
     };
     assert_eq!(w.scale(&context).apply(4.0), 6.0);
 
-    let metres =
-        r#""line-width": ["max", 1, ["/", ["get", "w"], ["dev.sargunv.orbis:meters-per-pixel"]]]"#;
-    let off = parse_with(&layer(metres), Previews::NONE, &[]).unwrap();
-    assert!(off.layers[0].get(LINE_WIDTH).as_expression().is_none());
-    assert!(
-        off.warnings[0].message.contains("preview"),
-        "{:?}",
-        off.warnings
-    );
-    let on = parse_with(&layer(metres), Previews::ALL, &[]).unwrap();
-    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
-    let w = on.layers[0].get(LINE_WIDTH);
+    let bounded = r#""line-width": ["max", 1, ["*", ["get", "w"], ["/", ["pitch"], 60]]]"#;
+    let style = parse(&layer(bounded)).unwrap();
+    let w = style.layers[0].get(LINE_WIDTH);
     let context = orb_expr::EvaluationContext {
-        meters_per_pixel: 0.5,
+        pitch: 30.0,
         ..Default::default()
     };
-    assert_eq!(w.scale(&context).apply(4.0), 8.0);
+    assert_eq!(w.scale(&context).apply(4.0), 2.0);
     assert_eq!(w.scale(&context).apply(0.1), 1.0);
 }
 
@@ -1089,204 +1078,4 @@ fn layers_that_lay_out_alike_share_a_group() {
     assert_eq!(group(0), group(1), "paint and key order aside");
     assert_ne!(group(0), group(2), "another layout");
     assert_ne!(group(0), group(3), "another zoom range");
-}
-
-/// style-spec#1881's `["dev.sargunv.orbis:meters-per-pixel"]` is new syntax: with its preview
-/// a camera value of paint, without it a warning and the default. Layout
-/// can't read it.
-#[test]
-fn meters_per_pixel_follows_its_preview() {
-    let layer = |paint: &str, layout: &str| {
-        format!(
-            r#"{{"version": 8, "sources": {{"s": {{"type": "geojson",
-                "data": {{"type": "FeatureCollection", "features": []}}}}}},
-                "layers": [{{"id": "l", "type": "line", "source": "s",
-                "paint": {{{paint}}}, "layout": {{{layout}}}}}]}}"#
-        )
-    };
-    let width = r#""line-width": ["/", 10, ["dev.sargunv.orbis:meters-per-pixel"]]"#;
-    let on = parse_with(&layer(width, ""), Previews::ALL, &[]).unwrap();
-    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
-    let w = on.layers[0].get(LINE_WIDTH);
-    assert_eq!(w.kind(), Kind::Camera);
-    let camera = orb_expr::CameraInputs {
-        pitch: 0.0,
-        bearing: 0.0,
-        meters_per_pixel: 2.5,
-    };
-    assert_eq!(w.evaluate_camera(0.0, camera), 4.0);
-    let off = parse(&layer(width, "")).unwrap();
-    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
-    assert!(
-        off.warnings[0]
-            .message
-            .contains(Preview::MetersPerPixel.name())
-    );
-    // The proposal's own spelling is an unknown expression.
-    let bare = r#""line-width": ["/", 10, ["meters-per-pixel"]]"#;
-    assert!(parse_with(&layer(bare, ""), Previews::ALL, &[]).is_err());
-    assert!(!off.layers[0].get(LINE_WIDTH).is_set());
-    let layout = r#""line-miter-limit": ["dev.sargunv.orbis:meters-per-pixel"]"#;
-    assert!(parse_with(&layer("", layout), Previews::ALL, &[]).is_err());
-}
-
-/// `["dev.sargunv.orbis:daylight"]` behind its preview: a label colour
-/// over it with the preview, without it a warning and the default. Other
-/// properties can't read it, even with the preview.
-#[test]
-fn daylight_follows_its_preview() {
-    let layer = |ty: &str, paint: &str| {
-        format!(
-            r#"{{"version": 8, "sources": {{"s": {{"type": "geojson",
-                "data": {{"type": "FeatureCollection", "features": []}}}}}},
-                "layers": [{{"id": "l", "type": "{ty}", "source": "s",
-                "paint": {{{paint}}}}}]}}"#
-        )
-    };
-    let curve =
-        r##"["interpolate", ["linear"], ["dev.sargunv.orbis:daylight"], 0, "#fff", 1, "#000"]"##;
-    let halo = layer("symbol", &format!(r#""text-halo-color": {curve}"#));
-    let on = parse_with(&halo, Previews::NONE.with(Preview::Daylight), &[]).unwrap();
-    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
-    let color = on.layers[0].get(TEXT_HALO_COLOR);
-    assert!(color.as_expression().is_some_and(|e| e.reads_daylight()));
-    let off = parse(&halo).unwrap();
-    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
-    assert!(
-        off.warnings[0]
-            .message
-            .contains("dev.sargunv.orbis:daylight")
-    );
-    assert!(!off.layers[0].get(TEXT_HALO_COLOR).is_set());
-    let line = layer("line", &format!(r#""line-color": {curve}"#));
-    assert!(parse_with(&line, Previews::ALL, &[]).is_err());
-}
-
-/// `metadata["dev.sargunv.orbis:color-space"]` behind its preview: off, the
-/// key warns and colours mix as sRGB; an unknown value warns too. Other
-/// metadata is anyone's.
-#[test]
-fn color_space_reads_metadata_with_its_preview() {
-    let style = |metadata: &str| {
-        format!(r#"{{"version": 8, "metadata": {metadata}, "sources": {{}}, "layers": []}}"#)
-    };
-    let on = Previews::NONE.with(Preview::ColorSpace);
-    let linear = style(r#"{"dev.sargunv.orbis:color-space": "linear", "other": 1}"#);
-    let parsed = parse_with(&linear, on, &[]).unwrap();
-    assert_eq!(parsed.color_space, ColorSpace::Linear);
-    assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
-    let off = parse(&linear).unwrap();
-    assert_eq!(off.color_space, ColorSpace::Srgb);
-    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
-    assert!(off.warnings[0].message.contains("preview"));
-    let unknown = parse_with(
-        &style(r#"{"dev.sargunv.orbis:color-space": "p3"}"#),
-        on,
-        &[],
-    )
-    .unwrap();
-    assert_eq!(unknown.color_space, ColorSpace::Srgb);
-    assert_eq!(
-        unknown.warnings[0].path,
-        "metadata.dev.sargunv.orbis:color-space"
-    );
-    for metadata in [
-        r#"{"dev.sargunv.orbis:color-space": "srgb"}"#,
-        r#"{"other": true}"#,
-        "7",
-    ] {
-        let parsed = parse_with(&style(metadata), on, &[]).unwrap();
-        assert_eq!(parsed.color_space, ColorSpace::Srgb, "{metadata}");
-        assert!(
-            parsed.warnings.is_empty(),
-            "{metadata}: {:?}",
-            parsed.warnings
-        );
-    }
-}
-
-/// The 3D proposals' syntax follows each one's preview: style-spec#1797's
-/// `light["dev.sargunv.orbis:shadow-intensity"]`, #1796's ambient
-/// occlusion and #1047's rounded fills. Off, each warns once (a transition
-/// too) and stays at its default; the proposals' own spellings are unknown.
-#[test]
-fn shadows_occlusion_and_rounded_fills_follow_their_previews() {
-    let doc = r#"{"version": 8,
-        "light": {"dev.sargunv.orbis:shadow-intensity": 0.4, "dev.sargunv.orbis:shadow-intensity-transition": {"duration": 0}},
-        "sources": {"s": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
-        "layers": [
-            {"id": "f", "type": "fill", "source": "s",
-             "layout": {"dev.sargunv.orbis:fill-rounded-corner-distance": 2}},
-            {"id": "b", "type": "fill-extrusion", "source": "s",
-             "paint": {"dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": 0.5,
-                       "dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-radius":
-                           ["interpolate", ["linear"], ["zoom"], 15, 2, 18, 6]}}]}"#;
-    let on = parse_with(doc, Previews::ALL, &[]).unwrap();
-    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
-    assert_eq!(on.light.shadow_intensity.evaluate(0.0), 0.4);
-    assert!(
-        (on.light.transitions.iter()).any(|(name, _)| name == "dev.sargunv.orbis:shadow-intensity")
-    );
-    assert_eq!(on.layers[0].get(FILL_ROUNDED_CORNER).evaluate(0.0), 2.0);
-    let building = &on.layers[1];
-    assert_eq!(building.get(EXTRUSION_AO_WALL_INTENSITY).evaluate(0.0), 0.5);
-    assert_eq!(building.get(EXTRUSION_AO_GROUND_RADIUS).evaluate(16.5), 4.0);
-    assert_eq!(building.get(EXTRUSION_AO_WALL_RADIUS).evaluate(0.0), 3.0);
-
-    let off = parse(doc).unwrap();
-    let mut warned: Vec<(&str, &str)> = (off.warnings.iter())
-        .map(|w| (w.path.as_str(), w.message.as_str()))
-        .collect();
-    warned.sort_unstable();
-    let expected = [
-        (
-            "layers[0].layout.dev.sargunv.orbis:fill-rounded-corner-distance",
-            Preview::FillRoundedCornerDistance,
-        ),
-        (
-            "layers[1].paint.dev.sargunv.orbis:fill-extrusion-ambient-occlusion-ground-radius",
-            Preview::AoGroundRadius,
-        ),
-        (
-            "layers[1].paint.dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity",
-            Preview::AoWallIntensity,
-        ),
-        (
-            "light.dev.sargunv.orbis:shadow-intensity",
-            Preview::ShadowIntensity,
-        ),
-        (
-            "light.dev.sargunv.orbis:shadow-intensity-transition",
-            Preview::ShadowIntensity,
-        ),
-    ];
-    assert_eq!(warned.len(), expected.len(), "{warned:?}");
-    for ((path, message), (want, preview)) in warned.into_iter().zip(expected) {
-        assert_eq!(path, want);
-        assert!(message.contains(preview.name()), "{path}: {message}");
-    }
-    assert_eq!(off.light.shadow_intensity.evaluate(0.0), 0.0);
-    assert!(off.light.transitions.is_empty());
-    assert_eq!(off.layers[0].get(FILL_ROUNDED_CORNER).evaluate(0.0), 0.0);
-    assert!(!off.layers[1].get(EXTRUSION_AO_WALL_INTENSITY).is_set());
-    assert!(!off.layers[1].get(EXTRUSION_AO_GROUND_RADIUS).is_set());
-    let bare = parse_with(&doc.replace("dev.sargunv.orbis:", ""), Previews::ALL, &[]).unwrap();
-    assert_eq!(bare.warnings.len(), 5, "{:?}", bare.warnings);
-    assert!((bare.warnings.iter()).all(|w| w.message.starts_with("unknown property")));
-    assert_eq!(bare.light.shadow_intensity.evaluate(0.0), 0.0);
-
-    // Drawn per frame, ambient occlusion reads the camera as the rest of
-    // the extrusion's paint does, warning that it isn't portable.
-    let pitch = doc.replace(
-        "\"dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity\": 0.5",
-        r#""dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity": ["interpolate", ["linear"], ["pitch"], 0, 0, 60, 0.5]"#,
-    );
-    let camera = parse_with(&pitch, Previews::ALL, &[]).unwrap();
-    let paths: Vec<&str> = camera.warnings.iter().map(|w| w.path.as_str()).collect();
-    assert_eq!(
-        paths,
-        ["layers[1].paint.dev.sargunv.orbis:fill-extrusion-ambient-occlusion-wall-intensity"]
-    );
-    let intensity = camera.layers[1].get(EXTRUSION_AO_WALL_INTENSITY);
-    assert_eq!(intensity.kind(), Kind::Camera);
 }

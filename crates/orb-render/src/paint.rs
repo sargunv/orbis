@@ -256,10 +256,6 @@ pub struct ExtrusionPaint {
     pub state: StateLookup,
     /// The colour over the elevation, drawn per fragment.
     pub elevation: Option<ElevationPaint>,
-    /// style-spec#1796's ambient occlusion: the walls' intensity and
-    /// radius (metres up from the ground), then the ground's (metres out
-    /// from the walls); an intensity of 0 is none.
-    pub occlusion: [f32; 4],
 }
 
 use orb_shaders::layout::{MAX_ELEVATION_OPS, MAX_ELEVATION_STOPS};
@@ -298,8 +294,8 @@ pub(crate) struct ExtrusionShape {
     /// Stops from features' rows (bit 0) or state (bit 1).
     dynamic: u32,
     pub(crate) stateless: bool,
-    /// No pattern, colour over the elevation or wall occlusion: the whole
-    /// pipeline passes its fragment stage the colour alone
+    /// No pattern or colour over the elevation: the whole pipeline passes
+    /// its fragment stage the colour alone
     /// (`vs_extrusion_plain`).
     pub(crate) plain: bool,
 }
@@ -324,19 +320,13 @@ impl ExtrusionShape {
 }
 
 impl ExtrusionPaint {
-    /// Whether it darkens the ground along its walls: a pass of its own.
-    pub(crate) fn ground_occlusion(&self) -> bool {
-        self.occlusion[2] > 0.0 && self.occlusion[3] > 0.0 && self.opacity > 0.0
-    }
-
     /// What its pipelines are specialised for, drawn with a pattern or not.
     fn shape(&self, pattern: bool) -> ExtrusionShape {
         let stateless = self.state.mask == 0;
         let Some(e) = &self.elevation else {
-            let walls_occluded = self.occlusion[0] > 0.0 && self.occlusion[1] > 0.0;
             return ExtrusionShape {
                 stateless,
-                plain: !pattern && !walls_occluded,
+                plain: !pattern,
                 ..ExtrusionShape::default()
             };
         };
@@ -435,16 +425,8 @@ pub struct SymbolPaint {
     pub halo_width: f32,
     pub halo_blur: f32,
     pub table_mask: u32,
-    /// The slots' zoom curves; a colour's night stop shares its own.
+    /// The slots' zoom curves.
     pub curves: [Curve; 5],
-    /// `["dev.sargunv.orbis:daylight"]`'s night stops of the colour and
-    /// the halo colour, slots 5 and 6.
-    pub night_color: [f32; 4],
-    pub night_halo_color: [f32; 4],
-    /// The colour's and halo colour's curves over the daylight, where they
-    /// follow it: the first stop's daylight, the last's, 0 for a step or 1
-    /// for an exponential curve, and its base.
-    pub daylight: [Option<[f32; 4]>; 2],
     /// Words per feature of its property rows.
     pub row_words: u32,
     pub translate: Translate,
@@ -569,11 +551,7 @@ impl NodePaint {
     }
 
     /// The node's uniform, its struct in the family's shader.
-    /// `linear` when colours mix in linear light: hillshade's, which only
-    /// its uniform holds, are decoded here; other families decode theirs
-    /// in their shaders (`color_in`), once chosen from the uniform, rows
-    /// or state.
-    pub(crate) fn uniform_words(&self, node: u32, linear: bool) -> Vec<u32> {
+    pub(crate) fn uniform_words(&self, node: u32) -> Vec<u32> {
         use orb_shaders::layout::*;
         let pattern = match self {
             Self::FillPattern(_, p) | Self::LinePattern(_, p) | Self::ExtrusionPattern(_, p) => {
@@ -610,7 +588,6 @@ impl NodePaint {
                 );
                 b.u(n::VERTICAL_GRADIENT, &[u32::from(p.vertical_gradient)]);
                 b.f(n::OPACITY, &[p.opacity]);
-                b.f(n::OCCLUSION, &p.occlusion);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
                 b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
                 if let Some(e) = &p.elevation {
@@ -724,10 +701,9 @@ impl NodePaint {
             Self::Hillshade(p) => {
                 use hillshade_node as n;
                 b = Block::new(n::WORDS);
-                let color = |c| crate::color_in(c, linear);
-                b.f(n::ACCENT, &color(p.accent))
-                    .f(n::SHADOWS, p.shadows.map(color).as_flattened());
-                b.f(n::HIGHLIGHTS, p.highlights.map(color).as_flattened());
+                b.f(n::ACCENT, &p.accent)
+                    .f(n::SHADOWS, p.shadows.as_flattened());
+                b.f(n::HIGHLIGHTS, p.highlights.as_flattened());
                 b.f(n::ALTITUDES, &p.altitudes).f(n::AZIMUTHS, &p.azimuths);
                 b.f(n::EXAGGERATION, &[p.exaggeration])
                     .u(n::METHOD, &[p.method as u32]);
@@ -756,8 +732,6 @@ impl NodePaint {
                     p.keep_upright,
                     p.translate.viewport,
                     p.height_anchor_ground,
-                    p.daylight[0].is_some(),
-                    p.daylight[1].is_some(),
                     p.along_line,
                 ];
                 b = Block::new(n::WORDS);
@@ -774,10 +748,6 @@ impl NodePaint {
                 p.text_size.put(&mut b, n::TEXT_SIZE);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
                 b.u(n::ROW_WORDS, &[p.row_words]);
-                b.f(n::NIGHT_FILL, &p.night_color)
-                    .f(n::NIGHT_HALO, &p.night_halo_color);
-                b.f(n::DAYLIGHT_FILL, &p.daylight[0].unwrap_or_default())
-                    .f(n::DAYLIGHT_HALO, &p.daylight[1].unwrap_or_default());
             }
         }
         b.0
@@ -932,7 +902,7 @@ mod tests {
             mipmapped: true,
             fade_duration: 300.0,
         });
-        let words = raster.uniform_words(0, false);
+        let words = raster.uniform_words(0);
         let at = orb_shaders::layout::raster_node::SPIN_WEIGHTS;
         let spin: Vec<f32> = words[at..at + 3]
             .iter()

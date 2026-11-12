@@ -315,21 +315,6 @@ struct Texture {
     /// A view of these mip levels of another entry's texture, which it
     /// doesn't own.
     levels: Option<std::ops::Range<u32>>,
-    /// The format a view of another entry's texture takes, if not the
-    /// texture's.
-    format: Option<wgpu::TextureFormat>,
-}
-
-/// The usages of a view of `texture` in `format`: the texture's, except
-/// that a view in another format (its sRGB twin) can't be storage.
-fn view_usage(
-    texture: &wgpu::Texture,
-    format: Option<wgpu::TextureFormat>,
-) -> Option<wgpu::TextureUsages> {
-    format.filter(|&f| f != texture.format()).map(|_| {
-        texture.usage()
-            & (wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
-    })
 }
 
 /// The layers wgpu's GL back end makes an array texture of `desc` with,
@@ -425,29 +410,6 @@ fn gl_clips_zero_to_one(device: &wgpu::Device) -> bool {
 }
 
 impl WgpuGpu {
-    /// A view of `levels` of `texture`'s, in `format` or the texture's.
-    fn view_of(
-        &mut self,
-        texture: TextureId,
-        levels: std::ops::Range<u32>,
-        format: Option<wgpu::TextureFormat>,
-    ) -> TextureId {
-        let texture = self.texture(texture).clone();
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            format,
-            usage: view_usage(&texture, format),
-            base_mip_level: levels.start,
-            mip_level_count: Some(levels.len() as u32),
-            ..Default::default()
-        });
-        TextureId(self.textures.insert(Texture {
-            texture: Some(texture),
-            view,
-            levels: Some(levels),
-            format,
-        }))
-    }
-
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         // GLES runs the CPU frame driver, as WebGL 2 does, even where it
         // offers compute (#140); WebGL 2's limits already say so.
@@ -1154,7 +1116,6 @@ impl WgpuGpu {
             texture: None,
             view,
             levels: None,
-            format: None,
         }))
     }
 
@@ -1457,18 +1418,13 @@ impl Gpu for WgpuGpu {
             dimension: wgpu::TextureDimension::D2,
             format: convert::texture_format(desc.format),
             usage: convert::texture_usages(desc.usage) & self.texture_usages,
-            view_formats: &desc
-                .view_formats
-                .iter()
-                .map(|&f| convert::texture_format(f))
-                .collect::<Vec<_>>(),
+            view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         TextureId(self.textures.insert(Texture {
             texture: Some(texture),
             view,
             levels: None,
-            format: None,
         }))
     }
 
@@ -1477,30 +1433,22 @@ impl Gpu for WgpuGpu {
         texture: TextureId,
         levels: std::ops::Range<u32>,
     ) -> TextureId {
-        self.view_of(texture, levels, None)
-    }
-
-    fn create_texture_view_as(
-        &mut self,
-        texture: TextureId,
-        levels: std::ops::Range<u32>,
-        format: TextureFormat,
-    ) -> TextureId {
-        self.view_of(texture, levels, Some(convert::texture_format(format)))
-    }
-
-    fn create_layer_view(
-        &mut self,
-        texture: TextureId,
-        layer: u32,
-        level: u32,
-        format: Option<TextureFormat>,
-    ) -> TextureId {
         let texture = self.texture(texture).clone();
-        let format = format.map(convert::texture_format);
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            format,
-            usage: view_usage(&texture, format),
+            base_mip_level: levels.start,
+            mip_level_count: Some(levels.len() as u32),
+            ..Default::default()
+        });
+        TextureId(self.textures.insert(Texture {
+            texture: Some(texture),
+            view,
+            levels: Some(levels),
+        }))
+    }
+
+    fn create_layer_view(&mut self, texture: TextureId, layer: u32, level: u32) -> TextureId {
+        let texture = self.texture(texture).clone();
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2),
             base_mip_level: level,
             mip_level_count: Some(1),
@@ -1512,7 +1460,6 @@ impl Gpu for WgpuGpu {
             texture: Some(texture),
             view,
             levels: Some(level..level + 1),
-            format,
         }))
     }
 
@@ -1687,11 +1634,9 @@ impl Gpu for WgpuGpu {
             .map(|entry| match entry.resource {
                 BindingResource::Texture { texture, dimension } => {
                     let entry = &self.textures[texture.0];
-                    let (levels, format) = (entry.levels.clone(), entry.format);
+                    let levels = entry.levels.clone();
                     let texture = self.texture(texture);
                     Some(texture.create_view(&wgpu::TextureViewDescriptor {
-                        format,
-                        usage: view_usage(texture, format),
                         dimension: Some(convert::view_dimension(dimension)),
                         base_mip_level: levels.as_ref().map_or(0, |l| l.start),
                         mip_level_count: levels.map(|l| l.len() as u32),
@@ -2168,7 +2113,6 @@ mod tests {
                 usage: TextureUsages::TEXTURE_BINDING,
                 sample_count: 1,
                 mip_levels: 1,
-                view_formats: &[],
             })
         };
         assert_eq!(layers(258, 258, 1), 2);

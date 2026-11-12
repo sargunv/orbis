@@ -2,7 +2,7 @@
 // vertex-only clip-plane shaders, which leave them out.
 @fragment
 fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
-    return extrusion_shade(in);
+    return extrusion_color(in);
 }
 @fragment
 fn fs_extrusion_cut(in: ExtrusionOut) -> @location(0) vec4<f32> {
@@ -16,7 +16,7 @@ fn fs_extrusion_cut(in: ExtrusionOut) -> @location(0) vec4<f32> {
     } else if !extrusion_inside(tile_at(in.tile), in.tile_pos) {
         discard;
     }
-    return extrusion_shade(in);
+    return extrusion_color(in);
 }
 @fragment
 fn fs_extrusion_plain(in: ExtrusionPlainOut) -> @location(0) vec4<f32> {

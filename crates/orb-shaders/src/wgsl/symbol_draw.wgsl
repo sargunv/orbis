@@ -154,8 +154,8 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
         }
     }
     out.data = vec3<f32>(final_pos.w, size, visible_opacity);
-    out.fill = color_in(unpack4x8unorm(paint.z));
-    out.halo = color_in(unpack4x8unorm(paint.w));
+    out.fill = unpack4x8unorm(paint.z);
+    out.halo = unpack4x8unorm(paint.w);
     out.halo_params = halo_params;
     let linear = (halves[half].flags & LINEAR_ICONS) != 0u || (mesh_flags & H_LINEAR_IMAGES) != 0u
         || abs(frame.pitch) > 0.0;
@@ -185,9 +185,9 @@ fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
     let uv = atlas_uv(in, select(halves[h].glyph_page, halves[h].image_page, image));
     if image && !sdf {
         if (in.kind & 4u) != 0u {
-            return color_in(textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0)) * total_opacity;
+            return textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0) * total_opacity;
         }
-        return color_in(textureSampleLevel(image_pages_nearest, nearest_sampler, uv, in.layer, 0.0)) * total_opacity;
+        return textureSampleLevel(image_pages_nearest, nearest_sampler, uv, in.layer, 0.0) * total_opacity;
     }
     var dist: f32;
     if image {

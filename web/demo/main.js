@@ -10,7 +10,7 @@
 // `&debug`, `&compare[=<left>,<right>]` (two engines' maps of
 // the style side by side, Orbis and GL JS by default, app/compare.js),
 // the map options that differ from the entry's own (`&terrain=1`,
-// `&light=map`, `&shadows=1`, `&projection=mercator`, …, app/options.js),
+// `&light=map`, `&blend=1`, `&projection=mercator`, …, app/options.js),
 // `&backend=webgpu|webgl2` (the renderer, Auto by default, app/options.js),
 // `&worker=0` (the map on the page's thread rather than in its worker),
 // `&lose=<ms>` (lose the GPU that long after

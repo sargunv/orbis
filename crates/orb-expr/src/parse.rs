@@ -50,7 +50,6 @@ const OPERATORS: &[&str] = &[
     "cos",
     "distance",
     "downcase",
-    "dev.sargunv.orbis:daylight",
     "e",
     "elevation",
     "error",
@@ -206,14 +205,7 @@ fn compound(name: &str) -> Option<(Type, Vec<(Params, Build)>)> {
         "heatmap-density" => (N, vec![(none(), |_, _| Op::Call(Call::Heatmap, vec![]))]),
         "pitch" => (N, vec![(none(), |_, _| Op::Call(Call::Pitch, vec![]))]),
         "bearing" => (N, vec![(none(), |_, _| Op::Call(Call::Bearing, vec![]))]),
-        "dev.sargunv.orbis:meters-per-pixel" => (
-            N,
-            vec![(none(), |_, _| Op::Call(Call::MetersPerPixel, vec![]))],
-        ),
         "elevation" => (N, vec![(none(), |_, _| Op::Call(Call::Elevation, vec![]))]),
-        "dev.sargunv.orbis:daylight" => {
-            (N, vec![(none(), |_, _| Op::Call(Call::Daylight, vec![]))])
-        }
         "accumulated" => (
             V,
             vec![(none(), |_, _| Op::Call(Call::Accumulated, vec![]))],

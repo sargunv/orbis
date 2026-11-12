@@ -305,7 +305,6 @@ fn data_texture(gpu: &mut dyn Gpu, label: &str, rows: u32) -> TextureId {
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
         sample_count: 1,
         mip_levels: 1,
-        view_formats: &[],
     })
 }
 

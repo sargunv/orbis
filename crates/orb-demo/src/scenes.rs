@@ -277,11 +277,9 @@ impl Flight {
 /// part is as it is): the palette over each layer's paint by id, the ocean
 /// left to the background with the sea's depth and relief over it and
 /// under the land, a hillshade over the land and lakes, the buildings
-/// extruded under the labels, the DEM sources, and Orbis's previews for the
-/// options to switch on (the hillshade multiplied into the land, rounded
-/// footprints, a light that shades the ground, shadows), each off by
-/// default. Each addition is placed by the
-/// layers it finds.
+/// extruded under the labels, the DEM sources and the light, and the
+/// hillshade multiplied into the land (a preview) for its option to switch
+/// on, off by default. Each addition is placed by the layers it finds.
 fn globe(style: &Value) -> Value {
     let globe: Value = serde_json::from_str(include_str!("../../../web/demo/data/globe.json"))
         .expect("web/demo/data/globe.json");
@@ -326,7 +324,6 @@ fn globe(style: &Value) -> Value {
     {
         let mut buildings = globe["buildings"].clone();
         buildings["source"] = layers[at]["source"].clone();
-        layers[at]["layout"]["dev.sargunv.orbis:fill-rounded-corner-distance"] = json!(2);
         let at = labels(&layers);
         layers.insert(at, buildings);
     }
@@ -336,11 +333,6 @@ fn globe(style: &Value) -> Value {
         }
     }
     style["light"] = globe["light"].clone();
-    if let Value::Object(metadata) = &globe["metadata"] {
-        for (name, value) in metadata {
-            style["metadata"][name] = value.clone();
-        }
-    }
     style["layers"] = Value::Array(layers);
     style
 }

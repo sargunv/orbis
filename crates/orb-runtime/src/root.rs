@@ -27,27 +27,10 @@ pub(crate) struct LightValues {
     /// Radius, azimuth and polar angle, degrees.
     pub(crate) position: [f32; 3],
     pub(crate) intensity: f32,
-    /// style-spec#1797's extrusion shadows, 0 for none.
-    pub(crate) shadow_intensity: f32,
-    /// `dev.sargunv.orbis:ground-lighting`, 0 for none; the ambient light
-    /// (premultiplied) and its intensity; the twilight, degrees.
-    pub(crate) ground_lighting: f32,
-    pub(crate) ambient_color: [f32; 4],
-    pub(crate) ambient_intensity: f32,
-    pub(crate) twilight: f32,
-    /// Toward a map-anchored sun on Earth-fixed axes, unit as evaluated
-    /// (an eased one is normalised where it's read): where it stands at
-    /// `dev.sargunv.orbis:datetime`, else as v8 places it, over 0°, 0°.
-    pub(crate) sun: [f32; 3],
-    /// Whether the sun comes from `dev.sargunv.orbis:datetime`.
-    pub(crate) timed: bool,
-    /// How far the extrusions take the ambient light, 1 where the style
-    /// sets it, rather than GL JS's `1 − intensity` of the light's colour.
-    pub(crate) ambient: f32,
 }
 
 /// Slots a light eases in.
-const LIGHT_SLOTS: usize = 20;
+const LIGHT_SLOTS: usize = 8;
 
 impl LightValues {
     pub(crate) fn of(light: &Light, zoom: f64) -> Self {
@@ -56,44 +39,13 @@ impl LightValues {
             color: light.color.evaluate(zoom).premultiplied(),
             position: light.position.evaluate(zoom),
             intensity: light.intensity.evaluate(zoom),
-            shadow_intensity: light.shadow_intensity.evaluate(zoom),
-            ground_lighting: light.ground_lighting.evaluate(zoom),
-            ambient_color: light.ambient_color.evaluate(zoom).premultiplied(),
-            ambient_intensity: light.ambient_intensity.evaluate(zoom),
-            twilight: light.twilight.evaluate(zoom),
-            sun: crate::light::map_sun(light, zoom),
-            timed: light.datetime.is_some(),
-            ambient: f32::from(u8::from(light.ambient)),
         }
     }
 
     fn slots(&self) -> [f32; LIGHT_SLOTS] {
         let [r, g, b, a] = self.color;
         let [radius, azimuth, polar] = self.position;
-        let [ar, ag, ab, aa] = self.ambient_color;
-        let [sx, sy, sz] = self.sun;
-        [
-            r,
-            g,
-            b,
-            a,
-            radius,
-            azimuth,
-            polar,
-            self.intensity,
-            self.shadow_intensity,
-            self.ground_lighting,
-            ar,
-            ag,
-            ab,
-            aa,
-            self.ambient_intensity,
-            self.twilight,
-            sx,
-            sy,
-            sz,
-            self.ambient,
-        ]
+        [r, g, b, a, radius, azimuth, polar, self.intensity]
     }
 
     fn with(self, s: [f32; LIGHT_SLOTS]) -> Self {
@@ -101,67 +53,38 @@ impl LightValues {
             color: [s[0], s[1], s[2], s[3]],
             position: [s[4], s[5], s[6]],
             intensity: s[7],
-            shadow_intensity: s[8],
-            ground_lighting: s[9],
-            ambient_color: [s[10], s[11], s[12], s[13]],
-            ambient_intensity: s[14],
-            twilight: s[15],
-            sun: [s[16], s[17], s[18]],
-            ambient: s[19],
             ..self
         }
     }
 }
 
 /// The light's fields in slot order, with each one's slot count.
-const LIGHT: &[(&str, usize)] = &[
-    ("color", 4),
-    ("position", 3),
-    ("intensity", 1),
-    ("dev.sargunv.orbis:shadow-intensity", 1),
-    ("dev.sargunv.orbis:ground-lighting", 1),
-    ("dev.sargunv.orbis:ambient-color", 4),
-    ("dev.sargunv.orbis:ambient-intensity", 1),
-    ("dev.sargunv.orbis:twilight", 1),
-    // Eased as `dev.sargunv.orbis:datetime` with a time, else `position`.
-    (SUN, 3),
-    // The style's transition.
-    ("ambient", 1),
-];
-
-const SUN: &str = "sun";
+const LIGHT: &[(&str, usize)] = &[("color", 4), ("position", 3), ("intensity", 1)];
 
 /// The sky's fields in slot order, with each one's slot count.
 const SKY: &[(&str, usize)] = &[
     ("sky-color", 4),
     ("horizon-color", 4),
     ("fog-color", 4),
-    ("dev.sargunv.orbis:backdrop-color", 4),
     ("fog-ground-blend", 1),
     ("horizon-fog-blend", 1),
     ("sky-horizon-blend", 1),
     ("atmosphere-blend", 1),
-    ("dev.sargunv.orbis:star-opacity", 1),
 ];
 
 /// The sky's values at `zoom`; GL JS's transparent sky for none.
-fn sky_slots(sky: Option<&Atmosphere>, zoom: f64) -> [f32; 21] {
+fn sky_slots(sky: Option<&Atmosphere>, zoom: f64) -> [f32; SKY_SLOTS] {
     let Some(a) = sky else {
         // GL JS's `Sky.setSky(undefined)`: transparent colours, fog-ground
         // blend 1 and no atmosphere; the rest at the spec's defaults.
-        let mut s = [0.0; 21];
-        s[16..].copy_from_slice(&[1.0, 0.8, 0.8, 0.0, 0.0]);
+        let mut s = [0.0; SKY_SLOTS];
+        s[12..].copy_from_slice(&[1.0, 0.8, 0.8, 0.0]);
         return s;
     };
-    let mut s = [0.0; 21];
-    for (i, c) in [
-        &a.sky_color,
-        &a.horizon_color,
-        &a.fog_color,
-        &a.backdrop_color,
-    ]
-    .into_iter()
-    .enumerate()
+    let mut s = [0.0; SKY_SLOTS];
+    for (i, c) in [&a.sky_color, &a.horizon_color, &a.fog_color]
+        .into_iter()
+        .enumerate()
     {
         s[4 * i..4 * i + 4].copy_from_slice(&c.evaluate(zoom).premultiplied());
     }
@@ -170,28 +93,28 @@ fn sky_slots(sky: Option<&Atmosphere>, zoom: f64) -> [f32; 21] {
         &a.horizon_fog_blend,
         &a.sky_horizon_blend,
         &a.atmosphere_blend,
-        &a.star_opacity,
     ]
     .into_iter()
     .enumerate()
     {
-        s[16 + i] = v.evaluate(zoom);
+        s[12 + i] = v.evaluate(zoom);
     }
     s
 }
 
-fn sky_paint(s: [f32; 21]) -> AtmospherePaint {
+/// Slots a sky eases in.
+const SKY_SLOTS: usize = 16;
+
+fn sky_paint(s: [f32; SKY_SLOTS]) -> AtmospherePaint {
     let color = |i: usize| [s[4 * i], s[4 * i + 1], s[4 * i + 2], s[4 * i + 3]];
     AtmospherePaint {
         sky_color: color(0),
         horizon_color: color(1),
         fog_color: color(2),
-        backdrop_color: color(3),
-        fog_ground_blend: s[16],
-        horizon_fog_blend: s[17],
-        sky_horizon_blend: s[18],
-        atmosphere_blend: s[19],
-        star_opacity: s[20],
+        fog_ground_blend: s[12],
+        horizon_fog_blend: s[13],
+        sky_horizon_blend: s[14],
+        atmosphere_blend: s[15],
     }
 }
 
@@ -214,7 +137,7 @@ pub(crate) struct RootFrame {
 #[derive(Debug, Default)]
 pub(crate) struct Root {
     light: Eases<LIGHT_SLOTS>,
-    sky: Eases<21>,
+    sky: Eases<SKY_SLOTS>,
     terrain: Eases<2>,
 }
 
@@ -228,16 +151,8 @@ impl Root {
                 .map_or(style.transition, |(_, t)| t.over(style.transition))
         };
         let light = LightValues::of(&style.light, zoom).slots();
-        let sun = match style.light.datetime {
-            Some(_) => orb_style::Preview::Datetime.name(),
-            None => "position",
-        };
-        self.light.start(LIGHT, &light, |name| {
-            lookup(
-                &style.light.transitions,
-                if name == SUN { sun } else { name },
-            )
-        });
+        self.light
+            .start(LIGHT, &light, |name| lookup(&style.light.transitions, name));
         let sky = sky_slots(style.atmosphere.as_ref(), zoom);
         let none = Vec::new();
         let sky_transitions = style.atmosphere.as_ref().map_or(&none, |a| &a.transitions);

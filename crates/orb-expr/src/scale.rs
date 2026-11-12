@@ -5,8 +5,8 @@
 //! the feature part, laid out with the tile as any per-feature value; the
 //! factor and bounds follow the camera as feature-independent values do.
 //!
-//! `["/", ["get", "width_m"], ["dev.sargunv.orbis:meters-per-pixel"]]`
-//! splits into `["get", "width_m"]` and `1 / meters-per-pixel`. So do
+//! `["*", ["get", "width"], ["/", ["pitch"], 60]]` splits into
+//! `["get", "width"]` and `pitch / 60`. So do
 //! products and quotients of such values, a `step`, `interpolate`,
 //! `match` or `case` that the camera chooses among outputs sharing one
 //! feature part (constant multiples of it, or 0), or that the feature
@@ -94,13 +94,6 @@ impl CameraScale {
             min: self.min.as_ref().map(fold),
             max: self.max.as_ref().map(fold),
         }
-    }
-
-    /// Its expressions: the factor, then the bounds it has.
-    pub(crate) fn expressions(&self) -> impl Iterator<Item = &Expression> {
-        std::iter::once(&self.factor)
-            .chain(self.min.as_ref())
-            .chain(self.max.as_ref())
     }
 }
 
@@ -460,7 +453,6 @@ mod tests {
             camera: true,
             camera_data: true,
             elevation: false,
-            daylight: false,
             interpolated: true,
             tokens: false,
         };
@@ -468,11 +460,11 @@ mod tests {
             .map_err(|e| e[0].message.clone())
     }
 
-    fn camera(zoom: f64, pitch: f64, meters_per_pixel: f64) -> EvaluationContext<'static> {
+    fn camera(zoom: f64, pitch: f64, bearing: f64) -> EvaluationContext<'static> {
         EvaluationContext {
             zoom,
             pitch,
-            meters_per_pixel,
+            bearing,
             ..EvaluationContext::default()
         }
     }
@@ -510,11 +502,11 @@ mod tests {
     }
 
     #[test]
-    fn metres_by_the_ground_resolution() {
-        let text = r#"["/", ["get", "w"], ["dev.sargunv.orbis:meters-per-pixel"]]"#;
+    fn a_feature_value_over_the_bearing() {
+        let text = r#"["/", ["get", "w"], ["bearing"]]"#;
         let value = width(text).unwrap();
         assert_eq!(value.kind(), Kind::Source);
-        assert!(value.reads_camera() && value.reads_meters_per_pixel());
+        assert!(value.reads_camera());
         let (part, scale) = split(text, r#"{"w": 12}"#, &camera(14.0, 0.0, 4.0));
         assert_eq!((part, scale.factor), (12.0, 0.25));
         assert_eq!(scale.apply(part), 3.0);
@@ -525,20 +517,20 @@ mod tests {
         let at = [camera(13.5, 50.0, 2.5), camera(3.0, 10.0, 0.25)];
         for text in [
             r#"["*", 2, ["get", "w"], ["pitch"]]"#,
-            r#"["/", ["*", ["get", "w"], 3], ["*", ["pitch"], ["dev.sargunv.orbis:meters-per-pixel"]]]"#,
-            r#"["-", ["/", ["get", "w"], ["dev.sargunv.orbis:meters-per-pixel"]]]"#,
+            r#"["/", ["*", ["get", "w"], 3], ["*", ["pitch"], ["bearing"]]]"#,
+            r#"["-", ["/", ["get", "w"], ["bearing"]]]"#,
             r#"["/", ["get", "w"], ["*", ["get", "k"], ["pitch"]]]"#,
             r#"["interpolate", ["linear"], ["pitch"], 0, 0, 60, ["*", 2, ["get", "w"]]]"#,
             r#"["interpolate", ["linear"], ["pitch"], 0, ["get", "w"], 60, ["/", ["get", "w"], 4]]"#,
             r#"["step", ["pitch"], ["get", "w"], 30, ["-", ["get", "w"]]]"#,
             r#"["case", [">", ["pitch"], 20], ["*", ["get", "w"], 2], ["get", "w"]]"#,
             r#"["match", ["get", "k"], 2, ["/", ["get", "w"], ["pitch"]], ["/", 5, ["pitch"]]]"#,
-            r#"["interpolate", ["linear"], ["zoom"], 3, ["/", ["get", "w"], ["dev.sargunv.orbis:meters-per-pixel"]], 15, ["/", ["*", 4, ["get", "w"]], ["dev.sargunv.orbis:meters-per-pixel"]]]"#,
+            r#"["interpolate", ["linear"], ["zoom"], 3, ["/", ["get", "w"], ["bearing"]], 15, ["/", ["*", 4, ["get", "w"]], ["bearing"]]]"#,
             r#"["interpolate", ["linear"], ["zoom"], 3, ["/", ["get", "w"], ["pitch"]], 15, ["/", ["get", "k"], ["pitch"]]]"#,
-            r#"["max", 1, ["/", ["get", "w"], ["dev.sargunv.orbis:meters-per-pixel"]]]"#,
-            r#"["min", ["max", ["/", ["get", "w"], ["dev.sargunv.orbis:meters-per-pixel"]], 1, ["/", 2, ["pitch"]]], 20]"#,
+            r#"["max", 1, ["/", ["get", "w"], ["bearing"]]]"#,
+            r#"["min", ["max", ["/", ["get", "w"], ["bearing"]], 1, ["/", 2, ["pitch"]]], 20]"#,
             r#"["max", ["min", ["*", ["get", "w"], ["pitch"]], 5], 8]"#,
-            r#"["max", ["get", "w"], ["/", 1, ["dev.sargunv.orbis:meters-per-pixel"]]]"#,
+            r#"["max", ["get", "w"], ["/", 1, ["bearing"]]]"#,
         ] {
             for properties in [r#"{"w": 12, "k": 2}"#, r#"{"w": 0.5, "k": 3}"#] {
                 for context in &at {
