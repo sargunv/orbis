@@ -75,6 +75,9 @@ pub(crate) struct ViewResult {
     /// Every pass label's time per frame and how many passes it has.
     pub(crate) passes: Vec<(String, Summary, usize)>,
     pub(crate) render_cpu: Summary,
+    /// `Map::render`'s median instructions on the calling thread, where
+    /// counted.
+    pub(crate) instructions: Option<u64>,
     pub(crate) submit_cpu: Summary,
     /// Nudged frames' render and readback.
     pub(crate) wall: Option<Summary>,
@@ -156,11 +159,11 @@ impl FramesReport {
         };
         writeln!(
             out,
-            "| view |{wall} GPU {g} | p90 | cull pass {g} | main pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches |"
+            "| view |{wall} GPU {g} | p90 | cull pass {g} | main pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches | render k instructions median |"
         )?;
         writeln!(
             out,
-            "|---|{}---|---|---|---|---|---|---|---|",
+            "|---|{}---|---|---|---|---|---|---|---|---|",
             if s.nudge { "---|---|" } else { "" }
         )?;
         let pass = |p: &Option<Summary>| p.as_ref().map_or("—".into(), |m| ms(gpu_stat.of(m)));
@@ -171,7 +174,7 @@ impl FramesReport {
             };
             writeln!(
                 out,
-                "| {} |{wall} {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} |{wall} {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 view.name,
                 ms(gpu_stat.of(&view.gpu)),
                 ms(view.gpu.p90),
@@ -181,10 +184,16 @@ impl FramesReport {
                 ms(cpu_stat.of(&view.submit_cpu)),
                 view.draws,
                 view.dispatches,
+                view.instructions
+                    .map_or("—".into(), |n| format!("{:.0}", n as f64 / 1e3)),
             )?;
         }
         writeln!(out)?;
-        writeln!(out, "Times in ms.")?;
+        writeln!(
+            out,
+            "Times in ms; instructions: those `Map::render` retired on its thread (macOS), which \
+             other work on the machine barely moves."
+        )?;
         for view in &self.views {
             writeln!(
                 out,

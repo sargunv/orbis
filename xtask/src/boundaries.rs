@@ -57,6 +57,8 @@ const UNSAFE_ALLOWED: &[&str] = &[
     "orb-web",
     // A Windows child's CPU time and peak memory, for `h2h` (`h2h.rs`).
     "xtask",
+    // A thread's instructions retired, for the benches (`clock.rs`).
+    "orb-bench",
 ];
 
 /// Job-side crates are share-nothing and never depend on scene-side crates.

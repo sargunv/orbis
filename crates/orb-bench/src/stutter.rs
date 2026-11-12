@@ -229,6 +229,8 @@ struct Frame {
     index: usize,
     zoom: f64,
     cpu: Duration,
+    /// `Map::render`'s instructions, where counted.
+    instructions: Option<u64>,
     /// Per stage in [`STAGES`].
     stages: [Duration; STAGES.len()],
     /// Its submissions' GPU time, each's from its first pass's start to
@@ -412,12 +414,13 @@ fn run_path(
         }
         let before = runtime.stats().uploaded_bytes;
         // The target keeps two frames in flight, as a swapchain does.
-        let (report, cpu) = frame(map, target, now)?;
+        let (report, cpu, instructions) = crate::frame_counted(map, target, now)?;
         warnings.extend(crate::take_warnings(map));
         frames.push(Frame {
             index: f as usize,
             zoom: map.zoom(),
             cpu,
+            instructions,
             stages: Frame::stages(&report.times, cpu),
             gpu: None,
             passes: Vec::new(),
@@ -493,11 +496,11 @@ impl StutterReport {
             out,
             "| path | frames | CPU p50 | p99 | max | > 16.7 ms | > 33.3 ms | GPU p50 | p99 | max | \
              > 16.7 ms | worst of both > 16.7 ms | tiles arrived | MiB uploaded (peak frame) | \
-             frames with layers compiling | settle ms |"
+             frames with layers compiling | settle ms | render M instructions |"
         )?;
         writeln!(
             out,
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         )?;
         for p in &self.paths {
             let cpu = sorted(p.frames.iter().map(|f| f.cpu));
@@ -512,7 +515,7 @@ impl StutterReport {
             };
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} | {} | {} |",
                 p.name,
                 p.frames.len(),
                 ms(percentile(&cpu, 0.5)),
@@ -534,6 +537,9 @@ impl StutterReport {
                 } else {
                     format!("{:.0}", p.settle.as_secs_f64() * 1000.0)
                 },
+                (p.frames.iter().map(|f| f.instructions))
+                    .sum::<Option<u64>>()
+                    .map_or("—".into(), |n| format!("{:.1}", n as f64 / 1e6)),
             )?;
         }
         writeln!(out)?;
@@ -542,8 +548,10 @@ impl StutterReport {
             "Times in ms. CPU: `Map::render`; GPU: its submissions, from the first pass's start \
              to the last one's end; worst of both: the slower of the two, what a display waits \
              for; frames with layers compiling: frames that left a layer out while its \
-             pipelines compiled; settle: from the path's end until the map is idle. Passes \
-             overlap on tiled GPUs, so their times below sum to more than the frame's."
+             pipelines compiled; settle: from the path's end until the map is idle; render M instructions: those \
+             `Map::render` retired on its thread over the path (macOS), which other work on the \
+             machine barely moves. Passes overlap on tiled GPUs, so their times below sum to \
+             more than the frame's."
         )?;
         for p in &self.paths {
             writeln!(out)?;

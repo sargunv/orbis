@@ -19,7 +19,7 @@
 //!
 //! [`run`] returns a [`Report`], which formats as Markdown.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod clock;
 mod cull;
@@ -442,6 +442,8 @@ struct Samples {
     passes: BTreeMap<String, (Vec<Duration>, usize)>,
     /// `Map::render`.
     render_cpu: Vec<Duration>,
+    /// `Map::render`'s instructions on the calling thread, where counted.
+    instructions: Vec<u64>,
     submit_cpu: Vec<Duration>,
     /// Render and readback of nudged frames.
     wall: Vec<Duration>,
@@ -541,6 +543,7 @@ pub fn run(
             let count = settings.warmup + settings.frames;
             let mut cpu = Vec::with_capacity(count);
             let mut wall = Vec::with_capacity(count);
+            let mut counts = Vec::with_capacity(count);
             // The target keeps two frames in flight, as a swapchain does,
             // unless nudged frames are read back one by one.
             for i in 0..count {
@@ -550,13 +553,14 @@ pub fn run(
                 }
                 let started = clock::now();
                 let time = (started - epoch).as_secs_f64() * 1000.0;
-                let (report, time) = frame(map, target, time)?;
+                let (report, time, instructions) = frame_counted(map, target, time)?;
                 if settings.nudge {
                     target.read_pixels().map_err(|e| e.to_string())?;
                     wall.push(clock::now() - started);
                 }
                 s.report = report;
                 cpu.push(time);
+                counts.push(instructions);
             }
             // A frame's submission each: one that only copies (a table
             // or page growing as something arrives) is no frame's.
@@ -582,6 +586,7 @@ pub fn run(
                     e.1 = n;
                 }
                 s.render_cpu.push(cpu[f]);
+                s.instructions.extend(counts[f]);
                 s.submit_cpu.push(times[f].cpu);
                 s.wall.extend(wall.get(f));
             }
@@ -675,6 +680,10 @@ fn view_result(name: &str, size: (u32, u32), mut s: Samples) -> ViewResult {
             .map(|(label, (mut d, n))| (label, Summary::of(&mut d), n))
             .collect(),
         render_cpu: Summary::of(&mut s.render_cpu),
+        instructions: (!s.instructions.is_empty()).then(|| {
+            s.instructions.sort_unstable();
+            s.instructions[s.instructions.len() / 2]
+        }),
         submit_cpu: Summary::of(&mut s.submit_cpu),
         wall: summary(&mut s.wall),
         draws: stats.draws,
@@ -718,12 +727,22 @@ pub(crate) fn frame(
     target: &mut Target,
     time: f64,
 ) -> Result<(FrameReport, Duration), String> {
-    let started = clock::now();
+    frame_counted(map, target, time).map(|(report, time, _)| (report, time))
+}
+
+/// [`frame`], with the instructions the render retired on this thread.
+pub(crate) fn frame_counted(
+    map: &mut Map,
+    target: &mut Target,
+    time: f64,
+) -> Result<(FrameReport, Duration, Option<u64>), String> {
+    let (started, counted) = (clock::now(), clock::instructions());
     let report = map
         .render(target, time)
         .map_err(|e| e.to_string())?
         .ok_or("a texture target always draws")?;
-    Ok((report, clock::now() - started))
+    let instructions = clock::instructions().zip(counted).map(|(a, b)| a - b);
+    Ok((report, clock::now() - started, instructions))
 }
 
 /// Draws until the map is idle, then once more.

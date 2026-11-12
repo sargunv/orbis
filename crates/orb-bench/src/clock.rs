@@ -1,4 +1,5 @@
-//! Wall-clock time for CPU timings, and the process's CPU time.
+//! Wall-clock time for CPU timings, the process's CPU time, and the
+//! instructions a thread retires.
 
 use std::time::Duration;
 
@@ -46,4 +47,28 @@ pub(crate) fn thread() -> Duration {
     }
     #[cfg(not(unix))]
     now()
+}
+
+/// Instructions this thread has retired so far, where the platform counts
+/// them (macOS). Unlike CPU time, they barely move with other work on the
+/// machine or with the cores the scheduler picks, so they compare two
+/// builds on a loaded machine.
+pub(crate) fn instructions() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        #[allow(unsafe_code)]
+        unsafe extern "C" {
+            /// libsystem_kernel's per-thread counters: kind 1 writes
+            /// instructions, then cycles.
+            fn thread_selfcounts(kind: i32, counts: *mut u64, size: usize) -> i32;
+        }
+        let mut counts = [0u64; 2];
+        // SAFETY: `counts` is writable for the size passed.
+        #[allow(unsafe_code)]
+        let status =
+            unsafe { thread_selfcounts(1, counts.as_mut_ptr(), std::mem::size_of_val(&counts)) };
+        (status == 0).then_some(counts[0])
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
 }
