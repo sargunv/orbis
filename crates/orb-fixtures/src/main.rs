@@ -200,8 +200,12 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     }))
 }
 
-/// Says on stderr why a render test failed, as it runs.
+/// Says on stderr why a render test failed, as it runs, and when its
+/// frames asked for pipelines the style's set left out.
 pub(crate) fn print_failure(suite: &str, id: &str, result: &Value) {
+    if let Some(late) = result["pipelines_late"].as_u64() {
+        eprintln!("LATE {suite} {id}: {late} pipelines outside the style's set");
+    }
     if result["status"] == "fail" {
         eprintln!(
             "FAIL {suite} {id}: {} ({:.2}% pixels)",
@@ -423,6 +427,9 @@ fn run_test(
     };
     result["frames"] = rendered["frames"].clone();
     result["tiles_drawn"] = rendered["tiles_drawn"].clone();
+    if rendered["pipelines_late"].as_u64().is_some_and(|n| n > 0) {
+        result["pipelines_late"] = rendered["pipelines_late"].clone();
+    }
     result["diagnostics"] = json!(diagnostics);
     if !reasons.is_empty() {
         finish_skip(&mut result, &reasons, started);
@@ -539,6 +546,8 @@ fn render_native(
     let mut target = Target::texture(runtime, width, height, metadata.pixel_ratio);
     let mut frames = 0;
     let mut tiles_drawn = 0;
+    // Pipelines the frames asked for that the style's set left out.
+    let late = Cell::new(0);
     let mut failure = None;
     let render_started = Instant::now();
     // Tests with fades follow GL JS's harness: they start once the map has
@@ -554,7 +563,10 @@ fn render_native(
     let mut render = |map: &mut Map, at: f64, diagnostics: &mut Vec<String>| {
         last_frame.set(at);
         match map.render(&mut target, at) {
-            Ok(report) => report,
+            Ok(report) => {
+                late.set(late.get() + report.as_ref().map_or(0, |r| r.pipelines_late));
+                report
+            }
             Err(e) => {
                 diagnostics.push(format!("render: {e}"));
                 None
@@ -646,7 +658,12 @@ fn render_native(
         pixels,
     };
     image.unpremultiply();
-    let report = json!({"frames":frames,"tiles_drawn":tiles_drawn,"timed_out":failure.is_some()});
+    let report = json!({
+        "frames": frames,
+        "tiles_drawn": tiles_drawn,
+        "timed_out": failure.is_some(),
+        "pipelines_late": late.get(),
+    });
     Some((image, report))
 }
 

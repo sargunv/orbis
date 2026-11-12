@@ -105,32 +105,45 @@ impl Atmosphere {
             .collect()
     }
 
-    /// Writes the frame's atmosphere: without a paint there is no sky and
-    /// no fog. The first sky asks for its pipeline, and for the globe's
+    /// Asks for the sky's pipeline unless it is made, and for the globe's
     /// scattering where the map's views may be on a low-zoom surface
-    /// (`full_projection`), in the background unless this view is.
-    pub(crate) fn set(
+    /// (`full_projection`), in the background unless the view is a globe
+    /// (`globe`): the pipeline set's for a style with a sky.
+    pub(crate) fn request(
         &mut self,
         gpu: &mut dyn Gpu,
         (target, full_projection): (TargetFormat, bool),
+        frame: BufferId,
+        globe: bool,
+    ) {
+        let uniform = self.uniform;
+        let (layout, _) = *self
+            .group
+            .get_or_insert_with(|| sky_group(gpu, frame, uniform));
+        let blend = Some(BlendState::PremultipliedAlpha);
+        if self.sky.is_none() {
+            self.sky = Some(pipeline(gpu, &SKY_SHADER, target, layout, blend));
+        }
+        if self.scatter.is_none() && (globe || full_projection) {
+            gpu.set_background_compiles(!globe);
+            self.scatter = Some(pipeline(gpu, &SCATTER_SHADER, target, layout, blend));
+            gpu.set_background_compiles(false);
+        }
+    }
+
+    /// Writes the frame's atmosphere: without a paint there is no sky and
+    /// no fog. A sky the pipeline set left out asks for its pipelines.
+    pub(crate) fn set(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        target: (TargetFormat, bool),
         frame: BufferId,
         paint: Option<AtmospherePaint>,
         view: AtmosphereView,
     ) {
         self.enabled = paint.is_some();
-        if self.enabled && self.group.is_none() {
-            self.group = Some(sky_group(gpu, frame, self.uniform));
-        }
-        if let Some((layout, _)) = self.group {
-            let blend = Some(BlendState::PremultipliedAlpha);
-            if self.enabled && self.sky.is_none() {
-                self.sky = Some(pipeline(gpu, &SKY_SHADER, target, layout, blend));
-            }
-            if self.enabled && self.scatter.is_none() && (view.globe.is_some() || full_projection) {
-                gpu.set_background_compiles(view.globe.is_none());
-                self.scatter = Some(pipeline(gpu, &SCATTER_SHADER, target, layout, blend));
-                gpu.set_background_compiles(false);
-            }
+        if self.enabled {
+            self.request(gpu, target, frame, view.globe.is_some());
         }
         if self.written == Some((paint, view)) {
             return;

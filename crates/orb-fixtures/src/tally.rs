@@ -22,6 +22,8 @@ pub(crate) struct Tally {
     skips: BTreeMap<String, usize>,
     /// The counts of the tests Native's manifest ignores.
     native_ignored: Counts,
+    /// Tests whose frames asked for pipelines the style's set left out.
+    late: usize,
     tests: Vec<Value>,
 }
 
@@ -48,6 +50,7 @@ impl Tally {
             prefixes: BTreeMap::new(),
             skips: BTreeMap::new(),
             native_ignored: Counts::default(),
+            late: 0,
             tests: Vec::new(),
         })
     }
@@ -61,6 +64,7 @@ impl Tally {
         if result["native_ignored"].is_string() {
             self.native_ignored.add(status);
         }
+        self.late += usize::from(result["pipelines_late"].is_u64());
         for reason in result["skip_reasons"].as_array().into_iter().flatten() {
             *self
                 .skips
@@ -121,6 +125,12 @@ impl Tally {
                 ignored.pass,
                 ignored.fail,
                 ignored.skip
+            );
+        }
+        if self.late > 0 {
+            println!(
+                "  {} asked for pipelines outside the style's set (LATE above)",
+                self.late
             );
         }
     }

@@ -535,15 +535,18 @@ fn pacing(xs: &mut [f64]) -> String {
 
 /// The device's counts over `frames`, summed, the drape slots redrawn
 /// and how many frames.
-fn summed<'a>(frames: impl Iterator<Item = &'a Frame>) -> (GpuCounters, u32, usize) {
+/// The frames' device counts summed, their drape slots redrawn, their
+/// pipelines asked for outside the style's set, and how many they are.
+fn summed<'a>(frames: impl Iterator<Item = &'a Frame>) -> (GpuCounters, u32, u32, usize) {
     let mut sum = GpuCounters::default();
-    let (mut slots, mut n) = (0, 0);
+    let (mut slots, mut late, mut n) = (0, 0, 0);
     for f in frames {
         sum += f.report.gpu;
         slots += f.report.frame.drape_slots;
+        late += f.report.pipelines_late;
         n += 1;
     }
-    (sum, slots, n)
+    (sum, slots, late, n)
 }
 
 fn mib(bytes: u64) -> String {
@@ -669,11 +672,11 @@ impl SessionReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| session | frames | pipelines asked | made | buffers + textures made | MiB made | MiB \
+            "| session | frames | pipelines asked | late | made | buffers + textures made | MiB made | MiB \
              copied on the GPU | MiB uploaded | upload calls | texture-write submissions | drape \
              slots | peak frame MiB uploaded |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(12))?;
+        writeln!(out, "|{}", "---|".repeat(13))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -681,14 +684,14 @@ impl SessionReport {
                     "moving" => f.report.moved || f.report.input,
                     _ => true,
                 };
-                let (c, slots, n) = summed(r.frames.iter().filter(keep));
+                let (c, slots, late, n) = summed(r.frames.iter().filter(keep));
                 let peak = (r.frames.iter().filter(keep))
                     .map(|f| f.report.gpu.uploaded_bytes())
                     .max()
                     .unwrap_or(0);
                 writeln!(
                     out,
-                    "| {} {what} | {n} | {} | {} | {} | {} | {} | {} | {} | {} | {slots} | {} |",
+                    "| {} {what} | {n} | {} | {late} | {} | {} | {} | {} | {} | {} | {} | {slots} | {} |",
                     r.name,
                     c.pipelines_requested,
                     c.pipelines_compiled,
@@ -705,7 +708,8 @@ impl SessionReport {
         writeln!(out)?;
         writeln!(
             out,
-            "Each frame's device counts since the frame before. input: frames drawn while input \
+            "Each frame's device counts since the frame before. late: pipelines asked for that \
+             the style's pipeline set left out. input: frames drawn while input \
              held the camera (a pipeline made then compiled mid-gesture); moving: frames \
              that moved the camera, or with input (memory made then is made while it moves); peak \
              frame: the most one frame uploaded, with what was prepared before it."

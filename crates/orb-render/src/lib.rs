@@ -344,6 +344,17 @@ pub struct PipelineGroup {
     pub first: bool,
 }
 
+/// Every pipeline a style can reach on a renderer
+/// ([`Renderer::set_pipelines`]): its nodes' by what draws together, and
+/// the sky's.
+#[derive(Clone, Debug, Default)]
+pub struct PipelineSet {
+    pub groups: Vec<PipelineGroup>,
+    /// The style has a sky: its pipeline, and the globe's scattering
+    /// where views may be on a low-zoom surface.
+    pub sky: bool,
+}
+
 #[derive(Debug)]
 pub struct Renderer {
     id: u64,
@@ -384,10 +395,12 @@ pub struct Renderer {
     /// holds theirs, or one was shown.
     pipelines_stale: bool,
     /// Every pipeline the style can reach ([`set_pipelines`](Self::set_pipelines)).
-    pipeline_set: Vec<PipelineGroup>,
+    pipeline_set: PipelineSet,
     /// The set is to be asked for again, in what the map draws it with
     /// now: other variants, another sample count, or into the drape.
     set_stale: bool,
+    /// Pipelines the set asked for since [`take_set_asked`](Self::take_set_asked).
+    set_asked: u32,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
     /// Nodes the main bundle left out, waiting for a pipeline.
@@ -635,8 +648,9 @@ impl Renderer {
             background_fills: false,
             beneath: None,
             pipelines_stale: false,
-            pipeline_set: Vec::new(),
+            pipeline_set: PipelineSet::default(),
             set_stale: false,
+            set_asked: 0,
             made_seen: 0,
             waiting: 0,
             drape_waiting: false,
@@ -1762,31 +1776,44 @@ impl Renderer {
     }
 
     /// Sets the style's pipeline set: every pipeline it can reach, by
-    /// what draws together ([`PipelineGroup`]). Asks for them at once: the
+    /// what draws together ([`PipelineGroup`]), and the sky's. Asks for
+    /// them at once: the
     /// first view's groups as frames wait for them, in draw order, then
     /// the rest in the background, after every other compile. Frames then
     /// choose among them and make none: a node shown before its pipeline
     /// compiled waits for that pipeline alone, or draws with a variant
     /// compiled that draws it alike (`Variants::drawn`).
-    pub fn set_pipelines(&mut self, gpu: &mut dyn Gpu, set: Vec<PipelineGroup>) {
+    pub fn set_pipelines(&mut self, gpu: &mut dyn Gpu, set: PipelineSet) {
         self.pipeline_set = set;
         self.set_stale = false;
         self.request_set(gpu);
     }
 
-    /// What comes before a frame: asks for the set's pipelines again in
-    /// what the map now draws them with (other variants, sample count,
-    /// terrain), once that changed, and for the pipelines of nodes shown
-    /// that the set left out. Returns how many of those it asked for: none
-    /// for a complete set, which the path tests hold.
-    pub fn request_pipelines(&mut self, gpu: &mut dyn Gpu) -> u32 {
+    /// Asks for the set's pipelines again in what the map now draws them
+    /// with (other variants, sample count, terrain), once that changed
+    /// since they were asked for.
+    pub fn renew_pipelines(&mut self, gpu: &mut dyn Gpu) {
         if std::mem::take(&mut self.set_stale) {
             self.request_set(gpu);
         }
+    }
+
+    /// How many pipelines the set asked for since the last call: those
+    /// the map asked for besides are what the set left out.
+    pub fn take_set_asked(&mut self) -> u32 {
+        std::mem::take(&mut self.set_asked)
+    }
+
+    /// What comes before a frame: renews the set
+    /// ([`renew_pipelines`](Self::renew_pipelines)) if what the frame
+    /// draws changed it, and asks for the pipelines of nodes shown that
+    /// the set left out: none for a complete set, which the path tests
+    /// hold.
+    pub fn request_pipelines(&mut self, gpu: &mut dyn Gpu) {
+        self.renew_pipelines(gpu);
         if !self.pipelines_stale {
-            return 0;
+            return;
         }
-        let requested = gpu.counters().pipelines_requested;
         for i in 0..self.nodes.len() {
             if !self.scene_cull(i).visible && !self.nodes[i].drawn {
                 continue;
@@ -1797,7 +1824,6 @@ impl Renderer {
                 self.composites.make(gpu, offscreen::Mode::Blend(blend));
             }
         }
-        gpu.counters().pipelines_requested - requested
     }
 
     /// Asks for the set's pipelines that aren't made: the first view's,
@@ -1805,6 +1831,7 @@ impl Renderer {
     /// yet, they are the drape's and the terrain's: its draped nodes wait
     /// for it.
     fn request_set(&mut self, gpu: &mut dyn Gpu) {
+        let asked = gpu.counters().pipelines_requested;
         // Extrusions take the paint pipelines' variant.
         self.extrusions.set_full(self.variants()[1]);
         let set = std::mem::take(&mut self.pipeline_set);
@@ -1814,7 +1841,7 @@ impl Renderer {
         }
         for first in [true, false] {
             gpu.set_background_compiles(!first);
-            for group in set.iter().filter(|g| g.first == first) {
+            for group in set.groups.iter().filter(|g| g.first == first) {
                 self.request_group(gpu, &group.nodes, !first);
                 if let Some(blend) = group.composite {
                     self.composites.make(gpu, offscreen::Mode::Blend(blend));
@@ -1822,6 +1849,13 @@ impl Renderer {
             }
         }
         gpu.set_background_compiles(false);
+        if set.sky {
+            // With the first view's: a tilt that brings the horizon in
+            // shows the sky at once.
+            let frame = self.scene.buffers().frame;
+            let target = (self.target, self.full_projection);
+            self.atmosphere.request(gpu, target, frame, false);
+        }
         if ahead || self.terrain_on() {
             self.request_terrain(gpu);
         }
@@ -1829,6 +1863,7 @@ impl Renderer {
             self.assign_stacks();
         }
         self.pipeline_set = set;
+        self.set_asked += gpu.counters().pipelines_requested - asked;
     }
 
     /// Asks for the terrain's pipelines at the sample count 3D layers draw

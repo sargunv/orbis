@@ -165,8 +165,9 @@ pub struct FrameReport {
     /// wakes the host for it: a host that draws only what's new can leave
     /// it to its next frame.
     pub upkeep: bool,
-    /// Pipelines the frame's nodes needed that the style's pipeline set
-    /// left out, asked for before it drew: none for a complete set.
+    /// Pipelines the frame, and the frames prepared since the last one
+    /// drawn, asked the device for besides the style's pipeline set's: what
+    /// the set left out, none for a complete one.
     pub pipelines_late: u32,
     /// As `idle` but for the camera: nothing the map draws changes in
     /// frames to come unless the camera moves (MapLibre Native's
@@ -668,6 +669,9 @@ pub struct Map {
     pub(crate) waiting: Vec<WaitingTile>,
     /// Chunks the last frame's cull left out for want of room.
     pub(crate) candidates_dropped: u32,
+    /// Pipelines prepared frames asked for that the style's set left out,
+    /// for the next drawn frame's report ([`FrameReport::pipelines_late`]).
+    pipelines_late: u32,
     /// A frame at rest found pools, pages or the drape atlas to resize for
     /// the view (more than three quarters full, or at most a quarter), for
     /// the next to resize, which settles it again. A continuous map
@@ -921,6 +925,7 @@ impl Map {
             planned: None,
             waiting: Vec::new(),
             candidates_dropped: 0,
+            pipelines_late: 0,
             resize_due: false,
             resize_now: false,
             resize_grew: false,
@@ -1771,6 +1776,7 @@ impl Map {
         let frame_time = self.frame_time;
         let clock = Arc::clone(&self.services.clock);
         let started = clock.now();
+        let asked = gpu.counters().pipelines_requested;
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
         let deadline = self.open_beat(started);
         self.take_arrivals(gpu, renderer, pixel_ratio, deadline);
@@ -1824,6 +1830,9 @@ impl Map {
         });
         renderer.set_full_projection(self.surface.globe().is_some() || warped || terrain);
         renderer.set_terrain_reachable(terrain);
+        // The style's pipeline set, in what the map now declares, before
+        // anything the frame shows asks for its own.
+        self.pipeline_set(gpu, renderer);
         let view = self.view(viewport);
         // What this frame draws, for picking.
         let mut drawn = Vec::new();
@@ -1885,8 +1894,8 @@ impl Map {
         let labels_settled = self.place_labels(gpu, renderer, &view, now, data_loaded);
         times.placement = micros(0.0, self.placement_ms);
         times.upload = micros(0.0, self.upload_ms);
-        self.pipeline_set(gpu, renderer);
         let Some(target) = target else {
+            self.pipelines_late += self.asked_late(gpu, renderer, asked);
             self.globe_warps.end_frame();
             times.total = micros(started, clock.now());
             self.prepared.0.add_prepared(&times);
@@ -1944,8 +1953,12 @@ impl Map {
         {
             renderer.set_images(atlas.bindings());
         }
-        report.pipelines_late = renderer.request_pipelines(gpu);
+        renderer.request_pipelines(gpu);
         report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
+        // Whatever this frame, and the prepared ones since the last,
+        // asked for besides the set.
+        report.pipelines_late =
+            std::mem::take(&mut self.pipelines_late) + self.asked_late(gpu, renderer, asked);
         times.render = report.frame.times;
         // A frame that left something out for a compiling pipeline isn't
         // complete. Only a compile still pending wakes the host when it
@@ -2230,8 +2243,11 @@ impl Map {
 
     /// Gives the renderer the style's pipeline set when the style or its
     /// nodes changed since it was made: every pipeline it can reach,
-    /// the view's first ([`PipelineSet::for_style`](crate::pipelines::PipelineSet::for_style)).
+    /// the view's first ([`for_style`](crate::pipelines::for_style)), or
+    /// else renews it in what the map now declares it draws with (another
+    /// projection, terrain or sample count).
     fn pipeline_set(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        renderer.renew_pipelines(gpu);
         let zoom = self.zoom();
         let inputs = crate::paint::camera_inputs(self.camera.state());
         let Some(style) = &mut self.style else {
@@ -2245,10 +2261,15 @@ impl Map {
         let Some(atlas) = images.atlas.as_mut() else {
             return;
         };
-        let set =
-            crate::pipelines::PipelineSet::for_style(gpu, renderer, style, (zoom, inputs), atlas);
-        renderer.set_pipelines(gpu, set.groups);
+        let set = crate::pipelines::for_style(gpu, renderer, style, (zoom, inputs), atlas);
+        renderer.set_pipelines(gpu, set);
         style.pipelines = Some(key);
+    }
+
+    /// The pipelines asked for since the frame began (the device's count
+    /// was `asked` then) that the style's set didn't ask for.
+    fn asked_late(&self, gpu: &dyn Gpu, renderer: &mut Renderer, asked: u32) -> u32 {
+        (gpu.counters().pipelines_requested - asked).saturating_sub(renderer.take_set_asked())
     }
 
     /// Makes the renderer's nodes the plan's: removes the meshes of nodes

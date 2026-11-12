@@ -555,6 +555,24 @@ impl FeatureStates {
         }
     }
 
+    /// Where node `node` of `plan` reads its state lookups once a feature
+    /// has state: [`lookup`](Self::lookup)'s, with what it reads before any
+    /// feature has. The node's pipelines are made for it, so a first state
+    /// asks for none.
+    pub(crate) fn reach(&self, plan: &StylePlan, node: usize) -> StateLookup {
+        let lookup = self.lookup(node);
+        let n = &plan.nodes[node];
+        if lookup.mask != 0 || !plan.reads_state(n) {
+            return lookup;
+        }
+        let properties = plan.paint_properties(n);
+        let mask = (properties.iter().enumerate())
+            .filter(|(_, p)| p.reads_state())
+            .map(|(slot, _)| 1 << slot)
+            .sum();
+        StateLookup { mask, ..lookup }
+    }
+
     /// Lets go of the GPU table, for its owner to free: rows written into
     /// the next one start without fades.
     pub(crate) fn take_table(&mut self) -> Option<std::ops::Range<u32>> {

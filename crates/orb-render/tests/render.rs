@@ -5,8 +5,8 @@ use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
     Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameLight, FrameStats,
-    MeshData, NodePaint, PipelineGroup, PlacementTarget, Renderer, SceneCapacity, SymbolPaint,
-    TargetFormat, TileRow, Words,
+    MeshData, NodePaint, PipelineGroup, PipelineSet, PlacementTarget, Renderer, SceneCapacity,
+    SymbolPaint, TargetFormat, TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -441,7 +441,9 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     // fill.
     let pipelines = 1 + u32::from(h.gpu_driven());
     // A map without a pipeline set asks for them as nodes show.
-    assert_eq!(h.renderer.request_pipelines(&mut h.gpu), 1);
+    let asked = h.gpu.counters().pipelines_requested;
+    h.renderer.request_pipelines(&mut h.gpu);
+    assert_eq!(h.gpu.counters().pipelines_requested - asked, 1);
     let counts = h.gpu.poll_pipelines();
     assert_eq!(counts.made + counts.pending, pipelines, "{counts:?}");
     // One worker can't have compiled both yet: the fill waits, and the
@@ -1848,27 +1850,32 @@ fn the_set_asks_for_the_symbol_pipeline_both_halves_pick() {
         table_mask: 1,
         ..SymbolPaint::default()
     });
-    let group = |nodes| PipelineGroup {
-        nodes,
-        composite: None,
-        first: false,
+    let set = |groups: Vec<Vec<_>>| PipelineSet {
+        groups: (groups.into_iter())
+            .map(|nodes| PipelineGroup {
+                nodes,
+                composite: None,
+                first: false,
+            })
+            .collect(),
+        sky: false,
     };
     // Neither half painted yet: the icons alone, with text that draws
     // nothing, or with text painted alike pick the pipeline without rows.
     h.renderer.set_pipelines(
         &mut h.gpu,
-        vec![
-            group(vec![(0, Some(plain))]),
-            group(vec![(0, Some(plain)), (1, None)]),
-            group(vec![(0, Some(plain)), (1, Some(plain))]),
-        ],
+        set(vec![
+            vec![(0, Some(plain))],
+            vec![(0, Some(plain)), (1, None)],
+            vec![(0, Some(plain)), (1, Some(plain))],
+        ]),
     );
     let plain_pipelines = h.gpu.background_pending();
     assert!(plain_pipelines > 0);
     // Text reading rows picks the variant with them for both halves.
     h.renderer.set_pipelines(
         &mut h.gpu,
-        vec![group(vec![(0, Some(plain)), (1, Some(rows))])],
+        set(vec![vec![(0, Some(plain)), (1, Some(rows))]]),
     );
     assert_eq!(h.gpu.background_pending(), 2 * plain_pipelines);
 }
