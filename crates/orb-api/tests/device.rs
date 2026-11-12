@@ -441,3 +441,86 @@ fn a_map_that_never_rests_compiles_its_whole_set() {
         std::thread::sleep(Duration::from_millis(16));
     }
 }
+
+/// The child's role in [`a_device_whose_compiles_hold_presents_shows_its_whole_set_compiled`].
+const HOLD_CHILD: &str = "ORB_TEST_HOLD_CHILD";
+
+/// On a device whose presents wait behind compiles (Firefox's WebGPU,
+/// stood in for here), the style's whole set compiles at once, a layer a
+/// zoom shows later's too, and the map draws nothing until it has: its
+/// first frame shows its view whole, and the zoom that shows the layer
+/// compiles nothing. In a child process: the device and the layer's slowed
+/// compile are set from the environment.
+#[test]
+fn a_device_whose_compiles_hold_presents_shows_its_whole_set_compiled() {
+    if std::env::var_os(HOLD_CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "a_device_whose_compiles_hold_presents_shows_its_whole_set_compiled",
+                "--nocapture",
+            ])
+            .env(HOLD_CHILD, "1")
+            .env("ORB_COMPILES_HOLD_PRESENTS", "1")
+            .env("ORB_FAULT_INJECTION", "slow:circle:500")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(child.status.success(), "{stderr}");
+        return;
+    }
+    let style = r##"{"version":8,"zoom":1,"sources":{"point":{"type":"geojson","data":
+      {"type":"Point","coordinates":[0,0]}}},
+      "layers":[{"id":"bg","type":"background","paint":{"background-color":"#ff0000"}},
+      {"id":"dot","type":"circle","source":"point","minzoom":4,
+        "paint":{"circle-radius":20,"circle-color":"#00ff00"}}]}"##;
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let center = |target: &Target| {
+        let pixels = target.read_pixels().unwrap();
+        let i = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).unwrap();
+    let started = Instant::now();
+    let mut held = 0;
+    loop {
+        assert!(started.elapsed() < Duration::from_secs(15), "never idle");
+        if !map.needs_frame() {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+        let Some(report) = map.render(&mut target, 0.0).unwrap() else {
+            continue;
+        };
+        let counters = runtime.stats().counters;
+        if report.compiling {
+            held += 1;
+            assert_eq!(center(&target), [0, 0, 0], "a frame drew while compiling");
+            continue;
+        }
+        assert_eq!(
+            counters.pipelines_compiled, counters.pipelines_requested,
+            "a frame drew before the whole set compiled"
+        );
+        if report.idle {
+            break;
+        }
+    }
+    assert!(held > 0, "no frame waited for the slowed compile");
+    assert_eq!(center(&target), [255, 0, 0], "the background");
+    let asked = runtime.stats().counters.pipelines_requested;
+    map.jump_to(&orb_api::CameraTarget {
+        zoom: Some(5.0),
+        ..Default::default()
+    });
+    map.render_until_idle(&mut target, Duration::from_secs(15))
+        .unwrap();
+    assert_eq!(center(&target), [0, 255, 0], "the circle");
+    assert_eq!(
+        runtime.stats().counters.pipelines_requested,
+        asked,
+        "the zoom asked for a pipeline"
+    );
+}

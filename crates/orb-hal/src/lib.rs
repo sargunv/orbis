@@ -149,6 +149,12 @@ pub trait Gpu {
     fn pause_background_compiles(&mut self, paused: bool) {
         let _ = paused;
     }
+    /// Whether a frame presented now would wait behind compiles: on a
+    /// device whose compiles hold presents
+    /// ([`Caps::compiles_hold_presents`]), while one runs.
+    fn presents_wait(&mut self) -> bool {
+        false
+    }
 
     /// Records render commands once for replay with
     /// [`RenderCommand::ExecuteBundles`]. Bundles may not contain
@@ -329,6 +335,13 @@ pub struct Caps {
     /// GL back end remaps it into GL's −1 to 1 (`2z − w`), which spends
     /// reversed Z's precision far from the camera.
     pub zero_to_one_depth: bool,
+    /// The device compiles pipelines on the thread that runs its commands
+    /// (Firefox's WebGPU, in its GPU process), so a present waits behind
+    /// every compile asked for before it, and the page's frames behind
+    /// that present. It has no background compiles, and a map on it shows
+    /// nothing until its style's pipelines compiled, nor while any
+    /// compiles ([`Gpu::presents_wait`]).
+    pub compiles_hold_presents: bool,
 }
 
 impl Caps {

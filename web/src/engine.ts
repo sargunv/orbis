@@ -622,7 +622,8 @@ export class Engine {
     stats.inputTime = this.#inputTime;
     this.#stats = stats;
     this.#drain();
-    this.#send({ stats });
+    // A frame held back while compiles run drew nothing: no `render`.
+    this.#send(stats.drew === false ? {} : { stats });
     return stats.needsFrame;
   }
 

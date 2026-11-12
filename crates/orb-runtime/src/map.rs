@@ -1951,6 +1951,23 @@ impl Map {
         // The style's pipeline set, in what the map now declares, before
         // anything the frame shows asks for its own.
         self.pipeline_set(gpu, renderer);
+        // A present while compiles run would wait behind them, and the
+        // page's own frames behind that present, on a device that compiles
+        // on the thread that presents (Firefox's,
+        // `Caps::compiles_hold_presents`): there the frame draws nothing,
+        // as a prepared one, and the compile that ends last wakes the host
+        // for the frame that does. Nor does it draw before the style it
+        // loads has asked for its pipelines: the map shows once its first
+        // view draws, and input never meets a map compiling.
+        let compiling = target.is_some() && gpu.presents_wait();
+        let held_back = compiling
+            || target.is_some()
+                && gpu.caps().compiles_hold_presents
+                && match &self.style {
+                    Some(style) => style.pipelines.is_none(),
+                    None => self.style_fetching,
+                };
+        let target = target.filter(|_| !held_back);
         let view = self.view(viewport);
         // What this frame draws, for picking.
         let mut drawn = Vec::new();
@@ -2020,6 +2037,7 @@ impl Map {
             self.prepared.0.add_prepared(&times);
             self.prepared.1 += self.tiles_arrived;
             self.prepared.2 += renderer.take_resized();
+            report.compiling = compiling;
             return report;
         };
         let (prepared, arrived, resized) = std::mem::take(&mut self.prepared);

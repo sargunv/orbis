@@ -148,6 +148,10 @@ pub struct WgpuGpu {
     compiler: compile::Compiler,
     /// Pipelines asked for and not yet compiled, background ones aside.
     pending: u32,
+    /// The surface texture a frame draws into, once a pass draws into it
+    /// ([`register_surface`](Self::register_surface)).
+    #[cfg(target_arch = "wasm32")]
+    surface: Option<PendingSurface>,
     /// Later requests are background ones
     /// ([`Gpu::set_background_compiles`]).
     background: bool,
@@ -296,10 +300,24 @@ struct BindGroupLayout {
 struct Texture {
     /// `None` for views the host registered and owns.
     texture: Option<wgpu::Texture>,
-    view: wgpu::TextureView,
+    /// `None` for a surface's texture not yet acquired
+    /// ([`WgpuGpu::register_surface`]).
+    view: Option<wgpu::TextureView>,
     /// A view of these mip levels of another entry's texture, which it
     /// doesn't own.
     levels: Option<std::ops::Range<u32>>,
+}
+
+/// A surface's texture for the frame ([`WgpuGpu::register_surface`]).
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug)]
+struct PendingSurface {
+    id: TextureId,
+    surface: std::rc::Rc<wgpu::Surface<'static>>,
+    /// Configured so before its texture is acquired.
+    configure: Option<wgpu::SurfaceConfiguration>,
+    /// Once a pass drew into it.
+    frame: Option<Result<wgpu::SurfaceTexture, String>>,
 }
 
 /// The layers wgpu's GL back end makes an array texture of `desc` with,
@@ -467,6 +485,14 @@ impl WgpuGpu {
             // adapter (WebGL 2 has them with `EXT_color_buffer_float`).
             float_targets: cfg!(webgpu),
             zero_to_one_depth: !gl || gl_clips_zero_to_one(&device),
+            // `ORB_COMPILES_HOLD_PRESENTS` has a native device stand in for
+            // Firefox's: what a map does there, in tests and benches.
+            #[cfg(webgpu)]
+            compiles_hold_presents: compile::compiles_hold_presents(),
+            #[cfg(not(target_arch = "wasm32"))]
+            compiles_hold_presents: std::env::var_os("ORB_COMPILES_HOLD_PRESENTS").is_some(),
+            #[cfg(webgl)]
+            compiles_hold_presents: false,
         };
         let glsl_es = gl && gl_takes_glsl_es(&device);
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
@@ -495,6 +521,8 @@ impl WgpuGpu {
             attribute_zero: None,
             compiler: compile::Compiler::new(),
             pending: 0,
+            #[cfg(target_arch = "wasm32")]
+            surface: None,
             background: false,
             background_pending: Default::default(),
             background_paused: false,
@@ -1252,9 +1280,71 @@ impl WgpuGpu {
     pub fn register_view(&mut self, view: wgpu::TextureView) -> TextureId {
         TextureId(self.textures.insert(Texture {
             texture: None,
-            view,
+            view: Some(view),
             levels: None,
         }))
+    }
+
+    /// A target for a frame into `surface`, whose texture is acquired
+    /// when a pass first draws into it, so a frame that draws nothing
+    /// (one held while compiles run, [`Gpu::presents_wait`]) presents
+    /// nothing. [`take_surface`](Self::take_surface) takes the texture.
+    /// The surface takes `configure`, if given, before its texture.
+    #[cfg(target_arch = "wasm32")]
+    pub fn register_surface(
+        &mut self,
+        surface: std::rc::Rc<wgpu::Surface<'static>>,
+        configure: Option<wgpu::SurfaceConfiguration>,
+    ) -> TextureId {
+        let id = TextureId(self.textures.insert(Texture {
+            texture: None,
+            view: None,
+            levels: None,
+        }));
+        self.surface = Some(PendingSurface {
+            id,
+            surface,
+            configure,
+            frame: None,
+        });
+        id
+    }
+
+    /// The texture the frame acquired for `id` (`None` if no pass drew
+    /// into it), or why acquiring it failed; `id` is released.
+    #[cfg(target_arch = "wasm32")]
+    pub fn take_surface(&mut self, id: TextureId) -> Option<Result<wgpu::SurfaceTexture, String>> {
+        let pending = self.surface.take().filter(|s| s.id == id);
+        self.textures.remove(id.0);
+        pending.and_then(|s| s.frame)
+    }
+
+    /// Acquires the pending surface's texture if a pass draws into it
+    /// (`id`) and it wasn't yet.
+    #[cfg(target_arch = "wasm32")]
+    fn acquire_surface(&mut self, id: TextureId) {
+        let Some(pending) = (self.surface.as_mut()).filter(|s| s.id == id && s.frame.is_none())
+        else {
+            return;
+        };
+        if let Some(config) = pending.configure.take() {
+            pending.surface.configure(&self.device, &config);
+        }
+        let frame = match pending.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
+            other => Err(format!("canvas texture: {other:?}")),
+        };
+        if let Ok(frame) = &frame {
+            let view = (frame.texture).create_view(&wgpu::TextureViewDescriptor::default());
+            self.textures[id.0].view = Some(view);
+        }
+        pending.frame = Some(frame);
+    }
+
+    /// The view of a texture a pass draws into.
+    fn view(&self, id: TextureId) -> &wgpu::TextureView {
+        (self.textures[id.0].view.as_ref()).expect("a surface's texture acquired for its pass")
     }
 
     /// The wgpu texture behind an id created with [`Gpu::create_texture`].
@@ -1623,7 +1713,7 @@ impl Gpu for WgpuGpu {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         TextureId(self.textures.insert(Texture {
             texture: Some(texture),
-            view,
+            view: Some(view),
             levels: None,
         }))
     }
@@ -1641,7 +1731,7 @@ impl Gpu for WgpuGpu {
         });
         TextureId(self.textures.insert(Texture {
             texture: Some(texture),
-            view,
+            view: Some(view),
             levels: Some(levels),
         }))
     }
@@ -1658,7 +1748,7 @@ impl Gpu for WgpuGpu {
         });
         TextureId(self.textures.insert(Texture {
             texture: Some(texture),
-            view,
+            view: Some(view),
             levels: Some(level..level + 1),
         }))
     }
@@ -1972,7 +2062,7 @@ impl Gpu for WgpuGpu {
     }
 
     fn set_background_compiles(&mut self, on: bool) {
-        self.background = on;
+        self.background = on && !self.caps.compiles_hold_presents;
     }
 
     fn pause_background_compiles(&mut self, paused: bool) {
@@ -1980,6 +2070,14 @@ impl Gpu for WgpuGpu {
             self.background_paused = paused;
             self.gate_background();
         }
+    }
+
+    fn presents_wait(&mut self) -> bool {
+        if !self.caps.compiles_hold_presents {
+            return false;
+        }
+        self.take_compiled(false);
+        self.pending > 0
     }
 
     fn create_render_bundle(
@@ -2026,6 +2124,18 @@ impl Gpu for WgpuGpu {
 
     fn submit(&mut self, passes: &[Pass]) {
         let started = timing::now();
+        // The frame's surface texture, once a pass draws into it.
+        #[cfg(target_arch = "wasm32")]
+        for pass in passes {
+            if let Pass::Render(render) = pass {
+                for color in &render.colors {
+                    self.acquire_surface(color.target);
+                    if let Some(resolve) = color.resolve {
+                        self.acquire_surface(resolve);
+                    }
+                }
+            }
+        }
         self.reserve_attribute_zero(passes.iter().flat_map(|pass| match pass {
             Pass::Render(render) => render.commands.as_slice(),
             _ => &[],
@@ -2187,15 +2297,20 @@ impl Gpu for WgpuGpu {
                         }
                     }
                 }
+                // Into a surface whose texture couldn't be acquired
+                // (`take_surface` says why).
+                Pass::Render(render)
+                    if (render.colors.iter()).any(|c| self.textures[c.target.0].view.is_none()) => {
+                }
                 Pass::Render(render) => {
                     let colors: Vec<Option<wgpu::RenderPassColorAttachment>> = render
                         .colors
                         .iter()
                         .map(|color| {
                             Some(wgpu::RenderPassColorAttachment {
-                                view: &self.textures[color.target.0].view,
+                                view: self.view(color.target),
                                 depth_slice: None,
-                                resolve_target: color.resolve.map(|id| &self.textures[id.0].view),
+                                resolve_target: color.resolve.map(|id| self.view(id)),
                                 ops: wgpu::Operations {
                                     load: match color.load {
                                         LoadOp::Clear([r, g, b, a]) => {
@@ -2216,7 +2331,7 @@ impl Gpu for WgpuGpu {
                         color_attachments: &colors,
                         depth_stencil_attachment: render.depth.as_ref().map(|depth| {
                             wgpu::RenderPassDepthStencilAttachment {
-                                view: &self.textures[depth.target.0].view,
+                                view: self.view(depth.target),
                                 depth_ops: Some(wgpu::Operations {
                                     load: match depth.load {
                                         LoadOp::Clear(v) => wgpu::LoadOp::Clear(v),

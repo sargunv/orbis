@@ -25,8 +25,9 @@
 // starts (500 ms). `--warm` makes the session once untimed first and
 // reloads, so tiles come from the HTTP cache and pipelines from the
 // browser's. `--headed` runs Chromium in a window, at the display's
-// refresh. `--dump` writes each engine's frames, input windows and
-// presents to `<prefix>-<engine>.json`. `--backend` draws Orbis with that
+// refresh. `--dump` writes each engine's frames, input windows,
+// presents, pipelines and the page thread's stalls (`beats`) to
+// `<prefix>-<engine>.json`. `--backend` draws Orbis with that
 // backend. `--pkgs` runs Orbis on each of these builds of web/pkg (copies
 // of it) in turn, run by run, for A/B runs in one session; GL JS runs once
 // a run. `--profile` (Firefox, one engine) runs Gecko's profiler on every
@@ -49,10 +50,15 @@
 //
 // For each run it reports when the first frame came, the map's frame
 // intervals (as the page hears of them: Orbis's `render` events from its
-// worker, GL JS's on the page), the page's animation-frame intervals and,
-// in Chromium, the GPU process's presents (what reached the screen) while
-// input moves the camera, and how long the map took to settle after
-// the last input. For Orbis it names what each of the `--worst` longest
+// worker, GL JS's on the page), how long from each move's start the map's
+// first frame came (`moveToFrame`: a move no frame answered shows only
+// there), the page's animation-frame intervals that overlap a move (a
+// stall that swallows a whole move counts) and, in Chromium, the GPU
+// process's presents (what reached the screen) while input moves the
+// camera, and how long the map took to settle after the last input. The
+// pipelines' compiles are timed on the page: those over 100 ms of page
+// frames that ran while one compiled (`compileStalls`), and when the last
+// settled (`lastCompileMs`). For Orbis it names what each of the `--worst` longest
 // intervals spent: the frame's render CPU by stage, pipelines still
 // compiling, tiles arrived, bytes uploaded and GPU memory grown, and what
 // none of that accounts for (`untimedMs`: the browser's GPU thread, the
@@ -235,6 +241,20 @@ function intervals(times, windows) {
   for (let i = 1; i < times.length; i++) {
     const [s, t] = [times[i - 1], times[i]];
     if (windows.some(([a, b]) => s >= a && t <= b)) out.push({ i, gap: t - s });
+  }
+  return out;
+}
+
+/** Intervals between successive `times` that overlap one of `windows`:
+ * for the page's animation frames, which come on every display frame,
+ * so a stall that swallows a whole move (no frame inside it at all) is
+ * one interval too. */
+function overlapping(times, windows) {
+  const out = [];
+  for (let i = 1; i < times.length; i++) {
+    const [s, t] = [times[i - 1], times[i]];
+    if (windows.some(([a, b]) => s < b && t > a))
+      out.push({ i, s, gap: t - s });
   }
   return out;
 }
@@ -548,6 +568,8 @@ async function run(server, engine) {
           const pipeline = {
             at: Math.round(performance.now()),
             label: desc?.label ?? "?",
+            // Its stages' override constants and targets: which variant.
+            what: JSON.stringify([desc?.vertex?.constants ?? desc?.compute?.constants, desc?.fragment?.constants, desc?.fragment?.targets?.map((t) => t.format), desc?.multisample?.count]),
             async: name.endsWith("Async"),
           };
           made.push(pipeline);
@@ -624,6 +646,17 @@ async function run(server, engine) {
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
+      // The page's thread, beside its animation frames: a timer every
+      // 10 ms, and each gap over 50 ms between them (the thread blocked,
+      // where a gap in the animation frames alone is the browser holding
+      // them back).
+      globalThis.__beats = [];
+      let beat = performance.now();
+      setInterval(() => {
+        const t = performance.now();
+        if (t - beat > 50) globalThis.__beats.push([beat, t - beat]);
+        beat = t;
+      }, 10);
       globalThis.__long = [];
       try {
         new PerformanceObserver((list) => {
@@ -769,6 +802,7 @@ async function run(server, engine) {
     const {
       frames,
       raf,
+      beats,
       longTasks,
       where,
       camera,
@@ -791,12 +825,13 @@ async function run(server, engine) {
       slow: globalThis.__slow,
       pipelines: globalThis.__pipelines,
       raf: globalThis.__raf,
+      beats: globalThis.__beats,
       longTasks: globalThis.__long,
       where: globalThis.loadDetails?.(),
     }));
     const times = frames.map((f) => f.t);
     const mapGaps = intervals(times, windows);
-    const pageGaps = intervals(raf, windows);
+    const pageGaps = overlapping(raf, windows);
     const report = {
       session: sessionName,
       style,
@@ -808,6 +843,13 @@ async function run(server, engine) {
       firstFrameMs: Math.round(firstFrame),
       inputSeconds: round(windows.reduce((s, [a, b]) => s + b - a, 0) / 1000),
       mapFrames: pacing(mapGaps.map((g) => g.gap)),
+      // From each move's start to the map's first frame after it: one
+      // over a frame or two is a move the map didn't answer, which
+      // `mapFrames` (intervals inside the moves) can't show when no frame
+      // came in the move at all.
+      moveToFrame: pacing(
+        windows.map(([a]) => (times.find((t) => t >= a) ?? a) - a),
+      ),
       ...(screen && {
         presents: pacing(intervals(screen, windows).map((g) => g.gap)),
       }),
@@ -829,6 +871,25 @@ async function run(server, engine) {
         pipelinesSettledInMoves: pipelines
           .filter((p) => p.settled >= windows[0][0])
           .map((p) => `${p.settled} ${p.label} (asked at ${p.at})`),
+        // The page's frames over 100 ms in the moves while an async
+        // compile ran (asked before the frame's end, settled after its
+        // start): where the browser compiles on the thread that presents
+        // (Firefox), each holds the frame back.
+        compileStalls: pageGaps
+          .filter((g) => g.gap > 100)
+          .map((g) => {
+            const end = g.s + g.gap;
+            const running = pipelines.filter(
+              (p) => p.async && p.at < end && (p.settled ?? end) > g.s,
+            );
+            return running.length
+              ? `${Math.round(g.s)}+${Math.round(g.gap)}: ${running.map((p) => p.label).join(", ")}`
+              : null;
+          })
+          .filter(Boolean),
+        // When the last compile settled: past the first move's start,
+        // the browser compiled into the moves.
+        lastCompileMs: Math.max(0, ...pipelines.map((p) => p.settled ?? 0)),
       }),
       // When the page fetched each wasm file (core-deferred.wasm late, in
       // the moves, is a placeholder's synchronous load).
@@ -901,7 +962,7 @@ async function run(server, engine) {
     if (dump)
       writeFileSync(
         `${dump}-${engine}.json`,
-        JSON.stringify({ windows, frames, raf, screen }),
+        JSON.stringify({ windows, frames, raf, beats, screen, pipelines }),
       );
     return report;
   } finally {

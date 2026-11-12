@@ -100,6 +100,10 @@ pub struct FrameStats {
     /// waiting for pipelines that wake it when they compile.
     #[wasm_bindgen(readonly, js_name = needsFrame)]
     pub needs_frame: bool,
+    /// The frame drew and presented: not one held back while compiles
+    /// run, where presents wait behind them ([`orb_hal::Gpu::presents_wait`]).
+    #[wasm_bindgen(readonly)]
+    pub drew: bool,
     /// The GPU was lost and nothing was drawn; the map draws again once
     /// [`OrbisMap::recover`] gives it another.
     #[wasm_bindgen(readonly)]
@@ -1193,7 +1197,11 @@ impl OrbisMap {
         self.take_replies(started + self.map.frame_budget_now().ms);
         let viewport = self.viewport();
         let (map, ratio, renderer) = (&mut self.map, self.pixel_ratio as f32, &mut self.renderer);
-        let (report, pixels) = self
+        let crate::canvas::Drawn {
+            result: report,
+            pixels,
+            presented,
+        } = self
             .canvas
             .frame(self.read_next.is_some(), |gpu, target, format| {
                 let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
@@ -1227,6 +1235,7 @@ impl OrbisMap {
             loaded: report.loaded,
             transitioning: self.map.transitioning(),
             needs_frame: !report.idle && !report.compiling,
+            drew: presented,
             lost: false,
             meshes_uploaded: counts.meshes_uploaded,
             rows_uploaded: counts.rows_uploaded,

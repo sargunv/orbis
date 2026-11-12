@@ -605,6 +605,10 @@ impl<G: Gpu> Gpu for Recording<G> {
         self.inner.pause_background_compiles(paused);
     }
 
+    fn presents_wait(&mut self) -> bool {
+        self.inner.presents_wait()
+    }
+
     fn create_render_bundle(
         &mut self,
         desc: &RenderBundleDesc<'_>,

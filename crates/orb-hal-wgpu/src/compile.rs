@@ -963,12 +963,26 @@ mod webgpu {
     /// Called when a promise settles: the map draws the pipeline then.
     type Wake = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
-    /// Background compiles in flight at once: one. The browser compiles
-    /// async pipelines in turn, Firefox on the thread that runs the
-    /// device's commands (frames' submissions and presents wait behind
-    /// each), and one a frame asks for later waits behind those it already
-    /// has: when input pauses them, at most one is left to finish.
-    const BACKGROUND_LANES: usize = 1;
+    /// Background compiles in flight at once: two, as natively. Only a
+    /// browser that compiles beside the thread that presents has any
+    /// ([`compiles_hold_presents`]): Chromium's Dawn and WebKit compile
+    /// async pipelines on threads of their own, so more in flight only
+    /// finish the set sooner.
+    const BACKGROUND_LANES: usize = 2;
+
+    /// Whether this browser compiles pipelines on the thread that runs the
+    /// device's commands, so a present waits behind every compile asked
+    /// for before it, async ones too, and the page's animation frames
+    /// behind that present ([`orb_hal::Gpu::presents_wait`]): Firefox,
+    /// whose WebGPU server (wgpu-core in its GPU process) does, as of 159.
+    /// A page that presents nothing while compiles run keeps its frames.
+    pub(crate) fn compiles_hold_presents() -> bool {
+        let navigator = Reflect::get(&js_sys::global(), &"navigator".into()).unwrap_or_default();
+        Reflect::get(&navigator, &"userAgent".into())
+            .ok()
+            .and_then(|ua| ua.as_string())
+            .is_some_and(|ua| ua.contains("Firefox/"))
+    }
 
     /// Compiles with the browser's async pipeline creation.
     #[derive(Default)]
@@ -1398,7 +1412,7 @@ mod webgpu {
 }
 
 #[cfg(webgpu)]
-pub(crate) use webgpu::bind_group_layout as raw_bind_group_layout;
+pub(crate) use webgpu::{bind_group_layout as raw_bind_group_layout, compiles_hold_presents};
 
 #[cfg(all(target_arch = "wasm32", not(any(webgpu, webgl))))]
 compile_error!("orb-hal-wgpu on the web needs one of the `webgpu` and `gl` features");

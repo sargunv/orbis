@@ -39,6 +39,11 @@ pub(crate) struct Canvas {
     instance: wgpu::Instance,
     surface: std::rc::Rc<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
+    /// WebGPU's context takes `config` with the next frame it presents,
+    /// not at once: Firefox paints a context configured (or a canvas
+    /// resized) since its last frame from a snapshot it waits for, on the
+    /// page's thread, behind every compile asked for before it.
+    configure_due: bool,
     format: TargetFormat,
     /// Set by the device's lost callback.
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -47,6 +52,15 @@ pub(crate) struct Canvas {
     /// The canvas, whose WebGL 2 context says when it's lost.
     #[cfg_attr(not(feature = "gl"), allow(dead_code))]
     element: JsValue,
+}
+
+/// What [`Canvas::frame`] drew: the draw's result, the pixels read, and
+/// whether the canvas presented the frame (not if the frame drew nothing
+/// into it, as one held while compiles run).
+pub(crate) struct Drawn<R> {
+    pub(crate) result: R,
+    pub(crate) pixels: Option<Pixels>,
+    pub(crate) presented: bool,
 }
 
 /// Where a WebGL 2 frame that's read back draws: its canvas frame is a
@@ -228,8 +242,12 @@ impl Canvas {
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        if !self.lost() {
-            self.surface.configure(self.gpu.device(), &self.config);
+        if GL {
+            if !self.lost() {
+                self.surface.configure(self.gpu.device(), &self.config);
+            }
+        } else {
+            self.configure_due = true;
         }
     }
 
@@ -275,12 +293,43 @@ impl Canvas {
 
     /// Draws a frame with `draw`, which renders into the target it's
     /// given, and presents it; with `read`, also its pixels, in the
-    /// canvas's byte order ([`format`](Self::format)).
+    /// canvas's byte order ([`format`](Self::format)). The canvas's
+    /// texture is taken only once a pass draws into it: a frame that
+    /// draws nothing presents nothing (`None` pixels then).
     pub(crate) fn frame<R>(
         &mut self,
         read: bool,
         draw: impl FnOnce(&mut dyn Gpu, TextureId, TargetFormat) -> R,
-    ) -> Result<(R, Option<Pixels>), String> {
+    ) -> Result<Drawn<R>, String> {
+        // WebGL 2's frame read back draws into a texture first.
+        if read && GL {
+            return self.frame_read_gl(draw);
+        }
+        let config = self.configure_due.then(|| self.config.clone());
+        let target = self.gpu.register_surface(self.surface.clone(), config);
+        let result = draw(&mut self.gpu, target, self.format);
+        let frame = self.gpu.take_surface(target).transpose()?;
+        let presented = frame.is_some();
+        self.configure_due &= !presented;
+        let pixels = frame.and_then(|frame| {
+            let pixels =
+                read.then(|| Box::pin(self.gpu.read_wgpu_texture(&frame.texture)) as Pixels);
+            self.gpu.queue().present(frame);
+            pixels
+        });
+        Ok(Drawn {
+            result,
+            pixels,
+            presented,
+        })
+    }
+
+    /// [`frame`](Self::frame) read back on WebGL 2: drawn into a texture,
+    /// read from there and copied into the canvas's.
+    fn frame_read_gl<R>(
+        &mut self,
+        draw: impl FnOnce(&mut dyn Gpu, TextureId, TargetFormat) -> R,
+    ) -> Result<Drawn<R>, String> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -289,32 +338,25 @@ impl Canvas {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        // WebGL 2's frame read back draws into a texture first.
         let size = self.size();
-        let read_target = (read && GL).then(|| {
-            let fits = |r: &ReadTarget| (r.texture.width(), r.texture.height()) == size;
-            if !self.read.as_ref().is_some_and(fits) {
-                let format = frame.texture.format();
-                self.read = Some(ReadTarget::new(self.gpu.device(), format, size));
-            }
-            self.read.as_ref().expect("made above").view.clone()
-        });
-        let target = self
-            .gpu
-            .register_view(read_target.unwrap_or_else(|| view.clone()));
+        let fits = |r: &ReadTarget| (r.texture.width(), r.texture.height()) == size;
+        if !self.read.as_ref().is_some_and(fits) {
+            let format = frame.texture.format();
+            self.read = Some(ReadTarget::new(self.gpu.device(), format, size));
+        }
+        let drawn = self.read.as_ref().expect("made above");
+        let target = self.gpu.register_view(drawn.view.clone());
         let result = draw(&mut self.gpu, target, self.format);
-        let pixels = match (read, &self.read) {
-            (false, _) => None,
-            (true, Some(drawn)) if GL => {
-                let pixels = Box::pin(self.gpu.read_wgpu_texture(&drawn.texture)) as Pixels;
-                drawn.copy_to(self.gpu.device(), self.gpu.queue(), &view);
-                Some(pixels)
-            }
-            (true, _) => Some(Box::pin(self.gpu.read_wgpu_texture(&frame.texture)) as Pixels),
-        };
+        let drawn = self.read.as_ref().expect("made above");
+        let pixels = Box::pin(self.gpu.read_wgpu_texture(&drawn.texture)) as Pixels;
+        drawn.copy_to(self.gpu.device(), self.gpu.queue(), &view);
         self.gpu.destroy_texture(target);
         self.gpu.queue().present(frame);
-        Ok((result, pixels))
+        Ok(Drawn {
+            result,
+            pixels: Some(pixels),
+            presented: true,
+        })
     }
 
     /// A device drawing into `canvas` (an `HTMLCanvasElement` or an
@@ -430,7 +472,9 @@ impl Canvas {
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
-        surface.configure(&device, &config);
+        if GL {
+            surface.configure(&device, &config);
+        }
         // WebGPU's copies only: WebGL 2 copies images at submission.
         if !GL {
             warm_image_copies(device.clone(), queue.clone());
@@ -446,6 +490,7 @@ impl Canvas {
             instance,
             surface,
             config,
+            configure_due: !GL,
             format: TargetFormat {
                 color: from_texture_format(surface_format).expect("checked above"),
                 sample_count: 1,
