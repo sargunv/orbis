@@ -4,7 +4,8 @@
     "The palette is the Globe's own: warm, calm limestone land; vegetation in muted sage that tints the globe by biome from orbit and gives way to parks close in; a sea that deepens from a pale lagoon over the shelves to slate blue over the abyss, with a faint seafloor relief; white roads with honey motorways on Protomaps' quiet hierarchy; slate-plum labels on soft halos, each text colour at least 4.5:1 against its halo (3:1 for the large ocean, country and region names).",
     "Orbis's previews here (the night side, its ambient light and labels, shadows, ambient occlusion, rounded footprints, linear colour) are each a map option, off by default, so the Globe opens as GL JS and MapLibre Native could draw it. The night side is a globe-scale effect: ground lighting fades out from zoom 5 to 7, and the labels follow the daylight where they stand (`dev.sargunv.orbis:daylight`), switching to light text on dark navy halos (POIs keep their category hues, lightened) where the ground is dark, past a quarter of the way from night to day, so each reads against the ground beneath it.",
     "The ambient light is the night side's dim blue at globe zooms and a pale sky by city zooms, where it lights the buildings' faces the sun doesn't reach (maplibre/maplibre#555's ambient light); the sun adds half its light to the faces turned to it, and its shadows take that away.",
-    "`paint` is set over each Protomaps layer's own by id; `sea` goes over the background (the ocean, its shore colour) and under `earth`, the land, so neither shows on land however low it lies; its last layer, `caspian`, fills the Caspian Sea as the lake it is: OpenStreetMap maps its shore as coastline, so it is among Protomaps' ocean polygons, and the DEM there shows its surface, 28 m below sea level, in blocks; a box around it, under the land, takes the shore's shape; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source."
+    "`paint` is set over each Protomaps layer's own by id; `sea` goes over the background (the ocean, its shore colour) and under `earth`, the land, so neither shows on land however low it lies; its last layer, `caspian`, fills the Caspian Sea as the lake it is: OpenStreetMap maps its shore as coastline, so it is among Protomaps' ocean polygons, and the DEM there shows its surface, 28 m below sea level, in blocks; a box around it, under the land, takes the shore's shape; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source.",
+    "The bathymetry stops at zoom 10, and closer views draw its zoom-10 tiles enlarged: from zoom 11 Terrain Tiles lay land-only elevation models over much of the coast and hold 0 m over the sea there (Puget Sound, Tokyo Bay, New York harbour, Miami and Marseille offshore), so the depths and seafloor relief would vanish from zoom 9.5, where a map starts using zoom-11 tiles."
   ],
   "paint": {
     "background": {
@@ -962,7 +963,7 @@
       ],
       "encoding": "terrarium",
       "tileSize": 256,
-      "maxzoom": 12,
+      "maxzoom": 10,
       "attribution": "<a href=\"https://github.com/tilezen/joerd/blob/master/docs/attribution.md\">Terrain Tiles: ETOPO1, GEBCO, NOAA, USGS and others</a>"
     },
     "caspian": {
