@@ -192,7 +192,11 @@ pub(crate) struct Terrain {
     tile_px: f64,
     /// This frame's terrain tiles.
     pub(crate) tiles: Vec<CoveredTile>,
+    /// The drawn slots of the cover's tiles: a tile without one is blank.
     slots: FxHashMap<CoveredTile, Slot>,
+    /// The drawn slots of tiles the cover split, kept while a blank tile
+    /// they cover shows their part of them ([`plan`](Self::plan)).
+    retired: FxHashMap<CoveredTile, Slot>,
     generation: u64,
     /// Drape plans made.
     plans: u64,
@@ -255,6 +259,7 @@ impl Terrain {
             tile_px,
             tiles: Vec::new(),
             slots: FxHashMap::default(),
+            retired: FxHashMap::default(),
             generation: 0,
             plans: 0,
             elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
@@ -710,35 +715,74 @@ impl Terrain {
         )
     }
 
-    /// Frees the slots of tiles this frame doesn't cover.
+    /// Retires the slots of tiles this frame doesn't cover: those drawn
+    /// stand in for the blank tiles they cover until these are drawn.
     pub(crate) fn release_slots(&mut self) {
         let keep: FxHashSet<CoveredTile> = self.tiles.iter().copied().collect();
-        self.slots.retain(|tile, _| keep.contains(tile));
+        let gone: Vec<CoveredTile> = (self.slots.keys())
+            .filter(|t| !keep.contains(t))
+            .copied()
+            .collect();
+        for tile in gone {
+            let slot = self.slots.remove(&tile).expect("listed above");
+            self.retired.insert(tile, slot);
+        }
+        // A tile the cover takes back keeps the slot it retired.
+        for tile in &self.tiles {
+            if let Some(slot) = self.retired.remove(tile) {
+                self.slots.insert(*tile, slot);
+            }
+        }
     }
 
-    /// Whether every tile of the cover has the slot of its place in it,
-    /// as [`plan`](Self::plan) at rest gives them.
+    /// Whether every tile of the cover is drawn in the slot of its place,
+    /// as [`plan`](Self::plan) at rest leaves them.
     pub(crate) fn slots_follow_cover(&self) -> bool {
-        (0u32..)
-            .zip(&self.tiles)
-            .all(|(place, tile)| self.slots.get(tile).is_some_and(|s| s.index == place))
+        self.retired.is_empty()
+            && (0u32..)
+                .zip(&self.tiles)
+                .all(|(place, tile)| self.slots.get(tile).is_some_and(|s| s.index == place))
+    }
+
+    /// The nearest retired ancestor of `tile`, whose slot it shows while
+    /// blank.
+    fn stand_in(&self, tile: CoveredTile) -> Option<CoveredTile> {
+        let mut at = tile.index.parent();
+        while let Some(index) = at {
+            let ancestor = CoveredTile {
+                index,
+                wrap: tile.wrap,
+            };
+            if self.retired.contains_key(&ancestor) {
+                return Some(ancestor);
+            }
+            at = index.parent();
+        }
+        None
     }
 
     /// This frame's terrain tiles for the renderer, with slots assigned
     /// from `layout`, the tile slots' stacks it redraws, and whether it
-    /// left slots stale for the frames after. A stack is stale when its
-    /// draped content, as `content` hashes it per stack, changed, and
-    /// every stack of a tile whose slots' side in `view` did
-    /// ([`slot_shrink`]). Blank slots all redraw; stale ones within
-    /// `texels` a frame (none for all of them), the longest stale first,
-    /// then those that show largest, the rest drawn as they were, at the
-    /// side they were drawn at, until a frame redraws them: so that what a
-    /// frame redraws follows the screen, not how fast the zoom crosses the
-    /// drape's steps. Once none is stale, each holds what a fresh map's
-    /// does. On a globe, `globe` places a tile on the sphere. While the
-    /// camera moves, a tile keeps its slot and a new one takes a free one;
-    /// `at_rest`, each takes the slot of its place in the cover, redrawn
-    /// if it moved there.
+    /// left any for the frames after. A stack is stale when its draped
+    /// content, as `content` hashes it per stack, changed, and every stack
+    /// of a tile whose slots' side in `view` did ([`slot_shrink`]).
+    ///
+    /// What a frame redraws is bounded by `texels` (unbounded for none),
+    /// so that it follows the screen, not how fast the zoom crosses the
+    /// drape's steps or how many tiles a cover splits. Blank tiles go
+    /// first: a tile the cover split shows its part of its ancestor's
+    /// slot, retired, until drawn; one with no such ancestor (new ground,
+    /// or a merge) is drawn whatever the budget. Then stale ones, the
+    /// longest stale first, each drawn as it was until a frame redraws
+    /// it. Of those alike, the ones that show largest go first, then those
+    /// nearest the view's centre. While the camera moves, a tile keeps
+    /// its slot and a new one takes a free one. `at_rest`, each takes the
+    /// slot of its place in the cover, so that where it lies in the atlas
+    /// is a function of the cover alone: the same tile drapes and samples a
+    /// step apart at a few pixels in another slot. A move is a redraw,
+    /// within the budget, into a place left free. Once none is blank,
+    /// stale or out of place, each slot holds what a fresh map's does. On a
+    /// globe, `globe` places a tile on the sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
@@ -751,80 +795,182 @@ impl Terrain {
         if layout.generation != self.generation {
             self.generation = layout.generation;
             self.slots.clear();
+            self.retired.clear();
         }
-        // The same tile drapes and samples a step apart at a few pixels in
-        // another slot (where it lies in the atlas, not what the slots
-        // beside it hold: those never show), so which slot a tile takes
-        // must follow the cover alone, not the tiles that came and went
-        // before it, for a map at rest to draw what a fresh one does.
-        if at_rest {
-            debug_assert!(self.tiles.len() <= layout.tile_slots as usize);
-            for (place, tile) in (0u32..).zip(&self.tiles) {
-                if let Some(slot) = self.slots.get_mut(tile).filter(|s| s.index != place) {
-                    slot.index = place;
-                    slot.content.clear();
-                }
-            }
+        debug_assert!(self.tiles.len() <= layout.tile_slots as usize);
+        let places: FxHashMap<CoveredTile, u32> = self.tiles.iter().copied().zip(0..).collect();
+        let period = tms.projection().wrap_period().unwrap_or(0.0);
+        // Out of place with no free slot to move through, at rest: every
+        // tile takes its place in one frame, drawn anew where it moves.
+        // So too wherever the budget is unbounded (a still map).
+        let held = self.slots.len() + self.retired.len();
+        let misplaced = (self.slots.iter()).any(|(t, s)| places[t] != s.index);
+        if at_rest && (texels.is_none() || misplaced && held >= layout.tile_slots as usize) {
+            self.retired.clear();
+            self.slots.retain(|t, s| places[t] == s.index);
         }
-        let used: FxHashSet<u32> = self.slots.values().map(|s| s.index).collect();
-        let mut free = (0..layout.tile_slots).filter(|t| !used.contains(t));
-        // Each tile's slot, and what of it is stale: (place, shrink,
-        // content, stacks), blank ones first.
-        let mut stale = Vec::new();
+        let mut wants = Vec::new();
         for (place, &tile) in (0u32..).zip(&self.tiles) {
             let content = content(tile);
             let shrink = slot_shrink(view, tms, tile);
-            let slot = self.slots.entry(tile).or_insert_with(|| Slot {
-                index: match at_rest {
-                    true => place,
-                    false => free.next().expect("the atlas holds every tile"),
-                },
+            let need = match self.slots.get(&tile) {
+                None => Need::Blank(self.stand_in(tile)),
+                Some(slot) if at_rest && slot.index != place => Need::Move,
+                Some(slot) => {
+                    let stacks: Vec<u8> = (0..content.len())
+                        .filter(|&s| slot.shrink != shrink || slot.content.get(s) != content.get(s))
+                        .map(|s| s as u8)
+                        .collect();
+                    if stacks.is_empty() {
+                        continue;
+                    }
+                    Need::Stale(stacks)
+                }
+            };
+            wants.push(Want {
+                place,
                 shrink,
-                content: Vec::new(),
-                drawn: 0,
+                content,
+                need,
             });
-            let stacks: Vec<u8> = (0..content.len())
-                .filter(|&s| slot.shrink != shrink || slot.content.get(s) != content.get(s))
-                .map(|s| s as u8)
-                .collect();
-            if !stacks.is_empty() {
-                stale.push((place, shrink, content, stacks));
+        }
+        // A retired slot stays only while a blank tile shows it.
+        let mut shown: FxHashMap<CoveredTile, u32> = FxHashMap::default();
+        for want in &wants {
+            if let Need::Blank(Some(stand_in)) = want.need {
+                *shown.entry(stand_in).or_default() += 1;
             }
         }
-        let blank = |tile: CoveredTile| self.slots[&tile].content.is_empty();
-        let order = |&(place, shrink, ..): &(u32, u8, Vec<u64>, Vec<u8>)| {
-            let tile = self.tiles[place as usize];
-            (!blank(tile), self.slots[&tile].drawn, shrink, place)
+        self.retired.retain(|t, _| shown.contains_key(t));
+        let order = |want: &Want| {
+            let tile = self.tiles[want.place as usize];
+            let rank = match want.need {
+                Need::Blank(None) => 0,
+                Need::Blank(Some(_)) => 1,
+                Need::Stale(_) | Need::Move => 2,
+            };
+            let drawn = self.slots.get(&tile).map_or(0, |s| s.drawn);
+            // Nearest the camera's target first: the view's centre.
+            let target = view.camera_world();
+            let shift = DVec2::new(f64::from(tile.wrap) * period, 0.0);
+            let bounds = tms.tile_bounds(tile.index).translated(shift);
+            let distance = bounds.clamp(target).distance(target).to_bits();
+            (rank, drawn, want.shrink, distance, want.place)
         };
-        stale.sort_by_cached_key(order);
+        wants.sort_by_cached_key(order);
+        let mut used: FxHashSet<u32> = (self.slots.values().chain(self.retired.values()))
+            .map(|s| s.index)
+            .collect();
+        let all: Vec<u8> = (0..layout.stack_count() as u8).collect();
         let mut spent = 0;
         let mut redraw = Vec::new();
         let mut deferred = false;
-        for (place, shrink, content, stacks) in stale {
-            let tile = self.tiles[place as usize];
-            let slot = self.slots.get_mut(&tile).expect("given above");
-            let cost: u64 = (stacks.iter())
-                .map(|&s| u64::from(layout.slot_px(u32::from(s)) >> shrink).pow(2))
-                .sum();
-            if !slot.content.is_empty() && texels.is_some_and(|t| spent >= t) {
+        // A tile out of place whose place another holds, and whether any
+        // moved: where none could, the first takes a free slot, so that
+        // the place it leaves frees another's (they took each other's).
+        let (mut blocked, mut moved) = (None, false);
+        for want in wants {
+            let tile = self.tiles[want.place as usize];
+            let forced = matches!(want.need, Need::Blank(None));
+            if !forced && texels.is_some_and(|t| spent >= t) {
                 deferred = true;
                 continue;
             }
-            spent += cost;
+            let (index, stacks) = match want.need {
+                Need::Stale(stacks) => (self.slots[&tile].index, stacks),
+                // Into its place once that's free.
+                Need::Move if used.contains(&want.place) => {
+                    deferred = true;
+                    blocked.get_or_insert((tile, want.shrink, want.content));
+                    continue;
+                }
+                Need::Move => {
+                    moved = true;
+                    used.remove(&self.slots[&tile].index);
+                    (want.place, all.clone())
+                }
+                Need::Blank(stand_in) => {
+                    let free = (0..layout.tile_slots).find(|i| !used.contains(i));
+                    let index = match free {
+                        _ if at_rest && !used.contains(&want.place) => want.place,
+                        Some(index) => index,
+                        // Each retired slot left is shown by one blank
+                        // tile alone (they number no more than those, and
+                        // every slot is held): this one's, which it no
+                        // longer shows once drawn.
+                        None => {
+                            let stand_in = stand_in.expect("a free slot for a tile without one");
+                            shown.remove(&stand_in);
+                            let retired = self.retired.remove(&stand_in).expect("kept above");
+                            used.remove(&retired.index);
+                            retired.index
+                        }
+                    };
+                    // A retired slot no blank tile shows any more is free.
+                    if let Some(n) = stand_in.and_then(|s| shown.get_mut(&s)) {
+                        *n -= 1;
+                        if *n == 0 {
+                            let stand_in = stand_in.expect("counted");
+                            shown.remove(&stand_in);
+                            let retired = self.retired.remove(&stand_in).expect("kept above");
+                            used.remove(&retired.index);
+                        }
+                    }
+                    (index, all.clone())
+                }
+            };
+            used.insert(index);
+            spent += (stacks.iter())
+                .map(|&s| u64::from(layout.slot_px(u32::from(s)) >> want.shrink).pow(2))
+                .sum::<u64>();
             redraw.push(Redraw {
                 tile,
-                slot: slot.index,
-                shrink,
+                slot: index,
+                shrink: want.shrink,
                 stacks,
             });
-            slot.shrink = shrink;
-            slot.content = content;
-            slot.drawn = self.plans;
+            self.slots.insert(
+                tile,
+                Slot {
+                    index,
+                    shrink: want.shrink,
+                    content: want.content,
+                    drawn: self.plans,
+                },
+            );
         }
-        let period = tms.projection().wrap_period().unwrap_or(0.0);
+        let free = (0..layout.tile_slots).find(|i| !used.contains(i));
+        let room = texels.is_none_or(|t| spent < t);
+        if let (Some((tile, shrink, content)), Some(index), false, true) =
+            (blocked, free, moved, room)
+        {
+            redraw.push(Redraw {
+                tile,
+                slot: index,
+                shrink,
+                stacks: all,
+            });
+            let drawn = self.plans;
+            self.slots.insert(
+                tile,
+                Slot {
+                    index,
+                    shrink,
+                    content,
+                    drawn,
+                },
+            );
+        }
         let mut out = Vec::with_capacity(self.tiles.len());
         for tile in &self.tiles {
-            let slot = &self.slots[tile];
+            // A blank tile shows its part of its ancestor's slot.
+            let (slot, in_slot) = match self.slots.get(tile) {
+                Some(slot) => (slot, ([0.0; 2], 1.0)),
+                None => {
+                    let stand_in = self.stand_in(*tile).expect("blank tiles stand in");
+                    (&self.retired[&stand_in], within(tile.index, stand_in.index))
+                }
+            };
             let bounds = tms.tile_bounds(tile.index);
             let origin = DVec2::new(bounds.min.x + f64::from(tile.wrap) * period, bounds.max.y)
                 - view.camera_world();
@@ -842,12 +988,33 @@ impl Terrain {
                 dem,
                 slot: slot.index,
                 shrink: slot.shrink,
+                within: in_slot,
                 globe: globe(tile.index),
                 latitudes: orb_render::tile_latitudes(tile.index),
             });
         }
         (out, redraw, deferred)
     }
+}
+
+/// What a cover tile's slots need this frame ([`Terrain::plan`]).
+#[derive(Debug)]
+enum Need {
+    /// Drawing: it has no slot, but shows that of its retired ancestor, if
+    /// any.
+    Blank(Option<CoveredTile>),
+    /// These stacks drawn again.
+    Stale(Vec<u8>),
+    /// Drawing into the slot of its place, at rest.
+    Move,
+}
+
+#[derive(Debug)]
+struct Want {
+    place: u32,
+    shrink: u8,
+    content: Vec<u64>,
+    need: Need,
 }
 
 /// Where `tile` lies in its ancestor (or itself) `at`: tile uv → `at`'s uv
@@ -1917,6 +2084,72 @@ mod tests {
             near.len() >= 4 && near.iter().all(|&&(_, s)| s == 0),
             "{tilted:?}"
         );
+    }
+
+    /// A tile the cover splits shows its part of its parent's slot until
+    /// a frame's budget draws it, one a frame; at rest each moves to the
+    /// slot of its place within the budget too, and then none is left.
+    #[test]
+    fn split_tiles_show_their_parents_slot_until_the_budget_draws_them() {
+        let tms = tms();
+        let mercator = *tms.projection();
+        let camera =
+            orb_camera::CameraState::new(orb_crs::Geodetic::new(7.75, 46.02), 11.5, &mercator);
+        let viewport = orb_camera::Viewport {
+            width: 1024.0,
+            height: 768.0,
+        };
+        let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
+        let layout = DrapeLayout {
+            stacks: [1, 0],
+            columns: [4, 1],
+            tile_slots: 6,
+            generation: 1,
+        };
+        let mut terrain = terrain_with(&[]);
+        let covered = |index| CoveredTile { index, wrap: 0 };
+        let parent = TileIndex::new(11, 1067, 727);
+        let children: Vec<CoveredTile> = (0..4)
+            .map(|i| covered(TileIndex::new(12, 2 * 1067 + i % 2, 2 * 727 + i / 2)))
+            .collect();
+        // A tile a frame: what a frame redraws may pass its budget by one.
+        let budget = Some(1);
+        let plan = |terrain: &mut Terrain, at_rest| {
+            terrain.release_slots();
+            terrain.plan(
+                &tms,
+                &view,
+                (layout, at_rest, budget),
+                &|_| vec![1],
+                &mut |_| None,
+            )
+        };
+        terrain.tiles = vec![covered(parent)];
+        let (_, redraw, deferred) = plan(&mut terrain, false);
+        assert_eq!((redraw.len(), deferred), (1, false));
+        let parent_slot = redraw[0].slot;
+        terrain.tiles = children.clone();
+        for frame in 0..4 {
+            let (tiles, redraw, deferred) = plan(&mut terrain, false);
+            assert_eq!((redraw.len(), deferred), (1, frame < 3), "frame {frame}");
+            // The others show their quarter of the parent's slot.
+            let standing = (tiles.iter())
+                .filter(|t| t.within.1 == 0.5)
+                .collect::<Vec<_>>();
+            assert_eq!(standing.len(), 3 - frame, "frame {frame}");
+            assert!(standing.iter().all(|t| t.slot == parent_slot));
+        }
+        assert!(terrain.retired.is_empty());
+        // At rest, the tiles out of place move one a frame.
+        let mut frames = 0;
+        while !terrain.slots_follow_cover() {
+            let (_, redraw, _) = plan(&mut terrain, true);
+            assert!(redraw.len() <= 1);
+            frames += 1;
+            assert!(frames < 10, "the tiles never took their places");
+        }
+        let (_, redraw, deferred) = plan(&mut terrain, true);
+        assert_eq!((redraw.len(), deferred), (0, false));
     }
 
     /// A drawn tile's regions reach a terrain tile's slots only where they

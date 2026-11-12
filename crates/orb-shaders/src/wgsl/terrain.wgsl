@@ -32,6 +32,10 @@ struct TerrainTile {
     // side.
     slot: u32,
     shrink: u32,
+    // Tile uv → the uv of the slots it shows: `uv * slot_scale +
+    // slot_offset`, its own, or while blank its part of an ancestor's.
+    slot_offset: vec2<f32>,
+    slot_scale: f32,
     // On a globe: its patches in space (`project.wgsl`'s layout, from word
     // `globe_base` of the props) around `globe_origin`, camera-relative
     // metres, and the poles its skirts close (bit 0 north, bit 1 south).
@@ -123,7 +127,7 @@ fn terrain_elevation(tile: TerrainTile, uv: vec2<f32>) -> f32 {
 
 struct TerrainOut {
     @builtin(position) @invariant position: vec4<f32>,
-    // Tile uv, y down.
+    // Uv in the slots it shows, y down.
     @location(0) uv: vec2<f32>,
     // The tile's index, its block of drape slots and their shrink.
     @location(1) @interpolate(flat, either) tile: vec3<u32>,
@@ -167,7 +171,7 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     // Reversed-Z, as extrusions draw (`ground_clip_reversed`).
     let depth = select(plane_depth(world, z), clip.w - clip.z, globe);
     out.position = vec4<f32>(clip.xy, depth, clip.w);
-    out.uv = uv;
+    out.uv = uv * tile.slot_scale + tile.slot_offset;
     out.tile = vec3<u32>(instance, tile.slot, tile.shrink);
     out.stretch = 1.0 / cos(radians(mix(tile.latitudes.x, tile.latitudes.y, uv.y)));
     // The view depth is the clip w, mixed as the globe hands over: fog

@@ -185,6 +185,9 @@ pub struct TerrainTile {
     /// to it at every mip level, so that a tile that shows small draws
     /// few texels.
     pub shrink: u8,
+    /// Where it lies in the slots it shows, as `uv · scale + offset`: its
+    /// own, or while blank its part of an ancestor's.
+    pub within: ([f32; 2], f32),
     /// On a globe, where it lies on the sphere.
     pub globe: Option<TerrainGlobe>,
     /// Latitudes of its top and bottom edges, in degrees, which a shaded
@@ -852,6 +855,8 @@ impl Terrain {
                     .f(n::DEM_SCALE, &[scale])
                     .u(n::SLOT, &[t.slot])
                     .u(n::SHRINK, &[u32::from(t.shrink)]);
+                b.f(n::SLOT_OFFSET, &t.within.0)
+                    .f(n::SLOT_SCALE, &[t.within.1]);
                 if let Some(g) = t.globe {
                     let poles = u32::from(g.poles[0]) | u32::from(g.poles[1]) << 1;
                     b.f(n::GLOBE_ORIGIN, &g.origin)

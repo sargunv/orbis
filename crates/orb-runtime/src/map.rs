@@ -256,6 +256,14 @@ impl FrameTimes {
     }
 }
 
+/// What a frame's drape drew: whether it redrew slots, and whether it
+/// left any blank, stale or out of place for the frames after.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DrapeDrawn {
+    redrew: bool,
+    deferred: bool,
+}
+
 /// The map's GPU memory, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Memory {
@@ -2024,7 +2032,7 @@ impl Map {
                 let stages = (&mut report, &mut times, &mut drawn);
                 self.update_scene(gpu, renderer, &view, drawing, stages)
             }
-            false => (None, false),
+            false => (None, DrapeDrawn::default()),
         };
         // Everything the frame shows has arrived, labels aside.
         let data_loaded = self.style_loaded()
@@ -2072,9 +2080,10 @@ impl Map {
             }
             picking.drew(view.clone(), *self.camera.state(), drawn, report.generation);
         }
-        report.loaded = data_loaded && labels_settled;
+        // Loaded once the drape, too, shows all of it.
+        report.loaded = data_loaded && labels_settled && !redrew.deferred;
         report.idle = report.loaded
-            && !redrew
+            && !redrew.redrew
             && !fading
             && !self.labels.fading(now)
             && !self.transitions.running()
@@ -2187,7 +2196,7 @@ impl Map {
             &mut FrameTimes,
             &mut Vec<crate::query::DrawnTile>,
         ),
-    ) -> (Option<orb_render::FrameTerrain>, bool) {
+    ) -> (Option<orb_render::FrameTerrain>, DrapeDrawn) {
         let clock = Arc::clone(&self.services.clock);
         let mut frame_terrain = None;
         // Terrain's DEM and cover first: the sources cover over its
@@ -2233,9 +2242,10 @@ impl Map {
         };
         let placing = clock.now();
         times.drape = micros(draping, placing);
-        let redrew = drape
-            .as_ref()
-            .is_some_and(|d| !d.redraw.is_empty() || d.deferred);
+        let redrew = DrapeDrawn {
+            redrew: drape.as_ref().is_some_and(|d| !d.redraw.is_empty()),
+            deferred: drape.as_ref().is_some_and(|d| d.deferred),
+        };
         if drawing {
             self.place_background(
                 gpu,

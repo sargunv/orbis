@@ -626,13 +626,19 @@ impl Map {
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
         terrain.release_slots();
-        // The pages hold exactly the cover's tiles ([`Map::cover_room`]),
-        // made anew only where memory may move. The tiles take the slots
-        // of their places in the cover in any frame at rest, as moving
-        // them allocates nothing.
+        // The pages hold the cover's tiles ([`Map::cover_room`]), made
+        // anew only where memory may move. The tiles move to the slots of
+        // their places in the cover in any frame at rest, as moving them
+        // allocates nothing; a continuous map's pages keep a slot more,
+        // which a move between two tiles that hold each other's places
+        // goes through, so that moves fit the frame's budget.
         let still = renderer.moves() == orb_render::Moves::Free;
-        let at_rest = self.resize_now || still;
-        let slots = terrain.tiles.len() as u32;
+        let at_rest = renderer.moves() != orb_render::Moves::Held;
+        let tiles = terrain.tiles.len() as u32;
+        let slots = match still {
+            true => tiles,
+            false => (tiles + 1).min(renderer.drape_room(gpu)),
+        };
         let layout = match renderer.reserve_drape(gpu, slots.max(1)) {
             Ok(layout) => layout,
             Err(full) => {
