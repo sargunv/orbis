@@ -268,11 +268,13 @@ mod tests {
             },
             time,
         );
-        let (mut moving, mut rest, mut most) = (0, 0, 0);
+        let (mut moving, mut rest, mut most, mut made) = (0, 0, 0, 0);
         let mut count = |report: &orb_runtime::FrameReport| {
             let moves = report.resized.moves + report.prepared_resized.moves;
             if report.moved || report.input {
                 moving += moves;
+                // Nor is anything made for a first use.
+                made += report.gpu.bytes_allocated;
             } else {
                 rest += moves;
                 most = most.max(report.resized.moves);
@@ -315,6 +317,7 @@ mod tests {
         }
         crate::common::take_warnings(&mut moved.map);
         assert_eq!(moving, 0, "memory moved while the camera did");
+        assert_eq!(made, 0, "memory made while the camera moved");
         assert!(rest > 0, "the view needed the pools grown");
         // A style's first sizes aside (none here), a frame at rest moves
         // a pool or page once, and lists that copy nothing.

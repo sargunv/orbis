@@ -573,11 +573,20 @@ impl Scene {
     /// node's `first_group` is the groups of the nodes before it, which
     /// take one for each 256 candidate rows of an indexed node (its
     /// batches) and one for a listed node with any, and none for a hidden
-    /// node (`cull.wgsl`).
+    /// node (`cull.wgsl`). A symbol node whose quads lie past the
+    /// placement target's [cap](Self::cap_quads) is hidden.
     pub(super) fn write_node_rows(&mut self, gpu: &mut dyn Gpu) {
         use layout::node_cull as nc;
         let mut groups = 0u32;
-        for row in self.node_rows.as_chunks_mut::<NODE_CULL_WORDS>().0 {
+        let rows = self.node_rows.as_chunks_mut::<NODE_CULL_WORDS>().0;
+        for (row, node) in rows.iter_mut().zip(&self.nodes) {
+            if node.cull.labels {
+                let end = u64::from(row[nc::QUAD_BASE])
+                    + u64::from(row[nc::CANDIDATE_COUNT])
+                        * u64::from(orb_layout::MAX_CHUNK_INSTANCES);
+                let past = end > u64::from(self.quad_cap);
+                row[nc::DRAW] = node.cull.draw_word() | if past { HIDDEN } else { 0 };
+            }
             row[nc::FIRST_GROUP] = groups;
             let (draw, count) = (row[nc::DRAW], row[nc::CANDIDATE_COUNT]);
             groups += if draw & HIDDEN != 0 || count == 0 {
@@ -591,6 +600,15 @@ impl Scene {
         self.cull_groups = groups;
         self.tables
             .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
+    }
+
+    /// Draws only the symbol nodes whose quads lie below `quads` of the
+    /// placement target (`u32::MAX`: all of them): what a target that
+    /// can't grow while memory is held leaves out.
+    pub(crate) fn cap_quads(&mut self, gpu: &mut dyn Gpu, quads: u32) {
+        if std::mem::replace(&mut self.quad_cap, quads) != quads && !self.node_rows.is_empty() {
+            self.write_node_rows(gpu);
+        }
     }
 
     /// The passes that hide the last layout's dropped slots and make its

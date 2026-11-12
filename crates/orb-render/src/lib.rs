@@ -494,9 +494,9 @@ pub struct Renderer {
     image_bindings: ImageBindings,
     /// The image texture the scene group binds.
     images_bound: TextureId,
-    /// Whether pools, lists and pages move into memory of another size of
-    /// their own accord as they fill or empty ([`set_resizing`](Self::set_resizing)).
-    resizing: bool,
+    /// When GPU memory may move ([`set_moves`](Self::set_moves)): the one
+    /// gate every pool, table, list, page and atlas move goes through.
+    moves: Moves,
     /// Tile pages an upload was refused a layer of since the last
     /// [`take_refusals`](Self::take_refusals).
     refused_pages: Vec<PageId>,
@@ -506,6 +506,33 @@ pub struct Renderer {
     /// What the symbol placement target did made again at another size,
     /// since the last [`take_resized`](Self::take_resized).
     resized: Resized,
+}
+
+/// When the renderer's GPU memory may move into memory of another size, or
+/// be made for something's first use ([`Renderer::set_moves`]): pools,
+/// tables, candidate lists, tile pages, glyph pages, the symbol placement
+/// target and the drape atlas. Every move checks it, so a map that holds
+/// its memory while the camera moves can't move any by mistake.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Moves {
+    /// As uploads, layouts and frames need: a still map's, which has no
+    /// gesture to keep smooth.
+    #[default]
+    Free,
+    /// A continuous map whose camera rests. The pools, the chunk table and
+    /// tile page layers move only in its upkeep, a move a frame
+    /// ([`Renderer::grow_into`], [`Renderer::grow_headroom`],
+    /// [`Renderer::shrink`]); what an upload finds no room for meanwhile
+    /// is refused ([`Renderer::take_refusals`]). The lists, glyph pages,
+    /// symbol placement target, drape atlas and a source's first tile page
+    /// move or are made as the frame needs, and an edit's relayouts grow
+    /// the pools ([`Renderer::grow_for_edit`]).
+    Rest,
+    /// The camera moves: nothing moves or is made. Uploads, layouts and
+    /// glyphs that find no room leave out or wait for what they wanted, and
+    /// say so ([`Renderer::take_refusals`], [`Renderer::wants_room`]), for
+    /// the upkeep at rest to make.
+    Held,
 }
 
 /// What a map's first sizes follow ([`Renderer::size_for`]): its GPU
@@ -807,33 +834,41 @@ impl Renderer {
             glyphs,
             images_bound: image_bindings.texture,
             image_bindings,
-            resizing: true,
+            moves: Moves::Free,
             refused_pages: Vec::new(),
             sizing: None,
             resized: Resized::default(),
         }
     }
 
-    /// Whether pools, lists and pages move into memory of another size of
-    /// their own accord, as uploads and layouts fill them and views empty
-    /// them (as they do at first). A map that holds them while the camera
-    /// moves makes each move itself at rest ([`grow_into`](Self::grow_into),
-    /// [`grow_headroom`](Self::grow_headroom), [`shrink`](Self::shrink)),
-    /// and uploads that find no room meanwhile say what they wanted
-    /// ([`take_refusals`](Self::take_refusals)).
-    pub fn set_resizing(&mut self, gpu: &mut dyn Gpu, resizing: bool) {
-        self.resizing = resizing;
-        self.glyphs.set_grows(resizing);
-        if resizing {
+    /// When GPU memory may move from now on ([`Moves`]); free at first.
+    pub fn set_moves(&mut self, gpu: &mut dyn Gpu, moves: Moves) {
+        self.moves = moves;
+        self.glyphs.set_grows(moves != Moves::Held);
+        if moves != Moves::Held {
             self.scene.retry_lists(gpu);
         }
     }
 
+    /// When GPU memory may move now ([`set_moves`](Self::set_moves)).
+    pub fn moves(&self) -> Moves {
+        self.moves
+    }
+
+    /// Whether an upload may grow the pools, tables and tile pages it
+    /// finds full: only a [free](Moves::Free) renderer's do.
+    fn uploads_grow(&self) -> bool {
+        self.moves == Moves::Free
+    }
+
     /// Sizes the pools, tables and lists for `sizing`, and the tile pages
     /// made from then on: each grows to its share, and doesn't shrink
-    /// below it. Moves only what's held, and only once per sizing.
+    /// below it. Moves only what's held, and only once per sizing. The
+    /// first sizing is made whenever it comes (a style's first frame may
+    /// move the camera); a later one waits while memory is
+    /// [held](Moves::Held).
     pub fn size_for(&mut self, gpu: &mut dyn Gpu, sizing: Sizing) {
-        if self.sizing == Some(sizing) {
+        if self.sizing == Some(sizing) || (self.sizing.is_some() && self.moves == Moves::Held) {
             return;
         }
         self.sizing = Some(sizing);
@@ -885,8 +920,12 @@ impl Renderer {
     /// moves the first pool `room` asks more of, or else the chunk table,
     /// a page it asks a layer of, or the glyph pages, within its ceiling.
     /// One move, so that a frame pays for at most one new allocation (see
-    /// [`grow_headroom`](Self::grow_headroom)). Whether one grew.
+    /// [`grow_headroom`](Self::grow_headroom)). Whether one grew: never
+    /// while memory is [held](Moves::Held).
     pub fn grow_into(&mut self, gpu: &mut dyn Gpu, room: &Room) -> bool {
+        if self.moves == Moves::Held {
+            return false;
+        }
         if self.scene.grow_into(gpu, (room.words, room.chunks)) {
             self.glyphs
                 .set_table(self.scene.tables().writer(Table::Props));
@@ -1495,11 +1534,16 @@ impl Renderer {
     /// per drape stack, unless they do: new pages are blank (a new layout
     /// generation). Fails past the [`drape_room`](Self::drape_room), or
     /// where the device refuses a page, which the next call makes smaller.
+    /// While memory is [held](Moves::Held) pages once made stay as they
+    /// are, holding at most their slots (a map's terrain cover coarsens
+    /// to them).
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,
         tile_slots: u32,
     ) -> Result<DrapeLayout, DrapeFull> {
+        let held = self.drape_held().filter(|_| self.moves == Moves::Held);
+        let tile_slots = held.map_or(tile_slots, |held| tile_slots.min(held));
         let stacks = self.drape_stacks();
         let terrain = self.terrain.as_mut().expect("terrain is on");
         let made = terrain.reserve(gpu, (tile_slots, stacks), &mut self.downsampler)?;
@@ -1655,10 +1699,25 @@ impl Renderer {
     }
 
     /// A page of tile textures, `size` texels per tile, for image nodes to
-    /// bind.
-    pub fn create_page(&mut self, gpu: &mut dyn Gpu, kind: PageKind, size: [u32; 2]) -> PageId {
+    /// bind; none while memory is [held](Moves::Held), which makes no
+    /// page for a first use either.
+    pub fn create_page(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        kind: PageKind,
+        size: [u32; 2],
+    ) -> Option<PageId> {
+        if self.moves == Moves::Held {
+            return None;
+        }
         let layers = self.page_layers(kind, size);
-        self.images.create_page(gpu, kind, size, layers)
+        Some(self.images.create_page(gpu, kind, size, layers))
+    }
+
+    /// Whether image tiles of style source `source` have a page
+    /// ([`upload_image`](Self::upload_image) makes its first).
+    pub fn has_page(&self, source: u32) -> bool {
+        self.tiles.page(source).is_some()
     }
 
     /// Layers a new page starts with: what the view's cover needs of its
@@ -1692,15 +1751,15 @@ impl Renderer {
     }
 
     /// A layer of `page`, which grows to the device's layer limit if
-    /// `grow`; without, a page with no free layer records the refusal
-    /// ([`take_refusals`](Self::take_refusals)).
+    /// `grow` and memory is [free](Moves::Free); otherwise a page with no
+    /// free layer records the refusal ([`take_refusals`](Self::take_refusals)).
     pub fn alloc_layer(
         &mut self,
         gpu: &mut dyn Gpu,
         page: PageId,
         grow: bool,
     ) -> Result<u32, OutOfSpace> {
-        if grow {
+        if grow && self.uploads_grow() {
             return self.images.alloc_layer(gpu, page);
         }
         self.images.alloc_existing_layer(page).ok_or_else(|| {
@@ -2508,7 +2567,35 @@ impl Renderer {
     ) -> FrameStats {
         let mut times = RenderTimes::default();
         let started = clock();
-        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame, self.resizing);
+        let held = self.moves == Moves::Held;
+        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame, !held);
+        // The symbol draws bind the placement target, which is made again
+        // for the symbol nodes' quads: when memory may move, with room for
+        // twice them, so that a gesture's labels rarely outgrow it; never
+        // below its share. Held, it stays, and symbol nodes whose quads lie
+        // past it don't draw until it grows: before the cull, which reads
+        // which do.
+        let (rows, needed) = (self.symbols.rows(), self.scene.placed_rows());
+        let floor = self.sizing.map_or(0, |s| s.placed_rows());
+        let fit = match held {
+            false if needed * 2 > rows || needed * 8 <= rows => (needed * 2).max(floor),
+            false => rows.max(floor),
+            // Its first is made for a first use.
+            true if rows == 0 => (needed * 2).max(floor),
+            true => rows,
+        };
+        let before = gpu.counters();
+        if self.symbols.fit(gpu, fit) {
+            if rows > 0 {
+                self.resized.count(gpu, &before);
+            }
+            self.invalidate_bundle(gpu);
+        }
+        let quads = match held && needed > fit {
+            true => fit * scene::PLACED_WIDTH,
+            false => u32::MAX,
+        };
+        self.scene.cap_quads(gpu, quads);
         // The CPU driver's cull: draws that changed record again.
         if self
             .driver
@@ -2531,25 +2618,6 @@ impl Renderer {
         let beneath = self.solid_beneath();
         if beneath != self.beneath {
             self.beneath = beneath;
-            self.invalidate_bundle(gpu);
-        }
-        // The symbol draws bind the placement target, which is made again
-        // for the symbol nodes' quads: at rest with room for twice them,
-        // so that a gesture's labels rarely outgrow it, and otherwise kept
-        // unless they do; never below its share.
-        let (held, needed) = (self.symbols.rows(), self.scene.placed_rows());
-        let floor = self.sizing.map_or(0, |s| s.placed_rows());
-        let rows = match self.resizing {
-            true if needed * 2 > held || needed * 8 <= held => needed * 2,
-            _ if needed > held => needed * 2,
-            _ => held,
-        }
-        .max(floor);
-        let before = gpu.counters();
-        if self.symbols.fit(gpu, rows) {
-            if held > 0 {
-                self.resized.count(gpu, &before);
-            }
             self.invalidate_bundle(gpu);
         }
         self.symbols.bind(gpu, self.symbol_scene());
@@ -2713,22 +2781,21 @@ impl Renderer {
             .viewport
             .map(|v| (v * frame.pixel_ratio).max(1.0) as u32);
         let logical = frame.viewport.map(|v| v.max(1.0) as u32);
-        // Only nodes that have drawn have targets.
+        // Every 3D and heatmap node has its targets from the first frame,
+        // whether or not its layer draws yet, so that none is made for a
+        // first use in a gesture: a frame makes them only for a new
+        // viewport, which the screen made anew too.
         let mut resized = self.extrusions.resize(
             gpu,
             size,
-            self.nodes
-                .iter()
-                .filter(|n| n.drawn && n.extrusion.is_some())
-                .count()
-                + terrain_layers,
+            self.nodes.iter().filter(|n| n.extrusion.is_some()).count() + terrain_layers,
         );
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
             terrain.set_layers(gpu, &self.terrain_layers, self.drape_stacks[0]);
             let sizes = (size, logical);
             resized |= terrain.resize(gpu, &mut self.composites, sizes, self.extrusions.samples);
         }
-        for node in self.nodes.iter_mut().filter(|n| n.drawn) {
+        for node in &mut self.nodes {
             if let Some(extrusion) = &mut node.extrusion {
                 resized |= self
                     .extrusions

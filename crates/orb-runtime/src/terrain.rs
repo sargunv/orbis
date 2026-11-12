@@ -25,8 +25,8 @@ use orb_camera::View;
 use orb_crs::{CoveredTile, Metres, TileIndex, TileMatrixSet, WorldRect};
 use orb_hal::Gpu;
 use orb_render::{
-    ClipRect, DemRef, DrapeLayout, PageId, PlacementTarget, Renderer, TerrainDem, TerrainTile,
-    TileRow,
+    ClipRect, DemRef, DrapeLayout, Moves, PageId, PlacementTarget, Renderer, TerrainDem,
+    TerrainTile, TileRow,
 };
 use orb_source::{Draw, TilePyramid};
 use orb_tile::DemGrid;
@@ -476,7 +476,7 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        (tile, grow): (TileIndex, bool),
+        tile: TileIndex,
         result: Result<crate::TileOutcome, String>,
         now: f64,
     ) -> Result<(), String> {
@@ -506,16 +506,25 @@ impl Terrain {
             }
         };
         let size = [image.width, image.height];
-        let page = *self
-            .page
-            .get_or_insert_with(|| renderer.create_page(gpu, orb_render::PageKind::Terrain, size));
+        let page = match self.page {
+            Some(page) => page,
+            None => match renderer.create_page(gpu, orb_render::PageKind::Terrain, size) {
+                Some(page) => *self.page.insert(page),
+                // Memory is held: the page is made at rest, and the tile
+                // loads again then.
+                None => {
+                    self.pyramid.forget_loading(tile);
+                    return Ok(());
+                }
+            },
+        };
         let layer = match renderer.page_size(page) {
             other if other != size => Err(format!("{}×{} among {other:?} tiles", size[0], size[1])),
-            _ => match self.alloc_layer(gpu, renderer, page, grow) {
+            _ => match self.alloc_layer(gpu, renderer, page) {
                 Ok(layer) => Ok(layer),
                 // The page grows at rest; the tile loads again then.
                 Err(_)
-                    if !grow && {
+                    if renderer.moves() != Moves::Free && {
                         let room = self.refused(renderer);
                         renderer.can_grow_into(&room)
                     } =>
@@ -536,25 +545,25 @@ impl Terrain {
         Ok(())
     }
 
-    /// A layer of the DEM page: grown for, if `grow`, or else made by
-    /// evicting DEM tiles the cover no longer reads, least recently used
-    /// first.
+    /// A layer of the DEM page: grown for where memory is
+    /// [free](Moves::Free), or else made by evicting DEM tiles the cover no
+    /// longer reads, least recently used first.
     fn alloc_layer(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
         page: PageId,
-        grow: bool,
     ) -> Result<u32, orb_render::OutOfSpace> {
         loop {
-            match renderer.alloc_layer(gpu, page, grow) {
-                Err(_) if !grow => match self.pyramid.evict_lru() {
+            match renderer.alloc_layer(gpu, page, true) {
+                // The last refusal stays recorded, for the map's upkeep.
+                Err(e) if renderer.moves() != Moves::Free => match self.pyramid.evict_lru() {
                     Some(old) => {
                         renderer.forget_refusals();
                         renderer.free_layer(page, old.layer);
                         self.stale = true;
                     }
-                    None => return renderer.alloc_layer(gpu, page, false),
+                    None => return Err(e),
                 },
                 done => return done,
             }

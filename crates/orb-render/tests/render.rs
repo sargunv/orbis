@@ -5,8 +5,8 @@ use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
     Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameLight, FrameStats,
-    MeshData, NodePaint, PipelineGroup, PipelineSet, PlacementTarget, Renderer, SceneCapacity,
-    SymbolPaint, TargetFormat, TileRow, Words,
+    MeshData, Moves, NodePaint, PipelineGroup, PipelineSet, PlacementTarget, Renderer,
+    SceneCapacity, SymbolPaint, TargetFormat, TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -319,7 +319,7 @@ fn held_pools_grow_into_their_refusals_a_move_at_a_time() {
         ..Harness::SMALL
     };
     let mut h = Harness::with(4, 2, 8, capacity, None);
-    h.renderer.set_resizing(&mut h.gpu, false);
+    h.renderer.set_moves(&mut h.gpu, Moves::Held);
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
@@ -343,6 +343,17 @@ fn held_pools_grow_into_their_refusals_a_move_at_a_time() {
     h.renderer.refuse(&sizes);
     let room = h.renderer.take_refusals();
     assert!(!room.is_empty() && h.renderer.can_grow_into(&room));
+    // The gate refuses every move while held, upkeep's too.
+    assert!(!h.renderer.grow_into(&mut h.gpu, &room));
+    assert!(!h.renderer.grow_for(&mut h.gpu, &sizes));
+    assert!(!h.renderer.grow(&mut h.gpu));
+    assert!(!h.renderer.grow_headroom(&mut h.gpu, u64::MAX));
+    assert_eq!(h.renderer.take_resized().moves, 0, "held: nothing moved");
+    // At rest, an upload still doesn't grow them; upkeep does.
+    h.renderer.set_moves(&mut h.gpu, Moves::Rest);
+    assert!(!h.renderer.grow_for(&mut h.gpu, &sizes));
+    assert!(!h.renderer.grow(&mut h.gpu));
+    assert_eq!(h.renderer.take_resized().moves, 0, "an upload at rest grew");
     // Vertices, indices, properties and chunks: four moves, one a call.
     let mut moves = 0;
     while !h.renderer.fits(&sizes) {
@@ -358,6 +369,7 @@ fn held_pools_grow_into_their_refusals_a_move_at_a_time() {
         !h.renderer.grow_into(&mut h.gpu, &room),
         "nothing left to grow"
     );
+    h.renderer.set_moves(&mut h.gpu, Moves::Held);
     h.renderer
         .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data(&right), &rows)
         .unwrap();
@@ -382,7 +394,7 @@ fn held_lists_leave_candidates_out_until_they_may_grow() {
         ..Harness::SMALL
     };
     let mut h = Harness::with(4, 2, 8, capacity, None);
-    h.renderer.set_resizing(&mut h.gpu, false);
+    h.renderer.set_moves(&mut h.gpu, Moves::Held);
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
@@ -398,7 +410,7 @@ fn held_lists_leave_candidates_out_until_they_may_grow() {
     assert!(h.renderer.stats().candidates_dropped > 0);
     assert!(h.renderer.wants_room());
     assert_eq!(h.renderer.take_resized().moves, 0, "held lists don't move");
-    h.renderer.set_resizing(&mut h.gpu, true);
+    h.renderer.set_moves(&mut h.gpu, Moves::Rest);
     let pixels = h.render();
     assert_eq!(h.renderer.stats().candidates_dropped, 0);
     assert!(!h.renderer.wants_room());
@@ -435,7 +447,6 @@ fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
             fade_duration: 0.0,
         }),
     );
-    h.renderer.set_resizing(&mut h.gpu, false);
     for (kind, source) in [(PageKind::Raster, source), (PageKind::Dem, source + 1)] {
         let upload = |h: &mut Harness, col: u32, rgba: [u8; 4]| {
             let pixels = rgba.repeat(4);
@@ -455,8 +466,14 @@ fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
             };
             h.renderer.upload_image(&mut h.gpu, &build, false)
         };
-        // Pages start at eight layers before a map sizes them.
+        // Held, a source's first page isn't made; at rest it is, and an
+        // upload still grows nothing.
         let green = [0, 255, 0, 255];
+        h.renderer.set_moves(&mut h.gpu, Moves::Held);
+        assert!(matches!(upload(&mut h, 0, RED), Err(UploadError::NoRoom)));
+        assert!(!h.renderer.has_page(source));
+        h.renderer.set_moves(&mut h.gpu, Moves::Rest);
+        // Pages start at eight layers before a map sizes them.
         let first = upload(&mut h, 0, RED).unwrap();
         let mut last = first;
         for col in 1..8 {
@@ -503,7 +520,7 @@ fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
 #[test]
 fn held_glyph_pages_keep_bitmaps_until_they_grow() {
     let mut h = Harness::new();
-    h.renderer.set_resizing(&mut h.gpu, false);
+    h.renderer.set_moves(&mut h.gpu, Moves::Held);
     let revision = h.renderer.glyphs().revision();
     // A page-sized bitmap per row: the ninth outgrows the first 8 pages.
     let bitmap = vec![255u8; 500 * 500];
@@ -516,6 +533,8 @@ fn held_glyph_pages_keep_bitmaps_until_they_grow() {
     }
     assert_eq!(h.renderer.glyphs().revision(), revision, "held pages stay");
     assert!(h.renderer.wants_room());
+    assert!(!h.renderer.grow_into(&mut h.gpu, &Default::default()));
+    h.renderer.set_moves(&mut h.gpu, Moves::Rest);
     h.renderer.take_resized();
     assert!(h.renderer.grow_into(&mut h.gpu, &Default::default()));
     assert_eq!(h.renderer.take_resized().moves, 1);

@@ -413,7 +413,9 @@ impl Renderer {
     /// Uploads an image tile: its pixels into a layer of its source's page,
     /// and a quad (or its mesh) into each of the source's image nodes.
     /// Without `grow`, only room already there is used; with it, the page
-    /// and the scene's pools grow within their limits.
+    /// and the scene's pools grow within their limits, if memory is
+    /// [free](crate::Moves::Free). No source's first page is made while
+    /// memory is [held](crate::Moves::Held) ([`has_page`](Self::has_page)).
     pub fn upload_image(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -428,6 +430,7 @@ impl Renderer {
         }
         let page = match self.tiles.page(key.source) {
             Some(page) => page,
+            None if self.moves() == crate::Moves::Held => return Err(UploadError::NoRoom),
             None => {
                 let layers = self.page_layers(kind, size);
                 let page = self.images.create_page(gpu, kind, size, layers);
@@ -618,7 +621,8 @@ impl Renderer {
 
     /// Uploads a tile: all its meshes, in order, or none. Without `grow`,
     /// only room already there is used; with it, the pools grow within
-    /// their limits. Returns the tile and its meshes' ids.
+    /// their limits, if memory is [free](crate::Moves::Free). Returns the
+    /// tile and its meshes' ids.
     pub fn upload_tile(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -893,8 +897,12 @@ impl Renderer {
     }
 
     /// Grows the pools, within their limits, until meshes of these sizes
-    /// fit; whether they do.
+    /// fit; whether they do. Only [free](crate::Moves::Free) memory grows
+    /// for an upload.
     pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
+        if !self.uploads_grow() {
+            return self.fits(meshes);
+        }
         let fits = self.scene.grow_for(gpu, meshes);
         self.glyphs
             .set_table(self.scene.tables().writer(Table::Props));
@@ -902,8 +910,12 @@ impl Renderer {
     }
 
     /// Halves a pool, table or image tile page a view that emptied left
-    /// mostly free: one move. Whether one shrank.
+    /// mostly free: one move. Whether one shrank: never while memory is
+    /// [held](crate::Moves::Held).
     pub fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+        if self.moves() == crate::Moves::Held {
+            return false;
+        }
         self.refused_pages.clear();
         if self.scene.shrink(gpu) {
             self.glyphs
@@ -940,8 +952,12 @@ impl Renderer {
     /// costs its clearing, and a device may hold up other work while it
     /// clears (#176: on RADV 43 µs a MiB, holding up submissions; a new
     /// 256 MiB block of wgpu's allocator 10-12 ms), so a frame grows one,
-    /// and a gesture that starts waits for one at most. Whether one grew.
+    /// and a gesture that starts waits for one at most. Whether one grew:
+    /// never while memory is [held](crate::Moves::Held).
     pub fn grow_headroom(&mut self, gpu: &mut dyn Gpu, room: u64) -> bool {
+        if self.moves() == crate::Moves::Held {
+            return false;
+        }
         if self.scene.grow_headroom(gpu, room) {
             self.glyphs
                 .set_table(self.scene.tables().writer(Table::Props));
@@ -950,8 +966,25 @@ impl Renderer {
         self.images.grow_headroom(gpu, room) || self.glyphs.grow_headroom(gpu, room)
     }
 
-    /// Grows the pools once, within their limits; whether they grew.
+    /// Grows the pools once, within their limits; whether they grew. Only
+    /// [free](crate::Moves::Free) memory grows for an upload.
     pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
+        self.uploads_grow() && self.grow_for_style(gpu)
+    }
+
+    /// Grows the pools once for an edit's relayout, within their limits,
+    /// unless memory is [held](crate::Moves::Held): an edit at rest grows
+    /// them as a style's load sizes them, with no upkeep to wait for.
+    /// Whether they grew.
+    pub fn grow_for_edit(&mut self, gpu: &mut dyn Gpu) -> bool {
+        self.moves() != crate::Moves::Held && self.grow_for_style(gpu)
+    }
+
+    /// Grows the pools once, within their limits, whatever the
+    /// [gate](crate::Moves) says: for what a style's load or edit makes
+    /// itself (its background meshes), which has no upkeep to wait for and
+    /// no frame to keep smooth. Whether they grew.
+    pub fn grow_for_style(&mut self, gpu: &mut dyn Gpu) -> bool {
         let grew = self.scene.grow(gpu);
         self.glyphs
             .set_table(self.scene.tables().writer(Table::Props));

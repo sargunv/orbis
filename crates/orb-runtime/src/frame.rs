@@ -613,8 +613,11 @@ impl Map {
         let time = self.shader_time();
         let drape_tiles = self.drape_tiles();
         // A camera a host jumps frame by frame moves as one under input.
-        let texels = (self.mode == RenderMode::Continuous)
-            .then(|| self.frame_budget.at(self.holds_memory()).drape_texels);
+        let texels = (self.mode == RenderMode::Continuous).then(|| {
+            self.frame_budget
+                .at(self.moves() == orb_render::Moves::Held)
+                .drape_texels
+        });
         let Some(style) = &mut self.style else {
             return None;
         };
@@ -631,7 +634,7 @@ impl Map {
         // terrain came on); a still map's, exactly its cover's. The tiles
         // take the slots of their places in the cover in any frame at
         // rest, as moving them allocates nothing.
-        let still = self.mode != RenderMode::Continuous;
+        let still = renderer.moves() == orb_render::Moves::Free;
         let at_rest = self.resize_now || still;
         let tiles = terrain.tiles.len() as u32;
         let slots = match still {

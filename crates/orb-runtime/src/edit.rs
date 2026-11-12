@@ -354,10 +354,10 @@ impl Map {
         tile: TileIndex,
         result: Result<TileOutcome, String>,
     ) {
-        // Pools don't move while the camera does: tiles out of view make
-        // the room. An edit at rest grows them, as a style's load sizes
-        // them: it has no upkeep to wait for.
-        let free = !self.holds_memory();
+        // Pools don't move while the camera does (the renderer's gate):
+        // tiles out of view make the room. An edit at rest grows them, as a
+        // style's load sizes them: it has no upkeep to wait for.
+        let free = renderer.moves() != orb_render::Moves::Held;
         let Some(style) = &mut self.style else {
             return;
         };
@@ -418,7 +418,7 @@ impl Map {
                 .ramps
                 .extend(remove_resident(renderer, victim, &mut style.states));
         }
-        let grow = free && (wanted || under_budget(renderer, atlas.bytes(), self.budget));
+        let grow = wanted || under_budget(renderer, atlas.bytes(), self.budget);
         let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
             unreachable!("checked above");
         };

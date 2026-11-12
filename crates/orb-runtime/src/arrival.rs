@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
-use orb_render::{ImageUpload, OutOfSpace, Renderer, Room, TileKey};
+use orb_render::{ImageUpload, Moves, OutOfSpace, Renderer, Room, TileKey};
 use orb_style::{LayerType, SourceKind};
 
 use crate::image::ResidentImage;
@@ -608,8 +608,9 @@ impl Map {
 
     /// What a waiting tile depends on: the scene's pools in use and their
     /// buffers, tile page layers in use, tile jobs in flight, and sprites
-    /// whose pixels are on their way.
-    pub(crate) fn room_state(&self, renderer: &Renderer) -> [u64; 7] {
+    /// whose pixels are on their way, and when memory may move (a source's
+    /// first page is made only when it does).
+    pub(crate) fn room_state(&self, renderer: &Renderer) -> [u64; 8] {
         let stats = renderer.stats();
         let loading: u64 = self
             .style
@@ -630,6 +631,7 @@ impl Map {
             self.style
                 .as_ref()
                 .map_or(0, |s| u64::from(s.sprites.pixels_loading)),
+            renderer.moves() as u64,
         ]
     }
 
@@ -698,10 +700,9 @@ impl Map {
     ) -> Applied {
         // A tile made of words written over frames spent them as they went.
         let finishing = reserved.is_some();
-        // Whether the pools grow as the tile needs, and whether the camera
-        // rests: a continuous map's grow only in its upkeep at rest.
-        let free = self.resizes_freely();
-        let still = !free && !self.holds_memory();
+        // The renderer's gate says whether the pools grow as the tile needs
+        // (a still map's), or only in the map's upkeep at rest.
+        let moves = renderer.moves();
         let Some(style) = &mut self.style else {
             return Applied::Done;
         };
@@ -864,7 +865,11 @@ impl Map {
         // Labels take their images' atlas rectangles as they upload: a tile
         // whose labels show images waits for the sprites' pixels (layout
         // needed only their JSON).
-        if style.awaits_sprite_pixels(&build) {
+        // An image tile of a source with no page yet waits for one at rest,
+        // when memory moves again (`room_state`).
+        if style.awaits_sprite_pixels(&build)
+            || (image_build.is_some() && moves == Moves::Held && !renderer.has_page(key.source))
+        {
             return Applied::Waits(build, Room::default());
         }
         let sizes = mesh_sizes(plan, &build);
@@ -879,10 +884,11 @@ impl Map {
         // standing in for a tile of it that failed) is forgotten; one it
         // wants gives way, to be tried again later, and its ancestor is
         // asked to stand in.
-        // A continuous map's pools don't grow here: while the camera
-        // moves, unused tiles and stand-ins go instead; at rest under the
-        // budget the tile waits for its upkeep to grow them, keeping the
-        // cache; and one with no room after all waits for that too.
+        // A continuous map's pools don't grow here (the renderer's gate
+        // refuses): while the camera moves, unused tiles and stand-ins go
+        // instead; at rest under the budget the tile waits for its upkeep
+        // to grow them, keeping the cache; and one with no room after all
+        // waits for that too.
         let others_loading = style
             .sources
             .iter()
@@ -890,7 +896,7 @@ impl Map {
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
         let under = under_budget(renderer, atlas.bytes(), self.budget);
-        let mut grow = free && under;
+        let mut grow = under;
         let uploading = self.services.clock.now();
         let uploaded = loop {
             atlas.release_ramps(gpu, self.retired.ramps.drain(..));
@@ -944,12 +950,14 @@ impl Map {
                 Err(Invalid(e)) => break Err(Some(e)),
                 // Labels' sizes aren't known ahead: both pools grow.
                 Err(NoRoom) if grow && image_build.is_none() && renderer.grow(gpu) => continue,
-                Err(NoRoom) if still && under && renderer.can_grow_refused() => break Err(None),
+                Err(NoRoom) if moves == Moves::Rest && under && renderer.can_grow_refused() => {
+                    break Err(None);
+                }
                 Err(NoRoom) => evict_unused(&mut style.sources, source),
             };
             let victim = match victim {
                 Some(victim) => Some(victim),
-                None if free && !grow => {
+                None if moves == Moves::Free && !grow => {
                     grow = true;
                     continue;
                 }
@@ -983,8 +991,8 @@ impl Map {
         let wanted = pyramid.wants(tile);
         // What it was refused, for a continuous map's upkeep to grow; a
         // tile that got in needs none.
-        let room = match (&uploaded, free) {
-            (Err(None), false) => renderer.take_refusals(),
+        let room = match (&uploaded, moves) {
+            (Err(None), Moves::Rest | Moves::Held) => renderer.take_refusals(),
             _ => {
                 renderer.forget_refusals();
                 Room::default()

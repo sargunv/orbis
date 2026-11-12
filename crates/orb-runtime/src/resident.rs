@@ -147,7 +147,7 @@ pub(crate) struct WaitingTile {
     pub(crate) tile: TileIndex,
     pub(crate) build: TileResult,
     /// [`Map::room_state`] when it was last tried.
-    pub(crate) tried: Option<[u64; 7]>,
+    pub(crate) tried: Option<[u64; 8]>,
     /// What it was refused while the pools couldn't grow: what the map's
     /// upkeep at rest makes room for. Empty while it waits for other
     /// tiles or sprites' pixels.
@@ -551,9 +551,10 @@ pub(crate) fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize>
     )]
 }
 
-/// Runs `upload` until the scene has room for it: after each refusal,
-/// while `grow` allows, the scene grows what refused it (to its
-/// ceilings) and `upload` runs again.
+/// Runs an edit's `upload` until the scene has room for it: after each
+/// refusal, while `grow` allows, the scene grows what refused it (to its
+/// ceilings, and as the renderer's gate allows an edit) and `upload` runs
+/// again.
 pub(crate) fn with_room<T>(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
@@ -562,7 +563,7 @@ pub(crate) fn with_room<T>(
 ) -> Result<T, OutOfSpace> {
     loop {
         match upload(gpu, renderer) {
-            Err(OutOfSpace) if grow && renderer.grow(gpu) => {}
+            Err(OutOfSpace) if grow && renderer.grow_for_edit(gpu) => {}
             done => return done,
         }
     }

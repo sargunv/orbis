@@ -1159,6 +1159,9 @@ pub(crate) struct Scene {
     /// Texels of the symbol placement target that symbol nodes' quads
     /// take: 64 for each candidate row (`NodeCull`'s `quad_base`).
     placed_quads: u32,
+    /// The placement target's quads, past which symbol nodes don't draw
+    /// ([`cap_quads`](Self::cap_quads)).
+    quad_cap: u32,
     /// The last frame's label fades had run (`follow_label_fades`).
     labels_faded: bool,
     /// The ends of the node slices of the candidate lists and the
@@ -1331,6 +1334,7 @@ impl Scene {
             candidate_count: 0,
             candidates_dropped: 0,
             placed_quads: 0,
+            quad_cap: u32::MAX,
             labels_faded: false,
             rows_end: 0,
             compacted_words: 0,
