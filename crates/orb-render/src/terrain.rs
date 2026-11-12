@@ -1266,14 +1266,12 @@ impl Terrain {
                 }
                 let (columns, _) = atlas.grid();
                 let px = atlas.slot_px;
+                // Whole places, cleared and downsampled, a smaller slot's
+                // too: what filters read past its edge is then blank, not
+                // what the place held before.
                 let regions: Vec<[u32; 4]> = (pending.iter())
-                    .map(|&(stack, s, side)| {
-                        [
-                            layout.layer(stack),
-                            s % columns * px,
-                            s / columns * px,
-                            side,
-                        ]
+                    .map(|&(stack, s, _)| {
+                        [layout.layer(stack), s % columns * px, s / columns * px, px]
                     })
                     .collect();
                 atlas.mips.regions.write(gpu, &regions);
