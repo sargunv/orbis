@@ -378,9 +378,10 @@ fn c_event(e: &mut Event) -> mln_runtime_event {
     event
 }
 
-/// How long the thread waits for work while a map still loads or moves
-/// without a frame to draw it: Orbis advances maps in steps.
-const IDLE_STEP: Duration = Duration::from_millis(16);
+/// How often a map steps that nothing paces: a camera that moves with no
+/// session drawing it, a still image waiting on time. Data, compiles and
+/// pacers wake the thread themselves.
+const STEP: Duration = Duration::from_millis(16);
 
 /// A fresh directory for the regions of a runtime without a cache file,
 /// removed with it.
@@ -403,9 +404,9 @@ fn temporary_state_dir() -> Result<std::path::PathBuf> {
 /// directory to remove then, before the stop completes.
 fn run(rx: Receiver<Msg>, temporary: Option<&std::path::Path>) {
     loop {
-        let busy = STATE.with(|s| s.borrow().as_ref().is_some_and(crate::map::any_busy));
-        let first = if busy {
-            match rx.recv_timeout(IDLE_STEP) {
+        let steps = STATE.with(|s| s.borrow().as_ref().is_some_and(crate::map::any_steps));
+        let first = if steps {
+            match rx.recv_timeout(STEP) {
                 Ok(msg) => Some(msg),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => return,

@@ -202,8 +202,6 @@ pub(crate) struct MapEntry {
     ended: Vec<(EndHandler, mln_camera_transition_outcome)>,
     /// Camera events of immediate moves, for the next settle.
     camera_events: Vec<(mln_runtime_event_type, Payload, String)>,
-    /// Draws the map's frames while no session does, so animations run.
-    idle: Option<orb_api::Target>,
     /// What the C API keeps of the style beyond Orbis's document.
     pub(crate) style: crate::style::StyleState,
     /// Feature queries waiting for Orbis's answer, by its query id, and
@@ -350,23 +348,24 @@ impl MapEntry {
         self.handle.has_session.store(attached, Ordering::Release);
     }
 
-    /// Whether the map moves or loads with nothing drawing it, or its
-    /// session's still image needs another frame.
-    fn busy(&self) -> bool {
+    /// Whether the map needs a step on time rather than on a wake: its
+    /// camera moves with nothing drawing it, or its session's still image
+    /// needs a frame for something other than data (which wakes it).
+    fn steps(&self) -> bool {
         match self.session {
-            None => self.map.is_moving() || self.woken.load(Ordering::Acquire),
+            None => self.map.is_moving(),
             Some(_) => self.still.is_some() && self.map.needs_frame(),
         }
     }
 }
 
-/// Whether any map needs the runtime thread to step it.
-pub(crate) fn any_busy(state: &State) -> bool {
-    state.maps.values().any(MapEntry::busy)
+/// Whether any map needs the runtime thread to step it on time.
+pub(crate) fn any_steps(state: &State) -> bool {
+    state.maps.values().any(MapEntry::steps)
 }
 
-/// Steps the maps no session draws: takes in what arrived, and draws a
-/// frame for a moving camera so its animation runs.
+/// Steps the maps no session draws: takes in what arrived, and moves a
+/// moving camera on, so its animation runs and reports as under frames.
 pub(crate) fn advance(state: &mut State) {
     let now = state.now();
     for entry in state.maps.values_mut() {
@@ -374,15 +373,9 @@ pub(crate) fn advance(state: &mut State) {
             continue;
         }
         if entry.map.is_moving() {
-            let (w, h) = (entry.extent.width.max(1), entry.extent.height.max(1));
-            let target = entry
-                .idle
-                .get_or_insert_with(|| orb_api::Target::texture(&state.runtime, w, h, 1.0));
-            if target.size() != (w, h) {
-                target.resize(w, h, 1.0);
-            }
-            let _ = entry.map.render(target, now);
-        } else if entry.woken.swap(false, Ordering::AcqRel) {
+            entry.map.advance(now);
+        }
+        if entry.woken.swap(false, Ordering::AcqRel) {
             let _ = entry.map.apply_arrivals();
         }
     }
@@ -805,7 +798,6 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                             MLN_CAMERA_CHANGE_SOURCE_COMMAND,
                         ),
                         jumped: false,
-                        idle: None,
                         style: Default::default(),
                         queries: Default::default(),
                         query_aliases: Default::default(),

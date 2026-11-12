@@ -217,6 +217,15 @@ impl Map {
         self.camera.revision() != before
     }
 
+    /// Advances gestures and animations to `time` (milliseconds, on the
+    /// clock frames use) without drawing, in the last frame's viewport:
+    /// for a host that draws nothing of the map for now, so that its camera
+    /// moves, ends its moves and reports them as it would under frames.
+    /// Returns whether the camera moves on.
+    pub fn advance(&mut self, time: f64) -> bool {
+        self.advance_camera(self.camera.viewport(), time)
+    }
+
     /// Brings the camera to this frame: it stands on the surface and
     /// terrain that have arrived and the frame's viewport, then gestures
     /// and animations advance to `time`. Returns whether it moves on.

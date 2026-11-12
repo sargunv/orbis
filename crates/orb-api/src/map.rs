@@ -877,6 +877,20 @@ impl Map {
         self.frame(target, frame_time)
     }
 
+    /// Advances gestures and animations to `time` (on the clock frames
+    /// use) without drawing, for a map nothing draws for now: its camera
+    /// moves, its moves end and their events come out as under frames,
+    /// and no device is needed. Returns whether the camera moves on; call
+    /// it again on the host's beat until it doesn't.
+    pub fn advance(&mut self, time: f64) -> bool {
+        let moving = self.map.advance(time);
+        self.events
+            .extend(self.map.take_events().into_iter().map(Event::Map));
+        // The next frame shows where the camera went.
+        self.dirty = true;
+        moving
+    }
+
     /// Draws frames into `target` until the map is idle (its loads,
     /// pipelines, fades and camera motion done, and a last frame drawing
     /// what the one before brought), waiting for data between frames, and
