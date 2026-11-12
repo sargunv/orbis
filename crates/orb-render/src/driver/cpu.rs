@@ -97,11 +97,12 @@ const NODE_WORDS: usize = layout::node_cull::WORDS;
 const DRAW_IMAGES: u32 = 0;
 const DRAW_POINTS: u32 = 1;
 const DRAW_INDEXED: u32 = 2;
-/// What this driver hides with: the primitive restart index, which WebGL 2
-/// skips without drawing. WebGL rejects element indices from 2^31, and
-/// ANGLE drops a whole draw holding one, such as [`HIDDEN_INDEX`]; where
-/// it isn't a restart (Metal's triangle lists), `pull_indexed` takes it
-/// as hidden too.
+/// What this driver hides with, where the GPU's cull writes
+/// [`HIDDEN_INDEX`]: the primitive restart index, which WebGL 2 skips
+/// without drawing its triangle's vertices (WebGL rejects other element
+/// indices from 2^31, and ANGLE drops a whole draw holding one); where it
+/// isn't a restart (Metal's triangle lists), `pull_indexed` takes it as
+/// hidden too.
 pub(crate) const RESTART_INDEX: u32 = 0xffff_ffff;
 /// `types.wgsl`'s vertices an image chunk draws.
 const CHUNK_VERTICES: u32 = 768;
@@ -231,18 +232,9 @@ impl CpuDriver {
             changed.extend((scene.moves().iter()).map(|m| m.to..m.to + m.words));
             // The twin's, on the GPU, in a submission of their own.
             if let Some(twin) = &self.twin {
-                let moves = scene.move_passes(gpu, twin.compacted);
-                let longest = scene.hidden().iter().map(|r| r.end - r.start).max();
-                let words = vec![HIDDEN_INDEX; longest.unwrap_or(0) as usize];
-                for range in scene.hidden() {
-                    gpu.write_buffer(
-                        twin.compacted,
-                        u64::from(range.start) * 4,
-                        bytemuck::cast_slice(&words[..(range.end - range.start) as usize]),
-                    );
-                }
-                if !moves.is_empty() {
-                    gpu.submit(&moves);
+                let passes = scene.slot_passes(gpu, twin.compacted);
+                if !passes.is_empty() {
+                    gpu.submit(&passes);
                 }
             }
         }
@@ -552,11 +544,12 @@ impl CpuDriver {
         keeps
     }
 
-    /// The GPU twin's cull, writing its own buffers.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, nodes: u32, passes: &mut Vec<Pass>) -> u32 {
+    /// The GPU twin's cull of `groups` workgroups, writing its own
+    /// buffers.
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, groups: u32, passes: &mut Vec<Pass>) -> u32 {
         self.twin
             .as_ref()
-            .map_or(0, |twin| twin.cull(gpu, nodes, passes))
+            .map_or(0, |twin| twin.cull(gpu, groups, passes))
     }
 
     /// Node `node`'s draw, from its arguments.
@@ -755,7 +748,7 @@ fn fill_slots(words: &mut [u32], at: u32, segments: &[Segment], drawn: &[u64], t
             if from >= to {
                 continue;
             }
-            let tag = (row[c::RUN] << segment.run_shift).wrapping_add(chunk[ch::FIRST_VERTEX]);
+            let tag = run_tag(row[c::RUN], segment.run_shift, chunk[ch::FIRST_VERTEX]);
             let first = (chunk[ch::FIRST_INDEX] + (from - slot)) as usize;
             let out = &mut words[(from - at) as usize..(to - at) as usize];
             match indices.get(first..first + out.len()) {
@@ -768,6 +761,12 @@ fn fill_slots(words: &mut [u32], at: u32, segments: &[Segment], drawn: &[u64], t
             }
         }
     }
+}
+
+/// `cull.wgsl`'s tag of run `run`'s indices from a chunk's first vertex:
+/// runs from 1, so that no run's index is the GPU's hidden one.
+fn run_tag(run: u32, run_shift: u32, first_vertex: u32) -> u32 {
+    (run.wrapping_add(1) << run_shift).wrapping_add(first_vertex)
 }
 
 /// Index `i` of the pool's packed u16 pairs, tagged.
@@ -874,7 +873,7 @@ fn decided_slots(
             }
             let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
             let n = chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES);
-            let tag = (row[c::RUN] << node[nc::RUN_SHIFT]).wrapping_add(chunk[ch::FIRST_VERTEX]);
+            let tag = run_tag(row[c::RUN], node[nc::RUN_SHIFT], chunk[ch::FIRST_VERTEX]);
             for k in 0..n {
                 let word = match row[c::DRAWN] {
                     1 => index_word(indices, tag, chunk[ch::FIRST_INDEX] + k),

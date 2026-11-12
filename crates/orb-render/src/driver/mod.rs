@@ -22,8 +22,8 @@ use crate::scene::{NodeDraw, Scene, SceneBuffers, SceneCapacity, Table};
 /// one set for whichever driver runs, so both drop the same candidates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SubmitLimits {
-    /// Bits of a compacted index (`run << run_shift | vertex`): 32 on
-    /// WebGPU; WebGL rejects element indices from 2^31.
+    /// Bits of a compacted index (`(run + 1) << run_shift | vertex`): 32
+    /// on WebGPU; WebGL rejects element indices from 2^31.
     pub index_bits: u32,
     /// Words of the compacted index buffer: indexed candidates' slots.
     pub compacted_words: u32,
@@ -41,9 +41,10 @@ impl SubmitLimits {
     }
 
     /// The runs a node whose meshes' vertices take `run_shift` bits can
-    /// address, the all-ones run (hidden indices) aside.
+    /// address: tags from 1, the all-zero tag (the GPU's hidden index) and
+    /// the all-ones one (the CPU driver's restart) aside.
     pub(crate) fn max_runs(&self, run_shift: u32) -> u64 {
-        (1u64 << self.index_bits.saturating_sub(run_shift)) - 1
+        (1u64 << self.index_bits.saturating_sub(run_shift)).saturating_sub(2)
     }
 }
 
@@ -96,15 +97,6 @@ impl Kind {
             Self::Gpu => u64::from(words),
             #[cfg(cpu_driven)]
             Self::Cpu => 0,
-        }
-    }
-
-    /// The compacted index that hides a slot, as the driver writes it.
-    pub(crate) fn hidden_index(self) -> u32 {
-        match self {
-            Self::Gpu => gpu::HIDDEN_INDEX,
-            #[cfg(cpu_driven)]
-            Self::Cpu => cpu::RESTART_INDEX,
         }
     }
 
@@ -229,15 +221,15 @@ impl Driver {
         }
     }
 
-    /// The frame's first passes: on the GPU, those that move the slots
-    /// the layout moved, which nothing this frame wrote yet (the CPU
-    /// driver moves them in [`prepare`](Self::prepare), before its own
-    /// writes).
+    /// The frame's first passes: on the GPU, those that hide the slots of
+    /// runs the layout dropped and move the slots it moved, which nothing
+    /// this frame wrote yet (the CPU driver does both in
+    /// [`prepare`](Self::prepare), before its own writes).
     pub(crate) fn moves(&self, gpu: &mut dyn Gpu, scene: &mut Scene, passes: &mut Vec<Pass>) {
         match self {
             Self::Gpu(_) => {
                 let compacted = scene.buffers().compacted;
-                passes.extend(scene.move_passes(gpu, compacted));
+                passes.extend(scene.slot_passes(gpu, compacted));
             }
             #[cfg(cpu_driven)]
             Self::Cpu(_) => {}
@@ -245,12 +237,14 @@ impl Driver {
     }
 
     /// The frame's passes before its draws: on the GPU, the cull of the
-    /// scene's `nodes`. Returns the dispatches it adds.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, nodes: u32, passes: &mut Vec<Pass>) -> u32 {
+    /// scene's nodes, its workgroups as their rows lay them out. Returns
+    /// the dispatches it adds.
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, scene: &Scene, passes: &mut Vec<Pass>) -> u32 {
+        let groups = scene.cull_groups();
         match self {
-            Self::Gpu(d) => d.cull(gpu, nodes, passes),
+            Self::Gpu(d) => d.cull(gpu, scene.buffers().args, groups, passes),
             #[cfg(cpu_driven)]
-            Self::Cpu(d) => d.cull(gpu, nodes, passes),
+            Self::Cpu(d) => d.cull(gpu, groups, passes),
         }
     }
 

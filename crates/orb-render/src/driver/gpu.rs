@@ -1,5 +1,5 @@
-//! The GPU-driven frame: one compute dispatch culls and compacts every
-//! node's candidates and writes its indirect draw arguments
+//! The GPU-driven frame: one flat compute dispatch culls and compacts
+//! every node's candidates and writes its indirect draw arguments
 //! (`cull.wgsl`), and each node draws with one indirect draw.
 //!
 //! The only place in `orb-render`, with the files `xtask check`'s
@@ -18,8 +18,9 @@ use crate::scene::{ARGS_WORDS, NodeDraw, SceneBuffers, Table, Tables};
 pub(crate) const INDEX_BITS: u32 = 32;
 
 /// `types.wgsl`'s compacted index that draws nothing, which the cull
-/// writes.
-pub(crate) const HIDDEN_INDEX: u32 = 0xffff_fffe;
+/// writes: zero, so that clearing a range hides it.
+#[cfg(cpu_driven)]
+pub(crate) const HIDDEN_INDEX: u32 = 0;
 
 /// The draw arguments: the cull dispatch writes them, indirect draws read
 /// them, and tests read them back.
@@ -107,13 +108,30 @@ impl GpuDriver {
         true
     }
 
-    /// The cull dispatch, a workgroup per node. It writes every node's
-    /// arguments, zeros included, so it runs even when nothing is resident.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, nodes: u32, passes: &mut Vec<Pass>) -> u32 {
-        if nodes == 0 || !self.ready(gpu) {
+    /// The cull dispatch: `groups` workgroups, as the node rows' first
+    /// groups lay them out, after `args` is cleared, which leaves a node
+    /// with no workgroups drawing nothing. It runs even when nothing is
+    /// resident, to clear what nodes drew.
+    pub(crate) fn cull(
+        &self,
+        gpu: &mut dyn Gpu,
+        args: BufferId,
+        groups: u32,
+        passes: &mut Vec<Pass>,
+    ) -> u32 {
+        if !self.ready(gpu) {
             return 0;
         }
         let start = passes.len();
+        passes.push(Pass::ClearBuffer {
+            buffer: args,
+            offset: 0,
+            size: None,
+        });
+        if groups == 0 {
+            Pass::group(passes, start, "cull");
+            return 0;
+        }
         passes.push(Pass::Compute(ComputePass {
             label: "cull",
             commands: vec![
@@ -123,7 +141,7 @@ impl GpuDriver {
                     group: self.group,
                 },
                 ComputeCommand::Dispatch {
-                    x: nodes,
+                    x: groups,
                     y: 1,
                     z: 1,
                 },
@@ -295,8 +313,8 @@ impl Twin {
     }
 
     /// Its cull, writing its own buffers.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, nodes: u32, passes: &mut Vec<Pass>) -> u32 {
-        self.cull.cull(gpu, nodes, passes)
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, groups: u32, passes: &mut Vec<Pass>) -> u32 {
+        self.cull.cull(gpu, self.args, groups, passes)
     }
 
     pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {

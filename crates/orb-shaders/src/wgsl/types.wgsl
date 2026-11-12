@@ -279,13 +279,19 @@ struct NodeCull {
     // (`symbol.wgsl`'s), 64 for each of its candidate rows; any other
     // node's is where the next symbol node's would be.
     quad_base: u32,
+    // The node's first workgroup of the cull dispatch (`cull.wgsl`): the
+    // groups of the nodes before it, so the firsts rise with the node.
+    first_group: u32,
 };
 
-// A compacted index that draws nothing; no run reaches it. The CPU driver
-// hides with the one above it instead, the primitive restart index, which
-// WebGL 2 skips (it drops a whole draw holding an index from 2^31 on);
-// where it isn't a restart, a vertex takes either as hidden.
-const HIDDEN_INDEX: u32 = 0xfffffffeu;
+// A compacted index that draws nothing: zero, below every run's indices
+// (a run's are tagged with its number plus one), so a cleared range is
+// hidden. The CPU driver hides with the primitive restart index instead,
+// which WebGL 2 skips (it drops a whole draw holding an index from 2^31
+// on); where it isn't a restart, a vertex takes it as hidden too. No run
+// reaches it either: the all-ones tag is no run's.
+const HIDDEN_INDEX: u32 = 0u;
+const RESTART_INDEX: u32 = 0xffffffffu;
 
 // Every chunk is drawn as this many vertices; the excess is degenerate.
 const CHUNK_VERTICES: u32 = 768u;

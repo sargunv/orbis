@@ -45,8 +45,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::driver::SubmitLimits;
 
 use super::{
-    CANDIDATE_WORDS, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, NodeMeshes, PlacementTarget,
-    Route, Scene, Stream, Table, UNKNOWN, VISIBLE_WORDS,
+    CANDIDATE_WORDS, CULL_BATCH, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, NodeMeshes,
+    PlacementTarget, Route, Scene, Stream, Table, UNKNOWN, VISIBLE_WORDS,
 };
 
 /// A candidate row that holds no candidate: a hole a run left in an
@@ -274,7 +274,7 @@ fn shape(node: &NodeEntry) -> Shape {
     (c.draw, c.target, c.labels, c.unclipped, c.meshes)
 }
 
-/// An indexed node's index is `run << run_shift | vertex`.
+/// An indexed node's index is `(run + 1) << run_shift | vertex`.
 fn run_shift(vertex_words: u32) -> u32 {
     32 - (vertex_words - 1).leading_zeros().min(31)
 }
@@ -520,25 +520,10 @@ impl Scene {
         &mut self,
         gpu: &mut dyn Gpu,
         laid: Vec<LaidNode>,
-        mut writes: Writes,
+        writes: Writes,
         rows_end: u32,
         words_end: u32,
     ) {
-        // Runs that went side by side hide in one write: each is a call
-        // across to the GPU (to JavaScript, on the web).
-        writes.hidden = joined(writes.hidden);
-        let longest = writes.hidden.iter().map(|r| r.end - r.start).max();
-        let words = vec![self.driver.hidden_index(); longest.unwrap_or(0) as usize];
-        // A driver with compacted indices of its own hides them there.
-        if self.driver.scene_compacted_words(1) > 0 {
-            for range in &writes.hidden {
-                gpu.write_buffer(
-                    self.buffers.compacted,
-                    u64::from(range.start) * 4,
-                    bytemuck::cast_slice(&words[..(range.end - range.start) as usize]),
-                );
-            }
-        }
         for (at, words) in writes.rows() {
             self.tables.write_words(gpu, Table::Candidates, at, words);
         }
@@ -568,32 +553,66 @@ impl Scene {
             row[nc::ELEVATION] = node.cull.elevation.to_bits();
             live += laid.live;
         }
-        self.tables
-            .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
+        self.write_node_rows(gpu);
         self.params_dirty = false;
         self.placed_quads = quads;
         self.candidate_count = live;
         self.rows_end = rows_end;
         self.compacted_words = words_end;
         self.laid = laid;
-        self.hidden = writes.hidden;
-        // Any layout earlier in the frame moved slots of a buffer made
-        // again since, which holds nothing to move.
+        // Runs that went side by side hide in one clear: each is a call
+        // across to the GPU (to JavaScript, on the web). Any layout earlier
+        // in the frame hid and moved slots of a buffer made again since,
+        // or of runs laid out again from the start, which the cull writes
+        // whole.
+        self.hidden = joined(writes.hidden);
         self.moves = joined_moves(writes.moves);
     }
 
-    /// The passes that make the last layout's moves in `buffer`, the
-    /// scene's compacted indices or a copy of them: each move's words
-    /// copied from where they were to where they go, all into the scratch
-    /// buffer first, as one move's place can be another's old one. They
-    /// run before any write to the slots they move from.
-    pub(crate) fn move_passes(&mut self, gpu: &mut dyn Gpu, buffer: BufferId) -> Vec<Pass> {
-        let words: u64 = self.moves.iter().map(|m| u64::from(m.words)).sum();
-        if words == 0 {
-            return Vec::new();
+    /// The node rows, with the cull's workgroups laid out in them: a
+    /// node's `first_group` is the groups of the nodes before it, which
+    /// take one for each 256 candidate rows of an indexed node (its
+    /// batches) and one for a listed node with any, and none for a hidden
+    /// node (`cull.wgsl`).
+    pub(super) fn write_node_rows(&mut self, gpu: &mut dyn Gpu) {
+        use layout::node_cull as nc;
+        let mut groups = 0u32;
+        for row in self.node_rows.as_chunks_mut::<NODE_CULL_WORDS>().0 {
+            row[nc::FIRST_GROUP] = groups;
+            let (draw, count) = (row[nc::DRAW], row[nc::CANDIDATE_COUNT]);
+            groups += if draw & HIDDEN != 0 || count == 0 {
+                0
+            } else if draw & 255 == NodeDraw::Indexed.word() {
+                count.div_ceil(CULL_BATCH)
+            } else {
+                1
+            };
         }
-        let scratch = self.scratch(gpu, words * 4);
-        copies(buffer, scratch, &self.moves)
+        self.cull_groups = groups;
+        self.tables
+            .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
+    }
+
+    /// The passes that hide the last layout's dropped slots and make its
+    /// moves in `buffer`, the scene's compacted indices or a copy of them:
+    /// each dropped range cleared, then each move's words copied from
+    /// where they were to where they go, all into the scratch buffer first,
+    /// as one move's place can be another's old one. They run before any
+    /// write to the slots they move from.
+    pub(crate) fn slot_passes(&mut self, gpu: &mut dyn Gpu, buffer: BufferId) -> Vec<Pass> {
+        let words: u64 = self.moves.iter().map(|m| u64::from(m.words)).sum();
+        let mut passes: Vec<Pass> = (self.hidden.iter())
+            .map(|range| Pass::ClearBuffer {
+                buffer,
+                offset: u64::from(range.start) * 4,
+                size: Some(u64::from(range.end - range.start) * 4),
+            })
+            .collect();
+        if words > 0 {
+            let scratch = self.scratch(gpu, words * 4);
+            passes.extend(copies(buffer, scratch, &self.moves));
+        }
+        passes
     }
 }
 

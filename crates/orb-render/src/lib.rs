@@ -2423,7 +2423,7 @@ impl Renderer {
             Pass::group(passes, start, "image mips");
         }
         let cull_ready = self.driver.ready(gpu);
-        let dispatches = self.driver.cull(gpu, self.scene.node_count(), passes);
+        let dispatches = self.driver.cull(gpu, &self.scene, passes);
         if self.driver.culled(dispatches) {
             self.scene.culled();
         }

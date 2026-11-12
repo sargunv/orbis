@@ -523,6 +523,9 @@ const CHUNK_WORDS: usize = layout::chunk::WORDS;
 const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const VISIBLE_WORDS: usize = layout::visible::WORDS;
 const NODE_CULL_WORDS: usize = layout::node_cull::WORDS;
+/// Candidate rows of an indexed node one cull workgroup decides
+/// (`cull.wgsl`'s `WORKGROUP`).
+const CULL_BATCH: u32 = 256;
 /// Words per node of `SceneBuffers::args`: a draw's indirect arguments
 /// and the cull's counters.
 pub const ARGS_WORDS: usize = 8;
@@ -991,7 +994,7 @@ pub enum NodeDraw {
     /// buffer, which the cull pass fills with the chunk's indices when it
     /// becomes visible and with hidden indices when it leaves the view;
     /// one `drawIndexedIndirect` covers the node's slots. Indices are
-    /// `run << run_shift | vertex`, a run being a mesh in one placement.
+    /// `(run + 1) << run_shift | vertex`, a run being a mesh in one placement.
     Indexed,
 }
 
@@ -1084,6 +1087,8 @@ pub(crate) struct Scene {
     node_rows: Vec<u32>,
     /// Cull parameters changed since the node rows were last written.
     params_dirty: bool,
+    /// The cull's workgroups, as the node rows last written lay them out.
+    cull_groups: u32,
     /// Candidates laid out, holes aside.
     candidate_count: u32,
     candidates_dropped: u32,
@@ -1099,7 +1104,8 @@ pub(crate) struct Scene {
     /// Each node's slices as last laid out, so a rebuild lays out only
     /// what changed (`candidates`); empty when the next is laid out whole.
     laid: Vec<candidates::LaidNode>,
-    /// Compacted words the last rebuild hid, the slots of runs that went.
+    /// Compacted words the last rebuild hid, the slots of runs that went,
+    /// which the frame clears.
     hidden: Vec<Range<u32>>,
     /// Compacted words the last rebuild moved, from slots it left to its
     /// own (`candidates`).
@@ -1246,6 +1252,7 @@ impl Scene {
             candidates_dirty: true,
             node_rows: Vec::new(),
             params_dirty: false,
+            cull_groups: 0,
             candidate_count: 0,
             candidates_dropped: 0,
             placed_quads: 0,
@@ -1288,6 +1295,7 @@ impl Scene {
 
     /// The cull's rows: the render nodes', then their cut streams'
     /// ([`cut_row`](Self::cut_row)).
+    #[cfg(cpu_driven)]
     pub(crate) fn node_count(&self) -> u32 {
         self.nodes.len() as u32
     }
@@ -1679,6 +1687,11 @@ impl Scene {
         &self.hidden
     }
 
+    /// The cull's workgroups, as the node rows lay them out.
+    pub(crate) fn cull_groups(&self) -> u32 {
+        self.cull_groups
+    }
+
     /// Compacted words the last rebuild moved, which a driver writing
     /// compacted indices of its own moves too.
     #[cfg(cpu_driven)]
@@ -2051,6 +2064,7 @@ impl Scene {
     pub(crate) fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
         self.write_rows(gpu, quantum(frame.world_span));
         self.follow_label_fades(gpu, frame.symbol_fade_change);
+        self.hidden.clear();
         self.moves.clear();
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
@@ -2073,8 +2087,7 @@ impl Scene {
                 self.rebuild_candidates(gpu);
             }
         } else if std::mem::take(&mut self.params_dirty) && !self.node_rows.is_empty() {
-            self.tables
-                .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
+            self.write_node_rows(gpu);
         }
 
         let mut words = frame_words(frame);
