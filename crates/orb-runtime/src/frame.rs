@@ -915,12 +915,17 @@ impl DrapePlan {
         out: &mut Vec<TileRow>,
     ) {
         let drawn = crate::terrain::Drawn::of(tms, draw, at.frame, at.period);
+        // The stacks a slot redraws, kept across slots for its allocation.
+        let mut redrawing = Vec::new();
         for ((terrain, slot, redrawn), reach) in self.redraw.iter().zip(&self.reaches) {
             let (terrain, slot) = (*terrain, *slot);
-            let stacks: Vec<u8> = (stacks.iter().copied())
-                .filter(|s| redrawn.contains(s))
-                .collect();
-            if !stacks.is_empty() && drawn.within(reach) {
+            if !drawn.within(reach) {
+                continue;
+            }
+            redrawing.clear();
+            redrawing.extend((stacks.iter().copied()).filter(|s| redrawn.contains(s)));
+            let stacks = &redrawing;
+            if !stacks.is_empty() {
                 let zoom = self.zoom;
                 let map = placements(tms, draw, Placement { zoom, ..at });
                 crate::terrain::drape_rows(
@@ -928,7 +933,7 @@ impl DrapePlan {
                     drawn,
                     at.extent,
                     (terrain, slot),
-                    (&self.layout, &stacks),
+                    (&self.layout, stacks),
                     (zoom, self.reach_px),
                     map,
                     out,

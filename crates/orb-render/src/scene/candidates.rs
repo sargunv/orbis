@@ -539,11 +539,11 @@ impl Scene {
                 );
             }
         }
-        for (at, words) in &writes.rows {
-            self.tables.write_words(gpu, Table::Candidates, *at, words);
+        for (at, words) in writes.rows() {
+            self.tables.write_words(gpu, Table::Candidates, at, words);
         }
-        for (at, words) in &writes.visible {
-            self.tables.write_words(gpu, Table::Visible, *at, words);
+        for (at, words) in writes.visibles() {
+            self.tables.write_words(gpu, Table::Visible, at, words);
         }
         let mut live = 0u32;
         // Symbol nodes' quads in the placement target, 64 for each of
@@ -638,19 +638,46 @@ fn joined_moves(mut moves: Vec<Move>) -> Vec<Move> {
 }
 
 /// What a layout writes: candidate rows and visible words (at their first
-/// word), compacted ranges to hide, and slots that move.
+/// word, the words themselves one after another in `words`), compacted
+/// ranges to hide, and slots that move.
 #[derive(Default)]
 struct Writes {
-    rows: Vec<(u32, Vec<u32>)>,
-    visible: Vec<(u32, Vec<u32>)>,
+    rows: Vec<(u32, Range<usize>)>,
+    visible: Vec<(u32, Range<usize>)>,
+    words: Vec<u32>,
     hidden: Vec<Range<u32>>,
     moves: Vec<Move>,
 }
 
 impl Writes {
+    /// Candidate rows at word `at` of the table.
+    fn row(&mut self, at: u32, words: impl IntoIterator<Item = u32>) {
+        let start = self.words.len();
+        self.words.extend(words);
+        self.rows.push((at, start..self.words.len()));
+    }
+
+    /// Visible words at word `at` of the table.
+    fn visible(&mut self, at: u32, words: impl IntoIterator<Item = u32>) {
+        let start = self.words.len();
+        self.words.extend(words);
+        self.visible.push((at, start..self.words.len()));
+    }
+
+    fn rows(&self) -> impl Iterator<Item = (u32, &[u32])> {
+        (self.rows.iter()).map(|(at, words)| (*at, &self.words[words.clone()]))
+    }
+
+    fn visibles(&self) -> impl Iterator<Item = (u32, &[u32])> {
+        (self.visible.iter()).map(|(at, words)| (*at, &self.words[words.clone()]))
+    }
+
     fn append(&mut self, mut other: Self) {
-        self.rows.append(&mut other.rows);
-        self.visible.append(&mut other.visible);
+        let base = self.words.len();
+        let shifted = |(at, words): (u32, Range<usize>)| (at, words.start + base..words.end + base);
+        self.rows.extend(other.rows.drain(..).map(shifted));
+        self.visible.extend(other.visible.drain(..).map(shifted));
+        self.words.append(&mut other.words);
         self.hidden.append(&mut other.hidden);
         self.moves.append(&mut other.moves);
     }
@@ -776,16 +803,16 @@ impl LaidNode {
                 to: self.word_base + run.words.start,
                 words: words.end - words.start,
             });
-            let mut rows = Vec::with_capacity(run.rows.len() * CANDIDATE_WORDS);
             let mut at = self.word_base + run.words.start;
-            for (chunk, index_count, _) in runs[k].chunks() {
-                rows.extend([chunk, runs[k].placement, at, run.run, MOVED]);
+            let rows = runs[k].chunks().flat_map(|(chunk, index_count, _)| {
+                let row = [chunk, runs[k].placement, at, run.run, MOVED];
                 at += index_count;
-            }
-            writes.rows.push((
+                row
+            });
+            writes.row(
                 (self.row_base + run.rows.start) * CANDIDATE_WORDS as u32,
                 rows,
-            ));
+            );
         }
         fits
     }
@@ -816,12 +843,10 @@ impl LaidNode {
         for key in gone {
             let run = kept.remove(&key).expect("a laid run");
             let n = run.rows.end - run.rows.start;
-            writes.rows.push((
+            writes.row(
                 (self.row_base + run.rows.start) * CANDIDATE_WORDS as u32,
-                std::iter::repeat_n([NO_CHUNK, 0, 0, 0, 0], n as usize)
-                    .flatten()
-                    .collect(),
-            ));
+                std::iter::repeat_n([NO_CHUNK, 0, 0, 0, 0], n as usize).flatten(),
+            );
             writes
                 .hidden
                 .push(self.word_base + run.words.start..self.word_base + run.words.end);
@@ -885,19 +910,17 @@ impl LaidNode {
             };
             before = slot + words;
             self.numbers[number as usize] = true;
-            let mut rows = Vec::with_capacity(n as usize * CANDIDATE_WORDS);
             let mut at = self.word_base + slot;
-            for (chunk, index_count, _) in run.chunks() {
-                rows.extend([chunk, run.placement, at, number, UNKNOWN]);
+            let rows = run.chunks().flat_map(|(chunk, index_count, _)| {
+                let row = [chunk, run.placement, at, number, UNKNOWN];
                 at += index_count;
-            }
-            writes
-                .rows
-                .push(((self.row_base + row) * CANDIDATE_WORDS as u32, rows));
-            writes.visible.push((
+                row
+            });
+            writes.row((self.row_base + row) * CANDIDATE_WORDS as u32, rows);
+            writes.visible(
                 (self.row_base + number) * VISIBLE_WORDS as u32,
-                vec![run.first(), run.placement],
-            ));
+                [run.first(), run.placement],
+            );
             kept.insert(
                 run.key,
                 LaidRun {
@@ -1100,24 +1123,20 @@ impl NodePlan {
             ..*m
         });
         writes.moves.extend(moves.filter(|m| m.from != m.to));
-        let rows: Vec<u32> = (self.rows.into_iter())
-            .flat_map(|mut row| {
+        if !self.rows.is_empty() {
+            let rows = (self.rows.into_iter()).flat_map(|mut row| {
                 if indexed {
                     row[2] += laid.word_base;
                 }
                 row
-            })
-            .collect();
-        if !rows.is_empty() {
-            writes
-                .rows
-                .push((laid.row_base * CANDIDATE_WORDS as u32, rows));
+            });
+            writes.row(laid.row_base * CANDIDATE_WORDS as u32, rows);
         }
         if !self.runs.is_empty() {
-            writes.visible.push((
+            writes.visible(
                 laid.row_base * VISIBLE_WORDS as u32,
-                self.runs.into_iter().flatten().collect(),
-            ));
+                self.runs.into_iter().flatten(),
+            );
         }
         laid.rows = Space::new(count, laid.rows.cap);
         laid.words = Space::new(self.words, laid.words.cap);
@@ -1209,7 +1228,8 @@ mod tests {
         let runs = tail(&[run(1, 2), run(3, 2), run(7, 2), run(8, 2)]);
         assert!(node.lay_out_changes(&runs, &limits, &mut writes));
         assert_eq!(writes.hidden, vec![6..12]);
-        assert_eq!(writes.rows[0].1[..CANDIDATE_WORDS], [NO_CHUNK, 0, 0, 0, 0]);
+        let (_, first) = writes.rows().next().unwrap();
+        assert_eq!(first[..CANDIDATE_WORDS], [NO_CHUNK, 0, 0, 0, 0]);
         assert_eq!((slots(&node, 1), slots(&node, 3)), (0..6, 12..18));
         // A run between them takes the hole; one after them, the room past
         // the last; neither moves a run that stays.
@@ -1240,14 +1260,14 @@ mod tests {
         let at = |serial| slots(&written, serial);
         assert_eq!([at(6), at(1), at(4), at(3)], [0..3, 3..9, 9..12, 12..18]);
         assert_eq!(
-            joined_moves(writes.moves),
+            joined_moves(writes.moves.clone()),
             [Move {
                 from: 0,
                 to: 3,
                 words: 9
             }]
         );
-        let moved: Vec<u32> = (writes.rows.iter())
+        let moved: Vec<u32> = (writes.rows())
             .flat_map(|(_, rows)| rows.chunks(CANDIDATE_WORDS).map(|r| r[4]))
             .collect();
         assert_eq!(moved.iter().filter(|&&d| d == MOVED).count(), 3);
