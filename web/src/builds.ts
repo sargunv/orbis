@@ -38,11 +38,18 @@ const WASM = {
   webgl2: new URL("../pkg/core-gl_bg.wasm", import.meta.url),
 };
 
+/** Each build's bindings, an import apiece: as a conditional's two arms,
+ * the minifier merged their preloads into one, and the page preloaded
+ * core-gl.js for WebGPU (and not core.js). */
+const BINDINGS: Record<Backend, () => Promise<Bindings>> = {
+  webgpu: () => import("../pkg/core.js"),
+  webgl2: () =>
+    import("../pkg/core-gl.js") as Promise<unknown> as Promise<Bindings>,
+};
+
 /** The bindings of `backend`'s build. */
 export function bindings(backend: Backend): Promise<Bindings> {
-  return backend === "webgpu"
-    ? import("../pkg/core.js")
-    : (import("../pkg/core-gl.js") as Promise<unknown> as Promise<Bindings>);
+  return BINDINGS[backend]();
 }
 
 /** The deferred half of each build that has one. */
