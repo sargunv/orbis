@@ -768,7 +768,8 @@ impl Map {
             })
         };
         let terrain = style.terrain.as_mut().expect("checked above");
-        let (tiles, redraw) = terrain.plan(&surface, view, (layout, &moves), &content, &mut globe);
+        let slots = (layout, &moves[..], at_rest);
+        let (tiles, redraw) = terrain.plan(&surface, view, slots, &content, &mut globe);
         renderer.set_terrain_tiles(gpu, &tiles);
         let slots: Vec<(u32, &[u8])> = (redraw.iter())
             .map(|(_, slot, stacks)| (*slot, &stacks[..]))

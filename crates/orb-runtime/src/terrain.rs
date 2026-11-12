@@ -545,16 +545,26 @@ impl Terrain {
         self.slots.values().map(|s| s.index).collect()
     }
 
+    /// Whether every tile of the cover has the slot of its place in it,
+    /// as [`plan`](Self::plan) at rest gives them.
+    pub(crate) fn slots_follow_cover(&self) -> bool {
+        (0u32..)
+            .zip(&self.tiles)
+            .all(|(place, tile)| self.slots.get(tile).is_some_and(|s| s.index == place))
+    }
+
     /// This frame's terrain tiles for the renderer, with slots assigned
     /// from `layout` after the atlas's `moves`, and which tile slots'
     /// stacks to redraw: those whose draped content, as `content` hashes
     /// it per stack, changed. On a globe, `globe` places a tile on the
-    /// sphere.
+    /// sphere. While the camera moves, a tile keeps its slot and a new one
+    /// takes a free one; `at_rest`, each takes the slot of its place in
+    /// the cover, redrawn if it moved there.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         view: &View,
-        (layout, moves): (DrapeLayout, &[(u32, u32)]),
+        (layout, moves, at_rest): (DrapeLayout, &[(u32, u32)], bool),
         content: &dyn Fn(CoveredTile) -> Vec<u64>,
         globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
     ) -> (Vec<TerrainTile>, Vec<Redraw>) {
@@ -567,12 +577,25 @@ impl Terrain {
                 slot.index = to;
             }
         }
+        // Filters read a little past a slot's edge, into the slots beside
+        // it in the atlas: which tiles those hold must follow the cover
+        // alone, not the tiles that came and went before it, for a map at
+        // rest to draw what a fresh one does.
+        if at_rest {
+            debug_assert!(self.tiles.len() <= layout.tile_slots as usize);
+            for (place, tile) in (0u32..).zip(&self.tiles) {
+                if let Some(slot) = self.slots.get_mut(tile).filter(|s| s.index != place) {
+                    slot.index = place;
+                    slot.content.clear();
+                }
+            }
+        }
         let used: FxHashSet<u32> = self.slots.values().map(|s| s.index).collect();
         let mut free = (0..layout.tile_slots).filter(|t| !used.contains(t));
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         let mut out = Vec::with_capacity(self.tiles.len());
         let mut redraw = Vec::new();
-        for &tile in &self.tiles {
+        for (place, &tile) in (0u32..).zip(&self.tiles) {
             let content = content(tile);
             let slot = match self.slots.get_mut(&tile) {
                 Some(slot) => {
@@ -587,7 +610,11 @@ impl Terrain {
                     slot.index
                 }
                 None => {
-                    let index = free.next().expect("the atlas holds every tile");
+                    let index = if at_rest {
+                        place
+                    } else {
+                        free.next().expect("the atlas holds every tile")
+                    };
                     let every = (0..content.len() as u8).collect();
                     self.slots.insert(tile, Slot { index, content });
                     redraw.push((tile, index, every));

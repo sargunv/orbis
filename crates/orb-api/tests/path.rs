@@ -148,27 +148,7 @@ fn fresh_at(
 
 /// Asserts the two pictures equal. On failure, writes both and their
 /// difference to a fresh directory and names it.
-fn assert_same(name: &str, pair: (Vec<u8>, Vec<u8>)) {
-    assert_within(name, pair, 0);
-}
-
-/// [`assert_same`] for a map over 3D terrain: to two steps in a channel.
-///
-/// Which drape atlas slot a terrain tile gets follows the tiles that came
-/// and went, and the GPU's anisotropic filter places its taps from the
-/// absolute texture coordinate, so the same texel of the same tile can
-/// filter a step or two apart in another slot (#174). The slots' data is
-/// the same: sampled at level 0 without anisotropy, every terrain path
-/// test here is byte-identical on RADV, where the hardware's taps differ
-/// at up to a few hundred pixels by one (#172), and by two at one pixel
-/// once a map at rest grows its DEM pages ahead of need, which moves its
-/// slots (#176).
-fn assert_same_terrain(name: &str, pair: (Vec<u8>, Vec<u8>)) {
-    assert_within(name, pair, 2);
-}
-
-/// [`assert_same`] to `steps` in a channel.
-fn assert_within(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>), steps: u8) {
+fn assert_same(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>)) {
     // A map that loaded nothing draws its background alike both ways.
     let colours: std::collections::HashSet<&[u8]> = fresh.chunks(4).collect();
     if colours.len() <= 64 {
@@ -190,7 +170,7 @@ fn assert_within(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>), steps: u8) {
                 a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap(),
             )
         })
-        .filter(|&(_, d)| d > steps)
+        .filter(|&(_, d)| d > 0)
         .collect();
     if differ.is_empty() {
         return;
@@ -210,8 +190,7 @@ fn assert_within(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>), steps: u8) {
         .chunks(4)
         .zip(fresh.chunks(4))
         .flat_map(|(a, b)| {
-            let close = a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= steps);
-            if close {
+            if a == b {
                 [0, 0, 0, 255]
             } else {
                 [255, 0, 255, 255]
@@ -728,7 +707,7 @@ fn a_terrain_that_comes_on_late_drapes_what_a_moved_map_does() {
     let north = Geodetic::new(STATION.lon, 35.70);
     let start = (north, 12.5, 0.0, 60.0);
     let end = (north, 12.9, 0.0, 60.0);
-    assert_same_terrain("late-terrain", both_ways(&style, start, end, 5));
+    assert_same("late-terrain", both_ways(&style, start, end, 5));
 }
 
 /// Terrain over local hills: DEM borders come from the neighbours the view
@@ -742,7 +721,7 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     );
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
-    assert_same_terrain("terrain", both_ways(&style, start, end, 30));
+    assert_same("terrain", both_ways(&style, start, end, 30));
 }
 
 /// Tokyo's buildings on hills, lit by a map-anchored light: they stand
@@ -758,7 +737,7 @@ fn extrusions_on_terrain_after_a_gesture_draw_what_a_fresh_map_does() {
     ));
     let start = (Geodetic::new(139.735, 35.68), 14.5, -20.0, 40.0);
     let end = (STATION, 16.0, 30.0, 60.0);
-    assert_same_terrain("terrain-extrusions", both_ways(&style, start, end, 20));
+    assert_same("terrain-extrusions", both_ways(&style, start, end, 20));
 }
 
 /// A map over terrain resized between frames draws its next frame at
@@ -994,9 +973,7 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0);
     let end = (Geodetic::new(7.85, 45.95), 12.4, 60.0, 75.0);
     let (alps, _dem) = alps();
-    // Far slopes filtered anisotropically: a step at a few pixels, as
-    // the late terrain's.
-    assert_within("alps", both_ways(&alps, start, end, 30), 1);
+    assert_same("alps", both_ways(&alps, start, end, 30));
 }
 
 /// The same ridges on a globe, into the middle of its handover to Web
@@ -1015,7 +992,7 @@ fn an_alpine_globe_gesture_draws_what_a_fresh_globe_does() {
         1,
     );
     assert_ne!(globe, alps);
-    assert_within("alps-globe", both_ways(&globe, start, end, 30), 1);
+    assert_same("alps-globe", both_ways(&globe, start, end, 30));
 }
 
 /// Terrain fog fades in through a globe's handover to Web Mercator rather
@@ -1121,7 +1098,7 @@ fn every_terrain_view_fits_the_drape_atlas() {
     // Detail enough to compare: the DEM's 11 zooms overzoomed by 8.
     let start = (crest, 16.0, -120.0, 30.0);
     let end = (crest, 19.0, -167.1, 0.0);
-    assert_same_terrain("crest", both_ways(&alps, start, end, 20));
+    assert_same("crest", both_ways(&alps, start, end, 20));
 }
 
 /// The Alps terrain style's view (live tiles), turned at a pitch of 72° with the
@@ -1178,8 +1155,7 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
     fresh.edit(&hide).unwrap();
     fresh.jump_to(&camera(at(-32.0)));
     common::settle(&mut fresh, &mut target);
-    // The drape rounds by its slots' places as in the terrain gesture.
-    assert_within("live-alps", (turned, target.read_pixels().unwrap()), 1);
+    assert_same("live-alps", (turned, target.read_pixels().unwrap()));
 }
 
 /// A draped fill whose hovered colour varies with zoom shows the colour of
@@ -1854,7 +1830,7 @@ fn terrain_switched_by_edits_ends_as_a_fresh_map_does() {
     let on = (target.read_pixels().unwrap(), map.camera());
     let (fresh, fresh_camera) = fresh_at(&runtime, &mut target, &terrain, at);
     assert_eq!(on.1, fresh_camera, "the camera on the risen terrain");
-    assert_within("terrain-on", (on.0, fresh), 1);
+    assert_same("terrain-on", (on.0, fresh));
     map.edit(&restyle(&flat)).unwrap();
     for step in 0..30 {
         let s = f64::from(step);

@@ -2203,7 +2203,8 @@ impl Map {
                 // What the budget leaves is summed only for something full.
                 || (renderer.wants_headroom(u64::MAX)
                     && renderer.wants_headroom(self.headroom_room(renderer)))
-                || self.drape_at_rest(gpu, renderer).is_some())
+                || self.drape_at_rest(gpu, renderer).is_some()
+                || self.drape_moves_at_rest(renderer))
         {
             self.resize_due = true;
             report.idle = false;
@@ -2258,6 +2259,13 @@ impl Map {
             .terrain_on()
             .then(|| renderer.drape_at_rest(gpu, terrain.tiles.len() as u32))
             .flatten()
+    }
+
+    /// Whether the terrain's tiles take other drape slots at rest: those
+    /// of their places in the cover ([`Terrain::plan`](crate::terrain::Terrain::plan)).
+    fn drape_moves_at_rest(&self, renderer: &Renderer) -> bool {
+        let terrain = self.style.as_ref().and_then(|s| s.terrain.as_ref());
+        renderer.terrain_on() && terrain.is_some_and(|t| !t.slots_follow_cover())
     }
 
     /// Gives the renderer the style's pipeline set when the style or its
