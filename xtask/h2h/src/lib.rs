@@ -1,32 +1,28 @@
-//! What the harness's binaries share: a still that waits rather than
-//! spins, process CPU time, and the camera of a Web Mercator tile.
+//! What the harness's binaries share: the backend they render with, a
+//! still, process CPU time, and the camera of a Web Mercator tile.
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
-use mln_rs::mln_actor::RunLoop;
 use mln_rs::mln_headless::HeadlessFrontend;
 use mln_rs::mln_map::{CameraOptions, Map};
 use mln_rs::mln_util::geo::LatLng;
 use mln_rs::mln_util::image::PremultipliedImage;
 
-/// One still, as `HeadlessFrontend::render` makes it, but waiting on the
-/// run loop (`RunLoop::run`, which sleeps until a task or timer is due)
-/// instead of spinning on the port's non-blocking `run_once`: C++'s
-/// `runOnce` blocks in libuv, and the spin would count as CPU time.
+/// `--backend webgpu|metal|vulkan|gl`: the backend mln-rs's headless
+/// frontend renders with, which it reads from `MLN_RENDER_BACKEND`
+/// (unset: WebGPU, through wgpu). Call it first, before any thread starts.
+pub fn backend(args: &[String]) {
+    let backend = flag(args, "--backend", "webgpu");
+    // SAFETY: called at the top of `main`, before the process has another
+    // thread that could read the environment.
+    unsafe { std::env::set_var("MLN_RENDER_BACKEND", backend) };
+}
+
+/// One still: the frontend's `render`, which runs the map's loop until
+/// the still is drawn and read back (spinning up to 2 ms when the loop
+/// goes idle, then sleeping until there is work).
 pub fn render(frontend: &mut HeadlessFrontend, map: &mut Map) -> PremultipliedImage {
-    let done: Rc<RefCell<Option<Option<String>>>> = Rc::new(RefCell::new(None));
-    let d = done.clone();
-    map.render_still(Box::new(move |error| {
-        *d.borrow_mut() = Some(error.map(|e| e.to_string()));
-        RunLoop::get().stop();
-    }));
-    RunLoop::get().run();
-    if let Some(Some(error)) = done.borrow_mut().take() {
-        panic!("render: {error}");
-    }
-    frontend.read_still_image()
+    frontend.render(map).expect("a still").image
 }
 
 /// The process's CPU time so far, every thread's.

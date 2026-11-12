@@ -1,20 +1,19 @@
 //! `mlnstill <style> -o out.png --at lon,lat,z[,bearing,pitch] [--size WxH]
-//! [--ratio r]`: one still through mln-rs (`MapMode::Static`, an in-memory
+//! [--ratio r] [--backend b]`: one still through mln-rs (`MapMode::Static`, an in-memory
 //! cache), as `orbis render` draws one. Prints the map's time to its
 //! first complete frame as `orbis render` does.
 
-use std::rc::Rc;
 use std::time::Instant;
 
 use mln_rs::mln_actor::RunLoop;
 use mln_rs::mln_headless::HeadlessFrontend;
-use mln_rs::mln_map::{CameraOptions, Map, MapMode, MapOptions, NullMapObserver};
-use mln_rs::mln_storage::{ClientOptions, ResourceOptions};
+use mln_rs::mln_map::{CameraOptions, Map, MapMode, MapOptions};
 use mln_rs::mln_util::geo::LatLng;
 use mln_rs::mln_util::size::Size;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    mln_h2h::backend(&args);
     let style = args.first().expect("a style URL");
     let out = mln_h2h::flag(&args, "-o", "out.png");
     let at: Vec<f64> = mln_h2h::flag(&args, "--at", "0,0,0")
@@ -32,18 +31,14 @@ fn main() {
     let _run_loop = RunLoop::new();
     let mut frontend = HeadlessFrontend::new(size, ratio);
     let started = Instant::now();
-    let mut map = Map::with_resource_options(
-        &frontend,
-        Rc::new(NullMapObserver),
+    let mut map = Map::new(
         MapOptions::new()
             .with_map_mode(MapMode::Static)
             .with_size(size)
             .with_pixel_ratio(ratio),
-        &ResourceOptions::default().with_cache_path(":memory:"),
-        &ClientOptions::default(),
     )
     .expect("a map");
-    map.get_style_mut().load_url(style);
+    map.style_mut().load_url(style);
     map.jump_to(
         &CameraOptions::default()
             .with_center(Some(LatLng::new(at[1], at[0]).expect("a latitude")))

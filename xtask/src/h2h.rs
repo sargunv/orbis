@@ -1,5 +1,7 @@
 //! `cargo xtask h2h`: Orbis against mln-rs (a Rust port of MapLibre
 //! Native, at a pinned commit) on the same machine, data and cameras.
+//! mln-rs runs on its WebGPU backend (on wgpu, as Orbis is) and on the
+//! platform's own API (Metal on macOS, Vulkan on Linux), each an engine.
 //!
 //! - `stills`: one process per still (`orbis render`, `mlnstill`) per view
 //!   of mln-rs's `tools/liberty-compare/views.txt`: wall time, CPU,
@@ -51,7 +53,7 @@ mod pixelmatch;
 
 const UPSTREAM: &str = "https://tiles.openfreemap.org";
 /// The mln-rs commit `xtask/h2h/Cargo.toml` pins.
-const MLN_RS: &str = "louwers/mln-rs@bdf81771";
+const MLN_RS: &str = "louwers/mln-rs@4f6dcede";
 
 const HELP: &str = "\
 cargo xtask h2h <stills|tiles|frames|size|all|web|mirror> [options]
@@ -70,12 +72,16 @@ cargo xtask h2h <stills|tiles|frames|size|all|web|mirror> [options]
   --compare <rev>      <rev>'s build as an engine named <rev>: built in
                        target/compare, as `bench --compare` builds it
   --diff <dir>         for `stills`: each Orbis engine's stills against
-                       <dir>/orbis-<view>.png (a copy of an earlier run's
-                       target/h2h/png, or that directory itself to compare
-                       this run's builds), mismatched pixels by pixelmatch,
-                       diff images in target/h2h/diff
+                       <dir>/orbis-<view>.png and each mln-rs backend's
+                       against <dir>/mln-rs-<view>.png (a copy of an
+                       earlier run's target/h2h/png, or that directory
+                       itself to compare this run's builds and backends),
+                       mismatched pixels by pixelmatch, diff images in
+                       target/h2h/diff
   --engines a,b        engines and their order (default orbis, every --bin
-                       and --compare, mln-rs)
+                       and --compare, mln-rs, then mln-rs on the platform's
+                       own API: mln-rs-metal on macOS, mln-rs-vulkan on
+                       Linux); mln-rs is its WebGPU backend, on wgpu
   --frames N           frames per view for `frames` (default 40)
   --port N             the mirror's port for `mirror` (default 18731)
 ";
@@ -295,21 +301,60 @@ fn cache_dir() -> Result<PathBuf, String> {
 }
 
 /// An engine: an Orbis build (its `orbis`, with `orb-bench` beside it) or
-/// the mln-rs harness.
+/// the mln-rs harness on one of its backends.
 #[derive(Clone, Debug)]
 enum Engine {
-    Orbis { name: String, orbis: PathBuf },
-    Mln,
+    Orbis {
+        name: String,
+        orbis: PathBuf,
+    },
+    /// `mln-rs` on its default, WebGPU through wgpu; `mln-rs-<backend>` on
+    /// another (`MLN_RENDER_BACKEND`): `metal` or `vulkan`.
+    Mln {
+        name: String,
+        backend: &'static str,
+    },
 }
 
 impl Engine {
     fn name(&self) -> &str {
         match self {
-            Self::Orbis { name, .. } => name,
-            Self::Mln => "mln-rs",
+            Self::Orbis { name, .. } | Self::Mln { name, .. } => name,
         }
     }
+
+    fn mln(backend: &'static str) -> Self {
+        Self::Mln {
+            name: match backend {
+                "webgpu" => "mln-rs".into(),
+                _ => format!("mln-rs-{backend}"),
+            },
+            backend,
+        }
+    }
+
+    /// mln-rs's binary `bin` in `dir` on this engine's backend, for
+    /// `style`: a command's first words.
+    fn mln_command(&self, dir: &Path, bin: &str, style: &str) -> Vec<String> {
+        let Self::Mln { backend, .. } = self else {
+            unreachable!("an mln-rs engine")
+        };
+        vec![
+            dir.join(crate::exe(bin)).display().to_string(),
+            style.into(),
+            "--backend".into(),
+            backend.to_string(),
+        ]
+    }
 }
+
+/// mln-rs's backends: WebGPU through wgpu everywhere, and the platform's
+/// own API where mln-rs has a backend on it, which runs by default too.
+const MLN_BACKENDS: &[(&str, bool)] = &[
+    ("webgpu", true),
+    ("metal", cfg!(target_os = "macos")),
+    ("vulkan", cfg!(target_os = "linux")),
+];
 
 struct H2h {
     options: Options,
@@ -334,9 +379,13 @@ impl H2h {
                 orbis: orbis.clone(),
             });
         }
-        known.push(Engine::Mln);
-        let engines = match &options.engines {
-            None => known,
+        let native = known.len();
+        known.extend(MLN_BACKENDS.iter().map(|(b, _)| Engine::mln(b)));
+        let engines: Vec<Engine> = match &options.engines {
+            None => (known.iter().enumerate())
+                .filter(|(i, _)| *i < native || MLN_BACKENDS[i - native].1)
+                .map(|(_, e)| e.clone())
+                .collect(),
             Some(names) => names
                 .iter()
                 .map(|n| {
@@ -344,7 +393,9 @@ impl H2h {
                         .iter()
                         .find(|e| e.name() == n)
                         .cloned()
-                        .ok_or_else(|| format!("h2h: no engine `{n}` (give it with --bin)"))
+                                .ok_or_else(|| {
+                            format!("h2h: no engine `{n}` (give an Orbis build with --bin; mln-rs's are mln-rs, mln-rs-metal and mln-rs-vulkan)")
+                        })
                 })
                 .collect::<Result<_, _>>()?,
         };
@@ -389,6 +440,22 @@ impl H2h {
             views,
             out,
         })
+    }
+
+    /// What each table compares: every Orbis engine against every mln-rs
+    /// one, or with no mln-rs engine, each engine against the last.
+    fn pairs(&self) -> Vec<(&str, &str)> {
+        let (orbis, mln): (Vec<&Engine>, Vec<&Engine>) =
+            (self.engines.iter()).partition(|e| matches!(e, Engine::Orbis { .. }));
+        match (&orbis[..], &mln[..]) {
+            (_, []) => match &orbis[..] {
+                [first @ .., last] => first.iter().map(|a| (a.name(), last.name())).collect(),
+                [] => Vec::new(),
+            },
+            _ => (orbis.iter())
+                .flat_map(|a| mln.iter().map(|b| (a.name(), b.name())))
+                .collect(),
+        }
     }
 
     fn runs(&self, default: usize) -> usize {
@@ -545,18 +612,20 @@ impl H2h {
                     "--state-dir".into(),
                     state.join(engine.name()).display().to_string(),
                 ],
-                Engine::Mln => vec![
-                    self.mln.join(crate::exe("mlnstill")).display().to_string(),
-                    style.clone(),
-                    "-o".into(),
-                    png,
-                    "--at".into(),
-                    at,
-                    "--size".into(),
-                    size,
-                    "--ratio".into(),
-                    v[5].clone(),
-                ],
+                Engine::Mln { .. } => {
+                    let mut c = engine.mln_command(&self.mln, "mlnstill", &style);
+                    c.extend([
+                        "-o".into(),
+                        png,
+                        "--at".into(),
+                        at,
+                        "--size".into(),
+                        size,
+                        "--ratio".into(),
+                        v[5].clone(),
+                    ]);
+                    c
+                }
             }
         };
         let png = self.out.join("png");
@@ -663,25 +732,22 @@ impl H2h {
             views.len(),
             table.finish()
         );
-        // Each engine against the last (mln-rs by default), view by view.
-        if let [first @ .., last] = &names[..] {
-            for name in first {
-                for (metric, f, _) in &metrics[..2] {
-                    let (mut better, mut tie, mut worse) = (0, 0, 0);
-                    for (view, _) in &views {
-                        let (Some(a), Some(b)) =
-                            (median_of(name, view, *f), median_of(last, view, *f))
-                        else {
-                            continue;
-                        };
-                        match a / b {
-                            r if r < 0.95 => better += 1,
-                            r if r > 1.05 => worse += 1,
-                            _ => tie += 1,
-                        }
+        // Each Orbis engine against each mln-rs one, view by view.
+        for (name, last) in self.pairs() {
+            for (metric, f, _) in &metrics[..2] {
+                let (mut better, mut tie, mut worse) = (0, 0, 0);
+                for (view, _) in &views {
+                    let (Some(a), Some(b)) = (median_of(name, view, *f), median_of(last, view, *f))
+                    else {
+                        continue;
+                    };
+                    match a / b {
+                        r if r < 0.95 => better += 1,
+                        r if r > 1.05 => worse += 1,
+                        _ => tie += 1,
                     }
-                    writeln!(out, "\n{name} against {last}, {metric}: lower on {better} views, within 5% on {tie}, higher on {worse}.").expect("a String");
                 }
+                writeln!(out, "\n{name} against {last}, {metric}: lower on {better} views, within 5% on {tie}, higher on {worse}.").expect("a String");
             }
         }
         let mut net = Stats::default();
@@ -712,8 +778,9 @@ impl H2h {
         Ok(out)
     }
 
-    /// `--diff`: each Orbis engine's last still of each view against
-    /// `dir`'s `orbis-<view>.png`, by pixelmatch (threshold 0.1, as GL JS's
+    /// `--diff`: each engine's last still of each view against `dir`'s
+    /// `orbis-<view>.png` (an Orbis engine) or `mln-rs-<view>.png` (an
+    /// mln-rs backend), by pixelmatch (threshold 0.1, as GL JS's
     /// render tests default to, anti-aliased pixels aside).
     fn diff_stills(&self, views: &[(String, [String; 8])], dir: &Path) -> Result<String, String> {
         let diffs = self.out.join("diff");
@@ -722,11 +789,12 @@ impl H2h {
         std::fs::create_dir_all(&diffs).map_err(|e| format!("{}: {e}", diffs.display()))?;
         let mut table = Table::new(["view", "engine", "mismatched px", "of all"]);
         for (view, _) in views {
-            let reference = dir.join(format!("orbis-{view}.png"));
             for engine in &self.engines {
-                let Engine::Orbis { name, .. } = engine else {
-                    continue;
+                let (name, family) = match engine {
+                    Engine::Orbis { name, .. } => (name, "orbis"),
+                    Engine::Mln { name, .. } => (name, "mln-rs"),
                 };
+                let reference = dir.join(format!("{family}-{view}.png"));
                 let still = self.out.join("png").join(format!("{name}-{view}.png"));
                 if still.canonicalize().ok() == reference.canonicalize().ok() {
                     continue;
@@ -786,12 +854,11 @@ impl H2h {
                         list.display().to_string(),
                         "--times".into(),
                     ],
-                    Engine::Mln => vec![
-                        self.mln.join(crate::exe("mlntiles")).display().to_string(),
-                        style.clone(),
-                        "--list".into(),
-                        list.display().to_string(),
-                    ],
+                    Engine::Mln { .. } => {
+                        let mut c = engine.mln_command(&self.mln, "mlntiles", &style);
+                        c.extend(["--list".into(), list.display().to_string()]);
+                        c
+                    }
                 };
                 if still {
                     c.push("--still".into());
@@ -849,9 +916,8 @@ impl H2h {
             for name in &names {
                 head.extend([format!("wall {name}"), format!("CPU {name}")]);
             }
-            if names.len() > 1 {
-                head.push(format!("CPU {} / {}", names[0], names[names.len() - 1]));
-            }
+            let pairs = self.pairs();
+            head.extend(pairs.iter().map(|(a, b)| format!("CPU {a} / {b}")));
             let mut table = Table::new(head);
             let column = |name: &str, set: &str, i: usize| {
                 let mut v: Vec<f64> = (totals
@@ -871,10 +937,8 @@ impl H2h {
                 for name in &names {
                     row.extend([cell(column(name, set, 0), 0), cell(column(name, set, 1), 0)]);
                 }
-                if names.len() > 1 {
-                    let ratio = column(names[0], set, 1)
-                        .zip(column(names[names.len() - 1], set, 1))
-                        .map(|(a, b)| a / b);
+                for (a, b) in &pairs {
+                    let ratio = column(a, set, 1).zip(column(b, set, 1)).map(|(a, b)| a / b);
                     row.push(cell(ratio, 2));
                 }
                 table.row(row);
@@ -918,16 +982,18 @@ impl H2h {
                     "--rounds".into(),
                     "1".into(),
                 ],
-                Engine::Mln => vec![
-                    self.mln.join(crate::exe("mlnframes")).display().to_string(),
-                    style.clone(),
-                    "--views".into(),
-                    views.clone(),
-                    "--frames".into(),
-                    frames.clone(),
-                    "--warmup".into(),
-                    warmup.clone(),
-                ],
+                Engine::Mln { .. } => [
+                    engine.mln_command(&self.mln, "mlnframes", &style),
+                    vec![
+                        "--views".into(),
+                        views.clone(),
+                        "--frames".into(),
+                        frames.clone(),
+                        "--warmup".into(),
+                        warmup.clone(),
+                    ],
+                ]
+                .concat(),
             };
             if let Some(filter) = &self.options.filter {
                 c.extend(["--filter".into(), filter.clone()]);
@@ -954,7 +1020,8 @@ impl H2h {
                                 _ => continue,
                             }
                         }
-                        Engine::Mln => match line.split_whitespace().collect::<Vec<_>>()[..] {
+                        Engine::Mln { .. } => match line.split_whitespace().collect::<Vec<_>>()[..]
+                        {
                             ["frame", view, wall, ..] => (view, wall, None),
                             _ => continue,
                         },
@@ -978,9 +1045,8 @@ impl H2h {
             .collect();
         let mut head = vec!["view".to_string()];
         head.extend(names.iter().map(|name| name.to_string()));
-        if names.len() > 1 {
-            head.push(format!("{} / {}", names[0], names[names.len() - 1]));
-        }
+        let pairs = self.pairs();
+        head.extend(pairs.iter().map(|(a, b)| format!("{a} / {b}")));
         head.extend(orbis.iter().map(|name| format!("GPU {name}")));
         let mut table = Table::new(head);
         let get = |map: &BTreeMap<(String, String), Vec<f64>>, name: &str, view: &str| {
@@ -999,8 +1065,8 @@ impl H2h {
                 sums[i] += m.unwrap_or(0.0);
                 row.push(cell(m, 2));
             }
-            if names.len() > 1 {
-                let r = get(&walls, names[0], view).zip(get(&walls, names[names.len() - 1], view));
+            for (a, b) in &pairs {
+                let r = get(&walls, a, view).zip(get(&walls, b, view));
                 row.push(cell(r.map(|(a, b)| a / b), 2));
             }
             row.extend(orbis.iter().map(|name| cell(get(&gpu, name, view), 2)));
@@ -1008,10 +1074,7 @@ impl H2h {
         }
         let mut row = vec!["**sum**".to_string()];
         row.extend(sums.iter().map(|s| format!("**{s:.1}**")));
-        row.resize(
-            row.len() + usize::from(names.len() > 1) + orbis.len(),
-            String::new(),
-        );
+        row.resize(row.len() + pairs.len() + orbis.len(), String::new());
         table.row(row);
         let out = format!(
             "### Frames: whole frames read back, the zoom nudged by 0.001 a frame ({frames} frames a view after 10, {runs} runs)\n\n{}\nMedian ms a frame: Orbis renders continuously into a texture and reads each frame back (`orb-bench --nudge`); mln-rs renders each frame as a Static-mode still and reads it back (its own still bench).\n",
@@ -1032,7 +1095,9 @@ impl H2h {
                     ));
                 }
                 Engine::Orbis { name, orbis } => binaries.push((name.clone(), orbis.clone())),
-                Engine::Mln => {
+                // One binary has every backend.
+                Engine::Mln { .. } if binaries.iter().any(|(n, _)| n == "mlnstill") => {}
+                Engine::Mln { .. } => {
                     binaries.push(("mlnstill".into(), self.mln.join(crate::exe("mlnstill"))))
                 }
             }
