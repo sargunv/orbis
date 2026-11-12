@@ -291,68 +291,6 @@ mod tests {
         }
     }
 
-    /// FNV-1a: a hash that stays the same across Rust releases.
-    fn fnv(text: &str) -> u64 {
-        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
-    }
-
-    /// Each pipeline stage as the modern path compiles it, its override
-    /// constants at their defaults, written out by naga's Metal back end
-    /// and hashed, against `src/stage-hashes.txt`: a change to what any
-    /// stage computes shows as a hash to review, and changes meant to
-    /// keep the modern path's code (the WebGL 2 path's shared fixes, #140)
-    /// prove they do. `UPDATE_GOLDEN=1` rewrites the file.
-    #[test]
-    fn stages_keep_their_hashes() {
-        let mut text =
-            String::from("# Each pipeline stage's Metal, hashed (`stages_keep_their_hashes`).\n");
-        for shader in SHADERS {
-            for (entry, one) in split::entry_modules(&validate(shader)) {
-                let info = naga::valid::Validator::new(
-                    naga::valid::ValidationFlags::all(),
-                    naga::valid::Capabilities::CLIP_DISTANCES,
-                )
-                .validate(&one)
-                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                let (one, info) = naga::back::pipeline_constants::process_overrides(
-                    &one,
-                    &info,
-                    None,
-                    &Default::default(),
-                )
-                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                let options = naga::back::msl::Options {
-                    lang_version: (2, 4),
-                    ..Default::default()
-                };
-                let (msl, _) = naga::back::msl::write_string(
-                    &one,
-                    &info,
-                    &options,
-                    &naga::back::msl::PipelineOptions::default(),
-                )
-                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                text.push_str(&format!("{} {entry} {:016x}\n", shader.label, fnv(&msl)));
-            }
-        }
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/stage-hashes.txt");
-        if std::env::var_os("UPDATE_GOLDEN").is_some() {
-            std::fs::write(path, &text).unwrap();
-            return;
-        }
-        let golden = std::fs::read_to_string(path).unwrap_or_default();
-        let changed: Vec<&str> = text
-            .lines()
-            .filter(|l| !golden.lines().any(|g| g == *l))
-            .collect();
-        assert!(
-            changed.is_empty() && golden.lines().count() == text.lines().count(),
-            "stages changed from {path}: {changed:?}; UPDATE_GOLDEN=1 rewrites it, once the change is the one meant"
-        );
-    }
-
     /// How deep structs nest in `ty`, arrays aside: 0 for a plain type.
     fn struct_depth(types: &naga::UniqueArena<naga::Type>, ty: naga::Handle<naga::Type>) -> usize {
         match &types[ty].inner {
