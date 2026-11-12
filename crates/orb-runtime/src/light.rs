@@ -105,12 +105,12 @@ fn ground_light(
     })
 }
 
-/// A globe view's sphere for its sky and scattering, lit by the sun the
-/// extrusions and the ground take (`toward_light`), whether or not the
-/// light shades the ground, so that shading the ground darkens its night
-/// side and moves nothing. (GL JS's atmosphere turns the light's position
-/// half a turn about the east axis, which puts the default sun behind the
-/// globe; see `docs/style-support.md`.)
+/// A globe view's sphere for its sky and scattering. Its sun is GL JS's
+/// (`gl_sun`), the only engine that draws `sky.atmosphere-blend`, whose
+/// fixtures hold it; a preview that moves the light over the ground (a
+/// dated sun, or `dev.sargunv.orbis:ground-lighting` as it eases in)
+/// turns it toward the ground's (`toward_light`), so that the haze glows
+/// over the lit side, along the arc between the two so it never jumps.
 fn globe_sky(
     globe: &orb_camera::GlobeView,
     view: &orb_camera::View,
@@ -123,8 +123,59 @@ fn globe_sky(
         radius: orb_crs::sphere::RADIUS as f32,
         amount: globe.amount as f32,
         eye_distance_px: view.eye_distance_px() as f32,
-        sun: toward_light(camera, light).as_vec3().to_array(),
+        sun: haze_sun(camera, light).as_vec3().to_array(),
     }
+}
+
+/// The globe's scattering's sun ([`globe_sky`]).
+fn haze_sun(camera: &orb_camera::CameraState, light: &LightValues) -> glam::DVec3 {
+    let gl = gl_sun(camera, light);
+    let t = if light.timed {
+        1.0
+    } else {
+        f64::from(light.ground_lighting).clamp(0.0, 1.0)
+    };
+    if t <= 0.0 {
+        return gl;
+    }
+    let ground = toward_light(camera, light);
+    if t >= 1.0 {
+        return ground;
+    }
+    // Along the arc between them, as the two can stand opposite.
+    let turn = glam::DQuat::from_rotation_arc(gl, ground);
+    glam::DQuat::IDENTITY.slerp(turn, t) * gl
+}
+
+/// GL JS's `getSunPos` for its atmosphere, on Earth-fixed axes: the
+/// light's position negated, in the view for a viewport anchor (turned by
+/// the view's pitch and bearing), fixed to the globe for a map one. At the
+/// spec's default position it puts the sun behind the globe, so the haze
+/// rims its far side; a light below (polar 180) lights the face.
+fn gl_sun(camera: &orb_camera::CameraState, light: &LightValues) -> glam::DVec3 {
+    use glam::{DMat3, DVec3};
+    let target = camera.target;
+    let frame = orb_crs::sphere::frame(target);
+    let [_, azimuth, polar] = light.position.map(f64::from);
+    let (a, p) = ((azimuth + 90.0).to_radians(), polar.to_radians());
+    let v = -DVec3::new(a.cos() * p.sin(), a.sin() * p.sin(), p.cos());
+    let sun = match light.anchor {
+        // View axes back through the view's pitch and bearing to the
+        // target's east, north and up.
+        TranslateAnchor::Viewport => {
+            frame
+                * DMat3::from_rotation_z(-camera.bearing.to_radians())
+                * DMat3::from_rotation_x(camera.pitch.to_radians())
+                * v
+        }
+        TranslateAnchor::Map => {
+            frame
+                * DMat3::from_rotation_x(target.lat.to_radians())
+                * DMat3::from_rotation_y(-target.lon.to_radians())
+                * v
+        }
+    };
+    sun.normalize()
 }
 
 /// Toward the light, unit, on Earth-fixed axes, as v8 places it: the
@@ -320,10 +371,13 @@ mod tests {
         assert_eq!((band[5], band[6]), (1.0, 1.0));
     }
 
-    /// The haze is lit by the ground's sun whether or not the light shades
-    /// the ground, so easing ground lighting in moves nothing.
+    /// The haze's sun is GL JS's while no preview moves the light (the
+    /// atmosphere fixtures hold it), and turns toward the ground's as
+    /// ground lighting eases in, rather than jumping as it leaves 0 or
+    /// reaches 1, though at v8's default position the two stand nearly
+    /// opposite.
     #[test]
-    fn the_haze_and_the_ground_share_one_sun() {
+    fn the_haze_sun_eases_from_gl_js_to_the_ground() {
         let tms = orb_crs::TileMatrixSet::web_mercator();
         let mercator = *tms.projection();
         let surface = orb_crs::Surface {
@@ -337,25 +391,37 @@ mod tests {
         let camera = orb_camera::CameraState::new(Geodetic::new(10.0, 30.0), 1.5, &mercator);
         let view = orb_camera::View::new(&camera, viewport, &surface);
         let globe = view.globe().unwrap();
+        let eye = (globe.target + globe.eye).normalize();
         for anchor in [TranslateAnchor::Viewport, TranslateAnchor::Map] {
-            let mut light = LightValues::of(&orb_style::v8::default_light(), 0.0);
-            light.anchor = anchor;
-            light.ground_lighting = 1.0;
-            let ground = glam::Vec3::from(ground_light(&light, &camera, 0.0).unwrap().sun);
-            for amount in [0.0, 0.5, 1.0] {
+            let sun = |amount: f32| {
+                let mut light = LightValues::of(&orb_style::v8::default_light(), 0.0);
+                light.anchor = anchor;
                 light.ground_lighting = amount;
-                let haze = glam::Vec3::from(globe_sky(globe, &view, &camera, &light).sun);
+                let haze = globe_sky(globe, &view, &camera, &light).sun;
+                (glam::DVec3::from(haze.map(f64::from)), light)
+            };
+            let ((gl, light), (ground, _)) = (sun(0.0), sun(1.0));
+            assert!(
+                gl.angle_between(gl_sun(&camera, &light)) < 1e-6,
+                "{anchor:?}"
+            );
+            assert!(ground.angle_between(toward_light(&camera, &light)) < 1e-6);
+            let mut last = gl;
+            for i in 1..=100 {
+                let (next, _) = sun(i as f32 / 100.0);
+                assert!((next.length() - 1.0).abs() < 1e-4, "{next}");
+                assert!(next.angle_between(last) < 0.05, "{i}: {last} → {next}");
+                last = next;
+            }
+            if anchor == TranslateAnchor::Viewport {
+                // v8's default light: GL JS's sun behind the globe, the
+                // ground's on the eye's side.
+                assert!(gl.dot(ground) < -0.5, "{gl} {ground}");
                 assert!(
-                    haze.angle_between(ground) < 1e-6,
-                    "{anchor:?} {amount}: {haze} {ground}"
+                    gl.dot(eye) < 0.0 && ground.dot(eye) > 0.5,
+                    "{gl} {ground} {eye}"
                 );
             }
         }
-        // v8's default viewport light stands over the target, 60° up: the
-        // haze's sun is on the eye's side of the globe, not behind it.
-        let light = LightValues::of(&orb_style::v8::default_light(), 0.0);
-        let sun = glam::DVec3::from(globe_sky(globe, &view, &camera, &light).sun.map(f64::from));
-        let eye = globe.target + globe.eye;
-        assert!(sun.dot(eye.normalize()) > 0.5, "{sun} {eye}");
     }
 }

@@ -299,12 +299,10 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          azimuth clockwise from the top of the viewport (`viewport` anchor) or\n\
          from north (`map`), its polar angle from the zenith. GL JS's and\n\
          MapLibre Native's extrusions agree on that direction. Orbis lights\n\
-         everything by it: the extrusions, the ground under\n\
-         `dev.sargunv.orbis:ground-lighting`, and the globe's atmosphere,\n\
-         whose scattering glows over the day side, whether or not the light\n\
-         shades the ground. A viewport light stands over the camera's target;\n\
-         on a globe a map light stands as if over 0°, 0° for the ground and\n\
-         the atmosphere, while extrusions take either anchor's light over the\n\
+         the extrusions and the ground under\n\
+         `dev.sargunv.orbis:ground-lighting` by it. A viewport light stands\n\
+         over the camera's target; on a globe a map light stands as if over\n\
+         0°, 0° for the ground, while extrusions take either anchor's light over the\n\
          target, as on a flat map. On a globe that light is one direction\n\
          across the sphere: a face far from the target is lit by how far it\n\
          turns to it there, as a wall at the limb facing it is lit.\n\n\
@@ -319,7 +317,10 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          turns its sun half a turn about the east axis: the north–south and\n\
          up–down parts reverse. At the spec's default light it stands behind\n\
          the globe, and the haze rims its far side, while the extrusions are\n\
-         lit from the front. Native has no globe, sky or atmosphere.\n",
+         lit from the front. Native has no globe, sky or atmosphere, so\n\
+         GL JS's is the atmosphere's only reference and its fixtures hold it:\n\
+         Orbis's scattering takes GL JS's sun, turning to the ground's only\n\
+         as a preview moves the light (ground lighting, or a dated sun).\n",
     );
 
     out.push_str(

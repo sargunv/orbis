@@ -619,10 +619,9 @@ fn linear_light_adds_the_scattering_to_the_surface() {
     );
 }
 
-/// `dev.sargunv.orbis:ground-lighting` darkens a globe's night side and
-/// moves nothing: the scattering is lit by the same sun with it off or on,
-/// so the day side draws the same, and the globe's outermost pixels on
-/// the night side are as dark as the ground just inside them.
+/// `dev.sargunv.orbis:ground-lighting` darkens a globe's night side to
+/// its limb: the globe's outermost pixels on the night side are as dark as
+/// the ground just inside them.
 #[test]
 fn ground_lighting_darkens_the_night_side_to_its_limb() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
@@ -651,15 +650,7 @@ fn ground_lighting_darkens_the_night_side_to_its_limb() {
     };
     const WIDE: u32 = 256;
     let at = |pixels: &[u8], x: u32| pixel_of(pixels, WIDE, x, WIDE / 2);
-    let (off, on) = (draw(0.0), draw(1.0));
-    // The day side, left of centre, haze and all.
-    for x in [WIDE * 3 / 8, WIDE / 2 - 8] {
-        let (a, b) = (at(&off, x), at(&on, x));
-        assert!(
-            a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1),
-            "day side at {x}: {a:?} off, {b:?} on"
-        );
-    }
+    let on = draw(1.0);
     // The night side's limb: the rightmost pixel the globe covers, against
     // the ground a few pixels inside it.
     let edge = (0..WIDE).rev().find(|&x| at(&on, x)[3] == 255).unwrap();
