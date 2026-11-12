@@ -419,6 +419,76 @@ fn held_lists_leave_candidates_out_until_they_may_grow() {
     assert!(h.renderer.take_resized().moves > 0, "the lists grew");
 }
 
+/// While memory is held, a node that outgrew its slices is laid out
+/// again in new ones without moving its slots: the cull writes them all,
+/// and the frame draws what a fresh scene would.
+#[test]
+fn a_held_node_laid_out_again_moves_no_slot() {
+    // Lists that grow past their first size and shrink back to it, which
+    // makes the scratch buffer the GPU driver moves slots through.
+    let capacity = SceneCapacity {
+        vertex_words: 1 << 16,
+        index_words: 1 << 16,
+        chunks: 1 << 10,
+        max_compacted_words: 1 << 16,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity, None);
+    red_fill(&mut h);
+    // A second node, whose meshes come and go first.
+    h.renderer
+        .set_nodes(&mut h.gpu, &[Family::Fill, Family::Fill]);
+    // The first tile draws before the second.
+    let (first, tile) = (h.tile(), h.tile());
+    for t in [first, tile] {
+        h.renderer.place(t, EXTENT, &[full_view_tile(0.0)]).unwrap();
+    }
+    h.renderer.set_tile_order(0, &[first, tile]);
+    let add_to = |h: &mut Harness, tile, node, mesh: &orb_layout::Mesh| {
+        let data = MeshData::new(mesh, &[], 0);
+        h.renderer
+            .add_mesh(&mut h.gpu, tile, (node, EXTENT), &data, &Default::default())
+            .unwrap()
+    };
+    let add = |h: &mut Harness, node, mesh: &orb_layout::Mesh| add_to(h, tile, node, mesh);
+    let big: Vec<_> = (0..3).map(|_| add(&mut h, 1, &disc(2048))).collect();
+    h.render_stats();
+    for mesh in big {
+        h.renderer.remove_mesh(tile, mesh);
+    }
+    add(&mut h, 0, &half_square(0));
+    // The cull writes its slots, which a layout could move from now on.
+    h.render();
+    h.renderer.set_moves(&mut h.gpu, Moves::Held);
+    // More than its slices' room to grow, drawn before what's there.
+    for _ in 0..16 {
+        add_to(&mut h, first, 0, &half_square(2048));
+    }
+    let stats = h.render_stats();
+    assert!(stats.candidates_rebuilt);
+    assert_eq!(stats.slot_bytes_moved, 0, "held: a slot moved");
+    assert_eq!(h.renderer.stats().candidates_dropped, 0);
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    assert_eq!(pixel(&pixels, 4, 32), RED);
+    assert_eq!(pixel(&pixels, 36, 32), RED);
+}
+
+/// A polygon of `n` vertices around the tile's centre.
+fn disc(n: u32) -> orb_layout::Mesh {
+    let mut b = LayerBuilder::new("water", 4096);
+    b.begin_feature(None, GeometryType::Polygon);
+    b.begin_part();
+    b.begin_ring();
+    for i in 0..n {
+        let a = f64::from(i) / f64::from(n) * std::f64::consts::TAU;
+        b.push_vertex([
+            2048 + (1500.0 * a.cos()) as i32,
+            2048 + (1500.0 * a.sin()) as i32,
+        ]);
+    }
+    fill::layout(&b.finish(), &[0])
+}
+
 /// A held tile page refuses a layer past its last and names itself;
 /// growing into that keeps the layers it held (their texels copied over)
 /// and then takes the tile. Raster and DEM pages alike.

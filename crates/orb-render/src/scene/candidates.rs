@@ -438,19 +438,19 @@ impl Scene {
     /// out everything). A node that keeps its runs where they are writes
     /// only the runs that came or went; any other node whose candidates
     /// changed is laid out again in its slices, or, past their room, in new
-    /// ones past every node's (its old ones left unused until everything
-    /// is laid out again). When it couldn't, the last layout stays for
-    /// [`lay_out`](Self::lay_out) to move runs from, but for nodes laid out
-    /// again, whose runs no longer say where their slots are.
+    /// ones where another node left its old ones or past every node's (its
+    /// old ones room for others then). With no room for them it couldn't,
+    /// and the last layout stays for [`lay_out`](Self::lay_out) to move runs
+    /// from, but for nodes laid out again, whose runs no longer say where
+    /// their slots are.
     ///
     /// Only the nodes whose runs changed are walked ([`dirty`](Self::dirty)):
     /// an arrival costs what its tile's nodes hold, not the scene. While
-    /// memory is `held` nothing is laid out from the start: a node changes
-    /// without moving slots where it can (no longer [tidy](LaidNode::tidy)),
-    /// and one whose slices can't hold it and that finds no room past
-    /// every node's leaves out what they don't hold. At rest the first
-    /// layout lays out again the nodes left untidy, and everything when
-    /// something was left out.
+    /// memory is `held` no slot moves: a node changes in place where it
+    /// can (no longer [tidy](LaidNode::tidy)), and one laid out again takes
+    /// its slots afresh, for the cull to write. At rest the first layout
+    /// lays out again the nodes left untidy, and everything when something
+    /// was left out.
     pub(super) fn lay_out_changes(&mut self, gpu: &mut dyn Gpu, held: bool) -> bool {
         if self.nodes.is_empty()
             || self.laid.len() != self.nodes.len()
@@ -491,9 +491,10 @@ impl Scene {
                 }
             }
             // Laid out again: in its slices, else in new ones past
-            // everything's.
+            // everything's. While memory is held its slots don't move:
+            // the cull writes them all, as after a layout from the start.
             let mut budget = Budget::unbounded();
-            let old = laid.movable(shift);
+            let old = laid.movable(shift).filter(|_| !held);
             let plan = NodePlan::new(&runs, indexed, shift, &limits, &mut budget, old);
             let plan = match plan {
                 _ if budget.dropped > 0 => {
@@ -621,6 +622,7 @@ impl Scene {
     pub(super) fn write_node_rows(&mut self, gpu: &mut dyn Gpu) {
         use layout::node_cull as nc;
         let mut groups = 0u32;
+        let mut capped = 0u32;
         let rows = self.node_rows.as_chunks_mut::<NODE_CULL_WORDS>().0;
         for (row, node) in rows.iter_mut().zip(&self.nodes) {
             if node.cull.labels {
@@ -629,6 +631,9 @@ impl Scene {
                         * u64::from(orb_layout::MAX_CHUNK_INSTANCES);
                 let past = end > u64::from(self.quad_cap);
                 row[nc::DRAW] = node.cull.draw_word() | if past { HIDDEN } else { 0 };
+                if past && node.cull.visible {
+                    capped += row[nc::CANDIDATE_COUNT];
+                }
             }
             row[nc::FIRST_GROUP] = groups;
             let (draw, count) = (row[nc::DRAW], row[nc::CANDIDATE_COUNT]);
@@ -641,6 +646,7 @@ impl Scene {
             };
         }
         self.cull_groups = groups;
+        self.labels_capped = capped;
         self.tables
             .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
     }

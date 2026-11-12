@@ -154,6 +154,9 @@ pub struct FrameStats {
     pub pipelines_pending: u32,
     /// Nodes not drawn because a pipeline they need is still compiling.
     pub nodes_waiting: u32,
+    /// Bytes of compacted index slots the frame's candidate layout moved
+    /// (natively through the scratch buffer, so copied twice).
+    pub slot_bytes_moved: u64,
     /// Something in the frame waited for a pipeline (nodes, terrain, the
     /// DEM prepare, the sky): the frame isn't complete.
     pub waited: bool,
@@ -2699,6 +2702,7 @@ impl Renderer {
             paints_written: std::mem::take(&mut self.paints_written),
             pipelines_pending: compiling.pending,
             nodes_waiting: self.waiting,
+            slot_bytes_moved: self.scene.moved_bytes(),
             ..FrameStats::default()
         };
         let cull_ready = self.cull_passes(gpu, &mut passes, &mut stats);

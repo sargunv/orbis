@@ -1172,6 +1172,9 @@ pub(crate) struct Scene {
     /// The placement target's quads, past which symbol nodes don't draw
     /// ([`cap_quads`](Self::cap_quads)).
     quad_cap: u32,
+    /// Candidate rows of visible symbol nodes past the [cap](Self::cap_quads),
+    /// which don't draw.
+    labels_capped: u32,
     /// The last frame's label fades had run (`follow_label_fades`).
     labels_faded: bool,
     /// The ends of the node slices of the candidate lists and the
@@ -1230,6 +1233,10 @@ pub struct SceneStats {
     /// [`SceneCapacity::compacted_words`], or beyond an indexed node's runs
     /// (see [`NodeDraw::Indexed`]), not drawn.
     pub candidates_dropped: u32,
+    /// Candidates of symbol nodes that don't draw because their quads lie
+    /// past the symbol placement target, which doesn't grow while memory
+    /// is [held](crate::Moves::Held).
+    pub labels_capped: u32,
     pub vertex_words: u32,
     pub index_words: u32,
     pub compacted_words: u32,
@@ -1352,6 +1359,7 @@ impl Scene {
             candidates_dropped: 0,
             placed_quads: 0,
             quad_cap: u32::MAX,
+            labels_capped: 0,
             labels_faded: false,
             rows_end: 0,
             compacted_words: 0,
@@ -1594,6 +1602,7 @@ impl Scene {
             meshes: (self.meshes.len() - self.free_meshes.len()) as u32,
             candidates: self.candidate_count,
             candidates_dropped: self.candidates_dropped,
+            labels_capped: self.labels_capped,
             vertex_words: self.vertex_arena.used(),
             index_words: self.index_arena.used(),
             compacted_words: self.compacted_words,
@@ -1883,6 +1892,11 @@ impl Scene {
     /// The cull's workgroups, as the node rows lay them out.
     pub(crate) fn cull_groups(&self) -> u32 {
         self.cull_groups
+    }
+
+    /// Bytes of compacted slots this frame's layout moved.
+    pub(crate) fn moved_bytes(&self) -> u64 {
+        self.moves.iter().map(|m| u64::from(m.words) * 4).sum()
     }
 
     /// Compacted words the last rebuild moved, which a driver writing

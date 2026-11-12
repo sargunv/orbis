@@ -676,9 +676,9 @@ impl SessionReport {
              copied on the GPU | pool moves | MiB they made | MiB they copied | MiB uploaded | \
              upload calls | texture-write submissions | drape slots | peak frame MiB uploaded | \
              peak frame MiB of tiles | layout ms on arrival frames p50 / max | most \
-             chunks left out |"
+             chunks left out | most label chunks capped, in frames | MiB of slots moved |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(19))?;
+        writeln!(out, "|{}", "---|".repeat(21))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -715,6 +715,14 @@ impl SessionReport {
                     .map(|f| f.report.scene.candidates_dropped)
                     .max()
                     .unwrap_or(0);
+                // Label chunks that didn't draw for the placement target.
+                let (most_capped, capped_frames) = (r.frames.iter().filter(keep))
+                    .map(|f| f.report.scene.labels_capped)
+                    .filter(|&c| c > 0)
+                    .fold((0, 0), |(most, n), c| (most.max(c), n + 1));
+                let slot_moves: u64 = (r.frames.iter().filter(keep))
+                    .map(|f| f.report.frame.slot_bytes_moved)
+                    .sum();
                 let tiles = (r.frames.iter().filter(keep))
                     .map(|f| f.report.tile_bytes)
                     .max()
@@ -722,7 +730,8 @@ impl SessionReport {
                 writeln!(
                     out,
                     "| {} {what} | {n} | {} | {late} | {} | {} | {} | {} | {} | {} | {} | {} | {} | \
-                     {} | {slots} | {} | {} | {layout} | {left_out} |",
+                     {} | {slots} | {} | {} | {layout} | {left_out} | {most_capped}, \
+                     {capped_frames} | {} |",
                     r.name,
                     c.pipelines_requested,
                     c.pipelines_compiled,
@@ -737,6 +746,7 @@ impl SessionReport {
                     c.texture_write_submissions,
                     mib(peak),
                     mib(tiles),
+                    mib(slot_moves),
                 )?;
             }
         }
@@ -754,7 +764,10 @@ impl SessionReport {
              results one frame uploaded, which its budget's bytes bound; layout: the render's \
              cull stage (the candidates laid out again, and tile placement rows written) in \
              frames that took tiles; chunks left out: the most one frame's cull lists had no \
-             room for."
+             room for; label chunks capped: the most one frame's symbol nodes left undrawn \
+             past the placement target, which doesn't grow while memory is held, and the \
+             frames that left any; slots moved: compacted index slots the candidate layouts moved \
+             (natively copied twice, through the scratch buffer)."
         )?;
         writeln!(out)?;
         writeln!(
