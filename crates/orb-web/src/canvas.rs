@@ -34,7 +34,10 @@ pub(crate) type Timed = (Vec<(String, f64)>, f64, f64);
 #[derive(Debug)]
 pub(crate) struct Canvas {
     gpu: WgpuGpu,
-    surface: wgpu::Surface<'static>,
+    /// The instance and surface, which a new device after a loss draws
+    /// into again ([`again`](Self::again)).
+    instance: wgpu::Instance,
+    surface: std::rc::Rc<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     format: TargetFormat,
     /// Set by the device's lost callback.
@@ -237,11 +240,18 @@ impl Canvas {
 
     /// Loses the device on purpose (`device.destroy()`; on WebGL 2, the
     /// context, as `WEBGL_lose_context` does), to exercise recovery.
+    /// WebGPU's loss is marked here at once rather than by the device's
+    /// lost callback: Firefox can leave `device.lost` pending after
+    /// `destroy()` (a map on the page after the e2e `edits` check's edits
+    /// and queries never heard of it).
     pub(crate) fn lose(&mut self) {
         #[cfg(feature = "gl")]
         let _ = crate::gl_context::lose(&self.element);
         #[cfg(not(feature = "gl"))]
-        self.gpu.device().destroy();
+        {
+            self.gpu.device().destroy();
+            self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Each submission's times since the last call once the GPU finished
@@ -310,20 +320,10 @@ impl Canvas {
     /// A device drawing into `canvas` (an `HTMLCanvasElement` or an
     /// `OffscreenCanvas`) of `size` physical pixels, which wakes map `map`
     /// when it's lost.
-    pub(crate) async fn new(
-        canvas: JsValue,
-        (width, height): (u32, u32),
-        map: u32,
-    ) -> Result<Self, String> {
-        use orb_hal_wgpu::from_texture_format;
+    pub(crate) async fn new(canvas: JsValue, size: (u32, u32), map: u32) -> Result<Self, String> {
         use wasm_bindgen::JsCast;
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        #[cfg(not(feature = "gl"))]
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await
-            .map_err(|e| format!("no WebGPU adapter: {e}"))?;
         let target = if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
             wgpu::SurfaceTarget::Canvas(canvas.clone())
         } else {
@@ -332,6 +332,45 @@ impl Canvas {
         let surface = instance
             .create_surface(target)
             .map_err(|e| format!("surface: {e}"))?;
+        Self::on(instance, std::rc::Rc::new(surface), canvas, size, map).await
+    }
+
+    /// A new device drawing into this canvas, after a loss. WebGPU's draws
+    /// into the same surface, its canvas's one context configured anew:
+    /// Firefox throws when an `OffscreenCanvas` is asked for its WebGPU
+    /// context again ("Cannot update created context to different
+    /// options"), so a map in a worker never recovered there. WebGL 2's
+    /// context comes back on the same canvas once restored, and a new
+    /// surface takes it.
+    pub(crate) fn again(
+        &self,
+        map: u32,
+    ) -> impl std::future::Future<Output = Result<Self, String>> + use<> {
+        let (element, size) = (self.element.clone(), self.size());
+        let reuse = (!GL).then(|| (self.instance.clone(), self.surface.clone()));
+        async move {
+            match reuse {
+                Some((instance, surface)) => Self::on(instance, surface, element, size, map).await,
+                None => Self::new(element, size, map).await,
+            }
+        }
+    }
+
+    /// A device of `instance` drawing into `surface`, `canvas`'s.
+    async fn on(
+        instance: wgpu::Instance,
+        surface: std::rc::Rc<wgpu::Surface<'static>>,
+        canvas: JsValue,
+        (width, height): (u32, u32),
+        map: u32,
+    ) -> Result<Self, String> {
+        use orb_hal_wgpu::from_texture_format;
+
+        #[cfg(not(feature = "gl"))]
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .map_err(|e| format!("no WebGPU adapter: {e}"))?;
         // WebGL 2's adapter is the canvas's context: it comes after the
         // surface.
         #[cfg(feature = "gl")]
@@ -404,6 +443,7 @@ impl Canvas {
         gpu.set_compile_wake(std::rc::Rc::new(move || crate::map::wake(map)));
         Ok(Self {
             gpu,
+            instance,
             surface,
             config,
             format: TargetFormat {

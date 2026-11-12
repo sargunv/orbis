@@ -1014,6 +1014,7 @@ impl OrbisMap {
     #[wasm_bindgen(js_name = loseDevice)]
     pub fn lose_device(&mut self) {
         self.canvas.lose();
+        wake(self.id);
     }
 
     /// Traps while borrowed, as a bug in a frame would: the map stops and
@@ -1029,16 +1030,16 @@ impl OrbisMap {
     /// map already in use.
     #[wasm_bindgen(js_name = newDevice)]
     pub fn new_device(&self, canvas: JsValue) -> js_sys::Promise {
-        let (size, id) = (self.canvas.size(), self.id);
+        let again = self.canvas.again(self.id);
         wasm_bindgen_futures::future_to_promise(async move {
             // A WebGL 2 context comes back on the same canvas once restored.
             #[cfg(feature = "gl")]
             crate::gl_context::restored(&canvas)
                 .await
                 .map_err(|e| JsError::new(&format!("{e:?}")))?;
-            let canvas = Canvas::new(canvas, size, id)
-                .await
-                .map_err(|e| JsError::new(&e))?;
+            #[cfg(not(feature = "gl"))]
+            let _ = canvas;
+            let canvas = again.await.map_err(|e| JsError::new(&e))?;
             Ok(NewDevice(canvas).into())
         })
     }
