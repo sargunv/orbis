@@ -101,10 +101,6 @@ export type InputKind =
   | "key"
   | "blur";
 
-/** orb-web's `InputEffect.Moved`: the input moved the camera at once. A
- * number here, as the build that defines the enum loads later. */
-const MOVED = 2;
-
 /** How the map starts. */
 export interface EngineSetup {
   canvas: HTMLCanvasElement | OffscreenCanvas;
@@ -117,14 +113,6 @@ export interface EngineSetup {
   /** Milliseconds to add to the page's event times to put them on this
    * thread's clock: 0 on the page. */
   clock: number;
-  /** Whether input that moves the map draws a frame as it arrives, rather
-   * than at the next animation frame: in a worker, whose input comes as
-   * soon as the page has it (`pointerrawupdate`), just after an animation
-   * frame has begun, and whose frames the compositor shows a frame after
-   * the page's. Drawn at the next animation frame, input would show a
-   * frame later than on the page's own thread, whose moves wait for its
-   * next frame anyway. */
-  drawOnInput?: boolean;
 }
 
 /** A wasm-bindgen object's getters as a plain object, which crosses to
@@ -151,18 +139,6 @@ const BACKOFF_MS = [0, 250, 1000];
 /** How long a map that hasn't been idle waits to fetch core-deferred.wasm. */
 const DEFER_AT_MOST = 5000;
 
-/** Runs `f` in a task of its own, soon: a message, not a timer, which
- * browsers delay. */
-const afterTask = (() => {
-  const channel = new MessageChannel();
-  const queued: (() => void)[] = [];
-  channel.port1.onmessage = () => queued.shift()?.();
-  return (f: () => void) => {
-    queued.push(f);
-    channel.port2.postMessage(null);
-  };
-})();
-
 export class Engine {
   #host: Host;
   #canvas: HTMLCanvasElement | OffscreenCanvas;
@@ -185,8 +161,6 @@ export class Engine {
   #deviceAt = performance.now();
   #losses = 0;
   #removed = false;
-  /** Whether a prepare is queued. */
-  #preparing = false;
   /** The annotations' points, [lon, lat, …]. */
   #annotations: Float64Array = new Float64Array(0);
   /** The box zoom's corners last reported, as text. */
@@ -195,21 +169,10 @@ export class Engine {
   #inputTime: number | undefined;
   /** The state last read. */
   #state: MapState | undefined;
-  #drawOnInput: boolean;
-  /** Whether input drew a frame since the last animation frame. */
-  #drewOnInput = false;
-  /** Whether something asked for a frame since the last one drew. */
-  #changed = false;
-  /** The frame drawn if the input expected after an animation frame
-   * doesn't come. */
-  #fallback: ReturnType<typeof setTimeout> | undefined;
   /** The last frame's time: a frame never goes back before it. */
   #shown = -Infinity;
   /** The time a test runner's clock gives frames, on this thread's clock. */
   #frameClock: number | undefined;
-  /** The last animation frame's time, and the display's frame interval. */
-  #vsync = 0;
-  #interval = 1000 / 60;
 
   private constructor(
     host: Host,
@@ -219,26 +182,13 @@ export class Engine {
     this.#host = host;
     this.#canvas = setup.canvas;
     this.#clock = setup.clock;
-    this.#drawOnInput = setup.drawOnInput ?? false;
     this.#report = report;
+    // The map's one beat: all its work (what arrived, the camera, loads,
+    // labels, the draw) runs in a frame on the display's refresh, within
+    // the frame's budget (orb-runtime's `FrameBudget`). Input, calls and
+    // wakes between frames only queue and ask for the next.
     this.#loop = frameLoop(
-      (now) => {
-        const since = now - this.#vsync;
-        if (since > 4 && since < 50)
-          this.#interval += (since - this.#interval) / 8;
-        this.#vsync = now;
-        const drewOnInput = this.#drewOnInput;
-        this.#drewOnInput = false;
-        if (!drewOnInput || !this.#core.isMoving()) return this.#tick(now);
-        // Input drew the last frame of a gesture, whose next input is likely
-        // on its way: the next frame waits for it, or for half a frame.
-        this.#fallback ??= setTimeout(() => {
-          this.#fallback = undefined;
-          if (this.#changed || this.#stats?.needsFrame)
-            this.#draw(performance.now());
-        }, this.#interval / 2);
-        return false;
-      },
+      (now) => this.#tick(now),
       (e) => this.#fail(e),
     );
   }
@@ -274,8 +224,7 @@ export class Engine {
     );
     host.resize(...setup.size);
     engine = new Engine(host, setup, report);
-    // The style goes in and its tiles are asked for as soon as the map is
-    // made, without waiting for the first frame.
+    // The first frame takes the style in and asks for its tiles.
     engine.wake();
     // What the first frames don't run comes once the map is idle, out of
     // their way, or after a while for a map that doesn't settle.
@@ -331,25 +280,14 @@ export class Engine {
     this.#inputTime = time;
     const core = this.#core as unknown as Record<
       InputKind,
-      (...a: unknown[]) => number | undefined
+      (...a: unknown[]) => boolean | undefined
     >;
-    const effect = core[kind](...args, time + this.#clock);
+    // Input applies as it arrives and shows from the next frame: drawn
+    // now, off the display's beat, a frame puts the frames after it out of
+    // step with the display, which drops one of them.
+    const used = core[kind](...args, time + this.#clock);
     // A release may end a click, which the next frame reports.
-    if (effect || kind === "blur" || kind === "pointerUp") {
-      // Only input that moved the camera draws at once: a frame drawn now
-      // for an eased step, a glide's start or a release would show nothing
-      // new, and drawn off the animation frame it puts the frames after
-      // it out of step with the display, which drops one of them (wheel
-      // zooms: 2-7 frames over 25 ms apart where none were).
-      if (this.#drawOnInput && !this.#drewOnInput && effect === MOVED) {
-        this.#drewOnInput = true;
-        this.#draw(performance.now());
-        // The next animation frame lets the next input draw.
-        this.#loop.request();
-      } else {
-        this.#request();
-      }
-    }
+    if (used || kind === "blur" || kind === "pointerUp") this.#request();
     // The box shows and goes between frames too.
     const corners = this.#core.boxZoom();
     const box = corners ? Array.from(corners) : null;
@@ -652,41 +590,17 @@ export class Engine {
     if (this.#removed) return;
     this.#removed = true;
     this.#loop.stop();
-    clearTimeout(this.#fallback);
     this.#host.destroy();
   }
 
   #request(): void {
-    this.#changed = true;
     this.#loop.request();
   }
 
-  /** A frame now, outside an animation frame, and the next animation
-   * frame if it needs one. */
-  #draw(now: number): void {
-    try {
-      if (this.#tick(now)) this.#loop.request();
-    } catch (e) {
-      this.#fail(e);
-    }
-  }
-
-  /** The map has new data to draw. Its next requests go out in a task of
-   * their own, without waiting for the frame. */
+  /** The map has news (data arrived, a compile ended): the next frame
+   * takes it in. */
   wake(): void {
     this.#request();
-    if (this.#preparing) return;
-    this.#preparing = true;
-    afterTask(() => {
-      this.#preparing = false;
-      if (this.#removed || this.#lostAt !== undefined || this.#snapshotting)
-        return;
-      try {
-        this.#core.prepare();
-      } catch (e) {
-        this.#fail(e);
-      }
-    });
   }
 
   /** One frame, shown at `now`; returns whether another is needed. */
@@ -694,12 +608,8 @@ export class Engine {
     // A snapshot draws its own frames, and asks for one when it ends.
     if (this.#removed || this.#lostAt !== undefined || this.#snapshotting)
       return false;
-    this.#changed = false;
-    clearTimeout(this.#fallback);
-    this.#fallback = undefined;
-    // A frame input drew can come after an animation frame began and
-    // before its callback ran, with a later time than that callback's:
-    // animations and fades must not step back.
+    // A test's frame clock may have run ahead of the display's: animations
+    // and fades must not step back once it stops.
     now = this.#shown = Math.max(this.#frameClock ?? now, this.#shown);
     const frame = this.#core.render(now);
     if (frame.lost) {
@@ -776,7 +686,6 @@ export class Engine {
     if (this.#removed) return;
     this.#removed = true;
     this.#loop.stop();
-    clearTimeout(this.#fallback);
     const events = this.#events;
     this.#events = [];
     events.push({ type: "error", data: { message: e.message } });

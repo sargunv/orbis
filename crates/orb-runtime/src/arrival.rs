@@ -18,12 +18,16 @@ use crate::{MapEvent, Progress};
 use orb_source::endpoint::TileEndpoint;
 
 impl Map {
-    /// Applies arrived results in order. New tiles apply within
-    /// [`TILE_APPLY_MS`], at least one a frame: tiles that arrive together
-    /// spread their uploads over frames rather than stalling one. Edits'
-    /// results apply whole.
-    pub(crate) fn apply_messages(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
-        let started = self.services.clock.now();
+    /// Applies arrived results in order. New tiles apply until `deadline`
+    /// on the services' clock (the frame's [`FrameBudget`]), at least one a
+    /// frame: tiles that arrive together spread their uploads over frames
+    /// rather than stalling one. Edits' results apply whole.
+    pub(crate) fn apply_messages(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        deadline: f64,
+    ) {
         self.tiles_deferred = false;
         while let Ok(message) = self.receiver.try_recv() {
             let new_tile = matches!(message, Message::Tile { edit: None, .. });
@@ -208,12 +212,12 @@ impl Map {
                     }
                 }
             }
-            if new_tile && self.services.clock.now() - started > TILE_APPLY_MS {
+            if new_tile && self.services.clock.now() > deadline {
                 self.tiles_deferred = true;
                 break;
             }
         }
-        self.retry_waiting(gpu, renderer, started);
+        self.retry_waiting(gpu, renderer, deadline);
     }
 
     /// A sprite's pixels, into the atlas, for the icons its JSON gave. A
@@ -311,14 +315,14 @@ impl Map {
         }
     }
 
-    /// Tries the tiles waiting for room again, in the frame's budget left,
-    /// each only if room may have changed since it last failed: memory
-    /// freed or grown, or other tiles' jobs done.
+    /// Tries the tiles waiting for room again until `deadline`, the frame's
+    /// budget, each only if room may have changed since it last failed:
+    /// memory freed or grown, or other tiles' jobs done.
     pub(crate) fn retry_waiting(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        started: f64,
+        deadline: f64,
     ) {
         let mut state = self.room_state(renderer);
         for mut waiting in std::mem::take(&mut self.waiting) {
@@ -350,7 +354,7 @@ impl Map {
                     state = self.room_state(renderer);
                 }
             }
-            self.tiles_deferred = self.services.clock.now() - started > TILE_APPLY_MS;
+            self.tiles_deferred = self.services.clock.now() > deadline;
         }
     }
 

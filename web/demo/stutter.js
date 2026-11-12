@@ -2,9 +2,8 @@
 // `orb-bench`'s stutter paths, the camera moved once a display frame
 // through the orbis package. Per frame: the interval since the last one
 // reached the page, `render`'s CPU time by stage (`FrameStats.times`), the
-// work `prepare` did on the page between it and the last (applying tiles
-// that arrived between frames), the bytes uploaded and the tiles that
-// arrived; the GPU's submissions where timestamp queries exist. `engine=gl`
+// bytes uploaded and the tiles that arrived; the GPU's submissions where
+// timestamp queries exist. `engine=gl`
 // drives MapLibre GL JS along the same paths and records its frame pacing,
 // the CPU time of its `_render` and the tiles that load each frame;
 // `engine=both` runs each path through both, interleaved after an untimed
@@ -217,8 +216,6 @@ async function runOrbis(container, scenario, style, legs, show) {
         zoom: s.zoom,
         cpu: s.ms,
         stages,
-        between: s.prepared.total,
-        betweenStages: STAGES.map(([, key]) => s.prepared[key]),
         arrived: s.tilesArrived,
         uploaded: uploaded === undefined ? 0 : bytes - uploaded,
         waiting: s.layersWaiting,
@@ -352,19 +349,13 @@ function share(frames, names, of) {
     .join(", ");
 }
 
-/** Each stage's share of the frames over 16.7 ms of render CPU, and of the work between frames. */
+/** Each stage's share of the frames over 16.7 ms of render CPU. */
 function shares(frames) {
   const slow = frames.filter((f) => f.cpu > FRAME);
-  const between = frames.reduce((sum, f) => sum + f.between, 0);
   return [
     slow.length
       ? `- the ${slow.length} frames over 16.7 ms of render CPU spent it on: ${share(slow, STAGE_NAMES, (f) => f.stages)}`
       : "- no frame's render took over 16.7 ms of CPU",
-    `- between frames, \`prepare\` spent ${between.toFixed(0)} ms on: ${share(
-      frames,
-      STAGES.map(([name]) => name),
-      (f) => f.betweenStages,
-    )}`,
   ];
 }
 
@@ -378,13 +369,7 @@ function worstTable(frames, gl) {
     .slice(0, WORST);
   const columns = gl
     ? []
-    : [
-        "between frames",
-        "GPU",
-        "GPU's slowest passes",
-        "KiB uploaded",
-        ...STAGE_NAMES,
-      ];
+    : ["GPU", "GPU's slowest passes", "KiB uploaded", ...STAGE_NAMES];
   const head = [
     "frame",
     "zoom",
@@ -412,7 +397,6 @@ function worstTable(frames, gl) {
           .map(([label, d]) => `${label} ${d.toFixed(1)}`)
           .join(", ");
         cells.push(
-          ms(f.between),
           ms(f.gpu),
           passes,
           (f.uploaded / 1024).toFixed(0),
@@ -424,8 +408,8 @@ function worstTable(frames, gl) {
   ];
 }
 
-/** Per stage, and for the work between frames, how many frames spent each
- * bucket's time on it, its p99, max and share of render CPU. */
+/** Per stage, how many frames spent each bucket's time on it, its p99, max
+ * and share of render CPU. */
 function histogram(frames) {
   const head = [
     "stage",
@@ -437,10 +421,7 @@ function histogram(frames) {
     "share",
   ];
   const all = frames.reduce((sum, f) => sum + f.cpu, 0) || 1;
-  const rows = [
-    ...STAGE_NAMES.map((name, i) => [name, (f) => f.stages[i]]),
-    ["between frames", (f) => f.between],
-  ];
+  const rows = STAGE_NAMES.map((name, i) => [name, (f) => f.stages[i]]);
   return [
     `| ${head.join(" | ")} |`,
     `|${"---|".repeat(head.length)}`,
@@ -465,8 +446,8 @@ const intervals = (f) => sorted(f.slice(1).map((x, i) => x.t - f[i].t));
 /** One engine's table and per-path details. */
 function engineReport(rows, gl) {
   const lines = [
-    `| path | frames | interval p50 | p99 | max | > 25 ms | > 33.3 ms | render CPU p50 | p99 | max | > 16.7 ms |${gl ? "" : " between frames p99 | max | GPU p50 | p99 | max | > 16.7 ms |"} tiles arrived |${gl ? "" : " MiB uploaded |"} long tasks (max ms) | settle ms |`,
-    `|${"---|".repeat(gl ? 14 : 21)}`,
+    `| path | frames | interval p50 | p99 | max | > 25 ms | > 33.3 ms | render CPU p50 | p99 | max | > 16.7 ms |${gl ? "" : " GPU p50 | p99 | max | > 16.7 ms |"} tiles arrived |${gl ? "" : " MiB uploaded |"} long tasks (max ms) | settle ms |`,
+    `|${"---|".repeat(gl ? 14 : 19)}`,
   ];
   for (const r of rows) {
     const f = r.frames;
@@ -488,10 +469,7 @@ function engineReport(rows, gl) {
       over(cpu, FRAME),
     ];
     if (!gl) {
-      const between = sorted(f.map((x) => x.between));
       cells.push(
-        ms(at(between, 0.99)),
-        ms(at(between, 1)),
         ms(at(gpu, 0.5)),
         ms(at(gpu, 0.99)),
         ms(at(gpu, 1)),
@@ -515,11 +493,9 @@ function engineReport(rows, gl) {
       "path's end until the map is idle." +
       (gl
         ? ""
-        : " Between frames: `prepare`'s work on the page since the frame " +
-          "before (arrived tiles applied and asked for between frames); GPU: the frame's " +
-          "submission, from its first pass's start to its last one's end, where the device has " +
+        : " GPU: the frame's submission, from its first pass's start to its last one's end, where the device has " +
           "timestamp queries (tiled GPUs overlap passes, whose times then sum to more); " +
-          "uploaded and tiles arrived: since the frame before, between frames included."),
+          "uploaded and tiles arrived: since the frame before."),
   );
   for (const r of rows) {
     lines.push("", `#### ${r.scenario.name}`, "", `- style: ${r.style}`);

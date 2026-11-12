@@ -19,21 +19,6 @@ use wasm_bindgen::prelude::*;
 
 use crate::OrbisMap;
 
-/// What an input did: whether the page keeps the platform's default, and
-/// whether a frame drawn now would show anything new.
-#[wasm_bindgen]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InputEffect {
-    /// The map didn't use it: the page keeps the platform's default.
-    Unused = 0,
-    /// Used, with the camera where it was: what it started (an eased
-    /// step, a glide, a click) shows from the next frame on.
-    Used = 1,
-    /// Used, and it moved the camera at once: a drag, a pinch, a
-    /// trackpad's zoom.
-    Moved = 2,
-}
-
 /// The camera as the package's `Camera`: degrees, zoom, and metres the
 /// center stands above sea level.
 #[wasm_bindgen]
@@ -344,16 +329,11 @@ impl OrbisMap {
         });
     }
 
-    /// One input at `time`, and what it did.
-    fn input(&mut self, input: Input, time: f64) -> InputEffect {
-        let before = *self.map.camera();
-        if !self.map.input(input, time) {
-            InputEffect::Unused
-        } else if *self.map.camera() != before {
-            InputEffect::Moved
-        } else {
-            InputEffect::Used
-        }
+    /// One input at `time`, applied as it arrives (what it does shows from
+    /// the next frame on); whether the map used it, or the page keeps the
+    /// platform's default.
+    fn input(&mut self, input: Input, time: f64) -> bool {
+        self.map.input(input, time)
     }
 
     /// A pointer pressed at `time` (the event's `timeStamp`): `kind` is the
@@ -370,7 +350,7 @@ impl OrbisMap {
         y: f64,
         modifiers_bits: u32,
         time: f64,
-    ) -> InputEffect {
+    ) -> bool {
         let kind = match kind {
             "touch" => PointerKind::Touch,
             "pen" => PointerKind::Pen,
@@ -380,7 +360,7 @@ impl OrbisMap {
             0 => Button::Primary,
             1 => Button::Middle,
             2 => Button::Secondary,
-            _ => return InputEffect::Unused,
+            _ => return false,
         };
         let input = Input::PointerDown {
             id,
@@ -393,19 +373,19 @@ impl OrbisMap {
     }
 
     #[wasm_bindgen(js_name = pointerMove)]
-    pub fn pointer_move(&mut self, id: u32, x: f64, y: f64, time: f64) -> InputEffect {
+    pub fn pointer_move(&mut self, id: u32, x: f64, y: f64, time: f64) -> bool {
         let position = DVec2::new(x, y);
         self.input(Input::PointerMove { id, position }, time)
     }
 
     #[wasm_bindgen(js_name = pointerUp)]
-    pub fn pointer_up(&mut self, id: u32, x: f64, y: f64, time: f64) -> InputEffect {
+    pub fn pointer_up(&mut self, id: u32, x: f64, y: f64, time: f64) -> bool {
         let position = DVec2::new(x, y);
         self.input(Input::PointerUp { id, position }, time)
     }
 
     #[wasm_bindgen(js_name = pointerCancel)]
-    pub fn pointer_cancel(&mut self, id: u32, time: f64) -> InputEffect {
+    pub fn pointer_cancel(&mut self, id: u32, time: f64) -> bool {
         self.input(Input::PointerCancel { id }, time)
     }
 
@@ -420,7 +400,7 @@ impl OrbisMap {
         mode: u32,
         modifiers_bits: u32,
         time: f64,
-    ) -> InputEffect {
+    ) -> bool {
         let unit = match mode {
             1 => WheelUnit::Line,
             2 => WheelUnit::Page,
@@ -449,7 +429,7 @@ impl OrbisMap {
         rotation: f64,
         phase: u32,
         time: f64,
-    ) -> InputEffect {
+    ) -> bool {
         let phase = match phase {
             0 => GesturePhase::Begin,
             1 => GesturePhase::Update,
@@ -477,7 +457,7 @@ impl OrbisMap {
     }
 
     /// A DOM `keydown`'s `key`.
-    pub fn key(&mut self, key: &str, modifiers_bits: u32, time: f64) -> InputEffect {
+    pub fn key(&mut self, key: &str, modifiers_bits: u32, time: f64) -> bool {
         let key = match key {
             "ArrowLeft" => Key::Left,
             "ArrowRight" => Key::Right,
@@ -486,7 +466,7 @@ impl OrbisMap {
             "+" | "=" => Key::ZoomIn,
             "-" | "_" => Key::ZoomOut,
             "Escape" => Key::Escape,
-            _ => return InputEffect::Unused,
+            _ => return false,
         };
         let modifiers = modifiers(modifiers_bits);
         self.input(Input::Key { key, modifiers }, time)

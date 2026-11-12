@@ -31,9 +31,45 @@ use orb_source::endpoint::TileEndpoint;
 /// Logical pixel size of vector/background tiles and pattern origins.
 pub(crate) const TILE_PX: f64 = 512.0;
 
-/// Milliseconds a frame spends applying arrived tiles before it leaves the
-/// rest for the next frame (upload budget at 60 Hz).
-pub(crate) const TILE_APPLY_MS: f64 = 1.5;
+/// What a frame may spend applying what arrived since the last before it
+/// draws. A host draws frames on the display's refresh, and they are the
+/// one time the map works: what arrives between them only queues, its wake
+/// asking for the next. Counted from the frame's start, so however often
+/// the host hears of arrivals, a frame spends no more; tiles that arrive
+/// together spread over frames rather than stalling one, at least one a
+/// frame. A frame whose camera moves draws the move on time; one at rest
+/// has the rest of the frame to spare, and loads sooner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameBudget {
+    /// Milliseconds of a frame while the camera moves or input holds it.
+    pub moving: f64,
+    /// Milliseconds of a frame at rest.
+    pub resting: f64,
+}
+
+impl FrameBudget {
+    /// A desktop's, the default, in a 60 Hz frame: a quarter of it while
+    /// moving, and most of it at rest (with a quarter, Liberty's views
+    /// took 13 % longer to their first idle in Chromium than with as long
+    /// as arrivals took).
+    pub const DESKTOP: Self = Self {
+        moving: 4.0,
+        resting: 12.0,
+    };
+    /// A phone's or a tablet's.
+    pub const MOBILE: Self = Self {
+        moving: 2.0,
+        resting: 8.0,
+    };
+
+    /// The milliseconds of a frame, as the camera moves or rests.
+    pub fn ms(&self, moving: bool) -> f64 {
+        match moving {
+            true => self.moving,
+            false => self.resting,
+        }
+    }
+}
 
 /// GPU images shared by the maps in one Runtime / host-service set. The
 /// first render initializes them on that Runtime's device.
@@ -662,6 +698,8 @@ pub struct Map {
     pub(crate) capacity: SceneCapacity,
     /// The GPU memory budget.
     pub(crate) budget: u64,
+    /// What a frame may spend on arrivals.
+    pub(crate) frame_budget: FrameBudget,
     /// The next frame lets go of every cached tile out of view
     /// ([`Map::release_cached_tiles`]).
     pub(crate) release_cached: bool,
@@ -864,6 +902,7 @@ impl Map {
             nodes_stale: false,
             capacity: SceneCapacity::default(),
             budget: orb_render::DESKTOP_BUDGET,
+            frame_budget: FrameBudget::DESKTOP,
             release_cached: false,
             tile_cache: true,
             style_id: 0,
@@ -1010,6 +1049,12 @@ impl Map {
     /// limits, so a view that needs more than the budget still draws.
     pub fn set_memory_budget(&mut self, bytes: u64) {
         self.budget = bytes;
+    }
+
+    /// Sets what each frame may spend applying what arrived
+    /// ([`FrameBudget::DESKTOP`], the default, or [`FrameBudget::MOBILE`]).
+    pub fn set_frame_budget(&mut self, budget: FrameBudget) {
+        self.frame_budget = budget;
     }
 
     /// What a job host that starts afresh needs to take this map's requests
@@ -1559,6 +1604,19 @@ impl Map {
     /// before the style is in waits for it this way. [`render`](Self::render)
     /// begins with it.
     pub fn apply_arrivals(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, pixel_ratio: f32) {
+        let deadline = self.services.clock.now() + self.frame_budget.ms(self.is_moving());
+        self.apply_arrivals_until(gpu, renderer, pixel_ratio, deadline);
+    }
+
+    /// As [`apply_arrivals`](Self::apply_arrivals), new tiles until
+    /// `deadline` on the services' clock.
+    fn apply_arrivals_until(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        pixel_ratio: f32,
+        deadline: f64,
+    ) {
         if self.renderer != Some(renderer.id()) {
             if self.renderer.is_some() {
                 self.forget_gpu();
@@ -1572,7 +1630,7 @@ impl Map {
         self.apply_image_edits(gpu);
         // Bring the scene's nodes to the plan before results for it apply.
         self.sync_nodes(gpu, renderer);
-        self.apply_messages(gpu, renderer);
+        self.apply_messages(gpu, renderer, deadline);
         // A URL style may have arrived while applying messages.
         self.start_sprites(gpu, pixel_ratio);
         self.sync_nodes(gpu, renderer);
@@ -1580,11 +1638,16 @@ impl Map {
 
     /// Draws the frame shown at `frame_time` (the host's frame timestamp,
     /// on the clock its input times use, in milliseconds) into `target`
-    /// with `renderer`: applies arrived data, takes the style's camera if
-    /// nothing moved it, advances gestures and animations to it, loads what
-    /// the view needs and renders. A renderer the map hasn't drawn with
-    /// before (one on a new device, say) gets the map's tiles laid out
-    /// again; the map holds tiles of one renderer at a time.
+    /// with `renderer`: applies arrived data within the frame's
+    /// [`FrameBudget`], takes the style's camera if nothing moved it,
+    /// advances gestures and animations to it, loads what the view needs
+    /// and renders. This is the map's beat: a host calls it on the
+    /// display's refresh while the last report asks for frames (or a wake
+    /// came since), applies input as it arrives, and never draws on input
+    /// or on a wake, so the map's work stays on the display's beat and
+    /// within its budget. A renderer the map hasn't drawn with before (one
+    /// on a new device, say) gets the map's tiles laid out again; the map
+    /// holds tiles of one renderer at a time.
     pub fn render(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1601,15 +1664,14 @@ impl Map {
 
     /// Applies what has arrived and asks for what the view needs next
     /// (tiles, glyphs, a placement), as a frame would, without moving the
-    /// camera or drawing: for a host that hears of arrivals between
-    /// frames, so that each request goes out without waiting for the next
-    /// frame. The frames after it draw as they would without it. Before
-    /// the first [`render`](Self::render), it takes in the style and asks
-    /// for its first tiles, at the services' clock's time (which should be
-    /// the host's frame clock). Nothing while the camera moves: frames come
-    /// at the display's rate then, and what it would ask for is for a view
-    /// about to change; nor with another renderer than the frames' (after
-    /// a device loss, the next frame takes the new one).
+    /// camera or drawing: the upkeep a report asked for
+    /// ([`FrameReport::upkeep`]), for a host that draws only when there's
+    /// something new. The frames after it draw as they would without it.
+    /// Before the first [`render`](Self::render), it takes in the style
+    /// and asks for its first tiles, at the services' clock's time (which
+    /// should be the host's frame clock). Nothing while the camera moves,
+    /// nor with another renderer than the frames' (after a device loss,
+    /// the next frame takes the new one).
     pub fn prepare(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1640,7 +1702,8 @@ impl Map {
         let clock = Arc::clone(&self.services.clock);
         let started = clock.now();
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
-        self.take_arrivals(gpu, renderer, pixel_ratio);
+        let deadline = started + self.frame_budget.ms(self.is_moving());
+        self.take_arrivals(gpu, renderer, pixel_ratio, deadline);
         let mut times = FrameTimes {
             // Uploads and label commits are stages of their own.
             arrivals: micros(started + self.upload_ms + self.placement_ms, clock.now()),
@@ -1815,11 +1878,18 @@ impl Map {
         report
     }
 
-    /// Takes in what arrived, and the device's state the map sets.
-    fn take_arrivals(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, pixel_ratio: f32) {
+    /// Takes in what arrived, new tiles until `deadline`, and the device's
+    /// state the map sets.
+    fn take_arrivals(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        pixel_ratio: f32,
+        deadline: f64,
+    ) {
         renderer.set_antialias_3d(gpu, self.antialias_3d);
         renderer.set_keep_all(gpu, self.keep_all_cull);
-        self.apply_arrivals(gpu, renderer, pixel_ratio);
+        self.apply_arrivals_until(gpu, renderer, pixel_ratio, deadline);
         self.prewarm(gpu, renderer);
     }
 

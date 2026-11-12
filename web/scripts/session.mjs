@@ -8,8 +8,8 @@
 //
 //   pnpm session [--session=manhattan|paris|alps|globe] [--browser=chromium|firefox]
 //     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
-//     [--ratio=r] [--start=ms] [--warm] [--driver] [--page] [--headed] [--worst=n]
-//     [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
+//     [--ratio=r] [--start=ms] [--warm] [--driver] [--page] [--worker] [--headed]
+//     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
 //     [--dump=prefix] [--profile=firefox-profile.json] [--sample=gpu-sample.txt]
 //
 // Sessions: `manhattan` opens Liberty over Midtown at z13 and wheel-zooms
@@ -53,14 +53,15 @@
 // in Chromium, the GPU process's presents (what reached the screen) while
 // input moves the camera, and how long the map took to settle after
 // the last input. For Orbis it names what each of the `--worst` longest
-// intervals spent: the frame's render CPU by stage, the work `prepare` did
-// between frames, pipelines still compiling, tiles arrived, bytes uploaded
-// and GPU memory grown, and what none of that accounts for (`untimedMs`:
-// the browser's GPU thread, the compositor, GC). Chromium also reports the
-// page's long tasks.
+// intervals spent: the frame's render CPU by stage, pipelines still
+// compiling, tiles arrived, bytes uploaded and GPU memory grown, and what
+// none of that accounts for (`untimedMs`: the browser's GPU thread, the
+// compositor, GC). Chromium also reports the page's long tasks.
 // Firefox on macOS draws Orbis on the page's thread (map.ts's
 // `staleWorkerFrames`), so there the page's own frames show the map's
-// work, and `--page` draws it there in Chromium too. A map on the page
+// work, and `--page` draws it there in Chromium too; `--worker` draws it
+// in its worker in Firefox, as Firefox elsewhere than macOS does (its user
+// agent another platform's, as `pnpm flight` documents). A map on the page
 // has its WebGPU calls timed (each slow frame's, and the session's, with
 // the bytes each buffer took), its message handlers too, its calls over
 // 5 ms listed by when (`slowCalls`), and the pipelines it made during the
@@ -326,7 +327,6 @@ function attribute(frames, i, gap, raf, longTasks) {
       .slice(0, 3)
       .map(([k, v]) => `${k} ${round(v)}`)
       .join(", ");
-  const between = f.prepared.total;
   const [from, to] = [prev.t, f.t];
   const pageGap = Math.max(
     0,
@@ -339,9 +339,7 @@ function attribute(frames, i, gap, raf, longTasks) {
     gap: round(gap),
     renderMs: round(f.ms),
     render: top(f.times),
-    betweenMs: round(between),
-    between: top(f.prepared),
-    untimedMs: round(Math.max(0, gap - f.ms - between)),
+    untimedMs: round(Math.max(0, gap - f.ms)),
     compiling: f.pending,
     layersWaiting: f.waiting,
     arrived: f.arrived,
@@ -385,7 +383,13 @@ async function launch() {
     // Timers to the microsecond, for the WebGPU tally: Firefox rounds
     // them to the millisecond otherwise.
     const browser = await launchFirefox({
-      prefs: { "privacy.reduceTimerPrecision": false },
+      prefs: {
+        "privacy.reduceTimerPrecision": false,
+        ...(args.worker && {
+          "general.useragent.override":
+            "Mozilla/5.0 (X11; Linux aarch64; rv:159.0) Gecko/20100101 Firefox/159.0",
+        }),
+      },
     });
     if (!browser.webgpu) console.error("no installed Firefox: WebGL 2");
     return browser;
@@ -419,7 +423,7 @@ async function run(server, engine) {
     page.on("console", (m) => {
       if (m.type() === "error") errors.push(m.text());
     });
-    const onPage = browserName === "firefox" || !!args.page;
+    const onPage = (browserName === "firefox" && !args.worker) || !!args.page;
     const query = () =>
       new URLSearchParams({
         engine,

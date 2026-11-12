@@ -58,7 +58,6 @@ async function start(init: WorkerInit): Promise<void> {
         size: init.size,
         // Event times are on the page's clock.
         clock: init.origin - performance.timeOrigin,
-        drawOnInput: true,
       },
       (report: Report) =>
         post(

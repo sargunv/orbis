@@ -782,8 +782,11 @@ export class OrbisMap {
 }
 
 /** Whether this browser runs the map in a worker: it can hand a canvas to
- * one, and tells the page of pointer moves as they come (without that, a
- * worker's frames show input a frame late). Chromium-based browsers and
+ * one, and tells the page of pointer moves as they come. Without that
+ * (Safari) the page hears of a move as its own frame begins, when the
+ * worker's has too: forwarded then, input shows two frames later than on
+ * the page (in Chromium, pointer moves so forwarded showed a pan 72 ms
+ * after input, against 39 ms on the page). Chromium-based browsers and
  * Firefox can; whether the worker has WebGPU, it says. */
 const workerCapable = () =>
   typeof HTMLCanvasElement.prototype.transferControlToOffscreen ===
@@ -795,7 +798,9 @@ const workerCapable = () =>
  * changes, as a map's compass and markers change it each frame, and
  * slows until it freezes (https://bugzilla.mozilla.org/show_bug.cgi?id=2091844;
  * its WebGL 2 is unaffected). Drawn on the page, every frame shows in
- * order. Remove once Firefox fixes it. */
+ * order. Firefox 159 still shows some: three 60 s Alps flights in a worker
+ * (`pnpm flight --browser=firefox --record=1`) composited one stale frame
+ * in 739, and none in 911 on the page. Remove once Firefox fixes it. */
 async function staleWorkerFrames(backend?: BackendChoice): Promise<boolean> {
   const agent = navigator.userAgent;
   if (

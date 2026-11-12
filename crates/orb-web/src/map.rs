@@ -126,10 +126,6 @@ pub struct FrameStats {
     /// Where the frame's CPU time went.
     #[wasm_bindgen(readonly)]
     pub times: FrameTimes,
-    /// What `prepare` spent since the last frame, summed: work between
-    /// frames.
-    #[wasm_bindgen(readonly)]
-    pub prepared: FrameTimes,
     /// Tiles whose data arrived since the last frame (not loads given up,
     /// missing or failed).
     #[wasm_bindgen(readonly, js_name = tilesArrived)]
@@ -157,8 +153,7 @@ pub struct FrameStats {
     /// GPU memory against the budget.
     #[wasm_bindgen(readonly)]
     pub memory: FrameMemory,
-    /// What the device did since the last frame, in `prepare` and in
-    /// this frame.
+    /// What the device did since the last frame.
     #[wasm_bindgen(readonly)]
     pub gpu: FrameGpu,
     /// Terrain drape slots drawn again.
@@ -468,6 +463,7 @@ pub async fn create_map(
     let mut map = Map::new(services, None);
     if mobile() {
         map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
+        map.set_frame_budget(orb_runtime::FrameBudget::MOBILE);
     }
     map.set_placement_lane(lane);
     // The page plays video sources (`web/src/videos.ts`).
@@ -1146,8 +1142,7 @@ impl OrbisMap {
                 map.render(gpu, renderer, target, viewport, ratio, frame_time)
             })
             .map_err(|e| JsError::new(&e))?;
-        // The page draws or prepares the frame the map's upkeep asks for
-        // when woken.
+        // The page draws the frame the map's upkeep asks for when woken.
         if report.upkeep {
             wake(self.id);
         }
@@ -1186,7 +1181,6 @@ impl OrbisMap {
             bundle_recorded: report.frame.bundle_recorded,
             placements_written: report.frame.placements_written,
             times: FrameTimes::from(&report.times),
-            prepared: FrameTimes::from(&report.prepared),
             tiles_arrived: report.tiles_arrived,
             paints_written: report.frame.paints_written,
             uploaded_from_wasm: uploaded.buffer_bytes_from_core as f64,
@@ -1204,24 +1198,6 @@ impl OrbisMap {
             moved: report.moved,
             input: report.input,
         })
-    }
-
-    /// Applies what has arrived since the last frame and sends what the
-    /// view needs next (tiles, glyphs, a placement) now, rather than at the
-    /// next frame; draws nothing. The page calls it soon after `on_wake`,
-    /// and once the map is made: its style's tiles are asked for before
-    /// its first frame draws.
-    pub fn prepare(&mut self) {
-        if self.canvas.lost() || self.snapshot.is_some() {
-            return;
-        }
-        let viewport = self.viewport();
-        let format = self.canvas.format();
-        let (map, gpu) = (&mut self.map, self.canvas.gpu());
-        let renderer = self
-            .renderer
-            .get_or_insert_with(|| map.create_renderer(gpu, format));
-        map.prepare(gpu, renderer, viewport, self.pixel_ratio as f32);
     }
 
     fn viewport(&self) -> Viewport {

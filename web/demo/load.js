@@ -146,7 +146,6 @@ const counters = (s) => ({
   ms: s.ms,
   needs: s.needsFrame,
   times: Object.fromEntries(STAGES.map((k) => [k, s.times[k]])),
-  prepared: Object.fromEntries(STAGES.map((k) => [k, s.prepared[k]])),
   arrived: s.tilesArrived,
   loading: s.tilesLoading,
   meshes: s.meshesUploaded,
