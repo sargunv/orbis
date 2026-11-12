@@ -1279,7 +1279,7 @@ impl Terrain {
                 atlas.mips.regions.write(gpu, &regions);
                 // A pass a layer: its slots' regions cleared, then each
                 // stack's bundle replayed once per rectangle of its redrawn
-                // full slots, and once per smaller slot, scissored to it:
+                // slots, scissored to it (a smaller slot alone to its side):
                 // what a coarse tile standing in draws spans far more than
                 // the slots it draws into (all of the layer), and would
                 // otherwise be rasterized there only to be discarded.
@@ -1303,17 +1303,22 @@ impl Terrain {
                         let Some(&(_, bundle)) = drape.iter().find(|d| d.0 == stack) else {
                             continue;
                         };
-                        let full: Vec<u32> = (stack_run.iter())
-                            .filter(|p| p.2 == px)
-                            .map(|p| p.1)
-                            .collect();
-                        let runs = slot_runs(&full, columns)
-                            .into_iter()
-                            .map(|[x, y, w, h]| [x * px, y * px, w * px, h * px]);
-                        let small = (stack_run.iter())
-                            .filter(|p| p.2 < px)
-                            .map(|&(_, s, side)| [s % columns * px, s / columns * px, side, side]);
-                        for scissor in runs.chain(small) {
+                        let slots: Vec<u32> = stack_run.iter().map(|p| p.1).collect();
+                        let runs = slot_runs(&slots, columns).into_iter().map(|[x, y, w, h]| {
+                            // A slot alone takes its own side; slots in a
+                            // run take their places whole, one replay of a
+                            // bundle that replays its draws each time.
+                            let side = match (w, h) {
+                                (1, 1) => stack_run.iter().find(|p| p.1 == y * columns + x),
+                                _ => None,
+                            };
+                            let [w, h] = match side {
+                                Some(&(.., side)) => [side; 2],
+                                None => [w * px, h * px],
+                            };
+                            [x * px, y * px, w, h]
+                        });
+                        for scissor in runs {
                             commands.push(RenderCommand::SetScissor(scissor));
                             commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
                         }
