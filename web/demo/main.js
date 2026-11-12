@@ -12,6 +12,7 @@
 // the map options that differ from the entry's own (`&terrain=1`,
 // `&light=map`, `&shadows=1`, `&projection=mercator`, …, app/options.js),
 // `&backend=webgpu|webgl2` (the renderer, Auto by default, app/options.js),
+// `&worker=0` (the map on the page's thread rather than in its worker),
 // `&lose=<ms>` (lose the GPU that long after
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
@@ -145,16 +146,21 @@ function writeHashSoon() {
   clearTimeout(hashTimer);
   hashTimer = setTimeout(writeHash, 250);
 }
-/** Sets the URL's `name` to `value` (`true` for a bare flag), or removes it for a falsy one. */
+/** Sets the URL's `name` to `value` (`true` for a bare flag), or removes
+ * it for a falsy one. Only a change is written: the map options write
+ * every option's on each refresh, and Safari throws past 100
+ * `replaceState` calls in 10 s, losing the URL's later changes. */
 function setParam(name, value) {
   const query = params();
   if (value === true) query.set(name, "");
   else if (value) query.set(name, value);
   else query.delete(name);
+  const search = searchOf(query);
+  if (search === location.search) return;
   history.replaceState(
     history.state,
     "",
-    `${location.pathname}${searchOf(query)}${location.hash}`,
+    `${location.pathname}${search}${location.hash}`,
   );
 }
 
@@ -454,6 +460,7 @@ async function load(next, { camera }) {
       // The demo shows what Orbis can do beyond the spec too.
       previews: "all",
       backend: wantedBackend(params()),
+      worker: params().get("worker") !== "0",
     });
   } catch (e) {
     options.drawing(null);
