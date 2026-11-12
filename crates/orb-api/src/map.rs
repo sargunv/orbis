@@ -161,8 +161,9 @@ impl Drop for Map {
         // What the map drew with goes with it, on the device that made it.
         if let Some(renderer) = self.renderer.take()
             && self.device == self.runtime.shared.generation()
+            && let Some(mut device) = self.runtime.shared.opened()
         {
-            renderer.destroy(&mut *self.runtime.shared.gpu());
+            renderer.destroy(&mut *device);
         }
     }
 }
@@ -255,15 +256,12 @@ impl Map {
     /// cull drops. Reads the cull's counters back from the GPU, so it
     /// waits for the frame.
     pub fn cull_counts(&self) -> Vec<CullCount> {
-        let Some(renderer) = &self.renderer else {
+        let (Some(renderer), Some(device)) = (&self.renderer, self.runtime.shared.opened())
+        else {
             return Vec::new();
         };
-        let bytes = pollster::block_on(
-            self.runtime
-                .shared
-                .gpu()
-                .read_buffer(renderer.draw_args().0),
-        );
+        let bytes = pollster::block_on(device.read_buffer(renderer.draw_args().0));
+        drop(device);
         (renderer.cull_counts(&bytes).into_iter())
             .map(|(family, candidates, kept)| CullCount {
                 family: format!("{family:?}"),
@@ -366,11 +364,12 @@ impl Map {
         if !std::mem::take(&mut self.upkeep) || self.device != self.runtime.shared.generation() {
             return;
         }
-        let Some(renderer) = &mut self.renderer else {
+        let (Some(renderer), Some(mut device)) =
+            (&mut self.renderer, self.runtime.shared.opened())
+        else {
             return;
         };
         let viewport = self.map.viewport();
-        let mut device = self.runtime.shared.gpu();
         self.map
             .prepare(&mut *device, renderer, viewport, self.scale as f32);
         drop(device);
@@ -1258,14 +1257,14 @@ impl Map {
         if self.renderer.as_ref().is_some_and(|r| r.format() != format)
             && let Some(renderer) = self.renderer.take()
         {
-            renderer.destroy(&mut *self.runtime.shared.gpu());
+            renderer.destroy(&mut *self.runtime.shared.gpu()?);
             self.dirty = true;
         }
         let viewport = target.viewport();
         // The frame borrows the device once: the target begins and ends
         // with it, and it's let go before anything else here borrows it.
         let report = {
-            let mut device = self.runtime.shared.gpu();
+            let mut device = self.runtime.shared.gpu()?;
             let Some(texture) = target.begin(&mut device)? else {
                 return Ok(None);
             };
@@ -1317,6 +1316,8 @@ impl Map {
                 "the target belongs to another runtime".into(),
             ));
         }
+        // The first frame makes the runtime's device.
+        self.runtime.open_device()?;
         // A lost GPU is replaced before the frame: texture
         // targets are made again, and window targets fail with
         // `TargetLost` for the host to make on the new one. After too
@@ -1376,7 +1377,7 @@ impl Map {
         }
         let format = target.format();
         {
-            let mut device = self.runtime.shared.gpu();
+            let mut device = self.runtime.shared.gpu()?;
             self.woken.store(false, Ordering::Release);
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
             let map = &mut self.map;

@@ -369,7 +369,7 @@ fn render(
     eprintln!("orb-demo: {}", runtime.stats().adapter);
     // egui draws with the runtime's device, so the map's texture is one
     // it can sample.
-    let (instance, adapter, device, queue) = runtime.with_device(|gpu| {
+    let made = runtime.with_device(|gpu| {
         let (instance, adapter) = gpu
             .instance_and_adapter()
             .expect("the runtime made its own device");
@@ -380,6 +380,13 @@ fn render(
             gpu.queue().clone(),
         )
     });
+    let (instance, adapter, device, queue) = match made {
+        Ok(made) => made,
+        Err(e) => {
+            eprintln!("orb-demo: no GPU device: {e}");
+            return;
+        }
+    };
     let _ = proxy.send_event(UserEvent::MakeSurface(instance.clone()));
     let Some(surface) = shared.surface() else {
         return;

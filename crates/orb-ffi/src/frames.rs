@@ -349,7 +349,7 @@ pub(crate) fn import(runtime: &orb_api::Runtime, slot: &SlotInfo) -> Result<orb_
                 // SAFETY: the C API's contract: a live MTLTexture that the
                 // host keeps until the session lets go of it.
                 unsafe { gpu.import_metal_texture(texture) }
-            })
+            })?
             .map_err(Failure::unsupported)?;
         orb_api::Target::borrowed(runtime, &texture, slot.scale).map_err(Failure::from)
     }

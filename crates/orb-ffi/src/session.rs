@@ -291,7 +291,7 @@ fn metal_target(
         // the caller keeps until the session's target is released.
         unsafe { gpu.create_surface_raw(orb_api::RawSurface::MetalLayer(layer), width, height) }
             .map_err(Failure::native)
-    })?;
+    })??;
     Ok(Target::One {
         target: orb_api::Target::surface(&state.runtime, surface, scale),
         _layer: Some(Retained::new(UserData(layer.as_ptr()))),
@@ -307,7 +307,7 @@ fn same_device(state: &State, device: UserData) -> Result {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     if state
         .runtime
-        .with_device(|gpu| gpu.metal_device())
+        .with_device(|gpu| gpu.metal_device())?
         .map(|d| d.as_ptr())
         == Some(device.get())
     {

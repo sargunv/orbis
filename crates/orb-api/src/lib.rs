@@ -114,7 +114,10 @@ pub struct RuntimeOptions {
 /// runtime, its maps and its targets are `Send`, and a runtime is `Sync`:
 /// an embedder can make them on one thread and draw on another, such as
 /// a render thread of its own, on macOS too (`orb-demo` presents from
-/// one). The device is locked for each call that uses it, so maps of one
+/// one). The device is made when something first needs it (a frame, a
+/// surface, [`stats`](Runtime::stats)), not with the runtime, so making a
+/// runtime is cheap and a host that only fetches or keeps regions never
+/// opens one. It is locked for each call that uses it, so maps of one
 /// runtime on different threads take turns on it.
 #[derive(Clone, Debug)]
 pub struct Runtime {
@@ -123,11 +126,16 @@ pub struct Runtime {
 
 #[derive(Debug)]
 struct Shared {
-    gpu: Mutex<WgpuGpu>,
+    /// The device, once something needed it.
+    gpu: Mutex<Option<WgpuGpu>>,
+    /// Held while the first device is made, so that one is; with what the
+    /// host asked of it meanwhile.
+    opening: Mutex<Pending>,
     options: RuntimeOptions,
     /// The device's adapter.
     adapter: Mutex<String>,
-    /// Counts devices made: maps and targets of an older one rebuild.
+    /// Counts devices made, from 0 before the first: maps and targets of
+    /// an older one rebuild.
     generation: AtomicU64,
     /// Device losses in a row, and how the next is answered.
     recovery: Mutex<Recovery>,
@@ -146,6 +154,15 @@ struct Shared {
     wakes: Wakes,
     /// Whether submissions are timed ([`Runtime::set_gpu_timing`]).
     timing: AtomicBool,
+}
+
+/// What the host asked of a device not yet made, for it to start with.
+#[derive(Debug, Default)]
+struct Pending {
+    nonce: Option<u32>,
+    /// Debug groups on every frame, and frames to capture: how many to
+    /// skip, then how many.
+    capture: Option<(u64, u64)>,
 }
 
 /// What a runtime's device is and has done ([`Runtime::stats`]).
@@ -248,23 +265,28 @@ fn wake_all(wakes: &Wakes) -> Arc<dyn Fn() + Send + Sync> {
 const GPU_CAPTURE: &str = "ORB_GPU_CAPTURE";
 
 impl Runtime {
-    /// Makes a device on the default adapter and starts the job and fetch
-    /// pools. Blocks while the device is made.
+    /// Starts the job and fetch pools. The device waits for its first use
+    /// ([`open_device`](Self::open_device)), on the default adapter.
     pub fn new(options: &RuntimeOptions) -> Result<Self, Error> {
-        let (mut gpu, adapter) = device::make()?;
-        let wakes = Arc::default();
         let threads = options
             .job_threads
             .unwrap_or_else(ThreadPool::default_size)
             .max(1);
         let executor = Arc::new(ThreadPool::new("jobs", threads));
-        device::set_compiler(&mut gpu, executor.clone(), wake_all(&wakes));
         let fetch = NativeFetch::with_cache(http_cache(options)?);
-        let runtime = Self {
+        let capture = std::env::var(GPU_CAPTURE)
+            .ok()
+            .and_then(|n| n.parse::<u64>().ok())
+            .map(|frame| (frame.saturating_sub(1), u64::from(frame > 0)));
+        Ok(Self {
             shared: Arc::new(Shared {
-                gpu: Mutex::new(gpu),
+                gpu: Mutex::new(None),
+                opening: Mutex::new(Pending {
+                    nonce: None,
+                    capture,
+                }),
                 options: options.clone(),
-                adapter: Mutex::new(adapter),
+                adapter: Mutex::new(String::new()),
                 generation: AtomicU64::new(0),
                 recovery: Mutex::new(Recovery::new()),
                 fetch: fetch.clone(),
@@ -276,22 +298,22 @@ impl Runtime {
                 executor,
                 images: Default::default(),
                 cache: Mutex::new(None),
-                wakes,
+                wakes: Arc::default(),
                 timing: AtomicBool::new(false),
             }),
-        };
-        runtime.start_pipeline_cache()?;
-        if let Some(frame) = std::env::var(GPU_CAPTURE)
-            .ok()
-            .and_then(|n| n.parse::<u64>().ok())
-        {
-            let mut gpu = runtime.shared.gpu();
-            gpu.set_debug_groups(true);
-            if let Some(skip) = frame.checked_sub(1) {
-                gpu.capture_frames(skip, 1);
-            }
-        }
-        Ok(runtime)
+        })
+    }
+
+    /// Makes the device now if it isn't made yet: for a host that would
+    /// rather pay for it before its first frame, or know at once that it
+    /// can't be made.
+    pub fn open_device(&self) -> Result<(), Error> {
+        self.shared.gpu().map(drop)
+    }
+
+    /// Whether the device is made.
+    pub fn device_open(&self) -> bool {
+        self.shared.opened().is_some()
     }
 
     /// Asks the graphics debugger the process runs under (Xcode's Metal
@@ -304,7 +326,11 @@ impl Runtime {
     /// carries its debug groups, for captures the debugger's own controls
     /// start.
     pub fn capture_gpu_frames(&self, skip: u64, count: u64) {
-        self.shared.gpu().capture_frames(skip, count);
+        let mut pending = lock(&self.shared.opening);
+        match self.shared.opened() {
+            Some(mut gpu) => gpu.capture_frames(skip, count),
+            None => pending.capture = Some((skip, count)),
+        }
     }
 
     /// Rewrites every request the runtime's maps and region downloads make
@@ -334,9 +360,27 @@ impl Runtime {
     }
 
     /// What the runtime's device is and has done: for diagnostics and
-    /// measurements.
+    /// measurements. Makes the device if it isn't made; one that can't be
+    /// made reports why as its adapter, and no counters.
     pub fn stats(&self) -> RuntimeStats {
-        let gpu = self.shared.gpu();
+        let gpu = match self.shared.gpu() {
+            Ok(gpu) => gpu,
+            Err(e) => {
+                return RuntimeStats {
+                    adapter: format!("none: {}", e.message()),
+                    counters: GpuCounters::default(),
+                    pipeline_time: std::time::Duration::ZERO,
+                    pipeline_timings: Vec::new(),
+                    hung_compile: None,
+                    http_cache: self.shared.fetch.cache().map(|c| c.stats()),
+                    region_bytes: self.region_bytes(),
+                    max_texture_size: 0,
+                    gpu_timestamps: false,
+                    timestamp_resolution: None,
+                    live_resources: 0,
+                };
+            }
+        };
         let caps = orb_hal::Gpu::caps(&*gpu);
         RuntimeStats {
             adapter: lock(&self.shared.adapter).clone(),
@@ -346,13 +390,16 @@ impl Runtime {
             hung_compile: gpu.hung().map(str::to_owned),
             live_resources: orb_hal::Gpu::live_resources(&*gpu),
             http_cache: self.shared.fetch.cache().map(|c| c.stats()),
-            region_bytes: self
-                .regions()
-                .map_or(0, |r| r.iter().map(|r| r.bytes).sum()),
+            region_bytes: self.region_bytes(),
             max_texture_size: caps.limits.max_texture_dimension_2d,
             gpu_timestamps: caps.timestamp_query,
             timestamp_resolution: gpu.timestamp_resolution(),
         }
+    }
+
+    fn region_bytes(&self) -> u64 {
+        self.regions()
+            .map_or(0, |r| r.iter().map(|r| r.bytes).sum())
     }
 
     /// Makes the shader modules the device makes from now on unique to
@@ -360,14 +407,20 @@ impl Runtime {
     /// (`WgpuGpu::set_shader_nonce`). A device made after a loss keeps
     /// none.
     pub fn set_shader_nonce(&self, nonce: Option<u32>) {
-        self.shared.gpu().set_shader_nonce(nonce);
+        let mut pending = lock(&self.shared.opening);
+        match self.shared.opened() {
+            Some(mut gpu) => gpu.set_shader_nonce(nonce),
+            None => pending.nonce = nonce,
+        }
     }
 
     /// Times every submission from now on, for measurements:
     /// [`gpu_timings`](Self::gpu_timings) collects them.
     pub fn set_gpu_timing(&self, on: bool) {
         self.shared.timing.store(on, Ordering::Relaxed);
-        self.shared.gpu().set_timing(on);
+        if let Some(mut gpu) = self.shared.opened() {
+            gpu.set_timing(on);
+        }
     }
 
     /// Each submission's times since the last call, in order, once the GPU
@@ -375,20 +428,22 @@ impl Runtime {
     /// the device has timestamp queries. Blocks until the GPU is done. None
     /// from a lost device, whose wait wgpu would panic on.
     pub fn gpu_timings(&self) -> Vec<SubmitTimes> {
-        if self.lost() {
-            return Vec::new();
+        match self.shared.opened() {
+            Some(mut gpu) if !gpu.lost() => pollster::block_on(gpu.take_timings()),
+            _ => Vec::new(),
         }
-        pollster::block_on(self.shared.gpu().take_timings())
     }
 
     /// Whether the GPU was lost; the next frame drawn makes another.
     pub fn lost(&self) -> bool {
-        self.shared.gpu().lost()
+        self.shared.opened().is_some_and(|gpu| gpu.lost())
     }
 
     /// Loses the GPU on purpose, to exercise recovery.
     pub fn lose_device(&self) {
-        self.shared.gpu().lose();
+        if let Some(gpu) = self.shared.opened() {
+            gpu.lose();
+        }
     }
 
     /// Whether a lost device's replacement is due ([`BACKOFF`]): `false`
@@ -409,11 +464,10 @@ impl Runtime {
         } else {
             std::time::Duration::ZERO
         };
-        let hung = {
-            let mut gpu = self.shared.gpu();
+        let hung = self.shared.opened().and_then(|mut gpu| {
             gpu.settle_loss(wait);
             gpu.hung().map(str::to_owned)
-        };
+        });
         if let Some(hung) = hung {
             return Err(recovery.fail(format!("the GPU driver hung or failed making {hung}")));
         }
@@ -428,7 +482,8 @@ impl Runtime {
                     1
                 };
                 let Some(&wait) = BACKOFF.get(recovery.losses as usize - 1) else {
-                    let reason = (self.shared.gpu().lost_reason())
+                    let reason = (self.shared.opened())
+                        .and_then(|gpu| gpu.lost_reason())
                         .map(|r| format!("; the last: {r}"))
                         .unwrap_or_default();
                     let why = format!(
@@ -462,62 +517,20 @@ impl Runtime {
     /// again on their next frame from cached data; texture targets are
     /// made again, window targets fail with [`Error::TargetLost`].
     pub(crate) fn recover(&self) -> Result<(), Error> {
-        let made = device::make();
+        let made = self.shared.make_device(&Pending::default());
         let mut recovery = lock(&self.shared.recovery);
         recovery.due = None;
-        let (mut gpu, adapter) = made.map_err(|e| {
+        let gpu = made.map_err(|e| {
             recovery.fail(format!(
                 "the GPU was lost and no other could be made: {}",
                 e.message()
             ))
         })?;
-        recovery.made = std::time::Instant::now();
         drop(recovery);
-        device::set_compiler(
-            &mut gpu,
-            self.shared.executor.clone(),
-            wake_all(&self.shared.wakes),
-        );
-        drop(std::mem::replace(&mut *self.shared.gpu(), gpu));
-        *lock(&self.shared.adapter) = adapter;
-        self.shared.generation.fetch_add(1, Ordering::AcqRel);
+        let old = lock(&self.shared.gpu).replace(gpu);
+        drop(old);
         // The maps' images were on the old device.
         self.shared.images.reset();
-        *lock(&self.shared.cache) = None;
-        self.start_pipeline_cache()?;
-        self.set_gpu_timing(self.shared.timing.load(Ordering::Relaxed));
-        Ok(())
-    }
-
-    /// Keeps compiled pipelines in the state directory's `pipelines/`
-    /// between runs, so warm starts skip compiling them (Vulkan's pipeline
-    /// cache, and D3D12's of the shader compiler's output; elsewhere the
-    /// platform caches and this does nothing). Maps save the cache when
-    /// they go idle with new pipelines.
-    fn start_pipeline_cache(&self) -> Result<(), Error> {
-        let Some(dir) = self
-            .shared
-            .options
-            .state_dir
-            .as_ref()
-            .map(|d| d.join("pipelines"))
-        else {
-            return Ok(());
-        };
-        let mut device = self.shared.gpu();
-        let Some(key) = device.pipeline_cache_key() else {
-            return Ok(());
-        };
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))?;
-        let file = dir.join(key);
-        let data = std::fs::read(&file).ok();
-        device.start_pipeline_cache(data.as_deref());
-        let made = orb_hal::Gpu::counters(&*device).pipelines_compiled;
-        // The cache's lock goes before the device's, as in
-        // `save_pipeline_cache`.
-        drop(device);
-        *lock(&self.shared.cache) = Some((file, made));
         Ok(())
     }
 
@@ -528,7 +541,9 @@ impl Runtime {
         let Some((file, saved)) = cache.as_mut() else {
             return Ok(());
         };
-        let mut device = self.shared.gpu();
+        let Some(mut device) = self.shared.opened() else {
+            return Ok(());
+        };
         let made = orb_hal::Gpu::counters(&*device).pipelines_compiled;
         if made == *saved {
             return Ok(());
@@ -623,16 +638,16 @@ impl Runtime {
         height: u32,
     ) -> Result<Surface, Error> {
         self.shared
-            .gpu()
+            .gpu()?
             .create_surface(window, width, height)
             .map_err(Error::Unsupported)
     }
 
     /// Lets `f` make a surface from a raw platform handle with the device,
     /// such as a `CAMetalLayer` or an `ANativeWindow`
-    /// ([`WgpuGpu::create_surface_raw`]).
-    pub fn with_device<R>(&self, f: impl FnOnce(&WgpuGpu) -> R) -> R {
-        f(&self.shared.gpu())
+    /// ([`WgpuGpu::create_surface_raw`]), making the device if need be.
+    pub fn with_device<R>(&self, f: impl FnOnce(&WgpuGpu) -> R) -> Result<R, Error> {
+        Ok(f(&*self.shared.gpu()?))
     }
 
     /// Wakes `wake` when a pipeline compiles, while it lives.
@@ -680,10 +695,94 @@ const _: () = {
     send::<Target>();
 };
 
+/// The runtime's device, locked for a call.
+struct Gpu<'a>(MutexGuard<'a, Option<WgpuGpu>>);
+
+impl std::ops::Deref for Gpu<'_> {
+    type Target = WgpuGpu;
+
+    fn deref(&self) -> &WgpuGpu {
+        self.0.as_ref().expect("a made device")
+    }
+}
+
+impl std::ops::DerefMut for Gpu<'_> {
+    fn deref_mut(&mut self) -> &mut WgpuGpu {
+        self.0.as_mut().expect("a made device")
+    }
+}
+
 impl Shared {
-    /// The device, for the call.
-    fn gpu(&self) -> MutexGuard<'_, WgpuGpu> {
-        lock(&self.gpu)
+    /// The device, for the call, made first if it isn't yet. A first device
+    /// that couldn't be made fails every later call the same way.
+    fn gpu(&self) -> Result<Gpu<'_>, Error> {
+        if let Some(gpu) = self.opened() {
+            return Ok(gpu);
+        }
+        let pending = lock(&self.opening);
+        if let Some(gpu) = self.opened() {
+            return Ok(gpu);
+        }
+        if let Some(failed) = &lock(&self.recovery).failed {
+            return Err(Error::Native(failed.clone()));
+        }
+        let gpu = self
+            .make_device(&pending)
+            .map_err(|e| lock(&self.recovery).fail(e.message().to_owned()))?;
+        let mut slot = lock(&self.gpu);
+        *slot = Some(gpu);
+        Ok(Gpu(slot))
+    }
+
+    /// The device, if it is made.
+    fn opened(&self) -> Option<Gpu<'_>> {
+        let slot = lock(&self.gpu);
+        slot.is_some().then(|| Gpu(slot))
+    }
+
+    /// A new device on the default adapter, set up as the host asked and
+    /// counted: its pipelines compile on the job pool and wake every map,
+    /// and its pipeline cache starts from the state directory's.
+    fn make_device(&self, pending: &Pending) -> Result<WgpuGpu, Error> {
+        let (mut gpu, adapter) = device::make()?;
+        device::set_compiler(&mut gpu, self.executor.clone(), wake_all(&self.wakes));
+        gpu.set_timing(self.timing.load(Ordering::Relaxed));
+        if pending.nonce.is_some() {
+            gpu.set_shader_nonce(pending.nonce);
+        }
+        if let Some((skip, count)) = pending.capture {
+            gpu.set_debug_groups(true);
+            if count > 0 {
+                gpu.capture_frames(skip, count);
+            }
+        }
+        *lock(&self.cache) = self.start_pipeline_cache(&mut gpu)?;
+        *lock(&self.adapter) = adapter;
+        lock(&self.recovery).made = std::time::Instant::now();
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        Ok(gpu)
+    }
+
+    /// Keeps compiled pipelines in the state directory's `pipelines/`
+    /// between runs, so warm starts skip compiling them (Vulkan's pipeline
+    /// cache, and D3D12's of the shader compiler's output; elsewhere the
+    /// platform caches and this does nothing). Maps save the cache when
+    /// they go idle with new pipelines. Returns the cache's file and the
+    /// pipelines `device` has made.
+    fn start_pipeline_cache(&self, device: &mut WgpuGpu) -> Result<Option<(PathBuf, u32)>, Error> {
+        let Some(dir) = (self.options.state_dir.as_ref()).map(|d| d.join("pipelines")) else {
+            return Ok(None);
+        };
+        let Some(key) = device.pipeline_cache_key() else {
+            return Ok(None);
+        };
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))?;
+        let file = dir.join(key);
+        let data = std::fs::read(&file).ok();
+        device.start_pipeline_cache(data.as_deref());
+        let made = orb_hal::Gpu::counters(&*device).pipelines_compiled;
+        Ok(Some((file, made)))
     }
 
     /// Counts devices made: maps and targets of an older one rebuild.

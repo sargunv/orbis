@@ -35,6 +35,9 @@ const IN_FLIGHT: usize = 2;
 enum Kind {
     Surface(Box<Surface>),
     Texture(TextureId),
+    /// A texture target whose device couldn't be made yet: a frame that
+    /// makes it makes the texture.
+    Unmade,
     /// A texture the host made on the runtime's device, and its format.
     Borrowed(TextureId, TextureFormat),
     /// Its resources are gone ([`Target::release`]).
@@ -59,13 +62,18 @@ impl Target {
         }
     }
 
-    /// Draws into an RGBA8 texture the runtime owns.
+    /// Draws into an RGBA8 texture the runtime owns, making the runtime's
+    /// device if it isn't made. One that can't be made fails the target's
+    /// frames.
     pub fn texture(runtime: &Runtime, width: u32, height: u32, scale: f64) -> Self {
         let (width, height) = (width.max(1), height.max(1));
-        let id = create_texture(&mut runtime.shared.gpu(), width, height);
+        let kind = match runtime.shared.gpu() {
+            Ok(mut device) => Kind::Texture(create_texture(&mut device, width, height)),
+            Err(_) => Kind::Unmade,
+        };
         Self {
             shared: runtime.shared.clone(),
-            kind: Kind::Texture(id),
+            kind,
             width,
             height,
             scale: sane_scale(scale),
@@ -89,7 +97,7 @@ impl Target {
                 Error::Unsupported(format!("Orbis can't draw into {:?}", texture.format()))
             })?;
         let view = texture.create_view(&Default::default());
-        let id = runtime.shared.gpu().register_view(view);
+        let id = runtime.shared.gpu()?.register_view(view);
         Ok(Self {
             shared: runtime.shared.clone(),
             kind: Kind::Borrowed(id, format),
@@ -125,11 +133,14 @@ impl Target {
         }
         self.width = width;
         self.height = height;
-        let mut device = self.shared.gpu();
+        // Surfaces and textures are of a made device.
+        let Some(mut device) = self.shared.opened() else {
+            return;
+        };
         match &mut self.kind {
             Kind::Surface(surface) => device.resize_surface(surface, width, height),
             // The host gives it new textures instead.
-            Kind::Released | Kind::Borrowed(..) => {}
+            Kind::Released | Kind::Borrowed(..) | Kind::Unmade => {}
             Kind::Texture(id) => {
                 // A texture of a replaced device went with it.
                 if self.generation == self.shared.generation() {
@@ -147,7 +158,7 @@ impl Target {
     pub fn wgpu_texture(&self) -> Option<orb_hal_wgpu::wgpu::Texture> {
         match self.kind {
             Kind::Texture(id) if self.generation == self.shared.generation() => {
-                Some(self.shared.gpu().texture(id).clone())
+                Some(self.shared.opened()?.texture(id).clone())
             }
             _ => None,
         }
@@ -161,14 +172,20 @@ impl Target {
             Kind::Texture(_) if self.generation != self.shared.generation() => Err(
                 Error::InvalidState("the GPU was replaced since the last frame".into()),
             ),
-            // wgpu panics when a lost device's wait fails.
-            Kind::Texture(_) if self.shared.gpu().lost() => Err(Error::InvalidState(
-                "the GPU was lost: draw a frame on its replacement first".into(),
-            )),
             Kind::Texture(id) => {
+                let device = self.shared.opened().expect("a texture's device");
+                // wgpu panics when a lost device's wait fails.
+                if device.lost() {
+                    return Err(Error::InvalidState(
+                        "the GPU was lost: draw a frame on its replacement first".into(),
+                    ));
+                }
                 self.read_back.store(true, Ordering::Relaxed);
-                Ok(pollster::block_on(self.shared.gpu().read_texture(id)))
+                Ok(pollster::block_on(device.read_texture(id)))
             }
+            Kind::Unmade => Err(Error::InvalidState(
+                "nothing was drawn into the target yet".into(),
+            )),
             Kind::Surface(_) | Kind::Borrowed(..) => Err(Error::Unsupported(
                 "surface and borrowed targets can't be read back".into(),
             )),
@@ -181,7 +198,7 @@ impl Target {
             color: match &self.kind {
                 Kind::Surface(surface) => surface.format(),
                 Kind::Borrowed(_, format) => *format,
-                Kind::Texture(_) | Kind::Released => TEXTURE_FORMAT,
+                Kind::Texture(_) | Kind::Unmade | Kind::Released => TEXTURE_FORMAT,
             },
             sample_count: 1,
         }
@@ -202,8 +219,8 @@ impl Target {
         // windows need the host.
         if self.generation != self.shared.generation() {
             match &mut self.kind {
-                Kind::Texture(id) => {
-                    *id = create_texture(device, self.width, self.height);
+                Kind::Texture(_) | Kind::Unmade => {
+                    self.kind = Kind::Texture(create_texture(device, self.width, self.height));
                     self.generation = self.shared.generation();
                 }
                 Kind::Surface(_) | Kind::Borrowed(..) | Kind::Released => {
@@ -220,6 +237,7 @@ impl Target {
                 Ok(Some(*id))
             }
             Kind::Borrowed(id, _) => Ok(Some(*id)),
+            Kind::Unmade => unreachable!("made above: its generation is the first device's"),
             Kind::Released => Err(Error::TargetLost("the GPU was replaced".into())),
             Kind::Surface(surface) => match device.acquire(surface) {
                 Ok(id) => Ok(Some(id)),
@@ -244,14 +262,16 @@ impl Target {
     /// Frees a window target's surface, so a lost device's go before the
     /// new device's come. The target then reports [`Error::TargetLost`].
     pub(crate) fn release(&mut self) {
-        let mut device = self.shared.gpu();
         let kind = std::mem::replace(&mut self.kind, Kind::Released);
+        // Its resources went with the old device, or there were none.
+        let Some(mut device) = self.shared.opened() else {
+            return;
+        };
         if self.generation != self.shared.generation() {
-            // Its resources went with the old device.
             return;
         }
         match kind {
-            Kind::Released => {}
+            Kind::Released | Kind::Unmade => {}
             Kind::Texture(id) | Kind::Borrowed(id, _) => device.destroy_texture(id),
             Kind::Surface(mut surface) => device.retire_surface(&mut surface),
         }
