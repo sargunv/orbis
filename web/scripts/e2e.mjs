@@ -1874,7 +1874,8 @@ async function options(browser, server) {
         },
         disabled: [...document.querySelectorAll("#options [data-option]")]
           .filter((row) => row.disabled || row.querySelector("button:disabled"))
-          .map((row) => row.dataset.option),
+          .map((row) => row.dataset.option)
+          .sort(),
         url: Object.fromEntries(
           [...query].filter(([k]) => k !== "style").sort(),
         ),
