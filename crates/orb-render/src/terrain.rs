@@ -291,31 +291,25 @@ impl DrapeLayout {
     }
 }
 
-/// Sorted atlas slots as rectangles of an atlas `columns` slots wide:
-/// runs side by side in a row, each joined to the run above it when that
-/// spans the same columns, `[column, row, slots, rows]`.
-fn slot_runs(slots: &[u32], columns: u32) -> Vec<[u32; 4]> {
-    let mut rects: Vec<[u32; 4]> = Vec::new();
-    let close = |rects: &mut Vec<[u32; 4]>, [x, y, width]: [u32; 3]| match rects.last_mut() {
-        Some(r) if (r[0], r[2]) == (x, width) && r[1] + r[3] == y => r[3] += 1,
-        _ => rects.push([x, y, width, 1]),
-    };
-    let mut run: Option<[u32; 3]> = None;
-    for &slot in slots {
-        let (x, y) = (slot % columns, slot / columns);
-        match &mut run {
-            Some(r) if r[1] == y && r[0] + r[2] == x => r[2] += 1,
-            _ => {
-                if let Some(done) = run.replace([x, y, 1]) {
-                    close(&mut rects, done);
-                }
-            }
-        }
+/// The scissor around a stack's redrawn `slots` (stack, slot, side) of a
+/// layer `columns` slots of `px` texels wide: their places' bounding
+/// rectangle, or a slot alone's side.
+fn scissor(slots: &[(u32, u32, u32)], columns: u32, px: u32) -> [u32; 4] {
+    if let [(_, slot, side)] = *slots {
+        return [slot % columns * px, slot / columns * px, side, side];
     }
-    if let Some(done) = run {
-        close(&mut rects, done);
+    let (mut lo, mut hi) = ([u32::MAX; 2], [0; 2]);
+    for &(_, slot, _) in slots {
+        let at = [slot % columns, slot / columns];
+        lo = [0, 1].map(|i| lo[i].min(at[i]));
+        hi = [0, 1].map(|i| hi[i].max(at[i] + 1));
     }
-    rects
+    [
+        lo[0] * px,
+        lo[1] * px,
+        (hi[0] - lo[0]) * px,
+        (hi[1] - lo[1]) * px,
+    ]
 }
 
 /// A drape page's texture: `layers` layers of `size` texels, mipmapped
@@ -1134,11 +1128,15 @@ impl Terrain {
                     .collect();
                 atlas.mips.regions.write(gpu, &regions);
                 // A pass a layer: its slots' regions cleared, then each
-                // stack's bundle replayed once per rectangle of its redrawn
-                // slots, scissored to it (a smaller slot alone to its side):
-                // what a coarse tile standing in draws spans far more than
-                // the slots it draws into (all of the layer), and would
-                // otherwise be rasterized there only to be discarded.
+                // stack's bundle replayed once, scissored to the rectangle
+                // around its redrawn slots (a slot alone to its side). The
+                // bundle draws every redrawn slot's content, each bounded
+                // by its slot, so a replay per run of slots drew all of it
+                // again for each: twice the drape time where a frame's
+                // slots lay scattered. The scissor still keeps what a
+                // coarse tile standing in draws (spanning far more than
+                // its slot) from being rasterized over the whole layer only
+                // to be discarded.
                 let mut first = 0;
                 for run in pending.chunk_by(|a, b| layout.layer(a.0) == layout.layer(b.0)) {
                     let end = first + run.len() as u32;
@@ -1159,25 +1157,8 @@ impl Terrain {
                         let Some(&(_, bundle)) = drape.iter().find(|d| d.0 == stack) else {
                             continue;
                         };
-                        let slots: Vec<u32> = stack_run.iter().map(|p| p.1).collect();
-                        let runs = slot_runs(&slots, columns).into_iter().map(|[x, y, w, h]| {
-                            // A slot alone takes its own side; slots in a
-                            // run take their places whole, one replay of a
-                            // bundle that replays its draws each time.
-                            let side = match (w, h) {
-                                (1, 1) => stack_run.iter().find(|p| p.1 == y * columns + x),
-                                _ => None,
-                            };
-                            let [w, h] = match side {
-                                Some(&(.., side)) => [side; 2],
-                                None => [w * px, h * px],
-                            };
-                            [x * px, y * px, w, h]
-                        });
-                        for scissor in runs {
-                            commands.push(RenderCommand::SetScissor(scissor));
-                            commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
-                        }
+                        commands.push(RenderCommand::SetScissor(scissor(stack_run, columns, px)));
+                        commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
                     }
                     passes.push(Pass::Render(RenderPass {
                         label: "drape",
@@ -1557,17 +1538,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn redrawn_slots_replay_in_rectangles() {
-        // Four columns: 2, 3 run together; 4 starts the next row.
-        assert_eq!(
-            slot_runs(&[0, 2, 3, 4, 5, 7], 4),
-            [[0, 0, 1, 1], [2, 0, 2, 1], [0, 1, 2, 1], [3, 1, 1, 1]]
-        );
-        // Whole rows join: one stack of every tile slot from slot 6 on.
-        assert_eq!(
-            slot_runs(&(6..20).collect::<Vec<_>>(), 4),
-            [[2, 1, 2, 1], [0, 2, 4, 3]]
-        );
+    fn a_stack_replays_once_over_its_redrawn_slots() {
+        // Four columns of 1024-texel places: slots 2 and 7 span columns 2
+        // to 3 of rows 0 to 1.
+        let slots = [(0, 2, 1024), (0, 7, 512)];
+        assert_eq!(scissor(&slots, 4, 1024), [2048, 0, 2048, 2048]);
+        // A slot alone takes its side.
+        assert_eq!(scissor(&[(0, 5, 256)], 4, 1024), [1024, 1024, 256, 256]);
     }
 
     #[test]
