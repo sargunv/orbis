@@ -104,7 +104,7 @@ pub struct HitGeometry {
     words: Vec<u32>,
     /// Records by feature index, and whether they hold its parts.
     #[serde(skip)]
-    added: HashMap<(u32, bool), u32>,
+    added: rustc_hash::FxHashMap<(u32, bool), u32>,
 }
 
 impl HitGeometry {
@@ -141,35 +141,43 @@ impl HitGeometry {
         if let Some(id) = id {
             write_text(words, &crate::features::state_key(id));
         }
-        let parts: Vec<_> = layer.geometry(f).parts().filter(|_| with_parts).collect();
-        words.push(parts.len() as u32);
+        // Counts are written once what they count is: nothing is
+        // gathered apart first, as a tile adds every feature it draws.
+        let (mut min, mut max) = ([i32::MAX; 2], [i32::MIN; 2]);
+        let parts_at = words.len();
+        words.push(0);
         let kind = layer.geometry_type(f);
-        for part in parts {
-            words.push(part.rings().count() as u32);
+        let geometry = layer.geometry(f);
+        for part in geometry.parts().filter(|_| with_parts) {
+            words[parts_at] += 1;
+            let rings_at = words.len();
+            words.push(0);
             for ring in part.rings() {
-                let points: Vec<[i32; 2]> = match kind {
-                    orb_tile::GeometryType::Point => ring
-                        .iter()
-                        .filter(|p| p.iter().all(|v| (0..extent).contains(v)))
-                        .copied()
-                        .collect(),
-                    orb_tile::GeometryType::Polygon => {
-                        ring.iter().chain(ring.first()).copied().collect()
+                words[rings_at] += 1;
+                let points_at = words.len();
+                words.push(0);
+                let closing = ring
+                    .first()
+                    .filter(|_| kind == orb_tile::GeometryType::Polygon);
+                for &p in ring.iter().chain(closing) {
+                    if kind == orb_tile::GeometryType::Point
+                        && !p.iter().all(|v| (0..extent).contains(v))
+                    {
+                        continue;
                     }
-                    _ => ring.to_vec(),
-                };
-                words.push(points.len() as u32);
-                for p in points {
-                    for (i, v) in p.into_iter().enumerate() {
-                        let (min, max) = (at as usize + 1 + i, at as usize + 3 + i);
-                        words[min] = (words[min] as i32).min(v) as u32;
-                        words[max] = (words[max] as i32).max(v) as u32;
+                    for i in 0..2 {
+                        min[i] = min[i].min(p[i]);
+                        max[i] = max[i].max(p[i]);
                     }
                     words.extend(p.map(|v| v as u32));
                 }
+                words[points_at] = ((words.len() - points_at - 1) / 2) as u32;
             }
         }
-        words[at as usize] = words.len() as u32 - at - 1;
+        let at_ = at as usize;
+        let ([x0, y0], [x1, y1]) = (min, max);
+        words[at_ + 1..at_ + 5].copy_from_slice(&[x0, y0, x1, y1].map(|v| v as u32));
+        words[at_] = words.len() as u32 - at - 1;
         self.added.insert((feature, with_parts), at);
         at
     }
