@@ -256,27 +256,6 @@ impl FrameTimes {
     }
 }
 
-/// How many terrain tiles a frame's drape pages hold
-/// ([`Map::drape_tiles`]).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DrapeTiles {
-    budget: u64,
-    still: bool,
-    holds: bool,
-}
-
-impl DrapeTiles {
-    /// The tiles, with `renderer`'s stacks.
-    pub(crate) fn of(self, gpu: &dyn Gpu, renderer: &Renderer) -> u32 {
-        let room = renderer.drape_room(gpu);
-        match renderer.drape_held() {
-            _ if self.still => room,
-            Some(held) if self.holds => held.min(room),
-            _ => renderer.drape_tiles(gpu, self.budget),
-        }
-    }
-}
-
 /// The map's memory against its budget, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Memory {
@@ -2368,8 +2347,8 @@ impl Map {
             report.idle && !moving && !held && !holding && self.mode == RenderMode::Continuous;
         // What waits for room a move at rest makes asks for it whether or
         // not the map is idle, which it isn't until that room is made.
-        // So do drape pages whose tiles changed while the camera moved
-        // (another budget, or stacks that take more bytes).
+        // So do drape pages that hold other tiles than the view's cover:
+        // it changed while the camera moved.
         let wants = !moving
             && !held
             && self.mode == RenderMode::Continuous
@@ -2481,16 +2460,18 @@ impl Map {
         );
     }
 
-    /// The terrain tiles the drape pages hold: a still map's, all its
-    /// cover may have (its pages take what its cover does); a continuous
-    /// map's, those of its budget
-    /// ([`Renderer::drape_tiles`](orb_render::Renderer::drape_tiles)), or
-    /// while memory holds, those already made.
-    pub(crate) fn drape_tiles(&self) -> DrapeTiles {
-        DrapeTiles {
-            budget: self.budget,
-            still: self.moves() == Moves::Free,
-            holds: self.moves() == Moves::Held,
+    /// The most terrain tiles this frame's cover may have: as many as the
+    /// device's drape pages hold ([`Renderer::drape_room`]), whose pages
+    /// then hold exactly the cover's, or while memory is held, those of
+    /// the pages already made, which grow to the cover once the camera
+    /// rests.
+    pub(crate) fn cover_room(gpu: &dyn Gpu, renderer: &Renderer) -> u32 {
+        let room = renderer.drape_room(gpu);
+        match renderer.drape_held() {
+            // The renderer's gate, as the frame set it: the pages follow
+            // it, not the camera as it moved since.
+            Some(held) if renderer.moves() == Moves::Held => held.min(room),
+            _ => room,
         }
     }
 
@@ -2518,17 +2499,15 @@ impl Map {
             .saturating_sub(Memory::of(renderer, atlas).allocated())
     }
 
-    /// Whether a frame at rest makes the drape pages anew: they hold
-    /// other tiles than the budget now gives them.
+    /// Whether a frame at rest makes the drape pages anew: the view's
+    /// cover was coarsened to those held while the camera moved, short of
+    /// the device's room. (One with fewer tiles shrinks them in any frame
+    /// at rest, and one coarsened to the device's room keeps it.)
     fn drape_resizes(&self, gpu: &dyn Gpu, renderer: &Renderer) -> bool {
-        let Some(held) = renderer.drape_held().filter(|_| renderer.terrain_on()) else {
-            return false;
-        };
-        let tiles = DrapeTiles {
-            holds: false,
-            ..self.drape_tiles()
-        };
-        tiles.of(gpu, renderer).max(1) != held
+        let terrain = self.style.as_ref().and_then(|s| s.terrain.as_ref());
+        let room = renderer.drape_room(gpu) as usize;
+        renderer.terrain_on()
+            && terrain.is_some_and(|t| t.covered.0 > t.covered.1 && t.covered.1 < room)
     }
 
     /// Whether the terrain's tiles take other drape slots at rest: those
@@ -3173,7 +3152,7 @@ impl Map {
         view: &View,
         report: &mut FrameReport,
     ) -> Option<orb_render::FrameTerrain> {
-        let drape_tiles = self.drape_tiles();
+        let cover_room = Self::cover_room(gpu, renderer);
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();
         let root = self.root_frame.expect("eased before the terrain");
@@ -3269,7 +3248,7 @@ impl Map {
             }
         }
         let at = (view, self.surface.tms(), self.camera.state().target);
-        let ground = (view.world_z(skirt), drape_tiles.of(gpu, renderer));
+        let ground = (view.world_z(skirt), cover_room);
         let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, ground);
         let mut loads = Vec::new();
         for tile in requests {
@@ -3406,7 +3385,14 @@ impl Map {
         result: Result<crate::TileOutcome, String>,
     ) -> bool {
         let now = self.services.clock.now();
-        let terrain = self.style.as_mut().and_then(|s| s.terrain.as_mut());
+        // An edit that removed its source left the terrain until this
+        // frame's update lets it go: what it loaded, or failed to, goes
+        // with it, unsaid.
+        let style = self
+            .style
+            .as_mut()
+            .filter(|s| s.worker.plan().source(source).is_some());
+        let terrain = style.and_then(|s| s.terrain.as_mut());
         let kept = match terrain.filter(|t| t.key == source) {
             Some(terrain) => match terrain.arrive(gpu, renderer, tile, result, now) {
                 Ok(kept) => kept,

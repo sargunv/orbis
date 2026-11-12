@@ -611,7 +611,6 @@ impl Map {
         view: &View,
     ) -> Option<DrapePlan> {
         let time = self.shader_time();
-        let drape_tiles = self.drape_tiles();
         // A camera a host jumps frame by frame moves as one under input.
         let texels = (self.mode == RenderMode::Continuous).then(|| {
             self.frame_budget
@@ -628,19 +627,13 @@ impl Map {
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
         terrain.release_slots();
-        // A continuous map's pages hold the tiles its view's cover is
-        // coarsened to ([`DrapeTiles`]), made anew only where memory may
-        // move, and for more where the stacks changed after the cover (the
-        // terrain came on); a still map's, exactly its cover's. The tiles
-        // take the slots of their places in the cover in any frame at
-        // rest, as moving them allocates nothing.
+        // The pages hold exactly the cover's tiles ([`Map::cover_room`]),
+        // made anew only where memory may move. The tiles take the slots
+        // of their places in the cover in any frame at rest, as moving
+        // them allocates nothing.
         let still = renderer.moves() == orb_render::Moves::Free;
         let at_rest = self.resize_now || still;
-        let tiles = terrain.tiles.len() as u32;
-        let slots = match still {
-            true => tiles,
-            false => drape_tiles.of(gpu, renderer).max(tiles),
-        };
+        let slots = terrain.tiles.len() as u32;
         let layout = match renderer.reserve_drape(gpu, slots.max(1)) {
             Ok(layout) => layout,
             Err(full) => {

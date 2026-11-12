@@ -213,6 +213,10 @@ pub(crate) struct Terrain {
     /// last taken.
     stale: bool,
     pub(crate) revision: u64,
+    /// The cover's tiles before it was coarsened, and the most it was let
+    /// have: past the drape pages held while the camera moved, it grows to
+    /// them at rest.
+    pub(crate) covered: (usize, usize),
     /// What DEM tiles found no layer for while the page couldn't grow:
     /// they load again once it grows at rest.
     pub(crate) room: orb_render::Room,
@@ -259,6 +263,7 @@ impl Terrain {
             padded: FxHashMap::default(),
             stale: true,
             revision: 0,
+            covered: (0, 0),
             room: Default::default(),
             held: Vec::new(),
         }
@@ -301,9 +306,9 @@ impl Terrain {
         Some((at, self.pyramid.get(at)?))
     }
 
-    /// Covers the view with at most `budget` tiles, the drape atlas's
-    /// room, asks for the DEM tiles missing and returns the tiles to
-    /// request.
+    /// Covers the view with at most `room` tiles, what the drape pages
+    /// may hold ([`Map::cover_room`](crate::Map::cover_room)), asks for the
+    /// DEM tiles missing and returns the tiles to request.
     ///
     /// The cover culls tiles by the elevations held, and what is held
     /// follows from the cover, so a DEM tile whose range culls a tile is
@@ -314,7 +319,7 @@ impl Terrain {
     fn update(
         &mut self,
         (view, tms, focus): (&View, &TileMatrixSet, orb_crs::Geodetic),
-        budget: usize,
+        room: usize,
     ) -> Vec<TileIndex> {
         let consulted = Consulted {
             elevation: &self.elevation,
@@ -337,7 +342,8 @@ impl Terrain {
             .collect();
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         let eye = view.eye().truncate();
-        coarsen(&mut tiles, budget, |t| {
+        self.covered = (tiles.len(), room);
+        coarsen(&mut tiles, room, |t| {
             let offset = DVec2::new(f64::from(t.wrap) * period, 0.0) - view.camera_world();
             let rel = tms.tile_bounds(t.index).translated(offset);
             rel.clamp(eye).distance(eye)
@@ -853,12 +859,12 @@ fn within(tile: TileIndex, at: TileIndex) -> ([f32; 2], f32) {
     ([d(tile.col), d(tile.row)], scale)
 }
 
-/// Coarsens a cover until it has at most `budget` tiles (or no tiles
+/// Coarsens a cover until it has at most `room` tiles (or no tiles
 /// share an ancestor): the tiles under the farthest ancestor of two or
 /// more, by `distance` from the eye, become that ancestor, as distance
 /// already coarsens the cover.
-fn coarsen(tiles: &mut Vec<CoveredTile>, budget: usize, distance: impl Fn(CoveredTile) -> f64) {
-    while tiles.len() > budget {
+fn coarsen(tiles: &mut Vec<CoveredTile>, room: usize, distance: impl Fn(CoveredTile) -> f64) {
+    while tiles.len() > room {
         let mut under: FxHashMap<CoveredTile, usize> = FxHashMap::default();
         for t in tiles.iter() {
             let mut at = t.index;
@@ -1656,7 +1662,7 @@ mod tests {
         coarsen(&mut tiles, 6, distance);
         let want: Vec<_> = near.into_iter().chain([at(3, 3, 0), at(3, 1, 1)]).collect();
         assert_eq!(tiles, want, "the far four become their parent");
-        // Under budget: as covered.
+        // Within the room: as covered.
         let before = tiles.clone();
         coarsen(&mut tiles, 6, distance);
         assert_eq!(tiles, before);

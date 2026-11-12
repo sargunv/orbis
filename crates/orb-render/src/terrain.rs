@@ -11,10 +11,9 @@
 //! [`TerrainTile::shrink`]): colour stacks in one, slope stacks at half the
 //! texels a side in another, a layer of its page a stack, each layer as
 //! many slots as the pages hold tiles but for part of a row. The pages
-//! hold as many tiles as the map's memory budget gives them, which its
-//! terrain's cover is coarsened to, made once for the style and the
-//! budget: new pages are blank. A frame redraws only the slots the runtime
-//! marks: their drape placements, the draped nodes' only candidates, map
+//! hold exactly the tiles of the view's terrain cover, made anew at rest
+//! when it needs another grid of slots: new pages are blank. A frame
+//! redraws only the slots the runtime marks: their drape placements, the draped nodes' only candidates, map
 //! them into the atlas, so one pass a layer redraws them all, replaying
 //! each stack's bundle of its draped nodes over its redrawn slots, then a
 //! compute pass a page downsamples their mip levels. Each terrain
@@ -107,15 +106,6 @@ pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
         }
     }
     fits
-}
-
-/// The bytes a terrain tile's drape slots take with `stacks` colour and
-/// slope stacks, mips included.
-pub(crate) fn tile_bytes(stacks: [u32; 2]) -> u64 {
-    let alloc = allocated(stacks);
-    (0..2)
-        .map(|p| u64::from(alloc[p]) * u64::from(PAGE_PX[p]).pow(2) * 4 * 4 / 3)
-        .sum()
 }
 
 /// Why the drape pages can't hold a view's terrain tiles.
@@ -734,10 +724,12 @@ impl Terrain {
     }
 
     /// Makes pages of `tile_slots` blocks of `stacks` colour and slope
-    /// slots, unless those held are: blank ones, a new
-    /// [`DrapeLayout::generation`]. Whether it made them. Fails past the
-    /// device's [`room`], or when the device refuses a page, which leaves
-    /// none: the next reserve makes them anew, smaller.
+    /// slots, unless those held have their grids: blank ones, a new
+    /// [`DrapeLayout::generation`]. Pages of the same grids hold
+    /// `tile_slots` from then on, their slots as they were: a slot's
+    /// place in the page follows its grid alone. Whether it made them.
+    /// Fails past the device's [`room`], or when the device refuses a
+    /// page, which leaves none: the next reserve makes them anew, smaller.
     pub(crate) fn reserve(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -745,14 +737,18 @@ impl Terrain {
         downsampler: &mut crate::downsample::Downsampler,
     ) -> Result<bool, DrapeFull> {
         let state = self.layout_state;
-        let held = (state.stacks, state.tile_slots) == (stacks, tile_slots);
-        if held && self.atlas[0].is_some() {
+        if (state.stacks, state.tile_slots) == (stacks, tile_slots) && self.atlas[0].is_some() {
             return Ok(false);
         }
         let grids = (tile_slots <= room(gpu, stacks))
             .then(|| page_grids(gpu, tile_slots, stacks))
             .flatten()
             .ok_or(DrapeFull::Room)?;
+        let made = self.atlas.each_ref().map(|a| a.as_ref().map(Atlas::grid));
+        if state.stacks == stacks && self.atlas[0].is_some() && made == grids {
+            self.layout_state.tile_slots = tile_slots;
+            return Ok(false);
+        }
         let before = gpu.counters();
         self.release_atlas(gpu);
         self.pending.clear();

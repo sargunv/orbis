@@ -1247,6 +1247,80 @@ fn every_terrain_view_fits_the_drape_atlas() {
     assert_same("crest", both_ways(&alps, start, end, 20));
 }
 
+/// Ground below the horizon at a high pitch over steep terrain, as over
+/// Chongqing's hills on the demo's globe: a pitched view's cover wants
+/// many more terrain tiles than a view straight down, and the drape pages
+/// hold every one at rest, so the ground draws everywhere under the sky
+/// (no pixel is left clear) and a gesture there draws what a fresh map
+/// does. Pages sized for a fixed count of tiles coarsened the cover down
+/// to the tiles under the eye, whose coarser ground rose over the camera
+/// standing on the finer: black below the horizon.
+#[test]
+fn a_steep_view_over_terrain_shows_ground_below_the_horizon() {
+    let (hills, _dem) = hills();
+    let style = tokyo(
+        r##""terrain": {"source": "hills", "exaggeration": 1.5},
+            "projection": {"type": "globe"},
+            "sky": {"sky-color": "#4f8fd9", "horizon-color": "#d6e8fb", "fog-color": "#e4eef8"},"##,
+        &hills,
+    );
+    // Hillshaded, as the demo's globe is: a slope stack beside the colour.
+    let style = style.replacen(
+        "{\n      \"id\": \"park\",",
+        r#"{"id": "relief", "type": "hillshade", "source": "hills"},
+        {"id": "park","#,
+        1,
+    );
+    assert!(style.contains("\"relief\""));
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    for (size, scale, at) in [
+        ([3200, 2000], 2.0, (STATION, 16.12, -31.5, 85.0)),
+        ([3200, 2000], 2.0, (STATION, 15.65, -52.9, 74.0)),
+        ([1920, 1080], 1.0, (STATION, 15.02, -52.9, 80.0)),
+    ] {
+        let mut target = Target::texture(&runtime, size[0], size[1], scale);
+        let (pixels, _) = fresh_at(&runtime, &mut target, &style, at);
+        let dump = |what: &str, pixels: &[u8]| {
+            let path = std::env::temp_dir().join(format!(
+                "orb-path-steep-{}-{what}-{}.png",
+                at.3,
+                std::process::id()
+            ));
+            write_png(&path, size[0], size[1], pixels);
+            path
+        };
+        let bare = pixels.chunks(4).filter(|p| p[3] < 255).count();
+        assert!(
+            bare == 0,
+            "at {at:?}: {bare} pixels show no ground or sky: {}",
+            dump("live", &pixels).display()
+        );
+        // A still map's pages always held its whole cover: at rest, a
+        // live map's do too, and draw what it draws.
+        let mut still = Map::new(&runtime, options());
+        still.set_constraints(steep());
+        still.set_style_json(&style).unwrap();
+        still.jump_to(&camera(at));
+        let logical = size.map(|v| (f64::from(v) / scale) as u32);
+        let image = still.snapshot(logical[0], logical[1], scale).unwrap();
+        // Within rounding: the CPU driver's blends differ by a unit here
+        // and there between the two.
+        let near = |(a, b): (&[u8], &[u8])| a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 2);
+        let differ = (pixels.chunks(4).zip(image.pixels.chunks(4)))
+            .filter(|&p| !near(p))
+            .count();
+        assert!(
+            differ == 0,
+            "at {at:?}: {differ} pixels differ from a still map's: {} against {}",
+            dump("live", &pixels).display(),
+            dump("still", &image.pixels).display()
+        );
+    }
+    let start = (STATION, 14.0, 0.0, 40.0);
+    let end = (STATION, 16.12, -31.5, 85.0);
+    assert_same("steep", both_ways(&style, start, end, 20));
+}
+
 /// The Alps terrain style's view (live tiles), turned at a pitch of 72° with the
 /// camera never stopping: once loaded, a frame mid-turn draws what a fresh
 /// map at rest at its camera draws, ridges against the sky and every drape
