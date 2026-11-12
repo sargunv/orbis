@@ -6,14 +6,14 @@
 //! layers between layers that draw in 3D or on screen, the part of one
 //! above its first layer whose drawing changes with the zoom, or a
 //! hillshade the terrain shades, whose stack holds its unlit slopes).
-//! Slots are squares of mipmapped atlas pages, sized to the slots in use
-//! (a tile that shows small draws the top-left square of its slots that
-//! it shows at, [`TerrainTile::shrink`]):
-//! colour stacks in one, slope stacks at half the texels a side in
-//! another, each stack's slots side by side in a layer of its page, as
-//! many stacks a layer as fit, so that a page holds as many terrain tiles
-//! however many stacks it has. A new page takes the kept slots' texels,
-//! so none redraws for it. A frame redraws only the slots the runtime
+//! Slots are squares of mipmapped atlas pages (a tile that shows small
+//! draws the top-left square of its slots that it shows at,
+//! [`TerrainTile::shrink`]): colour stacks in one, slope stacks at half the
+//! texels a side in another, a layer of its page a stack, each layer as
+//! many slots as the pages hold tiles but for part of a row. The pages
+//! hold as many tiles as the map's memory budget gives them, which its
+//! terrain's cover is coarsened to, made once for the style and the
+//! budget: new pages are blank. A frame redraws only the slots the runtime
 //! marks: their drape placements, the draped nodes' only candidates, map
 //! them into the atlas, so one pass a layer redraws them all, replaying
 //! each stack's bundle of its draped nodes over its redrawn slots, then a
@@ -47,108 +47,75 @@ pub(crate) const SLOPE_SLOT_PX: u32 = DRAPE_SLOT_PX / 2;
 /// The drape's pages by slot side: colour stacks, then slope stacks.
 const PAGE_PX: [u32; 2] = [DRAPE_SLOT_PX, SLOPE_SLOT_PX];
 
-/// Slots of `slot_px` texels per side of a texture `max` texels a side, a
-/// power of two (see [`atlas_grid`]).
-fn atlas_side(max: u32, slot_px: u32) -> u32 {
-    1 << (max / slot_px).max(1).ilog2()
+/// Slots a side of a layer of page `page` on this device, whose sides
+/// stop at WebGPU's default, 8192.
+fn page_side(gpu: &dyn Gpu, page: usize) -> u32 {
+    gpu.caps().limits.max_texture_dimension_2d / PAGE_PX[page]
 }
 
-/// A page's grid: stacks a layer, and the layers' columns and rows.
-type Grid = (u32, u32, u32);
-
-/// A page's grid for `tiles` tile slots of `stacks` stacks: stacks a
-/// layer and the layers' (columns, rows); or `None` to keep the grid
-/// `held`, kept while its stacks have room for the tiles and they fill
-/// more than a quarter of it. A layer holds as many of the stacks as fit
-/// with their tiles, so that a view of few tiles keeps them all in one,
-/// redrawn in one pass, and one of many has a layer a stack. A grid is a
-/// power of two slots a side, so that drape space maps to clip space and
-/// atlas uv by powers of two, exactly; the GPU still drapes and samples a
-/// slot a step apart at a few pixels by where it lies, which is why a map
-/// at rest gives each tile the slot of its place in the cover (the
-/// runtime's `Terrain::plan`). A new grid holds the slots in the fewest, or on
-/// shrinking twice that, so that a view must grow past it again to make
-/// another; squarest, columns first. `tiles` is at most `side²`.
-fn atlas_grid(
-    tiles: u32,
-    held: Option<(u32, u32, u32)>,
-    stacks: u32,
-    side: u32,
-) -> Option<(u32, u32, u32)> {
+/// A layer's grid for `tiles` tile slots, columns and rows of at most
+/// `side` each: the fewest slots that hold them, of those the squarest.
+/// A layer holds one stack's slots, so that a page takes as many slots
+/// as its stacks have tiles, but for part of a row.
+fn layer_grid(tiles: u32, side: u32) -> Option<Grid> {
     let tiles = tiles.max(1);
-    let room = held.map(|(per_layer, columns, rows)| columns * rows / per_layer);
-    if room.is_some_and(|room| tiles <= room && tiles * 4 > room) {
-        return None;
-    }
-    let shrink = room.is_some_and(|room| tiles <= room);
-    let per_layer = stacks.min(side * side / tiles).max(1);
-    let count = ((per_layer * tiles).next_power_of_two() << u32::from(shrink)).min(side * side);
-    let k = count.ilog2();
-    Some((per_layer, 1 << k.div_ceil(2), 1 << (k / 2)))
+    (1..=side)
+        .map(|columns| (columns, tiles.div_ceil(columns)))
+        .filter(|&(_, rows)| rows <= side)
+        .min_by_key(|&(columns, rows)| (columns * rows, columns.abs_diff(rows)))
 }
 
-/// The grid of a layer a stack for `tiles` tile slots, rounded up to a
-/// power of two: the fewest texels a page of them can take.
-fn tight_grid(tiles: u32) -> Grid {
-    let k = tiles.max(1).next_power_of_two().ilog2();
-    (1, 1 << k.div_ceil(2), 1 << (k / 2))
-}
+/// A page's grid: a layer's columns and rows of slots.
+type Grid = (u32, u32);
 
-/// Whether the device allocates page `page` in `grid` for `stacks` stacks
-/// ([`Gpu::texture_fits`]).
-fn fits(gpu: &dyn Gpu, page: usize, (per_layer, columns, rows): Grid, stacks: u32) -> bool {
-    let px = PAGE_PX[page];
-    let size = [columns * px, rows * px];
-    gpu.texture_fits(&atlas_desc(size, stacks.div_ceil(per_layer), px))
-}
-
-/// The terrain tiles the drape pages hold, with `stacks` colour and slope
-/// stacks: the slots of a layer of WebGPU's default texture side (64
-/// colour slots), however many stacks there are, and on every device that
-/// has it, so that a view's terrain doesn't depend on either. Where a page
-/// of a layer a stack of them takes more bytes than the device allocates a
-/// texture (GL's [`Limits::max_texture_bytes`]), it holds half as many,
-/// and so on until such a page fits.
-pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
+/// Each page's grid for `tiles` tile slots of `stacks` colour and slope
+/// stacks, a layer a stack, or `None` where a page of them takes more
+/// layers, more slots a side or more bytes than the device allocates a
+/// texture ([`Gpu::texture_fits`], GL's [`Limits::max_texture_bytes`]).
+fn page_grids(gpu: &dyn Gpu, tiles: u32, stacks: [u32; 2]) -> Option<[Option<Grid>; 2]> {
     let alloc = allocated(stacks);
-    let limits = gpu.caps().limits;
-    (0..2)
-        .filter(|&p| alloc[p] > 0)
-        .map(|p| {
-            if alloc[p] > limits.max_texture_array_layers {
-                return 0;
-            }
-            let side = atlas_side(limits.max_texture_dimension_2d, PAGE_PX[p]);
-            let mut tiles = side * side;
-            while tiles > 0 && !fits(gpu, p, tight_grid(tiles), alloc[p]) {
-                tiles /= 2;
-            }
-            tiles
-        })
-        .min()
-        .expect("a colour page")
+    let mut grids = [None; 2];
+    for page in (0..2).filter(|&p| alloc[p] > 0) {
+        if alloc[page] > gpu.caps().limits.max_texture_array_layers {
+            return None;
+        }
+        let (columns, rows) = layer_grid(tiles, page_side(gpu, page))?;
+        let px = PAGE_PX[page];
+        let desc = atlas_desc([columns * px, rows * px], alloc[page], px);
+        if !gpu.texture_fits(&desc) {
+            return None;
+        }
+        grids[page] = Some((columns, rows));
+    }
+    Some(grids)
 }
 
-/// Page `page`'s grid for `tiles` tile slots of `stacks` stacks
-/// ([`atlas_grid`]), or `None` to keep `held`: of layers at most the
-/// device's side, WebGPU's default (8192) where it offers more, or else a
-/// layer a stack ([`tight_grid`]) where that page takes more bytes than
-/// the device allocates, which a cover within the [`room`] fits. A larger
-/// side would only pack the stacks into fewer layers, as one texture
-/// past what some devices allocate at all.
-fn page_grid(
-    gpu: &dyn Gpu,
-    page: usize,
-    tiles: u32,
-    held: Option<Grid>,
-    stacks: u32,
-) -> Option<Grid> {
-    let side = atlas_side(gpu.caps().limits.max_texture_dimension_2d, PAGE_PX[page]);
-    let grid = atlas_grid(tiles, held, stacks, side)?;
-    Some(match fits(gpu, page, grid, stacks) {
-        true => grid,
-        false => tight_grid(tiles),
-    })
+/// The terrain tiles the drape pages can hold with `stacks` colour and
+/// slope stacks: the slots of a layer of WebGPU's default texture side (64
+/// colour slots) on every device that has it, so that a view's terrain
+/// doesn't depend on which, or fewer where pages of them take more bytes
+/// than the device allocates a texture.
+pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
+    let side = page_side(gpu, 0);
+    // Pages take more bytes the more tiles they hold: the most that fit.
+    let (mut fits, mut over) = (0, side * side + 1);
+    while over - fits > 1 {
+        let tiles = (fits + over) / 2;
+        match page_grids(gpu, tiles, stacks) {
+            Some(_) => fits = tiles,
+            None => over = tiles,
+        }
+    }
+    fits
+}
+
+/// The bytes a terrain tile's drape slots take with `stacks` colour and
+/// slope stacks, mips included.
+pub(crate) fn tile_bytes(stacks: [u32; 2]) -> u64 {
+    let alloc = allocated(stacks);
+    (0..2)
+        .map(|p| u64::from(alloc[p]) * u64::from(PAGE_PX[p]).pow(2) * 4 * 4 / 3)
+        .sum()
 }
 
 /// Why the drape pages can't hold a view's terrain tiles.
@@ -281,28 +248,22 @@ pub struct TerrainDem {
 
 /// Where drape slots are. Stacks `0..stacks[0]` are colour stacks, on
 /// page 0 at [`DRAPE_SLOT_PX`] texels a side; the rest hold slopes, on
-/// page 1 at [`SLOPE_SLOT_PX`]. Page `p`'s layers hold `per_layer[p]`
-/// stacks each: tile slot `t`'s stack of rank `r` there is layer
-/// `r / per_layer[p]`, slot `r % per_layer[p] · strides[p] + t` of it, at
-/// column `slot % columns[p]`, row `slot / columns[p]`. Each stack's
-/// slots lie side by side in one layer, so that redrawing one stack of
-/// many tiles draws into a few rows. Each layer's drape space is its
-/// texels with y up: texel `(x, y)` is drape world `(x, −y)`.
+/// page 1 at [`SLOPE_SLOT_PX`]. A page has a layer a stack, the stack of
+/// rank `r` among the page's in layer `r`, and tile slot `t`'s slot of it
+/// is at column `t % columns[p]`, row `t / columns[p]`: each stack's
+/// slots side by side, so that redrawing one stack of many tiles draws
+/// into a few rows. Each layer's drape space is its texels with y up:
+/// texel `(x, y)` is drape world `(x, −y)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrapeLayout {
     /// Colour stacks, then slope stacks.
     pub stacks: [u32; 2],
-    /// Stacks a layer of each page holds.
-    pub per_layer: [u32; 2],
     /// Slots per row of each page's layers.
     pub columns: [u32; 2],
-    /// Slots of each page's layers between a tile slot's stacks: the tile
-    /// slots one of its stacks has room for.
-    pub strides: [u32; 2],
     /// Tile slots the pages hold.
     pub tile_slots: u32,
-    /// Changes when every slot is blank (new pages without the old ones'
-    /// texels, or other stacks): every slot must be redrawn.
+    /// Changes when every slot is blank (new pages, or other stacks):
+    /// every slot must be redrawn.
     pub generation: u64,
 }
 
@@ -312,7 +273,8 @@ impl DrapeLayout {
         self.stacks[0] + self.stacks[1]
     }
 
-    /// The page of stack `stack`, and its rank among the page's stacks.
+    /// The page of stack `stack`, and its rank among the page's stacks:
+    /// the layer of the page it lies in.
     pub fn page(&self, stack: u32) -> (usize, u32) {
         match stack.checked_sub(self.stacks[0]) {
             Some(rank) => (1, rank),
@@ -327,23 +289,15 @@ impl DrapeLayout {
 
     /// The layer of its page stack `stack` lies in.
     pub fn layer(&self, stack: u32) -> u32 {
-        let (page, rank) = self.page(stack);
-        rank / self.per_layer[page]
+        self.page(stack).1
     }
 
-    /// Tile slot `tile_slot`'s slot of `stack`: its page and slot in the
+    /// Tile slot `tile_slot`'s slot of `stack`: its top-left texel in the
     /// stack's layer.
-    fn slot(&self, tile_slot: u32, stack: u32) -> (usize, u32) {
-        let (page, rank) = self.page(stack);
-        let per_layer = self.per_layer[page];
-        (page, rank % per_layer * self.strides[page] + tile_slot)
-    }
-
-    /// A slot's top-left texel in its layer.
     pub fn corner(&self, tile_slot: u32, stack: u32) -> [u32; 2] {
-        let (page, slot) = self.slot(tile_slot, stack);
+        let page = self.page(stack).0;
         let (columns, px) = (self.columns[page], PAGE_PX[page]);
-        [slot % columns * px, slot / columns * px]
+        [tile_slot % columns * px, tile_slot / columns * px]
     }
 }
 
@@ -677,9 +631,7 @@ impl Terrain {
             atlas: [None, None],
             layout_state: DrapeLayout {
                 stacks: [1, 0],
-                per_layer: [1; 2],
                 columns: [1; 2],
-                strides: [0; 2],
                 tile_slots: 0,
                 generation: 0,
             },
@@ -781,170 +733,67 @@ impl Terrain {
         self.layers = layers.to_vec();
     }
 
-    /// Whether [`reserve`](Self::reserve) of `tile_slots` at rest would
-    /// make new pages.
-    pub(crate) fn would_reserve(&self, gpu: &dyn Gpu, tile_slots: u32, stacks: [u32; 2]) -> bool {
-        tile_slots <= room(gpu, stacks) && self.grids(gpu, tile_slots, stacks, true).1
-    }
-
-    /// Each page's grid for `tile_slots` slots ([`atlas_grid`]), and
-    /// whether any differs from the pages held.
-    fn grids(
-        &self,
-        gpu: &dyn Gpu,
-        tile_slots: u32,
-        stacks: [u32; 2],
-        may_shrink: bool,
-    ) -> ([Option<Grid>; 2], bool) {
-        let state = self.layout_state;
-        let alloc = allocated(stacks);
-        let same = self.atlas[0].is_some() && state.stacks == stacks;
-        let mut grids = [None; 2];
-        let mut changed = !same;
-        for page in 0..2 {
-            if alloc[page] == 0 {
-                continue;
-            }
-            let held = (self.atlas[page].as_ref())
-                .filter(|_| same)
-                .map(|a| (state.per_layer[page], a.grid()))
-                .map(|(per_layer, (columns, rows))| (per_layer, columns, rows));
-            let holds = held.is_some_and(|(k, c, r)| tile_slots <= c * r / k);
-            let grid = (may_shrink || !holds)
-                .then(|| page_grid(gpu, page, tile_slots, held, alloc[page]))
-                .flatten();
-            changed |= grid.is_some();
-            grids[page] = grid.or(held);
-        }
-        (grids, changed)
-    }
-
-    /// Sizes the pages for `tile_slots` blocks of `stacks` colour and
-    /// slope slots ([`atlas_grid`]); each new page copies the kept slots.
-    /// The tile slots in `kept` carry their texels into new pages, those
-    /// past the new end moved to free slots; returns the moves (from, to),
-    /// or `None` when the pages stay. A change of stacks blanks every slot
-    /// (a new [`DrapeLayout::generation`]). Pages that hold the slots
-    /// stay unless `may_shrink`, which a map at rest passes. Fails when
-    /// the slots exceed the device's texture size ([`room`]), or when the
-    /// device refuses a page, which leaves none: the next reserve makes
-    /// them anew, smaller.
+    /// Makes pages of `tile_slots` blocks of `stacks` colour and slope
+    /// slots, unless those held are: blank ones, a new
+    /// [`DrapeLayout::generation`]. Whether it made them. Fails past the
+    /// device's [`room`], or when the device refuses a page, which leaves
+    /// none: the next reserve makes them anew, smaller.
     pub(crate) fn reserve(
         &mut self,
         gpu: &mut dyn Gpu,
-        (tile_slots, kept): (u32, &[u32]),
-        (stacks, may_shrink): ([u32; 2], bool),
+        (tile_slots, stacks): (u32, [u32; 2]),
         downsampler: &mut crate::downsample::Downsampler,
-    ) -> Result<Option<Vec<(u32, u32)>>, DrapeFull> {
+    ) -> Result<bool, DrapeFull> {
         let state = self.layout_state;
-        if tile_slots > room(gpu, stacks) {
-            return Err(DrapeFull::Room);
+        let held = (state.stacks, state.tile_slots) == (stacks, tile_slots);
+        if held && self.atlas[0].is_some() {
+            return Ok(false);
         }
-        let alloc = allocated(stacks);
-        let same = self.atlas[0].is_some() && state.stacks == stacks;
-        let (grids, changed) = self.grids(gpu, tile_slots, stacks, may_shrink);
-        if !changed {
-            return Ok(None);
-        }
+        let grids = (tile_slots <= room(gpu, stacks))
+            .then(|| page_grids(gpu, tile_slots, stacks))
+            .flatten()
+            .ok_or(DrapeFull::Room)?;
         let before = gpu.counters();
-        let layout = DrapeLayout {
-            stacks,
-            per_layer: grids.map(|g| g.map_or(1, |(per_layer, ..)| per_layer)),
-            columns: grids.map(|g| g.map_or(1, |(_, columns, _)| columns)),
-            strides: grids.map(|g| g.map_or(0, |(k, c, r)| c * r / k)),
-            tile_slots: (grids.iter().flatten())
-                .map(|(k, c, r)| c * r / k)
-                .min()
-                .expect("a colour page"),
-            generation: state.generation + u64::from(!same),
-        };
-        // Kept slots past the new end move to the lowest free ones.
-        let mut free = (0..layout.tile_slots).filter(|t| !kept.contains(t));
-        let moves: Vec<(u32, u32)> = (kept.iter().filter(|&&t| t >= layout.tile_slots))
-            .map(|&t| (t, free.next().expect("room for every kept slot")))
-            .collect();
-        let to = |t: u32| moves.iter().find(|m| m.0 == t).map_or(t, |m| m.1);
-        for page in 0..2 {
-            let old = self.atlas[page].take();
-            let Some(grid) = grids[page] else {
-                old.release(gpu);
+        self.release_atlas(gpu);
+        self.pending.clear();
+        self.forget_group(gpu);
+        let alloc = allocated(stacks);
+        for (page, grid) in grids.into_iter().enumerate() {
+            let Some((columns, rows)) = grid else {
                 continue;
             };
-            let old = match old {
-                // Its grid and slots stay.
-                Some(old)
-                    if same
-                        && (state.per_layer[page], old.grid()) == (grid.0, (grid.1, grid.2))
-                        && moves.is_empty() =>
-                {
-                    self.atlas[page] = Some(old);
-                    continue;
-                }
-                Some(old) if same => Some(old),
-                other => {
-                    other.release(gpu);
-                    None
-                }
-            };
-            let (per_layer, columns, rows) = grid;
             let made = Atlas::new(
                 gpu,
-                (columns, rows, alloc[page].div_ceil(per_layer)),
+                (columns, rows, alloc[page]),
                 PAGE_PX[page],
                 self.clear_layout,
                 downsampler,
             );
-            let atlas = match made {
-                Ok(atlas) => atlas,
+            match made {
+                Ok(atlas) => self.atlas[page] = Some(atlas),
                 Err(bytes) => {
-                    old.release(gpu);
                     self.release_atlas(gpu);
-                    self.pending.clear();
-                    self.forget_group(gpu);
                     return Err(DrapeFull::Refused(bytes));
                 }
-            };
-            if let Some(old) = old {
-                let px = PAGE_PX[page];
-                let first = if page == 0 { 0 } else { stacks[0] };
-                let copies = (kept.iter())
-                    .flat_map(|&t| (first..first + stacks[page]).map(move |s| (t, s)))
-                    .map(|(t, s)| {
-                        let ([x0, y0], [x1, y1]) = (state.corner(t, s), layout.corner(to(t), s));
-                        orb_hal::TextureCopy {
-                            from: [x0, y0, state.layer(s)],
-                            to: [x1, y1, layout.layer(s)],
-                            size: [px, px, 1],
-                        }
-                    })
-                    .collect();
-                gpu.submit(&[Pass::CopyTexture {
-                    source: old.texture,
-                    destination: atlas.texture,
-                    copies,
-                }]);
-                old.release(gpu);
             }
-            self.atlas[page] = Some(atlas);
         }
-        self.layout_state = layout;
+        self.layout_state = DrapeLayout {
+            stacks,
+            columns: grids.map(|g| g.map_or(1, |(columns, _)| columns)),
+            tile_slots,
+            generation: state.generation + 1,
+        };
         // Terrain tiles find their slots by these from this frame on.
         self.write_layout(gpu);
-        self.pending.clear();
-        self.forget_group(gpu);
         self.resized.count(gpu, &before);
-        Ok(Some(moves))
+        Ok(true)
     }
 
     /// Writes the layout's words of the terrain's values.
     fn write_layout(&self, gpu: &mut dyn Gpu) {
         let state = self.layout_state;
         let words = [
-            (params::PER_LAYER, state.per_layer[0]),
-            (params::STRIDE, state.strides[0]),
             (params::COLUMNS, state.columns[0]),
-            (params::SLOPE_PER_LAYER, state.per_layer[1]),
-            (params::SLOPE_STRIDE, state.strides[1]),
             (params::SLOPE_COLUMNS, state.columns[1]),
         ];
         for (word, value) in words {
@@ -972,8 +821,8 @@ impl Terrain {
             let stacks =
                 (redrawn.iter().map(|&s| u32::from(s))).filter(|&s| s < layout.stack_count());
             self.pending.extend(stacks.map(|stack| {
-                let (page, slot) = layout.slot(tile, stack);
-                (page, stack, slot, layout.slot_px(stack) >> shrink)
+                let page = layout.page(stack).0;
+                (page, stack, tile, layout.slot_px(stack) >> shrink)
             }));
         }
     }
@@ -1048,11 +897,7 @@ impl Terrain {
             .f(params::EXAGGERATION, &[paint.exaggeration]);
         b.f(params::DEM_DIM, &[dim as f32])
             .f(params::SKIRT, &[paint.skirt]);
-        b.u(params::PER_LAYER, &[state.per_layer[0]])
-            .u(params::STRIDE, &[state.strides[0]])
-            .u(params::COLUMNS, &[state.columns[0]]);
-        b.u(params::SLOPE_PER_LAYER, &[state.per_layer[1]])
-            .u(params::SLOPE_STRIDE, &[state.strides[1]])
+        b.u(params::COLUMNS, &[state.columns[0]])
             .u(params::SLOPE_COLUMNS, &[state.columns[1]]);
         b.f(params::SLOT_PX, &[DRAPE_SLOT_PX as f32])
             .f(params::SLOPE_PX, &[SLOPE_SLOT_PX as f32])
@@ -1755,55 +1600,32 @@ mod tests {
     }
 
     #[test]
-    fn atlas_grids_are_powers_of_two_with_room_to_change() {
-        assert_eq!(atlas_grid(0, None, 1, 16), Some((1, 1, 1)));
-        assert_eq!(atlas_grid(24, None, 1, 16), Some((1, 8, 4)));
-        assert_eq!(atlas_grid(33, None, 1, 16), Some((1, 8, 8)));
-        // Kept while it holds them and they fill over a quarter of it.
-        assert_eq!(atlas_grid(32, Some((1, 8, 4)), 1, 16), None);
-        assert_eq!(atlas_grid(9, Some((1, 8, 4)), 1, 16), None);
-        assert_eq!(atlas_grid(33, Some((1, 8, 4)), 1, 16), Some((1, 8, 8)));
-        // Shrunk to twice the fewest, half full.
-        assert_eq!(atlas_grid(8, Some((1, 8, 4)), 1, 16), Some((1, 4, 4)));
+    fn layers_take_as_many_slots_as_their_tiles_but_for_part_of_a_row() {
+        assert_eq!(layer_grid(0, 8), Some((1, 1)));
+        assert_eq!(layer_grid(24, 8), Some((4, 6)));
+        assert_eq!(layer_grid(30, 8), Some((5, 6)));
+        assert_eq!(layer_grid(31, 8), Some((4, 8)));
+        assert_eq!(layer_grid(64, 8), Some((8, 8)));
         // Never past the device's side.
-        assert_eq!(atlas_grid(64, None, 1, 8), Some((1, 8, 8)));
+        assert_eq!(layer_grid(65, 8), None);
+        assert_eq!(layer_grid(17, 4), None);
     }
 
     #[test]
-    fn stacks_share_a_layer_while_they_fit_it() {
-        // Two stacks of 20 tiles: one layer of 64 slots, 32 a stack.
-        assert_eq!(atlas_grid(20, None, 2, 8), Some((2, 8, 8)));
-        // Of 33: a layer each, a stack holding a whole layer's 64.
-        assert_eq!(atlas_grid(33, None, 2, 8), Some((1, 8, 8)));
-        assert_eq!(atlas_grid(64, None, 2, 8), Some((1, 8, 8)));
-        // Kept on falling back to 20, which fill over a quarter of 64.
-        assert_eq!(atlas_grid(20, Some((1, 8, 8)), 2, 8), None);
-        // Three stacks of 20: two a layer.
-        assert_eq!(atlas_grid(20, None, 3, 8), Some((3, 8, 8)));
-        assert_eq!(atlas_grid(22, None, 3, 8), Some((2, 8, 8)));
-    }
-
-    #[test]
-    fn slots_fill_rows_of_the_atlas() {
+    fn a_tile_slots_stacks_lie_at_one_place_of_their_layers() {
         let layout = DrapeLayout {
             stacks: [3, 1],
-            per_layer: [2, 1],
-            columns: [8, 4],
-            strides: [16, 16],
-            tile_slots: 16,
+            columns: [5, 5],
+            tile_slots: 30,
             generation: 1,
         };
-        // Each stack's slots side by side: stack 1 after stack 0's 16.
         assert_eq!(layout.corner(1, 0), [DRAPE_SLOT_PX, 0]);
-        assert_eq!(layout.corner(0, 1), [0, 2 * DRAPE_SLOT_PX]);
-        assert_eq!(layout.corner(9, 0), [DRAPE_SLOT_PX, DRAPE_SLOT_PX]);
-        assert_eq!((layout.layer(0), layout.layer(1)), (0, 0));
-        // Stack 2 starts the next layer.
-        assert_eq!(layout.layer(2), 1);
         assert_eq!(layout.corner(1, 2), [DRAPE_SLOT_PX, 0]);
+        assert_eq!(layout.corner(7, 0), [2 * DRAPE_SLOT_PX, DRAPE_SLOT_PX]);
+        assert_eq!((layout.layer(0), layout.layer(2)), (0, 2));
         // Slopes on their own page, at half the texels a side.
         assert_eq!(layout.page(3), (1, 0));
         assert_eq!(layout.corner(1, 3), [SLOPE_SLOT_PX, 0]);
-        assert_eq!(layout.corner(5, 3), [SLOPE_SLOT_PX, SLOPE_SLOT_PX]);
+        assert_eq!(layout.corner(6, 3), [SLOPE_SLOT_PX, SLOPE_SLOT_PX]);
     }
 }

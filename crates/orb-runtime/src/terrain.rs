@@ -110,13 +110,15 @@ fn bilinear(dim: u32, uv: DVec2, texel: impl Fn(i64, i64) -> f32) -> f64 {
     top + (bottom - top) * f.y
 }
 
-/// A terrain tile's drape slots, the side they were drawn at and the
-/// content each stack's was drawn with.
+/// A terrain tile's drape slots, the side they were drawn at, the content
+/// each stack's was drawn with (none while blank) and when.
 #[derive(Debug)]
 struct Slot {
     index: u32,
     shrink: u8,
     content: Vec<u64>,
+    /// The plan that drew it ([`Terrain::plan`]).
+    drawn: u64,
 }
 
 /// A tile slot to redraw.
@@ -190,6 +192,8 @@ pub(crate) struct Terrain {
     pub(crate) tiles: Vec<CoveredTile>,
     slots: FxHashMap<CoveredTile, Slot>,
     generation: u64,
+    /// Drape plans made.
+    plans: u64,
     elevation: Arc<TerrainElevation>,
     /// The DEM tiles this camera's cover reads, sorted: the elevations hold
     /// these alone (and, while one loads, its nearest ready ancestor), not
@@ -207,9 +211,6 @@ pub(crate) struct Terrain {
     /// last taken.
     stale: bool,
     pub(crate) revision: u64,
-    /// The cover's tiles before it was coarsened to the drape atlas's
-    /// room: more than the atlas holds asks it to grow at rest.
-    pub(crate) covered: usize,
     /// What DEM tiles found no layer for while the page couldn't grow:
     /// they load again once it grows at rest.
     pub(crate) room: orb_render::Room,
@@ -245,13 +246,13 @@ impl Terrain {
             tiles: Vec::new(),
             slots: FxHashMap::default(),
             generation: 0,
+            plans: 0,
             elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
             wanted: Vec::new(),
             culling: Vec::new(),
             padded: FxHashMap::default(),
             stale: true,
             revision: 0,
-            covered: 0,
             room: Default::default(),
         }
     }
@@ -329,7 +330,6 @@ impl Terrain {
             .collect();
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         let eye = view.eye().truncate();
-        self.covered = tiles.len();
         coarsen(&mut tiles, budget, |t| {
             let offset = DVec2::new(f64::from(t.wrap) * period, 0.0) - view.camera_world();
             let rel = tms.tile_bounds(t.index).translated(offset);
@@ -637,12 +637,10 @@ impl Terrain {
         )
     }
 
-    /// Frees the slots of tiles this frame doesn't cover; returns the
-    /// tile slots kept, which the atlas carries over.
-    pub(crate) fn kept_slots(&mut self) -> Vec<u32> {
+    /// Frees the slots of tiles this frame doesn't cover.
+    pub(crate) fn release_slots(&mut self) {
         let keep: FxHashSet<CoveredTile> = self.tiles.iter().copied().collect();
         self.slots.retain(|tile, _| keep.contains(tile));
-        self.slots.values().map(|s| s.index).collect()
     }
 
     /// Whether every tile of the cover has the slot of its place in it,
@@ -654,29 +652,32 @@ impl Terrain {
     }
 
     /// This frame's terrain tiles for the renderer, with slots assigned
-    /// from `layout` after the atlas's `moves`, and which tile slots'
-    /// stacks to redraw: those whose draped content, as `content` hashes
-    /// it per stack, changed, and every stack of a tile whose slots' side
-    /// in `view` did ([`slot_shrink`]). On a globe, `globe` places a tile
-    /// on the sphere. While the camera moves, a tile keeps its slot and a
-    /// new one takes a free one; `at_rest`, each takes the slot of its
-    /// place in the cover, redrawn if it moved there.
+    /// from `layout`, the tile slots' stacks it redraws, and whether it
+    /// left slots stale for the frames after. A stack is stale when its
+    /// draped content, as `content` hashes it per stack, changed, and
+    /// every stack of a tile whose slots' side in `view` did
+    /// ([`slot_shrink`]). Blank slots all redraw; stale ones within
+    /// `texels` a frame (none for all of them), the longest stale first,
+    /// then those that show largest, the rest drawn as they were, at the
+    /// side they were drawn at, until a frame redraws them: so that what a
+    /// frame redraws follows the screen, not how fast the zoom crosses the
+    /// drape's steps. Once none is stale, each holds what a fresh map's
+    /// does. On a globe, `globe` places a tile on the sphere. While the
+    /// camera moves, a tile keeps its slot and a new one takes a free one;
+    /// `at_rest`, each takes the slot of its place in the cover, redrawn
+    /// if it moved there.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         view: &View,
-        (layout, moves, at_rest): (DrapeLayout, &[(u32, u32)], bool),
+        (layout, at_rest, texels): (DrapeLayout, bool, Option<u64>),
         content: &dyn Fn(CoveredTile) -> Vec<u64>,
         globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
-    ) -> (Vec<TerrainTile>, Vec<Redraw>) {
+    ) -> (Vec<TerrainTile>, Vec<Redraw>, bool) {
+        self.plans += 1;
         if layout.generation != self.generation {
             self.generation = layout.generation;
             self.slots.clear();
-        }
-        for slot in self.slots.values_mut() {
-            if let Some(&(_, to)) = moves.iter().find(|m| m.0 == slot.index) {
-                slot.index = to;
-            }
         }
         // The same tile drapes and samples a step apart at a few pixels in
         // another slot (where it lies in the atlas, not what the slots
@@ -694,56 +695,63 @@ impl Terrain {
         }
         let used: FxHashSet<u32> = self.slots.values().map(|s| s.index).collect();
         let mut free = (0..layout.tile_slots).filter(|t| !used.contains(t));
-        let period = tms.projection().wrap_period().unwrap_or(0.0);
-        let mut out = Vec::with_capacity(self.tiles.len());
-        let mut redraw = Vec::new();
+        // Each tile's slot, and what of it is stale: (place, shrink,
+        // content, stacks), blank ones first.
+        let mut stale = Vec::new();
         for (place, &tile) in (0u32..).zip(&self.tiles) {
             let content = content(tile);
             let shrink = slot_shrink(view, tms, tile);
-            let every = || (0..content.len() as u8).collect();
-            let slot = match self.slots.get_mut(&tile) {
-                Some(slot) => {
-                    let stacks: Vec<u8> = if slot.shrink == shrink {
-                        (0..content.len())
-                            .filter(|&s| slot.content.get(s) != content.get(s))
-                            .map(|s| s as u8)
-                            .collect()
-                    } else {
-                        every()
-                    };
-                    if !stacks.is_empty() {
-                        redraw.push(Redraw {
-                            tile,
-                            slot: slot.index,
-                            shrink,
-                            stacks,
-                        });
-                        slot.shrink = shrink;
-                        slot.content = content;
-                    }
-                    slot.index
-                }
-                None => {
-                    let index = if at_rest {
-                        place
-                    } else {
-                        free.next().expect("the atlas holds every tile")
-                    };
-                    redraw.push(Redraw {
-                        tile,
-                        slot: index,
-                        shrink,
-                        stacks: every(),
-                    });
-                    let slot = Slot {
-                        index,
-                        shrink,
-                        content,
-                    };
-                    self.slots.insert(tile, slot);
-                    index
-                }
-            };
+            let slot = self.slots.entry(tile).or_insert_with(|| Slot {
+                index: match at_rest {
+                    true => place,
+                    false => free.next().expect("the atlas holds every tile"),
+                },
+                shrink,
+                content: Vec::new(),
+                drawn: 0,
+            });
+            let stacks: Vec<u8> = (0..content.len())
+                .filter(|&s| slot.shrink != shrink || slot.content.get(s) != content.get(s))
+                .map(|s| s as u8)
+                .collect();
+            if !stacks.is_empty() {
+                stale.push((place, shrink, content, stacks));
+            }
+        }
+        let blank = |tile: CoveredTile| self.slots[&tile].content.is_empty();
+        let order = |&(place, shrink, ..): &(u32, u8, Vec<u64>, Vec<u8>)| {
+            let tile = self.tiles[place as usize];
+            (!blank(tile), self.slots[&tile].drawn, shrink, place)
+        };
+        stale.sort_by_cached_key(order);
+        let mut spent = 0;
+        let mut redraw = Vec::new();
+        let mut deferred = false;
+        for (place, shrink, content, stacks) in stale {
+            let tile = self.tiles[place as usize];
+            let slot = self.slots.get_mut(&tile).expect("given above");
+            let cost: u64 = (stacks.iter())
+                .map(|&s| u64::from(layout.slot_px(u32::from(s)) >> shrink).pow(2))
+                .sum();
+            if !slot.content.is_empty() && texels.is_some_and(|t| spent >= t) {
+                deferred = true;
+                continue;
+            }
+            spent += cost;
+            redraw.push(Redraw {
+                tile,
+                slot: slot.index,
+                shrink,
+                stacks,
+            });
+            slot.shrink = shrink;
+            slot.content = content;
+            slot.drawn = self.plans;
+        }
+        let period = tms.projection().wrap_period().unwrap_or(0.0);
+        let mut out = Vec::with_capacity(self.tiles.len());
+        for tile in &self.tiles {
+            let slot = &self.slots[tile];
             let bounds = tms.tile_bounds(tile.index);
             let origin = DVec2::new(bounds.min.x + f64::from(tile.wrap) * period, bounds.max.y)
                 - view.camera_world();
@@ -759,13 +767,13 @@ impl Terrain {
                 origin: [origin.x as f32, origin.y as f32],
                 scale: (tms.tile_span(tile.index.z) / f64::from(orb_render::TERRAIN_EXTENT)) as f32,
                 dem,
-                slot,
-                shrink,
+                slot: slot.index,
+                shrink: slot.shrink,
                 globe: globe(tile.index),
                 latitudes: orb_render::tile_latitudes(tile.index),
             });
         }
-        (out, redraw)
+        (out, redraw, deferred)
     }
 }
 
@@ -1673,9 +1681,7 @@ mod tests {
         let tms = tms();
         let layout = DrapeLayout {
             stacks: [2, 1],
-            per_layer: [2, 1],
-            columns: [8, 4],
-            strides: [4, 4],
+            columns: [2, 2],
             tile_slots: 4,
             generation: 1,
         };
@@ -1748,8 +1754,8 @@ mod tests {
             (rows[0].origin, rows[0].scale)
         );
         assert_eq!(rows[1].target, PlacementTarget::Drape(1));
-        // Stack 1's slots follow stack 0's 4 in its layer: slot 5.
-        assert_eq!(rows[1].origin[0], 5.5 * px);
+        // Stack 1's slot is at the same place of its own layer.
+        assert_eq!(rows[1].origin, rows[0].origin);
         // Stack 2 holds slopes: slot 1 of the slope page, half the texels.
         let slope = px / 2.0;
         assert!(near(rows[2].origin, [1.5 * slope, -0.5 * slope]));

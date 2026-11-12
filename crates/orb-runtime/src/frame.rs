@@ -611,6 +611,10 @@ impl Map {
         view: &View,
     ) -> Option<DrapePlan> {
         let time = self.shader_time();
+        let drape_tiles = self.drape_tiles();
+        // A camera a host jumps frame by frame moves as one under input.
+        let texels = (self.mode == RenderMode::Continuous)
+            .then(|| self.frame_budget.at(self.holds_memory()).drape_texels);
         let Some(style) = &mut self.style else {
             return None;
         };
@@ -620,19 +624,22 @@ impl Map {
         }
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
-        let kept = terrain.kept_slots();
-        let tiles = terrain.tiles.len() as u32;
-        // At rest the pages fit the view: room for more tiles than it has,
-        // or shrunk to them (`resize_now`), unless a pool grew this frame;
-        // the tiles take the slots of their places in the cover in any
-        // frame at rest, as moving them allocates nothing.
+        terrain.release_slots();
+        // A continuous map's pages hold the tiles its view's cover is
+        // coarsened to ([`DrapeTiles`]), made anew only where memory may
+        // move, and for more where the stacks changed after the cover (the
+        // terrain came on); a still map's, exactly its cover's. The tiles
+        // take the slots of their places in the cover in any frame at
+        // rest, as moving them allocates nothing.
         let still = self.mode != RenderMode::Continuous;
-        let resize = self.resize_now && !self.resize_grew;
         let at_rest = self.resize_now || still;
-        let wanted = resize.then(|| renderer.drape_at_rest(gpu, tiles)).flatten();
-        let slots = (wanted.unwrap_or(tiles).max(tiles), &kept[..]);
-        let (layout, moves) = match renderer.reserve_drape(gpu, slots, resize || still) {
-            Ok(reserved) => reserved,
+        let tiles = terrain.tiles.len() as u32;
+        let slots = match still {
+            true => tiles,
+            false => drape_tiles.of(gpu, renderer).max(tiles),
+        };
+        let layout = match renderer.reserve_drape(gpu, slots.max(1)) {
+            Ok(layout) => layout,
             Err(full) => {
                 // The cover fits the atlas's room (`Terrain::update`)
                 // unless its stacks leave none for the view's tiles, or the
@@ -773,8 +780,8 @@ impl Map {
             })
         };
         let terrain = style.terrain.as_mut().expect("checked above");
-        let slots = (layout, &moves[..], at_rest);
-        let (tiles, redraw) = terrain.plan(&surface, view, slots, &content, &mut globe);
+        let slots = (layout, at_rest, texels);
+        let (tiles, redraw, deferred) = terrain.plan(&surface, view, slots, &content, &mut globe);
         renderer.set_terrain_tiles(gpu, &tiles);
         let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
             .map(|r| (r.slot, r.shrink, &r.stacks[..]))
@@ -787,6 +794,7 @@ impl Map {
             surface,
             layout,
             redraw,
+            deferred,
             reaches,
             zoom,
             reach_px,
@@ -941,6 +949,8 @@ pub(crate) struct DrapePlan {
     pub(crate) surface: TileMatrixSet,
     pub(crate) layout: orb_render::DrapeLayout,
     pub(crate) redraw: Vec<crate::terrain::Redraw>,
+    /// Whether slots stay stale for frames after this one to redraw.
+    pub(crate) deferred: bool,
     /// Each redrawn terrain tile's reach.
     reaches: Vec<crate::terrain::Reach>,
     /// The zoom the slots are drawn at ([`drape_zoom`]).

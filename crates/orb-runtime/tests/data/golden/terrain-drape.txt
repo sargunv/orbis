@@ -12,9 +12,14 @@ submit 0
     colour texture "view of texture \"drape atlas\"#0"#0 resolve None Load Store
     pipeline render "drape"#0
     group 0 group "drape clear"#0
-    draw 0..4 0..16
+    draw 0..4 0..8
     scissor
     bundles [bundle "drape"#0]
+  render pass "drape"
+    colour texture "view of texture \"drape atlas\"#0"#1 resolve None Load Store
+    pipeline render "drape"#0
+    group 0 group "drape clear"#0
+    draw 0..4 8..16
     scissor
     bundles [bundle "drape"#1]
   compute pass "drape mips"
@@ -394,6 +399,7 @@ bundle "drape"#0: [Rgba8Unorm] depth None samples 1
     group 0 group "scene"#0
     group 1 group "drape node"#44
     draw indexed indirect buffer "draw args"#0 at 1760
+texture "view of texture \"drape atlas\"#0"#1: layer 1
 group "drape node"#45: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 31744 size Some(512)
 group "drape node"#46: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 32256 size Some(512)
 group "drape node"#47: layout layout "node"#0; 0 buffer "drape node uniforms"#0 at 33792 size Some(512)
@@ -474,28 +480,28 @@ bundle "drape"#1: [Rgba8Unorm] depth None samples 1
 layout "downsample"#0: 0 ShaderStages(COMPUTE) Texture { filterable: false, dimension: D2Array }; 1 ShaderStages(COMPUTE) StorageTexture { format: Rgba8Unorm, dimension: D2Array }; 2 ShaderStages(COMPUTE) Storage { read_only: true }; 3 ShaderStages(COMPUTE) Uniform; 
 module "downsample"#0: wgsl
 compute "downsample"#0: layouts [layout "downsample"#0]; module "downsample"#0 downsample []; 
-texture "view of texture \"drape atlas\"#0"#1: levels 0..1
-texture "view of texture \"drape atlas\"#0"#2: levels 1..2
+texture "view of texture \"drape atlas\"#0"#2: levels 0..1
+texture "view of texture \"drape atlas\"#0"#3: levels 1..2
 buffer "downsample levels"#0: BufferUsages(COPY_DST | UNIFORM)
-group "downsample"#0: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#1 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#2 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 256 size Some(16)
-texture "view of texture \"drape atlas\"#0"#3: levels 2..3
-group "downsample"#1: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#2 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#3 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 512 size Some(16)
-texture "view of texture \"drape atlas\"#0"#4: levels 3..4
-group "downsample"#2: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#3 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#4 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 768 size Some(16)
-texture "view of texture \"drape atlas\"#0"#5: levels 4..5
-group "downsample"#3: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#4 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#5 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 1024 size Some(16)
-texture "view of texture \"drape atlas\"#0"#6: levels 5..6
-group "downsample"#4: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#5 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#6 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 1280 size Some(16)
-texture "view of texture \"drape atlas\"#0"#7: levels 6..7
-group "downsample"#5: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#6 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#7 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 1536 size Some(16)
-texture "view of texture \"drape atlas\"#0"#8: levels 7..8
-group "downsample"#6: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#7 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#8 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 1792 size Some(16)
-texture "view of texture \"drape atlas\"#0"#9: levels 8..9
-group "downsample"#7: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#8 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#9 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 2048 size Some(16)
-texture "view of texture \"drape atlas\"#0"#10: levels 9..10
-group "downsample"#8: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#9 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#10 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 2304 size Some(16)
-texture "view of texture \"drape atlas\"#0"#11: levels 10..11
-group "downsample"#9: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#10 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#11 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 2560 size Some(16)
+group "downsample"#0: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#2 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#3 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 256 size Some(16)
+texture "view of texture \"drape atlas\"#0"#4: levels 2..3
+group "downsample"#1: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#3 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#4 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 512 size Some(16)
+texture "view of texture \"drape atlas\"#0"#5: levels 3..4
+group "downsample"#2: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#4 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#5 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 768 size Some(16)
+texture "view of texture \"drape atlas\"#0"#6: levels 4..5
+group "downsample"#3: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#5 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#6 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 1024 size Some(16)
+texture "view of texture \"drape atlas\"#0"#7: levels 5..6
+group "downsample"#4: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#6 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#7 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 1280 size Some(16)
+texture "view of texture \"drape atlas\"#0"#8: levels 6..7
+group "downsample"#5: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#7 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#8 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 1536 size Some(16)
+texture "view of texture \"drape atlas\"#0"#9: levels 7..8
+group "downsample"#6: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#8 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#9 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 1792 size Some(16)
+texture "view of texture \"drape atlas\"#0"#10: levels 8..9
+group "downsample"#7: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#9 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#10 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 2048 size Some(16)
+texture "view of texture \"drape atlas\"#0"#11: levels 9..10
+group "downsample"#8: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#10 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#11 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 2304 size Some(16)
+texture "view of texture \"drape atlas\"#0"#12: levels 10..11
+group "downsample"#9: layout layout "downsample"#0; 0 texture "view of texture \"drape atlas\"#0"#11 as D2Array; 1 texture "view of texture \"drape atlas\"#0"#12 as D2Array; 2 buffer "drape slots"#0 at 0 size None; 3 buffer "downsample levels"#0 at 2560 size Some(16)
 texture "drape atlas"#1: Rgba8Unorm D2Array samples 1 TextureUsages(COPY_SRC | COPY_DST | TEXTURE_BINDING | STORAGE_BINDING | RENDER_ATTACHMENT)
 texture "view of texture \"drape atlas\"#1"#0: layer 0
 buffer "drape atlas size"#1: BufferUsages(COPY_DST | UNIFORM)

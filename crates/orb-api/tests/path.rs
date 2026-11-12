@@ -672,6 +672,68 @@ fn a_zoom_within_a_drape_step_redraws_no_slots() {
     assert!(slots(12.09) > 0, "z12.09");
 }
 
+/// A zoom that crosses a drape step every frame, as a fast wheel zoom
+/// does, redraws no more slots a frame than its budget holds (four whole
+/// colour slots on a desktop), the slots it leaves stale drawn as they
+/// were meanwhile, the longest stale first; at rest the map draws what a
+/// fresh one does.
+#[test]
+fn a_zoom_across_a_drape_step_each_frame_redraws_within_its_budget() {
+    let (lon, lat) = (139.76, 35.68);
+    let (flat, _dem) = dem("flat", (139.2, 35.2, 140.3, 36.2), 11, |_, _| 0.0);
+    let lines: Vec<String> = (0..9)
+        .map(|i| {
+            let y = lat - 0.08 + 0.02 * f64::from(i);
+            format!("[[{}, {y}], [{}, {y}]]", lon - 0.3, lon + 0.3)
+        })
+        .collect();
+    let style = format!(
+        r##"{{"version": 8,
+        "sources": {{{flat}
+          "lines": {{"type": "geojson", "data": {{"type": "MultiLineString",
+            "coordinates": [{lines}]}}}}
+        }},
+        "terrain": {{"source": "flat", "exaggeration": 1}},
+        "layers": [
+          {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+          {{"id": "lines", "type": "line", "source": "lines",
+              "paint": {{"line-color": "#000000", "line-width": 6}}}}
+        ]}}"##,
+        lines = lines.join(", "),
+    );
+    // Straight down, a cover of a dozen tiles that only leave as it zooms
+    // in: none is blank.
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 3 * WIDTH, 3 * HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, options());
+    map.set_style_json(&style).unwrap();
+    let at = |zoom: f64| camera((Geodetic::new(lon, lat), zoom, 0.0, 0.0));
+    let end = 12.1 + 20.0 / 32.0;
+    map.jump_to(&at(12.1));
+    common::settle(&mut map, &mut target);
+    let (mut most, mut redrawn) = (0, 0);
+    for step in 1..=20 {
+        map.jump_to(&at(12.1 + f64::from(step) / 32.0));
+        let report = map.render(&mut target, 0.0).unwrap().unwrap();
+        most = most.max(report.frame.drape_slots);
+        redrawn += report.frame.drape_slots;
+    }
+    common::settle(&mut map, &mut target);
+    let gestured = target.read_pixels().unwrap();
+    assert!(most <= 4, "{most} slots redrawn in a frame");
+    assert!(redrawn >= 20, "{redrawn} slots redrawn over the zoom");
+    let (fresh, _) = fresh_at(
+        &runtime,
+        &mut target,
+        &style,
+        (Geodetic::new(lon, lat), end, 0.0, 0.0),
+    );
+    let dark = |pixels: &[u8]| pixels.chunks(4).filter(|p| p[0] < 128).count();
+    assert!(dark(&fresh) > 0, "the lines drew nothing");
+    let differ = (gestured.chunks(4).zip(fresh.chunks(4))).filter(|(a, b)| a != b);
+    assert_eq!(differ.count(), 0, "the zoomed map differs from a fresh one");
+}
+
 /// A per-feature line width the zoom blends, which the drape pass works
 /// out on the GPU, draws into a slot at its drape step too: a map zoomed
 /// within the step, which redraws no slot, draws what a fresh map there

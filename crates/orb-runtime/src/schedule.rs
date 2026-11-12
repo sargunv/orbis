@@ -27,6 +27,11 @@ pub struct Budget {
     pub ms: f64,
     /// Bytes of tile data uploaded.
     pub bytes: u64,
+    /// Drape slot texels redrawn beyond the blank ones, which a frame
+    /// draws whatever they take: what slots a zoom step or an arrival
+    /// left stale redraw over the frames after, the longest stale first
+    /// ([`Terrain::plan`](crate::terrain::Terrain::plan)).
+    pub drape_texels: u64,
 }
 
 /// What the current frame has spent of its [`Budget`]'s bytes: its time

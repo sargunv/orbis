@@ -56,15 +56,18 @@ impl FrameBudget {
     /// Liberty's views took 13 % longer to their first idle in Chromium
     /// than with as long as arrivals took). What a frame applies costs it
     /// again in the cull's candidates and drape slots, so the bytes bound
-    /// it as much as the time.
+    /// it as much as the time. Drape slots: four whole colour slots while
+    /// moving, sixteen at rest (an M6 redraws one in about 0.4 ms).
     pub const DESKTOP: Self = Self {
         moving: crate::Budget {
             ms: 4.0,
             bytes: 4 << 20,
+            drape_texels: 4 << 20,
         },
         resting: crate::Budget {
             ms: 12.0,
             bytes: 16 << 20,
+            drape_texels: 16 << 20,
         },
     };
     /// A phone's or a tablet's.
@@ -72,10 +75,12 @@ impl FrameBudget {
         moving: crate::Budget {
             ms: 2.0,
             bytes: 1 << 20,
+            drape_texels: 1 << 20,
         },
         resting: crate::Budget {
             ms: 8.0,
             bytes: 4 << 20,
+            drape_texels: 4 << 20,
         },
     };
 
@@ -243,6 +248,27 @@ impl FrameTimes {
         self.drape += t.drape;
         self.place += t.place;
         self.placement += t.placement;
+    }
+}
+
+/// How many terrain tiles a frame's drape pages hold
+/// ([`Map::drape_tiles`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DrapeTiles {
+    budget: u64,
+    still: bool,
+    holds: bool,
+}
+
+impl DrapeTiles {
+    /// The tiles, with `renderer`'s stacks.
+    pub(crate) fn of(self, gpu: &dyn Gpu, renderer: &Renderer) -> u32 {
+        let room = renderer.drape_room(gpu);
+        match renderer.drape_held() {
+            _ if self.still => room,
+            Some(held) if self.holds => held.min(room),
+            _ => renderer.drape_tiles(gpu, self.budget),
+        }
     }
 }
 
@@ -2155,7 +2181,9 @@ impl Map {
         };
         let placing = clock.now();
         times.drape = micros(draping, placing);
-        let redrew = drape.as_ref().is_some_and(|d| !d.redraw.is_empty());
+        let redrew = drape
+            .as_ref()
+            .is_some_and(|d| !d.redraw.is_empty() || d.deferred);
         if drawing {
             self.place_background(
                 gpu,
@@ -2256,15 +2284,12 @@ impl Map {
             report.idle && !moving && !held && !holding && self.mode == RenderMode::Continuous;
         // What waits for room a move at rest makes asks for it whether or
         // not the map is idle, which it isn't until that room is made.
-        // So does a terrain cover coarsened to drape pages that couldn't
-        // grow while the camera moved.
-        let coarsened = (self.style.as_ref().and_then(|s| s.terrain.as_ref())).is_some_and(|t| {
-            t.covered > t.tiles.len() && renderer.drape_held(gpu) < renderer.drape_room(gpu)
-        });
+        // So do drape pages whose tiles changed while the camera moved
+        // (another budget, or stacks that take more bytes).
         let short = !moving
             && !held
             && !self.resizes_freely()
-            && (renderer.wants_room() || coarsened || {
+            && (renderer.wants_room() || self.drape_resizes(gpu, renderer) || {
                 let room = self.room_wanted();
                 !room.is_empty() && renderer.can_grow_into(&room)
             });
@@ -2282,7 +2307,6 @@ impl Map {
                 // What the budget leaves is summed only for something full.
                 || (renderer.wants_headroom(u64::MAX)
                     && renderer.wants_headroom(self.headroom_room(renderer)))
-                || self.drape_at_rest(gpu, renderer).is_some()
                 || self.drape_moves_at_rest(renderer))
         {
             self.resize_due = true;
@@ -2365,6 +2389,19 @@ impl Map {
         );
     }
 
+    /// The terrain tiles the drape pages hold: a still map's, all its
+    /// cover may have (its pages take what its cover does); a continuous
+    /// map's, those of its budget
+    /// ([`Renderer::drape_tiles`](orb_render::Renderer::drape_tiles)), or
+    /// while memory holds, those already made.
+    pub(crate) fn drape_tiles(&self) -> DrapeTiles {
+        DrapeTiles {
+            budget: self.budget,
+            still: self.resizes_freely(),
+            holds: self.holds_memory(),
+        }
+    }
+
     /// What the tiles and DEM tiles waiting for room were refused: what
     /// the map's upkeep at rest grows for them.
     pub(crate) fn room_wanted(&self) -> orb_render::Room {
@@ -2389,14 +2426,17 @@ impl Map {
             .saturating_sub(Memory::of(renderer, atlas).allocated())
     }
 
-    /// The drape tile slots a map at rest reserves, when that resizes the
-    /// drape pages ([`Renderer::drape_at_rest`]).
-    fn drape_at_rest(&self, gpu: &dyn Gpu, renderer: &Renderer) -> Option<u32> {
-        let terrain = self.style.as_ref()?.terrain.as_ref()?;
-        renderer
-            .terrain_on()
-            .then(|| renderer.drape_at_rest(gpu, terrain.covered.max(terrain.tiles.len()) as u32))
-            .flatten()
+    /// Whether a frame at rest makes the drape pages anew: they hold
+    /// other tiles than the budget now gives them.
+    fn drape_resizes(&self, gpu: &dyn Gpu, renderer: &Renderer) -> bool {
+        let Some(held) = renderer.drape_held().filter(|_| renderer.terrain_on()) else {
+            return false;
+        };
+        let tiles = DrapeTiles {
+            holds: false,
+            ..self.drape_tiles()
+        };
+        tiles.of(gpu, renderer).max(1) != held
     }
 
     /// Whether the terrain's tiles take other drape slots at rest: those
@@ -3027,9 +3067,7 @@ impl Map {
         view: &View,
         report: &mut FrameReport,
     ) -> Option<orb_render::FrameTerrain> {
-        // While the camera moves (as the frame began) the cover fits the
-        // drape pages as they are; otherwise they grow for a cover of more.
-        let held = !self.resizing;
+        let drape_tiles = self.drape_tiles();
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();
         let root = self.root_frame.expect("eased before the terrain");
@@ -3123,11 +3161,7 @@ impl Map {
             }
         }
         let at = (view, self.surface.tms(), self.camera.state().target);
-        let cover_room = match held {
-            true => renderer.drape_held(gpu),
-            false => renderer.drape_room(gpu),
-        };
-        let ground = (view.world_z(skirt), cover_room);
+        let ground = (view.world_z(skirt), drape_tiles.of(gpu, renderer));
         let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, ground);
         let mut loads = Vec::new();
         for tile in requests {

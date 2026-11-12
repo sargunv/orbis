@@ -1463,72 +1463,52 @@ impl Renderer {
         terrain::room(gpu, self.drape_stacks())
     }
 
-    /// How many terrain tiles the drape atlas can hold now: its tile
-    /// slots, within its [`drape_room`](Self::drape_room), or that room
-    /// if it has no pages yet. A map whose atlas doesn't move while the
-    /// camera moves covers its terrain with these.
-    pub fn drape_held(&self, gpu: &dyn Gpu) -> u32 {
-        let room = self.drape_room(gpu);
-        match self.terrain.as_ref().map(|t| t.layout().tile_slots) {
-            Some(held) if held > 0 => held.min(room),
-            _ => room,
-        }
+    /// The bytes a terrain tile's drape slots take with this style's
+    /// stacks, mips included.
+    pub fn drape_tile_bytes(&self) -> u64 {
+        terrain::tile_bytes(self.drape_stacks())
     }
 
-    /// The tile slots a map at rest with `tiles` terrain tiles reserves,
-    /// when that resizes the drape pages: one past their room when the
-    /// tiles take more than three quarters of it (within
-    /// [`drape_room`](Self::drape_room)), so that they grow before a
-    /// gesture needs them to, or the tiles when the pages would shrink to
-    /// them. `None` when the pages stay.
-    pub fn drape_at_rest(&self, gpu: &dyn Gpu, tiles: u32) -> Option<u32> {
+    /// The terrain tiles a drape atlas within a memory `budget` holds with
+    /// this style's stacks: as many as half the budget takes, one at
+    /// least, within the [`drape_room`](Self::drape_room); a terrain's
+    /// cover is coarsened to them. Not the view's: how many tiles a
+    /// terrain covers follows its slopes and the camera's pitch more than
+    /// the viewport (a 512 × 384 view straight down onto an Alpine crest
+    /// at zoom 22 covers 38), and fixed, so that a view's tiles take the
+    /// same slots of the same pages however the camera came there. The
+    /// pools and pages size from the whole budget, as a flat style's do:
+    /// those of a 1440 × 900 view over the Alps sized from the other half
+    /// held its tiles back up to 450 ms after a move.
+    pub fn drape_tiles(&self, gpu: &dyn Gpu, budget: u64) -> u32 {
+        let tiles = budget / 2 / self.drape_tile_bytes().max(1);
+        (tiles.max(1).min(u64::from(self.drape_room(gpu)))) as u32
+    }
+
+    /// The terrain tiles the drape pages hold, once made.
+    pub fn drape_held(&self) -> Option<u32> {
         let terrain = self.terrain.as_ref()?;
-        let held = terrain.layout().tile_slots;
-        let stacks = self.drape_stacks();
-        let ahead = (held + 1).min(self.drape_room(gpu));
-        if held > 0 && u64::from(tiles) * 4 > u64::from(held) * 3 && ahead > held {
-            return Some(ahead);
-        }
-        (held > 0 && terrain.would_reserve(gpu, tiles, stacks)).then_some(tiles)
+        Some(terrain.layout().tile_slots).filter(|&tiles| tiles > 0)
     }
 
-    /// Makes room for `tile_slots` terrain tiles' drape slots, one per
-    /// drape stack, keeping the texels of the tile slots in `kept`. Returns
-    /// the layout and the kept slots that moved (from, to). A new layout
-    /// generation means every slot is blank. Fails past the
-    /// [`drape_room`](Self::drape_room), or where the device refuses a
-    /// page, which the next call makes smaller. Pages that hold the slots stay
-    /// unless `may_shrink`: a continuous map shrinks them at rest.
+    /// Makes the drape pages hold `tile_slots` terrain tiles' slots, one
+    /// per drape stack, unless they do: new pages are blank (a new layout
+    /// generation). Fails past the [`drape_room`](Self::drape_room), or
+    /// where the device refuses a page, which the next call makes smaller.
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,
-        (tile_slots, kept): (u32, &[u32]),
-        may_shrink: bool,
-    ) -> Result<(DrapeLayout, Vec<(u32, u32)>), DrapeFull> {
+        tile_slots: u32,
+    ) -> Result<DrapeLayout, DrapeFull> {
         let stacks = self.drape_stacks();
-        // The first pages hold the view's cover at its steepest, so that a
-        // gesture that tilts it needn't remake them.
-        let first = (self.sizing.as_ref())
-            .filter(|_| {
-                self.terrain
-                    .as_ref()
-                    .is_some_and(|t| t.layout().tile_slots == 0)
-            })
-            .map_or(0, |s| (s.tiles.ceil() as u32).min(self.drape_room(gpu)));
-        let tile_slots = tile_slots.max(first);
         let terrain = self.terrain.as_mut().expect("terrain is on");
-        let made = terrain.reserve(
-            gpu,
-            (tile_slots, kept),
-            (stacks, may_shrink),
-            &mut self.downsampler,
-        )?;
+        let made = terrain.reserve(gpu, (tile_slots, stacks), &mut self.downsampler)?;
         let layout = terrain.layout();
-        if made.is_some() {
+        if made {
             // Stack layers and the main bundle's composites follow it.
             self.invalidate_bundle(gpu);
         }
-        Ok((layout, made.unwrap_or_default()))
+        Ok(layout)
     }
 
     /// Redraws these terrain tiles' drape slots this frame, at the side
