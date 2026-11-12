@@ -3,8 +3,8 @@
 //! compute and render pass's GPU time.
 
 use std::future::Future;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::WgpuGpu;
@@ -57,6 +57,10 @@ pub(crate) struct Timing {
     /// The greatest common divisor of the timestamp steps seen, in ticks:
     /// the timer's resolution, once enough passes are timed.
     step: Arc<AtomicU64>,
+    /// Sets a take has read, for later submissions to write again: making
+    /// one costs more than the passes it times (on Metal a counter sample
+    /// buffer, some tens of µs), and a bench takes every frame.
+    spare: Arc<Mutex<Vec<wgpu::QuerySet>>>,
 }
 
 /// A submission's labelled passes and their first queries, its CPU time,
@@ -73,16 +77,18 @@ struct Queries {
 }
 
 impl Queries {
-    /// The first of the next pass's two queries, in a new set once the
-    /// last is full.
-    fn pair(&mut self, device: &wgpu::Device) -> u32 {
+    /// The first of the next pass's two queries, in another set once the
+    /// last is full: a spare one, or a new one.
+    fn pair(&mut self, device: &wgpu::Device, spare: &Mutex<Vec<wgpu::QuerySet>>) -> u32 {
         if self.next == self.sets.len() as u32 * QUERIES {
-            self.sets
-                .push(device.create_query_set(&wgpu::QuerySetDescriptor {
+            let set = spare.lock().expect("spare sets poisoned").pop();
+            self.sets.push(set.unwrap_or_else(|| {
+                device.create_query_set(&wgpu::QuerySetDescriptor {
                     label: Some("pass timestamps"),
                     ty: wgpu::QueryType::Timestamp,
                     count: QUERIES,
-                }));
+                })
+            }));
         }
         let first = self.next;
         self.next += 2;
@@ -98,6 +104,7 @@ impl Timing {
                 .then(Queries::default),
             submissions: Vec::new(),
             step: Arc::default(),
+            spare: Arc::default(),
         }
     }
 
@@ -114,7 +121,7 @@ impl Timing {
             .map(|label| {
                 draws |= label.is_some();
                 let (label, queries) = (label?, self.queries.as_mut()?);
-                let first = queries.pair(device);
+                let first = queries.pair(device, &self.spare);
                 passes.push((label.to_string(), first));
                 Some(first)
             })
@@ -161,14 +168,15 @@ impl WgpuGpu {
         let done = self.work_done();
         let (device, queue) = (self.device.clone(), self.queue.clone());
         let period = f64::from(self.timestamp_period_ns());
-        let (submissions, used, step) = match &mut self.timing {
+        let (submissions, used, step, spare) = match &mut self.timing {
             Some(timing) => (
                 std::mem::take(&mut timing.submissions),
-                // Later submissions write fresh sets.
+                // Later submissions write other sets until these are read.
                 timing.queries.as_mut().map(std::mem::take),
                 timing.step.clone(),
+                timing.spare.clone(),
             ),
-            None => (Vec::new(), None, Arc::default()),
+            None => (Vec::new(), None, Arc::default(), Arc::default()),
         };
         async move {
             // The passes' last samples are written once their work
@@ -213,6 +221,7 @@ impl WgpuGpu {
                     gcd_step = gcd(gcd_step, t - first);
                 }
                 step.store(gcd_step, Ordering::Relaxed);
+                spare.lock().expect("spare sets poisoned").extend(sets);
             }
             submissions
                 .into_iter()
@@ -300,8 +309,20 @@ mod tests {
             let labels: Vec<_> = t.passes.iter().map(|(l, _)| l.as_str()).collect();
             assert_eq!(labels, if timed { &["a", "b", "c"][..] } else { &[] });
         }
-        // Sets start over after a take.
+        // Sets start over after a take, in the sets it read.
+        let spare = |gpu: &WgpuGpu| gpu.timing.as_ref().unwrap().spare.lock().unwrap().len();
+        let read = spare(&gpu);
+        assert_eq!(
+            read,
+            if timed {
+                submissions * 3 * 2 / QUERIES as usize
+            } else {
+                0
+            }
+        );
         gpu.submit(&[pass("a")]);
+        assert_eq!(spare(&gpu), read.saturating_sub(1));
         assert_eq!(pollster::block_on(gpu.take_timings()).len(), 1);
+        assert_eq!(spare(&gpu), read.max(usize::from(timed)));
     }
 }
