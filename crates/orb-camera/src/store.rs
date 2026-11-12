@@ -230,6 +230,9 @@ pub struct Camera {
     elevation_held: bool,
     /// The target stands on the terrain (GL JS `centerClampedToGround`).
     clamped: bool,
+    /// Drags and their glides on the sphere turn the bearing with the
+    /// planet.
+    globe_free_bearing: bool,
 }
 
 impl Camera {
@@ -251,6 +254,7 @@ impl Camera {
             terrain: None,
             elevation_held: false,
             clamped: true,
+            globe_free_bearing: false,
         }
     }
 
@@ -355,6 +359,18 @@ impl Camera {
     pub fn set_constraints(&mut self, constraints: Constraints) {
         self.constraints = constraints;
         self.write(self.state);
+    }
+
+    /// Whether drags and their glides on the sphere turn the bearing with
+    /// the planet, so the ground under the pointer stays under it and a
+    /// drag carries on over a pole, rather than hold the bearing as GL JS
+    /// does (the default; MapLibre Native's globe free bearing).
+    pub fn set_globe_free_bearing(&mut self, free: bool) {
+        self.globe_free_bearing = free;
+    }
+
+    pub fn globe_free_bearing(&self) -> bool {
+        self.globe_free_bearing
     }
 
     pub fn view(&self) -> View {
@@ -577,7 +593,9 @@ impl Camera {
 
     /// Continues a user's move with a glide (smooth wheel zoom). A
     /// glide started during another adds what that one had left, and
-    /// starts at the speed it had.
+    /// starts at the speed it had. Its zoom stops at the zoom range, as GL
+    /// JS's wheel target does: levels past a limit would hold the zoom
+    /// there once the scroll turned back, until as many came back.
     pub(crate) fn glide(&mut self, mut glide: Glide, now: f64) -> AnimationId {
         if let Some(rest) = self
             .running
@@ -585,6 +603,15 @@ impl Camera {
             .find_map(|r| r.motion.glide_rest(r.elapsed))
         {
             glide.continue_from(&rest);
+        }
+        if let Some(track) = &mut glide.zoom {
+            let zoom = self.state.zoom(&self.surface.projection);
+            let least = self.state.least_zoom(&self.constraints, &self.surface);
+            let most = self.constraints.max_zoom.max(least);
+            // A zoom outside the range may still move toward it.
+            track.amount = track
+                .amount
+                .clamp((least - zoom).min(0.0), (most - zoom).max(0.0));
         }
         self.stop();
         let motion = Motion::glide(glide);
@@ -607,6 +634,7 @@ impl Camera {
             surface: &self.surface,
             viewport: self.viewport,
             constraints: &self.constraints,
+            free_bearing: self.globe_free_bearing,
         };
         let planned = Momentum::new(momentum, &mut next, &stage);
         let fields = match &planned {
@@ -697,9 +725,16 @@ impl Camera {
 
     /// Moves the ground under `from` to `to` (logical pixels).
     pub fn pan(&mut self, from: DVec2, to: DVec2) {
-        let mut next = self.state;
-        next.pan(&self.surface, self.viewport, from, to);
+        let next = self.panned(from, to);
         self.user_write(next);
+    }
+
+    /// The camera [`pan`](Self::pan) moves to, before the constraints.
+    pub fn panned(&self, from: DVec2, to: DVec2) -> CameraState {
+        let mut next = self.state;
+        let free = self.globe_free_bearing;
+        next.pan_with(&self.surface, self.viewport, from, to, free);
+        next
     }
 
     /// Zooms by `delta` levels around a pixel.
@@ -740,6 +775,7 @@ impl Camera {
             surface: &self.surface,
             viewport: self.viewport,
             constraints: &self.constraints,
+            free_bearing: self.globe_free_bearing,
         };
         for running in &mut self.running {
             // An app's move ends on the terrain under its destination,

@@ -13,8 +13,7 @@ use egui::{
 use glam::DVec2;
 use orb_api::{
     Button, CameraTarget, EaseOptions, Error, Event, GesturePhase, Input, Key, Map, MapEvent,
-    MapOptions, Modifiers, PointerKind, Previews, Runtime, Target, Transaction, WheelSource,
-    WheelUnit,
+    MapOptions, Modifiers, PointerKind, Previews, Runtime, Target, Transaction, WheelDelta,
 };
 use serde_json::{Value, json};
 
@@ -414,40 +413,28 @@ impl Demo {
                         self.map_input(Input::PointerUp { id: 0, position });
                     }
                 }
-                egui::Event::MouseWheel {
-                    unit,
-                    delta,
-                    source,
-                    ..
-                } => {
+                egui::Event::MouseWheel { unit, delta, .. } => {
                     let pos = pos2(self.input.cursor.x as f32, self.input.cursor.y as f32);
-                    if over_ui(pos) {
+                    if over_ui(pos) || delta.y == 0.0 {
                         continue;
                     }
                     // egui's deltas, as winit's, point away from the user;
-                    // the DOM's, which the gestures follow, toward.
-                    let delta = -DVec2::new(f64::from(delta.x), f64::from(delta.y));
-                    let unit = match unit {
-                        egui::MouseWheelUnit::Point => WheelUnit::Pixel,
-                        egui::MouseWheelUnit::Line => WheelUnit::Line,
-                        egui::MouseWheelUnit::Page => WheelUnit::Page,
-                    };
-                    // egui tells trackpads, and their momentum, from
-                    // wheels on macOS.
-                    let source = match source {
-                        egui::MouseWheelSource::Wheel => WheelSource::Wheel,
-                        egui::MouseWheelSource::Trackpad | egui::MouseWheelSource::Momentum => {
-                            WheelSource::Trackpad
+                    // the gestures', as the DOM's, toward. Lines and pages
+                    // are a wheel's notches (winit's line deltas), points
+                    // a trackpad's or a precise wheel's scrolling, as
+                    // mln-rs's desktop app takes them.
+                    let y = -f64::from(delta.y);
+                    let delta = match unit {
+                        egui::MouseWheelUnit::Point => WheelDelta::Pixels(y),
+                        egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => {
+                            WheelDelta::Notches(y)
                         }
-                        _ => WheelSource::Unknown,
                     };
                     let (position, modifiers) = (self.input.cursor, self.input.modifiers);
                     self.map_input(Input::Wheel {
                         position,
                         delta,
-                        unit,
                         modifiers,
-                        source,
                     });
                 }
                 egui::Event::Touch { id, phase, pos, .. } => {

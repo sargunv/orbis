@@ -149,9 +149,6 @@ pub(crate) struct MapEntry {
     pub(crate) event_mask: u64,
     debug_flags: mln_map_debug_flags,
     stats_view: bool,
-    /// The setting from `mln_map_set_globe_free_bearing_enabled`. Orbis's
-    /// gestures on a globe keep the bearing, as with it off.
-    globe_free_bearing: bool,
     viewport: mln_map_viewport,
     projection_mode: mln_projection_mode,
     bounds: mln_camera_bounds,
@@ -324,7 +321,7 @@ impl MapEntry {
             free_camera: free_camera(&self.map),
             view: self.view(),
             globe_rendering: self.globe_amount() > 0.0,
-            globe_free_bearing_enabled: self.globe_free_bearing,
+            globe_free_bearing_enabled: self.map.globe_free_bearing(),
         };
         *self
             .handle
@@ -762,7 +759,6 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                         event_mask,
                         debug_flags: 0,
                         stats_view: false,
-                        globe_free_bearing: false,
                         viewport: mln_map_viewport {
                             north_orientation: MLN_NORTH_ORIENTATION_UP,
                             constrain_mode: MLN_CONSTRAIN_MODE_HEIGHT_ONLY,
@@ -1030,7 +1026,7 @@ command!(
     |state, id| {
         Ok(job(move |entry| {
             entry.unchanged = true;
-            entry.globe_free_bearing = enabled;
+            entry.map.set_globe_free_bearing(enabled);
             Ok(())
         }))
     }
@@ -1963,14 +1959,25 @@ fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
         let offset = glam::DVec2::new(d.offset.x, d.offset.y);
         let center = entry.map.camera().target;
         let middle = entry.map.project(center).unwrap_or_default();
-        t.center = entry.map.unproject(middle - offset);
+        if entry.map.globe_free_bearing() && entry.globe_amount() > 0.0 {
+            // The planet turns under the anchor where it is on it, else
+            // under the middle, and the bearing turns with it.
+            let anchor = glam::DVec2::new(d.anchor.x, d.anchor.y);
+            let on_planet = has(MLN_CAMERA_DELTA_ANCHOR) && entry.map.unproject(anchor).is_some();
+            let grab = if on_planet { anchor } else { middle };
+            let turned = entry.map.panned(grab - offset, grab);
+            t.center = Some(turned.target);
+            t.bearing = Some(turned.bearing);
+        } else {
+            t.center = entry.map.unproject(middle - offset);
+        }
     }
     let camera = entry.map.camera();
     if has(MLN_CAMERA_DELTA_SCALE) {
         t.zoom = Some(entry.map.zoom() + d.scale.log2());
     }
     if has(MLN_CAMERA_DELTA_BEARING) {
-        t.bearing = Some(camera.bearing + d.bearing);
+        t.bearing = Some(t.bearing.unwrap_or(camera.bearing) + d.bearing);
     }
     if has(MLN_CAMERA_DELTA_PITCH) {
         t.pitch = Some(camera.pitch + d.pitch);

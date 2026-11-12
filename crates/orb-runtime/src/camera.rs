@@ -72,6 +72,25 @@ impl Map {
         self.camera.set_constraints(constraints);
     }
 
+    /// Whether drags and their glides on the globe turn the bearing with
+    /// the planet, so the ground under the pointer stays under it and a
+    /// drag carries on over a pole; off, the default, they hold the
+    /// bearing, as GL JS's do (MapLibre Native's globe free bearing).
+    pub fn set_globe_free_bearing(&mut self, free: bool) {
+        self.camera.set_globe_free_bearing(free);
+    }
+
+    pub fn globe_free_bearing(&self) -> bool {
+        self.camera.globe_free_bearing()
+    }
+
+    /// The camera a drag from `from` to `to` (logical pixels) moves to,
+    /// before the constraints: on the globe with a free bearing, turned
+    /// with the planet.
+    pub fn panned(&self, from: DVec2, to: DVec2) -> CameraState {
+        self.camera.panned(from, to)
+    }
+
     /// Whether the camera's target stands on the terrain at rest (GL JS
     /// `centerClampedToGround`, on by default). Off, it keeps the elevation
     /// it is given, and the camera orbits a point in the air.

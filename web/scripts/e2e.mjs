@@ -2590,20 +2590,15 @@ async function compare(browser, server) {
   );
 }
 
-/** The motion over the 100 ms before the newest sample (from the sample
- * at or before their start, and back no further than a gap over 40 ms),
- * per second of it, and zero for a release more than 40 ms after the
- * newest: the core's release velocity, written apart from it for a check. */
+/** The motion since the 100 ms before the release start (from the sample
+ * at or before their start, else the first), per second since then, and
+ * zero for a release more than 40 ms after the newest sample: the core's
+ * release velocity (mln-rs's), written apart from it for a check. */
 function releaseVelocity(samples, release) {
   const [newest, end] = samples.at(-1);
   if (release - newest > 40) return 0;
-  let start = samples.at(-1);
-  for (const sample of samples.slice(0, -1).reverse()) {
-    if (start[0] - sample[0] > 40) break;
-    start = sample;
-    if (sample[0] <= newest - 100) break;
-  }
-  const seconds = (newest - start[0]) / 1000;
+  const start = samples.findLast(([t]) => t <= release - 100) ?? samples[0];
+  const seconds = (release - start[0]) / 1000;
   return seconds > 0 ? (end - start[1]) / seconds : 0;
 }
 

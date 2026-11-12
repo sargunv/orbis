@@ -191,6 +191,19 @@ impl CameraState {
     /// that far too. (MapLibre Native's `moveBy` moves the ground at the
     /// centre by a step's pixels wherever the pointer is.)
     pub fn pan(&mut self, surface: &Surface, viewport: Viewport, from: DVec2, to: DVec2) {
+        self.pan_with(surface, viewport, from, to, false);
+    }
+
+    /// [`pan`](Self::pan), turning the bearing with the planet on the
+    /// sphere if `free_bearing` (MapLibre Native's globe free bearing).
+    pub(crate) fn pan_with(
+        &mut self,
+        surface: &Surface,
+        viewport: Viewport,
+        from: DVec2,
+        to: DVec2,
+        free_bearing: bool,
+    ) {
         let projection = &surface.projection;
         let view = View::new(self, viewport, surface);
         let center = self.center(viewport);
@@ -204,8 +217,12 @@ impl CameraState {
                     .low_ground(center, elevation)
                     .map(|ground| (ground, center + (to - from))),
             };
-            if let Some((ground, to)) = held {
-                self.put_under(surface, viewport, ground, to);
+            match held {
+                Some((ground, to)) if free_bearing && view.low_plane().is_none() => {
+                    self.turn_under(surface, viewport, ground, to);
+                }
+                Some((ground, to)) => self.put_under(surface, viewport, ground, to),
+                None => {}
             }
             return;
         }
@@ -361,6 +378,31 @@ impl CameraState {
             let g = best.target;
             *self = at(Geodetic::new(g.lon, g.lat.clamp(-90.0, 90.0)).wrapped());
         }
+    }
+
+    /// On the sphere, turns the camera with the planet so `ground` shows
+    /// at `px`: the one rotation that brings what shows there now to
+    /// `ground`, applied to the camera's target and heading alike, so the
+    /// bearing turns with the planet and a drag carries on over a pole
+    /// (MapLibre Native's globe free bearing, GL JS's
+    /// `versorSetLocationAtPoint` without the bearing held). A rotation
+    /// about the planet's centre moves every point on screen together, so
+    /// this lands `ground` exactly, without [`put_under`](Self::put_under)'s
+    /// steps.
+    fn turn_under(&mut self, surface: &Surface, viewport: Viewport, ground: Geodetic, px: DVec2) {
+        let view = View::new(self, viewport, surface);
+        let Some(now) = view.low_ground(px, view.elevation()) else {
+            return;
+        };
+        let turn = glam::DQuat::from_rotation_arc(sphere::up(now), sphere::up(ground));
+        let local = sphere::frame(self.target.wrapped());
+        let b = self.bearing.to_radians();
+        let heading = turn * (local.y_axis * b.cos() + local.x_axis * b.sin());
+        let target = sphere::geodetic(turn * local.z_axis);
+        let local = sphere::frame(target);
+        let bearing = heading.dot(local.x_axis).atan2(heading.dot(local.y_axis));
+        self.target = Geodetic::new(target.lon, target.lat.clamp(-90.0, 90.0)).wrapped();
+        self.bearing = wrap_bearing(bearing.to_degrees());
     }
 
     /// Keeps the camera to `constraints`: zoom and pitch within their
@@ -759,6 +801,50 @@ mod tests {
         // The style zoom falls as the parallels shorten.
         let adjusted = 2.0 + camera.target.lat.to_radians().cos().log2();
         assert!((camera.zoom(&mercator()) - adjusted).abs() < 1e-9);
+    }
+
+    /// With the bearing free, a drag keeps the ground under the pointer
+    /// exactly, turning the bearing with the planet, and one north carries
+    /// on over the pole to the far side, looking south.
+    #[test]
+    fn free_bearing_drags_turn_the_planet_over_the_poles() {
+        let surface = globe_surface();
+        let viewport = Viewport {
+            width: 800.0,
+            height: 800.0,
+        };
+        let mut camera = CameraState::new(Geodetic::new(10.0, 60.0), 2.0, &mercator());
+        let (from, to) = (DVec2::new(520.0, 330.0), DVec2::new(560.0, 360.0));
+        let view = View::new(&camera, viewport, &surface);
+        let ground = view.low_ground(from, view.elevation()).unwrap();
+        camera.pan_with(&surface, viewport, from, to, true);
+        let view = View::new(&camera, viewport, &surface);
+        let under = view.low_ground(to, view.elevation()).unwrap();
+        assert!(
+            (under.lon - ground.lon).abs() < 1e-9 && (under.lat - ground.lat).abs() < 1e-9,
+            "{under:?} {ground:?}"
+        );
+        assert!(
+            camera.bearing.abs() > 1.0,
+            "the bearing turned: {}",
+            camera.bearing
+        );
+        let mut camera = CameraState::new(Geodetic::new(10.0, 60.0), 2.0, &mercator());
+        for _ in 0..20 {
+            let (from, to) = (DVec2::new(400.0, 400.0), DVec2::new(400.0, 430.0));
+            camera.pan_with(&surface, viewport, from, to, true);
+        }
+        assert!(camera.target.lat < 75.0, "{:?}", camera.target);
+        assert!(
+            (camera.target.lon - -170.0).abs() < 1e-6,
+            "{:?}",
+            camera.target
+        );
+        assert!(
+            (camera.bearing.abs() - 180.0).abs() < 1e-6,
+            "{}",
+            camera.bearing
+        );
     }
 
     /// GL JS's `_getMaxLatitude`: a small globe centres on a pole, and the

@@ -22,7 +22,7 @@ use glam::DVec2;
 use orb_api::{
     Button, CameraState, Error, Event, Fling, Geodetic, GestureOptions, Input, Map, MapEvent,
     MapOptions, Modifiers, Movement, PointerKind, Previews, Runtime, RuntimeOptions, Target,
-    Thresholds, TileMatrixSet, WheelSource, WheelUnit,
+    Thresholds, TileMatrixSet, WheelDelta,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -519,27 +519,18 @@ impl ApplicationHandler<Wake> for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 // winit's deltas point away from the user; the DOM's, which
                 // the gestures follow, toward.
-                // Wheels scroll by lines, trackpads by pixels. (winit's
-                // Android backend reports every pointer as touches.)
-                let (delta, unit, source) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (
-                        -DVec2::new(f64::from(x), f64::from(y)),
-                        WheelUnit::Line,
-                        WheelSource::Wheel,
-                    ),
-                    MouseScrollDelta::PixelDelta(p) => (
-                        -DVec2::new(p.x, p.y) / scale,
-                        WheelUnit::Pixel,
-                        WheelSource::Trackpad,
-                    ),
+                // Wheels scroll by lines, their notches, and trackpads by
+                // pixels. (winit's Android backend reports every pointer
+                // as touches.)
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => WheelDelta::Notches(-f64::from(y)),
+                    MouseScrollDelta::PixelDelta(p) => WheelDelta::Pixels(-p.y / scale),
                 };
                 let position = state.cursor;
                 state.input(Input::Wheel {
                     position,
                     delta,
-                    unit,
                     modifiers: Modifiers::default(),
-                    source,
                 });
             }
             WindowEvent::Touch(touch) => {

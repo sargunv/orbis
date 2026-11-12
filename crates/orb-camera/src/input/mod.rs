@@ -10,11 +10,14 @@
 //! trackpad zoom; double-click or double-tap to zoom in, Shift-double-click
 //! or a two-finger tap to zoom out; double-tap-and-drag to zoom; two-finger
 //! pinch, twist and vertical tilt; the arrow, `+`/`=` and `-` keys. Each
-//! gesture's rates and thresholds are GL JS's. A release goes on at the
-//! average velocity of its last 100 ms ([`velocity`]), as mln-ffi's demo
-//! and GL JS take it; the rest of it is Compose's: a glide with mln-ffi's
-//! default decays, a glide the gesture caught added to one going the same
-//! way, and the bearing settling on north within 7°. A touch held still
+//! gesture's rates and thresholds are mln-rs's `mln_gestures` (a port of
+//! this module, whose README says where each comes from), so the two feel
+//! alike. A release goes on at the average velocity of its last 100 ms
+//! ([`velocity`]), as mln-ffi's demo and GL JS take it; the rest of it is
+//! Compose's: a glide with mln-ffi's default decays, a glide the gesture
+//! caught added to one going the same way, and the bearing settling on
+//! north within 7°. Hosts say whether a scroll is a wheel's notches or a
+//! trackpad's pixels ([`WheelDelta`]). A touch held still
 //! is a long click, as a right click is. Hosts whose platform recognizes
 //! trackpad pinches itself (macOS, Safari, Windows precision touchpads,
 //! libinput) hand them over as [`Input::Pinch`], which zooms, turns and
@@ -74,26 +77,21 @@ pub enum Key {
     Escape,
 }
 
-/// The unit of a wheel delta, as DOM `deltaMode` gives it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum WheelUnit {
-    Pixel,
-    Line,
-    Page,
-}
-
-/// What drives a wheel event, when the platform says.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum WheelSource {
-    /// The platform doesn't say (the DOM): the gestures tell wheels from
-    /// trackpads by their deltas and timing, as GL JS does.
-    #[default]
-    Unknown,
-    /// A mouse wheel's notches: each zooms smoothly to its target.
-    Wheel,
-    /// A trackpad or another precise scroll, or the platform's momentum
-    /// after one: the map zooms as it scrolls.
-    Trackpad,
+/// How far a scroll went, as its host classifies it. Positive scrolls
+/// down, as the DOM's `deltaY` does, which zooms out.
+///
+/// The host knows best which device scrolled (macOS's
+/// `hasPreciseScrollingDeltas`, the DOM's `deltaMode`, the platform's wheel
+/// units), so the gestures don't guess from the deltas' sizes and timing,
+/// which GL JS does and which read a slow trackpad start as a wheel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WheelDelta {
+    /// Detents of a mouse wheel, fractional for high-resolution wheels:
+    /// each zooms by a fixed amount, eased.
+    Notches(f64),
+    /// Continuous scrolling, as trackpads and precise wheels send, in
+    /// logical pixels: zooms at once, as the platform already smoothed it.
+    Pixels(f64),
 }
 
 /// Where a platform-recognized gesture is.
@@ -130,13 +128,12 @@ pub enum Input {
     PointerCancel {
         id: u32,
     },
-    /// Positive `delta.y` scrolls down, which zooms out.
+    /// A scroll at `position`. With Ctrl, which browsers add to a
+    /// trackpad pinch, pixels zoom at the pinch rate.
     Wheel {
         position: DVec2,
-        delta: DVec2,
-        unit: WheelUnit,
+        delta: WheelDelta,
         modifiers: Modifiers,
-        source: WheelSource,
     },
     /// A pinch the platform recognized (macOS magnify and rotate, Safari's
     /// `gesture*` events, libinput's pinch): each update scales by `scale`
@@ -454,17 +451,6 @@ enum End {
     Glide,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WheelKind {
-    Wheel,
-    Trackpad,
-}
-
-/// GL JS's mouse-wheel step, which trackpads never produce exactly.
-const WHEEL_STEP: f64 = 4.000_244_140_625;
-/// Trackpad zoom stays one move until this long after its last event.
-const TRACKPAD_END: f64 = 200.0;
-
 /// The gesture recognizers for one map.
 #[derive(Debug)]
 pub struct Interaction {
@@ -473,9 +459,7 @@ pub struct Interaction {
     tracking: Tracking,
     /// The last tap, for double taps: where and when.
     last_tap: Option<(DVec2, f64, PointerKind)>,
-    wheel_kind: Option<WheelKind>,
-    last_wheel: f64,
-    /// Trackpad zoom holds the camera until then.
+    /// A continuous scroll's zoom holds the camera until then.
     wheel_hold_until: Option<f64>,
     events: Vec<InteractEvent>,
     options: GestureOptions,
@@ -488,8 +472,6 @@ impl Default for Interaction {
             mode: Mode::Idle,
             tracking: Tracking::default(),
             last_tap: None,
-            wheel_kind: None,
-            last_wheel: f64::NEG_INFINITY,
             wheel_hold_until: None,
             events: Vec::new(),
             options: GestureOptions::default(),
@@ -594,10 +576,8 @@ impl Interaction {
             Input::Wheel {
                 position,
                 delta,
-                unit,
                 modifiers,
-                source,
-            } => self.wheel(camera, position, delta, unit, modifiers, source, now),
+            } => self.wheel(camera, position, delta, modifiers, now),
             Input::Pinch {
                 center,
                 scale,
@@ -1085,18 +1065,18 @@ impl Interaction {
         );
     }
 
-    /// GL JS's `ScrollZoomHandler`: mouse wheels zoom smoothly to a target;
-    /// trackpads zoom as they scroll. A wheel the map doesn't zoom with
-    /// isn't used, so the page scrolls.
-    #[allow(clippy::too_many_arguments)]
+    /// A scroll zooms around where the pointer is: a wheel's notches by
+    /// a fixed amount each, eased (a notch while earlier ones ease adds to
+    /// what they have left, from the speed they had), and continuous
+    /// pixels by their distance at once, faster with Ctrl, which browsers
+    /// add to a trackpad pinch (mln-rs's `mln_gestures`). A scroll the map
+    /// doesn't zoom with isn't used, so the page scrolls.
     fn wheel(
         &mut self,
         camera: &mut Camera,
         position: DVec2,
-        delta: DVec2,
-        unit: WheelUnit,
+        delta: WheelDelta,
         modifiers: Modifiers,
-        source: WheelSource,
         now: f64,
     ) -> bool {
         if !self.options.zoom.enabled {
@@ -1108,64 +1088,32 @@ impl Interaction {
         if modifiers.ctrl && matches!(self.mode, Mode::Platform) {
             return true;
         }
-        let mut value = match unit {
-            WheelUnit::Pixel => delta.y,
-            WheelUnit::Line => delta.y * 40.0,
-            WheelUnit::Page => delta.y * camera.viewport().height,
-        };
-        if value == 0.0 {
-            return true;
-        }
-        let since = now - self.last_wheel;
-        self.last_wheel = now;
-        if source == WheelSource::Wheel {
-            self.wheel_kind = Some(WheelKind::Wheel);
-        } else if source == WheelSource::Trackpad {
-            self.wheel_kind = Some(WheelKind::Trackpad);
-        } else if value % WHEEL_STEP == 0.0 {
-            self.wheel_kind = Some(WheelKind::Wheel);
-        } else if value.abs() < 4.0 || modifiers.ctrl {
-            // Pinching a trackpad sends Ctrl-wheel events.
-            self.wheel_kind = Some(WheelKind::Trackpad);
-        } else if since > 400.0 {
-            // A new scroll of unknown kind: GL JS waits 40 ms to see; take
-            // it as a wheel, which its timeout decides for a lone event.
-            self.wheel_kind = None;
-        } else if self.wheel_kind.is_none() {
-            self.wheel_kind = Some(if (since * value).abs() < 200.0 {
-                WheelKind::Trackpad
-            } else {
-                WheelKind::Wheel
-            });
-        }
-        if modifiers.shift {
-            value /= 4.0;
-        }
-        let kind = self.wheel_kind.unwrap_or(WheelKind::Wheel);
-        let rate = if kind == WheelKind::Wheel && value.abs() > WHEEL_STEP {
-            WHEEL_ZOOM_RATE
-        } else {
-            TRACKPAD_ZOOM_RATE
-        };
-        let mut scale = 2.0 / (1.0 + (-(value * rate).abs()).exp());
-        if value > 0.0 {
-            scale = 1.0 / scale;
-        }
-        let zoom = scale.log2();
-        match kind {
-            WheelKind::Trackpad => {
+        match delta {
+            WheelDelta::Pixels(pixels) => {
+                let rate = match modifiers.ctrl {
+                    true => PINCH_ZOOM_RATE,
+                    false => SCROLL_ZOOM_RATE,
+                };
+                let zoom = (-pixels * rate).clamp(-MAX_SCROLL_ZOOM, MAX_SCROLL_ZOOM);
+                if zoom == 0.0 || zoom.is_nan() {
+                    return true;
+                }
                 if !camera.is_held() {
                     camera.hold();
                 }
                 camera.zoom_by(position, zoom);
-                self.wheel_hold_until = Some(now + TRACKPAD_END);
+                self.wheel_hold_until = Some(now + SCROLL_IDLE);
             }
-            WheelKind::Wheel => {
+            WheelDelta::Notches(notches) => {
+                let zoom = -notches * NOTCH_ZOOM;
+                if zoom == 0.0 || !zoom.is_finite() {
+                    return true;
+                }
                 camera.glide(
                     Glide {
                         zoom: Some(Track {
                             amount: zoom,
-                            duration: 200.0,
+                            duration: NOTCH_DURATION,
                             easing: Easing::DEFAULT,
                         }),
                         around: Some(position),

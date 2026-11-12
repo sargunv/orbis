@@ -392,6 +392,8 @@ pub(crate) struct Stage<'a> {
     pub surface: &'a Surface,
     pub viewport: Viewport,
     pub constraints: &'a Constraints,
+    /// Pans on the sphere turn the bearing with the planet.
+    pub free_bearing: bool,
 }
 
 impl Stage<'_> {
@@ -418,7 +420,8 @@ impl Stage<'_> {
         let step = offset / steps;
         for _ in 0..steps as usize {
             let center = camera.center(self.viewport);
-            camera.pan(self.surface, self.viewport, center, center + step);
+            let to = center + step;
+            camera.pan_with(self.surface, self.viewport, center, to, self.free_bearing);
             self.settle(camera);
         }
     }

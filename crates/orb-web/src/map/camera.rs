@@ -8,7 +8,7 @@
 use glam::DVec2;
 use orb_camera::input::{
     Button, Fling, GestureOptions, GesturePhase, Input, Key, Modifiers, Movement, PointerKind,
-    Thresholds, WheelSource, WheelUnit,
+    Thresholds, WheelDelta,
 };
 use orb_camera::{
     AnchoredMomentum, Bounds, CameraTarget, Constraints, DecayModel, EaseOptions, Easing,
@@ -389,30 +389,27 @@ impl OrbisMap {
         self.input(Input::PointerCancel { id }, time)
     }
 
-    /// A DOM wheel event: `mode` is its `deltaMode`.
-    #[allow(clippy::too_many_arguments)]
+    /// A DOM wheel event at `x, y`, as the page classified it
+    /// (`web/src/input.ts`'s `wheelDelta`): `amount` notches of a mouse
+    /// wheel if `notches` is 1, else pixels of continuous scrolling.
+    /// Positive scrolls down.
     pub fn wheel(
         &mut self,
         x: f64,
         y: f64,
-        dx: f64,
-        dy: f64,
-        mode: u32,
+        notches: u32,
+        amount: f64,
         modifiers_bits: u32,
         time: f64,
     ) -> bool {
-        let unit = match mode {
-            1 => WheelUnit::Line,
-            2 => WheelUnit::Page,
-            _ => WheelUnit::Pixel,
+        let delta = match notches {
+            1 => WheelDelta::Notches(amount),
+            _ => WheelDelta::Pixels(amount),
         };
         let input = Input::Wheel {
             position: DVec2::new(x, y),
-            delta: DVec2::new(dx, dy),
-            unit,
+            delta,
             modifiers: modifiers(modifiers_bits),
-            // The DOM doesn't say.
-            source: WheelSource::Unknown,
         };
         self.input(input, time)
     }

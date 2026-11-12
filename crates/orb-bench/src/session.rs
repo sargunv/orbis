@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use glam::DVec2;
 use orb_api::{
     Button, CameraState, FrameReport, Geodetic, GpuCounters, Input, Modifiers, PointerKind,
-    Runtime, RuntimeOptions, Target, WheelSource, WheelUnit,
+    Runtime, RuntimeOptions, Target, WheelDelta,
 };
 
 use crate::report::{ms, percentile};
@@ -55,7 +55,9 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// Slow intervals the report lists.
 const WORST: usize = 6;
 /// The pixels a wheel notch scrolls: Chromium hears each of `pnpm
-/// session`'s 100 px notches as 50 (its report's `firstWheel`).
+/// session`'s 100 px notches as 50 (its report's `firstWheel`), with a
+/// legacy `wheelDeltaY` of -60, which the page reads as a trackpad's
+/// pixels, not a notch.
 const NOTCH: f64 = 0.5;
 
 /// One move: wheel notches, or a drag with a button held.
@@ -219,10 +221,8 @@ fn timeline(moves: &[Move], viewport: [f64; 2], start: f64) -> (Vec<(f64, Input)
                         t,
                         Input::Wheel {
                             position: px(at),
-                            delta: DVec2::new(0.0, delta * NOTCH),
-                            unit: WheelUnit::Pixel,
+                            delta: WheelDelta::Pixels(delta * NOTCH),
                             modifiers: Modifiers::default(),
-                            source: WheelSource::Unknown,
                         },
                     ));
                 }

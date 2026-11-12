@@ -120,16 +120,16 @@ fn dragging_pans_and_glides_on() {
     rig.up(1, 500.0, 300.0);
     let frames = rig.settle();
     // 10 px every 32 ms, released 16 ms after the last move: the 100 ms
-    // before the last move start at the move 96 ms before it, so 30 px in
-    // 96 ms, 312.5 px/s. mln-ffi's pan friction (half-life 140 ms,
-    // stopping at 10 px/s) glides (312.5 − 10) / (ln 2 / 0.14 s) = 61.1 px
-    // over ln(31.25) / (ln 2 / 0.14 s) = 695 ms.
+    // before the release start at the move 112 ms before it, so 30 px in
+    // 112 ms, 267.9 px/s. mln-ffi's pan friction (half-life 140 ms,
+    // stopping at 10 px/s) glides (267.9 − 10) / (ln 2 / 0.14 s) = 52.1 px
+    // over ln(26.79) / (ln 2 / 0.14 s) = 664 ms.
     assert!(
         (40..=43).contains(&frames),
         "momentum runs for a while: {frames}"
     );
     let after = rig.camera.project(ground).unwrap();
-    let glide = (30.0 / 0.096 - 10.0) / (std::f64::consts::LN_2 / 0.14);
+    let glide = (30.0 / 0.112 - 10.0) / (std::f64::consts::LN_2 / 0.14);
     assert!(
         (after.x - 500.0 - glide).abs() < 0.01,
         "and carries on in the same direction: {after}"
@@ -288,28 +288,25 @@ fn wheels_zoom_smoothly_and_trackpads_at_once() {
     // One notch of a mouse wheel, toward the user: zoom in.
     rig.send(Input::Wheel {
         position: at,
-        delta: DVec2::new(0.0, -100.0 * WHEEL_STEP / 4.0 * 4.0 / 100.0 * 25.0),
-        unit: WheelUnit::Pixel,
+        delta: WheelDelta::Notches(-1.0),
         modifiers: Modifiers::default(),
-        source: WheelSource::Unknown,
     });
     assert_eq!(rig.camera.zoom(), zoom, "eased, not immediate");
     let frames = rig.settle();
     assert!((10..=14).contains(&frames), "{frames}");
-    assert!(rig.camera.zoom() > zoom + 0.1);
+    assert!((rig.camera.zoom() - (zoom + 1.0 / 3.0)).abs() < 1e-9);
     let under = rig.camera.project(ground).unwrap();
     assert!(under.distance(at) < 1e-6);
-    // A trackpad's small deltas apply at once and end the move later.
+    // A trackpad's pixels apply at once, 1/300 level each, and end the
+    // move later.
     let before = rig.camera.zoom();
     rig.now += 1000.0;
     rig.send(Input::Wheel {
         position: at,
-        delta: DVec2::new(0.0, 2.0),
-        unit: WheelUnit::Pixel,
+        delta: WheelDelta::Pixels(3.0),
         modifiers: Modifiers::default(),
-        source: WheelSource::Unknown,
     });
-    assert!(rig.camera.zoom() < before);
+    assert!((rig.camera.zoom() - (before - 0.01)).abs() < 1e-9);
     rig.camera.take_events();
     rig.frame();
     assert!(!rig.camera.take_events().iter().any(|e| matches!(
@@ -625,6 +622,32 @@ fn a_touch_held_still_is_a_long_click() {
     );
 }
 
+/// A right-drag turns half a degree per pixel sideways and tilts half a
+/// degree per pixel upward, as mln-rs's does; held still before the
+/// release, it stops there.
+#[test]
+fn right_drags_turn_and_tilt_half_a_degree_a_pixel() {
+    let mut rig = Rig::new();
+    rig.send(Input::PointerDown {
+        id: 1,
+        kind: PointerKind::Mouse,
+        button: Button::Secondary,
+        position: DVec2::new(300.0, 300.0),
+        modifiers: Modifiers::default(),
+    });
+    for i in 1..=10 {
+        rig.now += 16.0;
+        rig.to(1, 300.0 + 10.0 * f64::from(i), 300.0 - 4.0 * f64::from(i));
+    }
+    rig.now += 100.0;
+    rig.up(1, 400.0, 260.0);
+    rig.settle();
+    let state = rig.camera.state();
+    // 100 px sideways and 40 up, from the press.
+    assert!((state.bearing - 50.0).abs() < 1e-6, "{}", state.bearing);
+    assert!((state.pitch - 20.0).abs() < 1e-6, "{}", state.pitch);
+}
+
 #[test]
 fn a_right_click_is_a_long_click() {
     let mut rig = Rig::new();
@@ -655,10 +678,8 @@ fn movements_turned_off_stay_put() {
         &mut rig.camera,
         Input::Wheel {
             position: DVec2::new(100.0, 100.0),
-            delta: DVec2::new(0.0, -100.0),
-            unit: WheelUnit::Pixel,
+            delta: WheelDelta::Notches(-1.0),
             modifiers: Modifiers::default(),
-            source: WheelSource::Unknown,
         },
         rig.now,
     );
@@ -838,13 +859,11 @@ fn a_platform_pinch_takes_no_ctrl_wheel_beside_it() {
     let ctrl_wheel = |rig: &mut Rig| {
         rig.send(Input::Wheel {
             position: DVec2::new(200.0, 200.0),
-            delta: DVec2::new(0.0, -10.0),
-            unit: WheelUnit::Pixel,
+            delta: WheelDelta::Pixels(-10.0),
             modifiers: Modifiers {
                 ctrl: true,
                 ..Modifiers::default()
             },
-            source: WheelSource::Unknown,
         });
     };
     rig.pinch(1.0, 0.0, GesturePhase::Begin);
@@ -892,26 +911,39 @@ fn changing_the_options_cancels_a_platform_pinch_until_it_ends() {
     assert!((rig.camera.zoom() - zoom - 1.0).abs() < 1e-9);
 }
 
+/// Notches in quick succession add up, from the speed the zoom had, and
+/// stop at the zoom range: a scroll back zooms out at once.
 #[test]
-fn a_known_trackpad_zooms_at_once_from_its_first_event() {
+fn notches_add_up_within_the_zoom_range() {
     let mut rig = Rig::new();
+    rig.camera.set_constraints(crate::Constraints {
+        max_zoom: 14.0,
+        ..crate::Constraints::default()
+    });
     let zoom = rig.camera.zoom();
-    // 10 px alone would read as a wheel's first step and ease.
-    for source in [WheelSource::Unknown, WheelSource::Trackpad] {
-        rig.now += 1000.0;
-        let before = rig.camera.zoom();
+    let notch = |rig: &mut Rig, notches: f64| {
         rig.send(Input::Wheel {
             position: DVec2::new(100.0, 100.0),
-            delta: DVec2::new(0.0, -10.0),
-            unit: WheelUnit::Pixel,
+            delta: WheelDelta::Notches(notches),
             modifiers: Modifiers::default(),
-            source,
         });
-        let at_once = rig.camera.zoom() != before;
-        assert_eq!(at_once, source == WheelSource::Trackpad, "{source:?}");
-        rig.settle();
+    };
+    for _ in 0..3 {
+        notch(&mut rig, -1.0);
+        rig.frame();
+        rig.frame();
     }
-    assert!(rig.camera.zoom() > zoom);
+    rig.settle();
+    assert!((rig.camera.zoom() - (zoom + 1.0)).abs() < 1e-9);
+    // 60 notches in, past the greatest zoom, go as far as it, and one
+    // out comes back from there.
+    for _ in 0..60 {
+        notch(&mut rig, -1.0);
+    }
+    rig.frame();
+    notch(&mut rig, 1.0);
+    rig.settle();
+    assert!((rig.camera.zoom() - (14.0 - 1.0 / 3.0)).abs() < 1e-6);
 }
 
 #[test]

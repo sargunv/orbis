@@ -35,6 +35,40 @@ const modifiers = (e: KeyboardEvent | MouseEvent) =>
   (e.altKey ? 4 : 0) |
   (e.metaKey ? 8 : 0);
 
+/** Safari's wheel notch in pixels, and a faster turn's a whole multiple. */
+const SAFARI_NOTCH = 4.000244140625;
+
+/** A wheel event as the gestures take it (orb-web's `wheel`): its notches
+ * (`notches` 1), for a mouse wheel's detents, which the map eases, or its
+ * pixels (0), for continuous scrolling (a trackpad, a precise wheel),
+ * which it applies at once. Positive scrolls down. Browsers don't say
+ * which device scrolled, so this reads it from how each reports it, as
+ * mln-rs's page does, `deltaMode` first:
+ * - Firefox reports wheels in lines, 3 a notch, and pages.
+ * - Safari reports a notch as 4.000244140625 px, and a faster turn as a
+ *   whole multiple of it (GL JS's test): one notch per multiple.
+ * - Chromium's legacy `wheelDeltaY` is 120 a detent, and -3 × `deltaY`
+ *   for precise scrolling.
+ * A misread zooms the same way by a similar amount, with or without the
+ * easing. */
+export const wheelDelta = (
+  e: Pick<WheelEvent, "deltaMode" | "deltaY"> & { wheelDeltaY?: number },
+): [notches: number, amount: number] => {
+  if (e.deltaMode === 1) return [1, e.deltaY / 3];
+  if (e.deltaMode === 2) return [1, e.deltaY];
+  if (e.deltaY !== 0 && e.deltaY % SAFARI_NOTCH === 0)
+    return [1, e.deltaY / SAFARI_NOTCH];
+  const legacy = e.wheelDeltaY;
+  if (
+    typeof legacy === "number" &&
+    legacy !== 0 &&
+    Math.abs(legacy + 3 * e.deltaY) >= 1 &&
+    legacy % 120 === 0
+  )
+    return [1, -legacy / 120];
+  return [0, e.deltaY];
+};
+
 /** Whether the map uses a key (orb-web's `key`) with what it allows;
  * Escape only ends a box zoom. */
 const usesKey = (e: KeyboardEvent, allowed: Allowed) => {
@@ -155,9 +189,11 @@ export function attachInput(
   const wheel = (e: WheelEvent) => {
     if (!allowedNow.zoom) return;
     e.preventDefault();
+    if (e.deltaY === 0) return;
+    const [notches, amount] = wheelDelta(e);
     send(
       "wheel",
-      [e.offsetX, e.offsetY, e.deltaX, e.deltaY, e.deltaMode, modifiers(e)],
+      [e.offsetX, e.offsetY, notches, amount, modifiers(e)],
       e.timeStamp,
     );
   };

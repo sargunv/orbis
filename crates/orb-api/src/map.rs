@@ -720,6 +720,23 @@ impl Map {
         self.dirty = true;
     }
 
+    /// Whether drags and their glides on the globe turn the bearing with
+    /// the planet; off, the default, they hold it.
+    pub fn set_globe_free_bearing(&mut self, free: bool) {
+        self.map.set_globe_free_bearing(free);
+    }
+
+    pub fn globe_free_bearing(&self) -> bool {
+        self.map.globe_free_bearing()
+    }
+
+    /// The camera a drag from `from` to `to` (logical pixels) moves to,
+    /// before the constraints: on the globe with a free bearing, turned
+    /// with the planet.
+    pub fn panned(&self, from: DVec2, to: DVec2) -> CameraState {
+        self.map.panned(from, to)
+    }
+
     /// Hands the map a pointer, wheel or key input at `time`, the event's
     /// timestamp in milliseconds on the clock frame times use, in logical
     /// pixels from the target's top-left corner. Returns whether the map
