@@ -395,3 +395,49 @@ fn hidden_layers_compile_ahead_of_need() {
     rest(&mut map, &mut target);
     assert_eq!(center(&target), [0, 255, 0], "the circle, once compiled");
 }
+
+/// A map that never rests (here an animation that outlasts the test)
+/// still compiles the pipelines no view has needed yet: they wait for the
+/// user's hand to be off the map, not for the map to be idle.
+#[test]
+fn a_map_that_never_rests_compiles_its_whole_set() {
+    let style = r##"{"version":8,"zoom":1,"sources":{"point":{"type":"geojson","data":
+      {"type":"Point","coordinates":[0,0]}}},
+      "layers":[{"id":"bg","type":"background","paint":{"background-color":"#ff0000"}},
+      {"id":"dot","type":"circle","source":"point","minzoom":4,
+        "paint":{"circle-radius":20,"circle-color":"#00ff00"}}]}"##;
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).unwrap();
+    map.ease_to(
+        &orb_api::CameraTarget {
+            bearing: Some(180.0),
+            ..Default::default()
+        },
+        &orb_api::EaseOptions {
+            duration: 600_000.0,
+            ..Default::default()
+        },
+    );
+    let started = Instant::now();
+    loop {
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "the circle's pipeline never compiled"
+        );
+        let report = map
+            .render(&mut target, elapsed.as_secs_f64() * 1000.0)
+            .unwrap();
+        assert!(!report.is_some_and(|r| r.idle), "the map rested");
+        let counters = runtime.stats().counters;
+        // The background's and the cull's, then the circle's.
+        if counters.pipelines_requested > 1
+            && counters.pipelines_compiled == counters.pipelines_requested
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(16));
+    }
+}

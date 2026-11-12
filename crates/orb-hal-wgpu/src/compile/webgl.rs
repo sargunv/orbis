@@ -164,9 +164,8 @@ impl Compiler {
     /// Wakes the map once the current task is done.
     fn wake_soon(&self) {
         if let Some(wake) = self.wake.borrow().clone() {
-            let wake = Closure::once(move |_: JsValue| wake());
-            let _ = js_sys::Promise::resolve(&JsValue::UNDEFINED).then(&wake);
-            wake.forget();
+            // A microtask, which leaves nothing behind once it ran.
+            wasm_bindgen_futures::spawn_local(async move { wake() });
         }
     }
 }

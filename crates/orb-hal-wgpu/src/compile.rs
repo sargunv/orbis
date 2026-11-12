@@ -806,9 +806,14 @@ mod native {
         }
 
         fn run(self) {
-            let job = {
-                let mut background = self.shared.background.lock().expect("compile poisoned");
-                background.jobs.pop_front()
+            // The gate may have closed since the lane was fed: the job
+            // waits for it to open again, which feeds lanes anew.
+            let open = self.shared.open.load(std::sync::atomic::Ordering::Relaxed);
+            let job = match open {
+                true => (self.shared.background.lock().expect("compile poisoned"))
+                    .jobs
+                    .pop_front(),
+                false => None,
             };
             let closed = self.shared.closed();
             if let Some(job) = job.filter(|_| !closed) {
