@@ -150,6 +150,17 @@ struct Entry {
     meshes: Vec<(u32, MeshId)>,
     image: Option<Image>,
     warp: TileWarp,
+    /// Its place in the tile order ([`Renderer::set_tile_order`]), which
+    /// parts it gains later take too.
+    order: Option<u32>,
+}
+
+impl Entry {
+    /// The scene's place for part `part` of a tile at `order` in the tile
+    /// order: the tile's parts follow each other, in the order they came.
+    fn part_place(order: u32, part: usize) -> u64 {
+        u64::from(order) << 32 | part as u64
+    }
 }
 
 #[derive(Debug)]
@@ -353,6 +364,7 @@ impl Renderer {
                 padded: None,
             }),
             warp: TileWarp::NONE,
+            order: None,
         };
         let added = nodes
             .iter()
@@ -535,6 +547,7 @@ impl Renderer {
             meshes: Vec::new(),
             image: None,
             warp,
+            order: None,
         }))
     }
 
@@ -774,13 +787,19 @@ impl Renderer {
             .expect("a released tile")
     }
 
-    /// A tile's scene tile of layer extent `extent`, made if need be.
+    /// A tile's scene tile of layer extent `extent`, made if need be in the
+    /// tile's place in the tile order.
     fn part(&mut self, tile: GpuTile, extent: u32) -> TileId {
         if let Some(&(_, id)) = self.entry_mut(tile).parts.iter().find(|p| p.0 == extent) {
             return id;
         }
         let id = self.scene.insert_tile();
-        self.entry_mut(tile).parts.push((extent, id));
+        let entry = self.entry_mut(tile);
+        entry.parts.push((extent, id));
+        if let Some(order) = entry.order {
+            let at = Entry::part_place(order, entry.parts.len() - 1);
+            self.scene.order_tile(id, at);
+        }
         id
     }
 
@@ -878,13 +897,22 @@ impl Renderer {
     }
 
     /// Orders tiles within each render node, in drawing order; tiles not
-    /// listed follow.
+    /// listed follow. The order holds until the next: meshes a tile gains
+    /// later (a relayout's) draw in its place too.
     pub fn set_tile_order(&mut self, tiles: &[GpuTile]) {
-        let parts: Vec<TileId> = tiles
-            .iter()
-            .flat_map(|&t| self.tiles.entry(t).parts.iter().map(|p| p.1))
-            .collect();
-        self.scene.set_tile_order(&parts);
+        for entry in self.tiles.entries.iter_mut().flatten() {
+            entry.order = None;
+        }
+        for (order, &tile) in (0u32..).zip(tiles) {
+            self.entry_mut(tile).order = Some(order);
+        }
+        let entries = &self.tiles;
+        let parts = tiles.iter().flat_map(|&tile| {
+            let entry = entries.entry(tile);
+            let order = entry.order.expect("set above");
+            (entry.parts.iter().enumerate()).map(move |(i, p)| (p.1, Entry::part_place(order, i)))
+        });
+        self.scene.set_tile_order(parts);
     }
 
     /// Words of the property buffer for a table outside any tile, such as
@@ -1179,5 +1207,70 @@ mod tests {
         assert_eq!(offset_tile(tile, (-1, 0)), Some(TileIndex::new(2, 3, 0)));
         assert_eq!(offset_tile(tile, (0, -1)), None);
         assert_eq!(offset_tile(tile, (1, 1)), Some(TileIndex::new(2, 1, 1)));
+    }
+
+    /// Meshes a tile gains after the tile order was set (a relayout's, in
+    /// a part of a new extent too) draw in the tile's place in it, not
+    /// after every tile: no one need set the order again for them.
+    #[test]
+    fn meshes_added_later_keep_their_tile_s_place() {
+        let Ok(mut gpu) = pollster::block_on(orb_hal_wgpu::WgpuGpu::offscreen()) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let images = crate::ImageAtlas::new(&mut gpu, 4, 2, 8);
+        let format = crate::TargetFormat {
+            color: orb_hal::TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+        };
+        let capacity = crate::SceneCapacity::default();
+        let mut renderer = Renderer::new(&mut gpu, format, capacity, images.bindings());
+        renderer.set_nodes(&mut gpu, &[crate::Family::Fill]);
+        let mut square = orb_tile::LayerBuilder::new("water", 4096);
+        square.begin_feature(None, orb_tile::GeometryType::Polygon);
+        square.begin_part();
+        square.begin_ring();
+        for v in [[0, 0], [4096, 0], [4096, 4096], [0, 4096]] {
+            square.push_vertex(v);
+        }
+        let mesh = orb_layout::fill::layout(&square.finish(), &[0]);
+        let tile = |renderer: &mut Renderer, gpu: &mut orb_hal_wgpu::WgpuGpu, row| {
+            let key = TileKey {
+                source: 0,
+                tile: TileIndex::new(2, 0, row),
+            };
+            renderer.add_tile(gpu, key, None).unwrap()
+        };
+        let (a, b, c) = (
+            tile(&mut renderer, &mut gpu, 0),
+            tile(&mut renderer, &mut gpu, 1),
+            tile(&mut renderer, &mut gpu, 2),
+        );
+        let mut add = |renderer: &mut Renderer, tile, extent| {
+            let data = MeshData::new(&mesh, &[], 0);
+            renderer
+                .add_mesh(&mut gpu, tile, (0, extent), &data, &Default::default())
+                .unwrap();
+        };
+        for tile in [c, b, a] {
+            add(&mut renderer, tile, 4096);
+        }
+        renderer.set_tile_order(&[a, b]);
+        // Another mesh of `a`, and one in a part of another extent.
+        add(&mut renderer, a, 4096);
+        add(&mut renderer, a, 8192);
+        add(&mut renderer, c, 4096);
+        let parts = |tile| renderer.tiles.entry(tile).parts.clone();
+        let [(_, a0), (_, a1)] = parts(a)[..] else {
+            panic!("a has two parts")
+        };
+        let ([(_, b0)], [(_, c0)]) = (&parts(b)[..], &parts(c)[..]) else {
+            panic!("b and c have one part")
+        };
+        assert_eq!(
+            renderer.scene.node_tiles(0),
+            [a0, a0, a1, *b0, *c0, *c0],
+            "a's meshes, then b's, then c's, which the order leaves out"
+        );
     }
 }

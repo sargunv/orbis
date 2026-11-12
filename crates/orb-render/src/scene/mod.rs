@@ -793,6 +793,15 @@ fn pack_range([lo, hi]: [f32; 2]) -> u32 {
         | u32::from(unit((hi / TERRAIN_RANGE_UNIT).ceil())) << 16
 }
 
+/// `tile`'s place in the tile order ([`Scene::set_tile_order`]): after
+/// every other place without one.
+fn place(tiles: &[Option<TileEntry>], tile: TileId) -> u64 {
+    tiles[tile.0 as usize]
+        .as_ref()
+        .and_then(|t| t.order)
+        .unwrap_or(u64::MAX)
+}
+
 /// The scene is full; evict something and retry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutOfSpace;
@@ -801,6 +810,9 @@ pub struct OutOfSpace;
 struct TileEntry {
     meshes: Vec<MeshId>,
     placements: Vec<Placement>,
+    /// Its place in the tile order ([`Scene::set_tile_order`]); a tile
+    /// without one follows those with one.
+    order: Option<u64>,
 }
 
 /// A tile placement: its row in the placement table, and the row's values.
@@ -1073,9 +1085,9 @@ pub(crate) struct Scene {
     tiles: Vec<Option<TileEntry>>,
     free_tiles: Vec<u32>,
     meshes: Vec<Option<MeshEntry>>,
-    /// Per mesh, its tile's place in the last tile order: kept for its
+    /// Per mesh, its tile's place in the tile order: kept for its
     /// allocation.
-    tile_ranks: Vec<usize>,
+    tile_ranks: Vec<u64>,
     free_meshes: Vec<u32>,
     nodes: Vec<NodeEntry>,
     /// Node rows' layout (slices of the candidate lists and compacted
@@ -1372,23 +1384,28 @@ impl Scene {
         SubmitLimits::new(&self.capacity, self.index_bits)
     }
 
-    /// Orders tiles within each render node independently of upload order.
-    /// Meshes of the same tile keep their relative order; tiles not listed
-    /// follow the listed ones. The order persists until changed again.
-    pub(crate) fn set_tile_order(&mut self, tiles: &[TileId]) {
-        let order: rustc_hash::FxHashMap<_, _> = tiles
-            .iter()
-            .enumerate()
-            .map(|(index, &tile)| (tile, index))
-            .collect();
+    /// Orders tiles within each render node independently of upload order,
+    /// by the places `order` gives them, least first. Meshes of the same
+    /// tile keep their relative order; tiles not listed follow the listed
+    /// ones. The order persists until changed again: meshes inserted later
+    /// take their tile's place in it.
+    pub(crate) fn set_tile_order(&mut self, order: impl IntoIterator<Item = (TileId, u64)>) {
+        for entry in self.tiles.iter_mut().flatten() {
+            entry.order = None;
+        }
+        for (tile, place) in order {
+            self.tiles[tile.0 as usize]
+                .as_mut()
+                .expect("unknown tile")
+                .order = Some(place);
+        }
         // Each mesh's tile's place, looked up once rather than at every
         // comparison of the sorts.
         let ranks = &mut self.tile_ranks;
         ranks.clear();
-        ranks.extend(self.meshes.iter().map(|mesh| {
+        ranks.extend((self.meshes.iter()).map(|mesh| {
             mesh.as_ref()
-                .and_then(|m| order.get(&m.tile).copied())
-                .unwrap_or(usize::MAX)
+                .map_or(u64::MAX, |m| place(&self.tiles, m.tile))
         }));
         for node in &mut self.nodes {
             let key = |id: &MeshId| ranks[id.0 as usize];
@@ -1397,6 +1414,22 @@ impl Scene {
                 self.candidates_dirty = true;
             }
         }
+    }
+
+    /// Gives `tile`, which has no meshes yet, its place in the tile order
+    /// ([`set_tile_order`](Self::set_tile_order)).
+    pub(crate) fn order_tile(&mut self, tile: TileId, at: u64) {
+        let entry = self.tiles[tile.0 as usize].as_mut().expect("unknown tile");
+        debug_assert!(entry.meshes.is_empty(), "a tile with meshes moved");
+        entry.order = Some(at);
+    }
+
+    /// The tiles of render `node`'s meshes, in drawing order.
+    #[cfg(test)]
+    pub(crate) fn node_tiles(&self, node: u32) -> Vec<TileId> {
+        (self.nodes[node as usize].meshes.iter())
+            .map(|m| self.meshes[m.0 as usize].as_ref().expect("live mesh").tile)
+            .collect()
     }
 
     /// Whether render `node` has any resident mesh.
@@ -1894,7 +1927,15 @@ impl Scene {
         self.mesh_serials.resize(self.meshes.len(), 0);
         self.mesh_serials[id.0 as usize] = self.next_serial;
         self.next_serial += 1;
-        self.nodes[node as usize].meshes.push(id);
+        // In its tile's place in the tile order, after the tile's others.
+        let at = place(&self.tiles, tile);
+        let (meshes, tiles) = (&self.meshes, &self.tiles);
+        let node = &mut self.nodes[node as usize].meshes;
+        let index = node.partition_point(|m| {
+            let other = meshes[m.0 as usize].as_ref().expect("live mesh");
+            place(tiles, other.tile) <= at
+        });
+        node.insert(index, id);
         self.tiles[tile.0 as usize]
             .as_mut()
             .expect("checked above")

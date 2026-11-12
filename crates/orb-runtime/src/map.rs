@@ -454,7 +454,9 @@ pub(crate) struct LoadedStyle {
     pub(crate) reported_missing: HashSet<String>,
     /// The scene tiles of the background layers' quads.
     pub(crate) background: Option<crate::meshes::Background>,
-    /// Tiles with placements in publication order, parallel to sources.
+    /// The tiles the last frame drew, in drawing order, parallel to
+    /// sources: the next frame hides those it no longer draws, so only a
+    /// frame sets it.
     pub(crate) placed: Vec<Vec<TileIndex>>,
     /// Tiles that left the draw list but whose labels still draw until a
     /// placement covers what replaced them (`Labels::hold`), parallel to
@@ -2372,9 +2374,6 @@ impl Map {
         style.background = make_background(gpu, renderer, plan, globe);
         style.drawn = keys;
         style.paint.invalidate();
-        for placed in &mut style.placed {
-            placed.clear();
-        }
     }
 
     fn start_sprites(&mut self, gpu: &mut dyn Gpu, pixel_ratio: f32) {
@@ -3735,6 +3734,89 @@ mod gpu_tests {
             .unwrap();
         centre(&mut map, &mut gpu, &mut renderer);
         assert_eq!(requests(&mut map), [("v".into(), VideoRequest::Close)]);
+    }
+
+    /// A tile that leaves the draw list in the frame an edit's relayout of
+    /// it lands stops drawing all the same: once idle, the map draws what a
+    /// fresh one at its camera does. Jobs run inline, so the relayout's
+    /// results wait in full for the frame the camera zooms out in.
+    #[test]
+    fn a_tile_relaid_out_as_it_leaves_draws_no_more() {
+        let Ok(mut gpu) = pollster::block_on(WgpuGpu::offscreen()) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        // A line over four tiles' corner, half opaque: a tile drawn twice
+        // shows darker.
+        const STYLE: &str = r##"{"version": 8,
+            "sources": {"g": {"type": "geojson", "data":
+                {"type": "LineString", "coordinates": [[-20, -10], [20, 10]]}}},
+            "layers": [
+                {"id": "bg", "type": "background", "paint": {"background-color": "#fff"}},
+                {"id": "l", "type": "line", "source": "g",
+                 "paint": {"line-color": "#000", "line-opacity": 0.5, "line-width": 12}}]}"##;
+        let format = TargetFormat {
+            color: orb_hal::TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+        };
+        let target = gpu.create_texture(&orb_hal::TextureDesc {
+            label: "departure test",
+            width: 64,
+            height: 64,
+            array_layers: 1,
+            dimension: orb_hal::TextureViewDimension::D2,
+            format: format.color,
+            usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
+            sample_count: 1,
+            mip_levels: 1,
+        });
+        let viewport = Viewport {
+            width: 64.0,
+            height: 64.0,
+        };
+        let at = |zoom: f64| crate::CameraTarget {
+            center: Some(orb_crs::Geodetic::new(0.0, 0.0)),
+            zoom: Some(zoom),
+            ..crate::CameraTarget::default()
+        };
+        let settle = |map: &mut Map, gpu: &mut WgpuGpu, renderer: &mut Renderer| {
+            let mut was_idle = false;
+            for _ in 0..200 {
+                let idle = map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle;
+                if idle && was_idle {
+                    return pollster::block_on(gpu.read_texture(target));
+                }
+                was_idle = idle;
+            }
+            panic!("the map didn't settle");
+        };
+        let cap = r#"[["setLayoutProperty", "l", "line-cap", "round"]]"#;
+        let cap = crate::Transaction::from_commands(cap).unwrap();
+        let fetch = Arc::new(crate::testing::NoFetch);
+        let mut fresh = Map::new(crate::testing::services(fetch.clone()), None);
+        fresh.set_style_json(STYLE).unwrap();
+        fresh.edit(&cap).unwrap();
+        fresh.jump_to(&at(3.0));
+        let mut renderer = fresh.create_renderer(&mut gpu, format);
+        let expected = settle(&mut fresh, &mut gpu, &mut renderer);
+        drop((fresh, renderer));
+
+        let mut map = Map::new(crate::testing::services(fetch), None);
+        map.set_style_json(STYLE).unwrap();
+        let mut renderer = map.create_renderer(&mut gpu, format);
+        map.jump_to(&at(3.0));
+        settle(&mut map, &mut gpu, &mut renderer);
+        // Zoom 3's tiles stay cached while zoom 4's draw.
+        map.jump_to(&at(4.0));
+        settle(&mut map, &mut gpu, &mut renderer);
+        map.edit(&cap).unwrap();
+        // The relayouts land in the frame zoom 4's tiles leave.
+        map.jump_to(&at(3.0));
+        let pixels = settle(&mut map, &mut gpu, &mut renderer);
+        let differ = (pixels.chunks(4).zip(expected.chunks(4)))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(differ, 0, "pixels that differ from a fresh map's");
     }
 
     #[test]

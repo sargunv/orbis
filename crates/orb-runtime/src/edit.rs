@@ -568,8 +568,6 @@ impl Map {
                     )
                 })
                 .is_err();
-            // New meshes and parts take their place in the tile order.
-            style.placed[index].clear();
         }
         if no_room {
             drop(images);
