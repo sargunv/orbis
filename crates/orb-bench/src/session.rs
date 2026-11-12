@@ -675,9 +675,10 @@ impl SessionReport {
             "| session | frames | pipelines asked | late | made | buffers + textures made | MiB made | MiB \
              copied on the GPU | pool moves | MiB they made | MiB they copied | MiB uploaded | \
              upload calls | texture-write submissions | drape slots | peak frame MiB uploaded | \
-             peak frame MiB of tiles |"
+             peak frame MiB of tiles | layout ms on arrival frames p50 / max | most \
+             chunks left out |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(17))?;
+        writeln!(out, "|{}", "---|".repeat(19))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -698,6 +699,22 @@ impl SessionReport {
                     .map(|f| f.report.gpu.uploaded_bytes())
                     .max()
                     .unwrap_or(0);
+                // The candidate layout's stage (with the placement rows),
+                // in frames that took tiles (only a drawn frame lays out).
+                let mut layout: Vec<Duration> = (r.frames.iter().filter(keep))
+                    .filter(|f| f.report.tiles_arrived > 0)
+                    .map(|f| Duration::from_micros(u64::from(f.report.times.render.cull)))
+                    .collect();
+                layout.sort_unstable();
+                let layout = match layout.last() {
+                    Some(&max) => format!("{} / {}", ms(percentile(&layout, 0.5)), ms(max)),
+                    None => "—".into(),
+                };
+                // Chunks the cull's lists had no room for.
+                let left_out = (r.frames.iter().filter(keep))
+                    .map(|f| f.report.scene.candidates_dropped)
+                    .max()
+                    .unwrap_or(0);
                 let tiles = (r.frames.iter().filter(keep))
                     .map(|f| f.report.tile_bytes)
                     .max()
@@ -705,7 +722,7 @@ impl SessionReport {
                 writeln!(
                     out,
                     "| {} {what} | {n} | {} | {late} | {} | {} | {} | {} | {} | {} | {} | {} | {} | \
-                     {} | {slots} | {} | {} |",
+                     {} | {slots} | {} | {} | {layout} | {left_out} |",
                     r.name,
                     c.pipelines_requested,
                     c.pipelines_compiled,
@@ -734,7 +751,10 @@ impl SessionReport {
              size, and what they made and copied (part of the device's counts), in the frames \
              (all: and in the map's upkeep between them, at rest); peak frame: the most one frame \
              uploaded, with what was prepared before it; of tiles: the most of tiles' and edits' \
-             results one frame uploaded, which its budget's bytes bound."
+             results one frame uploaded, which its budget's bytes bound; layout: the render's \
+             cull stage (the candidates laid out again, and tile placement rows written) in \
+             frames that took tiles; chunks left out: the most one frame's cull lists had no \
+             room for."
         )?;
         writeln!(out)?;
         writeln!(
