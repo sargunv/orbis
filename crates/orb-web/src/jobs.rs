@@ -108,26 +108,25 @@ fn payload(
             if u64::from(buffer.byte_length()) != 2 * texels {
                 return Err("malformed DEM reply".into());
             }
+            // Its elevations straight from the buffer into wasm memory.
+            let count = width * width;
+            let elevations = js_sys::Float32Array::new_with_byte_offset_and_length(
+                &buffer,
+                texels as u32,
+                count,
+            )
+            .to_vec();
+            let dem = orb_tile::DemGrid::from_elevations(width, elevations)?;
             let bytes = gpu.register_array_buffer(buffer);
-            let elevations = gpu.read_host_bytes(bytes, texels..2 * texels);
-            let elevations = elevations.as_chunks::<4>().0.iter();
-            let elevations = elevations.map(|e| f32::from_le_bytes(*e)).collect();
-            let dem = orb_tile::DemGrid::from_elevations(width, elevations);
-            match dem {
-                Ok(dem) => Ok(TileResult {
-                    image: Some(TileImage {
-                        width,
-                        height: width,
-                        pixels: ImagePixels::Bytes { bytes, offset: 0 },
-                    }),
-                    dem: Some(Arc::new(dem)),
-                    ..TileResult::default()
+            Ok(TileResult {
+                image: Some(TileImage {
+                    width,
+                    height: width,
+                    pixels: ImagePixels::Bytes { bytes, offset: 0 },
                 }),
-                Err(e) => {
-                    gpu.release_host_bytes(bytes);
-                    Err(e)
-                }
-            }
+                dem: Some(Arc::new(dem)),
+                ..TileResult::default()
+            })
         }
         JobReply::Image { warp_grid, .. } => {
             let bitmap = crate::js::get(reply, "image")
@@ -373,11 +372,15 @@ fn dem_buffer(texels: &[u8], elevations: &[f32]) -> ArrayBuffer {
     let len = texels.len() + elevations.len() * 4;
     let array = js_sys::Uint8Array::new_with_length(len as u32);
     array.subarray(0, texels.len() as u32).copy_from(texels);
-    let elevations: Vec<u8> = elevations.iter().flat_map(|e| e.to_le_bytes()).collect();
-    array
-        .subarray(texels.len() as u32, len as u32)
-        .copy_from(&elevations);
-    array.buffer()
+    // A whole number of texels: the elevations start on a word.
+    let buffer = array.buffer();
+    js_sys::Float32Array::new_with_byte_offset_and_length(
+        &buffer,
+        texels.len() as u32,
+        elevations.len() as u32,
+    )
+    .copy_from(elevations);
+    buffer
 }
 
 /// A packed tile's reply: its head and payload copied once, into the

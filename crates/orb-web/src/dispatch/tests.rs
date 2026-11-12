@@ -276,4 +276,14 @@ fn a_geojson_source_s_tiles_share_one_worker() {
     assert_eq!(workers(geojson).len(), 1);
     let vector = (1..=2).find(|&k| k != geojson).unwrap();
     assert!(workers(vector).len() > 1);
+    // Another style's keys start afresh: its vector source may have the
+    // GeoJSON source's key, and spreads.
+    let other = r#"{"version":8,"sources":{
+        "vec":{"type":"vector","tiles":["test://{z}/{x}/{y}"]}},
+      "layers":[{"id":"b","type":"fill","source":"vec","source-layer":"x"}]}"#;
+    let other = Arc::new(TileWorker::new(other).unwrap());
+    jobs.set_style(2, &StyleUpdate::default(), &other);
+    assert!(other.whole_sources().is_empty());
+    assert_eq!(geojson, 1, "the vector source takes the GeoJSON's key");
+    assert!(workers(geojson).len() > 1);
 }

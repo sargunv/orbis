@@ -1195,6 +1195,8 @@ impl OrbisMap {
         }
         let started = orb_host::Clock::now(&crate::host::WebClock);
         self.take_replies(started + self.map.frame_budget_now().ms);
+        // Decoding them spent the frame's time for arrivals.
+        self.map.arrivals_began(started);
         let viewport = self.viewport();
         let (map, ratio, renderer) = (&mut self.map, self.pixel_ratio as f32, &mut self.renderer);
         let crate::canvas::Drawn {

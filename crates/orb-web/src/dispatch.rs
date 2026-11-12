@@ -79,9 +79,11 @@ struct State {
     /// [`HOMES`] of them, oldest first in `home_order`.
     homes: HashMap<(u32, TileIndex), u32>,
     home_order: VecDeque<(u32, TileIndex)>,
-    /// Sources whose every tile slices one document (GeoJSON), by key:
-    /// their tiles go to one worker, which parses and indexes it once.
+    /// Sources whose every tile slices one document (GeoJSON), by key,
+    /// as the style has them: their tiles go to one worker, which parses
+    /// and indexes it once, its home in `whole_homes` once it has one.
     whole: HashSet<u32>,
+    whole_homes: HashMap<u32, u32>,
     /// Replies received.
     done: u32,
 }
@@ -351,10 +353,13 @@ impl State {
     /// The worker `tile` of `source` went to, or the one with the fewest
     /// requests in flight, which becomes its home.
     fn home(&mut self, source: u32, tile: TileIndex) -> u32 {
-        // A whole source's home stays while the map does.
+        // A whole source's home stays while the style has the source.
         let whole = self.whole.contains(&source);
-        let key = (source, if whole { TileIndex::new(0, 0, 0) } else { tile });
-        if let Some(&worker) = self.homes.get(&key) {
+        let home = match whole {
+            true => self.whole_homes.get(&source),
+            false => self.homes.get(&(source, tile)),
+        };
+        if let Some(&worker) = home {
             return worker;
         }
         let mut busy = vec![0usize; self.lost.len()];
@@ -365,8 +370,8 @@ impl State {
             .filter(|&w| !self.lost[w])
             .min_by_key(|&w| busy[w])
             .unwrap_or(0) as u32;
-        self.homes.insert(key, worker);
         if whole {
+            self.whole_homes.insert(source, worker);
             return worker;
         }
         if self.home_order.len() == HOMES
@@ -374,7 +379,8 @@ impl State {
         {
             self.homes.remove(&oldest);
         }
-        self.home_order.push_back(key);
+        self.homes.insert((source, tile), worker);
+        self.home_order.push_back((source, tile));
         worker
     }
 }
@@ -390,8 +396,14 @@ fn route(lost: &[bool], preferred: u32) -> Option<u32> {
 impl Jobs for WorkerJobs {
     fn set_style(&self, style: u64, update: &StyleUpdate, worker: &Arc<TileWorker>) {
         {
+            // Keys are the style's own: another style's source may have
+            // a GeoJSON source's key, and spreads over the workers.
             let mut state = self.state.lock().expect("jobs poisoned");
-            state.whole.extend(worker.whole_sources());
+            state.whole = worker.whole_sources().into_iter().collect();
+            let State {
+                whole, whole_homes, ..
+            } = &mut *state;
+            whole_homes.retain(|source, _| whole.contains(source));
         }
         self.broadcast(&JobRequest::Style {
             style,

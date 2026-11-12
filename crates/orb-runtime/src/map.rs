@@ -838,6 +838,9 @@ pub struct Map {
     pub(crate) budget: u64,
     /// What a frame may spend on arrivals.
     pub(crate) frame_budget: FrameBudget,
+    /// When the host began the next frame's work on what arrived, on the
+    /// services' clock ([`Map::arrivals_began`]).
+    pub(crate) arrivals_began: Option<f64>,
     /// The next frame lets go of every cached tile out of view
     /// ([`Map::release_cached_tiles`]).
     pub(crate) release_cached: bool,
@@ -1052,6 +1055,7 @@ impl Map {
             fruitless: 0,
             budget: orb_render::DESKTOP_BUDGET,
             frame_budget: FrameBudget::DESKTOP,
+            arrivals_began: None,
             release_cached: false,
             tile_cache: true,
             style_id: 0,
@@ -1222,6 +1226,14 @@ impl Map {
     /// a host that decodes arrivals for it does so within its time.
     pub fn frame_budget_now(&self) -> crate::Budget {
         self.frame_budget.at(self.is_moving())
+    }
+
+    /// Says the host began the next frame's work on what arrived at `at`
+    /// on the services' clock, before the frame (the web decodes job
+    /// replies first): the frame's time for arrivals counts from then, so
+    /// the two share one budget.
+    pub fn arrivals_began(&mut self, at: f64) {
+        self.arrivals_began = Some(at);
     }
 
     /// What a job host that starts afresh needs to take this map's requests
@@ -1878,7 +1890,11 @@ impl Map {
         let started = clock.now();
         let asked = gpu.counters().pipelines_requested;
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
-        let deadline = self.open_beat(started);
+        let began = self
+            .arrivals_began
+            .take()
+            .map_or(started, |at| at.min(started));
+        let deadline = self.open_beat(began);
         // The renderer's gate: no memory moves while the camera does, but
         // for the renderer's first sizes. At rest the candidate lists and
         // glyph pages grow as the frame needs (the lists copy nothing), and
