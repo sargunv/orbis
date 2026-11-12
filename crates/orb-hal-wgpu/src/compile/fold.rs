@@ -42,6 +42,7 @@ pub(super) fn fold(module: &mut Module, constants: &[(String, f64)]) -> bool {
         let mut folder = Folder {
             expressions: &function.expressions,
             known: HashMap::new(),
+            loaded: HashMap::new(),
         };
         function.body = folder.block(body).0;
         // The `let`s' names, which keep what they name (some of it the
@@ -55,13 +56,15 @@ pub(super) fn fold(module: &mut Module, constants: &[(String, f64)]) -> bool {
     true
 }
 
-/// Folds a function's body: its expressions, and the values the folded
-/// code has stored in its locals so far. WGSL's `&&` and `||` come to naga
-/// as an `if` that stores either side into a local the condition then
-/// loads, so `with_patterns && x` folds through that local.
+/// Folds a function's body: its expressions, the values the folded code
+/// has stored in its locals so far, and what each load of a local read
+/// where it was emitted (a later store doesn't change it). WGSL's `&&` and
+/// `||` come to naga as an `if` that stores either side into a local the
+/// condition then loads, so `with_patterns && x` folds through that local.
 struct Folder<'a> {
     expressions: &'a Arena<Expression>,
     known: HashMap<Handle<LocalVariable>, bool>,
+    loaded: HashMap<Handle<Expression>, bool>,
 }
 
 impl Folder<'_> {
@@ -143,6 +146,18 @@ impl Folder<'_> {
                     out.push(Statement::Store { pointer, value }, span);
                     false
                 }
+                Statement::Emit(range) => {
+                    for at in range.clone() {
+                        if let Expression::Load { pointer } = self.expressions[at]
+                            && let Expression::LocalVariable(local) = self.expressions[pointer]
+                            && let Some(&value) = self.known.get(&local)
+                        {
+                            self.loaded.insert(at, value);
+                        }
+                    }
+                    out.push(Statement::Emit(range), span);
+                    false
+                }
                 returning @ Statement::Return { .. } => {
                     out.push(returning, span);
                     true
@@ -220,10 +235,7 @@ impl Folder<'_> {
     fn decided(&self, at: Handle<Expression>) -> Option<bool> {
         match self.expressions[at] {
             Expression::Literal(Literal::Bool(b)) => Some(b),
-            Expression::Load { pointer } => match self.expressions[pointer] {
-                Expression::LocalVariable(local) => self.known.get(&local).copied(),
-                _ => None,
-            },
+            Expression::Load { .. } => self.loaded.get(&at).copied(),
             Expression::Unary {
                 op: UnaryOperator::LogicalNot,
                 expr,
@@ -325,5 +337,28 @@ override plane: bool = false;
             1,
             "the second turn reads the table"
         );
+    }
+    /// A condition reads a local as it was loaded, not as later stores
+    /// left it.
+    #[test]
+    fn a_load_keeps_the_value_it_read() {
+        let source = "
+override plane: bool = false;
+@group(0) @binding(0) var<storage, read> table: array<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    var z = 0.0;
+    var on = i > 0u;
+    on = plane;
+    let was = on;
+    on = !plane;
+    if was { z += table[i]; }
+    if on { z += 1.0; }
+    return vec4<f32>(0.0, 0.0, z, 1.0);
+}
+";
+        let mut plane = naga::front::wgsl::parse_str(source).unwrap();
+        assert!(fold(&mut plane, &[("plane".to_owned(), 1.0)]));
+        validated(&plane);
+        assert_eq!(plane.global_variables.len(), 1, "the table is read");
     }
 }
