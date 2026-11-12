@@ -778,7 +778,7 @@ impl Map {
         let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
             .map(|r| (r.slot, r.shrink, &r.stacks[..]))
             .collect();
-        renderer.redraw_drape(&slots);
+        renderer.redraw_drape(zoom, &slots);
         let reaches = (redraw.iter())
             .map(|r| crate::terrain::Reach::of(&surface, r.tile, (zoom, reach_px)))
             .collect();
@@ -922,9 +922,10 @@ const DRAPE_ZOOM_STEPS: f64 = 32.0;
 /// The zoom drape slots are drawn at for a camera at style zoom `zoom`:
 /// the step below it, 1/[`DRAPE_ZOOM_STEPS`] of a level, so that a zooming
 /// camera redraws the slots whose content scales with the zoom once a
-/// step rather than every frame, at most 2% thin, and they show what a
-/// map at rest there shows, however the camera got there. Layers' zoom
-/// ranges end on steps, as their zooms are whole or halves. A zoom a
+/// step rather than every frame, at most 2.2% thin (2^(1/32)), and they
+/// show what a map at rest there shows, however the camera got there.
+/// Layers' zoom ranges end on steps where their zooms are whole, halves
+/// or any 32nd; elsewhere they take effect from the next step. A zoom a
 /// rounding error short of a step (a camera's zoom read back from its
 /// scale) is on it.
 pub(crate) fn drape_zoom(zoom: f64) -> f64 {

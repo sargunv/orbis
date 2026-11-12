@@ -1286,12 +1286,14 @@ impl Renderer {
     }
 
     /// Redraws these terrain tiles' drape slots this frame, at the side
-    /// each shrinks to ([`TerrainTile::shrink`]), in the stacks given: their
-    /// drape placements are in the scene, and every draped node's paint
-    /// was set ([`set_drape_paint`](Self::set_drape_paint)).
-    pub fn redraw_drape(&mut self, tile_slots: &[(u32, u8, &[u8])]) {
+    /// each shrinks to ([`TerrainTile::shrink`]), in the stacks given, as
+    /// a map at style zoom `zoom` draws: their drape placements are in the
+    /// scene, and every draped node's paint was set at that zoom
+    /// ([`set_drape_paint`](Self::set_drape_paint)). The drape pass's
+    /// frame takes it, for what its shaders blend by the zoom.
+    pub fn redraw_drape(&mut self, zoom: f64, tile_slots: &[(u32, u8, &[u8])]) {
         if let Some(terrain) = &mut self.terrain {
-            terrain.redraw(tile_slots);
+            terrain.redraw(zoom, tile_slots);
         }
     }
 

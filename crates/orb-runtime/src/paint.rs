@@ -183,7 +183,8 @@ pub(crate) fn frame(
     (fading, missing)
 }
 
-/// Writes the draped nodes' paint at the camera's `zoom` for drape layout
+/// Writes the draped nodes' paint at the drape's `zoom`
+/// ([`drape_zoom`](crate::frame::drape_zoom)) for drape layout
 /// `generation`, unless it was written there since it last changed:
 /// with the cross-fade of a zoom at rest, and left out where their layers
 /// don't draw. Each drape stack's [`drape_key`](PaintState::drape_key)
@@ -289,7 +290,7 @@ pub(crate) struct Crossfade {
     pub(crate) mix: f32,
 }
 
-/// The draped nodes' paint at the camera's zoom, and per drape stack what
+/// The draped nodes' paint at the drape's zoom, and per drape stack what
 /// tells its slots' content changed with it.
 #[derive(Debug, Default)]
 struct DrapePaint {

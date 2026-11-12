@@ -294,7 +294,7 @@ pub struct TileRow {
     /// World units per logical pixel at this placement's scale, as a
     /// multiple of the frame's: pixel sizes (line widths, translations)
     /// convert with it. 1 for a map placement; a drape placement's is its
-    /// slot's texels per logical pixel at the camera's zoom.
+    /// slot's texels per logical pixel at the zoom slots draw at.
     pub px_scale: f32,
     /// The DEM tile elevated content of this placement stands on.
     pub dem: DemRef,

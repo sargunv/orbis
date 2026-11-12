@@ -551,6 +551,8 @@ pub(crate) struct Terrain {
     /// side). In a page's order they're each stack's in turn, so each
     /// layer's.
     pending: Vec<(usize, u32, u32, u32)>,
+    /// The style zoom `pending` slots draw at: the drape pass's frame's.
+    zoom: f64,
     /// What the last frame's drawn mip levels rendered into, released
     /// by the next.
     mip_targets: crate::downsample::Transient,
@@ -687,6 +689,7 @@ impl Terrain {
             occlusion_size: [0; 2],
             target_samples: 0,
             pending: Vec::new(),
+            zoom: 0.0,
             mip_targets: Default::default(),
             paint: None,
             atmosphere,
@@ -948,9 +951,11 @@ impl Terrain {
         self.group.take().map(|(group, _)| group).release(gpu);
     }
 
-    /// Redraws tile slots' stacks this frame: per tile slot, its
-    /// [`shrink`](TerrainTile::shrink) and the stacks to redraw.
-    pub(crate) fn redraw(&mut self, tile_slots: &[(u32, u8, &[u8])]) {
+    /// Redraws tile slots' stacks this frame at style zoom `zoom`: per
+    /// tile slot, its [`shrink`](TerrainTile::shrink) and the stacks to
+    /// redraw.
+    pub(crate) fn redraw(&mut self, zoom: f64, tile_slots: &[(u32, u8, &[u8])]) {
+        self.zoom = zoom;
         let layout = self.layout_state;
         for &(tile, shrink, redrawn) in tile_slots {
             let stacks =
@@ -1520,7 +1525,8 @@ impl Terrain {
         }
     }
 
-    /// The drape frame: the map's, at its zoom, drawn into page `page`.
+    /// The drape frame: the map's, at the zoom its slots draw at
+    /// ([`redraw`](Self::redraw)), drawn into page `page`.
     pub(crate) fn drape_frame(
         &self,
         frame: &crate::scene::FrameBlock,
@@ -1542,8 +1548,12 @@ impl Terrain {
             camera: [0.0; 2],
             viewport: [w, h],
             // Drape placements' `px_scale` is their texels per logical
-            // pixel at the map's zoom.
+            // pixel at the slots' zoom.
             world_per_px: 1.0,
+            // What shaders blend by the zoom (per-feature values, feature
+            // state, patterns' scale) blends at the slots' zoom, as their
+            // paint does, not at the zoom of the frame that draws them.
+            zoom: self.zoom,
             pixel_ratio: 1.0,
             align: [0.0; 2],
             pitch: 0.0,

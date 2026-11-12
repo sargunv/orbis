@@ -1713,9 +1713,8 @@ mod tests {
         assert!(!Drawn::of(&tms, &away, None, 0.0).overlaps(&tms, terrain, (3.0, 0.0)));
     }
 
-    /// A drawn tile's regions reach a terrain tile's slots only where they
-    /// overlap it: a coarse tile over two terrain tiles draws its west
-    /// half's region into the west one alone.
+    /// A terrain tile's slots take the texels it shows at: full in a view
+    /// straight down, fewer for a pitched view's far tiles.
     #[test]
     fn slots_shrink_with_their_tiles_on_screen() {
         let tms = tms();
@@ -1751,6 +1750,9 @@ mod tests {
         );
     }
 
+    /// A drawn tile's regions reach a terrain tile's slots only where they
+    /// overlap it: a coarse tile over two terrain tiles draws its west
+    /// half's region into the west one alone.
     #[test]
     fn a_drawn_region_reaches_the_slots_it_overlaps() {
         let tms = tms();

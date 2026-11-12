@@ -672,6 +672,48 @@ fn a_zoom_within_a_drape_step_redraws_no_slots() {
     assert!(slots(12.09) > 0, "z12.09");
 }
 
+/// A per-feature line width the zoom blends, which the drape pass works
+/// out on the GPU, draws into a slot at its drape step too: a map zoomed
+/// within the step, which redraws no slot, draws what a fresh map there
+/// does. At the camera's own zoom, the slot kept the width of the frame
+/// that drew it.
+#[test]
+fn a_zoom_blended_feature_width_drapes_at_its_step() {
+    let (lon, lat) = (139.76, 35.68);
+    let (flat, _dem) = dem("flat", (139.2, 35.2, 140.3, 36.2), 11, |_, _| 0.0);
+    let style = format!(
+        r##"{{"version": 8,
+        "sources": {{{flat}
+          "line": {{"type": "geojson", "data": {{"type": "Feature", "properties": {{"w": 2}},
+            "geometry": {{"type": "LineString", "coordinates": [[{w}, {lat}], [{e}, {lat}]]}}}}}}
+        }},
+        "terrain": {{"source": "flat", "exaggeration": 1}},
+        "layers": [
+          {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+          {{"id": "line", "type": "line", "source": "line", "paint": {{"line-color": "#000000",
+              "line-width": ["interpolate", ["linear"], ["zoom"],
+                12, ["get", "w"], 13, ["*", 30, ["get", "w"]]]}}}}
+        ]}}"##,
+        w = lon - 0.2,
+        e = lon + 0.2,
+    );
+    // 12.1 and 12.12 are in the step from 12.09375.
+    let start = (Geodetic::new(lon, lat), 12.1, 0.0, 0.0);
+    let end = (Geodetic::new(lon, lat), 12.12, 0.0, 0.0);
+    // A line on white has too few colours for `assert_same`.
+    let (gestured, fresh) = both_ways(&style, start, end, 2);
+    let dark = |pixels: &[u8]| pixels.chunks(4).filter(|p| p[0] < 128).count();
+    assert!(dark(&fresh) > 0, "the line drew nothing");
+    let differ = (gestured.chunks(4).zip(fresh.chunks(4))).filter(|(a, b)| a != b);
+    assert_eq!(
+        differ.count(),
+        0,
+        "{} dark pixels gestured against {} fresh",
+        dark(&gestured),
+        dark(&fresh)
+    );
+}
+
 /// A fill draped on terrain and translated far, in a pitched view where
 /// near terrain tiles are of zooms past the camera's, draws whole: a slot
 /// takes the rows of drawn tiles as far around it as the translation
