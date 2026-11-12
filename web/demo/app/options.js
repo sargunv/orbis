@@ -106,6 +106,15 @@ export const OPTIONS = [
     // terrain of its own puts it in only when asked.
     initial: ({ scene }) => scene.terrain === true,
   },
+  // Fog draws only over terrain; a fog-ground blend of 1 puts it past the horizon.
+  {
+    key: "fog",
+    group: "Terrain and light",
+    label: "Fog",
+    kind: "switch",
+    needs: ["terrain", true, "With terrain on"],
+    ...skyNumber("fog-ground-blend", 0.5, 1, (v) => (v ?? 0.5) < 1),
+  },
   {
     key: "hillshade",
     group: "Terrain and light",
@@ -183,7 +192,7 @@ export const OPTIONS = [
       tx.setProjection({ ...style.projection, type }),
     initial: projectionByDesign,
   },
-  // The spec's defaults: atmosphere 0.8, fog over the far half of the view.
+  // The spec's default atmosphere, 0.8.
   {
     key: "atmosphere",
     group: "Globe and sky",
@@ -191,15 +200,6 @@ export const OPTIONS = [
     kind: "switch",
     needs: ["projection", "globe", "On the globe"],
     ...skyNumber("atmosphere-blend", 0.8, 0),
-  },
-  // Fog draws only over terrain; a fog-ground blend of 1 puts it past the horizon.
-  {
-    key: "fog",
-    group: "Globe and sky",
-    label: "Fog",
-    kind: "switch",
-    needs: ["terrain", true, "With terrain on"],
-    ...skyNumber("fog-ground-blend", 0.5, 1, (v) => (v ?? 0.5) < 1),
   },
   {
     key: "labels",
@@ -581,10 +581,6 @@ function rendererGroup(wanted, onPick) {
         "data-value": value,
         "aria-checked": String(value === wanted),
         tabindex: value === wanted ? "0" : "-1",
-        title:
-          value === "webgl2"
-            ? "In progress (#140): terrain draws flat, and the map says what else it draws otherwise"
-            : undefined,
         onclick: () => value !== wanted && onPick(value),
       },
       label,
@@ -593,16 +589,7 @@ function rendererGroup(wanted, onPick) {
   const row = h(
     "div",
     { class: "option-row wrap", "data-option": "backend" },
-    h(
-      "span",
-      { class: "option-text" },
-      active,
-      h(
-        "span",
-        { class: "option-note" },
-        "In progress, WebGL 2 draws terrain flat (#140)",
-      ),
-    ),
+    h("span", { class: "option-text" }, active),
     h(
       "span",
       {

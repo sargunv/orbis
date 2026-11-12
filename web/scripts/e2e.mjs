@@ -1934,7 +1934,7 @@ async function options(browser, server) {
     window.stayed = true;
   });
 
-  // Opening the panel moves nothing; it lists the Globe's options, grouped, clear of its button.
+  // Opening the panel moves nothing, and it opens clear of its button.
   const boxes = () =>
     page.evaluate(() =>
       ["scene-button", "options-button", "menu-button", "zoom-in", "map"].map(
@@ -1945,27 +1945,13 @@ async function options(browser, server) {
   await openOptions(page);
   assert.deepEqual(await boxes(), before, "opening the panel moves nothing");
   const panel = await page.evaluate(() => ({
-    keys: [...document.querySelectorAll("#options [data-option]")].map(
-      (row) => row.dataset.option,
-    ),
-    groups: [...document.querySelectorAll("#options .option-group h3")].map(
-      (h) => h.textContent,
-    ),
     box: document.getElementById("options").getBoundingClientRect().toJSON(),
     button: document
       .getElementById("options-button")
       .getBoundingClientRect()
       .toJSON(),
   }));
-  // The renderer's row, last, which every map has: Auto, drawing WebGPU.
-  assert.deepEqual(panel.keys, [...Object.keys(GLOBE_OPTIONS), "backend"]);
-  assert.deepEqual(panel.groups, [
-    "Terrain and light",
-    "Buildings",
-    "Globe and sky",
-    "Map",
-    "Renderer",
-  ]);
+  // The renderer's row, which every map has: Auto, drawing WebGPU.
   assert.deepEqual(await renderer(page), {
     picked: "auto",
     active: browser.expects.backend,

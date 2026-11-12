@@ -30,13 +30,13 @@ pub(crate) struct Context {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Opt {
     Terrain,
+    Fog,
     Hillshade,
     Blend,
     Light,
     Buildings,
     Projection,
     Atmosphere,
-    Fog,
     Labels,
 }
 
@@ -49,13 +49,13 @@ pub(crate) enum Kind {
 /// The panel's order.
 pub(crate) const ALL: [Opt; 9] = [
     Opt::Terrain,
+    Opt::Fog,
     Opt::Hillshade,
     Opt::Blend,
     Opt::Light,
     Opt::Buildings,
     Opt::Projection,
     Opt::Atmosphere,
-    Opt::Fog,
     Opt::Labels,
 ];
 
@@ -145,9 +145,11 @@ impl SkyNumber {
 impl Opt {
     pub(crate) fn group(self) -> &'static str {
         match self {
-            Opt::Terrain | Opt::Hillshade | Opt::Blend | Opt::Light => "Terrain and light",
+            Opt::Terrain | Opt::Fog | Opt::Hillshade | Opt::Blend | Opt::Light => {
+                "Terrain and light"
+            }
             Opt::Buildings => "Buildings",
-            Opt::Projection | Opt::Atmosphere | Opt::Fog => "Globe and sky",
+            Opt::Projection | Opt::Atmosphere => "Globe and sky",
             Opt::Labels => "Map",
         }
     }
