@@ -9,16 +9,12 @@
 #![forbid(unsafe_code)]
 
 mod command;
-#[cfg(feature = "recording")]
-mod recording;
 mod resource;
 
 pub use command::{
     ColorAttachment, ComputeCommand, ComputePass, DepthAttachment, LoadOp, Pass, RenderCommand,
     RenderPass, StoreOp, TextureCopy,
 };
-#[cfg(feature = "recording")]
-pub use recording::Recording;
 pub use resource::*;
 
 /// The GPU as core crates see it.

@@ -203,13 +203,8 @@ const SIZE: (u32, u32) = (512, 384);
 
 /// `scene`'s map on `gpu`, settled, then one frame more after the scene's
 /// edit if it has one (which a frame of a settled map may not draw
-/// otherwise: the terrain's drape redraws on a paint change), with
-/// `before_last` called on `gpu` just before that frame.
-pub(crate) fn settle<G: orb_hal::Gpu>(
-    gpu: &mut G,
-    scene: &Scene,
-    before_last: impl FnOnce(&mut G),
-) {
+/// otherwise: the terrain's drape redraws on a paint change).
+pub(crate) fn settle<G: orb_hal::Gpu>(gpu: &mut G, scene: &Scene) {
     use super::{Geodetic, Map, TargetFormat, Viewport};
     let url = &scene.url;
     let format = TargetFormat {
@@ -266,6 +261,5 @@ pub(crate) fn settle<G: orb_hal::Gpu>(
         let tx = orb_runtime::Transaction::from_commands(edit).unwrap();
         map.edit(&tx).unwrap();
     }
-    before_last(gpu);
     frame(&mut map, gpu);
 }

@@ -1,5 +1,5 @@
-//! Every offline scene's frames, settled and edited as the golden streams
-//! draw them, under the graphics API's own validation: Vulkan's Khronos
+//! Every offline scene's frames, settled and edited, under the graphics
+//! API's own validation: Vulkan's Khronos
 //! layer and D3D12's debug layer, which wgpu turns on in debug builds
 //! (or with `WGPU_VALIDATION=1`) where they're installed and whose
 //! findings wgpu-hal logs as errors. Any error fails the test. Metal's and
@@ -93,7 +93,7 @@ fn scenes_validate() {
         // Validation runs as commands are recorded and submitted; dropping
         // the device reports what it leaked.
         let mut gpu = pollster::block_on(WgpuGpu::offscreen()).unwrap();
-        settle(&mut gpu, &scene, |_| {});
+        settle(&mut gpu, &scene);
         drop(gpu);
         let errors = std::mem::take(&mut *LOG.errors.lock().unwrap());
         if !errors.is_empty() {
