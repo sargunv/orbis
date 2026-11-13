@@ -62,13 +62,13 @@ test("a call into a module not in yet throws, as a trap", async () => {
 
 test("a build's module writes its functions into the table", async () => {
   const { builds, call, name, split } = await context("0123456789abcdef");
-  builds.takeModule(name, split);
+  builds.takeModule("webgpu", name, split);
   assert.equal(call(), 42);
 });
 
 test("another build's module stays out rather than link into it", async () => {
   const { builds, call, name, split } = await context("fedcba9876543210");
-  assert.throws(() => builds.takeModule(name, split), {
+  assert.throws(() => builds.takeModule("webgpu", name, split), {
     message: "core-deferred.wasm is another build's",
   });
   assert.throws(call, (e) => e instanceof ModuleNotLoadedError);

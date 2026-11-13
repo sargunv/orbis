@@ -435,6 +435,8 @@ export interface MapEvents {
   load: Record<string, never>;
   /** No loads, fades, placement or camera motion: no more frames until something changes. */
   idle: Record<string, never>;
+  /** A failure. One that starts "the map stopped" is the map's last: it
+   * draws no more, and every call fails with the same message. */
   error: { message: string };
   /** Something in the style or its data the map can't draw as written. */
   warning: { message: string };
@@ -442,12 +444,17 @@ export interface MapEvents {
    * `styleimagemissing`); once per name until it's added with `addImage`. */
   styleimagemissing: { id: string };
   /** The GPU was lost (GL JS `webglcontextlost`): the map draws nothing
-   * until it has another, then reports `restored`. Failing that, `error`. */
+   * until it has another, then reports `restored`. Where WebGPU, picked by
+   * `auto`, gives no other device, the map starts again on WebGL 2 in a
+   * new canvas ({@link OrbisMap.canvas}) with its style as edits left it,
+   * its camera, constraints, gestures and added images. Failing that, an
+   * `error` that the map stopped. */
   lost: Record<string, never>;
   /** The map draws on a new GPU after a loss (GL JS
    * `webglcontextrestored`): its first frame there, the milliseconds since
-   * the loss. */
-  restored: { recoveredMs: number };
+   * the loss, and the GPU API it draws with now, `webgl2` after WebGPU
+   * fell back. */
+  restored: { recoveredMs: number; backend: "webgpu" | "webgl2" };
   /** The map's GPU lacks something the style uses, so `layers` draw
    * otherwise than on WebGPU (`gap`).
    * Once per gap whenever the style or the GPU changes what's degraded. */

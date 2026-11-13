@@ -31,6 +31,9 @@ export interface Build {
   module: WebAssembly.Module;
   /** Why not WebGPU, for core-gl.wasm picked by `auto`. */
   noWebgpu?: string;
+  /** WebGPU was expected to draw and didn't: it failed, didn't answer, or
+   * its map stopped working. */
+  unexpected?: true;
   /** The map asked for this backend rather than leaving it to `auto`. */
   forced?: true;
 }
@@ -117,23 +120,29 @@ export function bindings(backend: Backend): Promise<Bindings> {
 const compile = (url: URL, init?: RequestInit) =>
   WebAssembly.compileStreaming(fetch(url, init));
 
-/** This context's instance of its build, once made, and the modules it
- * calls through placeholders: none for a whole build (a profiled or
- * panicking one), which holds every module's code. */
-let instance:
-  | {
-      backend: Backend;
-      exports: WebAssembly.Exports;
-      split: Set<string>;
-      pair: string | undefined;
-    }
-  | undefined;
-/** The modules this context has, compiled, and those linked into its
- * instance. */
-const held = new Map<ModuleName, WebAssembly.Module>();
-const linked = new Set<ModuleName>();
-/** Modules this context is fetching. */
-const fetching = new Map<ModuleName, Promise<WebAssembly.Module>>();
+/** What this context has of one build. A context holds both builds once
+ * a map falls back from WebGPU to WebGL 2. */
+interface Held {
+  /** Its instance, once made, and the modules it calls through
+   * placeholders: none for a whole build (a profiled or panicking one),
+   * which holds every module's code. */
+  instance?: {
+    exports: WebAssembly.Exports;
+    split: Set<string>;
+    pair: string | undefined;
+  };
+  /** Its modules, compiled, and those linked into its instance. */
+  modules: Map<ModuleName, WebAssembly.Module>;
+  linked: Set<ModuleName>;
+  /** Its modules being fetched. */
+  fetching: Map<ModuleName, Promise<WebAssembly.Module>>;
+}
+const held = (): Held => ({
+  modules: new Map(),
+  linked: new Set(),
+  fetching: new Map(),
+});
+const builds: Record<Backend, Held> = { webgpu: held(), webgl2: held() };
 const started = new WeakSet<Bindings>();
 
 /** Binds `glue` to an instance of `build`'s module: this context's map
@@ -165,33 +174,29 @@ export function instantiate(
     );
   }
   const made = new WebAssembly.Instance(module, imports);
-  instance = {
-    backend: build.backend,
-    exports: made.exports,
-    split,
-    pair: pair(module),
-  };
+  const own = builds[build.backend];
+  own.instance = { exports: made.exports, split, pair: pair(module) };
   glue.__wbg_finalize_init(made, module);
-  for (const name of held.keys()) {
+  for (const name of own.modules.keys()) {
     // Another build's module stays out: asked for again, it loads again.
     try {
-      link(name);
+      link(own, name);
     } catch (e) {
       console.warn(e);
     }
   }
 }
 
-/** Writes module `name`'s functions into this context's instance, if
- * both are here and it isn't yet. Another build's module (a stale copy, a
- * cache) would write other functions into the table: it throws, and stays
- * out. */
-function link(name: ModuleName): void {
-  const module = held.get(name);
+/** Writes module `name`'s functions into `build`'s instance, if both are
+ * here and it isn't yet. Another build's module (a stale copy, a cache)
+ * would write other functions into the table: it throws, and stays out. */
+function link(build: Held, name: ModuleName): void {
+  const { instance, modules, linked } = build;
+  const module = modules.get(name);
   if (!instance || !module || linked.has(name)) return;
   if (instance.split.has(name)) {
     if (pair(module) !== instance.pair) {
-      held.delete(name);
+      modules.delete(name);
       throw new Error(`core-${name}.wasm is another build's`);
     }
     new WebAssembly.Instance(module, { primary: instance.exports });
@@ -199,11 +204,16 @@ function link(name: ModuleName): void {
   linked.add(name);
 }
 
-/** Hands this context module `name`, compiled elsewhere: its instance
- * takes it now, or when it's made. */
-export function takeModule(name: ModuleName, module: WebAssembly.Module) {
-  if (!held.has(name)) held.set(name, module);
-  link(name);
+/** Hands this context `backend`'s module `name`, compiled elsewhere: the
+ * build's instance takes it now, or when it's made. */
+export function takeModule(
+  backend: Backend,
+  name: ModuleName,
+  module: WebAssembly.Module,
+) {
+  const build = builds[backend];
+  if (!build.modules.has(name)) build.modules.set(name, module);
+  link(build, name);
 }
 
 /** Fetches and compiles `backend`'s module `name` (once per context), and
@@ -213,7 +223,8 @@ export function loadModule(
   backend: Backend,
   name: ModuleName,
 ): Promise<WebAssembly.Module> {
-  const have = held.get(name);
+  const { modules, fetching } = builds[backend];
+  const have = modules.get(name);
   if (have) return Promise.resolve(have);
   let load = fetching.get(name);
   if (!load) {
@@ -221,7 +232,7 @@ export function loadModule(
     const init = name === "api" ? ({ priority: "low" } as RequestInit) : {};
     load = compile(MODULES[backend][name], init).then(
       (module) => {
-        takeModule(name, module);
+        takeModule(backend, name, module);
         return module;
       },
       (e) => {
@@ -235,10 +246,12 @@ export function loadModule(
   return load;
 }
 
-/** The modules this context has, compiled: what a worker it spawns
- * starts with. */
-export function heldModules(): [ModuleName, WebAssembly.Module][] {
-  return [...held];
+/** `backend`'s modules this context has, compiled: what a worker it
+ * spawns on that build starts with. */
+export function heldModules(
+  backend: Backend,
+): [ModuleName, WebAssembly.Module][] {
+  return [...builds[backend].modules];
 }
 
 /** Whether `name` is a feature module's name. */
@@ -258,21 +271,63 @@ export function loadCore(): Promise<Bindings> {
         backend: "webgpu",
         module: await compile(WASM.webgpu),
       });
-    await loadModule(instance?.backend ?? "webgpu", "api");
+    await loadModule("webgpu", "api");
     return glue;
   })();
   return loaded;
 }
 
-/** Why WebGPU gives no adapter here, if it doesn't. */
-async function noWebgpu(gpu: GPU | undefined): Promise<string | undefined> {
-  if (!gpu) return "this browser has none";
+/** How long WebGPU is given to answer for an adapter. It answers in tens
+ * of milliseconds; a browser whose GPU process is wedged may never answer,
+ * and a map waiting on it would never start. */
+export const ADAPTER_MS = 5000;
+
+/** Why WebGPU gives no adapter here, if it doesn't, and whether that is
+ * unexpected: it failed, or didn't answer in `ADAPTER_MS`. */
+async function noWebgpu(
+  gpu: GPU | undefined,
+): Promise<{ why?: string; unexpected?: true }> {
+  if (!gpu) return { why: "this browser has none" };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<{ why: string; unexpected: true }>((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve({
+          why: `it didn't answer for an adapter in ${ADAPTER_MS / 1000} s`,
+          unexpected: true,
+        }),
+      ADAPTER_MS,
+    );
+  });
+  const answer = Promise.resolve()
+    .then(() => gpu.requestAdapter())
+    .then(
+      (adapter) => (adapter ? {} : { why: "it found no GPU here" }),
+      (e) => ({
+        why: `it failed: ${e instanceof Error ? e.message : e}`,
+        unexpected: true as const,
+      }),
+    );
   try {
-    if (await gpu.requestAdapter()) return undefined;
-    return "it found no GPU here";
-  } catch (e) {
-    return `it failed: ${e instanceof Error ? e.message : e}`;
+    return await Promise.race([answer, late]);
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+/** core-gl.wasm, compiled. */
+const gl = (
+  build: Pick<Build, "noWebgpu" | "forced" | "unexpected">,
+): Promise<Build> =>
+  compile(WASM.webgl2).then((module) => ({
+    backend: "webgl2",
+    module,
+    ...build,
+  }));
+
+/** core-gl.wasm, for a map whose WebGPU stopped working (`why`). */
+export function fallbackBuild(why: string): Promise<Build> {
+  return gl({ noWebgpu: why, unexpected: true });
 }
 
 /** This context's build for `choice`, compiled. `auto`: core.wasm where
@@ -280,34 +335,25 @@ async function noWebgpu(gpu: GPU | undefined): Promise<string | undefined> {
  * core.wasm downloads while the adapter is asked for, so a WebGPU map
  * waits for nothing new, and without it core-gl.wasm downloads at once.
  * `webgl2` downloads only core-gl.wasm and asks WebGPU nothing; `webgpu`
- * rejects, saying why, where WebGPU gives no adapter. `gpu` is this
- * context's WebGPU, if it has one. */
+ * rejects, saying why, where WebGPU gives no adapter, as where it doesn't
+ * answer in `ADAPTER_MS`. `gpu` is this context's WebGPU, if it has one. */
 export function pickBuild(
   gpu = (globalThis.navigator as { gpu?: GPU } | undefined)?.gpu,
   choice: BackendChoice = "auto",
 ): Promise<Build> {
-  if (choice === "webgl2")
-    return compile(WASM.webgl2).then((module) => ({
-      backend: "webgl2",
-      module,
-      forced: true,
-    }));
+  if (choice === "webgl2") return gl({ forced: true });
   const likely = gpu ? compile(WASM.webgpu) : undefined;
   likely?.catch(() => {});
   return (async () => {
-    const missing = await noWebgpu(gpu);
-    if (missing === undefined)
+    const { why, unexpected } = await noWebgpu(gpu);
+    if (why === undefined)
       return {
         backend: "webgpu",
         module: await likely!,
         ...(choice === "webgpu" && { forced: true as const }),
       };
     if (choice === "webgpu")
-      throw new Error(`Orbis can't draw with WebGPU, as asked: ${missing}`);
-    return {
-      backend: "webgl2",
-      module: await compile(WASM.webgl2),
-      noWebgpu: missing,
-    };
+      throw new Error(`Orbis can't draw with WebGPU, as asked: ${why}`);
+    return gl({ noWebgpu: why, ...(unexpected && { unexpected }) });
   })();
 }

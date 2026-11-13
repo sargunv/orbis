@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 
-const { pickBuild } = await import("./builds.ts");
+const { ADAPTER_MS, fallbackBuild, pickBuild } = await import("./builds.ts");
 
 // A "compiled" build is the name of the file fetched for it.
 const fetched: string[] = [];
@@ -74,5 +74,45 @@ test("webgpu draws WebGPU, and fails saying why where it gives no adapter", asyn
   });
   await assert.rejects(pick(undefined, "webgpu"), {
     message: "Orbis can't draw with WebGPU, as asked: this browser has none",
+  });
+});
+
+test("auto draws WebGL 2 where WebGPU fails or never answers, saying so", async () => {
+  const failing = {
+    requestAdapter: async () => {
+      throw new Error("the GPU process is gone");
+    },
+  } as unknown as GPU;
+  assert.deepEqual(await pick(failing), {
+    backend: "webgl2",
+    module: "core-gl_bg.wasm",
+    noWebgpu: "it failed: the GPU process is gone",
+    unexpected: true,
+    fetched: ["core_bg.wasm", "core-gl_bg.wasm"],
+  });
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const silent = {
+      requestAdapter: () => new Promise(() => {}),
+    } as unknown as GPU;
+    const picked = pickBuild(silent);
+    mock.timers.tick(ADAPTER_MS);
+    assert.deepEqual(await picked, {
+      backend: "webgl2",
+      module: "core-gl_bg.wasm",
+      noWebgpu: `it didn't answer for an adapter in ${ADAPTER_MS / 1000} s`,
+      unexpected: true,
+    });
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a map whose WebGPU stopped working falls back to WebGL 2, saying why", async () => {
+  assert.deepEqual(await fallbackBuild("the GPU was lost"), {
+    backend: "webgl2",
+    module: "core-gl_bg.wasm",
+    noWebgpu: "the GPU was lost",
+    unexpected: true,
   });
 });

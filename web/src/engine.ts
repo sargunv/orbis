@@ -66,9 +66,13 @@ export interface Report {
   /** The box a Shift-drag zooms to, as corners, or null once it's gone;
    * absent when unchanged. */
   box?: number[] | null;
-  /** Why the map stopped, once its wasm trapped: the message its calls
-   * fail with from now on, which its `error` event said. */
+  /** Why the map stopped, once its wasm trapped or its GPU was lost for
+   * good: the message its calls fail with from now on, which its `error`
+   * event said. */
   stopped?: string;
+  /** WebGPU, picked by `auto`, is lost for good (`why`, since `lostAt`):
+   * the page starts the map again on WebGL 2, or stops this one. */
+  fallback?: { why: string; lostAt: number };
 }
 
 /** Pixels the map read back: straight RGBA, or the canvas's bytes. */
@@ -200,6 +204,8 @@ export class Engine {
   #deviceAt = performance.now();
   #losses = 0;
   #removed = false;
+  /** Why the map stopped: every call fails with it. */
+  #stopped: string | undefined;
   /** The annotations' points, [lon, lat, …]. */
   #annotations: Float64Array = new Float64Array(0);
   /** The box zoom's corners last reported, as text. */
@@ -269,6 +275,14 @@ export class Engine {
     );
     host.resize(...setup.size);
     engine = new Engine(host, setup, report);
+    // WebGPU expected to draw didn't: the page hears why.
+    if (host.unexpected)
+      engine.#events.push({
+        type: "warning",
+        data: {
+          message: `the map draws with WebGL 2. WebGPU: ${host.unexpected}`,
+        },
+      });
     // The first frame takes the style in and asks for its tiles.
     engine.wake();
     // The API's module comes once the map is idle, out of the first
@@ -285,6 +299,8 @@ export class Engine {
   /** Calls `method`: at once, or once the API's module is in, for a call
    * that needs it, and any call made while one waits. */
   call(method: string, args: unknown[]): Promise<unknown> {
+    if (this.#stopped !== undefined)
+      return Promise.reject(new Error(this.#stopped));
     const run = () =>
       (this[method as keyof Engine] as (...a: unknown[]) => unknown)(...args);
     const needs = API_CALLS.has(method) && !this.#host.modules().has("api");
@@ -341,6 +357,11 @@ export class Engine {
   /** The GPU API the map draws with. */
   get backend(): Backend {
     return this.#host.backend;
+  }
+
+  /** The feature modules the map has. */
+  modules(): ReadonlySet<ModuleName> {
+    return this.#host.modules();
   }
 
   /** What the page reads without asking. */
@@ -713,6 +734,20 @@ export class Engine {
     this.#frameClock = time;
   }
 
+  /** Ports apps' workers feed heights through, which the map no longer
+   * answers: for another map to take. */
+  takePorts(): MessagePort[] {
+    return this.#ports.splice(0);
+  }
+
+  /** Stops the map for good, saying why with one `error`: every call
+   * fails with `message` from now on. */
+  end(message: string): void {
+    if (this.#removed) return;
+    this.#halt(message);
+    this.#host.destroy();
+  }
+
   /** Stops drawing and releases the map's workers. */
   remove(): void {
     if (this.#removed) return;
@@ -796,7 +831,7 @@ export class Engine {
     this.#events.push({ type: "lost", data: {} });
     const wait = BACKOFF_MS[this.#losses - 1];
     if (wait === undefined) {
-      this.#fail(
+      this.#gone(
         `the GPU was lost ${this.#losses} times in a row, each device within ` +
           `${STABLE_MS / 1000} s of the last, so no other is made`,
       );
@@ -812,23 +847,47 @@ export class Engine {
           this.#deviceAt = performance.now();
           this.#request();
         },
-        (e) => this.#fail(`the GPU was lost and no other could be made: ${e}`),
+        (e) =>
+          this.#gone(
+            `the GPU was lost and no other could be made: ${e instanceof Error ? e.message : e}`,
+          ),
       );
     }, wait);
+  }
+
+  /** The GPU is lost for good: WebGPU picked by `auto` hands the map to
+   * the page to start again on WebGL 2; anything else stops it. */
+  #gone(why: string): void {
+    if (this.#removed) return;
+    if (this.backend === "webgpu" && !this.#host.forced)
+      this.#send({ fallback: { why, lostAt: this.#lostAt ?? 0 } });
+    else this.end(`the map stopped: ${why}`);
   }
 
   /** The wasm map trapped: it draws no more, and says why once. Its
    * calls throw `e` from now on. */
   #trapped(e: Error): void {
     if (this.#removed) return;
+    this.#halt(e.message);
+  }
+
+  /** Draws no more, and says why once: calls fail with `message`. */
+  #halt(message: string): void {
+    // The state as the last frame left it, or as the wasm map says if it
+    // still can, before any frame.
+    let state = this.#state;
+    try {
+      state ??= this.state();
+    } catch {
+      // It trapped.
+    }
     this.#removed = true;
+    this.#stopped = message;
     this.#loop.stop();
     const events = this.#events;
     this.#events = [];
-    events.push({ type: "error", data: { message: e.message } });
-    // The state as the last frame left it: the wasm map can't say.
-    if (this.#state)
-      this.#report({ state: this.#state, events, stopped: e.message });
+    events.push({ type: "error", data: { message } });
+    if (state) this.#report({ state, events, stopped: message });
   }
 
   /** A failure, as an `error` event. */
@@ -899,7 +958,10 @@ export class Engine {
           if (this.#recovering === undefined) break;
           const recoveredMs = performance.now() - this.#recovering;
           this.#recovering = undefined;
-          out.push({ type: "restored", data: { recoveredMs } });
+          out.push({
+            type: "restored",
+            data: { recoveredMs, backend: this.backend },
+          });
           break;
         }
         case "camera": {

@@ -56,6 +56,11 @@ export interface Host {
   readonly core: Core;
   /** The GPU API it draws with: its build's. */
   readonly backend: Backend;
+  /** The map asked for its backend rather than leaving it to `auto`. */
+  readonly forced: boolean;
+  /** Why it draws with WebGL 2 where WebGPU was expected to work: WebGPU
+   * failed or didn't answer for an adapter, or the map fell back. */
+  readonly unexpected: string | undefined;
   resize(width: number, height: number, ratio: number): void;
   /** Loses the GPU on purpose, to exercise recovery. */
   loseDevice(): void;
@@ -222,6 +227,8 @@ export async function startHost(
   return {
     core,
     backend: build.backend,
+    forced: !!build.forced,
+    unexpected: build.unexpected && build.noWebgpu,
     resize: (width, height, ratio) => {
       size = [width, height, ratio];
       core.resize(width, height, ratio);

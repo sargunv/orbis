@@ -55,7 +55,7 @@ function spawn(build: Build | Promise<Build>, placement: boolean): Spawned {
         {
           backend,
           module,
-          modules: heldModules(),
+          modules: heldModules(backend),
           port: channel.port2,
           placement,
         },

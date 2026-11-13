@@ -43,17 +43,21 @@ interface ModuleMessage {
   compiled: WebAssembly.Module;
 }
 
+/** This worker's build. */
+let build: Backend = "webgpu";
+
 /** Takes a feature module the map sent, if `data` is one. */
 function moduleMessage(data: unknown): boolean {
   const { module, compiled } = (data ?? {}) as Partial<ModuleMessage>;
   if (module === undefined || !compiled) return false;
-  takeModule(module, compiled);
+  takeModule(build, module, compiled);
   return true;
 }
 
 self.onmessage = async ({ data }: MessageEvent<Start>) => {
   const { backend, module, modules, port, placement } = data;
-  for (const [name, compiled] of modules) takeModule(name, compiled);
+  build = backend;
+  for (const [name, compiled] of modules) takeModule(backend, name, compiled);
   const glue = await bindings(backend);
   instantiate(glue, { backend, module });
   // A trap (a Rust panic) leaves the wasm unusable: the worker says it is
