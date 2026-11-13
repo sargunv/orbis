@@ -2300,16 +2300,10 @@ impl Gpu for WgpuGpu {
                                 depth_slice: None,
                                 resolve_target: color.resolve.map(|id| self.view(id)),
                                 ops: wgpu::Operations {
-                                    load: match color.load {
-                                        LoadOp::Clear([r, g, b, a]) => {
-                                            wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a })
-                                        }
-                                        LoadOp::Load => wgpu::LoadOp::Load,
-                                    },
-                                    store: match color.store {
-                                        StoreOp::Store => wgpu::StoreOp::Store,
-                                        StoreOp::Discard => wgpu::StoreOp::Discard,
-                                    },
+                                    load: convert::load_op(color.load, |[r, g, b, a]| {
+                                        wgpu::Color { r, g, b, a }
+                                    }),
+                                    store: convert::store_op(color.store),
                                 },
                             })
                         })
@@ -2318,27 +2312,18 @@ impl Gpu for WgpuGpu {
                         label: Some(render.label),
                         color_attachments: &colors,
                         depth_stencil_attachment: render.depth.as_ref().map(|depth| {
-                            let store = match depth.store {
-                                StoreOp::Store => wgpu::StoreOp::Store,
-                                StoreOp::Discard => wgpu::StoreOp::Discard,
-                            };
+                            let store = convert::store_op(depth.store);
                             // A stencil clears and stores as the depth does.
                             let stencil = (self.textures[depth.target.0].texture.as_ref())
                                 .is_some_and(|t| t.format().has_stencil_aspect());
                             wgpu::RenderPassDepthStencilAttachment {
                                 view: self.view(depth.target),
                                 depth_ops: Some(wgpu::Operations {
-                                    load: match depth.load {
-                                        LoadOp::Clear(v) => wgpu::LoadOp::Clear(v),
-                                        LoadOp::Load => wgpu::LoadOp::Load,
-                                    },
+                                    load: convert::load_op(depth.load, |v| v),
                                     store,
                                 }),
                                 stencil_ops: stencil.then_some(wgpu::Operations {
-                                    load: match depth.load {
-                                        LoadOp::Clear(_) => wgpu::LoadOp::Clear(0),
-                                        LoadOp::Load => wgpu::LoadOp::Load,
-                                    },
+                                    load: convert::load_op(depth.load, |_| 0),
                                     store,
                                 }),
                             }

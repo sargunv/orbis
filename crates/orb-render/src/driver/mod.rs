@@ -109,7 +109,6 @@ impl Kind {
         }
     }
 
-    /// The tables the CPU keeps copies of, for the driver to read.
     /// The tables it keeps copies of for the CPU to read, and whether it
     /// keeps the blocks' index pools too.
     pub(crate) fn mirrored(self) -> (&'static [Table], bool) {

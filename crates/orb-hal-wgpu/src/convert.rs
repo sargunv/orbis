@@ -139,6 +139,21 @@ pub(crate) fn bind_group_layout_entry(entry: &BindGroupLayoutEntry) -> wgpu::Bin
     }
 }
 
+/// An attachment's load, its clear value made by `clear`.
+pub(crate) fn load_op<T, U>(load: LoadOp<T>, clear: impl FnOnce(T) -> U) -> wgpu::LoadOp<U> {
+    match load {
+        LoadOp::Clear(value) => wgpu::LoadOp::Clear(clear(value)),
+        LoadOp::Load => wgpu::LoadOp::Load,
+    }
+}
+
+pub(crate) fn store_op(store: StoreOp) -> wgpu::StoreOp {
+    match store {
+        StoreOp::Store => wgpu::StoreOp::Store,
+        StoreOp::Discard => wgpu::StoreOp::Discard,
+    }
+}
+
 #[cfg(not(webgpu))]
 pub(crate) fn color_target(target: ColorTargetState) -> wgpu::ColorTargetState {
     wgpu::ColorTargetState {
