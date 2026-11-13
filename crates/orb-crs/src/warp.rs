@@ -1,6 +1,5 @@
-//! A tile matrix set's tiles on another plane (the `RasterWarp` plan):
-//! where each tile lands, for cover, and an error-bounded mesh that
-//! carries the tile's image there.
+//! A tile matrix set's tiles on another plane: where each tile lands, for
+//! cover, and an error-bounded mesh that carries the tile's image there.
 
 use rustc_hash::FxHashMap as HashMap;
 
@@ -571,8 +570,8 @@ impl Warp {
         (area > 0.0 && area.is_finite()).then(|| area.sqrt())
     }
 
-    /// The tile's position on the target plane as quadratic patches (the
-    /// `GpuPerVertex` plan's precision series): the fewest equal patches,
+    /// The tile's position on the target plane as quadratic patches, which
+    /// the GPU evaluates per vertex: the fewest equal patches,
     /// at most 256, over the part of the tile the target projects
     /// ([`Series::window`]) whose quadratics stay within `tolerance` of the
     /// tile's side of the true position, or `None` where that part leaves

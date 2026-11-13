@@ -39,9 +39,9 @@ pub enum Binding {
     Constant,
     /// A zoom curve: a node uniform rewritten as the camera zooms.
     Camera,
-    /// Per feature: property rows (`TableLookup`).
+    /// Per feature: property rows.
     Source,
-    /// Per feature and zoom: property rows at two zooms (`TableCurve`).
+    /// Per feature and zoom: property rows at two zooms.
     Composite,
     /// Per feature state only, not feature data: the state table
     /// (`StateLookup`). Values that read both are rows, which the state

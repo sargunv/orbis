@@ -1,7 +1,6 @@
-//! Subdivision along a grid, for tiles drawn through a curved warp onto
-//! another plane (`GpuPerVertex`): mapped vertices then follow the
-//! curve between them, and the vertices on a tile's edges fall on grid lines
-//! its neighbours share.
+//! Subdivision along a grid, for tiles the GPU warps per vertex onto
+//! another plane: mapped vertices then follow the curve between them, and
+//! the vertices on a tile's edges fall on grid lines its neighbours share.
 
 use crate::{GeometryType, Layer, TileFrame, clip_ring};
 

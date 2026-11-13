@@ -4,7 +4,7 @@
 //!
 //! A job-side core crate: no I/O, threads or GPU. The runtime evaluates
 //! the layer's layout properties per feature and resolves glyphs through
-//! `orb-text`; [`layout`] shapes each label, places anchors, and writes a
+//! `orb-text`; [`layout()`] shapes each label, places anchors, and writes a
 //! [`SymbolBucket`]: flat `Pod` tables for the placement lane and the GPU
 //! symbol pass. Quads name glyphs by tile-local [`orb_text::GlyphId`] and
 //! images by [`TileImages`] index; atlas coordinates never enter the data.

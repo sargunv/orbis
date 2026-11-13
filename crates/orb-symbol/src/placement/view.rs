@@ -81,7 +81,7 @@ pub struct TileGlobe {
     pub plane: bool,
     /// On the sphere, a Web Mercator tile's units → Web Mercator world
     /// metres: a point past the tile goes on exactly from the tile's edge,
-    /// as the shader's `mercator_sphere` carries it, rather than along the
+    /// as the shader's `mercator_step` carries it, rather than along the
     /// edge patch extrapolated.
     pub mercator: Option<glam::DAffine2>,
 }

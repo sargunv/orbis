@@ -21,13 +21,15 @@
 //! stroke drawn from a neighbour's line in the buffer reaches into the tile,
 //! as GL JS's unclipped buckets do. The fragment shader must discard outside
 //! the actual tile square; what lies well past it chunks apart
-//! ([`MeshBuilder::set_focus`]), for the cull to drop. Clipped ends use butt caps. Sharp-corner vertices use MapLibre's 512-pixel tile at overscaling 1.
+//! ([`MeshBuilder::set_focus`]), for the cull to drop. Clipped ends use butt
+//! caps. Sharp-corner vertices use MapLibre's 512-pixel tile at overscaling
+//! 1. Distance follows the pinned shader's two-tile-unit quantization.
 //!
-//! Extrusion ported from MapLibre GL JS 2b68611a4e2d4f7f076f6c6ebf758e2d53f91471, src/data/bucket/line_bucket.ts
-//! (addLine, addCurrentVertex, addHalfVertex and the fakeround pie slices):
+//! Extrusion is ported from MapLibre GL JS's `src/data/bucket/line_bucket.ts`
+//! (addLine, addCurrentVertex, addHalfVertex and the fakeround pie slices) at
 //! <https://github.com/maplibre/maplibre-gl-js/blob/2b68611a4e2d4f7f076f6c6ebf758e2d53f91471/src/data/bucket/line_bucket.ts>.
-//! BSD-3-Clause; copyright and terms in `LICENSE-MapLibre` alongside this module.
-//! Distance follows the pinned shader's two-tile-unit quantization.
+//! BSD-3-Clause; copyright and terms in `LICENSE-MapLibre` alongside this
+//! module.
 
 use orb_tile::js_round;
 use std::ops::{Add, Mul, Sub};

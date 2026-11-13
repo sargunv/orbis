@@ -848,8 +848,8 @@ impl View {
         )
     }
 
-    /// Covers the view with tiles of a set on another plane (the
-    /// `RasterWarp` plan), from where each tile lands on this one.
+    /// Covers the view with tiles of a set on another plane, from where
+    /// each tile lands on this one.
     pub fn cover_warped(
         &self,
         tms: &TileMatrixSet,
