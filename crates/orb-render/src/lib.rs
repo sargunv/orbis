@@ -3190,7 +3190,7 @@ impl Renderer {
                     self.recorded += 1;
                 }
                 Some((_, group)) => {
-                    commands.extend(self.layers.composite_commands(&self.composites, group));
+                    commands.extend(group.composite_commands(&self.composites));
                     self.recorded += 1;
                 }
                 None => {}
@@ -3449,7 +3449,7 @@ impl Renderer {
                 _ => LoadOp::Load,
             };
             let color = match samples {
-                _ if canvas < blends => this.layers.canvas(canvas).attachment_kept(0, load, keep),
+                _ if canvas < blends => this.layers.canvas(canvas).attachment_kept(load, keep),
                 Some(samples) => ColorAttachment {
                     target: samples,
                     resolve: (!keep).then_some(target),
@@ -3498,7 +3498,7 @@ impl Renderer {
                     // the pass before drew.
                     let beneath = canvas
                         .checked_sub(1)
-                        .map(|k| self.layers.canvas(k).texture(0));
+                        .map(|k| self.layers.canvas(k).texture());
                     let tables = shades.get(usize::from(layer)).copied().unwrap_or_default();
                     let terrain = self.terrain.as_mut().expect("terrain is on");
                     let drawn = terrain.layer_commands(gpu, layer, tables, beneath);
@@ -3514,7 +3514,7 @@ impl Renderer {
                         predraw(&mut commands);
                     }
                     let group = &self.layers.groups[group];
-                    commands.extend(self.layers.composite_commands(&self.composites, group));
+                    commands.extend(group.composite_commands(&self.composites));
                 }
                 Step::ThreeD(node) => {
                     let done = std::mem::take(&mut commands);

@@ -325,7 +325,7 @@ impl Extrusions {
             &mut node.offscreen,
             gpu,
             composites,
-            ("extrusion", &[self.format]),
+            ("extrusion", self.format),
             (size, self.samples),
             (Mode::Over, None),
             node.opacity,
@@ -384,7 +384,7 @@ impl Extrusions {
                     .as_ref()
                     .expect("sized")
                     .target
-                    .attachment(0, LoadOp::Clear([0.0; 4])),
+                    .attachment(LoadOp::Clear([0.0; 4])),
             ],
             depth: Some(DepthAttachment {
                 store: self.depth().expect("sized").1,

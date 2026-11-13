@@ -120,7 +120,7 @@ impl Heatmaps {
             &mut node.apart.offscreen,
             gpu,
             composites,
-            ("heatmap density", &[format]),
+            ("heatmap density", format),
             (size, 1),
             (Mode::Ramp, Some(node.ramp)),
             node.apart.opacity,
@@ -164,7 +164,7 @@ impl Heatmaps {
         });
         Some(RenderPass {
             label: "heatmap density",
-            colors: vec![target.attachment(0, LoadOp::Clear([0.0; 4]))],
+            colors: vec![target.attachment(LoadOp::Clear([0.0; 4]))],
             depth: None,
             commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],
         })

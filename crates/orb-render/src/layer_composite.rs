@@ -97,6 +97,12 @@ impl Group {
         self.layer.is_none()
     }
 
+    /// Its composite into the map: in the main pass's bundle for normal
+    /// blending, or opening the canvas pass after a split.
+    pub(crate) fn composite_commands(&self, composites: &Composites) -> [RenderCommand; 3] {
+        composites.commands(&self.composite)
+    }
+
     fn mode(&self) -> Mode {
         match self.blend {
             Blend::Normal => Mode::Over,
@@ -124,13 +130,7 @@ impl LayerComposites {
     ) {
         self.clear(gpu);
         let target = |gpu: &mut dyn Gpu, label, kept| {
-            Target::new(
-                gpu,
-                label,
-                &[format.color],
-                size,
-                (format.sample_count, kept),
-            )
+            Target::new(gpu, label, format.color, size, (format.sample_count, kept))
         };
         if runs.iter().any(|r| r.blend != Blend::Normal) {
             self.canvases = vec![
@@ -149,7 +149,7 @@ impl LayerComposites {
             let layer = source
                 .is_none()
                 .then(|| target(gpu, "layer composite", false));
-            let texture = source.unwrap_or_else(|| layer.as_ref().expect("made above").texture(0));
+            let texture = source.unwrap_or_else(|| layer.as_ref().expect("made above").texture());
             // The k-th blending group reads the canvas pass k drew.
             let (mode, backdrop) = match blend {
                 Blend::Normal => (Mode::Over, None),
@@ -157,7 +157,7 @@ impl LayerComposites {
                     backdrops += 1;
                     (
                         Mode::Blend(blend),
-                        Some(self.canvases[(backdrops - 1) % 2].texture(0)),
+                        Some(self.canvas(backdrops - 1).texture()),
                     )
                 }
             };
@@ -188,23 +188,13 @@ impl LayerComposites {
         }
     }
 
-    /// A group's composite into the map: in the main pass's bundle for
-    /// normal blending, or opening the canvas pass after a split.
-    pub(crate) fn composite_commands(
-        &self,
-        composites: &Composites,
-        group: &Group,
-    ) -> [RenderCommand; 3] {
-        composites.commands(&group.composite)
-    }
-
     /// Each group's pass: its nodes' draws into its target, over `depth`
     /// where the map's passes have one.
     pub(crate) fn passes(&self, depth: Option<TextureId>) -> impl Iterator<Item = Pass> + '_ {
         self.groups.iter().filter_map(move |g| {
             Some(Pass::Render(RenderPass {
                 label: "layer composite",
-                colors: vec![g.layer.as_ref()?.attachment(0, LoadOp::Clear([0.0; 4]))],
+                colors: vec![g.layer.as_ref()?.attachment(LoadOp::Clear([0.0; 4]))],
                 depth: depth.map(|target| DepthAttachment {
                     target,
                     load: LoadOp::Clear(0.0),

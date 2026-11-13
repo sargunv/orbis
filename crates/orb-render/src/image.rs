@@ -351,16 +351,16 @@ impl Images {
         }
     }
 
-    /// Draws the map's nodes into `target`'s passes from now on, the
-    /// map's with or without their depth: the pipelines for those, kept
-    /// since it last drew into them, take the place of these, which are
-    /// kept in turn.
     /// Lets the pipelines kept for the other kind of pass go: they were
     /// made for passes the map's no longer are.
     pub(crate) fn forget_kept(&mut self, gpu: &mut dyn Gpu) {
         std::mem::take(&mut self.kept).0.release(gpu);
     }
 
+    /// Draws the map's nodes into `target`'s passes from now on, the
+    /// map's with or without their depth: the pipelines for those, kept
+    /// since it last drew into them, take the place of these, which are
+    /// kept in turn.
     pub(crate) fn retarget(&mut self, target: Attachments) {
         std::mem::swap(&mut self.pipelines, &mut self.kept);
         self.target = target;

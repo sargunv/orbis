@@ -3,8 +3,8 @@
 //! [`Target`]; one full-screen draw then composites it into the map
 //! ([`Composites`]).
 //!
-//! A target is a list of colour attachments, each with a multisampled
-//! attachment when it draws multisampled.
+//! A target is a colour attachment, with a multisampled one when it draws
+//! multisampled.
 
 use crate::release::Release;
 use orb_hal::*;
@@ -13,29 +13,24 @@ use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER};
 use crate::Blend;
 use crate::pipeline::{Attachments, Draw};
 
-/// Colour attachments to draw into and sample.
+/// A colour attachment to draw into and sample.
 #[derive(Debug)]
 pub(crate) struct Target {
-    colors: Vec<Attachment>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Attachment {
     color: TextureId,
     multisample: Option<TextureId>,
 }
 
 impl Target {
-    /// Attachments of `formats`, `size` texels, drawn at `samples`, their
+    /// An attachment of `format`, `size` texels, drawn at `samples`, its
     /// samples kept between passes where `kept` (else transient).
     pub(crate) fn new(
         gpu: &mut dyn Gpu,
         label: &'static str,
-        formats: &[TextureFormat],
+        format: TextureFormat,
         size: [u32; 2],
         (samples, kept): (u32, bool),
     ) -> Self {
-        let texture = |gpu: &mut dyn Gpu, format, samples, usage| {
+        let texture = |gpu: &mut dyn Gpu, samples, usage| {
             gpu.create_texture(&TextureDesc {
                 label,
                 width: size[0],
@@ -48,59 +43,41 @@ impl Target {
                 mip_levels: 1,
             })
         };
-        let colors = formats
-            .iter()
-            .map(|&format| Attachment {
-                color: texture(
-                    gpu,
-                    format,
-                    1,
-                    TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-                ),
-                multisample: (samples > 1).then(|| {
-                    texture(
-                        gpu,
-                        format,
-                        samples,
-                        match kept {
-                            true => TextureUsages::RENDER_ATTACHMENT,
-                            false => {
-                                TextureUsages::RENDER_ATTACHMENT
-                                    | TextureUsages::TRANSIENT_ATTACHMENT
-                            }
-                        },
-                    )
-                }),
-            })
-            .collect();
-        Self { colors }
+        let color = texture(
+            gpu,
+            1,
+            TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+        );
+        let multisample = (samples > 1).then(|| {
+            let usage = match kept {
+                true => TextureUsages::RENDER_ATTACHMENT,
+                false => TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
+            };
+            texture(gpu, samples, usage)
+        });
+        Self { color, multisample }
     }
 
-    /// Attachment `i`'s texture, to sample.
-    pub(crate) fn texture(&self, i: usize) -> TextureId {
-        self.colors[i].color
+    /// Its texture, to sample.
+    pub(crate) fn texture(&self) -> TextureId {
+        self.color
     }
 
-    /// Attachment `i` as a pass draws it: into the multisampled texture,
+    /// The attachment as a pass draws it: into the multisampled texture,
     /// resolved, when there is one.
-    pub(crate) fn attachment(&self, i: usize, load: LoadOp<[f64; 4]>) -> ColorAttachment {
-        self.attachment_kept(i, load, false)
+    pub(crate) fn attachment(&self, load: LoadOp<[f64; 4]>) -> ColorAttachment {
+        self.attachment_kept(load, false)
     }
 
-    /// Attachment `i` as a pass draws it that a later pass goes on
+    /// The attachment as a pass draws it that a later pass goes on
     /// drawing, where `keep`: its samples stored, and resolved only once
     /// no pass goes on (the target made `kept`).
-    pub(crate) fn attachment_kept(
-        &self,
-        i: usize,
-        load: LoadOp<[f64; 4]>,
-        keep: bool,
-    ) -> ColorAttachment {
-        let a = self.colors[i];
+    pub(crate) fn attachment_kept(&self, load: LoadOp<[f64; 4]>, keep: bool) -> ColorAttachment {
+        let Self { color, multisample } = *self;
         ColorAttachment {
-            target: a.multisample.unwrap_or(a.color),
-            resolve: a.multisample.filter(|_| !keep).map(|_| a.color),
-            store: if a.multisample.is_some() && !keep {
+            target: multisample.unwrap_or(color),
+            resolve: multisample.filter(|_| !keep).map(|_| color),
+            store: if multisample.is_some() && !keep {
                 StoreOp::Discard
             } else {
                 StoreOp::Store
@@ -155,7 +132,7 @@ pub(crate) struct Offscreen {
 }
 
 impl Offscreen {
-    /// Makes `slot` a `label` target of `formats` at `size` and `samples`,
+    /// Makes `slot` a `label` target of `format` at `size` and `samples`,
     /// composited by `mode` (over `backdrop`) at `opacity`, unless it is
     /// one; whether it changed.
     #[allow(clippy::too_many_arguments)]
@@ -163,7 +140,7 @@ impl Offscreen {
         slot: &mut Option<Self>,
         gpu: &mut dyn Gpu,
         composites: &mut Composites,
-        (label, formats): (&'static str, &[TextureFormat]),
+        (label, format): (&'static str, TextureFormat),
         (size, samples): ([u32; 2], u32),
         (mode, backdrop): (Mode, Option<TextureId>),
         opacity: f32,
@@ -174,8 +151,8 @@ impl Offscreen {
         if let Some(old) = slot.take() {
             old.release(gpu);
         }
-        let target = Target::new(gpu, label, formats, size, (samples, false));
-        let composite = composites.composite(gpu, target.texture(0), backdrop, mode, opacity);
+        let target = Target::new(gpu, label, format, size, (samples, false));
+        let composite = composites.composite(gpu, target.texture(), backdrop, mode, opacity);
         *slot = Some(Self {
             target,
             composite,
@@ -281,16 +258,16 @@ impl Composites {
         }
     }
 
-    /// Composites into `target`'s passes from now on, the map's with or
-    /// without their depth: the pipelines for those, kept since it last
-    /// composited into them, take the place of these, which are kept in
-    /// turn.
     /// Lets the pipelines kept for the other kind of pass go: they were
     /// made for passes the map's no longer are.
     pub(crate) fn forget_kept(&mut self, gpu: &mut dyn Gpu) {
         std::mem::take(&mut self.kept).release(gpu);
     }
 
+    /// Composites into `target`'s passes from now on, the map's with or
+    /// without their depth: the pipelines for those, kept since it last
+    /// composited into them, take the place of these, which are kept in
+    /// turn.
     pub(crate) fn retarget(&mut self, target: Attachments) {
         let current = [self.over, self.replace];
         [self.over, self.replace] = std::mem::replace(&mut self.kept, current);
@@ -336,11 +313,7 @@ impl Composites {
             size: 16,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        gpu.write_buffer(
-            uniform,
-            0,
-            bytemuck::cast_slice(&[opacity, mode.number(), 0.0, 0.0]),
-        );
+        write_uniform(gpu, uniform, mode, opacity);
         use TextureViewDimension::D2;
         let group = gpu.create_bind_group(&BindGroupDesc {
             label: "composite",
@@ -365,22 +338,21 @@ impl Composites {
     pub(crate) fn set_opacity(gpu: &mut dyn Gpu, composite: &mut Composite, opacity: f32) {
         if composite.opacity != opacity {
             composite.opacity = opacity;
-            gpu.write_buffer(
-                composite.uniform,
-                0,
-                bytemuck::cast_slice(&[opacity, composite.mode.number(), 0.0, 0.0]),
-            );
+            write_uniform(gpu, composite.uniform, composite.mode, opacity);
+        }
+    }
+
+    /// The pipeline of composites in `mode`, once made.
+    fn pipeline(&self, mode: Mode) -> Option<RenderPipelineId> {
+        match mode.replaces() {
+            true => self.replace,
+            false => self.over,
         }
     }
 
     /// Whether the pipeline of a composite in `mode` compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, mode: Mode) -> bool {
-        let pipeline = if mode.replaces() {
-            self.replace
-        } else {
-            self.over
-        };
-        pipeline.is_some_and(|p| gpu.pipeline_ready(p.into()))
+        (self.pipeline(mode)).is_some_and(|p| gpu.pipeline_ready(p.into()))
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
@@ -393,11 +365,7 @@ impl Composites {
 
     /// A composite's draw, for a bundle or the pass it opens.
     pub(crate) fn commands(&self, composite: &Composite) -> [RenderCommand; 3] {
-        let pipeline = if composite.mode.replaces() {
-            self.replace
-        } else {
-            self.over
-        };
+        let pipeline = self.pipeline(composite.mode);
         [
             RenderCommand::SetPipeline(pipeline.expect("made with the composite")),
             RenderCommand::SetBindGroup {
@@ -410,6 +378,15 @@ impl Composites {
             },
         ]
     }
+}
+
+/// Writes a composite's uniform: its opacity and `composite.wgsl`'s mode.
+fn write_uniform(gpu: &mut dyn Gpu, uniform: BufferId, mode: Mode, opacity: f32) {
+    gpu.write_buffer(
+        uniform,
+        0,
+        bytemuck::cast_slice(&[opacity, mode.number(), 0.0, 0.0]),
+    );
 }
 
 impl crate::release::Release for Apart {
@@ -426,9 +403,7 @@ impl crate::release::Release for Offscreen {
 
 impl crate::release::Release for Target {
     fn release(self, gpu: &mut dyn Gpu) {
-        for a in self.colors {
-            (a.color, a.multisample).release(gpu);
-        }
+        (self.color, self.multisample).release(gpu);
     }
 }
 
