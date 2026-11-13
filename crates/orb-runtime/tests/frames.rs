@@ -260,8 +260,8 @@ mod tests {
             ..tokyo(14.5)
         };
         let small = crate::common::SceneCapacity::growable();
-        let mut held = crate::common::Offscreen::new(&at, small).unwrap();
-        let mut free = crate::common::Offscreen::new(&at, small).unwrap();
+        let mut held = crate::common::Offscreen::inline(&at, small).unwrap();
+        let mut free = crate::common::Offscreen::inline(&at, small).unwrap();
         let viewport = held.viewport;
         let time = held.time;
         held.map.input(
@@ -274,11 +274,10 @@ mod tests {
             },
             time,
         );
-        // Frames of the two in turn, so that their jobs share the pool
-        // alike, until each has loaded what its view shows.
+        // Frames of the two until each has loaded what its view shows:
+        // their loads land alike, by the next frame.
         let (mut loaded, mut copied) = ([None; 2], 0);
-        let started = std::time::Instant::now();
-        for frame in 0u32.. {
+        for frame in 0u32..1000 {
             for (i, map) in [&mut held, &mut free].into_iter().enumerate() {
                 let report = map.frame();
                 if i == 0 {
@@ -292,14 +291,9 @@ mod tests {
             if loaded.iter().all(Option::is_some) {
                 break;
             }
-            assert!(started.elapsed().as_secs() < 60, "loaded: {loaded:?}");
-            std::thread::sleep(std::time::Duration::from_millis(4));
         }
         let [held_at, free_at] = loaded.map(|f| f.expect("loaded"));
-        assert!(
-            held_at <= free_at + free_at / 2 + 10,
-            "held, loaded at frame {held_at}; let go, at {free_at}"
-        );
+        assert_eq!(held_at, free_at, "frames to load, held and let go");
         let memory = held.frame().memory.scene;
         assert!(
             memory.vertices.allocated > u64::from(small.vertex_words) * 4,

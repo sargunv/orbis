@@ -81,6 +81,97 @@ pub(crate) fn native_services(wake: Arc<dyn Fn() + Send + Sync>) -> Services {
     }
 }
 
+/// Services under which a map's frames are the same on every run, however
+/// loaded the machine: `file://` reads and tile jobs on the caller's
+/// thread, which land by the next frame, and a clock that stands still, so
+/// that only bytes bound what a frame applies. With placement inline too
+/// ([`Offscreen::inline`]).
+pub(crate) fn inline_services() -> Services {
+    let fetch: Arc<dyn orb_host::Fetch> = Arc::new(FileFetch);
+    let jobs = PoolJobs::new(
+        fetch.clone(),
+        Arc::new(NativeImageDecode),
+        Arc::new(orb_host::jobs::Inline),
+    );
+    jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
+    jobs.set_font_files(Arc::new(orb_host_native::FontFileFaces::new()));
+    Services {
+        clock: Arc::new(StillClock),
+        image_decode: Arc::new(NativeImageDecode),
+        images: Default::default(),
+        jobs,
+        fetch,
+        wake: Arc::new(|| {}),
+    }
+}
+
+/// A clock whose time never passes.
+struct StillClock;
+
+impl orb_host::Clock for StillClock {
+    fn now(&self) -> f64 {
+        0.0
+    }
+}
+
+/// Reads `file://` URLs, their `%XX` escapes decoded, on the caller's
+/// thread.
+#[derive(Debug)]
+struct FileFetch;
+
+impl FileFetch {
+    fn read(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, orb_host::FetchError> {
+        use std::io::{Read, Seek, SeekFrom};
+        let path = url
+            .strip_prefix("file://")
+            .ok_or_else(|| orb_host::FetchError::UnsupportedUrl(url.to_string()))?;
+        let (mut decoded, mut rest) = (Vec::new(), path.as_bytes());
+        while let Some((&byte, tail)) = rest.split_first() {
+            let hex = tail.get(..2).filter(|_| byte == b'%');
+            match hex.and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()) {
+                Some(escaped) => (decoded.push(escaped), rest = &tail[2..]),
+                None => (decoded.push(byte), rest = tail),
+            };
+        }
+        let path =
+            String::from_utf8(decoded).map_err(|e| orb_host::FetchError::Network(e.to_string()))?;
+        let mut file = std::fs::File::open(path).map_err(|_| orb_host::FetchError::NotFound)?;
+        let mut out = Vec::new();
+        let read = match range {
+            Some((offset, length)) => file
+                .seek(SeekFrom::Start(offset))
+                .and_then(|_| file.take(length).read_to_end(&mut out)),
+            None => file.read_to_end(&mut out),
+        };
+        read.map_err(|e| orb_host::FetchError::Network(e.to_string()))?;
+        Ok(out)
+    }
+}
+
+impl orb_host::Fetch for FileFetch {
+    fn get(
+        &self,
+        _: orb_host::ResourceKind,
+        url: &str,
+        _: &orb_host::Abort,
+        done: orb_host::FetchDone,
+    ) {
+        done(Self::read(url, None));
+    }
+
+    fn get_range(
+        &self,
+        _: orb_host::ResourceKind,
+        url: &str,
+        offset: u64,
+        length: u64,
+        _: &orb_host::Abort,
+        done: orb_host::FetchDone,
+    ) {
+        done(Self::read(url, Some((offset, length))));
+    }
+}
+
 /// Native fetches with tile jobs on `executor`, and no system fonts: for
 /// tests that count frames or hold jobs back.
 pub(crate) fn services_on(
@@ -198,6 +289,15 @@ impl Offscreen {
         Self::made(options, |map| map.set_scene_capacity(capacity))
     }
 
+    /// As [`new`](Self::new), on [`inline_services`] with placement inline:
+    /// its frames are the same on every run.
+    pub(crate) fn inline(options: &Options, capacity: SceneCapacity) -> Result<Self, String> {
+        Self::made_on(inline_services(), options, |map| {
+            map.set_placement_lane(Arc::new(orb_runtime::InlinePlacement::default()));
+            map.set_scene_capacity(capacity);
+        })
+    }
+
     /// Like [`new`](Self::new), the pools growing to what the view needs
     /// and the tile pages sized for the viewport, as an app's are.
     pub(crate) fn sized(options: &Options) -> Result<Self, String> {
@@ -205,7 +305,14 @@ impl Offscreen {
     }
 
     fn made(options: &Options, set: impl FnOnce(&mut Map)) -> Result<Self, String> {
-        let services = native_services(Arc::new(|| {}));
+        Self::made_on(native_services(Arc::new(|| {})), options, set)
+    }
+
+    fn made_on(
+        services: Services,
+        options: &Options,
+        set: impl FnOnce(&mut Map),
+    ) -> Result<Self, String> {
         let mut map = Map::new(services, camera(options));
         // Snapshots use the same white backing as the native demo window.
         map.set_clear_color([1.0; 4]);
