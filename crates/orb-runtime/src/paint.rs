@@ -271,14 +271,22 @@ pub(crate) fn drape(
 
 impl PaintState {
     /// What drape stack `stack`'s slots show of the draped paint at
-    /// `zoom` and `bearing`: its revision, the zoom if what it draws scales
-    /// with it ([`NodePaint::drapes_by_zoom`](orb_render::NodePaint::drapes_by_zoom)),
+    /// `zoom` on `sphere` and `bearing`: its revision, the zoom and the
+    /// globe's scale if what it draws scales with them
+    /// ([`NodePaint::drapes_by_zoom`](orb_render::NodePaint::drapes_by_zoom)),
     /// and the bearing if something drawn there turns with it.
-    pub(crate) fn drape_key(&self, stack: usize, zoom: f64, bearing: f64) -> [u64; 3] {
+    pub(crate) fn drape_key(
+        &self,
+        stack: usize,
+        (zoom, sphere): (f64, Option<crate::frame::DrapeSphere>),
+        bearing: f64,
+    ) -> [u64; 4] {
         let paint = self.drape.stacks.get(stack).copied().unwrap_or_default();
+        let sphere = sphere.map_or(0, |s| crate::terrain::hash(s.key()));
         [
             paint.revision,
             if paint.by_zoom { zoom.to_bits() } else { 0 },
+            if paint.by_zoom { sphere } else { 0 },
             if paint.turns { bearing.to_bits() } else { 0 },
         ]
     }

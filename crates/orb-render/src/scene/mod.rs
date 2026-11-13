@@ -303,6 +303,9 @@ pub struct TileRow {
     /// convert with it. 1 for a map placement; a drape placement's is its
     /// slot's texels per logical pixel at the zoom slots draw at.
     pub px_scale: f32,
+    /// A drape placement's scale over a globe, where its texels show
+    /// larger toward the equator; `None` keeps `px_scale` everywhere.
+    pub sphere: Option<RowSphere>,
     /// The DEM tile elevated content of this placement stands on.
     pub dem: DemRef,
     /// The lowest and highest terrain elevation under the placement, in
@@ -376,6 +379,12 @@ impl TileRow {
         put(t::PATTERN_ORIGIN, &self.pattern_origin);
         put(t::EXTENT, &[self.extent.to_bits(), self.wrap as u32]);
         put(t::PX_SCALE, &[self.px_scale.to_bits()]);
+        if let Some(s) = self.sphere {
+            put(
+                t::SPHERE,
+                &[s.y, s.dy, s.amount, s.reference].map(f32::to_bits),
+            );
+        }
         put(t::DEM, &self.dem.words());
         put(t::TERRAIN_RANGE, &[pack_range(self.terrain_range)]);
         put(t::WARP_BASE, &[self.warp.base, self.warp.cells]);
@@ -400,6 +409,23 @@ pub struct RowGlobe {
     pub warp: TileWarp,
     pub origin: [f64; 3],
     pub on_plane: bool,
+}
+
+/// A drape placement's terms on a globe (`types.wgsl`'s
+/// `tile_sphere_ratio`): at data y `p`, a texel of its flat Web Mercator
+/// slot shows on the sphere at `reference / cosh(y + p dy)` times the size
+/// `px_scale` gives it, as much as the view is a globe (`amount`). Web
+/// Mercator is conformal, so one ratio holds both ways.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowSphere {
+    /// Web Mercator y of data y 0, in radii (`asinh(tan(lat))`).
+    pub y: f32,
+    /// Radii of Web Mercator y per data unit, negative: data y runs south.
+    pub dy: f32,
+    /// How much of a globe the view is, 0 to 1.
+    pub amount: f32,
+    /// Web Mercator's scale factor where `px_scale` holds, `cosh(y)` there.
+    pub reference: f32,
 }
 
 /// A tile's biquadratic patches in the property arena (`GpuPerVertex`),

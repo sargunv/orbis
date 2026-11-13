@@ -630,6 +630,99 @@ fn a_draped_line_is_as_wide_as_a_flat_one() {
     }
 }
 
+/// A line keeps the spec's width at a zoom below its tiles' wherever on
+/// the globe it is, draped on terrain or not. A drape slot is flat Web
+/// Mercator drawn at one zoom, but on the globe a texel shows larger the
+/// nearer the equator it is: slots sized their pixels for the camera's
+/// latitude, so with the camera over 70°N a border at 15°N drew nearly
+/// three times as wide (the Globe demo's boundaries, zoomed out over
+/// Canada). Here a meridian's two segments, around 70°N and 15°N, lie as
+/// far north and south of a camera over 42.5°N, so the sphere's
+/// perspective narrows both alike, and under the camera each keeps its
+/// width east to west, which the sphere doesn't foreshorten: drawn right,
+/// they are as wide as each other, draped or not. On Web Mercator, at the
+/// equator where it holds the camera, both are the spec's width.
+#[test]
+fn a_line_is_as_wide_at_every_latitude_below_its_tiles_zoom() {
+    let (flat, _dem) = dem("flat", (-179.9, -85.0, 179.9, 85.0), 1, |_, _| 0.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    const LINE_WIDTH: f64 = 2.0;
+    // The meridian's width around 70°N and around 15°N: the blue ink of
+    // the rows of each of its two segments, less two at each end.
+    let mut widths = |projection: &str, terrain: bool| -> [f64; 2] {
+        let style = format!(
+            r##"{{"version": 8, "projection": {{"type": "{projection}"}},
+            "sources": {{{flat}
+              "line": {{"type": "geojson", "data": {{"type": "MultiLineString",
+                "coordinates": [[[0, 5], [0, 25]], [[0, 60], [0, 80]]]}}}}
+            }},
+            {}
+            "layers": [
+              {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+              {{"id": "line", "type": "line", "source": "line",
+                  "paint": {{"line-color": "#0000ff", "line-width": {LINE_WIDTH}}}}}
+            ]}}"##,
+            match terrain {
+                true => r#""terrain": {"source": "flat", "exaggeration": 1},"#,
+                false => "",
+            },
+        );
+        let mut map = Map::new(&runtime, options());
+        map.set_style_json(&style).unwrap();
+        map.jump_to(&camera((Geodetic::new(0.0, 42.5), -0.5, 0.0, 0.0)));
+        common::settle(&mut map, &mut target);
+        let pixels = target.read_pixels().unwrap();
+        let ink = (0..HEIGHT).map(|y| -> f64 {
+            (0..WIDTH)
+                .map(|x| {
+                    let i = ((y * WIDTH + x) * 4) as usize;
+                    (f64::from(pixels[i + 2]) - f64::from(pixels[i])).max(0.0) / 255.0
+                })
+                .sum()
+        });
+        let mut segments: Vec<Vec<f64>> = Vec::new();
+        let mut inked = false;
+        for w in ink {
+            if w >= 0.5 && !inked {
+                segments.push(Vec::new());
+            }
+            inked = w >= 0.5;
+            if inked {
+                segments.last_mut().unwrap().push(w);
+            }
+        }
+        assert_eq!(
+            segments.len(),
+            2,
+            "{projection}, terrain {terrain}: {segments:?}"
+        );
+        [0, 1].map(|i| {
+            let inner = &segments[i][2..segments[i].len() - 2];
+            inner.iter().sum::<f64>() / inner.len() as f64
+        })
+    };
+    for projection in ["mercator", "globe"] {
+        for terrain in [false, true] {
+            let [north, south] = widths(projection, terrain);
+            let case = format!("{projection}, terrain {terrain}");
+            assert!(
+                (north - south).abs() < 0.1,
+                "{case}: {north:.2} px wide around 70°N, {south:.2} px around 15°N"
+            );
+            // The globe's perspective narrows both a little, and a
+            // drape's texels, magnified, round it either way.
+            let tolerance = if projection == "globe" { 0.2 } else { 0.05 };
+            for width in [north, south] {
+                assert!(
+                    (width - LINE_WIDTH).abs() < tolerance,
+                    "{case}: {width:.2} px wide, not {LINE_WIDTH}"
+                );
+            }
+        }
+    }
+}
+
 /// A draped line's slots draw at the zoom's drape step, a 32nd of a level:
 /// a camera zooming within one redraws none of them, and one into the
 /// next redraws them, whichever way it zooms.

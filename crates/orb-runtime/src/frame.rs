@@ -679,6 +679,11 @@ impl Map {
         };
         let surface = self.surface.tms().clone();
         let zoom = drape_zoom(self.camera.state().zoom(self.surface.projection()));
+        let sphere = DrapeSphere::of(
+            &self.surface.view_surface(),
+            self.camera.state().target,
+            zoom,
+        );
         let stacks = layout.stack_count() as usize;
         let bearing = self.camera.state().bearing;
         let mut images = self.services.images.0.lock().expect("images poisoned");
@@ -731,7 +736,7 @@ impl Map {
             }
         }
         let content = |t: orb_crs::CoveredTile| {
-            let reach = crate::terrain::Reach::of(&surface, t, (zoom, reach_px));
+            let reach = crate::terrain::Reach::of(&surface, t, (zoom, sphere, reach_px));
             let mut parts = vec![Vec::new(); stacks];
             for &i in &draped {
                 let (
@@ -789,7 +794,7 @@ impl Map {
             }
             (parts.into_iter().enumerate())
                 .map(|(stack, parts)| {
-                    let paint = paint.drape_key(stack, zoom, bearing);
+                    let paint = paint.drape_key(stack, (zoom, sphere), bearing);
                     crate::terrain::hash((revision, parts, paint))
                 })
                 .collect()
@@ -813,7 +818,7 @@ impl Map {
             .collect();
         renderer.redraw_drape(zoom, &slots);
         let reaches = (redraw.iter())
-            .map(|r| crate::terrain::Reach::of(&surface, r.tile, (zoom, reach_px)))
+            .map(|r| crate::terrain::Reach::of(&surface, r.tile, (zoom, sphere, reach_px)))
             .collect();
         Some(DrapePlan {
             surface,
@@ -822,6 +827,7 @@ impl Map {
             deferred,
             reaches,
             zoom,
+            sphere,
             reach_px,
         })
     }
@@ -989,6 +995,64 @@ pub(crate) fn drape_zoom(zoom: f64) -> f64 {
     (zoom * DRAPE_ZOOM_STEPS + 1e-6).floor() / DRAPE_ZOOM_STEPS
 }
 
+/// The globe drape slots show on: a slot is flat Web Mercator drawn at
+/// one zoom, its pixel sizes in texels as the zoom gives them at the
+/// camera's target, but on the sphere its texels show larger the nearer
+/// the equator they are (orb-render's `RowSphere`). `None` on a plane,
+/// whose texels show alike everywhere, and on a low plane other than the
+/// sphere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DrapeSphere {
+    /// How much of a globe the view is at the slots' zoom.
+    pub(crate) amount: f64,
+    /// Web Mercator's scale factor where the slots' pixel sizes hold: the
+    /// target's, on the drape zoom's steps of its logarithm, so that a
+    /// slot shows the same however the camera reached it, its pixel sizes
+    /// at most 2.2% off, as the zoom's steps leave them.
+    pub(crate) reference: f64,
+}
+
+impl DrapeSphere {
+    /// The sphere of `surface`, for slots drawn at style zoom `zoom`
+    /// ([`drape_zoom`]) with the camera over `target`.
+    pub(crate) fn of(surface: &orb_crs::Surface, target: Geodetic, zoom: f64) -> Option<Self> {
+        let globe = surface.globe.filter(|g| g.plane.is_none())?;
+        let amount = globe.amount(zoom);
+        if amount == 0.0 || !surface.projection.is_web_mercator() {
+            return None;
+        }
+        let reference = drape_zoom(surface.projection.scale_factor(target).log2()).exp2();
+        Some(Self { amount, reference })
+    }
+
+    /// Its terms as `RowSphere` holds them, for a placement whose data y
+    /// 0 is at Web Mercator world y `y` and which spans `dy` world units a
+    /// data unit down.
+    pub(crate) fn row(&self, y: f64, dy: f64) -> orb_render::RowSphere {
+        let r = orb_crs::wgs84::SEMI_MAJOR_M;
+        orb_render::RowSphere {
+            y: (y / r) as f32,
+            dy: (-dy / r) as f32,
+            amount: self.amount as f32,
+            reference: self.reference as f32,
+        }
+    }
+
+    /// How many times larger a pixel's worth is than at the reference
+    /// anywhere between Web Mercator world ys `y0` and `y1`, at most: at
+    /// the end nearer a pole.
+    pub(crate) fn most(&self, y0: f64, y1: f64) -> f64 {
+        let r = orb_crs::wgs84::SEMI_MAJOR_M;
+        let cosh = (y0.abs().max(y1.abs()) / r).cosh();
+        1.0 / ((1.0 - self.amount) + self.reference / cosh * self.amount)
+    }
+
+    /// What tells two apart.
+    pub(crate) fn key(&self) -> [u64; 2] {
+        [self.amount.to_bits(), self.reference.to_bits()]
+    }
+}
+
 /// The drape slots a frame redraws: terrain tiles with their tile slots,
 /// and where slots are.
 #[derive(Debug)]
@@ -1003,6 +1067,8 @@ pub(crate) struct DrapePlan {
     reaches: Vec<crate::terrain::Reach>,
     /// The zoom the slots are drawn at ([`drape_zoom`]).
     pub(crate) zoom: f64,
+    /// The globe they show on, if they do.
+    pub(crate) sphere: Option<DrapeSphere>,
     /// The farthest a draped fill or line is translated, logical pixels.
     pub(crate) reach_px: f64,
 }
@@ -1036,7 +1102,7 @@ impl DrapePlan {
                     at.extent,
                     (redraw.tile, redraw.slot, redraw.shrink),
                     (&self.layout, stacks),
-                    (zoom, self.reach_px),
+                    (zoom, self.sphere, self.reach_px),
                     map,
                     out,
                 );
@@ -1429,6 +1495,7 @@ pub(crate) fn placements<'a>(
             clips,
             bound: ClipRect::EVERYWHERE,
             px_scale: 1.0,
+            sphere: None,
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,

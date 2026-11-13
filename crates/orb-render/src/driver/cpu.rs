@@ -1016,10 +1016,19 @@ impl Test<'_> {
         let margin_px = self.margin_px + margin;
         let points = self.draw == DRAW_POINTS;
         let scale = float(t::SCALE);
-        let margin = margin_px * (f.world_per_px * float(t::PX_SCALE)) / scale;
-        let before = (if points { 0.0 } else { margin }) + grow;
         let [lx, ly] = unpack(min);
         let [hx, hy] = unpack(max);
+        // `tile_sphere_ratio`.
+        let sphere = |y: f32| {
+            let s: [f32; 4] = std::array::from_fn(|i| float(t::SPHERE + i));
+            if s[2] == 0.0 {
+                return 1.0;
+            }
+            (1.0 - s[2]) + s[3] / (s[0] + y * s[1]).cosh() * s[2]
+        };
+        let ratio = sphere(ly).min(sphere(hy));
+        let margin = margin_px * (f.world_per_px * float(t::PX_SCALE)) / ratio / scale;
+        let before = (if points { 0.0 } else { margin }) + grow;
         let (lo, hi) = ([lx - before, ly - before], [hx + before, hy + before]);
         let unclipped = self.draw == DRAW_IMAGES || self.unclipped;
         let (mut clip_lo, mut clip_hi) = if unclipped {

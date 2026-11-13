@@ -163,6 +163,11 @@ struct Tile {
     // World units per logical camera pixel at this placement's scale, as a
     // multiple of the frame's (`tile_world_per_px`).
     px_scale: f32,
+    // A drape placement's terms on a globe, where its scale changes over
+    // it (`tile_px_scale_at`): the Web Mercator y of data y 0 in radii,
+    // radii per data unit, the frame's globe amount (0 elsewhere) and the
+    // plane's scale factor where `px_scale` holds.
+    sphere: array<f32, 4>,
     // The DEM elevated content stands on: page layer (low 16 bits, all
     // ones for none) and depth below the tile (bits 16–23), then the
     // tile's offset in the DEM tile as two u16s.
@@ -325,6 +330,29 @@ fn tile_globe_origin(tile: Tile) -> vec3<f32> {
 // World units per logical pixel at the placement's scale.
 fn tile_world_per_px(tile: Tile) -> f32 {
     return frame.world_per_px * tile.px_scale;
+}
+
+// How many times larger a pixel's worth of the placement's data is at
+// data point `p` than `px_scale` says. A drape placement's slot is flat
+// Web Mercator, drawn at one zoom, but on a globe a slot texel shows
+// larger the nearer the equator it is, by the scale factor's ratio, as
+// much as the view is a globe: a line `px_scale` drew at its reference
+// latitude would show wider toward the equator (an underzoomed globe over
+// a pole drew borders several pixels wide) and thinner toward the poles.
+fn tile_sphere_ratio(tile: Tile, y: f32) -> f32 {
+    let s = tile.sphere;
+    if plane || s[2] == 0.0 {
+        return 1.0;
+    }
+    // As orb-render's CPU cull writes it.
+    return (1.0 - s[2]) + s[3] / cosh(s[0] + y * s[1]) * s[2];
+}
+
+// World units per logical pixel at the placement's data point `p`: where
+// pixel sizes (widths, translations) convert, which draped content on a
+// globe takes at its own latitude (`tile_sphere_ratio`).
+fn tile_world_per_px_at(tile: Tile, p: vec2<f32>) -> f32 {
+    return tile_world_per_px(tile) / tile_sphere_ratio(tile, p.y);
 }
 
 // An affine tile's data units → camera-relative world (project.wgsl

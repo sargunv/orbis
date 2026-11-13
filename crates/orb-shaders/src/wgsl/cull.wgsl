@@ -106,10 +106,15 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
         return false;
     }
 
-    let margin = margin_px * tile_world_per_px(tile) / tile.scale;
+    let bounds_lo = unpack_i16x2(chunk.bounds_min);
+    let bounds_hi = unpack_i16x2(chunk.bounds_max);
+    // The chunk's largest scale: a draped one's on a globe is at the end
+    // nearer a pole.
+    let ratio = min(tile_sphere_ratio(tile, bounds_lo.y), tile_sphere_ratio(tile, bounds_hi.y));
+    let margin = margin_px * tile_world_per_px(tile) / ratio / tile.scale;
     let before_clip = select(margin, 0.0, point_instances);
-    var lo = unpack_i16x2(chunk.bounds_min) - vec2<f32>(before_clip);
-    var hi = unpack_i16x2(chunk.bounds_max) + vec2<f32>(before_clip);
+    var lo = bounds_lo - vec2<f32>(before_clip);
+    var hi = bounds_hi + vec2<f32>(before_clip);
     // Only the part inside the tile's clip rectangles can draw. Images clip
     // per fragment in their own units.
     var clip_lo = vec2<f32>(1e9);

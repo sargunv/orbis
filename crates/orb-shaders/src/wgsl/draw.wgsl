@@ -372,13 +372,13 @@ fn node_translate(px: vec2<f32>, table_mask: u32, row: u32, row_words: u32, c: C
 
 // A `*-translate` in pixels as a camera-relative world offset, after GL JS's
 // `translatePosition`: map-anchored, or turned with the map's bearing for
-// the `viewport` anchor.
-fn translate_world(px: vec2<f32>, viewport_anchor: u32, tile: Tile) -> vec2<f32> {
+// the `viewport` anchor, at the placement's scale at data point `p`.
+fn translate_world(px: vec2<f32>, viewport_anchor: u32, tile: Tile, p: vec2<f32>) -> vec2<f32> {
     var t = px;
     if viewport_anchor != 0u {
         let s = sin(frame.bearing);
         let c = cos(frame.bearing);
         t = vec2<f32>(t.x * c - t.y * s, t.x * s + t.y * c);
     }
-    return vec2<f32>(t.x, -t.y) * tile_world_per_px(tile);
+    return vec2<f32>(t.x, -t.y) * tile_world_per_px_at(tile, p);
 }

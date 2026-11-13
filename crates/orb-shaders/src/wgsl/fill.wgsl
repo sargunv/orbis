@@ -120,7 +120,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
     }
 
     let px = node_translate(node.translate, row_mask(node.table_mask), row, v.row_words, node.translate_curve, tile.zoom);
-    let shift = translate_world(px, node.translate_anchor, tile);
+    let shift = translate_world(px, node.translate_anchor, tile, pos);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip(ground, vec2<f32>(0.0), 0.0);
     out.color = color * opacity;

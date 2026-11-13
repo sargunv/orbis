@@ -75,7 +75,7 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     }
     let corner = point_corner(index, point_cells((node.flags & 4u) != 0u));
     let px = node_translate(node.translate, row_mask(node.table_mask), row, v.row_words, node.translate_curve, tile.zoom);
-    let shift = translate_world(px, flags & 1u, tile);
+    let shift = translate_world(px, flags & 1u, tile, p);
     // On terrain, the ground under the anchor (GL JS `get_elevation`).
     let z = ground_elevation(tile, p) * frame.extrusion_scale;
     let center = tile_ground_shifted(tile, p, shift);

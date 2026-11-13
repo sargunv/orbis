@@ -54,8 +54,8 @@ pub use scene::Pixels;
 pub use scene::{
     ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLight, FrameTerrain, ImageAtlas,
     ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData, MeshId, MeshSize, NodeCull,
-    NodeDraw, NodeMeshes, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity, SceneStats, TileId,
-    TileRow, TileWarp, Untested, Words, warp_words,
+    NodeDraw, NodeMeshes, OutOfSpace, PlacementTarget, RowGlobe, RowSphere, SceneCapacity,
+    SceneStats, TileId, TileRow, TileWarp, Untested, Words, warp_words,
 };
 pub use scene::{
     GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas, PLACED_WORDS, QUAD_WORDS,

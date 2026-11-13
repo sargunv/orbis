@@ -178,7 +178,7 @@ fn pulled_line(index: u32) -> StyledLineOut {
 // whose half-angle is under about 17° (sine 0.3) ease to the straight
 // run's frame.
 fn line_px_to_data(tile: Tile, p: vec2<f32>, across: vec2<f32>, miter: f32) -> mat2x2<f32> {
-    let world_per_px = tile_world_per_px(tile);
+    let world_per_px = tile_world_per_px_at(tile, p);
     if !warped(tile) && (!on_globe() || tile.globe_cells == 0u) {
         let s = world_per_px / tile.scale;
         return mat2x2<f32>(s, 0.0, 0.0, s);
@@ -244,8 +244,8 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     // Room for the edges' fade (`line_alpha`, a device pixel wide): half
     // a device pixel, so that the line's coverage sums to its width. In a
     // drape slot the fade is a texel wide, and a texel as many pixels as
-    // the zoom makes it: half a texel.
-    let antialiasing = select(1.0 / frame.pixel_ratio, 1.0 / tile.px_scale, draped_placement(tile)) / 2.0;
+    // the zoom makes it at the vertex: half a texel.
+    let antialiasing = select(1.0 / frame.pixel_ratio, tile_sphere_ratio(tile, pos.y) / tile.px_scale, draped_placement(tile)) / 2.0;
     let half_width = width / 2.0;
     var inset = gap_width;
     var outset = gap_width + half_width;
@@ -268,7 +268,7 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     let offset2 = offset * offset_normal * EXTRUDE_SCALE * normal.y;
 
     let px = node_translate(node.translate, row_mask(node.table_mask), row, v.row_words, node.translate_curve, tile.zoom);
-    let shift = translate_world(px, node.translate_anchor, tile);
+    let shift = translate_world(px, node.translate_anchor, tile, pos);
     let center = pos + px_to_data * offset2 + vec2<f32>(shift.x, -shift.y) / tile.scale;
     let projected_no_extrude = ground_clip(tile_ground(tile, center), vec2<f32>(0.0), 0.0);
     let extruded = center + px_to_data * dist;

@@ -237,6 +237,12 @@ impl Projection {
         Self::from_descriptor(&kind)
     }
 
+    /// Whether it is Web Mercator, whose world y over the semi-major axis
+    /// is `asinh(tan(lat))`, however it is named.
+    pub fn is_web_mercator(&self) -> bool {
+        matches!(self.plane.family, Family::WebMercator)
+    }
+
     /// Metres per world unit at the equator: 1 for projected planes, a
     /// degree's arc for geographic ones (OGC's convention for tile matrix
     /// scale denominators).

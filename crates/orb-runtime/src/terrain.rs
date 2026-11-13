@@ -32,6 +32,8 @@ use orb_source::{Draw, TilePyramid};
 
 use orb_tile::DemGrid;
 
+use crate::frame::DrapeSphere;
+
 /// Terrain tiles' side at their zoom, in logical pixels.
 pub(crate) const TERRAIN_TILE_PX: f64 = 512.0;
 /// GL JS's terrain tile manager covers up to zoom 22.
@@ -1090,9 +1092,9 @@ impl Drawn {
         &self,
         surface: &TileMatrixSet,
         terrain: CoveredTile,
-        reach: (f64, f64),
+        (zoom, reach_px): (f64, f64),
     ) -> bool {
-        self.within(&Reach::of(surface, terrain, reach))
+        self.within(&Reach::of(surface, terrain, (zoom, None, reach_px)))
     }
 
     /// Whether it overlaps a terrain tile's [`Reach`].
@@ -1106,7 +1108,8 @@ impl Drawn {
 }
 
 /// A terrain tile's bounds grown by `reach_px` logical pixels at style
-/// zoom `zoom` ([`Drawn::overlaps`]): worked out once for every drawn
+/// zoom `zoom` on `sphere`, wherever in the tile they are
+/// ([`Drawn::overlaps`]): worked out once for every drawn
 /// tile tested against it, as finding the tile's style zoom inverts the
 /// projection.
 #[derive(Clone, Copy, Debug)]
@@ -1119,10 +1122,12 @@ impl Reach {
     pub(crate) fn of(
         surface: &TileMatrixSet,
         terrain: CoveredTile,
-        (zoom, reach_px): (f64, f64),
+        (zoom, sphere, reach_px): (f64, Option<DrapeSphere>, f64),
     ) -> Self {
         let b = terrain_bounds(surface, terrain);
-        let reach = DVec2::splat(reach_px * b.size().x / slot_span_px(surface, terrain, zoom));
+        let most = sphere.map_or(1.0, |s| s.most(b.min.y, b.max.y));
+        let reach =
+            DVec2::splat(reach_px * most * b.size().x / slot_span_px(surface, terrain, zoom));
         Self {
             bounds: WorldRect {
                 min: b.min - reach,
@@ -1150,12 +1155,14 @@ fn terrain_bounds(surface: &TileMatrixSet, terrain: CoveredTile) -> WorldRect {
 /// Drape placements of a drawn tile (`extent` data units a side, mapped
 /// by its map placements `map_rows`) for a terrain tile and its tile
 /// slot, its slots `shrink` halvings of their page's side, drawn at style
-/// zoom `zoom` ([`drape_zoom`](crate::frame::drape_zoom)): one row set per
+/// zoom `zoom` ([`drape_zoom`](crate::frame::drape_zoom)) to show on
+/// `sphere`: one row set per
 /// drape stack of `stacks` (those its source's layers draw into), each
 /// mapping the tile's data into the stack's slot, clipped to the terrain
 /// tile and the `reach_px` (logical pixels) a translation moves content
 /// into it from, bounded by the terrain tile, with pixel sizes in slot
-/// texels at that zoom.
+/// texels at that zoom (on the sphere, where the camera's target has
+/// them, and as each point's latitude has them there).
 #[expect(clippy::too_many_arguments, reason = "one placement's terms")]
 pub(crate) fn drape_rows(
     surface: &TileMatrixSet,
@@ -1163,7 +1170,7 @@ pub(crate) fn drape_rows(
     extent: u32,
     (terrain, slot, shrink): (CoveredTile, u32, u8),
     (layout, stacks): (&DrapeLayout, &[u8]),
-    (zoom, reach_px): (f64, f64),
+    (zoom, sphere, reach_px): (f64, Option<DrapeSphere>, f64),
     map_rows: impl Iterator<Item = TileRow>,
     out: &mut Vec<TileRow>,
 ) {
@@ -1178,7 +1185,9 @@ pub(crate) fn drape_rows(
     let clamp = |v: f64| v.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
     let bound = ClipRect::new([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
     let slot_span_px = slot_span_px(surface, terrain, zoom);
-    let reach = DVec2::splat(reach_px * span / slot_span_px / scale);
+    let most = sphere.map_or(1.0, |s| s.most(t.min.y, t.max.y));
+    let reach = DVec2::splat(reach_px * most * span / slot_span_px / scale);
+    let sphere = sphere.map(|s| s.row(origin.y, scale));
     let (lo, hi) = (lo - reach, hi + reach);
     let (lo, hi) = ([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
     for row in map_rows {
@@ -1208,6 +1217,7 @@ pub(crate) fn drape_rows(
                 clips,
                 bound,
                 px_scale: (slot_px / slot_span_px) as f32,
+                sphere,
                 target: PlacementTarget::Drape(stack),
                 // Slots are flat: the terrain carries them onto a globe.
                 globe: None,
