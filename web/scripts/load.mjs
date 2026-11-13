@@ -237,7 +237,6 @@ writeFileSync(join(out, "load.json"), JSON.stringify(results, null, 1));
 const { width, height } = android
   ? { width: "phone", height: "screen" }
   : viewport;
-
 const gljs = JSON.parse(
   readFileSync(
     new URL("../node_modules/maplibre-gl/package.json", import.meta.url),
