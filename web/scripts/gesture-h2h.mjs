@@ -13,19 +13,12 @@
 // bearing, pitch and centre (pixels at the start's zoom, x east and y
 // south), read from each page's camera as its frames report it.
 //
-// `--browser=firefox` makes them in the installed Firefox over Marionette
-// (firefox.mjs), headed, on a fresh profile, input through Firefox's widget
-// layer: for each gesture, how long Firefox took to dispatch it, and from
-// its composition recorder the composites that showed a new map frame, with
-// their intervals (and stale frames, Firefox bug 2091844).
-//
-//   node scripts/gesture-h2h.mjs --mlnrs=<dist> [--engines=orbis,mlnrs]
-//     [--scene=paris|manhattan] [--runs=n] [--warm] [--browser=firefox]
+//   pnpm gestures --mlnrs=<dist> [--engines=orbis,mlnrs]
+//     [--scene=paris|manhattan] [--runs=n] [--warm]
 import { resolve } from "node:path";
 
 import { chromium } from "playwright";
 
-import { frameReport, openFirefox } from "./firefox.mjs";
 import { chromiumPlatform, serveDemo } from "./serve.mjs";
 
 const args = Object.fromEntries(
@@ -39,7 +32,6 @@ const engines = (args.engines ?? "orbis,mlnrs").split(",");
 const scene = args.scene ?? "paris";
 const runs = Number(args.runs ?? 1);
 const warm = !!args.warm;
-const inFirefox = args.browser === "firefox";
 const [width, height] = [1280, 800];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -244,125 +236,6 @@ async function run(engine, base) {
   }
 }
 
-/** The gestures as WebDriver actions at canvas point `c`. */
-const FIREFOX_GESTURES = {
-  pan: (c) => flingActions(c, [-500, 0], 500),
-  panDiagonal: (c) => flingActions(c, [300, 250], 400),
-  panBack: (c) => flingActions(c, [200, -250], 400),
-  rotate: (c) => flingActions(c, [300, -60], 800, 2),
-  wheelIn: (c) => wheelActions(c, -100, 8, 50),
-  wheelOut: (c) => wheelActions(c, 100, 8, 50),
-};
-function flingActions([x0, y0], [dx, dy], ms, button = 0) {
-  const steps = Math.round(ms / 8);
-  const moves = Array.from({ length: steps }, (_, i) => ({
-    type: "pointerMove",
-    duration: 8,
-    origin: "viewport",
-    x: Math.round(x0 + (dx * (i + 1)) / steps),
-    y: Math.round(y0 + (dy * (i + 1)) / steps),
-  }));
-  return [
-    {
-      type: "pointer",
-      id: "mouse",
-      parameters: { pointerType: "mouse" },
-      actions: [
-        { type: "pointerMove", duration: 0, origin: "viewport", x: x0, y: y0 },
-        { type: "pointerDown", button },
-        ...moves,
-        { type: "pointerUp", button },
-      ],
-    },
-  ];
-}
-function wheelActions([x, y], delta, n, ms) {
-  const actions = [];
-  for (let i = 0; i < n; i++)
-    actions.push(
-      {
-        type: "scroll",
-        x,
-        y,
-        deltaX: 0,
-        deltaY: delta,
-        duration: 0,
-        origin: "viewport",
-      },
-      { type: "pause", duration: ms },
-    );
-  return [{ type: "wheel", id: "wheel", actions }];
-}
-
-async function runFirefox(engine, base) {
-  const page = await openFirefox({ width, height });
-  try {
-    const url =
-      engine === "orbis"
-        ? `${base}?style=liberty&backend=webgpu#${CAMERAS[scene]}`
-        : `${base}mlnrs/index.html?style=liberty&backend=webgpu#${CAMERAS[scene]}`;
-    await page.goto(url);
-    if (engine === "orbis") {
-      await page.waitForFunction(() => globalThis.orbis?.map, null, {
-        timeout: 120_000,
-      });
-      await page.evaluate(
-        () =>
-          new Promise((r) => {
-            globalThis.orbis.map.once("idle").then(r);
-            setTimeout(r, 60_000);
-          }),
-      );
-    } else {
-      await page.waitForFunction(() => window.mln, null, { timeout: 120_000 });
-      await page.evaluate(() => window.mln.loaded);
-      await page.evaluate(() =>
-        Promise.race([
-          window.mln.idle(),
-          new Promise((r) => setTimeout(r, 60_000)),
-        ]),
-      );
-    }
-    await sleep(1000);
-    const content = await page.content();
-    const canvas = await page.evaluate(() => {
-      const r = [...document.querySelectorAll("canvas")]
-        .map((c) => c.getBoundingClientRect())
-        .sort((a, b) => b.width * b.height - a.width * a.height)[0];
-      return { x: r.x, y: r.y, width: r.width, height: r.height };
-    });
-    const rect = {
-      x: (content.x + canvas.x) * content.ratio,
-      y: (content.y + canvas.y) * content.ratio,
-      width: canvas.width * content.ratio,
-      height: canvas.height * content.ratio,
-    };
-    const c = [
-      Math.round(canvas.x + canvas.width / 2),
-      Math.round(canvas.y + canvas.height / 2 + 100),
-    ];
-    const out = {};
-    for (const [name, , after] of GESTURES) {
-      const recording = await page.record();
-      const started = Date.now();
-      await page.perform(FIREFOX_GESTURES[name](c));
-      const gestureMs = Date.now() - started;
-      await sleep(after);
-      const report = frameReport(await recording.stop(), rect);
-      out[name] = {
-        gestureMs,
-        fresh: report.fresh,
-        stale: report.stale,
-        ...report.newFrameInterval,
-      };
-      await sleep(400);
-    }
-    return out;
-  } finally {
-    await page.close();
-  }
-}
-
 const pct = (xs, p) => {
   const s = [...xs].sort((a, b) => a - b);
   return s.length
@@ -441,13 +314,6 @@ const server = await serveDemo({
 try {
   for (let r = 0; r < runs; r++)
     for (const engine of engines) {
-      if (inFirefox) {
-        const out = await runFirefox(engine, server.url);
-        console.log(
-          JSON.stringify({ engine, browser: "firefox", run: r, scene, ...out }),
-        );
-        continue;
-      }
       const { trace, cameras } = await run(engine, server.url);
       const camera = trajectories(cameras);
       const out = analyse(trace);

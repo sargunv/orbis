@@ -11,8 +11,6 @@ import { brotliCompressSync, gzipSync } from "node:zlib";
 import { chromium, firefox, webkit } from "playwright";
 import { build } from "vite";
 
-import { installedFirefox } from "./firefox.mjs";
-
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
 const androidSerial = fileURLToPath(
   new URL("../../scripts/android-serial", import.meta.url),
@@ -219,6 +217,17 @@ export function launchChromium({
     ],
   });
 }
+
+/** The installed Firefox, where there is one: `ORB_FIREFOX`, else the
+ * platform's usual install. */
+export const installedFirefox = () =>
+  [
+    process.env.ORB_FIREFOX,
+    {
+      darwin: "/Applications/Firefox.app/Contents/MacOS/firefox",
+      linux: "/usr/bin/firefox",
+    }[process.platform],
+  ].find((path) => path && existsSync(path));
 
 // Firefox as its users run it, with WebGPU where it has it: the installed
 // Firefox, headed, since headless Firefox blocklists its WebGPU adapter

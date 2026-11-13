@@ -107,9 +107,9 @@ import { fileURLToPath } from "node:url";
 
 import { chromium, firefox } from "playwright";
 
-import { installedFirefox } from "./firefox.mjs";
 import { decodePng, encodePng } from "./png.mjs";
 import {
+  installedFirefox,
   launchChromium,
   launchFirefox,
   launchWebkit,
