@@ -307,8 +307,9 @@ impl Viewport {
                 projected_east.x - projected.x,
                 projected_east.y - projected.y,
             );
-            let angle = libm::atan(dy / dx) + if dx < 0.0 { std::f64::consts::PI } else { 0.0 };
-            let (sin, cos) = (libm::sin(angle), libm::cos(angle));
+            let angle =
+                crate::math::atan(dy / dx) + if dx < 0.0 { std::f64::consts::PI } else { 0.0 };
+            let (sin, cos) = (crate::math::sin(angle), crate::math::cos(angle));
             east = Point::new(cos, sin);
             south = Point::new(-sin, cos);
         } else if !p.rotate_with_map && p.pitch_with_map {

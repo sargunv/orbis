@@ -2,7 +2,8 @@
 //!
 //! Layout reproduces GL JS's doubles bit for bit, so these follow
 //! `@mapbox/point-geometry` and the ECMAScript conversions exactly.
-//! Trigonometry goes through `libm`, the same code natively and in wasm.
+//! Trigonometry goes through [`crate::math`], the same code natively and in
+//! wasm.
 
 use std::f64::consts::PI;
 
@@ -33,16 +34,16 @@ impl Point {
 
     /// The angle from `b` to this point (`angleTo`).
     pub(crate) fn angle_to(self, b: Self) -> f64 {
-        libm::atan2(self.y - b.y, self.x - b.x)
+        crate::math::atan2(self.y - b.y, self.x - b.x)
     }
 
     pub(crate) fn rotate(self, angle: f64) -> Self {
-        let (cos, sin) = (libm::cos(angle), libm::sin(angle));
+        let (cos, sin) = (crate::math::cos(angle), crate::math::sin(angle));
         Self::new(cos * self.x - sin * self.y, sin * self.x + cos * self.y)
     }
 
     pub(crate) fn rotate_around(self, angle: f64, p: Self) -> Self {
-        let (cos, sin) = (libm::cos(angle), libm::sin(angle));
+        let (cos, sin) = (crate::math::cos(angle), crate::math::sin(angle));
         Self::new(
             p.x + cos * (self.x - p.x) - sin * (self.y - p.y),
             p.y + sin * (self.x - p.x) + cos * (self.y - p.y),
@@ -64,7 +65,7 @@ impl Point {
 
 /// The rotation matrix GL JS builds for `*-rotate` (`[cos, -sin, sin, cos]`).
 pub(crate) fn rotation_matrix(radians: f64) -> [f64; 4] {
-    let (sin, cos) = (libm::sin(radians), libm::cos(radians));
+    let (sin, cos) = (crate::math::sin(radians), crate::math::cos(radians));
     [cos, -sin, sin, cos]
 }
 

@@ -24,6 +24,7 @@ mod icon;
 mod key;
 mod layout;
 mod lines;
+mod math;
 mod merge_lines;
 mod placement;
 mod pole;

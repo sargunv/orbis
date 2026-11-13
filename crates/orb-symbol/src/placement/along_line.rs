@@ -229,7 +229,7 @@ fn scale(a: Point, k: f64) -> Point {
 }
 
 fn mag(a: Point) -> f64 {
-    libm::sqrt(a.x * a.x + a.y * a.y)
+    crate::math::sqrt(a.x * a.x + a.y * a.y)
 }
 
 fn unit(a: Point) -> Point {

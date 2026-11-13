@@ -173,11 +173,14 @@ pub(crate) fn project(m: &Mat4, x: f64, y: f64, z: Option<f64>) -> Projected {
 
 /// GL JS `getTileSkewVectors`.
 pub(crate) fn tile_skew_vectors(camera: &Camera) -> (Point, Point) {
-    let cos_pitch = libm::cos(camera.pitch);
-    let (sin_b, cos_b) = (libm::sin(camera.bearing), libm::cos(camera.bearing));
-    let (sin_r, cos_r) = (libm::sin(camera.roll), libm::cos(camera.roll));
+    let cos_pitch = crate::math::cos(camera.pitch);
+    let (sin_b, cos_b) = (
+        crate::math::sin(camera.bearing),
+        crate::math::cos(camera.bearing),
+    );
+    let (sin_r, cos_r) = (crate::math::sin(camera.roll), crate::math::cos(camera.roll));
     let unit = |x: f64, y: f64| {
-        let len = libm::hypot(x, y);
+        let len = crate::math::hypot(x, y);
         if len < 1.0e-9 {
             Point::new(0.0, 0.0)
         } else {

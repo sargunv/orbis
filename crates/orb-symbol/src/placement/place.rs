@@ -672,7 +672,10 @@ fn translation(camera: &Camera, tile: &TileView, translate: ([f64; 2], bool)) ->
         return t;
     }
     if viewport && camera.bearing != 0.0 {
-        let (s, c) = (libm::sin(camera.bearing), libm::cos(camera.bearing));
+        let (s, c) = (
+            crate::math::sin(camera.bearing),
+            crate::math::cos(camera.bearing),
+        );
         t = [t[0] * c - t[1] * s, t[0] * s + t[1] * c];
     }
     let units = tile.tile_units_per_pixel(camera);
@@ -1793,7 +1796,7 @@ fn bucket_states(
 /// GL JS `getSortedSymbolIndexes`: the instances by their anchors rotated
 /// by `angle`, top to bottom, ties by feature index descending.
 fn viewport_y_order(t: &PlacementTables, angle: f64) -> Vec<usize> {
-    let (sin, cos) = (libm::sin(angle), libm::cos(angle));
+    let (sin, cos) = (crate::math::sin(angle), crate::math::cos(angle));
     let mut order: Vec<usize> = (0..t.instances.len()).collect();
     order.sort_by_key(|&i| {
         let s = &t.instances[i];
