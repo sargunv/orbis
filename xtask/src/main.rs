@@ -65,8 +65,7 @@ cargo xtask <task>
                --antialias on for 3D layers with 4× MSAA), gestures,
                load (style load to first complete still) or tiles (the
                extract's tiles through decode, layout and pack); --views
-               <file> takes mln-rs's views.txt cameras; web/demo/bench.html
-               runs the frames and gestures benches in a browser;
+               <file> takes mln-rs's views.txt cameras;
                --compare <rev> [--runs N] builds <rev> in target/compare
                and runs both builds N times (default 3),
                interleaved, reporting each number as <rev> → this tree

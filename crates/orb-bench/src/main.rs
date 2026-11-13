@@ -5,8 +5,7 @@
 //! [--antialias on|off] [--paths city|alps] [--legs N] [--capture N]
 //! [--warm]`.
 //!
-//! Without a style URL it loads the committed Tokyo extract, as the browser
-//! bench (`web/demo/bench.html`) does; `alps` is the Alps terrain style
+//! Without a style URL it loads the committed Tokyo extract; `alps` is the Alps terrain style
 //! (live tiles), at its view and with the gestures bench's Alps paths.
 //! `stutter` is `--experiment stutter`, whose Liberty scenarios draw
 //! OpenFreeMap's live Liberty unless a style URL (say, `cargo xtask h2h

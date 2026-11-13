@@ -1,5 +1,5 @@
 // Builds and serves web/dist over HTTP with Range support, and launches headless
-// Chromium with WebGPU, for the snapshot and bench scripts.
+// Chromium with WebGPU, for the page scripts.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";

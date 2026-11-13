@@ -239,7 +239,7 @@ SCENES.tokyo = {
 
 /**
  * The Alps terrain style and its flight, by key only: the stable style the
- * flight, the stutter bench and orb-bench measure terrain on.
+ * flight, the sessions and orb-bench measure terrain on.
  */
 SCENES.alps = {
   key: "alps",

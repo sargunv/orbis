@@ -10,9 +10,7 @@
 //! the globe, zooming from the whole world onto Tokyo, and onto Manhattan
 //! as its buildings arrive. Each starts cold from
 //! its first camera at rest and runs at a 60 Hz pace, as the gestures bench
-//! does. `cargo xtask bench stutter`; in the browser
-//! `bench.html?experiment=stutter` runs the same paths through the page's
-//! map package and, with `engine=gl`, through GL JS.
+//! does. `cargo xtask bench stutter`.
 
 use std::fmt::Write;
 use std::time::Duration;
