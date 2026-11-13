@@ -72,34 +72,6 @@ test("a trap stops the map with one error, which every call after throws without
   }
 });
 
-test("what an event brings mid-call goes in once the call returns, in order", () => {
-  const fake = new Fake();
-  const { core, whenFree } = guard(fake, () => {});
-  const seen: number[] = [];
-  // A call that lets events in before it returns, as a placeholder's
-  // synchronous load of the deferred half does in Firefox.
-  const spin = () => {
-    whenFree(() => seen.push(core.camera()));
-    whenFree(() => seen.push(core.camera() + 1));
-  };
-  Object.assign(fake, {
-    camera: function (this: Fake) {
-      if (this.borrowed) throw new Error("recursive use of an object");
-      this.borrowed = true;
-      try {
-        if (this.calls++ === 0) spin();
-        return 1;
-      } finally {
-        this.borrowed = false;
-      }
-    },
-  });
-  assert.equal(core.camera(), 1);
-  assert.deepEqual(seen, [1, 2], "both went in, after the call");
-  whenFree(() => seen.push(3));
-  assert.deepEqual(seen, [1, 2, 3], "with no call under way, at once");
-});
-
 test("a trap outside a call stops the map too", () => {
   const heard: Error[] = [];
   const { core, stop } = guard(new Fake(), (e) => heard.push(e));

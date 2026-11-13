@@ -1,5 +1,5 @@
 // The wasm map, stopping at its first trap with one clear error rather
-// than a borrow held forever, and entered by one call at a time (hosts.ts).
+// than a borrow held forever (hosts.ts).
 
 /**
  * `core`, stopping at its first trap. A Rust panic traps the module
@@ -10,39 +10,12 @@
  * after throws it too without entering the module, and an answer a call
  * still waits on (the next frame's pixels, a snapshot's end) rejects with
  * it. `stop` stops it for a trap outside a call.
- *
- * A call can let events in before it returns: a placeholder's synchronous
- * load of the deferred half (builds.ts) spins Firefox's event loop, which
- * delivers the workers' replies. Entering the map then would throw
- * "recursive use of an object", losing the reply, so `whenFree` runs what
- * an event brings once no call is under way, in the order it came.
  */
 export function guard<Core extends object>(
   core: Core,
   trapped: (e: Error) => void,
-): {
-  core: Core;
-  stop: (e: unknown) => Error;
-  whenFree: (run: () => void) => void;
-} {
+): { core: Core; stop: (e: unknown) => Error } {
   let stopped: Error | undefined;
-  // Calls under way, and what came meanwhile.
-  let depth = 0;
-  const waiting: (() => void)[] = [];
-  let draining = false;
-  const drain = () => {
-    if (draining) return;
-    draining = true;
-    try {
-      for (let run; (run = waiting.shift());) run();
-    } finally {
-      draining = false;
-    }
-  };
-  const whenFree = (run: () => void) => {
-    if (depth > 0 || draining) waiting.push(run);
-    else run();
-  };
   let halt: (e: Error) => void = () => {};
   const halted = new Promise<never>((_, reject) => (halt = reject));
   halted.catch(() => {});
@@ -64,7 +37,6 @@ export function guard<Core extends object>(
       if (!method) {
         method = (...args) => {
           if (stopped) throw stopped;
-          depth++;
           try {
             const result: unknown = value.apply(target, args);
             // The frames that would settle it stop with the map.
@@ -73,8 +45,6 @@ export function guard<Core extends object>(
               : result;
           } catch (e) {
             throw e instanceof WebAssembly.RuntimeError ? stop(e) : e;
-          } finally {
-            if (--depth === 0) drain();
           }
         };
         methods.set(key, method);
@@ -82,7 +52,7 @@ export function guard<Core extends object>(
       return method;
     },
   });
-  return { core: guarded, stop, whenFree };
+  return { core: guarded, stop };
 }
 
 /** What a map whose wasm trapped throws, the trap its cause. */

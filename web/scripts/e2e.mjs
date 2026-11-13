@@ -46,8 +46,7 @@
 //   live style without a reload and keep the URL, options that need
 //   another (the blended relief the hillshade, fog terrain) wait for it, a
 //   reload reproduces the choices, opening the panel moves nothing, and at
-//   phone width it's a bottom sheet that fits; with core-deferred.wasm
-//   loaded only through placeholders, mid-call, and no error.
+//   phone width it's a bottom sheet that fits.
 // - `resize`: the Alps terrain style, offline, with circles over it,
 //   resized three times: each resize draws the map at the new size, not
 //   black, with no WebGPU error in any submit (a bundle bound to a target
@@ -1843,13 +1842,6 @@ async function options(browser, server) {
   const errors = [];
   onPageError(page, (m) => errors.push(m));
   await offlineGlobe(page, server);
-  // The idle fetch of core-deferred.wasm never answers, so the options'
-  // first calls into it load it through placeholders, mid-call: Firefox
-  // delivers the workers' replies meanwhile, which must wait for the call
-  // (trap.ts's `whenFree`), not enter the map inside it.
-  await page.route(/\/core-deferred[^/]*\.wasm/, (route) => {
-    if (route.request().resourceType() !== "fetch") route.continue();
-  });
   await page.goto(
     `${server.url}?style=globe&blend=1&projection=mercator#14/35.687/139.74`,
   );
