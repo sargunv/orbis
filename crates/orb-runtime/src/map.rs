@@ -210,6 +210,10 @@ pub struct FrameReport {
     /// What they did in [`Map::prepare`]'s frames since the last frame
     /// drawn (part of `gpu` too): at rest, in its upkeep.
     pub prepared_resized: orb_render::Resized,
+    /// The part of `gpu` that [`Map::prepare`]'s frames did while the
+    /// camera rested: the upkeep's moves, which the next frame drawn,
+    /// though input may have come since, didn't make.
+    pub prepared_at_rest: GpuCounters,
 }
 
 /// Where a frame's CPU time went on this thread, in microseconds of the
@@ -703,9 +707,9 @@ pub struct Map {
     pub(crate) placement_ms: f64,
     pub(crate) upload_ms: f64,
     pub(crate) tiles_arrived: u32,
-    /// What preparing spent, the tiles it took in and what it moved since
-    /// the last frame drawn.
-    prepared: (FrameTimes, u32, orb_render::Resized),
+    /// What preparing spent, the tiles it took in, what it moved and what
+    /// the device did in it at rest since the last frame drawn.
+    prepared: (FrameTimes, u32, orb_render::Resized, GpuCounters),
     /// The device's counts at the last frame drawn.
     counted: GpuCounters,
     /// The labels' placements asked for by the last frame drawn.
@@ -1958,7 +1962,9 @@ impl Map {
         let frame_time = self.frame_time;
         let clock = Arc::clone(&self.services.clock);
         let started = clock.now();
-        let asked = gpu.counters().pipelines_requested;
+        let counted_at_start = gpu.counters();
+        let asked = counted_at_start.pipelines_requested;
+        let at_rest = self.moves() != Moves::Held;
         (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
         let began = self
             .arrivals_began
@@ -2124,12 +2130,16 @@ impl Map {
             self.prepared.0.add_prepared(&times);
             self.prepared.1 += self.tiles_arrived;
             self.prepared.2 += renderer.take_resized();
+            if at_rest {
+                self.prepared.3 += gpu.counters().since(&counted_at_start);
+            }
             report.compiling = compiling;
             return report;
         };
-        let (prepared, arrived, resized) = std::mem::take(&mut self.prepared);
+        let (prepared, arrived, resized, at_rest) = std::mem::take(&mut self.prepared);
         report.prepared = prepared;
         report.prepared_resized = resized;
+        report.prepared_at_rest = at_rest;
         report.tiles_arrived = self.tiles_arrived + arrived;
         report.tile_bytes = self.beat.bytes();
 

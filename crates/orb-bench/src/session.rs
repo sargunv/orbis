@@ -655,11 +655,19 @@ fn pacing(xs: &mut [f64]) -> String {
 /// and how many frames.
 /// The frames' device counts summed, their drape slots redrawn, their
 /// pipelines asked for outside the style's set, and how many they are.
-fn summed<'a>(frames: impl Iterator<Item = &'a Frame>) -> (GpuCounters, u32, u32, usize) {
+/// The frames' device counts, drape slots, late pipelines and number;
+/// the counts with what their preparations at rest did, or without.
+fn summed<'a>(
+    frames: impl Iterator<Item = &'a Frame>,
+    at_rest: bool,
+) -> (GpuCounters, u32, u32, usize) {
     let mut sum = GpuCounters::default();
     let (mut slots, mut late, mut n) = (0, 0, 0);
     for f in frames {
-        sum += f.report.gpu;
+        sum += match at_rest {
+            true => f.report.gpu,
+            false => f.report.gpu.since(&f.report.prepared_at_rest),
+        };
         slots += f.report.frame.drape_slots;
         late += f.report.pipelines_late;
         n += 1;
@@ -805,7 +813,9 @@ impl SessionReport {
                     "moving" => f.report.moved || f.report.input,
                     _ => true,
                 };
-                let (c, slots, late, n) = summed(r.frames.iter().filter(keep));
+                // The upkeep's moves at rest count with the frame drawn after
+                // them, which input may have reached since: not its own.
+                let (c, slots, late, n) = summed(r.frames.iter().filter(keep), what == "all");
                 // Moves in upkeep between frames happened at rest.
                 let mut resized = orb_api::Resized::default();
                 for f in r.frames.iter().filter(keep) {
@@ -875,7 +885,8 @@ impl SessionReport {
             "Each frame's device counts since the frame before. late: pipelines asked for that \
              the style's pipeline set left out. input: frames drawn while input \
              held the camera (a pipeline made then compiled mid-gesture); moving: frames \
-             that moved the camera, or with input (memory made then is made while it moves); pool \
+             that moved the camera, or with input (memory made then is made while it moves); \
+             input and moving leave out what the map's upkeep did at rest before them; pool \
              moves: pools, tables, tile pages and the drape atlas moving into memory of another \
              size, and what they made and copied (part of the device's counts), in the frames \
              (all: and in the map's upkeep between them, at rest); peak frame: the most one frame \
