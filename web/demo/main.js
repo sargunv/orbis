@@ -476,10 +476,7 @@ async function load(next, { camera }) {
   quake = attachQuake(map, {
     active: () => !!current.scene.quake,
     epicentre: () => current.scene.quake.epicentre,
-    onStats: (stats) => (globalThis.quakeStats = stats),
   });
-  // For `pnpm quake`.
-  globalThis.quake = quake;
   options.drawing(map.backend);
   showGaps([]);
   map.on("gaps", ({ gaps }) => showGaps(gaps));

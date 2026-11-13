@@ -5,9 +5,7 @@
 // flight, so the map shows every step it is given at the rate it can.
 //
 // From the page (quake.js): `{ start, port }` once, then `{ tile }` for
-// each tile the map asks for, `{ epicentre }` on a click and `{ paused }`
-// to hold the ground still (for measurements). To the page: `{ stats }`
-// once a second.
+// each tile the map asks for and `{ epicentre }` on a click.
 
 /** Heights a tile side: Mapterhorn's 512-texel tiles averaged 2×2. */
 const SIDE = 256;
@@ -42,18 +40,7 @@ const tiles = new Map();
 let epicentre = { x: 0.5, y: 0.5, lat: 0 };
 let shockAt = performance.now();
 let inFlight = false;
-/** Held still: steps go only to tiles that have none yet, without the wave. */
-let paused = false;
-/** Tiles that have had heights. */
-const fed = new Set();
 let nextId = 0;
-const stats = {
-  sent: 0,
-  shown: 0,
-  bytes: 0,
-  tiles: 0,
-  since: performance.now(),
-};
 
 /** World x, y in [0, 1) of a longitude and latitude. */
 function world([lon, lat]) {
@@ -137,10 +124,8 @@ function table(t) {
 function step(now) {
   if (inFlight || !port) return;
   const ready = [...tiles.values()].filter((t) => t.base);
-  if (!ready.length || (paused && ready.every((t) => fed.has(t)))) return;
-  const t = ((now - shockAt) / 1000) % WAVE.period;
-  const lut = paused ? new Float32Array(BINS) : table(t);
-  for (const tile of ready) fed.add(tile);
+  if (!ready.length) return;
+  const lut = table(((now - shockAt) / 1000) % WAVE.period);
   const n = SIDE * SIDE;
   const heights = new Float32Array(ready.length * n);
   const zxy = new Uint32Array(ready.length * 3);
@@ -155,9 +140,6 @@ function step(now) {
     }
   });
   inFlight = true;
-  stats.sent++;
-  stats.bytes += heights.byteLength;
-  stats.tiles = ready.length;
   port.postMessage({ id: nextId++, source, side: SIDE, zxy, heights }, [
     zxy.buffer,
     heights.buffer,
@@ -166,18 +148,6 @@ function step(now) {
 
 function frame(now) {
   step(now);
-  if (now - stats.since > 1000) {
-    const seconds = (now - stats.since) / 1000;
-    postMessage({
-      stats: {
-        shownPerSecond: stats.shown / seconds,
-        sentPerSecond: stats.sent / seconds,
-        megabytesPerSecond: stats.bytes / seconds / 2 ** 20,
-        tiles: stats.tiles,
-      },
-    });
-    Object.assign(stats, { sent: 0, shown: 0, bytes: 0, since: now });
-  }
   schedule();
 }
 
@@ -189,7 +159,6 @@ const schedule = () =>
 function onPort({ data }) {
   if ("shown" in data) {
     if (data.source !== source) return;
-    stats.shown++;
     inFlight = false;
   } else if ("error" in data) {
     console.error(`quake: ${data.error}`);
@@ -203,7 +172,6 @@ function onPort({ data }) {
 self.onmessage = ({ data }) => {
   if (data.start) {
     ({ source } = data.start);
-    Object.assign(WAVE, data.start.wave ?? {});
     epicentre = world(data.start.epicentre);
     shockAt = performance.now();
     port = data.port;
@@ -218,9 +186,6 @@ self.onmessage = ({ data }) => {
     void baseHeights(z, x, y).then((base) => {
       if (tiles.get(key) === tile) tile.base = base;
     });
-  } else if ("paused" in data) {
-    paused = data.paused;
-    if (!paused) shockAt = performance.now();
   } else if (data.epicentre) {
     epicentre = world(data.epicentre);
     shockAt = performance.now();

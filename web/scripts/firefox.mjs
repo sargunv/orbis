@@ -38,24 +38,6 @@ export const installedFirefox = () =>
     }[process.platform],
   ].find((path) => path && existsSync(path));
 
-/** `name=value,…` as Firefox prefs: booleans, numbers or strings. */
-export const parsePrefs = (text) =>
-  Object.fromEntries(
-    (text?.split(",") ?? []).map((pref) => {
-      const [name, value] = pref.split("=");
-      return [
-        name,
-        value === "true"
-          ? true
-          : value === "false"
-            ? false
-            : Number.isNaN(Number(value))
-              ? value
-              : Number(value),
-      ];
-    }),
-  );
-
 /**
  * Launches the installed Firefox on a fresh profile with `prefs`, its
  * window `width`×`height` CSS pixels of content, and resolves to a page:

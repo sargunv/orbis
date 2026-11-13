@@ -245,7 +245,7 @@ export function launchWebkit({ headed = false } = {}) {
 }
 
 // `chromiumPlatform` with WebGPU off: ANGLE as pinned there.
-export function chromiumWithoutWebgpu() {
+function chromiumWithoutWebgpu() {
   const { executablePath, args } = chromiumPlatform();
   return {
     executablePath,

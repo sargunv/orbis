@@ -45,9 +45,9 @@ export function quakeStyle(style) {
 /**
  * Runs the quake on `map` while `active()` says its entry shows: a worker
  * starts with the entry's first tile request, its shock at `epicentre()`,
- * and stops with `stop()`. `onStats` hears its rates once a second.
+ * and stops with `stop()`.
  */
-export function attachQuake(map, { active, epicentre, onStats }) {
+export function attachQuake(map, { active, epicentre }) {
   let worker;
   let centre;
   const start = () => {
@@ -60,7 +60,6 @@ export function attachQuake(map, { active, epicentre, onStats }) {
       { start: { source: QUAKE_SOURCE, epicentre: centre }, port },
       [port],
     );
-    worker.onmessage = ({ data }) => data.stats && onStats?.(data.stats);
     return worker;
   };
   map.on("tilerequest", ({ source, z, x, y }) => {
@@ -73,10 +72,6 @@ export function attachQuake(map, { active, epicentre, onStats }) {
     worker.postMessage({ epicentre: lngLat });
   });
   return {
-    /** Holds the ground still, or lets it move again. */
-    pause(paused) {
-      worker?.postMessage({ paused });
-    },
     stop() {
       worker?.terminate();
       worker = undefined;
