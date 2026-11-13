@@ -311,11 +311,6 @@ impl Runtime {
         self.shared.gpu().map(drop)
     }
 
-    /// Whether the device is made.
-    pub fn device_open(&self) -> bool {
-        self.shared.opened().is_some()
-    }
-
     /// Asks the graphics debugger the process runs under (Xcode's Metal
     /// debugger, RenderDoc) to capture `count` of the frames this
     /// runtime's maps draw, after the next `skip`: each a frame's passes
