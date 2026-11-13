@@ -2555,18 +2555,30 @@ impl Map {
         }
     }
 
-    /// The most terrain tiles this frame's cover may have: as many as the
-    /// device's drape pages hold ([`Renderer::drape_room`]), whose pages
-    /// then hold exactly the cover's, or while memory is held, those of
-    /// the pages already made, which grow to the cover once the camera
-    /// rests.
+    /// The most terrain tiles this frame's cover may have: those the
+    /// device's drape pages hold a cover of ([`Self::drape_cover_room`]),
+    /// or while memory is held, those of the pages already made, which
+    /// grow to the cover once the camera rests.
     pub(crate) fn cover_room(gpu: &dyn Gpu, renderer: &Renderer) -> u32 {
-        let room = renderer.drape_room(gpu);
+        let room = Self::drape_cover_room(gpu, renderer);
         match renderer.drape_held() {
             // The renderer's gate, as the frame set it: the pages follow
             // it, not the camera as it moved since.
             Some(held) if renderer.moves() == Moves::Held => held.min(room),
             _ => room,
+        }
+    }
+
+    /// The most terrain tiles the device's drape pages hold a cover of
+    /// ([`Renderer::drape_room`]): all of a still map's, and all but one
+    /// of a continuous map's, whose pages keep a slot past the cover for
+    /// its moves at rest to go through ([`Map::plan_drape`]), so that they
+    /// fit the frame's budget even where the cover meets the device's room.
+    fn drape_cover_room(gpu: &dyn Gpu, renderer: &Renderer) -> u32 {
+        let room = renderer.drape_room(gpu);
+        match renderer.moves() {
+            Moves::Free => room,
+            Moves::Rest | Moves::Held => room.saturating_sub(1).max(1),
         }
     }
 
@@ -2593,7 +2605,8 @@ impl Map {
         let terrain = self.style.as_ref().and_then(|s| s.terrain.as_ref());
         renderer.terrain_on()
             && terrain.is_some_and(|t| {
-                t.covered.0 > t.covered.1 && t.covered.1 < renderer.drape_room(gpu) as usize
+                t.covered.0 > t.covered.1
+                    && t.covered.1 < Self::drape_cover_room(gpu, renderer) as usize
             })
     }
 

@@ -1494,6 +1494,23 @@ impl Renderer {
         Ok(layout)
     }
 
+    /// Where the drape pages [`reserve_drape`](Self::reserve_drape) just
+    /// made anew keep the pages they replaced, for
+    /// [`carry_drape`](Self::carry_drape): those pages' layout generation.
+    pub fn drape_carries(&self) -> Option<u64> {
+        self.terrain.as_ref().and_then(terrain::Terrain::carries)
+    }
+
+    /// Copies drape slots of the pages [`reserve_drape`](Self::reserve_drape)
+    /// replaced into the new ones, `(from, to, shrink)` each, and lets the
+    /// old pages go: the tiles carried show what they did until the map
+    /// redraws them in their new places.
+    pub fn carry_drape(&mut self, gpu: &mut dyn Gpu, slots: &[(u32, u32, u8)]) {
+        if let Some(terrain) = &mut self.terrain {
+            terrain.carry(gpu, slots);
+        }
+    }
+
     /// Redraws these terrain tiles' drape slots this frame, at the side
     /// each shrinks to ([`TerrainTile::shrink`]), in the stacks given, as
     /// a map at style zoom `zoom` draws: their drape placements are in the

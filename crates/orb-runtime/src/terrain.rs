@@ -756,6 +756,51 @@ impl Terrain {
                 .all(|(place, tile)| self.slots.get(tile).is_some_and(|s| s.index == place))
     }
 
+    /// Carries the slots into pages made anew for `layout` that keep the
+    /// pages of generation `from` they replaced
+    /// ([`Renderer::drape_carries`](orb_render::Renderer::drape_carries)),
+    /// if the slots are that generation's: each drawn tile of the cover
+    /// takes the slot of its place, and each retired one a blank tile
+    /// shows a slot left free. A tile drapes a few pixels apart in another
+    /// slot, so a carried tile is stale: it shows its old slot's copy until
+    /// the frame's budget redraws it, and at rest the map ends as a fresh
+    /// one. The slots to copy, `(from, to, shrink)`
+    /// ([`Renderer::carry_drape`](orb_render::Renderer::carry_drape)).
+    pub(crate) fn carry(&mut self, layout: DrapeLayout, from: u64) -> Vec<(u32, u32, u8)> {
+        if from != self.generation || layout.generation == self.generation {
+            return Vec::new();
+        }
+        self.generation = layout.generation;
+        let mut copies = Vec::new();
+        let mut used = FxHashSet::default();
+        for (place, tile) in (0u32..).zip(&self.tiles) {
+            if let Some(slot) = self.slots.get_mut(tile) {
+                copies.push((slot.index, place, slot.shrink));
+                slot.index = place;
+                slot.content.clear();
+                used.insert(place);
+            }
+        }
+        let shown: FxHashSet<CoveredTile> = (self.tiles.iter())
+            .filter(|t| !self.slots.contains_key(t))
+            .filter_map(|&t| self.stand_in(t))
+            .collect();
+        // Past the cover's places first, which its blank tiles take.
+        let cover = self.tiles.len() as u32;
+        let mut free = (cover..layout.tile_slots)
+            .chain(0..cover)
+            .filter(|i| !used.contains(i));
+        self.retired.retain(|tile, slot| {
+            let index = shown.contains(tile).then(|| free.next()).flatten();
+            if let Some(index) = index {
+                copies.push((slot.index, index, slot.shrink));
+                slot.index = index;
+            }
+            index.is_some()
+        });
+        copies
+    }
+
     /// The nearest retired ancestor of `tile`, whose slot it shows while
     /// blank.
     fn stand_in(&self, tile: CoveredTile) -> Option<CoveredTile> {
@@ -814,7 +859,9 @@ impl Terrain {
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         // Out of place with no free slot to move through, at rest: every
         // tile takes its place in one frame, drawn anew where it moves.
-        // So too wherever the budget is unbounded (a still map).
+        // So too wherever the budget is unbounded (a still map). A
+        // continuous map's pages keep a slot past its cover for this
+        // (`Map::cover_room`), so that only pages of a single slot do.
         let held = self.slots.len() + self.retired.len();
         let misplaced = (self.slots.iter()).any(|(t, s)| places[t] != s.index);
         if at_rest && (texels.is_none() || misplaced && held >= layout.tile_slots as usize) {
@@ -2220,6 +2267,64 @@ mod tests {
             t.elevation(&tms).range(rect, 9)
         };
         assert_eq!(range(&mut moved), range(&mut fresh));
+    }
+
+    /// Pages made anew for another grid carry the cover's drawn slots into
+    /// their places, shown until the budget redraws them there; pages
+    /// whose slots the map didn't draw as it thinks carry nothing.
+    #[test]
+    fn new_pages_carry_the_drawn_slots_into_their_places() {
+        let tms = tms();
+        let mercator = *tms.projection();
+        let camera =
+            orb_camera::CameraState::new(orb_crs::Geodetic::new(7.75, 46.02), 11.5, &mercator);
+        let viewport = orb_camera::Viewport {
+            width: 1024.0,
+            height: 768.0,
+        };
+        let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
+        let layout = |tile_slots, generation| DrapeLayout {
+            stacks: [1, 0],
+            columns: [tile_slots, 1],
+            tile_slots,
+            generation,
+        };
+        let mut terrain = terrain_with(&[]);
+        let tile = |i: u32| CoveredTile {
+            index: TileIndex::new(12, 2134 + i % 2, 1454 + i / 2),
+            wrap: 0,
+        };
+        let plan = |terrain: &mut Terrain, layout, at_rest, budget| {
+            terrain.release_slots();
+            let slots = (layout, at_rest, budget);
+            terrain.plan(&tms, &view, slots, &|_| vec![1], &mut |_| None)
+        };
+        // Drawn while the camera moved: the last tile in a slot not its
+        // place's.
+        terrain.tiles = (0..3).map(tile).collect();
+        plan(&mut terrain, layout(5, 1), false, None);
+        terrain.tiles = (1..4).map(tile).collect();
+        let (_, redraw, _) = plan(&mut terrain, layout(5, 1), false, None);
+        assert_eq!(redraw.len(), 1);
+        // Pages of another grid at rest.
+        let mut to: Vec<u32> = (terrain.carry(layout(4, 2), 1).iter())
+            .map(|&(_, to, _)| to)
+            .collect();
+        to.sort_unstable();
+        assert_eq!(to, [0, 1, 2]);
+        assert!(terrain.slots_follow_cover());
+        // Each shows its copy until the budget redraws it in its place.
+        for frame in 0..3 {
+            let (tiles, redraw, deferred) = plan(&mut terrain, layout(4, 2), true, Some(1));
+            assert_eq!((redraw.len(), deferred), (1, frame < 2), "frame {frame}");
+            assert!(tiles.iter().zip(0..).all(|(t, place)| t.slot == place));
+        }
+        let (_, redraw, deferred) = plan(&mut terrain, layout(4, 2), true, Some(1));
+        assert_eq!((redraw.len(), deferred), (0, false));
+        // Pages made since the generation the slots were drawn for.
+        assert!(terrain.carry(layout(5, 4), 3).is_empty());
+        let (_, redraw, _) = plan(&mut terrain, layout(5, 4), true, Some(1));
+        assert_eq!(redraw.len(), 3, "blank slots draw");
     }
 
     /// A drawn tile's regions reach a terrain tile's slots only where they

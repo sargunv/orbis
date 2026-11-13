@@ -671,6 +671,19 @@ impl Map {
                 return None;
             }
         };
+        // A continuous map's pages made anew carry over what the old ones'
+        // slots hold, shown until the budget redraws each in its new place:
+        // a cover that needs another grid at rest costs a copy of its
+        // slots, not a redraw of every one in one frame. A still map's
+        // frame redraws them all, so it carries none.
+        if let Some(from) = renderer.drape_carries() {
+            let terrain = style.terrain.as_mut().expect("checked above");
+            let carried = match still {
+                true => Vec::new(),
+                false => terrain.carry(layout, from),
+            };
+            renderer.carry_drape(gpu, &carried);
+        }
         let surface = self.surface.tms().clone();
         let zoom = drape_zoom(self.camera.state().zoom(self.surface.projection()));
         let stacks = layout.stack_count() as usize;

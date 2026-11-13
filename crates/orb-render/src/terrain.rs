@@ -473,6 +473,15 @@ pub(crate) struct Terrain {
     linear: SamplerId,
     /// The colour page, and the slope page while a hillshade is shaded.
     atlas: [Option<Atlas>; 2],
+    /// The pages a reserve at the same stacks replaced, and their layout's
+    /// generation, kept for the map to carry its tiles' slots from
+    /// ([`Terrain::carry`]).
+    replaced: Option<([Option<Atlas>; 2], u64)>,
+    /// The copies of carried slots the next frame drawn makes before its
+    /// drape, from `copied_from`, which stays until that frame was
+    /// submitted.
+    copies: Vec<Pass>,
+    copied_from: [Option<Atlas>; 2],
     layout_state: DrapeLayout,
     /// The DEM page texture and revision the group binds.
     dem: Option<(TextureId, u32)>,
@@ -616,6 +625,9 @@ impl Terrain {
             stack_uniforms: None,
             linear,
             atlas: [None, None],
+            replaced: None,
+            copies: Vec::new(),
+            copied_from: [None, None],
             layout_state: DrapeLayout {
                 stacks: [1, 0],
                 columns: [1; 2],
@@ -722,9 +734,11 @@ impl Terrain {
 
     /// Makes pages of `tile_slots` blocks of `stacks` colour and slope
     /// slots, unless those held have their grids: blank ones, a new
-    /// [`DrapeLayout::generation`]. Pages of the same grids hold
-    /// `tile_slots` from then on, their slots as they were: a slot's
-    /// place in the page follows its grid alone. Whether it made them.
+    /// [`DrapeLayout::generation`], the old ones of the same stacks kept
+    /// for the map to [`carry`](Self::carry) from. Pages of the same
+    /// grids hold `tile_slots` from then on, their slots as they were: a
+    /// slot's place in the page follows its grid alone. Whether it made
+    /// them.
     /// Fails past the device's [`room`], or when the device refuses a
     /// page, which leaves none: the next reserve makes them anew, smaller.
     pub(crate) fn reserve(
@@ -747,7 +761,18 @@ impl Terrain {
             return Ok(false);
         }
         let before = gpu.counters();
-        self.release_atlas(gpu);
+        // Pages of the same stacks, all drawn as the map planned, stay
+        // until it carries its tiles' slots over into the new ones
+        // ([`carry`](Self::carry)).
+        let drawn = self.pending.is_empty() && self.copies.is_empty();
+        self.copies.clear();
+        std::mem::take(&mut self.copied_from).release(gpu);
+        self.release_replaced(gpu);
+        let pages = std::mem::take(&mut self.atlas);
+        match state.stacks == stacks && pages[0].is_some() && drawn {
+            true => self.replaced = Some((pages, state.generation)),
+            false => pages.into_iter().for_each(|page| page.release(gpu)),
+        }
         self.pending.clear();
         self.forget_group(gpu);
         let alloc = allocated(stacks);
@@ -755,13 +780,19 @@ impl Terrain {
             let Some((columns, rows)) = grid else {
                 continue;
             };
-            let made = Atlas::new(
-                gpu,
-                (columns, rows, alloc[page]),
-                PAGE_PX[page],
-                self.clear_layout,
-                downsampler,
-            );
+            let clear_layout = self.clear_layout;
+            let mut make = |gpu: &mut dyn Gpu| {
+                let size = (columns, rows, alloc[page]);
+                Atlas::new(gpu, size, PAGE_PX[page], clear_layout, downsampler)
+            };
+            // Short of memory for both, the old pages go first.
+            let made = make(gpu).or_else(|bytes| match self.replaced.is_some() {
+                true => {
+                    self.release_replaced(gpu);
+                    make(gpu)
+                }
+                false => Err(bytes),
+            });
             match made {
                 Ok(atlas) => self.atlas[page] = Some(atlas),
                 Err(bytes) => {
@@ -794,10 +825,68 @@ impl Terrain {
         }
     }
 
+    /// Releases the pages, any a reserve replaced, and those slots were to
+    /// be copied from.
     fn release_atlas(&mut self, gpu: &mut dyn Gpu) {
         for page in &mut self.atlas {
             page.take().release(gpu);
         }
+        self.release_replaced(gpu);
+        self.copies.clear();
+        std::mem::take(&mut self.copied_from).release(gpu);
+    }
+
+    fn release_replaced(&mut self, gpu: &mut dyn Gpu) {
+        let (pages, _) = self.replaced.take().unzip();
+        pages
+            .into_iter()
+            .flatten()
+            .for_each(|page| page.release(gpu));
+    }
+
+    /// The generation of the pages the last [`reserve`](Self::reserve)
+    /// replaced, while they are kept for [`carry`](Self::carry).
+    pub(crate) fn carries(&self) -> Option<u64> {
+        self.replaced.as_ref().map(|&(_, generation)| generation)
+    }
+
+    /// Copies slots of the pages the last reserve replaced into the new
+    /// ones, `(from, to, shrink)` each, at every mip level of their side
+    /// and in every stack, before the next frame drawn draws its drape;
+    /// the old pages go once it was submitted. A slot holds much the same
+    /// wherever it lies (`project.wgsl`'s `drape_texel`), so a tile
+    /// carried shows what it did until the map redraws it in its new
+    /// place, within the frame's budget: a new grid at rest costs a copy of
+    /// the cover's slots rather than a redraw of every one in one frame.
+    pub(crate) fn carry(&mut self, gpu: &mut dyn Gpu, slots: &[(u32, u32, u8)]) {
+        let Some((old, _)) = self.replaced.take() else {
+            return;
+        };
+        let mut passes = Vec::new();
+        for (old, new) in old.iter().zip(&self.atlas) {
+            let (Some(old), Some(new)) = (old, new) else {
+                continue;
+            };
+            let (from_columns, to_columns) = (old.grid().0, new.grid().0);
+            let px = new.slot_px;
+            let corner = |slot: u32, columns: u32| [slot % columns * px, slot / columns * px, 0];
+            let copies: Vec<TextureCopy> = (slots.iter())
+                .map(|&(from, to, shrink)| TextureCopy {
+                    from: corner(from, from_columns),
+                    to: corner(to, to_columns),
+                    size: [px >> shrink, px >> shrink, new.layers.min(old.layers)],
+                })
+                .collect();
+            if !copies.is_empty() {
+                passes.push(Pass::CopyTexture {
+                    source: old.texture,
+                    destination: new.texture,
+                    copies,
+                });
+            }
+        }
+        std::mem::replace(&mut self.copied_from, old).release(gpu);
+        self.copies = passes;
     }
 
     fn forget_group(&mut self, gpu: &mut dyn Gpu) {
@@ -1089,6 +1178,13 @@ impl Terrain {
         (passes, layers): (&mut Vec<Pass>, &mut Vec<RenderPass>),
     ) -> TerrainDrawn {
         let mut drawn = TerrainDrawn::default();
+        // Carried slots land before anything draws into or samples their
+        // pages; the pages they came from go after the frame that copied
+        // them was submitted.
+        if self.copies.is_empty() {
+            std::mem::take(&mut self.copied_from).release(gpu);
+        }
+        passes.append(&mut self.copies);
         if !self.ready(gpu) || !downsampler.ready(gpu) {
             // The map placed this frame's drape for these slots only: it
             // draws them all again once terrain can.
