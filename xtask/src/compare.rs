@@ -101,7 +101,9 @@ impl Build {
 /// `cargo xtask bench --compare <rev> [--runs N] [orb-bench args]`: `runs`
 /// rounds of `orb-bench` at `rev` and at this tree, alternating which goes
 /// first, then every table of the report with each number as the median
-/// of `rev`'s runs → this tree's, and the change.
+/// of `rev`'s runs → this tree's, and the change. A `rev` that names an
+/// `orb-bench` binary runs that build instead, as built once and kept
+/// aside, without a checkout of its own.
 pub(crate) fn bench(args: &[String]) -> Result<(), String> {
     let mut rev = None;
     let mut runs = 3;
@@ -121,7 +123,16 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
         }
     }
     let rev = rev.ok_or("bench: --compare takes a revision")?;
-    let before = Build::new(rev, &["orb-bench"], "release")?;
+    let given = Path::new(rev);
+    let (_build, label, before) = match given.is_file() {
+        true => (None, rev.clone(), given.to_path_buf()),
+        false => {
+            let build = Build::new(rev, &["orb-bench"], "release")?;
+            let label = format!("{} ({})", build.rev, build.commit);
+            let bin = build.bin.join(crate::exe("orb-bench"));
+            (Some(build), label, bin)
+        }
+    };
     crate::cargo(&["build", "--release", "-p", "orb-bench"])?;
     let after = root().join("target/release").join(crate::exe("orb-bench"));
     let mut outputs: [Vec<String>; 2] = [Vec::new(), Vec::new()];
@@ -129,14 +140,11 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
         let order = if run % 2 == 0 { [0, 1] } else { [1, 0] };
         for side in order {
             let (name, bin) = match side {
-                0 => (
-                    before.rev.as_str(),
-                    before.bin.join(crate::exe("orb-bench")),
-                ),
-                _ => ("working tree", after.clone()),
+                0 => (label.as_str(), &before),
+                _ => ("working tree", &after),
             };
             eprintln!("compare: run {} of {runs}: {name}", run + 1);
-            let out = Command::new(&bin)
+            let out = Command::new(bin)
                 .args(&pass)
                 .output()
                 .map_err(|e| format!("{}: {e}", bin.display()))?;
@@ -150,9 +158,7 @@ pub(crate) fn bench(args: &[String]) -> Result<(), String> {
         }
     }
     print!(
-        "## Bench: {} ({}) → working tree, {runs} runs interleaved\n\n{}",
-        before.rev,
-        before.commit,
+        "## Bench: {label} → working tree, {runs} runs interleaved\n\n{}",
         merge(&outputs[0], &outputs[1])
     );
     Ok(())

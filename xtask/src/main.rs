@@ -70,6 +70,7 @@ cargo xtask <task>
                --compare <rev> [--runs N] builds <rev> in target/compare
                and runs both builds N times (default 3),
                interleaved, reporting each number as <rev> → this tree
+               (an orb-bench binary for <rev> runs that build instead)
   h2h <stills|tiles|frames|size|all|web|mirror> [options]  Orbis against mln-rs
                (pinned, built into the shared h2h cache) over a local
                caching mirror of OpenFreeMap: per-process stills, tile
