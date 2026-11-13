@@ -249,19 +249,8 @@ struct Node {
     second_group: Option<BindGroupId>,
     /// A symbol node draws its halos in a pass of their own.
     separate_halo: bool,
-    /// A symbol node places its labels along lines.
-    along_line: bool,
-    /// A line node has dashes, a pattern or a gradient: it draws with the
-    /// styled line pipeline.
-    styled: bool,
-    /// A paint or symbol node's paint reads a feature's property row or
-    /// state: it draws with its pipeline's variant with rows.
-    rows: bool,
-    /// A fill or line node draws a pattern: it draws with its pipeline's
-    /// variant with patterns.
-    pattern: bool,
-    /// What an extrusion node's pipelines are specialised for.
-    elevation: paint::ExtrusionShape,
+    /// What of its paint picks its pipelines.
+    shape: Shape,
     /// On terrain, the drape stack a draped node draws into, and the
     /// terrain layer that draws it.
     stack: Option<u8>,
@@ -295,37 +284,37 @@ struct Node {
 }
 
 /// Whether a node painted with `a` draws with the pipelines it does
-/// painted with `b`.
+/// painted with `b`, paint of its family.
 pub fn same_pipelines(a: &NodePaint, b: &NodePaint) -> bool {
-    PaintShape::of(a) == PaintShape::of(b)
+    Shape::of(a) == Shape::of(b)
 }
 
 /// What of a node's paint picks its pipelines.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PaintShape {
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Shape {
+    /// A line node has dashes, a pattern or a gradient: it draws with the
+    /// styled line pipeline.
     styled: bool,
+    /// A paint or symbol node's paint reads a feature's property row or
+    /// state: it draws with its pipeline's variant with rows.
     rows: bool,
+    /// A fill or line node draws a pattern: it draws with its pipeline's
+    /// variant with patterns.
     pattern: bool,
-    along_line: Option<bool>,
-    elevation: Option<paint::ExtrusionShape>,
+    /// A symbol node places its labels along lines.
+    along_line: bool,
+    /// What an extrusion node's pipelines are specialised for.
+    elevation: paint::ExtrusionShape,
 }
 
-impl PaintShape {
+impl Shape {
     fn of(paint: &NodePaint) -> Self {
         Self {
             styled: paint.styled(),
             rows: paint.reads_rows(),
             pattern: paint.patterned(),
-            along_line: match paint {
-                NodePaint::Symbol(p) => Some(p.along_line),
-                _ => None,
-            },
-            elevation: match paint {
-                NodePaint::Extrusion(_) | NodePaint::ExtrusionPattern(..) => {
-                    Some(paint.extrusion_shape())
-                }
-                _ => None,
-            },
+            along_line: matches!(paint, NodePaint::Symbol(p) if p.along_line),
+            elevation: paint.extrusion_shape(),
         }
     }
 }
@@ -342,50 +331,12 @@ impl Node {
     fn paint_kind(&self, patterned: &[Family], rowed: &[Family]) -> PaintKind {
         PaintKind {
             family: self.family,
-            styled: self.styled,
-            rows: self.rows || rowed.contains(&self.family),
-            pattern: self.pattern || patterned.contains(&self.family),
+            styled: self.shape.styled,
+            rows: self.shape.rows || rowed.contains(&self.family),
+            pattern: self.shape.pattern || patterned.contains(&self.family),
         }
-    }
-
-    /// What of it picks its pipelines, which [`Renderer::set_pipelines`]
-    /// sets from a paint it may draw with and puts back.
-    fn shape(&self) -> NodeShape {
-        (
-            self.styled,
-            self.rows,
-            self.pattern,
-            self.along_line,
-            self.elevation,
-        )
-    }
-
-    /// Its pipelines' shape as `paint` picks them.
-    fn set_shape(&mut self, paint: &NodePaint) {
-        (self.styled, self.rows) = (paint.styled(), paint.reads_rows());
-        self.pattern = paint.patterned();
-        match paint {
-            NodePaint::Symbol(p) => self.along_line = p.along_line,
-            NodePaint::Extrusion(_) | NodePaint::ExtrusionPattern(..) => {
-                self.elevation = paint.extrusion_shape();
-            }
-            _ => {}
-        }
-    }
-
-    fn restore_shape(&mut self, shape: NodeShape) {
-        (
-            self.styled,
-            self.rows,
-            self.pattern,
-            self.along_line,
-            self.elevation,
-        ) = shape;
     }
 }
-
-/// [`Node::shape`]: styled, rows, pattern, along lines and elevation.
-type NodeShape = (bool, bool, bool, bool, paint::ExtrusionShape);
 
 /// What draws together at one zoom a style shows it at, of a style's
 /// pipeline set ([`Renderer::set_pipelines`]): a node and its paint
@@ -1229,14 +1180,13 @@ impl Renderer {
                 written: Vec::new(),
                 image,
                 separate_halo: false,
-                along_line: false,
-                styled: false,
-                // A symbol half adds to the pipeline its layer draws with
-                // only once painted: unpainted (its layer not shown yet, or
-                // its part's opacity 0), it draws nothing.
-                rows: !family.is_symbol(),
-                pattern: false,
-                elevation: paint::ExtrusionShape::default(),
+                shape: Shape {
+                    // A symbol half adds to the pipeline its layer draws
+                    // with only once painted: unpainted (its layer not
+                    // shown yet, or its part's opacity 0), it draws nothing.
+                    rows: !family.is_symbol(),
+                    ..Shape::default()
+                },
                 stack: None,
                 terrain_layer: None,
                 blends_on_terrain: false,
@@ -2001,32 +1951,31 @@ impl Renderer {
             use orb_shaders::layout::symbol_node as n;
             words[n::GLYPH_PAGE] = (GLYPH_PAGE as f32).to_bits();
             words[n::IMAGE_PAGE] = (self.image_bindings.size as f32).to_bits();
-            if entry.separate_halo != p.separate_halo || entry.along_line != p.along_line {
-                if entry.along_line != p.along_line {
+            if entry.separate_halo != p.separate_halo || entry.shape.along_line != p.along_line {
+                if entry.shape.along_line != p.along_line {
                     self.pipelines_stale = true;
                 }
                 entry.separate_halo = p.separate_halo;
-                entry.along_line = p.along_line;
+                entry.shape.along_line = p.along_line;
                 std::mem::take(&mut self.bundles).release(gpu);
             }
         }
-        let shape = (paint.styled(), paint.reads_rows(), paint.patterned());
-        if (entry.styled, entry.rows, entry.pattern) != shape {
-            (entry.styled, entry.rows, entry.pattern) = shape;
+        let shape = Shape::of(paint);
+        let s = &mut entry.shape;
+        if (s.styled, s.rows, s.pattern) != (shape.styled, shape.rows, shape.pattern) {
+            (s.styled, s.rows, s.pattern) = (shape.styled, shape.rows, shape.pattern);
             if self.nodes[self.drawer(node as usize)].drawn {
                 self.pipelines_stale = true;
                 self.invalidate_bundle(gpu);
             }
         }
         let entry = &mut self.nodes[node as usize];
-        if let NodePaint::Extrusion(_) | NodePaint::ExtrusionPattern(..) = paint {
-            let shape = paint.extrusion_shape();
-            if entry.elevation != shape {
-                entry.elevation = shape;
-                self.pipelines_stale |= entry.drawn;
-                if let Some(e) = &mut entry.extrusion {
-                    e.forget_bundle(gpu);
-                }
+        // Only extrusion paint has an elevation shape.
+        if entry.shape.elevation != shape.elevation {
+            entry.shape.elevation = shape.elevation;
+            self.pipelines_stale |= entry.drawn;
+            if let Some(e) = &mut entry.extrusion {
+                e.forget_bundle(gpu);
             }
         }
         if words != entry.written {
@@ -2159,6 +2108,7 @@ impl Renderer {
     fn symbol_kind(&self, i: usize) -> usize {
         let [icons, text] = [&self.nodes[i], &self.nodes[i + 1]];
         let rowed = self.rowed.iter().any(|f| f.is_symbol());
+        let (icons, text) = (icons.shape, text.shape);
         2 * usize::from(icons.along_line || text.along_line)
             + usize::from(icons.rows || text.rows || rowed)
     }
@@ -2399,7 +2349,7 @@ impl Renderer {
     /// Shapes a group's nodes as their paint there picks their pipelines;
     /// what they were, for [`restore_shapes`](Self::restore_shapes); none
     /// where a node isn't of its paint's family, and the group is left out.
-    fn shape_as(&mut self, group: &[(u32, Option<NodePaint>)]) -> Vec<(usize, NodeShape)> {
+    fn shape_as(&mut self, group: &[(u32, Option<NodePaint>)]) -> Vec<(usize, Shape)> {
         let fits = |&(i, ref paint): &(u32, Option<NodePaint>)| {
             let node = self.nodes.get(i as usize);
             node.is_some_and(|n| paint.as_ref().is_none_or(|p| p.fits(n.family)))
@@ -2410,12 +2360,12 @@ impl Renderer {
         (group.iter())
             .map(|(i, paint)| {
                 let node = &mut self.nodes[*i as usize];
-                let kept = node.shape();
+                let kept = node.shape;
                 match paint {
-                    Some(paint) => node.set_shape(paint),
+                    Some(paint) => node.shape = Shape::of(paint),
                     // A symbol half that draws nothing reads nothing.
                     None if node.family.is_symbol() => {
-                        (node.rows, node.along_line) = (false, false)
+                        (node.shape.rows, node.shape.along_line) = (false, false)
                     }
                     None => {}
                 }
@@ -2424,9 +2374,9 @@ impl Renderer {
             .collect()
     }
 
-    fn restore_shapes(&mut self, kept: Vec<(usize, NodeShape)>) {
+    fn restore_shapes(&mut self, kept: Vec<(usize, Shape)>) {
         for (i, kept) in kept {
-            self.nodes[i].restore_shape(kept);
+            self.nodes[i].shape = kept;
         }
     }
 
@@ -2538,7 +2488,8 @@ impl Renderer {
                 self.composites.make(gpu, offscreen::Mode::Ramp);
             }
             Family::FillExtrusion => {
-                self.extrusions.make(gpu, self.nodes[i].elevation, warm);
+                self.extrusions
+                    .make(gpu, self.nodes[i].shape.elevation, warm);
                 // Its target's composite.
                 self.composites.make(gpu, offscreen::Mode::Over);
             }
@@ -2575,7 +2526,7 @@ impl Renderer {
         }
         match node.family {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
-            Family::FillExtrusion => out.extend(self.extrusions.pipelines(node.elevation)),
+            Family::FillExtrusion => out.extend(self.extrusions.pipelines(node.shape.elevation)),
             Family::SymbolIcon | Family::SymbolText => {
                 let kinds = self.symbol_kinds(self.drawer(i));
                 out.extend(self.symbols.wanted(kinds, self.full));
@@ -3366,7 +3317,7 @@ impl Renderer {
                 gpu,
                 target,
                 &buffers,
-                (&streams, node.elevation),
+                (&streams, node.shape.elevation),
                 (first, before),
             );
             first = false;
