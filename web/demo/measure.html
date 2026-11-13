@@ -40,11 +40,6 @@
   <body>
     <div id="map"></div>
     <div id="status">loading…</div>
-    <script type="module">
-      // `?pipelines`: pipeline creation (pipelines.js) instead of latency and skew.
-      if (new URLSearchParams(location.search).has("pipelines"))
-        import("./pipelines.js");
-      else import("./measure.js");
-    </script>
+    <script type="module" src="./measure.js"></script>
   </body>
 </html>

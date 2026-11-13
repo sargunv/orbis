@@ -41,7 +41,7 @@ export const VIEWS = {
     matterhorn13p60: "7.6586,45.9763,13,60,60",
     oberland9p45: "8.0,46.55,9,0,45",
   },
-  // The committed Tokyo extract (`--style=tokyo`), where measure.html's pipelines page opens it.
+  // The committed Tokyo extract (`--style=tokyo`).
   tokyo: { tokyo15: "139.74,35.685,15,0,0" },
   // Liberty on the globe.
   globe: {

@@ -6,22 +6,11 @@
 //
 //   pnpm measure [--android [--physical] | --headed] [--runs=3]
 //     [--configs=orbis,gljs] [--no-capture] [--no-annotation] [--profile]
-//     [--mouse] [--busy=ms[/period]]
-//     [--style=<url or key>] [--at=lon,lat,zoom,bearing,pitch]
-//   pnpm measure --pipelines [--runs=3] [--android [--physical]]
+//     [--mouse] [--style=<url or key>] [--at=lon,lat,zoom,bearing,pitch]
 //
 // `--style` and `--at` measure another scene than the Tokyo extract at
 // z15: a dense city at pitch 60, such as a `cargo xtask h2h mirror`'s
 // Liberty at `--at=2.35,48.857,15,0,60`.
-//
-// `--pipelines` measures pipeline creation instead: measure.html
-// `?pipelines` (web/demo/pipelines.js) loads the Tokyo extract (or
-// `--style`) `--runs` times in a fresh profile (cold: the browser's shader
-// cache empty) and as often again in that profile reopened (warm),
-// reporting pipelines made, each async compile, and the GPU queue's wait
-// from map creation to idle; on Android, cold after `chrome://gpuclean`
-// empties its GPU disk cache, warm in a tab after. Each run's shaders are
-// its own (`demo/cold.js`), which a driver's own cache can't hold.
 //
 // `--android` runs on this worktree's Android emulator (`scripts/android-serial`;
 // `ANDROID_SERIAL` overrides); `--physical` on a phone that the caller assigned
@@ -40,19 +29,8 @@
 // DOM annotation at the same point: its offset from the circle, as input
 // time, is the overlay skew. Main busy time is DevTools' TaskDuration for the
 // page's main thread over the load and over each gesture.
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-import { chromium } from "playwright";
-
 import { decodePng } from "./png.mjs";
-import {
-  chromiumPlatform,
-  launchChromium,
-  openAndroid,
-  serveDemo,
-} from "./serve.mjs";
+import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) =>
@@ -80,11 +58,6 @@ const profile = args.includes("--profile");
 // one a display frame at a fixed point in it: a map that draws on its
 // animation frames shows them later than input that streams.
 const mouse = args.includes("--mouse");
-// `--busy=30/100` has the page run 30 ms of JavaScript every 100 ms
-// through each gesture, as an app re-rendering beside the map does.
-const [busyTask, busyPeriod = 100] = (option("busy", "") || "0")
-  .split("/")
-  .map(Number);
 const GESTURES = mouse ? ["pan"] : ["pan", "pinch", "rotate"];
 
 /** The centroid of pixels matching `test`, or null. */
@@ -231,16 +204,6 @@ async function run(page, engine, viewport) {
     });
     await sleep(300);
     const busyStart = await busy();
-    if (busyTask)
-      await page.evaluate(
-        ([task, period]) => {
-          window.busyTimer = setInterval(() => {
-            const end = performance.now() + task;
-            while (performance.now() < end);
-          }, period);
-        },
-        [busyTask, busyPeriod],
-      );
     const path = gesture(kind, center);
     const touches = (t) =>
       path(t).map(([x, y], id) => ({
@@ -293,7 +256,6 @@ async function run(page, engine, viewport) {
           touchPoints: touches(1),
         }));
     await sleep(700);
-    if (busyTask) await page.evaluate(() => clearInterval(window.busyTimer));
     const gestureBusy = (await busy()) - busyStart;
     await session?.send("Page.stopScreencast");
     await session?.detach();
@@ -379,10 +341,6 @@ async function run(page, engine, viewport) {
 }
 
 const server = await serveDemo();
-if (args.includes("--pipelines")) {
-  await pipelines(server);
-  process.exit(0);
-}
 let browser, page, close;
 if (android) {
   ({ browser, page, close } = await openAndroid(server, { physical }));
@@ -494,115 +452,4 @@ try {
 } finally {
   await close();
   server.close();
-}
-
-/** The pipelines page, its shaders unique to `nonce` (`cold.js`). */
-function pipelinesUrl(server, nonce) {
-  return `${server.url}measure.html?${new URLSearchParams({ pipelines: "", nonce, ...(view.style && { style: view.style }) })}`;
-}
-
-/** One load in a profile, the browser started for it and closed after. */
-async function load(server, profile, nonce) {
-  const context = await chromium.launchPersistentContext(profile, {
-    ...chromiumPlatform(),
-    viewport: { width: 1024, height: 768 },
-  });
-  try {
-    const page = context.pages()[0] ?? (await context.newPage());
-    await page.goto(pipelinesUrl(server, nonce));
-    await page.waitForFunction(() => window.pipelines);
-    return await page.evaluate(() => window.pipelines);
-  } finally {
-    await context.close();
-  }
-}
-
-/** One load in a tab of Chrome on the device, after emptying its GPU cache if `clean`. */
-async function loadAndroid(server, clean, nonce) {
-  if (clean) {
-    const { page, close } = await openAndroid(server, { physical });
-    await page.goto("chrome://gpuclean").catch(() => {});
-    await close();
-  }
-  const { page, close } = await openAndroid(server, { physical });
-  try {
-    await page.goto(pipelinesUrl(server, nonce));
-    await page.waitForFunction(() => window.pipelines);
-    return await page.evaluate(() => window.pipelines);
-  } finally {
-    await close();
-  }
-}
-
-/** Pipeline creation, cold and warm. */
-async function pipelines(server) {
-  const rows = [];
-  try {
-    for (let r = 0; r < runs; r++) {
-      // Shaders no earlier run compiled: a phone's driver keeps compiled
-      // shaders where `chrome://gpuclean` doesn't reach.
-      const nonce = 1 + Math.floor(Math.random() * 9999);
-      if (android) {
-        const cold = await loadAndroid(server, true, nonce);
-        const warm = await loadAndroid(server, false, nonce);
-        rows.push({ cold, warm });
-        console.error(
-          `pipelines: run ${r + 1}: ${JSON.stringify({ cold, warm })}`,
-        );
-        continue;
-      }
-      const profile = await mkdtemp(join(tmpdir(), "orbis-pipelines-"));
-      try {
-        const cold = await load(server, profile, nonce);
-        const warm = await load(server, profile, nonce);
-        rows.push({ cold, warm });
-        console.error(
-          `pipelines: run ${r + 1}: ${JSON.stringify({ cold, warm })}`,
-        );
-      } finally {
-        await rm(profile, { recursive: true, force: true });
-      }
-    }
-  } finally {
-    server.close();
-  }
-  const median = (xs) =>
-    [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
-  const f = (x) => x.toFixed(0);
-  const { ua, adapter, shaders, render, compute, renderAsync, computeAsync } =
-    rows[0].cold;
-  console.log(
-    `\n${ua}; ${adapter}; medians of ${runs} ${android ? "runs" : "fresh profiles"}\n`,
-  );
-  console.log(
-    `${shaders} shader modules, ${render} render and ${compute} compute pipelines ` +
-      `(${renderAsync} and ${computeAsync} compiled asynchronously first)\n`,
-  );
-  console.log(
-    "| | first draw / last pipeline / idle ms | GPU queue wait during load: total / largest / first submission ms | pipeline calls on the page ms |",
-  );
-  console.log("|---|---|---|---|");
-  for (const key of ["cold", "warm"]) {
-    const m = (k) => median(rows.map((r) => r[key][k]));
-    console.log(
-      `| ${key} | ${f(m("firstDrawMs"))} / ${f(m("compiledMs"))} / ${f(m("idleMs"))} | ${f(m("waitTotalMs"))} / ${f(m("waitMaxMs"))} / ${f(m("firstWaitMs"))} | ${m("createMs").toFixed(1)} |`,
-    );
-  }
-  // Each async compile's promise, from its call: the GPU process's queue
-  // of compiles as well as the compile.
-  const labels = [
-    ...new Set(rows.flatMap((r) => r.cold.compiles.map((c) => c.label))),
-  ];
-  const took = (key, label) =>
-    median(
-      rows.map((r) => r[key].compiles.find((c) => c.label === label)?.ms ?? 0),
-    );
-  console.log("\n| async compile | cold ms | warm ms |\n|---|---|---|");
-  for (const label of labels.sort(
-    (a, b) => took("cold", b) - took("cold", a),
-  )) {
-    console.log(
-      `| ${label} | ${f(took("cold", label))} | ${f(took("warm", label))} |`,
-    );
-  }
 }
