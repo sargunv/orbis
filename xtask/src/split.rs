@@ -13,10 +13,14 @@
 //!
 //! The API's module starts at the exports JS calls for queries, edits,
 //! the style's document, images, snapshots, offline regions, fitting
-//! bounds, host-fed heights and video controls, which JS makes wait for
-//! the module (web/src/engine.ts), and takes what only they call: code
+//! bounds, host-fed heights, video controls and GPU timings, which JS
+//! makes wait for the module (web/src/engine.ts), and takes what only they
+//! call, workers' reads for queries and GeoJSON diffs included: code
 //! nothing else reaches, by construction rather than by a profile of what
 //! scenes ran.
+//!
+//! Read-only data only one module's code reaches goes with that module
+//! too ([`data`]): its strings, tables and shaders' sources.
 //!
 //! A name is one function's alone: neither LLVM nor binaryen folds two
 //! functions with one body into one of their names here (web.rs), which
@@ -35,10 +39,13 @@
 //! the loader takes only its own.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wasmparser::{ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
+use wasmparser::{DataKind, ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
+
+mod data;
 
 /// A feature's module.
 pub(crate) struct Module {
@@ -59,8 +66,7 @@ pub(crate) struct Module {
 /// parsed or edited, and the modules it needs worked out from it
 /// (orb-runtime's `modules.rs`). What these reach stays out of the feature
 /// modules whatever path names it: the maths of a projection a style
-/// names, the GeoJSON features a style's document copies. An edit, which
-/// only the API makes, may run the API's module's code.
+/// names, the GeoJSON features a style's document copies.
 const BEFORE_GATE: &[&str] = &[
     "orb_style::v8::read",
     "orb_style::v8::parse",
@@ -68,6 +74,19 @@ const BEFORE_GATE: &[&str] = &[
     "orb_source::endpoint::resolve_style_urls",
     "orb_runtime::modules::",
 ];
+
+/// Edits of a style's document, which only the API makes, to a style
+/// that may still wait for its modules: what they reach stays out of the
+/// feature modules too, but may be the API's.
+const EDITS: &[&str] = &["orb_style::v8::doc::StyleDoc>::apply"];
+
+/// What a function runs before: a map's gate ([`BEFORE_GATE`]), or the
+/// feature modules' but the API's ([`EDITS`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Before {
+    FeaturesButApi,
+    Gate,
+}
 
 /// The feature modules, as orb-runtime's `Module` names them: what each
 /// holds, and when the map loads it.
@@ -125,6 +144,23 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_render::Renderer>::publish_dems",
             "orb_render::Renderer>::pad_dems",
             "orb_camera::View>::unproject_terrain",
+            // The DEM sources' tiles, and their pages' padding and slopes
+            // for hillshades, color reliefs and the terrain.
+            "orb_source::TilePyramid<orb_runtime::terrain::DemTile>>::",
+            "orb_render::image::prepare::",
+            "orb_render::image::Images>::make_prepare",
+            "orb_render::image::Images>::prepare_dem",
+            "orb_render::image::Images>::make_slopes",
+            "orb_render::image::Images>::make_tables",
+            "orb_render::tiles::dem_neighbours",
+            // The camera over a terrain (`&dyn Elevation`).
+            "orb_camera::View>::clearance",
+            "orb_camera::View>::near_footprint",
+            "orb_camera::View>::near_points",
+            "orb_camera::View>::over",
+            "orb_camera::CameraState>::settle_on",
+            "orb_camera::CameraState>::recenter_on",
+            "orb_camera::CameraState>::keep_above",
         ],
         // Every map has an empty store of host heights, and turns the
         // terrain off.
@@ -153,6 +189,15 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_camera::View>::cover_low",
             "orb_camera::GlobeFrustum",
             "orb_symbol::placement::view::TileGlobe",
+            // Vector tiles bent to a warp or the sphere (`Bend`).
+            "orb_tile::TileFrame>::subdivided",
+            "orb_tile::subdivide::",
+            "orb_layout::fill::subdivide",
+            "orb_layout::fill::cap",
+            "orb_layout::fill::Bend",
+            "orb_layout::line::subdivide",
+            // Flights over the sphere.
+            "orb_camera::animate::over_sphere",
         ],
         // Every map has its warps, empty on Web Mercator, and a sphere frame.
         except: &[
@@ -213,6 +258,30 @@ pub(crate) const MODULES: &[Module] = &[
             // What they run, which a table or a callback's closure reaches
             // (edits not: a style URL loaded over another applies as one).
             "orb_runtime::map::Map>::query_",
+            "orb_runtime::map::Map>::read_features",
+            "orb_runtime::queries::",
+            "orb_web::map::features_promise",
+            // A query's features read off its tiles, in a worker: JS
+            // loads the module in every thread before it asks.
+            "orb_web::dispatch::WorkerJobs as orb_runtime::jobs::Jobs>::features",
+            "orb_web::dispatch::WorkerJobs as orb_runtime::jobs::Jobs>::cluster",
+            "orb_runtime::job_host::JobHost>::features",
+            "orb_runtime::job_host::JobHost>::cluster",
+            "orb_runtime::worker::TileWorker>::features",
+            "orb_runtime::worker::TileWorker>::cluster",
+            "orb_runtime::features::FeatureRequest",
+            "orb_runtime::features::TileFeature",
+            "orb_runtime::features::body",
+            "orb_runtime::features::evaluated",
+            "orb_runtime::features::parse_filter",
+            "orb_runtime::features::parse_state",
+            // Images an app added, which a new device takes back only
+            // when there are some.
+            "orb_runtime::map::Map>::add_image",
+            // GPU timings, for measurements.
+            "orbismap_gpuTimings",
+            "orb_web::map::OrbisMap>::gpu_timings",
+            "orb_web::canvas::Canvas>::take_timings",
             "orb_runtime::query::Query",
             "orb_runtime::query::Scene",
             "orb_runtime::query::ScreenHit",
@@ -227,6 +296,10 @@ pub(crate) const MODULES: &[Module] = &[
             // setStyleUrl (and orbismap_edit) start.
             "orb_runtime::map::Map>::diff_document",
             "orb_runtime::map::Map>::edit",
+            // A GeoJSON source's data changed by an edit's diffs, which
+            // workers apply too.
+            "orb_style::v8::geojson::apply_diffs",
+            "orb_style::v8::geojson::Diff",
         ],
         except: &[],
         needs: &[],
@@ -240,9 +313,10 @@ const PLACEHOLDERS: &str = "placeholder";
 /// the FNV-1a 64 hash of its feature modules' bytes, in hex.
 const PAIR: &str = "orbis.pair";
 
-/// What the split moved: per module, its functions and their code bytes.
+/// What the split moved: per module, its functions, their code bytes and
+/// its data bytes.
 pub(crate) struct Split {
-    pub(crate) modules: Vec<(&'static str, usize, usize)>,
+    pub(crate) modules: Vec<(&'static str, usize, usize, usize)>,
 }
 
 /// `name` without its crates' hashes (`orb_style[48b542d477ccbf4d]` →
@@ -351,31 +425,55 @@ fn names(own: &str, path: &str) -> bool {
     })
 }
 
-/// Whether `name` is code a map runs before its gate ([`BEFORE_GATE`]).
-fn before_gate(name: &str) -> bool {
+/// What `name` runs before, if it's code a map runs before its gate
+/// ([`BEFORE_GATE`]) or an edit ([`EDITS`]).
+fn before_gate(name: &str) -> Option<Before> {
     let name = unhashed(name);
     let own = name.strip_prefix('<').unwrap_or(&name);
-    BEFORE_GATE.iter().any(|p| own.starts_with(p))
+    if EDITS.iter().any(|p| names(own, p)) {
+        Some(Before::FeaturesButApi)
+    } else {
+        BEFORE_GATE
+            .iter()
+            .any(|p| own.starts_with(p))
+            .then_some(Before::Gate)
+    }
 }
 
 /// `seeds` without the functions code before the gate runs: `roots`
-/// ([`before_gate`]) and what they call, directly or through others.
-fn ungated(functions: &Functions, seeds: &[Option<usize>], roots: &[bool]) -> Vec<Option<usize>> {
+/// ([`before_gate`]) and what they call, directly or through others;
+/// what only edits run keeps the API's seeds.
+fn ungated(
+    functions: &Functions,
+    seeds: &[Option<usize>],
+    roots: &[Option<Before>],
+) -> Vec<Option<usize>> {
     let mut before = roots.to_vec();
-    let mut stack: Vec<usize> = (0..before.len()).filter(|&i| before[i]).collect();
-    while let Some(i) = stack.pop() {
-        for &callee in &functions.defined[i].callees {
-            let callee = callee as usize;
-            if !before[callee] {
-                before[callee] = true;
-                stack.push(callee);
+    // The gate's reach first, so that an edit's stops where it starts.
+    for gate in [Before::Gate, Before::FeaturesButApi] {
+        let mut stack: Vec<usize> = (0..before.len())
+            .filter(|&i| before[i] == Some(gate))
+            .collect();
+        while let Some(i) = stack.pop() {
+            for &callee in &functions.defined[i].callees {
+                let callee = callee as usize;
+                if before[callee].is_none_or(|b| b < gate) {
+                    before[callee] = Some(gate);
+                    stack.push(callee);
+                }
             }
         }
     }
     seeds
         .iter()
         .zip(before)
-        .map(|(&seed, before)| seed.filter(|_| !before))
+        .map(|(&seed, before)| {
+            seed.filter(|&m| match before {
+                None => true,
+                Some(Before::FeaturesButApi) => MODULES[m].name == "api",
+                Some(Before::Gate) => false,
+            })
+        })
         .collect()
 }
 
@@ -447,17 +545,21 @@ fn assign(functions: &Functions, seeds: &[Option<usize>]) -> Vec<Option<usize>> 
 
 /// Splits `whole` (core.wasm, without names) into `primary` and a module
 /// per feature, `<prefix><name>.wasm`; `symbols` is the symbol map
-/// wasm-opt wrote for `whole`, which names its functions by index.
-/// Returns where each module went, by [`MODULES`]' order.
+/// wasm-opt wrote for `whole`, which names its functions by index, and
+/// `map` the linker's map of the module it was made from, which bounds
+/// its data objects ([`data`]). Returns where each module went, by
+/// [`MODULES`]' order.
 pub(crate) fn split(
     whole: &Path,
     symbols: &Path,
+    map: &Path,
     primary: &Path,
     prefix: &str,
     features: &[&str],
 ) -> Result<(Split, Vec<PathBuf>), String> {
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-    let functions = functions(&read(whole)?)?;
+    let mut wasm = read(whole)?;
+    let functions = functions(&wasm)?;
     let symbols = String::from_utf8(read(symbols)?).map_err(|e| e.to_string())?;
     // `index:name`, in the module's index space, imports first.
     let names: HashMap<u32, &str> = symbols
@@ -471,8 +573,8 @@ pub(crate) fn split(
     let seeds: Vec<Option<usize>> = (0..functions.defined.len())
         .map(|i| seed(name(i)?))
         .collect();
-    let roots: Vec<bool> = (0..functions.defined.len())
-        .map(|i| name(i).is_some_and(before_gate))
+    let roots: Vec<Option<Before>> = (0..functions.defined.len())
+        .map(|i| before_gate(name(i)?))
         .collect();
     let modules = assign(&functions, &ungated(&functions, &seeds, &roots));
     let undeclared = undeclared(&functions, &modules);
@@ -491,6 +593,37 @@ pub(crate) fn split(
             calls.join("\n"),
         ));
     }
+    // The data only one module's code reaches goes with it.
+    let linked = std::fs::read_to_string(map).map_err(|e| format!("{}: {e}", map.display()))?;
+    let objects = data::objects(&linked)?;
+    let pointers: Vec<(&[u32], Option<usize>)> = (functions.defined.iter())
+        .zip(&modules)
+        .map(|(f, &m)| (f.pointers.as_slice(), m))
+        .collect();
+    let homes = data::assign(
+        &objects,
+        &wasm,
+        &functions.segments,
+        &pointers,
+        &functions.roots,
+    );
+    let held_data = |m: usize| -> Vec<data::Object> {
+        (objects.iter().zip(&homes))
+            .filter(|&(_, &home)| home == Some(m))
+            .map(|(&o, _)| o)
+            .collect()
+    };
+    let module_data: Vec<Vec<(u32, Vec<u8>)>> = (0..MODULES.len())
+        .map(|m| data::bytes(&wasm, &functions.segments, &held_data(m)))
+        .collect();
+    let moved: Vec<data::Object> = (objects.iter().zip(&homes))
+        .filter(|&(_, home)| home.is_some())
+        .map(|(&o, _)| o)
+        .collect();
+    data::zero(&mut wasm, &functions.segments, &moved);
+    // What wasm-split splits: `whole` without that data.
+    let zeroed = whole.with_extension("zeroed.wasm");
+    std::fs::write(&zeroed, &wasm).map_err(|e| format!("{}: {e}", zeroed.display()))?;
     let mut manifest = String::new();
     let mut split = Split {
         modules: Vec::new(),
@@ -500,7 +633,8 @@ pub(crate) fn split(
             .filter(|&i| modules[i] == Some(m))
             .collect();
         let bytes = held.iter().map(|&i| functions.defined[i].size).sum();
-        split.modules.push((module.name, held.len(), bytes));
+        let data = module_data[m].iter().map(|(_, b)| b.len()).sum();
+        split.modules.push((module.name, held.len(), bytes, data));
         if held.is_empty() {
             continue;
         }
@@ -535,7 +669,7 @@ pub(crate) fn split(
             .arg("--placeholdermap")
             .arg(format!("--manifest={}", manifest_file.display()))
             .arg(format!("--out-prefix={}/{prefix}", dir.display()))
-            .arg(whole)
+            .arg(&zeroed)
             .arg("-o")
             .arg(primary),
     )?;
@@ -560,20 +694,28 @@ pub(crate) fn split(
         })
         .collect();
     let _ = std::fs::remove_file(&map);
+    let _ = std::fs::remove_file(&zeroed);
     let placeholders = whole.with_extension("placeholders");
     std::fs::write(&placeholders, named).map_err(|e| format!("{}: {e}", placeholders.display()))?;
+    // Each module writes its data into its memory as it's instantiated.
+    for (path, segments) in paths.iter().zip(&module_data) {
+        if path.exists() && !segments.is_empty() {
+            let module = data::with_data(&read(path)?, segments)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(path, module).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
     // Functions with one body fold into one, within each module alone
-    // (`whole` was optimized without).
+    // (`whole` was optimized without), and core.wasm drops the data it
+    // zeroed.
     for path in std::iter::once(primary).chain(paths.iter().map(PathBuf::as_path)) {
         if path.exists() {
-            crate::run(
-                Command::new("wasm-opt")
-                    .arg("--duplicate-function-elimination")
-                    .args(features)
-                    .arg(path)
-                    .arg("-o")
-                    .arg(path),
-            )?;
+            let mut opt = Command::new("wasm-opt");
+            opt.arg("--duplicate-function-elimination");
+            if path == primary {
+                opt.args(["--zero-filled-memory", "--memory-packing"]);
+            }
+            crate::run(opt.args(features).arg(path).arg("-o").arg(path))?;
         }
     }
     // A build's modules know each other by the hash of theirs.
@@ -639,6 +781,11 @@ fn leb128(out: &mut Vec<u8>, mut value: usize) {
 struct Functions {
     imported: u32,
     defined: Vec<Function>,
+    /// The active data segments: where each starts in memory, and its
+    /// bytes' range in the module.
+    segments: Vec<(u32, Range<usize>)>,
+    /// The constants of the globals' initial values that may be addresses.
+    roots: Vec<u32>,
 }
 
 struct Function {
@@ -651,6 +798,9 @@ struct Function {
     callees: Vec<u32>,
     /// Its body's bytes.
     size: usize,
+    /// Its constants that may be addresses of data: any at or past 1 MiB,
+    /// where Rust lays data out, offsets of loads and stores included.
+    pointers: Vec<u32>,
 }
 
 /// The module's functions, and what they call.
@@ -662,6 +812,8 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
     let mut reached = Vec::new();
     let mut exports = Vec::new();
     let mut bodies = 0;
+    let mut segments = Vec::new();
+    let mut roots = Vec::new();
     let ref_funcs = |ops: wasmparser::OperatorsReader<'_>, reached: &mut Vec<u32>| {
         for op in ops {
             if let Operator::RefFunc { function_index } = op.map_err(|e| e.to_string())? {
@@ -687,6 +839,7 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                         exported: false,
                         callees: Vec::new(),
                         size: 0,
+                        pointers: Vec::new(),
                     });
                 }
             }
@@ -704,6 +857,9 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                 for global in reader {
                     let global = global.map_err(|e| e.to_string())?;
                     ref_funcs(global.init_expr.get_operators_reader(), &mut reached)?;
+                    for op in global.init_expr.get_operators_reader() {
+                        pointers(&op.map_err(|e| e.to_string())?, &mut roots);
+                    }
                 }
             }
             Payload::ElementSection(reader) => {
@@ -723,10 +879,28 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                     }
                 }
             }
+            Payload::DataSection(reader) => {
+                for segment in reader {
+                    let segment = segment.map_err(|e| e.to_string())?;
+                    let DataKind::Active { offset_expr, .. } = segment.kind else {
+                        continue;
+                    };
+                    let mut ops = offset_expr.get_operators_reader();
+                    let Operator::I32Const { value } = ops.read().map_err(|e| e.to_string())?
+                    else {
+                        return Err("a data segment's offset isn't a constant".into());
+                    };
+                    let at = segment.data.as_ptr() as usize - wasm.as_ptr() as usize;
+                    segments.push((value as u32, at..at + segment.data.len()));
+                }
+            }
             Payload::CodeSectionEntry(body) => {
                 let mut callees = Vec::new();
+                let mut addresses = Vec::new();
                 for op in body.get_operators_reader().map_err(|e| e.to_string())? {
-                    match op.map_err(|e| e.to_string())? {
+                    let op = op.map_err(|e| e.to_string())?;
+                    pointers(&op, &mut addresses);
+                    match op {
                         Operator::Call { function_index }
                         | Operator::ReturnCall { function_index } => {
                             // Imports come first in the index space.
@@ -744,6 +918,9 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                     .get_mut(bodies)
                     .ok_or("more function bodies than functions")?;
                 function.callees = callees;
+                addresses.sort_unstable();
+                addresses.dedup();
+                function.pointers = addresses;
                 let range = body.range();
                 function.size = (range.end - range.start) as usize;
                 bodies += 1;
@@ -767,7 +944,94 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
             function.exported = true;
         }
     }
-    Ok(Functions { imported, defined })
+    Ok(Functions {
+        imported,
+        defined,
+        segments,
+        roots,
+    })
+}
+
+/// Pushes what in `op` may be an address of data onto `out`: its
+/// constants at or past 1 MiB, where Rust lays data out (each half of an
+/// `i64`'s, each lane of a vector's), and its memory offset.
+fn pointers(op: &Operator<'_>, out: &mut Vec<u32>) {
+    const DATA: u32 = 1 << 20;
+    let mut push = |value: u32| {
+        if value >= DATA {
+            out.push(value);
+        }
+    };
+    match op {
+        Operator::I32Const { value } => push(*value as u32),
+        Operator::I64Const { value } => {
+            push(*value as u32);
+            push((*value as u64 >> 32) as u32);
+        }
+        Operator::V128Const { value } => {
+            for lane in value.bytes().as_chunks::<4>().0 {
+                push(u32::from_le_bytes(*lane));
+            }
+        }
+        _ => {
+            if let Some(offset) = memory_offset(op) {
+                push(u32::try_from(offset).unwrap_or(u32::MAX));
+            }
+        }
+    }
+}
+
+/// The memory offset of a load or store.
+fn memory_offset(op: &Operator<'_>) -> Option<u64> {
+    use Operator::*;
+    match op {
+        I32Load { memarg }
+        | I64Load { memarg }
+        | F32Load { memarg }
+        | F64Load { memarg }
+        | I32Load8S { memarg }
+        | I32Load8U { memarg }
+        | I32Load16S { memarg }
+        | I32Load16U { memarg }
+        | I64Load8S { memarg }
+        | I64Load8U { memarg }
+        | I64Load16S { memarg }
+        | I64Load16U { memarg }
+        | I64Load32S { memarg }
+        | I64Load32U { memarg }
+        | I32Store { memarg }
+        | I64Store { memarg }
+        | F32Store { memarg }
+        | F64Store { memarg }
+        | I32Store8 { memarg }
+        | I32Store16 { memarg }
+        | I64Store8 { memarg }
+        | I64Store16 { memarg }
+        | I64Store32 { memarg }
+        | V128Load { memarg }
+        | V128Load8x8S { memarg }
+        | V128Load8x8U { memarg }
+        | V128Load16x4S { memarg }
+        | V128Load16x4U { memarg }
+        | V128Load32x2S { memarg }
+        | V128Load32x2U { memarg }
+        | V128Load8Splat { memarg }
+        | V128Load16Splat { memarg }
+        | V128Load32Splat { memarg }
+        | V128Load64Splat { memarg }
+        | V128Load32Zero { memarg }
+        | V128Load64Zero { memarg }
+        | V128Store { memarg }
+        | V128Load8Lane { memarg, .. }
+        | V128Load16Lane { memarg, .. }
+        | V128Load32Lane { memarg, .. }
+        | V128Load64Lane { memarg, .. }
+        | V128Store8Lane { memarg, .. }
+        | V128Store16Lane { memarg, .. }
+        | V128Store32Lane { memarg, .. }
+        | V128Store64Lane { memarg, .. } => Some(memarg.offset),
+        _ => None,
+    }
 }
 
 /// The modules a module imports from.
@@ -844,6 +1108,7 @@ mod tests {
             exported: false,
             callees: callees.to_vec(),
             size: 100,
+            pointers: Vec::new(),
         };
         // 0 is exported and calls 1 (module 0's) and 2. 1 calls 3 and 4; 3
         // calls 5. 4 is called by 6 (module 1's) too, and 2 calls 7, which
@@ -860,6 +1125,8 @@ mod tests {
                 function(&[4], false),
                 function(&[], false),
             ],
+            segments: Vec::new(),
+            roots: Vec::new(),
         };
         let seeds = [None, Some(0), None, None, None, None, Some(1), None];
         assert_eq!(
@@ -868,14 +1135,33 @@ mod tests {
         );
         // Code before the gate, 2 here, keeps what it reaches in core:
         // 7, and 1 when it calls it, seed or not, with what 1 calls.
-        let mut before = vec![false; 8];
-        before[2] = true;
+        let mut before = vec![None; 8];
+        before[2] = Some(Before::Gate);
         let mut functions = functions;
         functions.defined[2].callees.push(1);
         let modules = assign(&functions, &ungated(&functions, &seeds, &before));
         assert_eq!(modules, [None, None, None, None, None, None, Some(1), None]);
-        assert!(before_gate("<orb_style[0a1b]::v8::doc::StyleDoc>::apply"));
-        assert!(!before_gate("orb_runtime::map::Map::frame"));
+        // An edit, 2 now, keeps the API's seeds it reaches, but no other
+        // module's.
+        let at = |name| MODULES.iter().position(|m| m.name == name);
+        let (api, dem) = (at("api"), at("dem"));
+        before[2] = Some(Before::FeaturesButApi);
+        let seeds = [None, api, None, None, None, None, dem, None];
+        assert_eq!(ungated(&functions, &seeds, &before), seeds);
+        let seeds = [None, dem, None, None, None, None, dem, None];
+        assert_eq!(
+            ungated(&functions, &seeds, &before),
+            [None, None, None, None, None, None, dem, None]
+        );
+        assert_eq!(
+            before_gate("<orb_style[0a1b]::v8::doc::StyleDoc>::from_json"),
+            Some(Before::Gate)
+        );
+        assert_eq!(
+            before_gate("<orb_style[0a1b]::v8::doc::StyleDoc>::apply"),
+            Some(Before::FeaturesButApi)
+        );
+        assert_eq!(before_gate("orb_runtime::map::Map::frame"), None);
     }
 
     #[test]
@@ -885,10 +1171,13 @@ mod tests {
             exported: false,
             callees: callees.to_vec(),
             size: 100,
+            pointers: Vec::new(),
         };
         let functions = Functions {
             imported: 0,
             defined: vec![function(&[1]), function(&[]), function(&[1])],
+            segments: Vec::new(),
+            roots: Vec::new(),
         };
         let at = |name| MODULES.iter().position(|m| m.name == name);
         // sqlite's code may call archive's (gzip), geojson's may not, and

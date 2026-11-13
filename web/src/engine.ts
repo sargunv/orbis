@@ -150,7 +150,7 @@ const MODULE_RETRY = 2000;
 
 /** The calls that run the API's module (queries, edits, the style's
  * document, images, snapshots, fitting bounds, host-fed heights, video
- * controls), which waits for it if it isn't in yet. */
+ * controls, GPU timings), which waits for it if it isn't in yet. */
 const API_CALLS = new Set<string>([
   "hitTest",
   "queryRendered",
@@ -174,6 +174,7 @@ const API_CALLS = new Set<string>([
   "reloadHostTiles",
   "retryFailedTiles",
   "controlVideo",
+  "gpuTimings",
 ]);
 
 export class Engine {

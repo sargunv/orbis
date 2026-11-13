@@ -28,8 +28,8 @@ const NAMED_CORE: &str = "target/web/core-names.wasm";
 /// crossing one means something grew. Find what in the per-crate report;
 /// if the growth earns its bytes, raise the level to the new size plus the
 /// same margin, and when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 775;
-const CORE_GL_WATCH_KIB: usize = 1060;
+const CORE_WATCH_KIB: usize = 745;
+const CORE_GL_WATCH_KIB: usize = 1040;
 const SHAPER_WATCH_KIB: usize = 380;
 
 /// Crates whose code the size report attributes separately.
@@ -138,12 +138,13 @@ fn report_modules(build: &str, modules: &[Feature]) {
     );
     for m in modules {
         eprintln!(
-            "  {build}-{}.wasm: {} KiB raw, {} KiB brotli, {} functions ({} KiB of code)",
+            "  {build}-{}.wasm: {} KiB raw, {} KiB brotli, {} functions ({} KiB of code, {} KiB of data)",
             m.name,
             m.raw / 1024,
             m.brotli / 1024,
             m.functions,
             m.code / 1024,
+            m.data / 1024,
         );
     }
 }
@@ -173,6 +174,8 @@ struct Feature {
     functions: usize,
     /// Its functions' code bytes in the whole module.
     code: usize,
+    /// The bytes of data it took from the whole module.
+    data: usize,
 }
 
 /// Builds `package` with `features` (cargo's feature arguments), binds it
@@ -199,8 +202,11 @@ fn module(
     // a merge sort and a heapsort rather than driftsort and ipnsort,
     // which every element type instantiated anew (19 KiB of core.wasm),
     // and its number formatting is the compact one.
+    // A split build's link writes the linker's map, which bounds its data
+    // objects for the split (split.rs).
+    let link_map = root.join(format!("target/web/{name}.map"));
     let mut args = vec![
-        "build",
+        if split.is_some() { "rustc" } else { "build" },
         "--quiet",
         "-p",
         package,
@@ -225,6 +231,11 @@ fn module(
         ]);
     }
     args.extend(features);
+    let map_arg = format!("-Clink-arg=--Map={}", link_map.display());
+    if split.is_some() {
+        std::fs::create_dir_all(root.join("target/web")).map_err(|e| format!("target/web: {e}"))?;
+        args.extend(["--lib", "--", &map_arg]);
+    }
     run(Command::new(env!("CARGO"))
         .env("RUSTC_BOOTSTRAP", "1")
         .args(&args))?;
@@ -291,10 +302,17 @@ fn module(
     let whole = root.join(format!("target/web/{name}-whole.wasm"));
     let symbols = whole.with_extension("symbols");
     run(whole_opt(&whole).arg(format!("--symbolmap={}", symbols.display())))?;
-    let (split, paths) = split::split(&whole, &symbols, &wasm, &format!("{name}-"), FEATURES)?;
+    let (split, paths) = split::split(
+        &whole,
+        &symbols,
+        &link_map,
+        &wasm,
+        &format!("{name}-"),
+        FEATURES,
+    )?;
     let bytes = read(&wasm)?;
     let mut modules = Vec::new();
-    for (&(name, functions, code), path) in split.modules.iter().zip(&paths) {
+    for (&(name, functions, code, data), path) in split.modules.iter().zip(&paths) {
         let module = read(path)?;
         modules.push(Feature {
             name,
@@ -302,6 +320,7 @@ fn module(
             brotli: brotli(&module)?,
             functions,
             code,
+            data,
         });
     }
     Ok(Sizes {
