@@ -43,7 +43,24 @@ pub(crate) struct Module {
     paths: &'static [&'static str],
     /// Functions of those paths that maps without the feature run too.
     except: &'static [&'static str],
+    /// The other modules its code calls into, which a map that loads it
+    /// loads too (orb-runtime's `modules::of_style`); the split fails on a
+    /// call into one not listed.
+    needs: &'static [&'static str],
 }
+
+/// What a map runs before its gate asks for any module: a style read,
+/// parsed or edited, and the modules it needs worked out from it
+/// (orb-runtime's `modules.rs`). What these reach stays in core.wasm
+/// whatever path names it: the maths of a projection a style names, the
+/// GeoJSON features a style's document copies.
+const BEFORE_GATE: &[&str] = &[
+    "orb_style::v8::read",
+    "orb_style::v8::parse",
+    "orb_style::v8::doc::StyleDoc",
+    "orb_source::endpoint::resolve_style_urls",
+    "orb_runtime::modules::",
+];
 
 /// The feature modules, as orb-runtime's `Module` names them: what each
 /// holds, and when the map loads it.
@@ -53,12 +70,14 @@ pub(crate) const MODULES: &[Module] = &[
         name: "mlt",
         paths: &["mlt_core::", "fastpfor::", "fsst::", "orb_tile::mlt::"],
         except: &[],
+        needs: &[],
     },
     // A `pmtiles://` source.
     Module {
         name: "archive",
         paths: &["orb_source::pmtiles::", "orb_source::gzip::"],
         except: &[],
+        needs: &[],
     },
     // An `mbtiles://` source.
     Module {
@@ -69,6 +88,8 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_runtime::native_db::",
         ],
         except: &[],
+        // MBTiles' tiles are gzipped.
+        needs: &["archive"],
     },
     // A `raster-dem` source: terrain, hillshade and color-relief.
     Module {
@@ -80,6 +101,7 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_render::terrain::",
         ],
         except: &[],
+        needs: &[],
     },
     // A projection but Web Mercator, or a source in another CRS.
     Module {
@@ -103,13 +125,14 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_runtime::globe::GlobeWarps>::end_frame",
             "orb_crs::sphere::frame",
         ],
+        needs: &[],
     },
     // A `geojson` source.
     Module {
         name: "geojson",
         paths: &["orb_tile::geojson::", "orb_runtime::geojson::"],
-        // A source's options are read with the style, before it waits.
-        except: &["orb_tile::geojson::Options"],
+        except: &[],
+        needs: &[],
     },
     // Queries, edits, the style's document, images, snapshots and offline
     // regions: on idle, or before the first call that needs it. JS calls
@@ -156,6 +179,7 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_runtime::offline::font_stacks",
         ],
         except: &[],
+        needs: &[],
     },
 ];
 
@@ -226,6 +250,57 @@ fn seed(name: &str) -> Option<usize> {
     })
 }
 
+/// Whether `name` is code a map runs before its gate ([`BEFORE_GATE`]).
+fn before_gate(name: &str) -> bool {
+    let name = unhashed(name);
+    let own = name.strip_prefix('<').unwrap_or(&name);
+    BEFORE_GATE.iter().any(|p| own.starts_with(p))
+}
+
+/// `seeds` without the functions code before the gate runs: `roots`
+/// ([`before_gate`]) and what they call, directly or through others.
+fn ungated(functions: &Functions, seeds: &[Option<usize>], roots: &[bool]) -> Vec<Option<usize>> {
+    let mut before = roots.to_vec();
+    let mut stack: Vec<usize> = (0..before.len()).filter(|&i| before[i]).collect();
+    while let Some(i) = stack.pop() {
+        for &callee in &functions.defined[i].callees {
+            let callee = callee as usize;
+            if !before[callee] {
+                before[callee] = true;
+                stack.push(callee);
+            }
+        }
+    }
+    seeds
+        .iter()
+        .zip(before)
+        .map(|(&seed, before)| seed.filter(|_| !before))
+        .collect()
+}
+
+/// The calls from one feature module into another that it doesn't
+/// declare it needs ([`Module::needs`]): a map that loaded only the first
+/// would call a placeholder. The API's module is exempt: it calls into a
+/// feature's module only for a style that declares the feature.
+fn undeclared(functions: &Functions, modules: &[Option<usize>]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for (i, function) in functions.defined.iter().enumerate() {
+        let Some(from) = modules[i].filter(|&m| MODULES[m].name != "api") else {
+            continue;
+        };
+        for &callee in &function.callees {
+            let callee = callee as usize;
+            if let Some(to) = modules[callee]
+                && to != from
+                && !MODULES[from].needs.contains(&MODULES[to].name)
+            {
+                out.push((i, callee));
+            }
+        }
+    }
+    out
+}
+
 /// Each function's module, from `seeds` (a module's paths name it): also
 /// each function only one module's functions reach, through functions of
 /// no module, and that nothing else reaches: not JS, a table nor
@@ -291,16 +366,34 @@ pub(crate) fn split(
             Some((index.parse().ok()?, name))
         })
         .collect();
-    let seeds: Vec<Option<usize>> = (0u32..)
-        .zip(&functions.defined)
+    let name = |i: usize| names.get(&(functions.imported + i as u32)).copied();
+    let seeds: Vec<Option<usize>> = (functions.defined.iter().enumerate())
         .map(|(i, function)| {
-            let name = names.get(&(functions.imported + i))?;
             (function.size >= MIN_SEED_BYTES || function.exported)
-                .then(|| seed(name))
+                .then(|| seed(name(i)?))
                 .flatten()
         })
         .collect();
-    let modules = assign(&functions, &seeds);
+    let roots: Vec<bool> = (0..functions.defined.len())
+        .map(|i| name(i).is_some_and(before_gate))
+        .collect();
+    let modules = assign(&functions, &ungated(&functions, &seeds, &roots));
+    let undeclared = undeclared(&functions, &modules);
+    if !undeclared.is_empty() {
+        let named = |i: usize| {
+            let module = MODULES[modules[i].expect("in a module")].name;
+            let name = name(i).map_or_else(|| i.to_string(), unhashed);
+            format!("{name} ({module})")
+        };
+        let calls: Vec<String> = (undeclared.iter().take(8))
+            .map(|&(from, to)| format!("  {} calls {}", named(from), named(to)))
+            .collect();
+        return Err(format!(
+            "{} calls from a feature module into another it doesn't list in its `needs`:\n{}",
+            undeclared.len(),
+            calls.join("\n"),
+        ));
+    }
     let mut manifest = String::new();
     let mut split = Split {
         modules: Vec::new(),
@@ -636,5 +729,36 @@ mod tests {
             assign(&functions, &seeds),
             [None, Some(0), None, Some(0), None, Some(0), Some(1), None]
         );
+        // Code before the gate, 2 here, keeps what it reaches in core:
+        // 7, and 1 when it calls it, seed or not, with what 1 calls.
+        let mut before = vec![false; 8];
+        before[2] = true;
+        let mut functions = functions;
+        functions.defined[2].callees.push(1);
+        let modules = assign(&functions, &ungated(&functions, &seeds, &before));
+        assert_eq!(modules, [None, None, None, None, None, None, Some(1), None]);
+        assert!(before_gate("<orb_style[0a1b]::v8::doc::StyleDoc>::apply"));
+        assert!(!before_gate("orb_runtime::map::Map::frame"));
+    }
+
+    #[test]
+    fn a_module_calls_only_the_modules_it_needs() {
+        let function = |callees: &[u32]| Function {
+            reachable: false,
+            exported: false,
+            callees: callees.to_vec(),
+            size: 100,
+        };
+        let functions = Functions {
+            imported: 0,
+            defined: vec![function(&[1]), function(&[]), function(&[1])],
+        };
+        let at = |name| MODULES.iter().position(|m| m.name == name);
+        // sqlite's code may call archive's (gzip), geojson's may not, and
+        // the API's calls whatever feature its style declares.
+        let modules = [at("sqlite"), at("archive"), at("geojson")];
+        assert_eq!(undeclared(&functions, &modules), [(2, 1)]);
+        let modules = [at("api"), at("dem"), None];
+        assert!(undeclared(&functions, &modules).is_empty());
     }
 }

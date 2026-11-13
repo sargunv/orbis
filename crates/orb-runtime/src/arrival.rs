@@ -393,12 +393,13 @@ impl Map {
                     && !self.modules.contains(mlt)
                 {
                     self.modules_wanted |= mlt;
-                    self.held.push(Message::TileJson {
+                    let message = Message::TileJson {
                         generation,
                         source,
                         result,
                         head: None,
-                    });
+                    };
+                    (self.for_modules).push((mlt, crate::map::ModuleWait::TileJson(message)));
                     self.events.wake();
                     return;
                 }

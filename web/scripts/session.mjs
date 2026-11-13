@@ -1356,7 +1356,7 @@ async function serve(pkg) {
   const saved = mkdtempSync(join(tmpdir(), "orbis-pkg-"));
   cpSync(live, saved, { recursive: true });
   // The build is `pkg` whole: copied over web/pkg, a file it lacks would
-  // come from the build there, a deferred half from another build among
+  // come from the build there, a feature module from another build among
   // them.
   const replace = (from) => {
     rmSync(live, { recursive: true, force: true });

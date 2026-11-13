@@ -82,7 +82,8 @@
 //   idle with no call into a feature module the map hasn't loaded (each
 //   throws: a bug in xtask/src/split.rs's paths or the map's gate), having
 //   fetched only the modules their styles declare, each once, and the
-//   API's once.
+//   API's once; then the extract takes GeoJSON the app answers for a
+//   tile it feeds, and a style on Equal Earth, loading their modules.
 // - `webgl2`: in a Chromium without WebGPU (#140), the scenario in the
 //   worker and on the page; the Tokyo extract at two views, pitched
 //   terrain, and the extract on the globe over terrain pitched 79° at
@@ -2336,6 +2337,58 @@ async function split(browser, server) {
       await page.waitForTimeout(100);
     const api = fetched.filter((f) => f.name === "api");
     assert.equal(api.length, 1, `${entry}: fetched the API's module once`);
+    if (entry === "tokyo") {
+      // Features no preload saw: GeoJSON the app answers for a tile it
+      // feeds, then a style whose projection's maths its parse runs
+      // before the map can ask for any module.
+      const settles = async (name) => {
+        const until = Date.now() + 20_000;
+        while (!fetched.some((f) => f.name === name) && Date.now() < until)
+          await page.waitForTimeout(100);
+        await page.waitForFunction(
+          () => document.getElementById("app")?.dataset.map === "idle",
+          null,
+          { timeout: 20_000 },
+        );
+        assert.ok(
+          fetched.some((f) => f.name === name),
+          `${entry}: fetched ${name}`,
+        );
+      };
+      await page.evaluate(() => {
+        const { map, edit } = globalThis.orbis;
+        map.on("tilerequest", ({ source, z, x, y }) => {
+          if (source !== "app") return;
+          const point = { type: "Point", coordinates: [139.76, 35.68] };
+          const shapes = { type: "Feature", properties: {}, geometry: point };
+          void map.setHostTile("app", { z, x, y }, { shapes });
+        });
+        return edit((tx) =>
+          tx
+            .addSource("app", {
+              type: "vector",
+              tiles: ["orbis-host:"],
+              maxzoom: 0,
+            })
+            .addLayer({
+              id: "app",
+              type: "circle",
+              source: "app",
+              "source-layer": "shapes",
+            }),
+        );
+      });
+      await settles("geojson");
+      await page.evaluate(() =>
+        globalThis.orbis.map.setStyle({
+          version: 8,
+          projection: { type: "dev.sargunv.orbis:equal-earth" },
+          sources: {},
+          layers: [{ id: "bg", type: "background" }],
+        }),
+      );
+      await settles("globe");
+    }
     assert.deepEqual(unloaded, [], `${entry}: called into a module unloaded`);
     await page.close();
     console.log(

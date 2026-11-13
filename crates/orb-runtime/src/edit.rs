@@ -71,6 +71,18 @@ impl Map {
     /// shows it in full ([`FrameReport::generation`](crate::FrameReport));
     /// paint and feature-state edits show on the next frame.
     pub fn edit(&mut self, tx: &Transaction) -> Result<u64, String> {
+        // A style waiting for its modules is the one asked for last: the
+        // edit goes to it, and shows once it's installed.
+        if let Some(waiting) = &mut self.waiting_style {
+            let patch = waiting.doc.apply(tx).map_err(|d| d.to_string())?;
+            self.warnings
+                .extend(patch.warnings.iter().map(ToString::to_string));
+            waiting.states.extend(patch.feature_state);
+            let needed = crate::modules::of_style(waiting.doc.style());
+            self.modules_wanted |= needed.without(self.modules);
+            self.events.wake();
+            return Ok(self.version + 1);
+        }
         let style = self.style.as_mut().ok_or("no style is loaded")?;
         let patch = style.doc.apply(tx).map_err(|d| d.to_string())?;
         self.warnings
@@ -92,7 +104,7 @@ impl Map {
             let doc = style.doc.clone();
             self.install(doc);
             // The version it's installed at, now or once the modules are in.
-            return Ok(self.version + u64::from(self.pending_install.is_some()));
+            return Ok(self.version + u64::from(self.waiting_style.is_some()));
         }
         // A new projection: the globe changes at once; vector tiles lay
         // out again for its curvature from the jobs' cached data, and the

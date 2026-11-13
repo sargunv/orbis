@@ -104,7 +104,8 @@ function modulesOf(doc: StyleParts): ModuleName[] {
   for (const source of Object.values(doc.sources ?? {})) {
     const url = typeof source?.url === "string" ? source.url : "";
     if (url.startsWith("pmtiles://")) names.add("archive");
-    if (url.startsWith("mbtiles://")) names.add("sqlite");
+    // MBTiles' gzipped tiles inflate in the archive module.
+    if (url.startsWith("mbtiles://")) names.add("sqlite").add("archive");
     if (source?.type === "raster-dem") names.add("dem");
     if (source?.type === "geojson") names.add("geojson");
     if (source?.encoding === "mlt") names.add("mlt");

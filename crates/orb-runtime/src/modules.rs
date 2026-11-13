@@ -2,9 +2,13 @@
 //! runs, which a host may load apart from the rest, as the web loads each
 //! from a wasm module of its own (`cargo xtask web`). A map runs no code
 //! of a module its host hasn't loaded: a style that needs one waits to be
-//! installed until it is in, and a source whose TileJSON names MLT sends
-//! no tile requests until its decoders are. Native hosts have every
-//! module from the start.
+//! installed until it is in (edits go to it meanwhile), a source whose
+//! TileJSON names MLT sends no tile requests until its decoders are, and
+//! an app's GeoJSON answer for a tile it feeds waits for GeoJSON's code.
+//! What runs before that gate (reading, parsing and editing a style, and
+//! [`of_style`]) stays in the code every map has, whatever it calls
+//! (`cargo xtask web`'s split). Native hosts have every module from the
+//! start.
 
 use orb_style::{Encoding, SourceKind, Style};
 
@@ -101,11 +105,13 @@ impl std::ops::BitOrAssign for Modules {
     }
 }
 
-/// What `url`, a source's TileJSON URL, needs: its archive's reader.
+/// What `url`, a source's TileJSON URL, needs: its archive's reader, and
+/// for MBTiles gzip too, which is in [`Modules::ARCHIVE`] (as the split's
+/// `needs` lists).
 fn archive(url: Option<&str>) -> Modules {
     match url {
         Some(url) if url.starts_with("pmtiles://") => Modules::ARCHIVE,
-        Some(url) if url.starts_with("mbtiles://") => Modules::SQLITE,
+        Some(url) if url.starts_with("mbtiles://") => Modules::SQLITE | Modules::ARCHIVE,
         _ => Modules::NONE,
     }
 }

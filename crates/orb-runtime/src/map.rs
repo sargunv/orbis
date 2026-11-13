@@ -688,8 +688,22 @@ struct PlanKey {
 /// A gap the style uses on the frames' renderer, and the layers it touches.
 type Degraded = (crate::Gap, Vec<String>);
 
-/// A style an install revises: its id and its jobs' worker.
-type Revised = (u64, Arc<TileWorker>);
+/// A style waiting for the feature modules it needs ([`crate::modules`]):
+/// the document asked for last, which edits go to meanwhile, and the
+/// feature states they set.
+pub(crate) struct WaitingStyle {
+    pub(crate) doc: StyleDoc,
+    pub(crate) states: Vec<orb_style::FeatureStateOp>,
+}
+
+/// Work that waits for feature modules, taken again once they're in.
+pub(crate) enum ModuleWait {
+    /// A source's TileJSON that names MLT.
+    TileJson(Message),
+    /// The app's GeoJSON answer for a tile of a source it feeds:
+    /// its source, tile and answer.
+    HostTile(String, TileIndex, crate::HostTile),
+}
 
 /// A map: a style, a camera and the tiles they need, drawn by
 /// [`render`](Self::render).
@@ -802,11 +816,10 @@ pub struct Map {
     pub(crate) modules: Modules,
     /// Those the map waits for, which the host is asked for.
     pub(crate) modules_wanted: Modules,
-    /// A style waiting for its modules, installed once they're in: its
-    /// document, and the id and worker of the style it revises.
-    pub(crate) pending_install: Option<(StyleDoc, Option<Revised>)>,
-    /// Messages waiting for modules: a source's TileJSON naming MLT.
-    pub(crate) held: Vec<Message>,
+    /// A style waiting for its modules, installed once they're in.
+    pub(crate) waiting_style: Option<WaitingStyle>,
+    /// Work waiting for modules, and the modules each waits for.
+    pub(crate) for_modules: Vec<(Modules, ModuleWait)>,
     /// Why the latest style request failed: nothing will load until
     /// another style replaces it.
     pub(crate) style_error: Option<String>,
@@ -1043,8 +1056,8 @@ impl Map {
             style_fetching: false,
             modules: Modules::ALL,
             modules_wanted: Modules::NONE,
-            pending_install: None,
-            held: Vec::new(),
+            waiting_style: None,
+            for_modules: Vec::new(),
             style_error: None,
             style_unparsed: false,
             style_fetch: Abort::NEVER,
@@ -1419,9 +1432,10 @@ impl Map {
         }
     }
 
-    /// The style document, as edits have left it.
+    /// The style document, as edits have left it: the one asked for last,
+    /// which may still wait for its modules.
     pub fn style_doc(&self) -> Option<&StyleDoc> {
-        self.style.as_ref().map(|s| &s.doc)
+        (self.waiting_style.as_ref().map(|w| &w.doc)).or(self.style.as_ref().map(|s| &s.doc))
     }
 
     /// The style generation in full view: every edit up to it has its jobs
@@ -1497,8 +1511,8 @@ impl Map {
     /// one drawn, which would otherwise settle a still of the old style.
     fn style_loaded(&self) -> bool {
         !self.style_fetching
-            && self.pending_install.is_none()
-            && self.held.is_empty()
+            && self.waiting_style.is_none()
+            && self.for_modules.is_empty()
             && self.style.as_ref().is_some_and(|s| {
                 s.sprites.loading == 0
                     && s.sprites.pixels_loading == 0
@@ -1510,17 +1524,27 @@ impl Map {
 
     /// Tells the map which feature modules its host has loaded: all of
     /// them unless a host says otherwise. A style waiting for them is
-    /// installed now, and messages waiting for them are taken again.
+    /// installed now, and work waiting for them is taken again.
     pub fn set_modules(&mut self, loaded: Modules) {
         self.modules = loaded;
         self.modules_wanted = self.modules_wanted.without(loaded);
-        self.install_pending();
-        if self.modules_wanted.is_empty() {
-            for message in std::mem::take(&mut self.held) {
-                let _ = self.sender.send(message);
+        self.install_waiting();
+        let (ready, waiting) = std::mem::take(&mut self.for_modules)
+            .into_iter()
+            .partition(|(needed, _)| loaded.contains(*needed));
+        self.for_modules = waiting;
+        for (_, held) in ready {
+            match held {
+                ModuleWait::TileJson(message) => {
+                    let _ = self.sender.send(message);
+                }
+                // Its source may have gone meanwhile.
+                ModuleWait::HostTile(source, tile, answer) => {
+                    let _ = self.host_tile(&source, tile, answer);
+                }
             }
-            self.events.wake();
         }
+        self.events.wake();
     }
 
     /// The feature modules the map waits for, which its host should load
@@ -1530,18 +1554,20 @@ impl Map {
     }
 
     /// Installs the style waiting for modules, if they're all in.
-    fn install_pending(&mut self) {
-        let ready = self
-            .pending_install
-            .as_ref()
-            .is_some_and(|(doc, _)| self.modules.contains(crate::modules::of_style(doc.style())));
+    fn install_waiting(&mut self) {
+        let ready = (self.waiting_style.as_ref()).is_some_and(|w| {
+            self.modules
+                .contains(crate::modules::of_style(w.doc.style()))
+        });
         if !ready {
             return;
         }
-        let (doc, previous) = self.pending_install.take().expect("waiting");
-        // The style it revised may have gone meanwhile.
-        let previous = previous.filter(|(id, _)| self.style.as_ref().is_some_and(|s| s.id == *id));
-        self.install_revision(doc, previous.as_ref().map(|(id, worker)| (*id, worker)));
+        let WaitingStyle { doc, states } = self.waiting_style.take().expect("waiting");
+        self.install_revision(doc, None);
+        let style = self.style.as_mut().expect("installed");
+        for op in &states {
+            style.states.apply(op);
+        }
     }
 
     /// Replaces the style with a v8 document. Its tiles load as frames
@@ -1615,29 +1641,29 @@ impl Map {
         (self.retired.tiles, self.retired.tables) = Default::default();
     }
 
-    /// Replaces the style with a document, every tile loaded fresh.
+    /// Replaces the style with a document, every tile loaded fresh, and
+    /// any style still waiting for modules with it. A style runs no code
+    /// of a module the host hasn't loaded: one that needs such a module
+    /// waits for it ([`crate::modules`]).
     pub(crate) fn install(&mut self, doc: StyleDoc) {
+        let needed = crate::modules::of_style(doc.style());
+        if !self.modules.contains(needed) {
+            self.modules_wanted |= needed.without(self.modules);
+            self.waiting_style = Some(WaitingStyle {
+                doc,
+                states: Vec::new(),
+            });
+            self.events.wake();
+            return;
+        }
+        self.waiting_style = None;
         self.install_revision(doc, None);
     }
 
-    /// Installs a document: a new style, or with `previous` the same
-    /// style again as a new revision of its jobs' style, which keeps their
-    /// cached tile frames.
+    /// Installs a document whose modules are in: a new style, or with
+    /// `previous` the same style again as a new revision of its jobs'
+    /// style, which keeps their cached tile frames.
     fn install_revision(&mut self, doc: StyleDoc, previous: Option<(u64, &Arc<TileWorker>)>) {
-        // The style runs no code of a module the host hasn't loaded.
-        let needed = crate::modules::of_style(doc.style());
-        if !self.modules.contains(needed) || self.pending_install.is_some() {
-            self.modules_wanted |= needed.without(self.modules);
-            let previous = previous.map(|(id, worker)| (id, Arc::clone(worker)));
-            // A later document replaces one still waiting.
-            let previous = match self.pending_install.take() {
-                Some((_, waiting)) => waiting.or(previous),
-                None => previous,
-            };
-            self.pending_install = Some((doc, previous));
-            self.events.wake();
-            return self.install_pending();
-        }
         self.version += 1;
         self.warned.clear();
         self.labels.invalidate();
@@ -2979,6 +3005,16 @@ impl Map {
         if !endpoint.host() {
             return Err(format!("{id} isn't a source the app feeds"));
         }
+        // GeoJSON is tiled by the GeoJSON module's code: the answer waits
+        // for it ([`crate::modules`]).
+        let geojson = Modules::GEOJSON;
+        if matches!(answer, crate::HostTile::GeoJson(_)) && !self.modules.contains(geojson) {
+            self.modules_wanted |= geojson;
+            let held = ModuleWait::HostTile(id.to_string(), tile, answer);
+            self.for_modules.push((geojson, held));
+            self.events.wake();
+            return Ok(());
+        }
         let (key, current) = (plan.sources[index].key, style.id);
         self.host_heights.forget(key, &|t| t == tile);
         for (mut request, edit, terrain) in self.host_tiles.answered(key, tile, answer.clone()) {
@@ -3958,6 +3994,25 @@ mod tests {
         map.set_modules(Modules::GEOJSON);
         assert_eq!(sources(&map), 1);
         assert_eq!(map.version, generation);
+        // While a style waits, edits go to it rather than to the style
+        // drawn, and the drawn one installed again (a lost device) leaves
+        // it waiting.
+        map.set_style_json(terrain).unwrap();
+        let layer = crate::Transaction::from_commands(
+            r#"[["addLayer", {"id": "bg", "type": "background"}]]"#,
+        )
+        .unwrap();
+        map.edit(&layer).unwrap();
+        map.forget_gpu();
+        assert_eq!(named(&map).as_deref(), Some("plain"));
+        let layers = |map: &Map| {
+            let style = map.style.as_ref().expect("a style");
+            style.worker.plan().style.layers.len()
+        };
+        assert_eq!(layers(&map), 0);
+        map.set_modules(Modules::GEOJSON | Modules::DEM);
+        assert_eq!(named(&map).as_deref(), Some("t"));
+        assert_eq!(layers(&map), 1);
     }
 
     /// A map dropped gives up its style URL's fetch, and a style URL
