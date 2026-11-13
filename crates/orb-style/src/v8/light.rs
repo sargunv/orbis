@@ -16,12 +16,9 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
         name,
         ty,
         default: Some(default),
-        zoom: true,
-        feature: false,
         interpolated,
         minimum,
         maximum,
-        tokens: false,
         ..Prop::ROOT
     };
     let anchor = prop(

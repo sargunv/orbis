@@ -26,12 +26,9 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
             name,
             ty,
             default: Some(default),
-            zoom: true,
-            feature: false,
             interpolated: true,
             minimum: number.then_some(0.0),
             maximum: number.then_some(1.0),
-            tokens: false,
             ..Prop::ROOT
         }
     };
