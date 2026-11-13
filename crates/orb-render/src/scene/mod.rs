@@ -14,6 +14,7 @@ mod shelf;
 mod sprites;
 mod symbol;
 mod tables;
+mod texels;
 pub(crate) use candidates::Move;
 #[cfg(cpu_driven)]
 pub(crate) use candidates::{MOVED, NO_CHUNK};

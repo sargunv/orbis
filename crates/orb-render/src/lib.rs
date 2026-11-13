@@ -2453,6 +2453,8 @@ impl Renderer {
         clock: &dyn Fn() -> f64,
     ) -> FrameStats {
         self.destroy_retired_pages(gpu);
+        // Glyphs that arrived since the last frame, one write a page layer.
+        self.glyphs.flush(gpu);
         // A DEM tile that arrived since `set_terrain` may have grown its
         // page into new textures, the one it gave destroyed.
         if let (Some(t), Some(page)) = (&mut self.terrain, self.terrain_page) {

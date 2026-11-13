@@ -2206,8 +2206,9 @@ impl Map {
             zoom,
             (frame_terrain, frame_light),
         );
-        // The shared atlas grows pages as images arrive.
-        if let Some(atlas) = &self
+        // The shared atlas grows pages as images arrive, and uploads them
+        // before a frame draws them.
+        if let Some(atlas) = &mut self
             .services
             .images
             .0
@@ -2215,6 +2216,7 @@ impl Map {
             .expect("images poisoned")
             .atlas
         {
+            atlas.flush(gpu);
             renderer.set_images(atlas.bindings());
         }
         renderer.request_pipelines(gpu);

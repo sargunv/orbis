@@ -5,6 +5,8 @@
 
 use orb_hal::*;
 
+use crate::scene::texels::AtlasTexels;
+
 pub(crate) const WIDTH: u32 = 256;
 const HEIGHT: u32 = 512;
 
@@ -12,6 +14,8 @@ const HEIGHT: u32 = 512;
 pub(crate) struct LineAtlas {
     pub texture: TextureId,
     used: Vec<bool>,
+    /// Its texels, uploaded once a frame ([`flush`](Self::flush)).
+    texels: AtlasTexels,
 }
 
 impl LineAtlas {
@@ -29,12 +33,17 @@ impl LineAtlas {
                 mip_levels: 1,
             }),
             used: vec![false; HEIGHT as usize],
+            texels: AtlasTexels::new(WIDTH, HEIGHT, 1),
         }
+    }
+
+    /// Uploads the patterns inserted since the last flush, in one write.
+    pub(crate) fn flush(&mut self, gpu: &mut dyn Gpu) {
+        self.texels.flush(gpu, self.texture);
     }
 
     pub(crate) fn insert(
         &mut self,
-        gpu: &mut dyn Gpu,
         array: &[u32],
         round: bool,
     ) -> Result<([u32; 2], f32), &'static str> {
@@ -53,18 +62,8 @@ impl LineAtlas {
             .ok_or("line atlas is full")?;
         let pixels = sdf(&array, round);
         self.used[y..y + height].fill(true);
-        gpu.write_texture(
-            &TextureRegion {
-                texture: self.texture,
-                x: 0,
-                y: y as u32,
-                layer: 0,
-                width: WIDTH,
-                height: height as u32,
-                level: 0,
-            },
-            &pixels,
-        );
+        self.texels
+            .write(0, [0, y as u32], [WIDTH, height as u32], &pixels);
         Ok(([y as u32, height as u32], array.iter().sum::<f64>() as f32))
     }
 

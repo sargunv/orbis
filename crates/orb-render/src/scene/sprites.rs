@@ -8,6 +8,7 @@ use rustc_hash::FxHashSet;
 
 use crate::scene::DataTable;
 use crate::scene::shelf::Shelves;
+use crate::scene::texels::AtlasTexels;
 
 /// Words of a row of the rect table (`types.wgsl`'s `ImageRect`).
 const RECT_WORDS: u32 = 8;
@@ -106,9 +107,18 @@ pub struct ImageAtlas {
     /// their symbols out again ([`take_icons_placed`](Self::take_icons_placed)),
     /// as a symbol takes its icon's rect when it is laid out.
     icons_placed: FxHashSet<u64>,
+    /// The pages' texels, uploaded once a frame ([`flush`](Self::flush)).
+    texels: AtlasTexels,
 }
 
 impl ImageAtlas {
+    /// Uploads the images and dash patterns written since the last flush:
+    /// one write a page, before the frame that draws them.
+    pub fn flush(&mut self, gpu: &mut dyn Gpu) {
+        self.texels.flush(gpu, self.bindings.texture);
+        self.lines.flush(gpu);
+    }
+
     /// GPU bytes of the icon and pattern pages.
     pub fn bytes(&self) -> u64 {
         u64::from(self.size) * u64::from(self.size) * 4 * self.pages.len() as u64
@@ -158,6 +168,7 @@ impl ImageAtlas {
             still: FxHashSet::default(),
             pending: Vec::new(),
             icons_placed: FxHashSet::default(),
+            texels: AtlasTexels::new(size, size, 4),
         }
     }
 
@@ -302,7 +313,7 @@ impl ImageAtlas {
         }
         match key {
             ImageKey::Dash { array, round } => {
-                let (rows, length) = self.lines.insert(gpu, array, *round)?;
+                let (rows, length) = self.lines.insert(array, *round)?;
                 let words = [
                     0,
                     rows[0] + rows[1] / 2,
@@ -445,18 +456,7 @@ impl ImageAtlas {
             }
             out
         };
-        gpu.write_texture(
-            &TextureRegion {
-                texture: self.bindings.texture,
-                x: x0,
-                y: y0,
-                layer: layer as u32,
-                width: w,
-                height: h,
-                level: 0,
-            },
-            &pixels,
-        );
+        self.texels.write(layer as u32, [x0, y0], [w, h], &pixels);
         let (x, y) = (x0 + margin, y0 + margin);
         let words = [
             x + 1,
@@ -552,6 +552,7 @@ impl ImageAtlas {
             ));
             if p.live == 0 {
                 *p = Shelves::default();
+                self.texels.forget(page as u32);
             }
         }
         entry.size = None;

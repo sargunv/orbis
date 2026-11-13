@@ -207,8 +207,8 @@ pub struct GpuCounters {
     /// image copies, and natively each staged copy (gathered writes count
     /// once a submission).
     pub upload_calls: u32,
-    /// Submissions made only to order texture writes that share a block
-    /// (their waves), each an extra command buffer.
+    /// Submissions made only to order texture writes into one level and
+    /// layer (their waves), each an extra command buffer.
     pub texture_write_submissions: u32,
 }
 

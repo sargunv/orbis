@@ -125,9 +125,10 @@ impl Harness {
 
     fn render_stats_at_ratio(&mut self, pixel_ratio: f32) -> FrameStats {
         let frame = Self::frame(pixel_ratio);
-        // The atlas grows pages as images arrive, as a map tells its
-        // renderer, and the nodes shown ask for their pipelines: these
-        // tests give no pipeline set.
+        // The atlas uploads what arrived and grows pages as images do, as a
+        // map tells its renderer, and the nodes shown ask for their
+        // pipelines: these tests give no pipeline set.
+        self.images.flush(&mut self.gpu);
         self.renderer.set_images(self.images.bindings());
         self.renderer.request_pipelines(&mut self.gpu);
         self.renderer.render(

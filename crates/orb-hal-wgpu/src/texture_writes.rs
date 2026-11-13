@@ -2,33 +2,29 @@
 //!
 //! wgpu records a submission's texture writes as copies into one Metal
 //! blit encoder, with no barrier between copies into the same texture.
-//! On Apple GPUs two such copies that touch one 16×16 block of a texture
-//! can race: under load, a copy now and then writes the whole block back
-//! with what it read before the other's texels landed, and those texels
-//! are lost. The glyph atlas packs bitmaps side by side and uploads a
-//! burst of them a frame, so a glyph lost a corner now and then and two
-//! maps of one style drew it differently (#156).
+//! On Apple GPUs two such copies into one level and layer can race: the
+//! texture is stored in compressed blocks, and under load a copy now and
+//! then writes a block back with what it read before the other's texels
+//! landed, and those texels are lost (#156). Which blocks two copies may
+//! share depends on the format and the GPU, so no spacing between them is
+//! safe.
 //!
-//! So writes into the same block of a texture's level and layer go in
-//! separate waves, each its own submission: Metal orders a resource's
-//! uses across command buffers. A write that overlaps an earlier one
-//! lands in a later wave, so the later texels still win. Writes into
-//! different blocks share a wave, and a burst of packed bitmaps takes a
-//! handful of waves, not one each. A write sharing no block with one made
-//! since the last submission would land in the first wave anyway: it is
-//! issued at once, its texels not copied or held.
+//! So a submission writes each level and layer of a texture at most once:
+//! a second write into one goes in the next wave, each wave its own
+//! submission, as Metal orders a resource's uses across command buffers,
+//! and the later texels still win. Atlases, which add many small bitmaps
+//! a frame, upload one dirty rectangle per layer a frame (orb-render's
+//! `scene::texels`), so their writes never wait for a wave. The first
+//! write into a level and layer is issued at once, its texels not copied
+//! or held.
 
 use orb_hal::{TextureId, TextureRegion};
-
-/// The side, in texels, of the blocks two writes in a wave may not share:
-/// twice the 16 seen on Apple GPUs.
-const BLOCK: u32 = 32;
 
 /// Where a write's texels come from.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Source {
-    /// Issued when it was made, in the first wave: kept for the blocks it
-    /// takes.
+    /// Issued when it was made, in the first wave: kept for the level and
+    /// layer it took.
     Issued,
     /// `len` bytes from `at` in the held texels, rows `bytes_per_row`
     /// apart.
@@ -66,27 +62,6 @@ impl TextureWrite {
         let r = &self.region;
         (r.texture, r.level, r.layer)
     }
-
-    /// Its texels' extent, `[x0, y0, x1, y1)`.
-    fn extent(&self) -> [u32; 4] {
-        let r = &self.region;
-        [r.x, r.y, r.x + r.width, r.y + r.height]
-    }
-
-    /// The blocks it touches, `[x0, y0, x1, y1)`.
-    fn blocks(&self) -> [u32; 4] {
-        let [x0, y0, x1, y1] = self.extent();
-        [
-            x0 / BLOCK,
-            y0 / BLOCK,
-            x1.div_ceil(BLOCK),
-            y1.div_ceil(BLOCK),
-        ]
-    }
-}
-
-fn intersect(a: [u32; 4], b: [u32; 4]) -> bool {
-    a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 }
 
 /// Bytes of held texels whose allocation outlives a submission.
@@ -104,22 +79,23 @@ pub(crate) struct TextureWrites {
 }
 
 impl TextureWrites {
-    /// Takes a write of `data`, rows `bytes_per_row` apart: holds it if it
-    /// shares a block with one made since the last submission, else
+    /// Whether a write since the last submission went into `region`'s
+    /// level and layer.
+    fn written(&self, region: &TextureRegion) -> bool {
+        let subresource = (region.texture, region.level, region.layer);
+        self.writes.iter().any(|w| w.subresource() == subresource)
+    }
+
+    /// Takes a write of `data`, rows `bytes_per_row` apart: holds it if one
+    /// made since the last submission went into its level and layer, else
     /// returns `false` for the caller to issue it now.
     #[must_use]
     pub(crate) fn core(&mut self, region: &TextureRegion, data: &[u8], bytes_per_row: u32) -> bool {
-        let write = TextureWrite {
-            region: *region,
-            source: Source::Issued,
-        };
-        let (subresource, blocks) = (write.subresource(), write.blocks());
-        if !self
-            .writes
-            .iter()
-            .any(|w| w.subresource() == subresource && intersect(blocks, w.blocks()))
-        {
-            self.writes.push(write);
+        if !self.written(region) {
+            self.writes.push(TextureWrite {
+                region: *region,
+                source: Source::Issued,
+            });
             return false;
         }
         let at = self.texels.len();
@@ -136,8 +112,8 @@ impl TextureWrites {
     }
 
     /// Takes a write from host bytes, as [`core`](Self::core) one from
-    /// core memory: held if it shares a block with one made since the last
-    /// submission, else `false` for the caller to issue it now.
+    /// core memory: held if one made since the last submission went into
+    /// its level and layer, else `false` for the caller to issue it now.
     #[cfg(target_arch = "wasm32")]
     #[must_use]
     pub(crate) fn bytes(
@@ -146,14 +122,9 @@ impl TextureWrites {
         (bytes, offset): (orb_hal::HostBytesId, u64),
         bytes_per_row: u32,
     ) -> bool {
-        let write = TextureWrite {
-            region: *region,
-            source: Source::Issued,
-        };
-        let (subresource, blocks) = (write.subresource(), write.blocks());
-        let held = (self.writes.iter())
-            .any(|w| w.subresource() == subresource && intersect(blocks, w.blocks()));
+        let held = self.written(region);
         self.writes.push(TextureWrite {
+            region: *region,
             source: match held {
                 true => Source::Bytes {
                     bytes,
@@ -162,7 +133,6 @@ impl TextureWrites {
                 },
                 false => Source::Issued,
             },
-            ..write
         });
         held
     }
@@ -203,9 +173,8 @@ impl TextureWrites {
         self.writes.retain(|w| w.region.texture != texture);
     }
 
-    /// Assigns each write its wave: after every earlier write it overlaps,
-    /// and in the first wave from there with no write in its blocks (the
-    /// first, for one issued when made). Returns the number of waves.
+    /// Assigns each write its wave: the number of earlier writes into its
+    /// level and layer. Returns the number of waves.
     fn plan(&mut self) -> u32 {
         let Self {
             writes,
@@ -219,34 +188,13 @@ impl TextureWrites {
         order.extend(0..writes.len());
         order.sort_by_key(|&i| (writes[i].subresource(), i));
         let mut count = 0;
-        let mut start = 0;
-        while start < order.len() {
-            let subresource = writes[order[start]].subresource();
-            let end = start
-                + order[start..]
-                    .iter()
-                    .take_while(|&&i| writes[i].subresource() == subresource)
-                    .count();
-            for n in start..end {
-                let w = &writes[order[n]];
-                let (extent, blocks) = (w.extent(), w.blocks());
-                let earlier = &order[start..n];
-                let mut wave = earlier
-                    .iter()
-                    .filter(|&&j| intersect(extent, writes[j].extent()))
-                    .map(|&j| waves[j] + 1)
-                    .max()
-                    .unwrap_or(0);
-                while earlier
-                    .iter()
-                    .any(|&j| waves[j] == wave && intersect(blocks, writes[j].blocks()))
-                {
-                    wave += 1;
-                }
-                waves[order[n]] = wave;
-                count = count.max(wave + 1);
-            }
-            start = end;
+        for (n, &i) in order.iter().enumerate() {
+            let wave = match n.checked_sub(1).map(|p| order[p]) {
+                Some(p) if writes[p].subresource() == writes[i].subresource() => waves[p] + 1,
+                _ => 0,
+            };
+            waves[i] = wave;
+            count = count.max(wave + 1);
         }
         count
     }
@@ -331,22 +279,21 @@ mod tests {
     }
 
     #[test]
-    fn writes_sharing_a_block_go_in_separate_waves() {
-        // Side by side across a block edge, then one below in both's
-        // blocks, then one far off.
+    fn writes_into_one_layer_go_in_separate_waves() {
+        // Far apart in one layer, then another layer, then the first again.
         let writes = [
-            region(1, 0, 0, 0, 40, 40),
-            region(1, 0, 40, 0, 40, 40),
-            region(1, 0, 0, 40, 40, 40),
-            region(1, 0, 200, 200, 20, 20),
+            region(1, 0, 0, 0, 8, 8),
+            region(1, 0, 400, 400, 8, 8),
+            region(1, 1, 0, 0, 8, 8),
+            region(1, 0, 200, 0, 8, 8),
         ];
-        assert_eq!(waves(&writes), [vec![0, 3], vec![1], vec![2]]);
+        assert_eq!(waves(&writes), [vec![0, 2], vec![1], vec![3]]);
     }
 
     #[test]
-    fn writes_in_free_blocks_are_issued_at_once() {
-        // A whole layer, another layer, then a write into the first one's
-        // blocks: only the last is held, its texels alone kept.
+    fn a_first_write_into_a_layer_is_issued_at_once() {
+        // A whole layer, another layer, then a write into the first one:
+        // only the last is held, its texels alone kept.
         let mut held = TextureWrites::default();
         assert!(!held.core(&region(1, 0, 0, 0, 64, 64), &[0; 64 * 64], 64));
         assert!(!held.core(&region(1, 1, 0, 0, 64, 64), &[0; 64 * 64], 64));
@@ -365,37 +312,5 @@ mod tests {
             region(2, 0, 0, 0, 40, 40),
         ];
         assert_eq!(waves(&writes), [vec![0, 1, 2]]);
-    }
-
-    #[test]
-    fn an_overlapping_write_lands_after_the_one_it_covers() {
-        // The third covers part of the first; the second shares a block
-        // with the first without overlapping it.
-        let writes = [
-            region(1, 0, 0, 0, 60, 60),
-            region(1, 0, 62, 0, 8, 8),
-            region(1, 0, 0, 0, 8, 8),
-        ];
-        let waves = waves(&writes);
-        let wave_of = |i: usize| waves.iter().position(|w| w.contains(&i)).unwrap();
-        assert!(wave_of(2) > wave_of(0));
-        assert!(wave_of(1) != wave_of(0));
-    }
-
-    #[test]
-    fn a_packed_burst_takes_a_handful_of_waves() {
-        // A page of glyph-sized bitmaps, shelf packed as the atlas packs
-        // them.
-        let mut writes = Vec::new();
-        let (mut x, mut y) = (0, 0);
-        for i in 0..64u32 {
-            let (w, h) = (44 + i * 7 % 20, 50 + i * 5 % 12);
-            if x + w > 512 {
-                (x, y) = (0, y + 62);
-            }
-            writes.push(region(1, 0, x, y, w, h));
-            x += w;
-        }
-        assert!(waves(&writes).len() <= 6, "{}", waves(&writes).len());
     }
 }

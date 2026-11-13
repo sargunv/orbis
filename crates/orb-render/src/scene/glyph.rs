@@ -6,9 +6,10 @@
 //! arrives, and nothing that refers to it changes then. The atlas knows
 //! rows only: which glyph a row holds is the runtime's business.
 
-use orb_hal::{Gpu, TextureFormat, TextureId, TextureRegion};
+use orb_hal::{Gpu, TextureFormat, TextureId};
 
 use crate::scene::shelf::Shelves;
+use crate::scene::texels::AtlasTexels;
 use crate::scene::{OutOfSpace, PageTexture, TableWriter, TilePage};
 
 /// Texels on a side of a glyph page.
@@ -52,6 +53,8 @@ pub struct GlyphAtlas {
     /// Bitmaps that arrived while the pages were full and couldn't grow:
     /// row, size and texels.
     deferred: Vec<(u32, [u32; 2], Vec<u8>)>,
+    /// The pages' texels, uploaded once a frame ([`flush`](Self::flush)).
+    texels: AtlasTexels,
 }
 
 impl GlyphAtlas {
@@ -96,7 +99,14 @@ impl GlyphAtlas {
             free: Vec::new(),
             grows: true,
             deferred: Vec::new(),
+            texels: AtlasTexels::new(GLYPH_PAGE, GLYPH_PAGE, 1),
         }
+    }
+
+    /// Uploads the bitmaps written since the last flush: one write a page
+    /// layer, before the frame that draws them.
+    pub(crate) fn flush(&mut self, gpu: &mut dyn Gpu) {
+        self.texels.flush(gpu, self.page.texture(0));
     }
 
     /// Whether a full page may grow as a bitmap arrives; otherwise the
@@ -234,18 +244,7 @@ impl GlyphAtlas {
         for (y, line) in bitmap.chunks(size[0] as usize).enumerate() {
             texels[(y + pad) * w + pad..][..line.len()].copy_from_slice(line);
         }
-        gpu.write_texture(
-            &TextureRegion {
-                texture: self.page.texture(0),
-                x: origin[0],
-                y: origin[1],
-                layer,
-                width: allocated[0],
-                height: allocated[1],
-                level: 0,
-            },
-            &texels,
-        );
+        self.texels.write(layer, origin, allocated, &texels);
         let inner = origin.map(|o| o + GLYPH_MARGIN);
         let words = [
             inner[0] | inner[1] << 16,
@@ -270,6 +269,7 @@ impl GlyphAtlas {
             shelves.free.push((origin, size));
             if shelves.live == 0 {
                 *shelves = Shelves::default();
+                self.texels.forget(layer);
             }
             self.table
                 .write_words(gpu, self.row_offset(row), &[0; GLYPH_ROW_WORDS]);

@@ -139,9 +139,8 @@ fn samples_written_layers_of_a_texture_array() {
 
 /// Bitmaps packed side by side in an R8 array, as the glyph atlas packs
 /// them, written in one submission: every texel lands. On Apple GPUs
-/// writes in one submission that share a block of a texture raced, and
-/// under load one now and then lost a block's worth of another's texels
-/// (#156).
+/// copies in one submission into one layer of a texture raced, and under
+/// load one now and then lost a block's worth of another's texels (#156).
 #[test]
 fn packed_writes_in_one_submission_all_land() {
     const SIZE: u32 = 512;
