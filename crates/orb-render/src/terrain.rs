@@ -570,10 +570,8 @@ pub(crate) struct Terrain {
     occlusion_pipeline: Option<RenderPipelineId>,
     /// The size of `occlusion`, in logical pixels.
     occlusion_size: [u32; 2],
-    /// Slots to redraw this frame: (page, sheet, stack, tile slot, side),
-    /// each page's sheets' in turn, and in a sheet each stack's, so each
-    /// layer's.
-    pending: Vec<(usize, u32, u32, u32, u32)>,
+    /// Slots to redraw this frame.
+    pending: Vec<Redraw>,
     /// The style zoom `pending` slots draw at: the drape pass's frame's.
     zoom: f64,
     /// What the last frame's drawn mip levels rendered into, released
@@ -585,6 +583,18 @@ pub(crate) struct Terrain {
     /// What remaking the drape pages did since the last
     /// [`take_resized`](Self::take_resized).
     resized: crate::scene::Resized,
+}
+
+/// A slot to redraw. They sort by page, then sheet, then stack: each
+/// page's sheets in turn, and in a sheet each stack's, so each layer's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Redraw {
+    page: usize,
+    sheet: u32,
+    stack: u32,
+    tile_slot: u32,
+    /// The slot's side in texels, smaller for a shrunk tile.
+    side: u32,
 }
 
 /// The terrain's depth in the map's passes.
@@ -603,10 +613,12 @@ enum Kind {
 
 impl TerrainLayer {
     fn kind(&self) -> Kind {
-        match () {
-            () if self.reads_beneath() => Kind::Beneath,
-            () if self.shaded() => Kind::Shaded,
-            () => Kind::Plain,
+        if self.reads_beneath() {
+            Kind::Beneath
+        } else if self.shaded() {
+            Kind::Shaded
+        } else {
+            Kind::Plain
         }
     }
 }
@@ -928,7 +940,7 @@ impl Terrain {
             gpu.write_buffer(self.params, rows[1], bytemuck::bytes_of(&self.rows(1)));
         }
         // Slots of the sheets let go draw nothing more.
-        self.pending.retain(|p| p.3 < tile_slots);
+        self.pending.retain(|p| p.tile_slot < tile_slots);
         if changed {
             self.forget_group(gpu);
             self.resized.count(gpu, &before);
@@ -969,17 +981,19 @@ impl Terrain {
         for &(slot, shrink, redrawn) in tile_slots {
             let stacks =
                 (redrawn.iter().map(|&s| u32::from(s))).filter(|&s| s < layout.stack_count());
-            self.pending.extend(stacks.map(|stack| {
-                let page = layout.page(stack).0;
-                let side = layout.slot_px(stack) >> shrink;
-                (page, slot / SHEET_SLOTS, stack, slot, side)
+            self.pending.extend(stacks.map(|stack| Redraw {
+                page: layout.page(stack).0,
+                sheet: slot / SHEET_SLOTS,
+                stack,
+                tile_slot: slot,
+                side: layout.slot_px(stack) >> shrink,
             }));
         }
     }
 
     /// The stacks this frame redraws slots of, in order.
     pub(crate) fn pending_stacks(&self) -> Vec<u32> {
-        let mut stacks: Vec<u32> = self.pending.iter().map(|p| p.2).collect();
+        let mut stacks: Vec<u32> = self.pending.iter().map(|p| p.stack).collect();
         stacks.sort_unstable();
         stacks.dedup();
         stacks
@@ -1317,15 +1331,13 @@ impl Terrain {
             drawn.slots = pending.len() as u32;
             let sheets = layout.side / SHEET_SIDE;
             let grid = layout.side as f32;
-            for run in pending.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
-                let (page, at) = (run[0].0, run[0].1);
+            for run in pending.chunk_by(|a, b| (a.page, a.sheet) == (b.page, b.sheet)) {
+                let (page, at) = (run[0].page, run[0].sheet);
                 let Some(sheet) = self.sheets[page].get(at as usize) else {
                     continue;
                 };
                 let px = sheet.slot_px;
-                let place = |&(_, _, stack, slot, _): &(usize, u32, u32, u32, u32)| {
-                    sheet.place(layout.rank(stack), slot)
-                };
+                let place = |p: &Redraw| sheet.place(layout.rank(p.stack), p.tile_slot);
                 // Whole places, cleared and downsampled, a smaller slot's
                 // too: what filters read past its edge is then blank, not
                 // what the place held before.
@@ -1355,7 +1367,7 @@ impl Terrain {
                     // onto a viewport of its size, moved so that the
                     // layer's slots of it land on the layer.
                     let (layer, [_, y]) = place(&layer_run[0]);
-                    let row = sheet_place(layer_run[0].3)[1] - y;
+                    let row = sheet_place(layer_run[0].tile_slot)[1] - y;
                     let corner = [origin[0], origin[1] + row].map(|n| -((n * px) as f32));
                     let viewport = [corner[0], corner[1], grid * px as f32, grid * px as f32];
                     let mut commands = vec![
@@ -1371,13 +1383,13 @@ impl Terrain {
                         RenderCommand::SetViewport(viewport),
                     ];
                     first = end;
-                    for stack_run in layer_run.chunk_by(|a, b| a.2 == b.2) {
-                        let stack = stack_run[0].2;
+                    for stack_run in layer_run.chunk_by(|a, b| a.stack == b.stack) {
+                        let stack = stack_run[0].stack;
                         let Some(&(_, bundle)) = drape.iter().find(|d| d.0 == stack) else {
                             continue;
                         };
                         let slots: Vec<([u32; 2], u32)> =
-                            stack_run.iter().map(|p| (place(p).1, p.4)).collect();
+                            stack_run.iter().map(|p| (place(p).1, p.side)).collect();
                         commands.push(RenderCommand::SetScissor(scissor(&slots, px)));
                         commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
                     }
