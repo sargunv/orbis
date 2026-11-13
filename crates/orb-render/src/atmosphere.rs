@@ -10,6 +10,10 @@ use crate::pipeline::Draw;
 use orb_hal::*;
 use orb_shaders::{SCATTER_SHADER, SKY_SHADER, Shader};
 
+/// Logical pixels a side of the scattering's grid cells (`sky.wgsl`'s
+/// `SCATTER_CELL`).
+const SCATTER_CELL: f32 = 8.0;
+
 /// The style's `sky`, evaluated.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AtmospherePaint {
@@ -201,15 +205,29 @@ impl Atmosphere {
     }
 
     /// The globe's scattering over the map, after its layers, once its
-    /// pipeline compiled.
-    pub(crate) fn commands_after(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
+    /// pipeline compiled: a grid over the `viewport`'s logical pixels.
+    pub(crate) fn commands_after(
+        &self,
+        gpu: &mut dyn Gpu,
+        viewport: [f32; 2],
+    ) -> Vec<RenderCommand> {
         match (self.group, self.scatter) {
             (Some((_, group)), Some(pipeline))
                 if self.enabled
                     && self.scatter_blend > 0.0
                     && gpu.pipeline_ready(pipeline.into()) =>
             {
-                Self::fullscreen(pipeline, group)
+                // A cell more each way than the shader's grid takes, whatever
+                // its f32 rounding: cells past the viewport are empty.
+                let [columns, rows] = viewport.map(|v| (v / SCATTER_CELL).ceil() as u32 + 1);
+                vec![
+                    RenderCommand::SetPipeline(pipeline),
+                    RenderCommand::SetBindGroup { index: 0, group },
+                    RenderCommand::Draw {
+                        vertices: 0..6 * columns * rows,
+                        instances: 0..1,
+                    },
+                ]
             }
             _ => Vec::new(),
         }
@@ -236,8 +254,9 @@ fn sky_group(
 ) -> (BindGroupLayoutId, BindGroupId) {
     let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
         label: "sky",
-        entries: &[0, 1]
-            .map(|binding| BindGroupLayoutEntry::uniform(binding, ShaderStages::FRAGMENT)),
+        entries: &[0, 1].map(|binding| {
+            BindGroupLayoutEntry::uniform(binding, ShaderStages::VERTEX | ShaderStages::FRAGMENT)
+        }),
     });
     let group = gpu.create_bind_group(&BindGroupDesc {
         label: "sky",

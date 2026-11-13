@@ -151,6 +151,7 @@ pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
 /// The globe atmosphere's scattering over the map.
 pub const SCATTER_SHADER: Shader = Shader {
     label: "atmosphere scattering",
+    vertex: "vs_scatter",
     fragment: "fs_scatter",
     ..SKY_SHADER
 };
