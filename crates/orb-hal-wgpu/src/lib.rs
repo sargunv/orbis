@@ -1463,6 +1463,7 @@ impl WgpuGpu {
             }
             RenderCommand::ExecuteBundles(_) => panic!("render bundles cannot execute bundles"),
             RenderCommand::SetScissor(_) => panic!("render bundles cannot set a scissor"),
+            RenderCommand::SetViewport(_) => panic!("render bundles cannot set a viewport"),
         }
     }
 }
@@ -2351,6 +2352,9 @@ impl Gpu for WgpuGpu {
                             ),
                             &RenderCommand::SetScissor([x, y, width, height]) => {
                                 pass.set_scissor_rect(x, y, width, height)
+                            }
+                            &RenderCommand::SetViewport([x, y, width, height]) => {
+                                pass.set_viewport(x, y, width, height, 0.0, 1.0)
                             }
                             command => self.encode_render(&mut pass, command),
                         }

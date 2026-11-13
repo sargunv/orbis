@@ -670,49 +670,33 @@ impl Terrain {
                 .all(|(place, tile)| self.slots.get(tile).is_some_and(|s| s.index == place))
     }
 
-    /// Carries the slots into pages made anew for `layout` that keep the
-    /// pages of generation `from` they replaced
-    /// ([`Renderer::drape_carries`](orb_render::Renderer::drape_carries)),
-    /// if the slots are that generation's: each drawn tile of the cover
-    /// takes the slot of its place, and each retired one a blank tile
-    /// shows a slot left free. A tile drapes a few pixels apart in another
-    /// slot, so a carried tile is stale: it shows its old slot's copy until
-    /// the frame's budget redraws it, and at rest the map ends as a fresh
-    /// one. The slots to copy, `(from, to, shrink)`
-    /// ([`Renderer::carry_drape`](orb_render::Renderer::carry_drape)).
-    pub(crate) fn carry(&mut self, layout: DrapeLayout, from: u64) -> Vec<(u32, u32, u8)> {
-        if from != self.generation || layout.generation == self.generation {
-            return Vec::new();
-        }
-        self.generation = layout.generation;
-        let mut copies = Vec::new();
-        let mut used = FxHashSet::default();
-        for (place, tile) in (0u32..).zip(&self.tiles) {
-            if let Some(slot) = self.slots.get_mut(tile) {
-                copies.push((slot.index, place, slot.shrink));
-                slot.index = place;
-                slot.content.clear();
-                used.insert(place);
-            }
-        }
-        let shown: FxHashSet<CoveredTile> = (self.tiles.iter())
-            .filter(|t| !self.slots.contains_key(t))
-            .filter_map(|&t| self.stand_in(t))
-            .collect();
-        // Past the cover's places first, which its blank tiles take.
-        let cover = self.tiles.len() as u32;
-        let mut free = (cover..layout.tile_slots)
-            .chain(0..cover)
-            .filter(|i| !used.contains(i));
-        self.retired.retain(|tile, slot| {
-            let index = shown.contains(tile).then(|| free.next()).flatten();
-            if let Some(index) = index {
-                copies.push((slot.index, index, slot.shrink));
-                slot.index = index;
-            }
-            index.is_some()
-        });
-        copies
+    /// One past the last tile slot held, drawn or retired: the pages hold
+    /// at least as many ([`Map::plan_drape`](crate::Map)).
+    pub(crate) fn slots_end(&self) -> u32 {
+        (self.slots.values().chain(self.retired.values()))
+            .map(|s| s.index + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The tile slots the drape pages need, of `room` at most: the cover's
+    /// tiles and every slot held past them. While a tile of a continuous
+    /// map's cover is out of its place they keep a slot free too, which a
+    /// move between two tiles that hold each other's places goes through,
+    /// so that moves fit the frame's budget ([`plan`](Self::plan)); a
+    /// still map moves every tile in its frame.
+    pub(crate) fn slots_needed(&self, still: bool, room: u32) -> u32 {
+        let tiles = self.tiles.len() as u32;
+        let held = (self.slots.len() + self.retired.len()) as u32;
+        let misplaced = !self.retired.is_empty()
+            || (0u32..)
+                .zip(&self.tiles)
+                .any(|(place, tile)| self.slots.get(tile).is_some_and(|s| s.index != place));
+        let wanted = match still || !misplaced {
+            true => tiles,
+            false => (tiles.max(held) + 1).min(room),
+        };
+        wanted.max(self.slots_end()).max(1)
     }
 
     /// The nearest retired ancestor of `tile`, whose slot it shows while
@@ -738,7 +722,8 @@ impl Terrain {
     /// content, as `content` hashes it per stack, changed, and every stack
     /// of a tile whose slots' side in `view` did ([`slot_shrink`]).
     ///
-    /// What a frame redraws is bounded by `texels` (unbounded for none),
+    /// What a frame redraws is bounded by `budget`'s texels and sheets
+    /// (unbounded for none),
     /// so that it follows the screen, not how fast the zoom crosses the
     /// drape's steps or how many tiles a cover splits. Blank tiles go
     /// first: a tile the cover split shows its part of its ancestor's
@@ -746,18 +731,17 @@ impl Terrain {
     /// or a merge) is drawn whatever the budget. Then stale ones, the
     /// longest stale first, each drawn as it was until a frame redraws
     /// it. Of those alike, the ones that show largest go first, then those
-    /// nearest the view's centre. Each tile takes the slot of its place in
-    /// the cover, so that where it lies in the atlas is a function of the
-    /// cover alone: the same tile drapes and samples a step apart at a few
-    /// pixels in another slot. A move is a redraw, within the budget, into
-    /// a place left free. Once none is blank, stale or out of place, each
-    /// slot holds what a fresh map's does. On a globe, `globe` places a
-    /// tile on the sphere.
+    /// nearest the view's centre, of the slots of the budget's sheets. Each tile takes the slot of its place in
+    /// the cover, so that the cover's tiles fill the first sheets, as a
+    /// fresh map's do, and the sheets past them come free. A move is a
+    /// redraw, within the budget, into a place left free. Once none is
+    /// blank, stale or out of place, each slot holds what a fresh map's
+    /// does. On a globe, `globe` places a tile on the sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         view: &View,
-        (layout, texels): (DrapeLayout, Option<u64>),
+        (layout, budget): (DrapeLayout, Option<(u64, usize)>),
         content: &dyn Fn(CoveredTile) -> Vec<u64>,
         globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
     ) -> (Vec<TerrainTile>, Vec<Redraw>, bool) {
@@ -777,6 +761,7 @@ impl Terrain {
         // (`Map::cover_room`), so that only pages of a single slot do.
         let held = self.slots.len() + self.retired.len();
         let misplaced = (self.slots.iter()).any(|(t, s)| places[t] != s.index);
+        let texels = budget.map(|b| b.0);
         if texels.is_none() || misplaced && held >= layout.tile_slots as usize {
             self.retired.clear();
             self.slots.retain(|t, s| places[t] == s.index);
@@ -841,10 +826,30 @@ impl Terrain {
         // moved: where none could, the first takes a free slot, so that
         // the place it leaves frees another's (they took each other's).
         let (mut blocked, mut moved) = (None, false);
+        // The sheets the frame redraws slots of.
+        let mut sheets: Vec<u32> = Vec::new();
         for want in wants {
             let tile = self.tiles[want.place as usize];
             let forced = matches!(want.need, Need::Blank(None));
             if !forced && texels.is_some_and(|t| spent >= t) {
+                deferred = true;
+                continue;
+            }
+            // Each sheet a frame redraws replays the drape's draws, so a
+            // continuous map's frame redraws slots of few: what else is
+            // due waits for a frame to come.
+            let target = match &want.need {
+                Need::Stale(_) => Some(self.slots[&tile].index),
+                Need::Move => Some(want.place),
+                Need::Blank(_) if !used.contains(&want.place) => Some(want.place),
+                Need::Blank(stand_in) => (0..layout.tile_slots)
+                    .find(|i| !used.contains(i))
+                    .or_else(|| stand_in.and_then(|s| self.retired.get(&s)).map(|r| r.index)),
+            };
+            let sheet = target.map(|slot| slot / orb_render::SHEET_SLOTS);
+            let new_sheet = sheet.is_some_and(|s| !sheets.contains(&s));
+            let most = budget.map_or(usize::MAX, |b| b.1);
+            if !forced && new_sheet && sheets.len() >= most {
                 deferred = true;
                 continue;
             }
@@ -892,6 +897,9 @@ impl Terrain {
                 }
             };
             used.insert(index);
+            if !sheets.contains(&(index / orb_render::SHEET_SLOTS)) {
+                sheets.push(index / orb_render::SHEET_SLOTS);
+            }
             spent += (stacks.iter())
                 .map(|&s| u64::from(layout.slot_px(u32::from(s)) >> want.shrink).pow(2))
                 .sum::<u64>();
@@ -2074,7 +2082,7 @@ mod tests {
         let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
         let layout = DrapeLayout {
             stacks: [1, 0],
-            columns: [4, 1],
+            side: 8,
             tile_slots: 6,
             generation: 1,
         };
@@ -2085,7 +2093,7 @@ mod tests {
             .map(|i| covered(TileIndex::new(12, 2 * 1067 + i % 2, 2 * 727 + i / 2)))
             .collect();
         // A tile a frame: what a frame redraws may pass its budget by one.
-        let budget = Some(1);
+        let budget = Some((1, usize::MAX));
         let plan = |terrain: &mut Terrain| {
             terrain.release_slots();
             terrain.plan(&tms, &view, (layout, budget), &|_| vec![1], &mut |_| None)
@@ -2174,64 +2182,6 @@ mod tests {
             t.elevation(&tms).range(rect, 9)
         };
         assert_eq!(range(&mut moved), range(&mut fresh));
-    }
-
-    /// Pages made anew for another grid carry the cover's drawn slots into
-    /// their places, shown until the budget redraws them there; pages
-    /// whose slots the map didn't draw as it thinks carry nothing.
-    #[test]
-    fn new_pages_carry_the_drawn_slots_into_their_places() {
-        let tms = tms();
-        let mercator = *tms.projection();
-        let camera =
-            orb_camera::CameraState::new(orb_crs::Geodetic::new(7.75, 46.02), 11.5, &mercator);
-        let viewport = orb_camera::Viewport {
-            width: 1024.0,
-            height: 768.0,
-        };
-        let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
-        let layout = |tile_slots, generation| DrapeLayout {
-            stacks: [1, 0],
-            columns: [tile_slots, 1],
-            tile_slots,
-            generation,
-        };
-        let mut terrain = terrain_with(&[]);
-        let tile = |i: u32| CoveredTile {
-            index: TileIndex::new(12, 2134 + i % 2, 1454 + i / 2),
-            wrap: 0,
-        };
-        let plan = |terrain: &mut Terrain, layout, budget| {
-            terrain.release_slots();
-            terrain.plan(&tms, &view, (layout, budget), &|_| vec![1], &mut |_| None)
-        };
-        // A frame's budget draws the new tile in a free slot, not its
-        // place's, which another holds until it moves.
-        terrain.tiles = (0..3).map(tile).collect();
-        plan(&mut terrain, layout(5, 1), None);
-        terrain.tiles = (1..4).map(tile).collect();
-        let (_, redraw, _) = plan(&mut terrain, layout(5, 1), Some(1));
-        assert_eq!(redraw.len(), 1);
-        assert!(!terrain.slots_follow_cover());
-        // Pages of another grid.
-        let mut to: Vec<u32> = (terrain.carry(layout(4, 2), 1).iter())
-            .map(|&(_, to, _)| to)
-            .collect();
-        to.sort_unstable();
-        assert_eq!(to, [0, 1, 2]);
-        assert!(terrain.slots_follow_cover());
-        // Each shows its copy until the budget redraws it in its place.
-        for frame in 0..3 {
-            let (tiles, redraw, deferred) = plan(&mut terrain, layout(4, 2), Some(1));
-            assert_eq!((redraw.len(), deferred), (1, frame < 2), "frame {frame}");
-            assert!(tiles.iter().zip(0..).all(|(t, place)| t.slot == place));
-        }
-        let (_, redraw, deferred) = plan(&mut terrain, layout(4, 2), Some(1));
-        assert_eq!((redraw.len(), deferred), (0, false));
-        // Pages made since the generation the slots were drawn for.
-        assert!(terrain.carry(layout(5, 4), 3).is_empty());
-        let (_, redraw, _) = plan(&mut terrain, layout(5, 4), Some(1));
-        assert_eq!(redraw.len(), 3, "blank slots draw");
     }
 
     /// A drawn tile's regions reach a terrain tile's slots only where they

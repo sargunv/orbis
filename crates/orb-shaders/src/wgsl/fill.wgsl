@@ -174,7 +174,12 @@ fn fs_fill_outline(in: FillOut) -> @location(0) vec4<f32> {
     if !clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos) {
         discard;
     }
-    let dist = length(in.screen - (in.position.xy - in.screen_origin));
+    // A drape slot's fragments lie in its sheet, whose viewport moves the
+    // drape's grid by a multiple of 1024 texels (orb-render's `terrain`):
+    // the outline is within a pixel of them, so what lies whole 1024s off
+    // is that move.
+    let off = in.screen - (in.position.xy - in.screen_origin);
+    let dist = length(off - round(off / 1024.0) * 1024.0);
     var color = in.color;
     if with_patterns && node.pattern.enabled == 1u {
         color = fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);

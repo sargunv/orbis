@@ -1534,16 +1534,27 @@ mod tests {
             ms: 1000.0,
             bytes: 1,
             drape_texels: u64::MAX,
+            drape_sheets: usize::MAX,
         };
         let steps = [ground(0, 25.0), ground(1, 25.0), ground(2, 25.0)];
         let mut fresh = Fed::new(0.0, None);
         fresh.settle(&steps[2]);
         let last = fresh.offscreen.pixels();
         let mut moved = Fed::new(0.0, Some(budget));
-        // GPU memory: the CPU driver's copies of its tables are the core's.
+        // GPU memory: the CPU driver's copies of its tables are the core's,
+        // and what the pools hold of it is what the frame draws.
         let gpu_memory = |report: orb_runtime::FrameReport| {
             let mut memory = report.memory;
             memory.scene.cpu_copies = 0;
+            let s = &mut memory.scene;
+            for pool in [
+                &mut s.vertices,
+                &mut s.indices,
+                &mut s.compacted,
+                &mut s.props,
+            ] {
+                pool.used = 0;
+            }
             memory
         };
         let memory = gpu_memory(moved.settle(&steps[0]));

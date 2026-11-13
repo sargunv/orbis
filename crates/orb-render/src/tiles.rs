@@ -843,14 +843,14 @@ impl Renderer {
         self.attach(gpu, mesh, rows)
     }
 
-    /// Halves one of the property rows, the chunk table, the block for
-    /// what draws as points and the image tile pages that a view that
-    /// emptied left mostly free, copying what it keeps (a quarter of it
-    /// at most; other blocks of vertices and indices go whole once empty,
-    /// copying nothing): one a frame, so that a view that emptied doesn't
-    /// pay for every move in one.
+    /// Halves the property rows, the chunk table, the block for what draws
+    /// as points and the image tile pages while a view left them mostly
+    /// free, copying what they keep (a quarter at most; other blocks of
+    /// vertices and indices go whole once empty, copying nothing). The
+    /// renderer does so in a frame that settles the map, the last before
+    /// it idles, so all at once.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) {
-        let _ = self.scene.shrink(gpu) || self.images.shrink(gpu);
+        while self.scene.shrink(gpu) || self.images.shrink(gpu) {}
     }
 
     /// How many world copies a symbol mesh keeps state words for.

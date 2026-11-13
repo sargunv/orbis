@@ -451,6 +451,7 @@ impl Scene {
             Space::new(rows_end, limits.candidates),
             Space::new(words_end, limits.compacted_words),
         );
+        self.relaid = false;
         (budget.compacted_short, budget.candidates_short)
     }
 
@@ -578,6 +579,7 @@ impl Scene {
         self.write_layout(gpu, laid, writes, slices.0.end, slices.1.end);
         self.slices = slices;
         self.untidy = self.laid.iter().any(|laid| !laid.tidy);
+        self.relaid = true;
         true
     }
 

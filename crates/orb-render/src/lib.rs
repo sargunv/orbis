@@ -38,8 +38,8 @@ mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
 pub use terrain::{
-    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
-    TerrainGlobe, TerrainPaint, TerrainTile,
+    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, SHEET_SLOTS, TERRAIN_EXTENT, TERRAIN_GRID,
+    TerrainDem, TerrainGlobe, TerrainPaint, TerrainTile,
 };
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
@@ -516,6 +516,10 @@ pub struct Renderer {
     /// What the symbol placement target did made again at another size,
     /// since the last [`take_resized`](Self::take_resized).
     resized: Resized,
+    /// Whether this frame leaves the map nothing to do after it
+    /// ([`set_settling`](Self::set_settling)): only then do pools, lists
+    /// and pages give back what they hold free.
+    settling: bool,
 }
 
 /// What a map's new tile pages start at ([`Renderer::size_for`]): the
@@ -770,6 +774,7 @@ impl Renderer {
             image_bindings,
             sizing: None,
             resized: Resized::default(),
+            settling: true,
         }
     }
 
@@ -815,6 +820,18 @@ impl Renderer {
         memory.compacted.ceiling *= copies;
         memory.cpu_copies += self.driver.heap_bytes();
         memory
+    }
+
+    /// Says whether the frame drawn next leaves the map nothing to do
+    /// after it: nothing loading, deferred or fading. Pools, lists and
+    /// pages grow in any frame that needs them to, and give back what they
+    /// hold free only in such a frame, the last before the map idles: a
+    /// view whose needs swing from frame to frame (a drape redrawing slots
+    /// and then none, a cover taking tiles and dropping them) would
+    /// otherwise make and let go of the same memory frame after frame.
+    /// What a frame shows doesn't depend on it.
+    pub fn set_settling(&mut self, settling: bool) {
+        self.settling = settling;
     }
 
     /// What pools, tables, tile pages and the drape atlas did moving into
@@ -1368,11 +1385,12 @@ impl Renderer {
     }
 
     /// Makes the drape pages hold `tile_slots` terrain tiles' slots, one
-    /// per drape stack, exactly: the view's cover, packed into the fewest
-    /// slots a layer's grid takes. Pages of another grid are new and blank
-    /// (a new layout generation); those of the same grid stay, slots and
-    /// all. Fails past the [`drape_room`](Self::drape_room), or where the
-    /// device refuses a page, which the next call makes smaller.
+    /// per drape stack, in the fewest sheets that do ([`SHEET_SLOTS`]
+    /// slots each): sheets are added blank and the last let go, the rest
+    /// staying, slots and all, where they are. Pages of other stacks are
+    /// new and blank (a new layout generation). Fails past the
+    /// [`drape_room`](Self::drape_room), or where the device refuses a
+    /// sheet.
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1387,23 +1405,6 @@ impl Renderer {
             self.invalidate_bundle(gpu);
         }
         Ok(layout)
-    }
-
-    /// Where the drape pages [`reserve_drape`](Self::reserve_drape) just
-    /// made anew keep the pages they replaced, for
-    /// [`carry_drape`](Self::carry_drape): those pages' layout generation.
-    pub fn drape_carries(&self) -> Option<u64> {
-        self.terrain.as_ref().and_then(terrain::Terrain::carries)
-    }
-
-    /// Copies drape slots of the pages [`reserve_drape`](Self::reserve_drape)
-    /// replaced into the new ones, `(from, to, shrink)` each, and lets the
-    /// old pages go: the tiles carried show what they did until the map
-    /// redraws them in their new places.
-    pub fn carry_drape(&mut self, gpu: &mut dyn Gpu, slots: &[(u32, u32, u8)]) {
-        if let Some(terrain) = &mut self.terrain {
-            terrain.carry(gpu, slots);
-        }
     }
 
     /// Redraws these terrain tiles' drape slots this frame, at the side
@@ -2459,10 +2460,12 @@ impl Renderer {
     ) -> FrameStats {
         let mut times = RenderTimes::default();
         let started = clock();
-        // A frame gives back at most one table or page a view left mostly
-        // free.
-        self.shrink(gpu);
-        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
+        // A settling frame gives back what tables and pages a view left
+        // mostly free.
+        if self.settling {
+            self.shrink(gpu);
+        }
+        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame, self.settling);
         // The symbol draws bind the placement target, which the placements
         // write whole each frame: it is made again for the symbol nodes'
         // quads, with room for twice them, so that labels rarely outgrow

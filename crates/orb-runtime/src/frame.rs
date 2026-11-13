@@ -619,8 +619,7 @@ impl Map {
     ) -> Option<DrapePlan> {
         let time = self.shader_time();
         // A still map redraws every stale slot in its one frame.
-        let texels =
-            (self.mode == RenderMode::Continuous).then_some(self.frame_budget.drape_texels);
+        let texels = (self.mode == RenderMode::Continuous).then_some(self.frame_budget.drape());
         let Some(style) = &mut self.style else {
             return None;
         };
@@ -631,50 +630,20 @@ impl Map {
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
         terrain.release_slots();
-        // The pages hold the cover's tiles ([`Map::cover_room`]). The
-        // tiles move to the slots of their places in the cover within the
-        // frame's budget, as moving them allocates nothing; a continuous
-        // map's pages keep a slot more, which a move between two tiles that
-        // hold each other's places goes through, so that moves fit the
-        // frame's budget. A still map's pages hold its cover exactly.
+        // The pages hold what the cover needs ([`Terrain::slots_needed`]),
+        // growing by a blank sheet of slots when it needs more. They let go
+        // of the sheets past it only in a frame that settles the map
+        // ([`Map::trim_drape`]): neither copies a slot, and what a frame
+        // shows doesn't depend on them.
         let still = self.mode != RenderMode::Continuous;
-        let tiles = terrain.tiles.len() as u32;
-        let wanted = match still {
-            true => tiles,
-            false => (tiles + 1).min(renderer.drape_room(gpu)),
-        }
-        .max(1);
-        // Pages too small for the cover are made anew at once, with a
-        // quarter more room. Pages larger than it are made anew to fit once
-        // the cover has wanted as many tiles, from the same camera, for
-        // [`DRAPE_REFIT`] frames. Making pages allocates the whole atlas in
-        // one frame, hundreds of MiB, and a turning view's cover changes
-        // its count all the time: shrinking pages whenever the count held
-        // for a moment grew them again a moment later. So pages only grow
-        // while the view moves. What a frame shows doesn't depend on
-        // them, which hold whatever it shows, and a view held still ends
-        // in pages that hold its cover exactly, as a fresh map's do.
-        let held = renderer.drape_slots();
-        let camera = self.camera.revision();
-        self.drape_wanted = match self.drape_wanted {
-            (count, seen, frames) if count == wanted && seen == camera => {
-                (count, seen, frames.saturating_add(1))
-            }
-            _ => (wanted, camera, 0),
-        };
-        let slots = match () {
-            _ if still || wanted == held => wanted,
-            _ if wanted > held => (wanted + wanted / 4).min(renderer.drape_room(gpu)),
-            _ if self.drape_wanted.2 >= DRAPE_REFIT => wanted,
-            _ => held,
-        };
-        let refit = slots != wanted;
+        let room = renderer.drape_room(gpu);
+        let slots = (terrain.slots_needed(still, room)).max(renderer.drape_slots());
         let layout = match renderer.reserve_drape(gpu, slots) {
             Ok(layout) => layout,
             Err(full) => {
                 // The cover fits the atlas's room (`Terrain::update`)
                 // unless its stacks leave none for the view's tiles, or the
-                // device refused the pages, which then fit in less.
+                // device refused a sheet.
                 self.warnings.push(match full {
                     DrapeFull::Room => {
                         "too many drape stacks for the drape atlas; terrain is flat".into()
@@ -684,7 +653,7 @@ impl Map {
                         // goes first.
                         self.release_cached = true;
                         format!(
-                            "the GPU refused the drape atlas's {} MiB; terrain is flat until it fits in less",
+                            "the GPU refused a drape sheet's {} MiB; terrain is flat until it fits",
                             bytes >> 20
                         )
                     }
@@ -693,19 +662,6 @@ impl Map {
                 return None;
             }
         };
-        // A continuous map's pages made anew carry over what the old ones'
-        // slots hold, shown until the budget redraws each in its new place:
-        // a cover that needs another grid costs a copy of its slots, not a
-        // redraw of every one in one frame. A still map's frame redraws
-        // them all, so it carries none.
-        if let Some(from) = renderer.drape_carries() {
-            let terrain = style.terrain.as_mut().expect("checked above");
-            let carried = match still {
-                true => Vec::new(),
-                false => terrain.carry(layout, from),
-            };
-            renderer.carry_drape(gpu, &carried);
-        }
         let surface = self.surface.tms().clone();
         let zoom = drape_zoom(self.camera.state().zoom(self.surface.projection()));
         let stacks = layout.stack_count() as usize;
@@ -848,12 +804,31 @@ impl Map {
             surface,
             layout,
             redraw,
-            // Pages larger than the cover are made to it in a frame to come.
-            deferred: deferred || refit,
+            deferred,
             reaches,
             zoom,
             reach_px,
         })
+    }
+
+    /// Lets the drape pages go of the sheets past the cover's tiles, in a
+    /// frame that settles the map: a cover that takes tiles and drops them
+    /// as the view moves keeps its pages until then, rather than making
+    /// and freeing the same sheets frame after frame, and a map at rest
+    /// holds what a fresh one there does.
+    pub(crate) fn trim_drape(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        let Some(terrain) = self.style.as_ref().and_then(|s| s.terrain.as_ref()) else {
+            return;
+        };
+        if !renderer.terrain_on() || renderer.drape_slots() == 0 {
+            return;
+        }
+        let still = self.mode != RenderMode::Continuous;
+        let slots = terrain.slots_needed(still, renderer.drape_room(gpu));
+        if slots < renderer.drape_slots() {
+            // Shrinking keeps within the room and makes nothing.
+            let _ = renderer.reserve_drape(gpu, slots);
+        }
     }
 
     /// Places the background layers' quads on every covered tile, and on
@@ -1759,7 +1734,3 @@ impl Unbounded {
         labels.chain(extrusions).fold(0.0, f32::max)
     }
 }
-
-/// Frames a cover wants as many tiles before pages larger than it are
-/// made anew to fit: half a second at 60 Hz.
-const DRAPE_REFIT: u32 = 30;

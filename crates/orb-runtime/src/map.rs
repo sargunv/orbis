@@ -757,11 +757,6 @@ pub struct Map {
     sized: bool,
     /// What a frame may spend on arrivals.
     pub(crate) frame_budget: crate::Budget,
-    /// The terrain tiles the drape's cover last wanted, the camera's
-    /// revision then, and for how many frames since both held: pages
-    /// larger than it are made anew to fit once they are enough
-    /// ([`Map::plan_drape`]).
-    pub(crate) drape_wanted: (u32, u64, u32),
     /// When the host began the next frame's work on what arrived, on the
     /// services' clock ([`Map::arrivals_began`]).
     pub(crate) arrivals_began: Option<f64>,
@@ -979,7 +974,6 @@ impl Map {
             capacity: SceneCapacity::default(),
             sized: true,
             frame_budget: crate::Budget::DESKTOP,
-            drape_wanted: (0, 0, 0),
             arrivals_began: None,
             release_cached: false,
             tile_cache: true,
@@ -2091,6 +2085,12 @@ impl Map {
             renderer.set_images(atlas.bindings());
         }
         renderer.request_pipelines(gpu);
+        // A frame that leaves the map nothing to do gives back the memory
+        // it holds free, as the last before it idles.
+        renderer.set_settling(report.idle);
+        if report.idle {
+            self.trim_drape(gpu, renderer);
+        }
         report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
         // Whatever this frame, and the prepared ones since the last,
         // asked for besides the set.

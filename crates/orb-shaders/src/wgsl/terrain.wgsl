@@ -5,11 +5,11 @@
 // tile's patches in space (`project.wgsl`'s `sphere_at`), raised along the
 // sphere's up, and its top and bottom rows' skirts close the poles.
 //
-// Drape slots are squares of the drape atlas's layers, `slot_px` texels
-// per side, `columns` per row; layer `s` holds colour stack `s`, and a
-// tile's slot of it is slot `slot` of the layer, each stack's slots side
-// by side. Slope stacks are on a page of their own, at `slope_px` texels a
-// side, likewise. A
+// Drape slots are squares of the drape pages' sheets, `slot_px` texels
+// per side, 2 × 2 a sheet: layer `s` of a sheet holds colour stack `s`,
+// and a tile's slot of it is place `slot % 4` of sheet `slot / 4`, which
+// the draw of the sheet's tiles binds. Slope stacks are on a page of their
+// own, at `slope_px` texels a side, likewise. A
 // terrain layer draws a stack's slots, two stacks' where the zoom splits
 // it, or a stack's below hillshades it shades from their slopes, each
 // under its stack above it (`terrain_shade.wgsl`).
@@ -56,13 +56,11 @@ struct Terrain {
     dem_dim: f32,
     // World units the skirts hang below the edges.
     skirt: f32,
-    // The colour page's slots per row.
-    columns: u32,
+    // The colour page's slots' side.
     slot_px: f32,
     // Terrain tiles drawn.
     tiles: u32,
-    // The same for the slope page's, and its slots' side.
-    slope_columns: u32,
+    // The slope page's slots' side.
     slope_px: f32,
 };
 
@@ -225,11 +223,16 @@ fn drape_sample(in: TerrainOut, page_px: f32) -> DrapeSample {
     let need = 0.5 * max(abs(dx), abs(dy));
     let fit = min(1.0, min(room.x / max(need.x, 1e-6), room.y / max(need.y, 1e-6)));
     // On a 1/512-texel grid, finer than samplers resolve: added to any
-    // slot's corner in a page of up to 32768 texels a side, exact in f32.
-    // Over a page's side that isn't a power of two, where a tile's slot
-    // lies moves its samples by a rounding: a view's tiles take the slots
-    // of their places in pages its own (the runtime's `Terrain::plan`).
+    // slot's corner in a sheet, exact in f32, and over the sheet's side, a
+    // power of two, exact as a texture coordinate too: a slot samples alike
+    // wherever it lies.
     return DrapeSample(round(p * 512.0) / 512.0, dx * fit, dy * fit);
+}
+
+// Where tile slot `slot` lies in its sheet: its column and row.
+fn sheet_place(slot: u32) -> vec2<f32> {
+    let at = slot % 4u;
+    return vec2<f32>(f32(at % 2u), f32(at / 2u));
 }
 
 // Colour stack `stack`'s slot colour at `at`, none for NO_STACK.
@@ -239,7 +242,7 @@ fn drape_color(in: TerrainOut, at: DrapeSample, stack: u32) -> vec4<f32> {
     }
     let slot = in.tile.y;
     let size = vec2<f32>(textureDimensions(drape));
-    let corner = vec2<f32>(f32(slot % terrain.columns), f32(slot / terrain.columns)) * terrain.slot_px;
+    let corner = sheet_place(slot) * terrain.slot_px;
     let uv = (corner + at.texel) / size;
     return textureSampleGrad(drape, drape_sampler, uv, stack, at.dx / size, at.dy / size);
 }
@@ -248,7 +251,7 @@ fn drape_color(in: TerrainOut, at: DrapeSample, stack: u32) -> vec4<f32> {
 fn slope_texel(in: TerrainOut, at: DrapeSample, rank: u32) -> vec4<f32> {
     let slot = in.tile.y;
     let size = vec2<f32>(textureDimensions(slope_atlas));
-    let corner = vec2<f32>(f32(slot % terrain.slope_columns), f32(slot / terrain.slope_columns)) * terrain.slope_px;
+    let corner = sheet_place(slot) * terrain.slope_px;
     let uv = (corner + at.texel) / size;
     return textureSampleGrad(slope_atlas, drape_sampler, uv, rank, at.dx / size, at.dy / size);
 }

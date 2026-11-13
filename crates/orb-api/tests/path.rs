@@ -1373,15 +1373,14 @@ fn every_terrain_view_fits_the_drape_atlas() {
     assert_same("crest", both_ways(&alps, start, end, 20));
 }
 
-/// A moving view's drape pages only grow. Its cover takes more tiles and
-/// fewer as it turns and tilts, and pages made anew allocate the whole
-/// atlas in one frame, so pages larger than the cover are made to fit it
-/// only once the view holds still: then exactly, as a fresh map's pages
-/// fit it. Here the view over the Alps at pitch 80 looking north holds
-/// larger pages than looking north-east, which a slow turn there, its
-/// cover steady, keeps.
+/// A moving view's drape pages hold what a fresh map's do once it rests.
+/// Its cover takes more tiles and fewer as it turns and tilts, and the
+/// pages grow and shrink by sheets of slots as it does, copying none.
+/// Here the view over the Alps at pitch 80 looking north holds larger
+/// pages than looking north-east, and a slow turn from one to the other
+/// ends in the pages a fresh map there holds.
 #[test]
-fn a_moving_view_only_grows_its_drape_pages() {
+fn a_turned_view_holds_the_drape_pages_a_fresh_one_does() {
     let (alps, _dem) = alps();
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, 1440, 900, 1.0);
@@ -1400,19 +1399,11 @@ fn a_moving_view_only_grows_its_drape_pages() {
         grown > rest,
         "looking north holds no larger pages: the test shows nothing"
     );
-    let mut shrank = Vec::new();
     for step in 0..90 {
         map.jump_to(&camera(at(45.0 + f64::from(step) * 0.05, 80.0)));
-        let report = map.render(&mut target, 0.0).unwrap();
-        if report.is_some_and(|r| r.memory.drape_atlas < grown) {
-            shrank.push(step);
-        }
+        map.render(&mut target, 0.0).unwrap();
         std::thread::sleep(Duration::from_millis(8));
     }
-    assert!(
-        shrank.is_empty(),
-        "the turning view's pages shrank in frames {shrank:?}"
-    );
     let turned = settled(&mut map, &mut target);
     let mut fresh = Map::new(&runtime, options());
     fresh.set_style_json(&alps).unwrap();

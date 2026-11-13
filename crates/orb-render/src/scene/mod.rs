@@ -1198,6 +1198,10 @@ pub(crate) struct Scene {
     /// A change in place left a node untidy (`LaidNode::tidy`), for a
     /// later layout to tidy within its frame's moves ([`TIDY_BYTES`]).
     untidy: bool,
+    /// The candidates were laid out in place since they were last laid out
+    /// from the start, their slices keeping the room they grew to: a
+    /// settling frame lays them out from the start, as a fresh scene.
+    relaid: bool,
     /// The node rows as the last rebuild laid them out, with their cull
     /// parameters (margin, elevation, visibility) patched since.
     node_rows: Vec<u32>,
@@ -1377,6 +1381,7 @@ impl Scene {
             dirty: Vec::new(),
             all_dirty: true,
             untidy: false,
+            relaid: false,
             node_rows: Vec::new(),
             params_dirty: false,
             cull_groups: 0,
@@ -2724,7 +2729,14 @@ impl Scene {
     /// whether they were laid out again. The lists move into larger
     /// buffers as a layout needs them: nothing copies, they are written
     /// whole and the cull writes every slot. Blocks no mesh holds go first.
-    pub(crate) fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
+    /// They shrink to what they hold only while `settling`
+    /// ([`Renderer::set_settling`](crate::Renderer::set_settling)).
+    pub(crate) fn prepare(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        frame: &FrameBlock,
+        settling: bool,
+    ) -> (u32, bool) {
         self.free_empty_blocks(gpu);
         self.write_rows(gpu, quantum(frame.world_span));
         self.follow_label_fades(gpu, frame.symbol_fade_change);
@@ -2734,11 +2746,24 @@ impl Scene {
         words[layout::frame::PLACED_NODES] = self.rows as u32;
         gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
         self.frame = words;
+        // A settling frame lays the candidates out from the start, as a
+        // fresh scene, in lists that hold what they need.
+        if settling && !self.candidates_dirty {
+            if self.relaid || self.untidy {
+                self.laid.clear();
+                self.candidates_dirty = true;
+            } else if self.shrink_lists(gpu) {
+                self.candidates_dirty = true;
+            }
+        }
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;
+            if settling && (self.relaid || self.untidy) {
+                self.laid.clear();
+            }
             self.lay_out_growing(gpu, |scene, gpu| scene.rebuild_candidates(gpu));
-            if self.shrink_lists(gpu) {
+            if settling && self.shrink_lists(gpu) {
                 self.rebuild_candidates(gpu);
             }
             self.dirty.clear();

@@ -40,9 +40,17 @@ pub struct Budget {
     /// left stale redraw over the frames after, the longest stale first
     /// ([`Terrain::plan`](crate::terrain::Terrain::plan)).
     pub drape_texels: u64,
+    /// Drape sheets those slots lie in, beyond those of the blank ones:
+    /// each replays the drape's draws on the CPU, every draped layer's.
+    pub drape_sheets: usize,
 }
 
 impl Budget {
+    /// What a frame may redraw of the drape: its texels and sheets.
+    pub(crate) fn drape(&self) -> (u64, usize) {
+        (self.drape_texels, self.drape_sheets)
+    }
+
     /// A desktop's, the default: a third of a 60 Hz frame and 8 MiB. What
     /// a frame applies costs it again in the cull's candidates and drape
     /// slots, so the bytes bound it as much as the time. Drape slots:
@@ -51,12 +59,14 @@ impl Budget {
         ms: 6.0,
         bytes: 8 << 20,
         drape_texels: 8 << 20,
+        drape_sheets: 2,
     };
     /// A phone's or a tablet's.
     pub const MOBILE: Self = Self {
         ms: 3.0,
         bytes: 2 << 20,
         drape_texels: 2 << 20,
+        drape_sheets: 1,
     };
 }
 

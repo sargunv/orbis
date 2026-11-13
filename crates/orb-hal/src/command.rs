@@ -151,4 +151,10 @@ pub enum RenderCommand {
     /// the targets in texels: `[x, y, width, height]`. Only valid in a
     /// pass, not inside a bundle.
     SetScissor([u32; 4]),
+    /// Maps clip space onto a rectangle `[x, y, width, height]` in texels
+    /// for the draws after it, bundles' included: it may reach past the
+    /// targets, whose texels it covers alone draw (by twice the device's
+    /// largest 2D texture side at most), and is no larger than that side.
+    /// Only valid in a pass, not inside a bundle.
+    SetViewport([f32; 4]),
 }
