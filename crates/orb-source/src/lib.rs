@@ -85,6 +85,23 @@ pub fn retry_delay(failures: u32) -> f64 {
     (RETRY_MS * 2f64.powi(failures.min(16) as i32)).min(RETRY_MAX_MS)
 }
 
+/// `tile`'s place along the Z-order curve over the whole tileset, at
+/// zoom 31: tiles that follow each other on it lie together, and a tile
+/// comes before its descendants' places that follow.
+fn z_order(tile: TileIndex) -> u64 {
+    // Each of the 32 bits of `v` to every other bit of the result.
+    fn spread(v: u32) -> u64 {
+        let mut x = u64::from(v);
+        x = (x | x << 16) & 0x0000_ffff_0000_ffff;
+        x = (x | x << 8) & 0x00ff_00ff_00ff_00ff;
+        x = (x | x << 4) & 0x0f0f_0f0f_0f0f_0f0f;
+        x = (x | x << 2) & 0x3333_3333_3333_3333;
+        (x | x << 1) & 0x5555_5555_5555_5555
+    }
+    let shift = 31u32.saturating_sub(u32::from(tile.z));
+    spread(tile.col << shift) | spread(tile.row << shift) << 1
+}
+
 /// What stands in for a missing tile.
 enum StandIn {
     Ready(TileIndex),
@@ -342,10 +359,16 @@ impl<T> TilePyramid<T> {
 
         update.draw = draws
             .into_iter()
-            .map(|((_, tile, wrap), regions)| {
+            .map(|((_, tile, wrap), mut regions)| {
                 let regions = if regions.contains(&tile) {
                     vec![tile]
                 } else {
+                    // In Z order, not the cover's: a placement clips to
+                    // four regions, and draws over their box (an image
+                    // tile's whole mesh shades it), so its four lie
+                    // together; nor does their grouping depend on the
+                    // order the view's tiles came in.
+                    regions.sort_unstable_by_key(|&r| z_order(r));
                     regions
                 };
                 Draw {
@@ -818,6 +841,28 @@ mod tests {
                 regions: vec![t(1, 0, 0)]
             }]
         );
+    }
+
+    /// An ancestor's regions come in Z order, whatever order the cover
+    /// gave its tiles in: each run of four lies together.
+    #[test]
+    fn regions_come_in_z_order() {
+        let mut p = TilePyramid::new(0, 22, 64);
+        p.update(&cover(&[(1, 0, 0)]));
+        p.insert(t(1, 0, 0), "ancestor");
+        let mut ideals: Vec<(u8, u32, u32)> = (0..4)
+            .flat_map(|c| (0..4).map(move |r| (3, c, r)))
+            .collect();
+        // Outward from the middle, as `focus_first` orders a cover.
+        ideals.sort_by_key(|&(_, c, r)| (c.abs_diff(2) + r.abs_diff(2), c, r));
+        let update = p.update(&cover(&ideals));
+        let draw = &update.draw[0];
+        assert_eq!(draw.tile, t(1, 0, 0));
+        let mut sorted = draw.regions.clone();
+        sorted.sort_by_key(|&r| z_order(r));
+        assert_eq!(draw.regions, sorted);
+        // The first four are one quadrant's.
+        assert!(draw.regions[..4].iter().all(|r| r.is_within(t(2, 0, 0))));
     }
 
     #[test]
