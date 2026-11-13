@@ -324,7 +324,8 @@ impl Symbols {
     /// their halos apart as `apart` says, `quads` its draw as indexed
     /// arguments; or nothing, and `false`, while a pipeline compiles (each
     /// placement's too, as [`pass`](Self::pass) dispatches only once all
-    /// have).
+    /// have). Drawn with a stand-in for the variant it wants
+    /// ([`Variants::drawn`]), it is `false` too: it waits for that one.
     pub(crate) fn commands(
         &self,
         gpu: &mut dyn Gpu,
@@ -344,7 +345,7 @@ impl Symbols {
             #[cfg(cpu_driven)]
             Placing::Inline(draws) => draws[kind].drawn(gpu, full),
         };
-        let Some(draw) = draw else {
+        let Some((draw, wanted)) = draw else {
             return false;
         };
         commands.extend([
@@ -368,7 +369,7 @@ impl Symbols {
                 quads.clone(),
             ]);
         }
-        true
+        wanted
     }
 
     /// The frame's placement dispatches, after the cull, which wrote the
@@ -429,7 +430,8 @@ impl Dispatch {
         full: bool,
     ) -> Option<Option<ComputePipelineId>> {
         match placings {
-            Some(placing) => self.pipelines[placing].drawn(gpu, full).map(Some),
+            // Dispatched every frame: the one it wants once compiled.
+            Some(placing) => (self.pipelines[placing].drawn(gpu, full)).map(|(p, _)| Some(p)),
             None => Some(None),
         }
     }

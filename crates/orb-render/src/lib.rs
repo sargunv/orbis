@@ -3583,7 +3583,9 @@ impl Renderer {
     /// in, that block's group bound; a split node's untested placements
     /// first, in their pipeline, then its tested ones. In the map, a
     /// terrain layer draws its nodes ([`Step::Terrain`]). `false` when
-    /// the node waits for a pipeline and records nothing.
+    /// the node waits for a pipeline: it records nothing, or draws with a
+    /// stand-in for the variant it wants ([`Variants::drawn`]) until that
+    /// one compiles and the bundles record again.
     fn node_commands(
         &self,
         gpu: &mut dyn Gpu,
@@ -3697,27 +3699,32 @@ impl Renderer {
         let split = second.is_some() && streams[0].is_some() && !node.shades_on_terrain();
         let untested = split.then(|| {
             let pipeline = match (drape, node.family.is_image()) {
-                (Some(d), true) => d.images.untested(node.family),
+                (Some(d), true) => d.images.untested(node.family).map(|p| (p, true)),
                 (Some(d), false) => d.paint.drawn_untested(gpu, kind, self.full),
-                (None, true) => self.images.untested(node.family),
+                (None, true) => self.images.untested(node.family).map(|p| (p, true)),
                 (None, false) => self.paint.drawn_untested(gpu, kind, self.full),
             };
-            let pipeline = pipeline.filter(|&p| gpu.pipeline_ready(p.into()));
+            let pipeline = pipeline.filter(|&(p, _)| gpu.pipeline_ready(p.into()));
             self.fell_back
                 .set(self.fell_back.get() || pipeline.is_none());
             pipeline
         });
         let pipeline = match (drape, node.family.is_image()) {
-            _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
-            (Some(d), true) => d.images.get(node.family),
+            _ if node.shades_on_terrain() => self.images.slopes_pipeline().map(|p| (p, true)),
+            (Some(d), true) => d.images.get(node.family).map(|p| (p, true)),
             (Some(d), false) => d.paint.drawn(gpu, kind, self.full),
-            (None, true) => self.images.pipeline(node.family),
+            (None, true) => self.images.pipeline(node.family).map(|p| (p, true)),
             (None, false) => self.paint.drawn(gpu, kind, self.full),
         };
-        let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
+        let Some((pipeline, wanted)) = pipeline.filter(|&(p, _)| gpu.pipeline_ready(p.into()))
+        else {
             return false;
         };
-        let pipelines = [untested.flatten().unwrap_or(pipeline), pipeline];
+        let (untested, wanted) = match untested.flatten() {
+            Some((untested, also)) => (untested, wanted && also),
+            None => (pipeline, wanted),
+        };
+        let pipelines = [untested, pipeline];
         let groups = [Some(group), second_group];
         for ((rows, pipeline), group) in streams.into_iter().zip(pipelines).zip(groups) {
             let Some(rows) = rows else {
@@ -3744,7 +3751,7 @@ impl Renderer {
                 ]);
             }
         }
-        true
+        wanted
     }
 }
 
@@ -4043,19 +4050,25 @@ impl PaintPipelines {
         Some(4 * shader + 2 * usize::from(kind.pattern) + usize::from(kind.rows))
     }
 
-    /// What a frame draws a node of `kind` with ([`Variants::drawn`]).
-    fn drawn(&self, gpu: &mut dyn Gpu, kind: PaintKind, full: bool) -> Option<RenderPipelineId> {
+    /// What a frame draws a node of `kind` with, and whether it is the one
+    /// it wants ([`Variants::drawn`]).
+    fn drawn(
+        &self,
+        gpu: &mut dyn Gpu,
+        kind: PaintKind,
+        full: bool,
+    ) -> Option<(RenderPipelineId, bool)> {
         self.pipelines[Self::index(kind)?].drawn(gpu, full)
     }
 
     /// What a frame draws a split node's untested placements of `kind`
-    /// with, once compiled.
+    /// with, once compiled, and whether it is the variant it wants.
     fn drawn_untested(
         &self,
         gpu: &mut dyn Gpu,
         kind: PaintKind,
         full: bool,
-    ) -> Option<RenderPipelineId> {
+    ) -> Option<(RenderPipelineId, bool)> {
         self.untested[Self::index(kind)?].drawn(gpu, full)
     }
 

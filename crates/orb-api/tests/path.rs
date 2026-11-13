@@ -1008,6 +1008,58 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
     turn("null", &without, "terrain-off");
 }
 
+/// A map loaded with terrain, turned flat before the flat view's tiles
+/// have loaded (its cover wants two tiles the terrain's didn't), draws at
+/// rest what a fresh flat map does: once, its antialiased edges ended up
+/// to 28 levels off a fresh map's.
+#[test]
+fn terrain_turned_off_before_the_flat_view_loads_ends_as_a_fresh_map() {
+    let (hills, _dem) = hills();
+    let with = tokyo(
+        r#""terrain": {"source": "hills", "exaggeration": 1.5},"#,
+        &hills,
+    );
+    let without = tokyo("", &hills);
+    let off = r#"[["setTerrain", null]]"#;
+    edited_ends_as_fresh("terrain-off-loading", (&with, off, &without));
+}
+
+/// A globe map turned to Web Mercator at a zoom past the globe's draws at
+/// rest what a fresh Mercator map does: its nodes stop drawing with the
+/// pipelines' full variants, which stood in for the plane ones while
+/// those compiled and round otherwise, once they have.
+#[test]
+fn a_globe_turned_to_mercator_ends_as_a_fresh_map() {
+    let globe = tokyo(r#""projection": {"type": "globe"},"#, "");
+    let to = r#"[["setProjection", {"type": "mercator"}]]"#;
+    edited_ends_as_fresh("globe-to-mercator", (&globe, to, &tokyo("", "")));
+}
+
+/// A map loaded with `style` and edited by the transaction `edit` draws
+/// at rest, at a pitched Tokyo camera, what a fresh map of `edited` does.
+fn edited_ends_as_fresh(name: &str, (style, edit, edited): (&str, &str, &str)) {
+    let at = (STATION, 14.5, 30.0, 55.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, options());
+    map.set_constraints(steep());
+    map.set_style_json(style).unwrap();
+    map.jump_to(&camera(at));
+    common::settle(&mut map, &mut target);
+    map.edit(&orb_api::Transaction::from_commands(edit).unwrap())
+        .unwrap();
+    common::settle(&mut map, &mut target);
+    let rest = map.camera();
+    let pixels = target.read_pixels().unwrap();
+    drop(map);
+    let (fresh, fresh_rest) = fresh_at(&runtime, &mut target, edited, at);
+    assert_eq!(
+        rest, fresh_rest,
+        "{name}: the camera differs from a fresh map's"
+    );
+    assert_same(name, (pixels, fresh));
+}
+
 /// Labels of tiles a view stopped drawing are held until a placement
 /// covers what replaced them and they've faded, on frame time: a host's
 /// display link has a clock of its own, not the runtime's. Let go by the
