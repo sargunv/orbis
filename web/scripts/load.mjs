@@ -23,10 +23,7 @@
 // their cameras, served offline from that render-test cache (mln-rs keeps
 // it at tools/render-test/testdata/metrics/; `--cache=default` finds it in
 // the checkout `cargo xtask h2h` builds); what the cache lacks is a 404
-// for every engine alike. `--settings=normal,cpu4x,cores2` repeats each
-// load with the page's thread throttled 4× over CDP (`cpu4x`) and with the
-// page told it has 2 cores (`cores2`: `navigator.hardwareConcurrency`,
-// which sizes each engine's worker pool; the machine's cores stay).
+// for every engine alike.
 //
 // `--scene=terrain` loads the Alps terrain style (live OpenFreeMap and
 // Mapterhorn tiles) and `--scene=globe` Liberty on the globe under the
@@ -101,18 +98,6 @@ const VIEWS =
     cache ? "realWorld" : (scene ?? (style === "tokyo" ? "tokyo" : "liberty"))
   ];
 const views = option("views", Object.keys(VIEWS).join(",")).split(",");
-const SETTINGS = {
-  normal: async () => {},
-  cpu4x: (cdp) => cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 }),
-  cores2: (cdp) =>
-    cdp.send("Emulation.setHardwareConcurrencyOverride", {
-      hardwareConcurrency: 2,
-    }),
-};
-const settings = option("settings", "normal").split(",");
-for (const s of settings)
-  if (!SETTINGS[s])
-    throw new Error(`--settings: no ${s}; ${Object.keys(SETTINGS).join(", ")}`);
 const viewport = cache
   ? { width: 512, height: 512 }
   : { width: 1024, height: 768 };
@@ -122,8 +107,6 @@ const warm = args.includes("--warm");
 const cold = args.includes("--cold");
 const backend = option("backend");
 const android = physical || args.includes("--android");
-if (android && settings.some((s) => s !== "normal"))
-  throw new Error("--android takes no --settings");
 const out = option(
   "out",
   fileURLToPath(new URL("../../target/h2h/web/", import.meta.url)),
@@ -159,11 +142,7 @@ async function samplePage() {
       viewport,
       deviceScaleFactor: 1,
     });
-    return {
-      context,
-      page: await context.newPage(),
-      close: () => context.close(),
-    };
+    return { page: await context.newPage(), close: () => context.close() };
   }
   if (!warm) {
     const clean = await openAndroid(server, { physical });
@@ -174,86 +153,80 @@ async function samplePage() {
   await (
     await page.context().newCDPSession(page)
   ).send("Network.setCacheDisabled", { cacheDisabled: true });
-  return { context: page.context(), page, close };
+  return { page, close };
 }
 const results = [];
 try {
   for (let run = -1; run < runs; run++) {
-    for (const setting of settings)
-      for (const view of views) {
-        // The engines' order turns each run, so that neither always follows the other.
-        for (const engine of run % 2 ? [...engines].reverse() : engines) {
-          const { context, page, close } = await samplePage();
-          await SETTINGS[setting](await context.newCDPSession(page));
-          const errors = [];
-          page.on("console", (m) => {
-            if (m.type() === "error") errors.push(m.text());
-          });
-          page.on("pageerror", (e) => errors.push(e.message));
-          const query = new URLSearchParams({
-            engine: engine.split("@")[0],
-            style: styleOf(view),
-            at: VIEWS[view],
-            mlnrs: `${new URL(server.url).pathname}mlnrs/index.js`,
-            ...(scene === "globe" && { globe: "" }),
-            // Orbis's shaders unique to the sample.
-            ...(engine.startsWith("orbis") &&
-              (android ? !warm : cold) && {
-                nonce: 1 + Math.floor(Math.random() * 9999),
-              }),
-            ...(backend && engine.startsWith("orbis") && { backend }),
-          });
-          const row = { engine, view, setting, run };
-          // When the style's fetch starts, on the epoch clock: from whichever
-          // thread the engine fetches it.
-          let styleRequest;
-          const onRequest = (r) => {
-            if (r.url() === styleOf(view) && !styleRequest) styleRequest = r;
-          };
-          context.on("request", onRequest);
-          try {
-            const build = engine.split("@")[1];
-            await page.goto(
-              `${server.url}${build ? `@${build}/` : ""}load.html?${query}`,
-            );
-            await page.waitForFunction(
-              () => /^(done|error)/.test(document.title),
-              null,
-              { timeout: 90_000 },
-            );
-            const title = await page.title();
-            if (title.startsWith("done ")) {
-              const done = JSON.parse(title.slice(5));
-              Object.assign(row, done);
-              // A build from before the page reported its time origin is
-              // asked for it.
-              const origin =
-                done.origin ??
-                (await page.evaluate(() => performance.timeOrigin));
-              if (engine.startsWith("orbis"))
-                Object.assign(
-                  row,
-                  await page.evaluate(() => window.loadDetails?.()),
-                );
-              const started = styleRequest?.timing().startTime;
-              if (started > 0) row.style = started - origin;
-            } else {
-              row.error = title;
-            }
-            if (run === 0)
-              await page.screenshot({
-                path: join(out, `${engine}-${view}-${setting}.png`),
-              });
-          } catch (e) {
-            row.error = String(e).slice(0, 300);
+    for (const view of views) {
+      // The engines' order turns each run, so that neither always follows the other.
+      for (const engine of run % 2 ? [...engines].reverse() : engines) {
+        const { page, close } = await samplePage();
+        const context = page.context();
+        const errors = [];
+        page.on("console", (m) => {
+          if (m.type() === "error") errors.push(m.text());
+        });
+        page.on("pageerror", (e) => errors.push(e.message));
+        const query = new URLSearchParams({
+          engine: engine.split("@")[0],
+          style: styleOf(view),
+          at: VIEWS[view],
+          mlnrs: `${new URL(server.url).pathname}mlnrs/index.js`,
+          ...(scene === "globe" && { globe: "" }),
+          // Orbis's shaders unique to the sample.
+          ...(engine.startsWith("orbis") &&
+            (android ? !warm : cold) && {
+              nonce: 1 + Math.floor(Math.random() * 9999),
+            }),
+          ...(backend && engine.startsWith("orbis") && { backend }),
+        });
+        const row = { engine, view, run };
+        // When the style's fetch starts, on the epoch clock: from whichever
+        // thread the engine fetches it.
+        let styleRequest;
+        const onRequest = (r) => {
+          if (r.url() === styleOf(view) && !styleRequest) styleRequest = r;
+        };
+        context.on("request", onRequest);
+        try {
+          const build = engine.split("@")[1];
+          await page.goto(
+            `${server.url}${build ? `@${build}/` : ""}load.html?${query}`,
+          );
+          await page.waitForFunction(
+            () => /^(done|error)/.test(document.title),
+            null,
+            { timeout: 90_000 },
+          );
+          const title = await page.title();
+          if (title.startsWith("done ")) {
+            const done = JSON.parse(title.slice(5));
+            Object.assign(row, done);
+            if (engine.startsWith("orbis"))
+              Object.assign(
+                row,
+                await page.evaluate(() => window.loadDetails?.()),
+              );
+            const started = styleRequest?.timing().startTime;
+            if (started > 0) row.style = started - done.origin;
+          } else {
+            row.error = title;
           }
-          if (errors.length) row.consoleErrors = errors.slice(0, 3);
-          context.off("request", onRequest);
-          await close();
-          console.error(JSON.stringify(row));
-          if (run >= 0) results.push(row);
+          if (run === 0)
+            await page.screenshot({
+              path: join(out, `${engine}-${view}.png`),
+            });
+        } catch (e) {
+          row.error = String(e).slice(0, 300);
         }
+        if (errors.length) row.consoleErrors = errors.slice(0, 3);
+        context.off("request", onRequest);
+        await close();
+        console.error(JSON.stringify(row));
+        if (run >= 0) results.push(row);
       }
+    }
   }
 } finally {
   await browser?.close();
@@ -264,7 +237,7 @@ writeFileSync(join(out, "load.json"), JSON.stringify(results, null, 1));
 const { width, height } = android
   ? { width: "phone", height: "screen" }
   : viewport;
-const tagged = settings.length > 1;
+
 const gljs = JSON.parse(
   readFileSync(
     new URL("../node_modules/maplibre-gl/package.json", import.meta.url),
@@ -280,47 +253,36 @@ for (const [what, from] of [
   lines.push(
     `### Web load: ms from ${what} to first idle (${android ? `Chrome on Android, ${warm ? "warm" : "cold"} GPU cache` : `Chromium${cold ? ", Orbis with cold shaders" : ""}`}, ${backend === "webgl2" ? "Orbis on WebGL 2" : "WebGPU"}, ${width}×${height}${android ? "" : " @1×"}; ${runs} runs)`,
     "",
-    `| view | ${tagged ? "setting | " : ""}${engines.join(" | ")} |`,
-    `|---|${tagged ? "---|" : ""}${engines.map(() => "---|").join("")}`,
+    `| view | ${engines.join(" | ")} |`,
+    `|---|${engines.map(() => "---|").join("")}`,
   );
-  const idles = (engine, view, setting) =>
+  const idles = (engine, view) =>
     results
       .filter(
-        (r) =>
-          r.engine === engine &&
-          r.view === view &&
-          r.setting === setting &&
-          r[from] !== undefined,
+        (r) => r.engine === engine && r.view === view && r[from] !== undefined,
       )
       .map((r) => r.idle - r[from]);
-  for (const setting of settings) {
-    for (const view of views) {
-      const cells = engines.map((engine) => {
-        const idle = idles(engine, view, setting);
-        if (!idle.length) {
-          const failed = results.find(
-            (r) =>
-              r.engine === engine && r.view === view && r.setting === setting,
-          );
-          return `failed: ${failed?.error ?? "no run"}`;
-        }
-        return `${median(idle).toFixed(0)} [${Math.min(...idle).toFixed(0)}–${Math.max(...idle).toFixed(0)}]`;
-      });
-      lines.push(
-        `| ${view} | ${tagged ? `${setting} | ` : ""}${cells.join(" | ")} |`,
-      );
-    }
-    // Idle comes on a display frame, so medians move in frames: the views' mean
-    // shows a change that moves some of them by one.
-    const overall = engines.map((engine) => {
-      const medians = views.map((view) => median(idles(engine, view, setting)));
-      return (medians.reduce((a, b) => a + b, 0) / medians.length).toFixed(0);
+  for (const view of views) {
+    const cells = engines.map((engine) => {
+      const idle = idles(engine, view);
+      if (!idle.length) {
+        const failed = results.find(
+          (r) => r.engine === engine && r.view === view,
+        );
+        return `failed: ${failed?.error ?? "no run"}`;
+      }
+      return `${median(idle).toFixed(0)} [${Math.min(...idle).toFixed(0)}–${Math.max(...idle).toFixed(0)}]`;
     });
-    if (views.length > 1)
-      lines.push(
-        `| mean of views | ${tagged ? `${setting} | ` : ""}${overall.join(" | ")} |`,
-      );
+    lines.push(`| ${view} | ${cells.join(" | ")} |`);
   }
+  // Idle comes on a display frame, so medians move in frames: the views' mean
+  // shows a change that moves some of them by one.
+  const overall = engines.map((engine) => {
+    const medians = views.map((view) => median(idles(engine, view)));
+    return (medians.reduce((a, b) => a + b, 0) / medians.length).toFixed(0);
+  });
+  if (views.length > 1)
+    lines.push(`| mean of views | ${overall.join(" | ")} |`);
   lines.push("");
 }
 const about = cache

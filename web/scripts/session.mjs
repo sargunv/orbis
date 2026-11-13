@@ -10,7 +10,7 @@
 //     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
 //     [--ratio=r] [--start=ms] [--input=ms] [--warm] [--driver] [--headed]
 //     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
-//     [--terrain=0|1] [--gpu] [--dump=prefix] [--profile=firefox-profile.json] [--sample=gpu-sample.txt]
+//     [--terrain=0|1] [--gpu] [--dump=prefix]
 //
 // Sessions: `manhattan` opens Liberty over Midtown at z13 and wheel-zooms
 // in to about z16 as the buildings load, tilts to 70, turns and drags
@@ -39,20 +39,7 @@
 // zoom). `--backend` draws Orbis with that
 // backend. `--pkgs` runs Orbis on each of these builds of web/pkg (whole
 // copies of it, each in its place alone) in turn, run by run, for A/B
-// runs in one session; GL JS runs once a run. `--profile` (Firefox, one
-// engine) runs Gecko's profiler on every thread of every process from
-// startup and writes its profile there when Firefox quits, for
-// profiler.firefox.com; the report's `profile` then says, for the worst
-// intervals and the pipelines made mid-move, which
-// threads of which processes were busy (CPU ms), so whether a compile
-// runs on the thread that presents shows without symbols. Gecko's
-// profile leaves out Firefox's GPU process, where WebGPU's server runs:
-// `--sample` (Firefox on macOS) samples that process over the moves with
-// macOS's `sample`, writes its call trees there, and the report's
-// `gpuSample` gives each of its threads' samples, those in Metal's
-// pipeline compiles and those encoding or committing GPU work: a thread
-// that does both makes every later command of the device, the frame's
-// presentation among them, wait for each compile.
+// runs in one session; GL JS runs once a run.
 // In Chromium the report has the GPU process's main thread over the
 // moves (`gpuProcess`: busy time, tasks over 50 ms, the longest), and with
 // `--deep` (GPU service tracing) what its tasks and its slow ones did, its
@@ -88,10 +75,8 @@
 // bust the driver's shader cache (`?nonce=`, cold.js), unless `--driver` keeps
 // what the driver's cache holds from earlier runs (a user's later
 // launches).
-import { execFileSync, spawn } from "node:child_process";
 import {
   cpSync,
-  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -100,7 +85,6 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gunzipSync } from "node:zlib";
 
 import {
   launchChromium,
@@ -493,19 +477,6 @@ function attribute(frames, i, gap, raf, longTasks) {
 
 async function launch() {
   if (browserName === "firefox") {
-    // Gecko's profiler from startup, written out when Firefox quits: every
-    // thread sampled over the whole session, for profiler.firefox.com.
-    if (args.profile) {
-      Object.assign(process.env, {
-        MOZ_PROFILER_STARTUP: "1",
-        MOZ_PROFILER_STARTUP_ENTRIES: String(1 << 26),
-        MOZ_PROFILER_STARTUP_INTERVAL: "1",
-        MOZ_PROFILER_STARTUP_FEATURES: "js,stackwalk,cpu,ipcmessages",
-        // Every thread: Firefox's WebGPU server runs on threads of its own.
-        MOZ_PROFILER_STARTUP_FILTERS: "*",
-        MOZ_PROFILER_SHUTDOWN: args.profile,
-      });
-    }
     // Timers to the microsecond, for the WebGPU tally: Firefox rounds
     // them to the millisecond otherwise.
     const browser = await launchFirefox({
@@ -533,7 +504,6 @@ async function launch() {
 
 /** One session in `engine` on a fresh browser: the run's report. */
 async function run(server, engine) {
-  const helpers = gpuHelpers();
   engineNow = engine;
   const browser = await launch();
   try {
@@ -846,32 +816,6 @@ async function run(server, engine) {
       performance.mark("session-clock");
       return performance.now();
     });
-    // macOS's `sample` of Firefox's GPU process over the moves.
-    const gpuPid =
-      args.sample && browserName === "firefox"
-        ? gpuHelpers().find((pid) => !helpers.includes(pid))
-        : undefined;
-    // Stopped (SIGINT, which writes the report) once the moves end; an
-    // earlier run's report goes first, so that a failed sample reads none.
-    if (gpuPid) rmSync(args.sample, { force: true });
-    const sampler =
-      gpuPid &&
-      spawn(
-        "/usr/bin/sample",
-        [gpuPid, "120", "1", "-mayDie", "-file", args.sample],
-        {
-          stdio: "ignore",
-        },
-      );
-    const sampled =
-      sampler &&
-      new Promise((resolve) => {
-        sampler.on("exit", resolve);
-        sampler.on("error", (e) => {
-          console.error(`session: sample: ${e.message}`);
-          resolve();
-        });
-      });
     // GL JS's by WebGL 2 timer queries, where the browser has them.
     const timing =
       !!args.gpu && (await page.evaluate(() => !!globalThis.mapGpu));
@@ -880,10 +824,6 @@ async function run(server, engine) {
     const submissions =
       timing && (await page.evaluate(() => globalThis.mapGpu.take()));
     const gpuTimes = timing && gpuPasses(submissions);
-    if (sampler) {
-      sampler.kill("SIGINT");
-      await sampled;
-    }
     let screen, gpuProcess;
     if (cdp) {
       const traced = new Promise((r) => cdp.once("Tracing.tracingComplete", r));
@@ -1064,18 +1004,6 @@ async function run(server, engine) {
         ...errors.slice(Math.max(3, errors.length - 2)),
       ].map((e) => e.split("\n").slice(0, 12).join("\n"));
     if (errors.length > 5) report.errorCount = errors.length;
-    if (gpuPid && existsSync(args.sample))
-      report.gpuSample = sampledThreads(readFileSync(args.sample, "utf8"));
-    if (browserName === "firefox" && args.profile)
-      profiled = {
-        report,
-        origin: await page.evaluate(() => performance.timeOrigin),
-        gaps: [...mapGaps]
-          .sort((a, b) => b.gap - a.gap)
-          .slice(0, worstCount)
-          .map(({ i, gap }) => [frames[i].t - gap, frames[i].t]),
-        pipelines: (pipelines ?? []).filter((p) => p.at >= windows[0][0]),
-      };
     if (dump)
       writeFileSync(
         `${dump}-${engine}.json`,
@@ -1200,155 +1128,6 @@ function gpuMain(events, origin, [from, to]) {
   return out;
 }
 
-/** Which threads of which Firefox processes were busy, by CPU ms, and
- * which were in Metal (its frameworks and the GPU's compiler, on CPU or
- * waiting: a compile waits on Apple's compiler service), by sampled ms, in
- * each of `windows` (page ms; `origin` the page's `timeOrigin`), from the
- * Gecko profile at `path`. Thread and library names need no symbols. */
-function profileThreads(path, origin, windows) {
-  let raw = readFileSync(path);
-  if (raw[0] === 0x1f) raw = gunzipSync(raw);
-  const profile = JSON.parse(raw.toString("utf8"));
-  const metalLib = /^(Metal|AGXMetal|MTL|libGPUCompiler|IOGPU|IOAccelerator)/;
-  const threads = [];
-  const walk = (p) => {
-    const unit = p.meta?.sampleUnits?.threadCPUDelta ?? "µs";
-    const scale = unit === "ns" ? 1e-6 : unit === "µs" ? 1e-3 : 0;
-    const libs = (p.libs ?? [])
-      .filter((l) => metalLib.test(l.name))
-      .map((l) => [l.start, l.end]);
-    const inMetal = (location) => {
-      if (!location?.startsWith("0x")) return false;
-      const at = parseInt(location, 16);
-      return libs.some(([a, b]) => at >= a && at < b);
-    };
-    for (const t of p.threads ?? []) {
-      const s = t.samples;
-      if (!s?.data?.length) continue;
-      const { time, stack, threadCPUDelta: cpu } = s.schema;
-      // Whether each stack has a frame in Metal, through its prefixes.
-      const st = t.stackTable;
-      const ft = t.frameTable;
-      const metal = new Map();
-      const stackInMetal = (i) => {
-        if (i === null || i === undefined) return false;
-        if (metal.has(i)) return metal.get(i);
-        const row = st.data[i];
-        const frame = ft.data[row[st.schema.frame]];
-        const value =
-          inMetal(t.stringTable[frame[ft.schema.location]]) ||
-          stackInMetal(row[st.schema.prefix]);
-        metal.set(i, value);
-        return value;
-      };
-      threads.push({
-        name: `${t.processName ?? t.processType ?? "?"}:${t.name}`,
-        start: p.meta.startTime,
-        samples: s.data.map((d) => [d[time], d[cpu], stackInMetal(d[stack])]),
-        scale,
-        interval: p.meta.interval ?? 1,
-      });
-    }
-    for (const sub of p.processes ?? []) walk(sub);
-  };
-  walk(profile);
-  const top = (list) =>
-    list
-      .filter(([, ms]) => ms >= 2)
-      .sort((x, y) => y[1] - x[1])
-      .slice(0, 5)
-      .map(([name, ms]) => `${name} ${round(ms, 0)}`)
-      .join(", ") || "none";
-  return windows.map(([a, b]) => {
-    const [from, to] = [origin + a, origin + b];
-    const cpu = [];
-    const metal = [];
-    for (const t of threads) {
-      let [busy, waiting] = [0, 0];
-      let last = null;
-      for (const [at, delta, inMetal] of t.samples) {
-        const epoch = t.start + at;
-        if (epoch < from || epoch > to) continue;
-        // Without CPU deltas, a sample stands for its interval.
-        busy += delta == null || !t.scale ? t.interval : delta * t.scale;
-        if (inMetal) waiting += last === null ? t.interval : at - last;
-        last = at;
-      }
-      cpu.push([t.name, busy]);
-      metal.push([t.name, waiting]);
-    }
-    return `${Math.round(a)}–${Math.round(b)} ms: CPU ${top(cpu)}; in Metal ${top(metal)}`;
-  });
-}
-
-/** The pids of Firefox's GPU processes running now. */
-function gpuHelpers() {
-  try {
-    return execFileSync("pgrep", ["-f", "Firefox GPU Helper"], {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/** Each thread of a `sample` report with samples in Metal's pipeline
- * compiles or in encoding and committing GPU work: `name: n samples,
- * compiling c, encoding e`. */
-function sampledThreads(text) {
-  const compile =
-    /newRenderPipelineState|newComputePipelineState|MTLCompiler|newFunctionWith|newLibraryWith/;
-  const encode =
-    /CommandEncoder|commandBuffer\]|\bcommit\]|presentDrawable|nextDrawable/;
-  const threads = [];
-  let thread;
-  // Lines whose pattern an enclosing line matched already count with it.
-  const open = { compile: [], encode: [] };
-  for (const line of text.split("\n")) {
-    const head = line.match(
-      /^ {4}(\d+) Thread_\d+(?::\s*(.*)|\s+DispatchQueue_\d+:\s*(.*))?$/,
-    );
-    if (head) {
-      thread = {
-        name: head[2] ?? head[3] ?? "?",
-        n: +head[1],
-        compile: 0,
-        encode: 0,
-      };
-      threads.push(thread);
-      open.compile = [];
-      open.encode = [];
-      continue;
-    }
-    if (!thread) continue;
-    const m = line.match(/^(\s*[+!:| ]*)(\d+) /);
-    if (!m) continue;
-    const depth = m[1].length;
-    for (const [key, re] of [
-      ["compile", compile],
-      ["encode", encode],
-    ]) {
-      const stack = open[key];
-      while (stack.length && stack.at(-1) >= depth) stack.pop();
-      if (re.test(line) && !stack.length) {
-        thread[key] += +m[2];
-        stack.push(depth);
-      }
-    }
-  }
-  return threads
-    .filter((t) => t.compile || t.encode)
-    .map(
-      (t) =>
-        `${t.name}: ${t.n} samples, compiling ${t.compile}, encoding ${t.encode}`,
-    );
-}
-
-/** What the last Orbis run in Firefox saw, for the profile's report. */
-let profiled;
-
 /** Serves `pkg` (a copy of web/pkg) or web/pkg itself as the demo. */
 async function serve(pkg) {
   const live = fileURLToPath(new URL("../pkg/", import.meta.url));
@@ -1382,20 +1161,6 @@ for (let r = 0; r < runs; r++) {
       );
       for (const engine of these) {
         const report = await run(server, engine);
-        if (profiled && existsSync(args.profile)) {
-          const { origin, gaps, pipelines } = profiled;
-          report.profile = {
-            timeOrigin: origin,
-            worst: profileThreads(args.profile, origin, gaps),
-            // 300 ms from each pipeline made mid-move: its compile.
-            pipelines: profileThreads(
-              args.profile,
-              origin,
-              pipelines.map((p) => [p.at, p.at + 300]),
-            ).map((line, i) => `${pipelines[i].label}: ${line}`),
-          };
-          profiled = undefined;
-        }
         console.log(JSON.stringify({ run: r, ...(pkg && { pkg }), ...report }));
       }
     } finally {
