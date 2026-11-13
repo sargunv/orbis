@@ -9,7 +9,8 @@
 //! Slots are squares of mipmapped pages (a tile that shows small draws the
 //! top-left square of its slots that it shows at,
 //! [`TerrainTile::shrink`]): colour stacks in one, slope stacks at half the
-//! texels a side in another, a layer of its page a stack. A page is
+//! texels a side in another, a layer of its page a stack (or two, a row of
+//! slots each, where GL would make one layer with two). A page is
 //! sheets of 2 × 2 slots, each a texture of its own, which lie side by
 //! side in one grid of drape space: pages grow by a sheet, blank, and
 //! shrink by sheets no slot holds, and no slot ever moves to another
@@ -92,8 +93,8 @@ fn sheet_place(slot: u32) -> [u32; 2] {
 pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
     let alloc = allocated(stacks);
     let fits = (0..2).filter(|&p| alloc[p] > 0).all(|page| {
-        alloc[page] <= gpu.caps().limits.max_texture_array_layers
-            && gpu.texture_fits(&sheet_desc(alloc[page], PAGE_PX[page]))
+        let desc = sheet_desc(gpu, alloc[page], PAGE_PX[page]);
+        desc.array_layers <= gpu.caps().limits.max_texture_array_layers && gpu.texture_fits(&desc)
     });
     if fits { grid_side(gpu).pow(2) } else { 0 }
 }
@@ -271,7 +272,8 @@ pub struct TerrainDem {
 /// Where drape slots are. Stacks `0..stacks[0]` are colour stacks, on
 /// page 0 at [`DRAPE_SLOT_PX`] texels a side; the rest hold slopes, on
 /// page 1 at [`SLOPE_SLOT_PX`]. A page has a layer a stack, the stack of
-/// rank `r` among the page's in layer `r`, in each of its sheets. Tile
+/// rank `r` among the page's in layer `r`, in each of its sheets (or
+/// layers `2r` and `2r + 1`, a row of slots each, [`sheet_desc`]). Tile
 /// slot `t` lies in sheet `t / 4` ([`SHEET_SLOTS`]), and the sheets lie
 /// in a grid `side` slots a side, the same for both pages: each a square
 /// of 2 × 2 slots, filling the grid's rows of sheets in turn. Where a
@@ -311,8 +313,8 @@ impl DrapeLayout {
         PAGE_PX[self.page(stack).0]
     }
 
-    /// The layer of its page stack `stack` lies in.
-    pub fn layer(&self, stack: u32) -> u32 {
+    /// Stack `stack`'s rank among its page's stacks.
+    pub fn rank(&self, stack: u32) -> u32 {
         self.page(stack).1
     }
 
@@ -324,17 +326,15 @@ impl DrapeLayout {
     }
 }
 
-/// The scissor around a stack's redrawn `slots` (slot, side) of a sheet
-/// of `px`-texel slots: their places' bounding rectangle in the sheet, or
-/// a slot alone's side.
-fn scissor(slots: &[(u32, u32)], px: u32) -> [u32; 4] {
-    if let [(slot, side)] = *slots {
-        let [x, y] = sheet_place(slot);
+/// The scissor around a stack's redrawn `slots` (place in the layer,
+/// side) of a layer of `px`-texel slots: their places' bounding rectangle,
+/// or a slot alone's side.
+fn scissor(slots: &[([u32; 2], u32)], px: u32) -> [u32; 4] {
+    if let [([x, y], side)] = *slots {
         return [x * px, y * px, side, side];
     }
     let (mut lo, mut hi) = ([u32::MAX; 2], [0; 2]);
-    for &(slot, _) in slots {
-        let at = sheet_place(slot);
+    for &(at, _) in slots {
         lo = [0, 1].map(|i| lo[i].min(at[i]));
         hi = [0, 1].map(|i| hi[i].max(at[i] + 1));
     }
@@ -346,14 +346,29 @@ fn scissor(slots: &[(u32, u32)], px: u32) -> [u32; 4] {
     ]
 }
 
-/// A drape sheet's texture: `layers` layers of 2 × 2 slots of `slot_px`
-/// texels, mipmapped down from those.
-fn sheet_desc(layers: u32, slot_px: u32) -> TextureDesc<'static> {
+/// A drape sheet's texture for `stacks` stacks of `slot_px`-texel slots,
+/// mipmapped down from those: a layer a stack of 2 × 2 slots, or where
+/// the device would make that with a layer more than it holds (wgpu's GL
+/// back end, for one layer, or a square of 6n), a layer each of a
+/// stack's two rows of slots, which it makes as they are
+/// ([`Gpu::allocated_layers`]).
+fn sheet_desc(gpu: &dyn Gpu, stacks: u32, slot_px: u32) -> TextureDesc<'static> {
+    let square = shaped_desc(stacks, slot_px, SHEET_SIDE);
+    if gpu.allocated_layers(&square) == square.array_layers {
+        square
+    } else {
+        shaped_desc(stacks, slot_px, 1)
+    }
+}
+
+/// A drape sheet's texture for `stacks` stacks of `slot_px`-texel slots,
+/// `rows` rows of 2 slots a layer.
+fn shaped_desc(stacks: u32, slot_px: u32, rows: u32) -> TextureDesc<'static> {
     TextureDesc {
         label: "drape sheet",
         width: SHEET_SIDE * slot_px,
-        height: SHEET_SIDE * slot_px,
-        array_layers: layers,
+        height: rows * slot_px,
+        array_layers: stacks * (SHEET_SIDE / rows),
         dimension: TextureViewDimension::D2Array,
         format: DRAPE_FORMAT,
         usage: TextureUsages::RENDER_ATTACHMENT
@@ -364,14 +379,17 @@ fn sheet_desc(layers: u32, slot_px: u32) -> TextureDesc<'static> {
     }
 }
 
-/// A sheet of a drape page: 2 × 2 slots a stack.
+/// A sheet of a drape page: 2 × 2 slots a stack, in a layer, or in two
+/// of a row each ([`sheet_desc`]).
 #[derive(Debug)]
 struct Sheet {
-    /// A layer a stack of the page, mipmapped.
+    /// A layer or two a stack of the page, mipmapped.
     texture: TextureId,
     layers: u32,
     /// Texels per slot side.
     slot_px: u32,
+    /// Rows of slots a layer holds: 2, or 1.
+    rows: u32,
     /// Per mip level, a view, which the mip levels are written through.
     levels: Vec<TextureId>,
     /// What draws into each layer's level 0.
@@ -385,16 +403,17 @@ struct Sheet {
 }
 
 impl Sheet {
-    /// A sheet of `layers` layers of `slot_px`-texel slots, or the bytes
+    /// A sheet of `stacks` stacks of `slot_px`-texel slots, or the bytes
     /// of one the device refused.
     fn new(
         gpu: &mut dyn Gpu,
-        (layers, slot_px): (u32, u32),
+        (stacks, slot_px): (u32, u32),
         clear_layout: BindGroupLayoutId,
         downsampler: &mut crate::downsample::Downsampler,
     ) -> Result<Self, u64> {
-        let desc = sheet_desc(layers, slot_px);
-        let side = desc.width;
+        let desc = sheet_desc(gpu, stacks, slot_px);
+        let (layers, rows) = (desc.array_layers, desc.height / slot_px);
+        debug_assert_eq!(gpu.allocated_layers(&desc), layers, "made as it is");
         let levels = desc.mip_levels;
         let texture = gpu
             .try_create_texture(&desc)
@@ -406,14 +425,14 @@ impl Sheet {
             .map(|layer| gpu.create_layer_view(texture, layer, 0))
             .collect();
         downsampler.make(gpu);
-        let slots = ("drape slots", SHEET_SLOTS * layers);
+        let slots = ("drape slots", SHEET_SLOTS * stacks);
         let mips = downsampler.chain(gpu, (texture, &views), slots);
         let size_uniform = gpu.create_buffer(&BufferDesc {
             label: "drape sheet size",
             size: 16,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        let words = [side as f32, side as f32, 0.0, 0.0];
+        let words = [desc.width as f32, desc.height as f32, 0.0, 0.0];
         gpu.write_buffer(size_uniform, 0, bytemuck::cast_slice(&words));
         let clear = gpu.create_bind_group(&BindGroupDesc {
             label: "drape clear",
@@ -427,6 +446,7 @@ impl Sheet {
             texture,
             layers,
             slot_px,
+            rows,
             levels: views,
             draw,
             size_uniform,
@@ -437,8 +457,17 @@ impl Sheet {
 
     /// Its bytes, mips included.
     fn bytes(&self) -> u64 {
-        let side = u64::from(SHEET_SIDE * self.slot_px);
-        side * side * u64::from(self.layers) * 4 * 4 / 3
+        let px = u64::from(self.slot_px);
+        let texels = u64::from(SHEET_SIDE) * px * u64::from(self.rows) * px;
+        texels * u64::from(self.layers) * 4 * 4 / 3
+    }
+
+    /// Where tile slot `slot` of the stack of rank `rank` lies: its layer,
+    /// and its column and row of slots in the layer.
+    fn place(&self, rank: u32, slot: u32) -> (u32, [u32; 2]) {
+        let [x, y] = sheet_place(slot);
+        let layer = rank * (SHEET_SIDE / self.rows) + y / self.rows;
+        (layer, [x, y % self.rows])
     }
 }
 
@@ -810,6 +839,11 @@ impl Terrain {
             }
         }
         let tile_slots = sheets * SHEET_SLOTS;
+        if made {
+            let rows = [params::SLOT_ROWS, params::SLOPE_ROWS].map(|w| w as u64 * 4);
+            gpu.write_buffer(self.params, rows[0], bytemuck::bytes_of(&self.rows(0)));
+            gpu.write_buffer(self.params, rows[1], bytemuck::bytes_of(&self.rows(1)));
+        }
         // Slots of the sheets let go draw nothing more.
         self.pending.retain(|p| p.3 < tile_slots);
         if changed {
@@ -823,6 +857,12 @@ impl Terrain {
             generation: state.generation + u64::from(made),
         };
         Ok(made)
+    }
+
+    /// Rows of slots a layer of page `page`'s sheets holds (2 without
+    /// sheets).
+    fn rows(&self, page: usize) -> u32 {
+        self.sheets[page].first().map_or(SHEET_SIDE, |s| s.rows)
     }
 
     /// Releases every sheet.
@@ -940,6 +980,8 @@ impl Terrain {
         b.f(params::SLOT_PX, &[DRAPE_SLOT_PX as f32])
             .f(params::SLOPE_PX, &[SLOPE_SLOT_PX as f32])
             .u(params::TILES, &[self.tile_count]);
+        b.u(params::SLOT_ROWS, &[self.rows(0)])
+            .u(params::SLOPE_ROWS, &[self.rows(1)]);
         gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&b.0));
         self.paint = Some(paint);
     }
@@ -1161,21 +1203,20 @@ impl Terrain {
                     continue;
                 };
                 let px = sheet.slot_px;
+                let place = |&(_, _, stack, slot, _): &(usize, u32, u32, u32, u32)| {
+                    sheet.place(layout.rank(stack), slot)
+                };
                 // Whole places, cleared and downsampled, a smaller slot's
                 // too: what filters read past its edge is then blank, not
                 // what the place held before.
                 let regions: Vec<[u32; 4]> = (run.iter())
-                    .map(|&(_, _, stack, slot, _)| {
-                        let [x, y] = sheet_place(slot);
-                        [layout.layer(stack), x * px, y * px, px]
+                    .map(|p| {
+                        let (layer, [x, y]) = place(p);
+                        [layer, x * px, y * px, px]
                     })
                     .collect();
                 sheet.mips.regions.write(gpu, &regions);
-                // The grid's drape space, which the drape frame maps onto
-                // a viewport of its size, moved so that the sheet's square
-                // of it lands on the sheet.
-                let origin = sheet_origin(at, sheets).map(|n| -((n * px) as f32));
-                let viewport = [origin[0], origin[1], grid * px as f32, grid * px as f32];
+                let origin = sheet_origin(at, sheets);
                 // A pass a layer: its slots' regions cleared, then each
                 // stack's bundle replayed once, scissored to the rectangle
                 // around its redrawn slots (a slot alone to its side). The
@@ -1188,8 +1229,15 @@ impl Terrain {
                 // draw of the stack, so the map redraws few sheets a frame
                 // (the runtime's `Terrain::plan`).
                 let mut first = 0;
-                for layer_run in run.chunk_by(|a, b| layout.layer(a.2) == layout.layer(b.2)) {
+                for layer_run in run.chunk_by(|a, b| place(a).0 == place(b).0) {
                     let end = first + layer_run.len() as u32;
+                    // The grid's drape space, which the drape frame maps
+                    // onto a viewport of its size, moved so that the
+                    // layer's slots of it land on the layer.
+                    let (layer, [_, y]) = place(&layer_run[0]);
+                    let row = sheet_place(layer_run[0].3)[1] - y;
+                    let corner = [origin[0], origin[1] + row].map(|n| -((n * px) as f32));
+                    let viewport = [corner[0], corner[1], grid * px as f32, grid * px as f32];
                     let mut commands = vec![
                         RenderCommand::SetPipeline(self.clear),
                         RenderCommand::SetBindGroup {
@@ -1208,14 +1256,15 @@ impl Terrain {
                         let Some(&(_, bundle)) = drape.iter().find(|d| d.0 == stack) else {
                             continue;
                         };
-                        let slots: Vec<(u32, u32)> = stack_run.iter().map(|p| (p.3, p.4)).collect();
+                        let slots: Vec<([u32; 2], u32)> =
+                            stack_run.iter().map(|p| (place(p).1, p.4)).collect();
                         commands.push(RenderCommand::SetScissor(scissor(&slots, px)));
                         commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
                     }
                     passes.push(Pass::Render(RenderPass {
                         label: "drape",
                         colors: vec![ColorAttachment {
-                            target: sheet.draw[layout.layer(layer_run[0].2) as usize],
+                            target: sheet.draw[layer as usize],
                             resolve: None,
                             store: StoreOp::Store,
                             load: LoadOp::Load,
@@ -1656,10 +1705,11 @@ mod tests {
 
     #[test]
     fn a_stack_replays_once_over_its_redrawn_slots() {
-        // Slots 5 and 6 lie at columns 1 and 0 of rows 0 and 1 of sheet 1.
-        assert_eq!(scissor(&[(5, 1024), (6, 512)], 1024), [0, 0, 2048, 2048]);
+        // Slots at columns 1 and 0 of rows 0 and 1.
+        let places = [([1, 0], 1024), ([0, 1], 512)];
+        assert_eq!(scissor(&places, 1024), [0, 0, 2048, 2048]);
         // A slot alone takes its side.
-        assert_eq!(scissor(&[(7, 256)], 1024), [1024, 1024, 256, 256]);
+        assert_eq!(scissor(&[([1, 1], 256)], 1024), [1024, 1024, 256, 256]);
     }
 
     #[test]

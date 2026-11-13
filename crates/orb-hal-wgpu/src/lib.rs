@@ -1652,12 +1652,16 @@ impl Gpu for WgpuGpu {
     }
 
     fn texture_fits(&self, desc: &TextureDesc<'_>) -> bool {
-        let layers = if self.gl_layers && desc.dimension == TextureViewDimension::D2Array {
+        orb_hal::level_bytes(desc, self.allocated_layers(desc))
+            <= self.caps.limits.max_texture_bytes
+    }
+
+    fn allocated_layers(&self, desc: &TextureDesc<'_>) -> u32 {
+        if self.gl_layers && desc.dimension == TextureViewDimension::D2Array {
             gl_array_layers(desc)
         } else {
             desc.array_layers
-        };
-        orb_hal::level_bytes(desc, layers) <= self.caps.limits.max_texture_bytes
+        }
     }
 
     fn try_create_texture(&mut self, desc: &TextureDesc<'_>) -> Option<TextureId> {

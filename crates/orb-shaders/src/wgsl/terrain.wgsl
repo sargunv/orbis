@@ -6,9 +6,10 @@
 // sphere's up, and its top and bottom rows' skirts close the poles.
 //
 // Drape slots are squares of the drape pages' sheets, `slot_px` texels
-// per side, 2 × 2 a sheet: layer `s` of a sheet holds colour stack `s`,
-// and a tile's slot of it is place `slot % 4` of sheet `slot / 4`, which
-// the draw of the sheet's tiles binds. Slope stacks are on a page of their
+// per side, 2 × 2 a sheet: layer `s` of a sheet holds colour stack `s`
+// (or layers `2s` and `2s + 1` its two rows, where `slot_rows` is 1), and
+// a tile's slot of it is place `slot % 4` of sheet `slot / 4`, which the
+// draw of the sheet's tiles binds. Slope stacks are on a page of their
 // own, at `slope_px` texels a side, likewise. A
 // terrain layer draws a stack's slots, two stacks' where the zoom splits
 // it, or a stack's below hillshades it shades from their slopes, each
@@ -62,6 +63,10 @@ struct Terrain {
     tiles: u32,
     // The slope page's slots' side.
     slope_px: f32,
+    // Rows of slots a layer of the colour page's sheets holds, and of the
+    // slope page's: 2, or 1 where a stack takes a layer a row.
+    slot_rows: u32,
+    slope_rows: u32,
 };
 
 // A hillshade a terrain layer shades: the slope stack (by its rank on
@@ -229,10 +234,13 @@ fn drape_sample(in: TerrainOut, page_px: f32) -> DrapeSample {
     return DrapeSample(round(p * 512.0) / 512.0, dx * fit, dy * fit);
 }
 
-// Where tile slot `slot` lies in its sheet: its column and row.
-fn sheet_place(slot: u32) -> vec2<f32> {
+// Where tile slot `slot` of the stack of rank `rank` lies in a sheet whose
+// layers hold `rows` rows of slots: its layer, then its
+// column and row in the layer.
+fn sheet_place(slot: u32, rank: u32, rows: u32) -> vec3<u32> {
     let at = slot % 4u;
-    return vec2<f32>(f32(at % 2u), f32(at / 2u));
+    let row = at / 2u;
+    return vec3<u32>(rank * (2u / rows) + row / rows, at % 2u, row % rows);
 }
 
 // Colour stack `stack`'s slot colour at `at`, none for NO_STACK.
@@ -240,20 +248,20 @@ fn drape_color(in: TerrainOut, at: DrapeSample, stack: u32) -> vec4<f32> {
     if stack == NO_STACK {
         return vec4<f32>(0.0);
     }
-    let slot = in.tile.y;
+    let place = sheet_place(in.tile.y, stack, terrain.slot_rows);
     let size = vec2<f32>(textureDimensions(drape));
-    let corner = sheet_place(slot) * terrain.slot_px;
+    let corner = vec2<f32>(place.yz) * terrain.slot_px;
     let uv = (corner + at.texel) / size;
-    return textureSampleGrad(drape, drape_sampler, uv, stack, at.dx / size, at.dy / size);
+    return textureSampleGrad(drape, drape_sampler, uv, place.x, at.dx / size, at.dy / size);
 }
 
 // Slope stack `rank`'s slot at `at` (a sample at `slope_px`).
 fn slope_texel(in: TerrainOut, at: DrapeSample, rank: u32) -> vec4<f32> {
-    let slot = in.tile.y;
+    let place = sheet_place(in.tile.y, rank, terrain.slope_rows);
     let size = vec2<f32>(textureDimensions(slope_atlas));
-    let corner = sheet_place(slot) * terrain.slope_px;
+    let corner = vec2<f32>(place.yz) * terrain.slope_px;
     let uv = (corner + at.texel) / size;
-    return textureSampleGrad(slope_atlas, drape_sampler, uv, rank, at.dx / size, at.dy / size);
+    return textureSampleGrad(slope_atlas, drape_sampler, uv, place.x, at.dx / size, at.dy / size);
 }
 
 // `top` over `bottom`, premultiplied.

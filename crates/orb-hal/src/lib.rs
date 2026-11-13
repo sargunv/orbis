@@ -53,7 +53,14 @@ pub trait Gpu {
     /// [`Limits::max_texture_bytes`]. Sides and layers within the other
     /// limits are the caller's to keep.
     fn texture_fits(&self, desc: &TextureDesc<'_>) -> bool {
-        level_bytes(desc, desc.array_layers) <= self.caps().limits.max_texture_bytes
+        level_bytes(desc, self.allocated_layers(desc)) <= self.caps().limits.max_texture_bytes
+    }
+    /// The layers the device makes a texture of `desc` with: its own,
+    /// or more where the back end can't make an array of that shape
+    /// (wgpu's GL back end makes a one-layer array, and a square one of
+    /// 6n layers, with a layer more).
+    fn allocated_layers(&self, desc: &TextureDesc<'_>) -> u32 {
+        desc.array_layers
     }
     /// [`create_texture`](Self::create_texture), or `None` where the
     /// device says at once that it couldn't allocate it (GL's driver
