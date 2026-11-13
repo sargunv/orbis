@@ -27,6 +27,17 @@ fn test_stack() -> FontStack {
     FontStack::new(&["Test"])
 }
 
+/// GL JS's `shapeText`: shaped, then justified as `options` say.
+fn shape_text(
+    label: &Label,
+    default_stack: &FontStack,
+    context: ShapeContext<'_>,
+    options: &ShapeOptions,
+) -> Option<Shaping> {
+    shape_unjustified(label, default_stack, context, options)
+        .map(|shaped| shaped.into_justified(options.justify))
+}
+
 /// GL JS's test glyphs, keyed by code point, with each one's atlas rect.
 struct Fixture {
     glyphs: GlyphMap,

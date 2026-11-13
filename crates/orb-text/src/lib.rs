@@ -7,7 +7,8 @@
 //!
 //! The flow for one tile: build each feature's [`Label`] (applying
 //! [`transform_text`]), collect [`GlyphRequests`], resolve each request
-//! through [`provider`] into a [`GlyphMap`], then [`shape_text`] each label.
+//! through [`provider`] into a [`GlyphMap`], then [`shape_unjustified`] each
+//! label and justify it.
 
 #![forbid(unsafe_code)]
 
@@ -35,7 +36,7 @@ pub use label::{
 pub use segment::{HostWords, WordBreaker};
 pub use shaping::{
     Anchor, DEFAULT_OFFSET, GlyphSource, Justify, ONE_EM, PositionedGlyph, PositionedLine,
-    ShapeContext, ShapeOptions, ShapedSection, Shaping, Unjustified, WritingMode, shape_text,
+    ShapeContext, ShapeOptions, ShapedSection, Shaping, Unjustified, WritingMode,
     shape_unjustified,
 };
 pub use transform::{TextTransform, transform_text};

@@ -172,18 +172,6 @@ impl std::fmt::Debug for ShapeContext<'_> {
     }
 }
 
-/// Shapes a label into positioned lines (GL JS `shapeText`). `None` when no
-/// glyph is placed.
-pub fn shape_text(
-    label: &Label,
-    default_stack: &FontStack,
-    context: ShapeContext<'_>,
-    options: &ShapeOptions,
-) -> Option<Shaping> {
-    shape_unjustified(label, default_stack, context, options)
-        .map(|shaped| shaped.into_justified(options.justify))
-}
-
 /// A label shaped into lines but not yet justified, which every
 /// justification of the label shares: a label with variable anchors is
 /// shaped once for all of them.
@@ -207,7 +195,7 @@ struct Block {
 }
 
 impl Unjustified {
-    /// The label justified to `justify`, as [`shape_text`] shapes it.
+    /// The label justified to `justify`.
     pub fn justify(&self, justify: Justify) -> Shaping {
         self.clone().into_justified(justify)
     }
@@ -224,8 +212,9 @@ impl Unjustified {
     }
 }
 
-/// [`shape_text`] short of justification, which it leaves to
-/// [`Unjustified::justify`]: `options.justify` is not read.
+/// Shapes a label into positioned lines (GL JS `shapeText`) short of
+/// justification, which it leaves to [`Unjustified::justify`]:
+/// `options.justify` is not read. `None` when no glyph is placed.
 pub fn shape_unjustified(
     label: &Label,
     default_stack: &FontStack,
