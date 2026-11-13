@@ -177,20 +177,19 @@ impl Map {
     }
 
     /// The shared atlas's gate, as the renderer's ([`Map::moves`]): tells
-    /// it whether this map holds memory, and in a frame no map holds,
-    /// places the images that waited for a page. A symbol takes its icon's
+    /// it how this map moves memory, and places the images that waited for
+    /// a page and need wait no longer (no map holds, or theirs is still). A symbol takes its icon's
     /// rect when it is laid out, so icons placed late lay this style's
     /// symbols out again.
     pub(crate) fn gate_images(&mut self, gpu: &mut dyn Gpu) {
         let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) else {
             return;
         };
-        let held = self.moves() == orb_render::Moves::Held;
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let Some(atlas) = &mut images.atlas else {
             return;
         };
-        atlas.hold(namespace, held);
+        atlas.gate(namespace, self.moves());
         for e in atlas.place_pending(gpu) {
             self.warnings.push(format!("image: {e}"));
         }

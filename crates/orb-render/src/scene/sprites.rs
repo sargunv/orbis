@@ -58,7 +58,7 @@ struct Entry {
 }
 
 /// An upload that found no room while a map held memory
-/// ([`ImageAtlas::hold`]): its row reads as a missing image until a frame
+/// ([`ImageAtlas::gate`]): its row reads as a missing image until a frame
 /// no map holds in places it.
 #[derive(Debug)]
 struct Pending {
@@ -74,12 +74,14 @@ struct Pending {
 /// Pages are reset when their last image leaves; no camera work touches them.
 ///
 /// The atlas is the runtime's, shared by its maps, so a renderer's gate
-/// ([`Moves`](crate::Moves)) doesn't reach it: each map says whether it
-/// holds memory ([`hold`](Self::hold)), and while any does no page is
-/// added, which copies every page before it. An image that finds no room
+/// ([`Moves`](crate::Moves)) doesn't reach it: each map says how it moves
+/// memory ([`gate`](Self::gate)), and while any holds no page is added
+/// for a continuous map, which copies every page before it. Such an image
 /// then waits, its row's size and metadata set (layout reads them) but not
 /// its texels and rect, until [`place_pending`](Self::place_pending) runs
-/// in a frame no map holds.
+/// in a frame no map holds. A still map's images never wait: it has no
+/// gesture of its own to keep smooth, and its picture can't wait on
+/// another map's.
 #[derive(Debug)]
 pub struct ImageAtlas {
     bindings: ImageBindings,
@@ -97,6 +99,8 @@ pub struct ImageAtlas {
     revision: u64,
     /// The style namespaces of the maps that hold memory.
     holders: FxHashSet<u64>,
+    /// The style namespaces of still maps ([`Moves::Free`](crate::Moves)).
+    still: FxHashSet<u64>,
     pending: Vec<Pending>,
     /// Namespaces whose icons were placed after they waited: their maps lay
     /// their symbols out again ([`take_icons_placed`](Self::take_icons_placed)),
@@ -151,18 +155,29 @@ impl ImageAtlas {
             lines,
             revision: 0,
             holders: FxHashSet::default(),
+            still: FxHashSet::default(),
             pending: Vec::new(),
             icons_placed: FxHashSet::default(),
         }
     }
 
-    /// Whether the map of style `namespace` holds memory (its camera
-    /// moves): while any map does, no page is added.
-    pub fn hold(&mut self, namespace: u64, held: bool) {
-        match held {
-            true => self.holders.insert(namespace),
-            false => self.holders.remove(&namespace),
-        };
+    /// How the map of style `namespace` moves memory now: while any map
+    /// holds it (its camera moves), no page is added for a continuous map.
+    pub fn gate(&mut self, namespace: u64, moves: crate::Moves) {
+        let held = moves == crate::Moves::Held;
+        let still = moves == crate::Moves::Free;
+        for (set, on) in [(&mut self.holders, held), (&mut self.still, still)] {
+            match on {
+                true => set.insert(namespace),
+                false => set.remove(&namespace),
+            };
+        }
+    }
+
+    /// Whether an image of style `namespace` that finds no room waits
+    /// rather than add a page.
+    fn waits(&self, namespace: u64) -> bool {
+        !self.holders.is_empty() && !self.still.contains(&namespace)
     }
 
     /// Whether an image of style `namespace` waits for a page.
@@ -174,15 +189,17 @@ impl ImageAtlas {
         })
     }
 
-    /// Places the images that waited for a page, adding the pages they
-    /// need, unless a map holds memory. What doesn't fit with every page
-    /// added is dropped, its row left missing, and its error returned.
+    /// Places the images that waited for a page and no longer need to
+    /// ([`gate`](Self::gate)), adding the pages they need. What doesn't fit
+    /// with every page added is dropped, its row left missing, and its
+    /// error returned.
     pub fn place_pending(&mut self, gpu: &mut dyn Gpu) -> Vec<&'static str> {
-        if !self.holders.is_empty() {
-            return Vec::new();
-        }
         let mut errors = Vec::new();
-        for p in std::mem::take(&mut self.pending) {
+        let (waiting, due) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|p| self.waits(self.entries[p.id as usize].as_ref().unwrap().namespace));
+        self.pending = waiting;
+        for p in due {
             let entry = self.entries[p.id as usize].as_mut().expect("a pending row");
             let metadata = entry.metadata.take().expect("a pending image's metadata");
             entry.size = None;
@@ -400,7 +417,7 @@ impl ImageAtlas {
         };
         let (layer, [x0, y0]) = match place(&mut self.pages) {
             Some(found) => found,
-            None if !self.holders.is_empty() && (self.pages.len() as u32) < self.max_pages => {
+            None if self.waits(entry.namespace) && (self.pages.len() as u32) < self.max_pages => {
                 self.pending.push(Pending {
                     id,
                     size: [width, height],
@@ -560,6 +577,7 @@ impl ImageAtlas {
 
     pub fn release(&mut self, gpu: &mut dyn Gpu, namespace: u64) {
         self.holders.remove(&namespace);
+        self.still.remove(&namespace);
         self.icons_placed.remove(&namespace);
         self.names.retain(|(n, _), _| *n != namespace);
         for id in 1..self.entries.len() {
@@ -667,7 +685,7 @@ mod tests {
         let first = upload(&mut atlas, &mut gpu, "first", true);
         assert_eq!(atlas.rect(first), Some([0, 0, 0]));
         // Another map's camera moves.
-        atlas.hold(other, true);
+        atlas.gate(other, crate::Moves::Held);
         let before = gpu.counters();
         let pattern = upload(&mut atlas, &mut gpu, "pattern", true);
         let icon = upload(&mut atlas, &mut gpu, "icon", false);
@@ -680,12 +698,51 @@ mod tests {
         assert_eq!((moved.textures_created, moved.bytes_copied), (0, 0));
         assert!(!atlas.take_icons_placed(mine));
         // It rests.
-        atlas.hold(other, false);
+        atlas.gate(other, crate::Moves::Rest);
         assert!(atlas.place_pending(&mut gpu).is_empty());
         assert_eq!(atlas.rect(pattern), Some([0, 0, 1]));
         assert_eq!(atlas.rect(icon), Some([1, 1, 2]));
         assert!(!atlas.pending(mine));
         assert!(atlas.take_icons_placed(mine));
         assert!(!atlas.take_icons_placed(mine));
+    }
+
+    /// A still map's picture can't wait on another map's gesture: its
+    /// images add the pages they need while the other holds, and what
+    /// waited before it turned still is placed in its next frame.
+    #[test]
+    fn a_still_maps_image_takes_a_page_while_another_holds_memory() {
+        let Ok(mut gpu) = pollster::block_on(orb_hal_wgpu::WgpuGpu::offscreen()) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let mut atlas = ImageAtlas::new(&mut gpu, 8, 3, 8);
+        let (mine, other) = (atlas.namespace(), atlas.namespace());
+        let mut upload = |atlas: &mut ImageAtlas, name: &str| {
+            let id = atlas.resolve(mine, name).unwrap();
+            let image = ImageUpload {
+                size: [4, 4],
+                pixels: &[255; 64],
+                metadata: ImageMetadata {
+                    pixel_ratio: 1.0,
+                    ..Default::default()
+                },
+                pattern: true,
+            };
+            atlas.upload(&mut gpu, id, image).unwrap();
+            id
+        };
+        upload(&mut atlas, "first");
+        atlas.gate(other, crate::Moves::Held);
+        atlas.gate(mine, crate::Moves::Rest);
+        let waited = upload(&mut atlas, "waited");
+        assert_eq!(atlas.rect(waited), None);
+        // The map turns still, as for a snapshot.
+        atlas.gate(mine, crate::Moves::Free);
+        let still = upload(&mut atlas, "still");
+        assert_eq!(atlas.rect(still), Some([0, 0, 1]));
+        assert!(atlas.place_pending(&mut gpu).is_empty());
+        assert_eq!(atlas.rect(waited), Some([0, 0, 2]));
+        assert!(!atlas.pending(mine));
     }
 }

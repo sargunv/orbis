@@ -866,7 +866,7 @@ impl Drop for Map {
         if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
             images.retired.push(namespace);
             if let Some(atlas) = &mut images.atlas {
-                atlas.hold(namespace, false);
+                atlas.gate(namespace, orb_render::Moves::Rest);
             }
         }
     }
