@@ -406,6 +406,7 @@ fn bound_evaluation_provides_all_state_and_global_inputs() {
     assert_eq!(bound.evaluate_with(&context, 0), Ok(Value::Number(28.0)));
     assert_eq!(bound.evaluate_with(&context, 1), Ok(Value::Number(29.0)));
     for dependency in [
+        Deps::FEATURE,
         Deps::FEATURE_STATE,
         Deps::GLOBAL_STATE,
         Deps::LINE_PROGRESS,
@@ -415,7 +416,6 @@ fn bound_evaluation_provides_all_state_and_global_inputs() {
     ] {
         assert!(expr.deps().contains(dependency));
     }
-    assert!(!expr.is_feature_constant());
     assert!(expr.constant().is_none());
 }
 

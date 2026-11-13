@@ -226,10 +226,6 @@ impl Expression {
         &self.ir.node(self.ir.root()).ty
     }
 
-    pub fn is_feature_constant(&self) -> bool {
-        !self.deps().contains(Deps::FEATURE)
-    }
-
     /// Whether the expression reads the feature's geometry (`within`,
     /// `distance`), which evaluation then needs in its context.
     pub(crate) fn reads_geometry(&self) -> bool {
