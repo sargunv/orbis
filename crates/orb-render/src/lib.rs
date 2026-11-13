@@ -2594,13 +2594,7 @@ impl Renderer {
         let start = passes.len();
         passes.extend(self.layers.passes());
         Pass::group(&mut passes, start, "layers apart");
-        self.main_passes(
-            gpu,
-            (target, clear),
-            frame.viewport,
-            terrain_on,
-            &mut passes,
-        );
+        self.main_passes(gpu, (target, clear), terrain_on, &mut passes);
         // What the frame wrote into data textures lands before it draws.
         #[cfg(cpu_driven)]
         self.scene.tables_mut().flush(gpu);
@@ -3040,7 +3034,6 @@ impl Renderer {
         &mut self,
         gpu: &mut dyn Gpu,
         (target, mut clear): (TextureId, [f64; 4]),
-        viewport: [f32; 2],
         terrain_on: bool,
         passes: &mut Vec<Pass>,
     ) {
@@ -3066,11 +3059,7 @@ impl Renderer {
         let start = passes.len();
         passes.extend(self.layers.main_passes(
             &self.composites,
-            (
-                first,
-                segments,
-                self.atmosphere.commands_after(gpu, viewport),
-            ),
+            (first, segments, self.atmosphere.commands_after(gpu)),
             target,
             clear,
         ));

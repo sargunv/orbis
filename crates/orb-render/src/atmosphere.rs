@@ -10,9 +10,9 @@ use crate::pipeline::Draw;
 use orb_hal::*;
 use orb_shaders::{SCATTER_SHADER, SKY_SHADER, Shader};
 
-/// Logical pixels a side of the scattering's grid cells (`sky.wgsl`'s
-/// `SCATTER_CELL`).
-const SCATTER_CELL: f32 = 8.0;
+/// Texels of the scattering's sunward table across (the sun's angle) and
+/// down (the height): `scatter.wgsl`'s `SUNWARD_SIZE`.
+const SUNWARD_SIZE: [u32; 2] = [256, 32];
 
 /// The style's `sky`, evaluated.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,8 +74,9 @@ pub(crate) struct Atmosphere {
     group: Option<(BindGroupLayoutId, BindGroupId)>,
     /// The sky's pipeline, made for the first sky.
     sky: Option<RenderPipelineId>,
-    /// The globe's scattering pipeline, made for the first globe sky.
-    scatter: Option<RenderPipelineId>,
+    /// The globe's scattering pipeline and its sunward table, made for the
+    /// first globe sky.
+    scatter: Option<(RenderPipelineId, Sunward)>,
     scatter_blend: f32,
     written: Option<(Option<AtmospherePaint>, AtmosphereView)>,
     pub(crate) enabled: bool,
@@ -101,7 +102,7 @@ impl Atmosphere {
 
     /// The pipelines the frame draws with, once made.
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        [self.sky, self.scatter]
+        [self.sky, self.scatter.as_ref().map(|s| s.0)]
             .into_iter()
             .filter(|_| self.enabled)
             .flatten()
@@ -126,12 +127,15 @@ impl Atmosphere {
             .get_or_insert_with(|| sky_group(gpu, frame, uniform));
         let blend = Some(BlendState::PremultipliedAlpha);
         if self.sky.is_none() {
-            self.sky = Some(pipeline(gpu, &SKY_SHADER, target, layout, blend));
+            self.sky = Some(pipeline(gpu, &SKY_SHADER, target, &[layout], blend));
         }
         if self.scatter.is_none() && (globe || full_projection) {
+            let sunward = Sunward::new(gpu);
             gpu.set_background_compiles(!globe);
-            self.scatter = Some(pipeline(gpu, &SCATTER_SHADER, target, layout, blend));
+            let layouts = [layout, sunward.layout];
+            let scatter = pipeline(gpu, &SCATTER_SHADER, target, &layouts, blend);
             gpu.set_background_compiles(false);
+            self.scatter = Some((scatter, sunward));
         }
     }
 
@@ -205,26 +209,23 @@ impl Atmosphere {
     }
 
     /// The globe's scattering over the map, after its layers, once its
-    /// pipeline compiled: a grid over the `viewport`'s logical pixels.
-    pub(crate) fn commands_after(
-        &self,
-        gpu: &mut dyn Gpu,
-        viewport: [f32; 2],
-    ) -> Vec<RenderCommand> {
-        match (self.group, self.scatter) {
-            (Some((_, group)), Some(pipeline))
+    /// pipeline compiled.
+    pub(crate) fn commands_after(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
+        match (self.group, &self.scatter) {
+            (Some((_, group)), Some((pipeline, sunward)))
                 if self.enabled
                     && self.scatter_blend > 0.0
-                    && gpu.pipeline_ready(pipeline.into()) =>
+                    && gpu.pipeline_ready((*pipeline).into()) =>
             {
-                // A cell more each way than the shader's grid takes, whatever
-                // its f32 rounding: cells past the viewport are empty.
-                let [columns, rows] = viewport.map(|v| (v / SCATTER_CELL).ceil() as u32 + 1);
                 vec![
-                    RenderCommand::SetPipeline(pipeline),
+                    RenderCommand::SetPipeline(*pipeline),
                     RenderCommand::SetBindGroup { index: 0, group },
+                    RenderCommand::SetBindGroup {
+                        index: 1,
+                        group: sunward.group,
+                    },
                     RenderCommand::Draw {
-                        vertices: 0..6 * columns * rows,
+                        vertices: 0..3,
                         instances: 0..1,
                     },
                 ]
@@ -254,9 +255,8 @@ fn sky_group(
 ) -> (BindGroupLayoutId, BindGroupId) {
     let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
         label: "sky",
-        entries: &[0, 1].map(|binding| {
-            BindGroupLayoutEntry::uniform(binding, ShaderStages::VERTEX | ShaderStages::FRAGMENT)
-        }),
+        entries: &[0, 1]
+            .map(|binding| BindGroupLayoutEntry::uniform(binding, ShaderStages::FRAGMENT)),
     });
     let group = gpu.create_bind_group(&BindGroupDesc {
         label: "sky",
@@ -273,14 +273,166 @@ fn pipeline(
     gpu: &mut dyn Gpu,
     shader: &Shader,
     target: TargetFormat,
-    layout: BindGroupLayoutId,
+    layouts: &[BindGroupLayoutId],
     blend: Option<BlendState>,
 ) -> RenderPipelineId {
-    Draw::new(shader, &[layout], target, blend).make(gpu)
+    Draw::new(shader, layouts, target, blend).make(gpu)
 }
 
 impl crate::release::Release for Atmosphere {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.uniform, self.group, self.sky, self.scatter).release(gpu);
+        (self.uniform, self.group, self.sky).release(gpu);
+        if let Some((pipeline, s)) = self.scatter {
+            (pipeline, s.table, s.sampler, s.layout, s.group).release(gpu);
+        }
+    }
+}
+
+/// The scattering's sunward table (`scatter.wgsl`): the share of each
+/// channel's light that reaches a point in the atmosphere from the sun, by
+/// its height and the sun's angle from its zenith, as GL JS's three steps
+/// toward the sun work it out. It holds no style value, so it is written
+/// once, with the scattering's pipeline.
+#[derive(Debug)]
+struct Sunward {
+    table: TextureId,
+    sampler: SamplerId,
+    layout: BindGroupLayoutId,
+    group: BindGroupId,
+}
+
+impl Sunward {
+    fn new(gpu: &mut dyn Gpu) -> Self {
+        let [width, height] = SUNWARD_SIZE;
+        let table = gpu.create_texture(&TextureDesc {
+            label: "sunward",
+            width,
+            height,
+            array_layers: 1,
+            dimension: TextureViewDimension::D2,
+            format: TextureFormat::Rgba16Float,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            sample_count: 1,
+            mip_levels: 1,
+        });
+        let region = TextureRegion {
+            texture: table,
+            x: 0,
+            y: 0,
+            layer: 0,
+            width,
+            height,
+            level: 0,
+        };
+        gpu.write_texture(&region, bytemuck::cast_slice(&sunward_table()));
+        let sampler = gpu.create_sampler(&SamplerDesc {
+            label: "sunward",
+            filter: FilterMode::Linear,
+            mipmap_filter: FilterMode::Nearest,
+            anisotropy: 1,
+        });
+        let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "sunward",
+            entries: &[
+                BindGroupLayoutEntry::texture(
+                    0,
+                    ShaderStages::FRAGMENT,
+                    true,
+                    TextureViewDimension::D2,
+                ),
+                BindGroupLayoutEntry::sampler(1, ShaderStages::FRAGMENT, true),
+            ],
+        });
+        let group = gpu.create_bind_group(&BindGroupDesc {
+            label: "sunward",
+            layout,
+            entries: &[
+                BindGroupEntry::texture(0, table, TextureViewDimension::D2),
+                BindGroupEntry::sampler(1, sampler),
+            ],
+        });
+        Self {
+            table,
+            sampler,
+            layout,
+            group,
+        }
+    }
+}
+
+/// The sunward table's texels, row by row, as RGBA half floats: at each
+/// texel's height and cosine of the sun's zenith angle (`scatter.wgsl`'s
+/// `scatter_sunward` lays them out, first and last texels at either end),
+/// GL JS's march of three steps from there to the atmosphere's edge,
+/// through the planet where the sun is below the horizon.
+fn sunward_table() -> Vec<u16> {
+    const PLANET: f64 = 6371e3;
+    const SHELL: f64 = 6471e3;
+    const RAYLEIGH: [f64; 3] = [5.5e-6, 13.0e-6, 22.4e-6];
+    const MIE: f64 = 21e-6;
+    const RAYLEIGH_HEIGHT: f64 = 8e3;
+    const MIE_HEIGHT: f64 = 1.2e3;
+    let [width, height] = SUNWARD_SIZE;
+    let mut texels = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        let row = f64::from(y) / f64::from(height - 1);
+        let h = row * row * (SHELL - PLANET);
+        let r = PLANET + h;
+        let horizon = -(h * (2.0 * PLANET + h)).sqrt() / r;
+        for x in 0..width {
+            let past = (f64::from(x) / f64::from(width - 1) - 0.5) * 2.0;
+            let past = past * past.abs();
+            let mu = if past >= 0.0 {
+                horizon + past * (1.0 - horizon)
+            } else {
+                horizon + past * (1.0 + horizon)
+            };
+            // The far side of the shell along the sun, in three steps.
+            let b = r * mu;
+            let step = ((b * b - r * r + SHELL * SHELL).max(0.0).sqrt() - b) / 3.0;
+            let (mut rayleigh, mut mie) = (0.0, 0.0);
+            for j in 0..3 {
+                let t = step * (f64::from(j) + 0.5);
+                let h = (r * r + t * t + 2.0 * r * t * mu).sqrt() - PLANET;
+                rayleigh += (-h / RAYLEIGH_HEIGHT).exp() * step;
+                mie += (-h / MIE_HEIGHT).exp() * step;
+            }
+            let light = RAYLEIGH.map(|k| half((-(k * rayleigh + MIE * mie)).exp() as f32));
+            texels.extend(light);
+            texels.push(half(1.0));
+        }
+    }
+    texels
+}
+
+/// `x`, from 0 to 1, as the nearest half float.
+fn half(x: f32) -> u16 {
+    if x < 2f32.powi(-14) {
+        // Below the smallest normal half: in steps of 2^-24.
+        return (x * 2f32.powi(24)).round() as u16;
+    }
+    // Rounded to nearest, ties to even, on the 13 bits the half drops; a
+    // carry moves into the exponent as it should.
+    let bits = x.to_bits();
+    let bits = bits + 0xfff + ((bits >> 13) & 1);
+    ((bits >> 13) - ((127 - 15) << 10)) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::half;
+
+    #[test]
+    fn half_floats_round_to_nearest() {
+        assert_eq!(half(0.0), 0);
+        assert_eq!(half(1.0), 0x3c00);
+        assert_eq!(half(0.5), 0x3800);
+        // 1/3 lies nearer 0x3555 than 0x3554.
+        assert_eq!(half(1.0 / 3.0), 0x3555);
+        // Just under 1 rounds up into the next exponent.
+        assert_eq!(half(1.0 - 2f32.powi(-13)), 0x3c00);
+        // The smallest subnormal half, and a value rounding to it.
+        assert_eq!(half(2f32.powi(-24)), 1);
+        assert_eq!(half(0.6 * 2f32.powi(-24)), 1);
     }
 }
