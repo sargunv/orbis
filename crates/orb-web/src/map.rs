@@ -351,6 +351,19 @@ pub struct FrameMemory {
     /// Tile pages, glyph pages and the icon and pattern atlas.
     #[wasm_bindgen(readonly)]
     pub textures: f64,
+    /// Raster and DEM tile pages, of `textures`.
+    #[wasm_bindgen(readonly, js_name = tilePages)]
+    pub tile_pages: f64,
+    /// The terrain's drape atlas, mips included.
+    #[wasm_bindgen(readonly, js_name = drapeAtlas)]
+    pub drape_atlas: f64,
+    /// The property rows.
+    #[wasm_bindgen(readonly, js_name = propsAllocated)]
+    pub props_allocated: f64,
+    /// The scene's fixed tables: placements, chunks, candidates, visible
+    /// lists, node tables and draw arguments.
+    #[wasm_bindgen(readonly)]
+    pub tables: f64,
     #[wasm_bindgen(readonly, js_name = cachedTiles)]
     pub cached_tiles: u32,
     #[wasm_bindgen(readonly)]
@@ -374,6 +387,10 @@ impl From<&orb_runtime::Memory> for FrameMemory {
             compacted_allocated: s.compacted.allocated as f64,
             cpu_copies: s.cpu_copies as f64,
             textures: (m.tile_textures + m.glyph_textures + m.image_atlas) as f64,
+            tile_pages: m.tile_textures as f64,
+            drape_atlas: m.drape_atlas as f64,
+            props_allocated: s.props.allocated as f64,
+            tables: s.tables as f64,
             cached_tiles: m.cached_tiles,
             cached: m.cached as f64,
             cache_limit: m.cache_limit,
