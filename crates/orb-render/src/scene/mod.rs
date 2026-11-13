@@ -12,8 +12,9 @@
 //! ([`Scene::row`]), which its meshes' candidates are laid out in: the
 //! cull runs once per block, and a node draws once per block it has
 //! candidates in, with that block bound; a node whose tiles lie in more
-//! than one block draws in stretches of one block's at a time, in its
-//! tiles' order ([`Segment`]).
+//! than one block, or whose slots a change in place left out of order,
+//! draws in stretches of one block's at a time, in its tiles' order
+//! ([`Segment`]).
 
 mod arena;
 mod candidates;
@@ -1280,7 +1281,8 @@ pub(crate) struct Scene {
     /// from the start, their slices keeping the room they grew to.
     relaid: bool,
     /// By render node, its draw in stretches of one block's slots, where
-    /// its candidates lie in more than one block ([`Segment`]).
+    /// its candidates lie in more than one block or out of order
+    /// ([`Segment`]).
     segments: Vec<Option<Vec<Segment>>>,
     /// The node rows changed since the segments were worked out.
     segments_dirty: bool,
