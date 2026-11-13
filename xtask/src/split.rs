@@ -375,7 +375,7 @@ fn ungated(functions: &Functions, seeds: &[Option<usize>], roots: &[bool]) -> Ve
     seeds
         .iter()
         .zip(before)
-        .map(|(&seed, before)| seed.filter(|&m| !before || MODULES[m].name == "api"))
+        .map(|(&seed, before)| seed.filter(|_| !before))
         .collect()
 }
 
@@ -874,12 +874,6 @@ mod tests {
         functions.defined[2].callees.push(1);
         let modules = assign(&functions, &ungated(&functions, &seeds, &before));
         assert_eq!(modules, [None, None, None, None, None, None, Some(1), None]);
-        // Unless the module is the API's, whose calls come only once it's
-        // in: an edit runs before the gate, and only the API makes one.
-        let api = MODULES.iter().position(|m| m.name == "api");
-        let seeds = [None, api, None, None, None, None, Some(1), None];
-        let modules = assign(&functions, &ungated(&functions, &seeds, &before));
-        assert_eq!(modules[1], api);
         assert!(before_gate("<orb_style[0a1b]::v8::doc::StyleDoc>::apply"));
         assert!(!before_gate("orb_runtime::map::Map::frame"));
     }
