@@ -131,7 +131,14 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let glyph_offset_px = rotation * (offset / 32.0 * max(min_font_scale, vec2<f32>(font_scale)) + pixel_offset);
     var final_pos: vec4<f32>;
     if pitch {
-        final_pos = tile_clip(tile, from_pitched_plane(tile, plane_pos + glyph_offset_px));
+        // The quad lies level at the elevation under its placement point
+        // (a glyph's on its line, a point label's anchor), as GL JS's
+        // pitched symbols stand at their anchor's: corners raised each by
+        // the ground under it fold over a slope that faces away from the
+        // eye, which draws the glyph mirrored.
+        let at = from_pitched_plane(tile, plane_pos);
+        let metres = symbol_metres(tile, at) * frame.extrusion_scale;
+        final_pos = ground_clip(tile_ground(tile, from_pitched_plane(tile, plane_pos + glyph_offset_px)), vec2<f32>(0.0), metres);
     } else {
         final_pos = vec4<f32>(px_to_clip(plane_pos + glyph_offset_px), 0.0, 1.0);
     }

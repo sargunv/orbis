@@ -1624,7 +1624,6 @@ mod tests {
 
     impl Fed {
         fn new(pitch: f64, budget: Option<orb_runtime::FrameBudget>) -> Self {
-            let services = crate::common::native_services(std::sync::Arc::new(|| {}));
             let camera = orb_camera::CameraState {
                 bearing: 20.0,
                 pitch,
@@ -1634,13 +1633,24 @@ mod tests {
                     &crate::common::web_mercator(),
                 )
             };
+            Self::with(FED, camera, budget)
+        }
+
+        /// A map of `style`, whose `ground` source the app feeds, at
+        /// `camera`.
+        fn with(
+            style: &str,
+            camera: orb_camera::CameraState,
+            budget: Option<orb_runtime::FrameBudget>,
+        ) -> Self {
+            let services = crate::common::native_services(std::sync::Arc::new(|| {}));
             let mut map = orb_runtime::Map::new(services, Some(camera));
             map.set_clear_color([1.0; 4]);
             map.set_stable_labels(false);
             if let Some(budget) = budget {
                 map.set_frame_budget(budget);
             }
-            map.set_style_json(FED).unwrap();
+            map.set_style_json(style).unwrap();
             Self {
                 offscreen: crate::common::Offscreen::with_map(map).unwrap(),
                 given: Default::default(),
@@ -1793,5 +1803,74 @@ mod tests {
         moved.settle(&steps[2]);
         let differing = crate::common::differing_pixels(&moved.offscreen.pixels(), &last);
         assert_eq!(differing, 0, "at rest, pixels differ from a fresh map's");
+    }
+
+    /// A symbol pitched with the map lies level on the terrain at the
+    /// height under it, so it reads as it does on flat ground wherever it
+    /// stands: on a crest over a drop that faces away from the eye, its
+    /// corners raised each by the ground under them folded its top below
+    /// its bottom, drawing it mirrored.
+    #[test]
+    fn pitched_symbols_on_a_drop_facing_away_are_not_mirrored() {
+        // A crest 20 m north of the camera's target, past which the ground
+        // falls 3 m a metre.
+        let crest = 46.02 + 20.0 / 111_000.0;
+        let ground = move |_lon: f64, lat: f64| {
+            (1000.0 - 3.0 * ((lat - crest) * 111_000.0).max(0.0)).max(0.0) as f32
+        };
+        let style = r##"{"version": 8,
+            "sources": {
+              "ground": {"type": "raster-dem", "encoding": "terrarium", "tileSize": 512,
+                "maxzoom": 11, "tiles": ["orbis-host:"]},
+              "mark": {"type": "geojson", "data": {"type": "Point", "coordinates": [7.75, 46.02]}}},
+            "terrain": {"source": "ground", "exaggeration": 1.5},
+            "layers": [
+              {"id": "land", "type": "background", "paint": {"background-color": "#d8e0c8"}},
+              {"id": "mark", "type": "symbol", "source": "mark", "layout": {
+                "icon-image": "mark", "icon-size": 2, "icon-allow-overlap": true,
+                "icon-ignore-placement": true, "icon-pitch-alignment": "map",
+                "icon-rotation-alignment": "map"}}
+            ]}"##;
+        let camera = orb_camera::CameraState {
+            pitch: 70.0,
+            ..orb_camera::CameraState::new(
+                orb_crs::Geodetic::new(7.75, 46.02),
+                14.0,
+                &crate::common::web_mercator(),
+            )
+        };
+        let mut map = Fed::with(style, camera, None);
+        // Red over blue.
+        let side = 32u32;
+        let pixels = (0..side * side)
+            .flat_map(|i| match i / side < side / 2 {
+                true => [255, 0, 0, 255],
+                false => [0, 0, 255, 255],
+            })
+            .collect();
+        let image = orb_runtime::StyleImage::with_options(side, side, pixels, "").unwrap();
+        map.offscreen.map.add_image("mark", image).unwrap();
+        map.settle(&ground);
+        let pixels = map.offscreen.pixels();
+        let width = crate::common::Offscreen::WIDTH as usize;
+        // Each colour's pixels: how many, and their mean row.
+        let rows = |pick: fn(&[u8; 4]) -> bool| {
+            let rows: Vec<usize> = (pixels.as_chunks::<4>().0.iter().enumerate())
+                .filter(|(_, p)| pick(p))
+                .map(|(i, _)| i / width)
+                .collect();
+            let mean = rows.iter().sum::<usize>() as f64 / rows.len().max(1) as f64;
+            (rows.len(), mean)
+        };
+        let (reds, red) = rows(|p| p[0] > 200 && p[1] < 60 && p[2] < 60);
+        let (blues, blue) = rows(|p| p[2] > 200 && p[0] < 60 && p[1] < 60);
+        assert!(
+            reds > 50 && blues > 50,
+            "{reds} red and {blues} blue pixels"
+        );
+        assert!(
+            red < blue,
+            "red's mean row {red:.1} lies under blue's {blue:.1}"
+        );
     }
 }
