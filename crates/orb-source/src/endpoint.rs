@@ -325,10 +325,12 @@ impl TileEndpoint {
 }
 
 /// `relative` resolved against `base`, as a browser resolves a link:
-/// absolute URLs stay, `/path` keeps the origin, others replace `base`'s
-/// last segment with `./` and `../` applied.
+/// absolute URLs stay (and [`HOST_TILES`], which names the app), `/path`
+/// keeps the origin, others replace `base`'s last segment with `./` and
+/// `../` applied.
 pub(crate) fn join_url(base: &str, relative: &str) -> String {
-    if relative.contains("://") || relative.starts_with("data:") {
+    if relative.contains("://") || relative.starts_with("data:") || relative.starts_with(HOST_TILES)
+    {
         return relative.to_string();
     }
     let base = base.split(['?', '#']).next().unwrap_or(base);
@@ -471,6 +473,7 @@ mod tests {
             "sources": {"t": {"type": "vector", "url": "pmtiles://./t.pmtiles"},
                 "g": {"type": "geojson", "data": "../g.json"},
                 "r": {"type": "raster", "tiles": ["https://x.org/{z}.png", "r/{z}.png"]},
+                "h": {"type": "raster-dem", "tiles": ["orbis-host:"]},
                 "i": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
             "font-faces": {"A": "fonts/a.ttf", "B": ["fonts/b.ttf", {"url": "fonts/c.ttf"}],
                 "C": {"url": "fonts/d.ttf"}},
@@ -487,6 +490,14 @@ mod tests {
         assert_eq!(
             at(&["glyphs"]),
             "file:///d/styles/glyphs/{fontstack}/{range}.pbf"
+        );
+        let host = doc
+            .get("sources")
+            .and_then(|s| s.get("h"))
+            .and_then(|h| h.get("tiles"));
+        assert_eq!(
+            host.unwrap().as_array().unwrap()[0].as_str(),
+            Some(HOST_TILES)
         );
         assert_eq!(
             doc.get("sprite").unwrap().as_array().unwrap()[0]
