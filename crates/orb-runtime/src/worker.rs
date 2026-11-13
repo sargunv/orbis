@@ -177,9 +177,6 @@ impl TileWorker {
         ))
     }
 
-    /// A revision of a parsed style, keeping `previous`'s data for the
-    /// sources both have.
-    #[allow(clippy::too_many_arguments)]
     /// A revision of a style, keeping `previous`'s data for the cached tile
     /// frames but for the sources in `new_data` (GeoJSON data replaced),
     /// whose index and frames are made again from the new data.
