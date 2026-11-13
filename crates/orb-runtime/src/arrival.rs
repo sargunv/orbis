@@ -1066,7 +1066,7 @@ impl Map {
         }
         if !stale.is_empty() {
             let version = self.version;
-            self.send_job(source, tile, Some(stale), false, Some(version));
+            self.send_edit_job(source, tile, Some(stale), false, version);
         }
         Applied::Done
     }

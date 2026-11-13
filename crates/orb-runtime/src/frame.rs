@@ -316,14 +316,12 @@ impl Map {
                 && let Some(build) = self.parked.take((generation, key, tile))
             {
                 pyramid.arrived(tile);
-                let source = key;
-                let (tried, waiting) = (None, &mut self.waiting);
-                waiting.push(WaitingTile {
+                self.waiting.push(WaitingTile {
                     generation,
-                    source,
+                    source: key,
                     tile,
                     build,
-                    tried,
+                    tried: None,
                 });
                 continue;
             }

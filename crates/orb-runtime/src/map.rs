@@ -1200,7 +1200,7 @@ impl Map {
         self.services.jobs.retry_glyphs();
         let version = self.version;
         for (index, tile, nodes) in relayout {
-            self.send_job(index, tile, Some(nodes), false, Some(version));
+            self.send_edit_job(index, tile, Some(nodes), false, version);
         }
     }
 
@@ -2558,27 +2558,30 @@ impl Map {
             .style_height_scale(self.camera.state().target)
     }
 
-    /// Sends a tile job for source `index` of the current plan.
-    pub(crate) fn send_job(
+    /// Sends the job edit generation `edit` asks of resident tile `tile`
+    /// of source `index`: laying out `nodes` (every node for `None`) again,
+    /// or with `rows_only` evaluating their property rows.
+    pub(crate) fn send_edit_job(
         &mut self,
         index: usize,
         tile: TileIndex,
         nodes: Option<Vec<u32>>,
         rows_only: bool,
-        edit: Option<u64>,
+        edit: u64,
     ) {
         // A neighbour's relayouts and rows lay out as it did: its meshes
         // hold its features at the edges alone.
-        let neighbour = edit.is_some()
-            && matches!(&self.style.as_ref().expect("jobs need a style").sources[index],
+        let neighbour = matches!(&self.style.as_ref().expect("jobs need a style").sources[index],
                 SourceState::Ready { pyramid, .. } if pyramid.get(tile).is_some_and(|r| r.neighbour));
         // Relayouts are of tiles drawn now: they go first.
-        self.send_tile_job(index, tile, (nodes, rows_only, neighbour), edit, 0);
+        self.send_tile_job(index, tile, (nodes, rows_only, neighbour), Some(edit), 0);
     }
 
-    /// [`send_job`](Self::send_job), for a neighbour of the tile Tile mode
-    /// draws if `neighbour` ([`TileRequest::neighbour`]), in its place
-    /// `rank` in the load order ([`TileRequest::rank`]).
+    /// Sends a tile job for source `index`: a load, or edit generation
+    /// `edit`'s job ([`send_edit_job`](Self::send_edit_job)); for a
+    /// neighbour of the tile Tile mode draws if `neighbour`
+    /// ([`TileRequest::neighbour`]), in its place `rank` in the load order
+    /// ([`TileRequest::rank`]).
     pub(crate) fn send_tile_job(
         &mut self,
         index: usize,
@@ -2838,7 +2841,7 @@ impl Map {
         let version = self.version;
         for tile in self.resident_tiles(index, None) {
             if picks(tile) {
-                self.send_job(index, tile, None, false, Some(version));
+                self.send_edit_job(index, tile, None, false, version);
             }
         }
         self.events.wake();

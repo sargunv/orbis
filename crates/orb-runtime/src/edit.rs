@@ -286,14 +286,14 @@ impl Map {
             nodes.sort_unstable();
             nodes.dedup();
             for tile in self.resident_tiles(source, None) {
-                self.send_job(source, tile, Some(nodes.clone()), false, Some(version));
+                self.send_edit_job(source, tile, Some(nodes.clone()), false, version);
             }
         }
         for (source, mut nodes) in columns {
             nodes.sort_unstable();
             nodes.dedup();
             for tile in self.resident_tiles(source, Some(&nodes)) {
-                self.send_job(source, tile, Some(nodes.clone()), true, Some(version));
+                self.send_edit_job(source, tile, Some(nodes.clone()), true, version);
             }
         }
     }
@@ -336,7 +336,7 @@ impl Map {
         self.style = Some(style);
         for (source, nodes) in relayout {
             for tile in self.resident_tiles(source, None) {
-                self.send_job(source, tile, Some(nodes.clone()), false, Some(version));
+                self.send_edit_job(source, tile, Some(nodes.clone()), false, version);
             }
         }
         self.events.wake();
@@ -575,7 +575,7 @@ impl Map {
         drop(images);
         if !stale_rows.is_empty() {
             let version = self.version;
-            self.send_job(index, tile, Some(stale_rows), true, Some(version));
+            self.send_edit_job(index, tile, Some(stale_rows), true, version);
         }
     }
 }
