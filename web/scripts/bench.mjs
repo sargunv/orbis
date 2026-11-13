@@ -87,11 +87,6 @@ for (const arg of args) {
   if (!match) throw new Error(`unknown argument ${arg}`);
   params.set(match[1], match[2]);
 }
-// Firefox keeps a worker's animation frames on the display's rate under
-// `layout.frame_rate` 0 (Orbis's interval stayed at 16.7 ms there, on
-// Linux, where GL JS's on the page went unpaced), so unpaced Firefox draws
-// Orbis on the page unless `--worker` says otherwise.
-if (inFirefox && unpaced && !params.has("worker")) params.set("worker", "0");
 if ((android || inFirefox || inWebkit) && precise)
   throw new Error("--precise needs headless Chromium");
 if (android && (inFirefox || inWebkit || unpaced))

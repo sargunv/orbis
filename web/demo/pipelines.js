@@ -78,12 +78,10 @@ window.pipelines = (async () => {
   try {
     const started = performance.now();
     window.mapStarted = started;
-    // On the page's thread, where the device's calls above are counted.
     const map = await createMap({
       container: document.getElementById("map"),
       style: demoStyle(new URLSearchParams(location.search), "tokyo"),
       camera: { center: [139.74, 35.685], zoom: 15 },
-      worker: false,
     });
     // The first frame that draws a layer, and the first with no pipeline
     // compiling.

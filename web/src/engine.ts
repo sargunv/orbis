@@ -1,9 +1,7 @@
 // The map itself: the wasm map with its frames, input, queries,
-// snapshots and recovery from a lost GPU, wherever it runs. In the map
-// worker (map-worker.ts) it draws into an OffscreenCanvas; where the
-// browser can't do that, on the page into the canvas. The page's side
-// (map.ts) reaches it through a link (link.ts) and hears from it by
-// reports: the map's state after each frame, with its events.
+// snapshots and recovery from a lost GPU, drawing into the page's canvas
+// on the page's thread. The page's side (map.ts) calls it and hears from
+// it by reports: the map's state after each frame, with its events.
 
 import {
   isModuleName,
@@ -41,7 +39,7 @@ import type {
 import type { VideoEventObject } from "./videos.ts";
 import type { Workers } from "./workers.ts";
 
-/** What the page reads of the map without asking: as of its last report. */
+/** What the page reads of the map without asking. */
 export interface MapState {
   camera: Camera;
   free: FreeCamera;
@@ -114,20 +112,17 @@ export type InputKind =
 
 /** How the map starts. */
 export interface EngineSetup {
-  canvas: HTMLCanvasElement | OffscreenCanvas;
+  canvas: HTMLCanvasElement;
   style: string;
   options: CoreOptions;
   camera?: CameraOptions;
   constraints?: Constraints;
   /** Physical width and height and device pixels per CSS pixel. */
   size: [number, number, number];
-  /** Milliseconds to add to the page's event times to put them on this
-   * thread's clock: 0 on the page. */
-  clock: number;
 }
 
-/** A wasm-bindgen object's getters as a plain object, which crosses to
- * the page by message. */
+/** A wasm-bindgen object's getters as a plain object, which outlives
+ * it. */
 function plain<T extends object>(object: T): T {
   const out: Record<string, unknown> = {};
   for (const [key, d] of Object.entries(
@@ -177,8 +172,7 @@ const API_CALLS = new Set<string>([
 
 export class Engine {
   #host: Host;
-  #canvas: HTMLCanvasElement | OffscreenCanvas;
-  #clock: number;
+  #canvas: HTMLCanvasElement;
   #report: (report: Report) => void;
   #loop: ReturnType<typeof frameLoop>;
   #events: EngineEvent[] = [];
@@ -209,7 +203,7 @@ export class Engine {
   #state: MapState | undefined;
   /** The last frame's time: a frame never goes back before it. */
   #shown = -Infinity;
-  /** The time a test runner's clock gives frames, on this thread's clock. */
+  /** The time a test runner's clock gives frames. */
   #frameClock: number | undefined;
   /** The feature modules asked for (builds.ts). */
   #asked = new Set<ModuleName>();
@@ -226,7 +220,6 @@ export class Engine {
   ) {
     this.#host = host;
     this.#canvas = setup.canvas;
-    this.#clock = setup.clock;
     this.#report = report;
     // The map's one beat: all its work (what arrived, the camera, loads,
     // labels, the draw) runs in a frame on the display's refresh, within
@@ -387,7 +380,7 @@ export class Engine {
     // Input applies as it arrives and shows from the next frame: drawn
     // now, off the display's beat, a frame puts the frames after it out of
     // step with the display, which drops one of them.
-    const used = core[kind](...args, time + this.#clock);
+    const used = core[kind](...args, time);
     // A release may end a click, which the next frame reports.
     if (used || kind === "blur" || kind === "pointerUp") this.#request();
     // The box shows and goes between frames too.
@@ -602,22 +595,16 @@ export class Engine {
     this.#core.sourceFrame(source, width, height, pixels);
     this.#request();
   }
-  /** A video source's new frame: its element on the page, or an
-   * ImageBitmap of it. A source the style dropped is ignored: its close
-   * is on the way. */
-  videoFrame(source: string, frame: HTMLVideoElement | ImageBitmap): void {
-    // A dropped bitmap is closed rather than left to the collector, which
-    // holds its pixels meanwhile; one the map took, it closes once copied.
-    const drop = () => {
-      if (frame instanceof ImageBitmap) frame.close();
-    };
+  /** A video source's new frame, in its element. A source the style
+   * dropped is ignored: its close is on the way. */
+  videoFrame(source: string, video: HTMLVideoElement): void {
     if (this.#removed || this.#lostAt !== undefined || this.#snapshotting)
-      return drop();
+      return;
     try {
-      this.#core.videoFrame(source, frame);
+      this.#core.videoFrame(source, video);
       this.#request();
     } catch {
-      drop();
+      // The source is gone.
     }
   }
   videoFailed(source: string, message: string): void {
@@ -718,9 +705,9 @@ export class Engine {
   trap(): void {
     this.#core.trap();
   }
-  /** Frames show `time`, on the page's clock, until another call. */
+  /** Frames show `time` until another call. */
   setFrameClock(time?: number): void {
-    this.#frameClock = time === undefined ? undefined : time + this.#clock;
+    this.#frameClock = time;
   }
 
   /** Stops drawing and releases the map's workers. */

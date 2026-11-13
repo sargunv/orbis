@@ -97,17 +97,10 @@ export type InputSink = (
   time: number,
 ) => void;
 
-/** Feeds `canvas`'s input to `send`. Moves arrive as `pointerrawupdate`s
- * with `raw` (as soon as the browser has them, for a map in a worker:
- * `pointermove` waits for the page's next frame, and the worker's would
- * already have begun). Returns the detach function, `showBox`, which
- * shows a Shift-drag's box ([x0, y0, x1, y1], or null to hide it), and
- * `allow`, which says what the map's gestures move now. */
-export function attachInput(
-  canvas: HTMLCanvasElement,
-  send: InputSink,
-  raw: boolean,
-) {
+/** Feeds `canvas`'s input to `send`. Returns the detach function,
+ * `showBox`, which shows a Shift-drag's box ([x0, y0, x1, y1], or null to
+ * hide it), and `allow`, which says what the map's gestures move now. */
+export function attachInput(canvas: HTMLCanvasElement, send: InputSink) {
   let allowedNow = allowed();
   canvas.tabIndex = 0;
   canvas.style.touchAction = "none";
@@ -165,8 +158,8 @@ export function attachInput(
     }
   };
   // A drag's every sample with its own time, for the release's velocity:
-  // `pointermove` comes once a frame with the samples since folded in, and
-  // `pointerrawupdate` can fold too. Hovers send the latest alone.
+  // `pointermove` comes once a frame, just before it, with the samples
+  // since folded in. Hovers send the latest alone.
   const move = (e: PointerEvent) => {
     const samples = (captured && e.getCoalescedEvents?.()) || [];
     for (const s of samples.length ? samples : [e]) {
@@ -240,7 +233,7 @@ export function attachInput(
   const menu = (e: Event) => e.preventDefault();
   const listeners: [string, EventListener, AddEventListenerOptions?][] = [
     ["pointerdown", down as EventListener],
-    [raw ? "pointerrawupdate" : "pointermove", move as EventListener],
+    ["pointermove", move as EventListener],
     ["pointerup", up as EventListener],
     ["pointercancel", cancel as EventListener],
     ["lostpointercapture", lost],

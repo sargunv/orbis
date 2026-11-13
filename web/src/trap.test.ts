@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ModuleNotLoadedError, guard, isTrap, trapError } from "./trap.ts";
+import { ModuleNotLoadedError, guard } from "./trap.ts";
 
 /** A stand-in for the wasm map: its own borrow, as wasm-bindgen's. */
 class Fake {
@@ -35,7 +35,7 @@ class Fake {
 test("a trap stops the map with one error, which every call after throws without entering it", async () => {
   const fake = new Fake();
   const heard: Error[] = [];
-  const { core } = guard(fake, (e) => heard.push(e));
+  const core = guard(fake, (e) => heard.push(e));
   const quiet = console.error;
   console.error = () => {};
   try {
@@ -53,7 +53,6 @@ test("a trap stops the map with one error, which every call after throws without
       error.message,
       /^the map stopped: its wasm trapped \(unreachable\)/,
     );
-    assert.ok(isTrap(error));
     assert.deepEqual(heard, [error], "heard once");
     const calls = fake.calls;
     assert.throws(
@@ -72,29 +71,25 @@ test("a trap stops the map with one error, which every call after throws without
   }
 });
 
-test("a trap outside a call stops the map too", () => {
+test("a call into a module not loaded stops the map as a trap", () => {
   const heard: Error[] = [];
-  const { core, stop } = guard(new Fake(), (e) => heard.push(e));
+  const core = guard(
+    {
+      relief(): void {
+        throw new ModuleNotLoadedError("dem");
+      },
+    },
+    (e) => heard.push(e),
+  );
   const quiet = console.error;
   console.error = () => {};
   try {
-    const error = stop(new WebAssembly.RuntimeError("unreachable"));
-    assert.equal(stop(new WebAssembly.RuntimeError("again")), error);
-    assert.throws(
-      () => core.camera(),
-      (e) => e === error,
-    );
-    assert.deepEqual(heard, [error]);
+    const message =
+      "the map stopped: it called into core-dem.wasm before loading it, a bug in Orbis";
+    assert.throws(() => core.relief(), { message });
+    assert.throws(() => core.relief(), { message });
+    assert.equal(heard.length, 1);
   } finally {
     console.error = quiet;
   }
-});
-
-test("a call into a module not loaded stops the map as a trap", () => {
-  const failed = new ModuleNotLoadedError("dem");
-  assert.ok(isTrap(failed));
-  assert.equal(
-    trapError(failed).message,
-    "the map stopped: it called into core-dem.wasm before loading it, a bug in Orbis",
-  );
 });

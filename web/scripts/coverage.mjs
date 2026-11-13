@@ -6,7 +6,7 @@
 //   cargo xtask web --names
 //   pnpm coverage [--scenes=liberty,paris,globe,terrain,raster,tokyo,
 //     tokyo-mlt,protomaps,versatiles,world,world-warm,berlin,app,app-tokyo,
-//     app-offline,app-page,tokyo-page,chicago,nepal,norway,sanfrancisco,uruguay] [--tour]
+//     app-offline,chicago,nepal,norway,sanfrancisco,uruguay] [--tour]
 //     [--out=<dir>] [--reuse] [--show=<n>]
 //
 // The last five are MapLibre Native's real-world render tests, offline
@@ -101,15 +101,6 @@ const SCENES = {
 SCENES.app = { app: "" };
 SCENES["app-tokyo"] = { app: "tokyo" };
 SCENES["app-offline"] = { app: "globe", offline: true };
-// The map on the page's thread, as Safari (no raw pointer moves) and
-// Firefox on macOS with WebGPU (map.ts's `staleWorkerFrames`) run it:
-// what the page runs there that the map worker runs elsewhere.
-SCENES["app-page"] = { app: "", worker: "0" };
-SCENES["tokyo-page"] = {
-  style: "tokyo-mvt",
-  at: "139.74,35.687,15,0,0",
-  worker: "0",
-};
 // MapLibre Native's real-world render tests, offline from the render-test
 // cache `cargo xtask h2h` checks out (load.mjs's `--cache`), where it is.
 const cache = realWorldCache();
@@ -279,9 +270,8 @@ const DUMP = `(globalThis.__wasmInstances ?? []).filter((i) => i.exports.__write
 })`;
 
 /**
- * CDP on the page, its workers and theirs (the map worker starts the job
- * workers), with `HOOK` in each before its scripts run; resolves to an
- * `evaluate` in all of them.
+ * CDP on the page, its workers and theirs, with `HOOK` in each before its
+ * scripts run; resolves to an `evaluate` in all of them.
  */
 async function sessions(context, page) {
   await page.addInitScript(HOOK);
@@ -410,10 +400,7 @@ async function failOffServer(page, server) {
 function url(scene, server) {
   const { realWorld, app, ...rest } = SCENES[scene];
   if (app !== undefined) {
-    const query = new URLSearchParams({
-      ...(app && { style: app }),
-      ...(rest.worker && { worker: rest.worker }),
-    });
+    const query = new URLSearchParams({ ...(app && { style: app }) });
     return `${server.url}${query.size ? `?${query}` : ""}`;
   }
   const query = realWorld

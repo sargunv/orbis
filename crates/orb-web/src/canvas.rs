@@ -4,7 +4,6 @@
 use orb_hal::{Gpu, TextureId};
 use orb_hal_wgpu::WgpuGpu;
 use orb_runtime::TargetFormat;
-use wasm_bindgen::JsValue;
 
 /// Whether this build draws with WebGL 2 (core-gl.wasm).
 pub(crate) const GL: bool = cfg!(feature = "gl");
@@ -51,7 +50,7 @@ pub(crate) struct Canvas {
     read: Option<ReadTarget>,
     /// The canvas, whose WebGL 2 context says when it's lost.
     #[cfg_attr(not(feature = "gl"), allow(dead_code))]
-    element: JsValue,
+    element: web_sys::HtmlCanvasElement,
 }
 
 /// What [`Canvas::frame`] drew: the draw's result, the pixels read, and
@@ -359,31 +358,24 @@ impl Canvas {
         })
     }
 
-    /// A device drawing into `canvas` (an `HTMLCanvasElement` or an
-    /// `OffscreenCanvas`) of `size` physical pixels, which wakes map `map`
-    /// when it's lost.
-    pub(crate) async fn new(canvas: JsValue, size: (u32, u32), map: u32) -> Result<Self, String> {
-        use wasm_bindgen::JsCast;
-
+    /// A device drawing into `canvas`, of `size` physical pixels, which
+    /// wakes map `map` when it's lost.
+    pub(crate) async fn new(
+        canvas: web_sys::HtmlCanvasElement,
+        size: (u32, u32),
+        map: u32,
+    ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let target = if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
-            wgpu::SurfaceTarget::Canvas(canvas.clone())
-        } else {
-            wgpu::SurfaceTarget::OffscreenCanvas(canvas.clone().unchecked_into())
-        };
         let surface = instance
-            .create_surface(target)
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
             .map_err(|e| format!("surface: {e}"))?;
         Self::on(instance, std::rc::Rc::new(surface), canvas, size, map).await
     }
 
     /// A new device drawing into this canvas, after a loss. WebGPU's draws
-    /// into the same surface, its canvas's one context configured anew:
-    /// Firefox throws when an `OffscreenCanvas` is asked for its WebGPU
-    /// context again ("Cannot update created context to different
-    /// options"), so a map in a worker never recovered there. WebGL 2's
-    /// context comes back on the same canvas once restored, and a new
-    /// surface takes it.
+    /// into the same surface, its canvas's one context configured anew.
+    /// WebGL 2's context comes back on the same canvas once restored, and
+    /// a new surface takes it.
     pub(crate) fn again(
         &self,
         map: u32,
@@ -393,7 +385,13 @@ impl Canvas {
         async move {
             match reuse {
                 Some((instance, surface)) => Self::on(instance, surface, element, size, map).await,
-                None => Self::new(element, size, map).await,
+                None => {
+                    #[cfg(feature = "gl")]
+                    crate::gl_context::restored(&element)
+                        .await
+                        .map_err(|e| format!("{e:?}"))?;
+                    Self::new(element, size, map).await
+                }
             }
         }
     }
@@ -402,7 +400,7 @@ impl Canvas {
     async fn on(
         instance: wgpu::Instance,
         surface: std::rc::Rc<wgpu::Surface<'static>>,
-        canvas: JsValue,
+        canvas: web_sys::HtmlCanvasElement,
         (width, height): (u32, u32),
         map: u32,
     ) -> Result<Self, String> {

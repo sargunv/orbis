@@ -1,5 +1,5 @@
 // The wasm map, with its job workers and placement worker (workers.ts),
-// and its recovery from a lost GPU: in the map worker or on the page.
+// and its recovery from a lost GPU, on the page's thread.
 
 import type { OrbisMap as Core } from "../pkg/core.js";
 import {
@@ -81,7 +81,7 @@ export interface Host {
 export async function startHost(
   compiling: Promise<Build>,
   workers: Workers,
-  canvas: HTMLCanvasElement | OffscreenCanvas,
+  canvas: HTMLCanvasElement,
   style: string,
   options: CoreOptions,
   callbacks: HostCallbacks,
@@ -106,7 +106,6 @@ export async function startHost(
   let placement = workers.placement;
   let build: Build;
   let core: Core;
-  let stop: (e: unknown) => Error;
   let destroy = () => {};
   let reloadRegions: () => void;
   try {
@@ -128,10 +127,10 @@ export async function startHost(
       (message: unknown, transfer: Transferable[]) =>
         placement.port.postMessage(message, transfer),
     );
-    ({ core, stop } = guard(created, (e) => {
+    core = guard(created, (e) => {
       destroy();
       callbacks.trapped(e);
-    }));
+    });
   } catch (e) {
     terminateWorkers(workers);
     // A trap making the map is a bug, not this thread's lack.
@@ -208,23 +207,6 @@ export async function startHost(
   };
   jobs.forEach((_, i) => listenJob(i));
   const regions = onRegionsChanged(reloadRegions);
-  // In the map worker the module is the map's alone: a trap outside a
-  // call (a future's poll, a callback from the browser) stops it too. On
-  // the page the module may serve other maps, and a trap there can't be
-  // told apart from other code's.
-  const inWorker =
-    typeof WorkerGlobalScope !== "undefined" &&
-    self instanceof WorkerGlobalScope;
-  const uncaught = (e: ErrorEvent | PromiseRejectionEvent) => {
-    const error = e instanceof ErrorEvent ? e.error : e.reason;
-    if (!(error instanceof WebAssembly.RuntimeError)) return;
-    e.preventDefault();
-    stop(error);
-  };
-  if (inWorker) {
-    self.addEventListener("error", uncaught);
-    self.addEventListener("unhandledrejection", uncaught);
-  }
   destroy = () => {
     if (stopped) return;
     stopped = true;
@@ -233,10 +215,6 @@ export async function startHost(
     for (const r of released) r();
     for (const w of [...jobs.map((j) => j.worker), placement.worker])
       w.terminate();
-    if (inWorker) {
-      self.removeEventListener("error", uncaught);
-      self.removeEventListener("unhandledrejection", uncaught);
-    }
   };
   callbacks.setup(core);
   let size: [number, number, number] | undefined;
@@ -255,7 +233,7 @@ export async function startHost(
     jobWorkers: ports.length,
     async recover() {
       // The map takes calls while its new device is made.
-      core.recovered(await core.newDevice(canvas));
+      core.recovered(await core.newDevice());
       if (size) core.resize(...size);
     },
     async loadModules(names) {

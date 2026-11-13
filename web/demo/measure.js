@@ -1,7 +1,7 @@
 // The measurement page (`web/scripts/measure.mjs` drives it): the
 // demo's Tokyo map with a blue circle drawn by the map and a cyan DOM
-// annotation at the same point, in Orbis (`?engine=orbis`; on the page,
-// not in a worker, with `&worker=0`) or the pinned GL JS (`?engine=gljs`).
+// annotation at the same point, in Orbis (`?engine=orbis`) or the pinned
+// GL JS (`?engine=gljs`).
 // It logs, for each frame that shows new input, where the circle is drawn
 // and when the latest input it shows arrived, so the driver can
 // read input-to-photon latency and overlay skew off composited frames.
@@ -67,7 +67,6 @@ async function startOrbis() {
     container,
     style: demoStyle(params, "tokyo"),
     camera: START,
-    worker: params.get("worker") !== "0",
   });
   await map.once("idle");
   const at = await circleLngLat(

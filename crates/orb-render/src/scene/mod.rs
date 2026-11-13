@@ -706,8 +706,7 @@ pub(crate) struct SceneBuffers {
 }
 
 /// A stream of u32 words to upload: in core memory, or held by the host
-/// (payloads reach the GPU without entering the map worker's wasm
-/// memory).
+/// (payloads reach the GPU without entering the map's wasm memory).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Words<'a> {
     Core(&'a [u32]),

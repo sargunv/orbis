@@ -12,7 +12,6 @@
 // the map options that differ from the entry's own (`&terrain=1`,
 // `&light=map`, `&blend=1`, `&projection=mercator`, …, app/options.js),
 // `&backend=webgpu|webgl2` (the renderer, Auto by default, app/options.js),
-// `&worker=0` (the map on the page's thread rather than in its worker),
 // `&lose=<ms>` (lose the GPU that long after
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
@@ -464,7 +463,6 @@ async function load(next, { camera }) {
       // The demo shows what Orbis can do beyond the spec too.
       previews: "all",
       backend: wantedBackend(params()),
-      worker: params().get("worker") !== "0",
     });
   } catch (e) {
     options.drawing(null);

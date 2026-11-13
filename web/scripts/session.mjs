@@ -2,13 +2,13 @@
 // empty HTTP cache and the browser's shader cache empty), the page opened,
 // and real mouse input (wheel notches, drags, right-button tilts and turns)
 // from soon after the map's first frame, while its tiles and pipelines
-// still load, through the same moves in every engine. In headless Chromium
-// or the installed Firefox (headed, on WebGPU: serve.mjs's
-// `launchFirefox`), in Orbis and the pinned GL JS on demo/load.html.
+// still load, through the same moves in every engine. In headless Chromium,
+// the installed Firefox (headed, on WebGPU: serve.mjs's `launchFirefox`) or
+// Playwright's WebKit, in Orbis and the pinned GL JS on demo/load.html.
 //
-//   pnpm session [--session=manhattan|paris|alps|globe|nepal] [--browser=chromium|firefox]
+//   pnpm session [--session=manhattan|paris|alps|globe|nepal] [--browser=chromium|firefox|webkit]
 //     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
-//     [--ratio=r] [--start=ms] [--input=ms] [--warm] [--driver] [--page] [--worker] [--headed]
+//     [--ratio=r] [--start=ms] [--input=ms] [--warm] [--driver] [--headed]
 //     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
 //     [--terrain=0|1] [--gpu] [--dump=prefix] [--profile=firefox-profile.json] [--sample=gpu-sample.txt]
 //
@@ -62,8 +62,8 @@
 // whose times show where work waits), its submissions in `--dump`'s file.
 //
 // For each run it reports when the first frame came, the map's frame
-// intervals (as the page hears of them: Orbis's `render` events from its
-// worker, GL JS's on the page), how long from each move's start the map's
+// intervals (as the page hears of them: Orbis's `render` events, GL JS's
+// own), how long from each move's start the map's
 // first frame came (`moveToFrame`: a move no frame answered shows only
 // there), the page's animation-frame intervals that overlap a move (a
 // stall that swallows a whole move counts) and, in Chromium, the GPU
@@ -76,19 +76,14 @@
 // compiling, tiles arrived, bytes uploaded and GPU memory grown, and what
 // none of that accounts for (`untimedMs`: the browser's GPU thread, the
 // compositor, GC). Chromium also reports the page's long tasks.
-// Firefox on macOS draws Orbis on the page's thread (map.ts's
-// `staleWorkerFrames`), so there the page's own frames show the map's
-// work, and `--page` draws it there in Chromium too; `--worker` draws it
-// in its worker in Firefox, as Firefox elsewhere than macOS does (its user
-// agent another platform's, as `pnpm flight` documents). A map on the page
-// has its WebGPU calls timed (each slow frame's, and the session's, with
+// Orbis draws on the page's thread, as GL JS does, so the page's own frames
+// show the map's work. It has its WebGPU calls timed (each slow frame's, and the session's, with
 // the bytes each buffer took), its message handlers too, its calls over
 // 5 ms listed by when (`slowCalls`), the pipelines it made during the
 // moves (`pipelinesInMoves`: each a compile mid-gesture), and the async
 // ones that finished compiling during them (`pipelinesSettledInMoves`:
 // each a compile that ran into the moves). Its cold runs
-// bust the driver's shader cache (`?nonce=`, cold.js; in a worker, the
-// same code put ahead of the map worker's script), unless `--driver` keeps
+// bust the driver's shader cache (`?nonce=`, cold.js), unless `--driver` keeps
 // what the driver's cache holds from earlier runs (a user's later
 // launches).
 import { execFileSync, spawn } from "node:child_process";
@@ -105,8 +100,12 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
-import { bustShaderCaches } from "../demo/cold.js";
-import { launchChromium, launchFirefox, serveDemo } from "./serve.mjs";
+import {
+  launchChromium,
+  launchFirefox,
+  launchWebkit,
+  serveDemo,
+} from "./serve.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -494,13 +493,7 @@ async function launch() {
     // Timers to the microsecond, for the WebGPU tally: Firefox rounds
     // them to the millisecond otherwise.
     const browser = await launchFirefox({
-      prefs: {
-        "privacy.reduceTimerPrecision": false,
-        ...(args.worker && {
-          "general.useragent.override":
-            "Mozilla/5.0 (X11; Linux aarch64; rv:159.0) Gecko/20100101 Firefox/159.0",
-        }),
-      },
+      prefs: { "privacy.reduceTimerPrecision": false },
     });
     if (!browser.webgpu) console.error("no installed Firefox: WebGL 2");
     return browser;
@@ -518,6 +511,7 @@ async function launch() {
       args: [...flags, "--enable-gpu-service-tracing"],
     });
   }
+  if (browserName === "webkit") return launchWebkit({ headed: !!args.headed });
   throw new Error(`unknown browser ${browserName}`);
 }
 
@@ -537,23 +531,12 @@ async function run(server, engine) {
     page.on("console", (m) => {
       if (m.type() === "error") errors.push(m.text());
     });
-    const onPage = (browserName === "firefox" && !args.worker) || !!args.page;
     // A cold run's shaders, unique to it past the browser's and the
-    // driver's caches (cold.js): on the page through `?nonce=`, in the map
-    // worker by the same code put ahead of the worker's script.
+    // driver's caches (cold.js).
     const nonce =
       engine === "orbis" && !warm && !args.driver
         ? 1 + Math.floor(Math.random() * 9999)
         : 0;
-    if (nonce && !onPage)
-      await context.route(/\/assets\/map-worker[^/]*\.js$/, async (route) => {
-        const response = await route.fetch();
-        const body = await response.text();
-        await route.fulfill({
-          response,
-          body: `(${bustShaderCaches})(new URLSearchParams("nonce=${nonce}"));\n${body}`,
-        });
-      });
     const query = () =>
       new URLSearchParams({
         engine,
@@ -562,9 +545,7 @@ async function run(server, engine) {
         frames: "",
         ...(args.terrain && { terrain: args.terrain }),
         ...(engine === "orbis" && args.backend && { backend: args.backend }),
-        // Firefox on macOS draws Orbis on the page anyway.
-        ...(engine === "orbis" &&
-          onPage && { worker: "0", ...(nonce && { nonce }) }),
+        ...(nonce && { nonce }),
       });
     // WebGPU's calls on the page timed and tallied, for a map drawn there:
     // what each frame spent in the browser's WebGPU, by call.

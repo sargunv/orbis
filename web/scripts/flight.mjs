@@ -6,9 +6,11 @@
 //
 //   pnpm flight [--engine=orbis|gljs] [--pkg=dir] [--trace=out.json]
 //     [--size=WxH] [--ratio=r] [--legs=n] [--gpu=1|out.json]
-//     [--browser=chromium|firefox|webkit] [--query=worker=0&backend=webgl2]
-//     [--prefs=name=value,…] [--record=1]
+//     [--browser=chromium|firefox|webkit] [--query=backend=webgl2]
+//     [--prefs=name=value,…] [--record=1] [--busy=ms[/period]]
 //
+// `--busy=30/100` has the page run 30 ms of JavaScript every 100 ms
+// through the flight, as an app busy beside the map.
 // `--browser=firefox` flies it in the installed Firefox, headed, with
 // WebGPU, over Marionette (firefox.mjs), `--prefs` setting its prefs. In
 // place of a trace's presents, `--record=1` records what Firefox's
@@ -16,13 +18,9 @@
 // composites that showed a new map frame, the last one again, or an older
 // one (`stale`: Firefox bug 2091844). Firefox writes each recording's
 // PNGs between windows, which slows the page: take frame pacing from runs
-// without it. Firefox on macOS draws a WebGPU map on the page's thread
-// (map.ts's `staleWorkerFrames`); to fly its worker for comparison, give
-// it another platform's user agent (`--prefs=general.useragent.override=
-// Mozilla/5.0 (X11; Linux aarch64; rv:159.0) Gecko/20100101 Firefox/159.0`).
-// `webkit` flies it in Playwright's WebKit, with neither. `--query` adds
-// to the demo page's query (`worker=0` keeps Orbis on the page's thread,
-// `backend=webgl2` draws with WebGL 2).
+// without it. `webkit` flies it in Playwright's WebKit, with neither.
+// `--query` adds to the demo page's query (`backend=webgl2` draws with
+// WebGL 2).
 // `--engine=gljs` flies the pinned MapLibre GL JS over the same style and
 // legs instead. `--pkg` serves another build of `core.wasm` (a copy of
 // web/pkg) for A/B runs. `--trace` keeps the Chrome trace the present
@@ -242,10 +240,23 @@ try {
       "devtools.timeline,v8.gc,disabled-by-default-devtools.timeline,toplevel,gpu",
     transferMode: "ReturnAsStream",
   });
+  if (args.busy) {
+    const [task, period = 100] = args.busy.split("/").map(Number);
+    await page.evaluate(
+      ([task, period]) => {
+        globalThis.__busy = setInterval(() => {
+          const end = performance.now() + task;
+          while (performance.now() < end);
+        }, period);
+      },
+      [task, period],
+    );
+  }
   const { started, ended, submissions, composites } =
     firefox && args.record
       ? await flyRecording(firefox, ...fly)
       : await page.evaluate(...fly);
+  if (args.busy) await page.evaluate(() => clearInterval(globalThis.__busy));
   if (cdp) {
     const traced = new Promise((r) => cdp.once("Tracing.tracingComplete", r));
     await cdp.send("Tracing.end");
@@ -266,7 +277,6 @@ try {
     engine === "orbis"
       ? await page.evaluate(() => ({
           backend: globalThis.orbis.map.backend,
-          worker: globalThis.orbis.map.inWorker,
         }))
       : {};
   const moving = frames.filter((f) => f.t > started && f.t <= ended);

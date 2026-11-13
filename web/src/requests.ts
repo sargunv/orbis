@@ -1,7 +1,6 @@
 // How every map on the page fetches (GL JS `transformRequest`): a page-wide
-// transform each request goes through, on the page and in the map and job
-// workers, which ask the page for it (a job worker of a map worker asks
-// that worker, which asks the page).
+// transform each request goes through, on the page and in the job workers,
+// which ask the page for it.
 
 /** What a transform makes of a request: the URL to fetch and headers to send. */
 export interface RequestParameters {

@@ -1,19 +1,22 @@
 // The page's side of a map: its DOM, input, events, annotations and video
 // players, and the API. The map itself (engine.ts: the wasm map, its
-// camera, gestures, drawing and queries) runs in the map worker where the
-// browser can draw into an OffscreenCanvas there and deliver
-// pointer moves as they come (`pointerrawupdate`): Chromium-based
-// browsers. Elsewhere it runs on the page. Either way tile jobs and labels
-// run in workers of their own, and the page reaches the map through a
-// link (link.ts): calls that answer with promises, and reports after
-// frames.
+// camera, gestures, drawing and queries) runs on the page's thread, as GL
+// JS does, and draws on its animation frames; tile jobs and labels run in
+// workers of their own. Calls into the map answer with promises (a call
+// may wait for the feature module it needs), and the map reports after
+// its frames.
 
 import { Annotations } from "./annotations.ts";
-import { loadModule, pickBuild, type BackendChoice } from "./builds.ts";
-import type { EngineEvent, MapState, Pixels, Report } from "./engine.ts";
+import { loadModule, pickBuild } from "./builds.ts";
+import {
+  Engine,
+  type EngineEvent,
+  type MapState,
+  type Pixels,
+  type Report,
+} from "./engine.ts";
 import { Emitter, type Listener } from "./events.ts";
 import { allowed, attachInput, type Allowed } from "./input.ts";
-import { directLink, workerLink, type Link } from "./link.ts";
 import { preloadStyle, styleModules } from "./preload.ts";
 import {
   transaction,
@@ -49,11 +52,20 @@ import type {
   TileLod,
 } from "./types.ts";
 import { Videos } from "./videos.ts";
-import {
-  defaultJobWorkers,
-  spawnWorkers,
-  terminateWorkers,
-} from "./workers.ts";
+import { defaultJobWorkers, spawnWorkers } from "./workers.ts";
+
+/** The map's methods the page calls by name. */
+type Calls = Omit<
+  { [K in keyof Engine]: Engine[K] },
+  "state" | "input" | "wake" | "backend" | "call" | "remove"
+>;
+type Method = keyof Calls;
+/** Calls the map's `method`: a promise of its answer, rejected once the
+ * map is removed. */
+type Call = <K extends Method>(
+  method: K,
+  ...args: Parameters<Calls[K]>
+) => Promise<Awaited<ReturnType<Calls[K]>>>;
 
 /** An image's RGBA bytes, as the wasm map takes them. */
 const rgba = (image: StyleImageData) =>
@@ -74,26 +86,25 @@ const imageData = ({ pixels, width, height }: Pixels) =>
     height,
   );
 
-/** The camera: its state, moves and limits. The state is the map's as of
- * its last frame or answer: a move shows in it once the map has it. */
+/** The camera: its state, moves and limits. The state is the map's now:
+ * a move shows in it as soon as the call that made it returns. */
 export class CameraControl {
-  #link: Link;
+  #call: Call;
+  #state: () => MapState;
   #track: (id: Promise<number>) => Promise<boolean>;
   #fail: (e: unknown) => void;
 
   /** @internal */
   constructor(
-    link: Link,
+    call: Call,
+    state: () => MapState,
     track: (id: Promise<number>) => Promise<boolean>,
     fail: (e: unknown) => void,
   ) {
-    this.#link = link;
+    this.#call = call;
+    this.#state = state;
     this.#track = track;
     this.#fail = fail;
-  }
-
-  #state(): MapState {
-    return this.#link.state();
   }
   #send(call: Promise<unknown>): void {
     call.catch(this.#fail);
@@ -112,7 +123,7 @@ export class CameraControl {
   /** Puts the eye there at once (GL JS `setFreeCameraOptions`), keeping the
    * field of view and padding; what `camera` leaves out stays. */
   jumpToFree(camera: Partial<FreeCamera>): void {
-    this.#send(this.#link.call("jumpToFree", camera));
+    this.#send(this.#call("jumpToFree", camera));
   }
 
   /** Whether the center stands on the terrain at rest (GL JS
@@ -122,13 +133,13 @@ export class CameraControl {
     return this.#state().clamped;
   }
   set centerClampedToGround(clamped: boolean) {
-    this.#send(this.#link.call("setCenterClampedToGround", clamped));
+    this.#send(this.#call("setCenterClampedToGround", clamped));
   }
 
   /** Puts the center this many metres above sea level at once (GL JS
    * `setCenterElevation`); while clamped to the ground, the terrain takes it back. */
   setCenterElevation(elevation: number): void {
-    this.#send(this.#link.call("setCenterElevation", elevation));
+    this.#send(this.#call("setCenterElevation", elevation));
   }
 
   /** Whether an animation or a gesture is moving the camera. */
@@ -140,18 +151,18 @@ export class CameraControl {
    * of the others go on, as in MapLibre Native, and one left with nothing to
    * move is interrupted. {@link stop} ends them all. */
   jumpTo(options: CameraOptions): void {
-    this.#send(this.#link.call("jumpTo", options));
+    this.#send(this.#call("jumpTo", options));
   }
 
   /** Starts at the next frame; resolves true on arrival, false when interrupted. */
   easeTo(options: EaseOptions): Promise<boolean> {
-    return this.#track(this.#link.call("easeTo", options));
+    return this.#track(this.#call("easeTo", options));
   }
 
   /** Flies along GL JS's zoom-out curve from the next frame; resolves
    * true on arrival, false when interrupted. */
   flyTo(options: FlyOptions): Promise<boolean> {
-    return this.#track(this.#link.call("flyTo", options));
+    return this.#track(this.#call("flyTo", options));
   }
 
   /** The camera that shows `bounds`, or null when the padding leaves no room. */
@@ -159,11 +170,7 @@ export class CameraControl {
     bounds: Bounds,
     options: FitOptions = {},
   ): Promise<CameraOptions | null> {
-    return this.#link.call(
-      "cameraForBounds",
-      new Float64Array(bounds),
-      options,
-    );
+    return this.#call("cameraForBounds", new Float64Array(bounds), options);
   }
 
   /** Flies (or, with `linear`, eases) to show `bounds`; resolves false when it doesn't fit or is interrupted. */
@@ -182,16 +189,16 @@ export class CameraControl {
    * snap. Input or a camera move stops it. Resolves true once it ends on
    * its own, false when stopped. The map's own gestures end this way. */
   startMomentum(momentum: GestureMomentum): Promise<boolean> {
-    return this.#track(this.#link.call("startMomentum", momentum));
+    return this.#track(this.#call("startMomentum", momentum));
   }
 
   /** Stops every running animation; their promises resolve false. */
   stop(): void {
-    this.#send(this.#link.call("stop"));
+    this.#send(this.#call("stop"));
   }
 
   setConstraints(constraints: Constraints): void {
-    this.#send(this.#link.call("setConstraints", constraints));
+    this.#send(this.#call("setConstraints", constraints));
   }
 }
 
@@ -200,7 +207,7 @@ export class OrbisMap {
   readonly container: HTMLElement;
   readonly camera: CameraControl;
   readonly annotations: Annotations;
-  #link: Link;
+  #engine: Engine;
   /** Video sources' players, on the page's thread. */
   #videos: Videos;
   #events = new Emitter<MapEvents>();
@@ -225,14 +232,15 @@ export class OrbisMap {
     frame: HTMLElement,
     canvas: HTMLCanvasElement,
     overlay: HTMLElement,
-    link: Link,
+    engine: Engine,
+    reports: Reports,
     interactive: boolean,
     pixelRatio?: number,
   ) {
     this.container = container;
     this.#frame = frame;
     this.#canvas = canvas;
-    this.#link = link;
+    this.#engine = engine;
     this.#pixelRatio = pixelRatio;
     const fail = (e: unknown) => this.#error(e);
     this.#videos = new Videos(
@@ -241,39 +249,29 @@ export class OrbisMap {
           ? undefined
           : {
               videoFrame: (source, video) => {
-                // A worker takes the frame as a bitmap, closed if it never gets there.
-                if (!link.worker) {
-                  link.call("videoFrame", source, video).catch(() => {});
-                  return;
-                }
-                createImageBitmap(video).then(
-                  (bitmap) =>
-                    link
-                      .call("videoFrame", source, bitmap)
-                      .catch(() => bitmap.close()),
-                  () => {},
-                );
+                this.#call("videoFrame", source, video).catch(() => {});
               },
               videoFailed: (source, message) => {
-                link.call("videoFailed", source, message).catch(fail);
+                this.#call("videoFailed", source, message).catch(fail);
               },
             },
       () => {},
     );
-    this.camera = new CameraControl(link, (id) => this.#track(id), fail);
+    this.camera = new CameraControl(
+      this.#call,
+      () => engine.state(),
+      (id) => this.#track(id),
+      fail,
+    );
     this.annotations = new Annotations(overlay, (points) => {
-      link.call("setAnnotations", points).then((pixels) => {
+      this.#call("setAnnotations", points).then((pixels) => {
         if (pixels) this.annotations.place(pixels);
       }, fail);
     });
     if (interactive) {
-      const input = attachInput(
-        canvas,
-        (kind, args, time) => {
-          if (!this.#removed) link.input(kind, args, time);
-        },
-        link.worker,
-      );
+      const input = attachInput(canvas, (kind, args, time) => {
+        if (!this.#removed) engine.input(kind, args, time);
+      });
       this.#showBox = input.showBox;
       this.#allow = input.allow;
       this.#detach.push(input.detach);
@@ -283,12 +281,17 @@ export class OrbisMap {
     this.#detach.push(() => observer.disconnect());
     // Tiles that failed while offline load again when the network returns.
     const online = () => {
-      link.call("retryFailedTiles").catch(fail);
+      this.#call("retryFailedTiles").catch(fail);
     };
     addEventListener("online", online);
     this.#detach.push(() => removeEventListener("online", online));
-    link.listen((report) => this.#receive(report));
+    reports.listen((report) => this.#receive(report));
   }
+
+  #call: Call = (method, ...args) =>
+    this.#removed
+      ? Promise.reject(new Error("the map was removed"))
+      : (this.#engine.call(method, args) as Promise<never>);
 
   /** Sets what the map's gestures may move, how releases continue and
    * when presses are clicks (MapLibre Compose's `MapInteractions`); what
@@ -297,7 +300,7 @@ export class OrbisMap {
    * a gesture under way. */
   setGestures(options: GestureOptions): void {
     this.#allow?.(allowed(options));
-    this.#link.call("setGestures", options).catch((e) => this.#error(e));
+    this.#call("setGestures", options).catch((e) => this.#error(e));
   }
 
   /** The canvas the map draws into and takes input from. */
@@ -305,18 +308,12 @@ export class OrbisMap {
     return this.#canvas;
   }
 
-  /** Whether the map runs in a worker (the default where the browser
-   * allows it, {@link MapOptions.worker}), not on the page's thread. */
-  get inWorker(): boolean {
-    return this.#link.worker;
-  }
-
   /** The GPU API the map draws with: WebGPU, or WebGL 2 where the browser
    * gives WebGPU no adapter or the map asked for it ({@link
    * MapOptions.backend}). What WebGL 2 draws otherwise than WebGPU, the
    * map says with `degraded` events (#140). */
   get backend(): "webgpu" | "webgl2" {
-    return this.#link.backend;
+    return this.#engine.backend;
   }
 
   /**
@@ -331,28 +328,28 @@ export class OrbisMap {
     height = this.#canvas.clientHeight,
     scale = this.#pixelRatio ?? devicePixelRatio,
   ): Promise<ImageData> {
-    return imageData(await this.#link.call("snapshot", width, height, scale));
+    return imageData(await this.#call("snapshot", width, height, scale));
   }
 
   /** Loses the GPU on purpose, to exercise recovery. */
   loseDevice(): void {
-    this.#send(this.#link.call("loseDevice"));
+    this.#send(this.#call("loseDevice"));
   }
   /** Traps the placement worker's wasm, as a bug would, to exercise its
    * replacement: labels place again within a frame or two. */
   trapPlacementWorker(): void {
-    this.#send(this.#link.call("trapPlacementWorker"));
+    this.#send(this.#call("trapPlacementWorker"));
   }
   /** Traps every job worker's wasm, as a bug would, to exercise their
    * replacement: tiles load again on the new workers. */
   trapJobWorkers(): void {
-    this.#send(this.#link.call("trapJobWorkers"));
+    this.#send(this.#call("trapJobWorkers"));
   }
   /** Traps the map's own wasm, as a bug would, to exercise how it fails:
    * one `error` event says the map stopped, and every call after rejects
    * with the same message. */
   trap(): void {
-    this.#send(this.#link.call("trap"));
+    this.#send(this.#call("trap"));
   }
   /** For test runners: frames show `time` (milliseconds on the page's
    * clock, as `performance.now()` gives it) instead of their animation
@@ -361,7 +358,7 @@ export class OrbisMap {
    * frames follow the animation frames again. Resolves once the map has
    * it, so every frame it reports after that shows `time`. */
   setFrameClock(time?: number): Promise<void> {
-    return this.#link.call("setFrameClock", time);
+    return this.#call("setFrameClock", time);
   }
 
   /** The last frame's counters. */
@@ -378,34 +375,34 @@ export class OrbisMap {
   async readPixels({
     premultiplied = false,
   }: { premultiplied?: boolean } = {}): Promise<ImageData> {
-    return imageData(await this.#link.call("readPixels", premultiplied));
+    return imageData(await this.#call("readPixels", premultiplied));
   }
 
   /** Draws a frame even if nothing changed (GL JS `triggerRepaint`). */
   triggerRepaint(): void {
-    this.#send(this.#link.call("triggerRepaint"));
+    this.#send(this.#call("triggerRepaint"));
   }
 
   /** Times the GPU's work from now on, for measurements: `gpuTimings`
    * collects it. WebGPU only. */
   setGpuTiming(on: boolean): void {
-    this.#send(this.#link.call("setGpuTiming", on));
+    this.#send(this.#call("setGpuTiming", on));
   }
   /** Has the cull keep every candidate, for measurements of what it saves:
    * the map draws the same, only slower. */
   setKeepAllCull(on: boolean): void {
-    this.#send(this.#link.call("setKeepAllCull", on));
+    this.#send(this.#call("setKeepAllCull", on));
   }
   /** Sets how tiles coarsen with distance in pitched views; fields left out stay as they were. */
   setTileLod(lod: TileLod): void {
-    this.#send(this.#link.call("setTileLod", lod));
+    this.#send(this.#call("setTileLod", lod));
   }
 
   /** Each GPU submission's times since the last call, once the GPU has
    * finished them, in order: its passes' GPU milliseconds by label (where
    * the device has timestamp queries) and the CPU's to submit them. */
   gpuTimings(): Promise<GpuSubmission[]> {
-    return this.#link.call("gpuTimings");
+    return this.#call("gpuTimings");
   }
 
   on<K extends keyof MapEvents>(
@@ -431,7 +428,7 @@ export class OrbisMap {
   /** The pixel showing a point, on the terrain, or null behind the eye: now,
    * or after a jump to `camera` (without making it). */
   async project(lngLat: LngLat, camera?: CameraOptions): Promise<Point | null> {
-    const p = await this.#link.call("project", lngLat[0], lngLat[1], camera);
+    const p = await this.#call("project", lngLat[0], lngLat[1], camera);
     return pair(p);
   }
 
@@ -441,13 +438,13 @@ export class OrbisMap {
     point: Point,
     camera?: CameraOptions,
   ): Promise<LngLat | null> {
-    const g = await this.#link.call("unproject", point[0], point[1], camera);
+    const g = await this.#call("unproject", point[0], point[1], camera);
     return pair(g);
   }
 
   /** The topmost feature under a pixel, from the last frame. */
   hitTest(point: Point): Promise<Hit | null> {
-    return this.#link.call("hitTest", point[0], point[1]);
+    return this.#call("hitTest", point[0], point[1]);
   }
 
   /** Every feature drawn under a point or box (all on screen without one), topmost first. */
@@ -465,7 +462,7 @@ export class OrbisMap {
               ...(geometry as [Point, Point])[1],
             ];
     return JSON.parse(
-      await this.#link.call(
+      await this.#call(
         "queryRendered",
         new Float64Array(box),
         options.layers ? JSON.stringify(options.layers) : undefined,
@@ -479,7 +476,7 @@ export class OrbisMap {
     options: SourceQueryOptions = {},
   ): Promise<Feature[]> {
     return JSON.parse(
-      await this.#link.call(
+      await this.#call(
         "querySource",
         source,
         options.sourceLayer,
@@ -496,14 +493,7 @@ export class OrbisMap {
     clusterId: number,
   ): Promise<Feature[]> {
     return JSON.parse(
-      await this.#link.call(
-        "queryCluster",
-        source,
-        "children",
-        clusterId,
-        0,
-        0,
-      ),
+      await this.#call("queryCluster", source, "children", clusterId, 0, 0),
     );
   }
 
@@ -515,7 +505,7 @@ export class OrbisMap {
     offset = 0,
   ): Promise<Feature[]> {
     return JSON.parse(
-      await this.#link.call(
+      await this.#call(
         "queryCluster",
         source,
         "leaves",
@@ -532,7 +522,7 @@ export class OrbisMap {
     clusterId: number,
   ): Promise<number> {
     return JSON.parse(
-      await this.#link.call(
+      await this.#call(
         "queryCluster",
         source,
         "expansionZoom",
@@ -550,7 +540,7 @@ export class OrbisMap {
    * new style is in; a style with another tile grid, or other glyphs, loads
    * every tile afresh. */
   setStyle(style: string | object): void {
-    this.#send(this.#link.call("setStyleUrl", styleUrl(style)));
+    this.#send(this.#call("setStyleUrl", styleUrl(style)));
   }
 
   /** Applies GL JS map calls as one transaction, or rejects and applies
@@ -563,7 +553,7 @@ export class OrbisMap {
     } catch (e) {
       return Promise.reject(e);
     }
-    return this.#link.call("edit", commands);
+    return this.#call("edit", commands);
   }
   setFeatureState(
     feature: FeatureTarget,
@@ -597,7 +587,7 @@ export class OrbisMap {
           ? data
           : undefined;
     const geojson = data && !bytes ? JSON.stringify(data) : undefined;
-    return this.#link.call(
+    return this.#call(
       "hostTile",
       source,
       tile.z,
@@ -627,7 +617,7 @@ export class OrbisMap {
       zxy.set([t.z, t.x, t.y], i * 3);
       heights.set(t.heights, i * side * side);
     });
-    return this.#link.call("hostElevations", source, side, zxy, heights);
+    return this.#call("hostElevations", source, side, zxy, heights);
   }
 
   /** A port that takes `setHostElevations`'s batches straight to the map's
@@ -637,20 +627,20 @@ export class OrbisMap {
    * shows, `ElevationPortShown`. The page's thread never sees them. */
   elevationPort(): MessagePort {
     const { port1, port2 } = new MessageChannel();
-    this.#link.call("elevationPort", port2).catch(() => port1.close());
+    this.#call("elevationPort", port2).catch(() => port1.close());
     return port1;
   }
 
   /** Asks for every tile of the app's source again: its data changed. Drawn
    * tiles stay until the new ones replace them. */
   reloadHostTiles(source: string): Promise<void> {
-    return this.#link.call("reloadHostTiles", source);
+    return this.#call("reloadHostTiles", source);
   }
 
   /** The picture a `canvas` source shows now ({"type": "canvas", "canvas":
    * name, "coordinates": …}): the app draws it, and hands each new one in. */
   setSourceFrame(source: string, image: StyleImageData): Promise<void> {
-    return this.#link.call(
+    return this.#call(
       "sourceFrame",
       source,
       image.width,
@@ -666,7 +656,7 @@ export class OrbisMap {
     image: StyleImageData,
     options: StyleImageOptions = {},
   ): Promise<void> {
-    return this.#link.call(
+    return this.#call(
       "addImage",
       name,
       image.width,
@@ -677,7 +667,7 @@ export class OrbisMap {
   }
   /** Replaces an image's pixels, of the same size (GL JS `updateImage`). */
   updateImage(name: string, image: StyleImageData): Promise<void> {
-    return this.#link.call(
+    return this.#call(
       "updateImage",
       name,
       image.width,
@@ -687,43 +677,43 @@ export class OrbisMap {
   }
   /** Removes an image from the style (GL JS `removeImage`). */
   removeImage(name: string): Promise<void> {
-    return this.#link.call("removeImage", name);
+    return this.#call("removeImage", name);
   }
   /** Plays, pauses or seeks (to `seconds`) a video source's video (GL JS
    * `VideoSource.play`, `pause`, `seek`); rejects for a source that isn't one. */
   playVideo(source: string): Promise<void> {
-    return this.#link.call("controlVideo", source, "play", 0);
+    return this.#call("controlVideo", source, "play", 0);
   }
   pauseVideo(source: string): Promise<void> {
-    return this.#link.call("controlVideo", source, "pause", 0);
+    return this.#call("controlVideo", source, "pause", 0);
   }
   seekVideo(source: string, seconds: number): Promise<void> {
-    return this.#link.call("controlVideo", source, "seek", seconds);
+    return this.#call("controlVideo", source, "seek", seconds);
   }
   /** Whether the style has an image by this name, from its sprites or added. */
   hasImage(name: string): Promise<boolean> {
-    return this.#link.call("hasImage", name);
+    return this.#call("hasImage", name);
   }
 
   /** The style as edits have left it. */
   async getStyle(): Promise<object> {
-    return JSON.parse(await this.#link.call("getStyle"));
+    return JSON.parse(await this.#call("getStyle"));
   }
   /** Layer `id` as the style has it, its paint and layout properties included. */
   async getLayer(id: string): Promise<Record<string, unknown> | undefined> {
-    const json = await this.#link.call("getLayer", id);
+    const json = await this.#call("getLayer", id);
     return json === undefined ? undefined : JSON.parse(json);
   }
   async getSource(id: string): Promise<Record<string, unknown> | undefined> {
-    const json = await this.#link.call("getSource", id);
+    const json = await this.#call("getSource", id);
     return json === undefined ? undefined : JSON.parse(json);
   }
   /** The layers' ids in drawing order. */
   getLayersOrder(): Promise<string[]> {
-    return this.#link.call("layerIds");
+    return this.#call("layerIds");
   }
   getSourceIds(): Promise<string[]> {
-    return this.#link.call("sourceIds");
+    return this.#call("sourceIds");
   }
 
   /** Stops drawing and releases the map's workers and DOM. Animations
@@ -735,7 +725,7 @@ export class OrbisMap {
     for (const resolve of this.#animations.values()) resolve(false);
     this.#animations.clear();
     this.#videos.destroy();
-    this.#link.destroy();
+    this.#engine.remove();
     this.#frame.remove();
   }
 
@@ -744,10 +734,7 @@ export class OrbisMap {
   }
 
   /** Resolves with animation `id`'s end. The id arrives before any
-   * frame's report can end it: in a worker, the call's reply is posted in
-   * the task that started the animation, before its frames, and this runs
-   * in a microtask of the reply's message; on the page, frames wait for
-   * an animation frame. */
+   * frame's report can end it: frames wait for an animation frame. */
   #track(id: Promise<number>): Promise<boolean> {
     return id.then((id) => {
       if (id < 0 || this.#removed) return id < 0;
@@ -764,12 +751,9 @@ export class OrbisMap {
       Math.round(this.canvas.clientWidth * ratio),
       Math.round(this.canvas.clientHeight * ratio),
     ];
-    // A worker sizes its offscreen canvas itself.
-    if (!this.#link.worker) {
-      this.canvas.width = w;
-      this.canvas.height = h;
-    }
-    this.#send(this.#link.call("resize", w, h, ratio));
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.#send(this.#call("resize", w, h, ratio));
   }
 
   /** What the map reports: its frame's counters, events and annotations. */
@@ -816,35 +800,25 @@ export class OrbisMap {
   }
 }
 
-/** Whether this browser runs the map in a worker: it can hand a canvas to
- * one, and tells the page of pointer moves as they come. Without that
- * (Safari) the page hears of a move as its own frame begins, when the
- * worker's has too: forwarded then, input shows two frames later than on
- * the page (in Chromium, pointer moves so forwarded showed a pan 72 ms
- * after input, against 39 ms on the page). Chromium-based browsers and
- * Firefox can; whether the worker has WebGPU, it says. */
-const workerCapable = () =>
-  typeof HTMLCanvasElement.prototype.transferControlToOffscreen ===
-    "function" && "onpointerrawupdate" in HTMLElement.prototype;
+/** Reports, held until the page's side of the map listens. */
+interface Reports {
+  deliver(report: Report): void;
+  listen(onreport: (report: Report) => void): void;
+}
 
-/** Whether this is Firefox on macOS with a WebGPU adapter, where a map
- * asking for anything but WebGL 2 draws on the page's thread: Firefox shows
- * older frames of a WebGPU canvas a worker draws whenever the page's DOM
- * changes, as a map's compass and markers change it each frame, and
- * slows until it freezes (https://bugzilla.mozilla.org/show_bug.cgi?id=2091844;
- * its WebGL 2 is unaffected). Drawn on the page, every frame shows in
- * order. Firefox 159 still shows some: three 60 s Alps flights in a worker
- * (`pnpm flight --browser=firefox --record=1`) composited one stale frame
- * in 739, and none in 911 on the page. Remove once Firefox fixes it. */
-async function staleWorkerFrames(backend?: BackendChoice): Promise<boolean> {
-  const agent = navigator.userAgent;
-  if (
-    backend === "webgl2" ||
-    !/ Firefox\//.test(agent) ||
-    !/Mac OS X/.test(agent)
-  )
-    return false;
-  return !!(await navigator.gpu?.requestAdapter().catch(() => null));
+function reports(): Reports {
+  const held: Report[] = [];
+  let target: ((report: Report) => void) | undefined;
+  return {
+    deliver: (report) => {
+      if (target) target(report);
+      else held.push(report);
+    },
+    listen: (onreport) => {
+      target = onreport;
+      for (const report of held.splice(0)) onreport(report);
+    },
+  };
 }
 
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on.
@@ -878,97 +852,28 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     inset: "0",
     pointerEvents: "none",
   });
-  const canvas = () => {
-    const canvas = document.createElement("canvas");
-    Object.assign(canvas.style, {
-      display: "block",
-      width: "100%",
-      height: "100%",
-    });
-    frame.replaceChildren(canvas, overlay);
-    return canvas;
-  };
-  let element = canvas();
+  const canvas = document.createElement("canvas");
+  Object.assign(canvas.style, {
+    display: "block",
+    width: "100%",
+    height: "100%",
+  });
+  frame.append(canvas, overlay);
   options.container.append(frame);
-  const size = (): [number, number, number] => [
-    Math.round(element.clientWidth * ratio),
-    Math.round(element.clientHeight * ratio),
+  const size: [number, number, number] = [
+    Math.round(canvas.clientWidth * ratio),
+    Math.round(canvas.clientHeight * ratio),
     ratio,
   ];
-  const setup = {
-    style,
-    options: core,
-    camera: options.camera,
-    constraints: options.constraints,
-  };
-  const preload = typeof options.style === "string" ? style : options.style;
-  let link: Link | string | undefined;
-  try {
-    if (
-      (options.worker ?? true) &&
-      workerCapable() &&
-      !(await staleWorkerFrames(options.backend))
-    ) {
-      // The worker's canvas starts at the element's size.
-      [element.width, element.height] = size();
-      link = await workerLink(element, {
-        // The page's count of cores sizes the job workers, as on the page.
-        ...setup,
-        preload,
-        size: size(),
-        jobWorkers: options.jobWorkers ?? defaultJobWorkers(),
-        origin: performance.timeOrigin,
-        pageWebgpu: "gpu" in navigator,
-        backend: options.backend ?? "auto",
-      });
-      // A worker that can't draw leaves the page to run the map, on a
-      // canvas of its own.
-      if (typeof link === "string") element = canvas();
-    }
-    if (typeof link !== "object")
-      link = await startOnPage(
-        element,
-        setup,
-        preload,
-        size(),
-        options.jobWorkers,
-        options.backend,
-      );
-  } catch (e) {
-    frame.remove();
-    throw e;
-  }
-  const map = new OrbisMap(
-    options.container,
-    frame,
-    element,
-    overlay,
-    link,
-    options.interactive ?? true,
-    options.pixelRatio,
-  );
-  if (options.gestures) map.setGestures(options.gestures);
-  return map;
-}
-
-/** The map on the page's thread. */
-async function startOnPage(
-  canvas: HTMLCanvasElement,
-  setup: {
-    style: string;
-    options: object;
-    camera?: CameraOptions;
-    constraints?: Constraints;
-  },
-  preload: string | object,
-  size: [number, number, number],
-  jobWorkers?: number,
-  backend?: BackendChoice,
-): Promise<Link> {
+  [canvas.width, canvas.height] = size;
   // The style's first fetches start, the build is picked, downloads and
   // compiles, and the workers load.
-  preloadStyle(preload, size[2], setup.camera?.zoom);
-  const build = pickBuild(undefined, backend);
+  preloadStyle(
+    typeof options.style === "string" ? style : options.style,
+    ratio,
+    options.camera?.zoom,
+  );
+  const build = pickBuild(undefined, options.backend);
   build.catch(() => {});
   // The modules the style declares download beside its TileJSON.
   void Promise.all([build, styleModules()]).then(
@@ -976,17 +881,42 @@ async function startOnPage(
       names.forEach((name) => loadModule(backend, name).catch(() => {})),
     () => {},
   );
-  // A page whose map runs in a worker never loads the bindings.
-  const engine = import("./engine.ts");
-  const workers = spawnWorkers(build, jobWorkers ?? defaultJobWorkers());
-  [canvas.width, canvas.height] = size;
-  const { Engine } = await engine.catch((e) => {
-    terminateWorkers(workers);
-    throw e;
-  });
-  return directLink((report) =>
-    Engine.start(build, workers, { ...setup, canvas, size, clock: 0 }, report),
+  const workers = spawnWorkers(
+    build,
+    options.jobWorkers ?? defaultJobWorkers(),
   );
+  const held = reports();
+  let engine: Engine;
+  try {
+    engine = await Engine.start(
+      build,
+      workers,
+      {
+        canvas,
+        style,
+        options: core,
+        camera: options.camera,
+        constraints: options.constraints,
+        size,
+      },
+      held.deliver,
+    );
+  } catch (e) {
+    frame.remove();
+    throw e;
+  }
+  const map = new OrbisMap(
+    options.container,
+    frame,
+    canvas,
+    overlay,
+    engine,
+    held,
+    options.interactive ?? true,
+    options.pixelRatio,
+  );
+  if (options.gestures) map.setGestures(options.gestures);
+  return map;
 }
 
 /** A style as the map loads it: a URL resolved against the page's, or a

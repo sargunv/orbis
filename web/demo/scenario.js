@@ -1,6 +1,6 @@
 // The binding scenario through the orbis
-// package; `pnpm -C web e2e` drives it (`?worker=0` keeps the map on the
-// page, `?backend=webgl2` draws it with WebGL 2). The
+// package; `pnpm -C web e2e` drives it (`?backend=webgl2` draws it with
+// WebGL 2). The
 // page makes the map and records its events and frames; the driver reads
 // pixels off screenshots and moves the pointer.
 import { createMap, setRequestTransform } from "orbis";
@@ -62,7 +62,6 @@ window.scenario = (async () => {
   const map = await createMap({
     container: document.getElementById("map"),
     style: STYLE,
-    worker: params.get("worker") !== "0",
     backend: params.get("backend") ?? undefined,
   });
   // Before a frame: the canvas's size, for fits and projections.

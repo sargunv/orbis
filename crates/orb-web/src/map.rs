@@ -438,9 +438,8 @@ fn map_options(options: &JsValue) -> orb_runtime::MapOptions {
     map
 }
 
-/// Creates a map in `canvas` (an `HTMLCanvasElement` or an
-/// `OffscreenCanvas`) showing the style at `style_url`, drawing on this
-/// thread. Its tile jobs go to `job_workers` job workers through
+/// Creates a map in `canvas` showing the style at `style_url`, drawing on
+/// the page's thread. Its tile jobs go to `job_workers` job workers through
 /// `post(worker, message)`, whose replies come back through
 /// [`receive_job`](OrbisMap::receive_job); labels are placed by the
 /// placement worker `place(message, transfer)` reaches, whose replies come
@@ -460,7 +459,7 @@ fn map_options(options: &JsValue) -> orb_runtime::MapOptions {
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(
-    canvas: JsValue,
+    canvas: HtmlCanvasElement,
     style_url: String,
     options: JsValue,
     on_wake: js_sys::Function,
@@ -468,13 +467,7 @@ pub async fn create_map(
     post: js_sys::Function,
     place: js_sys::Function,
 ) -> Result<OrbisMap, JsError> {
-    let size = match canvas.dyn_ref::<HtmlCanvasElement>() {
-        Some(canvas) => (canvas.width(), canvas.height()),
-        None => {
-            let canvas = canvas.unchecked_ref::<web_sys::OffscreenCanvas>();
-            (canvas.width(), canvas.height())
-        }
-    };
+    let size = (canvas.width(), canvas.height());
 
     let id = NEXT_MAP.with(|next| next.replace(next.get() + 1));
     let worker_jobs = WorkerJobs::posting(id, job_workers, post);
@@ -854,33 +847,18 @@ impl OrbisMap {
         out
     }
 
-    /// The video of source `id` has a new frame to show: a video element,
-    /// whose current frame is copied in the next frame drawn, or (for a
-    /// map in a worker) an `ImageBitmap` of the frame.
+    /// The video of source `id` has a new frame to show: its element,
+    /// whose current frame is copied in the next frame drawn.
     #[wasm_bindgen(js_name = videoFrame)]
-    pub fn video_frame(&mut self, id: &str, frame: JsValue) -> Result<(), JsError> {
-        let gpu = self.canvas.gpu();
-        let (width, height, image) = match frame.dyn_into::<web_sys::HtmlVideoElement>() {
-            Ok(video) => (
-                video.video_width(),
-                video.video_height(),
-                gpu.register_video(video),
-            ),
-            Err(frame) => {
-                let bitmap: web_sys::ImageBitmap = frame.dyn_into().map_err(|_| {
-                    JsError::new("a video frame is a video element or an ImageBitmap")
-                })?;
-                (
-                    bitmap.width(),
-                    bitmap.height(),
-                    gpu.register_image_bitmap(bitmap),
-                )
-            }
-        };
+    pub fn video_frame(
+        &mut self,
+        id: &str,
+        video: web_sys::HtmlVideoElement,
+    ) -> Result<(), JsError> {
         let frame = orb_runtime::TileImage {
-            width,
-            height,
-            pixels: orb_runtime::ImagePixels::Host(image),
+            width: video.video_width(),
+            height: video.video_height(),
+            pixels: orb_runtime::ImagePixels::Host(self.canvas.gpu().register_video(video)),
         };
         self.map
             .source_frame(id, frame)
@@ -1202,22 +1180,15 @@ impl OrbisMap {
         panic!("a trap asked for");
     }
 
-    /// Makes a new GPU in `canvas` after a loss, for
+    /// Makes a new GPU in the map's canvas after a loss, for
     /// [`recovered`](Self::recovered) to put in. The map isn't held while
     /// it is made: job workers' replies and the page's calls (another
     /// style, say) go on reaching it, rather than failing as a call into a
     /// map already in use.
     #[wasm_bindgen(js_name = newDevice)]
-    pub fn new_device(&self, canvas: JsValue) -> js_sys::Promise {
+    pub fn new_device(&self) -> js_sys::Promise {
         let again = self.canvas.again(self.id);
         wasm_bindgen_futures::future_to_promise(async move {
-            // A WebGL 2 context comes back on the same canvas once restored.
-            #[cfg(feature = "gl")]
-            crate::gl_context::restored(&canvas)
-                .await
-                .map_err(|e| JsError::new(&format!("{e:?}")))?;
-            #[cfg(not(feature = "gl"))]
-            let _ = canvas;
             let canvas = again.await.map_err(|e| JsError::new(&e))?;
             Ok(NewDevice(canvas).into())
         })

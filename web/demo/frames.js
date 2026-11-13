@@ -164,7 +164,7 @@ async function orbisEngine(
   style,
   center,
   ratio,
-  { backend, worker, keepAll },
+  { backend, keepAll },
 ) {
   // Half a zoom off the first view, so that its `jumpTo` moves the camera
   // and ends in `idle` however long the other engine took to start.
@@ -178,7 +178,6 @@ async function orbisEngine(
     // As the demo draws it, with every preview on (main.js).
     previews: "all",
     ...(backend && { backend }),
-    ...(worker === false && { worker }),
   });
   if (keepAll) map.setKeepAllCull(true);
   const warnings = new Set();
@@ -311,7 +310,6 @@ export async function runFrames({
   about,
   show,
   engines = ["orbis"],
-  worker,
   backend,
   views,
   drop,
@@ -353,10 +351,7 @@ export async function runFrames({
       show(`${engine}: starting`);
       if (engine === "orbis")
         made.push(
-          await orbisEngine(container, style, center, ratio, {
-            backend,
-            worker,
-          }),
+          await orbisEngine(container, style, center, ratio, { backend }),
         );
       else if (engine === "gl")
         made.push(await glEngine(container, style, center, ratio));
@@ -364,7 +359,6 @@ export async function runFrames({
         made.push(
           await orbisEngine(container, style, center, ratio, {
             backend,
-            worker,
             keepAll: true,
           }),
         );
@@ -438,8 +432,8 @@ export async function runFrames({
     "",
     "Times in ms, means over every measured frame: browsers coarsen timestamps (Chrome to 65.5 µs on a Mac) " +
       "and `performance.now()` (to 100 µs), which means don't bias. Interval: from one repaint's `render` event on the page " +
-      "to the next's, a display frame where the browser paces frames. Render CPU: Orbis's frame `render` (in its worker " +
-      "where it runs in one), GL JS's `_render` on the page. Draws: Orbis's recorded draws, GL JS's WebGL draw calls; the median frame's.",
+      "to the next's, a display frame where the browser paces frames. Render CPU: Orbis's frame `render`, " +
+      "GL JS's `_render`, both on the page. Draws: Orbis's recorded draws, GL JS's WebGL draw calls; the median frame's.",
   );
   return `${lines.join("\n")}\n`;
 }

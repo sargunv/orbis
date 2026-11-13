@@ -2,9 +2,9 @@
 // `--browsers` (all three by default), but those that need Chromium
 // (`CHROMIUM_ONLY`, which says why). Firefox is the installed one, headed,
 // on WebGPU, else Playwright's headless on WebGL 2 (serve.mjs's
-// `launchFirefox`); WebKit is Playwright's, headless, on WebGPU, its maps on
-// the page's thread. Each browser's backend and thread come from boot.html
-// first, and the checks expect them.
+// `launchFirefox`); WebKit is Playwright's, headless, on WebGPU. Maps draw on
+// the page's thread. Each browser's backend comes from boot.html first, and
+// the checks expect it.
 //
 // - `scenario`: the binding scenario through the orbis package
 //   on web/dist/scenario.html: an inline style,
@@ -70,7 +70,7 @@
 //   DEM tile and a sprite drawn on fixture.html come out the same with every
 //   context's `getImageData` flipping texels' low bits, and differently once
 //   `VideoFrame` is gone too, so the noise reaches what a canvas reads.
-// - `boot`: which build a map picks, in the worker and on the page: WebGPU
+// - `boot`: which build a map picks: WebGPU
 //   in Chromium, WebGL 2 (core-gl.wasm) in Firefox, whose adapter is
 //   blocklisted headless, and in Chromium without a GPU or without WebGPU;
 //   `backend: "webgl2"` loads only core-gl.wasm in Chromium with WebGPU,
@@ -84,8 +84,8 @@
 //   fetched only the modules their styles declare, each once, and the
 //   API's once; then the extract takes GeoJSON the app answers for a
 //   tile it feeds, and a style on Equal Earth, loading their modules.
-// - `webgl2`: in a Chromium without WebGPU (#140), the scenario in the
-//   worker and on the page; the Tokyo extract at two views, pitched
+// - `webgl2`: in a Chromium without WebGPU (#140), the scenario; the Tokyo
+//   extract at two views, pitched
 //   terrain, and the extract on the globe over terrain pitched 79° at
 //   z15.5, its drape pages within what WebGL 2 allocates, each within 1% of
 //   pixels of WebGPU's and the last with no GL error in the browser's log; extrusions report
@@ -237,30 +237,19 @@ async function open(browser, viewport) {
   return { page, errors };
 }
 
-/** The scenario with the map in its worker, then on the page's thread. */
-async function scenario(browser, server) {
-  await scenarioOn(browser, server, "worker");
-  await scenarioOn(browser, server, "page");
-}
-
-async function scenarioOn(
+async function scenario(
   browser,
   server,
-  thread,
   backend = browser.expects?.backend ?? "webgpu",
 ) {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
   const query = new URLSearchParams({
-    ...(thread === "page" && { worker: "0" }),
     ...(backend === "webgl2" && { backend }),
   });
   await page.goto(`${server.url}scenario.html?${query}`);
-  assert.deepEqual(
-    await page.evaluate(() =>
-      window.scenario.then((s) => [s.map.inWorker, s.map.backend]),
-    ),
-    [thread === "worker" && (browser.expects?.worker ?? true), backend],
-    thread,
+  assert.equal(
+    await page.evaluate(() => window.scenario.then((s) => s.map.backend)),
+    backend,
   );
   const scenario = (fn, arg) =>
     page.evaluate(
@@ -834,7 +823,7 @@ async function scenarioOn(
   image = await pixels();
   assert.deepEqual(pixel(image, CENTER), [255, 0, 255], "the app's tile");
   assert.deepEqual(errors, []);
-  console.log(`scenario: passed (${thread})`);
+  console.log(`scenario: passed (${backend})`);
   await page.close();
 }
 
@@ -1007,8 +996,8 @@ async function edits(browser, server) {
     map.loseDevice();
     await lost;
     const during = [];
-    // A task between calls: on the page's thread a call can answer within
-    // the task, and the recovery's own tasks would never run.
+    // A task between calls: a call can answer within the task, and the
+    // recovery's own tasks would never run.
     while (recovering) {
       during.push(await map.getLayersOrder().then(() => null, String));
       await new Promise((r) => setTimeout(r));
@@ -1180,9 +1169,9 @@ async function playground(browser, server) {
 
   // Measure frame acknowledgements, rather than elapsed wall time: the
   // frames from the edit's reply on. Frames acknowledged before it began
-  // before the worker applied the edit (it posts the reply in that task),
-  // as one already under way when the call went out, or one a pipeline
-  // compiled ahead at rest asked for, does.
+  // before the map applied the edit, as one already under way when the
+  // call went out, or one a pipeline compiled ahead at rest asked for,
+  // does.
   const measurements = await page.evaluate(async () => {
     const apply = async (name, commands) => {
       const frames = [];
@@ -2093,17 +2082,11 @@ async function options(browser, server) {
   );
 }
 
-/** Logs every WebGPU submit's validation errors on the page's console, from
- * the page and its workers (a worker's reach the page over a channel): Chrome
- * reports them through DevTools' log, which Playwright doesn't show from
- * workers, and only once the device next does work. Runs as an init script
- * and, through `Worker`, in each worker. */
+/** Logs every WebGPU submit's validation errors on the page's console:
+ * Chrome reports them through DevTools' log, and only once the device next
+ * does work. Runs as an init script. */
 function reportGpuErrors() {
-  const channel = new BroadcastChannel("e2e-gpu-errors");
-  const report = globalThis.document
-    ? (m) => console.error(m)
-    : (m) => channel.postMessage(m);
-  if (globalThis.document) channel.onmessage = (e) => report(e.data);
+  const report = (m) => console.error(m);
   const request = globalThis.GPUAdapter?.prototype.requestDevice;
   if (request) {
     GPUAdapter.prototype.requestDevice = async function (...args) {
@@ -2118,25 +2101,6 @@ function reportGpuErrors() {
       return device;
     };
   }
-  // The map's worker draws only where the page hears raw pointer moves
-  // (map.ts's `workerCapable`); elsewhere (WebKit) the map is on the page,
-  // and patched job workers there left GeoJSON tiles loading for good.
-  const Base = globalThis.Worker;
-  if (
-    !Base ||
-    (globalThis.HTMLElement && !("onpointerrawupdate" in HTMLElement.prototype))
-  )
-    return;
-  const patch = `data:text/javascript,${encodeURIComponent(`(${reportGpuErrors})()`)}`;
-  globalThis.Worker = class extends Base {
-    constructor(url, options) {
-      const source = `import ${JSON.stringify(patch)}; import ${JSON.stringify(String(url))};`;
-      super(
-        URL.createObjectURL(new Blob([source], { type: "text/javascript" })),
-        options,
-      );
-    }
-  };
 }
 
 async function resize(browser, server) {
@@ -2215,9 +2179,15 @@ async function resize(browser, server) {
       share < 0.2 && colours.size > 256,
       `at ${viewport.width}×${viewport.height} the map is ${(share * 100).toFixed(0)}% black in ${colours.size} colours`,
     );
-    // Offline, the style's live basemap fails to load; nothing else may.
+    // Offline, the style's live basemap fails to load (the map, on the
+    // page, and the browser say so); nothing else may.
     assert.deepEqual(
-      errors.filter((e) => !/network error/.test(e)),
+      errors.filter(
+        (e) =>
+          !/network error|^Failed to load resource: net::ERR_INTERNET_DISCONNECTED$/.test(
+            e,
+          ),
+      ),
       [],
       `at ${viewport.width}×${viewport.height}`,
     );
@@ -2657,9 +2627,7 @@ const PAN = { halfLife: 140, stop: 10, min: 200, max: 10_000 };
 
 async function gestures(browser, server) {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
-  // On the page's thread, where the log below reads each frame's time, and a
-  // projection answers for the camera at its call.
-  await page.goto(`${server.url}scenario.html?worker=0`);
+  await page.goto(`${server.url}scenario.html`);
   const scenario = (fn, arg) =>
     page.evaluate(
       ([fn, arg]) =>
@@ -2987,8 +2955,8 @@ async function gestures(browser, server) {
   );
 }
 
-/** Hides `EXT_clip_control` from WebGL 2 in this context and every worker
- * it starts, before their own scripts run, as Firefox lacks it. */
+/** Hides `EXT_clip_control` from WebGL 2 in this context, before its own
+ * scripts run, as Firefox lacks it. */
 function withoutClipControl() {
   const Context = globalThis.WebGL2RenderingContext;
   if (Context) {
@@ -3001,18 +2969,6 @@ function withoutClipControl() {
       return list.call(this)?.filter((n) => n !== "EXT_clip_control") ?? null;
     };
   }
-  const Base = globalThis.Worker;
-  if (!Base) return;
-  const patch = `data:text/javascript,${encodeURIComponent(`(${withoutClipControl})()`)}`;
-  globalThis.Worker = class extends Base {
-    constructor(url, options) {
-      const source = `import ${JSON.stringify(patch)}; import ${JSON.stringify(String(url))};`;
-      super(
-        URL.createObjectURL(new Blob([source], { type: "text/javascript" })),
-        options,
-      );
-    }
-  };
 }
 
 /** Patches this context, and every worker it starts, before their own
@@ -3184,9 +3140,8 @@ async function readback(browser, server) {
 async function webgl2(webgpuBrowser, server) {
   const browser = await launchChromium({ webgpu: false });
   try {
-    await scenarioOn(browser, server, "worker", "webgl2");
-    await scenarioOn(browser, server, "page", "webgl2");
-    console.log("webgl2: the scenario, in the worker and on the page");
+    await scenario(browser, server, "webgl2");
+    console.log("webgl2: the scenario");
 
     // The extract's views draw as on WebGPU, give or take antialiasing.
     const size = { width: 600, height: 400 };
@@ -3323,9 +3278,14 @@ async function webgl2(webgpuBrowser, server) {
     const at =
       ((image.height >> 1) * image.width + (image.width >> 1)) * image.channels;
     assert.deepEqual([...image.pixels.subarray(at, at + 3)], [0, 0, 255]);
-    // The gap's console warning, where there is one.
+    // The gap's console warning, where there is one, and Chrome's for each
+    // object of the lost context that the old device deletes on the
+    // restored one, which does nothing (WebGL frees them with the context).
     const unexpected = errors.filter(
-      (e) => !/otherwise than on WebGPU/.test(e),
+      (e) =>
+        !/otherwise than on WebGPU|delete\w*: object does not belong to this context|WebGL: too many errors/.test(
+          e,
+        ),
     );
     assert.deepEqual(unexpected, []);
     await page.close();
@@ -3366,8 +3326,7 @@ async function pitchedCity(webgpuBrowser, browser, server) {
     });
     const errors = [];
     onPageError(page, (m) => errors.push(m));
-    // GL errors reach the browser's log, from the map's worker too, and
-    // never the console.
+    // GL errors reach the browser's log, never the console.
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("Log.enable");
     cdp.on("Log.entryAdded", ({ entry }) => {
@@ -3483,21 +3442,11 @@ async function boot(webgpuBrowser, server) {
     // WebGL 2 asked for, though WebGPU has an adapter: only core-gl.wasm loads.
     ["Chromium asked for WebGL 2", "webgl2", () => webgpuBrowser, "webgl2"],
     ["Firefox", "webgl2", () => firefox.launch()],
-    // The installed Firefox, headed, has WebGPU (macOS, Windows); on macOS
-    // its maps stay on the page (map.ts's `staleWorkerFrames`).
+    // The installed Firefox, headed, has WebGPU (macOS, Windows).
     ...(installedFirefox()
-      ? [
-          [
-            "Firefox with WebGPU",
-            "webgpu",
-            () => launchFirefox(),
-            undefined,
-            process.platform !== "darwin",
-          ],
-        ]
+      ? [["Firefox with WebGPU", "webgpu", () => launchFirefox()]]
       : []),
-    // WebKit has WebGPU, but no raw pointer moves: its maps stay on the page.
-    ["WebKit", "webgpu", () => launchWebkit(), undefined, false],
+    ["WebKit", "webgpu", () => launchWebkit()],
     [
       "Chromium without a GPU",
       "webgl2",
@@ -3507,69 +3456,63 @@ async function boot(webgpuBrowser, server) {
     // WebGPU asked for where it has none: the map doesn't start, saying why.
     ["Chromium without WebGPU asked for it", null, noWebgpu, "webgpu"],
   ];
-  for (const [name, backend, launch, asked, workers = true] of browsers) {
+  for (const [name, backend, launch, asked] of browsers) {
     const browser = await launch();
     try {
-      for (const worker of [true, false]) {
-        const where = `${name}, ${worker ? "worker" : "page"}`;
-        const { page, errors } = await open(browser, {
-          width: 300,
-          height: 300,
-        });
-        const builds = [];
-        page.on("request", (r) => {
-          const build = r.url().match(/\/(core(?:-gl)?)_bg[^/]*\.wasm/)?.[1];
-          if (build) builds.push(build);
-        });
-        const query = new URLSearchParams({
-          ...(!worker && { worker: "0" }),
-          ...(asked && { backend: asked }),
-        });
-        await page.goto(`${server.url}boot.html?${query}`);
-        const booted = await page.evaluate(() => window.booted);
-        if (!backend) {
-          assert.match(
-            booted.error ?? "",
-            /^Orbis can't draw with WebGPU, as asked: /,
-            `${where}: ${JSON.stringify(booted)}`,
-          );
-          assert.ok(
-            !builds.includes("core-gl"),
-            `${where}: core-gl.wasm loads: ${builds}`,
-          );
-          await page.close();
-          console.log(`boot: ${where}: ${booted.error}`);
-          continue;
-        }
-        assert.equal(booted.error, undefined, where);
-        assert.equal(booted.backend, backend, where);
-        if (asked === "webgl2")
-          assert.deepEqual([...new Set(builds)], ["core-gl"], where);
-        // Firefox and Chromium hand a worker the canvas.
-        assert.equal(booted.inWorker, worker && workers, where);
-        await page.waitForTimeout(100);
-        const image = decodePng(await page.locator("#map").screenshot());
-        const at = (100 * image.width + 100) * image.channels;
-        const pixel = [...image.pixels.subarray(at, at + 3)];
+      const { page, errors } = await open(browser, {
+        width: 300,
+        height: 300,
+      });
+      const builds = [];
+      page.on("request", (r) => {
+        const build = r.url().match(/\/(core(?:-gl)?)_bg[^/]*\.wasm/)?.[1];
+        if (build) builds.push(build);
+      });
+      const query = new URLSearchParams({
+        ...(asked && { backend: asked }),
+      });
+      await page.goto(`${server.url}boot.html?${query}`);
+      const booted = await page.evaluate(() => window.booted);
+      if (!backend) {
+        assert.match(
+          booted.error ?? "",
+          /^Orbis can't draw with WebGPU, as asked: /,
+          `${name}: ${JSON.stringify(booted)}`,
+        );
         assert.ok(
-          pixel.every((v, i) => Math.abs(v - BOOTED[i]) <= 1),
-          `${where}: ${pixel}`,
+          !builds.includes("core-gl"),
+          `${name}: core-gl.wasm loads: ${builds}`,
         );
-        // Browsers warn that WebGPU has no adapter (Firefox's is
-        // blocklisted), Firefox of a deprecated extension wgpu reads, and
-        // Chromium without a GPU that its software compositor reads the
-        // canvas back; Firefox's WebGL that partial uploads into the data
-        // tables are slower than whole ones.
-        const unexpected = errors.filter(
-          (e) =>
-            !/WebGPU is disabled by blocklist|^No available adapters\.$|^Failed to create WebGPU Context Provider$|WEBGL_debug_renderer_info|GPU stall due to ReadPixels|WebGL warning: texSubImage: |After reporting 32, no further warnings/.test(
-              e,
-            ),
-        );
-        assert.deepEqual(unexpected, [], where);
         await page.close();
-        console.log(`boot: ${where}: ${backend}`);
+        console.log(`boot: ${name}: ${booted.error}`);
+        continue;
       }
+      assert.equal(booted.error, undefined, name);
+      assert.equal(booted.backend, backend, name);
+      if (asked === "webgl2")
+        assert.deepEqual([...new Set(builds)], ["core-gl"], name);
+      await page.waitForTimeout(100);
+      const image = decodePng(await page.locator("#map").screenshot());
+      const at = (100 * image.width + 100) * image.channels;
+      const pixel = [...image.pixels.subarray(at, at + 3)];
+      assert.ok(
+        pixel.every((v, i) => Math.abs(v - BOOTED[i]) <= 1),
+        `${name}: ${pixel}`,
+      );
+      // Browsers warn that WebGPU has no adapter (Firefox's is
+      // blocklisted), Firefox of a deprecated extension wgpu reads, and
+      // Chromium without a GPU that its software compositor reads the
+      // canvas back; Firefox's WebGL that partial uploads into the data
+      // tables are slower than whole ones.
+      const unexpected = errors.filter(
+        (e) =>
+          !/WebGPU is disabled by blocklist|^No available adapters\.$|^Failed to create WebGPU Context Provider$|WEBGL_debug_renderer_info|GPU stall due to ReadPixels|WebGL warning: texSubImage: |After reporting 32, no further warnings/.test(
+            e,
+          ),
+      );
+      assert.deepEqual(unexpected, [], name);
+      await page.close();
+      console.log(`boot: ${name}: ${backend}`);
     } finally {
       if (browser !== webgpuBrowser) await browser.close();
     }
@@ -3687,8 +3630,7 @@ try {
     try {
       browser.expects = await expectations(browser, server);
       console.log(
-        `${name} ${browser.version()}: maps draw with ${browser.expects.backend}` +
-          (browser.expects.worker ? ", in a worker" : ", on the page"),
+        `${name} ${browser.version()}: maps draw with ${browser.expects.backend}`,
       );
       for (const check of only) {
         if (!CHECKS[check]) throw new Error(`unknown check ${check}`);
@@ -3715,16 +3657,14 @@ try {
 }
 if (failed) process.exit(1);
 
-/** What a map in `browser` draws with, and whether it runs in a worker
- * (map.ts's `workerCapable`: WebKit tells the page of no raw pointer
- * moves, so its maps stay on the page). */
+/** What a map in `browser` draws with. */
 async function expectations(browser, server) {
   const page = await browser.newPage();
   try {
     await page.goto(`${server.url}boot.html`);
     const booted = await page.evaluate(() => window.booted);
     if (booted.error) throw new Error(`the map didn't boot: ${booted.error}`);
-    return { backend: booted.backend, worker: booted.inWorker };
+    return { backend: booted.backend };
   } finally {
     await page.close();
   }

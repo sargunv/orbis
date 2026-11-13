@@ -5,8 +5,8 @@
 // its screen on).
 //
 //   pnpm measure [--android [--physical] | --headed] [--runs=3]
-//     [--configs=orbis,orbis-page,gljs] [--no-capture] [--no-annotation] [--profile]
-//     [--mouse]
+//     [--configs=orbis,gljs] [--no-capture] [--no-annotation] [--profile]
+//     [--mouse] [--busy=ms[/period]]
 //     [--style=<url or key>] [--at=lon,lat,zoom,bearing,pitch]
 //   pnpm measure --pipelines [--runs=3] [--android [--physical]]
 //
@@ -61,7 +61,7 @@ const option = (name, fallback) =>
 const physical = args.includes("--physical");
 const android = physical || args.includes("--android");
 const runs = Number(option("runs", "3"));
-const configs = option("configs", "orbis,orbis-page,gljs").split(",");
+const configs = option("configs", "orbis,gljs").split(",");
 // The page's style and starting camera, for a dense or tilted scene.
 const view = Object.fromEntries(
   ["style", "at"].filter((k) => option(k)).map((k) => [k, option(k)]),
@@ -80,6 +80,11 @@ const profile = args.includes("--profile");
 // one a display frame at a fixed point in it: a map that draws on its
 // animation frames shows them later than input that streams.
 const mouse = args.includes("--mouse");
+// `--busy=30/100` has the page run 30 ms of JavaScript every 100 ms
+// through each gesture, as an app re-rendering beside the map does.
+const [busyTask, busyPeriod = 100] = (option("busy", "") || "0")
+  .split("/")
+  .map(Number);
 const GESTURES = mouse ? ["pan"] : ["pan", "pinch", "rotate"];
 
 /** The centroid of pixels matching `test`, or null. */
@@ -156,9 +161,7 @@ function inputTime(log, value) {
   return NaN;
 }
 
-async function run(page, config, viewport) {
-  // `orbis-page` is Orbis with its map on the page's thread.
-  const [engine, thread] = config.split("-");
+async function run(page, engine, viewport) {
   // A session per page: Android's Chrome delivers synthetic touches only to
   // the first page a session navigates.
   const cdp = await page.context().newCDPSession(page);
@@ -171,7 +174,6 @@ async function run(page, config, viewport) {
     ).value * 1000;
   const query = new URLSearchParams({
     engine,
-    ...(thread === "page" ? { worker: "0" } : {}),
     ...(annotation ? {} : { annotation: "0" }),
     ...view,
   });
@@ -195,7 +197,7 @@ async function run(page, config, viewport) {
   );
   const center = [viewport.width / 2, viewport.height / 2];
   const result = {
-    config,
+    config: engine,
     loadMs: info.loadMs,
     loadBusyMs: loadBusy,
     idle: idleQuiet,
@@ -229,6 +231,16 @@ async function run(page, config, viewport) {
     });
     await sleep(300);
     const busyStart = await busy();
+    if (busyTask)
+      await page.evaluate(
+        ([task, period]) => {
+          window.busyTimer = setInterval(() => {
+            const end = performance.now() + task;
+            while (performance.now() < end);
+          }, period);
+        },
+        [busyTask, busyPeriod],
+      );
     const path = gesture(kind, center);
     const touches = (t) =>
       path(t).map(([x, y], id) => ({
@@ -281,6 +293,7 @@ async function run(page, config, viewport) {
           touchPoints: touches(1),
         }));
     await sleep(700);
+    if (busyTask) await page.evaluate(() => clearInterval(window.busyTimer));
     const gestureBusy = (await busy()) - busyStart;
     await session?.send("Page.stopScreencast");
     await session?.detach();

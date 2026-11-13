@@ -9,12 +9,12 @@
  * that says what happened instead, `trapped` hears it once, every call
  * after throws it too without entering the module, and an answer a call
  * still waits on (the next frame's pixels, a snapshot's end) rejects with
- * it. `stop` stops it for a trap outside a call.
+ * it.
  */
 export function guard<Core extends object>(
   core: Core,
   trapped: (e: Error) => void,
-): { core: Core; stop: (e: unknown) => Error } {
+): Core {
   let stopped: Error | undefined;
   let halt: (e: Error) => void = () => {};
   const halted = new Promise<never>((_, reject) => (halt = reject));
@@ -52,7 +52,7 @@ export function guard<Core extends object>(
       return method;
     },
   });
-  return { core: guarded, stop };
+  return guarded;
 }
 
 /** What a map whose wasm trapped throws, the trap its cause. */
@@ -63,15 +63,6 @@ export function trapError(e: unknown): Error {
       ? `the map stopped: ${why}`
       : `the map stopped: its wasm trapped (${why}), a bug in Orbis`,
     { cause: e },
-  );
-}
-
-/** Whether `e` is a trap of the map's wasm: a bug, which a map on
- * another thread would hit too. */
-export function isTrap(e: unknown): boolean {
-  return (
-    e instanceof WebAssembly.RuntimeError ||
-    (e instanceof Error && e.cause instanceof WebAssembly.RuntimeError)
   );
 }
 

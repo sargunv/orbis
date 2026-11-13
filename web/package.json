@@ -34,7 +34,7 @@
     "vite": "8.3.5",
     "vite-plus": "^1.5.0"
   },
-  "description": "Orbis on the web: a GPU-driven map renderer in a worker or on the page",
+  "description": "Orbis on the web: a GPU-driven map renderer",
   "exports": {
     ".": "./src/index.ts"
   },

@@ -249,8 +249,7 @@ export function isModuleName(name: string): name is ModuleName {
 let loaded: Promise<Bindings> | undefined;
 
 /** core.wasm's bindings, instantiated on this thread if nothing here has
- * yet, with its API module: what a page whose map runs in a worker loads
- * for regions. */
+ * yet, with its API module: what regions load on a page with no map yet. */
 export function loadCore(): Promise<Bindings> {
   loaded ??= (async () => {
     const glue = await bindings("webgpu");

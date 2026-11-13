@@ -56,8 +56,7 @@ try {
   });
   page.on("pageerror", (e) => console.error(e));
   // `ORB_GLSL` names a JSON file of rewrites applied to every GLSL source
-  // the page's maps compile, on the page's thread (the map leaves its
-  // worker): `{"rewrites": [{"match": regex, "replace": text, "stage":
+  // the page's maps compile: `{"rewrites": [{"match": regex, "replace": text, "stage":
   // "vertex"|"fragment", "shader": a substring the source must hold}],
   // "dump": dir}`, `dump` writing each fixture's sources to a directory
   // numbered in request order, for bisecting a driver's miscompile without
@@ -68,7 +67,6 @@ try {
   let dumped = 0;
   if (glsl)
     await page.addInitScript((config) => {
-      delete HTMLElement.prototype.onpointerrawupdate;
       const sources = (globalThis.__glsl = []);
       const stages = new WeakMap();
       const gl = WebGL2RenderingContext.prototype;

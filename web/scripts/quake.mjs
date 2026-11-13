@@ -7,7 +7,7 @@
 // the camera moves.
 //
 //   pnpm quake [--browser=chromium|firefox] [--seconds=n] [--size=WxH]
-//     [--ratio=r] [--query=worker=0&backend=webgl2] [--shot=prefix]
+//     [--ratio=r] [--query=backend=webgl2] [--shot=prefix]
 //
 // `--shot` keeps a screenshot of each phase's end as `<prefix>-still.png`
 // and `<prefix>-quake.png` (Chromium).
@@ -56,7 +56,6 @@ try {
   await page.evaluate(() => new Promise((r) => setTimeout(r, 5000)));
   const where = await page.evaluate(() => ({
     backend: globalThis.orbis.map.backend,
-    worker: globalThis.orbis.map.inWorker,
   }));
   const report = { browser: browserName, ...where, seconds };
   if (args.query) report.query = args.query;

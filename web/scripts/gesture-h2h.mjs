@@ -6,8 +6,8 @@
 // In headless Chromium, under a Chrome trace: for each gesture, the GPU
 // process's presents from its start until its glide or ease is over (their
 // interval's median and p95, the worst, and how many came over 25 and 50 ms
-// apart), when the first came, and the busiest worker threads' time within
-// it. `--warm` makes the gestures once untimed first, so the timed pass
+// apart), when the first came, and the busiest page and worker threads'
+// time within it. `--warm` makes the gestures once untimed first, so the timed pass
 // takes its tiles from the HTTP cache. Each gesture's camera trajectory
 // goes beside it: every 100 ms from its start, the change in zoom,
 // bearing, pitch and centre (pixels at the start's zoom, x east and y
@@ -341,12 +341,7 @@ async function runFirefox(engine, base) {
       Math.round(canvas.x + canvas.width / 2),
       Math.round(canvas.y + canvas.height / 2 + 100),
     ];
-    const out = {
-      inWorker:
-        engine === "orbis"
-          ? await page.evaluate(() => globalThis.orbis.map.inWorker)
-          : true,
-    };
+    const out = {};
     for (const [name, , after] of GESTURES) {
       const recording = await page.record();
       const started = Date.now();
@@ -375,7 +370,8 @@ const pct = (xs, p) => {
     : 0;
 };
 
-/** Each gesture's presents and worker time in a Chrome trace. */
+/** Each gesture's presents and its page's and workers' time in a Chrome
+ * trace. */
 function analyse(trace) {
   const events = Array.isArray(trace) ? trace : trace.traceEvents;
   const presents = events
@@ -386,10 +382,14 @@ function analyse(trace) {
   const workers = new Set();
   for (const e of events) {
     if (e.name?.startsWith("g:") && !marks.has(e.name)) marks.set(e.name, e.ts);
-    if (e.ph === "M" && e.name === "thread_name" && /Worker/.test(e.args.name))
+    if (
+      e.ph === "M" &&
+      e.name === "thread_name" &&
+      /Worker|CrRendererMain/.test(e.args.name)
+    )
       workers.add(`${e.pid}:${e.tid}`);
   }
-  // Workers' outermost tasks: [thread, start, end].
+  // Their outermost tasks: [thread, start, end].
   const tasks = [];
   const ends = new Map();
   for (const e of events
@@ -421,7 +421,8 @@ function analyse(trace) {
       worst: +Math.max(0, ...gaps).toFixed(1),
       over25: gaps.filter((g) => g > 25).length,
       over50: gaps.filter((g) => g > 50).length,
-      // The two busiest workers: the map's and its helpers'.
+      // The two busiest threads: the map's (Orbis's page, mln-rs's map
+      // worker) and its helpers'.
       busyMs: [...busy.values()]
         .sort((x, y) => y - x)
         .slice(0, 2)

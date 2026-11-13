@@ -7,11 +7,9 @@
 // entry point keeps it and the back end writes it, where a change to a
 // function the stage doesn't call would go before the driver saw it.
 // WebGL 2's shaders (the GLSL naga writes from the same WGSL) get a
-// define unique to `n`, and their discarded vertex moved by it. On the
-// page's thread (`createMap`'s `worker: false`), where the device's
-// methods can be wrapped, or in the map worker, called ahead of its
-// script (session.mjs). Returns how many shaders it changed so far, of
-// how many.
+// define unique to `n`, and their discarded vertex moved by it, through
+// the device's methods on the page. Returns how many shaders it changed
+// so far, of how many.
 export function bustShaderCaches(params) {
   const nonce = Number(params.get("nonce"));
   let changed = 0;

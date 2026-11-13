@@ -261,13 +261,6 @@ export interface MapOptions {
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)`. */
   jobWorkers?: number;
-  /** Whether the map may run in a worker, off the page's thread: where
-   * the browser can draw into an OffscreenCanvas there and tells
-   * the page of pointer moves as they come (Chromium-based browsers and
-   * Firefox, but Firefox on macOS while it draws with WebGPU, which shows
-   * stale frames of a worker's canvas: Firefox bug 2091844).
-   * True by default; false keeps it on the page. */
-  worker?: boolean;
   /** The GPU API to draw with ({@link OrbisMap.backend}): `auto` (the
    * default) draws with WebGPU where it gives an adapter and WebGL 2
    * otherwise; `webgl2` draws with WebGL 2 whatever WebGPU offers, without

@@ -16,8 +16,8 @@
 <script type="module">
   // `pnpm -C web e2e --only=boot`'s page: a map on an empty style.
   // `window.booted` resolves, once it has drawn a frame, to the backend it
-  // drew with and whether it runs in a worker (`?worker=0` keeps it on the
-  // page; `?backend=webgl2|webgpu` asks for one), or to why it couldn't start.
+  // drew with (`?backend=webgl2|webgpu` asks for one), or to why it
+  // couldn't start.
   import { createMap } from "orbis";
 
   const params = new URLSearchParams(location.search);
@@ -25,7 +25,6 @@
     const map = await createMap({
       container: document.getElementById("map"),
       style: { version: 8, sources: {}, layers: [] },
-      worker: params.get("worker") !== "0",
       backend: params.get("backend") ?? undefined,
     });
     await new Promise((resolve) => {
@@ -33,6 +32,6 @@
         map.stats ? resolve() : requestAnimationFrame(drawn);
       drawn();
     });
-    return { backend: map.backend, inWorker: map.inWorker };
+    return { backend: map.backend };
   })().catch((e) => ({ error: String(e instanceof Error ? e.message : e) }));
 </script>

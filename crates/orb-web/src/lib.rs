@@ -1,9 +1,8 @@
 //! The browser build of Orbis: `core.wasm` and its wasm-bindgen surface.
 //!
 //! One module, run by the web package's JS in three roles:
-//! - **the map** ([`create_map`]): the map draws into a canvas, with its
-//!   camera, gestures and queries: an `OffscreenCanvas` in a map worker
-//!   where the browser allows it, else a canvas on the page's thread.
+//! - **the map** ([`create_map`]): the map draws into a canvas on the
+//!   page's thread, with its camera, gestures and queries.
 //! - **job workers** ([`jobs::JobWorker`]) fetch and lay out tiles.
 //! - **a placement worker** ([`PlacementWorker`]) places labels.
 //!

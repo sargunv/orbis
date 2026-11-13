@@ -79,8 +79,7 @@
     // (the GPU API Orbis draws with); for frames, frames, warmup, rounds, ratio,
     // views (the views' indices, comma-separated: 0,2 for z12 and z15 pitch 60),
     // drop (layer types the style leaves out, comma-separated: what a family costs),
-    // worker=0 (Orbis on the page's thread) and engine=orbis|keep-all|gl, any
-    // of them comma-separated (keep-all: Orbis with the cull keeping every
+    // and engine=orbis|keep-all|gl, any of them comma-separated (keep-all: Orbis with the cull keeping every
     // candidate; gl: GL JS), the engines taking turns view by view; for
     // gestures, workers=<job workers> and
     // paths=city|dense|alps|globe (alps by default with style=alps, globe
@@ -333,8 +332,6 @@
                 ? ["orbis", "gl"]
                 : (params.get("engine") ?? "orbis").split(","),
             backend,
-            // `worker=0` keeps Orbis on the page's thread, as GL JS runs.
-            worker: params.get("worker") !== "0",
           });
         }
         const seconds = ((performance.now() - started) / 1000).toFixed(0);
