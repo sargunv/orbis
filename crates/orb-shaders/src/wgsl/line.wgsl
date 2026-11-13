@@ -49,8 +49,11 @@ const LINE_STRIDE: u32 = 4u;
 const EXTRUDE_SCALE: f32 = 1.0 / 63.0;
 
 // A dashed, patterned or gradient line's varyings (`vs_line_styled`).
+// Its position is invariant: compiled beside fetches from storage buffers
+// or from data textures (WebGL 2's driver), the same words make the same
+// position, and both drivers draw the same pixels.
 struct StyledLineOut {
-    @builtin(position) position: vec4<f32>,
+    @builtin(position) @invariant position: vec4<f32>,
     @location(0) @interpolate(flat, either) color: vec4<f32>,
     @location(1) normal: vec2<f32>,
     // (outset, inset) in pixels.
@@ -80,7 +83,7 @@ struct StyledLineOut {
 // fragments read without interpolating: 4% of the moto g's main pass
 // across views (#180).
 struct LineOut {
-    @builtin(position) position: vec4<f32>,
+    @builtin(position) @invariant position: vec4<f32>,
     @location(0) @interpolate(flat, either) color: vec4<f32>,
     @location(1) normal: vec2<f32>,
     @location(2) @interpolate(flat, either) width2: vec2<f32>,
