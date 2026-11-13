@@ -199,9 +199,8 @@ async function styleFor(next) {
   const style = await sceneStyle(next.scene, next.format);
   if (typeof style === "string") return style;
   const { scene } = next;
-  const terrain = scene.terrain === true ? style.terrain : scene.terrain;
   design = { scene, style };
-  return opening(style, { scene, terrain: terrain ?? null }, params());
+  return opening(style, { scene, terrain: style.terrain ?? null }, params());
 }
 
 const debugToggle = document.getElementById("debug-toggle");
@@ -508,9 +507,9 @@ async function load(next, { camera }) {
       });
     }
     // The options read the style as the entry designs it, then apply the
-    // URL's: the terrain the switch turns on is the entry's own, or the
-    // style's as it loaded. A style the demo built is designed as built,
-    // before the options' edits it loaded with.
+    // URL's: the terrain the switch turns on is the style's own. A style
+    // the demo built is designed as built, before the options' edits it
+    // loaded with.
     const own = design?.scene === scene ? design.style : undefined;
     designed = {
       designed: own ?? {
@@ -518,10 +517,7 @@ async function load(next, { camera }) {
         ...(scene.projection && { projection: scene.projection }),
         ...(scene.sky && { sky: scene.sky }),
       },
-      terrain:
-        scene.terrain === true
-          ? ((own ?? loaded).terrain ?? null)
-          : (scene.terrain ?? null),
+      terrain: (own ?? loaded).terrain ?? null,
     };
     await options.attach(map, { ...designed, scene });
     attributionControl.update(loaded);

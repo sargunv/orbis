@@ -52,8 +52,10 @@ pub(crate) struct Scene {
     pub(crate) projection: Option<Value>,
     pub(crate) sky: Option<Value>,
     pub(crate) restyle: Option<String>,
-    /// The terrain the options' switch puts in, or `true` for the style's own.
-    pub(crate) terrain: Option<Value>,
+    /// Whether the options offer a switch for the style's own terrain,
+    /// on by default.
+    #[serde(default)]
+    pub(crate) terrain: bool,
     /// Switches the style designs that start off.
     #[serde(default)]
     pub(crate) off: Vec<String>,
@@ -141,7 +143,7 @@ impl Catalogue {
             projection: None,
             sky: None,
             restyle: None,
-            terrain: None,
+            terrain: false,
             off: Vec::new(),
             light: false,
             flight: None,
@@ -195,8 +197,8 @@ impl Scene {
     }
 
     /// `style` as the scene designs it: restyled, with its projection and
-    /// sky, and with its terrain when `terrain` asks for it.
-    pub(crate) fn designed(&self, style: &Value, terrain: bool) -> Value {
+    /// sky.
+    pub(crate) fn designed(&self, style: &Value) -> Value {
         let mut style = match self.restyle.as_deref() {
             Some("globe") => globe(style),
             Some("quake") => crate::quake::style(style),
@@ -207,9 +209,6 @@ impl Scene {
         }
         if let Some(sky) = &self.sky {
             style["sky"] = sky.clone();
-        }
-        if terrain && let Some(terrain @ Value::Object(_)) = &self.terrain {
-            style["terrain"] = terrain.clone();
         }
         style
     }
@@ -288,10 +287,10 @@ impl Flight {
 /// depth and relief under the land to zoom 6, and from there the ocean
 /// polygons over the landuse with the depth over them, the land below sea
 /// level and the Caspian put back over that, a hillshade over the land and
-/// lakes, the buildings extruded under the labels, the DEM sources and the
-/// light, and the hillshade multiplied into the land (a preview) for its
-/// option to switch on, off by default. Each addition is placed by the
-/// layers it finds.
+/// lakes, the buildings extruded under the labels, the DEM sources, the
+/// terrain and the light, and the hillshade multiplied into the land (a
+/// preview) for its option to switch on, off by default. Each addition is
+/// placed by the layers it finds.
 fn globe(style: &Value) -> Value {
     let globe: Value = serde_json::from_str(include_str!("../../../web/demo/data/globe.json"))
         .expect("web/demo/data/globe.json");
@@ -370,6 +369,7 @@ fn globe(style: &Value) -> Value {
         let at = labels(&layers);
         layers.insert(at, buildings);
     }
+    style["terrain"] = globe["terrain"].clone();
     style["light"] = globe["light"].clone();
     style["layers"] = Value::Array(layers);
     style

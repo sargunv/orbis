@@ -186,12 +186,8 @@ impl Demo {
         let Some(loaded) = &self.loaded else {
             return;
         };
-        let designed = self.scene.designed(loaded, false);
-        let terrain = match &self.scene.terrain {
-            Some(Value::Bool(true)) => loaded.get("terrain").cloned(),
-            Some(terrain @ Value::Object(_)) => Some(terrain.clone()),
-            _ => None,
-        };
+        let designed = self.scene.designed(loaded);
+        let terrain = designed.get("terrain").cloned();
         // A projection the style had, a scene without one sets back.
         let mut style = designed.clone();
         if self.scene.projection.is_none() && loaded.get("projection").is_none() {

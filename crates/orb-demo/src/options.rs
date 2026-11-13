@@ -246,7 +246,7 @@ impl Opt {
             return designed["sky"].is_object() && sky.is_on(&designed["sky"][sky.name]);
         }
         match self {
-            Opt::Terrain => cx.scene.terrain.is_some() && cx.terrain.is_some(),
+            Opt::Terrain => cx.scene.terrain && cx.terrain.is_some(),
             Opt::Blend => !blended(designed).is_empty(),
             Opt::Light => cx.scene.light,
             Opt::Projection => {
@@ -291,9 +291,6 @@ impl Opt {
             return json!(false);
         }
         match self {
-            // A scene with its style's own terrain draws it by default; one
-            // with terrain of its own puts it in only when asked.
-            Opt::Terrain => json!(cx.scene.terrain == Some(Value::Bool(true))),
             Opt::Projection => json!(Self::projection_by_design(cx)),
             _ if self.orbis_only() => json!(false),
             _ => self.read(&cx.designed),
@@ -484,12 +481,12 @@ mod tests {
                 { "id": "address_label", "type": "symbol", "source": "protomaps", "source-layer": "buildings" },
             ],
         });
-        let designed = scene.designed(&protomaps, false);
+        let designed = scene.designed(&protomaps);
         assert!(!orbis_keys(&designed).is_empty(), "{designed}");
         let mut style = designed.clone();
         let mut panel = Panel::default();
         let context = Context {
-            terrain: scene.terrain.clone(),
+            terrain: designed.get("terrain").cloned(),
             scene,
             designed: designed.clone(),
         };

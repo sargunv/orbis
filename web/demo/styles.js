@@ -50,9 +50,9 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * its upstream; the map then loads that style, with the projection and sky
  * in it, whole (`sceneStyle`). `light` offers the map options' choice
  * between a map- and a viewport-anchored light, and `terrain` their
- * terrain switch, with the terrain it turns on, off by default, or `true`
- * for the style's own, on by default (app/options.js, which offers the
- * rest by what the style draws); `off` names those of its switches that
+ * switch for the style's own terrain, on by default (app/options.js,
+ * which offers the rest by what the style draws); `off` names those of
+ * its switches that
  * start off though the style designs them (every Orbis-only one does).
  * `orbisOnly` marks an entry that exists to show an Orbis extension, a
  * projection or CRS beyond the spec, which it draws by default; the
@@ -63,7 +63,7 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, orbisOnly?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
- *   light?: boolean, terrain?: object | true, off?: string[], projection?: object, sky?: object,
+ *   light?: boolean, terrain?: boolean, off?: string[], projection?: object, sky?: object,
  *   quake?: { epicentre: [number, number] },
  *   restyle?: (style: object) => object,
  *   unsupported?: { gljs?: string, native?: string } }} Scene
@@ -120,16 +120,16 @@ function isLegacyFilter(filter) {
  * landuse fades in, over Protomaps' ocean polygons drawn over the landuse,
  * so that parks and military areas reaching out to sea stay under it, with
  * Mapterhorn's land below sea level and the Caspian Sea put back over it;
- * Mapterhorn's DEM for the entry's terrain (which keeps the sea at sea
- * level) and a hillshade over the land and lakes, under the roads and
- * labels; the buildings extruded under the labels, lit by a sun 60° from
- * overhead. One preview is designed in, for the map options to switch on,
- * off by default (app/options.js) so that the Globe opens as GL JS and
- * MapLibre Native could draw it: the land's hillshade multiplied into the
- * fills beneath it (`dev.sargunv.orbis:hillshade-layer-blend`), in colours
- * made for it, which its metadata holds the unblended ones of. Each
- * addition is placed by the layers it finds, so a style with other ids
- * still draws.
+ * the land standing on Mapterhorn's DEM as terrain (which keeps the sea at
+ * sea level), on by default, and a hillshade over the land and lakes,
+ * under the roads and labels; the buildings extruded under the labels, lit
+ * by a sun 60° from overhead. One preview is designed in, for the map
+ * options to switch on, off by default (app/options.js) so that the Globe
+ * opens as GL JS and MapLibre Native could draw it: the land's hillshade
+ * multiplied into the fills beneath it
+ * (`dev.sargunv.orbis:hillshade-layer-blend`), in colours made for it,
+ * which its metadata holds the unblended ones of. Each addition is placed
+ * by the layers it finds, so a style with other ids still draws.
  */
 function globeStyle(style) {
   const layers = style.layers.map((layer) => {
@@ -186,6 +186,7 @@ function globeStyle(style) {
   return {
     ...style,
     sources,
+    terrain: globe.terrain,
     light: globe.light,
     layers,
   };
@@ -300,18 +301,13 @@ export function sceneUrl(scene, format) {
   return new URL(url, location.href).href;
 }
 
-/**
- * `style` as `scene` draws it: restyled, with its projection and sky, and
- * with the entry's terrain when `terrain` asks for it.
- */
-function withScene(scene, style, { terrain = false } = {}) {
+/** `style` as `scene` draws it: restyled, with its projection and sky. */
+function withScene(scene, style) {
   const restyled = scene.restyle ? scene.restyle(style) : style;
   return {
     ...restyled,
     ...(scene.projection && { projection: scene.projection }),
     ...(scene.sky && { sky: scene.sky }),
-    ...(terrain &&
-      typeof scene.terrain === "object" && { terrain: scene.terrain }),
   };
 }
 
@@ -343,11 +339,11 @@ export function demoStyle(params, fallback = "live") {
 }
 
 /**
- * As `demoStyle`, with the scene's projection, sky, restyle and terrain
- * (on, whatever the app's default) put in the style itself, fetched, so
- * that every engine loads them with it, and a restyle's map options as the
- * app opens them: its defaults, which draw nothing GL JS and Native can't,
- * or those `params` names (`&blend=1`); `globe` in `params` puts
+ * As `demoStyle`, with the scene's projection, sky and restyle put in the
+ * style itself, fetched, so that every engine loads them with it, and a
+ * restyle's map options as the app opens them: its defaults, which draw
+ * nothing GL JS and Native can't, or those `params` names (`&blend=1`,
+ * `&terrain=0`); `globe` in `params` puts
  * Liberty-on-the-globe's projection and sky (GLOBE_SKY) in any style.
  * Otherwise the style's URL.
  */
@@ -359,11 +355,7 @@ export async function demoStyleWithScene(params, fallback = "live") {
       ? sceneFor(params).scene
       : {};
   if (!scene.projection && !scene.sky && !scene.restyle) return url;
-  const style = withScene(scene, await (await fetch(url)).json(), {
-    terrain: true,
-  });
+  const style = withScene(scene, await (await fetch(url)).json());
   if (!scene.restyle) return style;
-  const query = new URLSearchParams(params);
-  if (!query.has("terrain")) query.set("terrain", "1");
-  return opening(style, { scene, terrain: style.terrain ?? null }, query);
+  return opening(style, { scene, terrain: style.terrain ?? null }, params);
 }

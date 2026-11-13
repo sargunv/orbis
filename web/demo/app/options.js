@@ -86,8 +86,7 @@ const blended = (style) =>
  * `supported(context)` says whether the entry's style can take it,
  * `read(style)` gives its value in a style, `apply(tx, value, context)`
  * edits the style to it, and `initial(context)`, where given, is the
- * entry's default when not as the style was designed (terrain the switch
- * puts in). An entry's `off` lists switches its style designs that start
+ * entry's default when not as the style was designed. An entry's `off` lists switches its style designs that start
  * off (styles.js). `needs` names an option, and its value, without which this
  * one draws nothing, and says so: it's disabled then. `orbisOnly` marks a
  * preview GL JS and MapLibre Native don't draw: off by default (a choice's
@@ -102,9 +101,6 @@ export const OPTIONS = [
     supported: ({ scene, terrain }) => Boolean(scene.terrain && terrain),
     read: (style) => Boolean(style.terrain),
     apply: (tx, on, { terrain }) => tx.setTerrain(on ? terrain : null),
-    // An entry with its style's own terrain draws it by default; one with
-    // terrain of its own puts it in only when asked.
-    initial: ({ scene }) => scene.terrain === true,
   },
   // Fog draws only over terrain; a fog-ground blend of 1 puts it past the horizon.
   {

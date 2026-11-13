@@ -1879,7 +1879,7 @@ async function options(browser, server) {
     style: {
       anchor: "viewport",
       projection: "globe",
-      terrain: false,
+      terrain: true,
       hillshade: "visible",
       buildings: "visible",
       blend: null,
@@ -1889,15 +1889,15 @@ async function options(browser, server) {
     disabled,
     url: Object.fromEntries(Object.entries(url).sort()),
   });
-  // The URL's choices apply as the style loads; fog waits for terrain.
+  // The URL's choices apply as the style loads; the atmosphere waits for
+  // the globe.
   await settles(
     page,
     state,
-    expect(
-      { blend: "multiply", projection: "mercator" },
-      ["atmosphere", "fog"],
-      { blend: "1", projection: "mercator" },
-    ),
+    expect({ blend: "multiply", projection: "mercator" }, ["atmosphere"], {
+      blend: "1",
+      projection: "mercator",
+    }),
     "the URL's choices apply as the Globe loads",
   );
   await page.evaluate(() => {
@@ -1939,14 +1939,14 @@ async function options(browser, server) {
   await settles(
     page,
     state,
-    expect({}, ["fog"], {}),
+    expect({}, [], {}),
     "the blended relief off and the globe leave the URL",
   );
   await option(page, "light").locator('[data-value="map"]').click();
   await settles(
     page,
     state,
-    expect({ anchor: "map" }, ["fog"], { light: "map" }),
+    expect({ anchor: "map" }, [], { light: "map" }),
     "the light fixed to the map",
   );
   await option(page, "light").locator('[data-value="viewport"]').click();
@@ -1954,7 +1954,7 @@ async function options(browser, server) {
   await settles(
     page,
     state,
-    expect({ hillshade: "none" }, ["blend", "fog"], {
+    expect({ hillshade: "none" }, ["blend"], {
       hillshade: "0",
     }),
     "without the hillshade, the blended relief waits",
@@ -1964,7 +1964,7 @@ async function options(browser, server) {
   await settles(
     page,
     state,
-    expect({ buildings: "none" }, ["fog"], {
+    expect({ buildings: "none" }, [], {
       buildings: "0",
     }),
     "without 3D buildings",
@@ -1977,21 +1977,22 @@ async function options(browser, server) {
   await page.keyboard.press("Space");
   await option(page, "light").locator('[aria-checked="true"]').focus();
   await page.keyboard.press("ArrowLeft");
+  // Fog waits for the terrain the click took away.
   const chosen = expect(
     {
       blend: "multiply",
-      terrain: true,
+      terrain: false,
       labels: ["none"],
       anchor: "map",
     },
-    [],
-    { blend: "1", terrain: "1", labels: "0", light: "map" },
+    ["fog"],
+    { blend: "1", terrain: "0", labels: "0", light: "map" },
   );
   await settles(
     page,
     state,
     chosen,
-    "blended relief, terrain, labels and the light by click and key",
+    "blended relief, no terrain, labels and the light by click and key",
   );
   assert.ok(
     await page.evaluate(() => window.stayed),

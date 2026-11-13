@@ -38,10 +38,7 @@
             ]
           },
           "restyle": "globe",
-          "terrain": {
-            "source": "terrain",
-            "exaggeration": 1.3
-          },
+          "terrain": true,
           "camera": {
             "center": [10, 30],
             "zoom": 1.5
