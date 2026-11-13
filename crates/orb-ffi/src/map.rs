@@ -62,6 +62,13 @@ impl MapHandle {
             };
             let mut entry = cell.lock();
             let result = job(&mut entry);
+            // This thread steps a map no session draws: a move the command
+            // started takes its first step now, so its will-change comes
+            // with the command, as Native's does, not with a later step.
+            if entry.session.is_none() && entry.map.is_moving() {
+                let now = entry.core.now();
+                entry.map.advance(now);
+            }
             let unchanged = std::mem::take(&mut entry.unchanged);
             if changes && result.is_ok() {
                 entry.generation += 1;
