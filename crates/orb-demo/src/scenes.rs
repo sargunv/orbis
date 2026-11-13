@@ -284,12 +284,14 @@ impl Flight {
 
 /// Protomaps Light as the Globe draws it, from `web/demo/data/globe.json`
 /// as `globeStyle` in `web/demo/styles.js` applies it (which says why each
-/// part is as it is): the palette over each layer's paint by id, the ocean
-/// left to the background with the sea's depth and relief over it and
-/// under the land, a hillshade over the land and lakes, the buildings
-/// extruded under the labels, the DEM sources and the light, and the
-/// hillshade multiplied into the land (a preview) for its option to switch
-/// on, off by default. Each addition is placed by the layers it finds.
+/// part is as it is): the palette over each layer's paint by id, the sea's
+/// depth and relief under the land to zoom 6, and from there the ocean
+/// polygons over the landuse with the depth over them, the land below sea
+/// level and the Caspian put back over that, a hillshade over the land and
+/// lakes, the buildings extruded under the labels, the DEM sources and the
+/// light, and the hillshade multiplied into the land (a preview) for its
+/// option to switch on, off by default. Each addition is placed by the
+/// layers it finds.
 fn globe(style: &Value) -> Value {
     let globe: Value = serde_json::from_str(include_str!("../../../web/demo/data/globe.json"))
         .expect("web/demo/data/globe.json");
@@ -325,8 +327,39 @@ fn globe(style: &Value) -> Value {
     let earth = layers.iter().position(|l| l["id"] == "earth").unwrap_or(1);
     let sea = globe["sea"].as_array().cloned().unwrap_or_default();
     layers.splice(earth..earth, sea);
+    // The ocean polygons, from z6 over the landuse, and the sources the
+    // Globe derives from the water layer's: those with no `type` of their own.
     let water = layers.iter().position(|l| l["id"] == "water");
-    let at = water.map_or_else(|| labels(&layers), |i| i + 1);
+    let vector = water.map(|i| layers[i]["source"].clone());
+    if let Value::Object(sources) = &globe["sources"] {
+        for (name, source) in sources {
+            if !source["type"].is_null() {
+                style["sources"][name] = source.clone();
+            } else if let Some(Value::Object(base)) = vector
+                .as_ref()
+                .and_then(Value::as_str)
+                .map(|v| &style["sources"][v])
+            {
+                let mut derived = base.clone();
+                if let Value::Object(own) = source {
+                    derived.extend(own.clone());
+                }
+                style["sources"][name] = Value::Object(derived);
+            }
+        }
+    }
+    if let (Some(at), Some(vector)) = (water, &vector) {
+        let ocean = globe["ocean"].as_array().into_iter().flatten().map(|l| {
+            let mut l = l.clone();
+            if l["source"].is_null() {
+                l["source"] = vector.clone();
+            }
+            l
+        });
+        layers.splice(at..at, ocean);
+    }
+    let lakes = layers.iter().position(|l| l["id"] == "water");
+    let at = lakes.map_or_else(|| labels(&layers), |i| i + 1);
     layers.insert(at, globe["hillshade"].clone());
     if let Some(at) = layers
         .iter()
@@ -336,11 +369,6 @@ fn globe(style: &Value) -> Value {
         buildings["source"] = layers[at]["source"].clone();
         let at = labels(&layers);
         layers.insert(at, buildings);
-    }
-    if let Value::Object(sources) = &globe["sources"] {
-        for (name, source) in sources {
-            style["sources"][name] = source.clone();
-        }
     }
     style["light"] = globe["light"].clone();
     style["layers"] = Value::Array(layers);

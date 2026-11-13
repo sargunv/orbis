@@ -1,12 +1,14 @@
 {
   "$comment": [
     "The Globe entry's restyle of Protomaps Light, which web/demo/styles.js and orb-demo's scenes.rs both apply (styles.js says how).",
-    "The palette is the Globe's own: warm, calm limestone land; vegetation in muted sage that tints the globe by biome from orbit and gives way to parks close in; a sea that deepens from a pale lagoon over the shelves to slate blue over the abyss, with a faint seafloor relief; white roads with honey motorways on Protomaps' quiet hierarchy; slate-plum labels on soft halos, each text colour at least 4.5:1 against its halo (3:1 for the large ocean, country and region names).",
+    "The palette is the Globe's own: warm, calm limestone land; vegetation in muted sage that tints the globe by biome from orbit and gives way to parks close in; a sea that deepens from a pale lagoon over the shelves to slate blue over the abyss, with a faint seafloor relief from orbit; white roads with honey motorways on Protomaps' quiet hierarchy; slate-plum labels on soft halos, each text colour at least 4.5:1 against its halo (3:1 for the large ocean, country and region names).",
     "The land's hillshade shades the fills beneath it, with the relief option, by multiplying them (style-spec#1661's `dev.sargunv.orbis:hillshade-layer-blend`), so that forests and parks keep their saturation in shade rather than greying: a near-neutral slate shadow, which darkens each colour in proportion, a warm white highlight, which tints sunlit slopes without lifting them (multiply can only darken), and a little more exaggeration than drawn normally to make up for the highlights' contrast; without the option it takes the colours its `metadata[\"demo:unblended\"]` keeps, made for it composited normally, plum shadows and white highlights. The seafloor's relief stays normal: multiplied, it looks the same over the depth ramp's blues, whose paleness over the ridges is the ramp's, and would cost a second blended layer.",
     "Orbis's one preview here, the blended relief, is a map option, off by default, so the Globe opens as GL JS and MapLibre Native could draw it.",
     "`light` stands the sun 60° from overhead, turning with the view, at the spec's intensity: the buildings' faces turned to it are lit, the rest take half its light.",
-    "`paint` is set over each Protomaps layer's own by id; `sea` goes over the background (the ocean, its shore colour) and under `earth`, the land, so neither shows on land however low it lies; its last layer, `caspian`, fills the Caspian Sea as the lake it is: OpenStreetMap maps its shore as coastline, so it is among Protomaps' ocean polygons, and the DEM there shows its surface, 28 m below sea level, in blocks; a box around it, under the land, takes the shore's shape; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source.",
-    "The bathymetry stops at zoom 10, and closer views draw its zoom-10 tiles enlarged: from zoom 11 Terrain Tiles lay land-only elevation models over much of the coast and hold 0 m over the sea there (Puget Sound, Tokyo Bay, New York harbour, Miami and Marseille offshore), so the depths and seafloor relief would vanish from zoom 9.5, where a map starts using zoom-11 tiles."
+    "`paint` is set over each Protomaps layer's own by id; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source.",
+    "The sea hands over at zoom 6, where Protomaps' landuse starts to fade in: OpenStreetMap's national parks, nature reserves and military areas reach out to sea (Cinque Terre's, the Wadden Sea's), and only an ocean drawn over them hides them. Below it, `sea` goes over the background (the ocean, its shore colour) and under `earth`, so neither its depths nor its seafloor relief shows on land however low it lies; the relief fades out by zoom 6, since nothing keeps a hillshade off the land but the land drawn over it. From zoom 6, `ocean` goes over the landuse, before the lakes' `water`: Protomaps' ocean polygons, opaque in the shore colour, and the same depth ramp over them, transparent from 30 m deep up; then `lowland` puts the land colour back where Mapterhorn, which holds the sea at 0 m, puts the ground 20 m or more below sea level, so that the bathymetry doesn't tint Death Valley, Qattara, Turpan or the Dead Sea's shores as sea (they lose their landuse fills there instead), while polders and coastal flats, shallower, keep theirs, untinted. Mapterhorn's coastal values run a few metres below 0 in places (San Francisco, the Scheldt, the Wadden), well above the mask.",
+    "The Caspian Sea is filled as the lake it is: OpenStreetMap maps its shore as coastline, so it is among Protomaps' ocean polygons, and the bathymetry there shows its surface, 28 m below sea level, in blocks. Below zoom 6, `caspian`, the last of `sea`, is a box around it under the land, which takes the shore's shape; from zoom 6, `caspian_near` draws Protomaps' ocean polygons again in the lake colour, from a copy of the water layer's source bounded to that box (a source here with no `type` is such a copy, with its own keys over the water layer's), whose tiles hold no other sea from zoom 5 on.",
+    "The bathymetry stops at zoom 10, and closer views draw its zoom-10 tiles enlarged: from zoom 11 Terrain Tiles lay land-only elevation models over much of the coast and hold 0 m over the sea there (Puget Sound, Tokyo Bay, New York harbour, Miami and Marseille offshore), so the depths would vanish from zoom 9.5, where a map starts using zoom-11 tiles."
   ],
   "paint": {
     "background": {
@@ -493,10 +495,11 @@
           "#98cbe1",
           -60,
           "#acd9e5",
-          0,
-          "#c3e6ea"
+          -30,
+          "rgba(172, 217, 229, 0)"
         ]
-      }
+      },
+      "maxzoom": 6
     },
     {
       "id": "seafloor_hillshade",
@@ -514,18 +517,111 @@
           ],
           0,
           0.45,
-          8,
-          0.3
+          5,
+          0.36,
+          6,
+          0
         ],
         "hillshade-shadow-color": "rgba(28, 58, 102, 0.45)",
         "hillshade-highlight-color": "rgba(236, 248, 252, 0.35)",
         "hillshade-accent-color": "rgba(28, 58, 102, 0.2)"
-      }
+      },
+      "maxzoom": 6
     },
     {
       "id": "caspian",
       "type": "fill",
       "source": "caspian",
+      "paint": {
+        "fill-color": "#b0dbe7"
+      },
+      "maxzoom": 6
+    }
+  ],
+  "ocean": [
+    {
+      "id": "ocean",
+      "type": "fill",
+      "source-layer": "water",
+      "minzoom": 6,
+      "filter": [
+        "==",
+        [
+          "get",
+          "kind"
+        ],
+        "ocean"
+      ],
+      "paint": {
+        "fill-color": "#c3e6ea"
+      }
+    },
+    {
+      "id": "sea_depth_near",
+      "type": "color-relief",
+      "source": "bathymetry",
+      "minzoom": 6,
+      "paint": {
+        "color-relief-color": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "elevation"
+          ],
+          -8000,
+          "#5a84b8",
+          -5000,
+          "#6896c8",
+          -3000,
+          "#74a6d2",
+          -1000,
+          "#86badb",
+          -200,
+          "#98cbe1",
+          -60,
+          "#acd9e5",
+          -30,
+          "rgba(172, 217, 229, 0)"
+        ]
+      }
+    },
+    {
+      "id": "lowland",
+      "type": "color-relief",
+      "source": "hillshade",
+      "minzoom": 6,
+      "paint": {
+        "color-relief-color": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "elevation"
+          ],
+          -20,
+          "#efebe4",
+          -15,
+          "rgba(239, 235, 228, 0)"
+        ]
+      }
+    },
+    {
+      "id": "caspian_near",
+      "type": "fill",
+      "source": "caspian_water",
+      "source-layer": "water",
+      "minzoom": 6,
+      "filter": [
+        "==",
+        [
+          "get",
+          "kind"
+        ],
+        "ocean"
+      ],
       "paint": {
         "fill-color": "#b0dbe7"
       }
@@ -706,6 +802,14 @@
           ]
         ]
       }
+    },
+    "caspian_water": {
+      "bounds": [
+        45,
+        35.5,
+        56,
+        48
+      ]
     }
   },
   "light": {

@@ -112,11 +112,14 @@ function isLegacyFilter(filter) {
  * Protomaps' layers and tiles as the Globe draws them (data/globe.json,
  * which orb-demo applies too): its own palette set over each layer's paint
  * by id, keeping Protomaps' widths, filters and layout, so the road
- * hierarchy and label placement follow upstream; the sea's depth and
- * seafloor relief from AWS Terrain Tiles (ETOPO1 and GEBCO offshore) over
- * the ocean, which is the background once the water fill leaves out
- * Protomaps' ocean polygons, and under the land, so neither shows on land
- * however low it lies, and Mapterhorn's land hillshade isn't doubled;
+ * hierarchy and label placement follow upstream; the sea's depth from AWS
+ * Terrain Tiles (ETOPO1 and GEBCO offshore), drawn two ways: below zoom 6
+ * over the background, the ocean once the water fill leaves out Protomaps'
+ * ocean polygons, and under the land, with the seafloor's relief, so
+ * neither shows on land however low it lies; from zoom 6, where Protomaps'
+ * landuse fades in, over Protomaps' ocean polygons drawn over the landuse,
+ * so that parks and military areas reaching out to sea stay under it, with
+ * Mapterhorn's land below sea level and the Caspian Sea put back over it;
  * Mapterhorn's DEM for the entry's terrain (which keeps the sea at sea
  * level) and a hillshade over the land and lakes, under the roads and
  * labels; the buildings extruded under the labels, lit by a sun 60° from
@@ -149,8 +152,23 @@ function globeStyle(style) {
   };
   const earth = layers.findIndex((l) => l.id === "earth");
   layers.splice(earth < 0 ? 1 : earth, 0, ...globe.sea);
+  // The ocean polygons, from z6 over the landuse, and the sources the
+  // Globe derives from the water layer's: those with no `type` of their own.
   const water = layers.findIndex((l) => l.id === "water");
-  layers.splice(water < 0 ? labels() : water + 1, 0, globe.hillshade);
+  const vector = layers[water]?.source;
+  const sources = { ...style.sources };
+  for (const [id, source] of Object.entries(globe.sources)) {
+    if (source.type) sources[id] = source;
+    else if (vector) sources[id] = { ...style.sources[vector], ...source };
+  }
+  if (vector) {
+    const ocean = globe.ocean.map((l) =>
+      l.source ? l : { ...l, source: vector },
+    );
+    layers.splice(water, 0, ...ocean);
+  }
+  const lakes = layers.findIndex((l) => l.id === "water");
+  layers.splice(lakes < 0 ? labels() : lakes + 1, 0, globe.hillshade);
   const at = layers.findIndex(
     (l) => l["source-layer"] === "buildings" && l.type === "fill",
   );
@@ -167,7 +185,7 @@ function globeStyle(style) {
   }
   return {
     ...style,
-    sources: { ...style.sources, ...globe.sources },
+    sources,
     light: globe.light,
     layers,
   };
