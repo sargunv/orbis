@@ -114,37 +114,17 @@ impl orb_host::Clock for StillClock {
     }
 }
 
-/// Reads `file://` URLs, their `%XX` escapes decoded, on the caller's
-/// thread.
+/// Reads `file://` URLs on the caller's thread, as [`NativeFetch`] reads
+/// them on its own.
 #[derive(Debug)]
 struct FileFetch;
 
 impl FileFetch {
     fn read(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, orb_host::FetchError> {
-        use std::io::{Read, Seek, SeekFrom};
         let path = url
             .strip_prefix("file://")
             .ok_or_else(|| orb_host::FetchError::UnsupportedUrl(url.to_string()))?;
-        let (mut decoded, mut rest) = (Vec::new(), path.as_bytes());
-        while let Some((&byte, tail)) = rest.split_first() {
-            let hex = tail.get(..2).filter(|_| byte == b'%');
-            match hex.and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()) {
-                Some(escaped) => (decoded.push(escaped), rest = &tail[2..]),
-                None => (decoded.push(byte), rest = tail),
-            };
-        }
-        let path =
-            String::from_utf8(decoded).map_err(|e| orb_host::FetchError::Network(e.to_string()))?;
-        let mut file = std::fs::File::open(path).map_err(|_| orb_host::FetchError::NotFound)?;
-        let mut out = Vec::new();
-        let read = match range {
-            Some((offset, length)) => file
-                .seek(SeekFrom::Start(offset))
-                .and_then(|_| file.take(length).read_to_end(&mut out)),
-            None => file.read_to_end(&mut out),
-        };
-        read.map_err(|e| orb_host::FetchError::Network(e.to_string()))?;
-        Ok(out)
+        orb_host_native::read_file(path, range)
     }
 }
 
@@ -286,29 +266,21 @@ impl Offscreen {
 
     /// The map with its style set, before anything has loaded.
     pub(crate) fn new(options: &Options, capacity: SceneCapacity) -> Result<Self, String> {
-        Self::made(options, |map| map.set_scene_capacity(capacity))
+        Self::made(native_services(Arc::new(|| {})), options, |map| {
+            map.set_scene_capacity(capacity);
+        })
     }
 
     /// As [`new`](Self::new), on [`inline_services`] with placement inline:
     /// its frames are the same on every run.
     pub(crate) fn inline(options: &Options, capacity: SceneCapacity) -> Result<Self, String> {
-        Self::made_on(inline_services(), options, |map| {
+        Self::made(inline_services(), options, |map| {
             map.set_placement_lane(Arc::new(orb_runtime::InlinePlacement::default()));
             map.set_scene_capacity(capacity);
         })
     }
 
-    /// Like [`new`](Self::new), the pools growing to what the view needs
-    /// and the tile pages sized for the viewport, as an app's are.
-    pub(crate) fn sized(options: &Options) -> Result<Self, String> {
-        Self::made(options, |_| {})
-    }
-
-    fn made(options: &Options, set: impl FnOnce(&mut Map)) -> Result<Self, String> {
-        Self::made_on(native_services(Arc::new(|| {})), options, set)
-    }
-
-    fn made_on(
+    fn made(
         services: Services,
         options: &Options,
         set: impl FnOnce(&mut Map),

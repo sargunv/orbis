@@ -284,8 +284,10 @@ fn percent_decode(text: &str) -> std::borrow::Cow<'_, [u8]> {
     out.into()
 }
 
-/// Reads a `file://` URL's path, `range` of it when given.
-fn read_file(url_path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
+/// Reads a `file://` URL's path (what follows `file://`), `range` of it
+/// when given, on the caller's thread: what [`NativeFetch`] does with such
+/// a URL on its I/O threads.
+pub fn read_file(url_path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(file_path(url_path)).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => FetchError::NotFound,

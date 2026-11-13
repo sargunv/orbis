@@ -247,11 +247,9 @@ mod tests {
 
     /// Nothing in the renderer knows about gestures: a map whose pointer is
     /// held down and still while its view loads loads as one let go, frame
-    /// for frame within the jobs' timing, its memory growing as the view
-    /// needs (the vertex and index pools a block at a time, copying
-    /// nothing), and ends drawing what the other does. A held map's pools
-    /// once grew only at rest, so its view waited for the pointer's
-    /// release.
+    /// for frame, its memory growing as the view needs (the vertex and
+    /// index pools a block at a time, copying nothing), and ends drawing
+    /// what the other does.
     #[test]
     fn a_map_held_still_loads_as_one_let_go() {
         use orb_camera::input::{Button, Input, Modifiers, PointerKind};
