@@ -768,6 +768,10 @@ pub struct Map {
     /// The device refused the drape a sheet, and the next frame draws the
     /// terrain within the slots the drape held ([`Map::plan_drape`]).
     pub(crate) drape_refused: bool,
+    /// The terrain waits to turn on, or to go, for the pipelines the map
+    /// draws with then ([`orb_render::Renderer::terrain_ready_as`]): the
+    /// map isn't idle.
+    terrain_waits: bool,
     /// The last frame's viewport, which the views' worths of cached tiles
     /// are counted by ([`Map::cache_limit`]).
     pub(crate) cache_viewport: orb_camera::Viewport,
@@ -981,6 +985,7 @@ impl Map {
             release_cached: false,
             tile_cache: true,
             drape_refused: false,
+            terrain_waits: false,
             cache_viewport: orb_camera::Viewport {
                 width: 0.0,
                 height: 0.0,
@@ -1939,7 +1944,8 @@ impl Map {
                 })
         });
         renderer.set_full_projection(self.surface.globe().is_some() || warped || terrain);
-        renderer.set_terrain_reachable(gpu, terrain);
+        let reachable = renderer.set_terrain_reachable(gpu, terrain);
+        self.terrain_waits = terrain && !reachable;
         // The style's pipeline set, in what the map now declares, before
         // anything the frame shows asks for its own.
         self.pipeline_set(gpu, renderer);
@@ -2061,6 +2067,7 @@ impl Map {
         report.loaded = data_loaded && labels_settled && !redrew.deferred;
         report.idle = report.loaded
             && !self.drape_refused
+            && !self.terrain_waits
             && !redrew.redrew
             && !fading
             && !self.labels.fading(now)
@@ -3075,13 +3082,23 @@ impl Map {
             self.warnings.push(warning);
             wanted = None;
         }
-        // Terrain turned off falls flat before it goes.
+        // Terrain turned on waits for the pipelines it draws with.
+        if style.terrain.is_none() && self.terrain_waits {
+            wanted = None;
+        }
+        // Terrain turned off falls flat before it goes, and goes once the
+        // pipelines the map draws with without it are made.
         let same = match (&mut style.terrain, wanted) {
             (Some(t), Some(index)) => {
                 t.source = index;
                 t.key == plan.sources[index].key
             }
-            (Some(_), None) => root.terrain_presence > 0.0,
+            (Some(_), None) => {
+                let falling = root.terrain_presence > 0.0;
+                let stays = falling || !renderer.terrain_ready_as(gpu, false);
+                self.terrain_waits |= stays && !falling;
+                stays
+            }
             (None, None) => true,
             (None, Some(_)) => false,
         };

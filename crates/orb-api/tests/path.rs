@@ -926,9 +926,13 @@ fn a_resized_terrain_map_draws_its_next_frame() {
 /// tiles drawn on every frame between: a fill under Tokyo's layers covers
 /// the ground, so no frame shows the background (once, removing terrain
 /// left the drape no room while the terrain fell, and every frame of the
-/// fall drew the labels alone); the frames between differ from both ends
-/// (they ease rather than jump), and at rest the map draws what a fresh
-/// map with or without the terrain does at that camera.
+/// fall drew the labels alone; and since terrain draws in the map's own
+/// passes, whose pipelines differ with and without it, a map loaded with
+/// terrain dropped it before its flat pipelines compiled, and drew the
+/// background alone for a few frames); the frames between differ from
+/// both ends (they ease rather than jump), and at rest the map draws what
+/// a fresh map with or without the terrain does at that camera. Each turn
+/// starts from a fresh map, which has none of the other kind's pipelines.
 #[test]
 fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
     let (hills, _dem) = hills();
@@ -953,17 +957,6 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
     let without = style("");
     let at = (STATION, 14.5, 30.0, 55.0);
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
-    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
-    let mut map = Map::new(&runtime, options());
-    map.set_constraints(steep());
-    map.set_style_json(&without).unwrap();
-    map.jump_to(&camera(at));
-    // The frames' clock, in milliseconds: settling times its frames on
-    // from the last one's.
-    let started = std::time::Instant::now();
-    let clock = || started.elapsed().as_secs_f64() * 1000.0;
-    map.render(&mut target, clock()).unwrap();
-    common::settle(&mut map, &mut target);
     // The background's magenta, however the terrain shades it: nothing in
     // Tokyo's style is near it.
     let bare = |pixels: &[u8]| {
@@ -971,7 +964,18 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
             .filter(|p| u16::from(p[1]) + 96 < u16::from(p[0].min(p[2])))
             .count()
     };
-    let mut turn = |terrain: &str, fresh_style: &str, name: &str| {
+    let turn = |(start, terrain, end): (&str, &str, &str), name: &str| {
+        let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+        let mut map = Map::new(&runtime, options());
+        map.set_constraints(steep());
+        map.set_style_json(start).unwrap();
+        map.jump_to(&camera(at));
+        // The frames' clock, in milliseconds: settling times its frames
+        // on from the last one's.
+        let started = std::time::Instant::now();
+        let clock = || started.elapsed().as_secs_f64() * 1000.0;
+        map.render(&mut target, clock()).unwrap();
+        common::settle(&mut map, &mut target);
         let mut frames = vec![target.read_pixels().unwrap()];
         let tx = format!(r#"[["setTerrain", {terrain}]]"#);
         map.edit(&orb_api::Transaction::from_commands(&tx).unwrap())
@@ -996,16 +1000,15 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
             "{name}: the map jumped rather than eased"
         );
         let camera = map.camera();
-        let mut other = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
-        let (fresh, fresh_camera) = fresh_at(&runtime, &mut other, fresh_style, at);
+        let (fresh, fresh_camera) = fresh_at(&runtime, &mut target, end, at);
         assert_eq!(
             camera, fresh_camera,
             "{name}: the camera differs from a fresh map's"
         );
         assert_same(name, (last.clone(), fresh));
     };
-    turn(terrain, &with, "terrain-on");
-    turn("null", &without, "terrain-off");
+    turn((&without, terrain, &with), "terrain-on");
+    turn((&with, "null", &without), "terrain-off");
 }
 
 /// A map loaded with terrain, turned flat before the flat view's tiles

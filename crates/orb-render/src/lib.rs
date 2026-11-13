@@ -1427,40 +1427,104 @@ impl Renderer {
 
     /// Sets whether the style has terrain, on or not yet (its DEM source
     /// may still resolve): the pipeline set then holds the terrain's and
-    /// the draped nodes' drape pipelines from the first.
-    pub fn set_terrain_reachable(&mut self, gpu: &mut dyn Gpu, on: bool) {
+    /// the draped nodes' drape pipelines from the first. A map that has
+    /// drawn without terrain takes it only once what it draws on terrain
+    /// is made ([`terrain_ready_as`](Self::terrain_ready_as)), so no frame
+    /// between draws without its layers. Returns whether the terrain is
+    /// reachable now: until it is, the map stays as it was.
+    pub fn set_terrain_reachable(&mut self, gpu: &mut dyn Gpu, on: bool) -> bool {
+        let drew_flat = !self.target.depth && self.nodes.iter().any(|n| n.drawn);
+        let on = on && (self.terrain_reachable || !drew_flat || self.terrain_ready_as(gpu, true));
         if self.terrain_reachable != on {
             self.terrain_reachable = on;
             self.set_stale = true;
         }
         self.fit_depth(gpu);
+        on
     }
 
     /// Gives the map's passes a depth attachment while the style has
     /// terrain or terrain is on, for the terrain to draw in, or none:
-    /// every pipeline they draw with declares it, so those made for the
-    /// passes before are let go and made again as the set and the nodes
-    /// ask for them.
+    /// every pipeline they draw with declares it, so the set and the
+    /// nodes ask for those of the new kind, made ahead where the terrain
+    /// waited for them.
     fn fit_depth(&mut self, gpu: &mut dyn Gpu) {
         let depth = self.terrain_reachable || self.terrain_on();
         if self.target.depth == depth {
             return;
         }
-        self.target.depth = depth;
-        let target = self.target;
-        // Those for the other kind, kept since the passes last had or
-        // lacked it, so that turning terrain on and back off draws on
-        // at once.
-        std::mem::swap(&mut self.paint, &mut self.paint_kept);
-        self.symbols.swap_draws();
-        self.images.retarget(target);
-        self.composites.retarget(target);
-        self.atmosphere.swap_target();
+        self.swap_kind(depth);
         self.map_depth.take().map(|(depth, _)| depth).release(gpu);
         self.pipelines_stale = true;
         self.set_stale = true;
         self.invalidate_bundle(gpu);
         self.layers.clear(gpu);
+    }
+
+    /// Draws into the map's passes with (`depth`) or without the
+    /// terrain's depth from now on: the pipelines for that kind, kept
+    /// since the passes last were of it, take the place of these, which
+    /// are kept in turn.
+    fn swap_kind(&mut self, depth: bool) {
+        self.target.depth = depth;
+        let target = self.target;
+        std::mem::swap(&mut self.paint, &mut self.paint_kept);
+        self.symbols.swap_draws();
+        self.images.retarget(target);
+        self.composites.retarget(target);
+        self.atmosphere.swap_target();
+    }
+
+    /// Whether every pipeline the map's frames draw with once its terrain
+    /// is on (`on`), or once it is gone, is made, asking for those that
+    /// aren't: those of its nodes shown so far, its sky and its
+    /// composites, as they draw then. The map turns its terrain on or
+    /// drops it only then, so that no frame between draws without the
+    /// layers whose pipelines compile.
+    pub fn terrain_ready_as(&mut self, gpu: &mut dyn Gpu, on: bool) -> bool {
+        // The renderer as it is once terrain is on, its DEM still to come,
+        // or gone.
+        let paint = self.terrain.as_mut().and_then(|t| t.paint.take());
+        let (reachable, full, depth) = (self.terrain_reachable, self.full, self.target.depth);
+        self.terrain_reachable = on;
+        if depth != on {
+            self.swap_kind(on);
+        }
+        self.assign_stacks_as(on);
+        self.full = on;
+        self.request_set(gpu);
+        let mut wanted = Vec::new();
+        for i in 0..self.nodes.len() {
+            if !self.scene_cull(i).visible && !self.nodes[i].drawn {
+                continue;
+            }
+            self.make_for_node(gpu, i, false);
+            if let Some((_, opacity, blend)) = self.nodes[i].composite
+                && self.nodes[i].terrain_layer.is_none()
+                && composite_group(self.nodes[i].composite).is_some()
+            {
+                let mode = match blend {
+                    Blend::Normal if opacity < 1.0 => offscreen::Mode::Over,
+                    blend => offscreen::Mode::Blend(blend),
+                };
+                self.composites.make(gpu, mode);
+            }
+            self.node_pipelines(i, &mut wanted);
+        }
+        wanted.extend(self.composites.pipelines());
+        wanted.extend(self.atmosphere.pipelines());
+        // Back as it was.
+        self.full = full;
+        self.terrain_reachable = reachable;
+        if let (Some(terrain), Some(paint)) = (self.terrain.as_mut(), paint) {
+            terrain.paint = Some(paint);
+        }
+        self.assign_stacks();
+        if depth != on {
+            self.swap_kind(depth);
+        }
+        self.extrusions.set_full(self.variants()[1]);
+        wanted.into_iter().all(|id| gpu.pipeline_ready(id))
     }
 
     /// Whether the style's terrain is still to turn on: its DEM source
