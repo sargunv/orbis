@@ -6,8 +6,8 @@ use orb_style::Previews;
 
 use crate::{Map, MissingTiles};
 
-/// How a map starts. Each option but the camera can change later, on its
-/// own setter or all at once with [`Map::set_options`].
+/// How a map starts. Each option but the camera can change later with
+/// [`Map::set_options`], and some on setters of their own.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapOptions {
     /// The camera; the first style's when `None`, as GL JS does.
@@ -17,18 +17,21 @@ pub struct MapOptions {
     /// default, like GL JS's canvas.
     pub clear_color: [f64; 4],
     /// How long labels fade in and out, in milliseconds (GL JS
-    /// `fadeDuration`); still output doesn't fade.
+    /// `fadeDuration`); still output doesn't fade. As in GL JS, labels
+    /// don't fade until the map is first idle.
     pub fade_duration: f64,
     /// Whether labels of different sources collide with each other (GL JS
     /// `crossSourceCollisions`).
     pub cross_source_collisions: bool,
     /// The CSS font family ideographs of the default font stack are drawn
     /// with instead of the style's glyphs (GL JS
-    /// `localIdeographFontFamily`); `None` draws the glyphs.
+    /// `localIdeographFontFamily`); `None` draws the glyphs. Applies to
+    /// styles loaded afterwards.
     pub local_ideograph_font_family: Option<String>,
     /// Font files every font stack draws with after the style's own
-    /// `font-faces` (MapLibre Native's `fallbackFontFaces`). None by
-    /// default.
+    /// `font-faces` (MapLibre Native's `fallbackFontFaces`): text in
+    /// scripts the style's fonts don't cover, say. None by default;
+    /// applies to styles loaded afterwards.
     pub fallback_font_faces: Vec<orb_style::FontFace>,
     /// 4× multisampling for 3D surfaces: extrusion layers, and on a
     /// style with terrain, the map's passes, which it draws in (GL JS
@@ -62,7 +65,8 @@ pub struct MapOptions {
     /// What a vector tile the tileset doesn't have (HTTP 404) draws: its
     /// nearest ancestor by default, or nothing, as GL JS and MapLibre
     /// Native draw it. Raster and raster-dem tiles draw their ancestor
-    /// either way ([`MissingTiles`]).
+    /// either way ([`MissingTiles`]). Applies to tiles that arrive
+    /// afterwards.
     pub missing_tiles: MissingTiles,
 }
 
@@ -88,18 +92,14 @@ impl Default for MapOptions {
 impl Map {
     /// Sets every option but the camera, which only a new map takes
     /// ([`Map::new`]; move it with the camera's calls after). Options that
-    /// apply to styles or tiles loaded afterwards say so on their setters.
+    /// apply only to styles or tiles loaded afterwards say so.
     pub fn set_options(&mut self, options: &MapOptions) {
         self.set_clear_color(options.clear_color);
-        self.set_fade_duration(options.fade_duration);
-        self.set_cross_source_collisions(options.cross_source_collisions);
-        self.set_local_ideograph_font_family(options.local_ideograph_font_family.as_deref());
-        self.set_fallback_font_faces(options.fallback_font_faces.clone());
+        self.labels.options = options.into();
         self.set_antialias_3d(options.antialias);
-        self.set_terrain_skirts(options.terrain_skirts);
+        self.terrain_skirts = options.terrain_skirts;
         self.set_previews(options.previews);
-        self.set_stable_labels(options.stable_labels);
         self.set_tile_lod(options.tile_lod);
-        self.set_missing_tiles(options.missing_tiles);
+        self.missing_tiles = options.missing_tiles;
     }
 }

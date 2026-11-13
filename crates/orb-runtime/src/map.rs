@@ -690,13 +690,13 @@ pub struct Map {
     /// The camera and terrain revisions the last frame saw.
     pub(crate) camera_seen: u64,
     pub(crate) terrain_seen: u64,
-    /// Terrain tiles hang skirts ([`Map::set_terrain_skirts`]).
+    /// Terrain tiles hang skirts ([`crate::MapOptions::terrain_skirts`]).
     pub(crate) terrain_skirts: bool,
     /// How covers coarsen with distance ([`Map::set_tile_lod`]).
     tile_lod: orb_camera::TileLod,
-    /// What a vector tile that 404s draws ([`Map::set_missing_tiles`]).
+    /// What a vector tile that 404s draws ([`crate::MapOptions::missing_tiles`]).
     pub(crate) missing_tiles: MissingTiles,
-    /// The previews styles parse with ([`Map::set_previews`]).
+    /// The previews styles parse with ([`crate::MapOptions::previews`]).
     previews: orb_style::Previews,
     pub(crate) antialias_3d: bool,
     /// The cull keeps every candidate ([`Map::set_keep_all_cull`]).
@@ -1022,19 +1022,6 @@ impl Map {
         self.mode = mode;
     }
 
-    /// Sets how long labels fade in and out, milliseconds (GL JS
-    /// `fadeDuration`, 300 by default; 0 for still output). As in GL JS,
-    /// labels don't fade until the map is first idle.
-    pub fn set_fade_duration(&mut self, ms: f64) {
-        self.labels.options.fade_duration = ms;
-    }
-
-    /// Whether labels of different sources collide with each other (GL JS
-    /// `crossSourceCollisions`, on by default).
-    pub fn set_cross_source_collisions(&mut self, collide: bool) {
-        self.labels.options.cross_source_collisions = collide;
-    }
-
     /// Whether labels keep their place while the camera moves, as in
     /// MapLibre Native (on by default): a label tries its previous variable
     /// anchor first, and in tilted views labels shown before are placed
@@ -1043,22 +1030,6 @@ impl Map {
     /// afresh either way.
     pub fn set_stable_labels(&mut self, stable: bool) {
         self.labels.options.stable_labels = stable;
-    }
-
-    /// Draws ideographs (CJK and the like) of the default font stack with
-    /// this CSS font family instead of the style's glyph PBFs, as GL JS's
-    /// `localIdeographFontFamily` does; `sans-serif` by default, `None` to
-    /// use the PBFs. Applies to styles loaded afterwards.
-    pub fn set_local_ideograph_font_family(&mut self, family: Option<&str>) {
-        self.labels.options.ideographs = family.map(str::to_string);
-    }
-
-    /// Font files every font stack draws with after the style's own
-    /// `font-faces` (MapLibre Native's `fallbackFontFaces`): text in
-    /// scripts the style's fonts don't cover, say. Applies to styles
-    /// loaded afterwards.
-    pub fn set_fallback_font_faces(&mut self, files: Vec<orb_style::FontFace>) {
-        self.labels.options.fallback_fonts = files;
     }
 
     /// Places labels on `lane` instead of the host's default (a thread
@@ -1079,14 +1050,6 @@ impl Map {
         self.previews = previews;
     }
 
-    /// Whether terrain tiles hang skirts below their edges, hiding the
-    /// cracks between tiles of different detail (GL JS
-    /// `terrainSkirtLength`: on is `auto`, the default; off is `none`, for
-    /// translucent terrain, where skirts would show).
-    pub fn set_terrain_skirts(&mut self, skirts: bool) {
-        self.terrain_skirts = skirts;
-    }
-
     /// Sets how the covers' tiles coarsen with distance in pitched views:
     /// MapLibre Native's tile level of detail, its defaults until set.
     /// Values out of range are brought into it ([`TileLod::sanitized`]).
@@ -1094,13 +1057,6 @@ impl Map {
     /// [`TileLod::sanitized`]: orb_camera::TileLod::sanitized
     pub fn set_tile_lod(&mut self, lod: orb_camera::TileLod) {
         self.tile_lod = lod.sanitized();
-    }
-
-    /// Sets what a vector tile the tileset doesn't have draws: its nearest
-    /// ancestor by default, or nothing ([`MissingTiles`]). Applies to tiles
-    /// that arrive afterwards.
-    pub fn set_missing_tiles(&mut self, missing: MissingTiles) {
-        self.missing_tiles = missing;
     }
 
     /// How the covers' tiles coarsen with distance.
