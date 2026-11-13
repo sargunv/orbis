@@ -757,10 +757,11 @@ pub struct Map {
     sized: bool,
     /// What a frame may spend on arrivals.
     pub(crate) frame_budget: crate::Budget,
-    /// The terrain tiles the drape's cover last wanted, and for how many
-    /// frames since: pages larger than it are made anew to fit once they
-    /// are enough ([`Map::plan_drape`]).
-    pub(crate) drape_wanted: (u32, u32),
+    /// The terrain tiles the drape's cover last wanted, the camera's
+    /// revision then, and for how many frames since both held: pages
+    /// larger than it are made anew to fit once they are enough
+    /// ([`Map::plan_drape`]).
+    pub(crate) drape_wanted: (u32, u64, u32),
     /// When the host began the next frame's work on what arrived, on the
     /// services' clock ([`Map::arrivals_began`]).
     pub(crate) arrivals_began: Option<f64>,
@@ -975,7 +976,7 @@ impl Map {
             capacity: SceneCapacity::default(),
             sized: true,
             frame_budget: crate::Budget::DESKTOP,
-            drape_wanted: (0, 0),
+            drape_wanted: (0, 0, 0),
             arrivals_began: None,
             release_cached: false,
             tile_cache: true,

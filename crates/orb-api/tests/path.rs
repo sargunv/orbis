@@ -1247,6 +1247,57 @@ fn every_terrain_view_fits_the_drape_atlas() {
     assert_same("crest", both_ways(&alps, start, end, 20));
 }
 
+/// A moving view's drape pages only grow. Its cover takes more tiles and
+/// fewer as it turns and tilts, and pages made anew allocate the whole
+/// atlas in one frame, so pages larger than the cover are made to fit it
+/// only once the view holds still: then exactly, as a fresh map's pages
+/// fit it. Here the view over the Alps at pitch 80 looking north holds
+/// larger pages than looking north-east, which a slow turn there, its
+/// cover steady, keeps.
+#[test]
+fn a_moving_view_only_grows_its_drape_pages() {
+    let (alps, _dem) = alps();
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 1440, 900, 1.0);
+    let at = |bearing, pitch| (Geodetic::new(7.9, 46.0), 12.0, bearing, pitch);
+    let settled = |map: &mut Map, target: &mut Target| {
+        let report = map.render_until_idle(target, Duration::from_secs(60));
+        report.expect("the map idles").memory.drape_atlas
+    };
+    let mut map = Map::new(&runtime, options());
+    map.set_style_json(&alps).unwrap();
+    map.jump_to(&camera(at(45.0, 80.0)));
+    let rest = settled(&mut map, &mut target);
+    map.jump_to(&camera(at(0.0, 80.0)));
+    let grown = settled(&mut map, &mut target);
+    assert!(
+        grown > rest,
+        "looking north holds no larger pages: the test shows nothing"
+    );
+    let mut shrank = Vec::new();
+    for step in 0..90 {
+        map.jump_to(&camera(at(45.0 + f64::from(step) * 0.05, 80.0)));
+        let report = map.render(&mut target, 0.0).unwrap();
+        if report.is_some_and(|r| r.memory.drape_atlas < grown) {
+            shrank.push(step);
+        }
+        std::thread::sleep(Duration::from_millis(8));
+    }
+    assert!(
+        shrank.is_empty(),
+        "the turning view's pages shrank in frames {shrank:?}"
+    );
+    let turned = settled(&mut map, &mut target);
+    let mut fresh = Map::new(&runtime, options());
+    fresh.set_style_json(&alps).unwrap();
+    fresh.jump_to(&camera(at(45.0 + 89.0 * 0.05, 80.0)));
+    let fresh = settled(&mut fresh, &mut target);
+    assert_eq!(
+        turned, fresh,
+        "the turned map's pages differ from a fresh map's"
+    );
+}
+
 /// Ground below the horizon at a high pitch over steep terrain, as over
 /// Chongqing's hills on the demo's globe: a pitched view's cover wants
 /// many more terrain tiles than a view straight down, and the drape pages

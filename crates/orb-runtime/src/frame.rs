@@ -637,19 +637,26 @@ impl Map {
         .max(1);
         // Pages too small for the cover are made anew at once, with a
         // quarter more room. Pages larger than it are made anew to fit once
-        // the cover has wanted as many tiles for [`DRAPE_REFIT`] frames: a
-        // cover that grows and shrinks by a tile from frame to frame keeps
-        // its pages, and one that holds still ends in pages that hold it
-        // exactly, as a fresh map's do.
+        // the cover has wanted as many tiles, from the same camera, for
+        // [`DRAPE_REFIT`] frames. Making pages allocates the whole atlas in
+        // one frame, hundreds of MiB, and a turning view's cover changes
+        // its count all the time: shrinking pages whenever the count held
+        // for a moment grew them again a moment later. So pages only grow
+        // while the view moves. What a frame shows doesn't depend on
+        // them, which hold whatever it shows, and a view held still ends
+        // in pages that hold its cover exactly, as a fresh map's do.
         let held = renderer.drape_slots();
+        let camera = self.camera.revision();
         self.drape_wanted = match self.drape_wanted {
-            (count, frames) if count == wanted => (count, frames.saturating_add(1)),
-            _ => (wanted, 0),
+            (count, seen, frames) if count == wanted && seen == camera => {
+                (count, seen, frames.saturating_add(1))
+            }
+            _ => (wanted, camera, 0),
         };
         let slots = match () {
             _ if still || wanted == held => wanted,
             _ if wanted > held => (wanted + wanted / 4).min(renderer.drape_room(gpu)),
-            _ if self.drape_wanted.1 >= DRAPE_REFIT => wanted,
+            _ if self.drape_wanted.2 >= DRAPE_REFIT => wanted,
             _ => held,
         };
         let refit = slots != wanted;
