@@ -10,7 +10,7 @@
 //! `<style>` is a v8 style: a URL (`https://`, `file://`, `pmtiles://`)
 //! or a path. `render` draws one picture in Still
 //! mode (`--at`'s zoom is Web Mercator's, as the style's own plane is known
-//! only once it loads; `--antialias` multisamples 3D layers or not, the
+//! only once it loads; `--antialias` multisamples 3D layers and terrain or not, the
 //! map's default otherwise); with `--capture` it draws the settled picture once
 //! more for the graphics debugger it runs under (Xcode, RenderDoc) to
 //! capture; with `--pipelines` it prints each pipeline's compile time,

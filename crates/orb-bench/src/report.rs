@@ -128,7 +128,10 @@ impl FramesReport {
             s.width, s.height, s.ratio, s.center.lon, s.center.lat, s.rounds, s.frames, s.warmup,
         )?;
         if s.antialias {
-            writeln!(out, "- 3D layers multisampled 4× (`--antialias on`)")?;
+            writeln!(
+                out,
+                "- 3D layers and terrain multisampled 4× (`--antialias on`)"
+            )?;
         }
         if s.nudge {
             writeln!(
