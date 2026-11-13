@@ -322,7 +322,7 @@ impl From<&orb_runtime::FrameTimes> for FrameTimes {
 /// The map's GPU memory by pool, in bytes but `cached_tiles`: the scene's
 /// pools grow at rest to what the tiles in view need, within the device's
 /// ceilings; tiles out of view stay cached, at most `cache_limit` of them,
-/// as many as the view draws.
+/// two views' worth.
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameMemory {

@@ -224,7 +224,7 @@ pub struct Memory {
     /// picking data.
     pub cached_tiles: u32,
     pub cached: u64,
-    /// How many tiles the cache may hold: as many as the view draws
+    /// How many tiles the cache may hold: two views' worth
     /// ([`Map::cache_limit`]).
     pub cache_limit: u32,
 }
@@ -770,6 +770,9 @@ pub struct Map {
     pub(crate) release_cached: bool,
     /// Tiles out of view stay cached ([`Map::set_tile_cache`]).
     pub(crate) tile_cache: bool,
+    /// The last frame's viewport, which the views' worths of cached tiles
+    /// are counted by ([`Map::cache_limit`]).
+    pub(crate) cache_viewport: orb_camera::Viewport,
     /// The last style id given to the jobs.
     pub(crate) style_id: u64,
     /// Counts style revisions: every new style and every edit.
@@ -980,6 +983,10 @@ impl Map {
             arrivals_began: None,
             release_cached: false,
             tile_cache: true,
+            cache_viewport: orb_camera::Viewport {
+                width: 0.0,
+                height: 0.0,
+            },
             style_id: 0,
             version: 0,
             pending: BTreeMap::new(),
@@ -2233,7 +2240,7 @@ impl Map {
         for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
             self.place_source(gpu, renderer, view, index, drape.as_ref(), report, drawn);
         }
-        self.trim_cache(renderer);
+        self.trim_cache(renderer, view.viewport());
         times.place = micros(placing, clock.now());
         (frame_terrain, redrew)
     }
@@ -3006,9 +3013,8 @@ impl Map {
     }
 
     /// How many tiles out of view the map keeps, on the GPU and parked off
-    /// it ([`trim_cache`](Self::trim_cache), each source as many as its own
-    /// view draws; [`Parked`](crate::schedule::Parked)): as many as the
-    /// view draws, of every source, a view's worth. A gesture that comes back where it was
+    /// it ([`trim_cache`](Self::trim_cache); [`Parked`](crate::schedule::Parked)):
+    /// two views' worth of every source ([`source_cache_limit`]). A gesture that comes back where it was
     /// (a pan back, a zoom out and in again) finds the view it left without
     /// fetching or laying it out again; tiles further back load again. GL
     /// JS keeps five zooms of a view's tiles, which on a dense style is
@@ -3018,7 +3024,9 @@ impl Map {
     pub(crate) fn cache_limit(&self) -> usize {
         (self.style.iter().flat_map(|s| &s.sources))
             .map(|source| match source {
-                SourceState::Ready { pyramid, .. } => pyramid.used(),
+                SourceState::Ready {
+                    pyramid, endpoint, ..
+                } => source_cache_limit(pyramid.used(), endpoint.cover_px, self.cache_viewport),
                 _ => 0,
             })
             .sum()
@@ -4149,4 +4157,27 @@ fn shades_on_terrain(style: &LoadedStyle, tms: &orb_crs::TileMatrixSet) -> bool 
                 SourceState::Failed => false,
             }
     })
+}
+
+/// Views' worths of tiles a source keeps out of view ([`source_cache_limit`]):
+/// the view a gesture left, and as many again of the zooms it passes on the
+/// way out and back, which go out of view after it and would push it out
+/// first. One kept Nepal flung out to the whole globe and back laying out
+/// and uploading 165 of Protomaps' 227 tile loads again; two, 3 of 72.
+const CACHED_VIEWS: usize = 2;
+
+/// The tiles out of view a source keeps: as many as the view uses of it
+/// (`used`), and never fewer than [`CACHED_VIEWS`] of what a view the world
+/// fills draws of its tiles, which cover at `cover_px` logical pixels a
+/// side: the viewport's columns and rows of them, and one more of each for
+/// where they fall. A view zoomed out until the world is smaller than the
+/// viewport draws a handful, and keeping no more than that drops the view
+/// it came from.
+pub(crate) fn source_cache_limit(
+    used: usize,
+    cover_px: f64,
+    viewport: orb_camera::Viewport,
+) -> usize {
+    let side = |px: f64| (px / cover_px).ceil().max(0.0) as usize + 1;
+    used.max(CACHED_VIEWS * side(viewport.width) * side(viewport.height))
 }

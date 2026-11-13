@@ -543,12 +543,13 @@ impl Map {
         }
     }
 
-    /// Keeps each source's tiles out of view to as many as its view draws
-    /// ([`cache_limit`](Self::cache_limit); none with the tile cache off):
+    /// Keeps each source's tiles out of view to two views' worth of
+    /// `viewport` ([`source_cache_limit`]; none with the tile cache off):
     /// the least recently used go first.
     /// The scene's pools then hold the tiles in view and what's left of the
     /// cache, and arrivals that need room evict more (`evict_unused`).
-    pub(crate) fn trim_cache(&mut self, renderer: &mut Renderer) {
+    pub(crate) fn trim_cache(&mut self, renderer: &mut Renderer, viewport: orb_camera::Viewport) {
+        self.cache_viewport = viewport;
         if self.style.is_none() {
             return;
         }
@@ -565,8 +566,14 @@ impl Map {
         // (source, tile).
         let mut gone: Vec<(usize, TileIndex)> = Vec::new();
         for (index, source) in style.sources.iter().enumerate() {
-            if let SourceState::Ready { pyramid, .. } = source {
-                let limit = if keeps { pyramid.used() } else { 0 };
+            if let SourceState::Ready {
+                pyramid, endpoint, ..
+            } = source
+            {
+                let limit = match keeps {
+                    true => source_cache_limit(pyramid.used(), endpoint.cover_px, viewport),
+                    false => 0,
+                };
                 let mut unused: Vec<(u64, TileIndex)> =
                     pyramid.unused().map(|(tile, age, _)| (age, tile)).collect();
                 if unused.len() > limit {

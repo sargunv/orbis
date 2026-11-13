@@ -960,7 +960,7 @@ impl SessionReport {
         writeln!(
             out,
             "GPU memory in MiB when the map settled after the moves, and the most it held in \
-             any frame; the cache keeps at most as many tiles as the view draws."
+             any frame; the cache keeps at most two views' worth of tiles."
         )?;
         self.write_steadiness(out)?;
         for r in &self.results {
