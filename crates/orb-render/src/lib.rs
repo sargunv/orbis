@@ -1843,12 +1843,6 @@ impl Renderer {
         self.images.create_page(gpu, kind, size, layers)
     }
 
-    /// Whether image tiles of style source `source` have a page
-    /// ([`upload_image`](Self::upload_image) makes its first).
-    pub fn has_page(&self, source: u32) -> bool {
-        self.tiles.page(source).is_some()
-    }
-
     /// Layers a new page starts with: what the view's cover needs of its
     /// tiles ([`Sizing`]), or eight before the map sized them.
     pub(crate) fn page_layers(&self, size: [u32; 2]) -> u32 {

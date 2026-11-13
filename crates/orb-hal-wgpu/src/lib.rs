@@ -463,12 +463,10 @@ impl WgpuGpu {
             limits: Limits {
                 max_buffer_size: limits.max_buffer_size,
                 max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
-                max_storage_buffers_per_shader_stage: limits.max_storage_buffers_per_shader_stage,
                 max_texture_dimension_2d: (limits.max_texture_dimension_2d)
                     .min(wgpu::Limits::default().max_texture_dimension_2d),
                 max_texture_array_layers: limits.max_texture_array_layers,
                 max_texture_bytes: if gl { GL_TEXTURE_BYTES } else { u64::MAX },
-                min_storage_buffer_offset_alignment: limits.min_storage_buffer_offset_alignment,
                 min_uniform_buffer_offset_alignment: limits.min_uniform_buffer_offset_alignment,
             },
             timestamp_query: device.features().contains(wgpu::Features::TIMESTAMP_QUERY),

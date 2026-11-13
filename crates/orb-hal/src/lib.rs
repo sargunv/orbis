@@ -370,7 +370,6 @@ pub fn level_bytes(desc: &TextureDesc<'_>, layers: u32) -> u64 {
 pub struct Limits {
     pub max_buffer_size: u64,
     pub max_storage_buffer_binding_size: u64,
-    pub max_storage_buffers_per_shader_stage: u32,
     /// The 2D texture side everything sizes by: the device's, up to
     /// WebGPU's default (8192), so that what a map draws doesn't depend on
     /// a device that offers more.
@@ -383,6 +382,5 @@ pub struct Limits {
     /// M6 with 32 GiB), so GL takes 1 GiB, lowered where the driver
     /// refuses less ([`Gpu::try_create_texture`]).
     pub max_texture_bytes: u64,
-    pub min_storage_buffer_offset_alignment: u32,
     pub min_uniform_buffer_offset_alignment: u32,
 }

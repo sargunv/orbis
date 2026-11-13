@@ -110,11 +110,6 @@ impl TextureFormat {
             Self::Depth32FloatStencil8 => 8,
         }
     }
-
-    /// Whether it holds a stencil.
-    pub fn has_stencil(self) -> bool {
-        matches!(self, Self::Depth32FloatStencil8 | Self::Depth24PlusStencil8)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
