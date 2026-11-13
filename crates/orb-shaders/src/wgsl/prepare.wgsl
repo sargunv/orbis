@@ -22,7 +22,7 @@ struct Job {
 @group(0) @binding(2) var<uniform> job: Job;
 
 // The page's chunks of the texture the job reads (orb-render's
-// `ChunkedPage`): a layer word's bits from 11 up name its chunk, those
+// `TilePage`): a layer word's bits from 11 up name its chunk, those
 // below its layer there.
 @group(0) @binding(0) var source_0: texture_2d_array<f32>;
 @group(0) @binding(3) var source_1: texture_2d_array<f32>;

@@ -6,14 +6,15 @@
 //!
 //! A tile's layer word names its chunk and its layer there
 //! ([`CHUNK_SHIFT`]), and shaders bind every chunk, choosing by the word.
-//! Chunk `k`'s size is a function of `k` and the layers the page started
-//! with alone: the first holds those, and each after as many as the
-//! chunks before it together, so that the four hold eight times the
-//! first. A page grows by its next chunk, blank, copying nothing. A frame
-//! that settles the map compacts it ([`TilePage::compact`]): its last
-//! chunks' layers move into the free layers below, the chunks that leaves
-//! empty go, and the last one left fits to what it holds, so a page at
-//! rest holds its tiles in about as many layers as it has tiles.
+//! The first chunk holds the layers the page started with, and chunk `k`
+//! is made with as many as bring the chunks up to it to `2^k` times those,
+//! so that the four hold eight times the first whatever sizes the chunks
+//! below were left at. A page grows by its next chunk, blank, copying
+//! nothing. A frame that settles the map compacts it
+//! ([`TilePage::compact`]): its last chunks' layers move into the free
+//! layers below, the chunks that leaves empty go, and the last one left
+//! fits to what it holds, so a page at rest holds its tiles in about as
+//! many layers as it has tiles.
 //!
 //! Past its chunks, a page's last chunk grows into a larger one, copying
 //! its layers: a page of one chunk (the terrain's, which every draw that
@@ -159,9 +160,20 @@ impl TilePage {
             resized: Resized::default(),
         };
         page.first = page.fitting(gpu, layers);
-        // Its first chunk, now: a page is made to take a tile.
+        // Its first chunk, now: a page is made to take a tile, and has a
+        // chunk, as the device makes any texture, though it refuses one.
         let capacity = page.first;
-        page.make(gpu, 0, capacity);
+        if !page.make(gpu, 0, capacity) {
+            let textures = (page.textures.iter())
+                .map(|t| gpu.create_texture(&desc(t, capacity)))
+                .collect();
+            page.chunks = vec![Some(Chunk {
+                textures,
+                capacity,
+                layers: Slots::new(capacity),
+            })];
+            page.refused = most;
+        }
         page.resized = Resized::default();
         page
     }
@@ -177,14 +189,18 @@ impl TilePage {
     }
 
     /// The layers chunk `k` holds when made: the first chunk's, then as
-    /// many as those before it together, within the device's limits.
+    /// many as bring the chunks up to it to `2^k` times those (as many as
+    /// the chunks before it together, unless a settle fitted one to its
+    /// tiles), within the device's limits.
     fn chunk_layers(&self, gpu: &dyn Gpu, k: usize) -> u32 {
-        let (mut before, mut size) = (0u32, self.first);
-        for _ in 0..k {
-            before = before.saturating_add(size);
-            size = self.fitting(gpu, before.max(GROWTH));
+        if k == 0 {
+            return self.first;
         }
-        size
+        let below: u32 = (self.chunks.iter().take(k).flatten())
+            .map(|c| c.capacity)
+            .sum();
+        let total = self.first.saturating_mul(1 << k);
+        self.fitting(gpu, total.saturating_sub(below).max(GROWTH))
     }
 
     /// The textures of a chunk of `capacity` layers, or `None` where the
@@ -494,9 +510,10 @@ impl TilePage {
 
     /// Lets go of the chunks no layer is held in but the first, which a
     /// page keeps as a fresh one has it, and fits the last chunk after the
-    /// first to the layers it holds, copying them; halves a page of one
-    /// chunk while what it holds lies in its lowest quarter, down to its
-    /// first size. Whether it shrank.
+    /// first to the layers it holds, copying them (the chunks made after
+    /// make up what that gives back, [`chunk_layers`](Self::chunk_layers)).
+    /// Halves a page of one chunk while what it holds lies in its lowest
+    /// quarter, down to its first size. Whether it shrank.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
         let mut shrank = false;
         for k in 1..self.chunks.len() {

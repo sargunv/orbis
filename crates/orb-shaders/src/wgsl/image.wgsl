@@ -14,7 +14,7 @@
 // (8, 12 and 12 bits).
 //
 // Group 1 is the node: its uniform at binding 0, the linear sampler at 2,
-// and its page's chunks at 1 and 5 to 7 (orb-render's `ChunkedPage`): a
+// and its page's chunks at 1 and 5 to 7 (orb-render's `TilePage`): a
 // layer word's bits from 11 up name its chunk, those below its layer
 // there. Each texture binding takes the one sampler, as a texture unit
 // does on WebGL 2, where wgpu gives a texture the last sampler bound with

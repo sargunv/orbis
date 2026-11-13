@@ -435,6 +435,47 @@ fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
     }
 }
 
+/// A tile page holds eight times its first chunk's layers before it grows
+/// by a copy, though a settling frame fitted a chunk to its tiles on the
+/// way: the chunks made after make up what that gave back.
+#[test]
+fn tile_pages_grow_eightfold_without_copying_across_settles() {
+    use orb_render::{ImageBuild, PageKind, Pixels, TileKey};
+    let mut h = Harness::new();
+    let upload = |h: &mut Harness, n: u32| {
+        let pixels = RED.repeat(4);
+        let build = ImageBuild {
+            key: TileKey {
+                source: 5,
+                tile: orb_crs::TileIndex::new(6, n % 64, n / 64),
+            },
+            kind: PageKind::Raster,
+            size: [2, 2],
+            pixels: Pixels::Core(&pixels),
+            mesh: None,
+            patches: None,
+            fade_from: None,
+            unpack: None,
+            area: None,
+        };
+        h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
+    };
+    // Pages start at eight layers before a map sizes them: a ninth tile
+    // takes a second chunk, which the settling frame fits to it.
+    for n in 0..9 {
+        upload(&mut h, n);
+    }
+    h.render_stats();
+    assert!(
+        h.renderer.take_resized().bytes_copied > 0,
+        "the second chunk fitted to its tile"
+    );
+    for n in 9..64 {
+        upload(&mut h, n);
+    }
+    assert_eq!(h.renderer.take_resized().bytes_copied, 0, "nothing copied");
+}
+
 /// A mesh drawing another's vertices and indices takes no pool words of
 /// its own, and keeps drawing them when that mesh goes; they free with
 /// the last. A mesh with no words of its own (a point node's indices, a
