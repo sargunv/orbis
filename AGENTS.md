@@ -198,19 +198,23 @@ Advice that cost time to learn, not rules:
   change to `driver/cpu.rs` should say in its commit why the GPU driver needs no
   twin of it.
 - Firefox with a WebGPU adapter draws with WebGPU (on the page's thread on
-  macOS), by measurement: in cold `pnpm session` runs on Firefox 159 its WebGL
-  2, in a worker or on the page, drew a first frame sooner but filled the view's
-  centre later on every session, answered moves later (median 19–60 ms against
-  13–17, worst 0.2–0.8 s against under 30 ms once drawn) and uploaded 2–3× the
-  bytes (the CPU frame driver's copies). Firefox's WebGL has no
+  macOS), by measurement: in cold `pnpm session` runs on Firefox 159 (alps,
+  manhattan and globe, interleaved) its WebGL 2 in a worker drew a first frame
+  at 0.2–0.9 s against WebGPU's 1.9–4 s and answered a move started 1.2 s after
+  load sooner (worst 0.05–1 s against 0.6–3.2 s), but filled the view's centre
+  later on every session (2.4–8.5 s against 1.9–4.1 s), answered moves once
+  drawn later (worst 0.1–1 s against 20–150 ms), had more frames over 50 ms on
+  Alps and Manhattan and uploaded 2–3× the bytes (the CPU frame driver's
+  copies); on the page it froze the page for seconds. Firefox's WebGL has no
   `KHR_parallel_shader_compile`, so every program links on the thread that draws
   (a symbol program 160–185 ms on an idle machine, 1.3–3 s on a loaded one), and
   no `EXT_clip_control` (the `depth-precision` gap). Holding its frames until
   the set had linked, as Firefox's WebGPU does, didn't help: first content
   1.5–2.8 s and the centre later still. Retest both backends
   (`pnpm session --browser=firefox`, with `--backend=webgl2 --worker` beside the
-  default) once Firefox ships either extension, or a WebGPU that compiles off
-  the thread that presents (`Caps::compiles_hold_presents`).
+  default, and `--input=1200` beside both) once Firefox ships either extension,
+  or a WebGPU that compiles off the thread that presents
+  (`Caps::compiles_hold_presents`).
 - When a feature puts nontrivial work on a hot path (frames, tile arrival, first
   use), a focused bench of it on against off pays for itself; most features
   don't need one. Measure it moving, not only at rest: what a pass costs as a
