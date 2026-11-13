@@ -915,8 +915,9 @@ impl Map {
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
         let uploading = self.services.clock.now();
-        // An image tile's page grows only once the tiles kept out of view
-        // leave it no layer: growing copies the layers it holds.
+        // An image tile's page grows only once its source's tiles kept out
+        // of view leave it no layer: those give a layer back, where other
+        // sources' tiles hold none of the page.
         let mut grow = false;
         let uploaded = loop {
             atlas.release_ramps(gpu, self.retired.ramps.drain(..));
@@ -968,6 +969,10 @@ impl Map {
             let victim = match attempt {
                 Ok(uploaded) => break Ok(uploaded),
                 Err(Invalid(e)) => break Err(Some(e)),
+                Err(NoRoom) if image_build.is_some() && !grow => match &mut style.sources[source] {
+                    SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
+                    _ => None,
+                },
                 Err(NoRoom) => evict_unused(&mut style.sources, source),
             };
             let victim = match victim {

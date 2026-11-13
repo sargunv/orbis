@@ -543,6 +543,67 @@ mod tests {
         );
     }
 
+    /// A raster page that grows takes no other source's cached tiles,
+    /// which hold none of its layers: back at the view it left, the map
+    /// still shows a source whose tiles can no longer load.
+    #[test]
+    fn a_growing_page_keeps_other_sources_cached_tiles() {
+        let dir = crate::common::Scratch::new("page-growth");
+        let imagery = solid_tile(&dir);
+        let overlay = solid_png(&dir, "overlay.png", [255, 0, 0, 255]);
+        let path = dir.join("style.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"version":8,"sources":{{
+                    "imagery":{{"type":"raster","tiles":["file://{}"],"tileSize":256}},
+                    "overlay":{{"type":"raster","tiles":["file://{}"],"tileSize":256}}}},
+                  "layers":[{{"id":"imagery","type":"raster","source":"imagery"}},
+                    {{"id":"overlay","type":"raster","source":"overlay","maxzoom":2}}]}}"#,
+                imagery.display(),
+                overlay.display()
+            ),
+        )
+        .unwrap();
+        let at = |zoom: f64, pitch: f64| {
+            let mut camera = orb_runtime::CameraState::new(
+                orb_crs::Geodetic::new(0.0, 0.0),
+                zoom,
+                &crate::common::web_mercator(),
+            );
+            camera.pitch = pitch;
+            camera
+        };
+        let options = crate::common::Options {
+            style: Some(format!("file://{}", path.display())),
+            at: Some((orb_crs::Geodetic::new(0.0, 0.0), 1.0, 0.0, 0.0)),
+            ..tokyo(1.0)
+        };
+        let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
+        let first = settle(&mut offscreen).memory.tile_textures;
+        let center = |offscreen: &crate::common::Offscreen| {
+            let (w, h) = (offscreen.viewport.width, offscreen.viewport.height);
+            let i = ((h / 2.0) as usize * w as usize + (w / 2.0) as usize) * 4;
+            offscreen.pixels()[i..i + 3].to_vec()
+        };
+        assert_eq!(center(&offscreen), [255, 0, 0], "the overlay draws");
+        // The overlay's tiles can't load again; past its layer's maxzoom
+        // they stay cached while the imagery's page grows for a tilted
+        // view of many tiles.
+        std::fs::remove_file(&overlay).unwrap();
+        offscreen.map.jump_to_state(at(4.5, 60.0));
+        let grown = settle(&mut offscreen).memory.tile_textures;
+        assert!(grown > first, "the page grew: {first} -> {grown} bytes");
+        offscreen.map.jump_to_state(at(1.0, 0.0));
+        let started = std::time::Instant::now();
+        while !offscreen.frame().idle {
+            assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        offscreen.frame();
+        assert_eq!(center(&offscreen), [255, 0, 0], "the overlay's tiles kept");
+    }
+
     /// Tiles out of view stay cached, two views' worth, the least recently
     /// used giving way first: panned off the extract's data, the
     /// view still keeps the city it came from.
@@ -1329,16 +1390,19 @@ mod tests {
 
     /// A 256-pixel tile of one colour, as `tile.png` in `dir`.
     fn solid_tile(dir: &std::path::Path) -> std::path::PathBuf {
-        let tile = dir.join("tile.png");
+        solid_png(dir, "tile.png", [64, 128, 255, 255])
+    }
+
+    /// A 256-pixel tile of colour `rgba`, as `name` in `dir`.
+    fn solid_png(dir: &std::path::Path, name: &str, rgba: [u8; 4]) -> std::path::PathBuf {
+        let tile = dir.join(name);
         let mut png = Vec::new();
         {
             let mut encoder = png::Encoder::new(&mut png, 256, 256);
             encoder.set_color(png::ColorType::Rgba);
             encoder.set_depth(png::BitDepth::Eight);
             let mut writer = encoder.write_header().unwrap();
-            writer
-                .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
-                .unwrap();
+            writer.write_image_data(&rgba.repeat(256 * 256)).unwrap();
         }
         std::fs::write(&tile, png).unwrap();
         tile
