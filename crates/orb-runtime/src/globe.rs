@@ -3,8 +3,8 @@
 //! tile matrix set and tile; the renderer uploads them when a placement
 //! first needs them.
 
+use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::DVec3;

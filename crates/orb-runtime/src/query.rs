@@ -8,7 +8,7 @@
 //! their world bounds, and projects only the candidates into pixels for
 //! the exact test, so a camera change costs nothing until something picks.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::{Arc, OnceLock};
 
 use glam::{DVec2, Vec2};
@@ -1429,7 +1429,7 @@ impl Scene<'_> {
     /// Candidates whose projection may touch the pixel box `min..max`,
     /// upper ones first, each with what its exact test needs.
     fn candidates(&self, q: &Query<'_>, min: DVec2, max: DVec2) -> Vec<(Order, Candidate<'_>)> {
-        let mut layers: HashMap<u32, LayerAt> = HashMap::new();
+        let mut layers: HashMap<u32, LayerAt> = HashMap::default();
         let layer_at = |node: u32| -> Option<&HitLayer> {
             let layer = self.layers.nodes.get(&node)?;
             layer.visible_at(q.zoom).then_some(layer)
@@ -1688,7 +1688,7 @@ impl Scene<'_> {
             elevation: self.elevation,
         };
         let reach = q.reach(min, max, self.period);
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = rustc_hash::FxHashSet::default();
         let (mut flat, mut solid) = (Vec::new(), Vec::new());
         for (order, c) in self.candidates(&q, min, max) {
             let layer = match c {

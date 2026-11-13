@@ -201,14 +201,14 @@ impl Key {
 /// feature added again keeps its place, a new one goes last.
 struct Updateable<T> {
     order: Vec<Option<(Key, T)>>,
-    at: std::collections::HashMap<Key, usize>,
+    at: rustc_hash::FxHashMap<Key, usize>,
 }
 
 impl<T> Updateable<T> {
     fn new(features: Vec<T>, key: impl Fn(&T) -> Option<Key>) -> Result<Self, String> {
         let mut map = Self {
             order: Vec::new(),
-            at: std::collections::HashMap::new(),
+            at: rustc_hash::FxHashMap::default(),
         };
         for feature in features {
             let key = key(&feature).ok_or(

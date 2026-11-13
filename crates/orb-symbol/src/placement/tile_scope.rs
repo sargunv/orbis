@@ -4,8 +4,8 @@
 //! depends only on the tiles' own placements, never on which labels the
 //! step drops, so it reads no farther than the label's neighbours.
 
+use rustc_hash::FxHashMap as HashMap;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
 use super::grid::{
     boxes_collide, circle_and_rect_collide, circles_collide, in_group, overlap_allowed,
@@ -25,7 +25,7 @@ pub(crate) fn outranked(tiles: &[ScopeTile], records: &[Record]) -> Vec<(u32, bo
     // by the tiles. Only the lookup uses it: collisions are tested between
     // two tiles' own views, offset by whole tiles, so they come out the same
     // whichever tile is drawn.
-    let mut cells: HashMap<(i64, i64), Vec<Placed>> = HashMap::new();
+    let mut cells: HashMap<(i64, i64), Vec<Placed>> = HashMap::default();
     for (t, record) in records.iter().enumerate() {
         for (l, label) in record.labels.iter().enumerate() {
             for s in label.shapes.clone() {

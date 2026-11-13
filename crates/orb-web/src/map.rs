@@ -4,8 +4,8 @@
 mod camera;
 mod snapshot;
 
+use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::DVec2;
@@ -22,7 +22,7 @@ thread_local! {
     /// Each map's callback for "draw a frame soon", by map. Wasm in a page
     /// is single-threaded, so the runtime's `Send` wake hook reaches it
     /// here.
-    static WAKES: RefCell<HashMap<u32, js_sys::Function>> = RefCell::new(HashMap::new());
+    static WAKES: RefCell<HashMap<u32, js_sys::Function>> = RefCell::new(HashMap::default());
     static NEXT_MAP: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 

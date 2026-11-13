@@ -620,7 +620,7 @@ pub(crate) struct Cx {
     pub(crate) previews: Previews,
     /// The properties whose values read an input beyond the spec, each
     /// reported once.
-    not_portable: std::collections::HashSet<&'static str>,
+    not_portable: rustc_hash::FxHashSet<&'static str>,
 }
 
 impl Cx {

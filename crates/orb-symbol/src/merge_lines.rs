@@ -1,7 +1,7 @@
 //! Joining lines that continue each other under the same label (GL JS
 //! `merge_lines.ts`, the linear version of maplibre-gl-js#8436).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::geometry::Point;
 
@@ -33,8 +33,8 @@ struct Line {
 /// and `texts[i]` its label text, empty for none. Returns the surviving
 /// features in GL JS's order.
 pub(crate) fn merge_lines(texts: &[&str], firsts: &[&[Point]]) -> Vec<Merged> {
-    let mut left_index: HashMap<EndKey<'_>, usize> = HashMap::new();
-    let mut right_index: HashMap<EndKey<'_>, usize> = HashMap::new();
+    let mut left_index: HashMap<EndKey<'_>, usize> = HashMap::default();
+    let mut right_index: HashMap<EndKey<'_>, usize> = HashMap::default();
     let mut merged: Vec<Line> = Vec::new();
     // Each feature's line is one chunk, numbered by feature.
     let mut next: Vec<Option<usize>> = vec![None; firsts.len()];

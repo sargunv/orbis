@@ -4,8 +4,8 @@
 //! that changes the regions tells the other contexts on the
 //! `orbis-regions` broadcast channel, and each calls `reloadRegions`.
 
+use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::host::{OpfsStorage, WebFetch};

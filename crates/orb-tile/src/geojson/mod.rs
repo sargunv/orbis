@@ -14,7 +14,7 @@ mod tile;
 
 pub use cluster::{Aggregate, ClusterOptions, Clusters, Member, Properties};
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use crate::{TileFrame, Value};
@@ -194,7 +194,7 @@ impl Index {
         let features = clip::wrap(features, &options);
         let mut index = Self {
             options,
-            tiles: HashMap::new(),
+            tiles: HashMap::default(),
         };
         if !features.is_empty() {
             index.split(features, (0, 0, 0), None);

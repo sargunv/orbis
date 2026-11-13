@@ -542,7 +542,7 @@ mod native {
         running: usize,
         /// Background jobs waiting or compiling that no frame asked for:
         /// their compiles don't wake the host.
-        quiet: std::collections::HashSet<PipelineId>,
+        quiet: rustc_hash::FxHashSet<PipelineId>,
     }
 
     #[derive(Default)]
@@ -1035,7 +1035,7 @@ mod webgpu {
         running: usize,
         /// Waiting or compiling, and no frame asked for them: their
         /// promises wake nothing.
-        quiet: std::collections::HashSet<PipelineId>,
+        quiet: rustc_hash::FxHashSet<PipelineId>,
         /// The device, once a job came.
         device: Option<JsValue>,
         /// They may start ([`Compiler::open_background`]).

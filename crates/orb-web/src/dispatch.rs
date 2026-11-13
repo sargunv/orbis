@@ -16,7 +16,8 @@
 //! ancestor stands in, rather than take down a worker each time it is
 //! loaded.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
 use orb_crs::TileIndex;

@@ -6,7 +6,8 @@
 //! layers as GeoJSON (a custom geometry source), or empty. The answer goes
 //! to the jobs with each request, and is kept for relayouts.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::VecDeque;
 
 use orb_crs::TileIndex;
 use orb_source::endpoint::HostTile;
@@ -92,7 +93,7 @@ impl HostTiles {
         self.answers.retain(|k, _| !picked(k));
         self.order.retain(|k| !picked(k));
         let mut asked = Vec::new();
-        let mut held = HashSet::new();
+        let mut held = HashSet::default();
         for (key, jobs) in &self.waiting {
             if key.0 == source {
                 held.extend(jobs.iter().map(|(request, ..)| request.tile));

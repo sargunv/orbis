@@ -2,7 +2,7 @@
 //! (`performSymbolLayout`, `addFeature`, `addSymbol`) and the feature
 //! preparation of `SymbolBucket.populate`.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::f64::consts::PI;
 use std::ops::Range;
 
@@ -457,7 +457,7 @@ pub fn retain_line_labels_in_tile(
             .collect()
     };
     let keys: Vec<String> = features.iter().map(key).collect();
-    let near: std::collections::HashSet<&str> = (features.iter().zip(&keys))
+    let near: rustc_hash::FxHashSet<&str> = (features.iter().zip(&keys))
         .filter(|(f, _)| reaches(f.index))
         .map(|(_, k)| k.as_str())
         .collect();
@@ -753,7 +753,7 @@ impl<'a> Builder<'a> {
             tile,
             context,
             bucket,
-            compare_text: HashMap::new(),
+            compare_text: HashMap::default(),
             ordinal: 0,
             quads: Vec::new(),
             anchors: Vec::new(),

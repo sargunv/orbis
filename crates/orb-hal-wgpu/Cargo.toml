@@ -27,6 +27,7 @@ futures-channel.workspace = true
 # GL's error flag after a large texture (`try_create_texture`).
 glow = { workspace = true, optional = true }
 orb-hal.workspace = true
+rustc-hash.workspace = true
 wgpu.workspace = true
 
 

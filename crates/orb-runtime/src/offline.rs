@@ -15,7 +15,8 @@
 //! [`RegionFetch`] answers a map's fetches from complete regions, so a map
 //! of a downloaded area opens with no network, and passes the rest on.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use orb_crs::{TileIndex, TileMatrixSet};
@@ -1185,7 +1186,7 @@ impl Job {
 /// strings in a `text-font`, or the default for symbol layers with text
 /// and no `text-font`.
 fn font_stacks(style: &str) -> Vec<Vec<String>> {
-    let mut stacks = HashSet::new();
+    let mut stacks = HashSet::default();
     let Ok(doc) = json::parse(style) else {
         return Vec::new();
     };

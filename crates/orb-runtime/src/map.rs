@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -998,7 +999,7 @@ impl Map {
             sender,
             receiver,
             warnings: Vec::new(),
-            warned: HashSet::new(),
+            warned: HashSet::default(),
             degraded: (None, Vec::new()),
             events: Default::default(),
             terrains: 0,

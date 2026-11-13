@@ -7,7 +7,7 @@
 //! frame. Rows keep their atlas ids across edits, so tiles holding a name's
 //! id read the new pixels, or none, without being laid out again.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::sync::Arc;
 
 use orb_hal::Gpu;

@@ -2,7 +2,7 @@
 //! meshes, the glyph rows they lease, rasterization of new glyphs, and the
 //! placement lane's inputs and results.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::{Arc, Mutex};
 
 use orb_hal::Gpu;
@@ -688,7 +688,7 @@ impl Labels {
         Self {
             lane,
             retired: Arc::default(),
-            buckets: HashMap::new(),
+            buckets: HashMap::default(),
             next_bucket: 0,
             glyphs: GlyphRows::default(),
             committed: None,
@@ -698,7 +698,7 @@ impl Labels {
             commits: 0,
             requests: 0,
             committed_request: 0,
-            held: HashMap::new(),
+            held: HashMap::default(),
             drawn: Vec::new(),
             options,
         }
@@ -1211,7 +1211,7 @@ impl Labels {
 
     /// Records a placement asked of the lane.
     pub(crate) fn placing(&mut self, frame: &orb_symbol::Frame) {
-        let mut drawn: HashMap<u64, Vec<i32>> = HashMap::new();
+        let mut drawn: HashMap<u64, Vec<i32>> = HashMap::default();
         for t in frame.layers.iter().flat_map(|l| &l.tiles) {
             drawn.entry(t.bucket).or_default().push(t.view.id.wrap);
         }
@@ -1243,7 +1243,7 @@ impl Labels {
         self.committed_request = request;
         // Buckets dropped since the placement was asked for have no meshes.
         self.retire(gpu, renderer.glyphs());
-        let mut changed: HashMap<u64, Vec<(i32, orb_symbol::BucketStates)>> = HashMap::new();
+        let mut changed: HashMap<u64, Vec<(i32, orb_symbol::BucketStates)>> = HashMap::default();
         for (bucket, wrap, states) in std::mem::take(&mut committed.changed) {
             changed.entry(bucket).or_default().push((wrap, states));
         }
@@ -1378,7 +1378,7 @@ impl Labels {
     pub(crate) fn shown(&self, now: f64) -> HashMap<Box<str>, f32> {
         use orb_symbol::state;
         let change = self.fade_change(now);
-        let mut shown: HashMap<Box<str>, f32> = HashMap::new();
+        let mut shown: HashMap<Box<str>, f32> = HashMap::default();
         let held = self.held.keys().flat_map(|&bucket| {
             let wraps = self.buckets.get(&bucket).map(|m| m.written.keys().copied());
             wraps.into_iter().flatten().map(move |wrap| (bucket, wrap))
@@ -1591,13 +1591,13 @@ impl Labels {
                 let sorted: HashMap<u32, u32> = if layer.params.draw_by_viewport_y {
                     let order =
                         orb_symbol::feature_sort_order(&meshes.tables, frame.camera.bearing);
-                    let mut at = HashMap::new();
+                    let mut at = HashMap::default();
                     for (i, feature) in order.into_iter().enumerate() {
                         at.entry(feature).or_insert(i as u32);
                     }
                     at
                 } else {
-                    HashMap::new()
+                    HashMap::default()
                 };
                 for (index, instance) in meshes.tables.instances.iter().enumerate() {
                     let text = instance.text.iter().find(|&&p| shown(&states.text, p));

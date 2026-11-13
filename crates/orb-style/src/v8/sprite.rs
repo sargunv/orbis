@@ -1,5 +1,5 @@
 use crate::*;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 use orb_expr::json::Json;
 
@@ -18,7 +18,7 @@ pub(crate) fn parse(cx: &mut Cx, value: Option<&Json>) -> Vec<Sprite> {
     let Some(items) = cx.array(value, "sprite") else {
         return Vec::new();
     };
-    let mut ids = HashSet::new();
+    let mut ids = HashSet::default();
     items
         .iter()
         .enumerate()

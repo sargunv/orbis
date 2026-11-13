@@ -10,7 +10,8 @@
 //! every job worker runs one behind the page's messages. Image tiles come
 //! out as their encoded bytes: each platform decodes them its own way.
 
-use std::collections::{BinaryHeap, HashMap};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 

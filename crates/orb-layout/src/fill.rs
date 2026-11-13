@@ -229,7 +229,7 @@ fn cap(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, y: i16, pole: i16) 
 /// in a fixed order, so the triangles (and tiles) sharing an edge cut it
 /// alike and the mesh stays watertight.
 fn subdivide(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, step: [f64; 2]) {
-    let mut index: std::collections::HashMap<[i32; 2], u32> = points
+    let mut index: rustc_hash::FxHashMap<[i32; 2], u32> = points
         .iter()
         .enumerate()
         .map(|(i, p)| ([i32::from(p[0]), i32::from(p[1])], i as u32))

@@ -595,8 +595,8 @@ thread_local! {
     /// would have none of the first's files open.
     static SHAPER_LOAD: std::cell::RefCell<Option<js_sys::Promise>> =
         const { std::cell::RefCell::new(None) };
-    static SHAPER_OPEN: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+    static SHAPER_OPEN: std::cell::RefCell<rustc_hash::FxHashSet<String>> =
+        std::cell::RefCell::new(rustc_hash::FxHashSet::default());
 }
 
 impl ShaperFiles {

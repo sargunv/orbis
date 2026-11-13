@@ -24,7 +24,7 @@
 //! frame's time. Nothing runs per frame on the CPU while it fades; once it
 //! ends the feature draws as one that always had its state.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::ops::Range;
 
 use orb_expr::FeatureData;
@@ -127,7 +127,7 @@ pub(crate) struct FeatureStates {
 impl Default for FeatureStates {
     fn default() -> Self {
         Self {
-            ids: HashMap::new(),
+            ids: HashMap::default(),
             // Index 0 is the default state.
             entries: vec![Entry::default()],
             free: Vec::new(),

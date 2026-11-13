@@ -17,7 +17,8 @@
 //! Jobs carry the revision they were laid out with; per node, results from
 //! before the edit that invalidated it are stale and laid out again.
 
-use std::collections::{BTreeMap, HashMap};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use orb_crs::TileIndex;
@@ -421,7 +422,7 @@ impl Map {
         if build.rows_only {
             // A node's meshes split by features alike in every job, so the
             // rows' n-th mesh of a node is the tile's n-th.
-            let mut seen: HashMap<u32, usize> = HashMap::new();
+            let mut seen: HashMap<u32, usize> = HashMap::default();
             for mesh in &build.meshes {
                 let Some(state) = style.nodes.get(&mesh.node) else {
                     continue;

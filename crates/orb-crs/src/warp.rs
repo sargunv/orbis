@@ -2,7 +2,7 @@
 //! where each tile lands, for cover, and an error-bounded mesh that
 //! carries the tile's image there.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use glam::DVec2;
 
@@ -672,7 +672,7 @@ impl Warp {
             cells,
             reference,
             reach,
-            points: HashMap::new(),
+            points: HashMap::default(),
         };
         // What the mesh takes without refined edges: the grid's corners,
         // and boundary cells' centres and the edge steps along their
@@ -744,7 +744,7 @@ impl Warp {
         // whatever grid each chose (no T-junction cracks).
         let unit = LATTICE / cells;
         let step = edges.map(|e| LATTICE / (MAX_CELLS << e.min(MAX_EDGE_REFINE)));
-        let mut lattice: HashMap<(u32, u32), Option<u32>> = HashMap::new();
+        let mut lattice: HashMap<(u32, u32), Option<u32>> = HashMap::default();
         let mut positions: Vec<DVec2> = Vec::new();
         let mut sources = Vec::new();
         let mut vertex = |x: u32, y: u32| -> Option<u32> {

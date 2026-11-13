@@ -394,7 +394,7 @@ impl StylePlan {
             })
             .map(|(i, _)| i)
             .collect();
-        let mut groups = std::collections::HashMap::new();
+        let mut groups = rustc_hash::FxHashMap::default();
         let layout_leaders = (style.layers.iter().enumerate())
             .map(|(i, l)| {
                 let leader = *groups.entry(l.layout_group?).or_insert(i);

@@ -2620,7 +2620,7 @@ impl Renderer {
         }
         wanted.extend(self.atmosphere.pipelines());
         // Each moves to the front: the last asked for compiles first.
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = rustc_hash::FxHashSet::default();
         wanted.retain(|&id| seen.insert(id) && !gpu.pipeline_ready(id));
         for &id in wanted.iter().rev() {
             gpu.prioritize_pipeline(id);

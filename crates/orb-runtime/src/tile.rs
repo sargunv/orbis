@@ -1,8 +1,8 @@
 //! The tile job: a decoded tile in, one mesh and property rows per render
 //! node out. Pure, so it runs on any job thread or worker.
 
+use rustc_hash::FxHashMap as HashMap;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::ops::Range;
 
 use orb_layout::{Family, ImageKey, pack_color};
@@ -698,7 +698,7 @@ pub(crate) fn build(
             }
         }
     }
-    let mut ids: HashMap<String, u32> = HashMap::new();
+    let mut ids: HashMap<String, u32> = HashMap::default();
     let source_def = plan.source_def(source);
     for node in &plan.nodes {
         if node.source != source || select.nodes.is_some_and(|n| !n.contains(&node.key)) {
@@ -773,7 +773,7 @@ pub(crate) fn build(
             }
         };
         // A feature split into pieces picks once, with all its parts.
-        let mut picked = std::collections::HashSet::new();
+        let mut picked = rustc_hash::FxHashSet::default();
         let (layer, origin) = match &split.pieces {
             Some((pieces, origin)) => (pieces, Some(origin.as_slice())),
             None => (layer, None),
@@ -1142,7 +1142,7 @@ impl NodeLayout<'_> {
         (tile_layer, tile_promote, origin): (&Layer, Option<&orb_tile::Column>, Option<&[u32]>),
         hit_layers: &mut [(String, crate::query::HitGeometry)],
         hit_layer: usize,
-        picked: &mut std::collections::HashSet<u32>,
+        picked: &mut rustc_hash::FxHashSet<u32>,
     ) -> crate::query::MeshHits {
         let (plan, node, style_layer, layer, zoom) = (
             self.plan,

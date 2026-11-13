@@ -6,7 +6,8 @@
 //! symbols of one key; a scan finds the same match (the first unused one
 //! within tolerance), so Orbis scans.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BTreeMap;
 
 use crate::bucket::SymbolInstance;
 use crate::geometry::EXTENT;
@@ -27,7 +28,7 @@ struct TileLayerIndex {
 
 impl TileLayerIndex {
     fn new(tile: TileId, instances: &[SymbolInstance], ids: &[u32], bucket: u64) -> Self {
-        let mut by_key: HashMap<u64, (Vec<[i64; 2]>, Vec<u32>)> = HashMap::new();
+        let mut by_key: HashMap<u64, (Vec<[i64; 2]>, Vec<u32>)> = HashMap::default();
         for (instance, &id) in instances.iter().zip(ids) {
             let entry = by_key.entry(instance.key).or_default();
             entry.0.push([
@@ -207,7 +208,7 @@ impl CrossTileIndex {
     pub(crate) fn add_layer(&mut self, layer: u32, buckets: &mut [Indexed<'_>], lng: f64) {
         let index = self.layers.entry(layer).or_default();
         index.handle_wrap_jump(lng);
-        let mut current = HashSet::with_capacity(buckets.len());
+        let mut current = HashSet::with_capacity_and_hasher(buckets.len(), Default::default());
         for b in buckets.iter_mut() {
             index.add_bucket(b.tile, b.bucket, b.instances, b.ids, &mut self.next_id);
             current.insert(b.bucket);

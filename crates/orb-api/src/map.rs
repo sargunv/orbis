@@ -313,7 +313,7 @@ impl Map {
     /// Per label text, the greatest opacity it drew with in the last
     /// frame: for benches that watch labels across gestures.
     pub fn shown_labels(&self) -> std::collections::HashMap<Box<str>, f32> {
-        self.map.shown_labels()
+        self.map.shown_labels().into_iter().collect()
     }
 
     /// The style as v8 JSON, with every edit applied and the global state

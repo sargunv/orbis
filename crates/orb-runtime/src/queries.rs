@@ -4,7 +4,7 @@
 //! geometry come from each tile's owner worker; no tile is decoded again
 //! here.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::{Arc, Mutex};
 
 use glam::DVec2;
@@ -77,7 +77,7 @@ impl crate::Map {
             return done(Ok("[]".into()));
         };
         let mut wanted = Vec::new();
-        let mut drawn: HashMap<(usize, TileIndex, String), Vec<Drawn>> = HashMap::new();
+        let mut drawn: HashMap<(usize, TileIndex, String), Vec<Drawn>> = HashMap::default();
         for (hit, order, key) in hits {
             let Some(source) = plan.sources.iter().position(|s| s.key == key.source) else {
                 continue;
@@ -307,7 +307,7 @@ impl crate::Map {
         }
         let pending = Arc::new(Mutex::new(Pending {
             remaining: requests.len(),
-            found: HashMap::new(),
+            found: HashMap::default(),
             error: None,
         }));
         let finish = Arc::new(Mutex::new(Some((done, wanted, states, source_members))));

@@ -135,7 +135,7 @@ pub struct WgpuGpu {
     buffers: Slots<wgpu::Buffer>,
     /// Buffers made with [`BufferUsages::IDLE_WRITES`], which writes go to
     /// in place.
-    idle_writes: std::collections::HashSet<u32>,
+    idle_writes: rustc_hash::FxHashSet<u32>,
     textures: Slots<Texture>,
     shader_modules: Slots<compile::Shared<compile::Module>>,
     bind_group_layouts: Slots<BindGroupLayout>,
@@ -158,7 +158,7 @@ pub struct WgpuGpu {
     /// ([`Gpu::set_background_compiles`]).
     background: bool,
     /// Background pipelines compiling that no frame asked for.
-    background_pending: std::collections::HashSet<PipelineId>,
+    background_pending: rustc_hash::FxHashSet<PipelineId>,
     /// Pipelines compiled that a frame asked for ([`PipelineCounts::made`]).
     made: u32,
     /// A compile that ran past the watchdog's limit, or failed: the device

@@ -5,7 +5,7 @@
 //! them out again without fetching or decoding. This side of the jobs names
 //! no renderer or GPU type.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::{Arc, Mutex};
 
 use orb_crs::{TileIndex, TileMatrixSet};

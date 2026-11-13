@@ -2,7 +2,7 @@
 //! every drawn symbol layer against a camera snapshot, its commit with
 //! fades, and the state each placed symbol draws with.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
 use orb_text::{Anchor, WritingMode};
@@ -784,7 +784,7 @@ impl Placer {
         let layers = self.drawn(&frame.layers);
         // Each layer's copies lend the index their ids.
         let mut lent = Vec::new();
-        let mut keys = HashSet::new();
+        let mut keys = HashSet::default();
         for (params, tiles) in &layers {
             keys.clear();
             for t in tiles {
@@ -833,7 +833,7 @@ impl Placer {
 
         let mut changed = Vec::new();
         for (params, tiles) in &layers {
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             for t in tiles {
                 let b = self.buckets.get_mut(&copy_key(t)).expect("filtered above");
                 b.just_reloaded = false;
@@ -1071,7 +1071,7 @@ impl<'a> Pass<'a> {
             // along a line pack the same way whichever slices the line
             // crosses. A merge takes the place of its first part.
             let mut merges: Vec<Vec<usize>> = Vec::with_capacity(parts.len());
-            let mut ancestors: HashMap<_, usize> = HashMap::new();
+            let mut ancestors: HashMap<_, usize> = HashMap::default();
             for (i, &(key, t, b, _)) in parts.iter().enumerate() {
                 let scale = b.tables.ancestor_scale;
                 let id = t.view.id;
@@ -1085,7 +1085,7 @@ impl<'a> Pass<'a> {
                 }
                 merges.push(vec![i]);
             }
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             let mut slices = Vec::new();
             for members in merges {
                 self.sort_key = parts[members[0]].0;
@@ -1590,7 +1590,7 @@ fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duratio
             (time - p.commit_time) / fade_duration + adjustment
         }
     };
-    let empty = HashMap::new();
+    let empty = HashMap::default();
     let prev_opacities = prev.map_or(&empty, |p| &p.opacities);
     let mut changed = false;
     for (&id, placement) in &now.placements {

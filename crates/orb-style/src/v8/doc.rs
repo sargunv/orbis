@@ -1,7 +1,7 @@
 //! The persistent document.
 
 use crate::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use crate::v8::{Diagnostic, Diagnostics};
@@ -638,7 +638,7 @@ impl Draft {
             ["type", "source", "source-layer"].map(|k| json.get(k).map(ToString::to_string))
         };
         let old_layers = std::mem::take(&mut self.layers);
-        let mut by_id: HashMap<&str, &LayerEntry> = HashMap::new();
+        let mut by_id: HashMap<&str, &LayerEntry> = HashMap::default();
         for layer in &old_layers {
             if let Some(id) = layer_id(&layer.json) {
                 by_id.entry(id).or_insert(layer);

@@ -8,7 +8,7 @@
 //! override constants alone leave to it. The build's modules are folded
 //! here, with no WGSL parsed.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use naga::{
     Arena, BinaryOperator, Block, Expression, Handle, Literal, LocalVariable, Module, Override,
@@ -41,8 +41,8 @@ pub(super) fn fold(module: &mut Module, constants: &[(String, f64)]) -> bool {
         let body = std::mem::take(&mut function.body);
         let mut folder = Folder {
             expressions: &function.expressions,
-            known: HashMap::new(),
-            loaded: HashMap::new(),
+            known: HashMap::default(),
+            loaded: HashMap::default(),
         };
         function.body = folder.block(body).0;
         // The `let`s' names, which keep what they name (some of it the

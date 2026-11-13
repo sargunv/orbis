@@ -5,7 +5,7 @@
 //! fills the source's one tile, and later frames are written over its
 //! texture layer.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use orb_crs::TileIndex;
 use orb_hal::HostImageId;
@@ -73,7 +73,7 @@ impl Videos {
     /// Opens the plan's video sources and closes the others, asking the
     /// host through `events`.
     pub(crate) fn sync(&mut self, plan: Option<&StylePlan>, events: &mut Vec<MapEvent>) {
-        let mut sources = HashMap::new();
+        let mut sources = HashMap::default();
         if let Some(plan) = plan {
             for (index, source) in plan.sources.iter().enumerate() {
                 let def = plan.source_def(index);

@@ -12,7 +12,7 @@
 //! count and WebGL 2's attribute zero; or `compute`, the label and its
 //! stage.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};

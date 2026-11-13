@@ -1,7 +1,7 @@
 //! Runtime-shared icon/pattern pages and their stable shader table. Layout
 //! resolves names without allocating pixels; a later upload fills the same row.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use orb_hal::*;
 
@@ -127,7 +127,7 @@ impl ImageAtlas {
             capacity,
             pages: vec![Shelves::default()],
             max_pages,
-            names: HashMap::new(),
+            names: HashMap::default(),
             entries: vec![None],
             free: Vec::new(),
             namespace: 0,

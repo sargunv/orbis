@@ -16,8 +16,9 @@
 //! `{place: buffer}` (a packed frame). Placement worker to map:
 //! `{committed: buffer}`, one per frame.
 
+use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use js_sys::{Array, Object, Uint8Array};
@@ -30,7 +31,7 @@ use crate::js;
 thread_local! {
     /// Each map's placement worker, by map. Wasm in a page is
     /// single-threaded, so the runtime's `Send` lane reaches it here.
-    static LANES: RefCell<HashMap<u32, Lane>> = RefCell::new(HashMap::new());
+    static LANES: RefCell<HashMap<u32, Lane>> = RefCell::new(HashMap::default());
 }
 
 /// A map's `post(message, transfer)` to its placement worker, the commits

@@ -6,7 +6,7 @@
 //! GL JS's `SymbolBucket.populate` and `performSymbolLayout` evaluate it;
 //! `orb-symbol` only lays out.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use orb_expr::{FormattedSection, Kind};
 use orb_style::PropertyRef;
@@ -377,8 +377,8 @@ pub(crate) fn prepare(
     };
 
     let mut prepared = Vec::with_capacity(features.len());
-    let mut section_colors = HashMap::new();
-    let mut names = HashMap::new();
+    let mut section_colors = HashMap::default();
+    let mut names = HashMap::default();
     for &index in features {
         let row = index as usize;
         let text = has_text.then(|| {

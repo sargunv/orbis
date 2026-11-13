@@ -1,7 +1,7 @@
 //! Tiles in the scene: what the map keeps of each beside the renderer's
 //! handle, their upload with their rows and labels, and what they cost.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use orb_crs::TileIndex;

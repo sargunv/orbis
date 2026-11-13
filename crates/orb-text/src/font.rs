@@ -305,7 +305,7 @@ fn check_woff1(bytes: &[u8]) -> Result<(), String> {
 /// [`coverage`](Self::coverage) of the same text draws it once.
 #[derive(Debug, Default)]
 pub struct Files {
-    faces: std::collections::HashMap<String, Face>,
+    faces: rustc_hash::FxHashMap<String, Face>,
     last: Option<(String, String, Drawn)>,
 }
 

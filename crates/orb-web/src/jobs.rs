@@ -12,7 +12,7 @@
 //! Which worker a request goes to, and what happens when one is lost, is
 //! `dispatch`'s.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use js_sys::ArrayBuffer;
@@ -32,7 +32,7 @@ thread_local! {
     /// worker `worker`, by map. Wasm in a page is single-threaded, so the
     /// runtime's `Send` jobs reach it here.
     static POSTS: std::cell::RefCell<HashMap<u32, js_sys::Function>> =
-        std::cell::RefCell::new(HashMap::new());
+        std::cell::RefCell::new(HashMap::default());
 }
 
 /// Forgets map `map`'s job workers' `post`.

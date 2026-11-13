@@ -1,6 +1,6 @@
 //! The resource tables behind the ids.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Resources by id. Ids count up and are never reused, so a stale id finds
 /// nothing instead of another resource; removed entries are dropped, so the
@@ -14,7 +14,7 @@ pub(crate) struct Slots<T> {
 impl<T> Default for Slots<T> {
     fn default() -> Self {
         Self {
-            items: HashMap::new(),
+            items: HashMap::default(),
             next: 0,
         }
     }

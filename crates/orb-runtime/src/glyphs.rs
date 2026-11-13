@@ -5,7 +5,7 @@
 //! glyph atlas asks a range's owner worker for bitmaps separately, with a
 //! [`GlyphRaster`] job.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 

@@ -5,7 +5,8 @@
 //! overzoomed tiles of one data tile fetch it once. A load aborted leaves
 //! the fetch it shares, which is aborted once no load waits on it.
 
-use std::collections::{HashMap, VecDeque};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use orb_crs::TileIndex;
@@ -93,7 +94,7 @@ impl TileLoader {
             archives: Mutex::new(VecDeque::new()),
             #[cfg(feature = "sqlite")]
             mbtiles: Mutex::default(),
-            in_flight: Mutex::new(HashMap::new()),
+            in_flight: Mutex::new(HashMap::default()),
             next: Default::default(),
         })
     }

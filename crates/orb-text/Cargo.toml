@@ -16,6 +16,7 @@ sea-dictionaries = ["dep:icu_provider", "icu_provider/sync"]
 fonts = ["dep:harfrust", "dep:skrifa", "dep:wuff", "dep:zeno"]
 
 [dependencies]
+rustc-hash.workspace = true
 serde.workspace = true
 harfrust = { version = "0.15.0", default-features = false, features = [
   "std",

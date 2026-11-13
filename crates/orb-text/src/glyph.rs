@@ -1,7 +1,7 @@
 //! Glyph identity, the glyphs a tile asks for, and the provider each comes
 //! from.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::fmt;
 use std::sync::Arc;
 

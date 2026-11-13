@@ -2,7 +2,8 @@
 //! Each piece releases its own resources; ids it only binds (the shared
 //! image atlas, the textures it was handed) stay.
 
-use std::collections::{BTreeMap, HashMap};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::BTreeMap;
 
 use orb_hal::*;
 

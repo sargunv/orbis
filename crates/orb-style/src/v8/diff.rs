@@ -2,7 +2,7 @@
 //! changes.
 
 use crate::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
 use crate::v8::{Diagnostic, Diagnostics};
@@ -268,7 +268,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     let mut dirty = draft.dirty.clone();
     dirty.sort_unstable();
     let dirty = |key| dirty.binary_search(key).is_ok();
-    let mut ids = HashSet::new();
+    let mut ids = HashSet::default();
     for (index, entry) in draft.layers.iter().enumerate() {
         let id = entry
             .json
