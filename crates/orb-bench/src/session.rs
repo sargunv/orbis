@@ -17,7 +17,12 @@
 //! `paris` (Liberty tilted from 60 to the limit, panned and turned),
 //! `alps` (the Alps terrain style at pitch 72) and `globe` (Liberty on the
 //! globe with the Globe entry's Mapterhorn terrain, wheel-zoomed from z2
-//! over New York, tilting on the way). `--filter` picks them by name;
+//! over New York, tilting on the way) and `nepal` (the same, flung in and
+//! out between z1 and z7 over the Himalaya at a spun wheel's and a
+//! trackpad's rates). A style given that sets a projection of its own
+//! draws as it is in the globe sessions: the web demo's Globe entry, say,
+//! as `load.html` designs it (its `mapStyle`). `--dump prefix` writes each
+//! session's frames to `<prefix>-<session>.tsv`. `--filter` picks them by name;
 //! `--warm` runs each once untimed first and keeps its state directory
 //! and shaders, as a user's later launch.
 //!
@@ -64,8 +69,13 @@ const NOTCH: f64 = 0.5;
 #[derive(Clone, Copy, Debug)]
 enum Move {
     /// `n` notches of `delta` pixels at a point (as a fraction of the
-    /// viewport), 50 ms apart: negative zooms in.
-    Wheel { at: [f64; 2], delta: f64, n: u32 },
+    /// viewport), `ms` apart: negative zooms in.
+    Wheel {
+        at: [f64; 2],
+        delta: f64,
+        n: u32,
+        ms: f64,
+    },
     /// From a point (a fraction of the viewport) by `by` logical pixels
     /// over `ms`, held still 150 ms before the release.
     Drag {
@@ -80,7 +90,32 @@ const C: [f64; 2] = [0.5, 0.5];
 const LOW: [f64; 2] = [0.5, 0.8];
 
 const fn wheel(delta: f64, n: u32) -> Move {
-    Move::Wheel { at: C, delta, n }
+    fling(delta, n, 50.0)
+}
+
+/// Wheel notches `ms` apart: a spun wheel's or a trackpad's.
+const fn fling(delta: f64, n: u32, ms: f64) -> Move {
+    Move::Wheel {
+        at: C,
+        delta,
+        n,
+        ms,
+    }
+}
+
+/// Zooms `levels` (whole, or halves) in, or out where negative, with
+/// notches `ms` apart, each a third of a level (100 px heard at 1/300 a
+/// pixel), as `pnpm session`'s `fling` does.
+const fn levels(levels: i32, ms: f64) -> Move {
+    let delta = (if levels < 0 { 100.0 } else { -100.0 }) / NOTCH;
+    fling(delta, levels.unsigned_abs() * 3, ms)
+}
+
+/// Zooms whole `levels` with a trackpad's scroll, 8 px heard every 8 ms
+/// (37.5 events a level), as `pnpm session`'s `scroll` does.
+const fn scroll(levels: i32) -> Move {
+    let delta = (if levels < 0 { 8.0 } else { -8.0 }) / NOTCH;
+    fling(delta, levels.unsigned_abs() * 75 / 2, 8.0)
 }
 
 const fn drag(at: [f64; 2], by: [f64; 2], ms: f64) -> Move {
@@ -117,6 +152,8 @@ struct Session {
     style: Style,
     at: [f64; 5],
     moves: &'static [Move],
+    /// The pause between moves, in ms.
+    pause: f64,
 }
 
 const SESSIONS: &[Session] = &[
@@ -139,6 +176,7 @@ const SESSIONS: &[Session] = &[
             wheel(100.0, 8),
             wheel(-100.0, 8),
         ],
+        pause: PAUSE,
     },
     Session {
         name: "paris",
@@ -155,6 +193,7 @@ const SESSIONS: &[Session] = &[
             wheel(-100.0, 8),
             drag(LOW, [0.0, -150.0], 800.0),
         ],
+        pause: PAUSE,
     },
     Session {
         name: "alps",
@@ -170,6 +209,7 @@ const SESSIONS: &[Session] = &[
             wheel(100.0, 12),
             drag(LOW, [-300.0, -200.0], 800.0),
         ],
+        pause: PAUSE,
     },
     Session {
         name: "globe",
@@ -194,6 +234,31 @@ const SESSIONS: &[Session] = &[
             drag(LOW, [0.0, -400.0], 800.0),
             turn([200.0, 0.0], 1000.0),
         ],
+        pause: PAUSE,
+    },
+    Session {
+        name: "nepal",
+        style: Style::Globe,
+        at: [84.0, 28.0, 1.0, 0.0, 0.0],
+        moves: &[
+            levels(6, 20.0),
+            levels(-6, 20.0),
+            levels(6, 16.0),
+            levels(-3, 16.0),
+            levels(3, 25.0),
+            levels(-6, 16.0),
+            scroll(6),
+            scroll(-6),
+            levels(6, 20.0),
+            levels(-6, 20.0),
+            levels(6, 16.0),
+            levels(-3, 16.0),
+            levels(3, 25.0),
+            levels(-6, 16.0),
+            scroll(6),
+            scroll(-6),
+        ],
+        pause: 150.0,
     },
 ];
 
@@ -206,7 +271,12 @@ const GLOBE: &str = r#"[
 
 /// The inputs a session's moves make from `start` (ms), each at its
 /// time, and each move's window.
-fn timeline(moves: &[Move], viewport: [f64; 2], start: f64) -> (Vec<(f64, Input)>, Vec<[f64; 2]>) {
+fn timeline(
+    moves: &[Move],
+    pause: f64,
+    viewport: [f64; 2],
+    start: f64,
+) -> (Vec<(f64, Input)>, Vec<[f64; 2]>) {
     let px = |[x, y]: [f64; 2]| DVec2::new(x * viewport[0], y * viewport[1]);
     let mut inputs = Vec::new();
     let mut windows = Vec::new();
@@ -214,9 +284,9 @@ fn timeline(moves: &[Move], viewport: [f64; 2], start: f64) -> (Vec<(f64, Input)
     for &m in moves {
         let from = t;
         match m {
-            Move::Wheel { at, delta, n } => {
+            Move::Wheel { at, delta, n, ms } => {
                 for i in 0..n {
-                    t = from + f64::from(i) * 50.0;
+                    t = from + f64::from(i) * ms;
                     inputs.push((
                         t,
                         Input::Wheel {
@@ -226,7 +296,7 @@ fn timeline(moves: &[Move], viewport: [f64; 2], start: f64) -> (Vec<(f64, Input)
                         },
                     ));
                 }
-                t += 50.0;
+                t += ms;
             }
             Move::Drag { at, by, ms, button } => {
                 let at = px(at);
@@ -263,7 +333,7 @@ fn timeline(moves: &[Move], viewport: [f64; 2], start: f64) -> (Vec<(f64, Input)
             }
         }
         windows.push([from, t]);
-        t += PAUSE;
+        t += pause;
     }
     (inputs, windows)
 }
@@ -275,6 +345,11 @@ struct Frame {
     t: f64,
     cpu: Duration,
     gpu: Option<Duration>,
+    /// Its costliest passes on the GPU, summed by label (tiled GPUs
+    /// overlap them: where work waits, not where it is).
+    passes: Vec<(String, Duration)>,
+    /// The camera's zoom once drawn.
+    zoom: f64,
     report: FrameReport,
 }
 
@@ -404,6 +479,7 @@ fn run_session(
         Style::Globe => Some(orb_api::Transaction::from_commands(GLOBE)?),
         _ => None,
     };
+    let mut edited = false;
     let gpu_timestamps = runtime.stats().gpu_timestamps;
     runtime.set_gpu_timing(gpu_timestamps);
     let epoch = Instant::now();
@@ -434,8 +510,14 @@ fn run_session(
         }
         if let Some(tx) = &edit {
             map.apply_arrivals().map_err(|e| e.to_string())?;
-            if map.style().is_some() {
-                map.edit(tx).map_err(|e| e.to_string())?;
+            if let Some(doc) = map.style() {
+                // A style that sets its projection itself (the Globe entry
+                // as the web demo designs it, `load.html`'s `mapStyle`)
+                // draws as it is.
+                if doc.root("projection").is_none() {
+                    map.edit(tx).map_err(|e| e.to_string())?;
+                    edited = true;
+                }
                 edit = None;
             }
         }
@@ -449,11 +531,24 @@ fn run_session(
             warnings.extend(crate::take_warnings(&mut map));
             // The frame's submissions: collecting them waits for the GPU,
             // as a present would.
-            let gpu = gpu_timestamps.then(|| runtime.gpu_timings().iter().map(|s| s.gpu()).sum());
+            let timings = match gpu_timestamps {
+                true => runtime.gpu_timings(),
+                false => Vec::new(),
+            };
+            let gpu = gpu_timestamps.then(|| timings.iter().map(|s| s.gpu()).sum());
+            let mut passes: Vec<(String, Duration)> = Vec::new();
+            for (label, took) in timings.iter().flat_map(|s| &s.passes) {
+                match passes.iter_mut().find(|(l, _)| l == label) {
+                    Some((_, sum)) => *sum += *took,
+                    None => passes.push((label.clone(), *took)),
+                }
+            }
+            passes.sort_by_key(|&(_, took)| std::cmp::Reverse(took));
+            passes.truncate(3);
             let t = now();
             if first_ms.is_none() && report.tiles_drawn > 0 {
                 first_ms = Some(t);
-                let (moves, w) = timeline(session.moves, viewport, t + START);
+                let (moves, w) = timeline(session.moves, session.pause, viewport, t + START);
                 inputs.extend(moves);
                 last_input = w.last().map(|w| w[1]);
                 windows = w;
@@ -462,6 +557,8 @@ fn run_session(
                 t,
                 cpu,
                 gpu,
+                passes,
+                zoom: map.camera().zoom(&crate::web_mercator()),
                 report,
             });
         } else {
@@ -494,15 +591,36 @@ fn run_session(
         }
     }
     runtime.set_gpu_timing(false);
+    // Each frame's end (ms), the camera's zoom, tiles drawn, cull
+    // candidates, CPU and GPU ms and draws, for attributing slow frames.
+    if let Some(prefix) = &settings.dump {
+        let mut out = String::from("t\tzoom\ttiles\tcandidates\tcpu\tgpu\tdraws\n");
+        for f in &frames {
+            writeln!(
+                out,
+                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}",
+                f.t,
+                f.zoom,
+                f.report.tiles_drawn,
+                f.report.frame.candidates,
+                f.cpu.as_secs_f64() * 1000.0,
+                f.gpu.map_or(0.0, |g| g.as_secs_f64() * 1000.0),
+                f.report.frame.draws,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let path = format!("{prefix}-{}.tsv", session.name);
+        std::fs::write(&path, out).map_err(|e| format!("{path}: {e}"))?;
+    }
     let compiled_in_moves = match compiled {
         [Some(from), Some(to)] => runtime.stats().pipeline_timings[from..to].to_vec(),
         _ => Vec::new(),
     };
     Ok(SessionResult {
         name: session.name,
-        style: match session.style {
-            Style::Globe => format!("{style} on the globe, with the Globe entry's terrain"),
-            _ => style.to_string(),
+        style: match edited {
+            true => format!("{style} on the globe, with the Globe entry's terrain"),
+            false => style.to_string(),
         },
         warm: false,
         device_ms,
@@ -667,7 +785,8 @@ impl SessionReport {
              next's (its GPU work waited for); first tiles and centre from the map's creation; \
              centre: the first frame whose tiles under the view's centre all arrived; after \
              moves: from each move's end to that; settle: from the last input until the map is \
-             idle."
+             idle. The slowest intervals' passes: the frame's three costliest GPU passes by \
+             label, summed (tiled GPUs overlap passes, whose times show where work waits)."
         )?;
         writeln!(out)?;
         writeln!(
@@ -844,20 +963,25 @@ impl SessionReport {
             writeln!(out)?;
             writeln!(
                 out,
-                "| at ms | interval | CPU | GPU | stages | between frames | pipelines made | \
-                 MiB made | KiB uploaded | upload calls | tiles arrived | drape slots |"
+                "| at ms | interval | CPU | GPU | passes | stages | between frames | \
+                 pipelines made | MiB made | KiB uploaded | upload calls | tiles arrived | \
+                 drape slots |"
             )?;
-            writeln!(out, "|{}", "---|".repeat(12))?;
+            writeln!(out, "|{}", "---|".repeat(13))?;
             let mut worst = r.intervals();
             worst.sort_by(|a, b| b.1.total_cmp(&a.1));
             for &(i, gap) in worst.iter().take(WORST) {
                 let f = &r.frames[i];
                 writeln!(
                     out,
-                    "| {:.0} | {gap:.1} | {} | {} | {} | {} | {} | {} | {:.0} | {} | {} | {} |",
+                    "| {:.0} | {gap:.1} | {} | {} | {} | {} | {} | {} | {} | {:.0} | {} | {} | {} |",
                     f.t,
                     ms(f.cpu),
                     f.gpu.map_or("—".into(), ms),
+                    (f.passes.iter())
+                        .map(|(label, took)| format!("{label} {:.1}", took.as_secs_f64() * 1000.0))
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     top_stages(&f.report.times),
                     top_stages(&f.report.prepared),
                     f.report.gpu.pipelines_compiled,

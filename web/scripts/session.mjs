@@ -6,11 +6,11 @@
 // or the installed Firefox (headed, on WebGPU: serve.mjs's
 // `launchFirefox`), in Orbis and the pinned GL JS on demo/load.html.
 //
-//   pnpm session [--session=manhattan|paris|alps|globe] [--browser=chromium|firefox]
+//   pnpm session [--session=manhattan|paris|alps|globe|nepal] [--browser=chromium|firefox]
 //     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
 //     [--ratio=r] [--start=ms] [--input=ms] [--warm] [--driver] [--page] [--worker] [--headed]
 //     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
-//     [--dump=prefix] [--profile=firefox-profile.json] [--sample=gpu-sample.txt]
+//     [--terrain=0|1] [--gpu] [--dump=prefix] [--profile=firefox-profile.json] [--sample=gpu-sample.txt]
 //
 // Sessions: `manhattan` opens Liberty over Midtown at z13 and wheel-zooms
 // in to about z16 as the buildings load, tilts to 70, turns and drags
@@ -18,10 +18,14 @@
 // 60 to the limit (85) and pans and turns there; `alps` drags, turns and
 // zooms the Alps terrain style at pitch 72; `globe` wheel-zooms the demo's
 // Globe entry (terrain on) over New York from z2 to about z8.5, tilting
-// to the limit on the way. The moves end where the hand stops (no fling),
+// to the limit on the way; `nepal` flings the Globe entry in and out
+// between z1 and z7 over the Himalaya at a spun wheel's and a trackpad's
+// rates, its moves given in zoom levels and each engine's deltas sized
+// to zoom them (Orbis's notch zooms twice GL JS's). The moves end where the hand stops (no fling),
 // so every engine and browser ends at the same camera (`camera` in the
 // report says where). `--style` gives a session's moves another catalogue
-// key or style URL. `--start` is how long after the first frame the input
+// key or style URL; `--terrain=0` turns a catalogue entry's terrain off
+// (on by default, as the demo opens it). `--start` is how long after the first frame the input
 // starts (500 ms); `--input` starts it that many ms after the page's
 // navigation instead, whether the map has drawn or not, so engines and
 // builds whose first frames come at different times meet the same hand
@@ -30,7 +34,8 @@
 // browser's. `--headed` runs Chromium in a window, at the display's
 // refresh. `--dump` writes each engine's frames, input windows,
 // presents, pipelines and the page thread's stalls (`beats`) to
-// `<prefix>-<engine>.json`. `--backend` draws Orbis with that
+// `<prefix>-<engine>.json`, each frame with its camera (`at`: lon, lat,
+// zoom). `--backend` draws Orbis with that
 // backend. `--pkgs` runs Orbis on each of these builds of web/pkg (whole
 // copies of it, each in its place alone) in turn, run by run, for A/B
 // runs in one session; GL JS runs once a run. `--profile` (Firefox, one
@@ -49,8 +54,12 @@
 // presentation among them, wait for each compile.
 // In Chromium the report has the GPU process's main thread over the
 // moves (`gpuProcess`: busy time, tasks over 50 ms, the longest), and with
-// `--deep` (GPU service tracing) what its slow tasks did, its GL calls
-// (ANGLE's waits on WebGL 2, #140) and its work in the worst present gaps.
+// `--deep` (GPU service tracing) what its tasks and its slow ones did, its
+// GL calls (ANGLE's waits on WebGL 2, #140) and its work in the worst
+// present gaps. `--gpu` times Orbis's GPU work over the moves by its
+// timestamp queries (`gpuTimes`: each frame's span, how many run past a
+// 120 Hz and a 60 Hz frame, each pass's sum; tiled GPUs overlap passes,
+// whose times show where work waits), its submissions in `--dump`'s file.
 //
 // For each run it reports when the first frame came, the map's frame
 // intervals (as the page hears of them: Orbis's `render` events from its
@@ -157,6 +166,55 @@ async function wheel(page, [x, y], delta, n, ms = 50) {
   }
 }
 
+/** The engine whose session runs, for moves given in zoom levels. */
+let engineNow = "orbis";
+/** How much of a wheel's or a trackpad's pixels the page hears: headless
+ * Chromium halves them (its report's `firstWheel`). */
+const heard = browserName === "chromium" && !args.headed ? 0.5 : 1;
+
+/** Zooms `levels` in (out, negative) with wheel notches `ms` apart, each a
+ * notch Orbis zooms a third of a level by (100 px heard, at mln-rs's
+ * 1/300 a pixel); GL JS, whose notches zoom less (its logistic 1/450 a
+ * pixel), gets them 2.2 times as large, so that both cameras take the
+ * same path. */
+function fling(page, levels, ms) {
+  const n = Math.round(Math.abs(levels) * 3);
+  const px = (100 / heard) * (engineNow === "gljs" ? 2.2 : 1);
+  return wheel(page, c, -Math.sign(levels) * px, n, ms);
+}
+
+/** Zooms `levels` with a trackpad's scroll: 8 px every 8 ms (Orbis's
+ * 1/300 a pixel); GL JS reads it as a trackpad, at twice that rate, and
+ * gets half. Dispatched on the page from a timer there: Playwright's
+ * wheel events carry a whole detent's legacy `wheelDeltaY`, which reads
+ * as a mouse wheel's notch however small the delta. */
+function scroll(page, levels) {
+  const n = Math.round((Math.abs(levels) * 300) / 8);
+  const px = 8 * (engineNow === "gljs" ? 0.5 : 1) * -Math.sign(levels);
+  return page.evaluate(
+    ([x, y, n, px]) =>
+      new Promise((resolve) => {
+        const start = performance.now();
+        let i = 0;
+        const send = () => {
+          const init = { deltaY: px, deltaMode: 0, clientX: x, clientY: y };
+          const at = document.elementFromPoint(x, y);
+          at.dispatchEvent(
+            new WheelEvent("wheel", {
+              ...init,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+          if (++i >= n) return resolve();
+          setTimeout(send, Math.max(0, start + i * 8 - performance.now()));
+        };
+        send();
+      }),
+    [...c, n, px],
+  );
+}
+
 const c = [width / 2, height / 2];
 const low = [width / 2, height * 0.8];
 /** Each session: its style, its first camera and its moves, each a
@@ -204,6 +262,25 @@ const SESSIONS = {
       (p) => wheel(p, c, 100, 12),
       (p) => drag(p, low, [-300, -200], 800),
     ],
+  },
+  // Flung in and out over the Himalaya on the Globe entry (terrain on),
+  // between the whole globe (z1) and regional zooms (z7), twice: a spun
+  // mouse wheel (a notch every 16-25 ms) and a trackpad's scroll (small
+  // deltas every 8 ms), barely pausing between flings.
+  nepal: {
+    style: "globe",
+    at: [84, 28, 1, 0, 0],
+    pause: 150,
+    moves: [1, 2].flatMap(() => [
+      (p) => fling(p, 6, 20),
+      (p) => fling(p, -6, 20),
+      (p) => fling(p, 6, 16),
+      (p) => fling(p, -3, 16),
+      (p) => fling(p, 3, 25),
+      (p) => fling(p, -6, 16),
+      (p) => scroll(p, 6),
+      (p) => scroll(p, -6),
+    ]),
   },
   globe: {
     style: "globe",
@@ -427,7 +504,9 @@ async function launch() {
     return browser;
   }
   if (browserName === "chromium") {
-    if (!deep) return launchChromium({ unsafe: false, headed: !!args.headed });
+    // `--gpu`'s timestamps unquantized need WebGPU's unsafe APIs.
+    if (!deep)
+      return launchChromium({ unsafe: !!args.gpu, headed: !!args.headed });
     const { chromium } = await import("playwright");
     const { chromiumPlatform } = await import("./serve.mjs");
     const { executablePath, args: flags } = chromiumPlatform();
@@ -443,6 +522,7 @@ async function launch() {
 /** One session in `engine` on a fresh browser: the run's report. */
 async function run(server, engine) {
   const helpers = gpuHelpers();
+  engineNow = engine;
   const browser = await launch();
   try {
     const context = await browser.newContext({
@@ -462,6 +542,7 @@ async function run(server, engine) {
         style,
         at: session.at.join(","),
         frames: "",
+        ...(args.terrain && { terrain: args.terrain }),
         ...(engine === "orbis" && args.backend && { backend: args.backend }),
         // Firefox on macOS draws Orbis on the page anyway; there its
         // shaders can be made unique to the run, past the driver's cache.
@@ -721,7 +802,7 @@ async function run(server, engine) {
         await move(page);
         const b = await page.evaluate(() => performance.now());
         windows.push([a, b]);
-        await sleep(400);
+        await sleep(session.pause ?? 400);
       }
       return windows;
     };
@@ -781,7 +862,12 @@ async function run(server, engine) {
           resolve();
         });
       });
+    const timing = engine === "orbis" && !!args.gpu;
+    if (timing) await page.evaluate(() => globalThis.mapGpu.start());
     const windows = await moves();
+    const submissions =
+      timing && (await page.evaluate(() => globalThis.mapGpu.take()));
+    const gpuTimes = timing && gpuPasses(submissions);
     if (sampler) {
       sampler.kill("SIGINT");
       await sampled;
@@ -866,6 +952,7 @@ async function run(server, engine) {
         presents: pacing(intervals(screen, windows).map((g) => g.gap)),
       }),
       ...(gpuProcess && { gpuProcess }),
+      ...(gpuTimes && { gpuTimes }),
       pageFrames: pacing(pageGaps.map((g) => g.gap)),
       settleMs: settled === null ? null : Math.round(settled - lastInput),
       ...(frames.some((f) => "centre" in f) && centre(frames, windows)),
@@ -980,12 +1067,49 @@ async function run(server, engine) {
     if (dump)
       writeFileSync(
         `${dump}-${engine}.json`,
-        JSON.stringify({ windows, frames, raf, beats, screen, pipelines }),
+        JSON.stringify({
+          windows,
+          frames,
+          raf,
+          beats,
+          screen,
+          pipelines,
+          submissions,
+        }),
       );
     return report;
   } finally {
     await browser.close();
   }
+}
+
+/** Orbis's GPU over the moves (`--gpu`), from its submissions'
+ * timestamps: each drawing submission's span (its first pass's start to
+ * its last one's end), how many spans run past a 120 Hz and a 60 Hz
+ * frame, and each pass label's GPU milliseconds summed and at most. */
+function gpuPasses(submissions) {
+  const drawn = submissions.filter((s) => s.passes.length);
+  const by = {};
+  for (const s of drawn)
+    for (const [label, ms] of s.passes) {
+      const b = (by[label] ??= { n: 0, ms: 0, max: 0 });
+      b.n++;
+      b.ms += ms;
+      b.max = Math.max(b.max, ms);
+    }
+  return {
+    spans: pacing(drawn.map((s) => s.span)),
+    over8: drawn.filter((s) => s.span > 8.3).length,
+    over16: drawn.filter((s) => s.span > 16.7).length,
+    totalMs: Math.round(drawn.reduce((t, s) => t + s.span, 0)),
+    passes: Object.entries(by)
+      .sort((a, b) => b[1].ms - a[1].ms)
+      .slice(0, 14)
+      .map(
+        ([label, b]) =>
+          `${label}: ${b.n}× ${round(b.ms, 0)} ms (max ${round(b.max)})`,
+      ),
+  };
 }
 
 /** The GPU process's main thread in a Chrome trace over `span` (page
@@ -1030,6 +1154,10 @@ function gpuMain(events, origin, [from, to]) {
           `${name}: ${b.n}× ${round(b.ms, 0)} ms (max ${round(b.max)})`,
       );
   };
+  // Everything its tasks did, by event (nested events count in each).
+  out.inTasks = tally(
+    onMain.filter((e) => e.name !== "ThreadControllerImpl::RunTask"),
+  );
   const slow = tasks.filter((e) => e.dur > 16_000);
   out.inSlowTasks = tally(
     onMain.filter(

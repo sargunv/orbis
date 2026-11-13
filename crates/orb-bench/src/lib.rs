@@ -203,6 +203,9 @@ pub struct Settings {
     /// Each session once untimed first, its state and shaders kept for
     /// the timed run (`session`).
     pub warm: bool,
+    /// Where each session writes its frames, one a line
+    /// (`<prefix>-<session>.tsv`; `session`).
+    pub dump: Option<String>,
 }
 
 impl Default for Settings {
@@ -224,6 +227,7 @@ impl Default for Settings {
             antialias: MapOptions::default().antialias,
             legs: None,
             warm: false,
+            dump: None,
         }
     }
 }
@@ -235,9 +239,9 @@ impl Settings {
     /// `stutter` or `cull`), `legs` (a flight's first legs, for `stutter`),
     /// `paths` (`city` or `alps`, the gestures bench's), `view`
     /// (`zoom,pitch,bearing`, adding a view to measure instead of the
-    /// bench's own) or `filter` (a substring of the views' names, of
+    /// bench's own), `filter` (a substring of the views' names, of
     /// the gestures or stutter bench's paths', or of the tile bench's
-    /// `z/x/y`).
+    /// `z/x/y`) or `dump` (the session bench's frames' file prefix).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
             value
@@ -279,6 +283,7 @@ impl Settings {
                 });
             }
             "filter" => self.filter = Some(value.to_string()),
+            "dump" => self.dump = Some(value.to_string()),
             "antialias" => {
                 self.antialias = match value {
                     "on" => true,

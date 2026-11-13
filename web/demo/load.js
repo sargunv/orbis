@@ -52,11 +52,21 @@ const engines = {
     // CPU driver keeps in wasm memory (memory.mjs).
     window.gpuBytes = () => map.stats?.memory.allocated;
     window.cpuCopies = () => map.stats?.memory.cpuCopies;
+    // GPU timestamps of each submission's passes (session.mjs's `--gpu`).
+    window.mapGpu = {
+      start: () => map.setGpuTiming(true),
+      take: () => map.gpuTimings(),
+      repaint: () => map.triggerRepaint(),
+    };
     // The shaders `?nonce=` made cold, and the backend (load.mjs).
     window.loadDetails = () => ({ busted: busted(), backend: map.backend });
     if (recording)
       map.on("render", (s) =>
-        mapFrames.push({ t: performance.now(), ...counters(s) }),
+        mapFrames.push({
+          t: performance.now(),
+          at: at(map.camera.current),
+          ...counters(s),
+        }),
       );
     return {
       created: performance.now(),
@@ -93,7 +103,12 @@ const engines = {
       map.on("move", () => (centre = false));
       map.on("render", () => {
         centre ||= centreLoaded(map, maplibregl);
-        mapFrames.push({ t: performance.now(), centre });
+        const [lng, lat] = map.getCenter().toArray();
+        mapFrames.push({
+          t: performance.now(),
+          at: at({ center: [lng, lat], zoom: map.getZoom() }),
+          centre,
+        });
       });
     }
     return {
@@ -141,12 +156,16 @@ const engines = {
   },
 };
 
+/** A frame's camera, as session.mjs dumps it: lon, lat, zoom. */
+const at = (c) => c && [...c.center, c.zoom].map((x) => +x.toFixed(4));
+
 /** What session.mjs reads of an Orbis frame's counters: enough to say why a frame came late. */
 const counters = (s) => ({
   ms: s.ms,
   needs: s.needsFrame,
   times: Object.fromEntries(STAGES.map((k) => [k, s.times[k]])),
   arrived: s.tilesArrived,
+  drawn: s.tilesDrawn,
   loading: s.tilesLoading,
   meshes: s.meshesUploaded,
   uploaded:
@@ -223,7 +242,9 @@ function tourCamera(f) {
 }
 
 try {
-  const map = await engines[engine](await demoStyleWithScene(params));
+  // The style as the engines load it, for a native twin to load the same.
+  const style = (window.mapStyle = await demoStyleWithScene(params));
+  const map = await engines[engine](style);
   window.mapIdle = map.idle;
   window.mapCamera = map.camera;
   await map.idle();
