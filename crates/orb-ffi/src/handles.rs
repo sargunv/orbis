@@ -63,7 +63,10 @@ pub(crate) enum Object {
     Expression(Arc<ExpressionHandle>),
     Frame(Arc<FrameHandle>),
     /// Holds the results a drained batch's view points at.
-    Batch(#[allow(dead_code)] Arc<Vec<mln_render_frame_result>>),
+    Batch(
+        #[expect(dead_code, reason = "held for the view, never read")]
+        Arc<Vec<mln_render_frame_result>>,
+    ),
     Queue(Arc<DeliveryQueue>),
     /// Orbis owns the device of its runtime, so an offscreen device is only a
     /// token that sessions accept.
