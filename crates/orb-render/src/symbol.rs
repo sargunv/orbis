@@ -322,10 +322,11 @@ impl Symbols {
     /// Node `i`'s draws into `commands`, a symbol layer's icon node, `kind`
     /// and `placings` as in [`make`](Self::make), whose icons and text draw
     /// their halos apart as `apart` says, `quads` its draw as indexed
-    /// arguments; or nothing, and `false`, while a pipeline compiles (each
+    /// arguments, and whether they draw with the variant it wants: `false`
+    /// for a stand-in ([`Variants::drawn`]), which records again once that
+    /// one compiles. Nothing, and `None`, while a pipeline compiles (each
     /// placement's too, as [`pass`](Self::pass) dispatches only once all
-    /// have). Drawn with a stand-in for the variant it wants
-    /// ([`Variants::drawn`]), it is `false` too: it waits for that one.
+    /// have).
     pub(crate) fn commands(
         &self,
         gpu: &mut dyn Gpu,
@@ -334,20 +335,15 @@ impl Symbols {
         apart: [bool; 2],
         quads: RenderCommand,
         commands: &mut Vec<RenderCommand>,
-    ) -> bool {
-        let draw = match &self.placing {
+    ) -> Option<bool> {
+        let (draw, wanted) = match &self.placing {
             Placing::Dispatched(dispatch) => {
-                if dispatch.placements(gpu, placings, full).is_none() {
-                    return false;
-                }
+                dispatch.placements(gpu, placings, full)?;
                 dispatch.draws[kind % 2].drawn(gpu, full)
             }
             #[cfg(cpu_driven)]
             Placing::Inline(draws) => draws[kind].drawn(gpu, full),
-        };
-        let Some((draw, wanted)) = draw else {
-            return false;
-        };
+        }?;
         commands.extend([
             RenderCommand::SetPipeline(draw),
             RenderCommand::SetBindGroup {
@@ -369,7 +365,7 @@ impl Symbols {
                 quads.clone(),
             ]);
         }
-        wanted
+        Some(wanted)
     }
 
     /// The frame's placement dispatches, after the cull, which wrote the

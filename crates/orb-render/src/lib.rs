@@ -3737,6 +3737,9 @@ impl Renderer {
             // all 0, as points always have them.
             let apart = [node.separate_halo, self.nodes[i + 1].separate_halo];
             let (kind, placings) = self.symbol_kinds(i);
+            // Every block's draw, a stand-in's too: the node waits for the
+            // variant it wants all the same.
+            let mut wanted = true;
             for (scene, row) in rows {
                 let quads = (self.driver).draw(buffers, row, NodeDraw::Indexed);
                 let recorded = self.symbols.commands(
@@ -3747,11 +3750,12 @@ impl Renderer {
                     quads,
                     commands,
                 );
-                if !recorded {
-                    return false;
+                match recorded {
+                    Some(drawn) => wanted &= drawn,
+                    None => return false,
                 }
             }
-            return true;
+            return wanted;
         }
         if matches!(node.family, Family::Hillshade | Family::ColorRelief) && !ready.prepare {
             return false;
