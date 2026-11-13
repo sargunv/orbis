@@ -717,13 +717,11 @@ impl Images {
             .sum()
     }
 
-    /// Lets go of the pages' chunks no tile holds: whether any went.
-    pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let mut shrank = false;
+    /// Lets go of the pages' chunks no tile holds.
+    pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) {
         for page in self.pages.iter_mut().flatten() {
-            shrank |= page.page.shrink(gpu);
+            page.page.shrink(gpu);
         }
-        shrank
     }
 
     /// Changes whenever a page's textures are replaced.

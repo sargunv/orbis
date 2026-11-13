@@ -445,6 +445,19 @@ fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
             h.renderer.release_tile(tile);
         }
         h.render_stats();
+        if kind != PageKind::Raster {
+            continue;
+        }
+        // Its last tile gone, a page the map still draws from holds no
+        // chunk, and the next tiles make its first again and draw.
+        assert_eq!(h.renderer.texture_bytes().0, 0, "no chunk held");
+        let (first, last) = (upload(&mut h, 11, RED), upload(&mut h, 12, blue));
+        let (first, last) = (first.unwrap(), last.unwrap());
+        assert_eq!(h.renderer.texture_bytes().0, one_chunk);
+        draws(&mut h, first, last);
+        h.renderer.release_tile(first);
+        h.renderer.release_tile(last);
+        h.render_stats();
     }
 }
 

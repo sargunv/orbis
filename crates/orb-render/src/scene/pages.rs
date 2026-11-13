@@ -246,7 +246,7 @@ impl TilePage {
         let before = gpu.counters();
         let made = self.textures_of(gpu, capacity).ok_or(OutOfSpace)?;
         let chunk = self.chunks[k].as_mut().expect("a chunk to resize");
-        let kept = chunk.layers.held_below().min(capacity);
+        let kept = chunk.layers.held_below();
         let copies: Vec<Pass> = (self.textures.iter().zip(&chunk.textures).zip(&made))
             .map(|((t, &source), &destination)| Pass::CopyTexture {
                 source,
@@ -436,32 +436,23 @@ impl TilePage {
     /// does. [`alloc`](Self::alloc) hands out the lowest chunk's layers
     /// first, so the higher chunks a view grew the page by take tiles only
     /// while the lower ones are full, and empty as their tiles leave. A
-    /// page of one chunk keeps it. Whether any went.
-    pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+    /// page of one chunk keeps it.
+    pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) {
         if self.most == 1 {
-            return false;
+            return;
         }
-        let mut shrank = false;
-        for k in 0..self.chunks.len() {
-            if self.chunks[k]
-                .as_ref()
-                .is_some_and(|c| c.layers.used() == 0)
-            {
-                let chunk = self.chunks[k].take().expect("checked");
+        for slot in &mut self.chunks {
+            if let Some(chunk) = slot.take_if(|c| c.layers.used() == 0) {
                 for texture in chunk.textures {
                     gpu.destroy_texture(texture);
                 }
-                shrank = true;
                 self.revision += 1;
+                // A chunk refused before may fit now that this one went.
+                self.refused = self.most;
             }
         }
         while self.chunks.last().is_some_and(Option::is_none) {
             self.chunks.pop();
         }
-        if shrank {
-            // A chunk refused before may fit now that others went.
-            self.refused = self.most;
-        }
-        shrank
     }
 }

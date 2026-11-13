@@ -504,9 +504,11 @@ mod tests {
     }
 
     /// Raster tile pages give back what a view of many tiles grew them
-    /// to once fewer tiles hold layers, as the scene's pools do: the chunks
-    /// no tile holds go whole, nothing moving, so a page at rest holds the
-    /// chunks its tiles lie in, which may be more than a fresh map's.
+    /// to once no tile holds their layers, as the scene's pools do: every
+    /// chunk no tile holds goes whole, nothing moving, and the next view's
+    /// tiles fill the page from its first chunk, as a fresh map's do. (Where
+    /// tiles still hold layers, a page keeps the chunks they lie in, which
+    /// may be more than a fresh map would need for them.)
     #[test]
     fn tile_pages_shrink_with_their_tiles() {
         let dir = crate::common::Scratch::new("pages");
@@ -534,22 +536,23 @@ mod tests {
         };
         let (mut offscreen, _, _) = crate::common::Offscreen::load(&options(4.5, 60.0)).unwrap();
         let many = pages(&mut offscreen);
-        // Past the layer's maxzoom no tile holds a layer; back at zoom 1,
-        // sixteen do.
-        for zoom in [6.0, 1.0] {
+        let at = |offscreen: &mut crate::common::Offscreen, zoom: f64| {
             offscreen.map.jump_to_state(orb_runtime::CameraState::new(
                 orb_crs::Geodetic::new(0.0, 0.0),
                 zoom,
                 &offscreen.map.projection(),
             ));
-            settle(&mut offscreen);
-        }
-        let few = pages(&mut offscreen);
+            pages(offscreen)
+        };
+        // Past the layer's maxzoom no tile holds a layer; back at zoom 1,
+        // sixteen do.
+        let none = at(&mut offscreen, 6.0);
+        let few = at(&mut offscreen, 1.0);
         let (mut fresh, _, _) = crate::common::Offscreen::load(&options(1.0, 0.0)).unwrap();
         let fresh = pages(&mut fresh);
         assert!(many > 4 * fresh, "{many} bytes of pages at the tilted view");
-        // The chunks the sixteen lie in: a quarter of the tilted view's.
-        assert!(4 * few <= many, "pages of {many} bytes shrank to {few}");
+        assert_eq!(none, 0, "pages of {many} bytes held {none} with no tile");
+        assert_eq!(few, fresh, "the sixteen as a fresh map holds them");
     }
 
     /// A raster page that grows takes no other source's cached tiles,
