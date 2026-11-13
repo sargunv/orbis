@@ -188,11 +188,6 @@ impl Slots {
         }
     }
 
-    /// The slots held, lowest first.
-    pub(crate) fn held(&self) -> impl Iterator<Item = u32> + '_ {
-        (0..self.next).filter(|s| !self.free.contains(s))
-    }
-
     /// Where the free slots above every held one start.
     pub(crate) fn held_below(&self) -> u32 {
         self.next

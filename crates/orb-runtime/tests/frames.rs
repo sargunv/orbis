@@ -504,9 +504,9 @@ mod tests {
     }
 
     /// Raster tile pages give back what a view of many tiles grew them
-    /// to once fewer tiles hold layers, as the scene's pools do: a page at
-    /// rest holds its tiles in the fewest chunks, as a fresh map's does,
-    /// whichever layers the tiles a cache kept left them.
+    /// to once fewer tiles hold layers, as the scene's pools do: the chunks
+    /// no tile holds go whole, nothing moving, so a page at rest holds the
+    /// chunks its tiles lie in, which may be more than a fresh map's.
     #[test]
     fn tile_pages_shrink_with_their_tiles() {
         let dir = crate::common::Scratch::new("pages");
@@ -548,11 +548,8 @@ mod tests {
         let (mut fresh, _, _) = crate::common::Offscreen::load(&options(1.0, 0.0)).unwrap();
         let fresh = pages(&mut fresh);
         assert!(many > 4 * fresh, "{many} bytes of pages at the tilted view");
-        // No more than a fresh map's.
-        assert!(
-            few <= fresh,
-            "pages of {many} bytes shrank to {few}, past {fresh}"
-        );
+        // The chunks the sixteen lie in: a quarter of the tilted view's.
+        assert!(4 * few <= many, "pages of {many} bytes shrank to {few}");
     }
 
     /// A raster page that grows takes no other source's cached tiles,

@@ -717,44 +717,6 @@ impl Images {
             .sum()
     }
 
-    /// Compacts the tile pages ([`TilePage::compact`]), but the
-    /// terrain's, whose layers the runtime holds: what moved, `(from, to)`
-    /// layer words by page, which this follows and the tiles must too.
-    pub(crate) fn compact(&mut self, gpu: &mut dyn Gpu) -> Vec<(PageId, Vec<(u32, u32)>)> {
-        let mut moved = Vec::new();
-        for (id, page) in self.pages.iter_mut().enumerate() {
-            let Some(page) = page.as_mut().filter(|p| p.kind != PageKind::Terrain) else {
-                continue;
-            };
-            let moves = page.page.compact(gpu);
-            if moves.is_empty() {
-                continue;
-            }
-            let to = |layer: u32| moves.iter().find(|m| m.0 == layer).map_or(layer, |m| m.1);
-            page.prepared = std::mem::take(&mut page.prepared)
-                .into_iter()
-                .map(|(layer, mut job)| {
-                    job.layer = to(job.layer);
-                    job.neighbours = job.neighbours.map(|n| n.map(to));
-                    (to(layer), job)
-                })
-                .collect();
-            for job in &mut page.pending {
-                job.layer = to(job.layer);
-                job.neighbours = job.neighbours.map(|n| n.map(to));
-            }
-            page.staged = page.staged.iter().map(|&l| to(l)).collect();
-            for layer in &mut page.mip_layers {
-                *layer = to(*layer);
-            }
-            for edge in &mut page.edges {
-                edge.0 = to(edge.0);
-            }
-            moved.push((PageId(id as u32), moves));
-        }
-        moved
-    }
-
     /// Lets go of the pages' chunks no tile holds: whether any went.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
         let mut shrank = false;

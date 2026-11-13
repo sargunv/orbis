@@ -7,20 +7,17 @@
 //! A tile's layer word names its chunk and its layer there
 //! ([`CHUNK_SHIFT`]), and shaders bind every chunk, choosing by the word.
 //! The first chunk holds the layers the page started with, and chunk `k`
-//! is made with as many as bring the chunks up to it to `2^k` times those,
-//! so that the four hold eight times the first whatever sizes the chunks
-//! below were left at. A page grows by its next chunk, blank, copying
-//! nothing. A frame that settles the map compacts it
-//! ([`TilePage::compact`]): its last chunks' layers move into the free
-//! layers below, the chunks that leaves empty go, and the last one left
-//! fits to what it holds, so a page at rest holds its tiles in about as
-//! many layers as it has tiles.
+//! as many as the chunks before it together, so that the four hold eight
+//! times the first. A page grows by its next chunk, blank, and shrinks by
+//! letting go of a chunk once no tile holds a layer of it
+//! ([`TilePage::shrink`]): no layer ever moves. New tiles take the lowest
+//! chunk's free layers first, so the chunks a view grew the page by fill
+//! last and empty as their tiles leave.
 //!
 //! Past its chunks, a page's last chunk grows into a larger one, copying
 //! its layers: a page of one chunk (the terrain's, which every draw that
 //! stands on the terrain binds, within WebGL 2's 16 textures a pipeline,
-//! and the glyphs') grows only so, and halves while what it holds lies in
-//! its lowest quarter.
+//! and the glyphs') grows only so, and keeps its size.
 
 use crate::scene::arena::Slots;
 use orb_hal::{
@@ -190,8 +187,7 @@ impl TilePage {
 
     /// The layers chunk `k` holds when made: the first chunk's, then as
     /// many as bring the chunks up to it to `2^k` times those (as many as
-    /// the chunks before it together, unless a settle fitted one to its
-    /// tiles), within the device's limits.
+    /// the chunks before it together), within the device's limits.
     fn chunk_layers(&self, gpu: &dyn Gpu, k: usize) -> u32 {
         if k == 0 {
             return self.first;
@@ -242,11 +238,11 @@ impl TilePage {
         true
     }
 
-    /// Moves chunk `k` into textures of `capacity` layers, the layers it
-    /// holds copied over (all below `capacity`). The copy is submitted at
+    /// Moves chunk `k` into textures of `capacity` layers, more than it
+    /// has, the layers it holds copied over. The copy is submitted at
     /// once, so writes queued before it land in the old textures first.
     /// Fails, keeping the chunk, where the device refuses one.
-    fn resize(&mut self, gpu: &mut dyn Gpu, k: usize, capacity: u32) -> Result<(), OutOfSpace> {
+    fn grow(&mut self, gpu: &mut dyn Gpu, k: usize, capacity: u32) -> Result<(), OutOfSpace> {
         let before = gpu.counters();
         let made = self.textures_of(gpu, capacity).ok_or(OutOfSpace)?;
         let chunk = self.chunks[k].as_mut().expect("a chunk to resize");
@@ -269,11 +265,7 @@ impl TilePage {
         for texture in std::mem::replace(&mut chunk.textures, made) {
             gpu.destroy_texture(texture);
         }
-        if capacity > chunk.capacity {
-            chunk.layers.grow(capacity);
-        } else {
-            chunk.layers.shrink(capacity);
-        }
+        chunk.layers.grow(capacity);
         chunk.capacity = capacity;
         self.revision += 1;
         self.resized.count(gpu, &before);
@@ -382,7 +374,7 @@ impl TilePage {
                 if capacity <= old {
                     return Err(OutOfSpace);
                 }
-                self.resize(gpu, k, capacity)?;
+                self.grow(gpu, k, capacity)?;
                 k
             }
         };
@@ -439,84 +431,18 @@ impl TilePage {
         }
     }
 
-    /// Moves the layers of its last chunks into free layers of the chunks
-    /// below, the last chunk's highest first, for as many as there are
-    /// free layers below: every texture array's layer copied, mip levels
-    /// and all. Returns the moves, `(from, to)` layer words, which whoever
-    /// holds a word follows. The copies are submitted at once, so writes
-    /// queued before land first. [`shrink`](Self::shrink) then lets go of
-    /// the chunks that leaves empty, and fits the last to what it holds.
-    pub(crate) fn compact(&mut self, gpu: &mut dyn Gpu) -> Vec<(u32, u32)> {
-        let mut moves = Vec::new();
-        while let Some(last) = (1..self.chunks.len())
-            .rev()
-            .find(|&k| self.chunks[k].as_ref().is_some_and(|c| c.layers.used() > 0))
-        {
-            let mut held: Vec<u32> = self.chunks[last]
-                .as_ref()
-                .expect("found")
-                .layers
-                .held()
-                .collect();
-            let mut moved = false;
-            while let Some(&layer) = held.last() {
-                let Some(to) =
-                    (0..last).find_map(|k| Some(word(k, self.chunks[k].as_mut()?.layers.alloc()?)))
-                else {
-                    break;
-                };
-                held.pop();
-                self.chunks[last]
-                    .as_mut()
-                    .expect("found")
-                    .layers
-                    .free(layer);
-                moves.push((word(last, layer), to));
-                moved = true;
-            }
-            if !held.is_empty() || !moved {
-                break;
-            }
-        }
-        if moves.is_empty() {
-            return moves;
-        }
-        let before = gpu.counters();
-        let mut copies: Vec<((TextureId, TextureId), TextureCopy)> = Vec::new();
-        for (index, t) in self.textures.iter().enumerate() {
-            for &(from, to) in &moves {
-                let (source, a) = self.texture_of(index, from);
-                let (destination, b) = self.texture_of(index, to);
-                let copy = TextureCopy {
-                    from: [0, 0, a],
-                    to: [0, 0, b],
-                    size: [t.width, t.height, 1],
-                };
-                copies.push(((source, destination), copy));
-            }
-        }
-        copies.sort_by_key(|(pair, _)| *pair);
-        let passes: Vec<Pass> = (copies.chunk_by(|a, b| a.0 == b.0))
-            .map(|run| Pass::CopyTexture {
-                source: run[0].0.0,
-                destination: run[0].0.1,
-                copies: run.iter().map(|(_, c)| *c).collect(),
-            })
-            .collect();
-        gpu.submit(&passes);
-        self.resized.count(gpu, &before);
-        moves
-    }
-
-    /// Lets go of the chunks no layer is held in but the first, which a
-    /// page keeps as a fresh one has it, and fits the last chunk after the
-    /// first to the layers it holds, copying them (the chunks made after
-    /// make up what that gives back, [`chunk_layers`](Self::chunk_layers)).
-    /// Halves a page of one chunk while what it holds lies in its lowest
-    /// quarter, down to its first size. Whether it shrank.
+    /// Lets go of the chunks no layer is held in, copying nothing: the
+    /// layers held stay where they are, so a chunk goes once its last tile
+    /// does. [`alloc`](Self::alloc) hands out the lowest chunk's layers
+    /// first, so the higher chunks a view grew the page by take tiles only
+    /// while the lower ones are full, and empty as their tiles leave. A
+    /// page of one chunk keeps it. Whether any went.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+        if self.most == 1 {
+            return false;
+        }
         let mut shrank = false;
-        for k in 1..self.chunks.len() {
+        for k in 0..self.chunks.len() {
             if self.chunks[k]
                 .as_ref()
                 .is_some_and(|c| c.layers.used() == 0)
@@ -535,15 +461,6 @@ impl TilePage {
         if shrank {
             // A chunk refused before may fit now that others went.
             self.refused = self.most;
-        }
-        let last = self.chunks.len() - 1;
-        let chunk = self.chunks[last].as_ref().expect("a last chunk");
-        let capacity = match last {
-            0 => super::shrunk(chunk.capacity, chunk.layers.held_below(), self.first),
-            _ => chunk.layers.held_below(),
-        };
-        if capacity < chunk.capacity {
-            shrank |= self.resize(gpu, last, capacity).is_ok();
         }
         shrank
     }

@@ -329,10 +329,10 @@ fn assert_copied_no_pool(h: &Harness, copied: u64) {
 }
 
 /// A full tile page grows for a tile past its last layer by a chunk of
-/// its own, copying none of the layers it holds, and draws from both;
-/// once tiles go, a settled page moves its last chunk's tiles into the
-/// room they left and lets the chunk go, its tiles keeping their texels.
-/// Raster and DEM pages alike.
+/// its own, copying none of the layers it holds, and draws from both; a
+/// new tile takes a free layer of the first chunk before the second's,
+/// and once the second's last tile goes a settled page lets it go, no
+/// layer moving. Raster and DEM pages alike.
 #[test]
 fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
     use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey};
@@ -416,29 +416,40 @@ fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
             assert_eq!(pixel(&pixels, 48, 32), blue, "the last tile's texels");
         };
         draws(&mut h, first, last);
-        // A tile of the first chunk goes: a settling frame moves the last
-        // into its layer and lets the second chunk go.
+        // A tile of the first chunk goes: the settling frame keeps the
+        // second, which holds the last, and moves nothing.
         h.renderer.release_tile(held.pop().unwrap());
-        h.renderer.take_resized();
-        h.render();
-        let shrank = h.renderer.take_resized();
-        assert!(shrank.bytes_copied > 0, "{kind:?}: the last tile moved");
+        let two_chunks = h.renderer.texture_bytes().0;
+        h.render_stats();
+        assert_eq!(h.renderer.take_resized().bytes_copied, 0, "{kind:?}");
+        assert_eq!(h.renderer.texture_bytes().0, two_chunks, "{kind:?}");
+        // A new tile takes the layer it left, not one of the second chunk's.
+        held.push(upload(&mut h, 9, green).unwrap());
+        assert_eq!(h.renderer.texture_bytes().0, two_chunks, "{kind:?}");
+        draws(&mut h, first, last);
+        // The second chunk's last tile goes, and the chunk with it.
+        h.renderer.release_tile(last);
+        h.render_stats();
+        assert_eq!(h.renderer.take_resized().bytes_copied, 0, "{kind:?}");
         assert_eq!(
             h.renderer.texture_bytes().0,
             one_chunk,
             "{kind:?}: one chunk left"
         );
+        // The first chunk is full again: the next tile takes a chunk.
+        let last = upload(&mut h, 10, blue).unwrap();
+        assert_eq!(h.renderer.texture_bytes().0, two_chunks, "{kind:?}");
+        assert_eq!(h.renderer.take_resized().bytes_copied, 0, "{kind:?}");
         draws(&mut h, first, last);
         for tile in [first, last].into_iter().chain(held) {
             h.renderer.release_tile(tile);
         }
-        h.render();
+        h.render_stats();
     }
 }
 
 /// A tile page holds eight times its first chunk's layers before it grows
-/// by a copy, though a settling frame fitted a chunk to its tiles on the
-/// way: the chunks made after make up what that gave back.
+/// by a copy, settling frames on the way moving none.
 #[test]
 fn tile_pages_grow_eightfold_without_copying_across_settles() {
     use orb_render::{ImageBuild, PageKind, Pixels, TileKey};
@@ -462,19 +473,20 @@ fn tile_pages_grow_eightfold_without_copying_across_settles() {
         h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
     };
     // Pages start at eight layers before a map sizes them: a ninth tile
-    // takes a second chunk, which the settling frame fits to it.
+    // takes a second chunk.
     for n in 0..9 {
         upload(&mut h, n);
     }
     h.render_stats();
-    assert!(
-        h.renderer.take_resized().bytes_copied > 0,
-        "the second chunk fitted to its tile"
-    );
     for n in 9..64 {
         upload(&mut h, n);
+        if n % 16 == 0 {
+            h.render_stats();
+        }
     }
     assert_eq!(h.renderer.take_resized().bytes_copied, 0, "nothing copied");
+    upload(&mut h, 64);
+    assert!(h.renderer.take_resized().bytes_copied > 0, "past the four");
 }
 
 /// A mesh drawing another's vertices and indices takes no pool words of
