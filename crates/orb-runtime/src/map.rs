@@ -764,11 +764,10 @@ pub struct Map {
     pub(crate) retired: Retired,
     /// The renderer's nodes are of a replaced style.
     pub(crate) nodes_stale: bool,
-    pub(crate) capacity: SceneCapacity,
-    /// Whether the map sizes the renderer's new tile pages from the
-    /// viewport ([`orb_render::Sizing`]): unless the host set the scene's
-    /// capacity.
-    sized: bool,
+    /// The scene's capacity the host set ([`Map::set_scene_capacity`]);
+    /// without one, the default, and the map sizes the renderer's new tile
+    /// pages from the viewport ([`orb_render::Sizing`]).
+    capacity: Option<SceneCapacity>,
     /// What a frame may spend on arrivals.
     pub(crate) frame_budget: crate::Budget,
     /// When the host began the next frame's work on what arrived, on the
@@ -991,8 +990,7 @@ impl Map {
             antialias_3d: defaults.antialias,
             keep_all_cull: false,
             nodes_stale: false,
-            capacity: SceneCapacity::default(),
-            sized: true,
+            capacity: None,
             frame_budget: crate::Budget::DESKTOP,
             arrivals_began: None,
             release_cached: false,
@@ -1094,8 +1092,7 @@ impl Map {
     /// ([`Map::create_renderer`]): its first sizes and ceilings, which the
     /// map then keeps to, its tile pages starting at eight layers.
     pub fn set_scene_capacity(&mut self, capacity: SceneCapacity) {
-        self.capacity = capacity;
-        self.sized = false;
+        self.capacity = Some(capacity);
     }
 
     /// Begins a frame's spending on arrivals at `now`: its bytes, and its
@@ -1483,7 +1480,8 @@ impl Map {
         let images = images
             .atlas
             .get_or_insert_with(|| ImageAtlas::new(gpu, 1024, 8, 8192));
-        Renderer::new(gpu, format, self.capacity, images.bindings())
+        let capacity = self.capacity.unwrap_or_default();
+        Renderer::new(gpu, format, capacity, images.bindings())
     }
 
     /// Forgets the GPU state of another renderer: after a device loss, or
@@ -2311,7 +2309,7 @@ impl Map {
     /// ([`orb_render::Sizing`]). A still map's grow as its frames need, as
     /// they may.
     fn size_pages(&self, renderer: &mut Renderer, viewport: Viewport) {
-        if self.sized && self.mode == RenderMode::Continuous && self.style.is_some() {
+        if self.capacity.is_none() && self.mode == RenderMode::Continuous && self.style.is_some() {
             let size = [viewport.width, viewport.height];
             renderer.size_for(orb_render::Sizing::of_viewport(size));
         }
