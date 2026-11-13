@@ -739,6 +739,7 @@ impl Renderer {
         }
         Ok((tile, ids))
     }
+
     /// A vector tile with no meshes yet, drawing through planar patches
     /// (cells per side and their words) if it has any.
     pub fn add_tile(

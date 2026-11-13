@@ -1354,8 +1354,7 @@ pub(crate) struct Scene {
     mesh_serials: Vec<u64>,
     next_serial: u64,
     /// Changes whenever a pool or table moves into a larger buffer: bind
-    /// groups and
-    /// recorded commands over the old one must be made again.
+    /// groups and recorded commands over the old one must be made again.
     buffers_revision: u64,
     /// Placement rows that changed since the last `take_placements_written`.
     placements_written: u32,

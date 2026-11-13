@@ -459,6 +459,7 @@ pub(crate) struct Loss {
     /// What the driver said.
     pub(crate) reason: std::sync::Arc<std::sync::OnceLock<String>>,
 }
+
 #[cfg(webgpu)]
 pub(crate) use webgpu::Compiler;
 

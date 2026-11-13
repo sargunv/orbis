@@ -39,7 +39,7 @@ pub(crate) struct Extrusions {
     drawn_full: bool,
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
-    /// The targets' format: the map's.
+    /// The targets' format (RGBA8, whatever the map's).
     format: TextureFormat,
     /// The depth's format ([`depth_format`](crate::pipeline::depth_format)).
     depth_format: TextureFormat,
@@ -47,6 +47,7 @@ pub(crate) struct Extrusions {
     size: [u32; 2],
     single_layer: bool,
 }
+
 /// An extrusion layer's node, drawn apart.
 pub(crate) type NodeExtrusion = Apart;
 
@@ -256,6 +257,10 @@ impl Extrusions {
             .map(|&p| p.into())
             .collect()
     }
+
+    /// Draws at four samples when `antialias`, else at one; whether that
+    /// changed, so the pipelines are asked for again and the targets made
+    /// anew.
     pub(crate) fn set_antialias(&mut self, antialias: bool) -> bool {
         let samples = if antialias { 4 } else { 1 };
         if samples == self.samples {
@@ -265,6 +270,7 @@ impl Extrusions {
         self.size = [0; 2];
         true
     }
+
     /// What their passes draw into: their targets' format at their sample
     /// count.
     pub(crate) fn format(&self) -> TargetFormat {
@@ -312,6 +318,7 @@ impl Extrusions {
         self.single_layer = count == 1;
         true
     }
+
     /// Gives a node its target of `size` and its composite, unless it has
     /// them at this size and sample count; whether it changed.
     pub(crate) fn resize_node(

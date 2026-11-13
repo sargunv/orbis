@@ -1409,6 +1409,7 @@ impl NodePlan {
         laid.dropped = 0;
     }
 }
+
 /// The segments that draw `runs`, each a block and its compacted words, in
 /// the order given: runs that follow one another both in it and in their
 /// block's slots draw as one stretch, as what lies between them there is

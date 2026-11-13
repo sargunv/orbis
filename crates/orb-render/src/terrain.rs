@@ -147,6 +147,7 @@ fn grid_step(tile_px: f32) -> u32 {
         .find(|&&s| s <= step)
         .expect("a step of 1")
 }
+
 /// Terrain units per tile side (`terrain.wgsl`'s `TERRAIN_EXTENT`).
 pub const TERRAIN_EXTENT: f32 = 8192.0;
 const NO_DEM: u32 = u32::MAX;

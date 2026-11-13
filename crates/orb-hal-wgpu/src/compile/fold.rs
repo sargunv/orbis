@@ -338,6 +338,7 @@ override plane: bool = false;
             "the second turn reads the table"
         );
     }
+
     /// A condition reads a local as it was loaded, not as later stores
     /// left it.
     #[test]
