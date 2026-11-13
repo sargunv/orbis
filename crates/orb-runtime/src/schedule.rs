@@ -27,9 +27,8 @@ use crate::resident::HostData;
 /// camera does: a map held still loads as one let go. The web's frames,
 /// on the display's refresh, are the one time its map works: what
 /// arrives between them only queues, its wake asking for the next. Native
-/// hosts also spend it in the upkeep a report asks for
-/// ([`Map::prepare`](crate::Map::prepare)) and, drawing nothing, in
-/// [`Map::apply_arrivals`](crate::Map::apply_arrivals).
+/// hosts also spend it in [`Map::prepare`](crate::Map::prepare) and,
+/// drawing nothing, in [`Map::apply_arrivals`](crate::Map::apply_arrivals).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Budget {
     /// Time on the map's thread from the frame's start, in milliseconds.

@@ -4,6 +4,14 @@
 //! A camera-only frame writes the frame block and the tile rows; everything
 //! else changes only when meshes arrive or leave. Row layouts match the
 //! structs in `orb-shaders`' `types.wgsl` and `cull.wgsl`.
+//!
+//! Vertices and indices live in blocks ([`Block`]): a mesh takes room in
+//! one, a scene with no room for one adds another, and an empty one goes,
+//! so their memory follows what the scene holds and none ever moves. Each
+//! block has its own cull rows, one per render node and cut stream
+//! ([`Scene::row`]), which its meshes' candidates are laid out in: the
+//! cull runs once per block, and a node draws once per block it has
+//! candidates in, with that block bound.
 
 mod arena;
 mod candidates;
@@ -22,7 +30,7 @@ pub use glyph::{GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
 pub use sprites::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
 #[cfg(cpu_driven)]
 pub(crate) use tables::data_width;
-pub(crate) use tables::{Backing, DataTable, Table, TableWriter, Tables};
+pub(crate) use tables::{Backing, BlockPool, DataTable, Table, TableWriter, Tables};
 
 use std::ops::Range;
 
@@ -185,13 +193,8 @@ fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
     [whole.map(|w| w as i64 as i32 as u32), rest]
 }
 
-/// Writes a frame block into a uniform buffer of [`FRAME_BYTES`]: the
+/// A frame block's words, for a uniform buffer of [`FRAME_BYTES`]: the
 /// scene's own, or another view's of the same scene (the terrain drape's).
-pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
-    gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&frame_words(frame)));
-}
-
-/// A frame block's words, as [`write_frame`] writes them.
 pub(crate) fn frame_words(frame: &FrameBlock) -> Vec<u32> {
     use layout::frame as f;
     let mut b = orb_shaders::Block::new(f::WORDS);
@@ -530,6 +533,11 @@ const CULL_BATCH: u32 = 256;
 /// Words per node of `SceneBuffers::args`: a draw's indirect arguments
 /// and the cull's counters.
 pub const ARGS_WORDS: usize = 8;
+/// The bytes of compacted slots a frame's layout moves tidying what changes
+/// in place left out of order, past the first node it tidies: a copy on
+/// the GPU (twice, through the scratch buffer), bounded like the frame's
+/// other work.
+const TIDY_BYTES: u64 = 4 << 20;
 /// A candidate's `drawn` word before its first cull: neither drawn (1) nor
 /// hidden (0), so the cull pass writes its slot (`cull.wgsl`).
 const UNKNOWN: u32 = u32::MAX;
@@ -543,9 +551,11 @@ pub struct SceneCapacity {
     /// `(chunk, placement)` pairs the cull pass considers, over all nodes.
     pub candidates: u32,
     pub nodes: u32,
-    /// The vertex pool's first size; it doubles as meshes need, up to
-    /// `max_vertex_words`.
+    /// The first block's vertex pool. A later block holds what the blocks
+    /// before it hold together, up to `max_vertex_words`, the most one
+    /// block may (as the device's bindings allow).
     pub vertex_words: u32,
+    /// The first block's index pool, as `vertex_words`.
     pub index_words: u32,
     /// Slots of indexed nodes' candidates in the compacted index buffer:
     /// each candidate's chunk indices once per placement.
@@ -554,9 +564,8 @@ pub struct SceneCapacity {
     pub prop_words: u32,
     /// Rows of the glyph atlas's table, the property arena's first block.
     pub glyph_rows: u32,
-    /// Ceilings of the growable pools, which the device's buffer limits
-    /// lower further. Growth is for the tiles in view: the map evicts
-    /// tiles out of view first.
+    /// Ceilings of the growable pools and of a block's, which the
+    /// device's buffer limits lower further.
     pub max_vertex_words: u32,
     pub max_index_words: u32,
     pub max_compacted_words: u32,
@@ -566,9 +575,8 @@ pub struct SceneCapacity {
 }
 
 impl SceneCapacity {
-    /// Pools that start at 1 MB and grow at rest to what the tiles in
-    /// view need, to the device's limits, and shrink back as they need
-    /// less.
+    /// Pools that start at 1 MB and grow to what the tiles in view need,
+    /// to the device's limits, and shrink back as they need less.
     pub fn growable() -> Self {
         let start = 1 << 18;
         Self {
@@ -589,7 +597,8 @@ impl SceneCapacity {
     }
 
     /// Fixed pools at the given sizes, as tests set them: the growable
-    /// pools don't grow past their first size.
+    /// pools don't grow past their first size, and blocks hold no more
+    /// than the first.
     pub fn fixed() -> Self {
         Self {
             placements: 1024,
@@ -647,10 +656,9 @@ impl SceneMemory {
 }
 
 /// What pools, tables, tile pages and the drape atlas did moving into
-/// memory of another size: how many moves, the GPU memory they made and
-/// the bytes they copied over on the GPU. A continuous map makes these
-/// only at rest (but for its first sizes), so a frame that moves the
-/// camera counts none.
+/// memory of another size, or blocks being made: how many moves, the GPU
+/// memory they made and the bytes they copied over on the GPU. A new
+/// block copies nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resized {
     pub moves: u32,
@@ -870,6 +878,8 @@ pub(crate) struct Placement {
 struct MeshEntry {
     tile: TileId,
     node: u32,
+    /// The block holding its vertices and indices.
+    block: u32,
     chunk_slots: Vec<u32>,
     chunks: Vec<Chunk>,
     vertices: Range<u32>,
@@ -891,7 +901,9 @@ const CHUNK_ROW_WORDS_WORD: u64 = layout::chunk::ROW_WORDS as u64;
 /// No feature-state remap: every feature has the default state.
 pub(crate) const NO_STATE: u32 = u32::MAX;
 
-#[derive(Debug)]
+/// A cull row: a render node's, or its cut stream's, in one block, with
+/// the block's meshes it draws.
+#[derive(Clone, Debug)]
 struct NodeEntry {
     meshes: Vec<MeshId>,
     cull: NodeCull,
@@ -906,6 +918,17 @@ impl NodeEntry {
             stream,
         }
     }
+}
+
+/// A block of the vertex and index pools ([`Scene`]'s): fixed in size,
+/// made when no block there has room for what comes, freed once empty.
+#[derive(Debug)]
+struct Block {
+    vertices: Arena,
+    indices: Arena,
+    /// Its frame block: the scene's, with where its rows start
+    /// ([`Scene::block_words`]).
+    frame: BufferId,
 }
 
 /// Which of its meshes' chunks a cull row's candidates hold, in which
@@ -925,7 +948,7 @@ enum Stream {
     /// An extrusion node's [`Owner::Square`] chunks, the same in every
     /// placement, with the row of its cut stream.
     Whole(u32),
-    /// Render node `n`'s chunks its placements draw cut: those of
+    /// Row `n`'s chunks its placements draw cut: those of
     /// buildings the source cut ([`Owner::Every`]), a neighbour's where
     /// that neighbour isn't placed alone, and in a placement that isn't
     /// alone over its square ([`Route`]), its own.
@@ -1108,8 +1131,8 @@ pub(crate) struct Scene {
     buffers: SceneBuffers,
     /// The driver whose frames it lays candidates out for.
     driver: driver::Kind,
-    /// The frame block as the last [`prepare`](Self::prepare) wrote it.
-    #[cfg(cpu_driven)]
+    /// The frame block as the last [`prepare`](Self::prepare) wrote it,
+    /// which each block's carries with its rows' places.
     frame: Vec<u32>,
     capacity: SceneCapacity,
     /// Bits of a compacted index on the renderer's driver
@@ -1117,12 +1140,14 @@ pub(crate) struct Scene {
     index_bits: u32,
     placement_slots: Slots,
     chunk_slots: Slots,
-    vertex_arena: Arena,
-    index_arena: Arena,
+    /// The vertex and index pools' blocks, by slot; `None` where one was
+    /// freed, for the next to take.
+    blocks: Vec<Option<Block>>,
     prop_arena: Arena,
-    /// Vertex and index ranges more than one mesh draws, by their first
-    /// word: how many meshes beyond the first. The last to go frees it.
-    shared: [rustc_hash::FxHashMap<u32, u32>; 2],
+    /// Vertex and index ranges more than one mesh draws, by block and
+    /// first word: how many meshes beyond the first. The last to go frees
+    /// it.
+    shared: [rustc_hash::FxHashMap<(u32, u32), u32>; 2],
     /// The sizes the growable pools and lists don't shrink below: those
     /// the scene started with.
     first: SceneCapacity,
@@ -1133,7 +1158,14 @@ pub(crate) struct Scene {
     /// allocation.
     tile_ranks: Vec<u64>,
     free_meshes: Vec<u32>,
+    /// The cull rows, block by block: each block slot's render nodes',
+    /// then their cut streams' ([`row`](Self::row)).
     nodes: Vec<NodeEntry>,
+    /// Rows a block has: the render nodes and their cut streams.
+    rows: usize,
+    /// Rows the node cull and draw argument tables hold, for every block
+    /// slot's.
+    row_capacity: u32,
     /// Node rows' layout (slices of the candidate lists and compacted
     /// buffer) is stale: tiles or placements came or went, or nodes changed
     /// how they draw.
@@ -1144,9 +1176,8 @@ pub(crate) struct Scene {
     dirty: Vec<bool>,
     /// Every node's runs may have changed: the next layout walks them all.
     all_dirty: bool,
-    /// A layout while memory was held left a node untidy
-    /// (`LaidNode::tidy`), for the next one at
-    /// rest to lay out again.
+    /// A change in place left a node untidy (`LaidNode::tidy`), for a
+    /// later layout to tidy within its frame's moves ([`TIDY_BYTES`]).
     untidy: bool,
     /// The node rows as the last rebuild laid them out, with their cull
     /// parameters (margin, elevation, visibility) patched since.
@@ -1161,12 +1192,6 @@ pub(crate) struct Scene {
     /// Texels of the symbol placement target that symbol nodes' quads
     /// take: 64 for each candidate row (`NodeCull`'s `quad_base`).
     placed_quads: u32,
-    /// The placement target's quads, past which symbol nodes don't draw
-    /// ([`cap_quads`](Self::cap_quads)).
-    quad_cap: u32,
-    /// Candidate rows of visible symbol nodes past the [cap](Self::cap_quads),
-    /// which don't draw.
-    labels_capped: u32,
     /// The last frame's label fades had run (`follow_label_fades`).
     labels_faded: bool,
     /// The ends of the node slices of the candidate lists and the
@@ -1207,13 +1232,6 @@ pub(crate) struct Scene {
     /// What moving pools and tables did since the last
     /// [`take_resized`](Self::take_resized).
     resized: Resized,
-    /// Compacted index words and candidates the last layout left out
-    /// while the lists couldn't grow: what a layout that may resize them
-    /// grows them for ([`retry_lists`](Self::retry_lists)).
-    lists_short: [u64; 2],
-    /// The bytes of moved slots a layout found the scratch buffer too
-    /// small for while it couldn't grow.
-    scratch_short: u64,
 }
 
 /// Counts for the stats HUD and memory accounting.
@@ -1225,10 +1243,6 @@ pub struct SceneStats {
     /// [`SceneCapacity::compacted_words`], or beyond an indexed node's runs
     /// (see [`NodeDraw::Indexed`]), not drawn.
     pub candidates_dropped: u32,
-    /// Candidates of symbol nodes that don't draw because their quads lie
-    /// past the symbol placement target, which doesn't grow while memory
-    /// is [held](crate::Moves::Held).
-    pub labels_capped: u32,
     pub vertex_words: u32,
     pub index_words: u32,
     pub compacted_words: u32,
@@ -1241,6 +1255,9 @@ impl Scene {
         let b = self.buffers;
         for buffer in [b.frame, b.args, b.compacted] {
             gpu.destroy_buffer(buffer);
+        }
+        for block in self.blocks.into_iter().flatten() {
+            gpu.destroy_buffer(block.frame);
         }
         if let Some((scratch, _)) = self.scratch {
             gpu.destroy_buffer(scratch);
@@ -1309,8 +1326,6 @@ impl Scene {
                 words(c.candidates, CANDIDATE_WORDS),
                 words(c.nodes, NODE_CULL_WORDS),
                 words(c.candidates, VISIBLE_WORDS),
-                u64::from(c.vertex_words),
-                u64::from(c.index_words),
                 u64::from(c.prop_words),
             ],
             driver.mirrored(),
@@ -1322,14 +1337,12 @@ impl Scene {
             tables,
             buffers,
             driver,
-            #[cfg(cpu_driven)]
             frame: Vec::new(),
             capacity,
             index_bits: driver.index_bits(),
             placement_slots: Slots::new(c.placements),
             chunk_slots: Slots::new(c.chunks),
-            vertex_arena: Arena::new(c.vertex_words),
-            index_arena: Arena::new(c.index_words),
+            blocks: Vec::new(),
             prop_arena,
             shared: Default::default(),
             first: capacity,
@@ -1339,6 +1352,8 @@ impl Scene {
             free_meshes: Vec::new(),
             tile_ranks: Vec::new(),
             nodes: Vec::new(),
+            rows: 0,
+            row_capacity: c.nodes,
             candidates_dirty: true,
             dirty: Vec::new(),
             all_dirty: true,
@@ -1349,8 +1364,6 @@ impl Scene {
             candidate_count: 0,
             candidates_dropped: 0,
             placed_quads: 0,
-            quad_cap: u32::MAX,
-            labels_capped: 0,
             labels_faded: false,
             rows_end: 0,
             compacted_words: 0,
@@ -1367,15 +1380,185 @@ impl Scene {
             rows_dirty: Vec::new(),
             quantum: 0.0,
             resized: Resized::default(),
-            lists_short: [0; 2],
-            scratch_short: 0,
         };
         // Relayouts move at most about half the slots at once.
         if scene.moves_through_scratch() {
             scene.scratch(gpu, u64::from(c.compacted_words) * 2);
         }
+        scene.add_block(gpu, [c.vertex_words, c.index_words]);
         scene.resized = Resized::default();
         scene
+    }
+
+    /// Makes a block of `words` vertex and index words in the first free
+    /// slot, its rows empty: they draw once its meshes arrive. Returns its
+    /// slot.
+    fn add_block(&mut self, gpu: &mut dyn Gpu, words: [u32; 2]) -> u32 {
+        let before = gpu.counters();
+        let slot = match self.blocks.iter().position(Option::is_none) {
+            Some(slot) => slot,
+            None => {
+                self.blocks.push(None);
+                let base = self.nodes[..self.rows].to_vec();
+                let block = self.blocks.len() - 1;
+                self.nodes.extend(block_rows(&base, block, self.rows));
+                self.fit_row_tables(gpu);
+                block
+            }
+        };
+        self.tables.add_block(gpu, slot, words.map(u64::from));
+        let frame = gpu.create_buffer(&BufferDesc {
+            label: "block frame",
+            size: FRAME_WORDS as u64 * 4,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        self.blocks[slot] = Some(Block {
+            vertices: Arena::new(words[0]),
+            indices: Arena::new(words[1]),
+            frame,
+        });
+        self.write_block_frame(gpu, slot as u32);
+        self.resized.count(gpu, &before);
+        self.buffers_revision += 1;
+        slot as u32
+    }
+
+    /// Frees the blocks no mesh holds a word of: a view that emptied gives
+    /// back what it took. Trailing free slots go with their rows, and the
+    /// row tables shrink to the slots left. A scene left with no block
+    /// takes one of the first size, as a fresh one has.
+    fn free_empty_blocks(&mut self, gpu: &mut dyn Gpu) {
+        let empty = |b: &Block| b.vertices.used() == 0 && b.indices.used() == 0;
+        // An empty block of the first size stays where every block is
+        // empty: it is the one a fresh scene has.
+        let first = [self.first.vertex_words, self.first.index_words];
+        let fresh = |b: &Block| empty(b) && [b.vertices.capacity(), b.indices.capacity()] == first;
+        let keep = (self.blocks.iter().flatten().all(empty))
+            .then(|| {
+                self.blocks
+                    .iter()
+                    .position(|b| b.as_ref().is_some_and(fresh))
+            })
+            .flatten();
+        let mut freed = false;
+        for slot in 0..self.blocks.len() {
+            if Some(slot) != keep && self.blocks[slot].as_ref().is_some_and(empty) {
+                let block = self.blocks[slot].take().expect("checked");
+                gpu.destroy_buffer(block.frame);
+                self.tables.remove_block(gpu, slot);
+                freed = true;
+            }
+        }
+        if !freed {
+            return;
+        }
+        while self.blocks.len() > 1 && self.blocks.last().is_some_and(Option::is_none) {
+            self.blocks.pop();
+            let rows = self.blocks.len() * self.rows;
+            self.nodes.truncate(rows);
+            self.laid.truncate(rows);
+            self.dirty.truncate(rows);
+            self.node_rows.truncate(rows * NODE_CULL_WORDS);
+            self.candidates_dirty = true;
+        }
+        self.shrink_row_tables(gpu);
+        self.buffers_revision += 1;
+        if self.blocks.iter().all(Option::is_none) {
+            self.add_block(gpu, [self.first.vertex_words, self.first.index_words]);
+        }
+    }
+
+    /// Moves the node cull and draw argument tables into buffers that hold
+    /// the block slots' rows, if smaller: nothing to copy, as the layout
+    /// that follows writes them whole.
+    fn shrink_row_tables(&mut self, gpu: &mut dyn Gpu) {
+        let new = (self.capacity.nodes * self.block_slots().max(1)).next_power_of_two();
+        if new >= self.row_capacity {
+            return;
+        }
+        let before = gpu.counters();
+        let words = |per: usize| u64::from(new) * per as u64;
+        self.tables
+            .resize(gpu, Table::NodeCull, words(NODE_CULL_WORDS), 0);
+        let desc = BufferDesc {
+            label: "draw args",
+            size: (words(ARGS_WORDS) * 4).max(16),
+            usage: self.driver.args_usage() | crate::symbol::read_usage(gpu.caps()),
+        };
+        move_buffer(gpu, &mut self.buffers.args, &desc, 0);
+        self.resized.count(gpu, &before);
+        self.row_capacity = new;
+        self.candidates_dirty = true;
+    }
+
+    /// The block slots that hold a block.
+    pub(crate) fn blocks(&self) -> impl Iterator<Item = u32> + '_ {
+        (self.blocks.iter().enumerate()).filter_map(|(i, b)| b.is_some().then_some(i as u32))
+    }
+
+    /// Block slots there are, held or free: rows go up to their count.
+    pub(crate) fn block_slots(&self) -> u32 {
+        self.blocks.len() as u32
+    }
+
+    /// Block `block`'s frame buffer.
+    pub(crate) fn block_frame(&self, block: u32) -> BufferId {
+        self.blocks[block as usize].as_ref().expect("a block").frame
+    }
+
+    /// Row `node` (a render node's, or a cut stream's) of block `block`.
+    pub(crate) fn row(&self, node: u32, block: u32) -> u32 {
+        block * self.rows as u32 + node
+    }
+
+    /// `frame`, a frame block's words, as block `block` reads it: the
+    /// rows a block has, where its own start, its first cull workgroup
+    /// and its first placement workgroup (`types.wgsl`'s `block_row`).
+    pub(crate) fn block_words(&self, block: u32, frame: &mut [u32]) {
+        use layout::frame as f;
+        use layout::node_cull as nc;
+        let row = self.row(0, block);
+        let first = |word: usize| {
+            self.node_rows
+                .get(row as usize * NODE_CULL_WORDS + word)
+                .copied()
+                .unwrap_or(0)
+        };
+        frame[f::PLACED_NODES] = self.rows as u32;
+        frame[f::BLOCK_ROW] = row;
+        frame[f::BLOCK_GROUP] = first(nc::FIRST_GROUP);
+        frame[f::BLOCK_QUAD_GROUP] = first(nc::QUAD_BASE) / orb_layout::MAX_CHUNK_INSTANCES;
+    }
+
+    /// Writes block `block`'s frame block: the scene's, with its rows'.
+    fn write_block_frame(&self, gpu: &mut dyn Gpu, block: u32) {
+        if self.frame.is_empty() {
+            return;
+        }
+        let mut words = self.frame.clone();
+        self.block_words(block, &mut words);
+        gpu.write_buffer(self.block_frame(block), 0, bytemuck::cast_slice(&words));
+    }
+
+    /// The cull workgroups of block `block`'s rows, from their first.
+    pub(crate) fn block_groups(&self, block: u32) -> std::ops::Range<u32> {
+        use layout::node_cull as nc;
+        let first =
+            |row: usize| (self.node_rows.get(row * NODE_CULL_WORDS + nc::FIRST_GROUP)).copied();
+        let start = self.row(0, block) as usize;
+        let end = start + self.rows;
+        let from = first(start).unwrap_or(self.cull_groups);
+        from..first(end).unwrap_or(self.cull_groups)
+    }
+
+    /// The placement target's quads of block `block`'s symbol rows.
+    pub(crate) fn block_quads(&self, block: u32) -> std::ops::Range<u32> {
+        use layout::node_cull as nc;
+        let base =
+            |row: usize| (self.node_rows.get(row * NODE_CULL_WORDS + nc::QUAD_BASE)).copied();
+        let start = self.row(0, block) as usize;
+        let end = start + self.rows;
+        base(start).unwrap_or(self.placed_quads)..base(end).unwrap_or(self.placed_quads)
     }
 
     /// Whether relayouts move slots through the scratch buffer: the GPU
@@ -1410,17 +1593,22 @@ impl Scene {
         &self.frame
     }
 
-    /// The cull's rows: the render nodes', then their cut streams'
-    /// ([`cut_row`](Self::cut_row)).
+    /// Rows a block has: its render nodes', then their cut streams'.
+    pub(crate) fn rows(&self) -> u32 {
+        self.rows as u32
+    }
+
+    /// The cull's rows in every block slot: the render nodes', then
+    /// their cut streams' ([`cut_row`](Self::cut_row)), block by block.
     #[cfg(cpu_driven)]
     pub(crate) fn node_count(&self) -> u32 {
         self.nodes.len() as u32
     }
 
-    /// The row of render node `node`'s cut stream, if it draws one (an
-    /// extrusion node, [`NodeCull::unclipped`]): drawn as a node of its
-    /// own, its candidates what the node's placements draw cut
-    /// ([`Stream`]).
+    /// The row of render node `node`'s cut stream in a block, if it draws
+    /// one (an extrusion node, [`NodeCull::unclipped`]): drawn as a node
+    /// of its own, its candidates what the node's placements draw cut
+    /// ([`Stream`]). Block `b`'s is [`row`](Self::row)`(cut, b)`.
     pub(crate) fn cut_row(&self, node: u32) -> Option<u32> {
         match self.nodes.get(node as usize)?.stream {
             Stream::Whole(cut) => Some(cut),
@@ -1453,9 +1641,20 @@ impl Scene {
 
     /// The render nodes' rows, before their cut streams'.
     fn render_nodes(&self) -> usize {
-        (self.nodes.iter())
+        (self.nodes[..self.rows].iter())
             .position(|n| matches!(n.stream, Stream::Cut(_)))
-            .unwrap_or(self.nodes.len())
+            .unwrap_or(self.rows)
+    }
+
+    /// The rows of `nodes` in every block slot: each slot's
+    /// ([`rows_for`](Self::rows_for)), its streams' rows in its own.
+    fn rows_in_blocks(&self, nodes: &[NodeCull]) -> Vec<NodeEntry> {
+        let base = Self::rows_for(nodes);
+        let mut rows = Vec::with_capacity(base.len() * self.blocks.len());
+        for block in 0..self.blocks.len() {
+            rows.extend(block_rows(&base, block, base.len()));
+        }
+        rows
     }
 
     /// Lays the candidates out again at the next
@@ -1471,12 +1670,6 @@ impl Scene {
     /// again only as they double or halve.
     pub(crate) fn placed_rows(&self) -> u32 {
         self.placed_quads.div_ceil(PLACED_WIDTH).next_power_of_two()
-    }
-
-    /// The symbol nodes' quads in the placement target: 64 for each of
-    /// their candidate rows.
-    pub(crate) fn placed_quads(&self) -> u32 {
-        self.placed_quads
     }
 
     pub(crate) fn capacity(&self) -> &SceneCapacity {
@@ -1534,10 +1727,11 @@ impl Scene {
         self.candidates_dirty = true;
         let n = node as usize;
         let before = (n.checked_sub(1)).filter(|&b| {
-            matches!(
-                self.nodes[b].cull.meshes,
-                NodeMeshes::WithNext { next: true, .. }
-            )
+            !n.is_multiple_of(self.rows)
+                && matches!(
+                    self.nodes[b].cull.meshes,
+                    NodeMeshes::WithNext { next: true, .. }
+                )
         });
         let cut = self.cut_row(node).map(|c| c as usize);
         for row in [Some(n), cut, before].into_iter().flatten() {
@@ -1547,13 +1741,14 @@ impl Scene {
         }
     }
 
-    /// [`dirty_node`](Self::dirty_node) for each node of `tile`'s meshes.
+    /// [`dirty_node`](Self::dirty_node) for each row of `tile`'s meshes.
     fn dirty_tile(&mut self, tile: TileId) {
         let Some(entry) = self.tiles[tile.0 as usize].as_ref() else {
             return;
         };
         let nodes: Vec<u32> = (entry.meshes.iter())
-            .filter_map(|m| self.meshes[m.0 as usize].as_ref().map(|m| m.node))
+            .filter_map(|m| self.meshes[m.0 as usize].as_ref())
+            .map(|m| self.row(m.node, m.block))
             .collect();
         for node in nodes {
             self.dirty_node(node);
@@ -1575,17 +1770,19 @@ impl Scene {
         entry.order = Some(at);
     }
 
-    /// The tiles of render `node`'s meshes, in drawing order.
+    /// The tiles of render `node`'s meshes, in drawing order, block by
+    /// block.
     #[cfg(test)]
     pub(crate) fn node_tiles(&self, node: u32) -> Vec<TileId> {
-        (self.nodes[node as usize].meshes.iter())
+        (0..self.block_slots())
+            .flat_map(|b| &self.nodes[self.row(node, b) as usize].meshes)
             .map(|m| self.meshes[m.0 as usize].as_ref().expect("live mesh").tile)
             .collect()
     }
 
     /// Whether render `node` has any resident mesh.
     pub(crate) fn node_has_meshes(&self, node: u32) -> bool {
-        !self.nodes[node as usize].meshes.is_empty()
+        (0..self.block_slots()).any(|b| !self.nodes[self.row(node, b) as usize].meshes.is_empty())
     }
 
     pub(crate) fn stats(&self) -> SceneStats {
@@ -1593,23 +1790,40 @@ impl Scene {
             meshes: (self.meshes.len() - self.free_meshes.len()) as u32,
             candidates: self.candidate_count,
             candidates_dropped: self.candidates_dropped,
-            labels_capped: self.labels_capped,
-            vertex_words: self.vertex_arena.used(),
-            index_words: self.index_arena.used(),
+            vertex_words: self
+                .blocks
+                .iter()
+                .flatten()
+                .map(|b| b.vertices.used())
+                .sum(),
+            index_words: self.blocks.iter().flatten().map(|b| b.indices.used()).sum(),
             compacted_words: self.compacted_words,
             prop_words: self.prop_arena.used(),
         }
     }
 
-    /// Makes room for `nodes` render nodes: the node cull and draw argument
-    /// tables move to buffers twice the size until they fit. Their rows
-    /// are written whole again ([`remap_nodes`](Self::remap_nodes) follows).
+    /// Makes room for `nodes` rows a block (render nodes and their cut
+    /// streams): the node uniforms the renderer sizes by
+    /// [`capacity`](Self::capacity), and the node cull and draw argument
+    /// tables, a row each in every block. They move to buffers twice the
+    /// size until they fit, their rows written whole again
+    /// ([`remap_nodes`](Self::remap_nodes) follows).
     pub(crate) fn grow_nodes(&mut self, gpu: &mut dyn Gpu, nodes: u32) {
-        if nodes <= self.capacity.nodes {
+        if nodes > self.capacity.nodes {
+            self.capacity.nodes = nodes.next_power_of_two();
+        }
+        self.fit_row_tables(gpu);
+    }
+
+    /// Moves the node cull and draw argument tables into buffers that hold
+    /// a block's rows in every block slot, if they don't.
+    fn fit_row_tables(&mut self, gpu: &mut dyn Gpu) {
+        let rows = self.capacity.nodes * self.block_slots().max(1);
+        if rows <= self.row_capacity {
             return;
         }
         let before = gpu.counters();
-        let new = nodes.next_power_of_two();
+        let new = rows.next_power_of_two();
         let words = |per: usize| u64::from(new) * per as u64;
         self.tables
             .resize(gpu, Table::NodeCull, words(NODE_CULL_WORDS), 0);
@@ -1620,10 +1834,16 @@ impl Scene {
         };
         move_buffer(gpu, &mut self.buffers.args, &desc, 0);
         self.resized.count(gpu, &before);
-        self.capacity.nodes = new;
+        self.row_capacity = new;
+        // The next layout writes the node rows whole.
         self.candidates_dirty = true;
-        self.laid.clear();
         self.buffers_revision += 1;
+    }
+
+    /// Rows the node cull and draw argument tables hold.
+    #[cfg(cpu_driven)]
+    pub(crate) fn row_capacity(&self) -> u32 {
+        self.row_capacity
     }
 
     /// Renumbers the render nodes with their meshes: node `i` becomes
@@ -1631,23 +1851,27 @@ impl Scene {
     /// `None` must hold no meshes.
     pub(crate) fn remap_nodes(&mut self, map: &[Option<u32>], nodes: &[NodeCull]) {
         assert_eq!(map.len(), self.render_nodes(), "one entry per node");
-        let mut entries = Self::rows_for(nodes);
-        assert!(
-            entries.len() as u32 <= self.capacity.nodes,
-            "too many render nodes"
-        );
-        for (old, node) in self.nodes.drain(..).enumerate().take(map.len()) {
+        let mut entries = self.rows_in_blocks(nodes);
+        let rows = entries.len() / self.blocks.len();
+        assert!(rows as u32 <= self.capacity.nodes, "too many render nodes");
+        let old_rows = self.rows;
+        for (r, node) in self.nodes.drain(..).enumerate() {
+            let (block, old) = (r / old_rows, r % old_rows);
+            if old >= map.len() {
+                continue;
+            }
             match map[old] {
                 Some(new) => {
                     for &id in &node.meshes {
                         self.meshes[id.0 as usize].as_mut().expect("live mesh").node = new;
                     }
-                    entries[new as usize].meshes = node.meshes;
+                    entries[block * rows + new as usize].meshes = node.meshes;
                 }
                 None => assert!(node.meshes.is_empty(), "removed node {old} holds meshes"),
             }
         }
         self.nodes = entries;
+        self.rows = rows;
         self.candidates_dirty = true;
         self.laid.clear();
     }
@@ -1665,9 +1889,10 @@ impl Scene {
                 self.nodes.iter().all(|n| n.meshes.is_empty()),
                 "nodes changed while meshes are resident"
             );
-            self.nodes = Self::rows_for(nodes);
+            self.nodes = self.rows_in_blocks(nodes);
+            self.rows = self.nodes.len() / self.blocks.len();
             assert!(
-                self.nodes.len() as u32 <= self.capacity.nodes,
+                self.rows as u32 <= self.capacity.nodes,
                 "too many render nodes"
             );
             self.candidates_dirty = true;
@@ -1679,16 +1904,18 @@ impl Scene {
         }
     }
 
-    /// Sets how one render node is culled, and its cut stream; see
-    /// [`set_nodes`](Self::set_nodes).
+    /// Sets how one render node is culled, and its cut stream, in every
+    /// block; see [`set_nodes`](Self::set_nodes).
     pub(crate) fn set_node(&mut self, node: u32, cull: NodeCull) {
         assert_eq!(
             self.nodes[node as usize].cull.unclipped, cull.unclipped,
             "a node keeps whether it draws a cut stream"
         );
         let cut = self.cut_row(node);
-        for row in std::iter::once(node).chain(cut) {
-            self.set_row(row as usize, cull);
+        for block in 0..self.block_slots() {
+            for row in std::iter::once(node).chain(cut) {
+                self.set_row(self.row(row, block) as usize, cull);
+            }
         }
     }
 
@@ -1868,9 +2095,17 @@ impl Scene {
         std::mem::take(&mut self.placements_written)
     }
 
-    /// How many candidates render `node` had at the last layout.
+    /// How many candidates row `node` (a render node's or a cut
+    /// stream's) had at the last layout, in every block.
     pub(crate) fn node_candidates(&self, node: u32) -> u32 {
-        self.laid.get(node as usize).map_or(0, |n| n.live)
+        (0..self.block_slots())
+            .map(|block| self.row_candidates(self.row(node, block)))
+            .sum()
+    }
+
+    /// How many candidates row `row` of a block had at the last layout.
+    pub(crate) fn row_candidates(&self, row: u32) -> u32 {
+        self.laid.get(row as usize).map_or(0, |n| n.live)
     }
 
     /// Compacted words the last rebuild hid: the slots of runs that went,
@@ -1878,11 +2113,6 @@ impl Scene {
     #[cfg(cpu_driven)]
     pub(crate) fn hidden(&self) -> &[Range<u32>] {
         &self.hidden
-    }
-
-    /// The cull's workgroups, as the node rows lay them out.
-    pub(crate) fn cull_groups(&self) -> u32 {
-        self.cull_groups
     }
 
     /// Bytes of compacted slots this frame's layout moved.
@@ -1952,19 +2182,6 @@ impl Scene {
     /// Uploads a mesh of `tile` for render `node`, with its property rows.
     /// Host-held words are written straight from the host; releasing them
     /// stays with the caller.
-    /// Whether meshes of these sizes would all insert now, in order: the
-    /// arena ranges and chunk slots [`insert_mesh`](Self::insert_mesh)
-    /// would take, found without writing anything.
-    pub(crate) fn fits(&self, meshes: &[MeshSize]) -> bool {
-        // The pools are apart: each takes its words of every mesh in turn.
-        let words = |of: fn(&MeshSize) -> u32| meshes.iter().map(of);
-        let chunks: u64 = meshes.iter().map(|m| u64::from(m.chunks)).sum();
-        self.vertex_arena.fits_all(words(|m| m.vertices))
-            && self.index_arena.fits_all(words(|m| m.indices))
-            && self.prop_arena.fits_all(words(|m| m.props))
-            && chunks <= u64::from(self.chunk_slots.available())
-    }
-
     pub(crate) fn insert_mesh(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1977,7 +2194,7 @@ impl Scene {
 
     /// [`insert_mesh`](Self::insert_mesh) drawing the vertices, the
     /// indices or both of earlier meshes (`shares`), whose words it
-    /// leaves out of `mesh`.
+    /// leaves out of `mesh`: in their block.
     pub(crate) fn insert_mesh_sharing(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1988,99 +2205,194 @@ impl Scene {
     ) -> Result<MeshId, OutOfSpace> {
         // A shared range is the earlier mesh's; the others are allocated.
         let shared = shares.map(|of| of.map(|of| self.mesh_ranges(of)));
+        let block = shared.iter().flatten().map(|&(block, _)| block).next();
         let words = [mesh.vertices, mesh.indices, mesh.props];
         let lens = [0, 1, 2].map(|p| match p {
             0 | 1 if shared[p].is_some() => 0,
             _ => words[p].len(),
         });
-        let block = self.alloc_block(lens).ok_or(OutOfSpace)?;
-        for (pool, range) in block.iter().enumerate() {
+        let (block, ranges) = self.alloc_words(gpu, lens, block)?;
+        for (pool, range) in ranges.iter().enumerate() {
             if !range.is_empty() {
-                self.write_pool(gpu, pool, range.start, words[pool]);
+                self.write_pool(gpu, block, pool, range.start, words[pool]);
             }
         }
-        let ranges = [0, 1, 2].map(|p| match &shared {
-            [Some(of), _] if p == 0 => of[0].clone(),
-            [_, Some(of)] if p == 1 => of[1].clone(),
-            _ => block[p].clone(),
+        let ranges_drawn = [0, 1, 2].map(|p| match &shared {
+            [Some((_, of)), _] if p == 0 => of[0].clone(),
+            [_, Some((_, of))] if p == 1 => of[1].clone(),
+            _ => ranges[p].clone(),
         });
         let inserted = self.insert_mesh_at(
             gpu,
             tile,
-            node,
-            ranges,
+            (node, block),
+            ranges_drawn,
             (mesh.chunks, mesh.row_words),
             shares.map(|s| s.is_some()),
         );
         if inserted.is_err() {
-            for (pool, range) in block.into_iter().enumerate() {
-                self.free_words(pool, range);
+            for (pool, range) in ranges.into_iter().enumerate() {
+                self.free_words(block, pool, range);
             }
         }
         inserted
     }
 
     /// Takes `lens` words of each pool (vertices, indices, property rows),
-    /// all of them or none.
-    pub(crate) fn alloc_block(&mut self, lens: [u32; 3]) -> Option<[Range<u32>; 3]> {
-        let vertices = self.vertex_arena.alloc(lens[0]);
-        let indices = self.index_arena.alloc(lens[1]);
-        let props = self.prop_arena.alloc(lens[2]);
-        match (vertices, indices, props) {
-            (Some(v), Some(i), Some(p)) => Some([v, i, p]),
-            (v, i, p) => {
-                for (pool, range) in [v, i, p].into_iter().enumerate() {
-                    if let Some(range) = range {
-                        self.free_words(pool, range);
-                    }
-                }
-                None
+    /// all of them or none: the vertices and indices in one block, `block`
+    /// if given, else the first with room for both, else a new one. The
+    /// property rows grow to hold theirs. `Err` only past the device's
+    /// limits.
+    pub(crate) fn alloc_words(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        lens: [u32; 3],
+        block: Option<u32>,
+    ) -> Result<(u32, [Range<u32>; 3]), OutOfSpace> {
+        let props = self.alloc_props(gpu, lens[2])?;
+        let fits = |b: &Block| b.vertices.fits_all([lens[0]]) && b.indices.fits_all([lens[1]]);
+        let found = match block {
+            Some(block) => self.blocks[block as usize]
+                .as_ref()
+                .is_some_and(fits)
+                .then_some(block),
+            None => (self
+                .blocks
+                .iter()
+                .position(|b| b.as_ref().is_some_and(fits)))
+            .map(|b| b as u32),
+        };
+        let block = match (found, block) {
+            (Some(block), _) => block,
+            // Shared words lie in their block, or nowhere.
+            (None, Some(_)) => {
+                self.prop_arena.free(props);
+                return Err(OutOfSpace);
             }
+            (None, None) => match self.block_for([lens[0], lens[1]]) {
+                Some(words) => self.add_block(gpu, words),
+                None => {
+                    self.prop_arena.free(props);
+                    return Err(OutOfSpace);
+                }
+            },
+        };
+        let b = self.blocks[block as usize].as_mut().expect("a block");
+        let vertices = b.vertices.alloc(lens[0]).expect("checked");
+        let indices = b.indices.alloc(lens[1]).expect("checked");
+        Ok((block, [vertices, indices, props]))
+    }
+
+    /// The vertex and index words of a new block that holds `need`: what
+    /// the blocks there hold together, so that what the scene holds
+    /// doubles with each block and a view takes few, or the first block's
+    /// size if more, to the device's limit. `None` if `need` is past it.
+    fn block_for(&self, need: [u32; 2]) -> Option<[u32; 2]> {
+        let c = &self.capacity;
+        let held = |pool: fn(&Block) -> u32| -> u64 {
+            self.blocks
+                .iter()
+                .flatten()
+                .map(|b| u64::from(pool(b)))
+                .sum()
+        };
+        let held = [held(|b| b.vertices.used()), held(|b| b.indices.used())];
+        let first = [self.first.vertex_words, self.first.index_words];
+        let largest = [c.max_vertex_words, c.max_index_words];
+        let mut words = [0; 2];
+        for p in 0..2 {
+            if need[p] > largest[p] {
+                return None;
+            }
+            words[p] = held[p].max(u64::from(first[p])).min(u64::from(largest[p])) as u32;
+            words[p] = words[p].max(need[p]);
+        }
+        Some(words)
+    }
+
+    /// Takes `words` of the property rows, which grow to hold them.
+    fn alloc_props(&mut self, gpu: &mut dyn Gpu, words: u32) -> Result<Range<u32>, OutOfSpace> {
+        loop {
+            if let Some(range) = self.prop_arena.alloc(words) {
+                return Ok(range);
+            }
+            let need = self.prop_arena.take_needed();
+            let (old, max) = (self.capacity.prop_words, self.capacity.max_prop_words);
+            let new = grown(old, u64::from(need), max);
+            if new <= old {
+                return Err(OutOfSpace);
+            }
+            self.resize_props(gpu, new);
         }
     }
 
-    /// Gives back words of pool `pool` that no mesh holds.
-    pub(crate) fn free_words(&mut self, pool: usize, range: Range<u32>) {
-        match POOLS[pool] {
-            Pool::Vertices => self.vertex_arena.free(range),
-            Pool::Indices => self.index_arena.free(range),
-            Pool::Props => self.prop_arena.free(range),
+    /// Gives back words of pool `pool` (vertices, indices, property rows)
+    /// that no mesh holds: block `block`'s, for vertices and indices.
+    pub(crate) fn free_words(&mut self, block: u32, pool: usize, range: Range<u32>) {
+        match pool {
+            0 | 1 => {
+                let b = self.blocks[block as usize].as_mut().expect("a block");
+                [&mut b.vertices, &mut b.indices][pool].free(range);
+            }
+            _ => self.prop_arena.free(range),
         }
     }
 
-    /// Queues `words` into pool `pool` from word `at`.
-    pub(crate) fn write_pool(&mut self, gpu: &mut dyn Gpu, pool: usize, at: u32, words: Words<'_>) {
-        let table = [Table::Vertices, Table::Indices, Table::Props][pool];
-        self.tables.write(gpu, table, at, words);
+    /// Queues `words` into pool `pool` (vertices, indices, property rows)
+    /// from word `at`: block `block`'s, for vertices and indices.
+    pub(crate) fn write_pool(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        block: u32,
+        pool: usize,
+        at: u32,
+        words: Words<'_>,
+    ) {
+        match pool {
+            0 | 1 => {
+                let pool = BlockPool::ALL[pool];
+                self.tables
+                    .write_block(gpu, (block as usize, pool), at, words);
+            }
+            _ => self.tables.write(gpu, Table::Props, at, words),
+        }
+    }
+
+    /// Takes room for `chunks` more chunk rows, growing the chunk table to
+    /// hold them.
+    fn reserve_chunks(&mut self, gpu: &mut dyn Gpu, chunks: u32) -> Result<(), OutOfSpace> {
+        if self.chunk_slots.reserve(chunks) {
+            return Ok(());
+        }
+        let needed = self.chunk_slots.take_needed();
+        if self.grow_chunks(gpu, u64::from(needed)) && self.chunk_slots.reserve(chunks) {
+            return Ok(());
+        }
+        Err(OutOfSpace)
     }
 
     /// Inserts a mesh of `tile` for render `node` whose words are written
-    /// at `ranges` of the pools (vertices, indices, property rows): its
-    /// own, or for those `shared`, an earlier mesh's. On `Err` it holds
-    /// nothing and the ranges are still the caller's.
+    /// at `ranges` of the pools (vertices and indices of block `block`,
+    /// property rows): its own, or for those `shared`, an earlier mesh's.
+    /// On `Err` it holds nothing and the ranges are still the caller's.
     pub(crate) fn insert_mesh_at(
         &mut self,
         gpu: &mut dyn Gpu,
         tile: TileId,
-        node: u32,
+        (node, block): (u32, u32),
         [vertices, indices, props]: [Range<u32>; 3],
         (chunks, row_words): (&[Chunk], u32),
         shared: [bool; 2],
     ) -> Result<MeshId, OutOfSpace> {
-        assert!(
-            (node as usize) < self.nodes.len(),
-            "unknown render node {node}"
-        );
+        assert!((node as usize) < self.rows, "unknown render node {node}");
         assert!(self.tiles[tile.0 as usize].is_some(), "unknown tile");
         let len = u32::try_from(chunks.len()).map_err(|_| OutOfSpace)?;
-        if !self.chunk_slots.reserve(len) {
-            return Err(OutOfSpace);
-        }
+        self.reserve_chunks(gpu, len)?;
         for (pool, range) in [&vertices, &indices].into_iter().enumerate() {
             // Empty ranges all start at 0, where the first allocation
             // does: they hold nothing to share.
             if shared[pool] && !range.is_empty() {
-                *self.shared[pool].entry(range.start).or_default() += 1;
+                *self.shared[pool].entry((block, range.start)).or_default() += 1;
             }
         }
         let mut chunk_ids = Vec::with_capacity(chunks.len());
@@ -2106,6 +2418,7 @@ impl Scene {
         let entry = MeshEntry {
             tile,
             node,
+            block,
             chunk_slots: chunk_ids,
             chunks: chunks.to_vec(),
             vertices,
@@ -2118,15 +2431,16 @@ impl Scene {
         Ok(self.add_mesh(entry))
     }
 
-    /// A mesh's vertex and index ranges, which a mesh sharing them draws.
-    pub(crate) fn mesh_ranges(&self, mesh: MeshId) -> [Range<u32>; 2] {
+    /// A mesh's block, and its vertex and index ranges there, which a
+    /// mesh sharing them draws.
+    pub(crate) fn mesh_ranges(&self, mesh: MeshId) -> (u32, [Range<u32>; 2]) {
         let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
-        [entry.vertices.clone(), entry.indices.clone()]
+        (entry.block, [entry.vertices.clone(), entry.indices.clone()])
     }
 
     /// Registers an uploaded mesh with its node and tile.
     fn add_mesh(&mut self, entry: MeshEntry) -> MeshId {
-        let (node, tile) = (entry.node, entry.tile);
+        let (node, tile) = (self.row(entry.node, entry.block), entry.tile);
         let id = match self.free_meshes.pop() {
             Some(id) => {
                 self.meshes[id as usize] = Some(entry);
@@ -2197,13 +2511,15 @@ impl Scene {
             }
         }
         if props.len() != entry.props.len() as u32 {
-            let range = self.prop_arena.alloc(props.len()).ok_or(OutOfSpace)?;
+            let range = self.alloc_props(gpu, props.len())?;
+            let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
             self.prop_arena
                 .free(std::mem::replace(&mut entry.props, range.clone()));
             for &chunk in &entry.chunk_slots {
                 write_chunk_word(gpu, &mut self.tables, chunk, CHUNK_PROPS_WORD, range.start);
             }
         }
+        let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
         self.tables
             .write(gpu, Table::Props, entry.props.start, *props);
         Ok(())
@@ -2217,12 +2533,10 @@ impl Scene {
         mesh: MeshId,
         indices: &[u32],
     ) -> Result<(), OutOfSpace> {
-        let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
+        let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
         if indices.len() != entry.state.len() {
-            let range = self
-                .prop_arena
-                .alloc(indices.len() as u32)
-                .ok_or(OutOfSpace)?;
+            let range = self.alloc_props(gpu, indices.len() as u32)?;
+            let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
             self.prop_arena
                 .free(std::mem::replace(&mut entry.state, range.clone()));
             for &chunk in &entry.chunk_slots {
@@ -2236,16 +2550,26 @@ impl Scene {
             }
         }
         if !indices.is_empty() {
+            let at = self.meshes[mesh.0 as usize]
+                .as_ref()
+                .expect("live mesh")
+                .state
+                .start;
             self.tables
-                .write(gpu, Table::Props, entry.state.start, Words::Core(indices));
+                .write(gpu, Table::Props, at, Words::Core(indices));
         }
         Ok(())
     }
 
     /// Words of the property buffer for a table outside any mesh, such as
-    /// the feature-state table. The words are not cleared.
-    pub(crate) fn alloc_table(&mut self, words: u32) -> Result<Range<u32>, OutOfSpace> {
-        self.prop_arena.alloc(words).ok_or(OutOfSpace)
+    /// the feature-state table, which grows to hold them. The words are
+    /// not cleared.
+    pub(crate) fn alloc_table(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        words: u32,
+    ) -> Result<Range<u32>, OutOfSpace> {
+        self.alloc_props(gpu, words)
     }
 
     pub(crate) fn free_table(&mut self, range: Range<u32>) {
@@ -2276,16 +2600,17 @@ impl Scene {
             .take()
             .expect("mesh already removed");
         self.free_meshes.push(id.0);
-        self.nodes[entry.node as usize].meshes.retain(|&m| m != id);
-        self.dirty_node(entry.node);
+        let row = self.row(entry.node, entry.block);
+        self.nodes[row as usize].meshes.retain(|&m| m != id);
+        self.dirty_node(row);
         for chunk in entry.chunk_slots {
             self.chunk_slots.free(chunk);
         }
-        if self.release_shared(0, &entry.vertices) {
-            self.vertex_arena.free(entry.vertices);
-        }
-        if self.release_shared(1, &entry.indices) {
-            self.index_arena.free(entry.indices);
+        let block = entry.block;
+        for (pool, range) in [entry.vertices, entry.indices].into_iter().enumerate() {
+            if self.release_shared(pool, block, &range) {
+                self.free_words(block, pool, range);
+            }
         }
         self.prop_arena.free(entry.props);
         self.prop_arena.free(entry.state);
@@ -2294,426 +2619,179 @@ impl Scene {
         }
     }
 
-    /// Drops a mesh's hold on a vertex (`pool` 0) or index (1) range:
-    /// whether it was the last, and the range is free.
-    fn release_shared(&mut self, pool: usize, range: &Range<u32>) -> bool {
+    /// Drops a mesh's hold on a vertex (`pool` 0) or index (1) range of
+    /// block `block`: whether it was the last, and the range is free.
+    fn release_shared(&mut self, pool: usize, block: u32, range: &Range<u32>) -> bool {
         // An empty range (`0..0`: a point node's indices, a symbol's) is
         // no share of the one starting at 0.
         if range.is_empty() {
             return true;
         }
-        let Some(others) = self.shared[pool].get_mut(&range.start) else {
+        let key = (block, range.start);
+        let Some(others) = self.shared[pool].get_mut(&key) else {
             return true;
         };
         *others -= 1;
         if *others == 0 {
-            self.shared[pool].remove(&range.start);
+            self.shared[pool].remove(&key);
         }
         false
     }
 
-    /// Writes the frame block, and the candidate lists if meshes or
-    /// placements changed. Returns the number of candidates, and whether
-    /// they were laid out again.
-    /// The lists move into larger or smaller buffers only if
-    /// `resize_lists`; otherwise what they leave out waits for a layout
-    /// that may ([`retry_lists`](Self::retry_lists)).
-    pub(crate) fn prepare(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        frame: &FrameBlock,
-        resize_lists: bool,
-    ) -> (u32, bool) {
+    /// Writes the frame block, each block's, and the candidate lists if
+    /// meshes or placements changed. Returns the number of candidates, and
+    /// whether they were laid out again. The lists move into larger
+    /// buffers as a layout needs them: nothing copies, they are written
+    /// whole and the cull writes every slot. Blocks no mesh holds go first.
+    pub(crate) fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
+        self.free_empty_blocks(gpu);
         self.write_rows(gpu, quantum(frame.world_span));
         self.follow_label_fades(gpu, frame.symbol_fade_change);
         self.hidden.clear();
         self.moves.clear();
+        let mut words = frame_words(frame);
+        words[layout::frame::PLACED_NODES] = self.rows as u32;
+        gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
+        self.frame = words;
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;
-            // A list moved to a larger buffer is written whole, and the
-            // cull writes every compacted slot again: they need no copy,
-            // only the candidates laid out again. Room in one can show a want of it
-            // in the other (candidates left out for the compacted words
-            // weren't counted against the lists), so both grow until
-            // everything fits or neither can.
-            loop {
-                let (compacted, candidates) = self.rebuild_candidates(gpu, resize_lists);
-                // A layout changed in place (held, with candidates still
-                // left out) keeps what the last whole one found short.
-                if self.candidates_dropped == 0 || compacted > 0 || candidates > 0 {
-                    self.lists_short = [compacted, candidates];
-                }
-                let grew = resize_lists
-                    && ((compacted > 0 && self.grow_compacted(gpu, compacted))
-                        | (candidates > 0 && self.grow_candidates(gpu, candidates)));
-                if !grew {
-                    break;
-                }
-            }
-            if resize_lists && self.shrink_lists(gpu) {
-                self.rebuild_candidates(gpu, true);
+            self.lay_out_growing(gpu, |scene, gpu| scene.rebuild_candidates(gpu));
+            if self.shrink_lists(gpu) {
+                self.rebuild_candidates(gpu);
             }
             self.dirty.clear();
             self.dirty.resize(self.nodes.len(), false);
             self.all_dirty = false;
-            // A layout at rest tidies every node.
-            self.untidy &= !resize_lists;
         } else if std::mem::take(&mut self.params_dirty) && !self.node_rows.is_empty() {
             self.write_node_rows(gpu);
         }
-
-        let mut words = frame_words(frame);
-        words[layout::frame::PLACED_NODES] = self.nodes.len() as u32;
-        gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
-        #[cfg(cpu_driven)]
-        {
-            self.frame = words;
+        // What changes in place left untidy, or left out, is laid out in
+        // order again, a frame's moves at a time; with no room for that,
+        // from the start in lists grown to hold it all.
+        if self.untidy && !self.lay_out_changes(gpu, Some(TIDY_BYTES)) {
+            self.laid.clear();
+            self.lay_out_growing(gpu, Self::lay_out);
+            self.untidy = false;
+        }
+        // Each block's frame carries its rows' places, which a layout may
+        // have moved.
+        for block in self.blocks().collect::<Vec<_>>() {
+            self.write_block_frame(gpu, block);
         }
         (self.candidate_count, rebuilt)
     }
 
-    /// Lays out the candidates again: only what changed where every node's
-    /// slices hold it, else everything (`candidates`). Returns the
-    /// compacted index words and candidates left out for want of room.
-    /// Slots that moved go through the scratch buffer: where it holds
-    /// fewer and may not grow (`resize`), the candidates are laid out whole
-    /// instead, which moves nothing (the cull writes every slot), and the
-    /// scratch grows at rest. While memory is held (not `resize`), a layout
-    /// that can't be changed in place (the lists have no room left for a
-    /// node's new slices) moves nothing either: copying every slot over is
-    /// what holding memory still spares the frame.
-    fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu, resize: bool) -> (u64, u64) {
-        let short = match self.lay_out_changes(gpu, !resize) {
+    /// Runs `layout` until it leaves nothing out, the lists growing for
+    /// what it left out between (written whole, nothing copied). Room in
+    /// one list can show a want of it in the other (candidates left out
+    /// for the compacted words weren't counted against the lists), so both
+    /// grow until everything fits or neither can.
+    fn lay_out_growing(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        mut layout: impl FnMut(&mut Self, &mut dyn Gpu) -> (u64, u64),
+    ) {
+        loop {
+            let (compacted, candidates) = layout(self, gpu);
+            let grew = (compacted > 0 && self.grow_compacted(gpu, compacted))
+                | (candidates > 0 && self.grow_candidates(gpu, candidates));
+            if !grew {
+                break;
+            }
+        }
+    }
+
+    /// Lays out the candidates again: only what changed, in place, where
+    /// every node's slices hold it, else everything (`candidates`).
+    /// Returns the compacted index words and candidates left out for want
+    /// of room. Slots that moved go through the scratch buffer, which
+    /// grows to hold them.
+    fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu) -> (u64, u64) {
+        let short = match self.lay_out_changes(gpu, None) {
             true => (0, 0),
+            // From the start, nothing moves: the cull writes every slot.
+            // Lists more than three quarters full grow first, nothing to
+            // copy, so that the changes after find room in them.
             false => {
-                if !resize {
-                    self.laid.clear();
+                let c = self.capacity;
+                let full = |used: u32, size: u32| u64::from(used) * 4 > u64::from(size) * 3;
+                if full(self.compacted_words, c.compacted_words) {
+                    self.grow_compacted(gpu, u64::from(c.compacted_words));
                 }
+                if full(self.rows_end, c.candidates) {
+                    self.grow_candidates(gpu, u64::from(c.candidates));
+                }
+                self.laid.clear();
+                self.untidy = false;
                 self.lay_out(gpu)
             }
         };
         let moved: u64 = self.moves.iter().map(|m| u64::from(m.words) * 4).sum();
-        if resize || !self.moves_through_scratch() || moved <= self.scratch_bytes() {
-            return short;
+        if self.moves_through_scratch() && moved > self.scratch_bytes() {
+            self.scratch(gpu, moved);
         }
-        self.scratch_short = self.scratch_short.max(moved);
-        self.laid.clear();
-        self.lay_out(gpu)
+        short
     }
 
     fn scratch_bytes(&self) -> u64 {
         self.scratch.map_or(0, |(_, bytes)| bytes)
     }
 
-    /// Grows the vertex and index pools, each doubling to its ceiling (the
-    /// device's buffer limits), until `meshes` would insert.
-    /// Returns whether they would.
-    pub(crate) fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
-        loop {
-            if self.fits(meshes) {
-                return true;
-            }
-            let short = |arena: &Arena, words: fn(&MeshSize) -> u32| {
-                !arena.fits_all(meshes.iter().map(words))
-            };
-            let vertices = short(&self.vertex_arena, |m| m.vertices);
-            let indices = short(&self.index_arena, |m| m.indices);
-            let props = short(&self.prop_arena, |m| m.props);
-            let mut grew = false;
-            if vertices {
-                grew |= self.grow_pool(gpu, Pool::Vertices);
-            }
-            if indices {
-                grew |= self.grow_pool(gpu, Pool::Indices);
-            }
-            if props {
-                grew |= self.grow_pool(gpu, Pool::Props);
-            }
-            let chunks: u64 = meshes.iter().map(|m| u64::from(m.chunks)).sum();
-            let available = u64::from(self.chunk_slots.available());
-            if chunks > available {
-                let needed = u64::from(self.capacity.chunks) + chunks - available;
-                grew |= self.grow_chunks(gpu, needed);
-            }
-            if !grew {
-                return false;
-            }
-        }
-    }
-
-    /// Grows what refused an upload whose sizes aren't known ahead: each
-    /// pool, and the chunk table, that refused it since the last grow, to
-    /// the smallest doubling that would have held what it refused, within
-    /// its ceiling. Returns whether any grew; an upload retries until it
-    /// fits or nothing grows.
-    pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let mut grew = false;
-        for pool in [Pool::Vertices, Pool::Indices, Pool::Props] {
-            let (old, max) = self.pool_words(pool);
-            let needed = self.arena_mut(pool).take_needed();
-            let new = grown(old, u64::from(needed), max);
-            if needed > old && new > old {
-                self.resize_pool(gpu, pool, new);
-                grew = true;
-            }
-        }
-        let chunks = self.chunk_slots.take_needed();
-        grew | (chunks > self.capacity.chunks && self.grow_chunks(gpu, u64::from(chunks)))
-    }
-
-    fn arena_mut(&mut self, pool: Pool) -> &mut Arena {
-        match pool {
-            Pool::Vertices => &mut self.vertex_arena,
-            Pool::Indices => &mut self.index_arena,
-            Pool::Props => &mut self.prop_arena,
-        }
-    }
-
-    /// Forgets the pools' and chunk table's refusals: they are for the
-    /// upload retrying after them, and one that made room another way
-    /// asks no growth later.
-    pub(crate) fn forget_refusals(&mut self) {
-        for pool in [Pool::Vertices, Pool::Indices, Pool::Props] {
-            self.arena_mut(pool).take_needed();
-        }
-        self.chunk_slots.take_needed();
-    }
-
-    /// Moves a pool into a buffer twice its size (or its ceiling's): the
-    /// contents copy over on the GPU, at the same offsets.
-    fn grow_pool(&mut self, gpu: &mut dyn Gpu, pool: Pool) -> bool {
-        let (old, max) = self.pool_words(pool);
-        let new = grown(old, u64::from(old) + 1, max);
-        new > old && {
-            self.resize_pool(gpu, pool, new);
-            true
-        }
-    }
-
-    /// Whether a pool or the chunk table holds more than three quarters of
-    /// its size, below its ceiling: [`grow_headroom`](Self::grow_headroom)
-    /// would grow it.
-    pub(crate) fn wants_headroom(&self) -> bool {
-        self.headroom().next().is_some()
-    }
-
-    /// Doubles the first pool, or else the chunk table, that holds more
-    /// than three quarters of its size, within its ceiling: room a map at
-    /// rest makes for the next view, so that it grows into new memory there
-    /// rather than in a frame of a gesture. One a frame, so that a frame
-    /// pays for at most one new allocation. Returns whether it grew one.
-    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let Some(growth) = self.headroom().next() else {
-            return false;
-        };
-        match growth {
-            Some(pool) => self.grow_pool(gpu, pool),
-            None => self.grow_chunks(gpu, u64::from(self.capacity.chunks) + 1),
-        }
-    }
-
-    /// The pools (`Some`) and chunk table (`None`) more than three quarters
-    /// full below their ceilings.
-    fn headroom(&self) -> impl Iterator<Item = Option<Pool>> + '_ {
-        let full = |used: u32, size: u32| u64::from(used) * 4 > u64::from(size) * 3;
-        let pools = POOLS.into_iter().filter_map(move |pool| {
-            let (size, max) = self.pool_words(pool);
-            let new = grown(size, u64::from(size) + 1, max);
-            (new > size && full(self.arena(pool).used(), size)).then_some(Some(pool))
-        });
-        let c = &self.capacity;
-        let new = grown(c.chunks, u64::from(c.chunks) + 1, c.max_chunks);
-        let chunks = (new > c.chunks && full(self.chunk_slots.used(), c.chunks)).then_some(None);
-        pools.chain(chunks)
-    }
-
-    /// Whether the last layout left candidates out that a larger list
-    /// would hold.
-    pub(crate) fn lists_short(&self) -> bool {
-        let c = &self.capacity;
-        let [compacted, candidates] = self.lists_short;
-        (compacted > 0 && c.compacted_words < c.max_compacted_words)
-            || (candidates > 0 && c.candidates < c.max_candidates)
-            || self.scratch_short > self.scratch_bytes()
-    }
-
-    /// Lays the candidates out again at the next
-    /// [`prepare`](Self::prepare) if the last layout left some out that
-    /// larger lists would hold: one that may resize them grows them.
-    pub(crate) fn retry_lists(&mut self, gpu: &mut dyn Gpu) {
-        let short = std::mem::take(&mut self.scratch_short);
-        if short > self.scratch_bytes() {
-            self.scratch(gpu, short);
-        }
-        if self.lists_short() {
-            self.dirty_all();
-        }
-        // What a layout while memory was held left untidy or out.
-        self.candidates_dirty |= self.untidy;
-    }
-
-    /// What the pools and the chunk table refused since the last call or
-    /// [`forget_refusals`](Self::forget_refusals): per pool the words, and
-    /// the chunk rows, that would have held it, or 0.
-    pub(crate) fn take_refusals(&mut self) -> ([u32; 3], u32) {
-        let words = POOLS.map(|pool| self.arena_mut(pool).take_needed());
-        (words, self.chunk_slots.take_needed())
-    }
-
-    /// Where the pools' words past what they hold start, and the chunk
-    /// table's rows: what a refusal asks beyond ([`take_refusals`](Self::take_refusals)).
-    pub(crate) fn room_base(&self) -> ([u32; 3], u32) {
-        let tops = POOLS.map(|pool| self.arena(pool).free_from(self.pool_words(pool).0));
-        (tops, self.capacity.chunks)
-    }
-
-    /// What [`take_refusals`](Self::take_refusals) would return.
-    pub(crate) fn refusals(&self) -> ([u32; 3], u32) {
-        let words = POOLS.map(|pool| self.arena(pool).needed());
-        (words, self.chunk_slots.needed())
-    }
-
-    /// Records that meshes of these sizes found no room
-    /// ([`fits`](Self::fits)), for [`take_refusals`](Self::take_refusals).
-    pub(crate) fn refuse(&mut self, meshes: &[MeshSize]) {
-        let lens: [fn(&MeshSize) -> u32; 3] = [|m| m.vertices, |m| m.indices, |m| m.props];
-        for (pool, len) in POOLS.into_iter().zip(lens) {
-            let arena = self.arena_mut(pool);
-            if !arena.fits_all(meshes.iter().map(len)) {
-                arena.refuse(meshes.iter().map(len));
-            }
-        }
-        let chunks: u64 = meshes.iter().map(|m| u64::from(m.chunks)).sum();
-        self.chunk_slots
-            .reserve(u32::try_from(chunks).unwrap_or(u32::MAX));
-    }
-
-    /// Whether [`grow_into`](Self::grow_into) would grow something for
-    /// these refusals.
-    pub(crate) fn can_grow_into(&self, (words, chunks): ([u32; 3], u32)) -> bool {
-        let pools = POOLS.into_iter().zip(words).any(|(pool, need)| {
-            let (old, max) = self.pool_words(pool);
-            need > old && grown(old, u64::from(need), max) > old
-        });
-        let c = &self.capacity;
-        pools || (chunks > c.chunks && c.chunks < c.max_chunks)
-    }
-
-    /// Moves the first pool these refusals ask more of, or else the chunk
-    /// table, into the smallest doubling that holds what it refused,
-    /// within its ceiling: one move. Whether one grew.
-    pub(crate) fn grow_into(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        (words, chunks): ([u32; 3], u32),
-    ) -> bool {
-        for (pool, need) in POOLS.into_iter().zip(words) {
-            let (old, max) = self.pool_words(pool);
-            let new = grown(old, u64::from(need), max);
-            if need > old && new > old {
-                self.resize_pool(gpu, pool, new);
-                return true;
-            }
-        }
-        chunks > self.capacity.chunks && self.grow_chunks(gpu, u64::from(chunks))
-    }
-
-    /// Halves a pool or the chunk table while what it holds all lies in
-    /// its lowest quarter, down to its first size: a view that emptied
-    /// gives back what it grew them to, and each keeps room to grow
-    /// fourfold before it doubles again. One move: whether one shrank.
+    /// Halves the property rows or the chunk table while what it holds all
+    /// lies in its lowest quarter, down to its first size: a view that
+    /// emptied gives back what it grew them to, and each keeps room to
+    /// grow fourfold before it doubles again. At most one a call, copying
+    /// what it keeps: whether one shrank.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
-        self.forget_refusals();
-        let (pools, chunks) = self.shrunk_sizes();
-        for (pool, new) in POOLS.into_iter().zip(pools) {
-            if new < self.pool_words(pool).0 {
-                self.resize_pool(gpu, pool, new);
-                return true;
-            }
+        let (props, chunks) = self.shrunk_sizes();
+        if props < self.capacity.prop_words {
+            self.resize_props(gpu, props);
+            return true;
         }
         let (old, new) = (self.capacity.chunks, chunks);
-        let mut shrank = false;
-        if new < old {
-            let words = |count: u32| u64::from(count) * CHUNK_WORDS as u64;
-            let kept = words(self.chunk_slots.held_below());
-            let before = gpu.counters();
-            self.tables.resize(gpu, Table::Chunks, words(new), kept);
-            self.resized.count(gpu, &before);
-            self.chunk_slots.shrink(new);
-            self.capacity.chunks = new;
-            self.buffers_revision += 1;
-            shrank = true;
+        if new >= old {
+            return false;
         }
-        shrank
+        let words = |count: u32| u64::from(count) * CHUNK_WORDS as u64;
+        let kept = words(self.chunk_slots.held_below());
+        let before = gpu.counters();
+        self.tables.resize(gpu, Table::Chunks, words(new), kept);
+        self.resized.count(gpu, &before);
+        self.chunk_slots.shrink(new);
+        self.capacity.chunks = new;
+        self.buffers_revision += 1;
+        true
     }
 
-    /// Whether [`shrink`](Self::shrink) would shrink a pool or the chunk
-    /// table.
-    pub(crate) fn would_shrink(&self) -> bool {
-        let (shrunk, chunks) = self.shrunk_sizes();
-        POOLS.map(|pool| self.pool_words(pool).0) != shrunk || chunks < self.capacity.chunks
-    }
-
-    /// The sizes [`shrink`](Self::shrink) halves the pools (in words) and
-    /// the chunk table to.
-    fn shrunk_sizes(&self) -> ([u32; 3], u32) {
-        let first = [
-            self.first.vertex_words,
-            self.first.index_words,
-            self.first.prop_words,
-        ];
-        let sizes = std::array::from_fn(|i| {
-            let (old, _) = self.pool_words(POOLS[i]);
-            shrunk(old, self.arena(POOLS[i]).free_from(old), first[i])
-        });
+    /// The sizes [`shrink`](Self::shrink) halves the property rows (in
+    /// words) and the chunk table to.
+    fn shrunk_sizes(&self) -> (u32, u32) {
+        let old = self.capacity.prop_words;
+        let props = shrunk(old, self.prop_arena.free_from(old), self.first.prop_words);
         let chunks = shrunk(
             self.capacity.chunks,
             self.chunk_slots.held_below(),
             self.first.chunks,
         );
-        (sizes, chunks)
+        (props, chunks)
     }
 
-    fn arena(&self, pool: Pool) -> &Arena {
-        match pool {
-            Pool::Vertices => &self.vertex_arena,
-            Pool::Indices => &self.index_arena,
-            Pool::Props => &self.prop_arena,
-        }
-    }
-
-    /// A pool's size and ceiling, in words.
-    fn pool_words(&self, pool: Pool) -> (u32, u32) {
-        let c = &self.capacity;
-        match pool {
-            Pool::Vertices => (c.vertex_words, c.max_vertex_words),
-            Pool::Indices => (c.index_words, c.max_index_words),
-            Pool::Props => (c.prop_words, c.max_prop_words),
-        }
-    }
-
-    /// Moves a pool into a buffer of `new` words, its contents below both
-    /// sizes copied over on the GPU at the same offsets.
-    fn resize_pool(&mut self, gpu: &mut dyn Gpu, pool: Pool, new: u32) {
-        let c = &mut self.capacity;
-        let (words, table, arena) = match pool {
-            Pool::Vertices => (&mut c.vertex_words, Table::Vertices, &mut self.vertex_arena),
-            Pool::Indices => (&mut c.index_words, Table::Indices, &mut self.index_arena),
-            Pool::Props => (&mut c.prop_words, Table::Props, &mut self.prop_arena),
-        };
-        let old = *words;
+    /// Moves the property rows into a buffer of `new` words, its contents
+    /// below both sizes copied over on the GPU at the same offsets.
+    fn resize_props(&mut self, gpu: &mut dyn Gpu, new: u32) {
+        let old = self.capacity.prop_words;
         // Only what lies below the free tail is held.
-        let keep = u64::from(arena.free_from(old).min(new));
+        let keep = u64::from(self.prop_arena.free_from(old).min(new));
         let before = gpu.counters();
-        self.tables.resize(gpu, table, u64::from(new), keep);
+        self.tables.resize(gpu, Table::Props, u64::from(new), keep);
         self.resized.count(gpu, &before);
         if new > old {
-            arena.grow(old, new);
+            self.prop_arena.grow(old, new);
         } else {
-            arena.shrink(old, new);
+            self.prop_arena.shrink(old, new);
         }
-        *words = new;
+        self.capacity.prop_words = new;
         self.buffers_revision += 1;
     }
 
@@ -2791,6 +2869,9 @@ impl Scene {
         let before = gpu.counters();
         move_buffer(gpu, &mut self.buffers.compacted, &desc, 0);
         self.resized.count(gpu, &before);
+        // What the frame's layouts hid and moved was of the old one.
+        self.hidden.clear();
+        self.moves.clear();
         if let Some((scratch, _)) = self.scratch.take() {
             gpu.destroy_buffer(scratch);
         }
@@ -2841,19 +2922,26 @@ impl Scene {
         self.buffers_revision
     }
 
-    /// The scene's GPU memory by pool.
+    /// The scene's GPU memory by pool: the blocks' vertices and indices
+    /// summed.
     pub(crate) fn memory(&self) -> SceneMemory {
         let c = &self.capacity;
         let bytes = |words: u32| u64::from(words) * 4;
-        let pool = |arena: &Arena, allocated: u32, ceiling: u32| PoolMemory {
-            used: bytes(arena.used()),
-            allocated: bytes(allocated),
-            ceiling: bytes(ceiling.max(allocated)),
+        let blocks = |arena: fn(&Block) -> &Arena, ceiling: u32| {
+            let (used, allocated) = (self.blocks.iter().flatten())
+                .map(|b| (u64::from(arena(b).used()), u64::from(arena(b).capacity())))
+                .fold((0, 0), |(u, a), (bu, ba)| (u + bu, a + ba));
+            PoolMemory {
+                used: used * 4,
+                allocated: allocated * 4,
+                ceiling: (allocated * 4).max(bytes(ceiling)),
+            }
         };
         let props = bytes(c.prop_words);
+        let frames = self.blocks.iter().flatten().count() as u64 * FRAME_WORDS as u64 * 4;
         SceneMemory {
-            vertices: pool(&self.vertex_arena, c.vertex_words, c.max_vertex_words),
-            indices: pool(&self.index_arena, c.index_words, c.max_index_words),
+            vertices: blocks(|b| &b.vertices, c.max_vertex_words),
+            indices: blocks(|b| &b.indices, c.max_index_words),
             compacted: PoolMemory {
                 used: bytes(self.compacted_words),
                 allocated: bytes(c.compacted_words),
@@ -2867,22 +2955,34 @@ impl Scene {
             tables: (u64::from(c.placements) * TILE_WORDS as u64
                 + u64::from(c.chunks) * CHUNK_WORDS as u64
                 + u64::from(c.candidates) * (CANDIDATE_WORDS + VISIBLE_WORDS) as u64
-                + u64::from(c.nodes) * (NODE_CULL_WORDS + ARGS_WORDS) as u64)
+                + u64::from(self.row_capacity) * (NODE_CULL_WORDS + ARGS_WORDS) as u64)
                 * 4
+                + frames
                 + self.scratch.map_or(0, |(_, bytes)| bytes),
             cpu_copies: self.tables.mirror_bytes(),
         }
     }
 }
 
-const POOLS: [Pool; 3] = [Pool::Vertices, Pool::Indices, Pool::Props];
-
-/// The pools that grow by copying into a larger buffer.
-#[derive(Clone, Copy, Debug)]
-enum Pool {
-    Vertices,
-    Indices,
-    Props,
+/// Rows `base` (a block's, its streams' rows counted in a block) for
+/// block slot `block` of blocks of `rows` rows: its streams' rows in the
+/// block's, and no meshes yet.
+fn block_rows(
+    base: &[NodeEntry],
+    block: usize,
+    rows: usize,
+) -> impl Iterator<Item = NodeEntry> + '_ {
+    let (first, rows) = ((block * rows) as u32, rows as u32);
+    let at = move |row: u32| first + row % rows;
+    base.iter().map(move |n| NodeEntry {
+        meshes: Vec::new(),
+        cull: n.cull,
+        stream: match n.stream {
+            Stream::All => Stream::All,
+            Stream::Whole(cut) => Stream::Whole(at(cut)),
+            Stream::Cut(of) => Stream::Cut(at(of)),
+        },
+    })
 }
 
 /// `old` halved while `held` lies in its lowest quarter, no lower than
@@ -2959,7 +3059,8 @@ mod tests {
 
     /// The shaders' chunk sizes are the layout's: the most indices a chunk
     /// has, which bounds the cull's copy loop, and the instances a point
-    /// chunk reserves.
+    /// chunk reserves; and the node rows' words, which a block's rows are
+    /// found past.
     #[test]
     fn the_shaders_share_the_chunk_sizes() {
         use orb_shaders::{CIRCLE_SHADER, CULL_SHADER, SYMBOL_PLACE_SHADERS, SYMBOL_SHADER};
@@ -2975,6 +3076,11 @@ mod tests {
             (SYMBOL_SHADER.source(), "CHUNK_QUADS", points),
             (SYMBOL_PLACE_SHADERS[0].source(), "CHUNK_QUADS", points),
             (SYMBOL_SHADER.source(), "PLACED_WIDTH", super::PLACED_WIDTH),
+            (
+                CULL_SHADER.source(),
+                "NODE_CULL_WORDS",
+                super::NODE_CULL_WORDS as u32,
+            ),
         ] {
             assert!(
                 source.contains(&format!("const {name}: u32 = {value}u;")),

@@ -110,11 +110,13 @@ impl Kind {
     }
 
     /// The tables the CPU keeps copies of, for the driver to read.
-    pub(crate) fn mirrored(self) -> &'static [Table] {
+    /// The tables it keeps copies of for the CPU to read, and whether it
+    /// keeps the blocks' index pools too.
+    pub(crate) fn mirrored(self) -> (&'static [Table], bool) {
         match self {
-            Self::Gpu => &[],
+            Self::Gpu => (&[], false),
             #[cfg(cpu_driven)]
-            Self::Cpu => cpu::MIRRORED,
+            Self::Cpu => (cpu::MIRRORED, true),
         }
     }
 }
@@ -131,10 +133,7 @@ impl Driver {
     /// The driver of `kind`, over `scene`'s tables.
     pub(crate) fn new(gpu: &mut dyn Gpu, kind: Kind, scene: &Scene) -> Self {
         match kind {
-            Kind::Gpu => Self::Gpu(gpu::GpuDriver::new(
-                gpu,
-                gpu::CullBuffers::of(scene.tables(), scene.buffers()),
-            )),
+            Kind::Gpu => Self::Gpu(gpu::GpuDriver::new(gpu, scene, None)),
             #[cfg(cpu_driven)]
             Kind::Cpu => Self::Cpu(Box::default()),
         }
@@ -190,10 +189,11 @@ impl Driver {
         }
     }
 
-    /// Binds the scene's tables again, after one moved.
+    /// Binds the scene's tables again, after one moved or a block came or
+    /// went.
     pub(crate) fn rebind(&mut self, gpu: &mut dyn Gpu, scene: &Scene) {
         match self {
-            Self::Gpu(d) => d.rebind(gpu, gpu::CullBuffers::of(scene.tables(), scene.buffers())),
+            Self::Gpu(d) => d.rebind(gpu, scene, None),
             #[cfg(cpu_driven)]
             Self::Cpu(d) => d.rebind(gpu, scene),
         }
@@ -237,14 +237,13 @@ impl Driver {
     }
 
     /// The frame's passes before its draws: on the GPU, the cull of the
-    /// scene's nodes, its workgroups as their rows lay them out. Returns
-    /// the dispatches it adds.
+    /// scene's nodes, a dispatch a block, its workgroups as their rows lay
+    /// them out. Returns the dispatches it adds.
     pub(crate) fn cull(&self, gpu: &mut dyn Gpu, scene: &Scene, passes: &mut Vec<Pass>) -> u32 {
-        let groups = scene.cull_groups();
         match self {
-            Self::Gpu(d) => d.cull(gpu, scene.buffers().args, groups, passes),
+            Self::Gpu(d) => d.cull(gpu, scene, scene.buffers().args, passes),
             #[cfg(cpu_driven)]
-            Self::Cpu(d) => d.cull(gpu, groups, passes),
+            Self::Cpu(d) => d.cull(gpu, scene, passes),
         }
     }
 
@@ -261,25 +260,25 @@ impl Driver {
         }
     }
 
-    /// Node `node`'s draw, as a bundle records it: what every pass that
-    /// draws a node's candidates replays.
-    pub(crate) fn draw(&self, buffers: &SceneBuffers, node: u32, draw: NodeDraw) -> RenderCommand {
+    /// Row `row`'s draw, as a bundle records it: what every pass that
+    /// draws a node's candidates in a block replays.
+    pub(crate) fn draw(&self, buffers: &SceneBuffers, row: u32, draw: NodeDraw) -> RenderCommand {
         match self {
-            Self::Gpu(_) => gpu::draw(buffers, node, draw),
+            Self::Gpu(_) => gpu::draw(buffers, row, draw),
             #[cfg(cpu_driven)]
-            Self::Cpu(d) => d.draw(node, draw),
+            Self::Cpu(d) => d.draw(row, draw),
         }
     }
 
-    /// Whether node `node`'s draw draws nothing, so bundles may leave it
+    /// Whether row `row`'s draw draws nothing, so bundles may leave it
     /// out: known only to a driver whose draws are recorded with their
     /// counts.
     #[cfg_attr(not(cpu_driven), allow(unused_variables))]
-    pub(crate) fn draws_nothing(&self, node: u32) -> bool {
+    pub(crate) fn draws_nothing(&self, row: u32) -> bool {
         match self {
             Self::Gpu(_) => false,
             #[cfg(cpu_driven)]
-            Self::Cpu(d) => d.draws_nothing(node),
+            Self::Cpu(d) => d.draws_nothing(row),
         }
     }
 

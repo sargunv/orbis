@@ -1238,10 +1238,6 @@ impl OrbisMap {
                 map.render(gpu, renderer, target, viewport, ratio, frame_time)
             })
             .map_err(|e| JsError::new(&e))?;
-        // The page draws the frame the map's upkeep asks for when woken.
-        if report.upkeep {
-            wake(self.id);
-        }
         if let (Some(pixels), Some(sender)) = (pixels, self.read_next.take()) {
             wasm_bindgen_futures::spawn_local(async move {
                 let _ = sender.send(pixels.await);

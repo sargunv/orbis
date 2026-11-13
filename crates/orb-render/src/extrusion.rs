@@ -325,34 +325,35 @@ impl Extrusions {
 
     /// An extrusion node's pass into its target over the shared depth,
     /// replaying its draws, recorded once.
+    /// The node's pass: in each scene block, over its group, the
+    /// block's buildings (`streams`).
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeExtrusion,
-        scene: BindGroupId,
         buffers: &SceneBuffers,
-        (streams, shape): (&Streams, ExtrusionShape),
+        (streams, shape): (&[(BindGroupId, Streams)], ExtrusionShape),
         first: bool,
     ) -> RenderPass {
         let [whole, cut] = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
-            let mut commands = vec![
-                RenderCommand::SetBindGroup {
+            let mut commands = vec![RenderCommand::SetIndexBuffer {
+                buffer: buffers.compacted,
+                offset: 0,
+            }];
+            for (scene, streams) in streams {
+                commands.push(RenderCommand::SetBindGroup {
                     index: 0,
-                    group: scene,
-                },
-                RenderCommand::SetIndexBuffer {
-                    buffer: buffers.compacted,
-                    offset: 0,
-                },
-            ];
-            // The buildings, each pipeline over its stream; with clip
-            // distances the whole pipeline draws the cut stream's
-            // buildings it clips by planes too.
-            let [w, c] = [&streams.whole, &streams.cut];
-            let planes = self.planes.then_some((whole, c));
-            let draws = [(whole, w), (cut, c)].into_iter().chain(planes);
-            streams.record(draws, &mut commands);
+                    group: *scene,
+                });
+                // The buildings, each pipeline over its stream; with clip
+                // distances the whole pipeline draws the cut stream's
+                // buildings it clips by planes too.
+                let [w, c] = [&streams.whole, &streams.cut];
+                let planes = self.planes.then_some((whole, c));
+                let draws = [(whole, w), (cut, c)].into_iter().chain(planes);
+                streams.record(draws, &mut commands);
+            }
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "3d layer",

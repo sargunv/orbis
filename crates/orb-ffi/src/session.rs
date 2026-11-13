@@ -1578,11 +1578,6 @@ fn step<'a>(
         entry.redraw_signaled = true;
         wake.signal();
     }
-    // Upkeep shows nothing new, so it publishes no update: what of it
-    // draws nothing runs now, and a resize waits for the next frame.
-    if continuous && !held && !map.map.has_news() {
-        map.map.upkeep();
-    }
     (map, drawn, still)
 }
 

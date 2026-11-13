@@ -894,6 +894,9 @@ impl Labels {
                 &icon_text_sizes[..],
             ),
         ];
+        // Each stream's chunks and placed symbols' quads, then their rows'
+        // states: they go up together, in one block of the scene.
+        let (mut pending, mut pending_rows) = (Vec::new(), Vec::new());
         for (key, placed, quads, offsets, params, text_sizes) in streams {
             if placed.is_empty() || plan.node(key).is_none() {
                 continue;
@@ -919,33 +922,17 @@ impl Labels {
                 continue;
             }
             let rows_mesh = result.meshes.iter().find(|m| m.node == key);
-            let props = rows_mesh.map_or(Words::Core(&[]), |m| m.props.words(bytes));
             let placed_quads: Vec<[u32; 2]> = placed.iter().map(|p| p.quads).collect();
-            let data = SymbolMeshData {
-                quads: quads_words,
-                placed: if key == text_key {
-                    s.table(SymbolTable::TextPlaced)
+            debug_assert_eq!(
+                s.table(if key == text_key {
+                    SymbolTable::TextPlaced
                 } else {
-                    s.table(SymbolTable::IconPlaced)
-                }
-                .words(bytes),
-                glyph_offsets: s.table(offsets).words(bytes),
-                lines: s.table(SymbolTable::Lines).words(bytes),
-                glyphs: &owner.rows,
-                images: &image_rects,
-                instance_rows: s.table(SymbolTable::InstanceRows).words(bytes),
-                text_sizes,
-                colors: if key == text_key {
-                    s.table(SymbolTable::TextColors).words(bytes)
-                } else {
-                    Words::Core(&[])
-                },
-                placed_quads: &placed_quads,
-                props,
-                params,
-                chunks: &chunks,
-            };
-            debug_assert_eq!(data.placed.len(), placed.len() as u32 * PLACED_WORDS);
+                    SymbolTable::IconPlaced
+                })
+                .words(bytes)
+                .len(),
+                placed.len() as u32 * PLACED_WORDS
+            );
             // Symbol rows name no images: only their features' states.
             let mut warnings = Vec::new();
             let rows = rows_mesh.map(|m| {
@@ -965,15 +952,67 @@ impl Labels {
                 "symbol rows name no images"
             );
             let indices = rows.map(|r| r.states).unwrap_or_default();
-            let mesh = match renderer.add_symbol_mesh(gpu, resident.gpu, node, &data, &indices) {
-                Ok(mesh) => mesh,
-                Err(e) => {
+            pending.push((
+                key,
+                node,
+                chunks,
+                placed_quads,
+                (quads_words, offsets),
+                params,
+            ));
+            pending_rows.push((rows_mesh, indices, text_sizes));
+        }
+        let datas: Vec<SymbolMeshData<'_>> = (pending.iter().zip(&pending_rows))
+            .map(
+                |(
+                    (key, _, chunks, placed_quads, (quads_words, offsets), params),
+                    (rows_mesh, _, text_sizes),
+                )| {
+                    let text = *key == text_key;
+                    SymbolMeshData {
+                        quads: *quads_words,
+                        placed: s
+                            .table(match text {
+                                true => SymbolTable::TextPlaced,
+                                false => SymbolTable::IconPlaced,
+                            })
+                            .words(bytes),
+                        glyph_offsets: s.table(*offsets).words(bytes),
+                        lines: s.table(SymbolTable::Lines).words(bytes),
+                        glyphs: &owner.rows,
+                        images: &image_rects,
+                        instance_rows: s.table(SymbolTable::InstanceRows).words(bytes),
+                        text_sizes,
+                        colors: match text {
+                            true => s.table(SymbolTable::TextColors).words(bytes),
+                            false => Words::Core(&[]),
+                        },
+                        placed_quads,
+                        props: rows_mesh.map_or(Words::Core(&[]), |m| m.props.words(bytes)),
+                        params: *params,
+                        chunks,
+                    }
+                },
+            )
+            .collect();
+        let streams: Vec<(u32, &SymbolMeshData<'_>, &[u32])> = (pending.iter().zip(&datas))
+            .zip(&pending_rows)
+            .map(|(((_, node, ..), data), (_, indices, _))| (*node, data, &indices[..]))
+            .collect();
+        let ids = match renderer.add_symbol_meshes(gpu, resident.gpu, &streams) {
+            Ok(ids) => ids,
+            Err(e) => {
+                for (_, indices, _) in pending_rows {
                     for index in indices {
                         states.release(index);
                     }
-                    return Err(e);
                 }
-            };
+                return Err(e);
+            }
+        };
+        for ((&(key, ..), (rows_mesh, indices, _)), mesh) in
+            pending.iter().zip(pending_rows).zip(ids)
+        {
             resident.meshes.push(Resident {
                 node: key,
                 mesh,

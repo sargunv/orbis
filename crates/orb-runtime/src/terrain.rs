@@ -25,12 +25,11 @@ use orb_camera::View;
 use orb_crs::{CoveredTile, Metres, TileIndex, TileMatrixSet, WorldRect};
 use orb_hal::Gpu;
 use orb_render::{
-    ClipRect, DemRef, DrapeLayout, Moves, PageId, PlacementTarget, Renderer, TerrainDem,
-    TerrainTile, TileRow,
+    ClipRect, DemRef, DrapeLayout, PageId, PlacementTarget, Renderer, TerrainDem, TerrainTile,
+    TileRow,
 };
 use orb_source::{Draw, TilePyramid};
 
-use crate::resident::HostData;
 use orb_tile::DemGrid;
 
 /// Terrain tiles' side at their zoom, in logical pixels.
@@ -217,17 +216,6 @@ pub(crate) struct Terrain {
     /// last taken.
     stale: bool,
     pub(crate) revision: u64,
-    /// The cover's tiles before it was coarsened, and the most it was let
-    /// have: past the drape pages held while the camera moved, it grows to
-    /// them at rest.
-    pub(crate) covered: (usize, usize),
-    /// What DEM tiles found no layer for while the page couldn't grow:
-    /// they load again once it grows at rest.
-    pub(crate) room: orb_render::Room,
-    /// DEM tiles that arrived while memory was held with no page, or no
-    /// layer, for them: still loading in the pyramid, so not asked for
-    /// again, they go in once memory may move ([`retry_held`](Self::retry_held)).
-    held: Vec<(TileIndex, crate::jobs::TileImage, Arc<DemGrid>)>,
 }
 
 impl Terrain {
@@ -268,9 +256,6 @@ impl Terrain {
             padded: FxHashMap::default(),
             stale: true,
             revision: 0,
-            covered: (0, 0),
-            room: Default::default(),
-            held: Vec::new(),
         }
     }
 
@@ -347,7 +332,6 @@ impl Terrain {
             .collect();
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         let eye = view.eye().truncate();
-        self.covered = (tiles.len(), room);
         coarsen(&mut tiles, room, |t| {
             let offset = DVec2::new(f64::from(t.wrap) * period, 0.0) - view.camera_world();
             let rel = tms.tile_bounds(t.index).translated(offset);
@@ -489,8 +473,7 @@ impl Terrain {
     }
 
     /// A DEM tile's `result` arrived: into the page and the elevations.
-    /// `Err` says why it isn't drawn; `Ok(true)` that it waits for rest
-    /// ([`retry_held`](Self::retry_held)), keeping its host data.
+    /// `Err` says why it isn't drawn.
     pub(crate) fn arrive(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -498,21 +481,21 @@ impl Terrain {
         tile: TileIndex,
         result: Result<crate::TileOutcome, String>,
         now: f64,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
         use crate::TileOutcome::{Built, Cancelled, Missing};
         if !self.pyramid.is_loading(tile) {
-            return Ok(false);
+            return Ok(());
         }
         let (image, grid) = match result {
             Ok(Missing { .. }) => {
                 self.pyramid.insert_missing(tile);
-                return Ok(false);
+                return Ok(());
             }
             // Given up before it loaded: a later cover that wants it asks
             // again.
             Ok(Cancelled) => {
                 self.pyramid.forget_loading(tile);
-                return Ok(false);
+                return Ok(());
             }
             Ok(Built(crate::TileResult {
                 image: Some(image),
@@ -527,38 +510,7 @@ impl Terrain {
         self.insert(gpu, renderer, tile, image, grid)
     }
 
-    /// The DEM tiles that arrived while memory was held, into the page
-    /// once memory may move: the page made for the first, if need be.
-    /// Their host data goes once they're in or dropped. Says why any isn't
-    /// drawn.
-    pub(crate) fn retry_held(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) -> Vec<String> {
-        if self.held.is_empty() || renderer.moves() == Moves::Held {
-            return Vec::new();
-        }
-        let mut errors = Vec::new();
-        for (tile, image, grid) in std::mem::take(&mut self.held) {
-            let host = HostData::of_image(&image);
-            let inserted = match self.pyramid.is_loading(tile) {
-                true => self.insert(gpu, renderer, tile, image, grid),
-                false => Ok(false),
-            };
-            match inserted {
-                Ok(true) => {}
-                Ok(false) => host.release(gpu),
-                Err(e) => {
-                    host.release(gpu);
-                    errors.push(format!("terrain tile {tile}: {e}"));
-                }
-            }
-        }
-        errors
-    }
-
-    /// A built DEM tile into the page and the elevations. While memory is
-    /// held, one with no page or layer to go in waits, still loading, for
-    /// [`retry_held`](Self::retry_held): forgotten, it would be asked for,
-    /// fetched and decoded again every frame of the gesture. Whether it
-    /// waits, keeping its host data.
+    /// A built DEM tile into the page and the elevations.
     fn insert(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -566,40 +518,14 @@ impl Terrain {
         tile: TileIndex,
         image: crate::jobs::TileImage,
         grid: Arc<DemGrid>,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
         let size = [image.width, image.height];
-        let page = match self.page {
-            Some(page) => page,
-            None => match renderer.create_page(gpu, orb_render::PageKind::Terrain, size) {
-                Some(page) => *self.page.insert(page),
-                // Memory is held: the page is made at rest.
-                None => {
-                    self.held.push((tile, image, grid));
-                    return Ok(true);
-                }
-            },
-        };
+        let page = *(self.page)
+            .get_or_insert_with(|| renderer.create_page(gpu, orb_render::PageKind::Terrain, size));
         let layer = match renderer.page_size(page) {
             other if other != size => Err(format!("{}×{} among {other:?} tiles", size[0], size[1])),
-            _ => match self.alloc_layer(gpu, renderer, page) {
-                Ok(layer) => Ok(layer),
-                // The page grows at rest: held, the tile waits for rest;
-                // at rest, it loads again once the page grew.
-                Err(_)
-                    if renderer.moves() != Moves::Free && {
-                        let room = self.refused(renderer);
-                        renderer.can_grow_into(&room)
-                    } =>
-                {
-                    let held = renderer.moves() == Moves::Held;
-                    match held {
-                        true => self.held.push((tile, image, grid)),
-                        false => self.pyramid.forget_loading(tile),
-                    }
-                    return Ok(held);
-                }
-                Err(_) => Err("out of terrain texture layers".into()),
-            },
+            _ => (self.alloc_layer(gpu, renderer, page))
+                .map_err(|_| "out of terrain texture layers".into()),
         };
         let layer = layer.inspect_err(|_| self.pyramid.insert_empty(tile))?;
         renderer.write_layer(gpu, page, layer, image.pixels.upload(false));
@@ -608,7 +534,7 @@ impl Terrain {
         if let Some(old) = self.pyramid.insert(tile, DemTile { layer, dem }) {
             renderer.free_layer(page, old.layer);
         }
-        Ok(false)
+        Ok(())
     }
 
     /// DEM tile `tile`, in layer `layer`, stands on `grid` from now on:
@@ -623,9 +549,9 @@ impl Terrain {
         true
     }
 
-    /// A layer of the DEM page: grown for where memory is
-    /// [free](Moves::Free), or else made by evicting DEM tiles the cover no
-    /// longer reads, least recently used first.
+    /// A layer of the DEM page: a free one, else one DEM tiles the cover no
+    /// longer reads leave, least recently used first, else one the page
+    /// grows to make, to the device's limits.
     fn alloc_layer(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -633,34 +559,21 @@ impl Terrain {
         page: PageId,
     ) -> Result<u32, orb_render::OutOfSpace> {
         loop {
-            match renderer.alloc_layer(gpu, page, true) {
-                // The last refusal stays recorded, for the map's upkeep.
-                Err(e) if renderer.moves() != Moves::Free => match self.pyramid.evict_lru() {
+            match renderer.alloc_layer(gpu, page, false) {
+                Err(_) => match self.pyramid.evict_lru() {
                     Some(old) => {
-                        renderer.forget_refusals();
                         renderer.free_layer(page, old.layer);
                         self.stale = true;
                     }
-                    None => return Err(e),
+                    None => return renderer.alloc_layer(gpu, page, true),
                 },
                 done => return done,
             }
         }
     }
 
-    /// Keeps what an upload was just refused, for the map to grow at
-    /// rest, and returns it.
-    fn refused(&mut self, renderer: &mut Renderer) -> orb_render::Room {
-        let room = renderer.take_refusals();
-        self.room.merge(&room);
-        room
-    }
-
-    /// Gives back its DEM page, and the host data of what waits for rest.
+    /// Gives back its DEM page.
     pub(crate) fn release(self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
-        for (_, image, _) in &self.held {
-            HostData::of_image(image).release(gpu);
-        }
         renderer.set_terrain(gpu, None);
         if let Some(page) = self.page {
             renderer.remove_page(gpu, page);
@@ -748,8 +661,9 @@ impl Terrain {
     }
 
     /// Whether every tile of the cover is drawn in the slot of its place,
-    /// as [`plan`](Self::plan) at rest leaves them.
-    pub(crate) fn slots_follow_cover(&self) -> bool {
+    /// as [`plan`](Self::plan) leaves them once nothing is deferred.
+    #[cfg(test)]
+    fn slots_follow_cover(&self) -> bool {
         self.retired.is_empty()
             && (0u32..)
                 .zip(&self.tiles)
@@ -832,19 +746,18 @@ impl Terrain {
     /// or a merge) is drawn whatever the budget. Then stale ones, the
     /// longest stale first, each drawn as it was until a frame redraws
     /// it. Of those alike, the ones that show largest go first, then those
-    /// nearest the view's centre. While the camera moves, a tile keeps
-    /// its slot and a new one takes a free one. `at_rest`, each takes the
-    /// slot of its place in the cover, so that where it lies in the atlas
-    /// is a function of the cover alone: the same tile drapes and samples a
-    /// step apart at a few pixels in another slot. A move is a redraw,
-    /// within the budget, into a place left free. Once none is blank,
-    /// stale or out of place, each slot holds what a fresh map's does. On a
-    /// globe, `globe` places a tile on the sphere.
+    /// nearest the view's centre. Each tile takes the slot of its place in
+    /// the cover, so that where it lies in the atlas is a function of the
+    /// cover alone: the same tile drapes and samples a step apart at a few
+    /// pixels in another slot. A move is a redraw, within the budget, into
+    /// a place left free. Once none is blank, stale or out of place, each
+    /// slot holds what a fresh map's does. On a globe, `globe` places a
+    /// tile on the sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         view: &View,
-        (layout, at_rest, texels): (DrapeLayout, bool, Option<u64>),
+        (layout, texels): (DrapeLayout, Option<u64>),
         content: &dyn Fn(CoveredTile) -> Vec<u64>,
         globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
     ) -> (Vec<TerrainTile>, Vec<Redraw>, bool) {
@@ -857,14 +770,14 @@ impl Terrain {
         debug_assert!(self.tiles.len() <= layout.tile_slots as usize);
         let places: FxHashMap<CoveredTile, u32> = self.tiles.iter().copied().zip(0..).collect();
         let period = tms.projection().wrap_period().unwrap_or(0.0);
-        // Out of place with no free slot to move through, at rest: every
-        // tile takes its place in one frame, drawn anew where it moves.
-        // So too wherever the budget is unbounded (a still map). A
-        // continuous map's pages keep a slot past its cover for this
+        // Out of place with no free slot to move through: every tile takes
+        // its place in one frame, drawn anew where it moves. So too
+        // wherever the budget is unbounded (a still map). A continuous
+        // map's pages keep a slot past its cover for this
         // (`Map::cover_room`), so that only pages of a single slot do.
         let held = self.slots.len() + self.retired.len();
         let misplaced = (self.slots.iter()).any(|(t, s)| places[t] != s.index);
-        if at_rest && (texels.is_none() || misplaced && held >= layout.tile_slots as usize) {
+        if texels.is_none() || misplaced && held >= layout.tile_slots as usize {
             self.retired.clear();
             self.slots.retain(|t, s| places[t] == s.index);
         }
@@ -874,7 +787,7 @@ impl Terrain {
             let shrink = slot_shrink(view, tms, tile);
             let need = match self.slots.get(&tile) {
                 None => Need::Blank(self.stand_in(tile)),
-                Some(slot) if at_rest && slot.index != place => Need::Move,
+                Some(slot) if slot.index != place => Need::Move,
                 Some(slot) => {
                     let stacks: Vec<u8> = (0..content.len())
                         .filter(|&s| slot.shrink != shrink || slot.content.get(s) != content.get(s))
@@ -951,7 +864,7 @@ impl Terrain {
                 Need::Blank(stand_in) => {
                     let free = (0..layout.tile_slots).find(|i| !used.contains(i));
                     let index = match free {
-                        _ if at_rest && !used.contains(&want.place) => want.place,
+                        _ if !used.contains(&want.place) => want.place,
                         Some(index) => index,
                         // Each retired slot left is shown by one blank
                         // tile alone (they number no more than those, and
@@ -1064,7 +977,7 @@ enum Need {
     Blank(Option<CoveredTile>),
     /// These stacks drawn again.
     Stale(Vec<u8>),
-    /// Drawing into the slot of its place, at rest.
+    /// Drawing into the slot of its place.
     Move,
 }
 
@@ -2146,8 +2059,8 @@ mod tests {
     }
 
     /// A tile the cover splits shows its part of its parent's slot until
-    /// a frame's budget draws it, one a frame; at rest each moves to the
-    /// slot of its place within the budget too, and then none is left.
+    /// a frame's budget draws it, one a frame; then each moves to the slot
+    /// of its place within the budget too, and then none is left.
     #[test]
     fn split_tiles_show_their_parents_slot_until_the_budget_draws_them() {
         let tms = tms();
@@ -2173,23 +2086,17 @@ mod tests {
             .collect();
         // A tile a frame: what a frame redraws may pass its budget by one.
         let budget = Some(1);
-        let plan = |terrain: &mut Terrain, at_rest| {
+        let plan = |terrain: &mut Terrain| {
             terrain.release_slots();
-            terrain.plan(
-                &tms,
-                &view,
-                (layout, at_rest, budget),
-                &|_| vec![1],
-                &mut |_| None,
-            )
+            terrain.plan(&tms, &view, (layout, budget), &|_| vec![1], &mut |_| None)
         };
         terrain.tiles = vec![covered(parent)];
-        let (_, redraw, deferred) = plan(&mut terrain, false);
+        let (_, redraw, deferred) = plan(&mut terrain);
         assert_eq!((redraw.len(), deferred), (1, false));
         let parent_slot = redraw[0].slot;
         terrain.tiles = children.clone();
         for frame in 0..4 {
-            let (tiles, redraw, deferred) = plan(&mut terrain, false);
+            let (tiles, redraw, deferred) = plan(&mut terrain);
             assert_eq!((redraw.len(), deferred), (1, frame < 3), "frame {frame}");
             // The others show their quarter of the parent's slot.
             let standing = (tiles.iter())
@@ -2199,15 +2106,15 @@ mod tests {
             assert!(standing.iter().all(|t| t.slot == parent_slot));
         }
         assert!(terrain.retired.is_empty());
-        // At rest, the tiles out of place move one a frame.
+        // The tiles out of place move one a frame.
         let mut frames = 0;
         while !terrain.slots_follow_cover() {
-            let (_, redraw, _) = plan(&mut terrain, true);
+            let (_, redraw, _) = plan(&mut terrain);
             assert!(redraw.len() <= 1);
             frames += 1;
             assert!(frames < 10, "the tiles never took their places");
         }
-        let (_, redraw, deferred) = plan(&mut terrain, true);
+        let (_, redraw, deferred) = plan(&mut terrain);
         assert_eq!((redraw.len(), deferred), (0, false));
     }
 
@@ -2294,19 +2201,19 @@ mod tests {
             index: TileIndex::new(12, 2134 + i % 2, 1454 + i / 2),
             wrap: 0,
         };
-        let plan = |terrain: &mut Terrain, layout, at_rest, budget| {
+        let plan = |terrain: &mut Terrain, layout, budget| {
             terrain.release_slots();
-            let slots = (layout, at_rest, budget);
-            terrain.plan(&tms, &view, slots, &|_| vec![1], &mut |_| None)
+            terrain.plan(&tms, &view, (layout, budget), &|_| vec![1], &mut |_| None)
         };
-        // Drawn while the camera moved: the last tile in a slot not its
-        // place's.
+        // A frame's budget draws the new tile in a free slot, not its
+        // place's, which another holds until it moves.
         terrain.tiles = (0..3).map(tile).collect();
-        plan(&mut terrain, layout(5, 1), false, None);
+        plan(&mut terrain, layout(5, 1), None);
         terrain.tiles = (1..4).map(tile).collect();
-        let (_, redraw, _) = plan(&mut terrain, layout(5, 1), false, None);
+        let (_, redraw, _) = plan(&mut terrain, layout(5, 1), Some(1));
         assert_eq!(redraw.len(), 1);
-        // Pages of another grid at rest.
+        assert!(!terrain.slots_follow_cover());
+        // Pages of another grid.
         let mut to: Vec<u32> = (terrain.carry(layout(4, 2), 1).iter())
             .map(|&(_, to, _)| to)
             .collect();
@@ -2315,15 +2222,15 @@ mod tests {
         assert!(terrain.slots_follow_cover());
         // Each shows its copy until the budget redraws it in its place.
         for frame in 0..3 {
-            let (tiles, redraw, deferred) = plan(&mut terrain, layout(4, 2), true, Some(1));
+            let (tiles, redraw, deferred) = plan(&mut terrain, layout(4, 2), Some(1));
             assert_eq!((redraw.len(), deferred), (1, frame < 2), "frame {frame}");
             assert!(tiles.iter().zip(0..).all(|(t, place)| t.slot == place));
         }
-        let (_, redraw, deferred) = plan(&mut terrain, layout(4, 2), true, Some(1));
+        let (_, redraw, deferred) = plan(&mut terrain, layout(4, 2), Some(1));
         assert_eq!((redraw.len(), deferred), (0, false));
         // Pages made since the generation the slots were drawn for.
         assert!(terrain.carry(layout(5, 4), 3).is_empty());
-        let (_, redraw, _) = plan(&mut terrain, layout(5, 4), true, Some(1));
+        let (_, redraw, _) = plan(&mut terrain, layout(5, 4), Some(1));
         assert_eq!(redraw.len(), 3, "blank slots draw");
     }
 

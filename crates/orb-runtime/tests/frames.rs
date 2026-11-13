@@ -236,261 +236,76 @@ mod tests {
         assert_eq!(differing, 0, "pixels differ from an unbounded scene");
     }
 
-    /// No pool, table, page or atlas moves while input holds the camera or
-    /// it glides after: a map whose pools start at what a flat view needs
-    /// (a host's first sizes, a megabyte each, grown at rest for it) tilts
-    /// to 60° under a drag, evicting cached tiles and stand-ins as it goes
-    /// and waiting where that leaves no room, and makes the room once the
-    /// camera rests, a move a frame, ending where a fresh map does.
+    /// Nothing in the renderer knows about gestures: a map whose pointer is
+    /// held down and still while its view loads loads as one let go, frame
+    /// for frame within the jobs' timing, its memory growing as the view
+    /// needs (the vertex and index pools a block at a time, copying
+    /// nothing), and ends drawing what the other does. A held map's pools
+    /// once grew only at rest, so its view waited for the pointer's
+    /// release.
     #[test]
-    fn memory_moves_only_at_rest() {
+    fn a_map_held_still_loads_as_one_let_go() {
         use orb_camera::input::{Button, Input, Modifiers, PointerKind};
         let at = crate::common::Options {
-            at: Some((orb_crs::Geodetic::new(139.765, 35.68), 14.5, -12.0, 0.0)),
+            at: Some((orb_crs::Geodetic::new(139.765, 35.68), 14.5, -12.0, 60.0)),
             ..tokyo(14.5)
         };
         let small = crate::common::SceneCapacity::growable();
-        let (mut moved, _, _) = crate::common::Offscreen::load_with(&at, small).unwrap();
-        let viewport = moved.viewport;
-        let point = |x: f64| glam::DVec2::new(x, viewport.height / 2.0);
-        let time = moved.time;
-        moved.map.input(
+        let mut held = crate::common::Offscreen::new(&at, small).unwrap();
+        let mut free = crate::common::Offscreen::new(&at, small).unwrap();
+        let viewport = held.viewport;
+        let time = held.time;
+        held.map.input(
             Input::PointerDown {
                 id: 1,
                 kind: PointerKind::Mouse,
                 button: Button::Primary,
-                position: point(viewport.width * 0.8),
+                position: glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0),
                 modifiers: Modifiers::default(),
             },
             time,
         );
-        let (mut moving, mut rest, mut most, mut made) = (0, 0, 0, 0);
-        let mut count = |report: &orb_runtime::FrameReport| {
-            let moves = report.resized.moves + report.prepared_resized.moves;
-            if report.moved || report.input {
-                moving += moves;
-                // Nor is anything made for a first use.
-                made += report.gpu.bytes_allocated;
-            } else {
-                rest += moves;
-                most = most.max(report.resized.moves);
-            }
-        };
-        for step in 1..=40 {
-            let x = viewport.width * (0.8 - 0.6 * f64::from(step) / 40.0);
-            let time = moved.time;
-            moved.map.input(
-                Input::PointerMove {
-                    id: 1,
-                    position: point(x),
-                },
-                time,
-            );
-            crate::common::move_camera(&mut moved.map, |c| c.pitch = 1.5 * f64::from(step));
-            count(&moved.frame());
-            std::thread::sleep(std::time::Duration::from_millis(4));
-        }
-        let time = moved.time;
-        let end = point(viewport.width * 0.2);
-        moved.map.input(
-            Input::PointerUp {
-                id: 1,
-                position: end,
-            },
-            time,
-        );
+        // Frames of the two in turn, so that their jobs share the pool
+        // alike, until each has loaded what its view shows.
+        let (mut loaded, mut copied) = ([None; 2], 0);
         let started = std::time::Instant::now();
-        let mut was_idle = false;
-        loop {
-            let report = moved.frame();
-            count(&report);
-            if report.idle && was_idle {
+        for frame in 0u32.. {
+            for (i, map) in [&mut held, &mut free].into_iter().enumerate() {
+                let report = map.frame();
+                if i == 0 {
+                    assert!(report.input, "the pointer holds the camera");
+                    copied += report.resized.bytes_copied;
+                }
+                if report.loaded && report.tiles_loading == 0 {
+                    loaded[i].get_or_insert(frame);
+                }
+            }
+            if loaded.iter().all(Option::is_some) {
                 break;
             }
-            was_idle = report.idle;
-            assert!(started.elapsed().as_secs() < 60, "did not settle");
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        crate::common::take_warnings(&mut moved.map);
-        assert_eq!(moving, 0, "memory moved while the camera did");
-        assert_eq!(made, 0, "memory made while the camera moved");
-        assert!(rest > 0, "the view needed the pools grown");
-        // A style's first sizes aside (none here), a frame at rest moves
-        // a pool or page once, and lists that copy nothing.
-        assert!(most <= 3, "{most} moves in a frame at rest");
-        let camera = *moved.map.camera();
-        let mut fresh = crate::common::Offscreen::new(&at, small).unwrap();
-        fresh.map.jump_to_state(camera);
-        fresh.settle().unwrap();
-        let differing = crate::common::differing_pixels(&moved.pixels(), &fresh.pixels());
-        assert_eq!(differing, 0, "pixels differ from a fresh map");
-    }
-
-    /// DEM tiles that arrive while a drag holds memory, before the
-    /// terrain has its first page, wait for rest rather than load again:
-    /// a held drag over one cover asks for each tile once, and the page is
-    /// made, with them in it, once the camera rests.
-    #[test]
-    fn dem_tiles_that_arrive_held_wait_for_rest() {
-        use orb_camera::input::{Button, Input, Modifiers, PointerKind};
-        struct Counting(Arc<AtomicUsize>, Arc<dyn orb_host::jobs::Executor>);
-        impl orb_host::jobs::Executor for Counting {
-            fn spawn(&self, job: orb_host::jobs::Job) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                self.1.spawn(job);
-            }
-        }
-        let dir = crate::common::Scratch::new("dem-held");
-        let tile = solid_tile(&dir);
-        let style = format!(
-            r#"{{"version":8,"sources":{{
-                "dem":{{"type":"raster-dem","tiles":["file://{tile}"],"tileSize":256,"maxzoom":8}}}},
-              "terrain":{{"source":"dem"}},
-              "layers":[{{"id":"bg","type":"background","paint":{{"background-color":"white"}}}}]}}"#,
-            tile = tile.display(),
-        );
-        let path = dir.join("style.json");
-        std::fs::write(&path, style).unwrap();
-        let options = crate::common::Options {
-            style: Some(format!("file://{}", path.display())),
-            at: Some((orb_crs::Geodetic::new(10.0, 46.0), 9.0, 0.0, 40.0)),
-            ..tokyo(9.0)
-        };
-        let jobs = Arc::new(AtomicUsize::new(0));
-        let pool = Arc::new(orb_host::jobs::ThreadPool::new("jobs", 2));
-        let executor = Arc::new(Counting(jobs.clone(), pool));
-        let services = crate::common::services_on(executor, Arc::new(|| {}));
-        let map = crate::common::Map::new(services, crate::common::camera(&options));
-        let mut offscreen = crate::common::Offscreen::with_map(map).unwrap();
-        crate::common::load_style(&mut offscreen.map, &options).unwrap();
-        let viewport = offscreen.viewport;
-        let point = |x: f64| glam::DVec2::new(x, viewport.height / 2.0);
-        let time = offscreen.time;
-        offscreen.map.input(
-            Input::PointerDown {
-                id: 1,
-                kind: PointerKind::Mouse,
-                button: Button::Primary,
-                position: point(400.0),
-                modifiers: Modifiers::default(),
-            },
-            time,
-        );
-        // A drag of a quarter pixel a frame, whose cover stays: once the
-        // terrain asked for its tiles, it asks for nothing more.
-        let mut x = 400.0;
-        let mut drag = |offscreen: &mut crate::common::Offscreen| {
-            x += 0.25;
-            let time = offscreen.time;
-            offscreen.map.input(
-                Input::PointerMove {
-                    id: 1,
-                    position: point(x),
-                },
-                time,
-            );
-            offscreen.frame();
+            assert!(started.elapsed().as_secs() < 60, "loaded: {loaded:?}");
             std::thread::sleep(std::time::Duration::from_millis(4));
-            jobs.load(Ordering::SeqCst)
-        };
-        // Until the style loaded and its tiles were asked for, ten frames
-        // asking for nothing more.
-        let (mut asked, mut quiet, mut frames) = (0, 0, 0);
-        while asked == 0 || quiet < 10 {
-            let now = drag(&mut offscreen);
-            quiet = if now == asked { quiet + 1 } else { 0 };
-            asked = now;
-            frames += 1;
-            assert!(
-                frames < 300,
-                "DEM tiles were asked for again and again while held"
-            );
         }
-        for _ in 0..40 {
-            assert_eq!(
-                drag(&mut offscreen),
-                asked,
-                "a DEM tile was asked for again while held"
-            );
-        }
-        let time = offscreen.time;
-        offscreen.map.input(
-            Input::PointerUp {
-                id: 1,
-                position: point(x),
-            },
-            time,
-        );
-        offscreen.settle().unwrap();
-        let camera = *offscreen.map.camera();
-        let view = orb_camera::View::new(&camera, viewport, &offscreen.map.surface());
-        let elevation = offscreen.map.elevation().expect("terrain");
+        let [held_at, free_at] = loaded.map(|f| f.expect("loaded"));
         assert!(
-            view.clearance(&*elevation).is_some(),
-            "the held DEM tiles went in at rest"
+            held_at <= free_at + free_at / 2 + 10,
+            "held, loaded at frame {held_at}; let go, at {free_at}"
         );
-        crate::common::take_warnings(&mut offscreen.map);
-    }
-
-    /// A viewport that grows under a held drag (a window resized, a
-    /// phone's toolbar sliding away) sizes the pools for its larger cover
-    /// once the camera rests, not in a frame of the gesture.
-    #[test]
-    fn a_viewport_grown_under_a_gesture_sizes_the_pools_at_rest() {
-        use orb_camera::input::{Button, Input, Modifiers, PointerKind};
-        let mut map = crate::common::Offscreen::sized(&tokyo(14.0)).unwrap();
-        let full = map.viewport;
-        let small = orb_runtime::Viewport {
-            width: full.width / 2.0,
-            height: full.height / 2.0,
-        };
-        map.viewport = small;
-        let sized = map.settle().unwrap().0.memory.scene;
-        let point = |x: f64| glam::DVec2::new(x, small.height / 2.0);
-        let time = map.time;
-        map.map.input(
-            Input::PointerDown {
-                id: 1,
-                kind: PointerKind::Mouse,
-                button: Button::Primary,
-                position: point(small.width * 0.8),
-                modifiers: Modifiers::default(),
-            },
-            time,
-        );
-        for step in 1..=20 {
-            let time = map.time;
-            let x = small.width * (0.8 - 0.3 * f64::from(step) / 20.0);
-            map.map.input(
-                Input::PointerMove {
-                    id: 1,
-                    position: point(x),
-                },
-                time,
-            );
-            let grown = f64::from(step) / 20.0;
-            let viewport = orb_runtime::Viewport {
-                width: small.width + (full.width - small.width) * grown,
-                height: small.height + (full.height - small.height) * grown,
-            };
-            let report = map.frame_at(viewport);
-            assert!(report.input, "the drag holds the camera");
-            assert_eq!(report.resized.moves, 0, "step {step}: memory moved");
-        }
-        let time = map.time;
-        map.map.input(
-            Input::PointerUp {
-                id: 1,
-                position: point(small.width * 0.5),
-            },
-            time,
-        );
-        map.viewport = full;
-        let rested = map.settle().unwrap().0.memory.scene;
+        let memory = held.frame().memory.scene;
         assert!(
-            rested.vertices.allocated > sized.vertices.allocated,
-            "sized for the larger view at rest: {rested:#?}"
+            memory.vertices.allocated > u64::from(small.vertex_words) * 4,
+            "the view grew the pools: {memory:#?}"
         );
+        // Only the tables blocks don't hold copy what they keep as they
+        // grow: the property rows and the chunk table.
+        assert!(
+            copied <= memory.props.allocated + memory.tables,
+            "{copied} bytes copied growing the scene: {memory:#?}"
+        );
+        crate::common::take_warnings(&mut held.map);
+        crate::common::take_warnings(&mut free.map);
+        let differing = crate::common::differing_pixels(&held.pixels(), &free.pixels());
+        assert_eq!(differing, 0, "pixels differ from the map let go");
     }
 
     /// Coarser tiles left standing in by a zoom don't crowd out the tiles
@@ -1264,35 +1079,6 @@ mod tests {
         // Nor does a reload fetch it: only the app's sources reload.
         assert!(offscreen.map.reload_host_tiles("c").is_err());
         settle(&mut offscreen);
-    }
-
-    /// While the camera moves, frames come at the display's rate and the
-    /// view is about to change: `prepare` leaves arrivals to them.
-    #[test]
-    fn prepare_leaves_a_moving_camera_to_its_frames() {
-        let mut offscreen = null_island(
-            r#"{"version":8,
-            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
-            "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
-        );
-        offscreen.frame();
-        let target = orb_runtime::CameraTarget {
-            zoom: Some(offscreen.map.zoom() + 0.5),
-            ..Default::default()
-        };
-        let options = orb_runtime::EaseOptions {
-            duration: 60_000.0,
-            ..Default::default()
-        };
-        offscreen.map.ease_to(&target, options);
-        let started = std::time::Instant::now();
-        while started.elapsed() < std::time::Duration::from_millis(300) {
-            let (map, gpu) = (&mut offscreen.map, &mut offscreen.gpu);
-            let renderer = offscreen.renderer.as_mut().expect("made by the frame");
-            map.prepare(gpu, renderer, offscreen.viewport, 1.0);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(offscreen.map.shown_labels().is_empty());
     }
 
     /// A source with symbol layers loads its tiles while the sprites load:

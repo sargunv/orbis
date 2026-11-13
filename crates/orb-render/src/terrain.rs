@@ -11,8 +11,9 @@
 //! [`TerrainTile::shrink`]): colour stacks in one, slope stacks at half the
 //! texels a side in another, a layer of its page a stack, each layer as
 //! many slots as the pages hold tiles but for part of a row. The pages
-//! hold exactly the tiles of the view's terrain cover, made anew at rest
-//! when it needs another grid of slots: new pages are blank. A frame
+//! hold exactly the tiles of the view's terrain cover, made anew when it
+//! needs another grid of slots: new pages are blank but for the slots
+//! carried into them. A frame
 //! redraws only the slots the runtime marks: their drape placements, the draped nodes' only candidates, map
 //! them into the atlas, so one pass a layer redraws them all, replaying
 //! each stack's bundle of its draped nodes over its redrawn slots, then a
@@ -856,8 +857,8 @@ impl Terrain {
     /// the old pages go once it was submitted. A slot holds much the same
     /// wherever it lies (`project.wgsl`'s `drape_texel`), so a tile
     /// carried shows what it did until the map redraws it in its new
-    /// place, within the frame's budget: a new grid at rest costs a copy of
-    /// the cover's slots rather than a redraw of every one in one frame.
+    /// place, within the frame's budget: a new grid costs a copy of the
+    /// cover's slots rather than a redraw of every one in one frame.
     pub(crate) fn carry(&mut self, gpu: &mut dyn Gpu, slots: &[(u32, u32, u8)]) {
         let Some((old, _)) = self.replaced.take() else {
             return;

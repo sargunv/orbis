@@ -176,40 +176,6 @@ impl Map {
         self.relayout_symbols();
     }
 
-    /// The shared atlas's gate, as the renderer's ([`Map::moves`]): tells
-    /// it how this map moves memory, and places the images that waited for
-    /// a page and need wait no longer (no map holds, or theirs is still). A symbol takes its icon's
-    /// rect when it is laid out, so icons placed late lay this style's
-    /// symbols out again.
-    pub(crate) fn gate_images(&mut self, gpu: &mut dyn Gpu) {
-        let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) else {
-            return;
-        };
-        let mut images = self.services.images.0.lock().expect("images poisoned");
-        let Some(atlas) = &mut images.atlas else {
-            return;
-        };
-        atlas.gate(namespace, self.moves());
-        for e in atlas.place_pending(gpu) {
-            self.warnings.push(format!("image: {e}"));
-        }
-        let relayout = atlas.take_icons_placed(namespace);
-        drop(images);
-        if relayout {
-            self.relayout_symbols();
-        }
-    }
-
-    /// Whether an image of this map's style waits for a page in the
-    /// shared atlas ([`gate_images`](Self::gate_images)).
-    pub(crate) fn images_pending(&self) -> bool {
-        let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) else {
-            return false;
-        };
-        let images = self.services.images.0.lock().expect("images poisoned");
-        images.atlas.as_ref().is_some_and(|a| a.pending(namespace))
-    }
-
     /// Applies the queued image edits to the atlas, before the frame's
     /// tile results.
     pub(crate) fn apply_image_edits(&mut self, gpu: &mut dyn Gpu) {

@@ -5,8 +5,7 @@ use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
     Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameLight, FrameStats,
-    MeshData, Moves, NodePaint, PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow,
-    Words,
+    MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -238,10 +237,11 @@ fn tables_grow_the_property_pool() {
     );
 }
 
-/// A pool that runs out moves into a buffer twice its size, its
-/// meshes copied over on the GPU, and the frame binds the new buffer.
+/// A full block of the vertex and index pools adds another rather than
+/// move: the meshes in both draw, nothing is copied, and the block a
+/// view emptied goes.
 #[test]
-fn pools_grow_into_larger_buffers_keeping_their_meshes() {
+fn a_full_block_adds_another_copying_nothing() {
     let (left, right) = (half_square(0), half_square(2048));
     let capacity = SceneCapacity {
         vertex_words: left.vertices.len() as u32,
@@ -256,159 +256,35 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
     h.renderer
         .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
-    h.renderer
-        .add_mesh(
-            &mut h.gpu,
-            tile,
-            (0, EXTENT),
-            &MeshData::new(&left, &[], 0),
-            &Default::default(),
-        )
-        .unwrap();
+    let add = |h: &mut Harness, mesh: &orb_layout::Mesh| {
+        let data = MeshData::new(mesh, &[], 0);
+        (h.renderer)
+            .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+            .unwrap()
+    };
+    add(&mut h, &left);
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 36, 32), CLEAR);
-    let mesh = MeshData::new(&right, &[], 0);
-    assert!(
-        h.renderer
-            .add_mesh(&mut h.gpu, tile, (0, EXTENT), &mesh, &Default::default())
-            .is_err()
-    );
-    let size = orb_render::MeshSize {
-        vertices: right.vertices.len() as u32,
-        indices: right.indices.len() as u32,
-        props: 0,
-        chunks: right.chunks.len() as u32,
-    };
-    let revision = h.renderer.pools_revision();
-    assert!(h.renderer.grow_for(&mut h.gpu, &[size]));
-    assert!(h.renderer.pools_revision() > revision);
-    h.renderer
-        .add_mesh(&mut h.gpu, tile, (0, EXTENT), &mesh, &Default::default())
-        .unwrap();
-    let pixels = h.render();
-    assert_eq!(pixel(&pixels, 4, 32), RED, "the first mesh copied over");
-    assert_eq!(pixel(&pixels, 36, 32), RED, "the second in the grown pool");
-    let memory = h.renderer.memory();
-    assert_eq!(
-        memory.vertices.allocated,
-        u64::from(capacity.vertex_words) * 8
-    );
-    // At its ceiling a pool doesn't grow.
-    let huge = orb_render::MeshSize {
-        vertices: 1 << 13,
-        ..size
-    };
-    assert!(!h.renderer.grow_for(&mut h.gpu, &[huge]));
-}
-
-/// A table outside any tile (a map's feature-state table) grows the
-/// property pool as an edit's relayout does: at rest, which no upkeep
-/// would do for it, and not while memory is held.
-#[test]
-fn a_full_property_pool_grows_for_a_table_at_rest_not_while_held() {
-    let capacity = SceneCapacity {
-        prop_words: 64,
-        max_prop_words: 1 << 12,
-        ..Harness::SMALL
-    };
-    let mut h = Harness::with(4, 2, 8, capacity, None);
-    h.renderer.set_moves(&mut h.gpu, Moves::Held);
-    assert!(h.renderer.alloc_table(&mut h.gpu, 256).is_err());
-    assert_eq!(h.renderer.take_resized().moves, 0, "held: nothing moved");
-    h.renderer.set_moves(&mut h.gpu, Moves::Rest);
-    let table = h
-        .renderer
-        .alloc_table(&mut h.gpu, 256)
-        .expect("grown at rest");
-    assert_eq!(table.len(), 256);
-    assert!(h.renderer.take_resized().moves > 0);
-}
-
-/// Held pools (a map's while the camera moves) refuse what doesn't fit
-/// and say what would have held it; growing into that is one move a call,
-/// each pool's meshes copied over, and the property pool and chunk table
-/// grow alike.
-#[test]
-fn held_pools_grow_into_their_refusals_a_move_at_a_time() {
-    let (left, right) = (half_square(0), half_square(2048));
-    let capacity = SceneCapacity {
-        vertex_words: left.vertices.len() as u32,
-        index_words: left.indices.len() as u32,
-        chunks: left.chunks.len() as u32,
-        prop_words: 64,
-        max_vertex_words: 1 << 12,
-        max_index_words: 1 << 12,
-        max_prop_words: 1 << 12,
-        max_chunks: 64,
-        ..Harness::SMALL
-    };
-    let mut h = Harness::with(4, 2, 8, capacity, None);
-    h.renderer.set_moves(&mut h.gpu, Moves::Held);
-    red_fill(&mut h);
-    let tile = h.tile();
-    h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
-        .unwrap();
-    let data = |mesh| MeshData::new(mesh, &[], 0);
-    let rows = Default::default();
-    h.renderer
-        .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data(&left), &rows)
-        .unwrap();
-    assert_eq!(pixel(&h.render(), 4, 32), RED);
+    let first = h.renderer.memory().vertices.allocated;
     h.renderer.take_resized();
-    let sizes = [
-        data(&right).size(),
-        orb_render::MeshSize {
-            props: 1024,
-            ..Default::default()
-        },
-    ];
-    assert!(!h.renderer.fits(&sizes));
-    h.renderer.refuse(&sizes);
-    let room = h.renderer.take_refusals();
-    assert!(!room.is_empty() && h.renderer.can_grow_into(&room));
-    // The gate refuses every move while held, upkeep's too.
-    assert!(!h.renderer.grow_into(&mut h.gpu, &room));
-    assert!(!h.renderer.grow_for(&mut h.gpu, &sizes));
-    assert!(!h.renderer.grow(&mut h.gpu));
-    assert!(!h.renderer.grow_headroom(&mut h.gpu));
-    assert_eq!(h.renderer.take_resized().moves, 0, "held: nothing moved");
-    // At rest the upkeep grows what waited while held. (An upload at rest
-    // grows what it needs itself.)
-    h.renderer.set_moves(&mut h.gpu, Moves::Rest);
-    // Vertices, indices, properties and chunks: four moves, one a call.
-    let mut moves = 0;
-    while !h.renderer.fits(&sizes) {
-        assert!(
-            h.renderer.grow_into(&mut h.gpu, &room),
-            "room after {moves} moves"
-        );
-        assert_eq!(h.renderer.take_resized().moves, 1, "one move a call");
-        moves += 1;
-    }
-    assert_eq!(moves, 4);
-    assert!(
-        !h.renderer.grow_into(&mut h.gpu, &room),
-        "nothing left to grow"
-    );
-    h.renderer.set_moves(&mut h.gpu, Moves::Held);
-    h.renderer
-        .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data(&right), &rows)
-        .unwrap();
+    let second = add(&mut h, &right);
     let pixels = h.render();
-    assert_eq!(pixel(&pixels, 4, 32), RED, "the first mesh copied over");
-    assert_eq!(pixel(&pixels, 36, 32), RED, "the second in the grown pools");
-    assert_eq!(
-        h.renderer.take_resized().moves,
-        0,
-        "held: the frame moved nothing"
-    );
+    assert_eq!(pixel(&pixels, 4, 32), RED, "the first block's mesh");
+    assert_eq!(pixel(&pixels, 36, 32), RED, "the second block's mesh");
+    let copied = h.renderer.take_resized().bytes_copied;
+    assert_copied_no_pool(&h, copied);
+    assert!(h.renderer.memory().vertices.allocated > first);
+    // The second block empties and goes.
+    h.renderer.remove_mesh(tile, second);
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 36, 32), CLEAR);
+    assert_eq!(h.renderer.memory().vertices.allocated, first);
 }
 
-/// Held candidate lists leave out what doesn't fit, and say so; the
-/// first layout that may resize them grows them and draws it all.
+/// The candidate lists grow as a layout needs them, whatever else
+/// happens: written whole, nothing copied, every candidate drawn.
 #[test]
-fn held_lists_leave_candidates_out_until_they_may_grow() {
+fn candidate_lists_grow_as_layouts_need() {
     let capacity = SceneCapacity {
         candidates: 1,
         max_candidates: 1 << 10,
@@ -416,107 +292,46 @@ fn held_lists_leave_candidates_out_until_they_may_grow() {
         ..Harness::SMALL
     };
     let mut h = Harness::with(4, 2, 8, capacity, None);
-    h.renderer.set_moves(&mut h.gpu, Moves::Held);
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
         .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
-    for mesh in [half_square(0), half_square(2048)] {
+    for x in [0, 2048] {
+        let mesh = half_square(x);
         let data = MeshData::new(&mesh, &[], 0);
-        h.renderer
+        (h.renderer)
             .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
             .unwrap();
     }
-    h.render_stats();
-    assert!(h.renderer.stats().candidates_dropped > 0);
-    assert!(h.renderer.wants_room());
-    assert_eq!(h.renderer.take_resized().moves, 0, "held lists don't move");
-    h.renderer.set_moves(&mut h.gpu, Moves::Rest);
+    h.renderer.take_resized();
     let pixels = h.render();
-    assert_eq!(h.renderer.stats().candidates_dropped, 0);
-    assert!(!h.renderer.wants_room());
     assert_eq!(pixel(&pixels, 4, 32), RED);
     assert_eq!(pixel(&pixels, 36, 32), RED);
-    assert!(h.renderer.take_resized().moves > 0, "the lists grew");
-}
-
-/// While memory is held, a node that outgrew its slices is laid out
-/// again in new ones without moving its slots: the cull writes them all,
-/// and the frame draws what a fresh scene would.
-#[test]
-fn a_held_node_laid_out_again_moves_no_slot() {
-    // Lists that grow past their first size and shrink back to it, which
-    // makes the scratch buffer the GPU driver moves slots through.
-    let capacity = SceneCapacity {
-        vertex_words: 1 << 16,
-        index_words: 1 << 16,
-        chunks: 1 << 10,
-        max_compacted_words: 1 << 16,
-        ..Harness::SMALL
-    };
-    let mut h = Harness::with(4, 2, 8, capacity, None);
-    red_fill(&mut h);
-    // A second node, whose meshes come and go first.
-    h.renderer
-        .set_nodes(&mut h.gpu, &[Family::Fill, Family::Fill]);
-    // The first tile draws before the second.
-    let (first, tile) = (h.tile(), h.tile());
-    for t in [first, tile] {
-        h.renderer.place(t, EXTENT, &[full_view_tile(0.0)]).unwrap();
-    }
-    h.renderer.set_tile_order(0, &[first, tile]);
-    let add_to = |h: &mut Harness, tile, node, mesh: &orb_layout::Mesh| {
-        let data = MeshData::new(mesh, &[], 0);
-        h.renderer
-            .add_mesh(&mut h.gpu, tile, (node, EXTENT), &data, &Default::default())
-            .unwrap()
-    };
-    let add = |h: &mut Harness, node, mesh: &orb_layout::Mesh| add_to(h, tile, node, mesh);
-    let big: Vec<_> = (0..3).map(|_| add(&mut h, 1, &disc(2048))).collect();
-    h.render_stats();
-    for mesh in big {
-        h.renderer.remove_mesh(tile, mesh);
-    }
-    add(&mut h, 0, &half_square(0));
-    // The cull writes its slots, which a layout could move from now on.
-    h.render();
-    h.renderer.set_moves(&mut h.gpu, Moves::Held);
-    // More than its slices' room to grow, drawn before what's there.
-    for _ in 0..16 {
-        add_to(&mut h, first, 0, &half_square(2048));
-    }
-    let stats = h.render_stats();
-    assert!(stats.candidates_rebuilt);
-    assert_eq!(stats.slot_bytes_moved, 0, "held: a slot moved");
     assert_eq!(h.renderer.stats().candidates_dropped, 0);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
-    assert_eq!(pixel(&pixels, 4, 32), RED);
-    assert_eq!(pixel(&pixels, 36, 32), RED);
+    let grew = h.renderer.take_resized();
+    assert!(grew.moves > 0, "the lists grew");
+    assert_copied_no_pool(&h, grew.bytes_copied);
 }
 
-/// A polygon of `n` vertices around the tile's centre.
-fn disc(n: u32) -> orb_layout::Mesh {
-    let mut b = LayerBuilder::new("water", 4096);
-    b.begin_feature(None, GeometryType::Polygon);
-    b.begin_part();
-    b.begin_ring();
-    for i in 0..n {
-        let a = f64::from(i) / f64::from(n) * std::f64::consts::TAU;
-        b.push_vertex([
-            2048 + (1500.0 * a.cos()) as i32,
-            2048 + (1500.0 * a.sin()) as i32,
-        ]);
+/// Asserts that growth copied nothing. On the CPU driver's data textures
+/// four small tables share one texture (WebGL 2 has too few texture units
+/// to give each its own), and when one grows the others' rows move with
+/// it: a few rows of texels, whatever the pools hold.
+fn assert_copied_no_pool(h: &Harness, copied: u64) {
+    // Rows of at most 4096 words.
+    let (rows, row) = (8, 4096 * 4);
+    match h.gpu_driven() {
+        true => assert_eq!(copied, 0),
+        false => assert!(copied <= rows * row, "{copied} bytes copied"),
     }
-    fill::layout(&b.finish(), &[0])
 }
 
-/// A held tile page refuses a layer past its last and names itself;
-/// growing into that keeps the layers it held (their texels copied over)
-/// and then takes the tile. Raster and DEM pages alike.
+/// A full tile page grows for a tile past its last layer, keeping the
+/// layers it held (their texels copied over). Raster and DEM pages alike.
 #[test]
-fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
-    use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey, UploadError};
+fn full_tile_pages_grow_keeping_their_layers() {
+    use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey};
     let mut h = Harness::new();
     let source = 5;
     let node = RenderNode {
@@ -556,33 +371,23 @@ fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
                 unpack: (kind == PageKind::Dem).then_some([0.0; 4]),
                 area: None,
             };
-            h.renderer.upload_image(&mut h.gpu, &build, false)
+            h.renderer.upload_image(&mut h.gpu, &build, true)
         };
-        // Held, a source's first page isn't made; at rest it is, and an
-        // upload still grows nothing.
         let green = [0, 255, 0, 255];
-        h.renderer.set_moves(&mut h.gpu, Moves::Held);
-        assert!(matches!(upload(&mut h, 0, RED), Err(UploadError::NoRoom)));
-        assert!(!h.renderer.has_page(source));
-        h.renderer.set_moves(&mut h.gpu, Moves::Rest);
         // Pages start at eight layers before a map sizes them.
         let first = upload(&mut h, 0, RED).unwrap();
         let mut last = first;
         for col in 1..8 {
             last = upload(&mut h, col, green).unwrap();
         }
-        assert!(matches!(upload(&mut h, 8, green), Err(UploadError::NoRoom)));
-        let room = h.renderer.take_refusals();
-        assert!(h.renderer.can_grow_into(&room), "{kind:?}");
         h.renderer.take_resized();
-        assert!(h.renderer.grow_into(&mut h.gpu, &room));
+        upload(&mut h, 8, green).unwrap();
         let moved = h.renderer.take_resized();
         assert_eq!(moved.moves, 1);
         assert!(
             moved.bytes_copied > 0,
             "{kind:?}: the layers held copied over"
         );
-        upload(&mut h, 8, green).unwrap();
         if kind == PageKind::Raster {
             // The first layer on the left, the last before the move on the
             // right: each keeps its own texels (the Adreno 619's WebGL 2
@@ -605,33 +410,6 @@ fn held_tile_pages_grow_into_a_refused_layer_keeping_theirs() {
             assert_eq!(pixel(&pixels, 48, 32), green, "the last layer's texels");
         }
     }
-}
-
-/// Glyph bitmaps that arrive while the held glyph pages are full wait,
-/// their rows transparent; growing the pages writes them.
-#[test]
-fn held_glyph_pages_keep_bitmaps_until_they_grow() {
-    let mut h = Harness::new();
-    h.renderer.set_moves(&mut h.gpu, Moves::Held);
-    let revision = h.renderer.glyphs().revision();
-    // A page-sized bitmap per row: the ninth outgrows the first 8 pages.
-    let bitmap = vec![255u8; 500 * 500];
-    for _ in 0..9 {
-        let row = h.renderer.glyphs().reserve().unwrap();
-        h.renderer
-            .glyphs()
-            .upload(&mut h.gpu, row, [500, 500], &bitmap)
-            .unwrap();
-    }
-    assert_eq!(h.renderer.glyphs().revision(), revision, "held pages stay");
-    assert!(h.renderer.wants_room());
-    assert!(!h.renderer.grow_into(&mut h.gpu, &Default::default()));
-    h.renderer.set_moves(&mut h.gpu, Moves::Rest);
-    h.renderer.take_resized();
-    assert!(h.renderer.grow_into(&mut h.gpu, &Default::default()));
-    assert_eq!(h.renderer.take_resized().moves, 1);
-    assert_ne!(h.renderer.glyphs().revision(), revision, "the pages grew");
-    assert!(!h.renderer.wants_room(), "the waiting bitmap is written");
 }
 
 /// A mesh drawing another's vertices and indices takes no pool words of
@@ -671,10 +449,7 @@ fn shared_geometry_lives_until_its_last_mesh() {
         meshes: &meshes,
         patches: None,
     };
-    let (tile, ids) = h
-        .renderer
-        .upload_tile(&mut h.gpu, &tile_build, false)
-        .unwrap();
+    let (tile, ids) = h.renderer.upload_tile(&mut h.gpu, &tile_build).unwrap();
     h.renderer
         .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();

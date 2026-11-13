@@ -110,10 +110,11 @@ struct Dispatch {
     /// for the first symbol layer that draws with it.
     draws: [Variants; 2],
     /// The dispatch's pipelines, by their [`Placings`] kind; its layout,
-    /// and its group with the scene's entries it was made with.
+    /// and by scene block slot its group with the scene's entries it was
+    /// made with.
     pipelines: [Variants<ComputePipelineId>; 4],
     layout: BindGroupLayoutId,
-    group: Option<(BindGroupId, Vec<BindGroupEntry>)>,
+    groups: Vec<Option<(BindGroupId, Vec<BindGroupEntry>)>>,
     /// The placement target: two layers of [`PLACED_WIDTH`] × `rows`
     /// texels.
     target: TextureId,
@@ -197,36 +198,47 @@ impl Symbols {
         let target = placed_target(gpu, rows);
         let old = std::mem::replace(&mut dispatch.target, target);
         dispatch.rows = rows;
-        let group = dispatch.group.take().map(|(group, _)| group);
+        let groups: Vec<BindGroupId> = (dispatch.groups.drain(..).flatten())
+            .map(|(group, _)| group)
+            .collect();
         let pass = (self.pass_layout, self.pass_buffer, self.pass_stride);
         let passes = pass_groups(gpu, pass, Some(target));
-        (old, group, std::mem::replace(&mut self.passes, passes)).release(gpu);
+        (old, groups, std::mem::replace(&mut self.passes, passes)).release(gpu);
         true
     }
 
-    /// Binds the scene for the placement dispatch, `scene` its entries
-    /// (frame, tables, terrain, node uniforms and draw arguments, as
-    /// [`compute_layout`] has them), when they changed.
-    pub(crate) fn bind(&mut self, gpu: &mut dyn Gpu, scene: Vec<BindGroupEntry>) {
+    /// Binds the scene for the placement dispatch, `scene` each block
+    /// slot's entries (frame, tables, terrain, node uniforms and draw
+    /// arguments, as [`compute_layout`] has them; `None` for a free slot),
+    /// where they changed.
+    pub(crate) fn bind(&mut self, gpu: &mut dyn Gpu, scene: Vec<Option<Vec<BindGroupEntry>>>) {
         let Some(dispatch) = self.placing.dispatch_mut() else {
             return;
         };
-        if (dispatch.group.as_ref()).is_some_and(|(_, bound)| *bound == scene) {
-            return;
+        let mut scene = scene;
+        let slots = scene.len().max(dispatch.groups.len());
+        scene.resize(slots, None);
+        dispatch.groups.resize_with(slots, || None);
+        for (slot, entries) in scene.into_iter().enumerate() {
+            let bound = &mut dispatch.groups[slot];
+            if bound.as_ref().map(|(_, e)| e) == entries.as_ref() {
+                continue;
+            }
+            let made = entries.map(|scene| {
+                let mut entries = scene.clone();
+                let d2_array = TextureViewDimension::D2Array;
+                entries.push(BindGroupEntry::texture(19, dispatch.target, d2_array));
+                let made = gpu.create_bind_group(&BindGroupDesc {
+                    label: "symbol placements",
+                    layout: dispatch.layout,
+                    entries: &entries,
+                });
+                (made, scene)
+            });
+            std::mem::replace(bound, made)
+                .map(|(old, _)| old)
+                .release(gpu);
         }
-        let mut entries = scene.clone();
-        let d2_array = TextureViewDimension::D2Array;
-        entries.push(BindGroupEntry::texture(19, dispatch.target, d2_array));
-        let made = gpu.create_bind_group(&BindGroupDesc {
-            label: "symbol placements",
-            layout: dispatch.layout,
-            entries: &entries,
-        });
-        dispatch
-            .group
-            .replace((made, scene))
-            .map(|(old, _)| old)
-            .release(gpu);
     }
 
     /// Makes the pipelines a symbol layer of `kind` draws with (along
@@ -344,22 +356,33 @@ impl Symbols {
         true
     }
 
-    /// The frame's placement dispatch, after the cull, which wrote the
+    /// The frame's placement dispatches, after the cull, which wrote the
     /// draw arguments, and the terrain's depth, which hides labels; before
-    /// any pass that draws them. It covers `quads`, the scene's symbol
-    /// nodes' (`placings` and `full` as in [`commands`](Self::commands)).
+    /// any pass that draws them. One for each block, by slot, of the
+    /// placement target's quads its symbol nodes take, `blocks`
+    /// (`placings` and `full` as in [`commands`](Self::commands)).
     pub(crate) fn pass(
         &self,
         gpu: &mut dyn Gpu,
         (placings, full): (Placings, bool),
-        quads: u32,
+        blocks: &[(u32, std::ops::Range<u32>)],
     ) -> Option<Pass> {
         let dispatch = self.placing.dispatch()?;
-        let rows = (quads / orb_layout::MAX_CHUNK_INSTANCES).min(MAX_WORKGROUPS);
-        let (group, _) = dispatch.group.as_ref().filter(|_| rows > 0)?;
-        let commands = match dispatch.placements(gpu, placings, full)? {
-            Some(pipeline) => vec![
-                ComputeCommand::SetPipeline(pipeline),
+        let pipeline = dispatch.placements(gpu, placings, full)?;
+        let mut commands = Vec::new();
+        for (slot, quads) in blocks {
+            let rows =
+                ((quads.end - quads.start) / orb_layout::MAX_CHUNK_INSTANCES).min(MAX_WORKGROUPS);
+            let Some(Some((group, _))) = dispatch.groups.get(*slot as usize) else {
+                continue;
+            };
+            let Some(pipeline) = pipeline.filter(|_| rows > 0) else {
+                continue;
+            };
+            if commands.is_empty() {
+                commands.push(ComputeCommand::SetPipeline(pipeline));
+            }
+            commands.extend([
                 ComputeCommand::SetBindGroup {
                     index: 0,
                     group: *group,
@@ -369,9 +392,11 @@ impl Symbols {
                     y: 1,
                     z: 1,
                 },
-            ],
-            None => Vec::new(),
-        };
+            ]);
+        }
+        if commands.is_empty() {
+            return None;
+        }
         Some(Pass::Compute(ComputePass {
             label: "symbol placements",
             commands,
@@ -406,7 +431,7 @@ impl Placing {
             draws: Default::default(),
             pipelines: Default::default(),
             layout: compute_layout(gpu, backing),
-            group: None,
+            groups: Vec::new(),
             target: placed_target(gpu, 1),
             rows: 1,
         }))
@@ -511,12 +536,13 @@ impl Release for Symbols {
                     draws,
                     pipelines,
                     layout,
-                    group,
+                    groups,
                     target,
                     ..
                 } = *dispatch;
-                let group = group.map(|(group, _)| group);
-                (draws, pipelines, (layout, group, target)).release(gpu);
+                let groups: Vec<BindGroupId> =
+                    groups.into_iter().flatten().map(|(g, _)| g).collect();
+                (draws, pipelines, (layout, groups, target)).release(gpu);
             }
             #[cfg(cpu_driven)]
             Placing::Inline(draws) => draws.release(gpu),

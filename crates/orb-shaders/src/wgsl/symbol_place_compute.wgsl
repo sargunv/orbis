@@ -1,8 +1,8 @@
-// The symbol placements, one dispatch for every symbol layer, point and
-// line labels alike: a workgroup for each 64 texels of the placement
-// target, the quads of one of a symbol node's visible chunks
-// (`place_quad`). The workgroups of chunks a node's cull didn't keep this
-// frame leave at once.
+// The symbol placements, one dispatch a scene block for every symbol
+// layer, point and line labels alike: a workgroup for each 64 texels of
+// the placement target the block's rows take (from `block_quad_group`),
+// the quads of one of a symbol node's visible chunks (`place_quad`). The
+// workgroups of chunks a node's cull didn't keep this frame leave at once.
 
 // The cull's draw arguments and counters, ARGS_WORDS a node (`cull.wgsl`):
 // at 5 the chunks it kept.
@@ -15,10 +15,10 @@ var<workgroup> place_node: u32;
 
 @compute @workgroup_size(64)
 fn cs_place(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
-    let first = group.x * CHUNK_QUADS;
+    let first = (group.x + frame.block_quad_group) * CHUNK_QUADS;
     if lane == 0u {
-        // The node whose texels these are: the last whose `quad_base` is
-        // at most the first's. Every node has one, the texels the symbol
+        // The node whose texels these are: the last of the block's whose
+        // `quad_base` is at most the first's. Every node has one, the texels the symbol
         // nodes before it take, so the bases rise with the node.
         var lo = 0u;
         var hi = max(frame.placed_nodes, 1u);
@@ -35,7 +35,7 @@ fn cs_place(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_i
     let n = workgroupUniformLoad(&place_node);
     let node = node_cull_at(n);
     let instance = first - node.quad_base + lane;
-    if instance / CHUNK_QUADS >= cull_args[n * ARGS_WORDS + 5u] { return; }
+    if instance / CHUNK_QUADS >= cull_args[(n + frame.block_row) * ARGS_WORDS + 5u] { return; }
     let placed = place_quad(node, n, instance);
     if placed.written {
         let at = placed_texel_at(first + lane);

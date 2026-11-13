@@ -10,9 +10,7 @@
 use orb_hal::*;
 use orb_shaders::CULL_SHADER;
 
-#[cfg(cpu_driven)]
-use crate::scene::Scene;
-use crate::scene::{ARGS_WORDS, NodeDraw, SceneBuffers, Table, Tables};
+use crate::scene::{ARGS_WORDS, BlockPool, NodeDraw, Scene, SceneBuffers, Table};
 
 /// Compacted indices are full u32s.
 pub(crate) const INDEX_BITS: u32 = 32;
@@ -41,18 +39,22 @@ pub(crate) fn args_offset(index: u32) -> u64 {
     u64::from(index) * ARGS_WORDS as u64 * 4
 }
 
-/// The cull's pipeline and the scene bound for it.
+/// The cull's pipeline and the scene bound for it, a group for each
+/// block.
 #[derive(Debug)]
 pub(crate) struct GpuDriver {
     layout: BindGroupLayoutId,
     pipeline: ComputePipelineId,
-    group: BindGroupId,
+    /// By block slot: its group, `None` for a free slot.
+    groups: Vec<Option<BindGroupId>>,
     /// The cull keeps every candidate (`cull.wgsl`'s `keep_all`).
     keep_all: bool,
 }
 
 impl GpuDriver {
-    pub(crate) fn new(gpu: &mut dyn Gpu, buffers: CullBuffers) -> Self {
+    /// The cull over `scene`, writing `swap`'s visible lists, draw
+    /// arguments and compacted indices in place of the scene's if given.
+    pub(crate) fn new(gpu: &mut dyn Gpu, scene: &Scene, swap: Option<Writes>) -> Self {
         use BindGroupLayoutEntry as E;
         let cs = ShaderStages::COMPUTE;
         let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -69,13 +71,13 @@ impl GpuDriver {
                 E::storage_rw(8, cs),
             ],
         });
-        let group = group(gpu, layout, buffers);
+        let groups = groups(gpu, layout, scene, swap);
         // The cull pipeline first: nothing draws without it.
         let pipeline = crate::pipeline::compute(gpu, &CULL_SHADER, &[layout], &[]);
         Self {
             layout,
             pipeline,
-            group,
+            groups,
             keep_all: false,
         }
     }
@@ -88,9 +90,13 @@ impl GpuDriver {
         vec![self.pipeline.into()]
     }
 
-    pub(crate) fn rebind(&mut self, gpu: &mut dyn Gpu, buffers: CullBuffers) {
-        gpu.destroy_bind_group(self.group);
-        self.group = group(gpu, self.layout, buffers);
+    /// Binds the scene's tables and blocks again, after one moved or a
+    /// block came or went.
+    pub(crate) fn rebind(&mut self, gpu: &mut dyn Gpu, scene: &Scene, swap: Option<Writes>) {
+        for group in self.groups.drain(..).flatten() {
+            gpu.destroy_bind_group(group);
+        }
+        self.groups = groups(gpu, self.layout, scene, swap);
     }
 
     pub(crate) fn set_keep_all(&mut self, gpu: &mut dyn Gpu, on: bool) -> bool {
@@ -108,15 +114,16 @@ impl GpuDriver {
         true
     }
 
-    /// The cull dispatch: `groups` workgroups, as the node rows' first
-    /// groups lay them out, after `args` is cleared, which leaves a node
-    /// with no workgroups drawing nothing. It runs even when nothing is
-    /// resident, to clear what nodes drew.
+    /// The cull: a dispatch for each block with rows to cull, of its
+    /// workgroups as the node rows lay them out, after `args` is cleared,
+    /// which leaves a node with no workgroups drawing nothing. The clear
+    /// runs even when nothing is resident, to clear what nodes drew.
+    /// Returns the dispatches.
     pub(crate) fn cull(
         &self,
         gpu: &mut dyn Gpu,
+        scene: &Scene,
         args: BufferId,
-        groups: u32,
         passes: &mut Vec<Pass>,
     ) -> u32 {
         if !self.ready(gpu) {
@@ -128,39 +135,51 @@ impl GpuDriver {
             offset: 0,
             size: None,
         });
-        if groups == 0 {
-            Pass::group(passes, start, "cull");
-            return 0;
-        }
-        passes.push(Pass::Compute(ComputePass {
-            label: "cull",
-            commands: vec![
-                ComputeCommand::SetPipeline(self.pipeline),
+        let mut commands = vec![ComputeCommand::SetPipeline(self.pipeline)];
+        let mut dispatches = 0;
+        for block in scene.blocks() {
+            let groups = scene.block_groups(block);
+            let Some(Some(group)) = self.groups.get(block as usize) else {
+                continue;
+            };
+            if groups.is_empty() {
+                continue;
+            }
+            commands.extend([
                 ComputeCommand::SetBindGroup {
                     index: 0,
-                    group: self.group,
+                    group: *group,
                 },
                 ComputeCommand::Dispatch {
-                    x: groups,
+                    x: groups.end - groups.start,
                     y: 1,
                     z: 1,
                 },
-            ],
-        }));
+            ]);
+            dispatches += 1;
+        }
+        if dispatches > 0 {
+            passes.push(Pass::Compute(ComputePass {
+                label: "cull",
+                commands,
+            }));
+        }
         Pass::group(passes, start, "cull");
-        1
+        dispatches
     }
 
     pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {
         gpu.destroy_pipeline(self.pipeline.into());
-        gpu.destroy_bind_group(self.group);
+        for group in self.groups.into_iter().flatten() {
+            gpu.destroy_bind_group(group);
+        }
         gpu.destroy_bind_group_layout(self.layout);
     }
 }
 
-/// Node `node`'s draw: its indirect arguments, which the cull wrote.
-pub(crate) fn draw(buffers: &SceneBuffers, node: u32, draw: NodeDraw) -> RenderCommand {
-    let (buffer, offset) = (buffers.args, args_offset(node));
+/// Node row `row`'s draw: its indirect arguments, which the cull wrote.
+pub(crate) fn draw(buffers: &SceneBuffers, row: u32, draw: NodeDraw) -> RenderCommand {
+    let (buffer, offset) = (buffers.args, args_offset(row));
     if draw == NodeDraw::Indexed {
         RenderCommand::DrawIndexedIndirect { buffer, offset }
     } else {
@@ -168,60 +187,58 @@ pub(crate) fn draw(buffers: &SceneBuffers, node: u32, draw: NodeDraw) -> RenderC
     }
 }
 
-/// What the cull binds: the scene's tables it reads and writes, and the
-/// draw arguments and compacted indices it writes.
+/// What a cull writes in place of the scene's: the visible lists, draw
+/// arguments and compacted indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CullBuffers {
-    pub frame: BufferId,
-    pub tiles: BufferId,
-    pub chunks: BufferId,
-    pub candidates: BufferId,
-    pub node_cull: BufferId,
+pub(crate) struct Writes {
     pub visible: BufferId,
     pub args: BufferId,
-    pub indices: BufferId,
     pub compacted: BufferId,
 }
 
-impl CullBuffers {
-    /// The scene's, on the storage backing.
-    pub(crate) fn of(tables: &Tables, buffers: &SceneBuffers) -> Self {
-        Self {
-            frame: buffers.frame,
-            tiles: tables.buffer(Table::Tiles),
-            chunks: tables.buffer(Table::Chunks),
-            candidates: tables.buffer(Table::Candidates),
-            node_cull: tables.buffer(Table::NodeCull),
-            visible: tables.buffer(Table::Visible),
-            args: buffers.args,
-            indices: tables.buffer(Table::Indices),
-            compacted: buffers.compacted,
-        }
-    }
-}
-
-/// The cull's group.
-fn group(gpu: &mut dyn Gpu, layout: BindGroupLayoutId, b: CullBuffers) -> BindGroupId {
-    let entries: Vec<BindGroupEntry> = [
-        b.frame,
-        b.tiles,
-        b.chunks,
-        b.candidates,
-        b.node_cull,
-        b.visible,
-        b.args,
-        b.indices,
-        b.compacted,
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, &buffer)| BindGroupEntry::buffer(i as u32, buffer))
-    .collect();
-    gpu.create_bind_group(&BindGroupDesc {
-        label: "cull",
-        layout,
-        entries: &entries,
-    })
+/// The cull's group for each of the scene's block slots: its frame and
+/// index pool, the tables every block shares, and what the cull writes,
+/// the scene's or `swap`'s.
+fn groups(
+    gpu: &mut dyn Gpu,
+    layout: BindGroupLayoutId,
+    scene: &Scene,
+    swap: Option<Writes>,
+) -> Vec<Option<BindGroupId>> {
+    let (tables, buffers) = (scene.tables(), scene.buffers());
+    let writes = swap.unwrap_or(Writes {
+        visible: tables.buffer(Table::Visible),
+        args: buffers.args,
+        compacted: buffers.compacted,
+    });
+    let held: Vec<u32> = scene.blocks().collect();
+    (0..scene.block_slots())
+        .map(|block| {
+            if !held.contains(&block) {
+                return None;
+            }
+            let entries: Vec<BindGroupEntry> = [
+                scene.block_frame(block),
+                tables.buffer(Table::Tiles),
+                tables.buffer(Table::Chunks),
+                tables.buffer(Table::Candidates),
+                tables.buffer(Table::NodeCull),
+                writes.visible,
+                writes.args,
+                tables.block_buffer(block as usize, BlockPool::Indices),
+                writes.compacted,
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, &buffer)| BindGroupEntry::buffer(i as u32, buffer))
+            .collect();
+            Some(gpu.create_bind_group(&BindGroupDesc {
+                label: "cull",
+                layout,
+                entries: &entries,
+            }))
+        })
+        .collect()
 }
 
 /// The GPU cull beside the CPU driver's, over the same scene and frame,
@@ -244,14 +261,13 @@ impl Twin {
     pub(crate) fn new(gpu: &mut dyn Gpu, scene: &Scene) -> Self {
         let sizes = Self::sizes(scene);
         let [visible, args, compacted] = Self::create(gpu, sizes);
-        let buffers = CullBuffers {
+        let writes = Writes {
             visible,
             args,
             compacted,
-            ..CullBuffers::of(scene.tables(), scene.buffers())
         };
         Self {
-            cull: GpuDriver::new(gpu, buffers),
+            cull: GpuDriver::new(gpu, scene, Some(writes)),
             visible,
             args,
             compacted,
@@ -264,57 +280,56 @@ impl Twin {
         let c = scene.capacity();
         [
             u64::from(c.candidates) * 8,
-            u64::from(c.nodes) * ARGS_WORDS as u64 * 4,
+            u64::from(scene.row_capacity()) * ARGS_WORDS as u64 * 4,
             u64::from(c.compacted_words) * 4,
         ]
         .map(|bytes| bytes.max(16))
     }
 
-    fn create(gpu: &mut dyn Gpu, [visible, args, compacted]: [u64; 3]) -> [BufferId; 3] {
-        let mut buffer = |label, size, usage| gpu.create_buffer(&BufferDesc { label, size, usage });
-        [
-            buffer(
-                "twin visible",
-                visible,
-                BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            ),
-            buffer("twin args", args, ARGS_USAGE),
-            buffer(
-                "twin compacted",
-                compacted,
-                COMPACTED_USAGE | BufferUsages::COPY_SRC,
-            ),
-        ]
+    fn create(gpu: &mut dyn Gpu, sizes: [u64; 3]) -> [BufferId; 3] {
+        [0, 1, 2].map(|i| Self::buffer(gpu, i, sizes[i]))
     }
 
-    /// The scene's buffers with the twin's own in place of what it writes.
-    fn buffers(&self, tables: &Tables, buffers: &SceneBuffers) -> CullBuffers {
-        CullBuffers {
+    /// Its visible lists (0), draw arguments (1) or compacted indices (2),
+    /// `size` bytes.
+    fn buffer(gpu: &mut dyn Gpu, which: usize, size: u64) -> BufferId {
+        let (label, usage) = match which {
+            0 => (
+                "twin visible",
+                BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            ),
+            1 => ("twin args", ARGS_USAGE),
+            _ => ("twin compacted", COMPACTED_USAGE | BufferUsages::COPY_SRC),
+        };
+        gpu.create_buffer(&BufferDesc { label, size, usage })
+    }
+
+    /// Binds the scene's tables again, each of its own buffers made again
+    /// to its size if that changed: the compacted indices keep what the
+    /// cull wrote while the scene's do, as the CPU driver's copies keep
+    /// theirs.
+    pub(crate) fn rebind(&mut self, gpu: &mut dyn Gpu, scene: &Scene) {
+        let sizes = Self::sizes(scene);
+        let mut buffers = [self.visible, self.args, self.compacted];
+        for (i, buffer) in buffers.iter_mut().enumerate() {
+            if sizes[i] != self.sizes[i] {
+                gpu.destroy_buffer(*buffer);
+                *buffer = Self::buffer(gpu, i, sizes[i]);
+            }
+        }
+        [self.visible, self.args, self.compacted] = buffers;
+        self.sizes = sizes;
+        let writes = Writes {
             visible: self.visible,
             args: self.args,
             compacted: self.compacted,
-            ..CullBuffers::of(tables, buffers)
-        }
-    }
-
-    /// Binds the scene's tables again, its own buffers made again to
-    /// their sizes.
-    pub(crate) fn rebind(&mut self, gpu: &mut dyn Gpu, scene: &Scene) {
-        let sizes = Self::sizes(scene);
-        if sizes != self.sizes {
-            for buffer in [self.visible, self.args, self.compacted] {
-                gpu.destroy_buffer(buffer);
-            }
-            [self.visible, self.args, self.compacted] = Self::create(gpu, sizes);
-            self.sizes = sizes;
-        }
-        let b = self.buffers(scene.tables(), scene.buffers());
-        self.cull.rebind(gpu, b);
+        };
+        self.cull.rebind(gpu, scene, Some(writes));
     }
 
     /// Its cull, writing its own buffers.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, groups: u32, passes: &mut Vec<Pass>) -> u32 {
-        self.cull.cull(gpu, self.args, groups, passes)
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, scene: &Scene, passes: &mut Vec<Pass>) -> u32 {
+        self.cull.cull(gpu, scene, self.args, passes)
     }
 
     pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {

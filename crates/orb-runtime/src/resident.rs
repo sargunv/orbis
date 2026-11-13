@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use orb_crs::TileIndex;
 use orb_hal::{Gpu, HostBytesId};
-use orb_render::{GpuTile, ImageAtlas, MeshData, MeshId, MeshSize, OutOfSpace, Renderer, TileKey};
+use orb_render::{GpuTile, ImageAtlas, MeshData, MeshId, OutOfSpace, Renderer, TileKey};
 use orb_source::TilePyramid;
 use orb_source::endpoint::TileEndpoint;
 
@@ -148,11 +148,7 @@ pub(crate) struct WaitingTile {
     pub(crate) tile: TileIndex,
     pub(crate) build: TileResult,
     /// [`Map::room_state`] when it was last tried.
-    pub(crate) tried: Option<[u64; 8]>,
-    /// What it was refused while the pools couldn't grow: what the map's
-    /// upkeep at rest makes room for. Empty while it waits for other
-    /// tiles or sprites' pixels.
-    pub(crate) room: orb_render::Room,
+    pub(crate) tried: Option<[u64; 7]>,
 }
 
 /// Raises the nodes' row maxima to those of new meshes; paint is written
@@ -408,6 +404,7 @@ fn mesh_builds<'a>(
 /// frames ([`orb_render::Reserved`]); [`upload`] then makes the tile of
 /// them.
 pub(crate) fn reserve(
+    gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     plan: &StylePlan,
     key: TileKey,
@@ -421,7 +418,7 @@ pub(crate) fn reserve(
         meshes: &builds,
         patches: None,
     };
-    renderer.reserve(&build)
+    renderer.reserve(gpu, &build)
 }
 
 /// Uploads a tile's meshes and symbol buckets, drawing through `patches`:
@@ -456,7 +453,7 @@ pub(crate) fn upload(
     };
     let uploaded = match reserved {
         Some(reserved) => renderer.finish_tile(gpu, &build, reserved),
-        None => renderer.upload_tile(gpu, &build, false),
+        None => renderer.upload_tile(gpu, &build),
     };
     let (handle, ids) = match uploaded {
         Ok(uploaded) => uploaded,
@@ -536,38 +533,6 @@ fn scene_meshes<'a>(
         .iter()
         .enumerate()
         .filter(move |(_, m)| !symbol(m))
-}
-
-/// What a tile result's meshes take in the scene, as [`upload`] inserts
-/// them: one range of each pool.
-pub(crate) fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {
-    let meshes = || scene_meshes(plan, result).map(|(_, m)| m);
-    let spans: Vec<_> = (meshes())
-        .map(|m| [m.vertices.range(), m.indices.range(), m.props.range()])
-        .collect();
-    let chunks = meshes().map(|m| m.chunks.len() as u32).sum();
-    vec![orb_render::tile_size(
-        &orb_render::tile_extents(&spans),
-        chunks,
-    )]
-}
-
-/// Runs an edit's `upload` until the scene has room for it: after each
-/// refusal, while `grow` allows, the scene grows what refused it (to its
-/// ceilings, and as the renderer's gate allows an edit) and `upload` runs
-/// again.
-pub(crate) fn with_room<T>(
-    gpu: &mut dyn Gpu,
-    renderer: &mut Renderer,
-    grow: bool,
-    mut upload: impl FnMut(&mut dyn Gpu, &mut Renderer) -> Result<T, OutOfSpace>,
-) -> Result<T, OutOfSpace> {
-    loop {
-        match upload(gpu, renderer) {
-            Err(OutOfSpace) if grow && renderer.grow_for_edit(gpu) => {}
-            done => return done,
-        }
-    }
 }
 
 /// What a resident tile costs to keep: the GPU bytes of its meshes and its

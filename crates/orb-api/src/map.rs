@@ -98,9 +98,6 @@ pub struct Map {
     _device_wake: Arc<dyn Fn() + Send + Sync>,
     /// The last frame waited for a compile, or the device's replacement.
     waiting: bool,
-    /// The last frame asked for a frame for the map's upkeep alone
-    /// ([`orb_runtime::FrameReport::upkeep`]).
-    upkeep: bool,
     /// The last frame left nothing to change but by the camera
     /// ([`orb_runtime::FrameReport::settled`]).
     settled: bool,
@@ -245,7 +242,6 @@ impl Map {
             device_woken,
             _device_wake: device_wake,
             waiting: false,
-            upkeep: false,
             settled: false,
             scale: 1.0,
             signal,
@@ -339,18 +335,15 @@ impl Map {
     }
 
     /// Whether the map wants a frame: one that shows something new
-    /// ([`has_news`](Self::has_news)), or one for its own upkeep at rest
-    /// (resizing its memory to the view). An idle map needs no frames.
+    /// ([`has_news`](Self::has_news)). An idle map needs no frames.
     pub fn needs_frame(&self) -> bool {
-        self.has_news() || self.upkeep
+        self.has_news()
     }
 
     /// Whether drawing a frame would show something new: data arrived, the
     /// camera moves, a gesture or animation runs, loads and fades are under
     /// way, a pipeline the last frame waited for compiled, or the device
-    /// was lost or replaced. A host that draws only what's new can leave
-    /// the map's upkeep to its next frame, or do the part that draws
-    /// nothing with [`upkeep`](Self::upkeep).
+    /// was lost or replaced.
     pub fn has_news(&self) -> bool {
         self.dirty
             || self.busy
@@ -376,26 +369,6 @@ impl Map {
             || self.woken.load(Ordering::Acquire)
             || self.device_news()
             || !(self.settled || self.waiting)
-    }
-
-    /// Does the upkeep the last frame asked for that draws nothing (asking
-    /// for the pipelines later views may need), without drawing a frame:
-    /// for a host that draws only when there's something new. A resize
-    /// waits for the next frame.
-    pub fn upkeep(&mut self) {
-        if !std::mem::take(&mut self.upkeep) || self.device != self.runtime.shared.generation() {
-            return;
-        }
-        let (Some(renderer), Some(mut device)) = (&mut self.renderer, self.runtime.shared.opened())
-        else {
-            return;
-        };
-        let viewport = self.map.viewport();
-        self.map
-            .prepare(&mut *device, renderer, viewport, self.scale as f32);
-        drop(device);
-        self.events
-            .extend(self.map.take_events().into_iter().map(Event::Map));
     }
 
     /// Requests the tiles that failed again now: call it when the network
@@ -1353,10 +1326,9 @@ impl Map {
         self.dirty = lost;
         // A map waiting only for pipelines draws again when one compiles.
         self.waiting = report.compiling;
-        self.upkeep = report.upkeep;
         self.settled = report.settled;
         self.scale = target.scale();
-        self.busy = !report.idle && !report.compiling && !report.upkeep;
+        self.busy = !report.idle && !report.compiling;
         if report.idle {
             // A failed write costs the next run its warm start, nothing else.
             let _ = self.runtime.save_pipeline_cache();

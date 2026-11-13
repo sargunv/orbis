@@ -155,7 +155,8 @@ fn a_map_at_rest_draws_again_on_a_replaced_device() {
         let mut map = Map::new(&runtime, MapOptions::default());
         map.set_style_json(STYLE).unwrap();
         settle(&mut map, &mut target).unwrap();
-        // And its upkeep, as a host drawing only what's new leaves none.
+        // And every frame it still asks for, as a host drawing only
+        // what's new leaves none.
         while map.needs_frame() {
             map.render(&mut target, 0.0).unwrap();
         }

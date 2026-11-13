@@ -71,6 +71,11 @@ impl Arena {
         self.used
     }
 
+    /// The words it spans.
+    pub(crate) fn capacity(&self) -> u32 {
+        self.capacity
+    }
+
     pub(crate) fn alloc(&mut self, len: u32) -> Option<Range<u32>> {
         if len == 0 {
             return Some(0..0);
@@ -118,20 +123,6 @@ impl Arena {
     /// since: retried, it takes that room again.
     pub(crate) fn take_needed(&mut self) -> u32 {
         std::mem::take(&mut self.needed)
-    }
-
-    /// What [`take_needed`](Self::take_needed) would return.
-    pub(crate) fn needed(&self) -> u32 {
-        self.needed
-    }
-
-    /// Records a refusal of `lens` found without allocating them
-    /// ([`fits_all`](Self::fits_all)): the size that holds them all past
-    /// what's held.
-    pub(crate) fn refuse(&mut self, lens: impl IntoIterator<Item = u32>) {
-        let words = lens.into_iter().fold(0u32, u32::saturating_add);
-        let needed = self.free_from(self.capacity).saturating_add(words);
-        self.needed = self.needed.max(needed);
     }
 
     pub(crate) fn free(&mut self, range: Range<u32>) {
@@ -223,11 +214,6 @@ impl Slots {
     /// the last call when it was refused, or 0.
     pub(crate) fn take_needed(&mut self) -> u32 {
         std::mem::take(&mut self.needed)
-    }
-
-    /// What [`take_needed`](Self::take_needed) would return.
-    pub(crate) fn needed(&self) -> u32 {
-        self.needed
     }
 
     pub(crate) fn available(&self) -> u32 {

@@ -7,8 +7,7 @@
 //! layer of three arrays. Pages start at the layers a map's view needs
 //! and grow when full, copying their layers into the larger arrays;
 //! [`TilePage::revision`] changes so bind groups over the old arrays are
-//! rebuilt. Growing and shrinking are their own calls, which a map makes
-//! at rest; the growth tests move every kind of page.
+//! rebuilt; the growth test moves every kind of page.
 
 use crate::scene::arena::Slots;
 use orb_hal::{
@@ -138,23 +137,21 @@ impl TilePage {
         std::mem::take(&mut self.resized)
     }
 
-    /// A free layer, growing the page if it is full.
-    pub(crate) fn alloc(&mut self, gpu: &mut dyn Gpu) -> Result<u32, OutOfSpace> {
-        if let Some(layer) = self.alloc_existing() {
+    /// A free layer, growing the page if it is full and `grow`.
+    pub(crate) fn alloc(&mut self, gpu: &mut dyn Gpu, grow: bool) -> Result<u32, OutOfSpace> {
+        if let Some(layer) = self.layers.alloc() {
             return Ok(layer);
         }
+        if !grow {
+            return Err(OutOfSpace);
+        }
         self.grow(gpu)?;
-        Ok(self.alloc_existing().expect("grown"))
+        Ok(self.layers.alloc().expect("grown"))
     }
 
     /// Layers handed out and not freed.
     pub(crate) fn used(&self) -> u32 {
         self.layers.used()
-    }
-
-    /// A layer the arrays already have, without growing them.
-    pub(crate) fn alloc_existing(&mut self) -> Option<u32> {
-        self.layers.alloc()
     }
 
     pub(crate) fn free(&mut self, layer: u32) {
@@ -209,18 +206,6 @@ impl TilePage {
         Ok(())
     }
 
-    /// Whether the arrays hold more than three quarters of their layers
-    /// below the device's most: room a map at rest makes by growing them
-    /// ([`grow`](Self::grow)).
-    pub(crate) fn wants_headroom(&self) -> bool {
-        self.grown_capacity() > self.capacity && self.layers.used() * 4 > self.capacity * 3
-    }
-
-    /// Whether [`grow`](Self::grow) would add layers.
-    pub(crate) fn can_grow(&self) -> bool {
-        self.grown_capacity() > self.capacity
-    }
-
     fn grown_capacity(&self) -> u32 {
         (self.capacity + (self.capacity / 2).max(GROWTH)).min(self.max_layers)
     }
@@ -239,11 +224,6 @@ impl TilePage {
         }
         self.layers.shrink(capacity);
         true
-    }
-
-    /// Whether [`shrink`](Self::shrink) would shrink the arrays.
-    pub(crate) fn would_shrink(&self) -> bool {
-        self.shrunk_capacity() != self.capacity
     }
 
     fn shrunk_capacity(&self) -> u32 {

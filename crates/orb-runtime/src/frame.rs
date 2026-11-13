@@ -324,7 +324,6 @@ impl Map {
                     tile,
                     build,
                     tried,
-                    room: Default::default(),
                 });
                 continue;
             }
@@ -623,20 +622,38 @@ impl Map {
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
         terrain.release_slots();
-        // The pages hold the cover's tiles ([`Map::cover_room`]), made
-        // anew only where memory may move. The tiles move to the slots of
-        // their places in the cover in any frame at rest, as moving them
-        // allocates nothing; a continuous map's pages keep a slot more,
-        // which a move between two tiles that hold each other's places
-        // goes through, so that moves fit the frame's budget.
-        let still = renderer.moves() == orb_render::Moves::Free;
-        let at_rest = renderer.moves() != orb_render::Moves::Held;
+        // The pages hold the cover's tiles ([`Map::cover_room`]). The
+        // tiles move to the slots of their places in the cover within the
+        // frame's budget, as moving them allocates nothing; a continuous
+        // map's pages keep a slot more, which a move between two tiles that
+        // hold each other's places goes through, so that moves fit the
+        // frame's budget. A still map's pages hold its cover exactly.
+        let still = self.mode != RenderMode::Continuous;
         let tiles = terrain.tiles.len() as u32;
-        let slots = match still {
+        let wanted = match still {
             true => tiles,
             false => (tiles + 1).min(renderer.drape_room(gpu)),
+        }
+        .max(1);
+        // Pages too small for the cover are made anew at once, with a
+        // quarter more room. Pages larger than it are made anew to fit once
+        // the cover has wanted as many tiles for [`DRAPE_REFIT`] frames: a
+        // cover that grows and shrinks by a tile from frame to frame keeps
+        // its pages, and one that holds still ends in pages that hold it
+        // exactly, as a fresh map's do.
+        let held = renderer.drape_slots();
+        self.drape_wanted = match self.drape_wanted {
+            (count, frames) if count == wanted => (count, frames.saturating_add(1)),
+            _ => (wanted, 0),
         };
-        let layout = match renderer.reserve_drape(gpu, slots.max(1)) {
+        let slots = match () {
+            _ if still || wanted == held => wanted,
+            _ if wanted > held => (wanted + wanted / 4).min(renderer.drape_room(gpu)),
+            _ if self.drape_wanted.1 >= DRAPE_REFIT => wanted,
+            _ => held,
+        };
+        let refit = slots != wanted;
+        let layout = match renderer.reserve_drape(gpu, slots) {
             Ok(layout) => layout,
             Err(full) => {
                 // The cover fits the atlas's room (`Terrain::update`)
@@ -662,9 +679,9 @@ impl Map {
         };
         // A continuous map's pages made anew carry over what the old ones'
         // slots hold, shown until the budget redraws each in its new place:
-        // a cover that needs another grid at rest costs a copy of its
-        // slots, not a redraw of every one in one frame. A still map's
-        // frame redraws them all, so it carries none.
+        // a cover that needs another grid costs a copy of its slots, not a
+        // redraw of every one in one frame. A still map's frame redraws
+        // them all, so it carries none.
         if let Some(from) = renderer.drape_carries() {
             let terrain = style.terrain.as_mut().expect("checked above");
             let carried = match still {
@@ -801,7 +818,7 @@ impl Map {
             })
         };
         let terrain = style.terrain.as_mut().expect("checked above");
-        let slots = (layout, at_rest, texels);
+        let slots = (layout, texels);
         let (tiles, redraw, deferred) = terrain.plan(&surface, view, slots, &content, &mut globe);
         renderer.set_terrain_tiles(gpu, &tiles);
         let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
@@ -815,7 +832,8 @@ impl Map {
             surface,
             layout,
             redraw,
-            deferred,
+            // Pages larger than the cover are made to it in a frame to come.
+            deferred: deferred || refit,
             reaches,
             zoom,
             reach_px,
@@ -1725,3 +1743,7 @@ impl Unbounded {
         labels.chain(extrusions).fold(0.0, f32::max)
     }
 }
+
+/// Frames a cover wants as many tiles before pages larger than it are
+/// made anew to fit: half a second at 60 Hz.
+const DRAPE_REFIT: u32 = 30;

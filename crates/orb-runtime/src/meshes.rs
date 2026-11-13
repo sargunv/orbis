@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
-use orb_render::{GpuTile, MeshData, OutOfSpace, Renderer, TileKey};
+use orb_render::{GpuTile, MeshData, Renderer, TileKey};
 use orb_source::endpoint::TileEndpoint;
 
 use crate::image;
@@ -204,18 +204,9 @@ fn background_tile(
         .expect("a tile without patches fits");
     let data = MeshData::new(&mesh, &[], 0);
     for &node in nodes {
-        // The pools grow for it, the scene full of tiles or a new device's
-        // still small: a style's own meshes, made as it loads, whatever
-        // the camera does.
-        loop {
-            match renderer.add_mesh(gpu, tile, (node, 8192), &data, &Default::default()) {
-                Err(OutOfSpace) if renderer.grow_for_style(gpu) => {}
-                done => {
-                    done.expect("background mesh fits the pools at their ceilings");
-                    break;
-                }
-            }
-        }
+        renderer
+            .add_mesh(gpu, tile, (node, 8192), &data, &Default::default())
+            .expect("background mesh fits the pools at their ceilings");
     }
     tile
 }

@@ -1,6 +1,11 @@
 //! The scene's tables as shaders read them: placements, chunks,
-//! candidates, node rows, visible lists and the vertex, index and property
-//! arenas.
+//! candidates, node rows, visible lists, the property arena, and each
+//! block's vertex and index pools.
+//!
+//! The vertex and index pools are blocks of fixed size (`BlockPool`): a
+//! scene that needs more adds a block and never moves the ones it has, so
+//! growing copies nothing. A block's meshes draw with the block bound,
+//! each node once per block it has candidates in.
 //!
 //! Every write to them, and every move into a larger one, goes through
 //! [`Tables`], so where they live is one decision, the device's: storage
@@ -40,12 +45,36 @@ pub(crate) enum Table {
     Candidates,
     NodeCull,
     Visible,
-    Vertices,
-    Indices,
     Props,
 }
 
-const TABLES: usize = 8;
+const TABLES: usize = 6;
+
+/// A pool of a scene block: the words its meshes draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlockPool {
+    Vertices,
+    Indices,
+}
+
+impl BlockPool {
+    pub(crate) const ALL: [Self; 2] = [Self::Vertices, Self::Indices];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Vertices => "vertices",
+            Self::Indices => "indices",
+        }
+    }
+
+    /// The scene group's binding of a block's pool (`fetch.wgsl`).
+    fn binding(self) -> u32 {
+        match self {
+            Self::Vertices => 4,
+            Self::Indices => 5,
+        }
+    }
+}
 
 /// The row tables, which the texture backing packs into one texture, in
 /// its order.
@@ -59,8 +88,6 @@ impl Table {
         Self::Candidates,
         Self::NodeCull,
         Self::Visible,
-        Self::Vertices,
-        Self::Indices,
         Self::Props,
     ];
 
@@ -71,25 +98,21 @@ impl Table {
             Self::Candidates => "candidates",
             Self::NodeCull => "node cull",
             Self::Visible => "visible",
-            Self::Vertices => "vertices",
-            Self::Indices => "indices",
             Self::Props => "props",
         }
     }
 
     /// Its buffer's usage on the storage backing: written from the CPU,
-    /// and copied from where it grows by moving (the pools) or the cull
-    /// writes what tests read back (candidates and visible lists).
+    /// and copied from where it grows by moving (the chunks and property
+    /// rows) or the cull writes what tests read back (candidates and
+    /// visible lists).
     fn usage(self) -> BufferUsages {
         let written = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         match self {
             Self::Tiles | Self::NodeCull => written,
-            Self::Chunks
-            | Self::Candidates
-            | Self::Visible
-            | Self::Vertices
-            | Self::Indices
-            | Self::Props => written | BufferUsages::COPY_SRC,
+            Self::Chunks | Self::Candidates | Self::Visible | Self::Props => {
+                written | BufferUsages::COPY_SRC
+            }
         }
     }
 
@@ -156,6 +179,31 @@ enum Place {
 }
 
 impl Place {
+    /// Its entry at `binding`: its buffer, or the texture it's in.
+    fn entry(self, binding: u32) -> BindGroupEntry {
+        match self {
+            Self::Buffer(buffer) => BindGroupEntry::buffer(binding, buffer),
+            #[cfg(cpu_driven)]
+            Self::Texture { texture, .. } => {
+                BindGroupEntry::texture(binding, texture, TextureViewDimension::D2)
+            }
+            #[cfg(cpu_driven)]
+            Self::Cpu => panic!("a table only the CPU reads has no binding"),
+        }
+    }
+
+    /// Frees a place of its own: a buffer, or a texture no other table
+    /// shares.
+    fn destroy(self, gpu: &mut dyn Gpu) {
+        match self {
+            Self::Buffer(buffer) => gpu.destroy_buffer(buffer),
+            #[cfg(cpu_driven)]
+            Self::Texture { texture, .. } => gpu.destroy_texture(texture),
+            #[cfg(cpu_driven)]
+            Self::Cpu => {}
+        }
+    }
+
     /// Queues `words` from word `at`: into a texture, in `staged` if
     /// given, else at once.
     fn write(
@@ -530,6 +578,9 @@ fn total(regions: &[(u32, u32); 4]) -> u32 {
 pub(crate) struct Tables {
     backing: Backing,
     places: [Place; TABLES],
+    /// Each block's vertex and index pools, in [`BlockPool`]'s order, by
+    /// block slot; `None` where a block was freed.
+    blocks: Vec<Option<[Place; 2]>>,
     #[cfg(cpu_driven)]
     rows: Option<RowTexture>,
     #[cfg(cpu_driven)]
@@ -545,6 +596,8 @@ pub(crate) struct Tables {
 #[derive(Debug, Default)]
 struct Mirrors {
     tables: [Option<Vec<u32>>; TABLES],
+    /// Each block's index pool, by block slot, when they're copied.
+    indices: Option<Vec<Vec<u32>>>,
     /// Changes with every write to one.
     revision: u64,
 }
@@ -556,6 +609,28 @@ impl Mirrors {
             return;
         };
         self.revision += 1;
+        Self::put(gpu, mirror, at, words);
+    }
+
+    /// Copies a write into block `block`'s pool, if its copy is kept.
+    fn write_block(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        (block, pool): (usize, BlockPool),
+        at: u32,
+        words: Words<'_>,
+    ) {
+        let Some(blocks) = self.indices.as_mut().filter(|_| pool == BlockPool::Indices) else {
+            return;
+        };
+        if blocks.len() <= block {
+            blocks.resize_with(block + 1, Vec::new);
+        }
+        self.revision += 1;
+        Self::put(gpu, &mut blocks[block], at, words);
+    }
+
+    fn put(gpu: &mut dyn Gpu, mirror: &mut Vec<u32>, at: u32, words: Words<'_>) {
         let at = at as usize;
         let end = at + words.len() as usize;
         if mirror.len() < end {
@@ -586,7 +661,7 @@ impl Tables {
         gpu: &mut dyn Gpu,
         backing: Backing,
         words: [u64; TABLES],
-        mirrored: &[Table],
+        (mirrored, block_indices): (&[Table], bool),
     ) -> Self {
         #[cfg(cpu_driven)]
         let mut rows = None;
@@ -617,9 +692,14 @@ impl Tables {
         for table in mirrored {
             mirrors.tables[table.index()] = Some(Vec::new());
         }
+        #[cfg(cpu_driven)]
+        if block_indices {
+            mirrors.indices = Some(Vec::new());
+        }
         Self {
             backing,
             places,
+            blocks: Vec::new(),
             #[cfg(cpu_driven)]
             rows,
             #[cfg(cpu_driven)]
@@ -653,6 +733,85 @@ impl Tables {
             #[cfg(cpu_driven)]
             Some(&mut self.staged),
         );
+    }
+
+    /// Makes block slot `block`'s pools, `words` long in [`BlockPool`]'s
+    /// order, on the tables' backing.
+    pub(super) fn add_block(&mut self, gpu: &mut dyn Gpu, block: usize, words: [u64; 2]) {
+        let places = [0, 1].map(|i| {
+            let pool = BlockPool::ALL[i];
+            match self.backing {
+                Backing::Storage => Place::Buffer(gpu.create_buffer(&BufferDesc {
+                    label: pool.label(),
+                    size: (words[i] * 4).max(16),
+                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                })),
+                #[cfg(cpu_driven)]
+                Backing::Texture => {
+                    let rows = rows(words[i], data_width(&gpu.caps().limits));
+                    Place::Texture {
+                        texture: data_texture(gpu, pool.label(), rows),
+                        base: 0,
+                    }
+                }
+            }
+        });
+        if self.blocks.len() <= block {
+            self.blocks.resize(block + 1, None);
+        }
+        assert!(self.blocks[block].is_none(), "block slot {block} is taken");
+        self.blocks[block] = Some(places);
+    }
+
+    /// Frees block slot `block`'s pools.
+    pub(super) fn remove_block(&mut self, gpu: &mut dyn Gpu, block: usize) {
+        #[cfg(cpu_driven)]
+        self.flush(gpu);
+        let places = self.blocks[block].take().expect("a block's pools");
+        for place in places {
+            place.destroy(gpu);
+        }
+        #[cfg(cpu_driven)]
+        if let Some(mirror) = self.mirrors.indices.as_mut().and_then(|m| m.get_mut(block)) {
+            *mirror = Vec::new();
+            self.mirrors.revision += 1;
+        }
+    }
+
+    /// Queues `words` into pool `pool` of block `block` from word `at`.
+    pub(crate) fn write_block(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        (block, pool): (usize, BlockPool),
+        at: u32,
+        words: Words<'_>,
+    ) {
+        #[cfg(cpu_driven)]
+        self.mirrors.write_block(gpu, (block, pool), at, words);
+        let place = self.blocks[block].expect("a block's pools")[pool as usize];
+        place.write(
+            gpu,
+            at,
+            words,
+            #[cfg(cpu_driven)]
+            Some(&mut self.staged),
+        );
+    }
+
+    /// The storage buffer of block `block`'s pool `pool`.
+    pub(crate) fn block_buffer(&self, block: usize, pool: BlockPool) -> BufferId {
+        match self.blocks[block].expect("a block's pools")[pool as usize] {
+            Place::Buffer(buffer) => buffer,
+            #[cfg(cpu_driven)]
+            place => panic!("{} has no buffer: {place:?}", pool.label()),
+        }
+    }
+
+    /// The copy of block `block`'s index pool, if they're kept.
+    #[cfg(cpu_driven)]
+    pub(crate) fn block_indices(&self, block: usize) -> Option<&[u32]> {
+        let blocks = self.mirrors.indices.as_ref()?;
+        Some(blocks.get(block).map_or(&[][..], Vec::as_slice))
     }
 
     /// Issues the writes into data textures held since the last flush:
@@ -690,6 +849,7 @@ impl Tables {
     pub(crate) fn mirror_bytes(&self) -> u64 {
         #[cfg(cpu_driven)]
         let bytes = (self.mirrors.tables.iter().flatten())
+            .chain(self.mirrors.indices.iter().flatten())
             .map(|m| m.capacity() as u64 * 4)
             .sum();
         #[cfg(not(cpu_driven))]
@@ -793,16 +953,20 @@ impl Tables {
         }
     }
 
-    /// The tables' entries in the scene group (bindings 1 to 7).
-    pub(crate) fn entries(&self) -> Vec<BindGroupEntry> {
+    /// The tables' entries in block `block`'s scene group (bindings 1 to
+    /// 7): its pools, and the tables every block shares.
+    pub(crate) fn entries(&self, block: usize) -> Vec<BindGroupEntry> {
         let entry = |binding, table: Table| self.entry(table, binding);
+        let pools = self.blocks[block].expect("a block's pools");
+        let [vertices, indices] =
+            BlockPool::ALL.map(|pool| pools[pool as usize].entry(pool.binding()));
         match self.backing {
             Backing::Storage => vec![
                 entry(1, Table::Tiles),
                 entry(2, Table::Chunks),
                 entry(3, Table::Visible),
-                entry(4, Table::Vertices),
-                entry(5, Table::Indices),
+                vertices,
+                indices,
                 entry(6, Table::Props),
                 entry(7, Table::NodeCull),
             ],
@@ -810,8 +974,8 @@ impl Tables {
             Backing::Texture => vec![
                 entry(1, Table::Tiles),
                 BindGroupEntry::buffer(2, self.rows.as_ref().expect("the row texture").bases),
-                entry(4, Table::Vertices),
-                entry(5, Table::Indices),
+                vertices,
+                indices,
                 entry(6, Table::Props),
             ],
         }
@@ -819,19 +983,14 @@ impl Tables {
 
     /// `table`'s entry at `binding`: its buffer, or the texture it's in.
     pub(crate) fn entry(&self, table: Table, binding: u32) -> BindGroupEntry {
-        match self.places[table.index()] {
-            Place::Buffer(buffer) => BindGroupEntry::buffer(binding, buffer),
-            #[cfg(cpu_driven)]
-            Place::Texture { texture, .. } => {
-                BindGroupEntry::texture(binding, texture, TextureViewDimension::D2)
-            }
-            #[cfg(cpu_driven)]
-            Place::Cpu => panic!("{} isn't on the GPU", table.label()),
-        }
+        self.places[table.index()].entry(binding)
     }
 
     #[cfg_attr(not(cpu_driven), allow(unused_variables))]
     pub(super) fn destroy(self, gpu: &mut dyn Gpu) {
+        for place in self.blocks.into_iter().flatten().flatten() {
+            place.destroy(gpu);
+        }
         for (i, place) in self.places.into_iter().enumerate() {
             match place {
                 Place::Buffer(buffer) => gpu.destroy_buffer(buffer),

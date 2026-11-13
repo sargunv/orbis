@@ -8,9 +8,8 @@
 //! frame that draws tiles, while tiles and pipelines still load: the wheel
 //! notches, drags and right-button tilts and turns of `pnpm session`,
 //! timed as it times them. Frames come on a 60 Hz beat, as a host's
-//! display asks for them: a beat whose map has news draws a frame,
-//! another does the map's upkeep, and input waits for the beat after it
-//! comes, as an event loop's would.
+//! display asks for them: a beat whose map has news draws a frame, and
+//! input waits for the beat after it comes, as an event loop's would.
 //!
 //! The sessions: `manhattan` (Liberty over Midtown, z13 wheel-zoomed to
 //! about z16 as the buildings load, tilted to 70, turned and dragged),
@@ -561,8 +560,6 @@ fn run_session(
                 zoom: map.camera().zoom(&crate::web_mercator()),
                 report,
             });
-        } else {
-            map.upkeep();
         }
         let t = now();
         let edges = [windows.first().map(|w: &[f64; 2]| w[0]), last_input];
@@ -659,23 +656,13 @@ fn pacing(xs: &mut [f64]) -> String {
     )
 }
 
-/// The device's counts over `frames`, summed, the drape slots redrawn
-/// and how many frames.
 /// The frames' device counts summed, their drape slots redrawn, their
 /// pipelines asked for outside the style's set, and how many they are.
-/// The frames' device counts, drape slots, late pipelines and number;
-/// the counts with what their preparations at rest did, or without.
-fn summed<'a>(
-    frames: impl Iterator<Item = &'a Frame>,
-    at_rest: bool,
-) -> (GpuCounters, u32, u32, usize) {
+fn summed<'a>(frames: impl Iterator<Item = &'a Frame>) -> (GpuCounters, u32, u32, usize) {
     let mut sum = GpuCounters::default();
     let (mut slots, mut late, mut n) = (0, 0, 0);
     for f in frames {
-        sum += match at_rest {
-            true => f.report.gpu,
-            false => f.report.gpu.since(&f.report.prepared_at_rest),
-        };
+        sum += f.report.gpu;
         slots += f.report.frame.drape_slots;
         late += f.report.pipelines_late;
         n += 1;
@@ -811,9 +798,9 @@ impl SessionReport {
              copied on the GPU | pool moves | MiB they made | MiB they copied | MiB uploaded | \
              upload calls | texture-write submissions | drape slots | peak frame MiB uploaded | \
              peak frame MiB of tiles | layout ms on arrival frames p50 / max | most \
-             chunks left out | most label chunks capped, in frames | MiB of slots moved |"
+             chunks left out | MiB of slots moved |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(21))?;
+        writeln!(out, "|{}", "---|".repeat(20))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -821,16 +808,11 @@ impl SessionReport {
                     "moving" => f.report.moved || f.report.input,
                     _ => true,
                 };
-                // The upkeep's moves at rest count with the frame drawn after
-                // them, which input may have reached since: not its own.
-                let (c, slots, late, n) = summed(r.frames.iter().filter(keep), what == "all");
-                // Moves in upkeep between frames happened at rest.
+                let (c, slots, late, n) = summed(r.frames.iter().filter(keep));
                 let mut resized = orb_api::Resized::default();
                 for f in r.frames.iter().filter(keep) {
                     resized += f.report.resized;
-                    if what == "all" {
-                        resized += f.report.prepared_resized;
-                    }
+                    resized += f.report.prepared_resized;
                 }
                 let peak = (r.frames.iter().filter(keep))
                     .map(|f| f.report.gpu.uploaded_bytes())
@@ -852,11 +834,6 @@ impl SessionReport {
                     .map(|f| f.report.scene.candidates_dropped)
                     .max()
                     .unwrap_or(0);
-                // Label chunks that didn't draw for the placement target.
-                let (most_capped, capped_frames) = (r.frames.iter().filter(keep))
-                    .map(|f| f.report.scene.labels_capped)
-                    .filter(|&c| c > 0)
-                    .fold((0, 0), |(most, n), c| (most.max(c), n + 1));
                 let slot_moves: u64 = (r.frames.iter().filter(keep))
                     .map(|f| f.report.frame.slot_bytes_moved)
                     .sum();
@@ -867,8 +844,7 @@ impl SessionReport {
                 writeln!(
                     out,
                     "| {} {what} | {n} | {} | {late} | {} | {} | {} | {} | {} | {} | {} | {} | {} | \
-                     {} | {slots} | {} | {} | {layout} | {left_out} | {most_capped}, \
-                     {capped_frames} | {} |",
+                     {} | {slots} | {} | {} | {layout} | {left_out} | {} |",
                     r.name,
                     c.pipelines_requested,
                     c.pipelines_compiled,
@@ -894,17 +870,14 @@ impl SessionReport {
              the style's pipeline set left out. input: frames drawn while input \
              held the camera (a pipeline made then compiled mid-gesture); moving: frames \
              that moved the camera, or with input (memory made then is made while it moves); \
-             input and moving leave out what the map's upkeep did at rest before them; pool \
-             moves: pools, tables, tile pages and the drape atlas moving into memory of another \
-             size, and what they made and copied (part of the device's counts), in the frames \
-             (all: and in the map's upkeep between them, at rest); peak frame: the most one frame \
+             pool moves: blocks made, and tables, tile pages and the drape atlas moving into \
+             memory of another size, and what they made and copied (part of the device's \
+             counts); peak frame: the most one frame \
              uploaded, with what was prepared before it; of tiles: the most of tiles' and edits' \
              results one frame uploaded, which its budget's bytes bound; layout: the render's \
              cull stage (the candidates laid out again, and tile placement rows written) in \
              frames that took tiles; chunks left out: the most one frame's cull lists had no \
-             room for; label chunks capped: the most one frame's symbol nodes left undrawn \
-             past the placement target, which doesn't grow while memory is held, and the \
-             frames that left any; slots moved: compacted index slots the candidate layouts moved \
+             room for; slots moved: compacted index slots the candidate layouts moved \
              (natively copied twice, through the scratch buffer)."
         )?;
         writeln!(out)?;

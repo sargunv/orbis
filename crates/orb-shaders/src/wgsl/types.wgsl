@@ -116,9 +116,15 @@ struct Frame {
     // orb-render's `surface_cells` of the view, so the cull, the point
     // shaders and a driver that draws without the cull count them alike.
     surface_cells: u32,
-    // The render nodes whose symbols the symbol placements place (the
-    // cull's node rows).
+    // The cull rows of a scene block: its render nodes' and their cut
+    // streams' (orb-render's `Scene::row`). A block's rows start at
+    // `block_row`, its cull workgroups at `block_group` and its symbol
+    // placement workgroups at `block_quad_group`: the block's frame block
+    // says where (the scene's own, unbound to a block, says 0).
     placed_nodes: u32,
+    block_row: u32,
+    block_group: u32,
+    block_quad_group: u32,
     // The vec3s last, one after another: ANGLE's Metal back end gives a
     // vec3 16 bytes where std140 packs a scalar into its fourth, and a
     // block laid out otherwise than std140 is converted on the CPU at a
@@ -262,6 +268,9 @@ fn point_cells(surface: bool) -> u32 {
 }
 
 // A render node's slice of the candidate and visible lists.
+// Words of a `NodeCull` row.
+const NODE_CULL_WORDS: u32 = 10u;
+
 struct NodeCull {
     // The node's first slot in the candidate and visible lists.
     visible_base: u32,

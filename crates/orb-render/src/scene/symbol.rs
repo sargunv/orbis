@@ -290,65 +290,105 @@ pub struct SymbolMeshData<'a> {
     pub chunks: &'a [Chunk],
 }
 
+/// A symbol stream's tables, in its header's order, the quads' draw
+/// order last but one.
+fn symbol_tables<'a>(data: &SymbolMeshData<'a>, order: &'a [u32]) -> [Words<'a>; 10] {
+    [
+        data.quads,
+        data.placed,
+        data.glyph_offsets,
+        data.lines,
+        Words::Core(data.glyphs),
+        Words::Core(data.images),
+        data.instance_rows,
+        Words::Core(data.text_sizes),
+        Words::Core(order),
+        data.colors,
+    ]
+}
+
+/// The vertex words a symbol stream takes: its header and tables.
+fn symbol_words(data: &SymbolMeshData<'_>) -> u32 {
+    let quads = data.quads.len() / QUAD_WORDS;
+    let tables = symbol_tables(data, &[]);
+    SYMBOL_HEADER_WORDS as u32 + quads + tables.iter().map(Words::len).sum::<u32>()
+}
+
 impl Scene {
-    /// Uploads a symbol stream of `tile` for render `node`, with state
-    /// words for one world copy. They start hidden (zero opacity, not
-    /// placed).
-    pub(crate) fn insert_symbol_mesh(
+    /// Uploads symbol streams of `tile`, each for its render node, with
+    /// state words for one world copy, all in one block: a layer's icons
+    /// and text draw in one list, icons first, which another block's
+    /// draw would come after. They start hidden (zero opacity, not
+    /// placed). All of them or none.
+    pub(crate) fn insert_symbol_meshes(
         &mut self,
         gpu: &mut dyn Gpu,
         tile: TileId,
-        node: u32,
+        meshes: &[(u32, &SymbolMeshData<'_>)],
+    ) -> Result<Vec<MeshId>, OutOfSpace> {
+        assert!(self.tiles[tile.0 as usize].is_some(), "unknown tile");
+        let words: Vec<u32> = meshes.iter().map(|(_, data)| symbol_words(data)).collect();
+        let chunks: u32 = meshes
+            .iter()
+            .map(|(_, data)| data.chunks.len() as u32)
+            .sum();
+        self.reserve_chunks(gpu, chunks)?;
+        let total = words.iter().sum();
+        let (block, [mut all, _, _]) = self.alloc_words(gpu, [total, 0, 0], None)?;
+        let mut ids = Vec::with_capacity(meshes.len());
+        for (&(node, data), words) in meshes.iter().zip(words) {
+            let vertices = all.start..all.start + words;
+            all.start += words;
+            match self.insert_symbol_mesh_in(gpu, tile, (node, block), vertices.clone(), data) {
+                Ok(id) => ids.push(id),
+                Err(e) => {
+                    self.free_words(block, 0, vertices.start..all.end);
+                    for id in ids {
+                        self.remove_mesh(id);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// A symbol stream of `tile` for render `node`, its header and tables
+    /// written at `vertices` of block `block`'s vertex pool. On `Err` the
+    /// words are still the caller's.
+    fn insert_symbol_mesh_in(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tile: TileId,
+        (node, block): (u32, u32),
+        vertices: Range<u32>,
         data: &SymbolMeshData<'_>,
     ) -> Result<MeshId, OutOfSpace> {
-        assert!(
-            (node as usize) < self.nodes.len(),
-            "unknown render node {node}"
-        );
-        assert!(self.tiles[tile.0 as usize].is_some(), "unknown tile");
+        assert!((node as usize) < self.rows, "unknown render node {node}");
         let placed_count = data.placed.len() / PLACED_WORDS;
         debug_assert_eq!(data.placed_quads.len() as u32, placed_count);
         let quads = data.quads.len() / QUAD_WORDS;
         let order: Vec<u32> = (0..quads).collect();
-        let tables = [
-            data.quads,
-            data.placed,
-            data.glyph_offsets,
-            data.lines,
-            Words::Core(data.glyphs),
-            Words::Core(data.images),
-            data.instance_rows,
-            Words::Core(data.text_sizes),
-            Words::Core(&order),
-            data.colors,
-        ];
-        let words = SYMBOL_HEADER_WORDS as u32 + tables.iter().map(Words::len).sum::<u32>();
-        if !self.chunk_slots.reserve(data.chunks.len() as u32) {
-            return Err(OutOfSpace);
-        }
-        let vertices = self.vertex_arena.alloc(words).ok_or(OutOfSpace)?;
-        let Some(props) = self.prop_arena.alloc(data.props.len()) else {
-            self.vertex_arena.free(vertices);
-            return Err(OutOfSpace);
-        };
-        let Some(states) = self.prop_arena.alloc(placed_count * SYMBOL_STATE_WORDS) else {
-            self.vertex_arena.free(vertices);
-            self.prop_arena.free(props);
-            return Err(OutOfSpace);
+        let tables = symbol_tables(data, &order);
+        let props = self.alloc_props(gpu, data.props.len())?;
+        let states = match self.alloc_props(gpu, placed_count * SYMBOL_STATE_WORDS) {
+            Ok(states) => states,
+            Err(e) => {
+                self.prop_arena.free(props);
+                return Err(e);
+            }
         };
         let mut header = [0u32; SYMBOL_HEADER_WORDS];
         let mut at = SYMBOL_HEADER_WORDS as u32;
         for (i, table) in tables.iter().enumerate() {
             header[i] = at;
-            self.tables
-                .write(gpu, Table::Vertices, vertices.start + at, *table);
+            self.write_pool(gpu, block, 0, vertices.start + at, *table);
             at += table.len();
         }
         header[symbol_header::STATES] = states.start;
         header[symbol_header::COPIES] = 1;
         header[symbol_header::PARAMS..].copy_from_slice(&data.params);
-        self.tables
-            .write(gpu, Table::Vertices, vertices.start, Words::Core(&header));
+        self.write_pool(gpu, block, 0, vertices.start, Words::Core(&header));
         self.tables
             .write(gpu, Table::Props, props.start, data.props);
         let zeros = vec![0; states.len()];
@@ -385,6 +425,7 @@ impl Scene {
         let entry = MeshEntry {
             tile,
             node,
+            block,
             chunk_slots: chunk_ids,
             chunks: data.chunks.to_vec(),
             vertices,
@@ -442,9 +483,8 @@ impl Scene {
         }
         symbol.order = order.to_vec();
         symbol.lay_runs(&entry.chunks);
-        let at = entry.vertices.start + symbol.order_at;
-        self.tables
-            .write(gpu, Table::Vertices, at, Words::Core(order));
+        let (block, at) = (entry.block, entry.vertices.start + symbol.order_at);
+        self.write_pool(gpu, block, 0, at, Words::Core(order));
         self.write_symbol_masks(gpu, mesh, None);
     }
 
@@ -463,8 +503,8 @@ impl Scene {
     ) -> Result<(), OutOfSpace> {
         assert!(copies.is_power_of_two(), "copies are a power of two");
         let symbol = self.symbol(mesh);
-        let block = symbol.states.len() as u32 / symbol.copies;
-        let states = self.prop_arena.alloc(block * copies).ok_or(OutOfSpace)?;
+        let per_copy = symbol.states.len() as u32 / symbol.copies;
+        let states = self.alloc_props(gpu, per_copy * copies)?;
         let zeros = vec![0; states.len()];
         self.tables
             .write_words(gpu, Table::Props, states.start, &zeros);
@@ -474,14 +514,12 @@ impl Scene {
         symbol.copies = copies;
         symbol.shown = vec![0; copies as usize * symbol.block_words()];
         symbol.stayed = symbol.shown.clone();
-        let header = entry.vertices.start + symbol_header::STATES as u32;
-        self.prop_arena.free(old);
-        self.tables.write(
-            gpu,
-            Table::Vertices,
-            header,
-            Words::Core(&[states.start, copies]),
+        let (block, header) = (
+            entry.block,
+            entry.vertices.start + symbol_header::STATES as u32,
         );
+        self.prop_arena.free(old);
+        self.write_pool(gpu, block, 0, header, Words::Core(&[states.start, copies]));
         self.write_symbol_masks(gpu, mesh, None);
         Ok(())
     }

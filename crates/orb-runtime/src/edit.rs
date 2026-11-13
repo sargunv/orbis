@@ -27,10 +27,7 @@ use orb_style::{Binding, Change, Class, LayerKey, Patch, PropertyId};
 
 use crate::jobs::TileOutcome;
 use crate::map::{LoadedStyle, Map, NodeState, revise};
-use crate::resident::{
-    SourceState, evict_unused, mesh_sizes, record_maxima, remove_resident, resolve_rows,
-    upload_mesh, with_room,
-};
+use crate::resident::{SourceState, record_maxima, remove_resident, resolve_rows, upload_mesh};
 use crate::style::StylePlan;
 use crate::worker::StyleUpdate;
 
@@ -371,10 +368,6 @@ impl Map {
         tile: TileIndex,
         result: Result<TileOutcome, String>,
     ) {
-        // Pools don't move while the camera does (the renderer's gate):
-        // tiles out of view make the room. An edit at rest grows them: it
-        // has no upkeep to wait for.
-        let free = renderer.moves() != orb_render::Moves::Held;
         let Some(style) = &mut self.style else {
             return;
         };
@@ -412,35 +405,15 @@ impl Map {
         }
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
-        // Room as for an arriving tile: what's free first; while the camera
-        // moves, tiles out of view go, as the pools can't grow (this one, if
-        // it is one, ends the edit's result).
-        let mut sizes = mesh_sizes(plan, &build);
-        if build.rows_only {
-            for size in &mut sizes {
-                *size = orb_render::MeshSize {
-                    props: size.props,
-                    ..Default::default()
-                };
-            }
-        }
-        while !renderer.fits(&sizes) && !free {
-            let Some(victim) = evict_unused(&mut style.sources, index) else {
-                break;
-            };
-            self.retired
-                .ramps
-                .extend(remove_resident(renderer, victim, &mut style.states));
-        }
-        let grow = true;
         let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
             unreachable!("checked above");
         };
         let Some(resident) = pyramid.get_mut(tile) else {
             return;
         };
-        // An upload that finds no room even so leaves the tile to load
-        // again, as a fresh map would, rather than draw without a layer.
+        // An upload that finds no room within the device's limits leaves
+        // the tile to load again, as a fresh map would, rather than draw
+        // without a layer.
         let mut no_room = false;
         let tile_zoom = resident.zoom;
         let namespace = style.image_namespace.expect("namespace");
@@ -478,14 +451,12 @@ impl Map {
                     &mut style.states,
                     &mut self.warnings,
                 );
-                let set = with_room(gpu, renderer, grow, |gpu, renderer| {
-                    renderer.set_mesh_rows(
-                        gpu,
-                        current.mesh,
-                        (&props, mesh.row_words),
-                        &rows.rows(),
-                    )
-                });
+                let set = renderer.set_mesh_rows(
+                    gpu,
+                    current.mesh,
+                    (&props, mesh.row_words),
+                    &rows.rows(),
+                );
                 if set.is_err() {
                     rows.release(gpu, atlas, &mut style.states);
                     no_room = true;
@@ -549,12 +520,10 @@ impl Map {
                 }
                 for mesh in build.meshes.iter().filter(|m| m.node == key) {
                     let (states, warnings) = (&mut style.states, &mut self.warnings);
-                    let uploaded = with_room(gpu, renderer, grow, |gpu, renderer| {
-                        upload_mesh(
-                            gpu, renderer, plan, &build, mesh, resident, atlas, namespace, states,
-                            warnings,
-                        )
-                    });
+                    let uploaded = upload_mesh(
+                        gpu, renderer, plan, &build, mesh, resident, atlas, namespace, states,
+                        warnings,
+                    );
                     if uploaded.is_err() {
                         no_room = true;
                         break;
@@ -571,10 +540,9 @@ impl Map {
                     .get(&crate::style::node_key(s.layer, 0))
                     .is_some_and(|state| build.revision >= state.layout_epoch)
             });
-            let labels = &mut self.labels;
             no_room = no_room
-                || with_room(gpu, renderer, grow, |gpu, renderer| {
-                    labels.upload(
+                || (self.labels)
+                    .upload(
                         gpu,
                         renderer,
                         plan,
@@ -586,8 +554,7 @@ impl Map {
                         tile_zoom,
                         true,
                     )
-                })
-                .is_err();
+                    .is_err();
         }
         if no_room {
             drop(images);

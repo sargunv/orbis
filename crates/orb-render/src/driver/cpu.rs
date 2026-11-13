@@ -80,13 +80,12 @@ const WRITE_GAP: u32 = 512;
 /// once, however many a frame changed.
 const WRITE_PIECE: u32 = 1 << 16;
 
-/// The tables its cull reads.
+/// The tables its cull reads, besides the blocks' index pools.
 pub(crate) const MIRRORED: &[Table] = &[
     Table::Tiles,
     Table::Chunks,
     Table::Candidates,
     Table::NodeCull,
-    Table::Indices,
 ];
 
 const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
@@ -224,7 +223,7 @@ impl CpuDriver {
             self.runs.clear();
             self.drawn.resize(words.div_ceil(64), 0);
             move_bits(&mut self.drawn, scene.moves());
-            self.segments = segments(scene.tables());
+            self.segments = segments(scene.tables(), scene.rows());
             // The slots of runs that went hide, then slots move, as the
             // GPU driver's do: before this frame's writes to the slots
             // they move from.
@@ -544,17 +543,16 @@ impl CpuDriver {
         keeps
     }
 
-    /// The GPU twin's cull of `groups` workgroups, writing its own
-    /// buffers.
-    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, groups: u32, passes: &mut Vec<Pass>) -> u32 {
+    /// The GPU twin's cull of the scene, writing its own buffers.
+    pub(crate) fn cull(&self, gpu: &mut dyn Gpu, scene: &Scene, passes: &mut Vec<Pass>) -> u32 {
         self.twin
             .as_ref()
-            .map_or(0, |twin| twin.cull(gpu, groups, passes))
+            .map_or(0, |twin| twin.cull(gpu, scene, passes))
     }
 
-    /// Node `node`'s draw, from its arguments.
-    pub(crate) fn draw(&self, node: u32, draw: NodeDraw) -> RenderCommand {
-        let at = node as usize * ARGS_WORDS;
+    /// Row `row`'s draw, from its arguments.
+    pub(crate) fn draw(&self, row: u32, draw: NodeDraw) -> RenderCommand {
+        let at = row as usize * ARGS_WORDS;
         let a = self.args.get(at..at + 5).unwrap_or(&[0; 5]);
         if draw == NodeDraw::Indexed {
             RenderCommand::DrawIndexed {
@@ -570,8 +568,8 @@ impl CpuDriver {
         }
     }
 
-    pub(crate) fn draws_nothing(&self, node: u32) -> bool {
-        let at = node as usize * ARGS_WORDS;
+    pub(crate) fn draws_nothing(&self, row: u32) -> bool {
+        let at = row as usize * ARGS_WORDS;
         self.args
             .get(at..at + 2)
             .is_none_or(|a| a[0] == 0 || a[1] == 0)
@@ -654,11 +652,14 @@ struct Segment {
     rows: u32,
     /// The node's `RUN_SHIFT`.
     run_shift: u32,
+    /// The block its chunks' indices are in.
+    block: u32,
 }
 
 /// Every indexed node's candidates (hidden nodes' too, whose slots keep
-/// what they held), as segments in slot order.
-fn segments(tables: &Tables) -> Vec<Segment> {
+/// what they held), as segments in slot order, of node rows `rows` to a
+/// block.
+fn segments(tables: &Tables, rows: u32) -> Vec<Segment> {
     use layout::candidate as c;
     use layout::chunk as ch;
     use layout::node_cull as nc;
@@ -670,10 +671,11 @@ fn segments(tables: &Tables) -> Vec<Segment> {
     );
     let listed = (candidates.len() / CANDIDATE_WORDS) as u32;
     let mut segments: Vec<Segment> = Vec::new();
-    for node in nodes.as_chunks::<NODE_WORDS>().0 {
+    for (n, node) in nodes.as_chunks::<NODE_WORDS>().0.iter().enumerate() {
         if node[nc::DRAW] & 255 != DRAW_INDEXED {
             continue;
         }
+        let block = n as u32 / rows.max(1);
         let ours = segments.len();
         let base = node[nc::VISIBLE_BASE].min(listed);
         for r in base..base.saturating_add(node[nc::CANDIDATE_COUNT]).min(listed) {
@@ -695,6 +697,7 @@ fn segments(tables: &Tables) -> Vec<Segment> {
                     row: r,
                     rows: 1,
                     run_shift: node[nc::RUN_SHIFT],
+                    block,
                 }),
             }
         }
@@ -711,12 +714,16 @@ fn fill_slots(words: &mut [u32], at: u32, segments: &[Segment], drawn: &[u64], t
     let end = at + words.len() as u32;
     let read = |table| tables.mirror(table).expect("copied");
     let (candidates, chunks) = (read(Table::Candidates), read(Table::Chunks));
-    // The pool's indices, two to a word, the first in its low half: in
+    // A block's indices, two to a word, the first in its low half: in
     // order, as u16s, on a little-endian target.
     const _: () = assert!(cfg!(target_endian = "little"));
-    let indices: &[u16] = bytemuck::cast_slice(read(Table::Indices));
     let row = |r: u32| rows_at(candidates, r as usize, CANDIDATE_WORDS);
     for segment in segments.iter().take_while(|s| s.slot < end) {
+        let indices: &[u16] = bytemuck::cast_slice(
+            tables
+                .block_indices(segment.block as usize)
+                .expect("copied"),
+        );
         let rows = segment.row..segment.row + segment.rows;
         // From its last row whose slot starts by `at`.
         let (mut lo, mut hi) = (rows.start, rows.end);
@@ -854,17 +861,19 @@ fn decided_slots(
     nodes: &[u32],
     candidates: &[u32],
     chunks: &[u32],
-    indices: &[u32],
+    (tables, rows): (&Tables, u32),
 ) -> Vec<(u32, u32)> {
     use layout::candidate as c;
     use layout::chunk as ch;
     use layout::node_cull as nc;
     let mut slots = Vec::new();
-    for node in nodes.as_chunks::<NODE_WORDS>().0 {
+    for (n, node) in nodes.as_chunks::<NODE_WORDS>().0.iter().enumerate() {
         let draw = node[nc::DRAW];
         if draw & HIDDEN != 0 || draw & 255 != DRAW_INDEXED {
             continue;
         }
+        let block = n / rows.max(1) as usize;
+        let indices = tables.block_indices(block).unwrap_or_default();
         let base = node[nc::VISIBLE_BASE] as usize;
         for i in base..base + node[nc::CANDIDATE_COUNT] as usize {
             let row = rows_at(candidates, i, CANDIDATE_WORDS);
@@ -1104,6 +1113,8 @@ pub struct DriverCheck {
     cpu_candidates: Vec<u32>,
     node_rows: Vec<u32>,
     nodes: usize,
+    /// Rows a block has.
+    rows: u32,
     compacted_words: usize,
     /// What every slot the CPU's cull decided holds, whatever moved it
     /// there: (word, index).
@@ -1136,7 +1147,7 @@ impl DriverCheck {
             node_rows,
             tables.mirror(Table::Candidates)?,
             tables.mirror(Table::Chunks)?,
-            tables.mirror(Table::Indices)?,
+            (tables, scene.rows()),
         );
         let compacted_words = scene.stats().compacted_words as usize;
         let known = known_words(
@@ -1155,6 +1166,7 @@ impl DriverCheck {
             cpu_candidates: tables.mirror(Table::Candidates)?.to_vec(),
             node_rows: tables.mirror(Table::NodeCull)?.to_vec(),
             nodes: scene.node_count() as usize,
+            rows: scene.rows(),
             compacted_words,
         })
     }
@@ -1200,8 +1212,14 @@ impl DriverCheck {
         let free = |i: usize| !self.known[i] && cpu_compacted.get(i) == Some(&HIDDEN_INDEX);
         if let Some(at) = (0..n).find(|&i| cpu_compacted.get(i) != gpu_compacted.get(i) && !free(i))
         {
+            use layout::node_cull as nc;
+            // The row whose slots hold it.
+            let row = (self.node_rows.as_chunks::<NODE_WORDS>().0.iter()).position(|r| {
+                (r[nc::INDEX_BASE]..r[nc::INDEX_BASE] + r[nc::INDEX_COUNT]).contains(&(at as u32))
+            });
             return Err(format!(
-                "compacted word {at} of {n}: CPU {:?}, GPU {:?}",
+                "compacted word {at} of {n} (row {row:?} of {} a block): CPU {:?}, GPU {:?}",
+                self.rows,
                 cpu_compacted.get(at),
                 gpu_compacted.get(at)
             ));

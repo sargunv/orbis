@@ -18,8 +18,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::scene::{
-    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, Table, TileId, TileRow,
-    TileWarp, Words,
+    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, TileId, TileRow, TileWarp,
+    Words,
 };
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
@@ -27,39 +27,6 @@ use orb_layout::{Chunk, TileBox};
 
 use crate::Renderer;
 use crate::image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
-
-/// What uploads found no room for while the pools couldn't grow
-/// ([`Renderer::take_refusals`]): per pool (vertices, indices,
-/// properties) the words, and the chunk rows, that would have held them,
-/// 0 where they fit; and the tile pages they wanted a layer of. A map
-/// that doesn't move memory while the camera moves keeps it with what
-/// waits, and makes the room at rest ([`Renderer::grow_into`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Room {
-    pub(crate) words: [u32; 3],
-    pub(crate) chunks: u32,
-    pub(crate) pages: Vec<PageId>,
-}
-
-impl Room {
-    /// Nothing was refused.
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-
-    /// Room for either: the larger of what each asks.
-    pub fn merge(&mut self, other: &Room) {
-        for (a, b) in self.words.iter_mut().zip(other.words) {
-            *a = (*a).max(b);
-        }
-        self.chunks = self.chunks.max(other.chunks);
-        for &page in &other.pages {
-            if !self.pages.contains(&page) {
-                self.pages.push(page);
-            }
-        }
-    }
-}
 
 /// A tile the renderer holds, from an upload; [`Renderer::release_tile`]
 /// frees it.
@@ -235,6 +202,8 @@ impl TileBuild<'_> {
 /// whole or not at all.
 #[derive(Debug)]
 pub struct Reserved {
+    /// The block its vertices and indices are in.
+    block: u32,
     /// Per pool, the tile's words it holds (a range of the build's) and
     /// where in the pool they start.
     pools: [(Range<u32>, u32); 3],
@@ -260,8 +229,7 @@ impl Reserved {
 /// Why an upload failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UploadError {
-    /// No room: releasing tiles, or uploading again allowed to grow, may
-    /// make some.
+    /// No room within the device's limits: releasing tiles may make some.
     NoRoom,
     /// The tile itself can't draw.
     Invalid(String),
@@ -411,11 +379,9 @@ impl Tiles {
 
 impl Renderer {
     /// Uploads an image tile: its pixels into a layer of its source's page,
-    /// and a quad (or its mesh) into each of the source's image nodes.
-    /// Without `grow`, only room already there is used; with it, the page
-    /// and the scene's pools grow within their limits, unless memory is
-    /// [held](crate::Moves::Held). No source's first page is made while
-    /// memory is [held](crate::Moves::Held) ([`has_page`](Self::has_page)).
+    /// and a quad (or its mesh) into each of the source's image nodes. The
+    /// scene grows within the device's limits to hold it, and with `grow`
+    /// the page ([`alloc_layer`](Self::alloc_layer)).
     pub fn upload_image(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -430,7 +396,6 @@ impl Renderer {
         }
         let page = match self.tiles.page(key.source) {
             Some(page) => page,
-            None if self.moves() == crate::Moves::Held => return Err(UploadError::NoRoom),
             None => {
                 let layers = self.page_layers(size);
                 let page = self.images.create_page(gpu, kind, size, layers);
@@ -461,12 +426,6 @@ impl Renderer {
         let nodes: Vec<u32> = (0..self.nodes.len() as u32)
             .filter(|&i| self.nodes[i as usize].source == Some(key.source))
             .collect();
-        let sizes = vec![image_mesh_size(build.mesh.as_deref()); nodes.len()];
-        let fits = self.scene.fits(&sizes) || (grow && self.grow_for(gpu, &sizes));
-        if !fits {
-            self.scene.refuse(&sizes);
-            return Err(UploadError::NoRoom);
-        }
         let layer = self
             .alloc_layer(gpu, page, grow)
             .map_err(|OutOfSpace| UploadError::NoRoom)?;
@@ -570,9 +529,8 @@ impl Renderer {
     }
 
     /// Gives an image tile another mesh (a globe came or went): its quads
-    /// in every node, and its patches. The pools grow, within their
-    /// limits, for a finer mesh than the old. All or nothing: on `Err`
-    /// the tile holds no quads and draws nothing until a mesh fits.
+    /// in every node, and its patches. All or nothing: on `Err` the tile
+    /// holds no quads and draws nothing until a mesh fits.
     pub fn set_image_mesh(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -590,19 +548,11 @@ impl Renderer {
         let nodes: Vec<u32> = (0..self.nodes.len() as u32)
             .filter(|&i| self.nodes[i as usize].source == Some(entry.key.source))
             .collect();
-        let mut sizes = vec![image_mesh_size(mesh.as_deref()); nodes.len()];
-        sizes.extend(patches.map(|(_, words)| MeshSize {
-            props: words.len() as u32,
-            ..MeshSize::default()
-        }));
         let image = entry.image.as_mut().expect("image tiles hold an image");
         image.mesh = mesh;
-        let mut result = match self.fits(&sizes) || self.grow_for(gpu, &sizes) {
-            true => nodes
-                .iter()
-                .try_for_each(|&node| self.add_image_node(gpu, &mut entry, node)),
-            false => Err(OutOfSpace),
-        };
+        let mut result = nodes
+            .iter()
+            .try_for_each(|&node| self.add_image_node(gpu, &mut entry, node));
         if let (Ok(()), Some((cells, patches))) = (&result, patches) {
             result = self
                 .scene
@@ -619,43 +569,39 @@ impl Renderer {
         result
     }
 
-    /// Uploads a tile: all its meshes, in order, or none. Without `grow`,
-    /// only room already there is used; with it, the pools grow within
-    /// their limits, unless memory is [held](crate::Moves::Held). Returns
-    /// the tile and its meshes' ids.
+    /// Uploads a tile: all its meshes, in order, or none. Returns the tile
+    /// and its meshes' ids.
     pub fn upload_tile(
         &mut self,
         gpu: &mut dyn Gpu,
         build: &TileBuild<'_>,
-        grow: bool,
     ) -> Result<(GpuTile, Vec<MeshId>), UploadError> {
-        let size = build.size();
-        if grow && !self.fits(&[size]) {
-            self.grow_for(gpu, &[size]);
-        }
-        let mut reserved = self.reserve(build)?;
+        let mut reserved = self.reserve(gpu, build)?;
         self.write_reserved(gpu, build.words, &mut reserved, u64::MAX);
         self.finish_tile(gpu, build, reserved)
     }
 
-    /// Takes room for a tile's words, one range of each pool, without
-    /// growing them; [`write_reserved`](Self::write_reserved) writes them
-    /// and [`finish_tile`](Self::finish_tile) makes the tile of them, or
+    /// Takes room for a tile's words, one range of each pool (its
+    /// vertices and indices in one block, a new one if none has room);
+    /// [`write_reserved`](Self::write_reserved) writes them and
+    /// [`finish_tile`](Self::finish_tile) makes the tile of them, or
     /// [`unreserve`](Self::unreserve) gives the room back.
-    pub fn reserve(&mut self, build: &TileBuild<'_>) -> Result<Reserved, UploadError> {
+    pub fn reserve(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        build: &TileBuild<'_>,
+    ) -> Result<Reserved, UploadError> {
         if !build.spans_apart() {
             return Err(UploadError::Invalid("a tile's streams overlap".into()));
         }
-        let size = build.size();
-        if !self.fits(&[size]) {
-            self.scene.refuse(&[size]);
-            return Err(UploadError::NoRoom);
-        }
         let extents = build.extents();
         let lens = extents.clone().map(|e| e.end - e.start);
-        let block = self.scene.alloc_block(lens).ok_or(UploadError::NoRoom)?;
+        let (block, ranges) = (self.scene)
+            .alloc_words(gpu, lens, None)
+            .map_err(|OutOfSpace| UploadError::NoRoom)?;
         Ok(Reserved {
-            pools: [0, 1, 2].map(|p| (extents[p].clone(), block[p].start)),
+            block,
+            pools: [0, 1, 2].map(|p| (extents[p].clone(), ranges[p].start)),
             written: 0,
         })
     }
@@ -685,7 +631,7 @@ impl Renderer {
             }
             let from = range.start + skip as u32;
             let piece = words.slice(from..from + take as u32);
-            self.scene.write_pool(gpu, pool, at + skip as u32, piece);
+            (self.scene).write_pool(gpu, reserved.block, pool, at + skip as u32, piece);
             (skip, budget, written) = (0, budget - take, written + take * 4);
         }
         reserved.written += written;
@@ -696,7 +642,7 @@ impl Renderer {
     pub fn unreserve(&mut self, reserved: Reserved) {
         for (pool, (range, at)) in reserved.pools.into_iter().enumerate() {
             self.scene
-                .free_words(pool, at..at + (range.end - range.start));
+                .free_words(reserved.block, pool, at..at + (range.end - range.start));
         }
     }
 
@@ -715,6 +661,7 @@ impl Renderer {
             self.unreserve(reserved);
             return Err(UploadError::NoRoom);
         };
+        let block = reserved.block;
         // Empty ranges start at 0, as an arena's empty allocations do.
         let at = |pool: usize, span: &Range<u32>| {
             if span.is_empty() {
@@ -737,16 +684,17 @@ impl Renderer {
                 .chain(std::iter::once(reserved.pools[pool].0.end..u32::MAX))
             {
                 if span.start > from {
-                    self.scene.free_words(pool, at(pool, &(from..span.start)));
+                    (self.scene).free_words(block, pool, at(pool, &(from..span.start)));
                 }
                 from = span.end;
             }
         }
         let mut ids: Vec<MeshId> = Vec::with_capacity(build.meshes.len());
         for (i, mesh) in build.meshes.iter().enumerate() {
+            // Meshes a tile shares words between take them from its block.
             let shared = mesh
                 .shares
-                .map(|of| of.map(|of| self.scene.mesh_ranges(ids[of])));
+                .map(|of| of.map(|of| self.scene.mesh_ranges(ids[of]).1));
             let ranges = [0, 1, 2].map(|p| match (&shared, p) {
                 ([Some(of), _], 0) => of[0].clone(),
                 ([_, Some(of)], 1) => of[1].clone(),
@@ -756,7 +704,7 @@ impl Renderer {
             let inserted = self.scene.insert_mesh_at(
                 gpu,
                 part,
-                mesh.node,
+                (mesh.node, block),
                 ranges,
                 (mesh.chunks, mesh.row_words),
                 mesh.shares.map(|s| s.is_some()),
@@ -779,7 +727,7 @@ impl Renderer {
             for mesh in &build.meshes[failed..] {
                 for (pool, span) in mesh.spans.iter().enumerate() {
                     if !span.is_empty() {
-                        self.scene.free_words(pool, at(pool, span));
+                        self.scene.free_words(block, pool, at(pool, span));
                     }
                 }
             }
@@ -846,24 +794,31 @@ impl Renderer {
         Ok(id)
     }
 
-    /// Adds a symbol stream for render `node` to a tile, with its rows'
-    /// feature-state indices.
-    pub fn add_symbol_mesh(
+    /// Adds symbol streams to a tile, each for its render node with its
+    /// rows' feature-state indices: a symbol layer's icons and text
+    /// together, as they draw in one list. All of them or none.
+    pub fn add_symbol_meshes(
         &mut self,
         gpu: &mut dyn Gpu,
         tile: GpuTile,
-        node: u32,
-        data: &SymbolMeshData<'_>,
-        states: &[u32],
-    ) -> Result<MeshId, OutOfSpace> {
+        meshes: &[(u32, &SymbolMeshData<'_>, &[u32])],
+    ) -> Result<Vec<MeshId>, OutOfSpace> {
         let part = self.part(tile, IMAGE_EXTENT);
-        let id = self.scene.insert_symbol_mesh(gpu, part, node, data)?;
-        if let Err(e) = self.scene.set_mesh_state(gpu, id, states) {
-            self.scene.remove_mesh(id);
+        let streams: Vec<(u32, &SymbolMeshData<'_>)> =
+            meshes.iter().map(|&(node, data, _)| (node, data)).collect();
+        let ids = self.scene.insert_symbol_meshes(gpu, part, &streams)?;
+        let stated = (ids.iter().zip(meshes))
+            .try_for_each(|(&id, &(_, _, states))| self.scene.set_mesh_state(gpu, id, states));
+        if let Err(e) = stated {
+            for &id in &ids {
+                self.scene.remove_mesh(id);
+            }
             return Err(e);
         }
-        self.entry_mut(tile).meshes.push((node, id));
-        Ok(id)
+        for (&id, &(node, _, _)) in ids.iter().zip(meshes) {
+            self.entry_mut(tile).meshes.push((node, id));
+        }
+        Ok(ids)
     }
 
     /// Removes one of a tile's meshes.
@@ -885,133 +840,12 @@ impl Renderer {
         self.attach(gpu, mesh, rows)
     }
 
-    /// Whether meshes of these sizes would fit without growing the pools.
-    pub fn fits(&self, meshes: &[MeshSize]) -> bool {
-        self.scene.fits(meshes)
-    }
-
-    /// Records that meshes of these sizes found no room, as an upload
-    /// refused would ([`take_refusals`](Self::take_refusals)).
-    pub fn refuse(&mut self, meshes: &[MeshSize]) {
-        self.scene.refuse(meshes);
-    }
-
-    /// Grows the pools, within their limits, until meshes of these sizes
-    /// fit; whether they do. Never while memory is
-    /// [held](crate::Moves::Held).
-    pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
-        if !self.uploads_grow() {
-            return self.fits(meshes);
-        }
-        let fits = self.scene.grow_for(gpu, meshes);
-        self.glyphs
-            .set_table(self.scene.tables().writer(Table::Props));
-        fits
-    }
-
-    /// Halves a pool, table or image tile page a view that emptied left
-    /// mostly free: one move. Whether one shrank: never while memory is
-    /// [held](crate::Moves::Held).
-    pub fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
-        if self.moves() == crate::Moves::Held {
-            return false;
-        }
-        self.refused_pages.clear();
-        if self.scene.shrink(gpu) {
-            self.glyphs
-                .set_table(self.scene.tables().writer(Table::Props));
-            return true;
-        }
-        self.images.shrink(gpu)
-    }
-
-    /// Whether [`shrink`](Self::shrink) would shrink anything.
-    pub fn would_shrink(&self) -> bool {
-        self.scene.would_shrink() || self.images.would_shrink()
-    }
-
-    /// Forgets the pools' refusals, as [`shrink`](Self::shrink) does, on
-    /// a frame that doesn't shrink.
-    pub fn forget_refusals(&mut self) {
-        self.scene.forget_refusals();
-        self.refused_pages.clear();
-    }
-
-    /// Adds what `other` asks to `room`: the words and chunk rows each
-    /// asks past the pools' and the chunk table's ends now, summed, so that
-    /// one move a pool at rest holds every upload that waits. A merge
-    /// would hold only the largest, and a fresh map's pools, which start
-    /// small, would take a move a tile.
-    pub fn add_room(&self, room: &mut Room, other: &Room) {
-        let (tops, chunks) = self.scene.room_base();
-        for ((a, b), base) in room.words.iter_mut().zip(other.words).zip(tops) {
-            if b > 0 {
-                *a = (*a).max(base).saturating_add(b.saturating_sub(base));
-            }
-        }
-        if other.chunks > 0 {
-            room.chunks =
-                (room.chunks.max(chunks)).saturating_add(other.chunks.saturating_sub(chunks));
-        }
-        for &page in &other.pages {
-            if !room.pages.contains(&page) {
-                room.pages.push(page);
-            }
-        }
-    }
-
-    /// Whether a pool, the chunk table, an image tile page or the glyph
-    /// pages are more than three quarters full, below their ceilings.
-    pub fn wants_headroom(&self) -> bool {
-        self.scene.wants_headroom() || self.images.wants_headroom() || self.glyphs.wants_headroom()
-    }
-
-    /// Grows one of what is more than three quarters full, within its
-    /// ceiling: a map at rest makes room ahead of the next view, so that a
-    /// gesture from rest needn't grow them, and what it holds of tiles out
-    /// of view doesn't make way for each tile it brings in. A doubling of
-    /// what's three quarters full, so the room ahead follows what the view
-    /// holds, not a share of a fixed number. New memory
-    /// costs its clearing, and a device may hold up other work while it
-    /// clears (#176: on RADV 43 µs a MiB, holding up submissions; a new
-    /// 256 MiB block of wgpu's allocator 10-12 ms), so a frame grows one,
-    /// and a gesture that starts waits for one at most. Whether one grew:
-    /// never while memory is [held](crate::Moves::Held).
-    pub fn grow_headroom(&mut self, gpu: &mut dyn Gpu) -> bool {
-        if self.moves() == crate::Moves::Held {
-            return false;
-        }
-        if self.scene.grow_headroom(gpu) {
-            self.glyphs
-                .set_table(self.scene.tables().writer(Table::Props));
-            return true;
-        }
-        self.images.grow_headroom(gpu) || self.glyphs.grow_headroom(gpu)
-    }
-
-    /// Grows the pools once, within their limits; whether they grew. Never
-    /// while memory is [held](crate::Moves::Held).
-    pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
-        self.uploads_grow() && self.grow_for_style(gpu)
-    }
-
-    /// Grows the pools once for an edit's relayout, within their limits,
-    /// unless memory is [held](crate::Moves::Held): an edit at rest grows
-    /// them as a style's load sizes them, with no upkeep to wait for.
-    /// Whether they grew.
-    pub fn grow_for_edit(&mut self, gpu: &mut dyn Gpu) -> bool {
-        self.moves() != crate::Moves::Held && self.grow_for_style(gpu)
-    }
-
-    /// Grows the pools once, within their limits, whatever the
-    /// [gate](crate::Moves) says: for what a style's load or edit makes
-    /// itself (its background meshes), which has no upkeep to wait for and
-    /// no frame to keep smooth. Whether they grew.
-    pub fn grow_for_style(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let grew = self.scene.grow(gpu);
-        self.glyphs
-            .set_table(self.scene.tables().writer(Table::Props));
-        grew
+    /// Halves the property rows, the chunk table and the image tile pages
+    /// while a view that emptied left them mostly free, copying what each
+    /// keeps (a quarter of it at most; blocks of vertices and indices go
+    /// whole once empty, copying nothing).
+    pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) {
+        while self.scene.shrink(gpu) || self.images.shrink(gpu) {}
     }
 
     /// How many world copies a symbol mesh keeps state words for.
@@ -1244,27 +1078,13 @@ impl Renderer {
 
     /// Words of the property buffer for a table outside any tile, such as
     /// the feature-state table; not cleared. The pool grows, within its
-    /// limit, to make room, as for an edit's relayout: unless memory is
-    /// [held](crate::Moves::Held), when the caller asks again at rest.
-    /// No upkeep knows to grow the pool for it, so it doesn't wait for one.
+    /// limit, to make room.
     pub fn alloc_table(
         &mut self,
         gpu: &mut dyn Gpu,
         words: u32,
     ) -> Result<std::ops::Range<u32>, OutOfSpace> {
-        self.scene.alloc_table(words).or_else(|_| {
-            if self.moves() == crate::Moves::Held {
-                return Err(OutOfSpace);
-            }
-            let table = MeshSize {
-                props: words,
-                ..MeshSize::default()
-            };
-            self.scene.grow_for(gpu, &[table]);
-            self.glyphs
-                .set_table(self.scene.tables().writer(Table::Props));
-            self.scene.alloc_table(words)
-        })
+        self.scene.alloc_table(gpu, words)
     }
 
     pub fn free_table(&mut self, table: std::ops::Range<u32>) {
@@ -1339,19 +1159,8 @@ impl Renderer {
             ) {
                 crate::image::Images::bind_page(image, page);
             }
-            // A new node of a source draws its resident tiles: room for
-            // their quads first.
-            let tiles = self.tiles.of_source(source);
-            let sizes: Vec<MeshSize> = (tiles.iter())
-                .map(|tile| {
-                    let image = self.tiles.entry(*tile).image.as_ref();
-                    image_mesh_size(image.and_then(|i| i.mesh.as_deref()))
-                })
-                .collect();
-            if !self.fits(&sizes) {
-                self.grow_for(gpu, &sizes);
-            }
-            for tile in tiles {
+            // A new node of a source draws its resident tiles.
+            for tile in self.tiles.of_source(source) {
                 let mut entry = self.tiles.entries[tile.0 as usize]
                     .take()
                     .expect("indexed tiles are resident");
@@ -1418,23 +1227,6 @@ impl Renderer {
 /// How many zooms up a fading tile looks for the ancestor it cross-fades
 /// from: the row packs the tile's offsets in it in 12 bits.
 const FADE_DEPTH: u8 = 12;
-
-fn image_mesh_size(mesh: Option<&ImageMesh>) -> MeshSize {
-    match mesh {
-        Some(mesh) => MeshSize {
-            vertices: mesh.vertices.len() as u32,
-            indices: mesh.indices.len() as u32,
-            props: IMAGE_ROW_WORDS as u32,
-            chunks: mesh.chunks.len() as u32,
-        },
-        None => MeshSize {
-            vertices: QUAD.len() as u32,
-            indices: QUAD_INDICES.len() as u32,
-            props: IMAGE_ROW_WORDS as u32,
-            chunks: 1,
-        },
-    }
-}
 
 /// The quad an image tile on its own plane draws: its corners in tile
 /// units, as f32 positions and as image units (the same for a quad).

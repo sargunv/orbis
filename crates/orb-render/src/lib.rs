@@ -64,8 +64,8 @@ pub use scene::{
 };
 pub use scene::{PoolMemory, Resized, SceneMemory};
 pub use tiles::{
-    GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, Reserved, Room, TileBuild, TileKey,
-    UploadError, WarpKey, changed_borders, dem_neighbours, tile_extents, tile_latitudes, tile_size,
+    GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, Reserved, TileBuild, TileKey, UploadError,
+    WarpKey, changed_borders, dem_neighbours, tile_extents, tile_latitudes, tile_size,
 };
 
 use crate::pipeline::{Draw, Variants};
@@ -394,7 +394,9 @@ pub struct Renderer {
     gaps: Vec<Gap>,
     atmosphere: atmosphere::Atmosphere,
     scene: Scene,
-    draw_group: BindGroupId,
+    /// The scene's groups, by block slot: each block's frame and pools
+    /// with the tables they share; `None` for a free slot.
+    draw_groups: Vec<Option<BindGroupId>>,
     /// How the frame's draws learn their counts: on the GPU, its cull.
     driver: driver::Driver,
     draw_layout: BindGroupLayoutId,
@@ -509,45 +511,11 @@ pub struct Renderer {
     image_bindings: ImageBindings,
     /// The image texture the scene group binds.
     images_bound: TextureId,
-    /// When GPU memory may move ([`set_moves`](Self::set_moves)): the one
-    /// gate every pool, table, list, page and atlas move goes through.
-    moves: Moves,
-    /// Tile pages an upload was refused a layer of since the last
-    /// [`take_refusals`](Self::take_refusals).
-    refused_pages: Vec<PageId>,
     /// What new tile pages start from ([`size_for`](Self::size_for)).
     sizing: Option<Sizing>,
     /// What the symbol placement target did made again at another size,
     /// since the last [`take_resized`](Self::take_resized).
     resized: Resized,
-}
-
-/// When the renderer's GPU memory may move into memory of another size, or
-/// be made for something's first use ([`Renderer::set_moves`]): pools,
-/// tables, candidate lists, tile pages, glyph pages, the symbol placement
-/// target and the drape atlas. Every move checks it, so a map that holds
-/// its memory while the camera moves can't move any by mistake.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Moves {
-    /// As uploads, layouts and frames need: a still map's, which has no
-    /// gesture to keep smooth.
-    #[default]
-    Free,
-    /// A continuous map whose camera rests. An upload grows the pools, the
-    /// chunk table and tile page layers it finds full, so that a view
-    /// loads into what it needs; the map's upkeep grows what waited while
-    /// memory was held, and room ahead, and shrinks what a view left
-    /// mostly free, a move a frame ([`Renderer::grow_into`],
-    /// [`Renderer::grow_headroom`], [`Renderer::shrink`]). The lists, glyph
-    /// pages, symbol placement target, drape atlas and a source's first
-    /// tile page move or are made as the frame needs, and an edit's
-    /// relayouts grow the pools ([`Renderer::grow_for_edit`]).
-    Rest,
-    /// The camera moves: nothing moves or is made. Uploads, layouts and
-    /// glyphs that find no room leave out or wait for what they wanted, and
-    /// say so ([`Renderer::take_refusals`], [`Renderer::wants_room`]), for
-    /// the upkeep at rest to make.
-    Held,
 }
 
 /// What a map's new tile pages start at ([`Renderer::size_for`]): the
@@ -575,7 +543,7 @@ impl Sizing {
     /// Layers a page of `size`-texel tiles starts with: one for each tile
     /// the cover holds at that size, and no fewer than eight. A view that
     /// holds more (stand-ins while tiles load, the coarser tiles a
-    /// terrain's cover and culling read) grows it at rest.
+    /// terrain's cover and culling read) grows it.
     fn page_layers(self, size: [u32; 2]) -> u32 {
         let side = f64::from(size[0].max(size[1]).max(1));
         let tiles = self.tiles * (512.0 / side).powi(2);
@@ -604,7 +572,7 @@ impl Renderer {
         self.glyphs.destroy(gpu);
         let layouts = (self.draw_layout, self.node_layout);
         self.driver.destroy(gpu);
-        let groups = self.draw_group;
+        let groups = self.draw_groups;
         let pipelines = (self.paint.pipelines, self.symbols);
         (
             layouts,
@@ -659,7 +627,6 @@ impl Renderer {
     ) -> Self {
         let kind = driver::Kind::of(gpu.caps());
         let scene = Scene::new(gpu, capacity, kind);
-        let b = *scene.buffers();
         // The driver's pipeline first: nothing draws without it.
         let driver = driver::Driver::new(gpu, kind, &scene);
         let (vs, fs) = (ShaderStages::VERTEX, ShaderStages::FRAGMENT);
@@ -714,13 +681,13 @@ impl Renderer {
             sample_count: 1,
             mip_levels: 1,
         });
-        let draw_group = scene_group(
+        let draw_groups = scene_groups(
             gpu,
             draw_layout,
-            scene.tables(),
-            b.frame,
+            &scene,
             &image_bindings,
             (glyphs.texture(), nearest, no_dem, no_terrain_depth),
+            None,
         );
 
         let symbols = symbol::Symbols::new(gpu, backing);
@@ -751,7 +718,7 @@ impl Renderer {
             gaps: Self::gaps_on(gpu.caps()),
             atmosphere,
             scene,
-            draw_group,
+            draw_groups,
             driver,
             draw_layout,
             node_layout,
@@ -801,38 +768,14 @@ impl Renderer {
             glyphs,
             images_bound: image_bindings.texture,
             image_bindings,
-            moves: Moves::Free,
-            refused_pages: Vec::new(),
             sizing: None,
             resized: Resized::default(),
         }
     }
 
-    /// When GPU memory may move from now on ([`Moves`]); free at first.
-    pub fn set_moves(&mut self, gpu: &mut dyn Gpu, moves: Moves) {
-        self.moves = moves;
-        self.glyphs.set_grows(moves != Moves::Held);
-        if moves != Moves::Held {
-            self.scene.retry_lists(gpu);
-        }
-    }
-
-    /// When GPU memory may move now ([`set_moves`](Self::set_moves)).
-    pub fn moves(&self) -> Moves {
-        self.moves
-    }
-
-    /// Whether an upload may grow the pools, tables and tile pages it
-    /// finds full: unless memory is [held](Moves::Held). A map's pools
-    /// start small and hold what its view needs: at rest a view loads
-    /// into memory grown for it, rather than wait a frame a move.
-    fn uploads_grow(&self) -> bool {
-        self.moves != Moves::Held
-    }
-
     /// Sizes the tile pages made from then on for `sizing`. The pools,
-    /// tables and lists start small and grow at rest to what the tiles in
-    /// view need ([`grow_into`](Self::grow_into)).
+    /// tables and lists start small and grow to what the tiles in view
+    /// need, the vertex and index pools a block at a time.
     pub fn size_for(&mut self, sizing: Sizing) {
         self.sizing = Some(sizing);
     }
@@ -840,58 +783,6 @@ impl Renderer {
     /// What the tile pages were last sized for ([`size_for`](Self::size_for)).
     pub fn sizing(&self) -> Option<Sizing> {
         self.sizing
-    }
-
-    /// Whether something waits for room only a move at rest makes: a
-    /// layout left candidates out, or glyph bitmaps wait for a page.
-    pub fn wants_room(&self) -> bool {
-        self.scene.lists_short() || self.glyphs.short()
-    }
-
-    /// What uploads were refused since the last call or
-    /// [`forget_refusals`](Self::forget_refusals), for
-    /// [`grow_into`](Self::grow_into).
-    pub fn take_refusals(&mut self) -> Room {
-        let (words, chunks) = self.scene.take_refusals();
-        Room {
-            words,
-            chunks,
-            pages: std::mem::take(&mut self.refused_pages),
-        }
-    }
-
-    /// Whether [`grow_into`](Self::grow_into) would grow something for
-    /// what uploads were refused since the last
-    /// [`take_refusals`](Self::take_refusals).
-    pub fn can_grow_refused(&self) -> bool {
-        self.scene.can_grow_into(self.scene.refusals())
-            || (self.refused_pages.iter()).any(|&page| self.images.can_grow(page))
-    }
-
-    /// Whether [`grow_into`](Self::grow_into) would grow something for
-    /// `room`.
-    pub fn can_grow_into(&self, room: &Room) -> bool {
-        self.scene.can_grow_into((room.words, room.chunks))
-            || room.pages.iter().any(|&page| self.images.can_grow(page))
-    }
-
-    /// Makes room that uploads were refused, and glyph bitmaps wait for:
-    /// moves the first pool `room` asks more of, or else the chunk table,
-    /// a page it asks a layer of, or the glyph pages, within its ceiling.
-    /// One move, so that a frame pays for at most one new allocation (see
-    /// [`grow_headroom`](Self::grow_headroom)). Whether one grew: never
-    /// while memory is [held](Moves::Held).
-    pub fn grow_into(&mut self, gpu: &mut dyn Gpu, room: &Room) -> bool {
-        if self.moves == Moves::Held {
-            return false;
-        }
-        if self.scene.grow_into(gpu, (room.words, room.chunks)) {
-            self.glyphs
-                .set_table(self.scene.tables().writer(Table::Props));
-            return true;
-        }
-        (room.pages.iter()).any(|&page| self.images.can_grow(page) && self.images.grow(gpu, page))
-            || self.glyphs.grow(gpu)
     }
 
     /// The image atlas's bindings as they are now: the atlas grows pages,
@@ -952,8 +843,11 @@ impl Renderer {
         self.scene.buffers_revision() + self.images.revisions()
     }
 
-    /// The glyph atlas symbol quads sample.
+    /// The glyph atlas symbol quads sample, its rows written where the
+    /// property rows are now.
     pub fn glyphs(&mut self) -> &mut GlyphAtlas {
+        self.glyphs
+            .set_table(self.scene.tables().writer(Table::Props));
         &mut self.glyphs
     }
 
@@ -1008,11 +902,12 @@ impl Renderer {
         }
     }
 
-    /// The scene's per-node draw arguments and cull counters, for
-    /// diagnostics: [`ARGS_WORDS`] words per node, as
-    /// `cull.wgsl` writes them, and the number of nodes.
+    /// The scene's per-row draw arguments and cull counters, for
+    /// diagnostics: [`ARGS_WORDS`] words per cull row, as `cull.wgsl`
+    /// writes them, block by block, and the number of rows.
     pub fn draw_args(&self) -> (BufferId, u32) {
-        (self.scene.buffers().args, self.nodes.len() as u32)
+        let rows = self.scene.rows() * self.scene.block_slots();
+        (self.scene.buffers().args, rows)
     }
 
     /// Per node, its family, the candidates its cull considers (as last
@@ -1025,12 +920,17 @@ impl Renderer {
             args.get(at..at + 4)
                 .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("a word")))
         };
-        // An extrusion node's counts take in its cut stream's.
+        // An extrusion node's counts take in its cut stream's, and a
+        // node's take in every block's.
+        let blocks = self.scene.block_slots();
         (self.nodes.iter().enumerate())
             .map(|(i, n)| {
                 let rows = std::iter::once(i as u32).chain(self.scene.cut_row(i as u32));
                 let (candidates, kept) = rows.fold((0, 0), |(c, k), row| {
-                    (c + self.scene.node_candidates(row), k + word(row as usize))
+                    let kept: u32 = (0..blocks)
+                        .map(|b| word(self.scene.row(row, b) as usize))
+                        .sum();
+                    (c + self.scene.node_candidates(row), k + kept)
                 });
                 (
                     n.family,
@@ -1455,16 +1355,15 @@ impl Renderer {
         [!full, full]
     }
 
+    /// The terrain tiles the drape pages hold, 0 before they're made.
+    pub fn drape_slots(&self) -> u32 {
+        (self.terrain.as_ref()).map_or(0, |t| t.layout().tile_slots)
+    }
+
     /// How many terrain tiles the drape atlas can hold with this style's
     /// stacks: the most a terrain cover may have.
     pub fn drape_room(&self, gpu: &dyn Gpu) -> u32 {
         terrain::room(gpu, self.drape_stacks())
-    }
-
-    /// The terrain tiles the drape pages hold, once made.
-    pub fn drape_held(&self) -> Option<u32> {
-        let terrain = self.terrain.as_ref()?;
-        Some(terrain.layout().tile_slots).filter(|&tiles| tiles > 0)
     }
 
     /// Makes the drape pages hold `tile_slots` terrain tiles' slots, one
@@ -1472,17 +1371,12 @@ impl Renderer {
     /// slots a layer's grid takes. Pages of another grid are new and blank
     /// (a new layout generation); those of the same grid stay, slots and
     /// all. Fails past the [`drape_room`](Self::drape_room), or where the
-    /// device refuses a page, which the next call makes smaller. While
-    /// memory is [held](Moves::Held) pages once made stay as they are,
-    /// whatever `tile_slots` asks (a map's terrain cover coarsens to them
-    /// until the camera rests).
+    /// device refuses a page, which the next call makes smaller.
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,
         tile_slots: u32,
     ) -> Result<DrapeLayout, DrapeFull> {
-        let held = self.drape_held().filter(|_| self.moves == Moves::Held);
-        let tile_slots = held.unwrap_or(tile_slots);
         let stacks = self.drape_stacks();
         let terrain = self.terrain.as_mut().expect("terrain is on");
         let made = terrain.reserve(gpu, (tile_slots, stacks), &mut self.downsampler)?;
@@ -1543,20 +1437,14 @@ impl Renderer {
         let nodes = self.nodes.len() as u64;
         let stride = NODE_UNIFORM_SIZE;
         let level = self.drape.get_or_insert_with(|| Drape {
-            frame: [(); 2].map(|()| {
-                gpu.create_buffer(&BufferDesc {
-                    label: "drape frame",
-                    size: crate::scene::FRAME_BYTES,
-                    usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-                })
-            }),
+            frames: Default::default(),
             uniforms: gpu.create_buffer(&BufferDesc {
                 label: "drape node uniforms",
                 size: stride * nodes,
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             }),
             written: Vec::new(),
-            scene: [None; 2],
+            scene: Default::default(),
             bundle: Vec::new(),
         });
         level.written.resize(self.nodes.len(), None);
@@ -1655,19 +1543,10 @@ impl Renderer {
     }
 
     /// A page of tile textures, `size` texels per tile, for image nodes to
-    /// bind; none while memory is [held](Moves::Held), which makes no
-    /// page for a first use either.
-    pub fn create_page(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        kind: PageKind,
-        size: [u32; 2],
-    ) -> Option<PageId> {
-        if self.moves == Moves::Held {
-            return None;
-        }
+    /// bind.
+    pub fn create_page(&mut self, gpu: &mut dyn Gpu, kind: PageKind, size: [u32; 2]) -> PageId {
         let layers = self.page_layers(size);
-        Some(self.images.create_page(gpu, kind, size, layers))
+        self.images.create_page(gpu, kind, size, layers)
     }
 
     /// Whether image tiles of style source `source` have a page
@@ -1697,29 +1576,16 @@ impl Renderer {
         (self.images.bytes(), self.glyphs.bytes())
     }
 
-    /// A layer of `page`, which grows to the device's layer limit if
-    /// `grow` and memory is [free](Moves::Free); otherwise a page with no
-    /// free layer records the refusal ([`take_refusals`](Self::take_refusals)).
+    /// A layer of `page`: a free one, or with `grow` one the page grows
+    /// to make, to the device's layer limit. A page that grows copies the
+    /// layers it holds, so a map frees what it keeps out of view first.
     pub fn alloc_layer(
         &mut self,
         gpu: &mut dyn Gpu,
         page: PageId,
         grow: bool,
     ) -> Result<u32, OutOfSpace> {
-        if grow && self.uploads_grow() {
-            return self.images.alloc_layer(gpu, page);
-        }
-        self.images.alloc_existing_layer(page).ok_or_else(|| {
-            self.refuse_page(page);
-            OutOfSpace
-        })
-    }
-
-    /// Records that an upload found no free layer of `page`.
-    pub(crate) fn refuse_page(&mut self, page: PageId) {
-        if !self.refused_pages.contains(&page) {
-            self.refused_pages.push(page);
-        }
+        self.images.alloc_layer(gpu, page, grow)
     }
 
     /// Tile page layers in use.
@@ -2519,12 +2385,11 @@ impl Renderer {
                 self.buffers_bound = buffers;
                 self.driver.rebind(gpu, &self.scene);
             }
-            gpu.destroy_bind_group(self.draw_group);
-            self.draw_group = scene_group(
+            std::mem::take(&mut self.draw_groups).release(gpu);
+            self.draw_groups = scene_groups(
                 gpu,
                 self.draw_layout,
-                self.scene.tables(),
-                self.scene.buffers().frame,
+                &self.scene,
                 &self.image_bindings,
                 (
                     self.glyphs.texture(),
@@ -2532,12 +2397,13 @@ impl Renderer {
                     dem,
                     terrain_depth,
                 ),
+                None,
             );
             self.glyphs_bound = self.glyphs.revision();
             self.dem_bound = dem;
             self.terrain_depth_bound = terrain_depth;
             for scene in self.drape.iter_mut().flat_map(|d| &mut d.scene) {
-                scene.take().release(gpu);
+                std::mem::take(scene).release(gpu);
             }
             // Extrusion and heatmap nodes record the scene group too.
             self.forget_draws(gpu);
@@ -2545,20 +2411,30 @@ impl Renderer {
     }
 
     /// What the symbol placements bind of the scene, as
-    /// `symbol::compute_layout` has it: the frame, the tables but the
-    /// indices, the terrain as the scene group binds it, the node
-    /// uniforms and the draw arguments.
-    fn symbol_scene(&self) -> Vec<BindGroupEntry> {
+    /// `symbol::compute_layout` has it, by block slot: the block's frame,
+    /// the tables but the indices, the terrain as the scene group binds
+    /// it, the node uniforms and the draw arguments.
+    fn symbol_scene(&self) -> Vec<Option<Vec<BindGroupEntry>>> {
         use TextureViewDimension::{D2, D2Array};
-        let mut entries = vec![BindGroupEntry::buffer(0, self.scene.buffers().frame)];
-        entries.extend((self.scene.tables().entries().into_iter()).filter(|e| e.binding != 5));
-        entries.extend([
-            BindGroupEntry::texture(14, self.dem_bound, D2Array),
-            BindGroupEntry::texture(15, self.terrain_depth_bound, D2),
-            BindGroupEntry::buffer(17, self.node_uniforms),
-            BindGroupEntry::buffer(18, self.scene.buffers().args),
-        ]);
-        entries
+        let held: Vec<u32> = self.scene.blocks().collect();
+        (0..self.scene.block_slots())
+            .map(|block| {
+                if !held.contains(&block) {
+                    return None;
+                }
+                let frame = self.scene.block_frame(block);
+                let mut entries = vec![BindGroupEntry::buffer(0, frame)];
+                let tables = self.scene.tables().entries(block as usize);
+                entries.extend(tables.into_iter().filter(|e| e.binding != 5));
+                entries.extend([
+                    BindGroupEntry::texture(14, self.dem_bound, D2Array),
+                    BindGroupEntry::texture(15, self.terrain_depth_bound, D2),
+                    BindGroupEntry::buffer(17, self.node_uniforms),
+                    BindGroupEntry::buffer(18, self.scene.buffers().args),
+                ]);
+                Some(entries)
+            })
+            .collect()
     }
 
     fn record(
@@ -2571,20 +2447,18 @@ impl Renderer {
     ) -> FrameStats {
         let mut times = RenderTimes::default();
         let started = clock();
-        let held = self.moves == Moves::Held;
-        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame, !held);
-        // The symbol draws bind the placement target, which is made again
-        // for the symbol nodes' quads: when memory may move, with room for
-        // twice them, so that a gesture's labels rarely outgrow it. Held,
-        // it stays, and symbol nodes whose quads lie past it don't draw
-        // until it grows: before the cull, which reads which do.
+        // A frame gives back at most one table or page a view left mostly
+        // free.
+        self.shrink(gpu);
+        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
+        // The symbol draws bind the placement target, which the placements
+        // write whole each frame: it is made again for the symbol nodes'
+        // quads, with room for twice them, so that labels rarely outgrow
+        // it, nothing to copy.
         let (rows, needed) = (self.symbols.rows(), self.scene.placed_rows());
-        let fit = match held {
-            false if needed * 2 > rows || needed * 8 <= rows => needed * 2,
+        let fit = match needed * 2 > rows || needed * 8 <= rows {
+            true => needed * 2,
             false => rows,
-            // Its first is made for a first use.
-            true if rows == 0 => needed * 2,
-            true => rows,
         };
         let before = gpu.counters();
         if self.symbols.fit(gpu, fit) {
@@ -2593,11 +2467,6 @@ impl Renderer {
             }
             self.invalidate_bundle(gpu);
         }
-        let quads = match held && needed > fit {
-            true => fit * scene::PLACED_WIDTH,
-            false => u32::MAX,
-        };
-        self.scene.cap_quads(gpu, quads);
         // The CPU driver's cull: draws that changed record again.
         if self
             .driver
@@ -2669,7 +2538,10 @@ impl Renderer {
             false => (Vec::new(), false),
         };
         let placings = (self.placings(), self.full);
-        passes.extend(self.symbols.pass(gpu, placings, self.scene.placed_quads()));
+        let quads: Vec<(u32, std::ops::Range<u32>)> = (self.scene.blocks())
+            .map(|block| (block, self.scene.block_quads(block)))
+            .collect();
+        passes.extend(self.symbols.pass(gpu, placings, &quads));
         stats.draws += self.extrusion_passes(
             gpu,
             extrusions_ready,
@@ -2872,7 +2744,7 @@ impl Renderer {
             }
             let mut group = Vec::new();
             for i in self.layers.groups[g].nodes.clone() {
-                let groups = (self.draw_group, self.nodes[i].group);
+                let groups = (&self.draw_groups[..], self.nodes[i].group, true);
                 let before = group.len();
                 if !self.node_commands(gpu, ready, i, groups, &mut group) {
                     self.waiting += 1;
@@ -2922,7 +2794,7 @@ impl Renderer {
                 }
                 None => {}
             }
-            let groups = (self.draw_group, self.nodes[i].group);
+            let groups = (&self.draw_groups[..], self.nodes[i].group, true);
             let before = commands.len();
             if !member && !self.node_commands(gpu, ready, i, groups, &mut commands) {
                 self.waiting += 1;
@@ -2962,18 +2834,21 @@ impl Renderer {
         stats.dispatches += dispatches;
         let start = passes.len();
         for (index, node) in self.nodes.iter_mut().enumerate() {
+            let draws: Vec<(BindGroupId, RenderCommand)> = (self.scene.blocks())
+                .filter_map(|block| {
+                    let row = self.scene.row(index as u32, block);
+                    let group = self.draw_groups.get(block as usize).copied().flatten()?;
+                    let draw = self
+                        .driver
+                        .draw(self.scene.buffers(), row, NodeDraw::Points);
+                    Some((group, draw))
+                })
+                .collect();
             if let Some(heatmap) = &mut node.heatmap
                 && node.drawn
                 && cull_ready
                 && self.heatmaps.ready(gpu, &self.composites)
-                && let Some(pass) = self.heatmaps.prepare(
-                    gpu,
-                    heatmap,
-                    self.draw_group,
-                    node.group,
-                    self.driver
-                        .draw(self.scene.buffers(), index as u32, NodeDraw::Points),
-                )
+                && let Some(pass) = self.heatmaps.prepare(gpu, heatmap, node.group, &draws)
             {
                 stats.draws += 1;
                 passes.push(Pass::Render(pass));
@@ -3051,7 +2926,7 @@ impl Renderer {
         passes: &mut Vec<Pass>,
     ) -> u32 {
         let mut draws = 0;
-        let (draw_group, buffers) = (self.draw_group, self.driver.buffers(self.scene.buffers()));
+        let buffers = self.driver.buffers(self.scene.buffers());
         let start = passes.len();
         let mut terrain_above = terrain_above.into_iter().peekable();
         // The first pass on the shared depth clears it, the rest load it.
@@ -3082,18 +2957,21 @@ impl Renderer {
             let draw = |row| self.driver.draw(&buffers, row, NodeDraw::Indexed);
             let cut = self.scene.cut_row(index as u32).zip(node.cut_group);
             let (cut_row, cut_group) = cut.expect("an extrusion node draws a cut stream");
-            let streams = extrusion::Streams {
-                whole: (node.group, draw(index as u32)),
-                cut: (cut_group, draw(cut_row)),
-            };
-            let pass = self.extrusions.prepare(
-                gpu,
-                target,
-                draw_group,
-                &buffers,
-                (&streams, node.elevation),
-                first,
-            );
+            // Each block's buildings, over its group.
+            let streams: Vec<(BindGroupId, extrusion::Streams)> = (self.scene.blocks())
+                .filter_map(|block| {
+                    let group = self.draw_groups.get(block as usize).copied().flatten()?;
+                    let [whole, cut] = [index as u32, cut_row].map(|r| self.scene.row(r, block));
+                    let streams = extrusion::Streams {
+                        whole: (node.group, draw(whole)),
+                        cut: (cut_group, draw(cut)),
+                    };
+                    Some((group, streams))
+                })
+                .collect();
+            let pass =
+                self.extrusions
+                    .prepare(gpu, target, &buffers, (&streams, node.elevation), first);
             passes.push(Pass::Render(pass));
             draws += 1;
         }
@@ -3186,17 +3064,30 @@ impl Renderer {
         let page = usize::from(stack >= colour);
         let drape_frame = terrain.drape_frame(frame, page);
         let level = self.drape.as_mut()?;
-        crate::scene::write_frame(gpu, level.frame[page], &drape_frame);
         let at = stack as usize;
         if level.bundle.len() <= at {
             level.bundle.resize_with(at + 1, || None);
         }
-        if level.scene[page].is_none() {
-            level.scene[page] = Some(scene_group(
+        if level.scene[page].is_empty() {
+            // A frame and a group for each block, the frame telling the
+            // block's rows.
+            let held: Vec<u32> = self.scene.blocks().collect();
+            std::mem::take(&mut level.frames[page]).release(gpu);
+            level.frames[page] = (0..self.scene.block_slots())
+                .map(|block| {
+                    held.contains(&block).then(|| {
+                        gpu.create_buffer(&BufferDesc {
+                            label: "drape frame",
+                            size: crate::scene::FRAME_BYTES,
+                            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                        })
+                    })
+                })
+                .collect();
+            level.scene[page] = scene_groups(
                 gpu,
                 self.draw_layout,
-                self.scene.tables(),
-                level.frame[page],
+                &self.scene,
                 &self.image_bindings,
                 // Draped content isn't hidden by the terrain it's on.
                 (
@@ -3205,7 +3096,8 @@ impl Renderer {
                     self.dem_bound,
                     self.no_terrain_depth,
                 ),
-            ));
+                Some(&level.frames[page]),
+            );
             // The bundles of the page's stacks bound the group it replaces.
             for (s, bundle) in level.bundle.iter_mut().enumerate() {
                 if usize::from(s as u32 >= colour) == page {
@@ -3213,12 +3105,20 @@ impl Renderer {
                 }
             }
         }
+        let words = crate::scene::frame_words(&drape_frame);
+        for (block, buffer) in level.frames[page].iter().enumerate() {
+            if let Some(buffer) = buffer {
+                let mut words = words.clone();
+                self.scene.block_words(block as u32, &mut words);
+                gpu.write_buffer(*buffer, 0, bytemuck::cast_slice(&words));
+            }
+        }
         if let Some((bundle, _)) = &level.bundle[at] {
             return Some(*bundle);
         }
         let ready = self.ready(gpu, true);
         let level = self.drape.as_ref().expect("found above");
-        let (scene, uniforms) = (level.scene[page].expect("made above"), level.uniforms);
+        let (scenes, uniforms) = (level.scene[page].clone(), level.uniforms);
         let mut commands = Vec::new();
         let mut groups = Vec::new();
         for i in 0..self.nodes.len() {
@@ -3244,7 +3144,7 @@ impl Renderer {
                 }),
             };
             groups.push(group);
-            if !self.node_commands(gpu, ready, i, (scene, group), &mut commands) {
+            if !self.node_commands(gpu, ready, i, (&scenes, group, false), &mut commands) {
                 self.drape_waiting = true;
             }
         }
@@ -3262,26 +3162,25 @@ impl Renderer {
         Some(bundle)
     }
 
-    /// Node `i`'s commands as a bundle records them, over the scene group
-    /// `scene`: the map's, or the drape's for draped nodes on terrain. In
-    /// the map, a terrain layer composites in its first node's place.
-    /// `false` when the node waits for a pipeline and records nothing.
+    /// Node `i`'s commands as a bundle records them, over the scene groups
+    /// `scenes`, one per block slot: the map's (`in_map`), or the drape's
+    /// for draped nodes on terrain. The node draws once in each block it
+    /// may have candidates in, that block's group bound. In the map, a
+    /// terrain layer composites in its first node's place. `false` when
+    /// the node waits for a pipeline and records nothing.
     fn node_commands(
         &self,
         gpu: &mut dyn Gpu,
         ready: Ready,
         i: usize,
-        (scene, group): (BindGroupId, BindGroupId),
+        (scenes, group, in_map): (&[Option<BindGroupId>], BindGroupId, bool),
         commands: &mut Vec<RenderCommand>,
     ) -> bool {
         if !ready.cull {
             return false;
         }
         let node = &self.nodes[i];
-        let draw = self
-            .driver
-            .draw(self.scene.buffers(), i as u32, node.cull.draw);
-        if let (Some(layer), true) = (node.terrain_layer, scene == self.draw_group) {
+        if let (Some(layer), true) = (node.terrain_layer, in_map) {
             let first = i == 0 || self.nodes[i - 1].terrain_layer != Some(layer);
             if !ready.terrain {
                 return false;
@@ -3327,27 +3226,41 @@ impl Renderer {
             node.left_out.set(true);
             return true;
         }
-        // A direct draw of nothing records nothing: the bundles record
-        // again when the node's draw changes.
-        if self.driver.draws_nothing(i as u32) {
+        // Its rows in each block, with the block's group; a direct draw of
+        // nothing records nothing: the bundles record again when the
+        // node's draw changes.
+        let rows: Vec<(BindGroupId, u32)> = (scenes.iter().enumerate())
+            .filter_map(|(block, scene)| {
+                let row = self.scene.row(i as u32, block as u32);
+                Some(((*scene)?, row)).filter(|&(_, row)| !self.driver.draws_nothing(row))
+            })
+            .collect();
+        if rows.is_empty() {
             return true;
         }
+        let buffers = self.scene.buffers();
         if node.family.is_symbol() {
             // Its icons and its text, in one list. The cull's point
             // arguments read as indexed ones too: 6 indices into the quad
             // indices, and the first index, base vertex and first instance
             // all 0, as points always have them.
-            let quads = (self.driver).draw(self.scene.buffers(), i as u32, NodeDraw::Indexed);
             let apart = [node.separate_halo, self.nodes[i + 1].separate_halo];
             let (kind, placings) = self.symbol_kinds(i);
-            return self.symbols.commands(
-                gpu,
-                (kind, placings, self.full),
-                (scene, group),
-                apart,
-                quads,
-                commands,
-            );
+            for (scene, row) in rows {
+                let quads = (self.driver).draw(buffers, row, NodeDraw::Indexed);
+                let recorded = self.symbols.commands(
+                    gpu,
+                    (kind, placings, self.full),
+                    (scene, group),
+                    apart,
+                    quads,
+                    commands,
+                );
+                if !recorded {
+                    return false;
+                }
+            }
+            return true;
         }
         if matches!(node.family, Family::Hillshade | Family::ColorRelief) && !ready.prepare {
             return false;
@@ -3360,7 +3273,7 @@ impl Renderer {
         let drape = self
             .drape_pipelines
             .as_ref()
-            .filter(|_| scene != self.draw_group && self.target.color != DRAPE_FORMAT);
+            .filter(|_| !in_map && self.target.color != DRAPE_FORMAT);
         let pipeline = match (drape, node.family.is_image()) {
             _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),
@@ -3381,19 +3294,23 @@ impl Renderer {
         };
         commands.extend([
             RenderCommand::SetPipeline(pipeline),
-            RenderCommand::SetBindGroup {
-                index: 0,
-                group: scene,
-            },
             RenderCommand::SetBindGroup { index: 1, group },
         ]);
         if node.cull.draw == NodeDraw::Indexed {
             commands.push(RenderCommand::SetIndexBuffer {
-                buffer: self.driver.buffers(self.scene.buffers()).compacted,
+                buffer: self.driver.buffers(buffers).compacted,
                 offset: 0,
             });
         }
-        commands.push(draw);
+        for (scene, row) in rows {
+            commands.extend([
+                RenderCommand::SetBindGroup {
+                    index: 0,
+                    group: scene,
+                },
+                self.driver.draw(buffers, row, node.cull.draw),
+            ]);
+        }
         true
     }
 }
@@ -3570,15 +3487,17 @@ struct DrapePipelines {
 /// page its frame, scene group and bundle.
 #[derive(Debug)]
 struct Drape {
-    /// The drape frame, per drape page.
-    frame: [BufferId; 2],
+    /// The drape frame, per drape page and block slot: each block's tells
+    /// its rows.
+    frames: [Vec<Option<BufferId>>; 2],
     /// Node uniforms, at each node's offset.
     uniforms: BufferId,
     /// Per node, the words written, or `None` where it doesn't draw (outside
     /// its layer's zooms, or not draped).
     written: Vec<Option<Vec<u32>>>,
-    /// Per page, the scene group over its `frame`.
-    scene: [Option<BindGroupId>; 2],
+    /// Per page, the scene groups over its `frames`, by block slot; empty
+    /// until made.
+    scene: [Vec<Option<BindGroupId>>; 2],
     /// Per stack, the bundle of the nodes drawing into it, with the node
     /// groups it binds: a redraw replays each over its own slots.
     bundle: Vec<Option<(RenderBundleId, Vec<BindGroupId>)>>,
@@ -3607,7 +3526,7 @@ impl Drape {
     fn release(mut self, gpu: &mut dyn Gpu) {
         self.forget_bundle(gpu);
         let [a, b] = self.scene;
-        let [f, g] = self.frame;
+        let [f, g] = self.frames;
         ((a, b), (f, g), self.uniforms).release(gpu);
     }
 }
@@ -3692,34 +3611,48 @@ impl PaintPipelines {
     }
 }
 
-/// The scene's group: its buffers, the image pages and the glyph pages.
-fn scene_group(
+/// The scene's groups, by block slot (`None` for a free one): each
+/// block's frame (`frames`' if given, else the block's own) and pools,
+/// the tables every block shares, the image pages and the glyph pages.
+fn scene_groups(
     gpu: &mut dyn Gpu,
     layout: BindGroupLayoutId,
-    tables: &Tables,
-    frame: BufferId,
+    scene: &Scene,
     images: &ImageBindings,
     (glyphs, nearest, dem, terrain_depth): (TextureId, SamplerId, TextureId, TextureId),
-) -> BindGroupId {
+    frames: Option<&[Option<BufferId>]>,
+) -> Vec<Option<BindGroupId>> {
     use TextureViewDimension::{D2, D2Array};
-    let mut entries = vec![BindGroupEntry::buffer(0, frame)];
-    entries.extend(tables.entries());
-    entries.push(images.table.entry(8));
-    entries.extend([
-        BindGroupEntry::texture(9, images.texture, D2Array),
-        BindGroupEntry::sampler(10, images.sampler),
-        BindGroupEntry::texture(11, images.dashes, D2),
-        BindGroupEntry::texture(12, glyphs, D2Array),
-        BindGroupEntry::sampler(13, nearest),
-        BindGroupEntry::texture(14, dem, D2Array),
-        BindGroupEntry::texture(15, terrain_depth, D2),
-        BindGroupEntry::texture(16, images.texture, D2Array),
-    ]);
-    gpu.create_bind_group(&BindGroupDesc {
-        label: "scene",
-        layout,
-        entries: &entries,
-    })
+    let held: Vec<u32> = scene.blocks().collect();
+    (0..scene.block_slots())
+        .map(|block| {
+            if !held.contains(&block) {
+                return None;
+            }
+            let frame = match frames {
+                Some(frames) => frames.get(block as usize).copied().flatten()?,
+                None => scene.block_frame(block),
+            };
+            let mut entries = vec![BindGroupEntry::buffer(0, frame)];
+            entries.extend(scene.tables().entries(block as usize));
+            entries.push(images.table.entry(8));
+            entries.extend([
+                BindGroupEntry::texture(9, images.texture, D2Array),
+                BindGroupEntry::sampler(10, images.sampler),
+                BindGroupEntry::texture(11, images.dashes, D2),
+                BindGroupEntry::texture(12, glyphs, D2Array),
+                BindGroupEntry::sampler(13, nearest),
+                BindGroupEntry::texture(14, dem, D2Array),
+                BindGroupEntry::texture(15, terrain_depth, D2),
+                BindGroupEntry::texture(16, images.texture, D2Array),
+            ]);
+            Some(gpu.create_bind_group(&BindGroupDesc {
+                label: "scene",
+                layout,
+                entries: &entries,
+            }))
+        })
+        .collect()
 }
 
 #[cfg(test)]

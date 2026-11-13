@@ -20,7 +20,8 @@ struct RowBases {
 fn tile_word(i: u32) -> u32 { return data_word(rows, row_bases.tiles + i); }
 fn chunk_word(i: u32) -> u32 { return data_word(rows, row_bases.chunks + i); }
 fn visible_word(i: u32) -> u32 { return data_word(rows, row_bases.visible + i); }
-fn node_cull_word(i: u32) -> u32 { return data_word(rows, row_bases.node_cull + i); }
+// Word `i` of the bound block's rows.
+fn node_cull_word(i: u32) -> u32 { return data_word(rows, row_bases.node_cull + frame.block_row * NODE_CULL_WORDS + i); }
 fn image_word(i: u32) -> u32 { return data_word(image_rects, i); }
 
 fn vertex_at(i: u32) -> u32 { return data_word(vertices, i); }

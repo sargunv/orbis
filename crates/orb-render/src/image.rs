@@ -524,8 +524,13 @@ impl Images {
     }
 
     /// A layer of the page, growing it if it's full.
-    pub(crate) fn alloc_layer(&mut self, gpu: &mut dyn Gpu, id: PageId) -> Result<u32, OutOfSpace> {
-        self.page_mut(id).page.alloc(gpu)
+    pub(crate) fn alloc_layer(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        id: PageId,
+        grow: bool,
+    ) -> Result<u32, OutOfSpace> {
+        self.page_mut(id).page.alloc(gpu, grow)
     }
 
     /// Layers in use across the pages.
@@ -543,49 +548,11 @@ impl Images {
         (self.pages.iter_mut().flatten()).any(|page| page.page.shrink(gpu))
     }
 
-    /// Whether page `id` can grow.
-    pub(crate) fn can_grow(&self, id: PageId) -> bool {
-        self.pages[id.0 as usize]
-            .as_ref()
-            .is_some_and(|page| page.page.can_grow())
-    }
-
-    /// Grows page `id`: one move. Whether it grew.
-    pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu, id: PageId) -> bool {
-        (self.pages[id.0 as usize].as_mut()).is_some_and(|page| page.page.grow(gpu).is_ok())
-    }
-
     /// Changes whenever a page's textures are replaced.
     pub(crate) fn revisions(&self) -> u64 {
         (self.pages.iter().flatten())
             .map(|page| u64::from(page.page.revision()))
             .sum()
-    }
-
-    /// Whether [`shrink`](Self::shrink) would shrink a page.
-    pub(crate) fn would_shrink(&self) -> bool {
-        self.pages
-            .iter()
-            .flatten()
-            .any(|page| page.page.would_shrink())
-    }
-
-    /// Whether a page holds more than three quarters of its layers.
-    pub(crate) fn wants_headroom(&self) -> bool {
-        (self.pages.iter().flatten()).any(|page| page.page.wants_headroom())
-    }
-
-    /// Grows the first page holding more than three quarters of its
-    /// layers; whether one grew.
-    pub(crate) fn grow_headroom(&mut self, gpu: &mut dyn Gpu) -> bool {
-        (self.pages.iter_mut().flatten())
-            .find(|page| page.page.wants_headroom())
-            .is_some_and(|page| page.page.grow(gpu).is_ok())
-    }
-
-    /// A layer the page already has, without growing it.
-    pub(crate) fn alloc_existing_layer(&mut self, id: PageId) -> Option<u32> {
-        self.page_mut(id).page.alloc_existing()
     }
 
     pub(crate) fn free_layer(&mut self, id: PageId, layer: u32) {

@@ -180,15 +180,18 @@ var<workgroup> drawn_indices: atomic<u32>;
 
 @compute @workgroup_size(256)
 fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+    // The dispatch is the bound block's: its rows, and its workgroups of
+    // the scene's, from `block_group`.
+    let group_x = group.x + frame.block_group;
     if lane == 0u {
-        // The node whose workgroup this is: the last whose `first_group`
-        // is at most this one. A node without workgroups has its next's,
-        // so the firsts rise with the node.
-        var lo = 0u;
-        var hi = max(frame.placed_nodes, 1u);
+        // The node whose workgroup this is: the last of the block's rows
+        // whose `first_group` is at most this one. A node without
+        // workgroups has its next's, so the firsts rise with the node.
+        var lo = frame.block_row;
+        var hi = frame.block_row + max(frame.placed_nodes, 1u);
         for (var guard = 0u; guard < 32u && hi - lo > 1u; guard++) {
             let mid = (lo + hi) / 2u;
-            if node_cull[mid].first_group <= group.x {
+            if node_cull[mid].first_group <= group_x {
                 lo = mid;
             } else {
                 hi = mid;
@@ -214,7 +217,7 @@ fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     }
     let draw = word & 255u;
     if draw == DRAW_INDEXED {
-        let batch = group.x - workgroupUniformLoad(&node_first_group);
+        let batch = group_x - workgroupUniformLoad(&node_first_group);
         cull_indexed(index, lane, node, batch * WORKGROUP);
     } else {
         cull_listed(index, lane, node, draw);
