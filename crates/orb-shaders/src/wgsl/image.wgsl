@@ -61,14 +61,25 @@ fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
     var clip = unpack_i16x2(vertex_at(v.vertex + 2u));
     // On an affine tile, where a vertex's place, clip position and image
     // position are one point, the mesh keeps to its placement's clips'
-    // box: a coarse tile standing in for a little of itself, as in a drape
-    // slot, would otherwise cover far more (all of the drape atlas) only
-    // to discard it.
-    if tile.warp_cells == 0u && tile.globe_cells == 0u && weight == 1.0 && all(pos == clip) && all(clip == image) {
+    // box: a coarse tile standing in for a little of itself (in a drape
+    // slot, or for the regions its descendants left while a zoom crosses
+    // levels) would otherwise cover far more only to discard it, once for
+    // each of its placements. On the globe too, whose grid's lines are
+    // the tile's axes, so a clamped grid is the grid within the box: a
+    // tip of a pole's cap (placed at the pole, clipped and sampled on the
+    // tile's edge) stays at the pole where the box reaches it, and else
+    // falls in the box with the edge.
+    if tile.warp_cells == 0u && weight == 1.0 && all(clip == image) {
         let box = clips_box(tile);
-        pos = clamp(pos, box.xy, max(box.xy, box.zw));
-        clip = pos;
-        image = pos;
+        let hi = max(box.xy, box.zw);
+        let north = pos.y <= -32767.5;
+        let south = pos.y >= 32766.5;
+        let cap = (north && box.y <= -32767.5) || (south && hi.y >= 32766.5);
+        if all(pos == clip) || ((north || south) && !cap) {
+            pos = clamp(clip, box.xy, hi);
+            clip = pos;
+            image = pos;
+        }
     }
     let ground = tile_ground(tile, pos);
     out.position = ground_clip(ground, frame.align, 0.0);
