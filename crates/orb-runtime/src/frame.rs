@@ -639,25 +639,40 @@ impl Map {
         let room = renderer.drape_room(gpu);
         let slots = (terrain.slots_needed(still, room)).max(renderer.drape_slots());
         let layout = match renderer.reserve_drape(gpu, slots) {
-            Ok(layout) => layout,
+            Ok(layout) => {
+                self.drape_refused = false;
+                layout
+            }
             Err(full) => {
                 // The cover fits the atlas's room (`Terrain::update`)
                 // unless its stacks leave none for the view's tiles, or the
                 // device refused a sheet.
-                self.warnings.push(match full {
+                let warning = match full {
                     DrapeFull::Room => {
                         "too many drape stacks for the drape atlas; terrain is flat".into()
                     }
                     DrapeFull::Refused(bytes) => {
                         // A device short of memory: what's kept out of view
-                        // goes first.
+                        // goes first, and the next frame's cover keeps to
+                        // the slots the drape held, which the device gave
+                        // (`Renderer::drape_room`); the map asks for more
+                        // again once it settles (`trim_drape`).
                         self.release_cached = true;
+                        let room = renderer.drape_room(gpu);
+                        self.drape_refused = room > 0;
                         format!(
-                            "the GPU refused a drape sheet's {} MiB; terrain is flat until it fits",
-                            bytes >> 20
+                            "the GPU refused a drape sheet's {} MiB; terrain {} until the map \
+                             settles",
+                            bytes >> 20,
+                            if room > 0 {
+                                "covers the view in fewer tiles"
+                            } else {
+                                "is flat"
+                            }
                         )
                     }
-                });
+                };
+                self.warnings.push(warning);
                 renderer.set_terrain(gpu, None);
                 return None;
             }
@@ -816,7 +831,10 @@ impl Map {
     /// as the view moves keeps its pages until then, rather than making
     /// and freeing the same sheets frame after frame, and a map at rest
     /// holds what a fresh one there does.
+    /// A device that refused the drape a sheet is asked again for what the
+    /// cover needs in the frames after this one.
     pub(crate) fn trim_drape(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        renderer.lift_drape_ceiling();
         let Some(terrain) = self.style.as_ref().and_then(|s| s.terrain.as_ref()) else {
             return;
         };

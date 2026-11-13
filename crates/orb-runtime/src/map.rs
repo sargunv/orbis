@@ -765,6 +765,9 @@ pub struct Map {
     pub(crate) release_cached: bool,
     /// Tiles out of view stay cached ([`Map::set_tile_cache`]).
     pub(crate) tile_cache: bool,
+    /// The device refused the drape a sheet, and the next frame draws the
+    /// terrain within the slots the drape held ([`Map::plan_drape`]).
+    pub(crate) drape_refused: bool,
     /// The last frame's viewport, which the views' worths of cached tiles
     /// are counted by ([`Map::cache_limit`]).
     pub(crate) cache_viewport: orb_camera::Viewport,
@@ -977,6 +980,7 @@ impl Map {
             arrivals_began: None,
             release_cached: false,
             tile_cache: true,
+            drape_refused: false,
             cache_viewport: orb_camera::Viewport {
                 width: 0.0,
                 height: 0.0,
@@ -2056,6 +2060,7 @@ impl Map {
         // Loaded once the drape, too, shows all of it.
         report.loaded = data_loaded && labels_settled && !redrew.deferred;
         report.idle = report.loaded
+            && !self.drape_refused
             && !redrew.redrew
             && !fading
             && !self.labels.fading(now)

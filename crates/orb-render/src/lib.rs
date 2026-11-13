@@ -486,6 +486,10 @@ pub struct Renderer {
     terrain: Option<terrain::Terrain>,
     /// The DEM page the terrain reads, as `set_terrain` last gave it.
     terrain_page: Option<PageId>,
+    /// Since the device last refused the drape a sheet: the tile slots it
+    /// held then, which the drape's room keeps to, and the bytes of the
+    /// sheet refused ([`reserve_drape`](Self::reserve_drape)).
+    drape_ceiling: Option<(u32, u64)>,
     /// The drape pass's paint, frames and bundles, made for the first
     /// draped paint.
     drape: Option<Drape>,
@@ -760,6 +764,7 @@ impl Renderer {
             extrusions,
             terrain: None,
             terrain_page: None,
+            drape_ceiling: None,
             drape: None,
             terrain_layers: Vec::new(),
             drape_stacks: [0; 2],
@@ -1379,9 +1384,20 @@ impl Renderer {
     }
 
     /// How many terrain tiles the drape atlas can hold with this style's
-    /// stacks: the most a terrain cover may have.
+    /// stacks: the most a terrain cover may have. Since the device refused
+    /// a sheet, the slots the drape held then
+    /// ([`lift_drape_ceiling`](Self::lift_drape_ceiling)).
     pub fn drape_room(&self, gpu: &dyn Gpu) -> u32 {
-        terrain::room(gpu, self.drape_stacks())
+        let room = terrain::room(gpu, self.drape_stacks());
+        self.drape_ceiling
+            .map_or(room, |(slots, _)| room.min(slots))
+    }
+
+    /// Lets the drape ask the device for sheets past those it held when
+    /// the device refused one, as a map whose memory settled does:
+    /// whether it kept to fewer.
+    pub fn lift_drape_ceiling(&mut self) -> bool {
+        self.drape_ceiling.take().is_some()
     }
 
     /// Makes the drape pages hold `tile_slots` terrain tiles' slots, one
@@ -1390,15 +1406,27 @@ impl Renderer {
     /// staying, slots and all, where they are. Pages of other stacks are
     /// new and blank (a new layout generation). Fails past the
     /// [`drape_room`](Self::drape_room), or where the device refuses a
-    /// sheet.
+    /// sheet (which lets go of them all): the room then keeps to the slots
+    /// held before, so that the next frame's cover fits what the device
+    /// gave, until [`lift_drape_ceiling`](Self::lift_drape_ceiling).
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,
         tile_slots: u32,
     ) -> Result<DrapeLayout, DrapeFull> {
+        if let Some((0, bytes)) = self.drape_ceiling {
+            return Err(DrapeFull::Refused(bytes));
+        }
         let stacks = self.drape_stacks();
         let terrain = self.terrain.as_mut().expect("terrain is on");
-        let made = terrain.reserve(gpu, (tile_slots, stacks), &mut self.downsampler)?;
+        let held = terrain.layout().tile_slots;
+        let made = terrain
+            .reserve(gpu, (tile_slots, stacks), &mut self.downsampler)
+            .inspect_err(|full| {
+                if let DrapeFull::Refused(bytes) = *full {
+                    self.drape_ceiling = Some((held.min(tile_slots), bytes));
+                }
+            })?;
         let layout = terrain.layout();
         if made {
             // Stack layers and the main bundle's composites follow it.
