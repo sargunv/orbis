@@ -123,8 +123,12 @@ fn image_pos(in: ImageOut) -> vec2<f32> {
 
 // Whether the fragment belongs to this placement of the tile. A warped
 // mesh's interpolated image position can stray just past the tile's edge,
-// where no other placement draws; it belongs to the edge.
+// where no other placement draws; it belongs to the edge. A placement
+// drawing its whole square holds every one (`clip_fragments`).
 fn image_clipped(in: ImageOut) -> bool {
+    if !clip_fragments {
+        return false;
+    }
     let p = clamp(in.clip_pos, vec2<f32>(0.0), vec2<f32>(IMAGE_EXTENT - 0.5));
     return !clip_drawn(in.clip, in.tile, p, p);
 }

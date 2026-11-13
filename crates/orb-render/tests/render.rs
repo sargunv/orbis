@@ -543,21 +543,25 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
         )
         .unwrap();
     // Only what the nodes use is made: the cull (on the GPU) and the
-    // fill.
-    let pipelines = 1 + u32::from(h.gpu_driven());
+    // fill, with its variant for placements whose fragments it needn't
+    // test.
+    let pipelines = 2 + u32::from(h.gpu_driven());
     // A map without a pipeline set asks for them as nodes show.
     let asked = h.gpu.counters().pipelines_requested;
     h.renderer.request_pipelines(&mut h.gpu);
-    assert_eq!(h.gpu.counters().pipelines_requested - asked, 1);
+    assert_eq!(h.gpu.counters().pipelines_requested - asked, 2);
     let counts = h.gpu.poll_pipelines();
     assert_eq!(counts.made + counts.pending, pipelines, "{counts:?}");
-    // One worker can't have compiled both yet: the fill waits, and the
-    // frame draws only the clear colour.
+    // One worker can't have compiled them all yet: the fill waits, and
+    // the frame draws only the clear colour, or it draws in the pipeline
+    // that draws every placement while its other variant compiles.
     let first = h.render_stats();
     if first.pipelines_pending > 0 {
-        assert_eq!((first.nodes_waiting, first.draws), (1, 0));
         let pixels = pollster::block_on(h.gpu.read_texture(h.target));
-        assert_eq!(pixel(&pixels, 4, 32), CLEAR);
+        match first.nodes_waiting {
+            0 => assert_eq!((first.draws, pixel(&pixels, 4, 32)), (1, RED)),
+            _ => assert_eq!((first.draws, pixel(&pixels, 4, 32)), (0, CLEAR)),
+        }
     }
     h.gpu.finish_pipelines();
     // The next frame records the fill.
@@ -853,8 +857,6 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
             &Default::default(),
         )
         .unwrap();
-    assert!(h.render_stats().candidates_rebuilt);
-    assert!(!h.render_stats().candidates_rebuilt);
     let translated = |px: f32| {
         NodePaint::Fill(FillPaint {
             color: [1.0, 0.0, 0.0, 1.0],
@@ -869,6 +871,11 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
             state: Default::default(),
         })
     };
+    // A translated fill clips where it lands, which only its fragments
+    // know: from then on its translation changes as its margin does.
+    h.renderer.set_paint(&mut h.gpu, 0, &translated(8.0));
+    assert!(h.render_stats().candidates_rebuilt);
+    assert!(!h.render_stats().candidates_rebuilt);
     h.renderer.set_paint(&mut h.gpu, 0, &translated(16.0));
     assert!(!h.render_stats().candidates_rebuilt);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
@@ -992,11 +999,15 @@ fn keeping_every_candidate_draws_the_same_pixels() {
 
 /// The compacted node's chunks kept, indices written and indices drawn by
 /// the last cull (`cull.wgsl`'s counters).
+/// The cull's counters over every row: a node's, and its second
+/// stream's.
 fn cull_counters(h: &mut Harness) -> [u32; 3] {
     let (args, _) = h.renderer.draw_args();
     let bytes = pollster::block_on(h.gpu.read_buffer(args));
-    let words: &[u32] = bytemuck::cast_slice(&bytes[..orb_render::ARGS_WORDS * 4]);
-    [words[5], words[6], words[7]]
+    let words: &[u32] = bytemuck::cast_slice(&bytes);
+    let (rows, _) = words.as_chunks::<{ orb_render::ARGS_WORDS }>();
+    rows.iter()
+        .fold([0; 3], |sum, row| [0, 1, 2].map(|i| sum[i] + row[5 + i]))
 }
 
 fn circle_paint(color: [f32; 4]) -> NodePaint {

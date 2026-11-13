@@ -49,7 +49,7 @@ pub(crate) type NodeExtrusion = Apart;
 
 /// An extrusion node's two draws, each with the node group it binds: the
 /// buildings its placements may draw whole, which the whole pipeline
-/// draws, and its cut stream ([`Scene::cut_row`](crate::scene::Scene::cut_row)),
+/// draws, and its cut stream ([`Scene::second_row`](crate::scene::Scene::second_row)),
 /// what they draw cut, which the cut pipelines draw.
 #[derive(Clone, Debug)]
 pub(crate) struct Streams {

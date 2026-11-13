@@ -107,6 +107,12 @@ pub const FEATURE_STATE: &str = "feature_state";
 /// no fill, line or fill-extrusion pattern.
 pub const PATTERNS: &str = "with_patterns";
 
+/// The override constant that, set false, makes a fill, line or image
+/// pipeline its variant whose fragments aren't tested against their
+/// placement's clip (`types.wgsl`'s `clip_fragments`): for placements that
+/// need no test (orb-render's `Untested`).
+pub const CLIP_FRAGMENTS: &str = "clip_fragments";
+
 /// The override constant that, set to 11, makes a pipeline read data
 /// textures 2048 words wide (`data_texture.wgsl`'s `data_width_log2`;
 /// 4096 by default): for a device whose texture side is shorter
@@ -695,6 +701,8 @@ mod tests {
             &FILL_OUTLINE_SHADER,
             &LINE_SHADER,
             &LINE_STYLED_SHADER,
+            &LINE_PLANES_SHADER,
+            &LINE_STYLED_PLANES_SHADER,
             &CIRCLE_SHADER,
             &SYMBOL_SHADER,
             &SYMBOL_PLACE_SHADERS[0],

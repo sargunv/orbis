@@ -18,6 +18,7 @@ const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
 
 const FILL: &str = wgsl!("fill");
 const LINE: &str = wgsl!("line");
+const LINE_FRAGMENT: &str = wgsl!("line_fragment");
 const POINT: &str = wgsl!("point");
 const CIRCLE: &str = wgsl!("circle");
 const SYMBOL: &str = wgsl!("symbol");
@@ -175,7 +176,7 @@ pub const FILL_OUTLINE_SHADER: Shader = Shader {
 /// Lines without dashes, a pattern or a gradient.
 pub const LINE_SHADER: Shader = Shader {
     label: "line",
-    parts: &[TYPES, DRAW, PATTERN, LINE],
+    parts: &[TYPES, DRAW, PATTERN, LINE, LINE_FRAGMENT],
     vertex: "vs_line",
     fragment: "fs_line",
     compute: "",
@@ -187,6 +188,26 @@ pub const LINE_STYLED_SHADER: Shader = Shader {
     vertex: "vs_line_styled",
     fragment: "fs_line_styled",
     ..LINE_SHADER
+};
+
+/// Where clip distances are, lines of placements with one clip rectangle,
+/// clipped by its four planes (orb-render's `Untested::Rect`). Vertex
+/// only: its pipelines draw [`LINE_SHADER`]'s and
+/// [`LINE_STYLED_SHADER`]'s fragment stages untested
+/// (`types.wgsl`'s `clip_fragments`), as a fragment stage can't take the
+/// clip distances its vertex output carries.
+pub const LINE_PLANES_SHADER: Shader = Shader {
+    label: "line planes",
+    parts: &[CLIP_PLANES, TYPES, DRAW, PATTERN, LINE],
+    fragment: "",
+    ..LINE_SHADER
+};
+
+/// [`LINE_PLANES_SHADER`]'s styled lines.
+pub const LINE_STYLED_PLANES_SHADER: Shader = Shader {
+    label: "line styled planes",
+    vertex: "vs_line_styled",
+    ..LINE_PLANES_SHADER
 };
 
 pub const CIRCLE_SHADER: Shader = Shader {
@@ -467,6 +488,8 @@ pub const SHADERS: &[Shader] = &[
     FILL_OUTLINE_SHADER,
     LINE_SHADER,
     LINE_STYLED_SHADER,
+    LINE_PLANES_SHADER,
+    LINE_STYLED_PLANES_SHADER,
     CIRCLE_SHADER,
     SYMBOL_SHADER,
     SYMBOL_PLACE_SHADERS[0],

@@ -160,7 +160,7 @@ fn fill_drawn(in: FillOut) -> bool {
 
 @fragment
 fn fs_fill(in: FillOut) -> @location(0) vec4<f32> {
-    if !fill_drawn(in) {
+    if clip_fragments && !fill_drawn(in) {
         discard;
     }
     if with_patterns && node.pattern.enabled == 1u {

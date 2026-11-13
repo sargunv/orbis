@@ -46,7 +46,7 @@ use crate::driver::SubmitLimits;
 
 use super::{
     CANDIDATE_WORDS, CULL_BATCH, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, NodeMeshes,
-    PlacementTarget, Route, Scene, Stream, Table, UNKNOWN, VISIBLE_WORDS,
+    PlacementTarget, Route, Scene, Stream, Table, UNKNOWN, Untested, VISIBLE_WORDS,
 };
 
 /// A candidate row that holds no candidate: a hole a run left in an
@@ -299,11 +299,25 @@ impl RunPlan<'_> {
 }
 
 /// What of a node decides how its candidates lay out.
-type Shape = (NodeDraw, PlacementTarget, bool, bool, NodeMeshes);
+type Shape = (
+    NodeDraw,
+    PlacementTarget,
+    bool,
+    bool,
+    Option<Untested>,
+    NodeMeshes,
+);
 
 fn shape(node: &NodeEntry) -> Shape {
     let c = &node.cull;
-    (c.draw, c.target, c.labels, c.unclipped, c.meshes)
+    (
+        c.draw,
+        c.target,
+        c.labels,
+        c.unclipped,
+        c.untested,
+        c.meshes,
+    )
 }
 
 /// An indexed node's index is `(run + 1) << run_shift | vertex`.
@@ -333,8 +347,8 @@ impl Scene {
             NodeMeshes::Previous => (false, false),
         };
         let (own, next) = match node.stream {
-            Stream::Cut(of) => (Some(&self.nodes[of as usize].meshes), None),
-            Stream::All | Stream::Whole(_) => (
+            Stream::Cut(of) | Stream::Tested(of) => (Some(&self.nodes[of as usize].meshes), None),
+            Stream::All | Stream::Whole(_) | Stream::Untested(_) => (
                 own.then_some(&node.meshes),
                 next.then(|| &self.nodes[n + 1].meshes),
             ),
@@ -355,7 +369,7 @@ impl Scene {
                 if !node.cull.draws(placement.row.target) {
                     continue;
                 }
-                let route = Route::new(node.stream, &placement.row);
+                let route = Route::new(node.stream, node.cull.untested, &placement.row);
                 let run = RunPlan {
                     key: (self.mesh_serials[mesh.0 as usize], placement.slot, route),
                     placement: placement.slot,
@@ -1346,6 +1360,7 @@ mod tests {
                 PlacementTarget::Map,
                 false,
                 false,
+                None,
                 NodeMeshes::Own,
             ),
             row_base: 0,

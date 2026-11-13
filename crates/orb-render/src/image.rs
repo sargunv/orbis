@@ -207,9 +207,11 @@ pub(crate) struct Prepared {
 }
 
 /// One target format's raster, hillshade and color-relief pipelines, each
-/// made for the first node of its family.
+/// made for the first node of its family, then each untested
+/// ([`Untested::Square`](crate::Untested::Square)): its fragments test no
+/// clip, for placements drawing their whole square.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ImagePipelines(pub(crate) [Option<RenderPipelineId>; 3]);
+pub(crate) struct ImagePipelines(pub(crate) [Option<RenderPipelineId>; 6]);
 
 fn image_index(family: Family) -> usize {
     match family {
@@ -223,6 +225,10 @@ fn image_index(family: Family) -> usize {
 impl ImagePipelines {
     pub(crate) fn get(&self, family: Family) -> Option<RenderPipelineId> {
         self.0[image_index(family)]
+    }
+
+    pub(crate) fn untested(&self, family: Family) -> Option<RenderPipelineId> {
+        self.0[3 + image_index(family)]
     }
 }
 
@@ -349,15 +355,24 @@ impl Images {
         draw_layout: BindGroupLayoutId,
         family: Family,
     ) -> RenderPipelineId {
-        *pipelines.0[image_index(family)].get_or_insert_with(|| {
-            let (shader, layout) = match family {
-                Family::Raster => (&RASTER_SHADER, self.image_layout),
-                Family::Hillshade => (&HILLSHADE_SHADER, self.table_layout),
-                _ => (&COLOR_RELIEF_SHADER, self.table_layout),
-            };
-            let blend = Some(BlendState::PremultipliedAlpha);
-            Draw::new(shader, &[draw_layout, layout], target, blend).make(gpu)
-        })
+        let (shader, layout) = match family {
+            Family::Raster => (&RASTER_SHADER, self.image_layout),
+            Family::Hillshade => (&HILLSHADE_SHADER, self.table_layout),
+            _ => (&COLOR_RELIEF_SHADER, self.table_layout),
+        };
+        let blend = Some(BlendState::PremultipliedAlpha);
+        let layouts = [draw_layout, layout];
+        let draw = Draw::new(shader, &layouts, target, blend);
+        let index = image_index(family);
+        pipelines.0[3 + index].get_or_insert_with(|| {
+            let constants: &[_] = &[(orb_shaders::CLIP_FRAGMENTS, 0.0)];
+            Draw {
+                constants: [&[], constants],
+                ..draw
+            }
+            .make(gpu)
+        });
+        *pipelines.0[index].get_or_insert_with(|| draw.make(gpu))
     }
 
     /// Makes the pipeline shaded hillshades drape their slopes with, if
@@ -460,6 +475,11 @@ impl Images {
 
     pub(crate) fn pipeline(&self, family: Family) -> Option<RenderPipelineId> {
         self.pipelines.get(family)
+    }
+
+    /// `family`'s untested pipeline, made or not.
+    pub(crate) fn untested(&self, family: Family) -> Option<RenderPipelineId> {
+        self.pipelines.untested(family)
     }
 
     /// Makes the DEM prepare pipelines, unless they are made: the

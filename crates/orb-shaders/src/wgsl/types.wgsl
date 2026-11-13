@@ -425,6 +425,19 @@ fn in_clip(clip: vec4<f32>, p: vec2<f32>) -> bool {
     return all(p >= clip.xy) && all(p < clip.zw);
 }
 
+// A pipeline's variant whose fragments aren't tested against their
+// placement's clip (orb-render's `Untested`): it draws only placements
+// whose content needs no test, those drawing their whole square (fills'
+// meshes end at it) or clipped by clip distances (`clip_planes`). On by
+// default: the tested variant draws every placement.
+override clip_fragments: bool = true;
+
+// The distances inside `fragment_clip` rectangle `clip` from position
+// `p`, for clip planes: the four sides, each a plane.
+fn clip_planes(clip: vec4<f32>, p: vec2<f32>) -> vec4<f32> {
+    return vec4<f32>(p - clip.xy, clip.zw - p);
+}
+
 // Whether `p` lies where the placement's content may land (`bound`).
 fn landed(tile: Tile, p: vec2<f32>) -> bool {
     return all(p >= unpack_i16x2(tile.bound.x)) && all(p < unpack_i16x2(tile.bound.y));

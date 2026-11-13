@@ -55,7 +55,7 @@ pub use scene::{
     ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLight, FrameTerrain, ImageAtlas,
     ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData, MeshId, MeshSize, NodeCull,
     NodeDraw, NodeMeshes, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity, SceneStats, TileId,
-    TileRow, TileWarp, Words, warp_words,
+    TileRow, TileWarp, Untested, Words, warp_words,
 };
 pub use scene::{
     GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas, PLACED_WORDS, QUAD_WORDS,
@@ -76,11 +76,34 @@ use crate::release::Release;
 pub use driver::cpu::{Compared, DriverCheck};
 use orb_hal::*;
 use orb_shaders::{
-    CIRCLE_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, LINE_STYLED_SHADER,
+    CIRCLE_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_PLANES_SHADER, LINE_SHADER,
+    LINE_STYLED_PLANES_SHADER, LINE_STYLED_SHADER,
 };
 #[cfg(cpu_driven)]
 use scene::Backing;
 use scene::{DataTable, Scene, Table, Tables};
+
+/// Whether a family's nodes draw in two rows by their placements' clips
+/// (`scene`'s `Stream::Untested`): fills, lines and image tiles.
+fn splits(family: Family) -> bool {
+    matches!(family, Family::Fill | Family::Line) || family.is_image()
+}
+
+/// Which of a split node's placements draw untested with `paint`, on a
+/// device with clip distances or not (`planes`).
+fn untested_of(paint: &NodePaint, planes: bool) -> Untested {
+    match paint {
+        _ if paint.translates() => Untested::None,
+        NodePaint::Fill(_)
+        | NodePaint::Background(_)
+        | NodePaint::FillPattern(..)
+        | NodePaint::Raster(_)
+        | NodePaint::Hillshade(_)
+        | NodePaint::ColorRelief(_) => Untested::Square,
+        NodePaint::Line(_) | NodePaint::LinePattern(..) if planes => Untested::Rect,
+        _ => Untested::None,
+    }
+}
 
 /// How a family's nodes draw: meshes from compacted
 /// indices, instanced quads by vertex pulling.
@@ -208,10 +231,10 @@ struct Node {
     heatmap: Option<heatmap::NodeHeatmap>,
     /// An extrusion node's colour target.
     extrusion: Option<extrusion::NodeExtrusion>,
-    /// An extrusion node's cut stream's group ([`Scene::cut_row`]): its
-    /// uniform at the stream's row, the node's paint with that row's
-    /// index.
-    cut_group: Option<BindGroupId>,
+    /// The group of an extrusion node's cut stream, or a split node's
+    /// tested placements ([`Scene::second_row`]): its uniform at that
+    /// row, the node's paint with the row's index.
+    second_group: Option<BindGroupId>,
     /// A symbol node draws its halos in a pass of their own.
     separate_halo: bool,
     /// A symbol node places its labels along lines.
@@ -253,10 +276,10 @@ struct Node {
     /// and the bundles record it. Until then it costs nothing, neither
     /// pipelines nor targets nor passes.
     drawn: bool,
-    /// A bundle recorded since the last invalidation left it out: it had
-    /// no candidates, so its draw would have drawn nothing. Candidates
-    /// arriving for it record the bundles again.
-    left_out: std::cell::Cell<bool>,
+    /// A bundle recorded since the last invalidation left out its row, or
+    /// its second row: it had no candidates, so its draw would have drawn
+    /// nothing. Candidates arriving for it record the bundles again.
+    left_out: std::cell::Cell<[bool; 2]>,
 }
 
 /// Whether a node painted with `a` draws with the pipelines it does
@@ -456,12 +479,19 @@ pub struct Renderer {
     /// node has no candidates in leaves out nothing), so the pipeline's
     /// arrival redraws every slot.
     drape_waiting: bool,
+    /// Whether a bundle drew a split node's untested placements in its
+    /// tested pipeline for want of the untested one, which arriving
+    /// records the bundles again.
+    fell_back: std::cell::Cell<bool>,
+    /// The device has clip distances: lines draw untested from placements
+    /// with one clip rectangle ([`Untested::Rect`]).
+    planes: bool,
     /// Nodes the main bundles record draws for.
     recorded: u32,
     node_uniforms: BufferId,
     /// The node uniforms as written, and the nodes changed since the last
     /// frame: one buffer write a frame, not one a node, and one for the
-    /// cut streams' rows past them.
+    /// second streams' rows past them.
     node_words: Vec<u32>,
     nodes_dirty: [Option<std::ops::Range<usize>>; 2],
     nodes: Vec<Node>,
@@ -581,7 +611,7 @@ impl Renderer {
         let layouts = (self.draw_layout, self.node_layout);
         self.driver.destroy(gpu);
         let groups = self.draw_groups;
-        let pipelines = (self.paint.pipelines, self.symbols);
+        let pipelines = ((self.paint.pipelines, self.paint.untested), self.symbols);
         (
             layouts,
             groups,
@@ -602,7 +632,7 @@ impl Renderer {
         (self.layers, self.composites).release(gpu);
         let drape = self
             .drape_pipelines
-            .map(|d| (d.paint.pipelines, d.images.0));
+            .map(|d| ((d.paint.pipelines, d.paint.untested), d.images.0));
         (self.terrain, self.drape, drape, self.no_terrain_depth).release(gpu);
     }
 
@@ -747,6 +777,8 @@ impl Renderer {
             made_seen: 0,
             waiting: 0,
             drape_waiting: false,
+            fell_back: Default::default(),
+            planes: gpu.caps().clip_distances,
             recorded: 0,
             node_uniforms,
             node_words: vec![0; (NODE_UNIFORM_SIZE / 4) as usize * capacity.nodes as usize],
@@ -942,12 +974,11 @@ impl Renderer {
             args.get(at..at + 4)
                 .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("a word")))
         };
-        // An extrusion node's counts take in its cut stream's, and a
-        // node's take in every block's.
+        // A node's counts take in its second stream's, and every block's.
         let blocks = self.scene.block_slots();
         (self.nodes.iter().enumerate())
             .map(|(i, n)| {
-                let rows = std::iter::once(i as u32).chain(self.scene.cut_row(i as u32));
+                let rows = std::iter::once(i as u32).chain(self.scene.second_row(i as u32));
                 let (candidates, kept) = rows.fold((0, 0), |(c, k), row| {
                     let kept: u32 = (0..blocks)
                         .map(|b| word(self.scene.row(row, b) as usize))
@@ -997,13 +1028,14 @@ impl Renderer {
         let families: Vec<Family> = nodes.iter().map(|n| n.family).collect();
         let families = &families[..];
         // A style with more nodes than ever drawn: the node tables grow,
-        // with a row for each extrusion node's cut stream after them.
-        // Every node's group binds its uniform again below.
-        let cut = families
+        // with a row for each extrusion node's cut stream and each split
+        // node's tested placements after them. Every node's group binds
+        // its uniform again below.
+        let seconds = families
             .iter()
-            .filter(|&&f| f == Family::FillExtrusion)
+            .filter(|&&f| f == Family::FillExtrusion || splits(f))
             .count();
-        let count = (families.len() + cut) as u32;
+        let count = (families.len() + seconds) as u32;
         let mut retired_uniforms = None;
         if count > self.scene.capacity().nodes {
             self.scene.grow_nodes(gpu, count);
@@ -1062,7 +1094,12 @@ impl Renderer {
             let (mut image, cull, (shaded, by_zoom)) = match node {
                 Some(node) => {
                     // Groups bind the uniform at the node's index.
-                    ((node.group, node.cut_group), node.extrusion, node.heatmap).release(gpu);
+                    (
+                        (node.group, node.second_group),
+                        node.extrusion,
+                        node.heatmap,
+                    )
+                        .release(gpu);
                     (node.image, node.cull, (node.shaded, node.by_zoom))
                 }
                 None => (
@@ -1076,6 +1113,7 @@ impl Renderer {
                         labels: family.is_symbol(),
                         surface: false,
                         unclipped: family == Family::FillExtrusion,
+                        untested: splits(family).then_some(Untested::None),
                         meshes: NodeMeshes::Own,
                     },
                     (false, false),
@@ -1098,7 +1136,7 @@ impl Renderer {
                 group,
                 extrusion: (family == Family::FillExtrusion)
                     .then(extrusion::NodeExtrusion::default),
-                cut_group: None,
+                second_group: None,
                 heatmap: (family == Family::Heatmap).then(|| heatmap::Heatmaps::node(gpu)),
                 cull,
                 written: Vec::new(),
@@ -1145,19 +1183,23 @@ impl Renderer {
         let cull: Vec<NodeCull> = (0..self.nodes.len()).map(|i| self.scene_cull(i)).collect();
         self.scene.remap_nodes(&map, &cull);
         for i in 0..self.nodes.len() {
-            let Some(row) = self.scene.cut_row(i as u32) else {
+            let Some(row) = self.scene.second_row(i as u32) else {
                 continue;
             };
             let uniform = self.node_uniform(row, false);
-            let group = gpu.create_bind_group(&BindGroupDesc {
-                label: "node cut stream",
-                layout: self.node_layout,
-                entries: &[BindGroupEntry {
-                    binding: 0,
-                    resource: uniform,
-                }],
-            });
-            self.nodes[i].cut_group = Some(group);
+            let node = &self.nodes[i];
+            let group = match &node.image {
+                Some(image) => self.images.group(gpu, node.family, image, uniform),
+                None => gpu.create_bind_group(&BindGroupDesc {
+                    label: "node second stream",
+                    layout: self.node_layout,
+                    entries: &[BindGroupEntry {
+                        binding: 0,
+                        resource: uniform,
+                    }],
+                }),
+            };
+            self.nodes[i].second_group = Some(group);
         }
         self.pipelines_stale = true;
         self.invalidate_bundle(gpu);
@@ -1464,13 +1506,19 @@ impl Renderer {
             );
             p.uniform_words(node)
         });
-        let nodes = self.nodes.len() as u64;
+        // A split node's tested placements draw with the paint at their
+        // row's offset, their row's index in it.
+        let second = (self.scene.second_row(node))
+            .filter(|_| self.nodes[node as usize].extrusion.is_none())
+            .zip(paint)
+            .map(|(row, p)| (row, p.uniform_words(row)));
+        let rows = u64::from(self.scene.capacity().nodes);
         let stride = NODE_UNIFORM_SIZE;
         let level = self.drape.get_or_insert_with(|| Drape {
             frames: Default::default(),
             uniforms: gpu.create_buffer(&BufferDesc {
                 label: "drape node uniforms",
-                size: stride * nodes,
+                size: stride * rows,
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             }),
             written: Vec::new(),
@@ -1486,11 +1534,14 @@ impl Renderer {
             level.forget_bundle(gpu);
         }
         if let Some(words) = &words {
-            gpu.write_buffer(
-                level.uniforms,
-                u64::from(node) * stride,
-                bytemuck::cast_slice(words),
-            );
+            let at = std::iter::once((node, words));
+            for (row, words) in at.chain(second.as_ref().map(|(row, w)| (*row, w))) {
+                gpu.write_buffer(
+                    level.uniforms,
+                    u64::from(row) * stride,
+                    bytemuck::cast_slice(words),
+                );
+            }
             self.paints_written += 1;
         }
         level.written[node as usize] = words;
@@ -1551,7 +1602,7 @@ impl Renderer {
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
         self.drop_bundles(gpu);
         for node in &self.nodes {
-            node.left_out.set(false);
+            node.left_out.set([false; 2]);
         }
         if let Some(drape) = &mut self.drape {
             drape.forget_bundle(gpu);
@@ -1685,6 +1736,7 @@ impl Renderer {
         let mut rebuilt = false;
         for i in 0..self.nodes.len() {
             let uniform = self.node_uniform(i as u32, false);
+            let second = (self.scene.second_row(i as u32)).map(|row| self.node_uniform(row, false));
             let node = &mut self.nodes[i];
             let Some(image) = &mut node.image else {
                 continue;
@@ -1694,6 +1746,11 @@ impl Renderer {
             }
             gpu.destroy_bind_group(node.group);
             node.group = self.images.node_group(gpu, node.family, image, uniform);
+            // Its tested placements' group binds the page too.
+            if let Some(uniform) = second {
+                node.second_group.take().release(gpu);
+                node.second_group = Some(self.images.group(gpu, node.family, image, uniform));
+            }
             rebuilt = true;
         }
         if rebuilt {
@@ -1716,7 +1773,8 @@ impl Renderer {
     /// Writes a node's paint values. The paint's family must match the
     /// node's.
     pub fn set_paint(&mut self, gpu: &mut dyn Gpu, node: u32, paint: &NodePaint) {
-        let cut_row = self.scene.cut_row(node);
+        let second_row = self.scene.second_row(node);
+        let planes = self.planes;
         let entry = &mut self.nodes[node as usize];
         assert!(
             paint.fits(entry.family),
@@ -1765,16 +1823,20 @@ impl Renderer {
         }
         if words != entry.written {
             let stride = (NODE_UNIFORM_SIZE / 4) as usize;
-            // An extrusion node's cut stream draws with its paint, from
-            // its own row, past the render nodes', which it says.
-            let cut = cut_row.map(|row| {
+            // An extrusion node's cut stream, and a split node's tested
+            // placements, draw with its paint, from their own row, past
+            // the render nodes', which it says; the cut stream says it is.
+            let second = second_row.map(|row| {
+                if entry.extrusion.is_none() {
+                    return (row as usize, paint.uniform_words(row));
+                }
                 let mut cut = words.clone();
                 cut[orb_shaders::layout::extrusion_node::INDEX] = row;
                 cut[orb_shaders::layout::extrusion_node::CUT] = 1;
                 (row as usize, cut)
             });
             let rows = std::iter::once((0, node as usize, &words));
-            for (part, row, words) in rows.chain(cut.as_ref().map(|(row, cut)| (1, *row, cut))) {
+            for (part, row, words) in rows.chain(second.as_ref().map(|(row, w)| (1, *row, w))) {
                 self.node_words[row * stride..][..words.len()].copy_from_slice(words);
                 let dirty = &mut self.nodes_dirty[part];
                 *dirty = Some(match dirty.take() {
@@ -1805,13 +1867,16 @@ impl Renderer {
             _ => 0.0,
         };
         let surface = paint.on_surface();
+        let untested = entry.cull.untested.map(|_| untested_of(paint, planes));
         if margin != entry.cull.margin_px
             || elevation != entry.cull.elevation
             || surface != entry.cull.surface
+            || untested != entry.cull.untested
         {
             entry.cull.margin_px = margin;
             entry.cull.elevation = elevation;
             entry.cull.surface = surface;
+            entry.cull.untested = untested;
             self.sync_node(node as usize);
         }
     }
@@ -2617,9 +2682,13 @@ impl Renderer {
     /// left out for want of candidates draws once it has some, and a
     /// heatmap hidden, or with nothing to draw, composites nothing.
     fn follow_candidates(&mut self, gpu: &mut dyn Gpu, candidates_rebuilt: bool) {
+        let rows = |i: usize| [Some(i as u32), self.scene.second_row(i as u32)];
         if candidates_rebuilt
-            && (self.nodes.iter().enumerate())
-                .any(|(i, n)| n.left_out.get() && self.scene.node_candidates(i as u32) > 0)
+            && (self.nodes.iter().enumerate()).any(|(i, n)| {
+                (n.left_out.get().into_iter().zip(rows(i))).any(|(left, row)| {
+                    left && row.is_some_and(|r| self.scene.node_candidates(r) > 0)
+                })
+            })
         {
             self.invalidate_bundle(gpu);
         }
@@ -2663,7 +2732,7 @@ impl Renderer {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
             let drape_waiting = std::mem::take(&mut self.drape_waiting);
-            if self.waiting > 0 || drape_waiting {
+            if self.waiting > 0 || drape_waiting || self.fell_back.take() {
                 self.invalidate_bundle(gpu);
             }
             if drape_waiting && let Some(terrain) = self.terrain.as_mut() {
@@ -2781,7 +2850,8 @@ impl Renderer {
             }
             let mut group = Vec::new();
             for i in self.layers.groups[g].nodes.clone() {
-                let groups = (&self.draw_groups[..], self.nodes[i].group, true);
+                let node = &self.nodes[i];
+                let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
                 let before = group.len();
                 if !self.node_commands(gpu, ready, i, groups, &mut group) {
                     self.waiting += 1;
@@ -2831,7 +2901,8 @@ impl Renderer {
                 }
                 None => {}
             }
-            let groups = (&self.draw_groups[..], self.nodes[i].group, true);
+            let node = &self.nodes[i];
+            let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
             let before = commands.len();
             if !member && !self.node_commands(gpu, ready, i, groups, &mut commands) {
                 self.waiting += 1;
@@ -3001,7 +3072,7 @@ impl Renderer {
             let first = !depth_cleared;
             depth_cleared = true;
             let draw = |row| self.driver.draw(&buffers, row, NodeDraw::Indexed);
-            let cut = self.scene.cut_row(index as u32).zip(node.cut_group);
+            let cut = self.scene.second_row(index as u32).zip(node.second_group);
             let (cut_row, cut_group) = cut.expect("an extrusion node draws a cut stream");
             // Each block's buildings, over its group.
             let streams: Vec<(BindGroupId, extrusion::Streams)> = (self.scene.blocks())
@@ -3199,24 +3270,41 @@ impl Renderer {
             if !in_stack || !level.written.get(i).is_some_and(Option::is_some) {
                 continue;
             }
-            let uniform = BindingResource::Buffer {
+            let uniform = |row: u32| BindingResource::Buffer {
                 buffer: uniforms,
-                offset: i as u64 * NODE_UNIFORM_SIZE,
+                offset: u64::from(row) * NODE_UNIFORM_SIZE,
                 size: Some(NODE_UNIFORM_SIZE),
             };
             let group = match &node.image {
-                Some(image) => self.images.group(gpu, node.family, image, uniform),
+                Some(image) => self
+                    .images
+                    .group(gpu, node.family, image, uniform(i as u32)),
                 None => gpu.create_bind_group(&BindGroupDesc {
                     label: "drape node",
                     layout: self.node_layout,
                     entries: &[BindGroupEntry {
                         binding: 0,
-                        resource: uniform,
+                        resource: uniform(i as u32),
                     }],
                 }),
             };
             groups.push(group);
-            if !self.node_commands(gpu, ready, i, (&scenes, group, false), &mut commands) {
+            let second = (self.scene.second_row(i as u32))
+                .filter(|_| node.extrusion.is_none())
+                .map(|row| match &node.image {
+                    Some(image) => self.images.group(gpu, node.family, image, uniform(row)),
+                    None => gpu.create_bind_group(&BindGroupDesc {
+                        label: "drape node second stream",
+                        layout: self.node_layout,
+                        entries: &[BindGroupEntry {
+                            binding: 0,
+                            resource: uniform(row),
+                        }],
+                    }),
+                });
+            groups.extend(second);
+            let node_groups = (&scenes[..], (group, second), false);
+            if !self.node_commands(gpu, ready, i, node_groups, &mut commands) {
                 self.drape_waiting = true;
             }
         }
@@ -3236,8 +3324,10 @@ impl Renderer {
 
     /// Node `i`'s commands as a bundle records them, over the scene groups
     /// `scenes`, one per block slot: the map's (`in_map`), or the drape's
-    /// for draped nodes on terrain. The node draws once in each block it
-    /// may have candidates in, that block's group bound. In the map, a
+    /// for draped nodes on terrain, with its group and its second
+    /// stream's. The node draws once in each block it may have candidates
+    /// in, that block's group bound; a split node's untested placements
+    /// first, in their pipeline, then its tested ones. In the map, a
     /// terrain layer composites in its first node's place. `false` when
     /// the node waits for a pipeline and records nothing.
     fn node_commands(
@@ -3245,7 +3335,11 @@ impl Renderer {
         gpu: &mut dyn Gpu,
         ready: Ready,
         i: usize,
-        (scenes, group, in_map): (&[Option<BindGroupId>], BindGroupId, bool),
+        (scenes, (group, second_group), in_map): (
+            &[Option<BindGroupId>],
+            (BindGroupId, Option<BindGroupId>),
+            bool,
+        ),
         commands: &mut Vec<RenderCommand>,
     ) -> bool {
         if !ready.cull {
@@ -3291,27 +3385,32 @@ impl Renderer {
             }
             return true;
         }
-        // Without candidates its draw draws nothing: on sparse views most
-        // of a style's nodes, each a pipeline, bindings and an indirect
-        // draw the CPU encodes and the GPU reads every frame.
-        if self.scene.node_candidates(i as u32) == 0 {
-            node.left_out.set(true);
-            return true;
-        }
-        // Its rows in each block, with the block's group; a direct draw of
-        // nothing records nothing: the bundles record again when the
-        // node's draw changes.
-        let rows: Vec<(BindGroupId, u32)> = (scenes.iter().enumerate())
-            .filter_map(|(block, scene)| {
-                let row = self.scene.row(i as u32, block as u32);
-                Some(((*scene)?, row)).filter(|&(_, row)| !self.driver.draws_nothing(row))
-            })
-            .collect();
-        if rows.is_empty() {
+        // Without candidates a row's draw draws nothing: on sparse views
+        // most of a style's nodes, each a pipeline, bindings and an
+        // indirect draw the CPU encodes and the GPU reads every frame. A
+        // split node's second row holds its tested placements.
+        let second = self.scene.second_row(i as u32);
+        let streams = [Some(i as u32), second]
+            .map(|row| row.filter(|&row| self.scene.node_candidates(row) > 0));
+        node.left_out.set(streams.map(|row| row.is_none()));
+        // A stream's rows in each block, with the block's group; a direct
+        // draw of nothing records nothing: the bundles record again when
+        // the node's draw changes.
+        let rows = |stream: u32| -> Vec<(BindGroupId, u32)> {
+            (scenes.iter().enumerate())
+                .filter_map(|(block, scene)| {
+                    let row = self.scene.row(stream, block as u32);
+                    Some(((*scene)?, row)).filter(|&(_, row)| !self.driver.draws_nothing(row))
+                })
+                .collect()
+        };
+        let streams = streams.map(|row| row.map(rows).filter(|rows| !rows.is_empty()));
+        if streams.iter().all(Option::is_none) {
             return true;
         }
         let buffers = self.scene.buffers();
         if node.family.is_symbol() {
+            let rows = streams[0].clone().unwrap_or_default();
             // Its icons and its text, in one list. The cull's point
             // arguments read as indexed ones too: 6 indices into the quad
             // indices, and the first index, base vertex and first instance
@@ -3349,42 +3448,58 @@ impl Renderer {
             .drape_pipelines
             .as_ref()
             .filter(|_| !in_map && self.target.color != DRAPE_FORMAT);
+        let kind = node.paint_kind(&self.patterned, &self.rowed);
+        // A split node's untested placements draw in a pipeline that tests
+        // no fragment once it compiled, else in the tested one.
+        let split = second.is_some() && streams[0].is_some() && !node.shades_on_terrain();
+        let untested = split.then(|| {
+            let pipeline = match (drape, node.family.is_image()) {
+                (Some(d), true) => d.images.untested(node.family),
+                (Some(d), false) => d.paint.drawn_untested(gpu, kind, self.full),
+                (None, true) => self.images.untested(node.family),
+                (None, false) => self.paint.drawn_untested(gpu, kind, self.full),
+            };
+            let pipeline = pipeline.filter(|&p| gpu.pipeline_ready(p.into()));
+            self.fell_back
+                .set(self.fell_back.get() || pipeline.is_none());
+            pipeline
+        });
         let pipeline = match (drape, node.family.is_image()) {
             _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),
-            (Some(d), false) => d.paint.drawn(
-                gpu,
-                node.paint_kind(&self.patterned, &self.rowed),
-                self.full,
-            ),
+            (Some(d), false) => d.paint.drawn(gpu, kind, self.full),
             (None, true) => self.images.pipeline(node.family),
-            (None, false) => self.paint.drawn(
-                gpu,
-                node.paint_kind(&self.patterned, &self.rowed),
-                self.full,
-            ),
+            (None, false) => self.paint.drawn(gpu, kind, self.full),
         };
         let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
             return false;
         };
-        commands.extend([
-            RenderCommand::SetPipeline(pipeline),
-            RenderCommand::SetBindGroup { index: 1, group },
-        ]);
-        if node.cull.draw == NodeDraw::Indexed {
-            commands.push(RenderCommand::SetIndexBuffer {
-                buffer: self.driver.buffers(buffers).compacted,
-                offset: 0,
-            });
-        }
-        for (scene, row) in rows {
+        let pipelines = [untested.flatten().unwrap_or(pipeline), pipeline];
+        let groups = [Some(group), second_group];
+        for ((rows, pipeline), group) in streams.into_iter().zip(pipelines).zip(groups) {
+            let Some(rows) = rows else {
+                continue;
+            };
+            let group = group.expect("a split node has its second stream's group");
             commands.extend([
-                RenderCommand::SetBindGroup {
-                    index: 0,
-                    group: scene,
-                },
-                self.driver.draw(buffers, row, node.cull.draw),
+                RenderCommand::SetPipeline(pipeline),
+                RenderCommand::SetBindGroup { index: 1, group },
             ]);
+            if node.cull.draw == NodeDraw::Indexed {
+                commands.push(RenderCommand::SetIndexBuffer {
+                    buffer: self.driver.buffers(buffers).compacted,
+                    offset: 0,
+                });
+            }
+            for (scene, row) in rows {
+                commands.extend([
+                    RenderCommand::SetBindGroup {
+                        index: 0,
+                        group: scene,
+                    },
+                    self.driver.draw(buffers, row, node.cull.draw),
+                ]);
+            }
         }
         true
     }
@@ -3590,7 +3705,7 @@ struct Drape {
 
 impl release::Release for Node {
     fn release(self, gpu: &mut dyn Gpu) {
-        let groups = (self.group, self.cut_group);
+        let groups = (self.group, self.second_group);
         (groups, self.image, self.heatmap, self.extrusion).release(gpu);
     }
 }
@@ -3630,10 +3745,14 @@ struct PaintKind {
 
 /// The vector families' pipelines (fill, fill outline, line, styled line,
 /// circle), each made for the family's first node, with property rows and
-/// without, and those that draw patterns with them and without.
+/// without, and those that draw patterns with them and without; a fill's
+/// and a line's also untested ([`Untested`]): a fill's fragments testing
+/// nothing, a line's, where the device has clip distances
+/// (`LINE_PLANES_SHADER`), clipped by their placement's planes instead.
 #[derive(Clone, Copy, Debug, Default)]
 struct PaintPipelines {
     pipelines: [Variants; 20],
+    untested: [Variants; 20],
 }
 
 impl PaintPipelines {
@@ -3653,6 +3772,17 @@ impl PaintPipelines {
     /// What a frame draws a node of `kind` with ([`Variants::drawn`]).
     fn drawn(&self, gpu: &mut dyn Gpu, kind: PaintKind, full: bool) -> Option<RenderPipelineId> {
         self.pipelines[Self::index(kind)?].drawn(gpu, full)
+    }
+
+    /// What a frame draws a split node's untested placements of `kind`
+    /// with, once compiled.
+    fn drawn_untested(
+        &self,
+        gpu: &mut dyn Gpu,
+        kind: PaintKind,
+        full: bool,
+    ) -> Option<RenderPipelineId> {
+        self.untested[Self::index(kind)?].drawn(gpu, full)
     }
 
     /// What a frame waits for to draw a node of `kind`
@@ -3693,6 +3823,26 @@ impl PaintPipelines {
             )
         };
         self.pipelines[index].make(gpu, variants, draw);
+        let planes = gpu.caps().clip_distances;
+        let vertex = match index / 4 {
+            0 => Some(&FILL_SHADER),
+            2 if planes => Some(&LINE_PLANES_SHADER),
+            4 if planes => Some(&LINE_STYLED_PLANES_SHADER),
+            _ => None,
+        };
+        if let Some(vertex) = vertex {
+            let untested = Draw {
+                label: if index / 4 == 0 {
+                    "fill untested"
+                } else {
+                    vertex.label
+                },
+                vertex: (vertex, vertex.vertex),
+                constants: [&[], &[(orb_shaders::CLIP_FRAGMENTS, 0.0)]],
+                ..draw
+            };
+            self.untested[index].make(gpu, variants, untested);
+        }
     }
 }
 
