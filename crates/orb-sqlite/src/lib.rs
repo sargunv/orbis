@@ -92,10 +92,6 @@ pub struct Header {
     pub usable: u32,
     /// The file's pages, when the header knows.
     pub pages: Option<u32>,
-    /// `PRAGMA user_version`.
-    pub user_version: i32,
-    /// `PRAGMA application_id`.
-    pub application_id: u32,
 }
 
 impl Header {
@@ -140,8 +136,6 @@ impl Header {
             page_size,
             usable,
             pages,
-            user_version: u32_at(60) as i32,
-            application_id: u32_at(68),
         })
     }
 }
@@ -160,7 +154,6 @@ pub struct Database {
     header: Header,
     tables: Vec<Table>,
     indexes: Vec<Index>,
-    views: Vec<String>,
 }
 
 impl Database {
@@ -177,7 +170,6 @@ impl Database {
             header,
             tables: Vec::new(),
             indexes: Vec::new(),
-            views: Vec::new(),
         };
         let text = |v: &Value| v.as_text().map(str::to_string);
         // `type, name, tbl_name, rootpage, sql`.
@@ -206,7 +198,6 @@ impl Database {
                 }
                 // A constraint's index, which has no SQL.
                 ("index", None) if root > 0 => autoindexes.push((name, root)),
-                ("view", _) => db.views.push(name),
                 _ => {}
             }
         }
@@ -247,11 +238,6 @@ impl Database {
         self.tables
             .iter()
             .find(|t| t.name.eq_ignore_ascii_case(name))
-    }
-
-    /// Whether the schema has a view `name`.
-    pub fn has_view(&self, name: &str) -> bool {
-        self.views.iter().any(|v| v.eq_ignore_ascii_case(name))
     }
 
     /// An index of `table` that starts with `columns`.

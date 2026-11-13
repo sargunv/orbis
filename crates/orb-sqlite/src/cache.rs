@@ -34,10 +34,6 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// The header, once the first read is in.
     pub fn header(&self) -> Option<&Header> {
         self.header.as_ref()
@@ -116,11 +112,6 @@ impl Cache {
             self.interior_bytes = self.interior.len() * size;
         }
         Ok(())
-    }
-
-    /// The bytes it holds.
-    pub fn bytes(&self) -> usize {
-        self.interior_bytes + self.leaf_bytes
     }
 }
 
