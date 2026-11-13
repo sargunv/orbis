@@ -86,15 +86,18 @@ export async function startHost(
   options: CoreOptions,
   callbacks: HostCallbacks,
 ): Promise<Host> {
+  // A reply goes in once no call into the map is under way (`guard`).
+  let whenFree = (run: () => void) => run();
   const receive =
     (apply: (data: unknown) => void) =>
-    ({ data }: MessageEvent) => {
-      try {
-        apply(data);
-      } catch (e) {
-        callbacks.error(e);
-      }
-    };
+    ({ data }: MessageEvent) =>
+      whenFree(() => {
+        try {
+          apply(data);
+        } catch (e) {
+          callbacks.error(e);
+        }
+      });
   // Replies still on their way when the map stops find it gone.
   let stopped = false;
   const reply = (apply: (data: unknown) => void) =>
@@ -128,7 +131,7 @@ export async function startHost(
       (message: unknown, transfer: Transferable[]) =>
         placement.port.postMessage(message, transfer),
     );
-    ({ core, stop } = guard(created, (e) => {
+    ({ core, stop, whenFree } = guard(created, (e) => {
       destroy();
       callbacks.trapped(e);
     }));
