@@ -109,7 +109,7 @@ impl ThreadPool {
         Self { queue }
     }
 
-    /// The plan's native default: one worker per core but one, at most six.
+    /// The native default: one worker per core but one, at most six.
     pub fn default_size() -> usize {
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
         (cores - 1).clamp(1, 6)

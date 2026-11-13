@@ -426,7 +426,6 @@ pub fn resolve_style_urls(doc: &mut Json, base: &str) {
     }
 }
 
-/// Header metadata has the same precedence as TileJSON keys.
 /// The protocols of archives a source's `url` names.
 const ARCHIVES: [&str; 2] = ["pmtiles://", "mbtiles://"];
 
@@ -444,6 +443,8 @@ pub fn archive_url(url: &str) -> Option<TileLocation> {
     }))
 }
 
+/// A PMTiles archive's header as TileJSON: its zooms, bounds and tile
+/// encoding, which the source's own keys take precedence over.
 pub fn archive_tilejson(bytes: &[u8]) -> Result<String, String> {
     let header = crate::pmtiles::Header::parse(bytes)?;
     let [west, south, east, north] = header.bounds;
