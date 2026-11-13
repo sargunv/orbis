@@ -843,14 +843,57 @@ impl Renderer {
         self.attach(gpu, mesh, rows)
     }
 
-    /// Halves the property rows, the chunk table, the block for what draws
-    /// as points and the image tile pages while a view left them mostly
-    /// free, copying what they keep (a quarter at most; other blocks of
-    /// vertices and indices go whole once empty, copying nothing). The
-    /// renderer does so in a frame that settles the map, the last before
-    /// it idles, so all at once.
+    /// Halves the property rows, the chunk table and the block for what
+    /// draws as points while a view left them mostly free, copying what
+    /// they keep (a quarter at most; other blocks of vertices and indices
+    /// go whole once empty, copying nothing), and compacts the image tile
+    /// pages, letting go of the chunks that leaves empty. The renderer
+    /// does so in a frame that settles the map, the last before it idles,
+    /// so all at once.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) {
-        while self.scene.shrink(gpu) || self.images.shrink(gpu) {}
+        for (page, moves) in self.images.compact(gpu) {
+            self.follow_moves(gpu, page, &moves);
+        }
+        while self.scene.shrink(gpu) {}
+        while self.images.shrink(gpu) {}
+    }
+
+    /// Follows page `page`'s layers that moved (`(from, to)` layer
+    /// words): its tiles' layers, their quads' property rows, the
+    /// ancestors they fade from and the neighbours they were padded from.
+    fn follow_moves(&mut self, gpu: &mut dyn Gpu, page: PageId, moves: &[(u32, u32)]) {
+        let Some(source) = (self.tiles.sources.iter())
+            .find(|(_, s)| s.page == page)
+            .map(|(&k, _)| k)
+        else {
+            return;
+        };
+        let to = |layer: u32| moves.iter().find(|m| m.0 == layer).map_or(layer, |m| m.1);
+        for tile in self.tiles.of_source(source) {
+            let entry = self.entry_mut(tile);
+            let Some(image) = &mut entry.image else {
+                continue;
+            };
+            let ancestor = image.fade.ancestor.map(|a| a.0);
+            let moved = to(image.layer) != image.layer || ancestor.is_some_and(|a| to(a) != a);
+            image.layer = to(image.layer);
+            if let Some(ancestor) = &mut image.fade.ancestor {
+                ancestor.0 = to(ancestor.0);
+            }
+            if let Some(padded) = &mut image.padded {
+                *padded = padded.map(|n| n.map(to));
+            }
+            if !moved {
+                continue;
+            }
+            let row = image_row(entry.key.tile, image);
+            for &(_, mesh) in &entry.meshes.clone() {
+                let words = Words::Core(&row);
+                let written =
+                    (self.scene).set_mesh_props(gpu, mesh, &words, IMAGE_ROW_WORDS as u32);
+                debug_assert!(written.is_ok(), "a row of the same length writes in place");
+            }
+        }
     }
 
     /// How many world copies a symbol mesh keeps state words for.
@@ -1125,11 +1168,7 @@ impl Renderer {
         node: u32,
     ) -> Result<(), OutOfSpace> {
         let image = entry.image.as_ref().expect("image tiles hold an image");
-        let tile = entry.key.tile;
-        let [top, bottom] = tile_latitudes(tile);
-        let mut row = [0; IMAGE_ROW_WORDS];
-        row[..3].copy_from_slice(&[image.layer, top.to_bits(), bottom.to_bits()]);
-        row[3..].copy_from_slice(&image.fade.words());
+        let row = image_row(entry.key.tile, image);
         let mesh = match &image.mesh {
             Some(mesh) => MeshData {
                 vertices: Words::Core(&mesh.vertices),
@@ -1227,6 +1266,16 @@ impl Renderer {
             ancestor: None,
         }
     }
+}
+
+/// An image tile's quads' property row ([`IMAGE_ROW_WORDS`]): its layer,
+/// latitudes and fade.
+fn image_row(tile: TileIndex, image: &Image) -> [u32; IMAGE_ROW_WORDS] {
+    let [top, bottom] = tile_latitudes(tile);
+    let mut row = [0; IMAGE_ROW_WORDS];
+    row[..3].copy_from_slice(&[image.layer, top.to_bits(), bottom.to_bits()]);
+    row[3..].copy_from_slice(&image.fade.words());
+    row
 }
 
 /// How many zooms up a fading tile looks for the ancestor it cross-fades

@@ -29,7 +29,7 @@ fn fs_color_relief(in: ImageOut) -> @location(0) vec4<f32> {
     if image_clipped(in) {
         discard;
     }
-    let dimension = f32(textureDimensions(images).x);
+    let dimension = f32(image_size().x);
     let epsilon = 2.0 / dimension;
     let scale = (dimension - 4.0) / dimension;
     let v_pos = (image_pos(in) / IMAGE_EXTENT) * scale + epsilon;

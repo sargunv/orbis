@@ -327,10 +327,13 @@ fn assert_copied_no_pool(h: &Harness, copied: u64) {
     }
 }
 
-/// A full tile page grows for a tile past its last layer, keeping the
-/// layers it held (their texels copied over). Raster and DEM pages alike.
+/// A full tile page grows for a tile past its last layer by a chunk of
+/// its own, copying none of the layers it holds, and draws from both;
+/// once tiles go, a settled page moves its last chunk's tiles into the
+/// room they left and lets the chunk go, its tiles keeping their texels.
+/// Raster and DEM pages alike.
 #[test]
-fn full_tile_pages_grow_keeping_their_layers() {
+fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
     use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey};
     let mut h = Harness::new();
     let source = 5;
@@ -374,24 +377,26 @@ fn full_tile_pages_grow_keeping_their_layers() {
             h.renderer.upload_image(&mut h.gpu, &build, true)
         };
         let green = [0, 255, 0, 255];
+        let blue = [0, 0, 255, 255];
         // Pages start at eight layers before a map sizes them.
         let first = upload(&mut h, 0, RED).unwrap();
-        let mut last = first;
+        let mut held = Vec::new();
         for col in 1..8 {
-            last = upload(&mut h, col, green).unwrap();
+            held.push(upload(&mut h, col, green).unwrap());
         }
         h.renderer.take_resized();
-        upload(&mut h, 8, green).unwrap();
-        let moved = h.renderer.take_resized();
-        assert_eq!(moved.moves, 1);
-        assert!(
-            moved.bytes_copied > 0,
-            "{kind:?}: the layers held copied over"
-        );
-        if kind == PageKind::Raster {
-            // The first layer on the left, the last before the move on the
-            // right: each keeps its own texels (the Adreno 619's WebGL 2
-            // copied layer 0 into every layer).
+        let (one_chunk, _) = h.renderer.texture_bytes();
+        let last = upload(&mut h, 8, blue).unwrap();
+        let grew = h.renderer.take_resized();
+        assert_eq!(grew.moves, 1, "{kind:?}: a chunk made");
+        assert_eq!(grew.bytes_copied, 0, "{kind:?}: nothing copied");
+        let draws = |h: &mut Harness, first, last| {
+            if kind != PageKind::Raster {
+                return;
+            }
+            // The first tile on the left, the last on the right: each
+            // keeps its own texels, whichever chunk holds it (the Adreno
+            // 619's WebGL 2 copied layer 0 into every layer).
             let row = |from: i16, to: i16| TileRow {
                 extent: 8192.0,
                 scale: 2.0 / 8192.0,
@@ -406,9 +411,27 @@ fn full_tile_pages_grow_keeping_their_layers() {
             h.renderer.place(first, 8192, &[row(0, 4096)]).unwrap();
             h.renderer.place(last, 8192, &[row(4096, 8192)]).unwrap();
             let pixels = h.render();
-            assert_eq!(pixel(&pixels, 16, 32), RED, "the first layer's texels");
-            assert_eq!(pixel(&pixels, 48, 32), green, "the last layer's texels");
+            assert_eq!(pixel(&pixels, 16, 32), RED, "the first tile's texels");
+            assert_eq!(pixel(&pixels, 48, 32), blue, "the last tile's texels");
+        };
+        draws(&mut h, first, last);
+        // A tile of the first chunk goes: a settling frame moves the last
+        // into its layer and lets the second chunk go.
+        h.renderer.release_tile(held.pop().unwrap());
+        h.renderer.take_resized();
+        h.render();
+        let shrank = h.renderer.take_resized();
+        assert!(shrank.bytes_copied > 0, "{kind:?}: the last tile moved");
+        assert_eq!(
+            h.renderer.texture_bytes().0,
+            one_chunk,
+            "{kind:?}: one chunk left"
+        );
+        draws(&mut h, first, last);
+        for tile in [first, last].into_iter().chain(held) {
+            h.renderer.release_tile(tile);
         }
+        h.render();
     }
 }
 

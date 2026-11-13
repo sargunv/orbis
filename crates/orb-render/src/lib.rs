@@ -1740,8 +1740,9 @@ impl Renderer {
     }
 
     /// A layer of `page`: a free one, or with `grow` one the page grows
-    /// to make, to the device's layer limit. A page that grows copies the
-    /// layers it holds, so a map frees what it keeps out of view first.
+    /// to make, to the device's limits. The terrain's page, one chunk,
+    /// grows by copying the layers it holds, so a map frees what it keeps
+    /// out of view first.
     pub fn alloc_layer(
         &mut self,
         gpu: &mut dyn Gpu,

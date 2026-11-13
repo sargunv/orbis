@@ -1,8 +1,6 @@
-@group(0) @binding(0) var raw: texture_2d_array<f32>;
-
 // Texel `id` of the job's padded layer, (dim + 4)² texels.
 fn pad_texel(id: vec2<u32>) -> vec4<f32> {
-    let dim = i32(textureDimensions(raw).x);
+    let dim = i32(source_side());
     let p = vec2<i32>(id) - 2;
     let d = vec2<i32>(select(0, -1, p.x < 0) + select(0, 1, p.x >= dim),
         select(0, -1, p.y < 0) + select(0, 1, p.y >= dim));
@@ -17,7 +15,7 @@ fn pad_texel(id: vec2<u32>) -> vec4<f32> {
             q = p - d * dim;
         }
     }
-    return textureLoad(raw, q, layer, 0);
+    return source_texel(q, layer);
 }
 
 @fragment

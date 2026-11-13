@@ -1,12 +1,10 @@
-@group(0) @binding(0) var padded: texture_2d_array<f32>;
-
 // The log2 of the Mercator world's width in metres, as GL JS's
 // `getLog2WorldWidth` gives for wrapping worlds.
 const LOG2_WORLD_WIDTH: f32 = 25.2562;
 
 // Texel `id` of the job's slope layer, (dim + 2)² texels.
 fn slope_texel(id: vec2<u32>) -> vec4<f32> {
-    let size = textureDimensions(padded).x - 2u;
+    let size = source_side() - 2u;
     let pos = vec2<i32>(id) + 1;
     let tile_size = f32(size - 2u);
 
@@ -42,7 +40,7 @@ fn slope_texel(id: vec2<u32>) -> vec4<f32> {
 }
 
 fn elevation_at(p: vec2<i32>) -> f32 {
-    return dem_elevation(textureLoad(padded, p, job.layer, 0), job.unpack);
+    return dem_elevation(source_texel(p, job.layer), job.unpack);
 }
 
 @fragment

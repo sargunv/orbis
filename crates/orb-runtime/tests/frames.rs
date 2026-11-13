@@ -497,9 +497,9 @@ mod tests {
     }
 
     /// Raster tile pages give back what a view of many tiles grew them
-    /// to once fewer tiles hold layers, as the scene's pools do. Pages
-    /// don't move layers down, so the tiles a cache keeps beneath the
-    /// view's new ones would hold them up: the cache is off.
+    /// to once fewer tiles hold layers, as the scene's pools do: a page at
+    /// rest holds its tiles in the fewest chunks, as a fresh map's does,
+    /// whichever layers the tiles a cache kept left them.
     #[test]
     fn tile_pages_shrink_with_their_tiles() {
         let dir = crate::common::Scratch::new("pages");
@@ -526,7 +526,6 @@ mod tests {
             settle(offscreen).memory.tile_textures
         };
         let (mut offscreen, _, _) = crate::common::Offscreen::load(&options(4.5, 60.0)).unwrap();
-        offscreen.map.set_tile_cache(false);
         let many = pages(&mut offscreen);
         // Past the layer's maxzoom no tile holds a layer; back at zoom 1,
         // sixteen do.

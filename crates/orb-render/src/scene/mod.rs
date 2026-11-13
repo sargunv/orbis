@@ -41,7 +41,7 @@ use orb_layout::Mesh;
 use orb_layout::{Chunk, Owner};
 use orb_shaders::layout;
 pub use pages::Pixels;
-pub(crate) use pages::{PageTexture, TilePage};
+pub(crate) use pages::{PAGE_CHUNKS, PageTexture, TilePage};
 pub(crate) use symbol::PLACED_WIDTH;
 pub use symbol::{
     PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS, SYMBOL_STATE_WORDS, SymbolMeshData,

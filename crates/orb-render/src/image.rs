@@ -2,11 +2,11 @@
 //! pages they sample, and the DEM prepare pass (`Prepare`).
 //!
 //! Each image tile is a one-chunk quad mesh whose property row
-//! ([`IMAGE_ROW_WORDS`]) names its layer in the source's [`TilePage`], so
-//! tiles go through the same cull, placements and fallback clipping as
-//! vector tiles. A node's bind group holds its source's texture array;
-//! it is rebuilt, and the bundle re-recorded, only when the node changes
-//! pages or a page grows.
+//! ([`IMAGE_ROW_WORDS`]) names its layer in the source's [`TilePage`],
+//! so tiles go through the same cull, placements and fallback clipping as
+//! vector tiles. A node's bind group holds its source's chunks; it is
+//! rebuilt, and the bundle re-recorded, only when the node changes pages
+//! or a page makes or lets go of a chunk.
 //!
 //! DEM tiles are prepared when the neighbours the view draws beside them
 //! change (`Renderer::pad_dems`): `pad` fills a two-texel border from those
@@ -19,7 +19,7 @@
 //! look the slopes they sample up in.
 
 use crate::release::Release;
-use crate::scene::{PageTexture, Pixels, TilePage};
+use crate::scene::{PAGE_CHUNKS, PageTexture, Pixels, TilePage};
 use orb_hal::*;
 use orb_shaders::{
     COLOR_RELIEF_SHADER, HILLSHADE_SHADER, HILLSHADE_SLOPES_SHADER, HILLSHADE_TABLE_SHADER,
@@ -130,6 +130,14 @@ impl DemPrepare {
     }
 }
 
+/// The bindings of an image node's page chunks, in order
+/// (`image.wgsl`'s `images_0` to `images_3`).
+const IMAGE_CHUNK_BINDINGS: [u32; PAGE_CHUNKS] = [1, 5, 6, 7];
+
+/// The bindings of the page chunks a DEM prepare reads, in order
+/// (`prepare.wgsl`'s `source_0` to `source_3`).
+const PREPARE_CHUNK_BINDINGS: [u32; PAGE_CHUNKS] = [0, 3, 4, 5];
+
 /// Texture array indices of a DEM page.
 const DEM_RAW: usize = 0;
 const DEM_PADDED: usize = 1;
@@ -153,17 +161,18 @@ struct Page {
     /// Of those, the ones whose tile reaches past its area, and the
     /// texels inside it, `[x0, y0, x1, y1)`: their edges extend first.
     edges: Vec<(u32, [u32; 4])>,
-    mips: Option<Mips>,
+    /// Per chunk, its mip bindings, made for the first layers it makes
+    /// levels of.
+    mips: Vec<Option<Mips>>,
     /// The prepare draws' targets.
     targets: Option<prepare::Targets>,
 }
 
-/// A raster page's mip bindings, for one revision of its
-/// texture: views of each level, and the downsampler's chain over them
-/// (whole layers).
+/// A raster page chunk's mip bindings, for one texture of it: views of
+/// each level, and the downsampler's chain over them (whole layers).
 #[derive(Debug)]
 struct Mips {
-    revision: u32,
+    texture: TextureId,
     views: Vec<TextureId>,
     chain: crate::downsample::Chain,
 }
@@ -273,19 +282,19 @@ impl Images {
     ) -> Self {
         use BindGroupLayoutEntry as E;
         let fs = ShaderStages::FRAGMENT;
-        let image_entries = [
+        let mut image_entries = vec![
             E::uniform(0, ShaderStages::VERTEX | fs),
-            E::texture(1, fs, true, TextureViewDimension::D2Array),
             E::sampler(2, fs, true),
-            E::sampler(3, fs, true),
-            // The texture again, for the nearest sampler (`image.wgsl`).
-            E::texture(5, fs, true, TextureViewDimension::D2Array),
         ];
+        image_entries.extend(
+            (IMAGE_CHUNK_BINDINGS.iter())
+                .map(|&b| E::texture(b, fs, true, TextureViewDimension::D2Array)),
+        );
         let image_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "image node",
             entries: &image_entries,
         });
-        let mut table_entries = image_entries.to_vec();
+        let mut table_entries = image_entries.clone();
         table_entries.push(E::texture(4, fs, true, TextureViewDimension::D2));
         let table_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "image node with a table",
@@ -304,6 +313,8 @@ impl Images {
         };
         let linear = sampler("linear", FilterMode::Linear, 16);
         let nearest = sampler("nearest", FilterMode::Nearest, 1);
+        // The nearest sampler stays for the terrain and symbols; image
+        // tiles read their nearest texel by loading it (`image.wgsl`).
         let mut placeholder = |label, height, layers, dimension| {
             gpu.create_texture(&TextureDesc {
                 label,
@@ -578,15 +589,22 @@ impl Images {
                 texture("padded dem tiles", 2, uploaded),
             ],
         };
+        let chunks = if kind == PageKind::Terrain {
+            1
+        } else {
+            PAGE_CHUNKS
+        };
         let page = Page {
             kind,
-            page: TilePage::new(gpu, &textures, layers),
+            // The terrain's page is one chunk, which every draw standing on
+            // the terrain binds (`draw.wgsl`'s `dem_pages`).
+            page: TilePage::new(gpu, &textures, (layers, chunks)),
             pending: Vec::new(),
             prepared: Default::default(),
             staged: Default::default(),
             mip_layers: Vec::new(),
             edges: Vec::new(),
-            mips: None,
+            mips: Vec::new(),
             targets: None,
         };
         let id = match self.pages.iter().position(Option::is_none) {
@@ -607,7 +625,7 @@ impl Images {
             .take()
             .expect("page already removed");
         self.resized += page.page.take_resized();
-        if let Some(mips) = page.mips {
+        for mips in page.mips.into_iter().flatten() {
             destroy_mips(gpu, mips);
         }
         if let Some(targets) = page.targets {
@@ -639,12 +657,15 @@ impl Images {
         self.linear
     }
 
-    /// A DEM page's padded elevations (2-texel borders from neighbours), and
-    /// the revision of its textures.
+    /// The terrain's DEM page's padded elevations (2-texel borders from
+    /// neighbours), its one chunk, and the revision of its textures.
     pub(crate) fn dem_texture(&self, id: PageId) -> (TextureId, u32) {
         let page = self.page(id);
-        assert!(page.kind.dem(), "terrain reads DEM pages");
-        (page.page.texture(DEM_PADDED), page.page.revision())
+        assert_eq!(page.kind, PageKind::Terrain, "terrain reads its own page");
+        (
+            page.page.textures(DEM_PADDED, self.placeholder)[0],
+            page.page.revision(),
+        )
     }
 
     /// The size of a page's tiles.
@@ -690,10 +711,51 @@ impl Images {
             .sum()
     }
 
-    /// Shrinks the first page whose layers in use went down to a
-    /// quarter: one move. Whether one did.
+    /// Compacts the tile pages ([`TilePage::compact`]), but the
+    /// terrain's, whose layers the runtime holds: what moved, `(from, to)`
+    /// layer words by page, which this follows and the tiles must too.
+    pub(crate) fn compact(&mut self, gpu: &mut dyn Gpu) -> Vec<(PageId, Vec<(u32, u32)>)> {
+        let mut moved = Vec::new();
+        for (id, page) in self.pages.iter_mut().enumerate() {
+            let Some(page) = page.as_mut().filter(|p| p.kind != PageKind::Terrain) else {
+                continue;
+            };
+            let moves = page.page.compact(gpu);
+            if moves.is_empty() {
+                continue;
+            }
+            let to = |layer: u32| moves.iter().find(|m| m.0 == layer).map_or(layer, |m| m.1);
+            page.prepared = std::mem::take(&mut page.prepared)
+                .into_iter()
+                .map(|(layer, mut job)| {
+                    job.layer = to(job.layer);
+                    job.neighbours = job.neighbours.map(|n| n.map(to));
+                    (to(layer), job)
+                })
+                .collect();
+            for job in &mut page.pending {
+                job.layer = to(job.layer);
+                job.neighbours = job.neighbours.map(|n| n.map(to));
+            }
+            page.staged = page.staged.iter().map(|&l| to(l)).collect();
+            for layer in &mut page.mip_layers {
+                *layer = to(*layer);
+            }
+            for edge in &mut page.edges {
+                edge.0 = to(edge.0);
+            }
+            moved.push((PageId(id as u32), moves));
+        }
+        moved
+    }
+
+    /// Lets go of the pages' chunks no tile holds: whether any went.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
-        (self.pages.iter_mut().flatten()).any(|page| page.page.shrink(gpu))
+        let mut shrank = false;
+        for page in self.pages.iter_mut().flatten() {
+            shrank |= page.page.shrink(gpu);
+        }
+        shrank
     }
 
     /// Changes whenever a page's textures are replaced.
@@ -814,38 +876,60 @@ impl Images {
             if page.mip_layers.is_empty() {
                 continue;
             }
-            let (revision, capacity) = (page.page.revision(), page.page.capacity());
-            if page.mips.as_ref().is_some_and(|m| m.revision != revision) {
-                destroy_mips(gpu, page.mips.take().expect("checked"));
-            }
-            let texture = page.page.texture(0);
-            let mips = page.mips.get_or_insert_with(|| {
-                let views: Vec<TextureId> = (0..page.page.mip_levels(0))
-                    .map(|level| gpu.create_texture_view(texture, level..level + 1))
-                    .collect();
-                let chain =
-                    downsampler.chain(gpu, (texture, &views), ("image mip regions", capacity));
-                Mips {
-                    revision,
-                    views,
-                    chain,
+            // Each chunk's mip bindings follow its texture.
+            let chunks: Vec<(usize, TextureId, u32)> = page.page.chunks(0).collect();
+            page.mips.resize_with(PAGE_CHUNKS, || None);
+            for (k, mips) in page.mips.iter_mut().enumerate() {
+                let held = chunks.iter().find(|c| c.0 == k).map(|c| c.1);
+                if mips.as_ref().is_some_and(|m| Some(m.texture) != held) {
+                    destroy_mips(gpu, mips.take().expect("checked"));
                 }
-            });
+            }
             let [side, _] = page.page.size(0);
             let edges = std::mem::take(&mut page.edges);
-            if !edges.is_empty() {
-                let extend = (texture, mips.views[0], side);
-                let extended = downsampler.extend_passes(gpu, extend, &edges, &mut self.edges)?;
-                work += extended.len() as u32 - 1;
-                passes.extend(extended);
-            }
             let layers = std::mem::take(&mut page.mip_layers);
-            let regions: Vec<[u32; 4]> = layers.iter().map(|&layer| [layer, 0, 0, side]).collect();
-            mips.chain.regions.write(gpu, &regions);
-            let chain = ("image mips", &mips.chain);
-            let (made, n) = downsampler.mip_passes(gpu, chain, &regions, &mut self.edges)?;
-            work += n;
-            levels.extend(made);
+            for &(k, texture, capacity) in &chunks {
+                let of_chunk = |&word: &u32| TilePage::chunk_of(word) == k;
+                let local = |word: u32| page.page.texture_of(0, word).1;
+                let layers: Vec<u32> = layers
+                    .iter()
+                    .filter(|l| of_chunk(l))
+                    .map(|&l| local(l))
+                    .collect();
+                if layers.is_empty() {
+                    continue;
+                }
+                let mips = page.mips[k].get_or_insert_with(|| {
+                    let views: Vec<TextureId> = (0..page.page.mip_levels(0))
+                        .map(|level| gpu.create_texture_view(texture, level..level + 1))
+                        .collect();
+                    let chain =
+                        downsampler.chain(gpu, (texture, &views), ("image mip regions", capacity));
+                    Mips {
+                        texture,
+                        views,
+                        chain,
+                    }
+                });
+                let edges: Vec<(u32, [u32; 4])> = (edges.iter())
+                    .filter(|e| of_chunk(&e.0))
+                    .map(|&(word, area)| (local(word), area))
+                    .collect();
+                if !edges.is_empty() {
+                    let extend = (texture, mips.views[0], side);
+                    let extended =
+                        downsampler.extend_passes(gpu, extend, &edges, &mut self.edges)?;
+                    work += extended.len() as u32 - 1;
+                    passes.extend(extended);
+                }
+                let regions: Vec<[u32; 4]> =
+                    layers.iter().map(|&layer| [layer, 0, 0, side]).collect();
+                mips.chain.regions.write(gpu, &regions);
+                let chain = ("image mips", &mips.chain);
+                let (made, n) = downsampler.mip_passes(gpu, chain, &regions, &mut self.edges)?;
+                work += n;
+                levels.extend(made);
+            }
         }
         // One compute pass makes every page's levels.
         let mut merged: Vec<Pass> = Vec::new();
@@ -988,23 +1072,26 @@ impl Images {
         uniform: BindingResource,
     ) -> BindGroupId {
         let page = node.page.map(|id| self.page(id));
-        let texture = match (page, family) {
-            (None, _) => self.placeholder,
-            (Some(page), Family::Raster) => page.page.texture(0),
-            (Some(page), Family::Hillshade) => page.page.texture(DEM_SLOPES),
-            (Some(page), Family::ColorRelief) => page.page.texture(DEM_PADDED),
+        let index = match family {
+            Family::Raster => 0,
+            Family::Hillshade => DEM_SLOPES,
+            Family::ColorRelief => DEM_PADDED,
             _ => unreachable!("not an image family"),
         };
+        let textures = page.map_or([self.placeholder; PAGE_CHUNKS], |page| {
+            page.page.textures(index, self.placeholder)
+        });
         let mut entries = vec![
             BindGroupEntry {
                 binding: 0,
                 resource: uniform,
             },
-            BindGroupEntry::texture(1, texture, TextureViewDimension::D2Array),
             BindGroupEntry::sampler(2, self.linear),
-            BindGroupEntry::sampler(3, self.nearest),
-            BindGroupEntry::texture(5, texture, TextureViewDimension::D2Array),
         ];
+        entries.extend(
+            (IMAGE_CHUNK_BINDINGS.iter().zip(textures))
+                .map(|(&b, t)| BindGroupEntry::texture(b, t, TextureViewDimension::D2Array)),
+        );
         let layout = if family == Family::Raster {
             self.image_layout
         } else {
@@ -1027,7 +1114,9 @@ mod prepare {
     use orb_hal::*;
     use orb_shaders::{PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER};
 
-    use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, Page, PageKind, prepare_job};
+    use super::{
+        DEM_PADDED, DEM_RAW, DEM_SLOPES, PREPARE_CHUNK_BINDINGS, Page, PageKind, prepare_job,
+    };
     use crate::TargetFormat;
     use crate::pipeline::Draw;
     use crate::release::Release;
@@ -1104,33 +1193,37 @@ mod prepare {
     }
 
     /// A page's layer views, job slots and groups, for one revision of its
-    /// textures.
+    /// chunks.
     #[derive(Debug)]
     pub(super) struct Targets {
         revision: u32,
         jobs: BufferId,
         slots: u32,
-        /// Per layer: a view a [stage](stages).
-        views: Vec<Vec<TextureId>>,
+        /// Per layer word: a view a [stage](stages).
+        views: rustc_hash::FxHashMap<u32, Vec<TextureId>>,
         /// Per slot: a group a [stage](stages).
         groups: Vec<Vec<BindGroupId>>,
     }
 
     impl Targets {
         pub(super) fn destroy(self, gpu: &mut dyn Gpu) {
-            (self.views, self.groups, self.jobs).release(gpu);
+            let views: Vec<Vec<TextureId>> = self.views.into_values().collect();
+            (views, self.groups, self.jobs).release(gpu);
         }
     }
 
     impl Draws {
         pub(super) fn new(gpu: &mut dyn Gpu) -> Self {
             let fs = ShaderStages::FRAGMENT;
+            let mut entries: Vec<BindGroupLayoutEntry> = (PREPARE_CHUNK_BINDINGS.iter())
+                .map(|&b| {
+                    BindGroupLayoutEntry::texture(b, fs, false, TextureViewDimension::D2Array)
+                })
+                .collect();
+            entries.push(BindGroupLayoutEntry::uniform(2, fs));
             let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
                 label: "prepare draw",
-                entries: &[
-                    BindGroupLayoutEntry::texture(0, fs, false, TextureViewDimension::D2Array),
-                    BindGroupLayoutEntry::uniform(2, fs),
-                ],
+                entries: &entries,
             });
             let target = TargetFormat {
                 color: TextureFormat::Rgba8Unorm,
@@ -1189,7 +1282,7 @@ mod prepare {
                         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
                     }),
                     slots,
-                    views: Vec::new(),
+                    views: Default::default(),
                     groups: Vec::new(),
                 }
             });
@@ -1204,40 +1297,39 @@ mod prepare {
                     let at = targets.groups.len() as u64 * SLOT;
                     let groups = (stages.iter())
                         .map(|&(label, source, ..)| {
-                            let texture = page.page.texture(source);
+                            // A chunk the page lacks binds one it has:
+                            // no layer word names it.
+                            let held = page.page.chunks(source).next().expect("a first chunk").1;
+                            let textures = page.page.textures(source, held);
+                            let mut entries: Vec<BindGroupEntry> =
+                                (PREPARE_CHUNK_BINDINGS.iter().zip(textures))
+                                    .map(|(&b, t)| {
+                                        BindGroupEntry::texture(b, t, TextureViewDimension::D2Array)
+                                    })
+                                    .collect();
+                            entries.push(BindGroupEntry::slice(
+                                2,
+                                targets.jobs,
+                                at,
+                                prepare_job::WORDS as u64 * 4,
+                            ));
                             gpu.create_bind_group(&BindGroupDesc {
                                 label,
                                 layout: self.layout,
-                                entries: &[
-                                    BindGroupEntry::texture(
-                                        0,
-                                        texture,
-                                        TextureViewDimension::D2Array,
-                                    ),
-                                    BindGroupEntry::slice(
-                                        2,
-                                        targets.jobs,
-                                        at,
-                                        prepare_job::WORDS as u64 * 4,
-                                    ),
-                                ],
+                                entries: &entries,
                             })
                         })
                         .collect();
                     targets.groups.push(groups);
                 }
-                let layer = job.layer as usize;
-                if targets.views.len() <= layer {
-                    targets.views.resize(layer + 1, Vec::new());
-                }
-                let views = &mut targets.views[layer];
-                if views.is_empty() {
-                    *views = (stages.iter())
+                let views = targets.views.entry(job.layer).or_insert_with(|| {
+                    (stages.iter())
                         .map(|&(_, _, t, _)| {
-                            gpu.create_layer_view(page.page.texture(t), job.layer, 0)
+                            let (texture, layer) = page.page.texture_of(t, job.layer);
+                            gpu.create_layer_view(texture, layer, 0)
                         })
-                        .collect();
-                }
+                        .collect()
+                });
                 let dim = page.page.size(DEM_RAW)[0];
                 let pipelines = [self.pad, self.slope];
                 let drawn =

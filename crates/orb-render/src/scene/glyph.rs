@@ -80,7 +80,8 @@ impl GlyphAtlas {
                 usage: orb_hal::TextureUsages::TEXTURE_BINDING,
                 mip_levels: 1,
             }],
-            FIRST_PAGES,
+            // One chunk, which the scene group binds.
+            (FIRST_PAGES, 1),
         );
         table.write_words(gpu, 0, &[0; GLYPH_ROW_WORDS]);
         Self {

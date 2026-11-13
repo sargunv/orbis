@@ -13,19 +13,26 @@
 // layer (or none), and that ancestor's depth and the tile's offsets in it
 // (8, 12 and 12 bits).
 //
-// Group 1 is the node: its uniform at binding 0, its texture array at 1,
-// linear and nearest samplers at 2 and 3, and the array again at 5 for
-// the nearest sampler. Each texture binding takes one sampler, as a
-// texture unit does on WebGL 2, where wgpu gives a texture the last
-// sampler bound with it.
+// Group 1 is the node: its uniform at binding 0, the linear sampler at 2,
+// and its page's chunks at 1 and 5 to 7 (orb-render's `ChunkedPage`): a
+// layer word's bits from 11 up name its chunk, those below its layer
+// there. Each texture binding takes the one sampler, as a texture unit
+// does on WebGL 2, where wgpu gives a texture the last sampler bound with
+// it; the nearest texel is loaded rather than sampled.
 
 // GL JS's `EXTENT`: image quads span this many units per tile side.
 const IMAGE_EXTENT: f32 = 8192.0;
 
-@group(1) @binding(1) var images: texture_2d_array<f32>;
 @group(1) @binding(2) var linear_sampler: sampler;
-@group(1) @binding(3) var nearest_sampler: sampler;
-@group(1) @binding(5) var images_nearest: texture_2d_array<f32>;
+@group(1) @binding(1) var images_0: texture_2d_array<f32>;
+@group(1) @binding(5) var images_1: texture_2d_array<f32>;
+@group(1) @binding(6) var images_2: texture_2d_array<f32>;
+@group(1) @binding(7) var images_3: texture_2d_array<f32>;
+
+// Texels a side of the page's layers.
+fn image_size() -> vec2<u32> {
+    return textureDimensions(images_0);
+}
 
 struct ImageOut {
     @builtin(position) position: vec4<f32>,
@@ -138,16 +145,42 @@ fn image_clipped(in: ImageOut) -> bool {
 // samples raster tiles; nearest from the full-size level.
 fn sample_image_grad(in: ImageOut, uv: vec2<f32>, nearest: u32, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
     if nearest != 0u {
-        return textureSampleLevel(images_nearest, nearest_sampler, uv, in.layer, 0.0);
+        return nearest_texel(in.layer, uv);
     }
-    return textureSampleGrad(images, linear_sampler, uv, in.layer, ddx, ddy);
+    let l = i32(in.layer & 2047u);
+    switch in.layer >> 11u {
+        case 0u: { return textureSampleGrad(images_0, linear_sampler, uv, l, ddx, ddy); }
+        case 1u: { return textureSampleGrad(images_1, linear_sampler, uv, l, ddx, ddy); }
+        case 2u: { return textureSampleGrad(images_2, linear_sampler, uv, l, ddx, ddy); }
+        default: { return textureSampleGrad(images_3, linear_sampler, uv, l, ddx, ddy); }
+    }
 }
 
 // The tile's texel at `uv` (0–1 over its layer), filtered by nearest texel
 // or linearly.
 fn sample_image(in: ImageOut, uv: vec2<f32>, nearest: u32) -> vec4<f32> {
     if nearest != 0u {
-        return textureSampleLevel(images_nearest, nearest_sampler, uv, in.layer, 0.0);
+        return nearest_texel(in.layer, uv);
     }
-    return textureSampleLevel(images, linear_sampler, uv, in.layer, 0.0);
+    let l = i32(in.layer & 2047u);
+    switch in.layer >> 11u {
+        case 0u: { return textureSampleLevel(images_0, linear_sampler, uv, l, 0.0); }
+        case 1u: { return textureSampleLevel(images_1, linear_sampler, uv, l, 0.0); }
+        case 2u: { return textureSampleLevel(images_2, linear_sampler, uv, l, 0.0); }
+        default: { return textureSampleLevel(images_3, linear_sampler, uv, l, 0.0); }
+    }
+}
+
+// The full-size level's texel of layer word `layer` nearest `uv`, as a
+// nearest sampler clamped to the edge reads it.
+fn nearest_texel(layer: u32, uv: vec2<f32>) -> vec4<f32> {
+    let size = vec2<i32>(image_size());
+    let p = clamp(vec2<i32>(floor(uv * vec2<f32>(size))), vec2<i32>(0), size - 1);
+    let l = i32(layer & 2047u);
+    switch layer >> 11u {
+        case 0u: { return textureLoad(images_0, p, l, 0); }
+        case 1u: { return textureLoad(images_1, p, l, 0); }
+        case 2u: { return textureLoad(images_2, p, l, 0); }
+        default: { return textureLoad(images_3, p, l, 0); }
+    }
 }

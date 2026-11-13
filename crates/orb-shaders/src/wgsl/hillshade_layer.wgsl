@@ -15,7 +15,7 @@ fn fs_hillshade(in: ImageOut) -> @location(0) vec4<f32> {
         discard;
     }
     let v_pos = image_pos(in) / IMAGE_EXTENT;
-    let size = vec2<f32>(textureDimensions(images));
+    let size = vec2<f32>(image_size());
     let pixel = sample_image(in, (v_pos * (size - 2.0) + 1.0) / size, node.nearest);
     let latitude = mix(in.latitudes.x, in.latitudes.y, v_pos.y);
     let slope = hillshade_slope(pixel, mercator_stretch(latitude));
@@ -32,7 +32,7 @@ fn fs_hillshade_slopes(in: ImageOut) -> @location(0) vec4<f32> {
         discard;
     }
     let v_pos = image_pos(in) / IMAGE_EXTENT;
-    let size = vec2<f32>(textureDimensions(images));
+    let size = vec2<f32>(image_size());
     let pixel = sample_image(in, (v_pos * (size - 2.0) + 1.0) / size, node.nearest);
     return vec4<f32>(pixel.rg, 0.0, 1.0);
 }
