@@ -5,17 +5,11 @@
 //!   idle and renders `rounds` runs of still frames offscreen; with
 //!   `nudge`, each frame moves the zoom by 0.001 and is read back, so it
 //!   times whole frames as mln-rs's bench does.
-//! - `gestures`: rotate, tilt, zoom and pan paths with tiles arriving.
-//! - `load` ([`load`]): a fresh map per sample from loading its style to
-//!   its first complete still, on a new device (cold) and on one that drew
-//!   the view before (warm).
 //! - `tiles` ([`tiles`]): the committed Tokyo extract's tiles through a
 //!   tile job's stages in process: decode, layout and pack.
 //! - `stutter` ([`stutter`]): paths that bring many tiles in, each frame's
 //!   CPU time by stage, GPU time, uploads and arrivals, and the worst
 //!   frames' attribution.
-//! - `cull` ([`cull`]): at each view, the candidates the cull keeps by
-//!   draw kind, and the GPU time and pixels of keeping them all.
 //! - `session` ([`session`]): `pnpm session`'s native twin, a user's cold
 //!   first session with real input before the map is idle.
 //!
@@ -24,10 +18,6 @@
 #![deny(unsafe_code)]
 
 mod clock;
-mod cull;
-mod gestures;
-mod load;
-mod quake;
 mod report;
 mod session;
 mod steadiness;
@@ -37,9 +27,6 @@ mod tiles;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-pub use cull::CullReport;
-pub use gestures::GesturesReport;
-pub use load::LoadReport;
 use orb_api::{
     CameraState, Event, FrameReport, Geodetic, Map, MapEvent, MapOptions, Runtime, Target,
 };
@@ -83,48 +70,23 @@ pub enum Experiment {
     /// Still frames of each view.
     #[default]
     Frames,
-    /// Rotate, tilt and zoom paths at a 60 Hz pace with tiles arriving:
-    /// frame-time distributions.
-    Gestures,
-    /// A fresh map from style load to its first complete still.
-    Load,
     /// The committed extract's tiles through decode, layout and pack.
     Tiles,
     /// Paths bringing many tiles in: each frame's stages, the worst
     /// frames.
     Stutter,
-    /// What the cull keeps at each view, and what keeping everything
-    /// costs.
-    Cull,
     /// A user's cold first session with real input, on runtimes of its
     /// own.
     Session,
-    /// The Alps on heights the bench feeds, still and then rippling.
-    Quake,
-}
-
-/// The gestures bench's camera paths.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum GesturePaths {
-    /// Rotate and tilt at z14, zoom z12 → z16 → z12: a city's streets.
-    #[default]
-    City,
-    /// The Alps terrain style's view (`web/demo/data/alps.json`):
-    /// rotate and pan at z11.6, pitch 72, and its 60 s flight.
-    Alps,
 }
 
 /// A bench's results.
 #[derive(Debug)]
 pub enum Report {
     Frames(FramesReport),
-    Gestures(GesturesReport),
-    Load(LoadReport),
     Tiles(TilesReport),
     Stutter(StutterReport),
-    Cull(CullReport),
     Session(SessionReport),
-    Quake(quake::QuakeReport),
 }
 
 impl Report {
@@ -133,13 +95,9 @@ impl Report {
         let mut out = String::new();
         match self {
             Self::Frames(r) => r.write(&mut out),
-            Self::Gestures(r) => r.write(&mut out),
-            Self::Load(r) => r.write(&mut out),
             Self::Tiles(r) => r.write(&mut out),
             Self::Stutter(r) => r.write(&mut out),
-            Self::Cull(r) => r.write(&mut out),
             Self::Session(r) => r.write(&mut out),
-            Self::Quake(r) => r.write(&mut out),
         }
         .expect("writing to a String");
         out
@@ -184,7 +142,7 @@ pub struct Settings {
     /// Frames rendered before measuring, per submission per round.
     pub warmup: usize,
     pub rounds: usize,
-    /// Samples per view (`load`) or per tile (`tiles`).
+    /// Samples per tile (`tiles`).
     pub samples: usize,
     /// Viewport in logical pixels.
     pub width: u32,
@@ -192,7 +150,6 @@ pub struct Settings {
     pub ratio: f32,
     pub center: Geodetic,
     pub experiment: Experiment,
-    pub paths: GesturePaths,
     /// The views to measure instead of the bench's own (`--view`,
     /// repeatable, or `--views <file>`).
     pub views: Vec<View>,
@@ -226,7 +183,6 @@ impl Default for Settings {
             ratio: 2.0,
             center: Geodetic::new(TOKYO.0, TOKYO.1),
             experiment: Experiment::Frames,
-            paths: GesturePaths::City,
             views: Vec::new(),
             filter: None,
             nudge: false,
@@ -241,13 +197,13 @@ impl Default for Settings {
 impl Settings {
     /// Sets one option by name, as the tool's `--name value` gives it:
     /// `frames`, `warmup`, `rounds`, `samples`, `size` (`WxH`), `ratio`, `at`
-    /// (`lon,lat`), `experiment` (`frames`, `gestures`, `load`, `tiles`,
-    /// `stutter` or `cull`), `legs` (a flight's first legs, for `stutter`),
-    /// `paths` (`city` or `alps`, the gestures bench's), `view`
+    /// (`lon,lat`), `experiment` (`frames`, `tiles`, `stutter` or
+    /// `session`), `legs` (a flight's first legs, for `stutter`), `view`
     /// (`zoom,pitch,bearing`, adding a view to measure instead of the
-    /// bench's own), `filter` (a substring of the views' names, of
-    /// the gestures or stutter bench's paths', or of the tile bench's
-    /// `z/x/y`) or `dump` (the session bench's frames' file prefix).
+    /// bench's own), `filter` (a substring of the views' names, of the
+    /// stutter paths' or sessions', or of the tile bench's `z/x/y`),
+    /// `antialias` (`on` or `off`) or `dump` (the session bench's frames'
+    /// file prefix).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
             value
@@ -304,25 +260,10 @@ impl Settings {
             "experiment" => {
                 self.experiment = match value {
                     "frames" => Experiment::Frames,
-                    "gestures" => Experiment::Gestures,
-                    "load" => Experiment::Load,
                     "tiles" => Experiment::Tiles,
                     "stutter" => Experiment::Stutter,
-                    "cull" => Experiment::Cull,
                     "session" => Experiment::Session,
-                    "quake" => Experiment::Quake,
-                    _ => {
-                        return Err("experiment needs frames, gestures, load, tiles, stutter, \
-                                    cull or session"
-                            .into());
-                    }
-                }
-            }
-            "paths" => {
-                self.paths = match value {
-                    "city" => GesturePaths::City,
-                    "alps" => GesturePaths::Alps,
-                    _ => return Err("paths needs city or alps".into()),
+                    _ => return Err("experiment needs frames, tiles, stutter or session".into()),
                 }
             }
             _ => return Err(format!("unknown option {name}")),
@@ -487,9 +428,6 @@ pub fn run(
     mut progress: impl FnMut(&str),
 ) -> Result<Report, String> {
     match settings.experiment {
-        Experiment::Load => {
-            return load::run(runtime, settings, about, style, progress).map(Report::Load);
-        }
         Experiment::Tiles => {
             return tiles::run(settings, about, data, progress).map(Report::Tiles);
         }
@@ -498,36 +436,17 @@ pub fn run(
             return stutter::run(runtime, settings, about, (style, &alps), progress)
                 .map(Report::Stutter);
         }
-        Experiment::Cull => {
-            return cull::run(runtime, settings, about, style, progress).map(Report::Cull);
-        }
+
         Experiment::Session => {
             let alps = format!("file://{}", data.join("alps.json").display());
             return session::run(settings, about, (style, &alps), progress).map(Report::Session);
         }
-        Experiment::Quake => {
-            return quake::run(runtime, settings, about, &data.join("alps.json"), progress)
-                .map(Report::Quake);
-        }
-        Experiment::Frames | Experiment::Gestures => {}
+        Experiment::Frames => {}
     }
     if !runtime.stats().gpu_timestamps {
         return Err("the device has no timestamp queries".into());
     }
     let cpu_resolution = clock::resolution();
-    if settings.experiment == Experiment::Gestures {
-        let (width, height) = settings.physical_size();
-        let mut target = Target::texture(runtime, width, height, f64::from(settings.ratio));
-        return gestures::run(
-            runtime,
-            (&mut target, (width, height)),
-            settings,
-            about,
-            |camera| new_map(runtime, style, camera, settings.antialias),
-            progress,
-        )
-        .map(Report::Gestures);
-    }
     // The frames' clock: fades and transitions run on frame times.
     let epoch = clock::now();
 

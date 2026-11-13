@@ -9,13 +9,13 @@
 //! fast turns and its flight (`web/demo/data/alps.json`); and Liberty on
 //! the globe, zooming from the whole world onto Tokyo, and onto Manhattan
 //! as its buildings arrive. Each starts cold from
-//! its first camera at rest and runs at a 60 Hz pace, as the gestures bench
-//! does. `cargo xtask bench stutter`.
+//! its first camera at rest and runs at a 60 Hz pace. `cargo xtask bench
+//! stutter`.
 
 use std::fmt::Write;
 use std::time::Duration;
 
-use orb_api::{CameraState, FrameTimes, Geodetic, Map, Runtime, Target};
+use orb_api::{CameraState, CameraTarget, FlyOptions, FrameTimes, Geodetic, Map, Runtime, Target};
 
 use crate::report::{ms, percentile, resolution};
 use crate::{Settings, clock, frame, settle};
@@ -346,6 +346,39 @@ pub(crate) fn run(
     })
 }
 
+/// The Alps terrain style's flight (`web/demo/data/alps-flight.json`): `flyTo`
+/// legs, as the demo flies them.
+fn flight_legs() -> Vec<(CameraTarget, FlyOptions)> {
+    let json: serde_json::Value =
+        serde_json::from_str(include_str!("../../../web/demo/data/alps-flight.json"))
+            .expect("the flight parses");
+    json["legs"]
+        .as_array()
+        .expect("the flight's legs")
+        .iter()
+        .map(|leg| {
+            let number = |key: &str| leg[key].as_f64();
+            let center = &leg["center"];
+            (
+                CameraTarget {
+                    center: Some(orb_api::Geodetic::new(
+                        center[0].as_f64().expect("lon"),
+                        center[1].as_f64().expect("lat"),
+                    )),
+                    zoom: number("zoom"),
+                    bearing: number("bearing"),
+                    pitch: number("pitch"),
+                    ..Default::default()
+                },
+                FlyOptions {
+                    duration: number("duration"),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect()
+}
+
 /// Moves the camera along the path once each 60 Hz frame from `base`
 /// (milliseconds), timing each; a flight flies its first `first_legs`.
 fn run_path(
@@ -357,7 +390,7 @@ fn run_path(
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Frame>, String> {
     let mut legs = match scenario.flight {
-        true => crate::gestures::flight_legs(),
+        true => flight_legs(),
         false => Vec::new(),
     };
     legs.truncate(first_legs.unwrap_or(usize::MAX));

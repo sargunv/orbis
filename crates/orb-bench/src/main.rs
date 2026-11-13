@@ -1,13 +1,12 @@
-//! The bench: `cargo xtask bench [style URL | alps | stutter] [--format mvt|mlt]
-//! [--experiment frames|gestures|load|tiles|stutter|quake] [--frames N] [--warmup N]
-//! [--rounds N] [--samples N] [--size WxH] [--ratio R] [--at lon,lat]
-//! [--view zoom,pitch,bearing]... [--views file] [--filter s] [--nudge]
-//! [--antialias on|off] [--paths city|alps] [--legs N] [--capture N]
-//! [--warm]`.
+//! The bench: `cargo xtask bench [style URL | alps | stutter | session]
+//! [--format mvt|mlt] [--experiment frames|tiles|stutter|session]
+//! [--frames N] [--warmup N] [--rounds N] [--samples N] [--size WxH]
+//! [--ratio R] [--at lon,lat] [--view zoom,pitch,bearing]... [--views file]
+//! [--filter s] [--nudge] [--antialias on|off] [--legs N] [--capture N]
+//! [--warm] [--dump prefix]`.
 //!
-//! Without a style URL it loads the committed Tokyo extract; `alps` is the Alps terrain style
-//! (live tiles), at its view and with the gestures bench's Alps paths.
-//! `stutter` is `--experiment stutter`, whose Liberty scenarios draw
+//! Without a style URL it loads the committed Tokyo extract; `alps` is the
+//! Alps terrain style (live tiles) at its view. `stutter` is `--experiment stutter`, whose Liberty scenarios draw
 //! OpenFreeMap's live Liberty unless a style URL (say, `cargo xtask h2h
 //! mirror`'s) stands in. `session` is `--experiment session` at 1440×900,
 //! `pnpm session`'s native twin, on live Liberty and the Alps style.
@@ -41,9 +40,8 @@ fn run() -> Result<(), String> {
     let mut about_data = "Tokyo extract (mvt, reduced Liberty)".to_string();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "alps") {
-        // The Alps terrain style's view and paths, unless the options say otherwise.
+        // The Alps terrain style's view, unless `--at` says otherwise.
         settings.center = orb_api::Geodetic::new(orb_bench::ALPS.0, orb_bench::ALPS.1);
-        settings.paths = orb_bench::GesturePaths::Alps;
     }
     if args.iter().any(|a| a == "session") {
         // `pnpm session`'s viewport, unless `--size` says otherwise.
@@ -96,10 +94,7 @@ fn run() -> Result<(), String> {
         style = orb_bench::LIBERTY.to_string();
         about_data = format!("{style}, and the Alps terrain style");
     }
-    // The quake draws the Alps style on heights it makes itself.
-    if settings.experiment == orb_bench::Experiment::Quake {
-        about_data = "the Alps terrain style (alps.json), its DEM sources fed as heights".into();
-    }
+
     if let Some(path) = &views_file {
         let name = style_name(&style);
         settings.views = orb_bench::read_views(path, name)?;

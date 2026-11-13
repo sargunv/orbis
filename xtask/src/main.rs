@@ -62,10 +62,11 @@ cargo xtask <task>
                fixture results in docs/scratch/rt; run it after the fixtures
   bench [args]  native benchmarks (release): --experiment frames (GPU/CPU
                frame timings; --nudge for whole frames read back,
-               --antialias on for 3D layers with 4× MSAA), gestures,
-               load (style load to first complete still) or tiles (the
-               extract's tiles through decode, layout and pack); --views
-               <file> takes mln-rs's views.txt cameras;
+               --antialias on for 3D layers with 4× MSAA), tiles (the
+               extract's tiles through decode, layout and pack), stutter
+               (paths that bring many tiles in, by stage) or session
+               (pnpm session's native twin); --views <file> takes
+               mln-rs's views.txt cameras;
                --compare <rev> [--runs N] builds <rev> in target/compare
                and runs both builds N times (default 3),
                interleaved, reporting each number as <rev> → this tree

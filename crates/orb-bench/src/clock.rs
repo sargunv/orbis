@@ -1,5 +1,5 @@
-//! Wall-clock time for CPU timings, the process's CPU time, and the
-//! instructions a thread retires.
+//! Wall-clock time for CPU timings, a thread's CPU time, and the
+//! instructions it retires.
 
 use std::time::Duration;
 
@@ -24,17 +24,6 @@ pub(crate) fn resolution() -> Duration {
         }
     }
     smallest
-}
-
-/// The process's CPU time so far, every thread's.
-pub(crate) fn cpu() -> Option<Duration> {
-    #[cfg(unix)]
-    {
-        let t = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
-        Some(Duration::new(t.tv_sec as u64, t.tv_nsec as u32))
-    }
-    #[cfg(not(unix))]
-    None
 }
 
 /// This thread's CPU time so far where the platform counts it (time the
