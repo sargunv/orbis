@@ -157,7 +157,6 @@ pub(crate) struct Inbox {
 #[derive(Debug, Default)]
 pub(crate) struct Parked {
     tiles: VecDeque<ParkedTile>,
-    bytes: u64,
 }
 
 #[derive(Debug)]
@@ -167,7 +166,6 @@ struct ParkedTile {
     source: u32,
     tile: TileIndex,
     build: TileResult,
-    bytes: u64,
 }
 
 impl Parked {
@@ -181,19 +179,15 @@ impl Parked {
         cap: usize,
         release: &mut Vec<HostData>,
     ) {
-        let bytes = upload_bytes(&build);
-        self.bytes += bytes;
         self.tiles.push_back(ParkedTile {
             generation,
             source,
             tile,
             build,
-            bytes,
         });
         while self.tiles.len() > cap
             && let Some(oldest) = self.tiles.pop_front()
         {
-            self.bytes -= oldest.bytes;
             release.push(HostData::of(&oldest.build));
         }
     }
@@ -206,9 +200,7 @@ impl Parked {
     ) -> Option<TileResult> {
         let at = (self.tiles.iter())
             .position(|p| (p.generation, p.source, p.tile) == (generation, source, tile))?;
-        let parked = self.tiles.remove(at).expect("found");
-        self.bytes -= parked.bytes;
-        Some(parked.build)
+        Some(self.tiles.remove(at).expect("found").build)
     }
 
     /// Drops the tiles `which` picks by source and tile, their host data
@@ -223,7 +215,6 @@ impl Parked {
             .partition::<VecDeque<_>, _>(|p| which(p.source, p.tile));
         self.tiles = kept;
         for parked in dropped {
-            self.bytes -= parked.bytes;
             release.push(HostData::of(&parked.build));
         }
     }
@@ -265,9 +256,6 @@ mod tests {
             "taken once"
         );
         parked.drop_where(|source, _| source == 7, &mut released);
-        assert_eq!(
-            (parked.tiles.len(), parked.bytes, released.len()),
-            (0, 0, 2)
-        );
+        assert_eq!((parked.tiles.len(), released.len()), (0, 2));
     }
 }
