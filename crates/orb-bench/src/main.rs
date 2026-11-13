@@ -97,6 +97,10 @@ fn run() -> Result<(), String> {
         style = orb_bench::LIBERTY.to_string();
         about_data = format!("{style}, and the Alps terrain style");
     }
+    // The quake draws the Alps style on heights it makes itself.
+    if settings.experiment == orb_bench::Experiment::Quake {
+        about_data = "the Alps terrain style (alps.json), its DEM sources fed as heights".into();
+    }
     if let Some(path) = &views_file {
         let name = style_name(&style);
         settings.views = orb_bench::read_views(path, name)?;

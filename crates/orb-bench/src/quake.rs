@@ -135,7 +135,7 @@ pub(crate) fn run(
     let text = std::fs::read_to_string(alps).map_err(|e| e.to_string())?;
     let (w, h) = (settings.width, settings.height);
     about.push(format!(
-        "{w}×{h} @{}, the Alps style on synthetic hills fed as heights, {SIDE}² a tile",
+        "{w}×{h} @{}, synthetic hills over the Valais, {SIDE}² heights a tile",
         settings.ratio
     ));
     let mut target = Target::texture(runtime, w, h, f64::from(settings.ratio));
