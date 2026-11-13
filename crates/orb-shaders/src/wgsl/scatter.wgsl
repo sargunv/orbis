@@ -5,9 +5,9 @@
 //
 // GL JS marches three more steps toward the sun from each of the five; how
 // much light reaches a point that way depends only on its height and the
-// sun's angle from its zenith, so `Atmosphere::sunward` (orb-render's
+// sun's angle from its zenith, so `sunward_table` (orb-render's
 // `atmosphere.rs`) works that march out once, at every texel of a table
-// over the two, with the constants below.
+// over the two, with the constants below, which it repeats.
 @group(1) @binding(0) var sunward: texture_2d<f32>;
 @group(1) @binding(1) var sunward_sampler: sampler;
 

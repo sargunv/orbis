@@ -364,7 +364,8 @@ impl Sunward {
 /// texel's height and cosine of the sun's zenith angle (`scatter.wgsl`'s
 /// `scatter_sunward` lays them out, first and last texels at either end),
 /// GL JS's march of three steps from there to the atmosphere's edge,
-/// through the planet where the sun is below the horizon.
+/// through the planet where the sun is below the horizon. Its constants
+/// are `scatter.wgsl`'s `SCATTER_*`, and change with them.
 fn sunward_table() -> Vec<u16> {
     const PLANET: f64 = 6371e3;
     const SHELL: f64 = 6471e3;
