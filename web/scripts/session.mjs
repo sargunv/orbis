@@ -59,7 +59,9 @@
 // present gaps. `--gpu` times Orbis's GPU work over the moves by its
 // timestamp queries (`gpuTimes`: each frame's span, how many run past a
 // 120 Hz and a 60 Hz frame, each pass's sum; tiled GPUs overlap passes,
-// whose times show where work waits), its submissions in `--dump`'s file.
+// whose times show where work waits), its submissions in `--dump`'s file,
+// and GL JS's by a WebGL 2 timer query around each frame it renders (one
+// pass, `frame`), where the browser has them.
 //
 // For each run it reports when the first frame came, the map's frame
 // intervals (as the page hears of them: Orbis's `render` events, GL JS's
@@ -856,7 +858,9 @@ async function run(server, engine) {
           resolve();
         });
       });
-    const timing = engine === "orbis" && !!args.gpu;
+    // GL JS's by WebGL 2 timer queries, where the browser has them.
+    const timing =
+      !!args.gpu && (await page.evaluate(() => !!globalThis.mapGpu));
     if (timing) await page.evaluate(() => globalThis.mapGpu.start());
     const windows = await moves();
     const submissions =

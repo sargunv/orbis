@@ -92,6 +92,7 @@ const engines = {
       attributionControl: false,
     });
     map.on("error", (e) => console.error(String(e.error)));
+    window.mapGpu = glGpuTiming(map);
     if (recording) {
       // Whether the tiles under the view's centre are in, as Orbis's
       // `centreLoaded` says: looked at once a frame until they are, and
@@ -197,6 +198,58 @@ const STAGES = [
   "encode",
   "submit",
 ];
+
+/** GL JS's GPU time a frame, as Orbis's `mapGpu` gives its own (session.mjs's
+ * `--gpu`): a WebGL 2 timer query around each `painter.render`, read once
+ * the GPU has it, each a submission of one pass, `frame`. Null where the
+ * browser has no timer queries. */
+function glGpuTiming(map) {
+  const gl = map.painter.context.gl;
+  const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+  if (!ext) return null;
+  let timing = false;
+  const pending = [];
+  const frames = [];
+  const read = () => {
+    while (
+      pending.length &&
+      gl.getQueryParameter(pending[0], gl.QUERY_RESULT_AVAILABLE)
+    ) {
+      const query = pending.shift();
+      // A disjoint run (the GPU's clock changed) times nothing.
+      if (!gl.getParameter(ext.GPU_DISJOINT_EXT)) {
+        const ms = gl.getQueryParameter(query, gl.QUERY_RESULT) / 1e6;
+        frames.push({ passes: [["frame", ms]], span: ms });
+      }
+      gl.deleteQuery(query);
+    }
+  };
+  const render = map.painter.render.bind(map.painter);
+  map.painter.render = (...args) => {
+    if (!timing) return render(...args);
+    read();
+    const query = gl.createQuery();
+    gl.beginQuery(ext.TIME_ELAPSED_EXT, query);
+    try {
+      return render(...args);
+    } finally {
+      gl.endQuery(ext.TIME_ELAPSED_EXT);
+      pending.push(query);
+    }
+  };
+  return {
+    start: () => (timing = true),
+    take: async () => {
+      timing = false;
+      for (let i = 0; pending.length && i < 60; i++) {
+        await nextFrame();
+        read();
+      }
+      return frames.splice(0);
+    },
+    repaint: () => map.triggerRepaint(),
+  };
+}
 
 /** Whether every source GL JS draws has the ideal tile under the view's
  * centre loaded (or failed): Orbis's `centreLoaded`. */
