@@ -8,7 +8,7 @@
 //! The line's tab-separated fields: `render`, the label, then the vertex
 //! and fragment stages (each its WGSL file, entry point and `k=v,…`
 //! override constants), the targets (`format:blend|…`), the depth
-//! (`format:write:test` or `-`), the topology, back-face culling, the sample
+//! (`format:write:test:once` or `-`), the topology, back-face culling, the sample
 //! count and WebGL 2's attribute zero; or `compute`, the label and its
 //! stage.
 
@@ -66,10 +66,11 @@ pub(super) fn job(job: &Job) {
                 .collect();
             let depth = (j.depth).map_or("-".to_string(), |d| {
                 format!(
-                    "{:?}:{}:{}",
+                    "{:?}:{}:{}:{}",
                     convert::texture_format(d.format),
                     d.write,
-                    d.test
+                    d.test,
+                    d.once
                 )
             });
             format!(

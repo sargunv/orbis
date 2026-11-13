@@ -112,20 +112,31 @@ impl LayerComposites {
     }
 
     /// Replaces the groups with `runs`, each drawn into a target of `size`
-    /// in the map's `format` of its own unless it has a source.
+    /// in the map's `format` of its own unless it has a source. The
+    /// canvases keep their samples between passes where the map's passes
+    /// split at 3D layers (`split`).
     pub(crate) fn regroup(
         &mut self,
         gpu: &mut dyn Gpu,
         composites: &mut Composites,
         runs: Vec<Run>,
-        (size, format): ([u32; 2], crate::TargetFormat),
+        (size, format, split): ([u32; 2], crate::TargetFormat, bool),
     ) {
         self.clear(gpu);
-        let target = |gpu: &mut dyn Gpu, label| {
-            Target::new(gpu, label, &[format.color], size, format.sample_count)
+        let target = |gpu: &mut dyn Gpu, label, kept| {
+            Target::new(
+                gpu,
+                label,
+                &[format.color],
+                size,
+                (format.sample_count, kept),
+            )
         };
         if runs.iter().any(|r| r.blend != Blend::Normal) {
-            self.canvases = vec![target(gpu, "map canvas"), target(gpu, "map canvas")];
+            self.canvases = vec![
+                target(gpu, "map canvas", split),
+                target(gpu, "map canvas", split),
+            ];
         }
         let mut backdrops = 0;
         for Run {
@@ -135,7 +146,9 @@ impl LayerComposites {
             source,
         } in runs
         {
-            let layer = source.is_none().then(|| target(gpu, "layer composite"));
+            let layer = source
+                .is_none()
+                .then(|| target(gpu, "layer composite", false));
             let texture = source.unwrap_or_else(|| layer.as_ref().expect("made above").texture(0));
             // The k-th blending group reads the canvas pass k drew.
             let (mode, backdrop) = match blend {

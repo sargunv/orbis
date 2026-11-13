@@ -70,12 +70,14 @@ const TEXTURE_SIDE: &str = "ORB_TEXTURE_SIDE";
 /// The features Orbis asks `adapter`'s device for, those it has of them:
 /// natively, a pipeline cache, which warm starts reuse pipelines through;
 /// timestamps, which time passes for measurements; clip distances, which
-/// clip cut buildings without discarding; and on GL, passthrough shaders,
+/// clip cut buildings without discarding; depth as floats beside a
+/// stencil (`Caps::depth32_stencil8`); and on GL, passthrough shaders,
 /// which take the build's GLSL (`ShaderModuleDesc::glsl`).
 pub fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     let mut wanted = wgpu::Features::PIPELINE_CACHE
         | wgpu::Features::TIMESTAMP_QUERY
-        | wgpu::Features::CLIP_DISTANCES;
+        | wgpu::Features::CLIP_DISTANCES
+        | wgpu::Features::DEPTH32FLOAT_STENCIL8;
     if !cfg!(webgpu) && adapter.get_info().backend == wgpu::Backend::Gl {
         wanted |= wgpu::Features::PASSTHROUGH_SHADERS;
     }
@@ -483,6 +485,7 @@ impl WgpuGpu {
             // adapter (WebGL 2 has them with `EXT_color_buffer_float`).
             float_targets: cfg!(webgpu),
             zero_to_one_depth: !gl || gl_clips_zero_to_one(&device),
+            depth32_stencil8: (device.features()).contains(wgpu::Features::DEPTH32FLOAT_STENCIL8),
             // `ORB_COMPILES_HOLD_PRESENTS` has a native device stand in for
             // Firefox's: what a map does there, in tests and benches.
             #[cfg(webgpu)]
@@ -1464,6 +1467,9 @@ impl WgpuGpu {
             RenderCommand::ExecuteBundles(_) => panic!("render bundles cannot execute bundles"),
             RenderCommand::SetScissor(_) => panic!("render bundles cannot set a scissor"),
             RenderCommand::SetViewport(_) => panic!("render bundles cannot set a viewport"),
+            RenderCommand::SetStencilReference(_) => {
+                panic!("render bundles cannot set a stencil reference")
+            }
         }
     }
 }
@@ -2323,6 +2329,13 @@ impl Gpu for WgpuGpu {
                         label: Some(render.label),
                         color_attachments: &colors,
                         depth_stencil_attachment: render.depth.as_ref().map(|depth| {
+                            let store = match depth.store {
+                                StoreOp::Store => wgpu::StoreOp::Store,
+                                StoreOp::Discard => wgpu::StoreOp::Discard,
+                            };
+                            // A stencil clears and stores as the depth does.
+                            let stencil = (self.textures[depth.target.0].texture.as_ref())
+                                .is_some_and(|t| t.format().has_stencil_aspect());
                             wgpu::RenderPassDepthStencilAttachment {
                                 view: self.view(depth.target),
                                 depth_ops: Some(wgpu::Operations {
@@ -2330,12 +2343,15 @@ impl Gpu for WgpuGpu {
                                         LoadOp::Clear(v) => wgpu::LoadOp::Clear(v),
                                         LoadOp::Load => wgpu::LoadOp::Load,
                                     },
-                                    store: match depth.store {
-                                        StoreOp::Store => wgpu::StoreOp::Store,
-                                        StoreOp::Discard => wgpu::StoreOp::Discard,
-                                    },
+                                    store,
                                 }),
-                                stencil_ops: None,
+                                stencil_ops: stencil.then_some(wgpu::Operations {
+                                    load: match depth.load {
+                                        LoadOp::Clear(_) => wgpu::LoadOp::Clear(0),
+                                        LoadOp::Load => wgpu::LoadOp::Load,
+                                    },
+                                    store,
+                                }),
                             }
                         }),
                         timestamp_writes: writes(i).map(|(query_set, first)| {
@@ -2359,6 +2375,9 @@ impl Gpu for WgpuGpu {
                             }
                             &RenderCommand::SetViewport([x, y, width, height]) => {
                                 pass.set_viewport(x, y, width, height, 0.0, 1.0)
+                            }
+                            &RenderCommand::SetStencilReference(reference) => {
+                                pass.set_stencil_reference(reference)
                             }
                             command => self.encode_render(&mut pass, command),
                         }

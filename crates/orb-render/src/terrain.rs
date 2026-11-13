@@ -26,12 +26,16 @@
 //! or up to [`MAX_SHADES`] hillshades lit between stacks from their
 //! slopes' stacks and the frame's bearing) at the place of its first
 //! node, over what the map drew beneath it, every fragment but the
-//! nearest failing the depth test. A layer that blends with the map
+//! nearest failing the depth test, and of those meeting at it (a skirt
+//! and a neighbour's edge) all but the first failing the stencil's, so
+//! no sample blends twice. With antialiasing on, the map's passes take
+//! four samples a pixel, and so do the terrain's silhouettes, as GL JS's
+//! antialiased canvas. A layer that blends with the map
 //! beneath it in a mode the blend unit has no factors for reads it from
 //! the canvas the pass before drew.
 
 use crate::TargetFormat;
-use crate::pipeline::{Attachments, DEPTH, Draw};
+use crate::pipeline::{Attachments, Draw, depth_test};
 use crate::release::Release;
 use crate::scene::{Backing, DataTable};
 use TextureViewDimension::D2Array;
@@ -1114,6 +1118,20 @@ impl Terrain {
         true
     }
 
+    /// Draws into the map's passes as `target` from now: the pipelines
+    /// made for them before are let go, for the next request to make.
+    pub(crate) fn retarget(&mut self, gpu: &mut dyn Gpu, target: Attachments) {
+        if self.target == target {
+            return;
+        }
+        self.target = target;
+        std::mem::take(&mut self.pipelines).release(gpu);
+        (self.depth_pipelines.iter_mut())
+            .map(|d| d.take().map(|(_, p)| p))
+            .collect::<Vec<_>>()
+            .release(gpu);
+    }
+
     /// Asks for the pipelines the terrain draws with: its layers' in the
     /// map's passes, a shaded hillshade's where one is (`shaded`), one
     /// reading the map beneath where a layer does (`beneath`), and its
@@ -1136,7 +1154,7 @@ impl Terrain {
         self.depth_pipeline(gpu, MAP, self.target);
         if let Some(three_d) = three_d {
             let three_d = Attachments {
-                depth: true,
+                depth: self.target.depth,
                 ..three_d.into()
             };
             self.depth_pipeline(gpu, THREE_D, three_d);
@@ -1213,9 +1231,18 @@ impl Terrain {
             Kind::Beneath => (&TERRAIN_SHADE_SHADER, "fs_terrain_beneath", &beneath),
         };
         let blend = (kind != Kind::Beneath).then_some(BlendState::PremultipliedAlpha);
+        // Over the depth alone, a sample of the nearest surface passes,
+        // and of the pieces of mesh meeting there (a skirt and a
+        // neighbour's edge) the first drawn alone: none blends twice.
+        let format = self.target.depth.expect("the map's passes have a depth");
         let pipeline = Draw {
             fragment: (shader, entry),
-            depth: DEPTH,
+            depth: Some(DepthState {
+                format,
+                write: false,
+                test: true,
+                once: true,
+            }),
             ..Draw::new(shader, layouts, self.target, blend)
         }
         .make(gpu);
@@ -1240,7 +1267,7 @@ impl Terrain {
         let pipeline = Draw {
             label: "terrain depth alone",
             fragment: (&TERRAIN_SHADER, "fs_terrain_hidden"),
-            depth: DEPTH,
+            depth: depth_test(target.depth.expect("the passes have a depth")),
             ..Draw::new(
                 &TERRAIN_SHADER,
                 &[self.layout],
@@ -1496,7 +1523,10 @@ impl Terrain {
         let Some(pipeline) = self.pipelines[kind as usize] else {
             return Vec::new();
         };
+        // A reference of the layer's own: what layers before it marked
+        // doesn't keep it from drawing.
         let mut commands = vec![
+            RenderCommand::SetStencilReference(u32::from(layer) % 255 + 1),
             RenderCommand::SetPipeline(pipeline),
             RenderCommand::SetBindGroup {
                 index: 1,
@@ -1702,7 +1732,7 @@ impl Terrain {
         let pipeline = Draw {
             label: "terrain depth",
             fragment: (&TERRAIN_SHADER, "fs_terrain_depth"),
-            depth: DEPTH,
+            depth: depth_test(TextureFormat::Depth32Float),
             ..Draw::new(&TERRAIN_SHADER, &[self.layout], target, None)
         }
         .make(gpu);

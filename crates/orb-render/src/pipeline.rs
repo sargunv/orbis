@@ -7,23 +7,38 @@ use orb_shaders::Shader;
 
 use crate::TargetFormat;
 
-/// The depth test and write of every 3D pipeline: reversed Z, into the
-/// shared depth attachment.
-pub(crate) const DEPTH: Option<DepthState> = Some(DepthState {
-    format: TextureFormat::Depth32Float,
-    write: true,
-    test: true,
-});
+/// The format of the depth the map's passes and the 3D layers' share:
+/// float depth beside a stencil, which terrain layers draw each sample
+/// once by ([`DepthState::once`]), or where the device has none,
+/// WebGPU's depth with a stencil of at least 24 bits (GL JS's own).
+pub(crate) fn depth_format(caps: &Caps) -> TextureFormat {
+    match caps.depth32_stencil8 {
+        true => TextureFormat::Depth32FloatStencil8,
+        false => TextureFormat::Depth24PlusStencil8,
+    }
+}
 
-/// What a pipeline draws into: a colour format at a sample count, and
-/// whether the pass has the depth attachment the map's passes carry while
-/// its style has terrain, which every pipeline drawing in them declares:
-/// the terrain tests and writes it ([`DEPTH`]), the rest neither.
+/// The depth test and write of every 3D pipeline: reversed Z, into a
+/// depth attachment of `format`.
+pub(crate) fn depth_test(format: TextureFormat) -> Option<DepthState> {
+    Some(DepthState {
+        format,
+        write: true,
+        test: true,
+        once: false,
+    })
+}
+
+/// What a pipeline draws into: a colour format at a sample count, and the
+/// format of the depth attachment the map's passes carry while its style
+/// has terrain ([`depth_format`]), which every pipeline drawing in them
+/// declares: the terrain tests and writes it ([`depth_test`]), the rest
+/// neither.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Attachments {
     pub(crate) color: TextureFormat,
     pub(crate) sample_count: u32,
-    pub(crate) depth: bool,
+    pub(crate) depth: Option<TextureFormat>,
 }
 
 impl From<TargetFormat> for Attachments {
@@ -31,7 +46,7 @@ impl From<TargetFormat> for Attachments {
         Self {
             color: target.color,
             sample_count: target.sample_count,
-            depth: false,
+            depth: None,
         }
     }
 }
@@ -102,10 +117,11 @@ impl<'a> Draw<'a> {
                 blend,
             },
             sample_count: target.sample_count,
-            depth: target.depth.then_some(DepthState {
-                format: TextureFormat::Depth32Float,
+            depth: target.depth.map(|format| DepthState {
+                format,
                 write: false,
                 test: false,
+                once: false,
             }),
             topology: PrimitiveTopology::TriangleList,
             cull_back: false,

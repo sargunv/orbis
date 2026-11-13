@@ -26,13 +26,14 @@ struct Attachment {
 }
 
 impl Target {
-    /// Attachments of `formats`, `size` texels, drawn at `samples`.
+    /// Attachments of `formats`, `size` texels, drawn at `samples`, their
+    /// samples kept between passes where `kept` (else transient).
     pub(crate) fn new(
         gpu: &mut dyn Gpu,
         label: &'static str,
         formats: &[TextureFormat],
         size: [u32; 2],
-        samples: u32,
+        (samples, kept): (u32, bool),
     ) -> Self {
         let texture = |gpu: &mut dyn Gpu, format, samples, usage| {
             gpu.create_texture(&TextureDesc {
@@ -61,7 +62,13 @@ impl Target {
                         gpu,
                         format,
                         samples,
-                        TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
+                        match kept {
+                            true => TextureUsages::RENDER_ATTACHMENT,
+                            false => {
+                                TextureUsages::RENDER_ATTACHMENT
+                                    | TextureUsages::TRANSIENT_ATTACHMENT
+                            }
+                        },
                     )
                 }),
             })
@@ -77,11 +84,23 @@ impl Target {
     /// Attachment `i` as a pass draws it: into the multisampled texture,
     /// resolved, when there is one.
     pub(crate) fn attachment(&self, i: usize, load: LoadOp<[f64; 4]>) -> ColorAttachment {
+        self.attachment_kept(i, load, false)
+    }
+
+    /// Attachment `i` as a pass draws it that a later pass goes on
+    /// drawing, where `keep`: its samples stored, and resolved only once
+    /// no pass goes on (the target made `kept`).
+    pub(crate) fn attachment_kept(
+        &self,
+        i: usize,
+        load: LoadOp<[f64; 4]>,
+        keep: bool,
+    ) -> ColorAttachment {
         let a = self.colors[i];
         ColorAttachment {
             target: a.multisample.unwrap_or(a.color),
-            resolve: a.multisample.map(|_| a.color),
-            store: if a.multisample.is_some() {
+            resolve: a.multisample.filter(|_| !keep).map(|_| a.color),
+            store: if a.multisample.is_some() && !keep {
                 StoreOp::Discard
             } else {
                 StoreOp::Store
@@ -155,7 +174,7 @@ impl Offscreen {
         if let Some(old) = slot.take() {
             old.release(gpu);
         }
-        let target = Target::new(gpu, label, formats, size, samples);
+        let target = Target::new(gpu, label, formats, size, (samples, false));
         let composite = composites.composite(gpu, target.texture(0), backdrop, mode, opacity);
         *slot = Some(Self {
             target,
@@ -266,6 +285,12 @@ impl Composites {
     /// without their depth: the pipelines for those, kept since it last
     /// composited into them, take the place of these, which are kept in
     /// turn.
+    /// Lets the pipelines kept for the other kind of pass go: they were
+    /// made for passes the map's no longer are.
+    pub(crate) fn forget_kept(&mut self, gpu: &mut dyn Gpu) {
+        std::mem::take(&mut self.kept).release(gpu);
+    }
+
     pub(crate) fn retarget(&mut self, target: Attachments) {
         let current = [self.over, self.replace];
         [self.over, self.replace] = std::mem::replace(&mut self.kept, current);

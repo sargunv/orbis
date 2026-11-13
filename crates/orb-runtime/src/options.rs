@@ -30,12 +30,14 @@ pub struct MapOptions {
     /// `font-faces` (MapLibre Native's `fallbackFontFaces`). None by
     /// default.
     pub fallback_font_faces: Vec<orb_style::FontFace>,
-    /// 4× multisampling for 3D surfaces: extrusion layers and the
-    /// terrain (GL JS `antialias`). Off by default, as in GL JS (MapLibre
-    /// Native never multisamples): off, their edges step visibly at a
-    /// pixel ratio of 1 and barely at 2, and on some tiling GPUs it costs
-    /// more than the rest of the frame (under D3D12 on the Adreno X1, a
-    /// pitched city's frame takes 2.4× as long with it).
+    /// 4× multisampling for 3D surfaces: extrusion layers, and on a
+    /// style with terrain, the map's passes, which it draws in (GL JS
+    /// `antialias`, which multisamples its whole canvas). Off by default,
+    /// as in GL JS (MapLibre Native never multisamples): off, their edges
+    /// step visibly at a pixel ratio of 1 and barely at 2, and on some
+    /// tiling GPUs it costs more than the rest of the frame (under D3D12
+    /// on the Adreno X1, a pitched city's frame takes 2.4× as long with
+    /// it).
     pub antialias: bool,
     /// Whether terrain tiles hang skirts that hide the cracks between
     /// tiles of different detail; translucent terrain shows them (GL JS

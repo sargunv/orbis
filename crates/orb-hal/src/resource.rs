@@ -87,6 +87,11 @@ pub enum TextureFormat {
     Rgba8Unorm,
     Bgra8Unorm,
     Depth32Float,
+    /// Depth as `Depth32Float`, and a stencil: where the device has them
+    /// together ([`Caps::depth32_stencil8`](crate::Caps::depth32_stencil8)).
+    Depth32FloatStencil8,
+    /// At least 24 bits of depth, and a stencil: on every device.
+    Depth24PlusStencil8,
 }
 
 impl TextureFormat {
@@ -100,8 +105,15 @@ impl TextureFormat {
             | Self::R32Uint
             | Self::Rgba8Unorm
             | Self::Bgra8Unorm
-            | Self::Depth32Float => 4,
+            | Self::Depth32Float
+            | Self::Depth24PlusStencil8 => 4,
+            Self::Depth32FloatStencil8 => 8,
         }
+    }
+
+    /// Whether it holds a stencil.
+    pub fn has_stencil(self) -> bool {
+        matches!(self, Self::Depth32FloatStencil8 | Self::Depth24PlusStencil8)
     }
 }
 
@@ -428,12 +440,19 @@ pub enum BlendState {
 
 /// A pipeline's use of the pass's depth attachment: a test in reversed
 /// Z, where a fragment passes at or nearer than the depth held
-/// (`greater-equal`), or none (`always`), and whether it writes its own.
+/// (`greater-equal`), or none (`always`), and whether it writes its own;
+/// and whether it draws a sample once a stencil reference (`once`): where
+/// the stencil holds another value than the pass's reference
+/// ([`RenderCommand::SetStencilReference`](crate::RenderCommand::SetStencilReference)),
+/// setting it to the reference where the fragment passes, so that of the
+/// fragments passing at a sample only the first draws. Its format must
+/// have a stencil.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepthState {
     pub format: TextureFormat,
     pub write: bool,
     pub test: bool,
+    pub once: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -423,11 +423,24 @@ pub struct PipelineSet {
 #[derive(Debug)]
 pub struct Renderer {
     id: u64,
-    /// The host's target, and whether the map's passes have a depth
-    /// attachment: while the style has terrain, which draws in them.
+    /// The host's target's format.
+    host: TargetFormat,
+    /// What the map's passes draw into: the host's target, and while the
+    /// style has terrain, which draws in them, a depth attachment, and
+    /// with antialiasing on, four samples a pixel (`fit_target`).
     target: Attachments,
+    /// What the pipelines kept for the other kind of pass were made for,
+    /// once the passes changed.
+    kept_target: Option<Attachments>,
     /// That depth attachment, made for the frame's size: never stored.
     map_depth: Option<(TextureId, [u32; 2])>,
+    /// The multisampled colour the map's last canvas draws into, where
+    /// they take more samples than the host's target, resolved into it:
+    /// its size, and whether it's kept between the passes, where they
+    /// split at 3D layers.
+    map_samples: Option<(TextureId, [u32; 2], bool)>,
+    /// The format of the depth the map's and the 3D layers' passes have.
+    depth_format: TextureFormat,
     /// Whether 3D surfaces draw at four samples
     /// ([`set_antialias_3d`](Self::set_antialias_3d)).
     antialias_3d: bool,
@@ -446,7 +459,7 @@ pub struct Renderer {
     /// node.
     paint: PaintPipelines,
     /// The vector families' pipelines for the map's other kind of pass,
-    /// with or without its depth ([`fit_depth`](Self::fit_depth)).
+    /// with or without its depth ([`fit_target`](Self::fit_target)).
     paint_kept: PaintPipelines,
     /// Symbol layers' pipelines, placement target and passes.
     symbols: symbol::Symbols,
@@ -664,7 +677,8 @@ impl Renderer {
             .drape_pipelines
             .map(|d| ((d.paint.pipelines, d.paint.untested), d.images.0));
         (self.terrain, self.drape, drape, self.no_terrain_depth).release(gpu);
-        self.map_depth.map(|(depth, _)| depth).release(gpu);
+        let samples = self.map_samples.map(|(texture, ..)| texture);
+        (self.map_depth.map(|(depth, _)| depth), samples).release(gpu);
     }
 
     /// What a renderer on a device of `caps` draws otherwise than on
@@ -695,6 +709,7 @@ impl Renderer {
         images: ImageBindings,
     ) -> Self {
         let kind = driver::Kind::of(gpu.caps());
+        let depth_format = pipeline::depth_format(gpu.caps());
         let scene = Scene::new(gpu, capacity, kind);
         // The driver's pipeline first: nothing draws without it.
         let driver = driver::Driver::new(gpu, kind, &scene);
@@ -735,6 +750,7 @@ impl Renderer {
         );
         let image_bindings = images;
         // Its nearest sampler and blank array serve the scene too.
+        let host = target;
         let target = Attachments::from(target);
         let images = image::Images::new(gpu, target, draw_layout);
         let (nearest, no_dem) = (images.nearest(), images.placeholder());
@@ -765,8 +781,11 @@ impl Renderer {
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
         // 3D layers draw into RGBA8.
-        let extrusions =
-            extrusion::Extrusions::new(draw_layout, node_layout, TextureFormat::Rgba8Unorm);
+        let extrusions = extrusion::Extrusions::new(
+            draw_layout,
+            node_layout,
+            (TextureFormat::Rgba8Unorm, depth_format),
+        );
         // WebGPU aligns uniform offsets to at most 256 bytes: nodes lie
         // NODE_UNIFORM_SIZE apart, as the symbol shader's halves do.
         let alignment = gpu.caps().limits.min_uniform_buffer_offset_alignment;
@@ -784,8 +803,12 @@ impl Renderer {
         static RENDERERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Self {
             id: RENDERERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            host,
             target,
+            kept_target: None,
             map_depth: None,
+            map_samples: None,
+            depth_format,
             antialias_3d: false,
             gaps: Self::gaps_on(gpu.caps()),
             atmosphere,
@@ -872,7 +895,7 @@ impl Renderer {
 
     /// The format of the targets it draws into.
     pub fn format(&self) -> TargetFormat {
-        self.target.format()
+        self.host
     }
 
     /// Identifies the renderer among those of the process: a map holds
@@ -943,20 +966,37 @@ impl Renderer {
     }
 
     /// Draws 3D surfaces at four samples when `enabled`, or at one (the
-    /// default).
+    /// default): 3D layers in their passes, and on terrain, which draws in
+    /// the map's passes, those (as GL JS's `antialias` draws its whole
+    /// canvas).
     pub fn set_antialias_3d(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
+        if self.antialias_3d == enabled {
+            return;
+        }
         self.antialias_3d = enabled;
-        self.fit_samples_3d(gpu);
-    }
-
-    /// Draws 3D surfaces at the sample count they take: four where asked
-    /// ([`set_antialias_3d`](Self::set_antialias_3d)), but the map's
-    /// where its passes take their depth (`splits_at_3d`).
-    fn fit_samples_3d(&mut self, gpu: &mut dyn Gpu) {
-        let four = self.antialias_3d && !self.splits_at_3d();
-        if self.extrusions.set_antialias(four) {
+        // The map's passes where they split at 3D layers take their
+        // sample count: four with terrain, as these.
+        if self.extrusions.set_antialias(enabled) {
             self.set_stale = true;
             self.invalidate_bundle(gpu);
+        }
+        let terrain = self.terrain_target();
+        if let Some(t) = &mut self.terrain {
+            t.retarget(gpu, terrain);
+        }
+        self.fit_target(gpu);
+    }
+
+    /// What the map's passes draw into while they have their depth, which
+    /// the terrain draws in.
+    fn terrain_target(&self) -> Attachments {
+        Attachments {
+            depth: Some(self.depth_format),
+            sample_count: match self.antialias_3d {
+                true => 4,
+                false => self.host.sample_count,
+            },
+            ..self.host.into()
         }
     }
 
@@ -1392,7 +1432,7 @@ impl Renderer {
             }
         }
         if was != self.terrain_on() {
-            self.fit_depth(gpu);
+            self.fit_target(gpu);
             // Draped nodes draw into the drape, with its pipelines, and
             // in the full variants.
             self.set_stale = true;
@@ -1416,10 +1456,7 @@ impl Renderer {
     /// for ahead.
     fn terrain(&mut self, gpu: &mut dyn Gpu) -> &mut terrain::Terrain {
         // It draws in the map's passes while they have their depth.
-        let target = Attachments {
-            depth: true,
-            ..self.target
-        };
+        let target = self.terrain_target();
         let atmosphere = self.atmosphere.uniform;
         let linear = self.images.linear();
         (self.terrain).get_or_insert_with(|| terrain::Terrain::new(gpu, target, atmosphere, linear))
@@ -1433,41 +1470,63 @@ impl Renderer {
     /// between draws without its layers. Returns whether the terrain is
     /// reachable now: until it is, the map stays as it was.
     pub fn set_terrain_reachable(&mut self, gpu: &mut dyn Gpu, on: bool) -> bool {
-        let drew_flat = !self.target.depth && self.nodes.iter().any(|n| n.drawn);
+        let drew_flat = self.target.depth.is_none() && self.nodes.iter().any(|n| n.drawn);
         let on = on && (self.terrain_reachable || !drew_flat || self.terrain_ready_as(gpu, true));
         if self.terrain_reachable != on {
             self.terrain_reachable = on;
             self.set_stale = true;
         }
-        self.fit_depth(gpu);
+        self.fit_target(gpu);
         on
     }
 
+    /// What the map's passes draw into with terrain (`terrain`) or
+    /// without: the host's target, and with terrain its depth, at four
+    /// samples where antialiasing is on.
+    fn kind_target(&self, terrain: bool) -> Attachments {
+        match terrain {
+            true => self.terrain_target(),
+            false => self.host.into(),
+        }
+    }
+
     /// Gives the map's passes a depth attachment while the style has
-    /// terrain or terrain is on, for the terrain to draw in, or none:
-    /// every pipeline they draw with declares it, so the set and the
-    /// nodes ask for those of the new kind, made ahead where the terrain
-    /// waited for them.
-    fn fit_depth(&mut self, gpu: &mut dyn Gpu) {
-        let depth = self.terrain_reachable || self.terrain_on();
-        if self.target.depth == depth {
+    /// terrain or terrain is on, for the terrain to draw in, at four
+    /// samples where antialiasing is on, or none at the host's: every
+    /// pipeline they draw with declares them, so the set and the nodes
+    /// ask for those of the new kind, made ahead where the terrain waited
+    /// for them.
+    fn fit_target(&mut self, gpu: &mut dyn Gpu) {
+        let target = self.kind_target(self.terrain_reachable || self.terrain_on());
+        if self.target == target {
             return;
         }
-        self.swap_kind(depth);
+        self.swap_kind(gpu, target);
         self.map_depth.take().map(|(depth, _)| depth).release(gpu);
+        self.map_samples
+            .take()
+            .map(|(texture, ..)| texture)
+            .release(gpu);
         self.pipelines_stale = true;
         self.set_stale = true;
         self.invalidate_bundle(gpu);
         self.layers.clear(gpu);
     }
 
-    /// Draws into the map's passes with (`depth`) or without the
-    /// terrain's depth from now on: the pipelines for that kind, kept
-    /// since the passes last were of it, take the place of these, which
-    /// are kept in turn.
-    fn swap_kind(&mut self, depth: bool) {
-        self.target.depth = depth;
-        let target = self.target;
+    /// Draws into the map's passes as `target` from now on: the pipelines
+    /// for that kind, kept since the passes last were of it, take the
+    /// place of these, which are kept in turn; unless they were made for
+    /// other passes (the sample count changed since), which are let go.
+    fn swap_kind(&mut self, gpu: &mut dyn Gpu, target: Attachments) {
+        if self.kept_target != Some(target) {
+            let kept = std::mem::take(&mut self.paint_kept);
+            (kept.pipelines, kept.untested).release(gpu);
+            self.symbols.forget_kept(gpu);
+            self.images.forget_kept(gpu);
+            self.composites.forget_kept(gpu);
+            self.atmosphere.forget_kept(gpu);
+        }
+        self.kept_target = Some(std::mem::replace(&mut self.target, target));
         std::mem::swap(&mut self.paint, &mut self.paint_kept);
         self.symbols.swap_draws();
         self.images.retarget(target);
@@ -1485,10 +1544,11 @@ impl Renderer {
         // The renderer as it is once terrain is on, its DEM still to come,
         // or gone.
         let paint = self.terrain.as_mut().and_then(|t| t.paint.take());
-        let (reachable, full, depth) = (self.terrain_reachable, self.full, self.target.depth);
+        let (reachable, full, was) = (self.terrain_reachable, self.full, self.target);
         self.terrain_reachable = on;
-        if depth != on {
-            self.swap_kind(on);
+        let then = self.kind_target(on);
+        if then != was {
+            self.swap_kind(gpu, then);
         }
         self.assign_stacks_as(on);
         self.full = on;
@@ -1520,8 +1580,8 @@ impl Renderer {
             terrain.paint = Some(paint);
         }
         self.assign_stacks();
-        if depth != on {
-            self.swap_kind(depth);
+        if then != was {
+            self.swap_kind(gpu, was);
         }
         self.extrusions.set_full(self.variants()[1]);
         wanted.into_iter().all(|id| gpu.pipeline_ready(id))
@@ -2820,10 +2880,11 @@ impl Renderer {
             Pass::group(&mut passes, start, "3d layers");
         }
         let start = passes.len();
-        let depth = self.map_depth.filter(|_| self.target.depth);
+        let depth = self.map_depth.filter(|_| self.target.depth.is_some());
         passes.extend(self.layers.passes(depth.map(|(depth, _)| depth)));
         Pass::group(&mut passes, start, "layers apart");
-        stats.draws += self.main_passes(gpu, (target, clear), terrain_on, three_d, &mut passes);
+        let map = (target, clear, size);
+        stats.draws += self.main_passes(gpu, map, terrain_on, three_d, &mut passes);
         // What the frame wrote into data textures lands before it draws.
         #[cfg(cpu_driven)]
         self.scene.tables_mut().flush(gpu);
@@ -2929,7 +2990,6 @@ impl Renderer {
             .viewport
             .map(|v| (v * frame.pixel_ratio).max(1.0) as u32);
         let logical = frame.viewport.map(|v| v.max(1.0) as u32);
-        self.fit_samples_3d(gpu);
         // Every 3D and heatmap node has its targets from the first frame,
         // whether or not its layer draws yet, so that none is made for a
         // first use in a gesture: a frame makes them only for a new
@@ -2939,7 +2999,9 @@ impl Renderer {
         let extruded = self.nodes.iter().filter(|n| n.extrusion.is_some()).count();
         let shared = usize::from(extruded > 0 && terrain_on && self.splits_at_3d());
         let mut resized = self.extrusions.resize(gpu, size, extruded + shared);
-        if self.target.depth && self.map_depth.is_none_or(|(_, made)| made != size) {
+        if let Some(format) = self.target.depth
+            && self.map_depth.is_none_or(|(_, made)| made != size)
+        {
             self.map_depth.take().map(|(depth, _)| depth).release(gpu);
             let depth = gpu.create_texture(&TextureDesc {
                 label: "map depth",
@@ -2947,7 +3009,7 @@ impl Renderer {
                 height: size[1],
                 array_layers: 1,
                 dimension: TextureViewDimension::D2,
-                format: TextureFormat::Depth32Float,
+                format,
                 usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
                 sample_count: self.target.sample_count,
                 mip_levels: 1,
@@ -3060,7 +3122,9 @@ impl Renderer {
         }
         let runs = runs.into_iter().map(|(_, run)| run).collect();
         let format = self.target.format();
-        (self.layers).regroup(gpu, &mut self.composites, runs, (size, format));
+        // The map's passes split at its 3D layers, which share their depth.
+        let split = terrain_on && self.splits_at_3d();
+        (self.layers).regroup(gpu, &mut self.composites, runs, (size, format, split));
         // Until the composites compile, nothing draws: a split main
         // pass needs its blend draw.
         if !self.layers.ready(gpu, &self.composites) {
@@ -3071,7 +3135,7 @@ impl Renderer {
         let layers = RenderBundleDesc {
             label: "layers",
             color_formats: &[self.target.color],
-            depth_format: self.target.depth.then_some(TextureFormat::Depth32Float),
+            depth_format: self.target.depth,
             sample_count: self.target.sample_count,
         };
         for g in 0..self.layers.groups.len() {
@@ -3096,7 +3160,6 @@ impl Renderer {
                 &bound_once(group),
             ));
         }
-        let split = terrain_on && self.splits_at_3d();
         let mut steps = Vec::new();
         let mut bundles = Vec::new();
         let mut flush = |gpu: &mut dyn Gpu, commands: &mut Vec<RenderCommand>, beneath: bool| {
@@ -3328,7 +3391,7 @@ impl Renderer {
     fn main_passes(
         &mut self,
         gpu: &mut dyn Gpu,
-        (target, mut clear): (TextureId, [f64; 4]),
+        (target, mut clear, size): (TextureId, [f64; 4], [u32; 2]),
         terrain_on: bool,
         mut three_d: Vec<(usize, RenderPass)>,
         passes: &mut Vec<Pass>,
@@ -3336,11 +3399,12 @@ impl Renderer {
         let start = passes.len();
         let steps = std::mem::take(&mut self.steps);
         let split = steps.iter().any(|s| matches!(s, Step::ThreeD(_)));
+        let samples = self.map_samples(gpu, size, split);
         let depth = match split {
             true => self.extrusions.depth().map(|(depth, _)| depth),
             false => self.map_depth.map(|(depth, _)| depth),
         };
-        let depth = depth.filter(|_| self.target.depth);
+        let depth = depth.filter(|_| self.target.depth.is_some());
         let terrain_depth = (self.terrain.as_ref())
             .filter(|_| terrain_on)
             .map_or(Vec::new(), |t| t.depth_commands(terrain::MAP));
@@ -3380,20 +3444,31 @@ impl Renderer {
         // and the passes into it so far.
         let (mut canvas, mut into) = (0usize, 0);
         let mut first = true;
-        let mut pass = |this: &Self, commands: Vec<RenderCommand>, (canvas, into), last: bool| {
+        // A pass the next goes on from, after a 3D layer's (`keep`), stores
+        // its samples, and only the canvas's last resolves them.
+        let mut pass = |this: &Self, commands, (canvas, into), (last, keep): (bool, bool)| {
             let load = match into {
                 0 => LoadOp::Clear(if canvas == 0 { clear } else { [0.0; 4] }),
                 _ => LoadOp::Load,
             };
-            let color = if canvas == blends {
-                ColorAttachment {
+            let color = match samples {
+                _ if canvas < blends => this.layers.canvas(canvas).attachment_kept(0, load, keep),
+                Some(samples) => ColorAttachment {
+                    target: samples,
+                    resolve: (!keep).then_some(target),
+                    store: if keep {
+                        StoreOp::Store
+                    } else {
+                        StoreOp::Discard
+                    },
+                    load,
+                },
+                None => ColorAttachment {
                     store: StoreOp::Store,
                     target,
                     resolve: None,
                     load,
-                }
-            } else {
-                this.layers.canvas(canvas).attachment(0, load)
+                },
             };
             let depth = depth.map(|target| DepthAttachment {
                 target,
@@ -3435,7 +3510,7 @@ impl Renderer {
                 }
                 Step::Blend(group) => {
                     let done = std::mem::take(&mut commands);
-                    passes.push(pass(self, done, (canvas, into), false));
+                    passes.push(pass(self, done, (canvas, into), (false, false)));
                     (canvas, into) = (canvas + 1, 0);
                     // The blend draw covers every pixel.
                     if !split {
@@ -3446,7 +3521,7 @@ impl Renderer {
                 }
                 Step::ThreeD(node) => {
                     let done = std::mem::take(&mut commands);
-                    passes.push(pass(self, done, (canvas, into), false));
+                    passes.push(pass(self, done, (canvas, into), (false, true)));
                     into += 1;
                     if let Some(at) = three_d.iter().position(|(n, _)| *n == node) {
                         passes.push(Pass::Render(three_d.swap_remove(at).1));
@@ -3455,10 +3530,45 @@ impl Renderer {
             }
         }
         commands.extend(self.atmosphere.commands_after(gpu));
-        passes.push(pass(self, commands, (canvas, into), true));
+        passes.push(pass(self, commands, (canvas, into), (true, false)));
         self.steps = steps;
         Pass::group(passes, start, "main");
         draws + predraws
+    }
+
+    /// The multisampled colour the map's last canvas draws into at
+    /// `size`, where the map's passes take more samples than the host's
+    /// target, its samples kept between passes where they `split` at 3D
+    /// layers: made unless it is.
+    fn map_samples(&mut self, gpu: &mut dyn Gpu, size: [u32; 2], split: bool) -> Option<TextureId> {
+        if self.target.sample_count == self.host.sample_count {
+            return None;
+        }
+        if let Some((texture, made, kept)) = self.map_samples
+            && (made, kept) == (size, split)
+        {
+            return Some(texture);
+        }
+        self.map_samples
+            .take()
+            .map(|(texture, ..)| texture)
+            .release(gpu);
+        let texture = gpu.create_texture(&TextureDesc {
+            label: "map samples",
+            width: size[0],
+            height: size[1],
+            array_layers: 1,
+            dimension: TextureViewDimension::D2,
+            format: self.target.color,
+            usage: match split {
+                true => TextureUsages::RENDER_ATTACHMENT,
+                false => TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
+            },
+            sample_count: self.target.sample_count,
+            mip_levels: 1,
+        });
+        self.map_samples = Some((texture, size, split));
+        Some(texture)
     }
 
     /// What a bundle record finds compiled besides the nodes' own

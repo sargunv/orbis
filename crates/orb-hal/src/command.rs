@@ -90,6 +90,8 @@ pub struct ColorAttachment {
     pub load: LoadOp<[f64; 4]>,
 }
 
+/// A depth attachment; one whose format has a stencil loads or clears
+/// it (to 0) and stores it as it does the depth.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DepthAttachment {
     pub target: TextureId,
@@ -157,4 +159,8 @@ pub enum RenderCommand {
     /// largest 2D texture side at most), and is no larger than that side.
     /// Only valid in a pass, not inside a bundle.
     SetViewport([f32; 4]),
+    /// The stencil value the draws after it compare with and set
+    /// ([`DepthState::once`](crate::DepthState::once)); 0 at a pass's
+    /// start. Only valid in a pass, not inside a bundle.
+    SetStencilReference(u32),
 }

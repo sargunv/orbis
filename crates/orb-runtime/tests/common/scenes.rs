@@ -1,7 +1,8 @@
 //! Offline scenes of the Tokyo extract that between them draw every
 //! family and pass: Liberty's layers flat and pitched, the globe, terrain
 //! with its drape and a hillshade, buildings on it, a heatmap, raster
-//! imagery, and 3D buildings, single-sampled and multisampled.
+//! imagery, and 3D buildings, single-sampled and multisampled, on the
+//! ground and on terrain.
 
 use serde_json::{Value, json};
 
@@ -96,7 +97,7 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
                 url: url(),
                 at,
                 edit,
-                antialias: name == "extrusions-lit",
+                antialias: matches!(name, "extrusions-lit" | "terrain-buildings-antialiased"),
                 dir: dir.clone(),
             });
         }
@@ -155,6 +156,14 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
         format!("file://{}", path.display())
     };
     add("terrain-buildings", &buildings, (16.0, -20.0, 60.0), None);
+    // Those multisampled: the map's passes then take four samples, kept
+    // between the passes split at the buildings.
+    add(
+        "terrain-buildings-antialiased",
+        &buildings,
+        (16.0, -20.0, 60.0),
+        None,
+    );
     // A heatmap of the points of interest, and circles.
     let heatmap = || {
         style(&dir, "heatmap", |s| {
@@ -212,6 +221,7 @@ pub(crate) const ALL: &[&str] = &[
     "terrain",
     "terrain-drape",
     "terrain-buildings",
+    "terrain-buildings-antialiased",
     "heatmap",
     "raster",
     "extrusions",

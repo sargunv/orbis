@@ -330,6 +330,8 @@ pub struct Caps {
     /// GL back end remaps it into GL's −1 to 1 (`2z − w`), which spends
     /// reversed Z's precision far from the camera.
     pub zero_to_one_depth: bool,
+    /// Depth as 32-bit floats beside a stencil (`depth32float-stencil8`).
+    pub depth32_stencil8: bool,
     /// The device compiles pipelines on the thread that runs its commands
     /// (Firefox's WebGPU, in its GPU process), so a present waits behind
     /// every compile asked for before it, and the page's frames behind

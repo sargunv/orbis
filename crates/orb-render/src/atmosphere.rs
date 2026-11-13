@@ -118,6 +118,13 @@ impl Atmosphere {
     /// Draws into the map's passes with or without their depth from now
     /// on: its pipelines for the other kind, kept since it last drew into
     /// those, take the place of these, which are kept in turn.
+    /// Lets the pipelines kept for the other kind of pass go: they were
+    /// made for passes the map's no longer are.
+    pub(crate) fn forget_kept(&mut self, gpu: &mut dyn Gpu) {
+        use crate::release::Release;
+        std::mem::take(&mut self.kept).release(gpu);
+    }
+
     pub(crate) fn swap_target(&mut self) {
         let current = [self.sky, self.scatter];
         [self.sky, self.scatter] = std::mem::replace(&mut self.kept, current);

@@ -5,7 +5,7 @@
 use crate::TargetFormat;
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use crate::paint::ExtrusionShape;
-use crate::pipeline::{DEPTH, Draw};
+use crate::pipeline::{Draw, depth_test};
 use crate::release::Release;
 use crate::scene::SceneBuffers;
 use orb_hal::*;
@@ -41,6 +41,8 @@ pub(crate) struct Extrusions {
     pub(crate) samples: u32,
     /// The targets' format: the map's.
     format: TextureFormat,
+    /// The depth's format ([`depth_format`](crate::pipeline::depth_format)).
+    depth_format: TextureFormat,
     depth: Option<TextureId>,
     size: [u32; 2],
     single_layer: bool,
@@ -89,7 +91,7 @@ impl Extrusions {
     pub(crate) fn new(
         scene: BindGroupLayoutId,
         node: BindGroupLayoutId,
-        format: TextureFormat,
+        (format, depth_format): (TextureFormat, TextureFormat),
     ) -> Self {
         Self {
             pipelines: Vec::new(),
@@ -100,6 +102,7 @@ impl Extrusions {
             layouts: [scene, node],
             samples: 1,
             format,
+            depth_format,
             depth: None,
             size: [0; 2],
             single_layer: false,
@@ -221,7 +224,7 @@ impl Extrusions {
             vertex,
             fragment,
             constants: [&vertex_constants, &fragment_constants],
-            depth: DEPTH,
+            depth: depth_test(self.depth_format),
             cull_back: true,
             plane: !self.full,
             state: !shape.stateless,
@@ -295,7 +298,7 @@ impl Extrusions {
             height: size[1],
             array_layers: 1,
             dimension: TextureViewDimension::D2,
-            format: TextureFormat::Depth32Float,
+            format: self.depth_format,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | if count == 1 {
                     TextureUsages::TRANSIENT_ATTACHMENT
@@ -368,7 +371,7 @@ impl Extrusions {
                 &RenderBundleDesc {
                     label: "3d layer",
                     color_formats: &[self.format],
-                    depth_format: Some(TextureFormat::Depth32Float),
+                    depth_format: Some(self.depth_format),
                     sample_count: self.samples,
                 },
                 &commands,

@@ -409,7 +409,23 @@ impl RenderJob {
                     } else {
                         wgpu::CompareFunction::Always
                     }),
-                    stencil: Default::default(),
+                    stencil: match d.once {
+                        true => {
+                            let face = wgpu::StencilFaceState {
+                                compare: wgpu::CompareFunction::NotEqual,
+                                fail_op: wgpu::StencilOperation::Keep,
+                                depth_fail_op: wgpu::StencilOperation::Keep,
+                                pass_op: wgpu::StencilOperation::Replace,
+                            };
+                            wgpu::StencilState {
+                                front: face,
+                                back: face,
+                                read_mask: 0xff,
+                                write_mask: 0xff,
+                            }
+                        }
+                        false => Default::default(),
+                    },
                     bias: Default::default(),
                 }),
                 multisample: wgpu::MultisampleState {
@@ -1306,22 +1322,27 @@ mod webgpu {
             ("multisample", dict(&[("count", job.sample_count.into())])),
         ];
         if let Some(depth) = job.depth {
-            fields.push((
-                "depthStencil",
-                dict(&[
-                    ("format", format(depth.format).into()),
-                    ("depthWriteEnabled", depth.write.into()),
-                    (
-                        "depthCompare",
-                        if depth.test {
-                            "greater-equal"
-                        } else {
-                            "always"
-                        }
-                        .into(),
-                    ),
-                ]),
-            ));
+            let mut state = vec![
+                ("format", format(depth.format).into()),
+                ("depthWriteEnabled", depth.write.into()),
+                (
+                    "depthCompare",
+                    if depth.test {
+                        "greater-equal"
+                    } else {
+                        "always"
+                    }
+                    .into(),
+                ),
+            ];
+            if depth.once {
+                let face = dict(&[
+                    ("compare", "not-equal".into()),
+                    ("passOp", "replace".into()),
+                ]);
+                state.extend([("stencilFront", face.clone()), ("stencilBack", face)]);
+            }
+            fields.push(("depthStencil", dict(&state)));
         }
         dict(&fields)
     }
@@ -1336,6 +1357,8 @@ mod webgpu {
             TextureFormat::R32Uint => "r32uint",
             TextureFormat::Rgba32Uint => "rgba32uint",
             TextureFormat::Depth32Float => "depth32float",
+            TextureFormat::Depth32FloatStencil8 => "depth32float-stencil8",
+            TextureFormat::Depth24PlusStencil8 => "depth24plus-stencil8",
         }
     }
 

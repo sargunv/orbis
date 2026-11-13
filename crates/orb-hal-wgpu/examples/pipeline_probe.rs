@@ -136,7 +136,7 @@ mod native {
             vs: Stage,
             fs: Stage,
             targets: Vec<(wgpu::TextureFormat, Option<wgpu::BlendState>)>,
-            depth: Option<(wgpu::TextureFormat, bool, bool)>,
+            depth: Option<(wgpu::TextureFormat, bool, bool, bool)>,
             topology: wgpu::PrimitiveTopology,
             cull: bool,
             samples: u32,
@@ -163,9 +163,10 @@ mod native {
                         .collect(),
                     depth: (f[9] != "-").then(|| {
                         let mut d = f[9].split(':');
-                        let format = d.next().expect("format:write:test");
+                        let format = d.next().expect("format:write:test:once");
                         let [write, test] = [d.next(), d.next()].map(|b| b != Some("false"));
-                        (texture_format(format), write, test)
+                        let once = d.next() == Some("true");
+                        (texture_format(format), write, test, once)
                     }),
                     topology: match f[10] {
                         "LineList" => wgpu::PrimitiveTopology::LineList,
@@ -543,16 +544,34 @@ mod native {
                         topology: *topology,
                         ..Default::default()
                     },
-                    depth_stencil: depth.map(|(format, write, test)| wgpu::DepthStencilState {
-                        format,
-                        depth_write_enabled: Some(write),
-                        depth_compare: Some(if test {
-                            wgpu::CompareFunction::GreaterEqual
-                        } else {
-                            wgpu::CompareFunction::Always
-                        }),
-                        stencil: Default::default(),
-                        bias: Default::default(),
+                    depth_stencil: depth.map(|(format, write, test, once)| {
+                        wgpu::DepthStencilState {
+                            format,
+                            depth_write_enabled: Some(write),
+                            depth_compare: Some(if test {
+                                wgpu::CompareFunction::GreaterEqual
+                            } else {
+                                wgpu::CompareFunction::Always
+                            }),
+                            stencil: match once {
+                                true => {
+                                    let face = wgpu::StencilFaceState {
+                                        compare: wgpu::CompareFunction::NotEqual,
+                                        fail_op: wgpu::StencilOperation::Keep,
+                                        depth_fail_op: wgpu::StencilOperation::Keep,
+                                        pass_op: wgpu::StencilOperation::Replace,
+                                    };
+                                    wgpu::StencilState {
+                                        front: face,
+                                        back: face,
+                                        read_mask: 0xff,
+                                        write_mask: 0xff,
+                                    }
+                                }
+                                false => Default::default(),
+                            },
+                            bias: Default::default(),
+                        }
                     }),
                     multisample: wgpu::MultisampleState {
                         count: *samples,
