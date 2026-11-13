@@ -149,6 +149,9 @@ const STABLE_MS = 30_000;
 const BACKOFF_MS = [0, 250, 1000];
 /** How long a map that hasn't been idle waits to fetch its API module. */
 const API_AT_MOST = 5000;
+/** How long a feature module that failed to load waits to be asked for
+ * again. */
+const MODULE_RETRY = 2000;
 
 /** The calls that run the API's module (queries, edits, the style's
  * document, images, snapshots), which waits for it if it isn't in yet. */
@@ -210,6 +213,8 @@ export class Engine {
   #frameClock: number | undefined;
   /** The feature modules asked for (builds.ts). */
   #asked = new Set<ModuleName>();
+  /** Those whose last load failed, reported once until one loads. */
+  #failed = new Set<ModuleName>();
   /** Calls waiting for the API's module, in order: later calls wait
    * behind them, so the map takes calls in the order they came. */
   #waiting: Promise<unknown> | undefined;
@@ -303,10 +308,10 @@ export class Engine {
    * map which it has; a module that fails to load is an `error`. */
   #want(names: readonly string[]): Promise<void> {
     const loads = names.filter(isModuleName).map((name) => {
-      const first = !this.#asked.has(name);
       this.#asked.add(name);
       return this.#host.loadModules([name]).then(
         () => {
+          this.#failed.delete(name);
           if (this.#removed) return;
           const loaded = this.#host.modules();
           let bits = 0;
@@ -316,9 +321,16 @@ export class Engine {
           this.#core.setModules(bits);
         },
         (e) => {
-          // Asked for again by the next frame that wants it.
-          this.#asked.delete(name);
-          if (first) this.#fail(`core-${name}.wasm didn't load: ${e}`);
+          // Asked for again by the frame after a while, if it still
+          // wants it, not by every frame; the first failure of a run is
+          // the error.
+          setTimeout(() => {
+            this.#asked.delete(name);
+            if (!this.#removed) this.#request();
+          }, MODULE_RETRY);
+          if (!this.#failed.has(name))
+            this.#fail(`core-${name}.wasm didn't load: ${e}`);
+          this.#failed.add(name);
           throw e;
         },
       );
