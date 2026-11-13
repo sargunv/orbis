@@ -652,17 +652,22 @@ impl WgpuGpu {
     /// Issues the held texture writes, wave by wave, each wave before the
     /// last its own submission (see `texture_writes`): natively staged,
     /// each in its wave, and on the web to the queue. GL orders its
-    /// texture uploads as they come, so there the waves share one: each
-    /// submission is a flush, which ANGLE's Metal back end commits as a
-    /// command buffer of its own (#140).
+    /// texture uploads as they come, so there the waves share one, in
+    /// order, natively as on the web: each submission is a flush, which
+    /// ANGLE's Metal back end commits as a command buffer of its own
+    /// (#140), and the CPU frame driver's data tables write a texture's
+    /// layer many times a frame.
     fn issue_texture_writes(&self) {
         let mut held = self.texture_writes.lock().expect("texture writes poisoned");
         let wave = std::cell::Cell::new(0);
         held.issue(
             |write, texels| self.issue_texture_write(write, texels, wave.get()),
             || {
+                if self.gl {
+                    return;
+                }
                 wave.set(wave.get() + 1);
-                if cfg!(target_arch = "wasm32") && !self.gl {
+                if cfg!(target_arch = "wasm32") {
                     self.queue.submit([]);
                     self.count(|c| c.texture_write_submissions += 1);
                 }

@@ -14,9 +14,10 @@
 //! submission, as Metal orders a resource's uses across command buffers,
 //! and the later texels still win. Atlases, which add many small bitmaps
 //! a frame, upload one dirty rectangle per layer a frame (orb-render's
-//! `scene::texels`), so their writes never wait for a wave. The first
-//! write into a level and layer is issued at once, its texels not copied
-//! or held.
+//! `scene::texels`), so their writes never wait for a wave. GL runs its
+//! copies in order and has no such race, so there the waves share one
+//! submission. The first write into a level and layer is issued at once,
+//! its texels not copied or held.
 
 use orb_hal::{TextureId, TextureRegion};
 
