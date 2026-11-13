@@ -97,7 +97,7 @@ cargo xtask <task>
   demo-data    reproduce the committed Tokyo MVT/MLT PMTiles extracts, then
                add Liberty's labels, sprite and glyph subsets to their styles
   unicode      regenerate orb-text's character tables from the UCD
-  fuzz <style|mvt|mlt|glyphs|geojson|dem|packed|sqlite> [--seconds n]  run one of
+  fuzz <style|mvt|mlt|glyphs|font|geojson|dem|packed|sqlite> [--seconds n]  run one of
                orb-fuzz's targets under cargo-fuzz (default 600 s), seeded
                from the fixture mirrors; its corpus and any input that
                panics are kept in target/fuzz
@@ -324,11 +324,7 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
         windows_clippy()?;
     }
     cargo(&test)?;
-    cpu_driver_tests(
-        selection.contains("orb-render"),
-        selection.contains("orb-runtime"),
-        selection.contains("orb-api"),
-    )?;
+    cpu_driver_tests(selection)?;
     if selection.contains("orb-ffi") {
         mln_ffi::check_declarations()?;
     }
@@ -337,26 +333,23 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
 
 /// The renderer's tests, `orb-runtime`'s frame tests and `orb-api`'s path
 /// tests again on the CPU frame driver with its tables in data textures,
-/// WebGL 2's path (#140), run natively (`ORB_DRIVER=cpu-tex`).
-/// `orb-runtime`'s `drivers` test holds the CPU driver to the GPU's word
-/// for word in every run.
-fn cpu_driver_tests(render: bool, frames: bool, path: bool) -> Result<(), String> {
+/// WebGL 2's path (#140), run natively (`ORB_DRIVER=cpu-tex`), for the
+/// selected packages among them. `orb-runtime`'s `drivers` test holds the
+/// CPU driver to the GPU's word for word in every run.
+fn cpu_driver_tests(selection: &affected::Selection) -> Result<(), String> {
     // One run each: `--test` would narrow orb-render's too.
-    let runs: [(bool, &[&str]); 3] = [
-        (render, &["test", "--quiet", "-p", "orb-render"]),
-        (
-            frames,
-            &["test", "--quiet", "-p", "orb-runtime", "--test", "frames"],
-        ),
-        (
-            path,
-            &["test", "--quiet", "-p", "orb-api", "--test", "path"],
-        ),
+    let runs: [(&str, &[&str]); 3] = [
+        ("orb-render", &[]),
+        ("orb-runtime", &["--test", "frames"]),
+        ("orb-api", &["--test", "path"]),
     ];
-    for (_, args) in runs.into_iter().filter(|(run, _)| *run) {
-        run(Command::new(env!("CARGO"))
-            .args(args)
-            .env("ORB_DRIVER", "cpu-tex"))?;
+    for (package, tests) in runs {
+        if selection.contains(package) {
+            run(Command::new(env!("CARGO"))
+                .args(["test", "--quiet", "-p", package])
+                .args(tests)
+                .env("ORB_DRIVER", "cpu-tex"))?;
+        }
     }
     Ok(())
 }

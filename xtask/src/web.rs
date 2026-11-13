@@ -53,12 +53,11 @@ const CRATES: &[&str] = &[
     "std",
 ];
 
-/// Builds the modules; `names` also writes `core.wasm` whole with its
-/// function names to [`NAMED_CORE`], for `pnpm -C web coverage`.
 /// How `cargo xtask web` builds.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Options {
-    /// `--names`: also core.wasm whole with its function names.
+    /// `--names`: also core.wasm whole with its function names, to
+    /// [`NAMED_CORE`], for `pnpm -C web coverage`.
     pub(crate) names: bool,
     /// `--panics`: panics say why on the console.
     pub(crate) panics: bool,
@@ -68,7 +67,7 @@ pub(crate) struct Options {
 
 pub(crate) fn build(options: Options) -> Result<(), String> {
     let Options { names, panics, gl } = options;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = crate::root();
     let out = root.join(OUT_DIR);
     if gl {
         return build_gl(&root, panics);
@@ -150,9 +149,8 @@ fn report_modules(build: &str, modules: &[Feature]) {
 
 pub(crate) fn pages() -> Result<(), String> {
     build(Options::default())?;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     run(Command::new("pnpm")
-        .current_dir(root.join("web"))
+        .current_dir(crate::root().join("web"))
         .arg("build"))
 }
 

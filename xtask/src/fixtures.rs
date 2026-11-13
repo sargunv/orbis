@@ -33,8 +33,7 @@ const GLYPHS: &str = "glyphs/";
 pub(crate) const SOURCE_MD: &str = "SOURCE.md";
 
 fn fixtures_dir() -> PathBuf {
-    let xtask = Path::new(env!("CARGO_MANIFEST_DIR"));
-    xtask.parent().expect("the workspace root").join("fixtures")
+    crate::root().join("fixtures")
 }
 
 /// Fetches the mirror into `fixtures/gl-js/` unless the one there matches the

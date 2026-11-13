@@ -185,7 +185,7 @@ const GPU_ONLY_FILES: &[(&str, Allows, &str)] = &[
 /// [`GPU_ONLY`] API outside what [`GPU_ONLY_FILES`] allows, in every
 /// crate's sources but the HALs'.
 fn gpu_only_uses() -> Result<Vec<String>, String> {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates");
+    let crates = crate::root().join("crates");
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     for entry in std::fs::read_dir(&crates).map_err(|e| format!("{}: {e}", crates.display()))? {
@@ -289,7 +289,7 @@ pub(crate) fn check() -> Result<(), String> {
         }
     }
 
-    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/orb-runtime/src");
+    let runtime = crate::root().join("crates/orb-runtime/src");
     for module in JOB_MODULES {
         let path = runtime.join(format!("{module}.rs"));
         let source =

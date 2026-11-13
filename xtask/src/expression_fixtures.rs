@@ -1,7 +1,6 @@
 //! The complete style-spec expression bundle, independent of render fixtures.
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::Path;
 
 use flate2::read::GzDecoder;
 use tar::Archive;
@@ -46,7 +45,7 @@ pub(crate) fn bundle() -> Result<(), String> {
             tests.len()
         ));
     }
-    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/orb-expr/tests/data");
+    let out = crate::root().join("crates/orb-expr/tests/data");
     let mut json = serde_json::to_string_pretty(&tests).map_err(|e| e.to_string())?;
     json.push('\n');
     std::fs::write(out.join("expression-fixtures.json"), json).map_err(|e| e.to_string())?;

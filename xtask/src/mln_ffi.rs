@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::fixtures::{SOURCE_MD, entry_path, get, hex, install, open, unwrap_root};
+use crate::root;
 
 /// The upstream repository and the commit Orbis implements.
 const REPO: &str = "https://github.com/maplibre/maplibre-native-ffi";
@@ -117,13 +118,6 @@ const RUN_TIMEOUT_SECS: u32 = 600;
 
 /// GPU processes at once: each runtime the suite makes opens a device.
 const PARALLEL_RUNS: usize = 2;
-
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the workspace root")
-        .to_path_buf()
-}
 
 fn mirror_dir() -> PathBuf {
     root().join("fixtures/mln-ffi")

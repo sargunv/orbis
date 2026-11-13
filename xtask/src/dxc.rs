@@ -45,10 +45,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     }
     // Not canonicalized: Windows's canonical `\\?\D:\…` paths are lost on
     // tar.
-    let target = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("dxc: xtask sits in the repository")?
-        .join("target");
+    let target = crate::root().join("target");
     let cache = target.join("dxc").join(VERSION);
     std::fs::create_dir_all(&cache).map_err(|e| format!("{}: {e}", cache.display()))?;
     let zip = cache.join(ZIP);

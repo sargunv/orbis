@@ -48,10 +48,8 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         .checked_sub(window)
         .unwrap_or(SystemTime::UNIX_EPOCH);
     let target = target.unwrap_or_else(|| {
-        std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-            || Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"),
-            PathBuf::from,
-        )
+        std::env::var_os("CARGO_TARGET_DIR")
+            .map_or_else(|| crate::root().join("target"), PathBuf::from)
     });
     let target =
         fs::canonicalize(&target).map_err(|e| format!("sweep: {}: {e}", target.display()))?;
