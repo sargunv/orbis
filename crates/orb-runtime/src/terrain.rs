@@ -723,16 +723,16 @@ impl Terrain {
     /// of a tile whose slots' side in `view` did ([`slot_shrink`]).
     ///
     /// What a frame redraws is bounded by `budget`'s texels and sheets
-    /// (unbounded for none),
-    /// so that it follows the screen, not how fast the zoom crosses the
-    /// drape's steps or how many tiles a cover splits. Blank tiles go
-    /// first: a tile the cover split shows its part of its ancestor's
-    /// slot, retired, until drawn; one with no such ancestor (new ground,
-    /// or a merge) is drawn whatever the budget. Then stale ones, the
-    /// longest stale first, each drawn as it was until a frame redraws
-    /// it. Of those alike, the ones that show largest go first, then those
-    /// nearest the view's centre, of the slots of the budget's sheets. Each tile takes the slot of its place in
-    /// the cover, so that the cover's tiles fill the first sheets, as a
+    /// (unbounded for none), so that it follows the screen, not how fast
+    /// the zoom crosses the drape's steps or how many tiles a cover
+    /// splits. Blank tiles go first: a tile the cover split shows its part
+    /// of its ancestor's slot, retired, until drawn; one with no such
+    /// ancestor (new ground, or a merge) is drawn whatever the budget.
+    /// Then stale ones, the longest stale first, each drawn as it was
+    /// until a frame redraws it. Of those alike, the ones that show
+    /// largest go first, then those nearest the view's centre, of the
+    /// slots of the budget's sheets. Each tile takes the slot of its place
+    /// in the cover, so that the cover's tiles fill the first sheets, as a
     /// fresh map's do, and the sheets past them come free. A move is a
     /// redraw, within the budget, into a place left free. Once none is
     /// blank, stale or out of place, each slot holds what a fresh map's
