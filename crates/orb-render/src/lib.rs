@@ -495,10 +495,11 @@ pub struct Renderer {
     /// Nodes the main bundle left out, waiting for a pipeline.
     waiting: u32,
     /// Whether a drape bundle has left out a draped node waiting for a
-    /// pipeline since every slot was last redrawn. A slot keeps lacking
-    /// the node whatever later recordings leave out (one whose slots the
-    /// node has no candidates in leaves out nothing), so the pipeline's
-    /// arrival redraws every slot.
+    /// pipeline, or drawn a split node's untested placements in its tested
+    /// pipeline, since every slot was last redrawn. A slot keeps lacking
+    /// the node, or what it drew, whatever later recordings leave out (one
+    /// whose slots the node has no candidates in leaves out nothing), so
+    /// the pipeline's arrival redraws every slot.
     drape_waiting: bool,
     /// Whether a bundle drew a split node's untested placements in its
     /// tested pipeline for want of the untested one, which arriving
@@ -2820,7 +2821,8 @@ impl Renderer {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
             let drape_waiting = std::mem::take(&mut self.drape_waiting);
-            if self.waiting > 0 || drape_waiting || self.fell_back.take() {
+            let fell_back = self.fell_back.take();
+            if self.waiting > 0 || drape_waiting || fell_back {
                 self.invalidate_bundle(gpu);
             }
             if drape_waiting && let Some(terrain) = self.terrain.as_mut() {
@@ -3548,9 +3550,16 @@ impl Renderer {
                 });
             groups.extend(second);
             let node_groups = (&scenes[..], (group, second), false);
-            if !self.node_commands(gpu, ready, i, node_groups, &mut commands) {
+            let fell_back = self.fell_back.replace(false);
+            let recorded = self.node_commands(gpu, ready, i, node_groups, &mut commands);
+            // A slot keeps what it drew: one drawn in the tested pipeline
+            // for want of the untested one (which lines draw otherwise, by
+            // rounding) is redrawn once it arrives, as for a pipeline a
+            // node waited for, so it draws alike whenever that compiled.
+            if !recorded || self.fell_back.get() {
                 self.drape_waiting = true;
             }
+            self.fell_back.set(fell_back || self.fell_back.get());
         }
         let bundle = gpu.create_render_bundle(
             &RenderBundleDesc {
