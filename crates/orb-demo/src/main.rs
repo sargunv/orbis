@@ -5,15 +5,12 @@
 //! keyboard; a click prints the features under it.
 //!
 //! `cargo run --release -p orb-demo -- [scene key or style URL]
-//! [--at lon,lat,zoom[,bearing,pitch]] [--flight] [--cache dir]
-//! [--count-frames seconds]`
+//! [--at lon,lat,zoom[,bearing,pitch]] [--flight] [--cache dir]`
 //!
 //! Without a scene it opens the Globe. `--flight` flies the scene's
 //! looping flight, if it has one, until the user takes the camera.
 //! `--cache <dir>` keeps state there between runs: the HTTP cache and the
-//! driver's pipelines. `--count-frames <seconds>` prints how many frames
-//! the window drew in that long after the map first went idle, then exits.
-//! Still pictures are `orbis render` (`orb-cli`).
+//! driver's pipelines. Still pictures are `orbis render` (`orb-cli`).
 
 #![forbid(unsafe_code)]
 
@@ -35,7 +32,6 @@ struct Options {
     scene: Option<String>,
     at: Option<Camera>,
     flight: bool,
-    count_frames: Option<f64>,
     cache: Option<String>,
 }
 
@@ -44,7 +40,6 @@ fn options() -> Result<Options, String> {
         scene: None,
         at: None,
         flight: false,
-        count_frames: None,
         cache: None,
     };
     let mut args = std::env::args().skip(1);
@@ -67,14 +62,6 @@ fn options() -> Result<Options, String> {
                     bearing,
                     pitch,
                 });
-            }
-            "--count-frames" => {
-                let seconds = value()?;
-                options.count_frames = Some(
-                    seconds
-                        .parse()
-                        .map_err(|e| format!("--count-frames: {e}"))?,
-                );
             }
             "--flight" => options.flight = true,
             "--cache" => options.cache = Some(value()?),
@@ -107,7 +94,6 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         scene,
         camera: options.at.map(|at| at.state()),
         flight: options.flight,
-        count_frames: options.count_frames,
     };
     host::run(runtime, launch)
 }

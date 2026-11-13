@@ -4,7 +4,7 @@
 //! device.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use egui::{
     Align2, Color32, CornerRadius, CursorIcon, Frame, Id, Margin, Order, Pos2, Rect, Response,
@@ -27,9 +27,6 @@ pub(crate) struct Launch {
     pub(crate) camera: Option<orb_api::CameraState>,
     /// Fly the scene's looping flight until the user takes the camera.
     pub(crate) flight: bool,
-    /// Count the frames drawn this many seconds after the map first goes
-    /// idle, print them and exit: idle means zero frames.
-    pub(crate) count_frames: Option<f64>,
 }
 
 pub(crate) struct Demo {
@@ -55,12 +52,9 @@ pub(crate) struct Demo {
     input: InputState,
     flight: Option<Flight>,
     fly: bool,
-    frames: u32,
     /// Whether the map stopped drawing (the runtime stopped replacing lost
     /// GPUs, say), once it has.
     stopped: bool,
-    idle_at: Option<(Instant, u32)>,
-    count_frames: Option<f64>,
     /// The page colour the map draws on, once set.
     page: Option<Color32>,
     /// The Earthquake's ground, while it shows.
@@ -127,10 +121,7 @@ impl Demo {
             input: InputState::default(),
             flight: None,
             fly: launch.flight,
-            frames: 0,
             stopped: false,
-            idle_at: None,
-            count_frames: launch.count_frames,
             page: None,
             quake: None,
             repaint: std::sync::Arc::new(move || repaint.request_repaint()),
@@ -559,13 +550,7 @@ impl Demo {
                 }
             }
             match self.map.render(&mut self.target, now) {
-                Ok(Some(report)) => {
-                    self.frames += 1;
-                    if report.idle && self.idle_at.is_none() {
-                        self.idle_at = Some((Instant::now(), self.frames));
-                    }
-                }
-                Ok(None) => {}
+                Ok(_) => {}
                 // A new GPU: the texture goes with the old one.
                 Err(Error::TargetLost(_)) => {
                     self.target =
@@ -599,23 +584,6 @@ impl Demo {
             None => renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
         };
         self.texture = Some((id, texture));
-    }
-
-    fn count_frames(&self, ctx: &egui::Context) {
-        let (Some(seconds), Some((idle, at))) = (self.count_frames, self.idle_at) else {
-            return;
-        };
-        let deadline = idle + Duration::from_secs_f64(seconds);
-        let now = Instant::now();
-        if now >= deadline {
-            println!(
-                "orb-demo: idle after {at} frames; {} frames in the {seconds} s since",
-                self.frames - at
-            );
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else {
-            ctx.request_repaint_after(deadline - now);
-        }
     }
 }
 
@@ -676,7 +644,6 @@ impl Demo {
         if self.map.needs_frame() || self.flight.is_some() {
             ctx.request_repaint();
         }
-        self.count_frames(&ctx);
     }
 }
 
