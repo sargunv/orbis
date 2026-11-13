@@ -131,8 +131,7 @@ impl TileView {
 
 /// Web Mercator, which the sphere's tiles are on.
 fn mercator() -> &'static orb_crs::Projection {
-    static MERCATOR: std::sync::OnceLock<orb_crs::Projection> = std::sync::OnceLock::new();
-    MERCATOR.get_or_init(|| *orb_crs::TileMatrixSet::web_mercator().projection())
+    orb_crs::TileMatrixSet::web_mercator().projection()
 }
 
 /// Whether the sphere stands between `eye` and `p` (ECEF). A point in
