@@ -11,8 +11,8 @@
 // by side. Slope stacks are on a page of their own, at `slope_px` texels a
 // side, likewise. A
 // terrain layer draws a stack's slots, two stacks' where the zoom splits
-// it, or two around a hillshade it shades between them from its slopes
-// (`terrain_shade.wgsl`).
+// it, or a stack's below hillshades it shades from their slopes, each
+// under its stack above it (`terrain_shade.wgsl`).
 // A tile's slots are the top-left square of their place, its `shrink`
 // halving their page's side, which a tile that shows small draws few texels
 // of. Mip levels never mix slots, and samples keep to the slot at the level
@@ -66,23 +66,30 @@ struct Terrain {
     slope_px: f32,
 };
 
-// A terrain layer: the colour stacks drawn below and above its shaded
-// hillshade, the slope stack (by its rank on the slope page) holding
-// that hillshade's slopes, or NO_STACK, and how it fogs: FOG_CONTENT, or
-// FOG_GROUND for the map's first terrain layer, the ground, which fogs
-// where it draws nothing too, or FOG_FADES for a layer composited in a
-// blend mode, over ground fogged already; the blend mode its shaded
-// hillshade blends into the stack below in (`blend.wgsl`), and 1 where it
-// blends into the terrain layer before it instead (`terrain_shade.wgsl`).
+// A hillshade a terrain layer shades: the slope stack (by its rank on
+// the slope page) holding its slopes, or NO_STACK past the layer's last,
+// the colour stack drawn above it, and the blend mode it blends into the
+// colours beneath it in (`blend.wgsl`).
+struct Shade {
+    slopes: u32,
+    above: u32,
+    blend: u32,
+    pad: u32,
+};
+
+// A terrain layer: the colour stack drawn below, and above it where no
+// hillshade is; how it fogs: FOG_CONTENT, or FOG_GROUND for the map's
+// first terrain layer, the ground, which fogs where it draws nothing too,
+// or FOG_FADES for a layer composited in a blend mode, over ground fogged
+// already; 1 where its first hillshade blends into the terrain layer
+// before it rather than a stack below (`terrain_shade.wgsl`); and its
+// hillshades (orb-render's `MAX_SHADES`).
 struct Layer {
     below: u32,
     above: u32,
-    slopes: u32,
     fog: u32,
-    shade_blend: u32,
     backdrop: u32,
-    pad1: u32,
-    pad2: u32,
+    shades: array<Shade, 2>,
 };
 
 const FOG_GROUND: u32 = 1u;

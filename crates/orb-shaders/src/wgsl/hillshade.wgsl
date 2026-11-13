@@ -1,11 +1,12 @@
-// Hillshade methods, after GL JS's `hillshade` fragment shader, over a
-// `node: HillshadeNode` the shader binds: the hillshade layer's
-// (`hillshade_layer.wgsl`), or one the terrain pass shades
-// (`terrain_shade.wgsl`). Slopes come from the DEM prepare pass
-// (`prepare_slope.wgsl`): (dim + 2)² texels a tile, a one-texel border
-// around it, as 8-bit derivatives about 128/255.
-
-const PI: f32 = 3.141592653589793;
+// Hillshades: a node's paint (`HillshadeNode`), and its table, the colour
+// it shades every slope (`hillshade_table.wgsl` draws it from the paint).
+// What draws a hillshade reads its slopes from the DEM prepare pass
+// (`prepare_slope.wgsl`: (dim + 2)² texels a tile, a one-texel border
+// around it, as 8-bit derivatives about 128/255) and looks their colour up
+// in the table: a sample there in place of GL JS's per-pixel `hillshade`
+// fragment shader, whose arctangents, powers and sines over every pixel
+// cost a 5120×2880 frame of the Globe over Nepal 0.7 ms of 7 for its two
+// full-screen hillshades (M6).
 
 const STANDARD: u32 = 0u;
 const COMBINED: u32 = 1u;
@@ -31,126 +32,30 @@ struct HillshadeNode {
     _pad2: u32,
 };
 
-fn get_aspect(deriv: vec2<f32>) -> f32 {
-    if deriv.x != 0.0 {
-        return atan2(deriv.y, -deriv.x);
-    }
-    return PI / 2.0 * select(-1.0, 1.0, deriv.y > 0.0);
+// The table's texels a side (orb-render's `HILLSHADE_TABLE_SIDE`).
+const HILLSHADE_TABLE_SIDE: f32 = 256.0;
+
+// Where the table holds a slope's colour: each derivative `d` squeezed into
+// (−1, 1) as d / (1 + |d|), finest at the gentle slopes most of a map is
+// (a texel every 1/128 there, four times as fine as the 8-bit slopes) and
+// reaching the steepest; texel i at (2i + 1) / side − 1, so that sampling
+// between texels interpolates their colours, within a level of the colour
+// computed where it falls.
+fn hillshade_table_uv(deriv: vec2<f32>) -> vec2<f32> {
+    return deriv / (1.0 + abs(deriv)) * 0.5 + 0.5;
 }
 
-// GLSL's `mod`: x − y · floor(x / y).
-fn glsl_mod(x: f32, y: f32) -> f32 {
-    return x - y * floor(x / y);
+// The slope at table position `uv` (`hillshade_table_uv`'s inverse).
+fn hillshade_table_slope(uv: vec2<f32>) -> vec2<f32> {
+    let u = uv * 2.0 - 1.0;
+    return u / (1.0 - abs(u));
 }
 
-fn igor_hillshade(d: vec2<f32>) -> vec4<f32> {
-    let deriv = d * node.exaggeration * 2.0;
-    let aspect = get_aspect(deriv);
-    let azimuth = node.azimuths[0] + PI;
-    let slope_strength = atan(length(deriv)) * 2.0 / PI;
-    let aspect_strength = 1.0 - abs(glsl_mod((aspect + azimuth) / PI + 0.5, 2.0) - 1.0);
-    let shadow_strength = slope_strength * aspect_strength;
-    let highlight_strength = slope_strength * (1.0 - aspect_strength);
-    return node.shadows[0] * shadow_strength + node.highlights[0] * highlight_strength;
-}
-
-fn standard_hillshade(deriv: vec2<f32>) -> vec4<f32> {
-    let azimuth = node.azimuths[0] + PI;
-    let slope = atan(0.625 * length(deriv));
-    let aspect = get_aspect(deriv);
-    let intensity = node.exaggeration;
-    let base = 1.875 - intensity * 1.75;
-    let max_value = 0.5 * PI;
-    var scaled_slope = slope;
-    if intensity != 0.5 {
-        // GL JS's `pow(base, slope)` as `exp2` of a `log2`: `base` is
-        // positive for intensities in 0..1, and `pow` pays for the bases
-        // that aren't.
-        let log_base = log2(base);
-        scaled_slope = ((exp2(slope * log_base) - 1.0) / (exp2(max_value * log_base) - 1.0)) * max_value;
-    }
-    let accent = cos(scaled_slope);
-    let accent_color = (1.0 - accent) * node.accent * clamp(intensity * 2.0, 0.0, 1.0);
-    let shade = abs(glsl_mod((aspect + azimuth) / PI + 0.5, 2.0) - 1.0);
-    let shade_color = mix(node.shadows[0], node.highlights[0], shade) * sin(scaled_slope)
-        * clamp(intensity * 2.0, 0.0, 1.0);
-    return accent_color * (1.0 - shade_color.a) + shade_color;
-}
-
-fn basic_hillshade(d: vec2<f32>) -> vec4<f32> {
-    let deriv = d * node.exaggeration * 2.0;
-    let azimuth = node.azimuths[0] + PI;
-    let cos_az = cos(azimuth);
-    let sin_az = sin(azimuth);
-    let cos_alt = cos(node.altitudes[0]);
-    let sin_alt = sin(node.altitudes[0]);
-    let cang = (sin_alt - (deriv.y * cos_az * cos_alt - deriv.x * sin_az * cos_alt))
-        / sqrt(1.0 + dot(deriv, deriv));
-    let shade = clamp(cang, 0.0, 1.0);
-    if shade > 0.5 {
-        return node.highlights[0] * (2.0 * shade - 1.0);
-    }
-    return node.shadows[0] * (1.0 - 2.0 * shade);
-}
-
-fn multidirectional_hillshade(d: vec2<f32>) -> vec4<f32> {
-    let deriv = d * node.exaggeration * 2.0;
-    let count = f32(node.lights);
-    var color = vec4<f32>(0.0);
-    for (var i = 0u; i < node.lights; i++) {
-        let cos_alt = cos(node.altitudes[i]);
-        let sin_alt = sin(node.altitudes[i]);
-        let cos_az = -cos(node.azimuths[i]);
-        let sin_az = -sin(node.azimuths[i]);
-        let cang = (sin_alt - (deriv.y * cos_az * cos_alt - deriv.x * sin_az * cos_alt))
-            / sqrt(1.0 + dot(deriv, deriv));
-        let shade = clamp(cang, 0.0, 1.0);
-        if shade > 0.5 {
-            color += node.highlights[i] * (2.0 * shade - 1.0) / count;
-        } else {
-            color += node.shadows[i] * (1.0 - 2.0 * shade) / count;
-        }
-    }
-    return color;
-}
-
-fn combined_hillshade(d: vec2<f32>) -> vec4<f32> {
-    let deriv = d * node.exaggeration * 2.0;
-    let azimuth = node.azimuths[0] + PI;
-    let cos_az = cos(azimuth);
-    let sin_az = sin(azimuth);
-    let cos_alt = cos(node.altitudes[0]);
-    let sin_alt = sin(node.altitudes[0]);
-    var cang = acos((sin_alt - (deriv.y * cos_az * cos_alt - deriv.x * sin_az * cos_alt))
-        / sqrt(1.0 + dot(deriv, deriv)));
-    cang = clamp(cang, 0.0, PI / 2.0);
-    let shade = cang * atan(length(deriv)) * 4.0 / PI / PI;
-    let highlight = (PI / 2.0 - cang) * atan(length(deriv)) * 4.0 / PI / PI;
-    return node.shadows[0] * shade + node.highlights[0] * highlight;
-}
-
-// The shade of slopes `pixel` (the prepared texel) where Mercator stretches
-// them by `stretch`: they shrink by the cosine of the latitude, so
-// `stretch` is its inverse (`mercator_stretch`, GL JS #4807).
-fn hillshade_color(pixel: vec4<f32>, stretch: f32) -> vec4<f32> {
-    let deriv = (pixel.rg - 128.0 / 255.0) * 8.0 * stretch;
-    switch node.method {
-        case BASIC: {
-            return basic_hillshade(deriv);
-        }
-        case COMBINED: {
-            return combined_hillshade(deriv);
-        }
-        case IGOR: {
-            return igor_hillshade(deriv);
-        }
-        case MULTIDIRECTIONAL: {
-            return multidirectional_hillshade(deriv);
-        }
-        default: {
-            return standard_hillshade(deriv);
-        }
-    }
+// The slope of prepared texel `pixel` where Mercator stretches it by
+// `stretch`: slopes shrink by the cosine of the latitude, so `stretch` is
+// its inverse (`mercator_stretch`, GL JS #4807).
+fn hillshade_slope(pixel: vec4<f32>, stretch: f32) -> vec2<f32> {
+    return (pixel.rg - 128.0 / 255.0) * 8.0 * stretch;
 }
 
 // Mercator's slope stretch at `latitude` degrees: the inverse of its cosine.

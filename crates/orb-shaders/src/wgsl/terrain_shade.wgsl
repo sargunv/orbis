@@ -1,41 +1,56 @@
-// A terrain layer that shades a hillshade between its stacks: lit from the
-// frame's bearing on every frame, so no drape slot turns with the map. The
-// hillshade draws its slopes, unlit, into a stack of their own on the
-// slope page
-// (`hillshade_layer.wgsl`'s `fs_hillshade_slopes`), from whatever tiles its
-// source draws there, as any draped layer does. Its node group is group 2:
-// its paint (`hillshade.wgsl`'s `node`). A hillshade that blends other than
-// normally blends into the colours below it, which are what it lies on.
+// A terrain layer that shades hillshades between its stacks: lit from the
+// frame's bearing on every frame, so no drape slot turns with the map. A
+// hillshade draws its slopes, unlit, into a stack of its own on the slope
+// page (`hillshade_layer.wgsl`'s `fs_hillshade_slopes`), from whatever
+// tiles its source draws there, as any draped layer does, and its table
+// (`hillshade.wgsl`) colours them: group 2 binds the layer's hillshades'
+// tables, in order. Each hillshade lies over what is beneath it in the
+// layer, blending into it in its blend mode, under the stack above it.
 
-@group(2) @binding(0) var<uniform> node: HillshadeNode;
-// The terrain layer before this one, as it drew, where the hillshade
-// blends into it (`layer.backdrop`).
+@group(2) @binding(0) var table_sampler: sampler;
+@group(2) @binding(1) var first_table: texture_2d<f32>;
+@group(2) @binding(2) var second_table: texture_2d<f32>;
+// The terrain layer before this one, as it drew, where the layer's first
+// hillshade blends into it (`layer.backdrop`).
 @group(3) @binding(0) var backdrop: texture_2d<f32>;
 
-// The hillshade at the fragment, from its slopes' slot: premultiplied by
-// how much of the footprint the source covers.
-fn shade_color(in: TerrainOut) -> vec4<f32> {
-    let slopes = slope_texel(in, drape_sample(in, terrain.slope_px), layer.slopes);
+// The layer's hillshade `k` at the fragment, from its slopes' slot at
+// `at`: premultiplied by how much of the footprint the source covers.
+fn shade_color(in: TerrainOut, at: DrapeSample, k: u32) -> vec4<f32> {
+    let slopes = slope_texel(in, at, layer.shades[k].slopes);
     if slopes.a < 0.5 / 255.0 {
         return vec4<f32>(0.0);
     }
-    let pixel = vec4<f32>(slopes.rg / slopes.a, 1.0, 1.0);
-    return hillshade_color(pixel, in.stretch) * slopes.a;
+    let slope = hillshade_slope(vec4<f32>(slopes.rg / slopes.a, 1.0, 1.0), in.stretch);
+    let uv = hillshade_table_uv(slope);
+    if k == 0u {
+        return textureSampleLevel(first_table, table_sampler, uv, 0.0) * slopes.a;
+    }
+    return textureSampleLevel(second_table, table_sampler, uv, 0.0) * slopes.a;
 }
 
 @fragment
 fn fs_terrain_shaded(in: TerrainOut) -> @location(0) vec4<f32> {
     let at = drape_sample(in, terrain.slot_px);
-    let above = drape_color(in, at, layer.above);
+    let slopes_at = drape_sample(in, terrain.slope_px);
     if layer.backdrop != 0u {
-        // The layer before, fogged already, under the hillshade blended
-        // into it, faded as the fog thickens, which takes its place.
-        let beneath = textureLoad(backdrop, vec2<i32>(in.position.xy), 0);
+        // The layer before, fogged already, under the hillshades blended
+        // into it, faded as the fog thickens, which takes their place, and
+        // the stacks above them fogged.
+        var color = textureLoad(backdrop, vec2<i32>(in.position.xy), 0);
         let fade = 1.0 - atmosphere_fog_factor(atmosphere, in.fog_depth);
-        let shaded = blend_over(layer.shade_blend, shade_color(in) * fade, beneath);
-        return over(fogged(in, above), shaded);
+        for (var k = 0u; k < 2u && layer.shades[k].slopes != NO_STACK; k++) {
+            let shade = layer.shades[k];
+            color = blend_over(shade.blend, shade_color(in, slopes_at, k) * fade, color);
+            color = over(fogged(in, drape_color(in, at, shade.above)), color);
+        }
+        return color;
     }
-    let below = drape_color(in, at, layer.below);
-    let shaded = blend_over(layer.shade_blend, shade_color(in), below);
-    return fogged(in, over(above, shaded));
+    var color = drape_color(in, at, layer.below);
+    for (var k = 0u; k < 2u && layer.shades[k].slopes != NO_STACK; k++) {
+        let shade = layer.shades[k];
+        color = blend_over(shade.blend, shade_color(in, slopes_at, k), color);
+        color = over(drape_color(in, at, shade.above), color);
+    }
+    return fogged(in, color);
 }

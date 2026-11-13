@@ -1155,8 +1155,9 @@ impl Renderer {
     /// layer of its own, which composites as the layer's. A shaded
     /// hillshade ends its stack and draws its slopes into one of its own:
     /// the terrain layer lights them over the stack before and under the
-    /// next, which draws the layers above it (one hillshade a terrain
-    /// layer; another starts the next). A terrain layer without one whose
+    /// next, which draws the layers above it (up to
+    /// [`terrain::MAX_SHADES`] hillshades a terrain layer; another starts
+    /// the next). A terrain layer without one whose
     /// first nodes draw alike at every zoom and whose later ones don't
     /// ([`set_drapes_by_zoom`](Self::set_drapes_by_zoom)) splits there
     /// into a stack below and one above, so that zooming redraws only the
@@ -1182,8 +1183,8 @@ impl Renderer {
             node.stack = stack;
             node.terrain_layer = layer;
             node.blends_on_terrain = layer.is_some_and(|l| {
-                let l = &stacks.layers[usize::from(l)];
-                l.shade_blend != Blend::Normal && l.shade.is_some_and(|(n, _)| n as usize == i)
+                (stacks.layers[usize::from(l)].shades.iter().flatten())
+                    .any(|s| s.node as usize == i && s.blend != Blend::Normal)
             });
             node.cull.target = match stack {
                 Some(stack) => PlacementTarget::Drape(stack),
@@ -1299,8 +1300,8 @@ impl Renderer {
     /// for ahead.
     fn terrain(&mut self, gpu: &mut dyn Gpu) -> &mut terrain::Terrain {
         let (target, atmosphere) = (self.target, self.atmosphere.uniform);
-        let images = (self.images.image_layout(), self.images.linear());
-        (self.terrain).get_or_insert_with(|| terrain::Terrain::new(gpu, target, atmosphere, images))
+        let linear = self.images.linear();
+        (self.terrain).get_or_insert_with(|| terrain::Terrain::new(gpu, target, atmosphere, linear))
     }
 
     /// Sets whether the style has terrain, on or not yet (its DEM source
@@ -2062,7 +2063,11 @@ impl Renderer {
     /// atlas's mips.
     fn request_terrain(&mut self, gpu: &mut dyn Gpu, shaded: bool) {
         let samples = self.extrusions.samples;
-        let shaded = shaded || self.terrain_layers.iter().any(|l| l.shade.is_some());
+        let shaded = shaded
+            || self
+                .terrain_layers
+                .iter()
+                .any(terrain::TerrainLayer::shaded);
         if shaded {
             self.images.make_slopes(gpu);
         }
@@ -2161,6 +2166,10 @@ impl Renderer {
         if matches!(family, Family::Hillshade | Family::ColorRelief) {
             // Its DEM tiles are prepared.
             self.images.make_prepare(gpu);
+        }
+        if family == Family::Hillshade {
+            // Its table, which its draws and the terrain's shading sample.
+            self.images.make_tables(gpu);
         }
         if node.shades_on_terrain() {
             // Its slopes into the drape atlas, which the terrain pass
@@ -2274,6 +2283,9 @@ impl Renderer {
                     out.extend(self.downsampler.pipelines());
                 } else {
                     out.extend(self.images.prepare_pipelines());
+                }
+                if family == Family::Hillshade {
+                    out.extend(self.images.tables_pipeline().map(PipelineId::from));
                 }
             }
             _ => out.extend(
@@ -2805,8 +2817,8 @@ impl Renderer {
             .push(gpu.create_render_bundle(&layers, &bound_once(commands)));
     }
 
-    /// The DEM prepare, image mip and cull passes and the heatmaps'
-    /// density passes; whether the cull is ready to draw from.
+    /// The DEM prepare, hillshade table, image mip and cull passes and the
+    /// heatmaps' density passes; whether the cull is ready to draw from.
     fn cull_passes(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -2820,6 +2832,10 @@ impl Renderer {
             passes.extend(prepare);
             Pass::group(passes, start, "dem prepare");
         }
+        let start = passes.len();
+        self.table_passes(gpu, passes);
+        stats.draws += (passes.len() - start) as u32;
+        Pass::group(passes, start, "hillshade tables");
         if let Some((mips, dispatches)) = self.images.mip_pass(gpu, &self.downsampler) {
             let start = passes.len();
             stats.dispatches += dispatches;
@@ -2875,12 +2891,17 @@ impl Renderer {
         let start = passes.len();
         let depth = self.extrusions.depth().expect("sized above");
         let b = self.scene.buffers();
-        // Shaded hillshades light their slopes' slots: blank until
-        // they draw there.
-        let shades: Vec<Option<BindGroupId>> = (self.terrain_layers.iter())
+        // Shaded hillshades light their slopes' slots (blank until they
+        // draw there) through their tables, those shown.
+        let shades: Vec<_> = (self.terrain_layers.iter())
             .map(|l| {
-                let node = &self.nodes[l.shade?.0 as usize];
-                node.cull.visible.then_some(node.group)
+                l.shades.map(|shade| {
+                    let node = &self.nodes[shade?.node as usize];
+                    node.cull
+                        .visible
+                        .then(|| node.image.as_ref()?.table())
+                        .flatten()
+                })
             })
             .collect();
         let mut layers = Vec::with_capacity(self.terrain_layers.len());
@@ -3046,7 +3067,38 @@ impl Renderer {
                 .is_some_and(|t| t.ready(gpu))
                 && self.composites.ready(gpu, offscreen::Mode::Over),
             prepare: !dems || self.images.prepare_ready(gpu),
+            tables: self.images.tables_ready(gpu),
             mips: !rasters || self.downsampler.ready(gpu),
+        }
+    }
+
+    /// The passes that draw hillshade tables from paint they weren't drawn
+    /// from: the drape's paint for a hillshade draped into its slots, which
+    /// draw it at their zoom, else the map's.
+    fn table_passes(&mut self, gpu: &mut dyn Gpu, passes: &mut Vec<Pass>) {
+        for i in 0..self.nodes.len() {
+            let node = &self.nodes[i];
+            if node.family != Family::Hillshade || !node.drawn {
+                continue;
+            }
+            let draped = (self.drape.as_ref())
+                .filter(|_| node.stack.is_some() && !node.shades_on_terrain())
+                .and_then(|d| Some((d.uniforms, d.written.get(i)?.as_deref()?)));
+            let (buffer, words) = draped.unwrap_or((self.node_uniforms, &node.written));
+            let uniform = BindingResource::Buffer {
+                buffer,
+                offset: i as u64 * NODE_UNIFORM_SIZE,
+                size: Some(NODE_UNIFORM_SIZE),
+            };
+            let words = words.to_vec();
+            let Some(image) = self.nodes[i].image.as_mut() else {
+                continue;
+            };
+            passes.extend(
+                self.images
+                    .table_pass(gpu, image, &words, uniform)
+                    .map(Pass::Render),
+            );
         }
     }
 
@@ -3265,6 +3317,9 @@ impl Renderer {
         if matches!(node.family, Family::Hillshade | Family::ColorRelief) && !ready.prepare {
             return false;
         }
+        if node.family == Family::Hillshade && !ready.tables {
+            return false;
+        }
         if node.family == Family::Raster && !ready.mips {
             return false;
         }
@@ -3352,24 +3407,25 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
         let shaded = draped && node.shaded;
         // A shaded hillshade blending other than normally blends into the
         // open terrain layer's colours beneath it, which are what it lies
-        // on, where they draw normally and the layer shades no other: it
-        // joins the layer, which goes on above it. Elsewhere its layer
-        // composites apart, a terrain layer of its own.
+        // on, where they draw normally: it joins the layer, which goes on
+        // above it, while the layer takes another hillshade. Where the
+        // layer's hillshades fill it, it starts the next, blending into
+        // what the layer before drew. Elsewhere its layer composites
+        // apart, a terrain layer of its own.
         let blends = shaded && node.blend != Blend::Normal && previous == Some(None);
-        let joins = blends
-            && layers
-                .last()
-                .is_some_and(|l| l.shade.is_none() && l.below.is_some());
-        // Where that layer shades another, it starts the next, whose
-        // hillshade blends into what the layer before drew.
-        let backdrop = blends && layers.last().is_some_and(|l| l.shade.is_some());
+        let last = layers.last();
+        let joins = blends && last.is_some_and(|l| !l.full() && (l.below.is_some() || l.shaded()));
+        let backdrop = blends && last.is_some_and(terrain::TerrainLayer::full);
         let inline = joins || backdrop;
         let group = if inline { None } else { node.group };
         let open = layers
             .last()
-            .filter(|l| draped && previous == Some(group) && !(shaded && l.shade.is_some()));
+            .filter(|l| draped && previous == Some(group) && !(shaded && l.full()));
         if draped && open.is_none() {
-            layers.push(terrain::TerrainLayer::default());
+            layers.push(terrain::TerrainLayer {
+                backdrop,
+                ..Default::default()
+            });
         }
         previous = draped.then_some(group);
         let terrain_layer = draped.then(|| layers.len() as u8 - 1);
@@ -3381,15 +3437,17 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
             };
             stack = Some(if shaded {
                 let slopes = next();
-                layer.shade = Some((i as u32, slopes));
-                if inline {
-                    layer.shade_blend = node.blend;
-                    layer.backdrop = backdrop;
-                }
+                let free = (layer.shades.iter_mut()).find(|s| s.is_none());
+                *free.expect("a layer with room") = Some(terrain::Shade {
+                    node: i as u32,
+                    slopes,
+                    above: None,
+                    blend: if inline { node.blend } else { Blend::Normal },
+                });
                 slopes
             } else {
-                let part = match layer.shade {
-                    Some(_) => &mut layer.above,
+                let part = match layer.shades.iter_mut().rev().flatten().next() {
+                    Some(shade) => &mut shade.above,
                     None => &mut layer.below,
                 };
                 *part.get_or_insert_with(next)
@@ -3401,7 +3459,7 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
     // above them: the stack below keeps its slots while the camera
     // zooms.
     for (index, layer) in layers.iter_mut().enumerate() {
-        if layer.shade.is_some() {
+        if layer.shaded() {
             continue;
         }
         let members: Vec<usize> = (0..nodes.len())
@@ -3419,7 +3477,9 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
         }
     }
     // Colour stacks keep their order ahead of the slope stacks.
-    let slopes: Vec<u8> = layers.iter().filter_map(|l| Some(l.shade?.1)).collect();
+    let slopes: Vec<u8> = (layers.iter())
+        .flat_map(|l| l.shades.iter().flatten().map(|s| s.slopes))
+        .collect();
     let colour = u32::from(stacks) - slopes.len() as u32;
     let renumber = |stack: u8| match slopes.iter().position(|&s| s == stack) {
         Some(rank) => colour as u8 + rank as u8,
@@ -3428,7 +3488,10 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
     for layer in &mut layers {
         layer.below = layer.below.map(renumber);
         layer.above = layer.above.map(renumber);
-        layer.shade = layer.shade.map(|(node, s)| (node, renumber(s)));
+        for shade in layer.shades.iter_mut().flatten() {
+            shade.slopes = renumber(shade.slopes);
+            shade.above = shade.above.map(renumber);
+        }
     }
     for node in &mut nodes {
         node.0 = node.0.map(renumber);
@@ -3471,6 +3534,8 @@ struct Ready {
     terrain: bool,
     /// The DEM prepare's, which hillshade and color relief wait for.
     prepare: bool,
+    /// The hillshade tables', which hillshades wait for.
+    tables: bool,
     /// The raster mip levels', which raster nodes wait for.
     mips: bool,
 }
@@ -3658,7 +3723,7 @@ fn scene_groups(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use terrain::TerrainLayer;
+    use terrain::{Shade, TerrainLayer};
 
     /// Drape stacks by case: per node, whether it drapes, its composite
     /// group, whether it's a shaded hillshade and whether it draws by zoom;
@@ -3676,13 +3741,30 @@ mod tests {
             by_zoom,
         };
         let plain = node(true, None, false, false);
-        let layer = |below, shade, above| TerrainLayer {
+        let layer = |below, above| TerrainLayer {
             below,
-            shade,
             above,
-            blended: false,
-            shade_blend: Blend::Normal,
-            backdrop: false,
+            ..TerrainLayer::default()
+        };
+        // Hillshade `node` lit from slopes stack `slopes`, under `above`.
+        let shade = |node, slopes, above| {
+            Some(Shade {
+                node,
+                slopes,
+                above,
+                blend: Blend::Normal,
+            })
+        };
+        let multiplied = |node, slopes, above| {
+            Some(Shade {
+                blend: Blend::Multiply,
+                ..shade(node, slopes, above).unwrap()
+            })
+        };
+        let shaded = |below, shades: &[Option<Shade>]| TerrainLayer {
+            below,
+            shades: std::array::from_fn(|k| shades.get(k).copied().flatten()),
+            ..TerrainLayer::default()
         };
         type Case = (&'static str, Vec<StackInput>, DrapeStacks);
         let cases: Vec<Case> = vec![
@@ -3700,7 +3782,7 @@ mod tests {
                 vec![plain, plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)); 2],
-                    layers: vec![layer(Some(0), None, None)],
+                    layers: vec![layer(Some(0), None)],
                     counts: [1, 0],
                 },
             ),
@@ -3709,7 +3791,7 @@ mod tests {
                 vec![plain, node(false, None, false, false), plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (None, None), (Some(1), Some(1))],
-                    layers: vec![layer(Some(0), None, None), layer(Some(1), None, None)],
+                    layers: vec![layer(Some(0), None), layer(Some(1), None)],
                     counts: [2, 0],
                 },
             ),
@@ -3718,7 +3800,7 @@ mod tests {
                 vec![plain, node(true, Some(5), false, false)],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (Some(1), Some(1))],
-                    layers: vec![layer(Some(0), None, None), layer(Some(1), None, None)],
+                    layers: vec![layer(Some(0), None), layer(Some(1), None)],
                     counts: [2, 0],
                 },
             ),
@@ -3727,20 +3809,33 @@ mod tests {
                 vec![plain, node(true, None, true, false), plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (Some(2), Some(0)), (Some(1), Some(0))],
-                    layers: vec![layer(Some(0), Some((1, 2)), Some(1))],
+                    layers: vec![shaded(Some(0), &[shade(1, 2, Some(1))])],
                     counts: [2, 1],
                 },
             ),
             (
-                "a second shaded hillshade starts a terrain layer",
-                vec![node(true, None, true, false), node(true, None, true, false)],
+                "a second shaded hillshade shades the same terrain layer",
+                vec![
+                    node(true, None, true, false),
+                    plain,
+                    node(true, None, true, false),
+                ],
                 DrapeStacks {
-                    nodes: vec![(Some(0), Some(0)), (Some(1), Some(1))],
+                    nodes: vec![(Some(1), Some(0)), (Some(0), Some(0)), (Some(2), Some(0))],
+                    layers: vec![shaded(None, &[shade(0, 1, Some(0)), shade(2, 2, None)])],
+                    counts: [1, 2],
+                },
+            ),
+            (
+                "a third starts a terrain layer",
+                vec![node(true, None, true, false); 3],
+                DrapeStacks {
+                    nodes: vec![(Some(0), Some(0)), (Some(1), Some(0)), (Some(2), Some(1))],
                     layers: vec![
-                        layer(None, Some((0, 0)), None),
-                        layer(None, Some((1, 1)), None),
+                        shaded(None, &[shade(0, 0, None), shade(1, 1, None)]),
+                        shaded(None, &[shade(2, 2, None)]),
                     ],
-                    counts: [0, 2],
+                    counts: [0, 3],
                 },
             ),
             (
@@ -3748,15 +3843,12 @@ mod tests {
                 vec![plain, node(true, Some(5), true, false), plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (Some(2), Some(0)), (Some(1), Some(0))],
-                    layers: vec![TerrainLayer {
-                        shade_blend: Blend::Multiply,
-                        ..layer(Some(0), Some((1, 2)), Some(1))
-                    }],
+                    layers: vec![shaded(Some(0), &[multiplied(1, 2, Some(1))])],
                     counts: [2, 1],
                 },
             ),
             (
-                "after another shaded hillshade, it blends into its layer",
+                "after another shaded hillshade, it blends into its layer too",
                 vec![
                     plain,
                     node(true, None, true, false),
@@ -3767,18 +3859,41 @@ mod tests {
                     nodes: vec![
                         (Some(0), Some(0)),
                         (Some(2), Some(0)),
-                        (Some(3), Some(1)),
+                        (Some(3), Some(0)),
+                        (Some(1), Some(0)),
+                    ],
+                    layers: vec![shaded(
+                        Some(0),
+                        &[shade(1, 2, None), multiplied(2, 3, Some(1))],
+                    )],
+                    counts: [2, 2],
+                },
+            ),
+            (
+                "past a full layer, it blends into what that layer drew",
+                vec![
+                    plain,
+                    node(true, None, true, false),
+                    node(true, None, true, false),
+                    node(true, Some(5), true, false),
+                    plain,
+                ],
+                DrapeStacks {
+                    nodes: vec![
+                        (Some(0), Some(0)),
+                        (Some(2), Some(0)),
+                        (Some(3), Some(0)),
+                        (Some(4), Some(1)),
                         (Some(1), Some(1)),
                     ],
                     layers: vec![
-                        layer(Some(0), Some((1, 2)), None),
+                        shaded(Some(0), &[shade(1, 2, None), shade(2, 3, None)]),
                         TerrainLayer {
-                            shade_blend: Blend::Multiply,
                             backdrop: true,
-                            ..layer(None, Some((2, 3)), Some(1))
+                            ..shaded(None, &[multiplied(3, 4, Some(1))])
                         },
                     ],
-                    counts: [2, 2],
+                    counts: [2, 3],
                 },
             ),
             (
@@ -3786,7 +3901,7 @@ mod tests {
                 vec![node(true, Some(5), true, false), plain],
                 DrapeStacks {
                     nodes: vec![(Some(1), Some(0)), (Some(0), Some(1))],
-                    layers: vec![layer(None, Some((0, 1)), None), layer(Some(0), None, None)],
+                    layers: vec![shaded(None, &[shade(0, 1, None)]), layer(Some(0), None)],
                     counts: [1, 1],
                 },
             ),
@@ -3795,7 +3910,7 @@ mod tests {
                 vec![plain, node(true, None, false, true), plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (Some(1), Some(0)), (Some(1), Some(0))],
-                    layers: vec![layer(Some(0), None, Some(1))],
+                    layers: vec![layer(Some(0), Some(1))],
                     counts: [2, 0],
                 },
             ),
@@ -3804,7 +3919,7 @@ mod tests {
                 vec![node(true, None, false, true), plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)); 2],
-                    layers: vec![layer(Some(0), None, None)],
+                    layers: vec![layer(Some(0), None)],
                     counts: [1, 0],
                 },
             ),

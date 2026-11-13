@@ -12,11 +12,19 @@
 //! change (`Renderer::pad_dems`): `pad` fills a two-texel border from those
 //! neighbours (GL JS's `backfillBorder`), `slope` computes hillshade
 //! slopes. Each is a draw into the tile's layer.
+//!
+//! Color-relief and hillshade nodes have a table besides: a color relief's
+//! ramp, and a hillshade's colour for every slope, drawn from its paint
+//! whenever the paint changes ([`Images::table_pass`]), which its draws
+//! look the slopes they sample up in.
 
 use crate::release::Release;
 use crate::scene::{PageTexture, Pixels, TilePage};
 use orb_hal::*;
-use orb_shaders::{COLOR_RELIEF_SHADER, HILLSHADE_SHADER, HILLSHADE_SLOPES_SHADER, RASTER_SHADER};
+use orb_shaders::{
+    COLOR_RELIEF_SHADER, HILLSHADE_SHADER, HILLSHADE_SLOPES_SHADER, HILLSHADE_TABLE_SHADER,
+    RASTER_SHADER,
+};
 
 use crate::pipeline::Draw;
 use crate::{Family, OutOfSpace, TargetFormat};
@@ -168,11 +176,28 @@ fn destroy_mips(gpu: &mut dyn Gpu, mips: Mips) {
 #[derive(Debug, Default)]
 pub(crate) struct NodeImage {
     page: Option<PageId>,
-    /// Color-relief ramp: colours in row 0, packed elevations in row 1.
-    ramp: Option<TextureId>,
+    /// Its table: a color relief's ramp (colours in row 0, packed
+    /// elevations in row 1), or a hillshade's colours by slope
+    /// ([`HILLSHADE_TABLE_SIDE`] texels a side).
+    table: Option<TextureId>,
+    /// The paint a hillshade's table was drawn from, and the group the
+    /// draw bound it with.
+    drawn: Option<(Vec<u32>, BindGroupId)>,
     /// The page revision the group was built for; `None` to rebuild.
     built: Option<u32>,
 }
+
+impl NodeImage {
+    /// Its table, once made: a color relief's ramp, a hillshade's colours.
+    pub(crate) fn table(&self) -> Option<TextureId> {
+        self.table
+    }
+}
+
+/// A hillshade table's texels a side (`hillshade.wgsl`'s
+/// `HILLSHADE_TABLE_SIDE`): bilinear between them, its colours are within
+/// a level of those computed where a slope falls.
+pub(crate) const HILLSHADE_TABLE_SIDE: u32 = 256;
 
 /// What a frame's prepare did.
 #[derive(Clone, Copy, Debug)]
@@ -206,16 +231,20 @@ pub(crate) struct Images {
     target: TargetFormat,
     draw_layout: BindGroupLayoutId,
     image_layout: BindGroupLayoutId,
-    relief_layout: BindGroupLayoutId,
+    /// Color-relief and hillshade nodes': the image node's and a table.
+    table_layout: BindGroupLayoutId,
     /// Raster, hillshade and color relief, made for their first node.
     pipelines: ImagePipelines,
     /// Shaded hillshades' slopes into the drape atlas, made for the first.
     slopes: Option<RenderPipelineId>,
+    /// Hillshade tables and their paint's layout, made for the first
+    /// hillshade.
+    tables: Option<(RenderPipelineId, BindGroupLayoutId)>,
     linear: SamplerId,
     nearest: SamplerId,
     /// Bound by nodes whose source has no page yet.
     placeholder: TextureId,
-    placeholder_ramp: TextureId,
+    placeholder_table: TextureId,
     /// The prepare draws, made for the first DEM page.
     prepare: Option<prepare::Draws>,
     pages: Vec<Option<Page>>,
@@ -247,11 +276,11 @@ impl Images {
             label: "image node",
             entries: &image_entries,
         });
-        let mut relief_entries = image_entries.to_vec();
-        relief_entries.push(E::texture(4, fs, true, TextureViewDimension::D2));
-        let relief_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "color relief node",
-            entries: &relief_entries,
+        let mut table_entries = image_entries.to_vec();
+        table_entries.push(E::texture(4, fs, true, TextureViewDimension::D2));
+        let table_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "image node with a table",
+            entries: &table_entries,
         });
         // Raster tiles are mipmapped (GL JS's `useMipmap`) and sampled
         // anisotropically, as GL JS does above 20° of pitch; pages without
@@ -280,19 +309,20 @@ impl Images {
             })
         };
         let placeholder_array = placeholder("no tiles", 1, 1, TextureViewDimension::D2Array);
-        let placeholder_ramp = placeholder("no ramp", 2, 1, TextureViewDimension::D2);
+        let placeholder_table = placeholder("no table", 2, 1, TextureViewDimension::D2);
 
         Self {
             target,
             draw_layout,
             image_layout,
-            relief_layout,
+            table_layout,
             pipelines: ImagePipelines::default(),
             slopes: None,
+            tables: None,
             linear,
             nearest,
             placeholder: placeholder_array,
-            placeholder_ramp,
+            placeholder_table,
             prepare: None,
             pages: Vec::new(),
             edges: Default::default(),
@@ -322,8 +352,8 @@ impl Images {
         *pipelines.0[image_index(family)].get_or_insert_with(|| {
             let (shader, layout) = match family {
                 Family::Raster => (&RASTER_SHADER, self.image_layout),
-                Family::Hillshade => (&HILLSHADE_SHADER, self.image_layout),
-                _ => (&COLOR_RELIEF_SHADER, self.relief_layout),
+                Family::Hillshade => (&HILLSHADE_SHADER, self.table_layout),
+                _ => (&COLOR_RELIEF_SHADER, self.table_layout),
             };
             let blend = Some(BlendState::PremultipliedAlpha);
             Draw::new(shader, &[draw_layout, layout], target, blend).make(gpu)
@@ -337,7 +367,7 @@ impl Images {
             color: crate::DRAPE_FORMAT,
             sample_count: 1,
         };
-        let layouts = [self.draw_layout, self.image_layout];
+        let layouts = [self.draw_layout, self.table_layout];
         *self.slopes.get_or_insert_with(|| {
             let blend = Some(BlendState::PremultipliedAlpha);
             Draw::new(&HILLSHADE_SLOPES_SHADER, &layouts, target, blend).make(gpu)
@@ -349,9 +379,83 @@ impl Images {
         self.slopes
     }
 
-    /// The bind group layout of raster and hillshade nodes' groups.
-    pub(crate) fn image_layout(&self) -> BindGroupLayoutId {
-        self.image_layout
+    /// Makes the pipeline hillshade tables draw with, unless it is made.
+    pub(crate) fn make_tables(&mut self, gpu: &mut dyn Gpu) {
+        if self.tables.is_some() {
+            return;
+        }
+        let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "hillshade table",
+            entries: &[BindGroupLayoutEntry::uniform(0, ShaderStages::FRAGMENT)],
+        });
+        let target = TargetFormat {
+            color: TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+        };
+        let pipeline = Draw::new(&HILLSHADE_TABLE_SHADER, &[layout], target, None).make(gpu);
+        self.tables = Some((pipeline, layout));
+    }
+
+    /// The pipeline hillshade tables draw with, made or not.
+    pub(crate) fn tables_pipeline(&self) -> Option<RenderPipelineId> {
+        self.tables.map(|(p, _)| p)
+    }
+
+    /// Whether hillshades can draw: their tables' pipeline compiled, or no
+    /// hillshade asked for it.
+    pub(crate) fn tables_ready(&self, gpu: &mut dyn Gpu) -> bool {
+        self.tables
+            .is_none_or(|(p, _)| gpu.pipeline_ready(p.into()))
+    }
+
+    /// The pass that draws hillshade `node`'s table from `words`, its
+    /// paint at `uniform`, unless it was drawn from them: GL JS's
+    /// `hillshade` methods once a texel, which the node's draws sample
+    /// rather than run once a pixel. `None` too while the pipeline
+    /// compiles.
+    pub(crate) fn table_pass(
+        &self,
+        gpu: &mut dyn Gpu,
+        node: &mut NodeImage,
+        words: &[u32],
+        uniform: BindingResource,
+    ) -> Option<RenderPass> {
+        let (pipeline, layout) = self.tables?;
+        let table = node.table?;
+        let drawn = node.drawn.as_ref().is_some_and(|(w, _)| w == words);
+        if drawn || !gpu.pipeline_ready(pipeline.into()) {
+            return None;
+        }
+        let group = gpu.create_bind_group(&BindGroupDesc {
+            label: "hillshade table",
+            layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: uniform,
+            }],
+        });
+        // The last draw's group, which that frame's work has used.
+        if let Some((_, group)) = node.drawn.replace((words.to_vec(), group)) {
+            gpu.destroy_bind_group(group);
+        }
+        Some(RenderPass {
+            label: "hillshade table",
+            colors: vec![ColorAttachment {
+                target: table,
+                resolve: None,
+                store: StoreOp::Store,
+                load: LoadOp::Clear([0.0; 4]),
+            }],
+            depth: None,
+            commands: vec![
+                RenderCommand::SetPipeline(pipeline),
+                RenderCommand::SetBindGroup { index: 0, group },
+                RenderCommand::Draw {
+                    vertices: 0..3,
+                    instances: 0..1,
+                },
+            ],
+        })
     }
 
     pub(crate) fn pipeline(&self, family: Family) -> Option<RenderPipelineId> {
@@ -761,7 +865,7 @@ impl Images {
         elevations: &[u32],
     ) {
         assert_eq!(colors.len(), elevations.len(), "one colour per stop");
-        node.ramp.take().release(gpu);
+        node.table.take().release(gpu);
         let width = colors.len() as u32;
         let texture = gpu.create_texture(&TextureDesc {
             label: "color relief ramp",
@@ -787,7 +891,7 @@ impl Images {
             },
             bytemuck::cast_slice(&texels),
         );
-        node.ramp = Some(texture);
+        node.table = Some(texture);
         node.built = None;
     }
 
@@ -814,6 +918,19 @@ impl Images {
         uniform: BindingResource,
     ) -> BindGroupId {
         node.built = Some(node.page.map_or(0, |id| self.page(id).page.revision()));
+        if family == Family::Hillshade && node.table.is_none() {
+            node.table = Some(gpu.create_texture(&TextureDesc {
+                label: "hillshade table",
+                width: HILLSHADE_TABLE_SIDE,
+                height: HILLSHADE_TABLE_SIDE,
+                array_layers: 1,
+                dimension: TextureViewDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+                sample_count: 1,
+                mip_levels: 1,
+            }));
+        }
         self.group(gpu, family, node, uniform)
     }
 
@@ -844,12 +961,12 @@ impl Images {
             BindGroupEntry::sampler(3, self.nearest),
             BindGroupEntry::texture(5, texture, TextureViewDimension::D2Array),
         ];
-        let layout = if family == Family::ColorRelief {
-            let ramp = node.ramp.unwrap_or(self.placeholder_ramp);
-            entries.push(BindGroupEntry::texture(4, ramp, TextureViewDimension::D2));
-            self.relief_layout
-        } else {
+        let layout = if family == Family::Raster {
             self.image_layout
+        } else {
+            let table = node.table.unwrap_or(self.placeholder_table);
+            entries.push(BindGroupEntry::texture(4, table, TextureViewDimension::D2));
+            self.table_layout
         };
         gpu.create_bind_group(&BindGroupDesc {
             label: "image node",
@@ -1169,17 +1286,18 @@ impl crate::release::Release for Images {
         let draws = self.prepare.map(|d| (d.layout, d.pad, d.slope));
         let fixed = (
             self.image_layout,
-            self.relief_layout,
+            self.table_layout,
             self.pipelines.0,
             self.slopes,
         );
-        (fixed, self.linear, self.nearest).release(gpu);
-        (self.placeholder, self.placeholder_ramp, draws, self.edges).release(gpu);
+        let tables = self.tables.map(|(p, l)| (l, p));
+        (fixed, tables, self.linear, self.nearest).release(gpu);
+        (self.placeholder, self.placeholder_table, draws, self.edges).release(gpu);
     }
 }
 
 impl crate::release::Release for NodeImage {
     fn release(self, gpu: &mut dyn Gpu) {
-        self.ramp.release(gpu);
+        (self.table, self.drawn.map(|(_, group)| group)).release(gpu);
     }
 }

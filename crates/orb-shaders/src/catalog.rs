@@ -331,6 +331,15 @@ pub const HILLSHADE_SLOPES_SHADER: Shader = Shader {
     compute: "",
 };
 
+/// A hillshade node's table: its colour for every slope.
+pub const HILLSHADE_TABLE_SHADER: Shader = Shader {
+    label: "hillshade table",
+    parts: &[HILLSHADE, wgsl!("hillshade_table")],
+    vertex: "vs_hillshade_table",
+    fragment: "fs_hillshade_table",
+    compute: "",
+};
+
 pub const COLOR_RELIEF_SHADER: Shader = Shader {
     label: "color relief",
     parts: &[TYPES, DRAW, IMAGE, COLOR_RELIEF],
@@ -468,6 +477,7 @@ pub const SHADERS: &[Shader] = &[
     RASTER_SHADER,
     HILLSHADE_SHADER,
     HILLSHADE_SLOPES_SHADER,
+    HILLSHADE_TABLE_SHADER,
     COLOR_RELIEF_SHADER,
     PREPARE_PAD_SHADER,
     PREPARE_SLOPE_SHADER,
