@@ -202,6 +202,18 @@ impl FrameTimes {
     }
 }
 
+/// What the frames [`Map::prepare`] ran since the last frame drawn did,
+/// for that frame's report.
+#[derive(Debug, Default)]
+struct Prepared {
+    times: FrameTimes,
+    tiles_arrived: u32,
+    resized: orb_render::Resized,
+    /// Pipelines they asked for that the style's set left out
+    /// ([`FrameReport::pipelines_late`]).
+    pipelines_late: u32,
+}
+
 /// What a frame's drape drew: whether it redrew slots, and whether it
 /// left any blank, stale or out of place for the frames after.
 #[derive(Clone, Copy, Debug, Default)]
@@ -615,6 +627,15 @@ struct PlanKey {
 /// A gap the style uses on the frames' renderer, and the layers it touches.
 type Degraded = (crate::Gap, Vec<String>);
 
+/// Why a style request failed.
+#[derive(Debug)]
+struct StyleError {
+    message: String,
+    /// Its text didn't parse as a style, rather than its fetch bringing
+    /// none.
+    unparsed: bool,
+}
+
 /// A style waiting for the feature modules it needs ([`crate::modules`]):
 /// the document asked for last, which edits go to meanwhile, and the
 /// feature states they set.
@@ -648,9 +669,8 @@ pub struct Map {
     pub(crate) placement_ms: f64,
     pub(crate) upload_ms: f64,
     pub(crate) tiles_arrived: u32,
-    /// What preparing spent, the tiles it took in and what it moved since
-    /// the last frame drawn.
-    prepared: (FrameTimes, u32, orb_render::Resized),
+    /// What the frames prepared since the last one drawn did.
+    prepared: Prepared,
     /// The device's counts at the last frame drawn.
     counted: GpuCounters,
     /// The labels' placements asked for by the last frame drawn.
@@ -675,9 +695,6 @@ pub struct Map {
     pub(crate) uploading: Option<crate::arrival::Uploading>,
     /// Chunks the last frame's cull left out for want of room.
     pub(crate) candidates_dropped: u32,
-    /// Pipelines prepared frames asked for that the style's set left out,
-    /// for the next drawn frame's report ([`FrameReport::pipelines_late`]).
-    pipelines_late: u32,
     pub(crate) services: Services,
     pub(crate) videos: crate::video::Videos,
     pub(crate) host_tiles: crate::host_tiles::HostTiles,
@@ -715,8 +732,6 @@ pub struct Map {
     pub(crate) transitions: crate::transitions::Transitions,
     /// The light, sky and terrain easing in.
     pub(crate) root: crate::root::Root,
-    /// This frame's root values, eased.
-    pub(crate) root_frame: Option<crate::root::RootFrame>,
     /// The latest `load_style_url` request; earlier ones are ignored.
     pub(crate) style_request: u64,
     /// The latest request is a style URL still loading: the style drawn
@@ -732,9 +747,7 @@ pub struct Map {
     pub(crate) for_modules: Vec<(Modules, ModuleWait)>,
     /// Why the latest style request failed: nothing will load until
     /// another style replaces it.
-    pub(crate) style_error: Option<String>,
-    /// Whether that failure was the style's text, not its fetch.
-    style_unparsed: bool,
+    style_error: Option<StyleError>,
     /// Gives up the style URL loading, once another style replaces it.
     pub(crate) style_fetch: Abort,
     /// Gives up what the style generation fetches (TileJSON, archive
@@ -790,9 +803,11 @@ pub struct Map {
     /// The warnings given since the style's last revision: each is given
     /// once.
     pub(crate) warned: HashSet<String>,
-    /// The gaps the style uses on the frames' renderer, and the style
-    /// revision and renderer they were found for: `MapEvent::Degraded`.
-    pub(crate) degraded: (Option<(u64, u64)>, Vec<Degraded>),
+    /// The gaps the style uses on the frames' renderer
+    /// (`MapEvent::Degraded`), and the style revision and renderer they
+    /// were found for.
+    degraded: Vec<Degraded>,
+    degraded_for: Option<(u64, u64)>,
     pub(crate) events: crate::events::EventQueue,
     /// Tiles' patches on the globe.
     pub(crate) globe_warps: crate::globe::GlobeWarps,
@@ -943,7 +958,6 @@ impl Map {
             waiting: Vec::new(),
             uploading: None,
             candidates_dropped: 0,
-            pipelines_late: 0,
             services,
             videos: Default::default(),
             host_tiles: Default::default(),
@@ -956,7 +970,6 @@ impl Map {
             surface,
             transitions: Default::default(),
             root: Default::default(),
-            root_frame: None,
             style_request: 0,
             style_fetching: false,
             modules: Modules::ALL,
@@ -964,7 +977,6 @@ impl Map {
             waiting_style: None,
             for_modules: Vec::new(),
             style_error: None,
-            style_unparsed: false,
             style_fetch: Abort::NEVER,
             style_loads: Abort::new(),
             generation: 0,
@@ -1000,7 +1012,8 @@ impl Map {
             receiver,
             warnings: Vec::new(),
             warned: HashSet::default(),
-            degraded: (None, Vec::new()),
+            degraded: Vec::new(),
+            degraded_for: None,
             events: Default::default(),
             terrains: 0,
             labels: crate::labels::Labels::new(default_lane(), (&defaults).into()),
@@ -1339,14 +1352,14 @@ impl Map {
     /// Why the latest style request failed, if it did: a fetch or parse
     /// error. Frames draw nothing until another style replaces it.
     pub fn style_error(&self) -> Option<&str> {
-        self.style_error.as_deref()
+        self.style_error.as_ref().map(|e| e.message.as_str())
     }
 
     /// Whether the latest style request's failure ([`style_error`](Self::style_error))
     /// was its text's, which didn't parse as a style, rather than its
     /// fetch's, which brought none (an error, or an empty answer).
     pub fn style_unparsed(&self) -> bool {
-        self.style_error.is_some() && self.style_unparsed
+        self.style_error.as_ref().is_some_and(|e| e.unparsed)
     }
 
     /// Whether every source's tiles under the view's centre, of the last
@@ -1937,7 +1950,6 @@ impl Map {
             self.root.hold_terrain();
         }
         let root = self.root.frame(model.as_deref(), zoom, frame_time);
-        self.root_frame = Some(root);
         let at = crate::light::atmosphere_view(
             &root.light,
             root.terrain_presence,
@@ -1974,7 +1986,7 @@ impl Map {
         let (frame_terrain, redrew) = match self.style.is_some() {
             true => {
                 let stages = (&mut report, &mut times, &mut drawn);
-                self.update_scene(gpu, renderer, &view, drawing, stages)
+                self.update_scene(gpu, renderer, (&view, &root), drawing, stages)
             }
             false => (None, DrapeDrawn::default()),
         };
@@ -1989,19 +2001,21 @@ impl Map {
         times.placement = micros(0.0, self.placement_ms);
         times.upload = micros(0.0, self.upload_ms);
         let Some(target) = target else {
-            self.pipelines_late += self.asked_late(gpu, renderer, asked);
+            let late = self.asked_late(gpu, renderer, asked);
             self.globe_warps.end_frame();
             times.total = micros(started, clock.now());
-            self.prepared.0.add_prepared(&times);
-            self.prepared.1 += self.tiles_arrived;
-            self.prepared.2 += renderer.take_resized();
+            let prepared = &mut self.prepared;
+            prepared.pipelines_late += late;
+            prepared.times.add_prepared(&times);
+            prepared.tiles_arrived += self.tiles_arrived;
+            prepared.resized += renderer.take_resized();
             report.compiling = compiling;
             return report;
         };
-        let (prepared, arrived, resized) = std::mem::take(&mut self.prepared);
-        report.prepared = prepared;
-        report.prepared_resized = resized;
-        report.tiles_arrived = self.tiles_arrived + arrived;
+        let prepared = std::mem::take(&mut self.prepared);
+        report.prepared = prepared.times;
+        report.prepared_resized = prepared.resized;
+        report.tiles_arrived = self.tiles_arrived + prepared.tiles_arrived;
         report.tile_bytes = self.beat.bytes();
 
         if !self.retired.ramps.is_empty() {
@@ -2066,8 +2080,7 @@ impl Map {
         report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
         // Whatever this frame, and the prepared ones since the last,
         // asked for besides the set.
-        report.pipelines_late =
-            std::mem::take(&mut self.pipelines_late) + self.asked_late(gpu, renderer, asked);
+        report.pipelines_late = prepared.pipelines_late + self.asked_late(gpu, renderer, asked);
         times.render = report.frame.times;
         // A frame that left something out for a compiling pipeline isn't
         // complete. Only a compile still pending wakes the host when it
@@ -2133,8 +2146,8 @@ impl Map {
         fading
     }
 
-    /// Brings the style's terrain, sources and drape to the view and places
-    /// their tiles, timing each stage into `times`, the tiles drawn for
+    /// Brings the style's terrain, sources and drape to the view (with the
+    /// frame's eased root values) and places their tiles, timing each stage into `times`, the tiles drawn for
     /// picking into `drawn`; with `drawing`, a frame drawn and not only
     /// prepared. Returns the frame's terrain and whether drape slots were
     /// redrawn.
@@ -2142,7 +2155,7 @@ impl Map {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        view: &View,
+        (view, root): (&View, &crate::root::RootFrame),
         drawing: bool,
         (report, times, drawn): (
             &mut FrameReport,
@@ -2156,7 +2169,7 @@ impl Map {
         // elevations, and drape over its tiles.
         let at = clock.now();
         if drawing {
-            frame_terrain = self.update_terrain(gpu, renderer, view, report);
+            frame_terrain = self.update_terrain(gpu, renderer, (view, root), report);
         }
         let planning = clock.now();
         times.terrain = micros(at, planning);
@@ -3004,14 +3017,14 @@ impl Map {
             .sum()
     }
 
-    /// Keeps the terrain to the style's `terrain`: made once its DEM
-    /// source is ready and its DEM tiles requested for this view. Returns
-    /// the frame's terrain.
+    /// Keeps the terrain to the style's `terrain`, as `root` eases it:
+    /// made once its DEM source is ready and its DEM tiles requested for
+    /// this view. Returns the frame's terrain.
     fn update_terrain(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        view: &View,
+        (view, root): (&View, &crate::root::RootFrame),
         report: &mut FrameReport,
     ) -> Option<orb_render::FrameTerrain> {
         // Asked only of a map with terrain, the style's or one still
@@ -3025,7 +3038,6 @@ impl Map {
         };
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();
-        let root = self.root_frame.expect("eased before the terrain");
         let mut wanted = plan.terrain().map(|(index, _)| index);
         // Terrain tiles are the surface's; their DEM must be too.
         let unusable = match wanted.map(|index| &style.sources[index]) {
@@ -3167,10 +3179,10 @@ impl Map {
         };
         let plan = style.worker.plan();
         let key = Some((plan.revision, renderer.id()));
-        if self.degraded.0 == key {
+        if self.degraded_for == key {
             return;
         }
-        self.degraded.0 = key;
+        self.degraded_for = key;
         let mut found = Vec::new();
         for &gap in renderer.gaps() {
             let uses = |family: Family| match gap {
@@ -3186,11 +3198,11 @@ impl Map {
                 found.push((gap, layers));
             }
         }
-        if found != self.degraded.1 {
+        if found != self.degraded {
             self.events.push(MapEvent::Degraded {
                 gaps: found.clone(),
             });
-            self.degraded.1 = found;
+            self.degraded = found;
         }
     }
 
@@ -3315,7 +3327,7 @@ impl Map {
             Ok(json) if json.trim().is_empty() => Err("no content".to_string()),
             Ok(json) => Ok(json),
         };
-        self.style_unparsed = fetched.is_ok();
+        let unparsed = fetched.is_ok();
         let installed = fetched.and_then(|json| {
             if self.style.is_some() {
                 self.diff_document(&json, url)
@@ -3325,7 +3337,10 @@ impl Map {
         });
         if let Err(e) = installed {
             let message = format!("style {}: {e}", orb_host::redacted_url(url));
-            self.style_error = Some(message.clone());
+            self.style_error = Some(StyleError {
+                message: message.clone(),
+                unparsed,
+            });
             self.fail(message);
         }
     }
