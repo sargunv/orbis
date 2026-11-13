@@ -29,6 +29,7 @@ import {
   wantedBackend,
 } from "./app/options.js";
 import { picker as createPicker } from "./app/picker.js";
+import { attachQuake } from "./app/quake.js";
 import { expose, hashCamera } from "./expose.js";
 import {
   DEFAULT_SCENE,
@@ -45,6 +46,8 @@ const toast = document.getElementById("toast");
 const params = () => new URLSearchParams(location.search);
 
 let map;
+/** The Earthquake entry's worker, while it shows. */
+let quake;
 
 /** What each gap does to the map, said briefly. */
 const GAP_NAMES = {
@@ -360,6 +363,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
   else history.replaceState(history.state, "", url);
   const previous = current;
   current = next;
+  if (previous.scene.quake) quake?.stop();
   tone();
   picker.show(next.scene, next.format);
   map.camera.stop();
@@ -472,6 +476,13 @@ async function load(next, { camera }) {
     return;
   }
   map = created;
+  quake = attachQuake(map, {
+    active: () => !!current.scene.quake,
+    epicentre: () => current.scene.quake.epicentre,
+    onStats: (stats) => (globalThis.quakeStats = stats),
+  });
+  // For `pnpm quake`.
+  globalThis.quake = quake;
   options.drawing(map.backend);
   showGaps([]);
   map.on("gaps", ({ gaps }) => showGaps(gaps));

@@ -63,6 +63,9 @@ pub(crate) struct Demo {
     count_frames: Option<f64>,
     /// The page colour the map draws on, once set.
     page: Option<Color32>,
+    /// The Earthquake's ground, while it shows.
+    quake: Option<crate::quake::Quake>,
+    repaint: std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -102,6 +105,7 @@ impl Demo {
         );
         let wake = ctx.clone();
         map.set_wake(move || wake.request_repaint());
+        let repaint = ctx.clone();
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let target = Target::texture(&runtime, 1, 1, 1.0);
         let mut demo = Self {
@@ -128,6 +132,8 @@ impl Demo {
             idle_at: None,
             count_frames: launch.count_frames,
             page: None,
+            quake: None,
+            repaint: std::sync::Arc::new(move || repaint.request_repaint()),
         };
         demo.load(launch.scene);
         demo
@@ -169,6 +175,7 @@ impl Demo {
         self.loaded = None;
         self.panel.loading();
         self.flight = None;
+        self.quake = None;
         self.map.load_style_url(&scene.style_url());
         self.scene = scene;
     }
@@ -253,6 +260,26 @@ impl Demo {
                 MapEvent::Load | MapEvent::Idle if !self.loading => {
                     if self.toast.as_ref().is_some_and(|(_, error)| !error) {
                         self.toast = None;
+                    }
+                }
+                MapEvent::TileRequest { source, tile } if source == crate::quake::SOURCE => {
+                    if let Some(quake) = self.scene.quake {
+                        let [lon, lat] = quake.epicentre;
+                        let repaint = std::sync::Arc::clone(&self.repaint);
+                        let start = || {
+                            crate::quake::Quake::start(orb_api::Geodetic::new(lon, lat), repaint)
+                        };
+                        self.quake.get_or_insert_with(start).tile(tile);
+                    }
+                }
+                MapEvent::ElevationsShown { source, .. } if source == crate::quake::SOURCE => {
+                    if let Some(quake) = &self.quake {
+                        quake.shown();
+                    }
+                }
+                MapEvent::Click { position } if self.quake.is_some() => {
+                    if let (Some(quake), Some(at)) = (&self.quake, self.map.unproject(position)) {
+                        quake.epicentre(at);
                     }
                 }
                 MapEvent::Click { position } | MapEvent::LongClick { position } => {
@@ -517,6 +544,24 @@ impl Demo {
         self.fly();
         if !self.stopped && (self.map.needs_frame() || self.texture.is_none()) {
             let now = self.now();
+            // The quake's next step, if its thread made one.
+            if let Some(step) = self.quake.as_ref().and_then(crate::quake::Quake::step) {
+                let side = crate::quake::SIDE;
+                match self
+                    .map
+                    .set_host_elevations(crate::quake::SOURCE, side, step)
+                {
+                    Ok(done) => {
+                        if let Some(quake) = &self.quake {
+                            quake.dropped(done.dropped);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("orb-demo: {e}");
+                        self.quake = None;
+                    }
+                }
+            }
             match self.map.render(&mut self.target, now) {
                 Ok(Some(report)) => {
                     self.frames += 1;

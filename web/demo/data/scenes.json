@@ -55,6 +55,28 @@
           "swatch": ["#efebe4", "#74a6d2", "#05070b"]
         },
         {
+          "key": "earthquake",
+          "name": "Earthquake",
+          "detail": "Mapterhorn's Alps rippling out from a shock: heights a worker makes at display rate, fed to one host raster-dem source that the terrain and hillshade both follow. Click to move the epicentre",
+          "url": "alps.json",
+          "restyle": "quake",
+          "quake": {
+            "epicentre": [7.6586, 45.9763]
+          },
+          "camera": {
+            "center": [7.79, 46.06],
+            "zoom": 10.4,
+            "bearing": -28,
+            "pitch": 62
+          },
+          "terrain": true,
+          "swatch": ["#e9e4d8", "#9fc2dd", "#6b5a4a"],
+          "unsupported": {
+            "gljs": "GL JS has no way for an app to feed a raster-dem source heights",
+            "native": "MapLibre Native has no way for an app to feed a raster-dem source heights"
+          }
+        },
+        {
           "key": "equal-earth",
           "name": "Equal Earth",
           "detail": "The whole world equal-area, handing over to Web Mercator by zoom 7",

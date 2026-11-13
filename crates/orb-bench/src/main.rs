@@ -1,5 +1,5 @@
 //! The bench: `cargo xtask bench [style URL | alps | stutter] [--format mvt|mlt]
-//! [--experiment frames|gestures|load|tiles|stutter] [--frames N] [--warmup N]
+//! [--experiment frames|gestures|load|tiles|stutter|quake] [--frames N] [--warmup N]
 //! [--rounds N] [--samples N] [--size WxH] [--ratio R] [--at lon,lat]
 //! [--view zoom,pitch,bearing]... [--views file] [--filter s] [--nudge]
 //! [--antialias on|off] [--paths city|alps] [--legs N] [--capture N]

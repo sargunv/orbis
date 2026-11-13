@@ -27,6 +27,7 @@ mod clock;
 mod cull;
 mod gestures;
 mod load;
+mod quake;
 mod report;
 mod session;
 mod stutter;
@@ -97,6 +98,8 @@ pub enum Experiment {
     /// A user's cold first session with real input, on runtimes of its
     /// own.
     Session,
+    /// The Alps on heights the bench feeds, still and then rippling.
+    Quake,
 }
 
 /// The gestures bench's camera paths.
@@ -120,6 +123,7 @@ pub enum Report {
     Stutter(StutterReport),
     Cull(CullReport),
     Session(SessionReport),
+    Quake(quake::QuakeReport),
 }
 
 impl Report {
@@ -134,6 +138,7 @@ impl Report {
             Self::Stutter(r) => r.write(&mut out),
             Self::Cull(r) => r.write(&mut out),
             Self::Session(r) => r.write(&mut out),
+            Self::Quake(r) => r.write(&mut out),
         }
         .expect("writing to a String");
         out
@@ -304,6 +309,7 @@ impl Settings {
                     "stutter" => Experiment::Stutter,
                     "cull" => Experiment::Cull,
                     "session" => Experiment::Session,
+                    "quake" => Experiment::Quake,
                     _ => {
                         return Err("experiment needs frames, gestures, load, tiles, stutter, \
                                     cull or session"
@@ -497,6 +503,10 @@ pub fn run(
         Experiment::Session => {
             let alps = format!("file://{}", data.join("alps.json").display());
             return session::run(settings, about, (style, &alps), progress).map(Report::Session);
+        }
+        Experiment::Quake => {
+            return quake::run(runtime, settings, about, &data.join("alps.json"), progress)
+                .map(Report::Quake);
         }
         Experiment::Frames | Experiment::Gestures => {}
     }

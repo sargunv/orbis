@@ -14,6 +14,7 @@
     "bench": "node scripts/bench.mjs",
     "compiles": "node scripts/compiles.mjs",
     "flight": "node scripts/flight.mjs",
+    "quake": "node scripts/quake.mjs",
     "gestures": "node scripts/gesture-h2h.mjs",
     "session": "node scripts/session.mjs",
     "load": "node scripts/load.mjs",

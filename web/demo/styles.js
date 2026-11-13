@@ -1,4 +1,5 @@
 import { opening } from "./app/options.js";
+import { quakeStyle } from "./app/quake.js";
 import alpsFlight from "./data/alps-flight.json";
 import alps from "./data/alps.json?url";
 import arctic from "./data/crs/arctic.json?url";
@@ -56,12 +57,14 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * `orbisOnly` marks an entry that exists to show an Orbis extension, a
  * projection or CRS beyond the spec, which it draws by default; the
  * picker tags it. `unsupported` says, by engine, why that engine can't
- * show the entry in the comparison (app/compare.js).
+ * show the entry in the comparison (app/compare.js). `quake` makes the
+ * entry's host-fed DEM source ripple from `quake.epicentre` (app/quake.js).
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, orbisOnly?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
  *   light?: boolean, terrain?: object | true, off?: string[], projection?: object, sky?: object,
+ *   quake?: { epicentre: [number, number] },
  *   restyle?: (style: object) => object,
  *   unsupported?: { gljs?: string, native?: string } }} Scene
  */
@@ -171,9 +174,10 @@ function globeStyle(style) {
 }
 
 /** What a catalogue entry's `restyle` names. */
-const RESTYLES = { globe: globeStyle };
+const RESTYLES = { globe: globeStyle, quake: quakeStyle };
 /** The catalogue's local files, as the build emits them. */
 const LOCAL = {
+  "alps.json": alps,
   "alps-flight.json": alpsFlight,
   "crs/arctic.json": arctic,
   "osm-carto.json": osmCarto,

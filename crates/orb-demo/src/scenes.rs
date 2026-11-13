@@ -2,7 +2,7 @@
 //! whose fields `web/demo/styles.js` documents), and what a scene does to
 //! its style once it loads: the projection and sky it puts in, or for the
 //! Globe, the restyle of `web/demo/data/globe.json` that `globeStyle` in
-//! `styles.js` makes.
+//! `styles.js` makes, and for the Earthquake, `crate::quake`'s.
 
 use orb_api::{
     Bounds, CameraState, CameraTarget, Constraints, FlyOptions, Geodetic, TileMatrixSet,
@@ -62,6 +62,14 @@ pub(crate) struct Scene {
     pub(crate) light: bool,
     /// A looping flight, relative to the data directory.
     pub(crate) flight: Option<String>,
+    /// The Earthquake's shock: its host-fed ground ripples from here
+    /// (`crate::quake`).
+    pub(crate) quake: Option<QuakeScene>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub(crate) struct QuakeScene {
+    pub(crate) epicentre: [f64; 2],
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -137,6 +145,7 @@ impl Catalogue {
             off: Vec::new(),
             light: false,
             flight: None,
+            quake: None,
         }
     }
 
@@ -190,6 +199,7 @@ impl Scene {
     pub(crate) fn designed(&self, style: &Value, terrain: bool) -> Value {
         let mut style = match self.restyle.as_deref() {
             Some("globe") => globe(style),
+            Some("quake") => crate::quake::style(style),
             _ => style.clone(),
         };
         if let Some(projection) = &self.projection {

@@ -20,6 +20,7 @@
 mod app;
 mod host;
 mod options;
+mod quake;
 mod scenes;
 
 use orb_api::{Runtime, RuntimeOptions};
