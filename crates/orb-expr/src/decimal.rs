@@ -20,21 +20,27 @@ pub fn parse(text: &str) -> Option<f64> {
         Some(b'+') => (false, 1),
         _ => (false, 0),
     };
-    // The significant digits, and their scale: the number is `digits ×
-    // 10^exponent`.
-    let mut digits: Vec<u8> = Vec::new();
-    let mut exponent: i64 = 0;
+    let digits_from = i;
+    // The number is `w × 10^exponent`, `w` its first 19 significant digits
+    // of `count`, without trailing zeros (`zeros` of them so far).
+    let (mut w, mut count, mut zeros, mut exponent) = (0u64, 0usize, 0u32, 0i64);
     let mut any = false;
     let mut fraction = false;
     while let Some(&c) = bytes.get(i) {
         match c {
             b'0'..=b'9' => {
                 any = true;
-                if !(digits.is_empty() && c == b'0') {
-                    digits.push(c - b'0');
-                }
                 if fraction {
                     exponent -= 1;
+                }
+                if c == b'0' {
+                    zeros += u32::from(count > 0);
+                } else {
+                    count += zeros as usize + 1;
+                    if count <= 19 {
+                        w = w * 10u64.pow(zeros + 1) + u64::from(c - b'0');
+                    }
+                    zeros = 0;
                 }
             }
             b'.' if !fraction => fraction = true,
@@ -45,6 +51,8 @@ pub fn parse(text: &str) -> Option<f64> {
     if !any {
         return None;
     }
+    let digits_to = i;
+    exponent += i64::from(zeros);
     if let Some(b'e' | b'E') = bytes.get(i) {
         i += 1;
         let sign = match bytes.get(i) {
@@ -73,47 +81,71 @@ pub fn parse(text: &str) -> Option<f64> {
     if i != bytes.len() {
         return None;
     }
-    while digits.last() == Some(&0) {
-        digits.pop();
-        exponent += 1;
-    }
-    let magnitude = magnitude(&digits, exponent);
+    let magnitude = if count <= 19 {
+        small(w, count, exponent)
+    } else {
+        // More digits than a `u64` holds: all of them, without leading or
+        // trailing zeros.
+        let digits: Vec<u8> = (bytes[digits_from..digits_to].iter())
+            .filter(|c| c.is_ascii_digit())
+            .map(|c| c - b'0')
+            .skip_while(|&d| d == 0)
+            .take(count)
+            .collect();
+        large(&digits, exponent)
+    };
     Some(if negative { -magnitude } else { magnitude })
 }
 
-/// `digits × 10^exponent`, its digits without leading or trailing zeros.
-fn magnitude(digits: &[u8], exponent: i64) -> f64 {
-    if digits.is_empty() {
+/// `w × 10^exponent`, `w` of `count` digits, 19 at most, with no trailing
+/// zero.
+fn small(w: u64, count: usize, exponent: i64) -> f64 {
+    if w == 0 {
         return 0.0;
     }
-    let count = digits.len() as i64;
-    // At least 10^309, past `f64::MAX`; under 10^-324, under half the
-    // least subnormal.
+    if let Some(out) = out_of_range(count, exponent) {
+        return out;
+    }
+    let k = exponent.unsigned_abs() as usize;
+    if w <= 1 << 53 && k <= 22 {
+        let (w, power) = (w as f64, POWERS[k]);
+        return if exponent < 0 { w / power } else { w * power };
+    }
+    if exponent >= 0 && k <= 19 {
+        // Exact, and `as` rounds to nearest, ties to even.
+        return (u128::from(w) * 10u128.pow(k as u32)) as f64;
+    }
+    if exponent < 0 && k <= 18 {
+        let den = 10u128.pow(k as u32);
+        // A quotient of 64 or 65 bits: `w << shift` fits, since `den` <
+        // 2^60.
+        let shift = 64 - (i64::from(bits(w.into())) - i64::from(bits(den)));
+        let num = u128::from(w) << shift;
+        return rounded(num / den, !num.is_multiple_of(den), shift);
+    }
+    let digits: Vec<u8> = w.to_string().bytes().map(|c| c - b'0').collect();
+    large(&digits, exponent)
+}
+
+/// Infinity or zero for a number of `count` digits times 10^`exponent`
+/// that is at least 10^309, past `f64::MAX`, or under 10^-324, under half
+/// the least subnormal.
+fn out_of_range(count: usize, exponent: i64) -> Option<f64> {
+    let count = count as i64;
     if exponent + count - 1 > 308 {
-        return f64::INFINITY;
+        Some(f64::INFINITY)
+    } else if exponent + count < -324 {
+        Some(0.0)
+    } else {
+        None
     }
-    if exponent + count < -324 {
-        return 0.0;
-    }
-    if count <= 19 {
-        let w = digits.iter().fold(0u64, |w, &d| w * 10 + u64::from(d));
-        let k = exponent.unsigned_abs() as usize;
-        if w <= 1 << 53 && k <= 22 {
-            let (w, power) = (w as f64, POWERS[k]);
-            return if exponent < 0 { w / power } else { w * power };
-        }
-        if exponent >= 0 && k <= 19 {
-            // Exact, and `as` rounds to nearest, ties to even.
-            return (u128::from(w) * 10u128.pow(k as u32)) as f64;
-        }
-        if exponent < 0 && k <= 18 {
-            let den = 10u128.pow(k as u32);
-            // A quotient of 64 or 65 bits: `w << shift` fits, since
-            // `den` < 2^60.
-            let shift = 64 - (i64::from(bits(w.into())) - i64::from(bits(den)));
-            let num = u128::from(w) << shift;
-            return rounded(num / den, !num.is_multiple_of(den), shift);
-        }
+}
+
+/// `digits × 10^exponent`, its digits without leading or trailing zeros,
+/// divided out in big integers.
+fn large(digits: &[u8], exponent: i64) -> f64 {
+    if let Some(out) = out_of_range(digits.len(), exponent) {
+        return out;
     }
     let mut num = Big::from_digits(digits);
     let mut den = Big::one();
@@ -354,6 +386,14 @@ mod tests {
             "1e100000000000",
             "1e-100000000000",
             "0.000000000000000000000000000000000000000000000000000000000000000000001",
+            "0001.2300",
+            "1000000000000000000000000",
+            "10000000000000000000000000000000000000001",
+            "1234567890123456789.0000000000001",
+            "123456789012345678900000",
+            "0.00000000000000000000123456789012345678901",
+            "9999999999999999999e-30",
+            "1.0e-300",
         ] {
             agrees(text);
         }
