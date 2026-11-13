@@ -592,16 +592,18 @@ fn run_session(
     }
     runtime.set_gpu_timing(false);
     // Each frame's end (ms), the camera's zoom, tiles drawn, cull
-    // candidates, CPU and GPU ms, draws, drape slots redrawn and whether
-    // input moved the camera, for attributing slow frames.
+    // candidates, CPU and GPU ms, draws, drape slots redrawn, whether
+    // input moved the camera and the tiles that arrived since the frame
+    // before, for attributing slow frames and seeing loads come again.
     if let Some(prefix) = &settings.dump {
-        let mut out =
-            String::from("t\tzoom\ttiles\tcandidates\tcpu\tgpu\tdraws\tdrape_slots\tmoving\n");
+        let mut out = String::from(
+            "t\tzoom\ttiles\tcandidates\tcpu\tgpu\tdraws\tdrape_slots\tmoving\tarrived\n",
+        );
         for f in &frames {
             let moving = windows.iter().any(|w| (w[0]..=w[1]).contains(&f.t));
             writeln!(
                 out,
-                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}",
+                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}",
                 f.t,
                 f.zoom,
                 f.report.tiles_drawn,
@@ -611,6 +613,7 @@ fn run_session(
                 f.report.frame.draws,
                 f.report.frame.drape_slots,
                 u8::from(moving),
+                f.report.tiles_arrived,
             )
             .map_err(|e| e.to_string())?;
         }
