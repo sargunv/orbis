@@ -5,8 +5,7 @@
 //! horizon: a line on flat surfaces, a sphere on the globe. Style values
 //! are written only when they or the view change.
 
-use crate::TargetFormat;
-use crate::pipeline::Draw;
+use crate::pipeline::{Attachments, Draw};
 use orb_hal::*;
 use orb_shaders::{SCATTER_SHADER, SKY_SHADER, Shader};
 
@@ -76,7 +75,11 @@ pub(crate) struct Atmosphere {
     sky: Option<RenderPipelineId>,
     /// The globe's scattering pipeline and its sunward table, made for the
     /// first globe sky.
-    scatter: Option<(RenderPipelineId, Sunward)>,
+    scatter: Option<RenderPipelineId>,
+    sunward: Option<Sunward>,
+    /// The sky's and the scattering's pipelines for the map's other kind
+    /// of pass ([`swap_target`](Self::swap_target)).
+    kept: [Option<RenderPipelineId>; 2],
     scatter_blend: f32,
     written: Option<(Option<AtmospherePaint>, AtmosphereView)>,
     pub(crate) enabled: bool,
@@ -94,6 +97,8 @@ impl Atmosphere {
             group: None,
             sky: None,
             scatter: None,
+            sunward: None,
+            kept: [None; 2],
             scatter_blend: 0.0,
             written: None,
             enabled: false,
@@ -102,12 +107,20 @@ impl Atmosphere {
 
     /// The pipelines the frame draws with, once made.
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        [self.sky, self.scatter.as_ref().map(|s| s.0)]
+        [self.sky, self.scatter]
             .into_iter()
             .filter(|_| self.enabled)
             .flatten()
             .map(PipelineId::from)
             .collect()
+    }
+
+    /// Draws into the map's passes with or without their depth from now
+    /// on: its pipelines for the other kind, kept since it last drew into
+    /// those, take the place of these, which are kept in turn.
+    pub(crate) fn swap_target(&mut self) {
+        let current = [self.sky, self.scatter];
+        [self.sky, self.scatter] = std::mem::replace(&mut self.kept, current);
     }
 
     /// Asks for the sky's pipeline unless it is made, and for the globe's
@@ -117,7 +130,7 @@ impl Atmosphere {
     pub(crate) fn request(
         &mut self,
         gpu: &mut dyn Gpu,
-        (target, full_projection): (TargetFormat, bool),
+        (target, full_projection): (Attachments, bool),
         frame: BufferId,
         globe: bool,
     ) {
@@ -130,12 +143,12 @@ impl Atmosphere {
             self.sky = Some(pipeline(gpu, &SKY_SHADER, target, &[layout], blend));
         }
         if self.scatter.is_none() && (globe || full_projection) {
-            let sunward = Sunward::new(gpu);
+            let sunward = self.sunward.get_or_insert_with(|| Sunward::new(gpu));
             gpu.set_background_compiles(!globe);
             let layouts = [layout, sunward.layout];
             let scatter = pipeline(gpu, &SCATTER_SHADER, target, &layouts, blend);
             gpu.set_background_compiles(false);
-            self.scatter = Some((scatter, sunward));
+            self.scatter = Some(scatter);
         }
     }
 
@@ -144,7 +157,7 @@ impl Atmosphere {
     pub(crate) fn set(
         &mut self,
         gpu: &mut dyn Gpu,
-        target: (TargetFormat, bool),
+        target: (Attachments, bool),
         frame: BufferId,
         paint: Option<AtmospherePaint>,
         view: AtmosphereView,
@@ -211,14 +224,14 @@ impl Atmosphere {
     /// The globe's scattering over the map, after its layers, once its
     /// pipeline compiled.
     pub(crate) fn commands_after(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
-        match (self.group, &self.scatter) {
-            (Some((_, group)), Some((pipeline, sunward)))
+        match (self.group, self.scatter, &self.sunward) {
+            (Some((_, group)), Some(pipeline), Some(sunward))
                 if self.enabled
                     && self.scatter_blend > 0.0
-                    && gpu.pipeline_ready((*pipeline).into()) =>
+                    && gpu.pipeline_ready(pipeline.into()) =>
             {
                 vec![
-                    RenderCommand::SetPipeline(*pipeline),
+                    RenderCommand::SetPipeline(pipeline),
                     RenderCommand::SetBindGroup { index: 0, group },
                     RenderCommand::SetBindGroup {
                         index: 1,
@@ -272,7 +285,7 @@ fn sky_group(
 fn pipeline(
     gpu: &mut dyn Gpu,
     shader: &Shader,
-    target: TargetFormat,
+    target: Attachments,
     layouts: &[BindGroupLayoutId],
     blend: Option<BlendState>,
 ) -> RenderPipelineId {
@@ -281,9 +294,9 @@ fn pipeline(
 
 impl crate::release::Release for Atmosphere {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.uniform, self.group, self.sky).release(gpu);
-        if let Some((pipeline, s)) = self.scatter {
-            (pipeline, s.table, s.sampler, s.layout, s.group).release(gpu);
+        (self.uniform, self.group, self.sky, self.scatter, self.kept).release(gpu);
+        if let Some(s) = self.sunward {
+            (s.table, s.sampler, s.layout, s.group).release(gpu);
         }
     }
 }

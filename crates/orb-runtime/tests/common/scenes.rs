@@ -1,7 +1,7 @@
 //! Offline scenes of the Tokyo extract that between them draw every
 //! family and pass: Liberty's layers flat and pitched, the globe, terrain
-//! with its drape and a hillshade, a heatmap, raster imagery, and 3D
-//! buildings, single-sampled and multisampled.
+//! with its drape and a hillshade, buildings on it, a heatmap, raster
+//! imagery, and 3D buildings, single-sampled and multisampled.
 
 use serde_json::{Value, json};
 
@@ -73,6 +73,16 @@ pub(crate) fn add_layer(style: &mut Value, layer: Value) {
     layers.insert(at, layer);
 }
 
+/// Liberty's 3D buildings at `opacity`.
+fn extrusion(opacity: f64) -> Value {
+    json!({"id": "building-3d", "type": "fill-extrusion",
+        "source": "openmaptiles", "source-layer": "building", "minzoom": 14,
+        "paint": {"fill-extrusion-color": "hsl(35,8%,85%)",
+            "fill-extrusion-height": ["get", "render_height"],
+            "fill-extrusion-base": ["get", "render_min_height"],
+            "fill-extrusion-opacity": opacity}})
+}
+
 /// The scenes named `names`, their files in a scratch directory.
 pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
     let first = names.first().copied().unwrap_or("none");
@@ -125,6 +135,26 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
     let repaint = r##"[["setPaintProperty", "water", "fill-color", "#3070c0"]]"##;
     add("terrain", &terrain, (13.0, 20.0, 60.0), None);
     add("terrain-drape", &terrain, (13.0, 20.0, 60.0), Some(repaint));
+    // Buildings on the terrain under roads draped over them, multiplied
+    // into the map: the map's pass splits at the buildings, which hide
+    // the roads behind them, and again where the roads read the map.
+    let buildings = || {
+        let terrain = terrain();
+        let path = terrain.strip_prefix("file://").unwrap();
+        let mut s: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        add_layer(&mut s, extrusion(0.8));
+        add_layer(
+            &mut s,
+            json!({"id": "roads-over", "type": "line", "source": "openmaptiles",
+            "source-layer": "transportation",
+            "paint": {"line-color": "#c06040", "line-width": 4,
+                "line-layer-blend": "multiply"}}),
+        );
+        let path = dir.join("terrain-buildings.json");
+        std::fs::write(&path, s.to_string()).unwrap();
+        format!("file://{}", path.display())
+    };
+    add("terrain-buildings", &buildings, (16.0, -20.0, 60.0), None);
     // A heatmap of the points of interest, and circles.
     let heatmap = || {
         style(&dir, "heatmap", |s| {
@@ -153,19 +183,7 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
     add("raster", &raster, (14.0, 0.0, 0.0), None);
     // Liberty's 3D buildings; then multisampled, under a light of their
     // own.
-    let extrusions = || {
-        style(&dir, "extrusions", |s| {
-            add_layer(
-                s,
-                json!({"id": "building-3d", "type": "fill-extrusion",
-                "source": "openmaptiles", "source-layer": "building", "minzoom": 14,
-                "paint": {"fill-extrusion-color": "hsl(35,8%,85%)",
-                    "fill-extrusion-height": ["get", "render_height"],
-                    "fill-extrusion-base": ["get", "render_min_height"],
-                    "fill-extrusion-opacity": 0.8}}),
-            );
-        })
-    };
+    let extrusions = || style(&dir, "extrusions", |s| add_layer(s, extrusion(0.8)));
     add("extrusions", &extrusions, (16.0, -20.0, 60.0), None);
     let lit = || {
         style(&dir, "extrusions-lit", |s| {
@@ -193,6 +211,7 @@ pub(crate) const ALL: &[&str] = &[
     "globe",
     "terrain",
     "terrain-drape",
+    "terrain-buildings",
     "heatmap",
     "raster",
     "extrusions",

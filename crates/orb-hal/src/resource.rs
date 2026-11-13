@@ -426,12 +426,14 @@ pub enum BlendState {
     Additive,
 }
 
-/// A depth test in reversed Z: a fragment passes at or nearer than the
-/// depth held (`greater-equal`).
+/// A pipeline's use of the pass's depth attachment: a test in reversed
+/// Z, where a fragment passes at or nearer than the depth held
+/// (`greater-equal`), or none (`always`), and whether it writes its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepthState {
     pub format: TextureFormat,
     pub write: bool,
+    pub test: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

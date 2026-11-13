@@ -13,7 +13,9 @@
 // own, at `slope_px` texels a side, likewise. A
 // terrain layer draws a stack's slots, two stacks' where the zoom splits
 // it, or a stack's below hillshades it shades from their slopes, each
-// under its stack above it (`terrain_shade.wgsl`).
+// under its stack above it (`terrain_shade.wgsl`), over the map at its
+// opacity. It draws in the map's pass after the terrain's depth alone
+// (`fs_terrain_hidden`), so only the nearest surface shades.
 // A tile's slots are the top-left square of their place, its `shrink`
 // halving their page's side, which a tile that shows small draws few texels
 // of. Mip levels never mix slots, and samples keep to the slot at the level
@@ -83,15 +85,19 @@ struct Shade {
 // A terrain layer: the colour stack drawn below, and above it where no
 // hillshade is; how it fogs: FOG_CONTENT, or FOG_GROUND for the map's
 // first terrain layer, the ground, which fogs where it draws nothing too,
-// or FOG_FADES for a layer composited in a blend mode, over ground fogged
-// already; 1 where its first hillshade blends into the terrain layer
-// before it rather than a stack below (`terrain_shade.wgsl`); and its
-// hillshades (orb-render's `MAX_SHADES`).
+// or FOG_FADES for a layer in a blend mode, over ground fogged already; 1
+// where its first hillshade blends into the map beneath rather than a
+// stack below (`terrain_shade.wgsl`); its opacity, and the blend mode it
+// blends into the map beneath in (`blend.wgsl`; 0, normal, over it); and
+// its hillshades (orb-render's `MAX_SHADES`).
 struct Layer {
     below: u32,
     above: u32,
     fog: u32,
     backdrop: u32,
+    opacity: f32,
+    blend: u32,
+    pad: vec2<u32>,
     shades: array<Shade, 2>,
 };
 
@@ -197,6 +203,13 @@ fn fs_terrain_depth(@builtin(position) position: vec4<f32>) -> @location(0) vec4
     return vec4<f32>(position.z, 0.0, 0.0, 0.0);
 }
 
+// The terrain's depth alone, in a pass that draws more: nothing over the
+// colour beneath it, which the pipeline blends over.
+@fragment
+fn fs_terrain_hidden() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
+}
+
 // Where a fragment samples its tile's drape slots on a page of `slot_px`
 // texels a slot: the texel in a slot and the footprint's gradients, the
 // same in every slot of the page and side (the colour page's, or the slope
@@ -272,7 +285,8 @@ fn over(top: vec4<f32>, bottom: vec4<f32>) -> vec4<f32> {
 @fragment
 fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
     let at = drape_sample(in, terrain.slot_px);
-    return fogged(in, over(drape_color(in, at, layer.above), drape_color(in, at, layer.below)));
+    let color = over(drape_color(in, at, layer.above), drape_color(in, at, layer.below));
+    return fogged(in, color) * layer.opacity;
 }
 
 // The layer's colour as the atmosphere fogs it: the ground whole, a layer

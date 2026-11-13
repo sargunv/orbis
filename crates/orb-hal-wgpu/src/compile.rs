@@ -404,7 +404,11 @@ impl RenderJob {
                 depth_stencil: self.depth.map(|d| wgpu::DepthStencilState {
                     format: convert::texture_format(d.format),
                     depth_write_enabled: Some(d.write),
-                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    depth_compare: Some(if d.test {
+                        wgpu::CompareFunction::GreaterEqual
+                    } else {
+                        wgpu::CompareFunction::Always
+                    }),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -1307,7 +1311,15 @@ mod webgpu {
                 dict(&[
                     ("format", format(depth.format).into()),
                     ("depthWriteEnabled", depth.write.into()),
-                    ("depthCompare", "greater-equal".into()),
+                    (
+                        "depthCompare",
+                        if depth.test {
+                            "greater-equal"
+                        } else {
+                            "always"
+                        }
+                        .into(),
+                    ),
                 ]),
             ));
         }

@@ -68,7 +68,7 @@ pub use tiles::{
     WarpKey, changed_borders, dem_neighbours, tile_extents, tile_latitudes, tile_size,
 };
 
-use crate::pipeline::{Draw, Variants};
+use crate::pipeline::{Attachments, Draw, Variants};
 use crate::release::Release;
 
 #[cfg(cpu_driven)]
@@ -251,7 +251,7 @@ struct Node {
     /// What an extrusion node's pipelines are specialised for.
     elevation: paint::ExtrusionShape,
     /// On terrain, the drape stack a draped node draws into, and the
-    /// terrain layer that composites it.
+    /// terrain layer that draws it.
     stack: Option<u8>,
     terrain_layer: Option<u8>,
     /// A shaded hillshade blending other than normally that its terrain
@@ -411,8 +411,14 @@ pub struct PipelineSet {
 #[derive(Debug)]
 pub struct Renderer {
     id: u64,
-    /// The host's target.
-    target: TargetFormat,
+    /// The host's target, and whether the map's passes have a depth
+    /// attachment: while the style has terrain, which draws in them.
+    target: Attachments,
+    /// That depth attachment, made for the frame's size: never stored.
+    map_depth: Option<(TextureId, [u32; 2])>,
+    /// Whether 3D surfaces draw at four samples
+    /// ([`set_antialias_3d`](Self::set_antialias_3d)).
+    antialias_3d: bool,
     /// What it draws otherwise than on WebGPU.
     gaps: Vec<Gap>,
     atmosphere: atmosphere::Atmosphere,
@@ -427,6 +433,9 @@ pub struct Renderer {
     /// The vector families' pipelines, each made for the family's first
     /// node.
     paint: PaintPipelines,
+    /// The vector families' pipelines for the map's other kind of pass,
+    /// with or without its depth ([`fit_depth`](Self::fit_depth)).
+    paint_kept: PaintPipelines,
     /// Symbol layers' pipelines, placement target and passes.
     symbols: symbol::Symbols,
     /// Whether the map's views may need the full projection
@@ -497,9 +506,10 @@ pub struct Renderer {
     nodes: Vec<Node>,
     tiles: tiles::Tiles,
     surface_warps: tiles::SurfaceWarps,
-    /// The main pass's bundles: one, or one more than the groups that
-    /// blend other than normally (empty until recorded).
+    /// The main pass's bundles (empty until recorded), and what the map's
+    /// passes draw in order, the bundles among it.
     bundles: Vec<RenderBundleId>,
+    steps: Vec<Step>,
     /// Node uniform writes since the last frame.
     paints_written: u32,
     images: image::Images,
@@ -523,7 +533,7 @@ pub struct Renderer {
     /// The drape pass's paint, frames and bundles, made for the first
     /// draped paint.
     drape: Option<Drape>,
-    /// What each terrain draw composites, in style order.
+    /// What each draw of the terrain draws, in style order.
     terrain_layers: Vec<terrain::TerrainLayer>,
     /// Colour and slope stacks of the terrain layers.
     drape_stacks: [u32; 2],
@@ -611,7 +621,11 @@ impl Renderer {
         let layouts = (self.draw_layout, self.node_layout);
         self.driver.destroy(gpu);
         let groups = self.draw_groups;
-        let pipelines = ((self.paint.pipelines, self.paint.untested), self.symbols);
+        let pipelines = (
+            (self.paint.pipelines, self.paint.untested),
+            (self.paint_kept.pipelines, self.paint_kept.untested),
+            self.symbols,
+        );
         (
             layouts,
             groups,
@@ -634,6 +648,7 @@ impl Renderer {
             .drape_pipelines
             .map(|d| ((d.paint.pipelines, d.paint.untested), d.images.0));
         (self.terrain, self.drape, drape, self.no_terrain_depth).release(gpu);
+        self.map_depth.map(|(depth, _)| depth).release(gpu);
     }
 
     /// What a renderer on a device of `caps` draws otherwise than on
@@ -704,6 +719,7 @@ impl Renderer {
         );
         let image_bindings = images;
         // Its nearest sampler and blank array serve the scene too.
+        let target = Attachments::from(target);
         let images = image::Images::new(gpu, target, draw_layout);
         let (nearest, no_dem) = (images.nearest(), images.placeholder());
         // Nothing hides symbols and circles without terrain: its depth is
@@ -753,6 +769,8 @@ impl Renderer {
         Self {
             id: RENDERERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             target,
+            map_depth: None,
+            antialias_3d: false,
             gaps: Self::gaps_on(gpu.caps()),
             atmosphere,
             scene,
@@ -761,6 +779,7 @@ impl Renderer {
             draw_layout,
             node_layout,
             paint: PaintPipelines::default(),
+            paint_kept: PaintPipelines::default(),
             symbols,
             full_projection: false,
             terrain_reachable: false,
@@ -787,6 +806,7 @@ impl Renderer {
             tiles: Default::default(),
             surface_warps: Default::default(),
             bundles: Vec::new(),
+            steps: Vec::new(),
             paints_written: 0,
             images,
             downsampler,
@@ -835,7 +855,7 @@ impl Renderer {
 
     /// The format of the targets it draws into.
     pub fn format(&self) -> TargetFormat {
-        self.target
+        self.target.format()
     }
 
     /// Identifies the renderer among those of the process: a map holds
@@ -908,7 +928,16 @@ impl Renderer {
     /// Draws 3D surfaces at four samples when `enabled`, or at one (the
     /// default).
     pub fn set_antialias_3d(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
-        if self.extrusions.set_antialias(enabled) {
+        self.antialias_3d = enabled;
+        self.fit_samples_3d(gpu);
+    }
+
+    /// Draws 3D surfaces at the sample count they take: four where asked
+    /// ([`set_antialias_3d`](Self::set_antialias_3d)), but the map's
+    /// where its passes take their depth (`splits_at_3d`).
+    fn fit_samples_3d(&mut self, gpu: &mut dyn Gpu) {
+        let four = self.antialias_3d && !self.splits_at_3d();
+        if self.extrusions.set_antialias(four) {
             self.set_stale = true;
             self.invalidate_bundle(gpu);
         }
@@ -1216,7 +1245,7 @@ impl Renderer {
     /// terrain is on: each run of them between nodes that aren't draped is
     /// a terrain layer of one stack, and a layer that composites once
     /// (below opacity 1 or blending other than normally) has a terrain
-    /// layer of its own, which composites as the layer's. A shaded
+    /// layer of its own, at the layer's opacity and in its mode. A shaded
     /// hillshade ends its stack and draws its slopes into one of its own:
     /// the terrain layer lights them over the stack before and under the
     /// next, which draws the layers above it (up to
@@ -1257,12 +1286,12 @@ impl Renderer {
         }
         self.drape_stacks = stacks.counts;
         self.terrain_layers = stacks.layers;
-        // A layer's own terrain layer composites in its blend mode.
+        // A layer's own terrain layer blends in its blend mode.
         for node in self.nodes.iter().filter(|n| !n.blends_on_terrain) {
             if let (Some(layer), Some((_, _, blend))) = (node.terrain_layer, node.composite)
                 && blend != Blend::Normal
             {
-                self.terrain_layers[usize::from(layer)].blended = true;
+                self.terrain_layers[usize::from(layer)].blend = blend;
             }
         }
     }
@@ -1345,6 +1374,7 @@ impl Renderer {
             }
         }
         if was != self.terrain_on() {
+            self.fit_depth(gpu);
             // Draped nodes draw into the drape, with its pipelines, and
             // in the full variants.
             self.set_stale = true;
@@ -1358,12 +1388,21 @@ impl Renderer {
         self.assign_stacks();
         self.sync_cull();
         self.invalidate_bundle(gpu);
+        if self.terrain_on() {
+            // The terrain layers may draw with pipelines the set's didn't.
+            self.request_terrain(gpu, self.pipeline_set.shaded);
+        }
     }
 
     /// The terrain, made for the first that turns on or that the set asks
     /// for ahead.
     fn terrain(&mut self, gpu: &mut dyn Gpu) -> &mut terrain::Terrain {
-        let (target, atmosphere) = (self.target, self.atmosphere.uniform);
+        // It draws in the map's passes while they have their depth.
+        let target = Attachments {
+            depth: true,
+            ..self.target
+        };
+        let atmosphere = self.atmosphere.uniform;
         let linear = self.images.linear();
         (self.terrain).get_or_insert_with(|| terrain::Terrain::new(gpu, target, atmosphere, linear))
     }
@@ -1371,11 +1410,39 @@ impl Renderer {
     /// Sets whether the style has terrain, on or not yet (its DEM source
     /// may still resolve): the pipeline set then holds the terrain's and
     /// the draped nodes' drape pipelines from the first.
-    pub fn set_terrain_reachable(&mut self, on: bool) {
+    pub fn set_terrain_reachable(&mut self, gpu: &mut dyn Gpu, on: bool) {
         if self.terrain_reachable != on {
             self.terrain_reachable = on;
             self.set_stale = true;
         }
+        self.fit_depth(gpu);
+    }
+
+    /// Gives the map's passes a depth attachment while the style has
+    /// terrain or terrain is on, for the terrain to draw in, or none:
+    /// every pipeline they draw with declares it, so those made for the
+    /// passes before are let go and made again as the set and the nodes
+    /// ask for them.
+    fn fit_depth(&mut self, gpu: &mut dyn Gpu) {
+        let depth = self.terrain_reachable || self.terrain_on();
+        if self.target.depth == depth {
+            return;
+        }
+        self.target.depth = depth;
+        let target = self.target;
+        // Those for the other kind, kept since the passes last had or
+        // lacked it, so that turning terrain on and back off draws on
+        // at once.
+        std::mem::swap(&mut self.paint, &mut self.paint_kept);
+        self.symbols.swap_draws();
+        self.images.retarget(target);
+        self.composites.retarget(target);
+        self.atmosphere.swap_target();
+        self.map_depth.take().map(|(depth, _)| depth).release(gpu);
+        self.pipelines_stale = true;
+        self.set_stale = true;
+        self.invalidate_bundle(gpu);
+        self.layers.clear(gpu);
     }
 
     /// Whether the style's terrain is still to turn on: its DEM source
@@ -1597,6 +1664,7 @@ impl Renderer {
 
     fn drop_bundles(&mut self, gpu: &mut dyn Gpu) {
         std::mem::take(&mut self.bundles).release(gpu);
+        self.steps.clear();
     }
 
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
@@ -2152,24 +2220,26 @@ impl Renderer {
         self.set_asked += gpu.counters().pipelines_requested - asked;
     }
 
-    /// Asks for the terrain's pipelines at the sample count 3D layers draw
-    /// at, a shaded hillshade's where a hillshade may shade, and the drape
-    /// atlas's mips.
+    /// Asks for the terrain's pipelines, a shaded hillshade's where a
+    /// hillshade may shade, its depth's in the 3D layers' passes, and the
+    /// drape atlas's mips.
     fn request_terrain(&mut self, gpu: &mut dyn Gpu, shaded: bool) {
-        let samples = self.extrusions.samples;
-        let shaded = shaded
-            || self
-                .terrain_layers
-                .iter()
-                .any(terrain::TerrainLayer::shaded);
+        let three_d = self.extrusions.format();
+        let layers = &self.terrain_layers;
+        let shaded = shaded || layers.iter().any(terrain::TerrainLayer::shaded);
+        let beneath = layers.iter().any(terrain::TerrainLayer::reads_beneath);
         if shaded {
             self.images.make_slopes(gpu);
         }
-        self.terrain(gpu).request_pipelines(gpu, samples, shaded);
+        if beneath {
+            // Its group's composite carries the map over to the pass after
+            // the split.
+            self.composites
+                .make(gpu, offscreen::Mode::Blend(Blend::Multiply));
+        }
+        (self.terrain(gpu)).request_pipelines(gpu, three_d, (shaded, beneath));
         self.downsampler.make(gpu);
         self.images.make_prepare(gpu);
-        // Terrain layers composite into the map.
-        self.composites.make(gpu, offscreen::Mode::Over);
     }
 
     /// Asks for the pipelines one group draws with: each node shaped as
@@ -2249,11 +2319,8 @@ impl Renderer {
     /// its drawing.
     fn make_for_node(&mut self, gpu: &mut dyn Gpu, i: usize, warm: bool) {
         let layouts = [self.draw_layout, self.node_layout];
-        let drape_target = TargetFormat {
-            color: DRAPE_FORMAT,
-            sample_count: 1,
-        };
-        let own_drape = self.target.color != drape_target.color;
+        let drape_target = drape_attachments();
+        let own_drape = self.target != drape_target;
         let variants = self.variants();
         let node = &self.nodes[i];
         let (family, kind) = (node.family, node.paint_kind(&self.patterned, &self.rowed));
@@ -2632,34 +2699,40 @@ impl Renderer {
             ..FrameStats::default()
         };
         let cull_ready = self.cull_passes(gpu, &mut passes, &mut stats);
-        let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
-        let (terrain_above, depth_cleared) = match terrain_on {
-            true => {
-                let passing = clock();
-                let (above, cleared, drawn) =
-                    self.terrain_passes(gpu, &drape, extrusions_ready, &mut passes);
-                stats.draws += drawn.draws;
-                stats.drape_slots = drawn.slots;
-                drape_passes = micros(passing, clock());
-                (above, cleared)
-            }
-            false => (Vec::new(), false),
+        if terrain_on {
+            let passing = clock();
+            let drawn = self.terrain_passes(gpu, &drape, &mut passes);
+            stats.draws += drawn.draws;
+            stats.drape_slots = drawn.slots;
+            drape_passes = micros(passing, clock());
+        }
+        // Over the terrain's depth, where it draws this frame.
+        let terrain_depth = match self.terrain.as_ref().filter(|t| terrain_on && t.drawing()) {
+            Some(t) => t.depth_ready(gpu, terrain::THREE_D),
+            None => true,
         };
+        let extrusions_ready =
+            cull_ready && terrain_depth && self.extrusions.ready(gpu, &self.composites);
         let placings = (self.placings(), self.full);
         let quads: Vec<(u32, std::ops::Range<u32>)> = (self.scene.blocks())
             .map(|block| (block, self.scene.block_quads(block)))
             .collect();
         passes.extend(self.symbols.pass(gpu, placings, &quads));
-        stats.draws += self.extrusion_passes(
-            gpu,
-            extrusions_ready,
-            (terrain_above, depth_cleared),
-            &mut passes,
-        );
+        // Before the map's passes, or among them where they split at the
+        // 3D layers.
+        let split = self.steps.iter().any(|s| matches!(s, Step::ThreeD(_)));
+        let (mut three_d, draws) = self.extrusion_passes(gpu, extrusions_ready, split);
+        stats.draws += draws;
+        if !split {
+            let start = passes.len();
+            passes.extend(three_d.drain(..).map(|(_, pass)| Pass::Render(pass)));
+            Pass::group(&mut passes, start, "3d layers");
+        }
         let start = passes.len();
-        passes.extend(self.layers.passes());
+        let depth = self.map_depth.filter(|_| self.target.depth);
+        passes.extend(self.layers.passes(depth.map(|(depth, _)| depth)));
         Pass::group(&mut passes, start, "layers apart");
-        self.main_passes(gpu, (target, clear), terrain_on, &mut passes);
+        stats.draws += self.main_passes(gpu, (target, clear), terrain_on, three_d, &mut passes);
         // What the frame wrote into data textures lands before it draws.
         #[cfg(cpu_driven)]
         self.scene.tables_mut().flush(gpu);
@@ -2748,19 +2821,15 @@ impl Renderer {
     }
 
     /// Sizes the frame's targets to its viewport: the 3D layers', the
-    /// terrain's, the heatmaps' densities. The bundles record again for
-    /// targets made anew. Returns the frame's size in pixels.
+    /// map's depth, the terrain's, the heatmaps' densities. The bundles
+    /// record again for targets made anew. Returns the frame's size in
+    /// pixels.
     fn resize_targets(
         &mut self,
         gpu: &mut dyn Gpu,
         frame: &FrameBlock,
         terrain_on: bool,
     ) -> [u32; 2] {
-        let terrain_layers = if terrain_on {
-            self.terrain_layers.len()
-        } else {
-            0
-        };
         let density_size = frame
             .viewport
             .map(|v| (v * frame.pixel_ratio / 4.0).floor().max(1.0) as u32);
@@ -2768,19 +2837,51 @@ impl Renderer {
             .viewport
             .map(|v| (v * frame.pixel_ratio).max(1.0) as u32);
         let logical = frame.viewport.map(|v| v.max(1.0) as u32);
+        self.fit_samples_3d(gpu);
         // Every 3D and heatmap node has its targets from the first frame,
         // whether or not its layer draws yet, so that none is made for a
         // first use in a gesture: a frame makes them only for a new
-        // viewport, which the screen made anew too.
-        let mut resized = self.extrusions.resize(
-            gpu,
-            size,
-            self.nodes.iter().filter(|n| n.extrusion.is_some()).count() + terrain_layers,
-        );
-        if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
-            terrain.set_layers(gpu, &self.terrain_layers, self.drape_stacks[0]);
-            let sizes = (size, logical);
-            resized |= terrain.resize(gpu, &mut self.composites, sizes, self.extrusions.samples);
+        // viewport, which the screen made anew too. The map's passes share
+        // the 3D layers' depth where they split at them, which a pass of
+        // its own then doesn't keep to itself.
+        let extruded = self.nodes.iter().filter(|n| n.extrusion.is_some()).count();
+        let shared = usize::from(extruded > 0 && terrain_on && self.splits_at_3d());
+        let mut resized = self.extrusions.resize(gpu, size, extruded + shared);
+        if self.target.depth && self.map_depth.is_none_or(|(_, made)| made != size) {
+            self.map_depth.take().map(|(depth, _)| depth).release(gpu);
+            let depth = gpu.create_texture(&TextureDesc {
+                label: "map depth",
+                width: size[0],
+                height: size[1],
+                array_layers: 1,
+                dimension: TextureViewDimension::D2,
+                format: TextureFormat::Depth32Float,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
+                sample_count: self.target.sample_count,
+                mip_levels: 1,
+            });
+            self.map_depth = Some((depth, size));
+        }
+        if terrain_on {
+            // A terrain layer of a layer composited once draws at its
+            // layer's opacity.
+            let opacities: Vec<f32> = (0..self.terrain_layers.len())
+                .map(|layer| {
+                    let first = (self.nodes.iter())
+                        .find(|n| n.terrain_layer == Some(layer as u8) && !n.blends_on_terrain);
+                    first
+                        .and_then(|n| {
+                            n.composite
+                                .filter(|_| composite_group(n.composite).is_some())
+                        })
+                        .map_or(1.0, |(_, opacity, _)| opacity)
+                })
+                .collect();
+            let layers = (&self.terrain_layers[..], self.drape_stacks[0]);
+            if let Some(terrain) = self.terrain.as_mut() {
+                terrain.set_layers(gpu, layers, &opacities);
+                resized |= terrain.resize(gpu, logical);
+            }
         }
         for node in &mut self.nodes {
             if let Some(extrusion) = &mut node.extrusion {
@@ -2800,43 +2901,74 @@ impl Renderer {
         size
     }
 
-    /// Records the main pass's bundles and the composited layers' own,
-    /// for a frame of `size` pixels.
+    /// Whether the map's passes split at each 3D layer, which then draws
+    /// its pass between theirs: on terrain, where a terrain layer lies
+    /// above a 3D layer, whose buildings hide what of it they stand in
+    /// front of. The map's passes then take the 3D layers' depth, which
+    /// holds the terrain's and their buildings', and draw at its sample
+    /// count.
+    fn splits_at_3d(&self) -> bool {
+        let first = self.nodes.iter().position(|n| n.extrusion.is_some());
+        self.terrain_on()
+            && first.is_some_and(|first| {
+                (self.nodes[first..].iter()).any(|n| n.terrain_layer.is_some())
+            })
+    }
+
+    /// Records the map's bundles and the composited layers' own, for a
+    /// frame of `size` pixels: what the map's passes draw ([`Step`]).
     fn record_bundles(&mut self, gpu: &mut dyn Gpu, size: [u32; 2], terrain_on: bool) {
         let mut ready = self.ready(gpu, terrain_on);
         let mut commands = Vec::with_capacity(self.nodes.len() * 5);
         // Runs of one layer's nodes below layer opacity 1 or blending
-        // other than normally draw into a texture of their own; draped
-        // nodes take the terrain's way.
-        // On terrain, a draped layer's group is its terrain layer: the
-        // texture it composites.
-        // A hillshade its terrain layer blends composites with it.
-        let mut runs: Vec<layer_composite::Run> = Vec::new();
+        // other than normally draw into a texture of their own. On
+        // terrain a draped layer's nodes draw in its terrain layer, at the
+        // layer's opacity: one that reads the map beneath it (blending
+        // other than normally, or a hillshade's blending into the map) is
+        // a group that splits the pass, with nothing of its own to
+        // composite.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Key {
+            Layer(u32),
+            Terrain(u8),
+        }
+        let blank = self.composites.blank();
+        let mut runs: Vec<(Key, layer_composite::Run)> = Vec::new();
         for (i, node) in self.nodes.iter().enumerate() {
-            let Some(layer) = composite_group(node.composite).filter(|_| !node.blends_on_terrain)
-            else {
-                continue;
-            };
-            let (_, opacity, blend) = node.composite.expect("grouped");
-            let terrain_layer = node.terrain_layer.filter(|_| terrain_on);
-            match runs.last_mut() {
-                Some(run)
-                    if run.nodes.end == i
-                        && composite_group(self.nodes[run.nodes.start].composite)
-                            == Some(layer) =>
-                {
-                    run.nodes.end = i + 1;
+            let (key, opacity, blend, source) = match node.terrain_layer.filter(|_| terrain_on) {
+                Some(l) => {
+                    let layer = &self.terrain_layers[usize::from(l)];
+                    if !layer.reads_beneath() {
+                        continue;
+                    }
+                    let shade = layer.shades[0].map_or(Blend::Normal, |s| s.blend);
+                    let blend = if layer.backdrop { shade } else { layer.blend };
+                    (Key::Terrain(l), 1.0, blend, Some(blank))
                 }
-                _ => runs.push(layer_composite::Run {
-                    nodes: i..i + 1,
-                    opacity,
-                    blend,
-                    source: terrain_layer.and_then(|l| self.terrain.as_ref()?.layer_texture(l)),
-                }),
+                None => {
+                    let Some(layer) = composite_group(node.composite) else {
+                        continue;
+                    };
+                    let (_, opacity, blend) = node.composite.expect("grouped");
+                    (Key::Layer(layer), opacity, blend, None)
+                }
+            };
+            match runs.last_mut() {
+                Some((k, run)) if run.nodes.end == i && *k == key => run.nodes.end = i + 1,
+                _ => runs.push((
+                    key,
+                    layer_composite::Run {
+                        nodes: i..i + 1,
+                        opacity,
+                        blend,
+                        source,
+                    },
+                )),
             }
         }
-        self.layers
-            .regroup(gpu, &mut self.composites, runs, (size, self.target));
+        let runs = runs.into_iter().map(|(_, run)| run).collect();
+        let format = self.target.format();
+        (self.layers).regroup(gpu, &mut self.composites, runs, (size, format));
         // Until the composites compile, nothing draws: a split main
         // pass needs its blend draw.
         if !self.layers.ready(gpu, &self.composites) {
@@ -2844,6 +2976,12 @@ impl Renderer {
             ready.cull = false;
         }
         (self.waiting, self.recorded) = (0, 0);
+        let layers = RenderBundleDesc {
+            label: "layers",
+            color_formats: &[self.target.color],
+            depth_format: self.target.depth.then_some(TextureFormat::Depth32Float),
+            sample_count: self.target.sample_count,
+        };
         for g in 0..self.layers.groups.len() {
             if self.layers.groups[g].drawn_elsewhere() {
                 continue;
@@ -2861,47 +2999,67 @@ impl Renderer {
             self.layers.groups[g].bundle = Some(gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "layer composite",
-                    color_formats: &[self.target.color],
-                    depth_format: None,
-                    sample_count: self.target.sample_count,
+                    ..layers
                 },
                 &bound_once(group),
             ));
         }
-        let layers = RenderBundleDesc {
-            label: "layers",
-            color_formats: &[self.target.color],
-            depth_format: None,
-            sample_count: self.target.sample_count,
+        let split = terrain_on && self.splits_at_3d();
+        let mut steps = Vec::new();
+        let mut bundles = Vec::new();
+        let mut flush = |gpu: &mut dyn Gpu, commands: &mut Vec<RenderCommand>, beneath: bool| {
+            if commands.is_empty() && !beneath {
+                return None;
+            }
+            let bundle = gpu.create_render_bundle(&layers, &bound_once(std::mem::take(commands)));
+            bundles.push(bundle);
+            Some(if beneath {
+                Step::Beneath(bundle)
+            } else {
+                Step::Bundle(bundle)
+            })
         };
         for i in 0..=self.nodes.len() {
             // The solid background and what it hides go in a bundle
             // of their own, which the clear can stand for.
             if self.beneath.is_some_and(|b| i == b + 1) {
-                let segment = bound_once(std::mem::take(&mut commands));
-                self.bundles
-                    .push(gpu.create_render_bundle(&layers, &segment));
+                steps.extend(flush(gpu, &mut commands, true));
             }
             if i == self.nodes.len() {
                 break;
             }
             let (start, member) = self.layers.at(i);
-            match start {
-                // The main pass splits here: its blend draw opens the
-                // next pass, before the next bundle.
-                Some(group) if group.blend != Blend::Normal => {
-                    let segment = bound_once(std::mem::take(&mut commands));
-                    self.bundles
-                        .push(gpu.create_render_bundle(&layers, &segment));
+            match start.map(|g| (g, &self.layers.groups[g])) {
+                // The pass splits here: its blend draw opens the next
+                // pass, before what follows.
+                Some((g, group)) if group.blend != Blend::Normal => {
+                    steps.extend(flush(gpu, &mut commands, false));
+                    steps.push(Step::Blend(g));
                     self.recorded += 1;
                 }
-                Some(group) => {
+                Some((_, group)) => {
                     commands.extend(self.layers.composite_commands(&self.composites, group));
                     self.recorded += 1;
                 }
                 None => {}
             }
             let node = &self.nodes[i];
+            if let Some(layer) = node.terrain_layer.filter(|_| terrain_on) {
+                // A terrain layer draws in its first node's place.
+                if i == 0 || self.nodes[i - 1].terrain_layer != Some(layer) {
+                    if ready.cull && ready.terrain {
+                        steps.extend(flush(gpu, &mut commands, false));
+                        steps.push(Step::Terrain(layer));
+                    } else {
+                        self.waiting += 1;
+                    }
+                }
+                continue;
+            }
+            if split && node.extrusion.is_some() {
+                steps.extend(flush(gpu, &mut commands, false));
+                steps.push(Step::ThreeD(i));
+            }
             let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
             let before = commands.len();
             if !member && !self.node_commands(gpu, ready, i, groups, &mut commands) {
@@ -2909,8 +3067,13 @@ impl Renderer {
             }
             self.recorded += u32::from(commands.len() > before);
         }
-        self.bundles
-            .push(gpu.create_render_bundle(&layers, &bound_once(commands)));
+        // The last bundle, empty or not: recorded bundles are never none.
+        steps.extend(flush(gpu, &mut commands, true).map(|s| match s {
+            Step::Beneath(b) => Step::Bundle(b),
+            s => s,
+        }));
+        self.bundles = bundles;
+        self.steps = steps;
     }
 
     /// The DEM prepare, hillshade table, image mip and cull passes and the
@@ -2970,26 +3133,28 @@ impl Renderer {
         cull_ready
     }
 
-    /// The terrain's passes: its drape slots (`drape`'s bundles) and its
-    /// layers. Those above a 3D layer are returned by their first node,
-    /// to draw after it; the rest join `passes`. Also returns whether a
-    /// pass cleared the depth the 3D passes share, and the draws.
+    /// The terrain's passes before the map: its drape slots (`drape`'s
+    /// bundles) and its depth for what it hides, and what its draws in
+    /// the map's passes draw this frame. Returns its draws.
     fn terrain_passes(
         &mut self,
         gpu: &mut dyn Gpu,
         drape: &[(u32, RenderBundleId)],
-        extrusions_ready: bool,
         passes: &mut Vec<Pass>,
-    ) -> (Vec<(usize, RenderPass)>, bool, terrain::TerrainDrawn) {
+    ) -> terrain::TerrainDrawn {
         let terrain = self.terrain.as_mut().expect("terrain is on");
-        let mut terrain_above: Vec<(usize, RenderPass)> = Vec::new();
-        let mut depth_cleared = false;
         let start = passes.len();
-        let depth = self.extrusions.depth().expect("sized above");
         let b = self.scene.buffers();
-        // Shaded hillshades light their slopes' slots (blank until they
-        // draw there) through their tables, those shown.
-        let shades: Vec<_> = (self.terrain_layers.iter())
+        let scene = (b.frame, self.scene.tables().entry(Table::Props, 8));
+        let drawn = terrain.passes(gpu, scene, drape, &self.downsampler, passes);
+        Pass::group(passes, start, "terrain");
+        drawn
+    }
+
+    /// Each terrain layer's hillshades' tables: those shown, which light
+    /// their slopes' slots (blank until they draw there).
+    fn shade_tables(&self) -> Vec<terrain::ShadeTables> {
+        (self.terrain_layers.iter())
             .map(|l| {
                 l.shades.map(|shade| {
                     let node = &self.nodes[shade?.node as usize];
@@ -2999,65 +3164,24 @@ impl Renderer {
                         .flatten()
                 })
             })
-            .collect();
-        let mut layers = Vec::with_capacity(self.terrain_layers.len());
-        let drawn = terrain.passes(
-            gpu,
-            (b.frame, self.scene.tables().entry(Table::Props, 8)),
-            (drape, &shades),
-            depth,
-            &self.downsampler,
-            (passes, &mut layers),
-        );
-        // A terrain layer draws after the 3D layers below it, over
-        // their depth, so that buildings hide what they stand in front
-        // of: draped layers above a fill-extrusion layer, and their
-        // fog, would otherwise composite over its buildings. Those
-        // below every 3D layer draw here.
-        let first_3d =
-            (self.nodes.iter()).position(|n| n.extrusion.is_some() && n.drawn && extrusions_ready);
-        for (layer, pass) in layers.into_iter().enumerate() {
-            let at = (self.nodes.iter())
-                .position(|n| n.terrain_layer == Some(layer as u8))
-                .unwrap_or(0);
-            match first_3d {
-                Some(first) if first < at => terrain_above.push((at, pass)),
-                _ => {
-                    depth_cleared = true;
-                    passes.push(Pass::Render(pass));
-                }
-            }
-        }
-        Pass::group(passes, start, "terrain");
-        (terrain_above, depth_cleared, drawn)
+            .collect()
     }
 
-    /// The 3D layers' passes, in order with the terrain layers above them
-    /// (`terrain_above`, after a pass cleared their shared depth when
-    /// `depth_cleared`); returns their draws.
+    /// The 3D layers' passes, by their nodes, each over the depth they
+    /// share. The first clears it, and on terrain draws the terrain's
+    /// depth into it first, unless the map's passes split at them
+    /// (`split`), whose first pass did both. Also returns their draws.
     fn extrusion_passes(
         &mut self,
         gpu: &mut dyn Gpu,
         extrusions_ready: bool,
-        (terrain_above, mut depth_cleared): (Vec<(usize, RenderPass)>, bool),
-        passes: &mut Vec<Pass>,
-    ) -> u32 {
-        let mut draws = 0;
+        split: bool,
+    ) -> (Vec<(usize, RenderPass)>, u32) {
+        let mut out = Vec::new();
         let buffers = self.driver.buffers(self.scene.buffers());
-        let start = passes.len();
-        let mut terrain_above = terrain_above.into_iter().peekable();
-        // The first pass on the shared depth clears it, the rest load it.
-        fn push_terrain(passes: &mut Vec<Pass>, mut pass: RenderPass, cleared: &mut bool) {
-            if let Some(depth) = &mut pass.depth {
-                depth.load = if *cleared {
-                    LoadOp::Load
-                } else {
-                    LoadOp::Clear(0.0)
-                };
-            }
-            *cleared = true;
-            passes.push(Pass::Render(pass));
-        }
+        let terrain = (self.terrain.as_ref()).filter(|t| t.active());
+        let mut terrain_depth = terrain.map(|t| t.depth_commands(terrain::THREE_D));
+        let mut first = !split;
         for (index, node) in self.nodes.iter_mut().enumerate() {
             let Some(target) = node
                 .extrusion
@@ -3066,11 +3190,6 @@ impl Renderer {
             else {
                 continue;
             };
-            while let Some((_, pass)) = terrain_above.next_if(|(at, _)| *at < index) {
-                push_terrain(passes, pass, &mut depth_cleared);
-            }
-            let first = !depth_cleared;
-            depth_cleared = true;
             let draw = |row| self.driver.draw(&buffers, row, NodeDraw::Indexed);
             let cut = self.scene.second_row(index as u32).zip(node.second_group);
             let (cut_row, cut_group) = cut.expect("an extrusion node draws a cut stream");
@@ -3086,55 +3205,168 @@ impl Renderer {
                     Some((group, streams))
                 })
                 .collect();
-            let pass =
-                self.extrusions
-                    .prepare(gpu, target, &buffers, (&streams, node.elevation), first);
-            passes.push(Pass::Render(pass));
-            draws += 1;
+            let before = if first {
+                terrain_depth.take().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let pass = (self.extrusions).prepare(
+                gpu,
+                target,
+                &buffers,
+                (&streams, node.elevation),
+                (first, before),
+            );
+            first = false;
+            out.push((index, pass));
         }
-        for (_, pass) in terrain_above {
-            push_terrain(passes, pass, &mut depth_cleared);
-        }
-        Pass::group(passes, start, "3d layers");
-        draws
+        let draws = out.len() as u32;
+        (out, draws)
     }
 
-    /// The main pass into `target`, cleared to `clear`: the sky, the
-    /// bundles and the composited layers.
+    /// The map's passes into `target`, cleared to `clear`: the sky, then
+    /// what the steps draw (the bundles, the terrain's draws, the
+    /// composited layers), then the scattering. The passes split where a
+    /// group blends other than normally, and where a 3D layer of
+    /// `three_d` (its pass, by its node) draws between them. Their depth
+    /// where they have one: the map's own, the terrain's drawn into it
+    /// first in each, or where they split at 3D layers the depth those
+    /// share, which the first clears and draws the terrain's into.
+    /// Returns the terrain's draws.
     fn main_passes(
         &mut self,
         gpu: &mut dyn Gpu,
         (target, mut clear): (TextureId, [f64; 4]),
         terrain_on: bool,
+        mut three_d: Vec<(usize, RenderPass)>,
         passes: &mut Vec<Pass>,
-    ) {
+    ) -> u32 {
+        let start = passes.len();
+        let steps = std::mem::take(&mut self.steps);
+        let split = steps.iter().any(|s| matches!(s, Step::ThreeD(_)));
+        let depth = match split {
+            true => self.extrusions.depth().map(|(depth, _)| depth),
+            false => self.map_depth.map(|(depth, _)| depth),
+        };
+        let depth = depth.filter(|_| self.target.depth);
+        let terrain_depth = (self.terrain.as_ref())
+            .filter(|_| terrain_on)
+            .map_or(Vec::new(), |t| t.depth_commands(terrain::MAP));
+        let shades = self.shade_tables();
+        let blends = steps.iter().filter(|s| matches!(s, Step::Blend(_))).count();
+        let (mut draws, mut predraws) = (0, 0);
+        // Each pass's first draw, with a depth of its own.
+        let mut predraw = |commands: &mut Vec<RenderCommand>| {
+            predraws += u32::from(!terrain_depth.is_empty());
+            commands.extend(terrain_depth.iter().cloned());
+        };
+        let mut commands = Vec::new();
+        predraw(&mut commands);
+        let mut rest = &steps[..];
         // A solid background filling the frame is the clear: its bundle
         // and the sky drawn before it, which it hides, are left out.
-        let (mut first, mut segments) = (Vec::new(), &self.bundles[..]);
-        if let Some(b) = self.beneath {
-            let (below, above) = segments.split_first().expect("recorded above");
-            segments = above;
+        let mut sky = true;
+        if let (Some(&Step::Beneath(below)), Some(b)) = (steps.first(), self.beneath) {
+            rest = &steps[1..];
             let shown = self.nodes[b].cull.visible && self.scene.node_candidates(b as u32) > 0;
             match self.nodes[b].solid {
                 Some(color) if shown && self.background_fills && !terrain_on => {
                     clear = color.map(f64::from);
+                    sky = false;
                 }
                 _ => {
-                    first = self.atmosphere.commands(gpu);
-                    first.push(RenderCommand::ExecuteBundles(vec![*below]));
+                    commands.extend(self.atmosphere.commands(gpu));
+                    commands.push(RenderCommand::ExecuteBundles(vec![below]));
+                    sky = false;
                 }
             }
-        } else {
-            first = self.atmosphere.commands(gpu);
         }
-        let start = passes.len();
-        passes.extend(self.layers.main_passes(
-            &self.composites,
-            (first, segments, self.atmosphere.commands_after(gpu)),
-            target,
-            clear,
-        ));
+        if sky {
+            commands.extend(self.atmosphere.commands(gpu));
+        }
+        // The canvas of the passes, by the groups that split them so far,
+        // and the passes into it so far.
+        let (mut canvas, mut into) = (0usize, 0);
+        let mut first = true;
+        let mut pass = |this: &Self, commands: Vec<RenderCommand>, (canvas, into), last: bool| {
+            let load = match into {
+                0 => LoadOp::Clear(if canvas == 0 { clear } else { [0.0; 4] }),
+                _ => LoadOp::Load,
+            };
+            let color = if canvas == blends {
+                ColorAttachment {
+                    store: StoreOp::Store,
+                    target,
+                    resolve: None,
+                    load,
+                }
+            } else {
+                this.layers.canvas(canvas).attachment(0, load)
+            };
+            let depth = depth.map(|target| DepthAttachment {
+                target,
+                load: if split && !first {
+                    LoadOp::Load
+                } else {
+                    LoadOp::Clear(0.0)
+                },
+                store: if split && !last {
+                    StoreOp::Store
+                } else {
+                    StoreOp::Discard
+                },
+            });
+            first = false;
+            Pass::Render(RenderPass {
+                label: "main",
+                colors: vec![color],
+                depth,
+                commands,
+            })
+        };
+        for &step in rest {
+            match step {
+                Step::Beneath(bundle) | Step::Bundle(bundle) => {
+                    commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
+                }
+                Step::Terrain(layer) => {
+                    // A layer that reads the map beneath reads the canvas
+                    // the pass before drew.
+                    let beneath = canvas
+                        .checked_sub(1)
+                        .map(|k| self.layers.canvas(k).texture(0));
+                    let tables = shades.get(usize::from(layer)).copied().unwrap_or_default();
+                    let terrain = self.terrain.as_mut().expect("terrain is on");
+                    let drawn = terrain.layer_commands(gpu, layer, tables, beneath);
+                    draws += u32::from(!drawn.is_empty());
+                    commands.extend(drawn);
+                }
+                Step::Blend(group) => {
+                    let done = std::mem::take(&mut commands);
+                    passes.push(pass(self, done, (canvas, into), false));
+                    (canvas, into) = (canvas + 1, 0);
+                    // The blend draw covers every pixel.
+                    if !split {
+                        predraw(&mut commands);
+                    }
+                    let group = &self.layers.groups[group];
+                    commands.extend(self.layers.composite_commands(&self.composites, group));
+                }
+                Step::ThreeD(node) => {
+                    let done = std::mem::take(&mut commands);
+                    passes.push(pass(self, done, (canvas, into), false));
+                    into += 1;
+                    if let Some(at) = three_d.iter().position(|(n, _)| *n == node) {
+                        passes.push(Pass::Render(three_d.swap_remove(at).1));
+                    }
+                }
+            }
+        }
+        commands.extend(self.atmosphere.commands_after(gpu));
+        passes.push(pass(self, commands, (canvas, into), true));
+        self.steps = steps;
         Pass::group(passes, start, "main");
+        draws + predraws
     }
 
     /// What a bundle record finds compiled besides the nodes' own
@@ -3151,12 +3383,9 @@ impl Renderer {
         );
         Ready {
             cull: self.driver.ready(gpu),
-            terrain: self
-                .terrain
-                .as_mut()
+            terrain: (self.terrain.as_mut())
                 .filter(|_| terrain_on)
-                .is_some_and(|t| t.ready(gpu))
-                && self.composites.ready(gpu, offscreen::Mode::Over),
+                .is_some_and(|t| t.ready(gpu)),
             prepare: !dems || self.images.prepare_ready(gpu),
             tables: self.images.tables_ready(gpu),
             mips: !rasters || self.downsampler.ready(gpu),
@@ -3328,7 +3557,7 @@ impl Renderer {
     /// stream's. The node draws once in each block it may have candidates
     /// in, that block's group bound; a split node's untested placements
     /// first, in their pipeline, then its tested ones. In the map, a
-    /// terrain layer composites in its first node's place. `false` when
+    /// terrain layer draws its nodes ([`Step::Terrain`]). `false` when
     /// the node waits for a pipeline and records nothing.
     fn node_commands(
         &self,
@@ -3346,20 +3575,9 @@ impl Renderer {
             return false;
         }
         let node = &self.nodes[i];
-        if let (Some(layer), true) = (node.terrain_layer, in_map) {
-            let first = i == 0 || self.nodes[i - 1].terrain_layer != Some(layer);
-            if !ready.terrain {
-                return false;
-            }
-            if let Some(composite) = self
-                .terrain
-                .as_ref()
-                .filter(|_| first)
-                .and_then(|t| t.layer_composite(layer))
-            {
-                commands.extend(self.composites.commands(composite));
-            }
-            return true;
+        if node.terrain_layer.is_some() && in_map {
+            // Its terrain layer draws it ([`Step::Terrain`]).
+            return ready.terrain;
         }
         if !node.drawn {
             // Nothing to draw yet: drawing records the bundles again.
@@ -3447,7 +3665,7 @@ impl Renderer {
         let drape = self
             .drape_pipelines
             .as_ref()
-            .filter(|_| !in_map && self.target.color != DRAPE_FORMAT);
+            .filter(|_| !in_map && self.target != drape_attachments());
         let kind = node.paint_kind(&self.patterned, &self.rowed);
         // A split node's untested placements draw in a pipeline that tests
         // no fragment once it compiled, else in the tested one.
@@ -3503,6 +3721,37 @@ impl Renderer {
         }
         true
     }
+}
+
+/// The drape atlas's passes: draped nodes draw into them with the map's
+/// pipelines where the map's passes are of the same attachments.
+fn drape_attachments() -> Attachments {
+    TargetFormat {
+        color: DRAPE_FORMAT,
+        sample_count: 1,
+    }
+    .into()
+}
+
+/// What the map's passes draw, in order ([`Renderer::record_bundles`]).
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    /// The solid background and what it hides, after the sky: a frame the
+    /// backgrounds fill clears to its colour in their place.
+    Beneath(RenderBundleId),
+    /// Nodes' draws.
+    Bundle(RenderBundleId),
+    /// Terrain layer `l`'s draw of the terrain, made each frame.
+    Terrain(u8),
+    /// Layer composite group `g` blends other than normally: the pass
+    /// splits, and the next opens with its composite over the canvas the
+    /// pass before drew.
+    Blend(usize),
+    /// 3D layer node `n` draws its pass between two of the map's, adding
+    /// its buildings to the depth they share, which hide what of the
+    /// terrain layers above it they stand in front of
+    /// ([`Renderer::splits_at_3d`]).
+    ThreeD(usize),
 }
 
 /// What puts a node in a drape stack ([`Renderer::assign_stacks`]).
@@ -3796,7 +4045,7 @@ impl PaintPipelines {
     fn make(
         &mut self,
         gpu: &mut dyn Gpu,
-        target: TargetFormat,
+        target: Attachments,
         layouts: &[BindGroupLayoutId],
         kind: PaintKind,
         variants: [bool; 2],

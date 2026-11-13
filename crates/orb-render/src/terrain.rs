@@ -18,22 +18,25 @@
 //! placements, the draped nodes' only candidates, map them into the grid,
 //! so one pass a sheet's layer redraws its slots, replaying each stack's
 //! bundle of its draped nodes over them with the viewport on the sheet,
-//! then a compute pass a sheet downsamples their mip levels. The terrain
-//! draws each sheet's tiles with it bound. Each terrain layer (a stack,
-//! two where the zoom splits it, or up to [`MAX_SHADES`] hillshades lit
-//! between stacks from their slopes' stacks and the frame's bearing)
-//! draws into a texture of its own with the depth extrusions share,
-//! composited in the map at its place.
+//! then a compute pass a sheet downsamples their mip levels.
+//!
+//! The terrain draws in the map's own pass, each sheet's tiles with it
+//! bound, over a depth attachment that pass never stores: first its depth
+//! alone, then each terrain layer (a stack, two where the zoom splits it,
+//! or up to [`MAX_SHADES`] hillshades lit between stacks from their
+//! slopes' stacks and the frame's bearing) at the place of its first
+//! node, over what the map drew beneath it, every fragment but the
+//! nearest failing the depth test. A layer that blends with the map
+//! beneath it in a mode the blend unit has no factors for reads it from
+//! the canvas the pass before drew.
 
 use crate::TargetFormat;
-use crate::pipeline::{DEPTH, Draw};
+use crate::pipeline::{Attachments, DEPTH, Draw};
 use crate::release::Release;
 use crate::scene::{Backing, DataTable};
 use TextureViewDimension::D2Array;
 use orb_hal::*;
 use orb_shaders::{DRAPE_SHADER, Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
-
-use crate::offscreen::{Composite, Composites, Mode, Offscreen};
 
 /// Drape texels per terrain tile side: twice the 512 logical pixels a
 /// terrain tile covers at its zoom, GL JS's quality factor.
@@ -188,12 +191,12 @@ pub struct TerrainTile {
 }
 
 /// The hillshades a terrain layer shades at most: each shades a frame's
-/// every pixel the layer covers, in the one pass, where a layer of its own
-/// each cost another pass over the screen and its composite (1 ms of
-/// 5 a 5120×2880 frame of the Globe over Nepal, M6).
+/// every pixel the layer covers, in the one draw of the terrain, where a
+/// layer of its own each cost another draw of it, and a third reads the
+/// map beneath it from the canvas the pass before drew.
 pub(crate) const MAX_SHADES: usize = 2;
 
-/// What one terrain draw composites in the map: a stack's slots, the
+/// What one draw of the terrain lays over the map: a stack's slots, the
 /// stacks below and above where the zoom splits it, or a stack below the
 /// hillshades it shades and those above each of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -205,15 +208,22 @@ pub(crate) struct TerrainLayer {
     /// Without a hillshade, the stack above `below` where the zoom splits
     /// the layer.
     pub(crate) above: Option<u8>,
-    /// A layer's own, composited in a blend mode other than normal.
-    pub(crate) blended: bool,
-    /// What its first hillshade blends into is the terrain layer's before
-    /// it, as it drew it, rather than a stack of its own: the hillshade
-    /// lies on that layer, whose hillshades fill it.
+    /// A layer's own, which blends with the map beneath it in this mode
+    /// (normal: over it).
+    pub(crate) blend: crate::Blend,
+    /// What its first hillshade blends into is the map beneath it, rather
+    /// than a stack of its own: the hillshade lies on the terrain layer
+    /// before, whose hillshades fill it.
     pub(crate) backdrop: bool,
 }
 
 impl TerrainLayer {
+    /// Whether it reads the map beneath it: it blends with it in a mode
+    /// other than normal, or its first hillshade blends into it.
+    pub(crate) fn reads_beneath(&self) -> bool {
+        self.backdrop || self.blend != crate::Blend::Normal
+    }
+
     /// Whether it shades as many hillshades as a layer takes.
     pub(crate) fn full(&self) -> bool {
         self.shades[MAX_SHADES - 1].is_some()
@@ -249,7 +259,9 @@ const FOG_CONTENT: u32 = 0;
 const FOG_GROUND: u32 = 1;
 const FOG_FADES: u32 = 2;
 /// Words of a terrain layer's uniform (`terrain.wgsl`'s `Layer`).
-const LAYER_WORDS: usize = 4 + 4 * MAX_SHADES;
+const LAYER_WORDS: usize = 8 + 4 * MAX_SHADES;
+/// The word of a terrain layer's uniform that holds its opacity.
+const LAYER_OPACITY: u64 = 4;
 
 /// A terrain tile on a globe: its patches in
 /// space around `origin`, the anchor less the camera target in metres, and
@@ -487,23 +499,29 @@ impl crate::release::Release for Sheet {
 
 #[derive(Debug)]
 pub(crate) struct Terrain {
-    target: TargetFormat,
+    /// The map's passes, which the terrain layers draw in.
+    target: Attachments,
     layout: BindGroupLayoutId,
     stack_layout: BindGroupLayoutId,
     /// A shaded layer's hillshades' tables, which colour their slopes.
     shade_layout: BindGroupLayoutId,
     /// Each terrain layer's shade group and the tables it binds.
     shade_groups: Vec<Option<(ShadeTables, BindGroupId)>>,
-    /// What a shaded hillshade blends into, where its layer has a
-    /// backdrop: the terrain layer's before it.
+    /// The map beneath a layer that reads it: the canvas the pass before
+    /// drew.
     backdrop_layout: BindGroupLayoutId,
-    /// Each terrain layer's backdrop group and the texture it binds, and
-    /// the blank one for the layers without.
+    /// Each terrain layer's backdrop group and the texture it binds.
     backdrops: Vec<Option<(TextureId, BindGroupId)>>,
+    /// A blank texture, and a backdrop group binding it.
     blank: Option<(TextureId, BindGroupId)>,
     clear_layout: BindGroupLayoutId,
-    /// Draping and shading, each at one sample and at four.
-    pipelines: [[Option<RenderPipelineId>; 2]; 2],
+    /// Terrain layers over the map, lighting hillshades between their
+    /// stacks or not, and those that read the map beneath ([`Kind`]).
+    pipelines: [Option<RenderPipelineId>; 3],
+    /// The terrain's depth alone, before anything tests it: in the map's
+    /// passes ([`MAP`]) and in the 3D layers' ([`THREE_D`]), each with the
+    /// attachments it was made for.
+    depth_pipelines: [Option<(Attachments, RenderPipelineId)>; 2],
     /// Clearing the pages' slots.
     clear: RenderPipelineId,
     grid: DataTable,
@@ -515,9 +533,10 @@ pub(crate) struct Terrain {
     tile_capacity: u32,
     tile_count: u32,
     params: BufferId,
-    /// The terrain layers, and each's group over its slice of
-    /// `stack_uniforms`, made for as many as the style has.
+    /// The terrain layers and their opacities, and each's group over its
+    /// slice of `stack_uniforms`, made for as many as the style has.
     layers: Vec<TerrainLayer>,
+    opacities: Vec<f32>,
     stack_groups: Vec<BindGroupId>,
     stack_uniforms: Option<BufferId>,
     /// Trilinear and anisotropic, as GL JS samples its render-to-texture
@@ -536,16 +555,15 @@ pub(crate) struct Terrain {
     /// The terrain tiles of each sheet's slots: the table holds them
     /// sheet by sheet, and each sheet's draw takes its range.
     sheet_tiles: Vec<std::ops::Range<u32>>,
-    /// Each terrain layer's texture and its composite into the map.
-    targets: Vec<Offscreen>,
+    /// What this frame's draws of the terrain draw: each sheet's group and
+    /// tiles, and the grid's indices; none while the terrain can't draw.
+    drawn: Option<Drawn>,
     /// The terrain's depth as a colour, and the depth it's drawn with: what
     /// hides symbols and circles.
     occlusion: Option<[TextureId; 2]>,
     occlusion_pipeline: Option<RenderPipelineId>,
-    target_size: [u32; 2],
     /// The size of `occlusion`, in logical pixels.
     occlusion_size: [u32; 2],
-    target_samples: u32,
     /// Slots to redraw this frame: (page, sheet, stack, tile slot, side),
     /// each page's sheets' in turn, and in a sheet each stack's, so each
     /// layer's.
@@ -563,6 +581,38 @@ pub(crate) struct Terrain {
     resized: crate::scene::Resized,
 }
 
+/// The terrain's depth in the map's passes.
+pub(crate) const MAP: usize = 0;
+/// The terrain's depth in the 3D layers' passes.
+pub(crate) const THREE_D: usize = 1;
+
+/// The pipelines of terrain layers: over the map, lighting hillshades or
+/// not, or reading the map beneath them ([`TerrainLayer::reads_beneath`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Plain,
+    Shaded,
+    Beneath,
+}
+
+impl TerrainLayer {
+    fn kind(&self) -> Kind {
+        match () {
+            () if self.reads_beneath() => Kind::Beneath,
+            () if self.shaded() => Kind::Shaded,
+            () => Kind::Plain,
+        }
+    }
+}
+
+/// What a frame's draws of the terrain draw: each sheet's group and the
+/// range of its tiles, and the grid's indices at the frame's step.
+#[derive(Debug)]
+struct Drawn {
+    sheets: Vec<(BindGroupId, std::ops::Range<u32>)>,
+    indices: std::ops::Range<u32>,
+}
+
 /// What a frame's terrain passes drew: render passes, and drape slots
 /// redrawn.
 #[derive(Clone, Copy, Debug, Default)]
@@ -576,7 +626,7 @@ impl Terrain {
     /// sampled with `linear`.
     pub(crate) fn new(
         gpu: &mut dyn Gpu,
-        target: TargetFormat,
+        target: Attachments,
         atmosphere: BufferId,
         linear: SamplerId,
     ) -> Self {
@@ -668,7 +718,8 @@ impl Terrain {
             backdrops: Vec::new(),
             blank: None,
             clear_layout,
-            pipelines: [[None; 2]; 2],
+            pipelines: [None; 3],
+            depth_pipelines: [None; 2],
             clear,
             grid: grid_buffer,
             grid_indices,
@@ -679,6 +730,7 @@ impl Terrain {
             tile_count: 0,
             params,
             layers: Vec::new(),
+            opacities: Vec::new(),
             stack_groups: Vec::new(),
             stack_uniforms: None,
             linear,
@@ -693,12 +745,10 @@ impl Terrain {
             groups: Vec::new(),
             bound: None,
             sheet_tiles: Vec::new(),
-            targets: Vec::new(),
+            drawn: None,
             occlusion: None,
             occlusion_pipeline: None,
-            target_size: [0; 2],
             occlusion_size: [0; 2],
-            target_samples: 0,
             pending: Vec::new(),
             zoom: 0.0,
             mip_targets: Default::default(),
@@ -723,10 +773,16 @@ impl Terrain {
     }
 
     /// This frame's terrain layers, whose slope stacks follow `colour`
-    /// colour stacks: each gets a group binding what it draws, and a
-    /// texture once sized.
-    pub(crate) fn set_layers(&mut self, gpu: &mut dyn Gpu, layers: &[TerrainLayer], colour: u32) {
+    /// colour stacks, at their `opacities`: each gets a group binding what
+    /// it draws.
+    pub(crate) fn set_layers(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        (layers, colour): (&[TerrainLayer], u32),
+        opacities: &[f32],
+    ) {
         if self.layers == layers {
+            self.set_opacities(gpu, opacities);
             return;
         }
         let count = (layers.len() as u32).next_power_of_two().max(4);
@@ -762,15 +818,20 @@ impl Terrain {
             // but for a blended one, which fades into the fog: what it
             // blends with is fogged already.
             let fog = match () {
-                () if layer.blended => FOG_FADES,
+                () if layer.blend != crate::Blend::Normal => FOG_FADES,
                 () if i == 0 => FOG_GROUND,
                 () => FOG_CONTENT,
             };
+            let opacity = opacities.get(i).copied().unwrap_or(1.0);
             let mut words = vec![
                 stack(layer.below),
                 stack(layer.above),
                 fog,
                 u32::from(layer.backdrop),
+                opacity.to_bits(),
+                layer.blend.mode() as u32,
+                0,
+                0,
             ];
             for shade in layer.shades {
                 // A slope stack by its rank on the slope page.
@@ -792,6 +853,21 @@ impl Terrain {
             );
         }
         self.layers = layers.to_vec();
+        self.opacities = opacities.to_vec();
+    }
+
+    /// Writes the terrain layers' opacities where they changed.
+    fn set_opacities(&mut self, gpu: &mut dyn Gpu, opacities: &[f32]) {
+        let Some(buffer) = self.stack_uniforms else {
+            return;
+        };
+        for (i, &opacity) in opacities.iter().enumerate().take(self.layers.len()) {
+            if self.opacities.get(i) != Some(&opacity) {
+                let at = UNIFORM_STRIDE * i as u64 + LAYER_OPACITY * 4;
+                gpu.write_buffer(buffer, at, bytemuck::bytes_of(&opacity));
+            }
+        }
+        self.opacities = opacities.to_vec();
     }
 
     /// Makes the pages hold `tile_slots` tile slots of `stacks` colour and
@@ -995,28 +1071,13 @@ impl Terrain {
         }
     }
 
-    /// Sizes the terrain layers' textures to the target, `size` device
-    /// pixels, and its depth for what the terrain hides to `logical`
-    /// pixels, as GL JS's: what it hides is tested a logical pixel at a
-    /// time, and a quarter of the texels at a pixel ratio of 2 take a
-    /// fraction of the pass. Returns whether they changed.
-    pub(crate) fn resize(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        composites: &mut Composites,
-        (size, logical): ([u32; 2], [u32; 2]),
-        samples: u32,
-    ) -> bool {
-        let layers = self.layers.len();
-        if self.target_size == size
-            && self.occlusion_size == logical
-            && self.target_samples == samples
-            && self.targets.len() == layers
-        {
+    /// Sizes the terrain's depth for what it hides to `logical` pixels, as
+    /// GL JS's: what it hides is tested a logical pixel at a time, and a
+    /// quarter of the texels at a pixel ratio of 2 take a fraction of the
+    /// pass. Returns whether it changed.
+    pub(crate) fn resize(&mut self, gpu: &mut dyn Gpu, logical: [u32; 2]) -> bool {
+        if self.occlusion.is_some() && self.occlusion_size == logical {
             return false;
-        }
-        for target in self.targets.drain(..) {
-            target.release(gpu);
         }
         self.release_occlusion(gpu);
         let texture = |gpu: &mut dyn Gpu, label, format, usage| {
@@ -1046,76 +1107,61 @@ impl Terrain {
                 TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
             ),
         ]);
-        self.target_size = size;
         self.occlusion_size = logical;
-        self.target_samples = samples;
-        for _ in 0..layers {
-            let mut slot = None;
-            let target = ("terrain layer", &[self.target.color][..]);
-            Offscreen::fit(
-                &mut slot,
-                gpu,
-                composites,
-                target,
-                (size, samples),
-                (Mode::Over, None),
-                1.0,
-            );
-            self.targets.extend(slot);
-        }
         true
     }
 
-    /// The colour texture terrain layer `layer` draws into, once sized.
-    pub(crate) fn layer_texture(&self, layer: u8) -> Option<TextureId> {
-        Some(self.targets.get(usize::from(layer))?.target.texture(0))
-    }
-
-    /// Terrain layer `layer`'s composite into the map, once sized.
-    pub(crate) fn layer_composite(&self, layer: u8) -> Option<&Composite> {
-        Some(&self.targets.get(usize::from(layer))?.composite)
-    }
-
-    /// Asks for the pipelines the terrain draws with at `samples`, a
-    /// shaded hillshade's too where one is (`shaded`): the pipeline set's
-    /// ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)).
-    pub(crate) fn request_pipelines(&mut self, gpu: &mut dyn Gpu, samples: u32, shaded: bool) {
-        self.pipeline(gpu, samples, false);
+    /// Asks for the pipelines the terrain draws with: its layers' in the
+    /// map's passes, a shaded hillshade's where one is (`shaded`), one
+    /// reading the map beneath where a layer does (`beneath`), and its
+    /// depth alone there and in the 3D layers' passes, of `three_d`: the
+    /// pipeline set's ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)).
+    pub(crate) fn request_pipelines(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        three_d: TargetFormat,
+        (shaded, beneath): (bool, bool),
+    ) {
+        self.pipeline(gpu, Kind::Plain);
         if shaded {
-            self.pipeline(gpu, samples, true);
+            self.pipeline(gpu, Kind::Shaded);
         }
+        if beneath {
+            self.pipeline(gpu, Kind::Beneath);
+        }
+        self.depth_pipeline(gpu, MAP, self.target);
+        let three_d = Attachments {
+            depth: true,
+            ..three_d.into()
+        };
+        self.depth_pipeline(gpu, THREE_D, three_d);
         self.occlusion_pipeline(gpu);
     }
 
-    /// The pipeline terrain layers draw with at `samples`, shading a
-    /// hillshade or not, once asked for.
-    fn made(&self, samples: u32, shaded: bool) -> Option<RenderPipelineId> {
-        self.pipelines[usize::from(shaded)][usize::from(samples > 1)]
+    /// Whether every terrain pipeline this frame's layers draw with
+    /// compiled, and its depth's in the map's passes. Until then terrain
+    /// draws nothing.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
+        let kinds = (self.layers.iter()).map(|l| self.pipelines[l.kind() as usize]);
+        let wanted = [
+            Some(self.clear),
+            self.occlusion.and(self.occlusion_pipeline),
+        ];
+        let mut all = kinds.chain(wanted.into_iter().filter(Option::is_some));
+        all.all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into()))) && self.depth_ready(gpu, MAP)
     }
 
-    /// Whether every terrain pipeline at the current sample count
-    /// compiled. Until then terrain draws nothing.
-    pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
-        let samples = self.target_samples.max(1);
-        let shaded = self.layers.iter().any(TerrainLayer::shaded);
-        let wanted = [
-            Some(Some(self.clear)),
-            Some(self.made(samples, false)),
-            shaded.then(|| self.made(samples, true)),
-            self.occlusion.map(|_| self.occlusion_pipeline),
-        ];
-        (wanted.into_iter().flatten()).all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
+    /// Whether the pipeline of the terrain's depth alone in the map's
+    /// passes ([`MAP`]) or the 3D layers' ([`THREE_D`]) compiled.
+    pub(crate) fn depth_ready(&self, gpu: &mut dyn Gpu, at: usize) -> bool {
+        self.depth_pipelines[at].is_some_and(|(_, p)| gpu.pipeline_ready(p.into()))
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
         let mut out: Vec<PipelineId> = vec![self.clear.into()];
-        out.extend(
-            self.pipelines
-                .iter()
-                .flatten()
-                .flatten()
-                .map(|&p| PipelineId::from(p)),
-        );
+        let depth = self.depth_pipelines.iter().flatten().map(|&(_, p)| p);
+        let made = (self.pipelines.iter().flatten().copied()).chain(depth);
+        out.extend(made.chain(self.occlusion_pipeline).map(PipelineId::from));
         out
     }
 
@@ -1126,54 +1172,73 @@ impl Terrain {
         self.pending.clear();
     }
 
-    /// Makes the pipeline terrain layers draw with at `samples`, shading
-    /// a hillshade or not, unless it is made.
-    fn pipeline(&mut self, gpu: &mut dyn Gpu, samples: u32, shaded: bool) {
-        if self.made(samples, shaded).is_some() {
+    /// Makes the pipeline terrain layers of `kind` draw with, unless it is
+    /// made: over the map, by premultiplied blending, or in place of it
+    /// where they read it.
+    fn pipeline(&mut self, gpu: &mut dyn Gpu, kind: Kind) {
+        if self.pipelines[kind as usize].is_some() {
             return;
         }
-        let (shader, layouts): (&Shader, &[_]) = if shaded {
-            (
-                &TERRAIN_SHADE_SHADER,
-                &[
-                    self.layout,
-                    self.stack_layout,
-                    self.shade_layout,
-                    self.backdrop_layout,
-                ],
-            )
-        } else {
-            (&TERRAIN_SHADER, &[self.layout, self.stack_layout])
+        let shaded = [self.layout, self.stack_layout, self.shade_layout];
+        let beneath = [
+            self.layout,
+            self.stack_layout,
+            self.shade_layout,
+            self.backdrop_layout,
+        ];
+        let (shader, entry, layouts): (&Shader, _, &[_]) = match kind {
+            Kind::Plain => (&TERRAIN_SHADER, "fs_terrain", &shaded[..2]),
+            Kind::Shaded => (&TERRAIN_SHADE_SHADER, "fs_terrain_shaded", &shaded),
+            Kind::Beneath => (&TERRAIN_SHADE_SHADER, "fs_terrain_beneath", &beneath),
         };
-        let target = TargetFormat {
-            sample_count: samples,
-            ..self.target
-        };
+        let blend = (kind != Kind::Beneath).then_some(BlendState::PremultipliedAlpha);
         let pipeline = Draw {
+            fragment: (shader, entry),
             depth: DEPTH,
-            ..Draw::new(shader, layouts, target, None)
+            ..Draw::new(shader, layouts, self.target, blend)
         }
         .make(gpu);
-        self.pipelines[usize::from(shaded)][usize::from(samples > 1)] = Some(pipeline);
+        self.pipelines[kind as usize] = Some(pipeline);
+    }
+
+    /// Makes the pipeline of the terrain's depth alone into `target`'s
+    /// passes, the map's ([`MAP`]) or the 3D layers' ([`THREE_D`]), unless
+    /// it is made for them: its fragments add nothing to the colour.
+    fn depth_pipeline(&mut self, gpu: &mut dyn Gpu, at: usize, target: Attachments) {
+        if self.depth_pipelines[at].is_some_and(|(made, _)| made == target) {
+            return;
+        }
+        self.depth_pipelines[at].take().map(|(_, p)| p).release(gpu);
+        let pipeline = Draw {
+            label: "terrain depth alone",
+            fragment: (&TERRAIN_SHADER, "fs_terrain_hidden"),
+            depth: DEPTH,
+            ..Draw::new(
+                &TERRAIN_SHADER,
+                &[self.layout],
+                target,
+                Some(BlendState::PremultipliedAlpha),
+            )
+        }
+        .make(gpu);
+        self.depth_pipelines[at] = Some((target, pipeline));
     }
 
     /// This frame's passes before the map: redrawn drape slots (`drape`
-    /// draws the draped nodes into level 0) and their mip levels into
-    /// `passes`, and into `layers` each terrain layer's pass into its
-    /// texture, in order, the first clearing `depth`, the rest loading it.
-    /// The caller places the layer passes among the 3D layers' passes. A
-    /// layer shades its hillshades where `shades` has their tables, and
-    /// none where it has none (they hide).
+    /// draws the draped nodes into level 0) and their mip levels, and the
+    /// terrain's depth for what it hides, into `passes`; and what the
+    /// frame's draws of the terrain draw, where every pipeline they take
+    /// compiled ([`layer_commands`](Self::layer_commands)).
     /// Returns its draws and the slots it redrew.
     pub(crate) fn passes(
         &mut self,
         gpu: &mut dyn Gpu,
         (frame, props): (BufferId, BindGroupEntry),
-        (drape, shades): (&[(u32, RenderBundleId)], &[ShadeTables]),
-        (depth, depth_store): (TextureId, StoreOp),
+        drape: &[(u32, RenderBundleId)],
         downsampler: &crate::downsample::Downsampler,
-        (passes, layers): (&mut Vec<Pass>, &mut Vec<RenderPass>),
+        passes: &mut Vec<Pass>,
     ) -> TerrainDrawn {
+        self.drawn = None;
         let mut drawn = TerrainDrawn::default();
         if !self.ready(gpu) || !downsampler.ready(gpu) {
             // The map placed this frame's drape for these slots only: it
@@ -1311,84 +1376,19 @@ impl Terrain {
                 .collect();
             self.bound = Some((frame, props));
         }
-        let occlusion_pipeline = self.occlusion.and(self.occlusion_pipeline);
-        let samples = self.target_samples.max(1);
-        // A layer that shades hillshades draws its stacks above them
-        // whether they show or not: one hidden shades nothing.
-        let shaded: Vec<bool> = (0..self.targets.len())
-            .map(|layer| self.layers.get(layer).is_some_and(TerrainLayer::shaded))
-            .collect();
-        let pipelines = [false, true].map(|with| {
-            let wanted = with && shaded.contains(&true);
-            (!with || wanted)
-                .then(|| self.made(samples, with))
-                .flatten()
-        });
         let step = GRID_STEPS.iter().position(|&s| s == self.grid_step);
         let indices = self.grid_ranges[step.expect("a grid step")].clone();
-        // A shaded layer's tables, and its backdrop: the layer's before
-        // it, or blank.
-        let backdrops: Vec<Option<(BindGroupId, BindGroupId)>> = (0..self.targets.len())
-            .map(|layer| {
-                if !shaded[layer] {
-                    return None;
-                }
-                let tables = shades.get(layer).copied().unwrap_or_default();
-                Some((
-                    self.shade_group(gpu, layer, tables),
-                    self.backdrop_group(gpu, layer),
-                ))
-            })
-            .collect();
         // Each sheet's tiles with it bound.
-        let sheets: Vec<(BindGroupId, std::ops::Range<u32>)> = (self.groups.iter())
+        let sheets = (self.groups.iter())
             .zip(&self.sheet_tiles)
             .filter(|(_, tiles)| !tiles.is_empty())
             .map(|(&group, tiles)| (group, tiles.clone()))
             .collect();
-        let draw = |pipeline, layer_group, shade: Option<(BindGroupId, BindGroupId)>| {
-            let mut commands = vec![
-                RenderCommand::SetPipeline(pipeline),
-                RenderCommand::SetBindGroup {
-                    index: 1,
-                    group: layer_group,
-                },
-            ];
-            if let Some((shade, backdrop)) = shade {
-                commands.push(RenderCommand::SetBindGroup {
-                    index: 2,
-                    group: shade,
-                });
-                commands.push(RenderCommand::SetBindGroup {
-                    index: 3,
-                    group: backdrop,
-                });
-            }
-            commands.push(RenderCommand::SetIndexBuffer {
-                buffer: self.grid_indices,
-                offset: 0,
-            });
-            for (group, tiles) in &sheets {
-                commands.extend([
-                    RenderCommand::SetBindGroup {
-                        index: 0,
-                        group: *group,
-                    },
-                    RenderCommand::DrawIndexed {
-                        indices: indices.clone(),
-                        base_vertex: 0,
-                        instances: tiles.clone(),
-                    },
-                ]);
-            }
-            commands
-        };
-        // The terrain's depth first, for what it hides.
-        if let (Some([color, occlusion_depth]), Some(&layer_group), Some(occlusion_pipeline)) = (
-            self.occlusion,
-            self.stack_groups.first(),
-            occlusion_pipeline,
-        ) {
+        self.drawn = Some(Drawn { sheets, indices });
+        // The terrain's depth, for what it hides.
+        if let (Some([color, depth]), Some(pipeline)) = (self.occlusion, self.occlusion_pipeline) {
+            let mut commands = vec![RenderCommand::SetPipeline(pipeline)];
+            self.draw(&mut commands);
             passes.push(Pass::Render(RenderPass {
                 label: "terrain depth",
                 colors: vec![ColorAttachment {
@@ -1398,34 +1398,93 @@ impl Terrain {
                     load: LoadOp::Clear([0.0; 4]),
                 }],
                 depth: Some(DepthAttachment {
-                    target: occlusion_depth,
+                    target: depth,
                     load: LoadOp::Clear(0.0),
                     store: StoreOp::Discard,
                 }),
-                commands: draw(occlusion_pipeline, layer_group, None),
+                commands,
             }));
             drawn.draws += 1;
         }
-        for (layer, target) in self.targets.iter().enumerate() {
-            let shade = backdrops[layer];
-            let pipeline = pipelines[usize::from(shade.is_some())].expect("ready: in the set");
-            layers.push(RenderPass {
-                label: "terrain",
-                colors: vec![target.target.attachment(0, LoadOp::Clear([0.0; 4]))],
-                depth: Some(DepthAttachment {
-                    target: depth,
-                    load: if layer == 0 {
-                        LoadOp::Clear(0.0)
-                    } else {
-                        LoadOp::Load
-                    },
-                    store: depth_store,
-                }),
-                commands: draw(pipeline, self.stack_groups[layer], shade),
-            });
-            drawn.draws += 1;
-        }
         drawn
+    }
+
+    /// The frame's tiles drawn, each sheet's with it bound, over the
+    /// pipeline set before: nothing while the terrain can't draw.
+    fn draw(&self, commands: &mut Vec<RenderCommand>) {
+        let Some(drawn) = &self.drawn else {
+            return;
+        };
+        commands.push(RenderCommand::SetIndexBuffer {
+            buffer: self.grid_indices,
+            offset: 0,
+        });
+        for (group, tiles) in &drawn.sheets {
+            commands.extend([
+                RenderCommand::SetBindGroup {
+                    index: 0,
+                    group: *group,
+                },
+                RenderCommand::DrawIndexed {
+                    indices: drawn.indices.clone(),
+                    base_vertex: 0,
+                    instances: tiles.clone(),
+                },
+            ]);
+        }
+    }
+
+    /// The terrain's depth alone, drawn first in a pass that tests it,
+    /// the map's ([`MAP`]) or a 3D layer's ([`THREE_D`]): the nearest
+    /// surface, which every layer's draw then shades once. Nothing while
+    /// the terrain can't draw this frame.
+    pub(crate) fn depth_commands(&self, at: usize) -> Vec<RenderCommand> {
+        let Some((_, pipeline)) = self.depth_pipelines[at].filter(|_| self.drawn.is_some()) else {
+            return Vec::new();
+        };
+        let mut commands = vec![RenderCommand::SetPipeline(pipeline)];
+        self.draw(&mut commands);
+        commands
+    }
+
+    /// Terrain layer `layer`'s draw in the map's pass, after its depth
+    /// ([`depth_commands`](Self::depth_commands)): its hillshades shaded
+    /// through `shades` (none where it has none there: they hide), over
+    /// the map, or where it reads the map beneath, from `beneath`, the
+    /// canvas the pass before drew. Nothing while the terrain can't draw
+    /// this frame.
+    pub(crate) fn layer_commands(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        layer: u8,
+        shades: ShadeTables,
+        beneath: Option<TextureId>,
+    ) -> Vec<RenderCommand> {
+        let at = usize::from(layer);
+        let (Some(kind), Some(_)) = (self.layers.get(at).map(TerrainLayer::kind), &self.drawn)
+        else {
+            return Vec::new();
+        };
+        let Some(pipeline) = self.pipelines[kind as usize] else {
+            return Vec::new();
+        };
+        let mut commands = vec![
+            RenderCommand::SetPipeline(pipeline),
+            RenderCommand::SetBindGroup {
+                index: 1,
+                group: self.stack_groups[at],
+            },
+        ];
+        if kind != Kind::Plain {
+            let group = self.shade_group(gpu, at, shades);
+            commands.push(RenderCommand::SetBindGroup { index: 2, group });
+        }
+        if kind == Kind::Beneath {
+            let group = self.backdrop_group(gpu, at, beneath);
+            commands.push(RenderCommand::SetBindGroup { index: 3, group });
+        }
+        self.draw(&mut commands);
+        commands
     }
 
     /// Terrain layer `layer`'s shade group, of the hillshade tables
@@ -1485,14 +1544,14 @@ impl Terrain {
         (texture, group)
     }
 
-    /// Terrain layer `layer`'s backdrop group: the texture of the layer
-    /// before it, where its first hillshade blends into that, else a blank
-    /// one.
-    fn backdrop_group(&mut self, gpu: &mut dyn Gpu, layer: usize) -> BindGroupId {
-        let previous = layer
-            .checked_sub(1)
-            .filter(|_| self.layers.get(layer).is_some_and(|l| l.backdrop))
-            .map(|l| self.targets[l].target.texture(0));
+    /// Terrain layer `layer`'s backdrop group: the map beneath it,
+    /// `beneath`, or a blank texture without one.
+    fn backdrop_group(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        layer: usize,
+        beneath: Option<TextureId>,
+    ) -> BindGroupId {
         let make = |gpu: &mut dyn Gpu, layout, texture| {
             let group = gpu.create_bind_group(&BindGroupDesc {
                 label: "terrain backdrop",
@@ -1505,7 +1564,7 @@ impl Terrain {
             });
             (texture, group)
         };
-        let Some(texture) = previous else {
+        let Some(texture) = beneath else {
             return self.blank(gpu).1;
         };
         if self.backdrops.len() <= layer {
@@ -1569,11 +1628,8 @@ impl Terrain {
         self.paint = None;
         self.release_sheets(gpu);
         self.forget_group(gpu);
-        for target in self.targets.drain(..) {
-            target.release(gpu);
-        }
         self.release_occlusion(gpu);
-        self.target_size = [0; 2];
+        self.drawn = None;
         self.dem = None;
         self.pending.clear();
         self.layout_state.tile_slots = 0;
@@ -1586,6 +1642,12 @@ impl Terrain {
 
     pub(crate) fn active(&self) -> bool {
         self.paint.is_some() && !self.sheets[0].is_empty()
+    }
+
+    /// Whether this frame's draws of the terrain draw it
+    /// ([`passes`](Self::passes)).
+    pub(crate) fn drawing(&self) -> bool {
+        self.drawn.is_some()
     }
 
     /// The terrain's depth symbols and circles read, while terrain is on.
@@ -1613,12 +1675,7 @@ impl Terrain {
             label: "terrain depth",
             fragment: (&TERRAIN_SHADER, "fs_terrain_depth"),
             depth: DEPTH,
-            ..Draw::new(
-                &TERRAIN_SHADER,
-                &[self.layout, self.stack_layout],
-                target,
-                None,
-            )
+            ..Draw::new(&TERRAIN_SHADER, &[self.layout], target, None)
         }
         .make(gpu);
         self.occlusion_pipeline = Some(pipeline);
@@ -1690,12 +1747,14 @@ impl crate::release::Release for Terrain {
         (self.backdrop_layout, backdrops, self.blank).release(gpu);
         let shades: Vec<BindGroupId> = (self.shade_groups.iter().flatten()).map(|s| s.1).collect();
         (self.shade_layout, shades).release(gpu);
-        let pipelines = (self.pipelines, self.clear, self.occlusion_pipeline);
+        let depth = self.depth_pipelines.map(|d| d.map(|(_, p)| p));
+        let pipelines = (self.pipelines, depth, self.clear);
+        let pipelines = (pipelines, self.occlusion_pipeline);
         self.grid.destroy(gpu);
         self.tiles.destroy(gpu);
         let buffers = (self.grid_indices, self.params);
         (layouts, pipelines, buffers, self.stack_uniforms).release(gpu);
-        (self.stack_groups, self.targets, self.mip_targets).release(gpu);
+        (self.stack_groups, self.mip_targets).release(gpu);
     }
 }
 

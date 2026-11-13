@@ -1,7 +1,7 @@
 //! Drawing apart from the map. A layer composited once, a
-//! 3D layer, a heatmap's density and a terrain stack each draw into an
-//! offscreen [`Target`]; one full-screen draw then composites it into the
-//! map ([`Composites`]).
+//! 3D layer and a heatmap's density each draw into an offscreen
+//! [`Target`]; one full-screen draw then composites it into the map
+//! ([`Composites`]).
 //!
 //! A target is a list of colour attachments, each with a multisampled
 //! attachment when it draws multisampled.
@@ -10,8 +10,8 @@ use crate::release::Release;
 use orb_hal::*;
 use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER};
 
-use crate::pipeline::Draw;
-use crate::{Blend, TargetFormat};
+use crate::Blend;
+use crate::pipeline::{Attachments, Draw};
 
 /// Colour attachments to draw into and sample.
 #[derive(Debug)]
@@ -204,7 +204,9 @@ pub(crate) struct Composites {
     /// Made for the first composite that needs each.
     over: Option<RenderPipelineId>,
     replace: Option<RenderPipelineId>,
-    target: TargetFormat,
+    /// Those for the map's other kind of pass ([`retarget`](Self::retarget)).
+    kept: [Option<RenderPipelineId>; 2],
+    target: Attachments,
     linear: SamplerId,
     /// Bound where a composite has no ramp or backdrop.
     blank: TextureId,
@@ -220,7 +222,7 @@ pub(crate) struct Composite {
 }
 
 impl Composites {
-    pub(crate) fn new(gpu: &mut dyn Gpu, target: TargetFormat) -> Self {
+    pub(crate) fn new(gpu: &mut dyn Gpu, target: Attachments) -> Self {
         use BindGroupLayoutEntry as E;
         let fs = ShaderStages::FRAGMENT;
         let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -253,10 +255,27 @@ impl Composites {
             layout,
             over: None,
             replace: None,
+            kept: [None; 2],
             target,
             linear,
             blank,
         }
+    }
+
+    /// Composites into `target`'s passes from now on, the map's with or
+    /// without their depth: the pipelines for those, kept since it last
+    /// composited into them, take the place of these, which are kept in
+    /// turn.
+    pub(crate) fn retarget(&mut self, target: Attachments) {
+        let current = [self.over, self.replace];
+        [self.over, self.replace] = std::mem::replace(&mut self.kept, current);
+        self.target = target;
+    }
+
+    /// A blank texture: the source of a composite that leaves the map
+    /// beneath it as it is.
+    pub(crate) fn blank(&self) -> TextureId {
+        self.blank
     }
 
     /// Makes the pipeline of composites in `mode`, unless it is made.
@@ -400,6 +419,7 @@ impl crate::release::Release for Composites {
             self.layout,
             self.over,
             self.replace,
+            self.kept,
             self.linear,
             self.blank,
         )

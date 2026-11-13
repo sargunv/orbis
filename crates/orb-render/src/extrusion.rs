@@ -1,6 +1,7 @@
 //! Extrusion layers draw into a target of their own, resolve it, then
 //! composite it at their layer opacity once. The shared depth attachment
-//! keeps occlusion between 3D layers and the terrain.
+//! keeps occlusion between 3D layers and the terrain, whose depth the
+//! first draws into it.
 use crate::TargetFormat;
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use crate::paint::ExtrusionShape;
@@ -261,6 +262,15 @@ impl Extrusions {
         self.size = [0; 2];
         true
     }
+    /// What their passes draw into: their targets' format at their sample
+    /// count.
+    pub(crate) fn format(&self) -> TargetFormat {
+        TargetFormat {
+            color: self.format,
+            sample_count: self.samples,
+        }
+    }
+
     /// The depth 3D passes share, once a resize made it, and how its
     /// passes store it: a single pass's is transient.
     pub(crate) fn depth(&self) -> Option<(TextureId, StoreOp)> {
@@ -272,8 +282,8 @@ impl Extrusions {
         self.depth.map(|d| (d, store))
     }
 
-    /// Sizes the depth `count` 3D passes share: extrusion layers and
-    /// terrain stacks.
+    /// Sizes the depth `count` passes share: the extrusion layers', and
+    /// the map's where they split at them.
     pub(crate) fn resize(&mut self, gpu: &mut dyn Gpu, size: [u32; 2], count: usize) -> bool {
         if count == 0 || (self.size == size && self.single_layer == (count == 1)) {
             return false;
@@ -324,16 +334,16 @@ impl Extrusions {
     }
 
     /// An extrusion node's pass into its target over the shared depth,
-    /// replaying its draws, recorded once.
-    /// The node's pass: in each scene block, over its group, the
-    /// block's buildings (`streams`).
+    /// which the `first` clears, replaying its draws, recorded once, after
+    /// `before` (the terrain's depth): in each scene block, over its
+    /// group, the block's buildings (`streams`).
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeExtrusion,
         buffers: &SceneBuffers,
         (streams, shape): (&[(BindGroupId, Streams)], ExtrusionShape),
-        first: bool,
+        (first, mut before): (bool, Vec<RenderCommand>),
     ) -> RenderPass {
         let [whole, cut] = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
@@ -382,7 +392,10 @@ impl Extrusions {
                     LoadOp::Load
                 },
             }),
-            commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],
+            commands: {
+                before.push(RenderCommand::ExecuteBundles(vec![bundle]));
+                before
+            },
         }
     }
 }

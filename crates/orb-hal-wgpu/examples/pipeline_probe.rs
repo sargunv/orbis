@@ -136,7 +136,7 @@ mod native {
             vs: Stage,
             fs: Stage,
             targets: Vec<(wgpu::TextureFormat, Option<wgpu::BlendState>)>,
-            depth: Option<(wgpu::TextureFormat, bool)>,
+            depth: Option<(wgpu::TextureFormat, bool, bool)>,
             topology: wgpu::PrimitiveTopology,
             cull: bool,
             samples: u32,
@@ -162,8 +162,10 @@ mod native {
                         })
                         .collect(),
                     depth: (f[9] != "-").then(|| {
-                        let (format, write) = f[9].split_once(':').expect("format:write");
-                        (texture_format(format), write == "true")
+                        let mut d = f[9].split(':');
+                        let format = d.next().expect("format:write:test");
+                        let [write, test] = [d.next(), d.next()].map(|b| b != Some("false"));
+                        (texture_format(format), write, test)
                     }),
                     topology: match f[10] {
                         "LineList" => wgpu::PrimitiveTopology::LineList,
@@ -541,10 +543,14 @@ mod native {
                         topology: *topology,
                         ..Default::default()
                     },
-                    depth_stencil: depth.map(|(format, write)| wgpu::DepthStencilState {
+                    depth_stencil: depth.map(|(format, write, test)| wgpu::DepthStencilState {
                         format,
                         depth_write_enabled: Some(write),
-                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                        depth_compare: Some(if test {
+                            wgpu::CompareFunction::GreaterEqual
+                        } else {
+                            wgpu::CompareFunction::Always
+                        }),
                         stencil: Default::default(),
                         bias: Default::default(),
                     }),

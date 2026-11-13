@@ -3,7 +3,7 @@
 // premultiplied.
 //
 // - over: the source at an opacity, by the pipeline's premultiplied-alpha
-//   blend (a 3D layer, a terrain stack, a layer composited once);
+//   blend (a 3D layer, a layer composited once);
 // - ramp: the source's red channel looked up in a colour ramp, sampled
 //   linearly (a heatmap's density, at a quarter of the resolution);
 // - replace: W3C Compositing 1's blend modes against the map beneath,

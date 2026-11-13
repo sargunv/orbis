@@ -13,12 +13,15 @@
 //! formula. Then the map's draws continue on top. The last pass draws
 //! into the target, so a map without such groups keeps its one pass.
 //!
-//! On terrain, a draped layer's group is its own drape stack: the stack's
-//! terrain layer is the texture the group composites, in place of the
-//! stack's plain composite. A blended terrain layer fades into the fog
-//! rather than taking its colour, since what it blends with is fogged
-//! already. A blended hillshade the terrain pass lights needs no group:
-//! its terrain layer blends it into the stack below it.
+//! On terrain, a draped layer's group is its own terrain layer, which
+//! draws at its opacity in the map's pass. One in a blend mode other than
+//! normal splits the pass there all the same: its composite of nothing
+//! carries the canvas over, and the terrain layer draws over that, reading
+//! the map beneath from the canvas before, and fading into the fog rather
+//! than taking its colour, since what it blends with is fogged already. A
+//! blended hillshade the terrain lights needs no group where its terrain
+//! layer blends it into the stack below it; where it blends into the map
+//! beneath, its terrain layer splits the pass as such a group does.
 
 use crate::release::Release;
 use std::ops::Range;
@@ -71,8 +74,9 @@ pub(crate) struct Run {
     pub(crate) nodes: Range<usize>,
     pub(crate) opacity: f32,
     pub(crate) blend: Blend,
-    /// The texture another pass draws the layer into (a drape stack's
-    /// terrain layer), or `None` for the group's own.
+    /// What it composites when another draw draws the layer (a terrain
+    /// layer, which leaves nothing to composite), or `None` for the
+    /// group's own target.
     pub(crate) source: Option<TextureId>,
 }
 
@@ -87,8 +91,8 @@ pub(crate) struct Group {
 }
 
 impl Group {
-    /// Whether another pass draws the layer (a drape stack), so the group
-    /// records no bundle of its own.
+    /// Whether another draw draws the layer (a terrain layer), so the
+    /// group records no bundle of its own.
     pub(crate) fn drawn_elsewhere(&self) -> bool {
         self.layer.is_none()
     }
@@ -162,10 +166,11 @@ impl LayerComposites {
         }
     }
 
-    /// The group node `i` starts, if any, and whether it belongs to one.
-    pub(crate) fn at(&self, i: usize) -> (Option<&Group>, bool) {
-        match self.groups.iter().find(|g| g.nodes.contains(&i)) {
-            Some(g) => ((g.nodes.start == i).then_some(g), true),
+    /// The group node `i` starts, if any, by its index, and whether the
+    /// node belongs to one.
+    pub(crate) fn at(&self, i: usize) -> (Option<usize>, bool) {
+        match self.groups.iter().position(|g| g.nodes.contains(&i)) {
+            Some(g) => ((self.groups[g].nodes.start == i).then_some(g), true),
             None => (None, false),
         }
     }
@@ -180,62 +185,27 @@ impl LayerComposites {
         composites.commands(&group.composite)
     }
 
-    /// Each group's pass: its nodes' draws into its target.
-    pub(crate) fn passes(&self) -> impl Iterator<Item = Pass> + '_ {
-        self.groups.iter().filter_map(|g| {
+    /// Each group's pass: its nodes' draws into its target, over `depth`
+    /// where the map's passes have one.
+    pub(crate) fn passes(&self, depth: Option<TextureId>) -> impl Iterator<Item = Pass> + '_ {
+        self.groups.iter().filter_map(move |g| {
             Some(Pass::Render(RenderPass {
                 label: "layer composite",
                 colors: vec![g.layer.as_ref()?.attachment(0, LoadOp::Clear([0.0; 4]))],
-                depth: None,
+                depth: depth.map(|target| DepthAttachment {
+                    target,
+                    load: LoadOp::Clear(0.0),
+                    store: StoreOp::Discard,
+                }),
                 commands: vec![RenderCommand::ExecuteBundles(vec![g.bundle?])],
             }))
         })
     }
 
-    /// The map's passes: `first` (the sky) and the `segments` of the main
-    /// bundle, split at each group blending other than normally, then
-    /// `last` (the scattering), ending in `target`.
-    pub(crate) fn main_passes(
-        &self,
-        composites: &Composites,
-        (mut first, segments, last): (Vec<RenderCommand>, &[RenderBundleId], Vec<RenderCommand>),
-        target: TextureId,
-        clear: [f64; 4],
-    ) -> Vec<Pass> {
-        let mut blending = self.groups.iter().filter(|g| g.blend != Blend::Normal);
-        let mut last = Some(last);
-        segments
-            .iter()
-            .enumerate()
-            .map(|(k, &segment)| {
-                let mut commands = if k == 0 {
-                    std::mem::take(&mut first)
-                } else {
-                    let group = blending.next().expect("a segment per blending group");
-                    self.composite_commands(composites, group).to_vec()
-                };
-                commands.push(RenderCommand::ExecuteBundles(vec![segment]));
-                // The blend draw covers every pixel: only the first clears.
-                let load = LoadOp::Clear(if k == 0 { clear } else { [0.0; 4] });
-                let color = if k + 1 == segments.len() {
-                    commands.extend(last.take().expect("one last pass"));
-                    ColorAttachment {
-                        store: StoreOp::Store,
-                        target,
-                        resolve: None,
-                        load,
-                    }
-                } else {
-                    self.canvases[k % 2].attachment(0, load)
-                };
-                Pass::Render(RenderPass {
-                    label: "main",
-                    colors: vec![color],
-                    depth: None,
-                    commands,
-                })
-            })
-            .collect()
+    /// The canvas the map's `k`th pass draws into where a later one reads
+    /// it: the canvases take turns.
+    pub(crate) fn canvas(&self, k: usize) -> &Target {
+        &self.canvases[k % 2]
     }
 
     pub(crate) fn clear(&mut self, gpu: &mut dyn Gpu) {

@@ -12,10 +12,43 @@ use crate::TargetFormat;
 pub(crate) const DEPTH: Option<DepthState> = Some(DepthState {
     format: TextureFormat::Depth32Float,
     write: true,
+    test: true,
 });
 
+/// What a pipeline draws into: a colour format at a sample count, and
+/// whether the pass has the depth attachment the map's passes carry while
+/// its style has terrain, which every pipeline drawing in them declares:
+/// the terrain tests and writes it ([`DEPTH`]), the rest neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Attachments {
+    pub(crate) color: TextureFormat,
+    pub(crate) sample_count: u32,
+    pub(crate) depth: bool,
+}
+
+impl From<TargetFormat> for Attachments {
+    fn from(target: TargetFormat) -> Self {
+        Self {
+            color: target.color,
+            sample_count: target.sample_count,
+            depth: false,
+        }
+    }
+}
+
+impl Attachments {
+    /// The colour target alone.
+    pub(crate) fn format(self) -> TargetFormat {
+        TargetFormat {
+            color: self.color,
+            sample_count: self.sample_count,
+        }
+    }
+}
+
 /// A render pipeline into one colour target: by default `shader`'s vertex
-/// and fragment entry points, drawing triangles without depth or culling.
+/// and fragment entry points, drawing triangles without culling, and
+/// without a depth test or write where the target has a depth attachment.
 /// Change the rest with struct update syntax over [`Draw::new`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Draw<'a> {
@@ -50,9 +83,10 @@ impl<'a> Draw<'a> {
     pub(crate) fn new(
         shader: &'a Shader,
         layouts: &'a [BindGroupLayoutId],
-        target: TargetFormat,
+        target: impl Into<Attachments>,
         blend: Option<BlendState>,
     ) -> Self {
+        let target = target.into();
         Self {
             label: shader.label,
             vertex: (shader, shader.vertex),
@@ -68,7 +102,11 @@ impl<'a> Draw<'a> {
                 blend,
             },
             sample_count: target.sample_count,
-            depth: None,
+            depth: target.depth.then_some(DepthState {
+                format: TextureFormat::Depth32Float,
+                write: false,
+                test: false,
+            }),
             topology: PrimitiveTopology::TriangleList,
             cull_back: false,
         }

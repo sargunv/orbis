@@ -19,8 +19,7 @@ use orb_hal::*;
 use orb_shaders::SYMBOL_INLINE_SHADERS;
 use orb_shaders::{SYMBOL_PLACE_SHADERS, SYMBOL_SHADER};
 
-use crate::TargetFormat;
-use crate::pipeline::{Draw, Variants};
+use crate::pipeline::{Attachments, Draw, Variants};
 use crate::release::Release;
 use crate::scene::{Backing, PLACED_WIDTH, Tables};
 
@@ -134,6 +133,9 @@ pub(crate) struct Symbols {
     passes: [BindGroupId; SYMBOL_PASSES.len()],
     /// [`QUAD_INDICES`], the index buffer the draws take.
     quad_indices: BufferId,
+    /// The draws' pipelines for the map's other kind of pass
+    /// ([`swap_draws`](Self::swap_draws)).
+    kept: [Variants; 4],
 }
 
 impl Symbols {
@@ -177,6 +179,7 @@ impl Symbols {
             pass_stride,
             passes,
             quad_indices,
+            kept: Default::default(),
         }
     }
 
@@ -241,6 +244,18 @@ impl Symbols {
         }
     }
 
+    /// Draws into the map's passes with or without their depth from now
+    /// on: its pipelines for the other kind, kept since it last drew into
+    /// those, take the place of these, which are kept in turn.
+    pub(crate) fn swap_draws(&mut self) {
+        let draws: &mut [Variants] = match &mut self.placing {
+            Placing::Dispatched(dispatch) => &mut dispatch.draws,
+            #[cfg(cpu_driven)]
+            Placing::Inline(draws) => draws,
+        };
+        draws.swap_with_slice(&mut self.kept[..draws.len()]);
+    }
+
     /// Makes the pipelines a symbol layer of `kind` draws with (along
     /// lines `kind / 2`, with property rows `kind % 2`) where the symbol
     /// layers place with `placings`, each variant of `variants` asked
@@ -249,7 +264,7 @@ impl Symbols {
         &mut self,
         gpu: &mut dyn Gpu,
         (scene, node): (BindGroupLayoutId, BindGroupLayoutId),
-        target: TargetFormat,
+        target: Attachments,
         (kind, placings): (usize, Placings),
         variants: [bool; 2],
     ) {
@@ -548,6 +563,6 @@ impl Release for Symbols {
             Placing::Inline(draws) => draws.release(gpu),
         }
         (self.pass_layout, self.pass_buffer).release(gpu);
-        (self.passes, self.quad_indices).release(gpu);
+        (self.passes, self.quad_indices, self.kept).release(gpu);
     }
 }

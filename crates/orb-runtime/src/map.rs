@@ -1939,7 +1939,7 @@ impl Map {
                 })
         });
         renderer.set_full_projection(self.surface.globe().is_some() || warped || terrain);
-        renderer.set_terrain_reachable(terrain);
+        renderer.set_terrain_reachable(gpu, terrain);
         // The style's pipeline set, in what the map now declares, before
         // anything the frame shows asks for its own.
         self.pipeline_set(gpu, renderer);

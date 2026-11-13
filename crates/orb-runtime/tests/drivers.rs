@@ -167,6 +167,7 @@ fn the_cpu_driver_writes_the_gpu_cull_s_words_in_every_scene() {
         "globe",
         "terrain",
         "terrain-drape",
+        "terrain-buildings",
         "heatmap",
         "raster",
         "extrusions",

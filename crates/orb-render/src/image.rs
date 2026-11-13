@@ -26,7 +26,7 @@ use orb_shaders::{
     RASTER_SHADER,
 };
 
-use crate::pipeline::Draw;
+use crate::pipeline::{Attachments, Draw};
 use crate::{Family, OutOfSpace, TargetFormat};
 
 /// Words per image tile property row: texture layer; the latitudes of the
@@ -234,13 +234,16 @@ impl ImagePipelines {
 
 #[derive(Debug)]
 pub(crate) struct Images {
-    target: TargetFormat,
+    /// The map's passes.
+    target: Attachments,
     draw_layout: BindGroupLayoutId,
     image_layout: BindGroupLayoutId,
     /// Color-relief and hillshade nodes': the image node's and a table.
     table_layout: BindGroupLayoutId,
-    /// Raster, hillshade and color relief, made for their first node.
+    /// Raster, hillshade and color relief, made for their first node, and
+    /// those for the map's other kind of pass ([`retarget`](Self::retarget)).
     pipelines: ImagePipelines,
+    kept: ImagePipelines,
     /// Shaded hillshades' slopes into the drape atlas, made for the first.
     slopes: Option<RenderPipelineId>,
     /// Hillshade tables and their paint's layout, made for the first
@@ -265,7 +268,7 @@ pub(crate) struct Images {
 impl Images {
     pub(crate) fn new(
         gpu: &mut dyn Gpu,
-        target: TargetFormat,
+        target: Attachments,
         draw_layout: BindGroupLayoutId,
     ) -> Self {
         use BindGroupLayoutEntry as E;
@@ -323,6 +326,7 @@ impl Images {
             image_layout,
             table_layout,
             pipelines: ImagePipelines::default(),
+            kept: ImagePipelines::default(),
             slopes: None,
             tables: None,
             linear,
@@ -334,6 +338,15 @@ impl Images {
             edges: Default::default(),
             resized: Default::default(),
         }
+    }
+
+    /// Draws the map's nodes into `target`'s passes from now on, the
+    /// map's with or without their depth: the pipelines for those, kept
+    /// since it last drew into them, take the place of these, which are
+    /// kept in turn.
+    pub(crate) fn retarget(&mut self, target: Attachments) {
+        std::mem::swap(&mut self.pipelines, &mut self.kept);
+        self.target = target;
     }
 
     /// Makes `family`'s pipeline for the map's target if it isn't made.
@@ -351,7 +364,7 @@ impl Images {
         &self,
         gpu: &mut dyn Gpu,
         pipelines: &mut ImagePipelines,
-        target: TargetFormat,
+        target: Attachments,
         draw_layout: BindGroupLayoutId,
         family: Family,
     ) -> RenderPipelineId {
@@ -1308,6 +1321,7 @@ impl crate::release::Release for Images {
             self.image_layout,
             self.table_layout,
             self.pipelines.0,
+            self.kept.0,
             self.slopes,
         );
         let tables = self.tables.map(|(p, l)| (l, p));
