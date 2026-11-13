@@ -19,9 +19,6 @@
 //! nothing else reaches, by construction rather than by a profile of what
 //! scenes ran.
 //!
-//! Read-only data only one module's code reaches goes with that module
-//! too ([`data`]): its strings, tables and shaders' sources.
-//!
 //! A name is one function's alone: neither LLVM nor binaryen folds two
 //! functions with one body into one of their names here (web.rs), which
 //! would give a module a function core.wasm calls too; [`split`] folds
@@ -39,13 +36,10 @@
 //! the loader takes only its own.
 
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wasmparser::{DataKind, ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
-
-mod data;
+use wasmparser::{ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
 /// A feature's module.
 pub(crate) struct Module {
@@ -313,10 +307,9 @@ const PLACEHOLDERS: &str = "placeholder";
 /// the FNV-1a 64 hash of its feature modules' bytes, in hex.
 const PAIR: &str = "orbis.pair";
 
-/// What the split moved: per module, its functions, their code bytes and
-/// its data bytes.
+/// What the split moved: per module, its functions and their code bytes.
 pub(crate) struct Split {
-    pub(crate) modules: Vec<(&'static str, usize, usize, usize)>,
+    pub(crate) modules: Vec<(&'static str, usize, usize)>,
 }
 
 /// `name` without its crates' hashes (`orb_style[48b542d477ccbf4d]` →
@@ -545,21 +538,17 @@ fn assign(functions: &Functions, seeds: &[Option<usize>]) -> Vec<Option<usize>> 
 
 /// Splits `whole` (core.wasm, without names) into `primary` and a module
 /// per feature, `<prefix><name>.wasm`; `symbols` is the symbol map
-/// wasm-opt wrote for `whole`, which names its functions by index, and
-/// `map` the linker's map of the module it was made from, which bounds
-/// its data objects ([`data`]). Returns where each module went, by
-/// [`MODULES`]' order.
+/// wasm-opt wrote for `whole`, which names its functions by index.
+/// Returns where each module went, by [`MODULES`]' order.
 pub(crate) fn split(
     whole: &Path,
     symbols: &Path,
-    map: &Path,
     primary: &Path,
     prefix: &str,
     features: &[&str],
 ) -> Result<(Split, Vec<PathBuf>), String> {
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-    let mut wasm = read(whole)?;
-    let functions = functions(&wasm)?;
+    let functions = functions(&read(whole)?)?;
     let symbols = String::from_utf8(read(symbols)?).map_err(|e| e.to_string())?;
     // `index:name`, in the module's index space, imports first.
     let names: HashMap<u32, &str> = symbols
@@ -593,37 +582,6 @@ pub(crate) fn split(
             calls.join("\n"),
         ));
     }
-    // The data only one module's code reaches goes with it.
-    let linked = std::fs::read_to_string(map).map_err(|e| format!("{}: {e}", map.display()))?;
-    let objects = data::objects(&linked)?;
-    let pointers: Vec<(&[u32], Option<usize>)> = (functions.defined.iter())
-        .zip(&modules)
-        .map(|(f, &m)| (f.pointers.as_slice(), m))
-        .collect();
-    let homes = data::assign(
-        &objects,
-        &wasm,
-        &functions.segments,
-        &pointers,
-        &functions.roots,
-    );
-    let held_data = |m: usize| -> Vec<data::Object> {
-        (objects.iter().zip(&homes))
-            .filter(|&(_, &home)| home == Some(m))
-            .map(|(&o, _)| o)
-            .collect()
-    };
-    let module_data: Vec<Vec<(u32, Vec<u8>)>> = (0..MODULES.len())
-        .map(|m| data::bytes(&wasm, &functions.segments, &held_data(m)))
-        .collect();
-    let moved: Vec<data::Object> = (objects.iter().zip(&homes))
-        .filter(|&(_, home)| home.is_some())
-        .map(|(&o, _)| o)
-        .collect();
-    data::zero(&mut wasm, &functions.segments, &moved);
-    // What wasm-split splits: `whole` without that data.
-    let zeroed = whole.with_extension("zeroed.wasm");
-    std::fs::write(&zeroed, &wasm).map_err(|e| format!("{}: {e}", zeroed.display()))?;
     let mut manifest = String::new();
     let mut split = Split {
         modules: Vec::new(),
@@ -633,8 +591,7 @@ pub(crate) fn split(
             .filter(|&i| modules[i] == Some(m))
             .collect();
         let bytes = held.iter().map(|&i| functions.defined[i].size).sum();
-        let data = module_data[m].iter().map(|(_, b)| b.len()).sum();
-        split.modules.push((module.name, held.len(), bytes, data));
+        split.modules.push((module.name, held.len(), bytes));
         if held.is_empty() {
             continue;
         }
@@ -669,7 +626,7 @@ pub(crate) fn split(
             .arg("--placeholdermap")
             .arg(format!("--manifest={}", manifest_file.display()))
             .arg(format!("--out-prefix={}/{prefix}", dir.display()))
-            .arg(&zeroed)
+            .arg(whole)
             .arg("-o")
             .arg(primary),
     )?;
@@ -694,28 +651,20 @@ pub(crate) fn split(
         })
         .collect();
     let _ = std::fs::remove_file(&map);
-    let _ = std::fs::remove_file(&zeroed);
     let placeholders = whole.with_extension("placeholders");
     std::fs::write(&placeholders, named).map_err(|e| format!("{}: {e}", placeholders.display()))?;
-    // Each module writes its data into its memory as it's instantiated.
-    for (path, segments) in paths.iter().zip(&module_data) {
-        if path.exists() && !segments.is_empty() {
-            let module = data::with_data(&read(path)?, segments)
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-            std::fs::write(path, module).map_err(|e| format!("{}: {e}", path.display()))?;
-        }
-    }
     // Functions with one body fold into one, within each module alone
-    // (`whole` was optimized without), and core.wasm drops the data it
-    // zeroed.
+    // (`whole` was optimized without).
     for path in std::iter::once(primary).chain(paths.iter().map(PathBuf::as_path)) {
         if path.exists() {
-            let mut opt = Command::new("wasm-opt");
-            opt.arg("--duplicate-function-elimination");
-            if path == primary {
-                opt.args(["--zero-filled-memory", "--memory-packing"]);
-            }
-            crate::run(opt.args(features).arg(path).arg("-o").arg(path))?;
+            crate::run(
+                Command::new("wasm-opt")
+                    .arg("--duplicate-function-elimination")
+                    .args(features)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(path),
+            )?;
         }
     }
     // A build's modules know each other by the hash of theirs.
@@ -781,11 +730,6 @@ fn leb128(out: &mut Vec<u8>, mut value: usize) {
 struct Functions {
     imported: u32,
     defined: Vec<Function>,
-    /// The active data segments: where each starts in memory, and its
-    /// bytes' range in the module.
-    segments: Vec<(u32, Range<usize>)>,
-    /// The constants of the globals' initial values that may be addresses.
-    roots: Vec<u32>,
 }
 
 struct Function {
@@ -798,9 +742,6 @@ struct Function {
     callees: Vec<u32>,
     /// Its body's bytes.
     size: usize,
-    /// Its constants that may be addresses of data: any at or past 1 MiB,
-    /// where Rust lays data out, offsets of loads and stores included.
-    pointers: Vec<u32>,
 }
 
 /// The module's functions, and what they call.
@@ -812,8 +753,6 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
     let mut reached = Vec::new();
     let mut exports = Vec::new();
     let mut bodies = 0;
-    let mut segments = Vec::new();
-    let mut roots = Vec::new();
     let ref_funcs = |ops: wasmparser::OperatorsReader<'_>, reached: &mut Vec<u32>| {
         for op in ops {
             if let Operator::RefFunc { function_index } = op.map_err(|e| e.to_string())? {
@@ -839,7 +778,6 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                         exported: false,
                         callees: Vec::new(),
                         size: 0,
-                        pointers: Vec::new(),
                     });
                 }
             }
@@ -857,9 +795,6 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                 for global in reader {
                     let global = global.map_err(|e| e.to_string())?;
                     ref_funcs(global.init_expr.get_operators_reader(), &mut reached)?;
-                    for op in global.init_expr.get_operators_reader() {
-                        pointers(&op.map_err(|e| e.to_string())?, &mut roots);
-                    }
                 }
             }
             Payload::ElementSection(reader) => {
@@ -879,28 +814,10 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                     }
                 }
             }
-            Payload::DataSection(reader) => {
-                for segment in reader {
-                    let segment = segment.map_err(|e| e.to_string())?;
-                    let DataKind::Active { offset_expr, .. } = segment.kind else {
-                        continue;
-                    };
-                    let mut ops = offset_expr.get_operators_reader();
-                    let Operator::I32Const { value } = ops.read().map_err(|e| e.to_string())?
-                    else {
-                        return Err("a data segment's offset isn't a constant".into());
-                    };
-                    let at = segment.data.as_ptr() as usize - wasm.as_ptr() as usize;
-                    segments.push((value as u32, at..at + segment.data.len()));
-                }
-            }
             Payload::CodeSectionEntry(body) => {
                 let mut callees = Vec::new();
-                let mut addresses = Vec::new();
                 for op in body.get_operators_reader().map_err(|e| e.to_string())? {
-                    let op = op.map_err(|e| e.to_string())?;
-                    pointers(&op, &mut addresses);
-                    match op {
+                    match op.map_err(|e| e.to_string())? {
                         Operator::Call { function_index }
                         | Operator::ReturnCall { function_index } => {
                             // Imports come first in the index space.
@@ -918,9 +835,6 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                     .get_mut(bodies)
                     .ok_or("more function bodies than functions")?;
                 function.callees = callees;
-                addresses.sort_unstable();
-                addresses.dedup();
-                function.pointers = addresses;
                 let range = body.range();
                 function.size = (range.end - range.start) as usize;
                 bodies += 1;
@@ -944,94 +858,7 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
             function.exported = true;
         }
     }
-    Ok(Functions {
-        imported,
-        defined,
-        segments,
-        roots,
-    })
-}
-
-/// Pushes what in `op` may be an address of data onto `out`: its
-/// constants at or past 1 MiB, where Rust lays data out (each half of an
-/// `i64`'s, each lane of a vector's), and its memory offset.
-fn pointers(op: &Operator<'_>, out: &mut Vec<u32>) {
-    const DATA: u32 = 1 << 20;
-    let mut push = |value: u32| {
-        if value >= DATA {
-            out.push(value);
-        }
-    };
-    match op {
-        Operator::I32Const { value } => push(*value as u32),
-        Operator::I64Const { value } => {
-            push(*value as u32);
-            push((*value as u64 >> 32) as u32);
-        }
-        Operator::V128Const { value } => {
-            for lane in value.bytes().as_chunks::<4>().0 {
-                push(u32::from_le_bytes(*lane));
-            }
-        }
-        _ => {
-            if let Some(offset) = memory_offset(op) {
-                push(u32::try_from(offset).unwrap_or(u32::MAX));
-            }
-        }
-    }
-}
-
-/// The memory offset of a load or store.
-fn memory_offset(op: &Operator<'_>) -> Option<u64> {
-    use Operator::*;
-    match op {
-        I32Load { memarg }
-        | I64Load { memarg }
-        | F32Load { memarg }
-        | F64Load { memarg }
-        | I32Load8S { memarg }
-        | I32Load8U { memarg }
-        | I32Load16S { memarg }
-        | I32Load16U { memarg }
-        | I64Load8S { memarg }
-        | I64Load8U { memarg }
-        | I64Load16S { memarg }
-        | I64Load16U { memarg }
-        | I64Load32S { memarg }
-        | I64Load32U { memarg }
-        | I32Store { memarg }
-        | I64Store { memarg }
-        | F32Store { memarg }
-        | F64Store { memarg }
-        | I32Store8 { memarg }
-        | I32Store16 { memarg }
-        | I64Store8 { memarg }
-        | I64Store16 { memarg }
-        | I64Store32 { memarg }
-        | V128Load { memarg }
-        | V128Load8x8S { memarg }
-        | V128Load8x8U { memarg }
-        | V128Load16x4S { memarg }
-        | V128Load16x4U { memarg }
-        | V128Load32x2S { memarg }
-        | V128Load32x2U { memarg }
-        | V128Load8Splat { memarg }
-        | V128Load16Splat { memarg }
-        | V128Load32Splat { memarg }
-        | V128Load64Splat { memarg }
-        | V128Load32Zero { memarg }
-        | V128Load64Zero { memarg }
-        | V128Store { memarg }
-        | V128Load8Lane { memarg, .. }
-        | V128Load16Lane { memarg, .. }
-        | V128Load32Lane { memarg, .. }
-        | V128Load64Lane { memarg, .. }
-        | V128Store8Lane { memarg, .. }
-        | V128Store16Lane { memarg, .. }
-        | V128Store32Lane { memarg, .. }
-        | V128Store64Lane { memarg, .. } => Some(memarg.offset),
-        _ => None,
-    }
+    Ok(Functions { imported, defined })
 }
 
 /// The modules a module imports from.
@@ -1108,7 +935,6 @@ mod tests {
             exported: false,
             callees: callees.to_vec(),
             size: 100,
-            pointers: Vec::new(),
         };
         // 0 is exported and calls 1 (module 0's) and 2. 1 calls 3 and 4; 3
         // calls 5. 4 is called by 6 (module 1's) too, and 2 calls 7, which
@@ -1125,8 +951,6 @@ mod tests {
                 function(&[4], false),
                 function(&[], false),
             ],
-            segments: Vec::new(),
-            roots: Vec::new(),
         };
         let seeds = [None, Some(0), None, None, None, None, Some(1), None];
         assert_eq!(
@@ -1171,13 +995,10 @@ mod tests {
             exported: false,
             callees: callees.to_vec(),
             size: 100,
-            pointers: Vec::new(),
         };
         let functions = Functions {
             imported: 0,
             defined: vec![function(&[1]), function(&[]), function(&[1])],
-            segments: Vec::new(),
-            roots: Vec::new(),
         };
         let at = |name| MODULES.iter().position(|m| m.name == name);
         // sqlite's code may call archive's (gzip), geojson's may not, and
