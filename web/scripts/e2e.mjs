@@ -38,7 +38,15 @@
 // - `failing`: the Alps terrain style and the Globe, offline, their tiles
 //   and DEM tiles failing, switched to the Tokyo extract, which draws; then
 //   the map's wasm trapped on purpose stops it with one `error` saying so,
-//   and calls after fail with that message.
+//   and calls after fail with that message; the demo's panel shows it in
+//   place of the loading toast, copies the details and reloads.
+// - `recovery`: the demo's still-loading panel when the map's code never
+//   arrives and when its tiles never answer, saying what it waits on and
+//   dismissable; where maps draw with WebGPU, WebGPU that never answers
+//   for an adapter starting the map on WebGL 2, and WebGPU lost with no
+//   adapter after starting it again on WebGL 2 in a new canvas at its
+//   camera, taking input; and a WebGL 2 context never restored stopping
+//   the map, saying why.
 // - `options`: the Globe's map options, offline (the Tokyo extract's style
 //   standing in for Protomaps Light): by default it loads with every
 //   Orbis-only preview off and none of their keys in its style, the URL's
@@ -97,7 +105,7 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split,offline]
+//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -123,7 +131,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,webgl2,edits,playground,switching,light,terrain,failing,options,resize,compare,gestures,readback,boot,split",
+  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split",
 ).split(",");
 const browsers = arg("browsers", "chromium,firefox,webkit").split(",");
 const writes = Number(arg("writes", 500));
@@ -1806,10 +1814,269 @@ async function failing(browser, server) {
     [],
     "no call reaches the trapped module",
   );
-  await page.close();
   console.log(
     `failing: a trap stops the map with one error: ${seen.events[0]}`,
   );
+
+  // The demo's panel replaces the loading toast with the stop's message,
+  // copies the details to report it, and reloads the page.
+  const shown = await failurePanel(page);
+  assert.equal(shown.mode, "stopped", JSON.stringify(shown));
+  assert.equal(shown.title, "The map stopped");
+  assert.equal(
+    shown.message,
+    seen.events[0].replace("the map stopped: its", "Its"),
+  );
+  assert.equal(shown.toast, "");
+  const copied = await copyDetails(page);
+  for (const part of [
+    seen.events[0],
+    "Scene: tokyo",
+    `URL: ${server.url}`,
+    "User agent: ",
+    "Backend: ",
+    `"tilesDrawn"`,
+    "Recent console errors and warnings:",
+  ])
+    assert.ok(copied.includes(part), `the details hold ${part}:\n${copied}`);
+  await Promise.all([
+    page.waitForEvent("load"),
+    page.getByRole("button", { name: "Reload" }).click(),
+  ]);
+  await page.waitForFunction(() => app.map?.running, null, { timeout: 60_000 });
+  assert.equal(await page.locator("#failure").isHidden(), true);
+  await page.close();
+  console.log(
+    "failing: the demo's panel says the map stopped, copies, reloads",
+  );
+}
+
+/** The demo's failure panel as it shows, and the toast beside it. */
+function failurePanel(page) {
+  return page.evaluate(() => {
+    const panel = document.getElementById("failure");
+    return {
+      mode: panel.hidden ? null : panel.dataset.mode,
+      title: panel.querySelector("h2").textContent,
+      message: panel.querySelector(".failure-message").textContent,
+      waits: [...panel.querySelectorAll(".failure-waits li")].map(
+        (li) => li.textContent,
+      ),
+      toast: document.getElementById("toast").textContent,
+    };
+  });
+}
+
+/** What the panel's Copy details button puts on the clipboard. */
+async function copyDetails(page) {
+  await page.evaluate(() => {
+    const writeText = async (text) => (window.copied = text);
+    if (navigator.clipboard)
+      Object.defineProperty(navigator.clipboard, "writeText", {
+        value: writeText,
+      });
+    else
+      Object.defineProperty(navigator, "clipboard", { value: { writeText } });
+  });
+  await page.getByRole("button", { name: "Copy details" }).click();
+  await page.waitForFunction(() => window.copied);
+  assert.equal(
+    await page.getByRole("button", { name: "Copied" }).isVisible(),
+    true,
+  );
+  return page.evaluate(() => window.copied);
+}
+
+/**
+ * How the map and the demo come through what stops or stalls them: a load
+ * that doesn't finish shows the demo's still-loading panel saying what it
+ * waits on (no frame yet, then a source that never answers), which can be
+ * dismissed; WebGPU that never answers for an adapter starts the map on
+ * WebGL 2; WebGPU lost with no new adapter starts it again on WebGL 2 in a
+ * new canvas, at the same camera, taking input; and a WebGL 2 context the
+ * browser never restores stops the map, saying why, in bounded time.
+ */
+async function recovery(browser, server) {
+  const webgpu = browser.expects.backend === "webgpu";
+  const idle = (page) =>
+    page.waitForFunction(
+      () => document.getElementById("app").dataset.map === "idle",
+      null,
+      { timeout: 60_000 },
+    );
+
+  // The map's code never arrives: no frame, so the panel says so.
+  {
+    const { page } = await open(browser, { width: 600, height: 400 });
+    await page.route(/core(-gl)?_bg[^/]*\.wasm/, () => {});
+    await page.goto(`${server.url}?style=tokyo&watchdog=2000`);
+    await page.waitForSelector("#failure:not([hidden])", { timeout: 30_000 });
+    const shown = await failurePanel(page);
+    assert.equal(shown.mode, "hang", JSON.stringify(shown));
+    assert.match(shown.waits.join(), /^no frame yet/, JSON.stringify(shown));
+    await page.close();
+    console.log(`recovery: a map with no frame yet says so: ${shown.waits}`);
+  }
+
+  // The extract's tiles never answer: the panel says what the map waits
+  // on, and goes when dismissed.
+  {
+    const { page } = await open(browser, { width: 600, height: 400 });
+    await page.route(/\.pmtiles/, () => {});
+    await page.goto(`${server.url}?style=tokyo&watchdog=3000`);
+    await page.waitForSelector("#failure:not([hidden])", { timeout: 60_000 });
+    const shown = await failurePanel(page);
+    assert.equal(shown.mode, "hang", JSON.stringify(shown));
+    assert.equal(shown.title, "Still loading");
+    assert.ok(shown.waits.length > 0, JSON.stringify(shown));
+    assert.doesNotMatch(shown.waits.join(), /no frame/);
+    assert.ok((await copyDetails(page)).includes("Still loading"));
+    await page.getByRole("button", { name: "Keep waiting" }).click();
+    assert.equal(await page.locator("#failure").isHidden(), true);
+    await page.close();
+    console.log(`recovery: a stalled load says it waits on ${shown.waits}`);
+  }
+
+  if (webgpu) {
+    // WebGPU that never answers for an adapter, as in a wedged browser:
+    // the map starts on WebGL 2, and says why.
+    const { page, errors } = await open(browser, { width: 600, height: 400 });
+    await page.addInitScript(() => {
+      GPU.prototype.requestAdapter = () => new Promise(() => {});
+    });
+    await page.goto(`${server.url}?style=tokyo`);
+    await idle(page);
+    assert.equal(await page.evaluate(() => app.map.backend), "webgl2");
+    assert.ok(
+      errors.some((e) => /WebGPU: it didn't answer for an adapter/.test(e)),
+      JSON.stringify(errors),
+    );
+    await page.close();
+    console.log(
+      "recovery: WebGPU that never answers starts the map on WebGL 2",
+    );
+  }
+
+  if (webgpu) {
+    // An adapter that makes no device, as the Android emulator's Chrome
+    // gives ("A valid external Instance reference no longer exists"): the
+    // map starts on WebGL 2 in a new canvas, and says why.
+    const { page, errors } = await open(browser, { width: 600, height: 400 });
+    await page.addInitScript(() => {
+      GPUAdapter.prototype.requestDevice = () =>
+        Promise.reject(
+          new DOMException(
+            "A valid external Instance reference no longer exists.",
+            "OperationError",
+          ),
+        );
+    });
+    await page.goto(`${server.url}?style=tokyo`);
+    await idle(page);
+    assert.equal(await page.evaluate(() => app.map.backend), "webgl2");
+    assert.ok(
+      errors.some((e) =>
+        /WebGPU: its map didn't start: no WebGPU device/.test(e),
+      ),
+      JSON.stringify(errors),
+    );
+    await page.close();
+    console.log(
+      "recovery: WebGPU that makes no device starts the map on WebGL 2",
+    );
+  }
+
+  if (webgpu) {
+    // WebGPU lost, and no adapter after: the map starts again on WebGL 2
+    // in a new canvas, at its camera, and takes input there.
+    const { page, errors } = await open(browser, { width: 600, height: 400 });
+    await page.goto(`${server.url}?style=tokyo#14/35.6830/139.7520`);
+    await idle(page);
+    const fell = await page.evaluate(async () => {
+      const { map } = app;
+      const before = { canvas: map.canvas, camera: map.camera.current };
+      GPU.prototype.requestAdapter = async () => null;
+      const restored = map.once("restored");
+      map.loseDevice();
+      const { backend } = await restored;
+      return {
+        backend,
+        now: map.backend,
+        newCanvas: map.canvas !== before.canvas && map.canvas.isConnected,
+        oldGone: !before.canvas.isConnected,
+        zoom: [before.camera.zoom, map.camera.current.zoom],
+      };
+    });
+    assert.deepEqual(
+      { ...fell, zoom: undefined },
+      {
+        backend: "webgl2",
+        now: "webgl2",
+        newCanvas: true,
+        oldGone: true,
+        zoom: undefined,
+      },
+    );
+    assert.ok(Math.abs(fell.zoom[0] - fell.zoom[1]) < 1e-6, fell.zoom);
+    await idle(page);
+    // A drag on the new canvas moves the camera.
+    const center = await page.evaluate(() => app.map.camera.current.center);
+    await page.mouse.move(300, 200);
+    await page.mouse.down();
+    await page.mouse.move(200, 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForFunction(
+      (was) => app.map.camera.current.center[0] !== was[0],
+      center,
+    );
+    const image = decodePng(await page.locator("#map").screenshot());
+    const first = image.pixels.subarray(0, 3).join();
+    let varied = false;
+    for (let i = 0; i < image.pixels.length && !varied; i += image.channels)
+      varied = image.pixels.subarray(i, i + 3).join() !== first;
+    assert.ok(varied, "the map draws on WebGL 2");
+    assert.equal(await page.locator("#failure").isHidden(), true);
+    const unexpected = errors.filter(
+      (e) =>
+        !/draws with WebGL 2|otherwise than on WebGPU|WebGL: too many errors|GPU stall due to ReadPixels/.test(
+          e,
+        ),
+    );
+    assert.deepEqual(unexpected, []);
+    await page.close();
+    console.log(
+      "recovery: WebGPU lost with no adapter after starts the map again on WebGL 2",
+    );
+  }
+
+  // A WebGL 2 context the browser never restores stops the map in
+  // bounded time, saying why, rather than leaving it black.
+  {
+    const { page } = await open(browser, { width: 600, height: 400 });
+    await page.goto(`${server.url}?style=tokyo&backend=webgl2`);
+    await idle(page);
+    const started = Date.now();
+    await page.evaluate(() => {
+      const extension = WebGL2RenderingContext.prototype.getExtension;
+      WebGL2RenderingContext.prototype.getExtension = function (name) {
+        const got = extension.call(this, name);
+        if (name === "WEBGL_lose_context" && got) got.restoreContext = () => {};
+        return got;
+      };
+      app.map.loseDevice();
+    });
+    await page.waitForSelector("#failure:not([hidden])", { timeout: 30_000 });
+    const shown = await failurePanel(page);
+    assert.equal(shown.mode, "stopped", JSON.stringify(shown));
+    assert.match(
+      shown.message,
+      /^The GPU was lost and no other could be made: the browser didn't restore the WebGL 2 context/,
+    );
+    await page.close();
+    console.log(
+      `recovery: a WebGL 2 context never restored stops the map in ${((Date.now() - started) / 1000).toFixed(1)} s`,
+    );
+  }
 }
 
 /**
@@ -3438,6 +3705,7 @@ const CHECKS = {
   light,
   terrain,
   failing,
+  recovery,
   options,
   resize,
   compare,

@@ -13,12 +13,14 @@
 // `&light=map`, `&blend=1`, `&projection=mercator`, …, app/options.js),
 // `&backend=webgpu|webgl2` (the renderer, Auto by default, app/options.js),
 // `&lose=<ms>` (lose the GPU that long after
-// loading, to show recovery), and the camera as
-// `#zoom/lat/lon[/bearing/pitch]`.
+// loading, to show recovery), `&watchdog=<ms>` (how long a load may take
+// before the panel says what it waits on, 30 s by default), and the camera
+// as `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
 
 import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
+import { failure } from "./app/failure.js";
 import { hud as createHud } from "./app/hud.js";
 import { offline as createOffline } from "./app/offline.js";
 import {
@@ -93,6 +95,81 @@ prefersDark.addEventListener("change", tone);
 function say(text, { error = false } = {}) {
   toast.textContent = text;
   toast.classList.toggle("error", error);
+}
+
+// The panel over the map when it stops, or hasn't loaded in a while.
+const panel = failure(document.getElementById("stage"), {
+  context: () => ({
+    scene: current && `${current.scene.key} (${current.scene.name})`,
+    backend: map?.backend,
+    stats: map?.stats,
+  }),
+  onFatal: (e) => stopped(e instanceof Error ? e.message : String(e)),
+});
+/** The map stopped (or never started), saying why: the panel replaces the
+ * loading toast. */
+function stopped(message, heading) {
+  clearTimeout(watchdog);
+  app.dataset.map = "error";
+  say("");
+  panel.stopped(message, heading);
+}
+
+/**
+ * How long a load (the page's, or a switch to another style) may take
+ * before the panel says what it waits on. The Globe idles in about 10 s on
+ * a moto g; three times that leaves room for a slow network.
+ */
+const LOAD_MS = Number(params().get("watchdog")) || 30_000;
+let watchdog;
+/** Watches a load: the panel shows if it hasn't finished in `LOAD_MS`. */
+function watchLoad() {
+  clearTimeout(watchdog);
+  watchdog = setTimeout(
+    () => panel.hang(Math.round(LOAD_MS / 1000), waitingOn()),
+    LOAD_MS,
+  );
+}
+/** A frame showed the load finished: idle, or everything in view in. */
+function finished(stats) {
+  return (
+    !styleLoading &&
+    (stats.idle ||
+      (stats.loaded && !stats.layersWaiting && !stats.pipelinesPending))
+  );
+}
+/** What the map waits on, by the last frame's counters. */
+function waitingOn() {
+  if (!map) {
+    // createMap hasn't resolved: the build downloads or compiles, or the
+    // GPU hasn't given the map a device.
+    const build = performance
+      .getEntriesByType("resource")
+      .find((e) => /core(-gl)?_bg[^/]*\.wasm/.test(e.name));
+    return [
+      build
+        ? `no frame yet: the map's code is in (${Math.round(build.encodedBodySize / 1024)} KiB), and compiling or waiting for the GPU to give it a device`
+        : "no frame yet: the map's code is still downloading",
+    ];
+  }
+  const stats = map.stats;
+  if (!stats) return ["no frame yet: the map waits for its first frame"];
+  const reasons = [];
+  if (styleLoading) reasons.push("the style, still downloading");
+  if (stats.tilesLoading) reasons.push(`${stats.tilesLoading} tiles loading`);
+  if (stats.layersWaiting)
+    reasons.push(`${stats.layersWaiting} layers waiting for their pipelines`);
+  if (stats.pipelinesPending)
+    reasons.push(`${stats.pipelinesPending} pipelines compiling`);
+  if (stats.transitioning) reasons.push("a paint transition");
+  if (map.camera.moving) reasons.push("the camera, moving");
+  if (!reasons.length)
+    reasons.push(
+      stats.loaded
+        ? "labels placing and fading in"
+        : "the style or its sources, still loading",
+    );
+  return reasons;
 }
 
 // URL state.
@@ -404,6 +481,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
   styleLoading = true;
   options.loading();
   app.dataset.map = "loading";
+  watchLoad();
   // The style's `styleload` applies the entry's projection and sky, unless
   // it restyles, which puts them in the style. The style's own camera is a
   // fresh page's (load), never a switch's.
@@ -452,6 +530,7 @@ async function load(next, { camera }) {
   compare.attach(undefined, next.scene);
   app.dataset.map = "loading";
   say(`Loading ${next.scene.name}…`);
+  watchLoad();
   let created;
   try {
     created = await createMap({
@@ -465,11 +544,11 @@ async function load(next, { camera }) {
     });
   } catch (e) {
     options.drawing(null);
-    app.dataset.map = "error";
-    say(`The map couldn't start: ${e instanceof Error ? e.message : e}`, {
-      error: true,
-    });
     console.error(e);
+    stopped(
+      e instanceof Error ? e.message : String(e),
+      "The map couldn't start",
+    );
     return;
   }
   map = created;
@@ -483,6 +562,10 @@ async function load(next, { camera }) {
   expose(map);
   map.on("error", ({ message }) => {
     console.error(message);
+    if (message.startsWith("the map stopped")) {
+      stopped(message);
+      return;
+    }
     if (
       app.dataset.map === "loading" ||
       toast.textContent.startsWith("Loading")
@@ -526,6 +609,10 @@ async function load(next, { camera }) {
   map.on("warning", ({ message }) => console.warn(message));
   map.on("render", (ack) => {
     app.dataset.map = styleLoading ? "loading" : ack.idle ? "idle" : "drawing";
+    if (finished(ack)) {
+      clearTimeout(watchdog);
+      panel.loaded();
+    } else panel.update(waitingOn());
     hudControl.frame(ack);
     showCompass();
   });
@@ -533,7 +620,17 @@ async function load(next, { camera }) {
   // How long a device loss took to recover: to the first frame on the new
   // device, and to the next complete one.
   let lostAt;
-  map.on("restored", ({ recoveredMs }) => {
+  let drawingWith = map.backend;
+  map.on("restored", ({ recoveredMs, backend }) => {
+    // WebGPU gave no new device: the map started again on WebGL 2.
+    if (backend !== drawingWith) {
+      drawingWith = backend;
+      options.drawing(backend);
+      say("WebGPU stopped working: the map draws with WebGL 2 now");
+      setTimeout(() => {
+        if (toast.textContent.startsWith("WebGPU stopped")) say("");
+      }, 5000);
+    }
     const idle = map.on("idle", () => {
       idle();
       const recovered =
@@ -589,12 +686,15 @@ function hoverNames(target) {
       busy = false;
     }
   };
-  target.canvas.addEventListener("pointermove", (e) => {
+  // On the container: a map that falls back to WebGL 2 draws into a new
+  // canvas.
+  container.addEventListener("pointermove", (e) => {
+    if (e.target !== target.canvas) return;
     if (e.buttons || e.pointerType === "touch") return;
     pointer = [e.offsetX, e.offsetY];
     void hover();
   });
-  target.canvas.addEventListener("pointerleave", () => {
+  container.addEventListener("pointerleave", () => {
     pointer = null;
     void hover();
   });
@@ -607,6 +707,7 @@ window.app = {
   },
   compare,
   options,
+  panel,
   get scene() {
     return current?.scene.key;
   },

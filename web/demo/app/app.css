@@ -1006,6 +1006,71 @@ button.option-row:hover:enabled {
   color: #fff;
 }
 
+/* The failure panel (failure.js): over the map when it stops, or hasn't
+   loaded in a while. */
+.failure {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(440px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  overflow: auto;
+  padding: var(--space-5);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--lift-high);
+}
+.failure h2 {
+  font-size: var(--text-lg);
+  font-weight: 750;
+}
+.failure[data-mode="stopped"] h2 {
+  color: var(--danger);
+}
+.failure-message {
+  margin: var(--space-2) 0;
+  overflow-wrap: anywhere;
+}
+.failure-waits {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+}
+.failure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 var(--space-3);
+}
+.secondary {
+  min-height: var(--target);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  background: var(--surface);
+  font-weight: 600;
+}
+.failure summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.failure-details {
+  max-height: 40vh;
+  overflow: auto;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  border-radius: 8px;
+  background: var(--well);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .attribution-text > span:not(:last-child) {
   margin-right: 6px;
 }
