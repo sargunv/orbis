@@ -1984,7 +1984,7 @@ impl Map {
         let (frame_terrain, redrew) = match self.style.is_some() {
             true => {
                 let stages = (&mut report, &mut times, &mut drawn);
-                self.update_scene(gpu, renderer, (&view, &root), drawing, stages)
+                self.update_scene(gpu, renderer, &view, &root, drawing, stages)
             }
             false => (None, DrapeDrawn::default()),
         };
@@ -2144,16 +2144,17 @@ impl Map {
         fading
     }
 
-    /// Brings the style's terrain, sources and drape to the view (with the
-    /// frame's eased root values) and places their tiles, timing each stage into `times`, the tiles drawn for
-    /// picking into `drawn`; with `drawing`, a frame drawn and not only
-    /// prepared. Returns the frame's terrain and whether drape slots were
-    /// redrawn.
+    /// Brings the style's terrain, sources and drape to the view, with the
+    /// frame's eased `root` values, and places their tiles, timing each
+    /// stage into `times`, the tiles drawn for picking into `drawn`; with
+    /// `drawing`, a frame drawn and not only prepared. Returns the frame's
+    /// terrain and whether drape slots were redrawn.
     fn update_scene(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        (view, root): (&View, &crate::root::RootFrame),
+        view: &View,
+        root: &crate::root::RootFrame,
         drawing: bool,
         (report, times, drawn): (
             &mut FrameReport,
@@ -2167,7 +2168,7 @@ impl Map {
         // elevations, and drape over its tiles.
         let at = clock.now();
         if drawing {
-            frame_terrain = self.update_terrain(gpu, renderer, (view, root), report);
+            frame_terrain = self.update_terrain(gpu, renderer, view, root, report);
         }
         let planning = clock.now();
         times.terrain = micros(at, planning);
@@ -2571,8 +2572,9 @@ impl Map {
     ) {
         // A neighbour's relayouts and rows lay out as it did: its meshes
         // hold its features at the edges alone.
-        let neighbour = matches!(&self.style.as_ref().expect("jobs need a style").sources[index],
-                SourceState::Ready { pyramid, .. } if pyramid.get(tile).is_some_and(|r| r.neighbour));
+        let style = self.style.as_ref().expect("jobs need a style");
+        let neighbour = matches!(&style.sources[index],
+            SourceState::Ready { pyramid, .. } if pyramid.get(tile).is_some_and(|r| r.neighbour));
         // Relayouts are of tiles drawn now: they go first.
         self.send_tile_job(index, tile, (nodes, rows_only, neighbour), Some(edit), 0);
     }
@@ -3025,7 +3027,8 @@ impl Map {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        (view, root): (&View, &crate::root::RootFrame),
+        view: &View,
+        root: &crate::root::RootFrame,
         report: &mut FrameReport,
     ) -> Option<orb_render::FrameTerrain> {
         // Asked only of a map with terrain, the style's or one still
