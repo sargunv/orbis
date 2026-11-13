@@ -326,6 +326,7 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
     cargo(&test)?;
     cpu_driver_tests(
         selection.contains("orb-render"),
+        selection.contains("orb-runtime"),
         selection.contains("orb-api"),
     )?;
     if selection.contains("orb-ffi") {
@@ -334,14 +335,19 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
     boundaries::check()
 }
 
-/// The renderer's tests and `orb-api`'s path tests again on the CPU frame
-/// driver with its tables in data textures, WebGL 2's path (#140), run
-/// natively (`ORB_DRIVER=cpu-tex`). `orb-runtime`'s `drivers` test holds
-/// the CPU driver to the GPU's word for word in every run.
-fn cpu_driver_tests(render: bool, path: bool) -> Result<(), String> {
+/// The renderer's tests, `orb-runtime`'s frame tests and `orb-api`'s path
+/// tests again on the CPU frame driver with its tables in data textures,
+/// WebGL 2's path (#140), run natively (`ORB_DRIVER=cpu-tex`).
+/// `orb-runtime`'s `drivers` test holds the CPU driver to the GPU's word
+/// for word in every run.
+fn cpu_driver_tests(render: bool, frames: bool, path: bool) -> Result<(), String> {
     // One run each: `--test` would narrow orb-render's too.
-    let runs: [(bool, &[&str]); 2] = [
+    let runs: [(bool, &[&str]); 3] = [
         (render, &["test", "--quiet", "-p", "orb-render"]),
+        (
+            frames,
+            &["test", "--quiet", "-p", "orb-runtime", "--test", "frames"],
+        ),
         (
             path,
             &["test", "--quiet", "-p", "orb-api", "--test", "path"],

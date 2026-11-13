@@ -5,6 +5,15 @@
 mod common;
 
 mod tests {
+    /// Whether frames draw on the GPU frame driver, whose bundles draw
+    /// the counts the cull writes, so that a camera move replays them.
+    /// The CPU driver's (`ORB_DRIVER=cpu`, `cpu-tex`, `webgl2`: WebGL 2's,
+    /// which draws nothing indirectly) hold their draws' counts and record
+    /// again when a move changes what the cull keeps.
+    fn gpu_driven() -> bool {
+        std::env::var("ORB_DRIVER").map_or(true, |driver| driver.is_empty() || driver == "gpu")
+    }
+
     fn tokyo(zoom: f64) -> crate::common::Options {
         crate::common::Options {
             style: None,
@@ -299,8 +308,11 @@ mod tests {
         // Blocks copy nothing as the view fills them: what moves as it
         // grows (the property rows, the chunk table, the block of what
         // draws as points) copies no more than the rows and tables hold.
+        // The CPU driver keeps the row tables in one data texture (WebGL
+        // 2 binds few textures), which a block's new node rows move
+        // whole.
         assert!(
-            copied <= memory.props.allocated + memory.tables,
+            !gpu_driven() || copied <= memory.props.allocated + memory.tables,
             "{copied} bytes copied growing the scene: {memory:#?}"
         );
         crate::common::take_warnings(&mut held.map);
@@ -755,7 +767,7 @@ mod tests {
         for pitch in [60.0, 80.0, 85.0] {
             crate::common::move_camera(&mut offscreen.map, |c| c.pitch = pitch);
             let report = offscreen.frame();
-            assert!(!report.frame.bundle_recorded);
+            assert!(!gpu_driven() || !report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
             assert!(report.idle);
         }
@@ -778,7 +790,7 @@ mod tests {
                 c.pitch = pitch;
             });
             let report = offscreen.frame();
-            assert!(!report.frame.bundle_recorded);
+            assert!(!gpu_driven() || !report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
             // Only placements: a tile's rows are written again where it
             // or the tiles drawn around it changed (`TileRow::neighbours`).
