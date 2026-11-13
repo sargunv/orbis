@@ -52,7 +52,7 @@ export const VIEWS = {
 };
 
 /** The h2h cache, as `cargo xtask h2h` finds it. */
-export function cacheDir() {
+function cacheDir() {
   if (process.env.ORB_H2H_CACHE) return process.env.ORB_H2H_CACHE;
   if (process.platform === "darwin")
     return join(homedir(), "Library/Caches/orbis-h2h");

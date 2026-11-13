@@ -28,9 +28,9 @@ sprites once served.
   Upstream style SHA-256: `408245464e76791801a64393c403433d09e8110eb9516040f8dc2b62584eee2a`.
 - `alps.json` and `alps-flight.json`: the Alps terrain style and its
   flight, written for this repository. No picker entry shows the style;
-  `?style=alps` opens it on the web (`&flight` flies the flight), as the
-  flight script, the stutter bench and `orb-bench` measure terrain on it,
-  and the native demo flies it with `--flight`. The flight's legs are
+  `?style=alps` opens it on the web (`&flight` flies the flight), the
+  sessions and `orb-bench` measure terrain on it, and the native demo flies
+  it with `--flight`. The flight's legs are
   `flyTo` options looped until the user takes the camera; the Globe entry
   flies them too. It draws OpenFreeMap's planet tiles (data as above) over
   [Mapterhorn](https://mapterhorn.com/)'s terrain tiles, fetched at run time
