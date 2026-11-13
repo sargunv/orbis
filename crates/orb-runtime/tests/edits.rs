@@ -474,7 +474,7 @@ fn visibility_edits_fade() {
 
 /// The CPU cost of a feature-state write on the scene thread: the edit
 /// call, and the next frame's extra time over a frame without one.
-/// `cargo test --release -p orb-demo feature_state_write_cost -- --ignored --nocapture`
+/// `cargo test --release -p orb-runtime --test edits feature_state_write_cost -- --ignored --nocapture`
 #[test]
 #[ignore = "a measurement"]
 fn feature_state_write_cost() {

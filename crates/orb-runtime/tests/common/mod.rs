@@ -179,7 +179,7 @@ impl Offscreen {
             frames += 1;
             for event in self.map.take_events() {
                 if let MapEvent::Warning { message } | MapEvent::Error { message } = event {
-                    eprintln!("orb-demo: {message}");
+                    eprintln!("{message}");
                 }
             }
             if report.idle && was_idle {

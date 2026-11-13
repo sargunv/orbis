@@ -26,8 +26,8 @@ mod tests {
     /// fly them from the moment the style loads, with tiles loading in wall
     /// time: how far the eye and its near plane stay above the map's
     /// full-resolution terrain, taking the terrain at each revision. Needs
-    /// the network: `cargo test
-    /// --release -p orb-demo -- --ignored flight`.
+    /// the network: `cargo test --release -p orb-runtime --test frames
+    /// -- --ignored flight`.
     #[test]
     #[ignore = "fetches tiles over the network"]
     fn the_alps_flight_stays_above_the_terrain() {
