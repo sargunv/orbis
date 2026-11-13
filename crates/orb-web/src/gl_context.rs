@@ -31,13 +31,22 @@ fn listen(canvas: &JsValue, event: &str, handler: impl FnMut(JsValue) + 'static)
 }
 
 /// Sets `lost` and wakes map `map` when the context is lost, keeping it
-/// restorable (the event's default would give it up).
+/// restorable (the event's default would give it up). It listens before
+/// the device is asked for, so a context lost while the map starts is
+/// heard too.
 pub(crate) fn watch(canvas: &JsValue, lost: Arc<AtomicBool>, map: u32) {
     listen(canvas, "webglcontextlost", move |event| {
         let _ = call(&event, "preventDefault", &[]);
         lost.store(true, Ordering::Relaxed);
         crate::map::wake(map);
     });
+}
+
+/// Whether the canvas's context is lost now.
+pub(crate) fn is_lost(canvas: &JsValue) -> bool {
+    of(canvas)
+        .and_then(|context| call(&context, "isContextLost", &[]))
+        .is_ok_and(|lost| lost.is_truthy())
 }
 
 /// Takes flat varyings from a primitive's first vertex, as WebGPU does
@@ -62,19 +71,38 @@ pub(crate) fn first_vertex(canvas: &JsValue) {
     }
 }
 
-/// Waits until the canvas's context, if lost, is restored.
-pub(crate) async fn restored(canvas: &JsValue) -> Result<(), JsValue> {
-    let context = of(canvas)?;
-    if !call(&context, "isContextLost", &[])?.is_truthy() {
+/// How long a lost context is waited for. Chrome restored one 1005 and
+/// 1008 ms after its GPU process crashed (the DevTools protocol's
+/// `Browser.crashGpuProcess`), and never one lost again soon after (not
+/// within a minute): a browser restores within seconds or not at all.
+const RESTORE_MS: i32 = 10_000;
+
+/// Waits until the canvas's context, if lost, is restored, and fails after
+/// [`RESTORE_MS`].
+pub(crate) async fn restored(canvas: &JsValue) -> Result<(), String> {
+    if !is_lost(canvas) {
         return Ok(());
     }
-    let restored = js_sys::Promise::new(&mut |resolve, _| {
+    let restored = js_sys::Promise::new(&mut |resolve, reject| {
         listen(canvas, "webglcontextrestored", move |_| {
             let _ = resolve.call0(&JsValue::UNDEFINED);
         });
+        let expire = Closure::once_into_js(move || {
+            let _ = reject.call0(&JsValue::UNDEFINED);
+        });
+        let _ = call(
+            &js_sys::global(),
+            "setTimeout",
+            &[expire, RESTORE_MS.into()],
+        );
     });
-    wasm_bindgen_futures::JsFuture::from(restored).await?;
-    Ok(())
+    match wasm_bindgen_futures::JsFuture::from(restored).await {
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!(
+            "the browser didn't restore the WebGL 2 context within {} s",
+            RESTORE_MS / 1000
+        )),
+    }
 }
 
 /// Loses the context on purpose (`WEBGL_lose_context`), as a browser

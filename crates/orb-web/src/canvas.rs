@@ -387,9 +387,7 @@ impl Canvas {
                 Some((instance, surface)) => Self::on(instance, surface, element, size, map).await,
                 None => {
                     #[cfg(feature = "gl")]
-                    crate::gl_context::restored(&element)
-                        .await
-                        .map_err(|e| format!("{e:?}"))?;
+                    crate::gl_context::restored(&element).await?;
                     Self::new(element, size, map).await
                 }
             }
@@ -406,6 +404,9 @@ impl Canvas {
     ) -> Result<Self, String> {
         use orb_hal_wgpu::from_texture_format;
 
+        let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(feature = "gl")]
+        crate::gl_context::watch(&canvas, lost.clone(), map);
         #[cfg(not(feature = "gl"))]
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -430,15 +431,17 @@ impl Canvas {
             })
             .await
             .map_err(|e| format!(concat!("no ", api!(), " device: {}"), e))?;
-        let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = lost.clone();
         device.set_device_lost_callback(move |_, _| {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
             // The next frame sees the loss and the host recovers.
             crate::map::wake(map);
         });
+        // A context made while the GPU was gone can come lost.
         #[cfg(feature = "gl")]
-        crate::gl_context::watch(&canvas, lost.clone(), map);
+        if crate::gl_context::is_lost(&canvas) {
+            lost.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         #[cfg(feature = "gl")]
         crate::gl_context::first_vertex(&canvas);
         let caps = surface.get_capabilities(&adapter);
