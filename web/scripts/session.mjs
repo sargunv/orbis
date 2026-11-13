@@ -277,7 +277,7 @@ const SESSIONS = {
       (p) => drag(p, c, [300, 0], 4000, "right"),
       (p) => drag(p, c, [0, -60], 600, "right"),
       (p) => drag(p, c, [300, 0], 4000, "right"),
-      (p) => drag(p, c, [0, 120], 600, "right"),
+      (p) => drag(p, c, [0, 20], 600, "right"),
       (p) => drag(p, c, [-300, 0], 4000, "right"),
     ],
   },

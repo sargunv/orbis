@@ -220,7 +220,7 @@ const SESSIONS: &[Session] = &[
             turn([300.0, 0.0], 4000.0),
             turn([0.0, -60.0], 600.0),
             turn([300.0, 0.0], 4000.0),
-            turn([0.0, 120.0], 600.0),
+            turn([0.0, 20.0], 600.0),
             turn([-300.0, 0.0], 4000.0),
         ],
         pause: PAUSE,
@@ -612,16 +612,30 @@ fn run_session(
     // Each frame's end (ms), the camera's zoom, tiles drawn, cull
     // candidates, CPU and GPU ms, draws, drape slots redrawn, whether
     // input moved the camera and the tiles that arrived since the frame
-    // before, for attributing slow frames and seeing loads come again.
+    // before, for attributing slow frames and seeing loads come again;
+    // the MiB the device made, and the drape atlas's and tile pages' MiB
+    // after it, for seeing pages made anew; over terrain on the plane,
+    // what it changed of the frame before ([`crate::steadiness`]): the
+    // share of the ground re-zoomed, tile drops and the near ground's
+    // wobble in pixels.
     if let Some(prefix) = &settings.dump {
         let mut out = String::from(
-            "t\tzoom\ttiles\tcandidates\tcpu\tgpu\tdraws\tdrape_slots\tmoving\tarrived\n",
+            "t\tzoom\ttiles\tcandidates\tcpu\tgpu\tdraws\tdrape_slots\tmoving\tarrived\tmade\t\
+             drape_atlas\ttile_pages\trezoomed\tdrops\twobble\n",
         );
-        for f in &frames {
+        for (i, f) in frames.iter().enumerate() {
             let moving = windows.iter().any(|w| (w[0]..=w[1]).contains(&f.t));
+            let before = i.checked_sub(1).and_then(|p| frames[p].terrain.as_ref());
+            let steadiness = match before.zip(f.terrain.as_ref()) {
+                Some((a, b)) => {
+                    let c = crate::steadiness::change(a, b);
+                    format!("{:.4}\t{}\t{:.2}", c.rezoomed_share(), c.drops, c.wobble_px)
+                }
+                None => "\t\t".into(),
+            };
             writeln!(
                 out,
-                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}",
+                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{steadiness}",
                 f.t,
                 f.zoom,
                 f.report.tiles_drawn,
@@ -632,6 +646,9 @@ fn run_session(
                 f.report.frame.drape_slots,
                 u8::from(moving),
                 f.report.tiles_arrived,
+                mib(f.report.gpu.bytes_allocated),
+                mib(f.report.memory.drape_atlas),
+                mib(f.report.memory.tile_textures),
             )
             .map_err(|e| e.to_string())?;
         }
