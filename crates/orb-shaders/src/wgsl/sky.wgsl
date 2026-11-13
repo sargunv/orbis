@@ -27,20 +27,22 @@ fn fs_sky(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 // power (GL JS's gamma-corrected alpha), which lifts a bright map's sunlit
 // face toward white.
 //
-// The light changes slowly with the view ray, so it is marched at the
-// corners of a grid of SCATTER_CELL logical pixels and interpolated
-// between them rather than at every pixel: its cost follows the logical
-// viewport, not the device's pixels (14.7 M rays a frame over a 2560×1440
-// window at a pixel ratio of 2). The limb is where it changes fast: a ray
-// past it crosses the whole shell, one short of it stops at the ground.
-// Pixels within SCATTER_LIMB cells of it march their own ray, so no cell
-// they lie in mixes the two sides.
+// Over the ground the light changes slowly with the view ray, so there it
+// is marched at the corners of a grid of SCATTER_CELL logical pixels and
+// interpolated between them rather than at every pixel: its cost follows
+// the logical viewport, not the device's pixels (14.7 M rays a frame over
+// a 2560×1440 window at a pixel ratio of 2). Past the limb it doesn't: a
+// ray there crosses the whole shell, and the air it passes thins by e for
+// every 8 km of height, so on a globe large in the view the glow fades
+// over a few pixels, which a grid would draw in steps. Pixels past the
+// limb, or short of it by under SCATTER_LIMB cells, march their own ray:
+// the shell is thin, so they are a ring of the view at any zoom.
 
 // Logical pixels a side of the scattering grid's cells.
 const SCATTER_CELL: f32 = 8.0;
-// Cells either side of the limb whose pixels march their own rays: more
-// than a cell's diagonal, so that every triangle the rest interpolate lies
-// on one side of it.
+// Cells short of the limb whose pixels march their own rays: more than a
+// cell's diagonal, so that every triangle the rest interpolate lies over
+// the ground.
 const SCATTER_LIMB: f32 = 2.0;
 
 struct ScatterOut {
@@ -105,7 +107,7 @@ fn fs_scatter(in: ScatterOut) -> @location(0) vec4<f32> {
     let limb = sqrt(max(1.0 - 1.0 / (distance * distance), 0.0));
     let past = dot(ray, -normalize(atmosphere.globe_eye.xyz)) - limb;
     let cell = fwidth(past) * SCATTER_CELL * frame.pixel_ratio;
-    if abs(past) < SCATTER_LIMB * cell {
+    if past < SCATTER_LIMB * cell {
         return scatter_color(ray);
     }
     return in.color;
